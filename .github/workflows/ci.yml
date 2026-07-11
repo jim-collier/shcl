@@ -1,0 +1,26 @@
+## Correctness gate only. Everything else (cross-compile, publish, artifacts)
+## stays in the local pipeline: cicd/cicd.bash. One definition of "passing" -
+## this just runs the engine's --ci mode.
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      ## Toolchain setup (Go/Rust/etc.) gets added here when the reference
+      ## parser lands; keep it in YAML, keep "what passing means" in the engine.
+      - run: cicd/cicd.bash --ci
