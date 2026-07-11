@@ -32,7 +32,11 @@ field-line      = indent path *wsp ":" *wsp [ value ] *wsp [ comment ]
 indent          = *( SP / HTAB )              ; one kind per subtree (see spec)
 
 path            = segment *( *wsp "." *wsp segment )
-segment         = field-name *wsp [ selector ]
+segment         = field-name *wsp [ [ ":" *wsp ] selector ]
+                ; the ":" before a selector is optional sugar - "base[x]" and
+                ; "base:[x]" are equivalent. A ":" is a selector colon only when
+                ; the next non-wsp char is "["; otherwise it is the field-line
+                ; separator. This keeps file-authoring and query syntax identical.
 selector        = "[" *wsp sel-body *wsp "]"
 sel-body        = index-sel / value-sel
 index-sel       = "#" 1*DIGIT                 ; explicit index

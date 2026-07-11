@@ -71,7 +71,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 ### Dot and bracket (inline form)
 
 - `a.b.c: v` is exactly `a:` / (indent) `b:` / (indent) `c: v`. The `.` stands in for "newline + one deeper indent".
-- `field:[disc]` selects (or creates) the instance of `field` whose discriminator value is `disc`, then continues the path under it. `base:[Boston].metrics.population: 700` is identical to writing `base: Boston` then nesting `metrics` then `population: 700`.
+- `field[disc]` selects (or creates) the instance of `field` whose discriminator value is `disc`, then continues the path under it. `base[Boston].metrics.population: 700` is identical to writing `base: Boston` then nesting `metrics` then `population: 700`. The colon before a selector is optional sugar, so `field[disc]` and `field:[disc]` are the same; the colon-less form is also the reader's query syntax, so a path reads identically whether authored in a file or passed to `Get`.
 - Inline and block forms may be freely mixed; the parser normalizes both to the same tree.
 
 ### Merging and instances
@@ -234,6 +234,8 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 ## Error handling philosophy
 
 SHCL never bails on a whole file for one bad line. The parser skips or best-effort-repairs the offending line, records a diagnostic, and continues. The reader never errors when it can unambiguously reach a value; malformed content before or after a clean section does not poison that section. Errors are reserved for genuine ambiguity (or surfaced on request via `onBad: Error`).
+
+One repair is defined concretely, because it is the common "figure it out" case: a line that is a **well-formed field path with no colon and nothing after it** (`base[Boston].metrics.population`, no value) is repaired to that path carrying an **empty value** - the obvious intent - with a diagnostic recorded. This is deliberately narrow. A line whose colon is missing but which is *not* a clean path - a bareword then whitespace then another token (`square-miles 300`) - is genuinely ambiguous (is `300` a value, or part of a name that cannot legally contain a space?), so it is skipped with a diagnostic rather than guessed.
 
 ## Cross-language parity and conformance
 
