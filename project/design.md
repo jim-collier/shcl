@@ -45,3 +45,12 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 ### Testing
 
 The conformance corpus is the primary cross-language guarantee: each case is an input, its canonical formatting, and expected typed reads with status sentinels. Every parser runs it in CI.
+
+### CI/CD
+
+We decided to split by responsibility rather than duplicate the pipeline:
+
+- The GitHub workflow (`.github/workflows/ci.yml`) is a correctness gate only - format check, build, lint, tests on push/PR. Minimal permissions, cancels superseded runs, times out.
+- Everything else (cross-compile, packaging, publish) stays in the local pipeline, `cicd/cicd.bash`, config-driven via `cicd/config.bash`.
+- Both share one definition of "passing": the workflow just runs `cicd.bash --ci`. Per-language toolchain setup lives in the workflow YAML; what passing means lives in the engine, so the two cannot drift.
+- The formatter rewrites in place locally but is check-only (fail on diff) in CI.

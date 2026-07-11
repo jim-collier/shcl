@@ -47,7 +47,8 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Platform and foundations
 
-- 🔘 Initialize the git repo (none exists yet at repo root or `github/`); wire remote `git@github.com:jim-collier/shcl.git`.
+- ✅ Initialize the git repo (none exists yet at repo root or `github/`); wire remote `git@github.com:jim-collier/shcl.git`.
+	- ✅ Done at `github/`; `main` plus feature-branch flow.
 
 - 🛠️ Language spec rationalized from `notes.txt`: terminology, model, types, reader API, formatter, raw blocks. See `spec.md` + `grammar.abnf`.
 
@@ -62,7 +63,8 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Build, CI/CD, and install
 
-- 🔘 A CI/CD pipeline kicked off by a bash script (`cicd/cicd.bash`): builds, tests, and can commit and push. Packaging and publishing are opt-in.
+- 🛠️ A CI/CD pipeline kicked off by a bash script (`cicd/cicd.bash`): builds, tests, and can commit and push. Packaging and publishing are opt-in.
+	- 🛠️ Engine + `config.bash` in place; `--ci` mode is the correctness gate the GitHub workflow (`.github/workflows/ci.yml`) runs, so local and CI share one definition of passing. Build/lint/test stages are stubs until the reference parser lands; shellcheck of the pipeline itself is live now.
 
 - 🔘 Dev-environment install script (Linux bash, macOS sh, Windows PowerShell), runnable via a single `curl`/`wget` and documented under "how to develop". Clones main, installs dependencies, and states what it will do with an option to abort.
 
