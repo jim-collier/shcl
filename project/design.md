@@ -1,0 +1,47 @@
+<!-- markdownlint-disable MD007 -- Unordered list indentation -->
+<!-- markdownlint-disable MD010 -- No hard tabs -->
+<!-- markdownlint-disable MD033 -- No inline html -->
+<!-- markdownlint-disable MD055 -- Table pipe style [Expected: leading_and_trailing; Actual: leading_only; Missing trailing pipe] -->
+<!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
+# Design
+
+Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`. The full language definition is in `spec.md` (with `grammar.abnf`); this file stays high-level - the *why*, not the letter of the rules.
+
+## Assumptions
+
+- The raw, by-example origin of the language is `../../notes.txt`. It was rationalized into a coherent model through a decision pass; where the two disagree, `spec.md` wins.
+- The language ships as many readers that must behave identically - Go, Rust, C (+ C++), C#, Java (+ Kotlin), Python, JavaScript (+ TypeScript), PowerShell, POSIX sh - plus single-file drop-in source and compiled binaries per platform. A smaller set lands first; the rest are designed-for from the start. Three of these are one core plus a thin companion typed surface, not separate parsers: C++ is a template header over the C core, Kotlin is generic extensions over the Java core, TypeScript is a `.d.ts` over the JS core.
+
+## Direction decisions
+
+The guiding tension is "simplest possible" versus "expressive enough for anything". We resolved it by fixing two audiences and moving all difficulty onto the parser:
+
+- Optimize for the hand-authoring user and the value-consuming programmer; burden neither. Any ambiguity a modern parser can resolve from context, it must - the user is never made to satisfy the machine.
+- The data model is relational, not a map. The left-of-colon token is a *field* (column), not a unique key; repeating it with different values yields *instances* (rows). One rule covers wrappers, leaves, and valued instances: nodes are `(name, value, children)` and merge on matching `(name, value)`.
+- Typing is reader-driven: the parser stores raw text and never guesses; the consumer requests a type and the library coerces intelligently but safely, reporting problems without ever refusing to keep working.
+- Forgiveness is a feature: never bail on a whole file for one bad line; skip/repair and diagnose; never error when a value is legitimately reachable.
+- Raw (fenced) blocks give verbatim escape hatches (DDL, code, templates) without contorting the config syntax.
+
+Full, itemized decisions live in project memory (`shcl-spec-decisions`); `spec.md` is their normative form.
+
+## Architecture
+
+### Software stack
+
+Many readers with a shared conformance corpus (`conformance/`) as the contract between them. A key portability constraint shapes the reader API: the requested value type is expressed by a typed entry point or a compile-time generic, never a runtime `type` field, because static languages (Go, Rust, C, C++, C#) cannot let a runtime value drive a return type. Compiled targets: Linux, BSD, macOS, Windows on x86_64 and ARM64.
+
+### Configuration model
+
+See `spec.md` - fields/instances, reader-driven types, arrays vs instances, raw blocks.
+
+### Reader API
+
+One conceptual operation - get a value at a path, coerced to a type, with a default and an on-bad policy - realized idiomatically per language. The type is chosen by a typed entry point or compile-time generic (not a runtime field), so results land in a strongly-typed variable with no consumer cast everywhere. Plus wildcards and enumeration for multi-instance access; structured diagnostics; write-out of defaults and comments.
+
+### Formatter
+
+Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting, redundancy collapsed, value text untouched (it cannot know types).
+
+### Testing
+
+The conformance corpus is the primary cross-language guarantee: each case is an input, its canonical formatting, and expected typed reads with status sentinels. Every parser runs it in CI.

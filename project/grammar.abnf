@@ -1,0 +1,101 @@
+; SHCL - Simple Hierarchical Config Language
+; Formal grammar (ABNF, RFC 5234 + RFC 7405 case-sensitive strings).
+;
+; ABNF cannot express indentation sensitivity or fenced-block termination on
+; its own; those are context-sensitive and are specified in prose in spec.md
+; (see "Structure & hierarchy" and "Raw blocks"). This grammar covers the
+; line-level and value-level syntax. Where a rule depends on runtime context
+; (current indent stack, active fence), that dependency is noted inline.
+
+;-----------------------------------------------------------------------------
+; File
+;-----------------------------------------------------------------------------
+
+file            = *line
+line            = ( blank-line / comment-line / field-line / fence-line / raw-content-line ) newline
+                ; raw-content-line only occurs while a fence is open (context).
+
+blank-line      = *wsp [ comment ]
+comment-line    = *wsp comment
+comment         = "#" *non-newline           ; to end of line; only outside quotes
+
+;-----------------------------------------------------------------------------
+; Field lines
+;-----------------------------------------------------------------------------
+; A field-line's leading whitespace (indent) is significant and governs
+; hierarchy per the indentation rules in spec.md. The dotted/bracketed path
+; below is the inline-hierarchy sugar; it is exactly equivalent to nesting.
+
+field-line      = indent path *wsp ":" *wsp [ value ] *wsp [ comment ]
+                / indent path *wsp ":" *wsp fence-open   ; named raw block
+
+indent          = *( SP / HTAB )              ; one kind per subtree (see spec)
+
+path            = segment *( *wsp "." *wsp segment )
+segment         = field-name *wsp [ selector ]
+selector        = "[" *wsp sel-body *wsp "]"
+sel-body        = index-sel / value-sel
+index-sel       = "#" 1*DIGIT                 ; explicit index
+                / 1*DIGIT                      ; bare integer = index
+value-sel       = quoted / bare-sel           ; non-numeric bare, or quoted (forces value)
+bare-sel        = 1*sel-char
+sel-char        = %x20-21 / %x23-2D / %x2F-3A / %x3C-5A / %x5E-7E
+                ; any char except '"' %x22, '.' %x2E, ';'? no - excludes: " . / ...
+                ; practical: any non-']' non-reserved char; quote for specials.
+
+field-name      = quoted / bare-name
+bare-name       = 1*name-char
+name-char       = ALPHA / DIGIT / "-" / "_"
+
+;-----------------------------------------------------------------------------
+; Values
+;-----------------------------------------------------------------------------
+; Type is NOT encoded in syntax; every value is stored as raw text and typed
+; on read by the consumer (reader-driven). "array" is the only value-level
+; structural distinction (comma-separated). Numbers/bools/dates are recognized
+; only at read time by the coercion rules in spec.md.
+
+value           = array / scalar
+array           = scalar *( *wsp "," *wsp scalar ) [ *wsp "," ]   ; trailing comma ok
+scalar          = quoted / bareword
+
+quoted          = dquoted / squoted
+dquoted         = DQUOTE *dqchar DQUOTE
+squoted         = SQUOTE *sqchar SQUOTE
+dqchar          = escape / fehu / ( %x00-21 / %x23-5B / %x5D-10FFFF )  ; not '"' unescaped
+sqchar          = escape / fehu / ( %x00-26 / %x28-5B / %x5D-10FFFF )  ; not "'" unescaped
+
+bareword        = 1*bare-char
+bare-char       = escape / fehu / bare-plain
+bare-plain      = %x21 / %x24-2B / %x2D-39 / %x3B-5A / %x5C-10FFFF
+                ; excludes reserved bare chars: SP HTAB , : # " ' [ ]
+                ; (0x20 0x09 0x2C 0x3A 0x23 0x22 0x27 0x5B 0x5D)
+
+escape          = "\" ( "t" / "n" / "\" / DQUOTE / SQUOTE )
+fehu            = %x16A0                        ; U+16A0 RUNIC FEHU = literal backslash run
+                                                ; ("\" %x16A0 yields a literal fehu)
+
+;-----------------------------------------------------------------------------
+; Raw (fenced) blocks
+;-----------------------------------------------------------------------------
+; Fence termination and base-indent stripping are context-sensitive (spec.md).
+; A block opens with >=3 identical fence chars; it closes at the first later
+; line whose trimmed text is a run of the SAME char, length >= the opener.
+
+fence-line      = indent fence-open            ; anonymous raw block (positional)
+fence-open      = fence-run [ info-string ]
+fence-run       = 3*"`" / 3*"~"                 ; run length N recorded for close-match
+info-string     = *wsp 1*non-newline           ; optional label (e.g. a language)
+raw-content-line= *non-newline                 ; verbatim; only while a fence is open
+; fence-close (context): indent (N*"`" / N*"~") *wsp   where char matches opener
+;                        and length >= opener length.
+
+;-----------------------------------------------------------------------------
+; Terminals
+;-----------------------------------------------------------------------------
+
+wsp             = SP / HTAB
+non-newline     = %x00-09 / %x0B-10FFFF        ; any char except LF
+newline         = [ CR ] LF / %xEOF            ; LF or CRLF; last line may lack newline
+DQUOTE          = %x22
+SQUOTE          = %x27

@@ -1,0 +1,14 @@
+base: Chicago
+	metrics:
+		population: 30200
+		weather: Hot, Cold, Lousy, "All around not that great"
+		square-miles: 300
+base: "Cleveland, OH"
+	metrics:
+		population: 700
+base: Boston
+	metrics:
+		population:
+base: Philly
+	metrics:
+		population: 1024
