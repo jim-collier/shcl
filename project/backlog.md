@@ -89,6 +89,8 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Features and enhancements
 
+- 🛠️ Reader API: two-tier junior-friendly surface (convenience default + full status), consistent across all bindings; a supplied default implies default-mode
+
 ### Done
 
 #### Done - Initial requirements
