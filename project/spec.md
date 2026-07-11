@@ -179,6 +179,31 @@ The three modes are the canonical surface everywhere; each binding names them id
 
 This reader-controlled error handling applies to **all** value access, not just arrays.
 
+### Ergonomic tiers
+
+The consumer is assumed to be a junior programmer in **every** binding, so each typed entry point comes in two tiers:
+
+- **Convenience tier (the one the docs lead with).** One value, one baked-in fallback, one return, no status to inspect. Supplying the fallback *is* choosing `Default` on-bad mode, so an empty/missing/bad/ambiguous read yields the fallback and nothing throws. This is the call a beginner writes 90% of the time.
+- **Full tier.** The same read exposing the status sentinel (and the raw text) for callers who must tell `Empty` from `NotFound` from `BadType`, or who want `onBad: Error`.
+
+The convenience tier has the same shape everywhere - a mandatory, call-site-visible fallback - which is precisely what defuses the silent-zero trap: a junior cannot accidentally read a `0`/`""` that was really empty or missing, because there is no convenience call without a stated fallback. Each binding names the tiers by its own convention; in languages that already have a native "value-or-default" idiom, that idiom *is* the convenience tier rather than a new method.
+
+| Language   | Convenience tier                              | Full tier                                          |
+|------------|-----------------------------------------------|----------------------------------------------------|
+| Go         | `pop := doc.GetIntOr(path, 0)`                | `pop, st := doc.GetInt(path)`                      |
+| Rust       | `let pop = doc.get_int(path).unwrap_or(0);`  | `let r = doc.get_int(path); // Result<i64, Status>`|
+| C          | `int pop = shcl_get_int(doc, path, 0);`      | `shcl_get_int_ex(doc, path, &pop); // -> status`   |
+| C++        | `int pop = doc.get_or<int>(path, 0);`        | `auto r = doc.get<int>(path); // .value / .status` |
+| C#         | `int pop = doc.GetIntOr(path, 0);`           | `var r = doc.GetInt(path); // .Value / .Status`    |
+| Java       | `int pop = doc.getIntOr(path, 0);`           | `var r = doc.getInt(path); // .value() .status()`  |
+| Kotlin     | `val pop = doc.getIntOr(path, 0)`            | `val r = doc.getInt(path)`                         |
+| Python     | `pop = doc.get_int(path, default=0)`         | `r = doc.read_int(path)  # r.value, r.status`      |
+| JS / TS    | `const pop = doc.getIntOr(path, 0)`          | `const r = doc.getInt(path)  // {value, status}`   |
+| PowerShell | `[int]$pop = $doc.GetIntOr($path, 0)`        | `$r = $doc.GetInt($path)  # .Value .Status`        |
+| POSIX sh   | `pop=$(shcl get --int --default=0 f 'path')` | `shcl get --int f 'path'; status=$?`               |
+
+The array, bool, float, datetime, string, and raw forms follow the same two-tier pattern (`GetIntArrayOr`, `GetBoolOr`, ...); only the coercion target changes. The full tier is one representation of the `Flag`-mode status described above; the convenience tier is `Default` mode with the fallback the caller passed.
+
 ### Status sentinels
 
 Reads report one of: **Good**, **Empty** (present but no value), **NotFound** (path does not resolve), **BadType** (present but not coercible to the requested type), **Multiple** (path resolves to more than one instance and the call wanted one). `Empty` is informational, not a failure - the empty value is still returned. The parser **never** refuses a legitimately reachable value because some *other* part of the file was malformed.
