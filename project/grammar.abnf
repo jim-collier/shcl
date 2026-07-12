@@ -55,7 +55,7 @@ name-char       = ALPHA / DIGIT / "-" / "_"
 ; Values
 ;-----------------------------------------------------------------------------
 ; Type is NOT encoded in syntax; every value is stored as raw text and typed
-; on read by the consumer (reader-driven). "array" is the only value-level
+; on read by the consumer (accessor-driven). "array" is the only value-level
 ; structural distinction (comma-separated). Numbers/bools/dates are recognized
 ; only at read time by the coercion rules in spec.md.
 
