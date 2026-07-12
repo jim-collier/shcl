@@ -105,52 +105,56 @@ When you do want zero-tolerance rigor: schema validation, plus a strict mode tha
 
 ## What it looks like
 
-All of this is one valid file. Indentation and dotted paths are interchangeable, quoting is only needed when a value contains a reserved character, and messy spacing is fine.
+A small web server - the kind of thing nginx makes you learn a bespoke brace language for. All of this is one valid file: indentation and dotted paths are interchangeable, quoting is only needed when a value contains a reserved character, and messy spacing is fine.
 
 ```text
-# Indented style
-base: Chicago
-	metrics:
-		Population : 30200
-		weather: Hot, Cold, "All around not that great"
+# Flat, TOML-style settings
+listen: "0.0.0.0:443"          # a colon in a value just needs quotes
+workers: 4
+log-level: warn
 
-# Same tree, inline style
-base[Boston].metrics.population: 700
+# Hierarchy when you need it: one instance per site
+site: example.com
+	root: /srv/www/example
+	Max-Upload-MB : 50         # names are case-insensitive, spacing is loose
+	methods: GET, POST, HEAD   # an array is just commas
+	tls:
+		cert: /etc/ssl/example.pem
+		hsts: on
 
-# Adding to an instance defined earlier just works
-base: Chicago
-	metrics:
-		square-miles: 300
+# Repeating the field adds another site - arrays of objects, no syntax to invent
+site: blog.example.com
+	root: /srv/www/blog
+
+# Dotted paths spell the same tree; add to any instance from anywhere
+site[blog.example.com].tls.hsts: off
 
 # Multi-line content goes in a fenced block, kept verbatim
-schema:
-	~~~sql
-	CREATE TABLE users (
-		id   INTEGER PRIMARY KEY,
-		name TEXT NOT NULL
-	);
+maintenance-page:
+	~~~html
+	<h1>Down for maintenance - back in five.</h1>
 	~~~
 ```
 
-Field names are case-insensitive. Repeated paths merge. `base` here is not one key but a set of instances (Chicago, Boston), which is how you write arrays of objects without inventing syntax for them.
+Field names are case-insensitive. Repeated paths merge. `site` here is not one key but a set of instances (example.com, blog.example.com), each with its own children - arrays of objects without inventing syntax for them.
 
 ## Reading it from code
 
 One call. A typed value. A visible fallback. This is the call you write 90% of the time:
 
 ```go
-pop := doc.GetIntOr("base[Boston].metrics.population", 0)
+limit := doc.GetIntOr("site[example.com].max-upload-mb", 10)
 ```
 
 ```python
-pop = doc.get_int("base[Boston].metrics.population", default=0)
+limit = doc.get_int("site[example.com].max-upload-mb", default=10)
 ```
 
 ```sh
-pop=$(shcl get --int --default=0 config.shcl 'base[Boston].metrics.population')
+limit=$(shcl get --int --default=10 server.shcl 'site[example.com].max-upload-mb')
 ```
 
-When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`. Wildcards read across instances (`base[*].metrics.population` gives you every city's population, in file order).
+When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`. Wildcards read across instances (`site[*].root` gives you every site's document root, in file order).
 
 ## How it compares
 
@@ -194,7 +198,7 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 ## Features
 
-- Hierarchy by indentation or dot-notation (`base[Boston].metrics.population: 700`), freely mixed. Both spell the same tree.
+- Hierarchy by indentation or dot-notation (`site[blog.example.com].tls.hsts: off`), freely mixed. Both spell the same tree.
 - Values are typed on *read*, not on parse. The file stores text; your code asks for an int.
 - Never bails on a whole file over one bad line. Bad lines are skipped or repaired with diagnostics, and the rest still loads.
 - Every convenience read takes a call-site fallback (`GetIntOr(path, 0)`), so a missing value can't masquerade as a real zero.
