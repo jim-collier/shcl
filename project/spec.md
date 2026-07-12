@@ -133,7 +133,28 @@ Recognized (case-insensitive) when a value is read as a boolean:
 
 ### Dates and times
 
-Recognized when a value is read as a date/time. The parser accepts common formats with any delimiters (or a delimiter only between the date and time parts): numeric dates, short named months (`Jan`, `Jul`), 12- or 24-hour times with or without AM/PM and with or without milliseconds. A bare 8-digit number is `YYYYMMDD` and must be a valid calendar date. Fully-written-out English prose dates are **not** recognized. A genuinely ambiguous numeric date (e.g. `01/02/2003`, both fields <= 12) or an invalid date is an error on read (it can still be read as a string). Because typing is accessor-driven, `20260709` is only tried as a date when a date is requested; otherwise it is the integer 20260709.
+Recognized when a value is read as a date/time. The formats are a closed whitelist, each pinned by a conformance case; the admission rule is that a format cannot be misread - either the year comes first, or the month is a word. Anything else fails the read as a date with `BadType` (the value is still readable as a string). Matching a format is not enough: the value must then also be a real calendar date and clock time (`2026-02-30` or `25:00` is `BadType` despite matching a shape).
+
+**Dates** - 4-digit year always. The internal delimiter is one of `-` `/` `.` and must be uniform within the date:
+
+- `YYYY-MM-DD`: `2026-07-12`, `2026/07/12`, `2026.07.12`.
+- `YYYYMMDD` - compact 8-digit.
+- `DD Mon YYYY` - space or a delimiter between components: `12 Jul 2026`, `12-Jul-2026`, `12.July.2026`.
+- `Mon DD YYYY` - likewise: `Jul 12 2026`, `Jul/12/2026`; in the space form a comma may follow the day (`Jul 12, 2026`).
+
+Month names are the fixed English set only - 3-letter abbreviation or full name, case-insensitive (`jan`, `Jan`, `JANUARY`), no trailing dot, no other languages (a locale table is how bindings drift).
+
+**Times:**
+
+- 24-hour `HH:MM` and `HH:MM:SS`.
+- Optional fractional seconds after seconds, `.` delimiter, 1-9 digits (`14:30:05.123`) - unambiguous because it can only follow `HH:MM:SS`.
+- 12-hour with mandatory minutes and mandatory meridiem: `H:MM AM` / `h:mm:ss pm`, case-insensitive, space before AM/PM optional (`2:30PM`); dotted `a.m.` is rejected.
+
+**Timezone suffix** (optional, after any time): `Z` or `+`/`-``HH:MM`. Named zones (`EST`, `Europe/Paris`) are rejected - they require a timezone database, the ultimate parity killer.
+
+**Combined:** `<date><sep><time>[zone]`. The separator is `T`, a single space, `_`, or one of `-` `/` `.` where it does not create ambiguity - the time's `:` ends the date reading, so `2026-07-12-14:30` and `20260712.14:30` are fine, and the separator need not match the date's internal delimiter. Date-only and time-only values are each valid alone. Without a zone suffix the value is a *local* (floating) date/time - each binding returns its idiomatic local type; it is never silently assumed UTC.
+
+**Rejected by decision, not omission:** `MM/DD/YYYY` and `DD/MM/YYYY` (the motivating ambiguity) and every other all-numeric date that is not year-first; 2-digit years; Unix epoch numbers (a consumer wanting epoch reads the integer and converts); fully-written-out prose dates ("July twelfth"). Because typing is accessor-driven, a bare 8-digit number is tried as `YYYYMMDD` only when a date is requested; otherwise `20260712` is the ordinary integer 20260712.
 
 ### Arrays
 

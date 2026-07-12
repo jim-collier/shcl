@@ -52,6 +52,7 @@ In each section, items are listed approximately from newest to oldest.
 
 - 🛠️ Language spec rationalized from `notes.txt`: terminology, model, types, accessor/writer API, formatter, raw blocks. See `spec.md` + `grammar.abnf`.
 	- ✅ Stacked (`*`) block-array form added alongside inline commas; both spellings read identical and canonicalize to inline (`spec.md` Arrays, `grammar.abnf` `array-elem-line`).
+	- ✅ Date/time formats pinned to a closed whitelist (year-first or named-month only; `-`/`/`/`.` delimiters; `T`/space/`_`/delimiter date-time separator; optional `.`-fractional seconds; shape match then calendar validation; epoch and non-year-first numerics rejected). Replaces "common formats with any delimiters". Conformance cases still to add with the corpus expansion.
 
 - ✅ Resolve the open minor items listed at the end of `spec.md` (currency-symbol set, wildcard-missing behavior, `onBad` enum surface, `%`->int, fence info-string meaning). All five settled inline in `spec.md` under "Resolved minor items".
 
