@@ -45,6 +45,18 @@ The consuming programmer is assumed to be a junior in *every* binding, not just 
 - The convenience tier defuses the one real hazard of a forgiving accessor - a junior discarding the status and trusting a `0`/`""` that was actually empty or missing. Making the fallback mandatory and visible at the call site means an unwanted zero can't slip in unseen.
 - Portability is unaffected: the type is still fixed by the entry point/generic. `default` and `onBad` are ordinary parameters and may ride in an options struct where that reads better to a beginner than functional options.
 
+### Integration modes
+
+One question - "how do you pull SHCL into your project?" - with two kinds of answer: *run it* or *embed it*. Named plainly and ordered easiest-first, so a beginner starts at the top:
+
+- **Command** - run the `shcl` CLI from a shell or script. Nothing to compile, nothing to link.
+- **Drop-in** - copy one source file into your project. No dependency and no build step; you own the copy.
+- **Package** - add it as an ordinary dependency and let the package manager fetch it (`go get`, `pip install`, `npm i`, ...).
+- **Shared library** - link the prebuilt `.so`/`.dll`/`.dylib` at runtime; the library stays a separate file.
+- **Bundled** - static-link it straight into your binary, so you ship one self-contained file.
+
+The last two are the same compiled code linked two ways - "shared" stays a separate file loaded at runtime, "bundled" is baked into your binary. Every mode reaches the same Accessor/Writer surface; the choice is packaging, not capability.
+
 ### Formatter
 
 Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting, redundancy collapsed, value text untouched (it cannot know types).
