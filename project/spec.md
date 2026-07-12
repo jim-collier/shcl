@@ -11,7 +11,7 @@ Simple Hierarchical Config Language. This is the canonical language spec: termin
 SHCL exists to be simultaneously the simplest and the most expressive config language, optimized for two audiences and nobody else:
 
 - **The person writing config by hand.** It must be forgiving and obvious enough that a non-programmer can hand-author a whole file from scratch - even something as rich as a declarative DDL - without memorizing rules. If a modern parser can figure out what was meant, it must; the user is never asked to satisfy the machine.
-- **The programmer consuming values.** Dropping in a single-file module, importing a package, linking a library, or shelling out to a CLI must all get you to "read the value I need" in one obvious call - amateur-friendly - and let you write out defaults and comments just as easily.
+- **The programmer consuming values.** However SHCL is pulled in - as a **Command** (CLI), a **Drop-in** source file, a **Package**, or a linked library (**Shared** or **Bundled**) - it must get you to "read the value I need" in one obvious call - amateur-friendly - and let you write out defaults and comments just as easily.
 
 Everything hard - typing, coercion, disambiguation, error recovery, formatting - is the parser's job. The corollary rule for every ambiguous design call: **push the burden onto this program, never onto the user or the consumer, and impose no constraint the parser could have resolved from context when the input is not legitimately ambiguous.**
 
