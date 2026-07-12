@@ -17,7 +17,7 @@ Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`
 The guiding tension is "simplest possible" versus "expressive enough for anything". We resolved it by fixing two audiences and moving all difficulty onto the parser:
 
 - Optimize for the hand-authoring user and the value-consuming programmer; burden neither. Any ambiguity a modern parser can resolve from context, it must - the user is never made to satisfy the machine.
-- The data model is relational, not a map. The left-of-colon token is a *field* (column), not a unique key; repeating it with different values yields *instances* (rows). One rule covers wrappers, leaves, and valued instances: nodes are `(name, value, children)` and merge on matching `(name, value)`.
+- The data model is relational, not a map. The left-of-colon token is a *field* (column), not a unique key; repeating it with different values yields *instances*. One rule covers wrappers, leaves, and valued instances: nodes are `(name, value, children)` and merge on matching `(name, value)`.
 - Typing is accessor-driven: the parser stores raw text and never guesses; the consumer requests a type on read and the library coerces intelligently but safely, reporting problems without ever refusing to keep working.
 - Forgiveness is a feature: never bail on a whole file for one bad line; skip/repair and diagnose; never error when a value is legitimately reachable.
 - Raw (fenced) blocks give verbatim escape hatches (DDL, code, templates) without contorting the config syntax.

@@ -88,7 +88,7 @@ fehu            = %x16A0                        ; U+16A0 RUNIC FEHU = literal ba
 
 fence-line      = indent fence-open            ; anonymous raw block (positional)
 fence-open      = fence-run [ info-string ]
-fence-run       = 3*"`" / 3*"~"                 ; run length N recorded for close-match
+fence-run       = 3*"`" / 3*"~"                 ; run length N captured for close-match
 info-string     = *wsp 1*non-newline           ; optional label (e.g. a language)
 raw-content-line= *non-newline                 ; verbatim; only while a fence is open
 ; fence-close (context): indent (N*"`" / N*"~") *wsp   where char matches opener
