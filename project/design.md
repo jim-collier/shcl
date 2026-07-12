@@ -10,7 +10,7 @@ Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`
 ## Assumptions
 
 - The raw, by-example origin of the language is `../../notes.txt`. It was rationalized into a coherent model through a decision pass; where the two disagree, `spec.md` wins.
-- The language ships as many readers that must behave identically - Go, Rust, C (+ C++), C#, Java (+ Kotlin), Python, JavaScript (+ TypeScript), PowerShell, POSIX sh - plus single-file drop-in source and compiled binaries per platform. A smaller set lands first; the rest are designed-for from the start. Three of these are one core plus a thin companion typed surface, not separate parsers: C++ is a template header over the C core, Kotlin is generic extensions over the Java core, TypeScript is a `.d.ts` over the JS core.
+- The language ships as many bindings that must behave identically - Go, Rust, C (+ C++), C#, Java (+ Kotlin), Python, JavaScript (+ TypeScript), PowerShell, POSIX sh - plus single-file drop-in source and compiled binaries per platform. A smaller set lands first; the rest are designed-for from the start. Three of these are one core plus a thin companion typed surface, not separate parsers: C++ is a template header over the C core, Kotlin is generic extensions over the Java core, TypeScript is a `.d.ts` over the JS core.
 
 ## Direction decisions
 
@@ -18,7 +18,7 @@ The guiding tension is "simplest possible" versus "expressive enough for anythin
 
 - Optimize for the hand-authoring user and the value-consuming programmer; burden neither. Any ambiguity a modern parser can resolve from context, it must - the user is never made to satisfy the machine.
 - The data model is relational, not a map. The left-of-colon token is a *field* (column), not a unique key; repeating it with different values yields *instances* (rows). One rule covers wrappers, leaves, and valued instances: nodes are `(name, value, children)` and merge on matching `(name, value)`.
-- Typing is reader-driven: the parser stores raw text and never guesses; the consumer requests a type and the library coerces intelligently but safely, reporting problems without ever refusing to keep working.
+- Typing is accessor-driven: the parser stores raw text and never guesses; the consumer requests a type on read and the library coerces intelligently but safely, reporting problems without ever refusing to keep working.
 - Forgiveness is a feature: never bail on a whole file for one bad line; skip/repair and diagnose; never error when a value is legitimately reachable.
 - Raw (fenced) blocks give verbatim escape hatches (DDL, code, templates) without contorting the config syntax.
 
@@ -28,21 +28,21 @@ Full, itemized decisions live in project memory (`shcl-spec-decisions`); `spec.m
 
 ### Software stack
 
-Many readers with a shared conformance corpus (`conformance/`) as the contract between them. A key portability constraint shapes the reader API: the requested value type is expressed by a typed entry point or a compile-time generic, never a runtime `type` field, because static languages (Go, Rust, C, C++, C#) cannot let a runtime value drive a return type. Compiled targets: Linux, BSD, macOS, Windows on x86_64 and ARM64.
+Many bindings with a shared conformance corpus (`conformance/`) as the contract between them. A key portability constraint shapes the Accessor: the requested value type is expressed by a typed entry point or a compile-time generic, never a runtime `type` field, because static languages (Go, Rust, C, C++, C#) cannot let a runtime value drive a return type. Compiled targets: Linux, BSD, macOS, Windows on x86_64 and ARM64.
 
 ### Configuration model
 
-See `spec.md` - fields/instances, reader-driven types, arrays vs instances, raw blocks.
+See `spec.md` - fields/instances, accessor-driven types, arrays vs instances, raw blocks.
 
-### Reader API
+### Consumer API
 
-One conceptual operation - get a value at a path, coerced to a type, with a default and an on-bad policy - realized idiomatically per language. The type is chosen by a typed entry point or compile-time generic (not a runtime field), so results land in a strongly-typed variable with no consumer cast everywhere. Plus wildcards and enumeration for multi-instance access; structured diagnostics; write-out of defaults and comments.
+The consumer-facing surface is the **Accessor** (read) and the **Writer** (emit). The Accessor's one conceptual operation is a **lookup** (query) - get a value at a path, coerced to a type, with a default and an on-bad policy - realized idiomatically per language. The type is chosen by a typed entry point or compile-time generic (not a runtime field), so results land in a strongly-typed variable with no consumer cast everywhere. For consuming a file as a whole there is **traversal** (scan): materialize the document - merge duplicates, order deterministically - then walk it (wildcards, instance enumeration). The Writer is the reverse: write out defaults, values, and comments. Structured diagnostics ride alongside.
 
 The consuming programmer is assumed to be a junior in *every* binding, not just the dynamic ones, so ergonomics are a design constraint, not an afterthought. Decided:
 
 - Two tiers, junior-first. A convenience tier is the documented default: one value, one baked-in fallback, one return, no status to inspect. In languages with a native idiom for it, the convenience tier *is* that idiom (Rust `unwrap_or`, Python default arg, sh `--default=`). The full tier - the status-returning form - is there when the caller needs to know *why* a read failed.
 - A supplied default implies default-behavior. The caller never writes a fallback *and* an explicit on-bad; explicit `Error` mode is reserved for "I want this to blow up". This kills the redundancy of asking for both.
-- The convenience tier defuses the one real hazard of a forgiving reader - a junior discarding the status and trusting a `0`/`""` that was actually empty or missing. Making the fallback mandatory and visible at the call site means an unwanted zero can't slip in unseen.
+- The convenience tier defuses the one real hazard of a forgiving accessor - a junior discarding the status and trusting a `0`/`""` that was actually empty or missing. Making the fallback mandatory and visible at the call site means an unwanted zero can't slip in unseen.
 - Portability is unaffected: the type is still fixed by the entry point/generic. `default` and `onBad` are ordinary parameters and may ride in an options struct where that reads better to a beginner than functional options.
 
 ### Formatter

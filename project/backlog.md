@@ -50,13 +50,13 @@ In each section, items are listed approximately from newest to oldest.
 - ✅ Initialize the git repo (none exists yet at repo root or `github/`); wire remote `git@github.com:jim-collier/shcl.git`.
 	- ✅ Done at `github/`; `main` plus feature-branch flow.
 
-- 🛠️ Language spec rationalized from `notes.txt`: terminology, model, types, reader API, formatter, raw blocks. See `spec.md` + `grammar.abnf`.
+- 🛠️ Language spec rationalized from `notes.txt`: terminology, model, types, accessor/writer API, formatter, raw blocks. See `spec.md` + `grammar.abnf`.
 
 - ✅ Resolve the open minor items listed at the end of `spec.md` (currency-symbol set, wildcard-missing behavior, `onBad` enum surface, `%`->int, fence info-string meaning). All five settled inline in `spec.md` under "Resolved minor items".
 
 - 🔘 Reference parser (pick one language first, likely Go or Rust) implementing the full spec, driven by the conformance corpus.
 
-- 🔘 Ports to the remaining reader languages (Go, Rust, C, C#, Java, Python, JavaScript, PowerShell, POSIX sh), each single-file/drop-in where possible, all green on the corpus. API rule: type via typed entry point / compile-time generic, never a runtime type field.
+- 🔘 Ports to the remaining binding languages (Go, Rust, C, C#, Java, Python, JavaScript, PowerShell, POSIX sh), each single-file/drop-in where possible, all green on the corpus. API rule: type via typed entry point / compile-time generic, never a runtime type field.
 	- Companion typed surfaces (not separate parsers): C++ template header over the C core; Kotlin reified-generic extensions over the Java core; TypeScript `.d.ts` over the JS core.
 
 - 🔘 Expand the conformance corpus (`conformance/`) to cover the hard edges: dates/ambiguity, coercion, quoting/escapes, fehu, indentation errors, raw blocks, selectors/wildcards.
@@ -89,7 +89,7 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Features and enhancements
 
-- 🛠️ Reader API: two-tier junior-friendly surface (convenience default + full status), consistent across all bindings; a supplied default implies default-mode
+- 🛠️ Accessor: two-tier junior-friendly surface (convenience default + full status), consistent across all bindings; a supplied default implies default-mode
 
 ### Done
 
