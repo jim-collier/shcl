@@ -51,6 +51,7 @@ In each section, items are listed approximately from newest to oldest.
 	- ✅ Done at `github/`; `main` plus feature-branch flow.
 
 - 🛠️ Language spec rationalized from `notes.txt`: terminology, model, types, accessor/writer API, formatter, raw blocks. See `spec.md` + `grammar.abnf`.
+	- ✅ Stacked (`*`) block-array form added alongside inline commas; both spellings read identical and canonicalize to inline (`spec.md` Arrays, `grammar.abnf` `array-elem-line`).
 
 - ✅ Resolve the open minor items listed at the end of `spec.md` (currency-symbol set, wildcard-missing behavior, `onBad` enum surface, `%`->int, fence info-string meaning). All five settled inline in `spec.md` under "Resolved minor items".
 
@@ -59,7 +60,8 @@ In each section, items are listed approximately from newest to oldest.
 - 🔘 Ports to the remaining binding languages (Go, Rust, C, C#, Java, Python, JavaScript, PowerShell, POSIX sh), each single-file/drop-in where possible, all green on the corpus. API rule: type via typed entry point / compile-time generic, never a runtime type field.
 	- Companion typed surfaces (not separate parsers): C++ template header over the C core; Kotlin reified-generic extensions over the Java core; TypeScript `.d.ts` over the JS core.
 
-- 🔘 Expand the conformance corpus (`conformance/`) to cover the hard edges: dates/ambiguity, coercion, quoting/escapes, fehu, indentation errors, raw blocks, selectors/wildcards.
+- 🛠️ Expand the conformance corpus (`conformance/`) to cover the hard edges: dates/ambiguity, coercion, quoting/escapes, fehu, indentation errors, raw blocks, selectors/wildcards.
+	- 🛠️ Case `002-stacked-array` added (inline-vs-stacked parity + array-vs-instances). Remaining edges still to cover.
 
 ### Build, CI/CD, and install
 

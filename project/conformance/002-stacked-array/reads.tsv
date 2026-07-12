@@ -1,0 +1,7 @@
+query	type	expected	status
+inline	string[]	small|medium|extra, large	Good
+stacked	string[]	small|medium|extra, large	Good
+stacked	count	1	Good
+pet	count	2	Good
+pet	instances	cat|dog	Good
+pet	string	-	Multiple

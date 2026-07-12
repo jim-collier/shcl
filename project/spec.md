@@ -137,7 +137,30 @@ Recognized when a value is read as a date/time. The parser accepts common format
 
 ### Arrays
 
-A comma-separated value is an array held in a single cell. Splitting is on **unquoted** commas; each element is trimmed; quoted elements keep their internal commas and colons; a trailing comma is ignored; a single value is a one-element array; an empty value is an empty array. Element typing is accessor-driven like any value.
+An array is multiple values in a **single cell**. It has two interchangeable spellings that produce the identical array; the canonical formatter emits the inline form.
+
+**Inline (comma) form** - `tags: red, green, blue`. Splitting is on **unquoted** commas; each element is trimmed; quoted elements keep their internal commas and colons; a trailing comma is ignored; a single value is a one-element array; an empty value is an empty array.
+
+**Stacked (`*`) form** - an empty-valued field whose child lines are all `*`-marked is the same array, one element per line:
+
+```
+sizes:
+	* small
+	* medium
+	* "extra, large"
+```
+
+is exactly `sizes: small, medium, "extra, large"`. The rules that keep it unambiguous:
+
+- The marker is `*` then at least one space. A stacked element is always **colon-less**, and that (not the space) is what separates `* small` (an element) from `*x: y` (a field) - a `*` can never begin a field name.
+- **Uniform or nothing:** at the child indent, every line is a `*` element or none is; a mix is not a block array (each line is parsed as whatever it is, with a diagnostic if malformed).
+- **One element per line**, each a single scalar typed on read exactly like an inline element; quote to embed a space, comma, or colon (`* "Bond, James"`). A bare comma on an element line is an error, not a second element.
+- The field opening the list has an **empty inline value**; a field may not carry both an inline value and a `*` list.
+- **Scalars only** (first cut): a `*` element is a value, not a sub-node, so it has no `field: value` children. Arrays *of objects* are expressed with instances and discriminators, not `*` lists.
+
+Element typing is accessor-driven, so `GetStringArray`/`GetIntArray` read either spelling identically.
+
+An array (either spelling) is **one cell holding many values** - not the same as repeating a field on separate lines, which makes distinct **instances** of that field. The two look alike only for a bare repeated leaf; once an instance carries children the intent is plain. A parser may emit a soft hint on a bare repeated leaf (`did you mean tags: red, blue?`) but never silently treats one form as the other.
 
 ### Coercion rules ("intelligent but safe")
 

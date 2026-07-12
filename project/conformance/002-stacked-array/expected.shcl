@@ -1,0 +1,4 @@
+inline: small, medium, "extra, large"
+stacked: small, medium, "extra, large"
+pet: cat
+pet: dog
