@@ -21,7 +21,7 @@ The word "key" is deliberately avoided - it implies uniqueness, which SHCL does 
 
 - **Field** (a.k.a. column): the name on the left of a colon. A field is not unique; it may recur.
 - **Value**: the text on the right of a colon (or an array of such, or a raw block).
-- **Instance** (a.k.a. row/record): one occurrence of a field carrying a particular value. Repeating a field with a *different* value creates another instance, exactly like rows in a table.
+- **Instance**: one occurrence of a field carrying a particular value. Repeating a field with a *different* value creates another instance. (*Row* and *record* are synonyms, listed here only as a glossary pointer; the docs and API use "instance" throughout, and "record" is never used as a verb - the write-side verb is "write".)
 - **Discriminator**: an instance's value, when used to tell instances of the same field apart (`base: Chicago` vs `base: Boston`).
 - **Wrapper**: a field whose occurrences all have an empty value; they collapse into a single organizational node. A wrapper is just the degenerate (empty-discriminator) case of an instance.
 - **Leaf**: a field occurrence with a value and no children.
@@ -258,9 +258,9 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 
 ## Error handling philosophy
 
-SHCL never bails on a whole file for one bad line. The parser skips or best-effort-repairs the offending line, records a diagnostic, and continues. The Accessor never errors when it can unambiguously reach a value; malformed content before or after a clean section does not poison that section. Errors are reserved for genuine ambiguity (or surfaced on request via `onBad: Error`).
+SHCL never bails on a whole file for one bad line. The parser skips or best-effort-repairs the offending line, emits a diagnostic, and continues. The Accessor never errors when it can unambiguously reach a value; malformed content before or after a clean section does not poison that section. Errors are reserved for genuine ambiguity (or surfaced on request via `onBad: Error`).
 
-One repair is defined concretely, because it is the common "figure it out" case: a line that is a **well-formed field path with no colon and nothing after it** (`base[Boston].metrics.population`, no value) is repaired to that path carrying an **empty value** - the obvious intent - with a diagnostic recorded. This is deliberately narrow. A line whose colon is missing but which is *not* a clean path - a bareword then whitespace then another token (`square-miles 300`) - is genuinely ambiguous (is `300` a value, or part of a name that cannot legally contain a space?), so it is skipped with a diagnostic rather than guessed.
+One repair is defined concretely, because it is the common "figure it out" case: a line that is a **well-formed field path with no colon and nothing after it** (`base[Boston].metrics.population`, no value) is repaired to that path carrying an **empty value** - the obvious intent - with a diagnostic emitted. This is deliberately narrow. A line whose colon is missing but which is *not* a clean path - a bareword then whitespace then another token (`square-miles 300`) - is genuinely ambiguous (is `300` a value, or part of a name that cannot legally contain a space?), so it is skipped with a diagnostic rather than guessed.
 
 ## Cross-language parity and conformance
 
