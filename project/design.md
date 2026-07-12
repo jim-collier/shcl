@@ -10,7 +10,7 @@ Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`
 ## Assumptions
 
 - The raw, by-example origin of the language is `../../notes.txt`. It was rationalized into a coherent model through a decision pass; where the two disagree, `spec.md` wins.
-- The language ships as many bindings that must behave identically - Go, Rust, C (+ C++), C#, Java (+ Kotlin), Python, JavaScript (+ TypeScript), PowerShell, POSIX sh - plus single-file drop-in source and compiled binaries per platform. A smaller set lands first; the rest are designed-for from the start. Three of these are one core plus a thin companion typed surface, not separate parsers: C++ is a template header over the C core, Kotlin is generic extensions over the Java core, TypeScript is a `.d.ts` over the JS core.
+- The language ships as tiered bindings, plus single-file drop-in source and compiled binaries per platform. We decided the guarantee is the corpus, not the count: every *shipped* binding is corpus-green, and nothing ships before it is. Tier 1: the Rust reference implementation and the `shcl` CLI built from it (Rust wins on the stated priorities - minimal binary size, instant startup for the CLI-wrapper bindings, clean `cdylib` for the shared-library mode, and compile-time strictness that forces spec precision). Tier 2: Go, C (+ C++ veneer), Python. Tier 3: the rest (C#, Java (+ Kotlin), JavaScript (+ TypeScript)) after v1.0, corpus-gated, designed-for from the start. POSIX sh and PowerShell are thin wrappers around the CLI, not independent parsers - they inherit conformance for free. Companion typed surfaces (C++/Kotlin/TypeScript) remain one core plus a veneer, not separate parsers.
 
 ## Direction decisions
 
@@ -20,7 +20,10 @@ The guiding tension is "simplest possible" versus "expressive enough for anythin
 - The data model is relational, not a map. The left-of-colon token is a *field* (column), not a unique key; repeating it with different values yields *instances*. One rule covers wrappers, leaves, and valued instances: nodes are `(name, value, children)` and merge on matching `(name, value)`.
 - Typing is accessor-driven: the parser stores raw text and never guesses; the consumer requests a type on read and the library coerces intelligently but safely, reporting problems without ever refusing to keep working.
 - Forgiveness is a feature: never bail on a whole file for one bad line; skip/repair and diagnose; never error when a value is legitimately reachable.
+- Forgiveness is also a knob, not dogma. We decided on three strictness levels - Loose/Standard/Strict, per-document, default Standard - instead of a binary strict flag. Standard keeps the defaults clean (no currency stripping, no `%` fractions, no float->int rounding, trimmed boolean set); Loose re-admits those conversions as a closed list for those who want maximum forgiving; Strict fails the load on any error diagnostic, the StrictYAML-style answer. Defaults are what adopters judge; the party tricks survive as opt-in. The normative bundle table is in `spec.md`.
+- Coercion earns trust by refusing to surprise: silent lossy conversion (rounding a float on an int read, `$1200` as a number) was cut from the default level for exactly that reason. Same logic killed the fehu anti-escape rune (raw blocks are the verbatim escape hatch) and restricted field-name case folding to ASCII (full Unicode folding is a locale trap and a cross-binding parity risk).
 - Raw (fenced) blocks give verbatim escape hatches (DDL, code, templates) without contorting the config syntax.
+- Positioning: the pitch is "forgiving to write, predictable to read, with the friendliest read API in the space" - not "simplest possible", which overpromises and invites the takedown. Versus schema-bearing languages (Pkl, CUE): the file stays dumb, the library is powerful (see Power layer).
 
 Full, itemized decisions live in project memory (`shcl-spec-decisions`); `spec.md` is their normative form.
 

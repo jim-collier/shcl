@@ -69,7 +69,22 @@
 
 ## Why
 
+Forgiving to write, predictable to read, with the friendliest read API in the space.
+
+Modern CPU cycles are cheap. Brainpower isn't. SHCL shifts the hard work of configuration *away* from the person writing the file and the programmer reading values, and onto the parser - where it belongs. It doesn't throw away your whole config file because a decimal was missing a leading `0`.
+
+Forgiving by default, verifiable on demand: schema validation (the schema is itself just an SHCL file) catches unknown or misspelled fields, and a one-flag strict mode fails loudly for those who want it. Unlike Pkl or CUE, the config file stays dumb - validation, layering, and generation are library features, never grammar.
+
 ## Features
+
+- Hierarchy by indentation or dot-notation (`base[Boston].metrics.population: 700`), freely mixed - both spell the same tree.
+- Values are typed on *read*, not on parse: the file stores text, your code asks for an int. No YAML "Norway problem".
+- Never bails on a whole file over one bad line: bad lines are skipped or repaired with diagnostics, the rest of your config still loads.
+- Every read takes a call-site fallback (`GetIntOr(path, 0)`), so a missing value can't masquerade as a real zero.
+- Three strictness levels - loose, standard, strict - one knob from maximum-forgiving to fail-on-anything.
+- Schema validation, layered loading (defaults, site, user), and commented starter-config generation, all as library features.
+- Raw fenced blocks embed anything verbatim - SQL, code, templates - Markdown-style.
+- One conformance corpus pins every shipped binding to identical behavior; Rust reference implementation plus the `shcl` CLI first, more bindings corpus-gated behind it.
 
 ## Installing
 

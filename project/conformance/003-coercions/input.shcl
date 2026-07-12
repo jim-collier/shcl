@@ -1,0 +1,6 @@
+# Coercion edges. Values are raw text; typing happens per-read, per-level.
+money: $1200
+ratio: 50%
+threshold: 3.5
+answer: yes
+switch: enabled

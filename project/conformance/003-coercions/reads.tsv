@@ -1,0 +1,19 @@
+query	type	expected	status	level
+money	int	-	BadType
+money	string	$1200	Good
+money	int	1200	Good	loose
+ratio	float	-	BadType
+ratio	string	50%	Good
+ratio	float	0.5	Good	loose
+ratio	int	1	Good	loose
+threshold	float	3.5	Good
+threshold	int	-	BadType
+threshold	int	4	Good	loose
+threshold	int	-	BadType	strict
+answer	bool	true	Good
+answer	bool	true	Good	loose
+answer	bool	-	BadType	strict
+answer	string	yes	Good	strict
+switch	bool	-	BadType
+switch	bool	true	Good	loose
+switch	string	enabled	Good
