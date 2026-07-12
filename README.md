@@ -84,21 +84,24 @@ You have probably lived some version of this:
 
 - A whole service refused to start because one line of config had a typo.
 - YAML turned `country: NO` into `false`. (Norway. It really does that.)
-- JSON needed a comment, and JSON does not do comments. Or a trailing comma killed the parse.
+- JSON needed a comment, and JSON does not do comments.
+	- Or a trailing comma killed the parse.
 - TOML was pleasant right up until the data nested three levels deep.
 - You wanted an integer. You got a string, or an exception, or a silent zero you did not notice until production.
+- Remember that one project where a complex nested config was stored in XML - that you have PTSD over to this day?
 
 Every mainstream format makes the human do the careful work, and punishes the whole file for one mistake.
 
 ## What SHCL does about it
 
-SHCL flips the effort. Modern CPU cycles are cheap. Brainpower isn't. So the parser does the hard work, not the person writing the file and not the programmer reading it.
+SHCL flips that around. Modern CPU cycles are cheap. Brainpower isn't. So the parser does the hard work, not the person writing the file - and not the programmer reading it.
 
 - If a human can tell what a line means, the parser figures it out too.
 - One broken line never takes down the file. It is skipped with a note, and everything else still loads.
-- Types live in your code, not in the file. The file stores text; you ask for an int when you read it. Nothing gets guessed at parse time, so there is no Norway problem.
+- Types live in your code, not in the file. The file stores text; you ask for an int when you read it. Nothing gets guessed at parse time, so there is no "Norway Problem".
 - Every convenience read states a fallback at the call site. A missing value cannot sneak in as a silent zero.
-- When you do want rigor, it is one knob: schema validation, and a strict mode that fails loudly.
+
+When you do want zero-tolerance rigor: schema validation, plus a strict mode that fails loudly.
 
 ## What it looks like
 
@@ -120,12 +123,13 @@ base: Chicago
 		square-miles: 300
 
 # Multi-line content goes in a fenced block, kept verbatim
-schema: ~~~sql
+schema:
+	~~~sql
 	CREATE TABLE users (
 		id   INTEGER PRIMARY KEY,
 		name TEXT NOT NULL
 	);
-~~~
+	~~~
 ```
 
 Field names are case-insensitive. Repeated paths merge. `base` here is not one key but a set of instances (Chicago, Boston), which is how you write arrays of objects without inventing syntax for them.
@@ -158,10 +162,10 @@ When you need to know *why* a read failed, the full form returns a status instea
 | Unquoted strings | yes | no | yes, but they can change type on you | no | n/a
 | One bad line breaks the whole file | no | yes | yes | yes | yes
 | Who decides a value's type | your code, at read time | the file | the parser guesses | the file | your code
-| Deep nesting | indent or dotted paths, your pick | brace pyramids | indent only, whitespace-fragile | `[a.b.c]` headers get old fast | tag soup
+| Deep nesting | indent or dot paths, either or both | brace pyramids | indent only, whitespace-fragile | `[a.b.c]` headers get old fast | tag soup
 | Multi-line verbatim blocks | fenced, like Markdown | escaped strings | block scalars, with rules to memorize | multi-line strings | CDATA
-| Hand-editable by a non-programmer | designed for exactly that | risky | risky | mostly | no
-| Tells you what it fixed | yes, structured diagnostics | no | no | no | no
+| Hand-editable by a non-programmer | ✅ | risky | risky | ✅ mostly | 🚫
+| Tells you what it fixed | ✅ structured diagnostics | 🚫 | 🚫 | 🚫 | 🚫
 
 A note on that type row, because it is the big design difference. JSON and TOML store types in the file, so the author has to get them right. YAML infers types from the text, which is where `NO` becomes `false`. SHCL stores plain text and coerces when *you* ask for a type, so the only code that decides a value is an int is the code that needed an int.
 
@@ -185,11 +189,8 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 ### When SHCL is the wrong choice
 
-Honesty section. Pick something else if:
-
-- You need expressions, functions, or imports inside the file itself. Use Pkl, CUE, or Dhall.
-- You are serializing machine-to-machine data at high volume. Use JSON or something binary; SHCL is for files humans touch.
-- You need a mature, everywhere-already parser today. SHCL is alpha (see Status).
+- You need expressions, functions, or imports inside the file itself. Use Pkl (arguably best), CUE, or Dhall.
+- You are serializing machine-to-machine data at high volume. Use JSON or something binary; SHCL is for files that humans use.
 
 ## Features
 

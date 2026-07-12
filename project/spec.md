@@ -196,24 +196,27 @@ An array (either spelling) is **one cell holding many values** - not the same as
 A raw block embeds verbatim multi-line content - a DDL, a code snippet, a template - exempt from all SHCL rules (indentation, escapes, `#` comments, reserved characters). A file may contain any number of them.
 
 - **Fenced, Markdown-style.** A block opens with a run of at least three identical fence characters, `` ``` `` or `~~~`. The opening run's character and length define the block; it closes at the first later line whose trimmed text is a run of the *same* character with length **>=** the opener. (So content may itself contain shorter fences.) An optional info-string may follow the opening fence (e.g. `~~~sql`); it is a free-form advisory label - captured and exposed to the consumer (a raw-block accessor returns it), but never interpreted by the parser. No values are reserved; a consumer may treat it as a content-type hint if it wants.
-- **Named form:** `path.name: ~~~` ... `~~~`. The block is that field's value, read via `Get`/`GetRaw`.
-- **Anonymous form:** a bare fence line at child indentation, content, closing fence. It attaches to the parent path positionally and is addressed by index (`notes[0]`).
+- **Binding: a fence is a value line for its parent field.** A fence line at child indent binds the block as its parent field's value. If the parent's value is empty, the block fills that instance's value; if the parent already carries a value (or already received a block), the fence creates a **new instance** of the parent field with the block as its value - the same rule as a repeated leaf line. There is no separate "anonymous block" concept: blocks are instances, selected with the normal selectors (`notes[0]`, `notes[#2]`), and identical `(field-name, value)` blocks merge like any other instances.
+- **Same-line spelling:** the fence may also open on the field's own line (`path.name: ~~~sql` ... close fence). Identical tree; the child-indent spelling is canonical. The info-string rides the fence line in both spellings.
+- **Reading:** `Get`/`GetRaw` at the field path. A path resolving to several block instances reports `Multiple` on a single-value read, like any other field.
 - **Indentation:** the block is visually nested at a child indent for clarity. The parser strips the block's common leading indentation (the nesting) and preserves the relative internal indentation. Content `a` then `  b` under nesting yields the value `"a\n  b"`.
 
 ```
 config:
-	ddl: ~~~sql
+	ddl:
+		~~~sql
 		CREATE TABLE users (
 			id   INTEGER PRIMARY KEY,
 			name TEXT NOT NULL
 		);
-	~~~
-	notes:
 		~~~
+	notes: ~~~
 		free-form paragraph, kept verbatim,
 		    including this deeper indent.
 		~~~
 ```
+
+Both blocks bind as values: `GetRaw("config.ddl")` returns the DDL, `GetRaw("config.notes")` the paragraph. No wrapper, no index needed.
 
 ## Consumer API
 
@@ -303,7 +306,7 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 - Preserve file/insertion order of instances and fields (so index-based access stays stable).
 - Collapse and merge redundant sections and paths.
 - Quote a value only when a reserved character requires it (minimal quoting).
-- Leave scalar text exactly as authored; raw blocks are re-emitted verbatim.
+- Leave scalar text exactly as authored; raw blocks are re-emitted verbatim. A block value canonicalizes to the child-indent spelling - bare `name:`, fence (with its info-string) on the next line at child indent - one field line per block instance.
 
 ## Error handling philosophy
 
