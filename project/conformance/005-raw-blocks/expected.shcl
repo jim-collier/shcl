@@ -1,0 +1,26 @@
+config:
+	ddl:
+		~~~sql
+		CREATE TABLE users (
+		  id   INTEGER PRIMARY KEY,
+		  name TEXT NOT NULL
+		);
+		~~~
+notes:
+	```
+	line one, kept verbatim   # not a comment
+	  deeper indent preserved
+	```
+host: web1
+host:
+	~~~
+	block instance
+	~~~
+misc:
+	~~~
+	first block
+	~~~
+misc:
+	~~~
+	second block
+	~~~

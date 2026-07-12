@@ -56,6 +56,7 @@ In each section, items are listed approximately from newest to oldest.
 	- ✅ Adoption-concerns sweep: fehu rune removed entirely (raw blocks are the verbatim hatch); currency/`%`/float->int-rounding/extra boolean tokens cut from default behavior; field-name case folding restricted to ASCII A-Z; repeated-leaf "did you mean an array?" hint now mandatory (severity `hint`); design-goals wording drops "simplest possible".
 	- ✅ Strictness levels: Loose/Standard/Strict per-document knob (CLI `--strictness`, aliases 1/2/3), default Standard; normative bundle table in `spec.md`; Loose re-admits the cut coercions as a closed list; Strict fails the load on any `error` diagnostic; diagnostics gained severity (`error`/`hint`).
 	- ✅ Bindings re-tiered: Tier 1 = Rust reference + `shcl` CLI; Tier 2 = Go, C (+C++ veneer), Python; Tier 3 = rest, post-v1.0, corpus-gated; POSIX sh + PowerShell are CLI wrappers, not parsers; parity promise reworded to "every shipped binding is corpus-green".
+	- ✅ Raw-block binding reworked: a fence is a value line for its parent field (fills an empty value, or adds an instance - repeated-leaf rule); named/anonymous split dropped; child-indent spelling is canonical. `spec.md` Raw blocks + formatter, `grammar.abnf`, `design.md`.
 
 - ✅ Resolve the open minor items listed at the end of `spec.md` (currency-symbol set, wildcard-missing behavior, `onBad` enum surface, `%`->int, fence info-string meaning). All five settled inline in `spec.md` under "Resolved minor items".
 	- Currency and `%`->int later superseded: cut from default behavior, Loose-level only (see strictness levels below).
@@ -69,6 +70,7 @@ In each section, items are listed approximately from newest to oldest.
 - 🛠️ Expand the conformance corpus (`conformance/`) to cover the hard edges: dates/ambiguity, coercion, quoting/escapes, indentation errors, raw blocks, selectors/wildcards, strictness levels.
 	- 🛠️ Case `002-stacked-array` added (inline-vs-stacked parity + array-vs-instances). Remaining edges still to cover.
 	- ✅ Cases `003-coercions` and `004-strict-load` added (strictness bundles: currency/`%`/rounding/boolean sets per level; load ok-vs-fail per level). `reads.tsv` gained an optional `level` column and a `load` pseudo-call.
+	- ✅ Case `005-raw-blocks` added (both spellings bind as the field's value; extra fences become instances; `\n` escaping for raw values in `reads.tsv`).
 	- 🔘 Model diagnostic expectations (count, severity, mandatory repeated-leaf hint) once the reference parser fixes the diagnostic shape.
 
 ### Build, CI/CD, and install

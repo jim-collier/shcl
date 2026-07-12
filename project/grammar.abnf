@@ -27,7 +27,7 @@ comment         = "#" *non-newline           ; to end of line; only outside quot
 ; below is the inline-hierarchy sugar; it is exactly equivalent to nesting.
 
 field-line      = indent path *wsp ":" *wsp [ value ] *wsp [ comment ]
-                / indent path *wsp ":" *wsp fence-open   ; named raw block
+                / indent path *wsp ":" *wsp fence-open   ; raw block, same-line spelling
 
 indent          = *( SP / HTAB )              ; one kind per subtree (see spec)
 
@@ -100,7 +100,9 @@ array-elem-line = indent "*" 1*wsp scalar *wsp [ comment ]
 ; A block opens with >=3 identical fence chars; it closes at the first later
 ; line whose trimmed text is a run of the SAME char, length >= the opener.
 
-fence-line      = indent fence-open            ; anonymous raw block (positional)
+fence-line      = indent fence-open            ; a value line for the parent field (spec.md):
+                ; fills the parent's empty value, or creates a new instance of the
+                ; parent if it already carries one - same rule as a repeated leaf.
 fence-open      = fence-run [ info-string ]
 fence-run       = 3*"`" / 3*"~"                 ; run length N captured for close-match
 info-string     = *wsp 1*non-newline           ; optional label (e.g. a language)
