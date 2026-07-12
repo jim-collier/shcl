@@ -12,7 +12,7 @@
 ;-----------------------------------------------------------------------------
 
 file            = *line
-line            = ( blank-line / comment-line / field-line / fence-line / raw-content-line ) newline
+line            = ( blank-line / comment-line / field-line / array-elem-line / fence-line / raw-content-line ) newline
                 ; raw-content-line only occurs while a fence is open (context).
 
 blank-line      = *wsp [ comment ]
@@ -78,6 +78,22 @@ bare-plain      = %x21 / %x24-2B / %x2D-39 / %x3B-5A / %x5C-10FFFF
 escape          = "\" ( "t" / "n" / "\" / DQUOTE / SQUOTE )
 fehu            = %x16A0                        ; U+16A0 RUNIC FEHU = literal backslash run
                                                 ; ("\" %x16A0 yields a literal fehu)
+
+;-----------------------------------------------------------------------------
+; Block arrays (stacked list form)
+;-----------------------------------------------------------------------------
+; Sugar for the inline comma array (above): an empty-valued field whose child
+; lines are all "* element" is identical to that field carrying the inline
+; array of the same elements. Context-sensitive (indentation), enforced in
+; prose (spec.md, "Arrays"):
+;   - opens only under a field-line whose inline value is EMPTY;
+;   - uniform-or-nothing: at that child indent every line is an element or none;
+;   - one element per line; a bare comma on the line is an error, not a split;
+;   - scalars only (an element has no "field: value" children).
+; The colon-less "* " head is what tells an element from a field: "*" is not a
+; name-char, so it can never begin a field-line.
+
+array-elem-line = indent "*" 1*wsp scalar *wsp [ comment ]
 
 ;-----------------------------------------------------------------------------
 ; Raw (fenced) blocks
