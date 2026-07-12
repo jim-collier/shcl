@@ -116,6 +116,8 @@ In each section, items are listed approximately from newest to oldest.
 
 #### Done - Features and enhancements
 
+- ✅ README rewrite: problem-first pitch, file + read-call examples, format comparison (JSON/YAML/TOML/XML table plus Pkl/CUE/Dhall notes), "wrong choice" section, honest alpha status.
+
 ### Future and/or deferred
 
 ### Canceled
