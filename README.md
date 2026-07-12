@@ -54,41 +54,179 @@
 	</tr style="border: none; border-collapse: collapse;">
 </table>
 
+Forgiving to write. Predictable to read. The friendliest read API in the space.
+
 <!-- TOC ignore:true -->
 ## Table of contents
 
 <!-- TOC -->
 
-- [Why](#why)
+- [The problem](#the-problem)
+- [What SHCL does about it](#what-shcl-does-about-it)
+- [What it looks like](#what-it-looks-like)
+- [Reading it from code](#reading-it-from-code)
+- [How it compares](#how-it-compares)
+	- [Everyday config formats](#everyday-config-formats)
+	- [The programmable ones: Pkl, CUE, Dhall](#the-programmable-ones-pkl-cue-dhall)
+	- [When SHCL is the wrong choice](#when-shcl-is-the-wrong-choice)
 - [Features](#features)
+- [Status](#status)
 - [Installing](#installing)
 - [Building from source](#building-from-source)
+- [Docs](#docs)
 - [Copyright and license](#copyright-and-license)
 
 <!-- /TOC -->
 
-## Why
+## The problem
 
-Forgiving to write, predictable to read, with the friendliest read API in the space.
+You have probably lived some version of this:
 
-Modern CPU cycles are cheap. Brainpower isn't. SHCL shifts the hard work of configuration *away* from the person writing the file and the programmer reading values, and onto the parser - where it belongs. It doesn't throw away your whole config file because a decimal was missing a leading `0`.
+- A whole service refused to start because one line of config had a typo.
+- YAML turned `country: NO` into `false`. (Norway. It really does that.)
+- JSON needed a comment, and JSON does not do comments. Or a trailing comma killed the parse.
+- TOML was pleasant right up until the data nested three levels deep.
+- You wanted an integer. You got a string, or an exception, or a silent zero you did not notice until production.
 
-Forgiving by default, verifiable on demand: schema validation (the schema is itself just an SHCL file) catches unknown or misspelled fields, and a one-flag strict mode fails loudly for those who want it. Unlike Pkl or CUE, the config file stays dumb - validation, layering, and generation are library features, never grammar.
+Every mainstream format makes the human do the careful work, and punishes the whole file for one mistake.
+
+## What SHCL does about it
+
+SHCL flips the effort. Modern CPU cycles are cheap. Brainpower isn't. So the parser does the hard work, not the person writing the file and not the programmer reading it.
+
+- If a human can tell what a line means, the parser figures it out too.
+- One broken line never takes down the file. It is skipped with a note, and everything else still loads.
+- Types live in your code, not in the file. The file stores text; you ask for an int when you read it. Nothing gets guessed at parse time, so there is no Norway problem.
+- Every convenience read states a fallback at the call site. A missing value cannot sneak in as a silent zero.
+- When you do want rigor, it is one knob: schema validation, and a strict mode that fails loudly.
+
+## What it looks like
+
+All of this is one valid file. Indentation and dotted paths are interchangeable, quoting is only needed when a value contains a reserved character, and messy spacing is fine.
+
+```text
+# Indented style
+base: Chicago
+	metrics:
+		Population : 30200
+		weather: Hot, Cold, "All around not that great"
+
+# Same tree, inline style
+base[Boston].metrics.population: 700
+
+# Adding to an instance defined earlier just works
+base: Chicago
+	metrics:
+		square-miles: 300
+
+# Multi-line content goes in a fenced block, kept verbatim
+schema: ~~~sql
+	CREATE TABLE users (
+		id   INTEGER PRIMARY KEY,
+		name TEXT NOT NULL
+	);
+~~~
+```
+
+Field names are case-insensitive. Repeated paths merge. `base` here is not one key but a set of instances (Chicago, Boston), which is how you write arrays of objects without inventing syntax for them.
+
+## Reading it from code
+
+One call. A typed value. A visible fallback. This is the call you write 90% of the time:
+
+```go
+pop := doc.GetIntOr("base[Boston].metrics.population", 0)
+```
+
+```python
+pop = doc.get_int("base[Boston].metrics.population", default=0)
+```
+
+```sh
+pop=$(shcl get --int --default=0 config.shcl 'base[Boston].metrics.population')
+```
+
+When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`. Wildcards read across instances (`base[*].metrics.population` gives you every city's population, in file order).
+
+## How it compares
+
+### Everyday config formats
+
+| | SHCL | JSON | YAML | TOML | XML
+| :-- | :-- | :-- | :-- | :-- | :--
+| Comments | yes | no | yes | yes | yes
+| Unquoted strings | yes | no | yes, but they can change type on you | no | n/a
+| One bad line breaks the whole file | no | yes | yes | yes | yes
+| Who decides a value's type | your code, at read time | the file | the parser guesses | the file | your code
+| Deep nesting | indent or dotted paths, your pick | brace pyramids | indent only, whitespace-fragile | `[a.b.c]` headers get old fast | tag soup
+| Multi-line verbatim blocks | fenced, like Markdown | escaped strings | block scalars, with rules to memorize | multi-line strings | CDATA
+| Hand-editable by a non-programmer | designed for exactly that | risky | risky | mostly | no
+| Tells you what it fixed | yes, structured diagnostics | no | no | no | no
+
+A note on that type row, because it is the big design difference. JSON and TOML store types in the file, so the author has to get them right. YAML infers types from the text, which is where `NO` becomes `false`. SHCL stores plain text and coerces when *you* ask for a type, so the only code that decides a value is an int is the code that needed an int.
+
+### The programmable ones: Pkl, CUE, Dhall
+
+These are a different species. They make the config file itself powerful.
+
+- **Pkl** (from Apple) is a real language: classes, inheritance, built-in validation. Great when your config genuinely is a program.
+- **CUE** unifies types and values into one thing. Extremely strong validation, and a mental model that takes real time to absorb.
+- **Dhall** is functional programming for config: imports, functions, guaranteed termination. Closer to writing Haskell than editing a file.
+
+They are all good at what they do. The shared cost is that once a config file can compute, it can be wrong in ways you have to debug.
+
+SHCL deliberately stays off that cliff. The file stays dumb, and the power moves into the library instead:
+
+- **Schema validation.** A schema is just another SHCL file. `Validate(doc, schema)` catches unknown fields, wrong types, and out-of-range values, including the "did you mean `enabled`?" typo case.
+- **Layered loading.** `Load(defaults, site, user)` merges files in order, with CLI and environment overrides on top. That covers most of what people actually use imports for.
+- **Generated starter configs.** The schema plus the writer can emit a fully commented, correctly typed starting file.
+
+Your config never needs a debugger, and a non-programmer can still edit it.
+
+### When SHCL is the wrong choice
+
+Honesty section. Pick something else if:
+
+- You need expressions, functions, or imports inside the file itself. Use Pkl, CUE, or Dhall.
+- You are serializing machine-to-machine data at high volume. Use JSON or something binary; SHCL is for files humans touch.
+- You need a mature, everywhere-already parser today. SHCL is alpha (see Status).
 
 ## Features
 
-- Hierarchy by indentation or dot-notation (`base[Boston].metrics.population: 700`), freely mixed - both spell the same tree.
-- Values are typed on *read*, not on parse: the file stores text, your code asks for an int. No YAML "Norway problem".
-- Never bails on a whole file over one bad line: bad lines are skipped or repaired with diagnostics, the rest of your config still loads.
-- Every read takes a call-site fallback (`GetIntOr(path, 0)`), so a missing value can't masquerade as a real zero.
-- Three strictness levels - loose, standard, strict - one knob from maximum-forgiving to fail-on-anything.
+- Hierarchy by indentation or dot-notation (`base[Boston].metrics.population: 700`), freely mixed. Both spell the same tree.
+- Values are typed on *read*, not on parse. The file stores text; your code asks for an int.
+- Never bails on a whole file over one bad line. Bad lines are skipped or repaired with diagnostics, and the rest still loads.
+- Every convenience read takes a call-site fallback (`GetIntOr(path, 0)`), so a missing value can't masquerade as a real zero.
+- Three strictness levels. Loose, standard, strict: one knob from maximum-forgiving to fail-on-anything.
 - Schema validation, layered loading (defaults, site, user), and commented starter-config generation, all as library features.
-- Raw fenced blocks embed anything verbatim - SQL, code, templates - Markdown-style.
-- One conformance corpus pins every shipped binding to identical behavior; Rust reference implementation plus the `shcl` CLI first, more bindings corpus-gated behind it.
+- Raw fenced blocks embed anything verbatim: SQL, code, templates, Markdown-style.
+- One conformance corpus pins every shipped binding to identical behavior. Rust reference implementation plus the `shcl` CLI first; more bindings gated behind the corpus.
+
+## Status
+
+Alpha, and spec-first on purpose. Five parsers that "mostly agree" would be worse than none, so the order of work is:
+
+1. Language spec and formal grammar. Done: [`project/spec.md`](project/spec.md), [`project/grammar.abnf`](project/grammar.abnf).
+2. A conformance corpus of golden test cases that every future parser must pass. Started: [`project/conformance/`](project/conformance/).
+3. The Rust reference parser and the `shcl` CLI. Next up. Nothing ships until it is corpus-green.
+4. Go, C, and Python bindings, each held to the same corpus. More after v1.0.
+
+Star or watch the repo if you want to know when the parser lands.
 
 ## Installing
 
+Nothing to install yet. The `shcl` CLI and the first library builds arrive with the Rust reference implementation (see Status).
+
 ## Building from source
+
+Nothing to build yet, for the same reason.
+
+## Docs
+
+- [`project/spec.md`](project/spec.md): the full language spec. Terminology, types, coercion, the read API, raw blocks, strictness levels.
+- [`project/grammar.abnf`](project/grammar.abnf): the formal grammar.
+- [`project/design.md`](project/design.md): the why behind the decisions.
+- [`contributing.md`](contributing.md): how to help.
 
 ## Copyright and license
 
