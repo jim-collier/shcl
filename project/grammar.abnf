@@ -66,18 +66,16 @@ scalar          = quoted / bareword
 quoted          = dquoted / squoted
 dquoted         = DQUOTE *dqchar DQUOTE
 squoted         = SQUOTE *sqchar SQUOTE
-dqchar          = escape / fehu / ( %x00-21 / %x23-5B / %x5D-10FFFF )  ; not '"' unescaped
-sqchar          = escape / fehu / ( %x00-26 / %x28-5B / %x5D-10FFFF )  ; not "'" unescaped
+dqchar          = escape / ( %x00-21 / %x23-5B / %x5D-10FFFF )  ; not '"' unescaped
+sqchar          = escape / ( %x00-26 / %x28-5B / %x5D-10FFFF )  ; not "'" unescaped
 
 bareword        = 1*bare-char
-bare-char       = escape / fehu / bare-plain
+bare-char       = escape / bare-plain
 bare-plain      = %x21 / %x24-2B / %x2D-39 / %x3B-5A / %x5C-10FFFF
                 ; excludes reserved bare chars: SP HTAB , : # " ' [ ]
                 ; (0x20 0x09 0x2C 0x3A 0x23 0x22 0x27 0x5B 0x5D)
 
 escape          = "\" ( "t" / "n" / "\" / DQUOTE / SQUOTE )
-fehu            = %x16A0                        ; U+16A0 RUNIC FEHU = literal backslash run
-                                                ; ("\" %x16A0 yields a literal fehu)
 
 ;-----------------------------------------------------------------------------
 ; Block arrays (stacked list form)

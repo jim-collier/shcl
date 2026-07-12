@@ -8,7 +8,7 @@ Simple Hierarchical Config Language. This is the canonical language spec: termin
 
 ## Design goals (the north star)
 
-SHCL exists to be simultaneously the simplest and the most expressive config language, optimized for two audiences and nobody else:
+SHCL aims to be forgiving to write, predictable to read, and expressive enough for any flat or hierarchical data - with the friendliest read API in the space. (Not "the simplest possible language": the grammar has real features, and pretending otherwise just invites the comparison. The simplicity claim lives where it is true - in what the two audiences below actually experience.) It is optimized for those two audiences and nobody else:
 
 - **The person writing config by hand.** It must be forgiving and obvious enough that a non-programmer can hand-author a whole file from scratch - even something as rich as a declarative DDL - without memorizing rules. If a modern parser can figure out what was meant, it must; the user is never asked to satisfy the machine.
 - **The programmer consuming values.** However SHCL is pulled in - as a **Command** (CLI), a **Drop-in** source file, a **Package**, or a linked library (**Shared** or **Bundled**) - it must get you to "read the value I need" in one obvious call - amateur-friendly - and let you write out defaults and comments just as easily.
@@ -69,7 +69,7 @@ The Accessor reads in two modes:
 ### Escapes
 
 - Inside any value (quoted or bare), `\` triggers escape processing: `\t` (tab), `\n` (newline), `\\` (backslash), `\"`, `\'`.
-- The runic character `ᚠ` (U+16A0, "fehu") is the complement: it inserts literal backslash run(s) with **no** escape processing, sparing the user backslash-escaping madness. So `ᚠn` is the two literal characters `\n`, and `C:ᚠnew` is `C:\new`. A literal fehu is written `\ᚠ`.
+- Backslash-heavy content (Windows paths, regexes) should go in a raw block, which is fully verbatim - that is the escape hatch, so no anti-escape gimmick is needed in values. Doubling backslashes in a one-line value (`C:\\new`) is always available.
 - A value is always a single physical line; a newline *in* a value is written `\n`. (Multi-line verbatim content is a raw block instead.)
 
 ## Structure and hierarchy
@@ -93,7 +93,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 - Occurrences with the same `(field-name, value)` merge; their children combine. This is how redundant paths collapse and how you add fields to an existing instance later in the file.
 - Occurrences of a field with **different** values are distinct instances, kept in file order.
 - A **repeated leaf line** (`tags: red` then `tags: blue`, no children) is two *instances* of `tags` - not the array `tags: red, blue`. Instances and arrays are separate mechanisms (see below).
-- Field names are case-**insensitive** (`Metrics` == `metrics`). Discriminator **values** are case-**sensitive** after trimming and quote-stripping (`base: Chicago` and `base: chicago` are two instances).
+- Field names are case-**insensitive**, folding **ASCII `A-Z`/`a-z` only** (`Metrics` == `metrics`). Non-ASCII characters in names never fold (`Straße` != `STRASSE`, `İ` != `i`) - full Unicode case folding is locale-trapped (Turkish dotless-I) and unportable across bindings, so it is deliberately excluded. Discriminator **values** are case-**sensitive** after trimming and quote-stripping (`base: Chicago` and `base: chicago` are two instances).
 
 ## Values and types
 
@@ -108,28 +108,28 @@ Any value can be read as a string. On read: trim surrounding whitespace, strip t
 Recognized (case-insensitive) when a value is read as an integer:
 
 - Optional sign `+`/`-`, then digits.
-- A single leading currency symbol is ignored (`$1200` -> 1200). The accepted set is exactly these codepoints: `$ ¢ £ ¤ ¥ ₩ ₪ ₫ € ₭ ₮ ₱ ₲ ₴ ₹ ₺ ₼ ₽ ₾ ₿`. Multi-letter codes (`USD`, `kr`, `Fr`) are not stripped - they collide with barewords. Only one leading symbol is stripped; there is no trailing-currency form. Every binding hardcodes this exact list so results match byte-for-byte.
 - Thousands separators are accepted only inside quotes, since `,` is reserved bare (`"1,000"` -> 1000).
 - Hexadecimal integers `0x...` (`0xFF` -> 255).
 - No digit-group underscores.
+- No currency handling: `$1200` is a string, `BadType` as an integer. (The Loose strictness level re-admits a fixed leading-symbol list; see Strictness levels.)
 
 ### Floats
 
 Recognized when a value is read as a float:
 
 - Optional sign; digits with a leading or trailing dot allowed (`.5`, `5.`, `3.14`).
-- A leading currency symbol is stripped by the same rule as integers.
 - Scientific exponent (`1e6`, `2.5E-3`).
-- A trailing `%` yields the fraction (`50%` -> 0.5).
 - An integer is a valid float on read.
+- No currency and no percent handling: `$3.14` and `50%` are strings, `BadType` as floats. (The Loose strictness level re-admits both; see Strictness levels.)
 
 ### Booleans
 
 Recognized (case-insensitive) when a value is read as a boolean:
 
-- True: `true`, `t`, `yes`, `y`, `on`, `enable`, `enabled`, `1`.
-- False: `false`, `f`, `no`, `n`, `off`, `disable`, `disabled`, `0`.
+- True: `true`, `yes`, `on`, `1`.
+- False: `false`, `no`, `off`, `0`.
 - `1`/`0` are boolean only when a boolean is requested; otherwise they are integers.
+- Anything else - including `t`, `y`, `enabled` - is `BadType`. (Strict narrows the set to `true`/`false` only; Loose widens it; see Strictness levels.)
 
 ### Dates and times
 
@@ -181,12 +181,12 @@ is exactly `sizes: small, medium, "extra, large"`. The rules that keep it unambi
 
 Element typing is accessor-driven, so `GetStringArray`/`GetIntArray` read either spelling identically.
 
-An array (either spelling) is **one cell holding many values** - not the same as repeating a field on separate lines, which makes distinct **instances** of that field. The two look alike only for a bare repeated leaf; once an instance carries children the intent is plain. A parser may emit a soft hint on a bare repeated leaf (`did you mean tags: red, blue?`) but never silently treats one form as the other.
+An array (either spelling) is **one cell holding many values** - not the same as repeating a field on separate lines, which makes distinct **instances** of that field. The two look alike only for a bare repeated leaf; once an instance carries children the intent is plain. A parser **must** emit a hint diagnostic on a bare repeated leaf (`did you mean tags: red, blue?`) and never silently treats one form as the other. The hint is advisory (severity `hint`, not `error`) - repeated leaves are legal and are the instance mechanism working as designed; the diagnostic just makes the lookalike impossible to hit unknowingly.
 
 ### Coercion rules ("intelligent but safe")
 
 - int -> float: always.
-- float -> int: **rounds** (`3.5` -> 4, `3.4` -> 3) rather than erroring. A `%` value is a fraction like any other float, so `GetInt` rounds it: `50%` -> 0.5 -> 1, `40%` -> 0.4 -> 0. It is deliberately not special-cased to the pre-`%` number, so `GetInt` and `GetFloat` never disagree.
+- float -> int: **`BadType`**. `3.5` read as an int is not silently rounded - silent lossy conversion is exactly what adopters distrust. It is still readable as a float or a string. (The Loose strictness level re-admits rounding; see Strictness levels.)
 - any scalar -> string: always.
 - to boolean: only from the boolean token set (never numeric-nonzero; `5` is not `true`).
 - No other lossy, silent conversion. A value that cannot be coerced to the requested type yields the requested failure behavior (below), not a thrown error.
@@ -217,7 +217,12 @@ config:
 
 ## Consumer API
 
-The library is uniform across languages; each binding realizes the same concepts idiomatically. Planned bindings: Go, Rust, C (+ C++), C#, Java (+ Kotlin), Python, JavaScript (+ TypeScript), PowerShell, POSIX sh. Aim for cross-language consistency with reasonable compromises, not for maxing out each language.
+The library is uniform across languages; each binding realizes the same concepts idiomatically. Aim for cross-language consistency with reasonable compromises, not for maxing out each language. Bindings are tiered by delivery commitment:
+
+- **Tier 1**: the Rust reference implementation, and the `shcl` CLI built from it. These define conformance.
+- **Tier 2**: Go, C (+ C++ veneer), Python - independent parsers, shipped when corpus-green.
+- **Tier 3**: everything else (C#, Java (+ Kotlin), JavaScript (+ TypeScript), ...) - after v1.0, corpus-gated, designed-for from the start.
+- **CLI wrappers**: POSIX sh and PowerShell are thin wrappers around the `shcl` CLI, not independent parsers - they inherit conformance from Tier 1 for free.
 
 The consumer-facing surface has two halves: the **Accessor** reads values (by lookup or traversal), and the **Writer** emits them.
 
@@ -287,12 +292,12 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 
 ### Diagnostics and writing
 
-- Loading also yields a list of structured **diagnostics** (line number + reason) for every skipped or repaired line, which the consumer may inspect or ignore.
+- Loading also yields a list of structured **diagnostics** (line number + reason + severity) for every skipped or repaired line, which the consumer may inspect or ignore. Severity is `error` (a line was skipped or repaired) or `hint` (legal input that looks like a common mistake, e.g. the repeated-leaf array hint). The split matters for Strict mode: only `error` diagnostics fail a strict load.
 - The **Writer** handles the reverse of the Accessor: emit values, defaults, and comment sections, and canonicalize a file (see below).
 
 ## Canonical formatter
 
-The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`, no `50%` change).
+The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`).
 
 - Block (indented) form, tabs for indentation.
 - Preserve file/insertion order of instances and fields (so index-based access stays stable).
@@ -302,13 +307,35 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 
 ## Error handling philosophy
 
-SHCL never bails on a whole file for one bad line. The parser skips or best-effort-repairs the offending line, emits a diagnostic, and continues. The Accessor never errors when it can unambiguously reach a value; malformed content before or after a clean section does not poison that section. Errors are reserved for genuine ambiguity (or surfaced on request via `onBad: Error`).
+SHCL never bails on a whole file for one bad line (at Loose and Standard strictness; Strict turns any `error` diagnostic into a load failure by request - see Strictness levels). The parser skips or best-effort-repairs the offending line, emits a diagnostic, and continues. The Accessor never errors when it can unambiguously reach a value; malformed content before or after a clean section does not poison that section. Errors are reserved for genuine ambiguity (or surfaced on request via `onBad: Error`).
 
 One repair is defined concretely, because it is the common "figure it out" case: a line that is a **well-formed field path with no colon and nothing after it** (`base[Boston].metrics.population`, no value) is repaired to that path carrying an **empty value** - the obvious intent - with a diagnostic emitted. This is deliberately narrow. A line whose colon is missing but which is *not* a clean path - a bareword then whitespace then another token (`square-miles 300`) - is genuinely ambiguous (is `300` a value, or part of a name that cannot legally contain a space?), so it is skipped with a diagnostic rather than guessed.
 
+## Strictness levels
+
+One knob, set once per document at load time, governs how forgiving the whole surface is: **`Loose` / `Standard` / `Strict`** (CLI shorthand `--strictness=loose|standard|strict` or `1|2|3`). The default is `Standard` - everything specified elsewhere in this document describes `Standard` behavior. The level is per-document, never per-call: it is a property of how an application treats its config, not of one read. It composes with, and is orthogonal to, the per-call `onBad` policy: strictness decides *whether* a value coerces; `onBad` decides what happens when it does not.
+
+The bundles are normative - a binding implements exactly this table:
+
+| Behavior | Loose (1) | Standard (2, default) | Strict (3)
+| :-- | :-- | :-- | :--
+| Malformed line at load | skip + `error` diagnostic | skip + `error` diagnostic | **load fails**
+| Colon-less-path repair | applied + `error` diagnostic | applied + `error` diagnostic | **load fails**
+| `hint` diagnostics (e.g. repeated-leaf) | emitted | emitted | emitted (never fail a load)
+| float -> int | rounds (`3.5` -> 4) | `BadType` | `BadType`
+| Leading currency symbol -> number | stripped | `BadType` | `BadType`
+| `50%` -> float | 0.5 | `BadType` | `BadType`
+| Boolean token set | Standard set plus `t`/`f`, `y`/`n`, `enable(d)`/`disable(d)` | `true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0` | `true`/`false` only
+
+Notes:
+
+- **Loose** re-admits the forgiving conversions cut from Standard, as a closed list - nothing joins it without a spec change. The currency rule is: a single leading symbol from exactly these codepoints is stripped (`$ ¢ £ ¤ ¥ ₩ ₪ ₫ € ₭ ₮ ₱ ₲ ₴ ₹ ₺ ₼ ₽ ₾ ₿`); multi-letter codes (`USD`, `kr`) are not, and there is no trailing form. A `%` float is the fraction, so a Loose `GetInt` on `50%` rounds 0.5 -> 1 - never special-cased to the pre-`%` number, so `GetInt` and `GetFloat` cannot disagree.
+- **Strict** is the "fail loudly" mode: any `error` diagnostic aborts the load (the never-bail philosophy above describes Loose and Standard). Reads are unchanged except the boolean set. `hint` diagnostics never fail a load at any level - repeated leaves are legal instances, and failing legal input would break the data model.
+- Every level is corpus-pinned: conformance reads carry an optional level column, so a binding cannot drift on any bundle row.
+
 ## Cross-language parity and conformance
 
-All independent bindings (Go, Rust, C (+ C++), C#, Java (+ Kotlin), Python, JavaScript (+ TypeScript), PowerShell, POSIX sh) must agree byte-for-byte; a companion surface inherits its core's conformance for free. The safeguards:
+The guarantee is the corpus, not the binding count: **every shipped binding is corpus-green**. A binding that has not passed the full conformance corpus is not shipped, full stop. A companion surface (C++/Kotlin/TypeScript) inherits its core's conformance for free, and the CLI-wrapper bindings (POSIX sh, PowerShell) inherit the Tier 1 CLI's. The safeguards:
 
 - This spec plus `grammar.abnf` are the single source of truth; behavior is specified, not left to each implementation.
 - A **conformance corpus** of golden cases (`conformance/`) pins every implementation to identical results: each case is an input `.shcl`, its expected canonical formatting, and a set of expected typed reads with their status sentinels. The date/coercion/quoting edge cases live here so no parser can silently drift.
@@ -318,8 +345,10 @@ All independent bindings (Go, Rust, C (+ C++), C#, Java (+ Kotlin), Python, Java
 
 These were previously deferred and are now settled inline (above):
 
-- **Currency set**: a fixed 20-codepoint list, single leading symbol only (see Integers).
+- **Currency set**: cut from Standard; Loose-only, a fixed 20-codepoint list, single leading symbol only (see Strictness levels).
 - **`field[*]` with a missing sub-path**: keep the positional slot, per-element `NotFound`, no diagnostic (see Paths, selectors, and enumeration).
 - **`onBad` surface**: canonical `Error`/`Default`/`Flag`, idiomatic enum per language, default `Flag` (see The core call).
-- **`GetInt` on a `%` value**: rounds the fraction, not special-cased (see Coercion rules).
+- **`GetInt` on a `%` value**: cut from Standard (`BadType`); at Loose, rounds the fraction, not special-cased (see Strictness levels).
 - **Fence info-string**: free-form advisory label, exposed but never interpreted (see Raw blocks).
+- **Fehu anti-escape**: removed entirely - raw blocks are the verbatim escape hatch (see Escapes).
+- **Field-name case folding**: ASCII `A-Z` only, never Unicode (see Merging and instances).

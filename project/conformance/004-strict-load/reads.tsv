@@ -1,0 +1,8 @@
+query	type	expected	status	level
+-	load	ok	-	loose
+-	load	ok	-
+-	load	fail	-	strict
+name	string	demo	Good
+port	int	8080	Good
+port	int	8080	Good	loose
+square-miles	int	-	NotFound
