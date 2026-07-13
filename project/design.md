@@ -87,3 +87,12 @@ We decided to split by responsibility rather than duplicate the pipeline:
 - Everything else (cross-compile, packaging, publish) stays in the local pipeline, `cicd/cicd.bash`, config-driven via `cicd/config.bash`.
 - Both share one definition of "passing": the workflow just runs `cicd.bash --ci`. Per-language toolchain setup lives in the workflow YAML; what passing means lives in the engine, so the two cannot drift.
 - The formatter rewrites in place locally but is check-only (fail on diff) in CI.
+- Branch flow: `dev` is the integration target (feature branches merge there, `--no-ff`); `main` is release-only. A dev -> main merge is a release cut.
+- One canonical version source: `source/rust/Cargo.toml`. The pipeline reads it for artifact names, and it guards dev pushes - new code on dev without a bump fails the publish stage; docs-only pushes pass.
+- Toolchain pins: `rust-toolchain.toml` (rustc + clippy + cross targets) and warn-only pins for cargo-installed helpers, so a box update cannot silently change results.
+- Fuzzing is in the regression suite, not a separate rig: a deterministic, seed-fixed mutator over the corpus inputs asserts two invariants for any input - never panic at any strictness, and the canonical formatter is a fixpoint. It found three real formatter bugs before first release.
+
+### Reference implementation
+
+- Rust crate at `source/rust/`, zero dependencies, single-file library (`src/lib.rs`) so the drop-in integration mode stays honest; the `shcl` CLI builds from the same crate. Later bindings get sibling folders (`source/go/`, ...).
+- The conformance runner and fuzz smoke are plain `cargo test` targets, so "the corpus passes" and "the build passes" are the same command everywhere.
