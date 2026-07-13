@@ -46,11 +46,14 @@ TOOL_PINS=(
 )
 
 ## Stage 2: debug build (what the tests exercise). Capped at half the cores.
-## The Go binding builds here too - crosscheck needs its CLI in stage 4.
+## The Go and C binding CLIs build here too - crosscheck needs them in stage 4.
+## C has no separate fmt/lint stage (no committed zero-dep formatter); the
+## -Wall -Wextra -Werror compile is its quality gate, same spirit as clippy.
 BUILD_CMD=(cargo build -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 BUILD_EXTRA=(
 	'go -C source/go build -o shcl ./cmd/shcl'
 	'python3 -m py_compile source/python/shcl.py source/python/cmd/shcl/main.py source/python/tests/conformance.py'
+	'cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/cmd/shcl/main.c -o source/c/shcl -lm -s'
 )
 
 ## Stage 3: lint. clippy gates (-D warnings); shellcheck covers the pipeline's own
@@ -76,6 +79,8 @@ TEST_CMD=(env SHCL_FUZZ_ITERS=20000 cargo test -j "${CPU_CAP}" --manifest-path "
 TEST_EXTRA=(
 	'go -C source/go test ./...'
 	'python3 source/python/tests/conformance.py'
+	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
+	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
 )
 
 ## Stage 4b: cross-binding differential check (crosscheck.bash). Every entry is
@@ -87,6 +92,7 @@ BINDING_CLIS=(
 	"rust|source/rust/target/debug/shcl"
 	"go|source/go/shcl"
 	"python|source/python/cmd/shcl/main.py"
+	"c|source/c/shcl"
 )
 XCHECK_GEN='env SHCL_FUZZ_DUMP="${XCHECK_DUMP_DIR}" SHCL_FUZZ_ITERS=2000 SHCL_FUZZ_DUMP_MAX=500 cargo test -j "${CPU_CAP}" --manifest-path '"${MANIFEST}"' --test fuzz_smoke --quiet'
 
@@ -154,3 +160,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-07-12 JC: Go binding wired in: gofmt/build/vet/test extras + second crosscheck entry.
 ##		- 2026-07-12 JC: Python binding wired in: py_compile build gate + conformance test extra + third crosscheck entry.
 ##		- 2026-07-13 JC: Dogfood stage: install the native release binary (+ bash wrapper when it exists) to a fixed local dir.
+##		- 2026-07-13 JC: C binding wired in: cc build extra (-Werror) + conformance/veneer test extras + fourth crosscheck entry.
