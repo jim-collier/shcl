@@ -133,10 +133,15 @@ DOGFOOD_FIXED_DESTS=(
 	"${HOME}/synced/0-0/common/exec/util/linux/bin"
 	"/usr/local/sbin"
 )
-## The bash wrapper rides along, renamed to <EXE_NAME>.bash, once it exists. This is
-## the anticipated path for the not-yet-built bash tier; a missing file is skipped
-## silently. Fix the path here if the wrapper lands elsewhere.
+## The bash wrapper rides along, renamed to <EXE_NAME>.bash. A missing file is
+## skipped silently. Fix the path here if the wrapper lands elsewhere.
 DOGFOOD_WRAPPER="source/bash/shcl.bash"
+## The wrapper has its own preferred dests (first existing+writable wins), separate
+## from the binary - it's a sourceable include, so it belongs with the bash includes,
+## not on PATH beside the binary. Falls back to the binary's dest if none exist.
+DOGFOOD_WRAPPER_DESTS=(
+	"${HOME}/synced/0-0/common/exec/util/linux/bash/include"
+)
 
 ## Stage 8: demo gif for the README. Rendered from a scripted scenario against the
 ## fresh native release binary, so the captured output can never go stale.
