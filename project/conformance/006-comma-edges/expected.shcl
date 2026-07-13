@@ -1,0 +1,7 @@
+trail: red, green, blue
+double: red, blue
+lead: red, green
+allcomma:
+onecomma:
+spaced:
+emptyish: red, "", blue
