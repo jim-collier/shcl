@@ -5,9 +5,10 @@
 ##	Purpose:
 ##		- Project-specific CI/CD settings for shcl.
 ##		- The engine (cicd.bash) stays generic; everything project-specific lives here.
-##		- Most stages are empty until the reference parser lands; an empty array means
-##		  that stage reports "nothing configured" and the run continues. Fill each in
-##		  as the reader(s) come online; later readers add commands here, not engine code.
+##		- All command arrays run from the repo root; the Rust crate lives in
+##		  source/rust (Tier 1 reference + the shcl CLI), so cargo goes through
+##		  --manifest-path. Later bindings (Go/C/Python) add their commands here,
+##		  not engine code.
 ##	History: At bottom of script.
 
 ##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
@@ -23,33 +24,76 @@ declare -i isSourced_t6wqf=0; [[ "${BASH_SOURCE[0]}" == "${0}" ]] || isSourced_t
 
 ## Identity
 APP_NAME="shcl"
+EXE_NAME="shcl"
+MANIFEST="source/rust/Cargo.toml"
+VERSION_MANIFEST="${MANIFEST}"   ## the single canonical version source (tag + guard read it)
 
 ## Stage 1: format. FMT_CMD rewrites in place (local runs); FMT_CHECK_CMD fails on
-## any diff without touching files (what --ci runs). Fill both in together once the
-## reference-parser language is picked (e.g. gofmt -l / cargo fmt --check).
-FMT_CMD=()
-FMT_CHECK_CMD=()
+## any diff without touching files (what --ci runs). rustfmt.toml at repo root
+## (tabs) is the style source.
+FMT_CMD=(cargo fmt --manifest-path "${MANIFEST}")
+FMT_CHECK_CMD=(cargo fmt --check --manifest-path "${MANIFEST}")
 
-## Stage 2: build. The reference parser first; later a fan-out over all readers.
-BUILD_CMD=()
+## Pinned versions of the cargo-installed helpers the pipeline uses; the engine
+## warns (non-gating) when an installed tool has drifted from its pin, so a box
+## update can't silently change results. Format: "name|version|command...".
+## The rustc/clippy toolchain itself is pinned by rust-toolchain.toml at repo root.
+TOOL_PINS=(
+	"cargo-zigbuild|0.23.0|cargo-zigbuild --version"
+)
 
-## Stage 3: lint. Project lint (language toolchain), plus shellcheck over the
-## pipeline's own scripts so cicd can't rot silently.
-LINT_CMD=()
-SHELLCHECK_TARGETS=(cicd/cicd.bash cicd/config.bash)
+## Stage 2: debug build (what the tests exercise). Capped at half the cores.
+BUILD_CMD=(cargo build -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 
-## Stage 4: tests. This will be the conformance-corpus runner (project/conformance/)
-## driving every built reader - the contract between implementations.
-TEST_CMD=()
+## Stage 3: lint. clippy gates (-D warnings); shellcheck covers the pipeline's own
+## scripts so cicd can't rot silently.
+LINT_CMD=(cargo clippy -j "${CPU_CAP}" --manifest-path "${MANIFEST}" --all-targets -- -D warnings)
+## n8git_backup-and-publish is excluded: SC1083 false-hits its legitimate git
+## @{u} upstream refs, and the script is a proven drop-in kept byte-close to its
+## sibling copies.
+SHELLCHECK_TARGETS=(
+	cicd/cicd.bash
+	cicd/config.bash
+	cicd/utility/lint-report.bash
+	cicd/utility/git-auto-msg.bash
+	cicd/utility/include/gfs-rotate.bash
+)
 
-## Stage 5: cross-compile (local runs only; --ci never runs this).
-CROSS_CMD=()
+## Stage 4: tests. cargo test runs the conformance corpus (project/conformance/)
+## plus the deterministic fuzz smoke; the env var raises the fuzz iteration count
+## well past the quick in-editor default.
+TEST_CMD=(env SHCL_FUZZ_ITERS=20000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 
-## Stage 6: publish. Simple add/commit/push from the engine. PUBLISH_AUTO_MESSAGE,
-## if set, is used when no -m is given and the run is unattended.
-DO_PUBLISH=1
+## Stage 5: native release + cross targets. One per line:
+## "label|os-arch|artifact|command...". os-arch feeds the versioned artifact name
+## (<exe>-<version>-<os-arch>[.exe]). macOS is deferred (no Apple SDK on this box).
+RELEASE_NATIVE_CMD=(cargo build --release -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
+RELEASE_NATIVE_BIN="source/rust/target/release/${EXE_NAME}"
+RELEASE_NATIVE_OSARCH="linux-x86_64"
+CROSS_TARGETS=(
+	"Windows x86_64 (mingw)|windows-x86_64|source/rust/target/x86_64-pc-windows-gnu/release/${EXE_NAME}.exe|cargo build --release -j \${CPU_CAP} --manifest-path ${MANIFEST} --target x86_64-pc-windows-gnu"
+	"Linux ARM64 (zig)|linux-arm64|source/rust/target/aarch64-unknown-linux-gnu/release/${EXE_NAME}|cargo zigbuild --release -j \${CPU_CAP} --manifest-path ${MANIFEST} --target aarch64-unknown-linux-gnu"
+	"Windows ARM64 (zig)|windows-arm64|source/rust/target/aarch64-pc-windows-gnullvm/release/${EXE_NAME}.exe|cargo zigbuild --release -j \${CPU_CAP} --manifest-path ${MANIFEST} --target aarch64-pc-windows-gnullvm"
+)
+RELEASE_ARTIFACT_DIR="cicd/artifacts/release"   ## relative to repo root; gitignored
+
+## Stage 6: demo gif for the README. Rendered from a scripted scenario against the
+## fresh native release binary, so the captured output can never go stale.
+GIF_ENABLE=1
+GIF_SCENARIO="cicd/demo-scenario.toml"
+GIF_OUT="assets/demo.gif"
+
+## Full-run output is tee'd here (gitignored) and gfs-rotated; lint-report.bash
+## surfaces warnings from the newest log at session start.
+LINT_LOG_DIR="cicd/artifacts/lint"
+
+## Stage 7: backup + publish via the standalone publisher (versioned RAR backup of
+## the whole project dir, then stash/pull/pop, add, commit, push). The engine runs
+## a version guard first: new code on dev needs a bump in ${VERSION_MANIFEST}.
+GIT_PUBLISH=(cicd/utility/n8git_backup-and-publish)
 PUBLISH_AUTO_MESSAGE=""
 
 
 ##	History:
 ##		- 2026-07-11 JC: Created; all build/test stages stubbed pending the reference parser, shellcheck live from day one.
+##		- 2026-07-12 JC: Wired the real stages: cargo fmt/clippy/test with the fuzz env, release + three cross targets, artifacts dir, demo gif scenario, n8git publish.
