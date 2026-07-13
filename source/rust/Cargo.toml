@@ -1,0 +1,29 @@
+[package]
+name = "shcl"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "SHCL - Simple Hierarchical Config Language. Reference parser, accessor, writer, and CLI."
+repository = "https://github.com/jim-collier/shcl"
+
+[lib]
+name = "shcl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "shcl"
+path = "src/main.rs"
+
+# Zero dependencies on purpose: the library is meant to be a single drop-in file.
+
+# Size and speed both matter for the shipped binary; these cost nothing at runtime.
+# NOTE: do NOT pack with UPX/etc - packers routinely trip antivirus heuristics.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+debug = "line-tables-only"
