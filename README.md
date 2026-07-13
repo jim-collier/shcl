@@ -41,6 +41,7 @@
 ![Coverage](https://img.shields.io/badge/Coverage-90%25-brightgreen)
 ![Status: Passing](https://img.shields.io/badge/Status-Passing-brightgreen)
 ![Status: Failing](https://img.shields.io/badge/Status-Failing-red)
+<img src="assets/demo.gif" alt="SHCL demo" width="640"/>
 -->
 
 <!-- TOC ignore:true -->
@@ -52,7 +53,11 @@
 
 *Forgiving to write. Predictable to read. The friendliest read API around.*
 
-<img src="assets/demo.gif" alt="SHCL demo" width="640"/>
+<img src="assets/demo.gif" alt="SHCL demo"/>
+
+<br />
+
+> *Ships as a complete spec plus one drop-in source file per language — Rust (reference), Go, Python, and a single-header C/C++ — each byte-for-byte identical in behavior and each with a matching CLI, plus a thin Bash wrapper over the binary. Zero dependencies; build the CLI from the same file you embed.*
 
 </div>
 
@@ -66,8 +71,8 @@
 - [What it looks like](#what-it-looks-like)
 - [Reading it from code](#reading-it-from-code)
 - [How it compares](#how-it-compares)
-	- [Everyday config formats](#everyday-config-formats)
-	- [The programmable ones: Pkl, CUE, Dhall](#the-programmable-ones-pkl-cue-dhall)
+	- [To JSON, YAML, TOML, XML](#to-json-yaml-toml-xml)
+	- [To Pkl, CUE, Dhall](#to-pkl-cue-dhall)
 	- [When SHCL is the wrong choice](#when-shcl-is-the-wrong-choice)
 - [Features](#features)
 - [Status](#status)
@@ -166,7 +171,7 @@ Wildcards read across instances (`site[*].root` gives you every site's document 
 
 ## How it compares
 
-### Everyday config formats
+### To JSON, YAML, TOML, XML
 
 | | SHCL | JSON | YAML | TOML | XML
 | :-- | :-- | :-- | :-- | :-- | :--
@@ -181,7 +186,7 @@ Wildcards read across instances (`site[*].root` gives you every site's document 
 
 > *A note on types, because it is the big design difference: JSON and TOML store types in the file, so the author has to get them right. YAML infers types from the text, which is where `NO` becomes `false`. SHCL stores plain text and coerces when **you** ask for a type; the only code that decides a value is an int (for example), is the code that needed an int.*
 
-### The programmable ones: Pkl, CUE, Dhall
+### To Pkl, CUE, Dhall
 
 These are a different species. They overlap a little with SHCL's power layer, but from the opposite direction: they make the *config file itself* powerful, which is exactly what SHCL avoids.
 
