@@ -70,6 +70,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/lint-report.bash
 	cicd/utility/git-auto-msg.bash
 	cicd/utility/include/gfs-rotate.bash
+	source/bash/shcl.bash
 )
 
 ## Stage 4: tests. cargo test runs the conformance corpus (project/conformance/)
