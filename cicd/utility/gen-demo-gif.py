@@ -40,17 +40,15 @@ except ImportError:
 	sys.stderr.write("gen-demo-gif: Pillow not installed\n"); sys.exit(2)
 
 
-##	Canvas and window chrome. 960x540 total; the "window" floats on a near-black
-##	backdrop so the end-of-loop fade has somewhere honest to go.
+##	Canvas and window chrome. 960x540 total; the "window" fills the frame, left
+##	with just a thin black border - which is also where the end-of-loop fade goes.
 CANVAS_W, CANVAS_H = 960, 540
-MARGIN     = 22       # backdrop border around the window
+MARGIN     = 4        # thin black border around the full-bleed window
 TITLE_H    = 34       # title bar height
 PAD        = 12       # text inset inside the terminal area
-RADIUS     = 10       # window corner radius
 
 THEME = {
-	"outer":    (14, 14, 16),      # backdrop behind the window
-	"shadow":   (8, 8, 9),         # drop shadow
+	"outer":    (0, 0, 0),         # black border framing the window
 	"border":   (58, 58, 62),      # 1px window outline
 	"titlebar": (44, 44, 48),
 	"titletxt": (150, 150, 152),
@@ -240,7 +238,7 @@ def fBuildPalette(userTint, hostTint, emojiTiles):
 	def blend(a, b, k):
 		return tuple(round(a[i] + (b[i] - a[i]) * k) for i in range(3))
 	t = THEME
-	colors = [(0, 0, 0), t["outer"], t["shadow"], t["border"], t["titlebar"],
+	colors = [(0, 0, 0), t["outer"], t["border"], t["titlebar"],
 	          t["titletxt"], t["bg"], t["fg"], t["gray"], t["dim"],
 	          userTint, hostTint] + t["dots"]
 	for c in (t["fg"], t["gray"], t["dim"], userTint, hostTint):
@@ -449,14 +447,9 @@ class Screen:
 		img = Image.new("RGB", (CANVAS_W, CANVAS_H), THEME["outer"])
 		d = ImageDraw.Draw(img)
 		x0, y0 = MARGIN, MARGIN
-		d.rounded_rectangle([x0 + 5, y0 + 7, x0 + self.winW + 5, y0 + self.winH + 7],
-		                    RADIUS, fill=THEME["shadow"])
-		d.rounded_rectangle([x0, y0, x0 + self.winW, y0 + self.winH],
-		                    RADIUS, fill=THEME["bg"], outline=THEME["border"])
-		d.rounded_rectangle([x0, y0, x0 + self.winW, y0 + TITLE_H],
-		                    RADIUS, fill=THEME["titlebar"])
-		d.rectangle([x0, y0 + TITLE_H - RADIUS, x0 + self.winW, y0 + TITLE_H],
-		            fill=THEME["titlebar"])
+		d.rectangle([x0, y0, x0 + self.winW, y0 + self.winH],
+		            fill=THEME["bg"], outline=THEME["border"])
+		d.rectangle([x0, y0, x0 + self.winW, y0 + TITLE_H], fill=THEME["titlebar"])
 		for i, c in enumerate(THEME["dots"]):
 			cx = x0 + 18 + i * 20
 			d.ellipse([cx, y0 + 12, cx + 11, y0 + 23], fill=c)
@@ -658,6 +651,8 @@ if __name__ == "__main__":
 
 
 ##	History:
+##		- 20260713 JC: v1.3. Full-bleed window (thin black border, no shadow),
+##			square corners.
 ##		- 20260711 JC: v1.2. Antialiased text again (ramped 256 palette), color
 ##			emoji tiles, prompt hidden until output lands, faster typing and
 ##			scrolling, cell-width wrap.
