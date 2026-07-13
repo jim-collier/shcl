@@ -9,8 +9,13 @@ Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`
 
 ## Assumptions
 
-- The raw, by-example origin of the language is `../../notes.txt`. It was rationalized into a coherent model through a decision pass; where the two disagree, `spec.md` wins.
-- The language ships as tiered bindings, plus single-file drop-in source and compiled binaries per platform. We decided the guarantee is the corpus, not the count: every *shipped* binding is corpus-green, and nothing ships before it is. Tier 1: the Rust reference implementation and the `shcl` CLI built from it (Rust wins on the stated priorities - minimal binary size, instant startup for the CLI-wrapper bindings, clean `cdylib` for the shared-library mode, and compile-time strictness that forces spec precision). Tier 2: Go, C (+ C++ veneer), Python. Tier 3: the rest (C#, Java (+ Kotlin), JavaScript (+ TypeScript)) after v1.0, corpus-gated, designed-for from the start. POSIX sh and PowerShell are thin wrappers around the CLI, not independent parsers - they inherit conformance for free. Companion typed surfaces (C++/Kotlin/TypeScript) remain one core plus a veneer, not separate parsers.
+- The language began by example in `../../notes.txt`. A decision pass rationalized it into a coherent model. Where the two disagree, `spec.md` wins.
+- The language ships as tiered bindings, plus single-file drop-in source and compiled binaries per platform.
+	- The guarantee is the corpus, not the binding count. Every shipped binding is corpus-green, and nothing ships before it is.
+	- Tier 1: the Rust reference and the `shcl` CLI built from it. Rust wins on the stated priorities: small binary, instant CLI startup, a clean shared-library build, and compile-time strictness that forces spec precision.
+	- Tier 2: Go, C (with a C++ veneer), Python.
+	- Tier 3: the rest (C#, Java with Kotlin, JavaScript with TypeScript), after v1.0, corpus-gated, designed for from the start.
+	- POSIX sh and PowerShell are thin wrappers around the CLI, not independent parsers. They inherit conformance for free. The companion typed surfaces (C++, Kotlin, TypeScript) are one core plus a veneer, not separate parsers.
 
 ## Direction decisions
 
@@ -77,11 +82,18 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 ### Testing
 
-The conformance corpus is the primary cross-language guarantee: each case is an input, its canonical formatting, and expected typed reads with status sentinels. Every parser runs it in CI.
+The conformance corpus is the primary cross-language guarantee. Each case is an input, its canonical formatting, and the expected typed reads with status sentinels. Every parser runs it in CI.
 
-Passing the corpus independently is necessary but not sufficient once there is more than one binding: two implementations can each satisfy the expectations yet still disagree on the details the corpus never pinned (float rendering, diagnostic-free edge behavior). So the pipeline also runs a differential check: every binding's CLI is replayed over the same inputs - the whole corpus plus a freshly fuzz-generated input set - and all bindings must agree with the reference byte for byte on stdout and exit code. It went live when the Go binding landed: rust is the reference, go is compared against it on every run. stderr is deliberately outside the contract (diagnostic wording and OS error text are per-binding voice); stdout and exit codes are the contract.
+Passing the corpus independently is necessary but not sufficient once there is more than one binding. Two implementations can each satisfy the expectations yet still disagree on details the corpus never pinned, like float rendering or diagnostic-free edge behavior. So the pipeline also runs a differential check:
 
-Two portability rules fell out of making the first port agree byte for byte, and now bind every future binding: floats render as shortest round-trip decimal, never scientific notation (the reference's native float formatting; Go had to opt into it explicitly), and diagnostic order must be deterministic - the reference's repeated-leaf hints originally grouped via a randomized-order hash map and were fixed to first-appearance order, since a port can match a rule but not a coin flip.
+- Every binding's CLI is replayed over the same inputs: the whole corpus plus a freshly generated fuzz set.
+- All bindings must agree with the reference byte-for-byte on stdout and exit code. The reference is Rust.
+- stderr is deliberately outside the contract. Diagnostic wording and OS error text are per-binding voice. stdout and exit codes are the contract.
+
+Two portability rules bind every binding:
+
+- Floats render as shortest round-trip decimal, never scientific notation. This matches the reference's native float formatting.
+- Diagnostic order must be deterministic, in first-appearance order. A port can match a rule, but not a coin flip.
 
 ### CI/CD
 
@@ -94,8 +106,8 @@ We decided to split by responsibility rather than duplicate the pipeline:
 - Branch flow: `dev` is the integration target (feature branches merge there, `--no-ff`); `main` is release-only. A dev -> main merge is a release cut.
 - One canonical version source: `source/rust/Cargo.toml`. The pipeline reads it for artifact names and release tags. (An automatic bump-before-push guard was tried and dropped: dev is the integration branch, and versions there are cut deliberately at release time, not policed per push.)
 - Toolchain pins: `rust-toolchain.toml` (rustc + clippy + cross targets) and warn-only pins for cargo-installed helpers, so a box update cannot silently change results.
-- Fuzzing is in the regression suite, not a separate rig: a deterministic, seed-fixed mutator over the corpus inputs asserts two invariants for any input - never panic at any strictness, and the canonical formatter is a fixpoint. It found three real formatter bugs before first release. The same mutator doubles as the input generator for the cross-binding differential check (see Testing).
-- Profiling is a standing pipeline stage, not an occasional exercise: every full run samples an optimized-with-symbols build over a heavy parse/format workload and emits a flamegraph SVG (rotated like the run logs) plus a hot-spot summary, so a performance regression shows up in the artifacts the run it happens. Kernel perf is locked down on the build box, so sampling is in-process via a feature-gated dev-only dependency that never reaches a shipped binary.
+- Fuzzing lives in the regression suite, not a separate rig. A deterministic mutator over the corpus asserts two invariants for any input: never panic at any strictness, and the formatter is a fixpoint. The same mutator generates the inputs for the differential check above.
+- Profiling is a standing stage. Every full run samples an optimized build over a heavy parse-and-format workload and emits a flamegraph plus a hot-spot summary, so a performance regression shows up in the artifacts the run it happens in. Sampling is in-process, feature-gated, and never reaches a shipped binary.
 
 ### Reference implementation
 
@@ -113,10 +125,15 @@ We decided to split by responsibility rather than duplicate the pipeline:
 - Sources at `source/c/`: a single-header drop-in library (`shcl.h`, C11, zero dependencies) plus the CLI under `cmd/shcl/` - same flags, output, and exit codes as the reference. The single-header story is the C analog of the other bindings' single-file libraries: copy `shcl.h` into a tree and, in one translation unit, `#define SHCL_IMPLEMENTATION` before including it.
 - The C++ typed surface (`shcl.hpp`) is a veneer, not a second parser: a header of `Read<T>` / `get<T>()` templates over the same C functions, so it inherits the core's conformance and only needs a compile-plus-behavior smoke to keep it honest.
 - Conformance runs natively (a C port of the runner over the same corpus), so the C binding is corpus-green on its own, and the cicd crosscheck holds it byte-for-byte to the reference besides.
-- Memory is a per-document bump arena whose growable vectors grow by copy, so teardown is a single free with no per-object bookkeeping - a short-lived-tool trade that keeps the port readable. Two portability details the reference implies for free but C must make explicit: byte strings are length-delimited with codepoint-accurate UTF-8 iteration (the reference works in Unicode scalars, so plain byte scanning would mishandle multibyte text and the backslash-shields-next rule), and float output is reproduced by taking the smallest printf precision that round-trips and reflowing it into fixed notation, matching the reference's shortest-decimal-never-scientific rule. C has no committed zero-dependency formatter, so its quality gate is a `-Wall -Wextra -Werror` compile rather than a separate fmt/lint stage.
+- Memory is a per-document bump arena, so teardown is a single free with no per-object bookkeeping. A short-lived-tool trade that keeps the port readable.
+- Two portability details the reference gets for free but C makes explicit: UTF-8 is iterated by codepoint (plain byte scanning would mishandle multibyte text), and float output reproduces the reference's shortest-decimal, never-scientific rule.
+- C has no committed zero-dependency formatter, so its quality gate is a warning-clean compile rather than a separate format stage.
 
 ### Shell wrapper
 
-- The shell binding is a wrapper around the `shcl` CLI, not a parser, so it inherits conformance for free. Given the choice between a thin POSIX `sh` and a fuller Bash, we chose Bash (`source/bash/shcl.bash`): the wrapper earns its keep only by being dual-purpose - runnable as a script *or* sourced so a caller invokes functions - and that dual mode plus the ergonomic sourced surface reads far cleaner with Bash's `BASH_SOURCE`, `local`, and arrays than with portable `sh`. A truly thin passthrough would give a sourcing caller nothing over calling the binary directly; the typed helpers are the reason to source.
-- One `shcl` function is the whole CLI; `shcl_get`/`shcl_int`/`shcl_bool`/`shcl_array`/... are one-line typed sugar over it. Script mode and function mode take the same arguments and hand back the binary's exit code unchanged, so a not-found or empty read stays a distinct nonzero rather than collapsing to a generic failure.
-- Two things a sourced tool must not do, and doesn't: leak shell options into the caller (strict mode is armed on the run path only, and `-e` is deliberately off there because a nonzero read is normal, not a fault), and let its own `shcl` function shadow the binary during lookup (`type -P` searches PATH for the executable, ignoring the function). The binary is found via `$SHCL_BIN`, then a co-located `shcl`, then PATH, then the repo build - so the dogfooded install (wrapper beside binary) and in-repo dev both resolve without configuration. shellcheck is the quality gate, wired through the same cicd target list as the pipeline's own scripts.
+- The shell binding wraps the `shcl` CLI, not a parser, so it inherits conformance for free.
+- We chose Bash (`source/bash/shcl.bash`) over POSIX sh. The wrapper earns its keep by being dual-purpose: run it as a script, or source it and call functions. That dual mode and the typed helpers read far cleaner with Bash's arrays and `local` than with portable sh. A thin passthrough would give a sourcing caller nothing over the binary itself.
+- One `shcl` function is the whole CLI. `shcl_get`, `shcl_int`, `shcl_bool`, and friends are one-line typed sugar. Both modes take the same arguments and return the binary's exit code unchanged, so a not-found or empty read stays a distinct nonzero.
+- Two things a sourced tool must not do, and doesn't:
+	- Leak shell options into the caller. Strict mode is armed only on the run path.
+	- Let its own `shcl` function shadow the binary during lookup. The binary is resolved via `$SHCL_BIN`, a co-located `shcl`, PATH, then the repo build, so a dogfooded install and in-repo dev both work without configuration.

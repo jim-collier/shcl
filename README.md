@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD007 -- Unordered list indentation -->
-<!-- markdownlint-disable MD010 -- 🚫 hard tabs -->
-<!-- markdownlint-disable MD033 -- 🚫 inline html -->
+<!-- markdownlint-disable MD010 -- hard tabs -->
+<!-- markdownlint-disable MD033 -- inline html -->
 <!-- markdownlint-disable MD055 -- Table pipe style [Expected: leading_and_trailing; Actual: leading_only; Missing trailing pipe] -->
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
 <div align="center">
@@ -44,16 +44,17 @@
 -->
 
 <!-- TOC ignore:true -->
+<div align="center">
+
 # SHCL
 
-<table style="border: none; border-collapse: collapse;">
-	<tr style="border: none; border-collapse: collapse;">
-		<td style="border: none; border-collapse: collapse;"><img src="assets/logo.png" alt="Logo" width="320"/></td>
-		<td style="border: none;"><b>S</b>imple <b>H</b>ierarchical <b>C</b>onfig <b>L</b>anguage</td>
-	</tr style="border: none; border-collapse: collapse;">
-</table>
+**S**imple **H**ierarchical **C**onfig **L**anguage
 
-Forgiving to write. Predictable to read. The friendliest read API in the space.
+*Forgiving to write. Predictable to read. The friendliest read API around.*
+
+<img src="assets/demo.gif" alt="SHCL demo" width="640"/>
+
+</div>
 
 <!-- TOC ignore:true -->
 ## Table of contents
@@ -73,6 +74,7 @@ Forgiving to write. Predictable to read. The friendliest read API in the space.
 - [Installing](#installing)
 - [Building from source](#building-from-source)
 - [Docs](#docs)
+- [Contributing and support](#contributing-and-support)
 - [Copyright and license](#copyright-and-license)
 
 <!-- /TOC -->
@@ -97,10 +99,10 @@ SHCL flips the burden around. Modern CPU cycles are cheap. Brainpower isn't. So 
 
 SHCL makes a contract:
 
-- Types live in your code, not in the file. The file stores text; you ask for one of the five fundamental strong data types when you read it. Nothing gets guessed at parse time, so there is 🚫 "Norway Problem".
-- One broken line never takes down the file. It is skipped with a note - and everything else that can still be safely and logically loaded, is.
+- Types live in your code, not in the file. The file stores text. You ask for a type when you read a value. Nothing is guessed at parse time, so there is no "Norway problem".
+- One broken line never takes down the file. It is skipped with a note. Everything else that can still be loaded safely, is.
 - Every convenience read states a fallback at the call site. A missing value cannot sneak in as a silent zero.
-- If a human can tell what a line means, the parser figures it out too.
+- If a person can tell what a line means, the parser can too.
 
 When you do want zero-tolerance rigor: schema validation, plus a strict mode that fails loudly.
 
@@ -123,7 +125,7 @@ site: example.com
 		cert: /etc/ssl/example.pem
 		hsts: on
 
-# Repeating the field adds another site - arrays of objects, 🚫 syntax to invent
+# Repeating the field adds another site - arrays of objects, no syntax to invent
 site: blog.example.com
 	root: /srv/www/blog
 
@@ -181,7 +183,7 @@ Wildcards read across instances (`site[*].root` gives you every site's document 
 
 ### The programmable ones: Pkl, CUE, Dhall
 
-These are a different species, but overlap a little with SHCL's Traversal model. These medels make the *config file itself* powerful (something SHCL goes out of its way to avoid).
+These are a different species. They overlap a little with SHCL's power layer, but from the opposite direction: they make the *config file itself* powerful, which is exactly what SHCL avoids.
 
 - **Pkl** (from Apple) is a real language: classes, inheritance, built-in validation. Great when your config genuinely is a program. (And very arguably the winner among these three, depending on your use-case.)
 
@@ -213,26 +215,37 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 - Three strictness levels. Loose, standard, strict: one knob from maximum-forgiving to fail-on-anything.
 - Schema validation, layered loading (defaults, site, user), and commented starter-config generation, all as library features.
 - Raw fenced blocks embed anything verbatim: SQL, code, templates, Markdown-style.
-- One conformance corpus pins every shipped binding to identical behavior. Rust reference implementation plus the `shcl` CLI first; more bindings gated behind the corpus.
+- One conformance corpus pins every shipped binding to identical behavior. The Rust reference plus independent Go, C, and Python parsers already agree byte-for-byte; a binding does not ship until it does.
 
 ## Status
 
-Alpha, and spec-first on purpose. Five parsers that "mostly agree" would be worse than none, so the order of work is:
+Alpha, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
 
-1. Language spec and formal grammar. Done: [`project/spec.md`](project/spec.md), [`project/grammar.abnf`](project/grammar.abnf).
-2. A conformance corpus of golden test cases that every future parser must pass. Started: [`project/conformance/`](project/conformance/).
-3. The Rust reference parser and the `shcl` CLI. Next up. Nothing ships until it is corpus-green.
-4. Go, C, and Python bindings, each held to the same corpus. More after v1.0.
+- **Language spec and formal grammar** - done. [`project/spec.md`](project/spec.md), [`project/grammar.abnf`](project/grammar.abnf).
+- **Conformance corpus** - the golden cases every binding must pass. Green and growing.
+- **Rust reference parser + the `shcl` CLI** - done, corpus-green. This is the source of truth every other binding is measured against.
+- **Independent parsers in Go, C (with a C++ veneer), and Python** - done, corpus-green, and checked byte-for-byte against the reference on every build.
+- **Bash wrapper** - done. It calls the CLI, so it inherits conformance for free.
 
-Star or watch the repo if you want to know when the parser lands.
+What is not done yet: a tagged release with prebuilt binaries and packages, the schema and layered-loading power layer, and the remaining Tier 3 bindings. Star or watch the repo to catch the first release.
 
 ## Installing
 
-Nothing to install yet. The `shcl` CLI and the first library builds arrive with the Rust reference implementation (see Status).
+No tagged release yet, so there are no prebuilt binaries or packages to install. Two options in the meantime:
+
+- **Drop-in** - copy one source file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
+- **Build the CLI from source** - see below.
 
 ## Building from source
 
-Nothing to build yet, for the same reason.
+The reference lives in `source/rust/`, zero dependencies:
+
+```sh
+cargo build --release --manifest-path source/rust/Cargo.toml
+# binary at source/rust/target/release/shcl
+```
+
+Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
 
 ## Docs
 
@@ -241,14 +254,20 @@ Nothing to build yet, for the same reason.
 - [`project/design.md`](project/design.md): the why behind the decisions.
 - [`contributing.md`](contributing.md): how to help.
 
+## Contributing and support
+
+Early days, and help is welcome. Bug reports, spec edge cases, and new-language bindings all move the needle. See [`contributing.md`](contributing.md) to get started.
+
+If SHCL saves you a headache and you can't contribute code, a star or a mention still helps other people find it.
+
 ## Copyright and license
 
-> Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)<br />
-> Licensed under the [MIT License](https://mit-license.org/). 🚫 warranty.
+> Copyright © 2026 Jim Collier<br />
+> Licensed under the [MIT License](https://mit-license.org/). No warranty.
 <!--
-> Licensed under the [MIT License](https://mit-license.org/). 🚫 warranty.
-> Licensed under the [GNU General Public License v2.0](https://www.gnu.org/licenses/gpl-2.0.html). 🚫 warranty.
-> Licensed under the [GNU General Public License v2.0 or later](https://spdx.org/licenses/GPL-2.0-or-later.html). 🚫 warranty.
-> Licensed under the [GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html) license. 🚫 warranty.
-> Licensed under the [Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/). 🚫 warranty.
+> Licensed under the [MIT License](https://mit-license.org/). No warranty.
+> Licensed under the [GNU General Public License v2.0](https://www.gnu.org/licenses/gpl-2.0.html). No warranty.
+> Licensed under the [GNU General Public License v2.0 or later](https://spdx.org/licenses/GPL-2.0-or-later.html). No warranty.
+> Licensed under the [GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html) license. No warranty.
+> Licensed under the [Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/). No warranty.
 -->
