@@ -18,9 +18,15 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      ## Toolchain setup (Go/Rust/etc.) gets added here when the reference
-      ## parser lands; keep it in YAML, keep "what passing means" in the engine.
+      ## rustup on the runner reads rust-toolchain.toml and fetches the pinned
+      ## toolchain on first cargo call; keep "what passing means" in the engine.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            source/rust/target
+          key: ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'source/rust/Cargo.lock') }}
       - run: cicd/cicd.bash --ci
