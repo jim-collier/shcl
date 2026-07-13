@@ -62,7 +62,10 @@ In each section, items are listed approximately from newest to oldest.
 - ✅ Resolve the open minor items listed at the end of `spec.md` (currency-symbol set, wildcard-missing behavior, `onBad` enum surface, `%`->int, fence info-string meaning). All five settled inline in `spec.md` under "Resolved minor items".
 	- Currency and `%`->int later superseded: cut from default behavior, Loose-level only (see strictness levels below).
 
-- 🔘 Reference parser in Rust (Tier 1) implementing the full spec, driven by the conformance corpus; the `shcl` CLI builds from it.
+- ✅ Reference parser in Rust (Tier 1) implementing the full spec, driven by the conformance corpus; the `shcl` CLI builds from it.
+	- ✅ Single-file library (`source/rust/src/lib.rs`, zero dependencies) + `shcl` CLI (`get`/`fmt`/`check`/`count`/`instances`, typed flags, strictness, stdin, status exit codes). Corpus-green; deterministic fuzz smoke (no panics, formatter is a fixpoint) runs in `cargo test`.
+	- ✅ Fuzzing forced two formatter rules, now in `spec.md`: same-line block spelling when an earlier same-name empty instance would absorb the header, and a space before an info-string starting with the fence char.
+	- ✅ `count` rows in case 006 corrected to instance counts (spec + case 002 define `Count`; the two rows were asserting array lengths).
 
 - 🔘 Ports to the remaining binding languages, in tiers: Tier 2 = Go, C, Python; Tier 3 (post-v1.0, corpus-gated) = C#, Java, JavaScript. Each single-file/drop-in where possible, corpus-green before shipping. API rule: type via typed entry point / compile-time generic, never a runtime type field.
 	- Companion typed surfaces (not separate parsers): C++ template header over the C core; Kotlin reified-generic extensions over the Java core; TypeScript `.d.ts` over the JS core.
@@ -73,12 +76,16 @@ In each section, items are listed approximately from newest to oldest.
 	- ✅ Cases `003-coercions` and `004-strict-load` added (strictness bundles: currency/`%`/rounding/boolean sets per level; load ok-vs-fail per level). `reads.tsv` gained an optional `level` column and a `load` pseudo-call.
 	- ✅ Case `006-comma-edges` added: forgiving inline arrays (leading/doubled/trailing/all-comma drop to empties; `""` keeps a real empty element).
 	- ✅ Case `005-raw-blocks` added (both spellings bind as the field's value; extra fences become instances; `\n` escaping for raw values in `reads.tsv`).
-	- 🔘 Model diagnostic expectations (count, severity, mandatory repeated-leaf hint) once the reference parser fixes the diagnostic shape.
+	- ✅ Case `007-dates` added: the full date/time whitelist (year-first, named-month, compact, 12/24-hour, fractions, zones) plus the rejects (ambiguous numeric, invalid calendar, prose).
+	- 🔘 Model diagnostic expectations (count, severity, mandatory repeated-leaf hint) once the reference parser fixes the diagnostic shape. The reference shape now exists: line + severity (`error`/`hint`) + message.
 
 ### Build, CI/CD, and install
 
 - 🛠️ A CI/CD pipeline kicked off by a bash script (`cicd/cicd.bash`): builds, tests, and can commit and push. Packaging and publishing are opt-in.
-	- 🛠️ Engine + `config.bash` in place; `--ci` mode is the correctness gate the GitHub workflow (`.github/workflows/ci.yml`) runs, so local and CI share one definition of passing. Build/lint/test stages are stubs until the reference parser lands; shellcheck of the pipeline itself is live now.
+	- ✅ Engine + `config.bash` in place; `--ci` mode is the correctness gate the GitHub workflow (`.github/workflows/ci.yml`) runs, so local and CI share one definition of passing.
+	- ✅ All stages live: cargo fmt (check-only in CI), debug build, clippy `-D warnings` + shellcheck, tests (conformance corpus + 20k-iteration fuzz smoke), native release + Windows x86_64 / Linux ARM64 / Windows ARM64 cross builds, versioned artifacts + sha256sums, README demo gif (`cicd/demo-scenario.toml` -> `assets/demo.gif`), publish via `cicd/utility/n8git_backup-and-publish`.
+	- ✅ Guard rails: run log tee + rotation under `cicd/artifacts/lint/` (`lint-report.bash` reads the newest), tool-pin drift warnings, version guard (new code on dev needs a `source/rust/Cargo.toml` bump; docs-only pushes pass), `--quick` skips cross + gif.
+	- 🔘 Packaging (.deb/.rpm/NSIS) still open; wire from the sister packaging stage when release cuts start.
 
 - 🔘 Dev-environment install script (Linux bash, macOS sh, Windows PowerShell), runnable via a single `curl`/`wget` and documented under "how to develop". Clones main, installs dependencies, and states what it will do with an option to abort.
 

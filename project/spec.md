@@ -307,6 +307,7 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 - Collapse and merge redundant sections and paths.
 - Quote a value only when a reserved character requires it (minimal quoting).
 - Leave scalar text exactly as authored; raw blocks are re-emitted verbatim. A block value canonicalizes to the child-indent spelling - bare `name:`, fence (with its info-string) on the next line at child indent - one field line per block instance.
+- Two narrow exceptions keep round-trips exact. If an *earlier* instance of the same field under the same parent is empty, the child-indent header line would merge into it on re-read and the fence would fill that instance - so the formatter emits that block in the same-line spelling instead. And an info-string that *starts with* the fence character gets one space after the fence, so it cannot lengthen the fence run on re-read.
 
 ## Error handling philosophy
 
