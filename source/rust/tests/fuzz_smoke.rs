@@ -77,9 +77,21 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 		.unwrap_or(300);
 	let seeds = seed_texts();
 	let mut rng = Rng(0x5EED_CAFE_F00D_0001);
+	// SHCL_FUZZ_DUMP: also write the generated inputs out (capped), so the cicd
+	// cross-binding check can replay the same soup through every binding's CLI.
+	let dump_dir = std::env::var("SHCL_FUZZ_DUMP").ok();
+	let dump_max: usize = std::env::var("SHCL_FUZZ_DUMP_MAX")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(500);
 	for i in 0..iters {
 		let base = &seeds[rng.below(seeds.len())];
 		let text = mutate(&mut rng, base);
+		if let Some(dir) = &dump_dir
+			&& i < dump_max
+		{
+			let _ = std::fs::write(format!("{}/fuzz_{:05}.shcl", dir, i), &text);
+		}
 		// Must never panic at any strictness; Strict may (validly) refuse the load.
 		let _ = Document::parse_with(&text, Strictness::Loose);
 		let _ = Document::parse_with(&text, Strictness::Strict);

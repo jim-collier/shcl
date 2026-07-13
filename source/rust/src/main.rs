@@ -313,6 +313,51 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 	0
 }
 
+fn run(cmd: &str, o: &Opts) -> u8 {
+	match cmd {
+		"get" => do_get(o),
+		"fmt" => do_fmt(o),
+		"check" => do_check(o),
+		"count" => do_enum(o, true),
+		"instances" => do_enum(o, false),
+		other => {
+			eprintln!("unknown command: {} (see --help)", other);
+			1
+		}
+	}
+}
+
+/// cicd profiler stage only (profiling builds, SHCL_PROFILE_OUT set): repeat the
+/// command under an in-process sampler for SHCL_PROFILE_SECS, then write a
+/// flamegraph SVG. Never compiled into a normal build.
+#[cfg(feature = "profiling")]
+fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
+	let secs: u64 = std::env::var("SHCL_PROFILE_SECS")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(8);
+	let guard = pprof::ProfilerGuardBuilder::default()
+		.frequency(199)
+		.blocklist(&["libc", "libpthread", "vdso", "libgcc"])
+		.build()
+		.expect("pprof: failed to start profiler");
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+	let mut code = run(cmd, o);
+	while std::time::Instant::now() < deadline {
+		code = run(cmd, o);
+	}
+	let report = guard
+		.report()
+		.build()
+		.expect("pprof: failed to build report");
+	let file = std::fs::File::create(out).expect("pprof: failed to create SVG");
+	report
+		.flamegraph(file)
+		.expect("pprof: failed to write flamegraph");
+	eprintln!("shcl: wrote flamegraph -> {}", out);
+	code
+}
+
 fn main() -> ExitCode {
 	let argv: Vec<String> = std::env::args().skip(1).collect();
 	if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") {
@@ -331,16 +376,9 @@ fn main() -> ExitCode {
 			return ExitCode::from(1);
 		}
 	};
-	let code = match cmd.as_str() {
-		"get" => do_get(&o),
-		"fmt" => do_fmt(&o),
-		"check" => do_check(&o),
-		"count" => do_enum(&o, true),
-		"instances" => do_enum(&o, false),
-		other => {
-			eprintln!("unknown command: {} (see --help)", other);
-			1
-		}
-	};
-	ExitCode::from(code)
+	#[cfg(feature = "profiling")]
+	if let Ok(out) = std::env::var("SHCL_PROFILE_OUT") {
+		return ExitCode::from(run_profiled(&cmd, &o, &out));
+	}
+	ExitCode::from(run(&cmd, &o))
 }
