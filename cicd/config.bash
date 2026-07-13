@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+#  shellcheck disable=2016  ## 'Expressions don't expand in single quotes.' Deliberate: the eval'd command strings expand in the engine, not here.
 #  shellcheck disable=2034  ## 'variable appears unused.' Everything here is consumed by cicd.bash.
 
 ##	Purpose:
@@ -26,7 +27,7 @@ declare -i isSourced_t6wqf=0; [[ "${BASH_SOURCE[0]}" == "${0}" ]] || isSourced_t
 APP_NAME="shcl"
 EXE_NAME="shcl"
 MANIFEST="source/rust/Cargo.toml"
-VERSION_MANIFEST="${MANIFEST}"   ## the single canonical version source (tag + guard read it)
+VERSION_MANIFEST="${MANIFEST}"   ## the single canonical version source (tags + artifact names read it)
 
 ## Stage 1: format. FMT_CMD rewrites in place (local runs); FMT_CHECK_CMD fails on
 ## any diff without touching files (what --ci runs). rustfmt.toml at repo root
@@ -54,6 +55,7 @@ LINT_CMD=(cargo clippy -j "${CPU_CAP}" --manifest-path "${MANIFEST}" --all-targe
 SHELLCHECK_TARGETS=(
 	cicd/cicd.bash
 	cicd/config.bash
+	cicd/utility/crosscheck.bash
 	cicd/utility/lint-report.bash
 	cicd/utility/git-auto-msg.bash
 	cicd/utility/include/gfs-rotate.bash
@@ -64,7 +66,33 @@ SHELLCHECK_TARGETS=(
 ## well past the quick in-editor default.
 TEST_CMD=(env SHCL_FUZZ_ITERS=20000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 
-## Stage 5: native release + cross targets. One per line:
+## Stage 4b: cross-binding differential check (crosscheck.bash). Every entry is
+## "name|cli-path" (debug builds - stage 2 has built them by then); the first is
+## the reference. One entry today, so it prints a note and moves on; add each new
+## binding here (e.g. "go|source/go/shcl") and every cicd run will require all
+## bindings to agree byte for byte on the corpus plus a fuzz-dumped input set.
+## XCHECK_GEN (eval'd, ${XCHECK_DUMP_DIR} exported by the engine) produces that
+## input set; it only runs when there are two or more bindings.
+BINDING_CLIS=(
+	"rust|source/rust/target/debug/shcl"
+)
+XCHECK_GEN='env SHCL_FUZZ_DUMP="${XCHECK_DUMP_DIR}" SHCL_FUZZ_ITERS=2000 SHCL_FUZZ_DUMP_MAX=500 cargo test -j "${CPU_CAP}" --manifest-path '"${MANIFEST}"' --test fuzz_smoke --quiet'
+
+## Stage 5: profiler. Optimized-with-symbols build (cargo profile "profiling",
+## feature-gated pprof sampler - never in a normal build), run over a workload big
+## enough to sample meaningfully: the whole corpus + the demo config, repeated.
+## Kernel perf is locked down on this box (perf_event_paranoid=3), hence the
+## in-process sampler. PROFILE_WORKLOAD_GEN / PROFILE_RUN are eval'd by the engine
+## with PROFILE_WORKLOAD / PROFILE_OUT / PROFILE_SECS exported.
+PROFILE_ENABLE=1
+PROFILE_SECS=8
+PROFILE_BUILD_CMD=(cargo build --profile profiling --features profiling -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
+PROFILE_BIN="source/rust/target/profiling/${EXE_NAME}"
+PROFILE_OUT_DIR="cicd/artifacts/profiling"   ## relative to repo root; gitignored
+PROFILE_WORKLOAD_GEN='{ for i in $(seq 40); do cat project/conformance/*/input.shcl cicd/demo/app.shcl; echo; done; } > "${PROFILE_WORKLOAD}"'
+PROFILE_RUN='SHCL_PROFILE_OUT="${PROFILE_OUT}" SHCL_PROFILE_SECS="${PROFILE_SECS}" "${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null'
+
+## Stage 6: native release + cross targets. One per line:
 ## "label|os-arch|artifact|command...". os-arch feeds the versioned artifact name
 ## (<exe>-<version>-<os-arch>[.exe]). macOS is deferred (no Apple SDK on this box).
 RELEASE_NATIVE_CMD=(cargo build --release -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
@@ -77,7 +105,7 @@ CROSS_TARGETS=(
 )
 RELEASE_ARTIFACT_DIR="cicd/artifacts/release"   ## relative to repo root; gitignored
 
-## Stage 6: demo gif for the README. Rendered from a scripted scenario against the
+## Stage 7: demo gif for the README. Rendered from a scripted scenario against the
 ## fresh native release binary, so the captured output can never go stale.
 GIF_ENABLE=1
 GIF_SCENARIO="cicd/demo-scenario.toml"
@@ -87,9 +115,8 @@ GIF_OUT="assets/demo.gif"
 ## surfaces warnings from the newest log at session start.
 LINT_LOG_DIR="cicd/artifacts/lint"
 
-## Stage 7: backup + publish via the standalone publisher (versioned RAR backup of
-## the whole project dir, then stash/pull/pop, add, commit, push). The engine runs
-## a version guard first: new code on dev needs a bump in ${VERSION_MANIFEST}.
+## Stage 8: backup + publish via the standalone publisher (versioned RAR backup of
+## the whole project dir, then stash/pull/pop, add, commit, push).
 GIT_PUBLISH=(cicd/utility/n8git_backup-and-publish)
 PUBLISH_AUTO_MESSAGE=""
 
@@ -97,3 +124,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##	History:
 ##		- 2026-07-11 JC: Created; all build/test stages stubbed pending the reference parser, shellcheck live from day one.
 ##		- 2026-07-12 JC: Wired the real stages: cargo fmt/clippy/test with the fuzz env, release + three cross targets, artifacts dir, demo gif scenario, n8git publish.
+##		- 2026-07-12 JC: Added the profiler settings + binding list for the crosscheck; version guard dropped.

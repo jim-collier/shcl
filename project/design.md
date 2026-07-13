@@ -79,6 +79,8 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 The conformance corpus is the primary cross-language guarantee: each case is an input, its canonical formatting, and expected typed reads with status sentinels. Every parser runs it in CI.
 
+Passing the corpus independently is necessary but not sufficient once there is more than one binding: two implementations can each satisfy the expectations yet still disagree on the details the corpus never pinned (float rendering, diagnostic-free edge behavior). So the pipeline also runs a differential check: every binding's CLI is replayed over the same inputs - the whole corpus plus a freshly fuzz-generated input set - and all bindings must agree with the reference byte for byte on stdout and exit code. With only the reference built it is a no-op; it gets teeth automatically the day a second binding lands.
+
 ### CI/CD
 
 We decided to split by responsibility rather than duplicate the pipeline:
@@ -88,9 +90,10 @@ We decided to split by responsibility rather than duplicate the pipeline:
 - Both share one definition of "passing": the workflow just runs `cicd.bash --ci`. Per-language toolchain setup lives in the workflow YAML; what passing means lives in the engine, so the two cannot drift.
 - The formatter rewrites in place locally but is check-only (fail on diff) in CI.
 - Branch flow: `dev` is the integration target (feature branches merge there, `--no-ff`); `main` is release-only. A dev -> main merge is a release cut.
-- One canonical version source: `source/rust/Cargo.toml`. The pipeline reads it for artifact names, and it guards dev pushes - new code on dev without a bump fails the publish stage; docs-only pushes pass.
+- One canonical version source: `source/rust/Cargo.toml`. The pipeline reads it for artifact names and release tags. (An automatic bump-before-push guard was tried and dropped: dev is the integration branch, and versions there are cut deliberately at release time, not policed per push.)
 - Toolchain pins: `rust-toolchain.toml` (rustc + clippy + cross targets) and warn-only pins for cargo-installed helpers, so a box update cannot silently change results.
-- Fuzzing is in the regression suite, not a separate rig: a deterministic, seed-fixed mutator over the corpus inputs asserts two invariants for any input - never panic at any strictness, and the canonical formatter is a fixpoint. It found three real formatter bugs before first release.
+- Fuzzing is in the regression suite, not a separate rig: a deterministic, seed-fixed mutator over the corpus inputs asserts two invariants for any input - never panic at any strictness, and the canonical formatter is a fixpoint. It found three real formatter bugs before first release. The same mutator doubles as the input generator for the cross-binding differential check (see Testing).
+- Profiling is a standing pipeline stage, not an occasional exercise: every full run samples an optimized-with-symbols build over a heavy parse/format workload and emits a flamegraph SVG (rotated like the run logs) plus a hot-spot summary, so a performance regression shows up in the artifacts the run it happens. Kernel perf is locked down on the build box, so sampling is in-process via a feature-gated dev-only dependency that never reaches a shipped binary.
 
 ### Reference implementation
 

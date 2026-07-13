@@ -15,6 +15,16 @@ name = "shcl"
 path = "src/main.rs"
 
 # Zero dependencies on purpose: the library is meant to be a single drop-in file.
+# The one entry below is dev-only tooling: optional + feature-gated, never part
+# of a normal or release build, and lib.rs itself stays dependency-free.
+# LICENSE: pprof pulls inferno (CDDL-1.0, GPL-incompatible) - fine for local dev
+# tooling, but binaries built with --features profiling must never ship.
+# In-process sampling (SIGPROF) -> flamegraph SVG; sidesteps perf_event_paranoid.
+[dependencies]
+pprof = { version = "0.14", features = ["flamegraph"], optional = true }
+
+[features]
+profiling = ["dep:pprof"]
 
 # Size and speed both matter for the shipped binary; these cost nothing at runtime.
 # NOTE: do NOT pack with UPX/etc - packers routinely trip antivirus heuristics.
@@ -27,3 +37,11 @@ strip = true
 
 [profile.dev]
 debug = "line-tables-only"
+
+# Used only by the cicd profiler stage (cargo build --profile profiling
+# --features profiling). Optimized like release so the flamegraph reflects real
+# perf, but keeps symbols + debuginfo (release strips them) so frames are named.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = true
