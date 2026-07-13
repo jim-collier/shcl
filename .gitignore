@@ -1,3 +1,4 @@
 target/
 cicd/artifacts/
 source/go/shcl
+__pycache__/

@@ -69,6 +69,7 @@ In each section, items are listed approximately from newest to oldest.
 
 - 🛠️ Ports to the remaining binding languages, in tiers: Tier 2 = Go, C, Python; Tier 3 (post-v1.0, corpus-gated) = C#, Java, JavaScript. Each single-file/drop-in where possible, corpus-green before shipping. API rule: type via typed entry point / compile-time generic, never a runtime type field.
 	- ✅ Go (Tier 2): single-file library (`source/go/shcl.go`, zero deps, generics for the typed reads) + CLI (`source/go/cmd/shcl/`) with the same flags/output/exit codes as the reference. Corpus-green natively (`go test`); crosscheck now compares rust vs go on every run - corpus + fuzz set, byte-for-byte.
+	- ✅ Python (Tier 2): single-file library (`source/python/shcl.py`, stdlib-only, 3.9+) + CLI (`source/python/cmd/shcl/main.py`) with the same flags/output/exit codes. Corpus-green natively (`source/python/tests/conformance.py`); crosscheck now compares rust vs go vs python every run, byte-for-byte. Float output via shortest-round-trip positional form (`Decimal(repr(v)).normalize()`), never scientific, matching the reference Display.
 	- Companion typed surfaces (not separate parsers): C++ template header over the C core; Kotlin reified-generic extensions over the Java core; TypeScript `.d.ts` over the JS core.
 	- POSIX sh and PowerShell: thin wrappers around the `shcl` CLI, not parsers.
 
@@ -88,8 +89,8 @@ In each section, items are listed approximately from newest to oldest.
 	- ✅ Guard rails: run log tee + rotation under `cicd/artifacts/lint/` (`lint-report.bash` reads the newest), tool-pin drift warnings, `--quick` skips cross + profiler + gif.
 		- Version guard dropped (was: new code on dev needs a version bump) - versions get cut deliberately at release time instead.
 	- ✅ Profiler stage: in-process sampler (feature-gated, dev-only - kernel perf is locked down on the build box) over a corpus-derived `fmt` workload -> gfs-rotated flamegraph SVG under `cicd/artifacts/profiling/` + `flame-report.py` hot-spot summary (plain mode each run, `--check` for a session-startup look).
-	- ✅ Cross-binding differential check (`cicd/utility/crosscheck.bash`) wired after tests: all binding CLIs must agree byte-for-byte (stdout + exit code) on `fmt` over every corpus input, every `reads.tsv` row, and a fuzz-dumped input set (`SHCL_FUZZ_DUMP`). Active since the Go binding landed (rust = reference, go compared against it every run).
-	- ✅ Per-stage config extras (`FMT/BUILD/LINT/TEST_EXTRA`) so each new binding wires its fmt/build/lint/test commands into the engine from `config.bash` only; Go uses gofmt/go build/go vet/go test. CI workflow installs Go via `setup-go` from `go.mod`.
+	- ✅ Cross-binding differential check (`cicd/utility/crosscheck.bash`) wired after tests: all binding CLIs must agree byte-for-byte (stdout + exit code) on `fmt` over every corpus input, every `reads.tsv` row, and a fuzz-dumped input set (`SHCL_FUZZ_DUMP`). Reference = rust; go and python compared against it every run.
+	- ✅ Per-stage config extras (`FMT/BUILD/LINT/TEST_EXTRA`) so each new binding wires its fmt/build/lint/test commands into the engine from `config.bash` only; Go uses gofmt/go build/go vet/go test; Python uses a py_compile build gate + the stdlib conformance runner. CI workflow installs Go via `setup-go` from `go.mod` and Python via `setup-python`.
 	- 🔘 Packaging (.deb/.rpm/NSIS) still open; wire from the sister packaging stage when release cuts start.
 
 - 🔘 Dev-environment install script (Linux bash, macOS sh, Windows PowerShell), runnable via a single `curl`/`wget` and documented under "how to develop". Clones main, installs dependencies, and states what it will do with an option to abort.

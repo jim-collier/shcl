@@ -29,6 +29,11 @@ jobs:
         with:
           go-version-file: source/go/go.mod
           cache: false
+      ## Python binding is a zero-dep single file; pin the interpreter so a runner
+      ## image bump can't silently shift float/coercion formatting under it.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - uses: actions/cache@v4
         with:
           path: |

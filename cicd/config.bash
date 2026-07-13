@@ -48,7 +48,10 @@ TOOL_PINS=(
 ## Stage 2: debug build (what the tests exercise). Capped at half the cores.
 ## The Go binding builds here too - crosscheck needs its CLI in stage 4.
 BUILD_CMD=(cargo build -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
-BUILD_EXTRA=('go -C source/go build -o shcl ./cmd/shcl')
+BUILD_EXTRA=(
+	'go -C source/go build -o shcl ./cmd/shcl'
+	'python3 -m py_compile source/python/shcl.py source/python/cmd/shcl/main.py source/python/tests/conformance.py'
+)
 
 ## Stage 3: lint. clippy gates (-D warnings); shellcheck covers the pipeline's own
 ## scripts so cicd can't rot silently.
@@ -70,7 +73,10 @@ SHELLCHECK_TARGETS=(
 ## plus the deterministic fuzz smoke; the env var raises the fuzz iteration count
 ## well past the quick in-editor default.
 TEST_CMD=(env SHCL_FUZZ_ITERS=20000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
-TEST_EXTRA=('go -C source/go test ./...')
+TEST_EXTRA=(
+	'go -C source/go test ./...'
+	'python3 source/python/tests/conformance.py'
+)
 
 ## Stage 4b: cross-binding differential check (crosscheck.bash). Every entry is
 ## "name|cli-path" (stage 2 has built them by then); the first is the reference.
@@ -80,6 +86,7 @@ TEST_EXTRA=('go -C source/go test ./...')
 BINDING_CLIS=(
 	"rust|source/rust/target/debug/shcl"
 	"go|source/go/shcl"
+	"python|source/python/cmd/shcl/main.py"
 )
 XCHECK_GEN='env SHCL_FUZZ_DUMP="${XCHECK_DUMP_DIR}" SHCL_FUZZ_ITERS=2000 SHCL_FUZZ_DUMP_MAX=500 cargo test -j "${CPU_CAP}" --manifest-path '"${MANIFEST}"' --test fuzz_smoke --quiet'
 
@@ -131,3 +138,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-07-12 JC: Wired the real stages: cargo fmt/clippy/test with the fuzz env, release + three cross targets, artifacts dir, demo gif scenario, n8git publish.
 ##		- 2026-07-12 JC: Added the profiler settings + binding list for the crosscheck; version guard dropped.
 ##		- 2026-07-12 JC: Go binding wired in: gofmt/build/vet/test extras + second crosscheck entry.
+##		- 2026-07-12 JC: Python binding wired in: py_compile build gate + conformance test extra + third crosscheck entry.
