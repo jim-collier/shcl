@@ -6,5 +6,5 @@ allcomma	string[]	-	Empty
 onecomma	string[]	-	Empty
 spaced	string[]	-	Empty
 emptyish	string[]	red||blue	Good
-emptyish	count	3	Good
-double	count	2	Good
+emptyish	count	1	Good
+double	count	1	Good
