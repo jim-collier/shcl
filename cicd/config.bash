@@ -34,6 +34,8 @@ VERSION_MANIFEST="${MANIFEST}"   ## the single canonical version source (tags + 
 ## (tabs) is the style source.
 FMT_CMD=(cargo fmt --manifest-path "${MANIFEST}")
 FMT_CHECK_CMD=(cargo fmt --check --manifest-path "${MANIFEST}")
+FMT_EXTRA=('gofmt -w source/go')
+FMT_CHECK_EXTRA=('gofmt_diff="$(gofmt -l source/go)"; [[ -z "${gofmt_diff}" ]] || { echo "gofmt: needs formatting: ${gofmt_diff}" >&2; false; }')
 
 ## Pinned versions of the cargo-installed helpers the pipeline uses; the engine
 ## warns (non-gating) when an installed tool has drifted from its pin, so a box
@@ -44,11 +46,14 @@ TOOL_PINS=(
 )
 
 ## Stage 2: debug build (what the tests exercise). Capped at half the cores.
+## The Go binding builds here too - crosscheck needs its CLI in stage 4.
 BUILD_CMD=(cargo build -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
+BUILD_EXTRA=('go -C source/go build -o shcl ./cmd/shcl')
 
 ## Stage 3: lint. clippy gates (-D warnings); shellcheck covers the pipeline's own
 ## scripts so cicd can't rot silently.
 LINT_CMD=(cargo clippy -j "${CPU_CAP}" --manifest-path "${MANIFEST}" --all-targets -- -D warnings)
+LINT_EXTRA=('go -C source/go vet ./...')
 ## n8git_backup-and-publish is excluded: SC1083 false-hits its legitimate git
 ## @{u} upstream refs, and the script is a proven drop-in kept byte-close to its
 ## sibling copies.
@@ -65,16 +70,16 @@ SHELLCHECK_TARGETS=(
 ## plus the deterministic fuzz smoke; the env var raises the fuzz iteration count
 ## well past the quick in-editor default.
 TEST_CMD=(env SHCL_FUZZ_ITERS=20000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
+TEST_EXTRA=('go -C source/go test ./...')
 
 ## Stage 4b: cross-binding differential check (crosscheck.bash). Every entry is
-## "name|cli-path" (debug builds - stage 2 has built them by then); the first is
-## the reference. One entry today, so it prints a note and moves on; add each new
-## binding here (e.g. "go|source/go/shcl") and every cicd run will require all
-## bindings to agree byte for byte on the corpus plus a fuzz-dumped input set.
-## XCHECK_GEN (eval'd, ${XCHECK_DUMP_DIR} exported by the engine) produces that
-## input set; it only runs when there are two or more bindings.
+## "name|cli-path" (stage 2 has built them by then); the first is the reference.
+## Every cicd run requires all bindings to agree byte for byte on the corpus
+## plus a fuzz-dumped input set. XCHECK_GEN (eval'd, ${XCHECK_DUMP_DIR} exported
+## by the engine) produces that input set; it only runs with two or more bindings.
 BINDING_CLIS=(
 	"rust|source/rust/target/debug/shcl"
+	"go|source/go/shcl"
 )
 XCHECK_GEN='env SHCL_FUZZ_DUMP="${XCHECK_DUMP_DIR}" SHCL_FUZZ_ITERS=2000 SHCL_FUZZ_DUMP_MAX=500 cargo test -j "${CPU_CAP}" --manifest-path '"${MANIFEST}"' --test fuzz_smoke --quiet'
 
@@ -125,3 +130,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-07-11 JC: Created; all build/test stages stubbed pending the reference parser, shellcheck live from day one.
 ##		- 2026-07-12 JC: Wired the real stages: cargo fmt/clippy/test with the fuzz env, release + three cross targets, artifacts dir, demo gif scenario, n8git publish.
 ##		- 2026-07-12 JC: Added the profiler settings + binding list for the crosscheck; version guard dropped.
+##		- 2026-07-12 JC: Go binding wired in: gofmt/build/vet/test extras + second crosscheck entry.

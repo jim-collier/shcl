@@ -63,6 +63,12 @@ _cores="$(nproc 2>/dev/null || echo 2)"
 CPU_CAP=$(( _cores / 2 )); (( CPU_CAP < 1 )) && CPU_CAP=1
 export CPU_CAP
 
+## Per-stage extras: eval'd strings run after the stage's primary command, so a
+## second binding (Go, C, ...) adds its fmt/build/lint/test commands in config
+## without touching engine code. All default empty.
+FMT_EXTRA=(); FMT_CHECK_EXTRA=(); BUILD_EXTRA=(); LINT_EXTRA=(); TEST_EXTRA=()
+fRunExtras(){ local c; for c in "$@"; do fEcho_Clean "extra: ${c}"; eval "${c}"; done; }
+
 ## shellcheck source=config.bash
 source "${here}/config.bash"
 source "${here}/utility/include/gfs-rotate.bash"   ## gfs_rotate() for log/artifact pruning
@@ -76,8 +82,8 @@ while (($#)); do case "$1" in
 	--quick)                  quick=1; shift ;;
 	-q|--quiet)               quiet=1; assume_yes=1; shift ;;
 	-y|--yes)                 assume_yes=1; shift ;;
-	--no-fmt)                 FMT_CMD=(); FMT_CHECK_CMD=(); shift ;;
-	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); shift ;;
+	--no-fmt)                 FMT_CMD=(); FMT_CHECK_CMD=(); FMT_EXTRA=(); FMT_CHECK_EXTRA=(); shift ;;
+	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); LINT_EXTRA=(); shift ;;
 	--no-cross)               CROSS_TARGETS=(); shift ;;
 	--no-profile)             PROFILE_ENABLE=0; shift ;;
 	--no-gif)                 GIF_ENABLE=0; shift ;;
@@ -141,10 +147,10 @@ if ((! quiet)); then
 	fEcho_Clean "${APP_NAME} $( ((ci_mode)) && echo 'CI gate' || echo 'local CI/CD')"
 	fEcho_Clean
 	fEcho_Clean "Repo root ......: ${root}"
-	fEcho_Clean "Format .........: $( ((ci_mode)) && echo "${FMT_CHECK_CMD[*]:-(none configured)}" || echo "${FMT_CMD[*]:-(skipped)}")"
-	fEcho_Clean "Build (debug) ..: ${BUILD_CMD[*]:-(none configured)}"
-	fEcho_Clean "Lint ...........: ${LINT_CMD[*]:-(none configured)}  + shellcheck: ${#SHELLCHECK_TARGETS[@]} file(s)"
-	fEcho_Clean "Tests ..........: ${TEST_CMD[*]:-(none configured)}  + crosscheck: ${#BINDING_CLIS[@]} binding(s)"
+	fEcho_Clean "Format .........: $( ((ci_mode)) && echo "${FMT_CHECK_CMD[*]:-(none configured)}" || echo "${FMT_CMD[*]:-(skipped)}")$( ((${#FMT_EXTRA[@]} + ${#FMT_CHECK_EXTRA[@]})) && echo "  (+ extras)" )"
+	fEcho_Clean "Build (debug) ..: ${BUILD_CMD[*]:-(none configured)}$( ((${#BUILD_EXTRA[@]})) && echo "  (+ ${#BUILD_EXTRA[@]} extra)" )"
+	fEcho_Clean "Lint ...........: ${LINT_CMD[*]:-(none configured)}$( ((${#LINT_EXTRA[@]})) && echo "  (+ ${#LINT_EXTRA[@]} extra)" )  + shellcheck: ${#SHELLCHECK_TARGETS[@]} file(s)"
+	fEcho_Clean "Tests ..........: ${TEST_CMD[*]:-(none configured)}$( ((${#TEST_EXTRA[@]})) && echo "  (+ ${#TEST_EXTRA[@]} extra)" )  + crosscheck: ${#BINDING_CLIS[@]} binding(s)"
 	fEcho_Clean "Profiler .......: $( ((PROFILE_ENABLE)) && echo "${PROFILE_SECS}s run -> flamegraph SVG -> ${PROFILE_OUT_DIR}/" || echo '(skipped)')"
 	if ((${#RELEASE_NATIVE_CMD[@]})); then
 		fEcho_Clean "Release ........: native + ${#CROSS_TARGETS[@]} cross target(s) -> ${RELEASE_ARTIFACT_DIR}/"
@@ -191,10 +197,15 @@ fi
 ## Stage 1: format. In place locally; check-only (fail on diff) under --ci.
 fSection "1/8  Format"
 if ((ci_mode)); then
-	if ((${#FMT_CHECK_CMD[@]})); then "${FMT_CHECK_CMD[@]}"; fEcho "OK: format clean"
+	if ((${#FMT_CHECK_CMD[@]})); then
+		"${FMT_CHECK_CMD[@]}"
+		fRunExtras "${FMT_CHECK_EXTRA[@]}"
+		fEcho "OK: format clean"
 	else fEcho_Clean "no format check configured"; fi
 elif ((${#FMT_CMD[@]})); then
-	"${FMT_CMD[@]}"; fEcho "OK: formatted"
+	"${FMT_CMD[@]}"
+	fRunExtras "${FMT_EXTRA[@]}"
+	fEcho "OK: formatted"
 else
 	fEcho_Clean "format skipped"
 fi
@@ -202,7 +213,9 @@ fi
 ## Stage 2: debug build (fast compile sanity; the tests run against this).
 fSection "2/8  Build (debug)"
 if ((${#BUILD_CMD[@]})); then
-	"${BUILD_CMD[@]}"; fEcho "OK: build"
+	"${BUILD_CMD[@]}"
+	fRunExtras "${BUILD_EXTRA[@]}"
+	fEcho "OK: build"
 else
 	fEcho_Clean "nothing to build yet"
 fi
@@ -212,7 +225,9 @@ fi
 ## is optional locally (warn if missing) but present on GitHub runners.
 fSection "3/8  Lint"
 if ((${#LINT_CMD[@]})); then
-	"${LINT_CMD[@]}"; fEcho "OK: lint clean"
+	"${LINT_CMD[@]}"
+	fRunExtras "${LINT_EXTRA[@]}"
+	fEcho "OK: lint clean"
 else
 	fEcho_Clean "no project lint configured yet"
 fi
@@ -233,7 +248,9 @@ fi
 ## With one binding it is a no-op note; it gets teeth the day a second binding lands.
 fSection "4/8  Tests"
 if ((${#TEST_CMD[@]})); then
-	"${TEST_CMD[@]}"; fEcho "OK: tests passed"
+	"${TEST_CMD[@]}"
+	fRunExtras "${TEST_EXTRA[@]}"
+	fEcho "OK: tests passed"
 else
 	fEcho_Clean "no tests configured yet"
 fi
@@ -358,3 +375,4 @@ fEcho_Clean
 ##		- 2026-07-11 JC: Created from the sister-project engine, trimmed to what shcl needs pre-code; added --ci gate mode shared with the GitHub workflow.
 ##		- 2026-07-12 JC: Filled out for the reference parser: debug+release split, cross targets + versioned artifacts + sha256sums, run-log tee with gfs rotation, tool-pin drift warnings, demo gif stage, dev version guard, publish via n8git_backup-and-publish.
 ##		- 2026-07-12 JC: Dropped the dev version guard; added the profiler stage (flamegraph + flame-report) and the cross-binding crosscheck after tests.
+##		- 2026-07-12 JC: Per-stage extras (FMT/BUILD/LINT/TEST_EXTRA eval lists) so additional bindings wire in via config only; first consumer is the Go binding.

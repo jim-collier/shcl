@@ -23,6 +23,12 @@ jobs:
       - uses: actions/checkout@v4
       ## rustup on the runner reads rust-toolchain.toml and fetches the pinned
       ## toolchain on first cargo call; keep "what passing means" in the engine.
+      ## Go version comes from go.mod (no go.sum - the binding is zero-dep, so
+      ## the module cache is off).
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: source/go/go.mod
+          cache: false
       - uses: actions/cache@v4
         with:
           path: |
