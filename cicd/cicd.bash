@@ -356,9 +356,12 @@ if ((${#DOGFOOD_FIXED_DESTS[@]})) && [[ -f "${RELEASE_NATIVE_BIN:-/nonexist}" ]]
 		cp -f "${RELEASE_NATIVE_BIN}" "${dogfood_dest}/${EXE_NAME}"
 		fEcho "OK: installed ${EXE_NAME} -> ${dogfood_dest}/${EXE_NAME}"
 		if [[ -n "${DOGFOOD_WRAPPER:-}" && -f "${DOGFOOD_WRAPPER}" ]]; then
-			cp -f "${DOGFOOD_WRAPPER}" "${dogfood_dest}/${EXE_NAME}.bash"
-			chmod +x "${dogfood_dest}/${EXE_NAME}.bash"
-			fEcho "OK: installed wrapper -> ${dogfood_dest}/${EXE_NAME}.bash"
+			wrapper_dest=""
+			for d in "${DOGFOOD_WRAPPER_DESTS[@]}"; do [[ -d "$d" && -w "$d" ]] && { wrapper_dest="$d"; break; }; done
+			[[ -z "$wrapper_dest" ]] && wrapper_dest="$dogfood_dest"   ## fall back beside the binary
+			cp -f "${DOGFOOD_WRAPPER}" "${wrapper_dest}/${EXE_NAME}.bash"
+			chmod +x "${wrapper_dest}/${EXE_NAME}.bash"
+			fEcho "OK: installed wrapper -> ${wrapper_dest}/${EXE_NAME}.bash"
 		fi
 	else
 		fEcho "WARNING: no dogfood dest exists+writable (${DOGFOOD_FIXED_DESTS[*]}); skipping"
