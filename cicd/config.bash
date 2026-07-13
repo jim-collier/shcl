@@ -117,7 +117,21 @@ CROSS_TARGETS=(
 )
 RELEASE_ARTIFACT_DIR="cicd/artifacts/release"   ## relative to repo root; gitignored
 
-## Stage 7: demo gif for the README. Rendered from a scripted scenario against the
+## Stage 7: dogfood. Drop the freshly built native release binary into the first
+## existing+writable dir below, under EXE_NAME, so the copy you launch by hand is
+## always current (same fixed path the sister project uses). Only runs when a
+## release binary got built - --ci builds none, so it no-ops there. Empty the list
+## to skip. No sudo: a non-writable dest is passed over, not force-installed.
+DOGFOOD_FIXED_DESTS=(
+	"${HOME}/synced/0-0/common/exec/util/linux/bin"
+	"/usr/local/sbin"
+)
+## The bash wrapper rides along, renamed to <EXE_NAME>.bash, once it exists. This is
+## the anticipated path for the not-yet-built bash tier; a missing file is skipped
+## silently. Fix the path here if the wrapper lands elsewhere.
+DOGFOOD_WRAPPER="source/bash/shcl.bash"
+
+## Stage 8: demo gif for the README. Rendered from a scripted scenario against the
 ## fresh native release binary, so the captured output can never go stale.
 GIF_ENABLE=1
 GIF_SCENARIO="cicd/demo-scenario.toml"
@@ -127,7 +141,7 @@ GIF_OUT="assets/demo.gif"
 ## surfaces warnings from the newest log at session start.
 LINT_LOG_DIR="cicd/artifacts/lint"
 
-## Stage 8: backup + publish via the standalone publisher (versioned RAR backup of
+## Stage 9: backup + publish via the standalone publisher (versioned RAR backup of
 ## the whole project dir, then stash/pull/pop, add, commit, push).
 GIT_PUBLISH=(cicd/utility/n8git_backup-and-publish)
 PUBLISH_AUTO_MESSAGE=""
@@ -139,3 +153,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-07-12 JC: Added the profiler settings + binding list for the crosscheck; version guard dropped.
 ##		- 2026-07-12 JC: Go binding wired in: gofmt/build/vet/test extras + second crosscheck entry.
 ##		- 2026-07-12 JC: Python binding wired in: py_compile build gate + conformance test extra + third crosscheck entry.
+##		- 2026-07-13 JC: Dogfood stage: install the native release binary (+ bash wrapper when it exists) to a fixed local dir.

@@ -17,8 +17,9 @@
 ##	   4. tests (conformance corpus + fuzz smoke + cross-binding differential check)
 ##	   5. profiler (flamegraph SVG + hot-spot report; non-gating artifact, local only)
 ##	   6. release + cross-compile + versioned artifacts + sha256sums (local only)
-##	   7. demo gif for the README (local only; non-gating)
-##	   8. backup + publish to git (local only)
+##	   7. dogfood (install the native release build to a fixed local dir; local only)
+##	   8. demo gif for the README (local only; non-gating)
+##	   9. backup + publish to git (local only)
 ##	- Syntax:
 ##	  cicd/cicd.bash [options]
 ##	  Options:
@@ -33,6 +34,7 @@
 ##	   --no-lint           skip the lint stage
 ##	   --no-cross          skip the cross-compile targets (native release still builds)
 ##	   --no-profile        skip the profiler stage
+##	   --no-dogfood        skip installing the native release build locally
 ##	   --no-gif            skip the demo gif refresh
 ##	   --no-publish        skip the git backup + publish stage
 ##	   -h, --help          show this help
@@ -86,6 +88,7 @@ while (($#)); do case "$1" in
 	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); LINT_EXTRA=(); shift ;;
 	--no-cross)               CROSS_TARGETS=(); shift ;;
 	--no-profile)             PROFILE_ENABLE=0; shift ;;
+	--no-dogfood)             DOGFOOD_FIXED_DESTS=(); shift ;;
 	--no-gif)                 GIF_ENABLE=0; shift ;;
 	--no-publish)             GIT_PUBLISH=(); shift ;;
 	--message=*|--msg=*|-m=*) cli_message="${1#*=}"; shift ;;
@@ -100,6 +103,7 @@ if ((ci_mode)); then
 	CROSS_TARGETS=()
 	RELEASE_NATIVE_CMD=()
 	PROFILE_ENABLE=0
+	DOGFOOD_FIXED_DESTS=()   ## no local install from the read-only gate (and no stale-binary risk)
 	GIF_ENABLE=0
 	GIT_PUBLISH=()
 else
@@ -157,6 +161,7 @@ if ((! quiet)); then
 	else
 		fEcho_Clean "Release ........: (skipped)"
 	fi
+	fEcho_Clean "Dogfood ........: $( if ((${#DOGFOOD_FIXED_DESTS[@]})); then _dfd=""; for d in "${DOGFOOD_FIXED_DESTS[@]}"; do [[ -d "$d" && -w "$d" ]] && { _dfd="$d"; break; }; done; [[ -n "$_dfd" ]] && echo "${_dfd}/${EXE_NAME}" || echo '(no writable dest; will skip)'; else echo '(skipped)'; fi )"
 	fEcho_Clean "Demo gif .......: $( ((GIF_ENABLE)) && echo "${GIF_OUT}" || echo '(skipped)')"
 	if ((${#GIT_PUBLISH[@]})); then
 		fEcho_Clean "Publish (last) .: ${GIT_PUBLISH[*]}$( [[ -n "$publish_msg" ]] && echo " (hands-off: \"${publish_msg}\")" || echo ' (will prompt for message; blank = editor)')"
@@ -195,7 +200,7 @@ if declare -p TOOL_PINS &>/dev/null; then
 fi
 
 ## Stage 1: format. In place locally; check-only (fail on diff) under --ci.
-fSection "1/8  Format"
+fSection "1/9  Format"
 if ((ci_mode)); then
 	if ((${#FMT_CHECK_CMD[@]})); then
 		"${FMT_CHECK_CMD[@]}"
@@ -211,7 +216,7 @@ else
 fi
 
 ## Stage 2: debug build (fast compile sanity; the tests run against this).
-fSection "2/8  Build (debug)"
+fSection "2/9  Build (debug)"
 if ((${#BUILD_CMD[@]})); then
 	"${BUILD_CMD[@]}"
 	fRunExtras "${BUILD_EXTRA[@]}"
@@ -223,7 +228,7 @@ fi
 ## Stage 3: lint. Project lint first, then shellcheck over the cicd scripts (and
 ## any other bash config lists), so the pipeline can't rot silently. shellcheck
 ## is optional locally (warn if missing) but present on GitHub runners.
-fSection "3/8  Lint"
+fSection "3/9  Lint"
 if ((${#LINT_CMD[@]})); then
 	"${LINT_CMD[@]}"
 	fRunExtras "${LINT_EXTRA[@]}"
@@ -246,7 +251,7 @@ fi
 ## then the cross-binding differential check: every binding CLI must agree with
 ## every other, byte for byte, on the corpus AND on a freshly fuzz-dumped input set.
 ## With one binding it is a no-op note; it gets teeth the day a second binding lands.
-fSection "4/8  Tests"
+fSection "4/9  Tests"
 if ((${#TEST_CMD[@]})); then
 	"${TEST_CMD[@]}"
 	fRunExtras "${TEST_EXTRA[@]}"
@@ -270,7 +275,7 @@ fi
 ## perf is locked down on this box) and writes a flamegraph SVG, gfs-rotated like
 ## the run logs; flame-report.py prints the hot spots into the log. Environmental
 ## problems skip with a warning; a build or run failure is the app's fault -> die.
-fSection "5/8  Profiler"
+fSection "5/9  Profiler"
 if ((PROFILE_ENABLE)); then
 	fEcho_Clean "building: ${PROFILE_BUILD_CMD[*]}"
 	"${PROFILE_BUILD_CMD[@]}" || fDie "profiler build failed (app problem)"
@@ -305,7 +310,7 @@ fi
 ## Stage 6: native release + cross targets, collected under versioned names plus
 ## a sha256 checksums file, ready to attach to a release as plain uploads.
 ## Naming (stable; download links depend on it): <exe>-<version>-<os-arch>[.exe]
-fSection "6/8  Release builds"
+fSection "6/9  Release builds"
 if ((${#RELEASE_NATIVE_CMD[@]})); then
 	"${RELEASE_NATIVE_CMD[@]}"
 	[[ -f "${RELEASE_NATIVE_BIN}" ]] || fDie "native release binary missing: ${RELEASE_NATIVE_BIN}"
@@ -338,8 +343,32 @@ else
 	fEcho_Clean "release builds skipped"
 fi
 
-## Stage 7: demo gif for the README (non-gating: a missing Pillow/font/etc. skips).
-fSection "7/8  Demo gif"
+## Stage 7: dogfood - drop the freshly built optimized native binary into the first
+## existing+writable fixed dest, under EXE_NAME, so the copy launched by hand stays
+## current. The bash wrapper rides along as <EXE_NAME>.bash once it exists. Skipped
+## when no release binary was built (e.g. --ci) or the dest list is empty. No sudo:
+## a non-writable dest is passed over with a warning, never force-installed.
+fSection "7/9  Dogfood"
+if ((${#DOGFOOD_FIXED_DESTS[@]})) && [[ -f "${RELEASE_NATIVE_BIN:-/nonexist}" ]]; then
+	dogfood_dest=""
+	for d in "${DOGFOOD_FIXED_DESTS[@]}"; do [[ -d "$d" && -w "$d" ]] && { dogfood_dest="$d"; break; }; done
+	if [[ -n "$dogfood_dest" ]]; then
+		cp -f "${RELEASE_NATIVE_BIN}" "${dogfood_dest}/${EXE_NAME}"
+		fEcho "OK: installed ${EXE_NAME} -> ${dogfood_dest}/${EXE_NAME}"
+		if [[ -n "${DOGFOOD_WRAPPER:-}" && -f "${DOGFOOD_WRAPPER}" ]]; then
+			cp -f "${DOGFOOD_WRAPPER}" "${dogfood_dest}/${EXE_NAME}.bash"
+			chmod +x "${dogfood_dest}/${EXE_NAME}.bash"
+			fEcho "OK: installed wrapper -> ${dogfood_dest}/${EXE_NAME}.bash"
+		fi
+	else
+		fEcho "WARNING: no dogfood dest exists+writable (${DOGFOOD_FIXED_DESTS[*]}); skipping"
+	fi
+else
+	fEcho_Clean "dogfood skipped"
+fi
+
+## Stage 8: demo gif for the README (non-gating: a missing Pillow/font/etc. skips).
+fSection "8/9  Demo gif"
 if ((GIF_ENABLE)); then
 	if "${here}/utility/gen-demo-gif.py" --scenario "${root}/${GIF_SCENARIO}" --out "${root}/${GIF_OUT}" --bin "${root}/${RELEASE_NATIVE_BIN}" --quiet; then
 		fEcho "OK: demo gif -> ${GIF_OUT} ($(du -h "${root}/${GIF_OUT}" | cut -f1))"
@@ -350,8 +379,8 @@ else
 	fEcho_Clean "demo gif skipped"
 fi
 
-## Stage 8: backup + publish via the standalone publisher.
-fSection "8/8  Backup + publish"
+## Stage 9: backup + publish via the standalone publisher.
+fSection "9/9  Backup + publish"
 if ((${#GIT_PUBLISH[@]})); then
 	command -v rar >/dev/null 2>&1 || export GIT_BACKUP_AND_PUBLISH_NOBACKUP=1
 	if [[ -n "$publish_msg" ]]; then
@@ -376,3 +405,4 @@ fEcho_Clean
 ##		- 2026-07-12 JC: Filled out for the reference parser: debug+release split, cross targets + versioned artifacts + sha256sums, run-log tee with gfs rotation, tool-pin drift warnings, demo gif stage, dev version guard, publish via n8git_backup-and-publish.
 ##		- 2026-07-12 JC: Dropped the dev version guard; added the profiler stage (flamegraph + flame-report) and the cross-binding crosscheck after tests.
 ##		- 2026-07-12 JC: Per-stage extras (FMT/BUILD/LINT/TEST_EXTRA eval lists) so additional bindings wire in via config only; first consumer is the Go binding.
+##		- 2026-07-13 JC: Dogfood stage (7/9) between release and demo gif: installs the native release binary + bash wrapper (when present) to a fixed local dir; --no-dogfood, off under --ci.
