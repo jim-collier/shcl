@@ -371,9 +371,28 @@ else
 fi
 
 ## Stage 8: demo gif for the README (non-gating: a missing Pillow/font/etc. skips).
+## Renders into the rotated private/ store (gfs-kept), then copies the newest onto
+## the committed GIF_OUT. If that store is unreachable (no private tree), render
+## straight to GIF_OUT and skip rotation.
 fSection "8/9  Demo gif"
 if ((GIF_ENABLE)); then
-	if "${here}/utility/gen-demo-gif.py" --scenario "${root}/${GIF_SCENARIO}" --out "${root}/${GIF_OUT}" --bin "${root}/${RELEASE_NATIVE_BIN}" --quiet; then
+	gif_dir="${root}/${GIF_ROTATE_DIR}"
+	if mkdir -p "${gif_dir}" 2>/dev/null; then
+		## Born canonical (role "frequent"); the rotation retags the newest "latest".
+		gif_target="${gif_dir}/demo_${stamp}_frequent.gif"
+	else
+		fEcho_Clean "gif store unavailable (${GIF_ROTATE_DIR}); rendering committed copy only"
+		gif_dir=""; gif_target="${root}/${GIF_OUT}"
+	fi
+	if "${here}/utility/gen-demo-gif.py" --scenario "${root}/${GIF_SCENARIO}" --out "${gif_target}" --bin "${root}/${RELEASE_NATIVE_BIN}" --quiet; then
+		if [[ -n "${gif_dir}" ]]; then
+			gfs_rotate "${gif_dir}" demo gif
+			## Rotation renames the just-rendered file by role (first run -> "first",
+			## later -> "latest"); the stamp is unique to this run, so glob it back
+			## whatever the suffix, and copy that onto the committed GIF_OUT.
+			gif_kept=( "${gif_dir}/demo_${stamp}_"*.gif )
+			cp -f "${gif_kept[0]}" "${root}/${GIF_OUT}"
+		fi
 		fEcho "OK: demo gif -> ${GIF_OUT} ($(du -h "${root}/${GIF_OUT}" | cut -f1))"
 	else
 		fEcho "WARNING: demo gif skipped (non-fatal)"
