@@ -8,7 +8,9 @@ Golden cases that pin every shipped SHCL binding to identical behavior. Each ind
 Each case is a directory `NNN-short-name/` containing:
 
 - `input.shcl` - the source, usually deliberately messy.
+
 - `expected.shcl` - the canonical formatter output for that input (block form, tabs, insertion order, minimal quoting, redundancy collapsed), at Standard strictness.
+
 - `reads.tsv` - expected typed reads. Columns, tab-separated: `query` `type` `expected` `status` `[level]`. `type` uses `int|float|bool|datetime|string|raw` and `[]` for array forms, or the pseudo-calls `count`/`instances`/`load`. `expected` is the value (`-` when not applicable); `status` is one of `Good|Empty|NotFound|BadType|Multiple`. The optional fifth column is the strictness level (`loose|standard|strict`), default `standard`. The `load` pseudo-call asserts whether the document loads at that level: query `-`, expected `ok` or `fail`, status `-`. In `expected`, a newline inside a raw-block value is written `\n` (a literal newline or tab would break the TSV).
 
 ## Notes

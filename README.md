@@ -1,15 +1,14 @@
 <!-- markdownlint-disable MD007 -- Unordered list indentation -->
-<!-- markdownlint-disable MD010 -- No hard tabs -->
-<!-- markdownlint-disable MD033 -- No inline html -->
+<!-- markdownlint-disable MD010 -- 🚫 hard tabs -->
+<!-- markdownlint-disable MD033 -- 🚫 inline html -->
 <!-- markdownlint-disable MD055 -- Table pipe style [Expected: leading_and_trailing; Actual: leading_only; Missing trailing pipe] -->
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
 <div align="center">
 
 [![made-with-rust](https://img.shields.io/badge/Made%20with-Rust-1f425f.svg)](https://www.rust-lang.org/)
 ![Go](https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white)
-![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
 [![made-with-python](https://img.shields.io/badge/Made%20with-Python-1f425f.svg)](https://www.python.org/)
-[![made-with-javascript](https://img.shields.io/badge/Made%20with-JavaScript-1f425f.svg)](https://www.javascript.com)
+![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
 [![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
 ![Lifecycle: Alpha](https://img.shields.io/badge/Lifecycle-Alpha-orange)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -94,12 +93,14 @@ Every mainstream format makes the human do the careful work, and punishes the wh
 
 ## What SHCL does about it
 
-SHCL flips that around. Modern CPU cycles are cheap. Brainpower isn't. So the parser does the hard work, not the person writing the file - and not the programmer reading it.
+SHCL flips the burden around. Modern CPU cycles are cheap. Brainpower isn't. So the parser does the hard work - not the person writing the file, and not the programmer consuming the configuration.
 
-- If a human can tell what a line means, the parser figures it out too.
-- One broken line never takes down the file. It is skipped with a note, and everything else still loads.
-- Types live in your code, not in the file. The file stores text; you ask for an int when you read it. Nothing gets guessed at parse time, so there is no "Norway Problem".
+SHCL makes a contract:
+
+- Types live in your code, not in the file. The file stores text; you ask for one of the five fundamental strong data types when you read it. Nothing gets guessed at parse time, so there is 🚫 "Norway Problem".
+- One broken line never takes down the file. It is skipped with a note - and everything else that can still be safely and logically loaded, is.
 - Every convenience read states a fallback at the call site. A missing value cannot sneak in as a silent zero.
+- If a human can tell what a line means, the parser figures it out too.
 
 When you do want zero-tolerance rigor: schema validation, plus a strict mode that fails loudly.
 
@@ -122,7 +123,7 @@ site: example.com
 		cert: /etc/ssl/example.pem
 		hsts: on
 
-# Repeating the field adds another site - arrays of objects, no syntax to invent
+# Repeating the field adds another site - arrays of objects, 🚫 syntax to invent
 site: blog.example.com
 	root: /srv/www/blog
 
@@ -143,18 +144,23 @@ Field names are case-insensitive. Repeated paths merge. `site` here is not one k
 One call. A typed value. A visible fallback. This is the call you write 90% of the time:
 
 ```go
+// Go
 limit := doc.GetIntOr("site[example.com].max-upload-mb", 10)
 ```
 
 ```python
+# Python
 limit = doc.get_int("site[example.com].max-upload-mb", default=10)
 ```
 
 ```sh
+# Bash (sh/ash/zsh/etc.)
 limit=$(shcl get --int --default=10 server.shcl 'site[example.com].max-upload-mb')
 ```
 
-When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`. Wildcards read across instances (`site[*].root` gives you every site's document root, in file order).
+When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`.
+
+Wildcards read across instances (`site[*].root` gives you every site's document root, in file order).
 
 ## How it compares
 
@@ -162,23 +168,25 @@ When you need to know *why* a read failed, the full form returns a status instea
 
 | | SHCL | JSON | YAML | TOML | XML
 | :-- | :-- | :-- | :-- | :-- | :--
-| Comments | yes | no | yes | yes | yes
-| Unquoted strings | yes | no | yes, but they can change type on you | no | n/a
-| One bad line breaks the whole file | no | yes | yes | yes | yes
-| Who decides a value's type | your code, at read time | the file | the parser guesses | the file | your code
-| Deep nesting | indent or dot paths, either or both | brace pyramids | indent only, whitespace-fragile | `[a.b.c]` headers get old fast | tag soup
-| Multi-line verbatim blocks | fenced, like Markdown | escaped strings | block scalars, with rules to memorize | multi-line strings | CDATA
-| Hand-editable by a non-programmer | ✅ | risky | risky | ✅ mostly | 🚫
-| Tells you what it fixed | ✅ structured diagnostics | 🚫 | 🚫 | 🚫 | 🚫
+| Comments | ✅ | 🚫 | ✅ | ✅ | ✅
+| Unquoted strings | ✅ | 🚫 | ✅ But the parser may silently change type | 🚫 | 🚫
+| Bad lines don't break the whole thing | ✅ | 🚫 | 🚫 | 🚫 | 🚫
+| Who decides a value's type | Your code, at read time | The file | The parser guesses | The file | Your code
+| Deep nesting | Indent or dot paths, mixed | Brace pyramids | Indent, whitespace-fragile | `[a.b.c]` headers get old fast | Tag soup
+| Multi-line verbatim blocks | Fenced, like Markdown | Escaped strings | Block scalars, with rules to memorize | Multi-line strings | CDATA
+| Hand-editable by a non-programmer | ✅ | Risky | Risky | ✅ Mostly | 🚫
+| Tells you what it fixed | ✅ Structured diagnostics | 🚫 | 🚫 | 🚫 | 🚫
 
-A note on that type row, because it is the big design difference. JSON and TOML store types in the file, so the author has to get them right. YAML infers types from the text, which is where `NO` becomes `false`. SHCL stores plain text and coerces when *you* ask for a type, so the only code that decides a value is an int is the code that needed an int.
+> *A note on types, because it is the big design difference: JSON and TOML store types in the file, so the author has to get them right. YAML infers types from the text, which is where `NO` becomes `false`. SHCL stores plain text and coerces when **you** ask for a type; the only code that decides a value is an int (for example), is the code that needed an int.*
 
 ### The programmable ones: Pkl, CUE, Dhall
 
-These are a different species. They make the config file itself powerful.
+These are a different species, but overlap a little with SHCL's Traversal model. These medels make the *config file itself* powerful (something SHCL goes out of its way to avoid).
 
-- **Pkl** (from Apple) is a real language: classes, inheritance, built-in validation. Great when your config genuinely is a program.
+- **Pkl** (from Apple) is a real language: classes, inheritance, built-in validation. Great when your config genuinely is a program. (And very arguably the winner among these three, depending on your use-case.)
+
 - **CUE** unifies types and values into one thing. Extremely strong validation, and a mental model that takes real time to absorb.
+
 - **Dhall** is functional programming for config: imports, functions, guaranteed termination. Closer to writing Haskell than editing a file.
 
 They are all good at what they do. The shared cost is that once a config file can compute, it can be wrong in ways you have to debug.
@@ -236,11 +244,11 @@ Nothing to build yet, for the same reason.
 ## Copyright and license
 
 > Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)<br />
-> Licensed under the [MIT License](https://mit-license.org/). No warranty.
+> Licensed under the [MIT License](https://mit-license.org/). 🚫 warranty.
 <!--
-> Licensed under the [MIT License](https://mit-license.org/). No warranty.
-> Licensed under the [GNU General Public License v2.0](https://www.gnu.org/licenses/gpl-2.0.html). No warranty.
-> Licensed under the [GNU General Public License v2.0 or later](https://spdx.org/licenses/GPL-2.0-or-later.html). No warranty.
-> Licensed under the [GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html) license. No warranty.
-> Licensed under the [Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/). No warranty.
+> Licensed under the [MIT License](https://mit-license.org/). 🚫 warranty.
+> Licensed under the [GNU General Public License v2.0](https://www.gnu.org/licenses/gpl-2.0.html). 🚫 warranty.
+> Licensed under the [GNU General Public License v2.0 or later](https://spdx.org/licenses/GPL-2.0-or-later.html). 🚫 warranty.
+> Licensed under the [GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html) license. 🚫 warranty.
+> Licensed under the [Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/). 🚫 warranty.
 -->
