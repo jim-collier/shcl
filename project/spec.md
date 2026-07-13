@@ -160,7 +160,7 @@ Month names are the fixed English set only - 3-letter abbreviation or full name,
 
 An array is multiple values in a **single cell**. It has two interchangeable spellings that produce the identical array; the canonical formatter emits the inline form.
 
-**Inline (comma) form** - `tags: red, green, blue`. Splitting is on **unquoted** commas; each element is trimmed; quoted elements keep their internal commas and colons; a trailing comma is ignored; a single value is a one-element array; an empty value is an empty array.
+**Inline (comma) form** - `tags: red, green, blue`. Splitting is on **unquoted** commas; each element is trimmed; quoted elements keep their internal commas and colons; a single value is a one-element array; an empty value is an empty array. **Empty elements are dropped** - a leading, doubled, or trailing comma contributes nothing (`red,,blue` is `[red, blue]`, `red,` is `[red]`), and a value that is only commas and whitespace (`,`, `, ,`, `,,,`) is the empty array. None of these is an error. To carry a deliberately empty element, quote it (`red, "", blue`).
 
 **Stacked (`*`) form** - an empty-valued field whose child lines are all `*`-marked is the same array, one element per line:
 

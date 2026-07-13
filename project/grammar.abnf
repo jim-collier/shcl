@@ -60,7 +60,7 @@ name-char       = ALPHA / DIGIT / "-" / "_"
 ; only at read time by the coercion rules in spec.md.
 
 value           = array / scalar
-array           = scalar *( *wsp "," *wsp scalar ) [ *wsp "," ]   ; trailing comma ok
+array           = [ scalar ] *( *wsp "," *wsp [ scalar ] )   ; empty slots (leading/doubled/trailing comma) parse then drop on read; all-comma or empty = empty array; quote "" for a real empty element (spec.md, Arrays)
 scalar          = quoted / bareword
 
 quoted          = dquoted / squoted
