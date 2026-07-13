@@ -774,13 +774,15 @@ impl Parser {
 	fn emit_repeated_leaf_hints(&mut self) {
 		let mut hints: Vec<(usize, String)> = Vec::new();
 		for parent in 0..self.arena.len() {
-			let mut by_name: std::collections::HashMap<&str, Vec<usize>> =
-				std::collections::HashMap::new();
+			// Group by name in first-appearance order: hint order must be
+			// deterministic or the cross-binding check can't compare `check` output.
+			let mut by_name: Vec<(&str, Vec<usize>)> = Vec::new();
 			for &c in &self.arena[parent].children {
-				by_name
-					.entry(self.arena[c].name.as_str())
-					.or_default()
-					.push(c);
+				let name = self.arena[c].name.as_str();
+				match by_name.iter_mut().find(|(n, _)| *n == name) {
+					Some((_, g)) => g.push(c),
+					None => by_name.push((name, vec![c])),
+				}
 			}
 			for (name, group) in by_name {
 				if group.len() < 2 {

@@ -79,7 +79,9 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 The conformance corpus is the primary cross-language guarantee: each case is an input, its canonical formatting, and expected typed reads with status sentinels. Every parser runs it in CI.
 
-Passing the corpus independently is necessary but not sufficient once there is more than one binding: two implementations can each satisfy the expectations yet still disagree on the details the corpus never pinned (float rendering, diagnostic-free edge behavior). So the pipeline also runs a differential check: every binding's CLI is replayed over the same inputs - the whole corpus plus a freshly fuzz-generated input set - and all bindings must agree with the reference byte for byte on stdout and exit code. With only the reference built it is a no-op; it gets teeth automatically the day a second binding lands.
+Passing the corpus independently is necessary but not sufficient once there is more than one binding: two implementations can each satisfy the expectations yet still disagree on the details the corpus never pinned (float rendering, diagnostic-free edge behavior). So the pipeline also runs a differential check: every binding's CLI is replayed over the same inputs - the whole corpus plus a freshly fuzz-generated input set - and all bindings must agree with the reference byte for byte on stdout and exit code. It went live when the Go binding landed: rust is the reference, go is compared against it on every run. stderr is deliberately outside the contract (diagnostic wording and OS error text are per-binding voice); stdout and exit codes are the contract.
+
+Two portability rules fell out of making the first port agree byte for byte, and now bind every future binding: floats render as shortest round-trip decimal, never scientific notation (the reference's native float formatting; Go had to opt into it explicitly), and diagnostic order must be deterministic - the reference's repeated-leaf hints originally grouped via a randomized-order hash map and were fixed to first-appearance order, since a port can match a rule but not a coin flip.
 
 ### CI/CD
 
@@ -99,3 +101,9 @@ We decided to split by responsibility rather than duplicate the pipeline:
 
 - Rust crate at `source/rust/`, zero dependencies, single-file library (`src/lib.rs`) so the drop-in integration mode stays honest; the `shcl` CLI builds from the same crate. Later bindings get sibling folders (`source/go/`, ...).
 - The conformance runner and fuzz smoke are plain `cargo test` targets, so "the corpus passes" and "the build passes" are the same command everywhere.
+
+### Go binding (Tier 2)
+
+- Module at `source/go/`: single-file library (`shcl.go`, zero dependencies, generics for the typed reads) plus the CLI under `cmd/shcl/` - same flags, output, and exit codes as the reference.
+- Conformance runs natively as `go test` (a port of the Rust runner over the same corpus), so the Go binding is corpus-green on its own, and the cicd crosscheck holds it byte-for-byte to the reference besides.
+- The pipeline stays engine-generic: the Go fmt/build/vet/test commands ride the config's per-stage extras, and the binding registers in `BINDING_CLIS` - a pattern each further binding (C, Python) repeats without engine changes.
