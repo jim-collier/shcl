@@ -57,9 +57,9 @@
 
 <br />
 
-> *Ships as a complete spec plus one drop-in source file per language — Rust (reference), Go, Python, and a single-header C/C++ — each byte-for-byte identical in behavior and each with a matching CLI, plus a thin Bash wrapper over the binary. Zero dependencies; build the CLI from the same file you embed.*
-
 </div>
+
+> *Ships as: a complete specification and grammar; plus one drop-in source file per language; plus Rust (reference), Go, Python, and C/C++ bindings + CLI. Bindings are byte-for-byte identical. Plus a thin Bash wrapper over the Rust binary. MIT License.*
 
 <!-- TOC ignore:true -->
 ## Table of contents
