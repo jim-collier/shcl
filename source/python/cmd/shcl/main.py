@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realp
 import shcl  # noqa: E402
 
 # Keep in step with source/rust/Cargo.toml, the canonical version source.
-VERSION = "0.1.0"
+VERSION = "1.0.0-beta1"
 
 HELP = """shcl - Simple Hierarchical Config Language (reference CLI)
 
