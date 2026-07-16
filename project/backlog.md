@@ -47,49 +47,46 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Platform and foundations
 
-- ✅ Initialize the git repo (none exists yet at repo root or `github/`); wire remote `git@github.com:jim-collier/shcl.git`.
-	- ✅ Done at `github/`; `main` plus feature-branch flow.
+- 🛠️ Language spec rationalized from `notes.txt`: terminology, model, types, accessor and writer API, formatter, raw blocks. See `spec.md` and `grammar.abnf`.
+	- Done: stacked (`*`) block-array form alongside inline commas. Both spellings read the same and canonicalize to inline.
+	- Done: date and time formats pinned to a closed whitelist (year-first or named-month only, then calendar-validated).
+	- Done: adoption sweep. Cut the currency, percent, float-to-int rounding, and extra boolean tokens from default behavior. Case folding restricted to ASCII. Repeated-leaf hint made mandatory.
+	- Done: three strictness levels (loose, standard, strict) as a per-document knob, default standard. Loose re-admits the cut coercions; strict fails the load on any error.
+	- Done: bindings re-tiered. Tier 1 reference plus CLI; Tier 2 Go, C, Python; Tier 3 the rest, post-v1.0.
+	- Done: raw-block binding reworked. A fence is a value line for its parent field. Child-indent spelling is canonical.
+	- Done: inline-array commas made fully forgiving. Stray commas drop their empty slots and never error.
+	- Next: model diagnostic expectations (count, severity, the mandatory repeated-leaf hint) in the corpus. See conformance item below.
 
-- 🛠️ Language spec rationalized from `notes.txt`: terminology, model, types, accessor/writer API, formatter, raw blocks. See `spec.md` + `grammar.abnf`.
-	- ✅ Stacked (`*`) block-array form added alongside inline commas; both spellings read identical and canonicalize to inline (`spec.md` Arrays, `grammar.abnf` `array-elem-line`).
-	- ✅ Date/time formats pinned to a closed whitelist (year-first or named-month only; `-`/`/`/`.` delimiters; `T`/space/`_`/delimiter date-time separator; optional `.`-fractional seconds; shape match then calendar validation; epoch and non-year-first numerics rejected). Replaces "common formats with any delimiters". Conformance cases still to add with the corpus expansion.
-	- ✅ Adoption-concerns sweep: fehu rune removed entirely (raw blocks are the verbatim hatch); currency/`%`/float->int-rounding/extra boolean tokens cut from default behavior; field-name case folding restricted to ASCII A-Z; repeated-leaf "did you mean an array?" hint now mandatory (severity `hint`); design-goals wording drops "simplest possible".
-	- ✅ Strictness levels: Loose/Standard/Strict per-document knob (CLI `--strictness`, aliases 1/2/3), default Standard; normative bundle table in `spec.md`; Loose re-admits the cut coercions as a closed list; Strict fails the load on any `error` diagnostic; diagnostics gained severity (`error`/`hint`).
-	- ✅ Bindings re-tiered: Tier 1 = Rust reference + `shcl` CLI; Tier 2 = Go, C (+C++ veneer), Python; Tier 3 = rest, post-v1.0, corpus-gated; POSIX sh + PowerShell are CLI wrappers, not parsers; parity promise reworded to "every shipped binding is corpus-green".
-	- ✅ Raw-block binding reworked: a fence is a value line for its parent field (fills an empty value, or adds an instance - repeated-leaf rule); named/anonymous split dropped; child-indent spelling is canonical. `spec.md` Raw blocks + formatter, `grammar.abnf`, `design.md`.
-	- ✅ Inline-array commas made fully forgiving: leading/doubled/trailing commas drop their empty slots, an all-comma value is the empty array, none of it errors; quote `""` for a deliberate empty element. `spec.md` Arrays, `grammar.abnf` `array`.
+- 🛠️ Ports to the remaining binding languages, in tiers. Tier 2 done; Tier 3 (C#, Java, JavaScript) after v1.0. Each drop-in where possible, corpus-green before shipping. Type via a typed entry point or compile-time generic, never a runtime type field.
+	- Done: Go, C (with a C++ veneer), and Python, each an independent parser with the same flags, output, and exit codes as the reference. All corpus-green and held byte-for-byte to the reference on every build.
+	- Note: remaining companion surfaces are veneers, not new parsers. Kotlin over the Java core, TypeScript over the JavaScript core.
+	- 🛠️ Shell wrappers around the CLI, not parsers.
+		- Done: Bash wrapper (`source/bash/shcl.bash`). Runs as a script or sourced for typed helpers. Forwards the binary's exit code unchanged.
+		- 🔘 PowerShell wrapper.
 
-- ✅ Resolve the open minor items listed at the end of `spec.md` (currency-symbol set, wildcard-missing behavior, `onBad` enum surface, `%`->int, fence info-string meaning). All five settled inline in `spec.md` under "Resolved minor items".
-	- Currency and `%`->int later superseded: cut from default behavior, Loose-level only (see strictness levels below).
-
-- 🔘 Reference parser in Rust (Tier 1) implementing the full spec, driven by the conformance corpus; the `shcl` CLI builds from it.
-
-- 🔘 Ports to the remaining binding languages, in tiers: Tier 2 = Go, C, Python; Tier 3 (post-v1.0, corpus-gated) = C#, Java, JavaScript. Each single-file/drop-in where possible, corpus-green before shipping. API rule: type via typed entry point / compile-time generic, never a runtime type field.
-	- Companion typed surfaces (not separate parsers): C++ template header over the C core; Kotlin reified-generic extensions over the Java core; TypeScript `.d.ts` over the JS core.
-	- POSIX sh and PowerShell: thin wrappers around the `shcl` CLI, not parsers.
-
-- 🛠️ Expand the conformance corpus (`conformance/`) to cover the hard edges: dates/ambiguity, coercion, quoting/escapes, indentation errors, raw blocks, selectors/wildcards, strictness levels.
-	- 🛠️ Case `002-stacked-array` added (inline-vs-stacked parity + array-vs-instances). Remaining edges still to cover.
-	- ✅ Cases `003-coercions` and `004-strict-load` added (strictness bundles: currency/`%`/rounding/boolean sets per level; load ok-vs-fail per level). `reads.tsv` gained an optional `level` column and a `load` pseudo-call.
-	- ✅ Case `006-comma-edges` added: forgiving inline arrays (leading/doubled/trailing/all-comma drop to empties; `""` keeps a real empty element).
-	- ✅ Case `005-raw-blocks` added (both spellings bind as the field's value; extra fences become instances; `\n` escaping for raw values in `reads.tsv`).
-	- 🔘 Model diagnostic expectations (count, severity, mandatory repeated-leaf hint) once the reference parser fixes the diagnostic shape.
+- 🛠️ Expand the conformance corpus (`conformance/`) to cover the hard edges: dates and ambiguity, coercion, quoting and escapes, indentation errors, raw blocks, selectors and wildcards, strictness levels.
+	- Done: cases for stacked arrays, coercion bundles, strict-load behavior, forgiving commas, raw blocks, and the full date whitelist.
+	- 🔘 Model diagnostic expectations (count, severity, the mandatory repeated-leaf hint). The reference diagnostic shape now exists (line, severity, message), so this can be pinned next.
 
 ### Build, CI/CD, and install
 
-- 🛠️ A CI/CD pipeline kicked off by a bash script (`cicd/cicd.bash`): builds, tests, and can commit and push. Packaging and publishing are opt-in.
-	- 🛠️ Engine + `config.bash` in place; `--ci` mode is the correctness gate the GitHub workflow (`.github/workflows/ci.yml`) runs, so local and CI share one definition of passing. Build/lint/test stages are stubs until the reference parser lands; shellcheck of the pipeline itself is live now.
+- 🛠️ A CI/CD pipeline driven by `cicd/cicd.bash`: builds, tests, and can commit and push. Packaging and publishing are opt-in. See `design.md` for the split-by-responsibility rationale.
+	- Done: all stages live. Format check, build, lint, tests plus fuzz smoke, profiler, native and cross builds, versioned artifacts, README demo gif, publish.
+	- Done: `--ci` mode is the correctness gate the GitHub workflow runs, so local and CI share one definition of passing.
+	- Done: cross-binding differential check. Every binding CLI must agree with the reference byte-for-byte on the corpus and a fuzz-dumped input set.
+	- Done: dogfood stage installs the fresh release binary to a fixed local dir. Off under `--ci`, no sudo path.
+	- 🔘 Packaging (.deb, .rpm, NSIS). Wire it when release cuts start.
 
-- 🔘 Dev-environment install script (Linux bash, macOS sh, Windows PowerShell), runnable via a single `curl`/`wget` and documented under "how to develop". Clones main, installs dependencies, and states what it will do with an option to abort.
+- 🔘 Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.
 
-- 🔘 Release-install script per platform, runnable via a single `curl`/`wget` and documented under "how to install". Downloads, installs, and runs the latest release, with an option to abort.
+- 🔘 Release-install script per platform, runnable via a single `curl` or `wget`. Downloads, installs, and runs the latest release, with an option to abort.
 
 ### Configuration and persistence
 
-- 🔘 Default configuration hard-coded
-	- 🔘 Overridden by per-user config file, created the first time a default setting is changed.
-		- 🔘 Settings live under `~/.config` (YAML or TOML), resistant to errors (e.g. don't bail on the whole thing due to one bad line).
-	- 🔘 Overridden by program options at run-time.
+- 🔘 Default configuration hard-coded.
+	- 🔘 Overridden by a per-user config file, created the first time a default is changed.
+		- 🔘 Settings live under `~/.config`, resistant to errors (do not bail on the whole file over one bad line).
+	- 🔘 Overridden by program options at run time.
 
 ### Performance and security
 
@@ -103,24 +100,32 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Features and enhancements
 
-- 🛠️ Accessor: two-tier junior-friendly surface (convenience default + full status), consistent across all bindings; a supplied default implies default-mode
+- 🛠️ Accessor: two-tier junior-friendly surface (convenience default plus full status), consistent across all bindings. A supplied default implies default mode.
 
-- 🔘 Schema-as-SHCL validation: schema is a plain SHCL file (type, required, allowed values); `Validate(doc, schemaDoc)` returns structured diagnostics; catches unknown/misspelled fields. Schema vocabulary interpreted by the validator, not the parser. See `design.md` "Power layer".
-	- Needs the reference parser first; spec the schema vocabulary alongside it.
+- 🔘 Schema-as-SHCL validation. The schema is a plain SHCL file (type, required, allowed values). `Validate(doc, schemaDoc)` returns structured diagnostics and catches unknown or misspelled fields. See `design.md` "Power layer".
+	- Note: needs the reference parser first, then spec the schema vocabulary alongside it.
 
-- 🔘 Layered loading: `Load(defaults, site, user, ...)` merging later over earlier via the existing merge rule; CLI/env overrides as the top layer.
+- 🔘 Layered loading. `Load(defaults, site, user, ...)` merges later over earlier via the existing merge rule, with CLI and env overrides on top.
 
-- 🔘 Schema-driven generation: Writer + schema emits a commented, typed starter config (`shcl init --schema ...`). Depends on schema validation above.
+- 🔘 Schema-driven generation. Writer plus schema emits a commented, typed starter config (`shcl init --schema ...`). Depends on schema validation.
 
 ### Done
 
 #### Done - Initial requirements
 
+- ✅ Initialize the git repo at `github/` and wire the remote. `main` plus a feature-branch flow.
+
+- ✅ Resolve the open minor items at the end of `spec.md` (currency set, wildcard-missing behavior, `onBad` surface, percent-to-int, fence info-string). All settled inline under "Resolved minor items".
+
+- ✅ Rust reference parser (Tier 1) implementing the full spec, driven by the corpus. The `shcl` CLI builds from it.
+	- Done: single-file zero-dependency library plus the CLI (`get`, `fmt`, `check`, `count`, `instances`). Corpus-green, with fuzz smoke in the test run.
+	- Note: fuzzing surfaced two formatter rules, now in `spec.md`.
+
 #### Done - Bugs
 
 #### Done - Features and enhancements
 
-- ✅ README rewrite: problem-first pitch, file + read-call examples, format comparison (JSON/YAML/TOML/XML table plus Pkl/CUE/Dhall notes), "wrong choice" section, honest alpha status.
+- ✅ README rewrite: problem-first pitch, file and read-call examples, a format comparison table, a "wrong choice" section, and honest alpha status.
 
 ### Future and/or deferred
 

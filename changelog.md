@@ -2,23 +2,16 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v1.0.0-beta.1
+## v1.0.0-beta1 - 2026-07-15
 
-### Notes
-
+First tagged pre-release.
 
 ### Added
 
-
-### Changed
-
-
-### Removed
-
-- Removed or refactored most or all *_byecho() functions. [≅2025-07]
-- Moved several low-use functions to an out-of-repo 'extras' script that will probably be forgotten. [≅2025-07-06 to 11]
-
-### Other work
-
-- Unit tested almost all functions. Still a several more to go, but which have all been in literal production for many years. [≅2025-07-06 to 11]
-
+- Language spec and formal grammar (`project/spec.md`, `project/grammar.abnf`).
+- Conformance corpus of golden cases that every binding must pass.
+- Rust reference parser and the `shcl` CLI (`get`, `fmt`, `check`, `count`, `instances`).
+- Independent parsers for Go, C (with a C++ veneer), and Python, each corpus-green.
+- Bash wrapper around the CLI, usable as a script or sourced for typed helpers.
+- Three strictness levels (loose, standard, strict) as a per-document knob.
+- Raw fenced blocks for verbatim multi-line content.

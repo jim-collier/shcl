@@ -1,15 +1,14 @@
 <!-- markdownlint-disable MD007 -- Unordered list indentation -->
-<!-- markdownlint-disable MD010 -- No hard tabs -->
-<!-- markdownlint-disable MD033 -- No inline html -->
+<!-- markdownlint-disable MD010 -- hard tabs -->
+<!-- markdownlint-disable MD033 -- inline html -->
 <!-- markdownlint-disable MD055 -- Table pipe style [Expected: leading_and_trailing; Actual: leading_only; Missing trailing pipe] -->
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
 <div align="center">
 
 [![made-with-rust](https://img.shields.io/badge/Made%20with-Rust-1f425f.svg)](https://www.rust-lang.org/)
 ![Go](https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white)
-![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
 [![made-with-python](https://img.shields.io/badge/Made%20with-Python-1f425f.svg)](https://www.python.org/)
-[![made-with-javascript](https://img.shields.io/badge/Made%20with-JavaScript-1f425f.svg)](https://www.javascript.com)
+![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
 [![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
 ![Lifecycle: Alpha](https://img.shields.io/badge/Lifecycle-Alpha-orange)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -42,19 +41,25 @@
 ![Coverage](https://img.shields.io/badge/Coverage-90%25-brightgreen)
 ![Status: Passing](https://img.shields.io/badge/Status-Passing-brightgreen)
 ![Status: Failing](https://img.shields.io/badge/Status-Failing-red)
+<img src="assets/demo.gif" alt="SHCL demo" width="640"/>
 -->
 
 <!-- TOC ignore:true -->
+<div align="center">
+
 # SHCL
 
-<table style="border: none; border-collapse: collapse;">
-	<tr style="border: none; border-collapse: collapse;">
-		<td style="border: none; border-collapse: collapse;"><img src="assets/logo.png" alt="Logo" width="320"/></td>
-		<td style="border: none;"><b>S</b>imple <b>H</b>ierarchical <b>C</b>onfig <b>L</b>anguage</td>
-	</tr style="border: none; border-collapse: collapse;">
-</table>
+**S**imple **H**ierarchical **C**onfig **L**anguage
 
-Forgiving to write. Predictable to read. The friendliest read API in the space.
+*Forgiving to write. Predictable to read. The friendliest read API around.*
+
+<img src="assets/demo.gif" alt="SHCL demo"/>
+
+<br />
+
+</div>
+
+> *Ships as: a complete specification and grammar; plus one drop-in source file per language; plus Rust (reference), Go, Python, and C/C++ bindings + CLI. Bindings are byte-for-byte identical. Plus a thin Bash wrapper over the Rust binary. MIT License.*
 
 <!-- TOC ignore:true -->
 ## Table of contents
@@ -66,14 +71,15 @@ Forgiving to write. Predictable to read. The friendliest read API in the space.
 - [What it looks like](#what-it-looks-like)
 - [Reading it from code](#reading-it-from-code)
 - [How it compares](#how-it-compares)
-	- [Everyday config formats](#everyday-config-formats)
-	- [The programmable ones: Pkl, CUE, Dhall](#the-programmable-ones-pkl-cue-dhall)
+	- [To JSON, YAML, TOML, XML](#to-json-yaml-toml-xml)
+	- [To Pkl, CUE, Dhall](#to-pkl-cue-dhall)
 	- [When SHCL is the wrong choice](#when-shcl-is-the-wrong-choice)
 - [Features](#features)
 - [Status](#status)
 - [Installing](#installing)
 - [Building from source](#building-from-source)
 - [Docs](#docs)
+- [Contributing and support](#contributing-and-support)
 - [Copyright and license](#copyright-and-license)
 
 <!-- /TOC -->
@@ -94,12 +100,14 @@ Every mainstream format makes the human do the careful work, and punishes the wh
 
 ## What SHCL does about it
 
-SHCL flips that around. Modern CPU cycles are cheap. Brainpower isn't. So the parser does the hard work, not the person writing the file - and not the programmer reading it.
+SHCL flips the burden around. Modern CPU cycles are cheap. Brainpower isn't. So the parser does the hard work - not the person writing the file, and not the programmer consuming the configuration.
 
-- If a human can tell what a line means, the parser figures it out too.
-- One broken line never takes down the file. It is skipped with a note, and everything else still loads.
-- Types live in your code, not in the file. The file stores text; you ask for an int when you read it. Nothing gets guessed at parse time, so there is no "Norway Problem".
+SHCL makes a contract:
+
+- Types live in your code, not in the file. The file stores text. You ask for a type when you read a value. Nothing is guessed at parse time, so there is no "Norway problem".
+- One broken line never takes down the file. It is skipped with a note. Everything else that can still be loaded safely, is.
 - Every convenience read states a fallback at the call site. A missing value cannot sneak in as a silent zero.
+- If a person can tell what a line means, the parser can too.
 
 When you do want zero-tolerance rigor: schema validation, plus a strict mode that fails loudly.
 
@@ -143,42 +151,49 @@ Field names are case-insensitive. Repeated paths merge. `site` here is not one k
 One call. A typed value. A visible fallback. This is the call you write 90% of the time:
 
 ```go
+// Go
 limit := doc.GetIntOr("site[example.com].max-upload-mb", 10)
 ```
 
 ```python
+# Python
 limit = doc.get_int("site[example.com].max-upload-mb", default=10)
 ```
 
 ```sh
+# Bash (sh/ash/zsh/etc.)
 limit=$(shcl get --int --default=10 server.shcl 'site[example.com].max-upload-mb')
 ```
 
-When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`. Wildcards read across instances (`site[*].root` gives you every site's document root, in file order).
+When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`.
+
+Wildcards read across instances (`site[*].root` gives you every site's document root, in file order).
 
 ## How it compares
 
-### Everyday config formats
+### To JSON, YAML, TOML, XML
 
 | | SHCL | JSON | YAML | TOML | XML
 | :-- | :-- | :-- | :-- | :-- | :--
-| Comments | yes | no | yes | yes | yes
-| Unquoted strings | yes | no | yes, but they can change type on you | no | n/a
-| One bad line breaks the whole file | no | yes | yes | yes | yes
-| Who decides a value's type | your code, at read time | the file | the parser guesses | the file | your code
-| Deep nesting | indent or dot paths, either or both | brace pyramids | indent only, whitespace-fragile | `[a.b.c]` headers get old fast | tag soup
-| Multi-line verbatim blocks | fenced, like Markdown | escaped strings | block scalars, with rules to memorize | multi-line strings | CDATA
-| Hand-editable by a non-programmer | ✅ | risky | risky | ✅ mostly | 🚫
-| Tells you what it fixed | ✅ structured diagnostics | 🚫 | 🚫 | 🚫 | 🚫
+| Comments | ✅ | 🚫 | ✅ | ✅ | ✅
+| Unquoted strings | ✅ | 🚫 | ✅ But the parser may silently change type | 🚫 | 🚫
+| Bad lines don't break the whole thing | ✅ | 🚫 | 🚫 | 🚫 | 🚫
+| Who decides a value's type | Your code, at read time | The file | The parser guesses | The file | Your code
+| Deep nesting | Indent or dot paths, mixed | Brace pyramids | Indent, whitespace-fragile | `[a.b.c]` headers get old fast | Tag soup
+| Multi-line verbatim blocks | Fenced, like Markdown | Escaped strings | Block scalars, with rules to memorize | Multi-line strings | CDATA
+| Hand-editable by a non-programmer | ✅ | Risky | Risky | ✅ Mostly | 🚫
+| Tells you what it fixed | ✅ Structured diagnostics | 🚫 | 🚫 | 🚫 | 🚫
 
-A note on that type row, because it is the big design difference. JSON and TOML store types in the file, so the author has to get them right. YAML infers types from the text, which is where `NO` becomes `false`. SHCL stores plain text and coerces when *you* ask for a type, so the only code that decides a value is an int is the code that needed an int.
+> *A note on types, because it is the big design difference: JSON and TOML store types in the file, so the author has to get them right. YAML infers types from the text, which is where `NO` becomes `false`. SHCL stores plain text and coerces when **you** ask for a type; the only code that decides a value is an int (for example), is the code that needed an int.*
 
-### The programmable ones: Pkl, CUE, Dhall
+### To Pkl, CUE, Dhall
 
-These are a different species. They make the config file itself powerful.
+These are a different species. They overlap a little with SHCL's power layer, but from the opposite direction: they make the *config file itself* powerful, which is exactly what SHCL avoids.
 
-- **Pkl** (from Apple) is a real language: classes, inheritance, built-in validation. Great when your config genuinely is a program.
+- **Pkl** (from Apple) is a real language: classes, inheritance, built-in validation. Great when your config genuinely is a program. (And very arguably the winner among these three, depending on your use-case.)
+
 - **CUE** unifies types and values into one thing. Extremely strong validation, and a mental model that takes real time to absorb.
+
 - **Dhall** is functional programming for config: imports, functions, guaranteed termination. Closer to writing Haskell than editing a file.
 
 They are all good at what they do. The shared cost is that once a config file can compute, it can be wrong in ways you have to debug.
@@ -205,26 +220,37 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 - Three strictness levels. Loose, standard, strict: one knob from maximum-forgiving to fail-on-anything.
 - Schema validation, layered loading (defaults, site, user), and commented starter-config generation, all as library features.
 - Raw fenced blocks embed anything verbatim: SQL, code, templates, Markdown-style.
-- One conformance corpus pins every shipped binding to identical behavior. Rust reference implementation plus the `shcl` CLI first; more bindings gated behind the corpus.
+- One conformance corpus pins every shipped binding to identical behavior. The Rust reference plus independent Go, C, and Python parsers already agree byte-for-byte; a binding does not ship until it does.
 
 ## Status
 
-Alpha, and spec-first on purpose. Five parsers that "mostly agree" would be worse than none, so the order of work is:
+Alpha, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
 
-1. Language spec and formal grammar. Done: [`project/spec.md`](project/spec.md), [`project/grammar.abnf`](project/grammar.abnf).
-2. A conformance corpus of golden test cases that every future parser must pass. Started: [`project/conformance/`](project/conformance/).
-3. The Rust reference parser and the `shcl` CLI. Next up. Nothing ships until it is corpus-green.
-4. Go, C, and Python bindings, each held to the same corpus. More after v1.0.
+- **Language spec and formal grammar** - done. [`project/spec.md`](project/spec.md), [`project/grammar.abnf`](project/grammar.abnf).
+- **Conformance corpus** - the golden cases every binding must pass. Green and growing.
+- **Rust reference parser + the `shcl` CLI** - done, corpus-green. This is the source of truth every other binding is measured against.
+- **Independent parsers in Go, C (with a C++ veneer), and Python** - done, corpus-green, and checked byte-for-byte against the reference on every build.
+- **Bash wrapper** - done. It calls the CLI, so it inherits conformance for free.
 
-Star or watch the repo if you want to know when the parser lands.
+What is not done yet: a tagged release with prebuilt binaries and packages, the schema and layered-loading power layer, and the remaining Tier 3 bindings. Star or watch the repo to catch the first release.
 
 ## Installing
 
-Nothing to install yet. The `shcl` CLI and the first library builds arrive with the Rust reference implementation (see Status).
+No tagged release yet, so there are no prebuilt binaries or packages to install. Two options in the meantime:
+
+- **Drop-in** - copy one source file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
+- **Build the CLI from source** - see below.
 
 ## Building from source
 
-Nothing to build yet, for the same reason.
+The reference lives in `source/rust/`, zero dependencies:
+
+```sh
+cargo build --release --manifest-path source/rust/Cargo.toml
+# binary at source/rust/target/release/shcl
+```
+
+Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
 
 ## Docs
 
@@ -233,9 +259,15 @@ Nothing to build yet, for the same reason.
 - [`project/design.md`](project/design.md): the why behind the decisions.
 - [`contributing.md`](contributing.md): how to help.
 
+## Contributing and support
+
+Early days, and help is welcome. Bug reports, spec edge cases, and new-language bindings all move the needle. See [`contributing.md`](contributing.md) to get started.
+
+If SHCL saves you a headache and you can't contribute code, a star or a mention still helps other people find it.
+
 ## Copyright and license
 
-> Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)<br />
+> Copyright © 2026 Jim Collier<br />
 > Licensed under the [MIT License](https://mit-license.org/). No warranty.
 <!--
 > Licensed under the [MIT License](https://mit-license.org/). No warranty.
