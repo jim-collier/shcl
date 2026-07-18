@@ -184,3 +184,94 @@ The responsibility is split rather than duplicate the pipeline:
 	- Leak shell options into the caller. Strict mode is armed only on the run path.
 
 	- Let its own `shcl` function shadow the binary during lookup. The binary is resolved via `$SHCL_BIN`, a co-located `shcl`, PATH, then the repo build, so a dogfooded install and in-repo dev both work without configuration.
+
+## Code Review 20260716
+
+Technical detail behind the backlog's "Code Review 20260716" items. Item numbers match the backlog; items whose backlog bullet says everything needed are not repeated here.
+
+- **Item 1 - C CLI use-after-free** (`source/c/cmd/shcl/main.c:127`)
+	- `PUSHLINE_FMT`/`PUSHLINE_BUF` store `lines[n].p = lines[n].own` - a pointer into the `lines` array itself. When the array grows (realloc at 8 entries, then each doubling), every stored `.p` still points into the freed block; the print loop reads it.
+	- Only formatted entries are affected, so the trigger is exactly int/float/datetime array output with 9+ elements. String/bool/raw entries borrow arena or static memory and are safe.
+	- Fix: stop storing a self-pointer - set `.p = NULL` for owned entries and pick `own` vs `p` at print time via the existing `owned` flag; or format into arena buffers and drop `own[]` entirely. Add a 9+-element typed-array corpus row so all bindings pin it.
+
+- **Item 2 - datetime timezone panic** (`source/rust/src/lib.rs:1485`)
+	- `parse_time_part` checks `is_char_boundary` only at the start of the 6-byte zone tail, then slices `tail[1..3]` and `tail[4..6]`. A `+`/`-` followed by a multibyte char (e.g. U+20AC) lands the slice mid-character: panic, exit 134.
+	- Fix: validate the tail as bytes (`is_ascii_digit` on positions 1,2,4,5 and `b':'` at 3) before any str slicing; byte indexing cannot panic. Add a fuzz/corpus case with a multibyte char in the last 6 bytes of a time-shaped value, mirrored to all ports.
+
+- **Item 3 - wildcard per-slot status** (`source/rust/src/lib.rs:1731`)
+	- `Read<Vec<T>>` carries one status for the whole array; a missing sub-path pushes `T::default()` and leaves status Good (spec line 361 says the slot is NotFound). Uncoercible scalar sets BadType, but an array/raw-valued slot hits the `Err(_)` arm and stays Good - internally inconsistent.
+	- `count()` counts None slots, `instances()` flattens them away, so the two disagree on the same path and index pairing breaks.
+	- Direction: per-slot statuses alongside the values (Vec in Rust, parallel array in C, multi-return in Go, list on the result in Python), aggregate = worst slot; keep empty slots in `instances()` (or spec count/instances as slot-count/slot-values); define the CLI surface for it; corpus rows with a missing sub-path.
+
+- **Item 4 - comments destroyed by fmt** (`source/rust/src/lib.rs:966`)
+	- Comments are dropped at parse (whole-line skipped, trailing stripped); `NodeData` has no comment storage, so `to_canonical()` cannot emit them. `fmt --write` therefore erases every comment from a hand-authored file silently. The spec's formatter section claims structure-only normalization; the Writer is spec'd to emit comment sections.
+	- Options: (a) attach comments as trivia (leading list + trailing string per node, orphan list for blank regions) and re-emit - model rework in five codebases, cheapest now; (b) spec the loss explicitly and have `fmt --write` warn on stderr when comments were present.
+
+- **Item 5 - Writer missing everywhere** (`spec.md:371`)
+	- No set/write/emit API exists in any binding beyond `to_canonical`/`fmt`. The Writer forces model decisions (comment representation, insertion position, quoting programmatic values, raw-block round-trip) that ripple through every binding, so cost grows with every month of port hardening.
+	- Either spec + implement in the reference before 1.0 final with write-corpus cases (input doc + ops + expected output), or move the Writer sentences in spec.md to an explicit post-1.0 section.
+
+- **Item 7 - fmt ignores strictness** (`source/rust/src/main.rs:242`)
+	- `do_fmt` calls `Document::parse` (hardwired Standard) while every other subcommand uses `parse_with(text, o.strictness)`. Route fmt through the same load, exit 6 with diagnostics on strict failure; same one-line change in the Go/Python/C mains; pin with a corpus row at strict level.
+	- Related looseness: every CLI accepts and silently ignores inapplicable flags (`check --int`, `get --write`); a later warn-on-unused pass would catch flag-placement typos.
+
+- **Item 8 - mixed star/field children** (`source/rust/src/lib.rs:858`)
+	- `add_star_element` has no uniformity tracking; each `* x` appends independently, so `sizes:` with `* small` / `color: red` / `* medium` yields an array plus a child, zero diagnostics - spec line 224 and grammar line 88 forbid the mix.
+	- Fix: per-parent tri-state (none/star/mixed) set by both the star path and the field path; on first mix, emit an Error and treat subsequent `* ` lines under that parent as the malformed lines they are.
+
+- **Item 9 - selector matching split-brain** (`source/rust/src/lib.rs:614`)
+	- `attach_path` (parse) matches `field[disc]` via `Value::key()` on a synthetic one-element cell; `resolve_from` (query) matches via `display()`. They disagree for array-valued instances: `base: Boston, MA` + `base[Boston, MA].pop: 700` makes a second instance; count=2, duplicate `instances`, fmt emits both spellings.
+	- Fix: make `attach_path`'s ByValue arm use the same display() predicate resolve_from uses, creating only when no display match exists; corpus case for selector-selects-array-valued-instance.
+
+- **Item 10 - raw-block identity vs info-string** (`source/rust/src/lib.rs:177`)
+	- `Value::key()` keys Raw on content only; two fences under one header with infos `sql` and `python` merge to one instance, the second info silently gone. The identical pair spelled as two headers stays two instances, so the accidental rule is not even applied consistently across spellings the spec calls equivalent.
+	- Spec decision needed: include info-string (and fence style) in identity, or keep content-only and emit a hint when a merge drops a differing info. Corpus case either way - currently unpinned behavior all bindings merely share.
+
+- **Item 11 - array-as-string read** (`source/rust/src/lib.rs:1689`)
+	- Single element: escapes applied. Multi-element cell: `display()` - bare `, `-join, no re-quoting, no escapes; contradicts the doc comment, spec line 135, and `read_string_array` (which does escape per element). `Read.raw` shares display(), so "original raw text" is not the original text either.
+	- Fix: define array-as-string as the canonical inline form (join `emit_element()` output so it re-parses to the same array) and one uniform escape rule; corpus rows with quoted/comma-bearing elements.
+
+- **Item 12 - quadratic parse** (`source/rust/src/lib.rs:559`, `source/python/shcl.py:548`)
+	- `select_or_create` linearly scans siblings per line, recomputing `value.key()` (a String build) per same-name candidate; `emit_repeated_leaf_hints` does a linear group-find per child. Both O(children^2) per parent. Measured (release): 12.5k lines 0.8s, 25k 2.9s, 50k 16s, 100k does not finish in 2 min. Python: 5k 0.7s, 20k 9.5s, 50k 72s.
+	- Fix in the reference and each port: per-parent map (name, value-key) -> child index for select_or_create (keep the Vec for order), cache the key at node creation, and group hints via map + first-appearance list (hint order stays deterministic).
+
+- **Item 13 - Python recursion** (`source/python/shcl.py:863`)
+	- `_emit_node` recurses per level. The CLI's `setrecursionlimit(20000)` caps around depth 19992; the reference handles ~5x that. Library users at the default limit crash near depth 1000 even though parse (iterative) succeeded.
+	- Fix: iterative emit with an explicit (node, depth) stack, children pushed in reverse; then delete the recursion-limit bump in the CLI. Output already appends to a list, so the conversion is mechanical and byte-identical.
+
+- **Item 14 - ps1 resolution accepts non-executables** (`source/powershell/shcl.ps1:59-85,125`)
+	- All resolution sites test `Test-Path -PathType Leaf` only (bash checks `-x` everywhere). On pwsh/Linux, `&` on a non-executable file produces no output, no error record, `$LASTEXITCODE` stays null; `exit $LASTEXITCODE` then exits 0. Worse, the OS may hand the file to the desktop opener, launching a GUI editor.
+	- Fix: on Unix require the executable bit (`UnixFileMode -band UserExecute`) at every site, keep bare Leaf on Windows; and harden the passthrough - `exit ($LASTEXITCODE ?? 1)` and the same null-guard for the sourced function.
+
+- **Item 15 - crosscheck trailing newlines** (`cicd/utility/crosscheck.bash:57`)
+	- `out="$(...)"` strips all trailing newlines pre-compare; "42\n" vs "42" vs "42\n\n" all pass. Fix with the sentinel idiom (`printf x` after the command, strip it after capture) or write both sides to temp files and `cmp -s`.
+
+- **Item 16 - crosscheck count floor** (`cicd/utility/crosscheck.bash:119`)
+	- Exits 0 on "agree on 0 comparison(s)"; nothing asserts the fuzz-dump dir was populated after cicd evals `XCHECK_GEN`. Fix: exit 2 when nCompared==0 and when `--extra` matches no `*.shcl`; optionally a minimum-count knob in config.bash so 1764 -> 588 fails loudly.
+
+- **Item 17 - gif generator exit codes** (`cicd/utility/gen-demo-gif.py:181`)
+	- `fRunStep` never checks `res.returncode`; error text renders into the gif and stage 8 reports OK, stage 9 publishes. Fix: nonzero step fails the render (with an optional per-step `expect_exit` key in the scenario TOML for future deliberate-failure demos).
+
+- **Item 18 - query-side pinning** (`cicd/utility/crosscheck.bash:95,111`)
+	- Recurring differential coverage of the accessor surface is ~88 hand-written reads.tsv rows; the ~500-file fuzz set is compared via `fmt` only; the big port-landing batteries were never committed. `read_raw_info` has no CLI type at all, so it is unpinnable today.
+	- Direction: have the fuzz dump also emit a derived `<name>.reads.tsv` per input (paths it knows exist, cycling types/strictness/on-bad), replayed through the existing row machinery; add a `--rawinfo` CLI type; commit corpus rows for wildcards and on-bad/defaults.
+
+- **Item 19 - diagnostic wording contract** (`source/rust/src/main.rs:272`)
+	- `check` prints prose diagnostics to stdout and crosscheck compares stdout byte-for-byte, so every format string in lib.rs is frozen five-way - the opposite of design.md's "wording is per-binding voice" rule (see Testing section above).
+	- Direction: stable machine codes per diagnostic (E001, H001, ...); compared stdout becomes `line N: severity: code`; prose moves to stderr or behind a stripped delimiter. Load behavior (count, lines, severities, kinds) stays pinned; wording becomes free again.
+
+- **Item 23 - `field[sel]: value`** (`source/rust/src/lib.rs:624`)
+	- Grammar allows it, spec never defines it, implementation drops the value with an Error diagnostic - so strict loads fail on a grammar-legal line. Align the three: forbid in grammar, or spec the drop-with-Error as the defined meaning. Corpus case with a strict-level load row.
+
+- **Item 24 - argv encoding** (`source/rust/src/main.rs`)
+	- `std::env::args()` panics (with panic=abort: exit 134) on non-UTF-8 argv; Go/Python/C exit 3. Fix the reference: `args_os` + a graceful "invalid argument encoding" error, exit 1 - and mirror the check in C, or document non-UTF-8 argv as out of contract.
+
+- **Item 25 - broken-pipe exits** (`source/go/cmd/shcl/main.go:227`, `source/python/cmd/shcl/main.py:299`)
+	- Rust panics on EPIPE (134), Go dies by SIGPIPE (141), Python catches BrokenPipeError and returns 0. Decide the contract (conventional Unix = die by SIGPIPE, or a common clean exit) and implement it in all four; note in parity docs since crosscheck cannot exercise pipes.
+
+- **Item 30 - merge-key injectivity** (`source/rust/src/lib.rs:172`)
+	- Cell elements join with bare NUL, so `[a, b]` collides with the single element `"a<NUL>b"` (NUL is grammar-legal in quoted strings); the later value silently merges away. Fix: length-prefix each element in the key (or include element count). Reference first, then ports, plus a NUL corpus case.
+
+- **Item 31 - bare-name charset and hex i64 min** (`spec.md:85`, `grammar.abnf:52`, `source/rust/src/lib.rs:225,1245`)
+	- Spec prose: quotes only needed for reserved chars (and shows a non-ASCII field name); grammar/parser: bare names are ALPHA/DIGIT/-/_ only, so the prose's own example is dropped as a malformed line. Pick one truth and align prose, grammar, `is_bare_name_char`, and the emit quoting predicate.
+	- Hex parse negates after an i64 magnitude parse, so `-0x8000000000000000` is BadType while its decimal spelling works: parse magnitude as u64, range-check against sign, mirror in ports.
