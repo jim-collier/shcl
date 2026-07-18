@@ -355,14 +355,18 @@ if ((${#DOGFOOD_FIXED_DESTS[@]})) && [[ -f "${RELEASE_NATIVE_BIN:-/nonexist}" ]]
 	if [[ -n "$dogfood_dest" ]]; then
 		cp -f "${RELEASE_NATIVE_BIN}" "${dogfood_dest}/${EXE_NAME}"
 		fEcho "OK: installed ${EXE_NAME} -> ${dogfood_dest}/${EXE_NAME}"
-		if [[ -n "${DOGFOOD_WRAPPER:-}" && -f "${DOGFOOD_WRAPPER}" ]]; then
+		for wrapper in "${DOGFOOD_WRAPPERS[@]:-}"; do
+			[[ -n "$wrapper" && -f "$wrapper" ]] || continue
+			ext="${wrapper##*.}"                                       ## .bash / .ps1 -> dest name + dest-list key
+			declare -n wrapper_dests="DOGFOOD_WRAPPER_DESTS_${ext}"
 			wrapper_dest=""
-			for d in "${DOGFOOD_WRAPPER_DESTS[@]}"; do [[ -d "$d" && -w "$d" ]] && { wrapper_dest="$d"; break; }; done
+			for d in "${wrapper_dests[@]:-}"; do [[ -d "$d" && -w "$d" ]] && { wrapper_dest="$d"; break; }; done
+			unset -n wrapper_dests
 			[[ -z "$wrapper_dest" ]] && wrapper_dest="$dogfood_dest"   ## fall back beside the binary
-			cp -f "${DOGFOOD_WRAPPER}" "${wrapper_dest}/${EXE_NAME}.bash"
-			chmod +x "${wrapper_dest}/${EXE_NAME}.bash"
-			fEcho "OK: installed wrapper -> ${wrapper_dest}/${EXE_NAME}.bash"
-		fi
+			cp -f "$wrapper" "${wrapper_dest}/${EXE_NAME}.${ext}"
+			chmod +x "${wrapper_dest}/${EXE_NAME}.${ext}"
+			fEcho "OK: installed wrapper -> ${wrapper_dest}/${EXE_NAME}.${ext}"
+		done
 	else
 		fEcho "WARNING: no dogfood dest exists+writable (${DOGFOOD_FIXED_DESTS[*]}); skipping"
 	fi

@@ -133,14 +133,20 @@ DOGFOOD_FIXED_DESTS=(
 	"${HOME}/synced/0-0/common/exec/util/linux/bin"
 	"/usr/local/sbin"
 )
-## The bash wrapper rides along, renamed to <EXE_NAME>.bash. A missing file is
-## skipped silently. Fix the path here if the wrapper lands elsewhere.
-DOGFOOD_WRAPPER="source/bash/shcl.bash"
-## The wrapper has its own preferred dests (first existing+writable wins), separate
-## from the binary - it's a sourceable include, so it belongs with the bash includes,
-## not on PATH beside the binary. Falls back to the binary's dest if none exist.
-DOGFOOD_WRAPPER_DESTS=(
+## Shell wrappers ride along, each renamed to <EXE_NAME>.<ext>. A missing source is
+## skipped silently. Each has its own preferred dest list (first existing+writable
+## wins), matched by file extension below - a wrapper is a sourceable include, so it
+## belongs with its kind, not on PATH beside the binary; falls back to the binary's
+## dest if none of its own exist.
+DOGFOOD_WRAPPERS=(
+	"source/bash/shcl.bash"
+	"source/powershell/shcl.ps1"
+)
+DOGFOOD_WRAPPER_DESTS_bash=(
 	"${HOME}/synced/0-0/common/exec/util/linux/bash/include"
+)
+DOGFOOD_WRAPPER_DESTS_ps1=(
+	"${HOME}/synced/0-0/common/exec/util/0_crossplatform"
 )
 
 ## Stage 8: demo gif for the README. Rendered from a scripted scenario against the
