@@ -623,11 +623,11 @@ class _Parser:
 			self._err(open_line, "unterminated raw block")
 		# Strip the common leading whitespace (the visual nesting); keep the rest.
 		common = None
-		for l in content:
-			if not _trim(l):
+		for ln in content:
+			if not _trim(ln):
 				continue
 			lead = []
-			for c in l:
+			for c in ln:
 				if c == " " or c == "\t":
 					lead.append(c)
 				else:
@@ -646,13 +646,13 @@ class _Parser:
 		if common is None:
 			common = ""
 		stripped = []
-		for l in content:
-			if not _trim(l):
+		for ln in content:
+			if not _trim(ln):
 				stripped.append("")
-			elif l.startswith(common):
-				stripped.append(l[len(common):])
+			elif ln.startswith(common):
+				stripped.append(ln[len(common):])
 			else:
-				stripped.append(l)
+				stripped.append(ln)
 		return _raw("\n".join(stripped), info, ch, length), i
 
 	def _bind_block(self, parent, value, line):
@@ -733,7 +733,7 @@ class _Parser:
 		# UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
 		if text.startswith("﻿"):
 			text = text[1:]
-		lines = [l[:-1] if l.endswith("\r") else l for l in text.split("\n")]
+		lines = [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
 		i = 0
 		nlines = len(lines)
 		while i < nlines:
@@ -899,10 +899,10 @@ class Document:
 				out.append(v.info)
 			out.append("\n")
 			if v.content:
-				for l in v.content.split("\n"):
-					if l:
+				for ln in v.content.split("\n"):
+					if ln:
 						out.append(pad)
-					out.append(l)
+					out.append(ln)
 					out.append("\n")
 			out.append(pad)
 			out.append(fence)

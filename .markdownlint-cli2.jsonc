@@ -1,0 +1,15 @@
+{
+	// House style: prose never hard-wraps (one paragraph = one line) and
+	// indentation is tabs, so the rules that fight that stay off globally.
+	"config": {
+		"MD007": false,  // ul indent (tab-based nesting)
+		"MD010": false,  // no hard tabs
+		"MD013": false,  // line length
+		"MD033": false,  // inline html
+		"MD038": false,  // spaces in code spans (deliberate when documenting exact tokens)
+		"MD041": false,  // first line must be a heading
+		"MD055": false   // table pipe style (leading-only is fine)
+	},
+	"globs": ["**/*.md"],
+	"ignores": ["cicd/artifacts/**", "source/rust/target/**", "**/node_modules/**"]
+}

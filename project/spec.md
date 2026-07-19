@@ -210,7 +210,7 @@ An array is multiple values in a **single cell**. It has two interchangeable spe
 
 **Stacked (`*`) form** - an empty-valued field whose child lines are all `*`-marked is the same array, one element per line:
 
-```
+```text
 sizes:
 	* small
 	* medium
