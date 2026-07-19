@@ -715,12 +715,16 @@ type parser struct {
 	diags []Diagnostic
 	// (indent, node) for each open level; [0] is the virtual root.
 	stack []stackEnt
+	// Per-node (name, value-key) -> first matching child, parallel to arena.
+	// Pure lookup accelerator for selectOrCreate; children keeps the order.
+	childMap []map[[2]string]int
 }
 
 func newParser() *parser {
 	return &parser{
-		arena: []nodeData{{}},
-		stack: []stackEnt{{}},
+		arena:    []nodeData{{}},
+		stack:    []stackEnt{{}},
+		childMap: []map[[2]string]int{{}},
 	}
 }
 
@@ -731,16 +735,31 @@ func (p *parser) err(line int, msg string) {
 // selectOrCreate finds (or creates by merge rule) the child of parent with
 // this (name, value).
 func (p *parser) selectOrCreate(parent int, name string, v value, line int) int {
-	key := v.key()
-	for _, c := range p.arena[parent].children {
-		if p.arena[c].name == name && p.arena[c].value.key() == key {
-			return c
-		}
+	mapKey := [2]string{name, v.key()}
+	if c, ok := p.childMap[parent][mapKey]; ok {
+		return c
 	}
 	idx := len(p.arena)
 	p.arena = append(p.arena, nodeData{name: name, value: v, parent: parent, line: line})
 	p.arena[parent].children = append(p.arena[parent].children, idx)
+	p.childMap = append(p.childMap, map[[2]string]int{})
+	p.childMap[parent][mapKey] = idx
 	return idx
+}
+
+// remapChild: a node's value mutated in place (empty field filled, star element
+// added): move its map entry from the old key to the new one. First-wins on
+// both sides so lookups keep matching the earliest sibling, like the scan did.
+func (p *parser) remapChild(node int, oldKey string) {
+	parent := p.arena[node].parent
+	name := p.arena[node].name
+	if c, ok := p.childMap[parent][[2]string{name, oldKey}]; ok && c == node {
+		delete(p.childMap[parent], [2]string{name, oldKey})
+	}
+	newKey := [2]string{name, p.arena[node].value.key()}
+	if _, ok := p.childMap[parent][newKey]; !ok {
+		p.childMap[parent][newKey] = node
+	}
 }
 
 // resolveParent resolves which open level this indent belongs to. Child only
@@ -889,7 +908,9 @@ func (p *parser) bindBlock(parent int, v value, line int) {
 		return
 	}
 	if p.arena[parent].value.isEmpty() {
+		oldKey := p.arena[parent].value.key()
 		p.arena[parent].value = v
+		p.remapChild(parent, oldKey)
 	} else {
 		name, grand := p.arena[parent].name, p.arena[parent].parent
 		p.selectOrCreate(grand, name, v, line)
@@ -924,12 +945,15 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 		return
 	}
 	node := &p.arena[parent]
+	oldKey := node.value.key()
 	switch {
 	case node.value.isEmpty():
 		node.value = value{kind: vCell, els: []element{el}}
 		node.starList = true
+		p.remapChild(parent, oldKey)
 	case node.value.kind == vCell && node.starList:
 		node.value.els = append(node.value.els, el)
+		p.remapChild(parent, oldKey)
 	default:
 		p.err(line, "field already has a value; list element ignored")
 	}
@@ -946,17 +970,13 @@ func (p *parser) emitRepeatedLeafHints() {
 	}
 	for parent := range p.arena {
 		var byName []group
+		groupOf := make(map[string]int)
 		for _, c := range p.arena[parent].children {
 			name := p.arena[c].name
-			found := false
-			for k := range byName {
-				if byName[k].name == name {
-					byName[k].nodes = append(byName[k].nodes, c)
-					found = true
-					break
-				}
-			}
-			if !found {
+			if g, ok := groupOf[name]; ok {
+				byName[g].nodes = append(byName[g].nodes, c)
+			} else {
+				groupOf[name] = len(byName)
 				byName = append(byName, group{name: name, nodes: []int{c}})
 			}
 		}

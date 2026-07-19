@@ -319,8 +319,6 @@ def run(argv):
 
 
 def main():
-	# Deep nesting is bounded in practice, but give the recursive formatter margin.
-	sys.setrecursionlimit(20000)
 	try:
 		return run(sys.argv[1:])
 	except BrokenPipeError:

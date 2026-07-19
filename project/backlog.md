@@ -135,13 +135,13 @@ In each section, items are listed approximately from newest to oldest.
 	- Fixed: array-as-string is the canonical inline form (minimal quoting, escapes intact, re-parses to the same array) in all four bindings. Corpus rows in case 011; spec's Strings section updated.
 	- Detail: `design.md` - Code Review 20260716, item 11.
 
-- 🔘 Code Review 20260716 item 12: parse time is quadratic in siblings.
-	- 100k flat lines take minutes in the reference; Python is far worse. A big valid config effectively hangs the load.
+- ✅ Code Review 20260716 item 12: parse time is quadratic in siblings.
+	- Fixed: per-parent (name, value-key) lookup map in all four parsers; sibling scan and hint grouping are linear now. 100k flat lines: reference went from minutes to 0.2s, Python to 1.5s.
 	- Detail: `design.md` - Code Review 20260716, item 12.
 
-- 🔘 Code Review 20260716 item 13: Python formatter recurses and crashes on deep nesting.
-	- The reference handles depth the Python CLI dies on (RecursionError, empty stdout, exit 1) - a parity break.
-	- Library callers at the default recursion limit hit it around depth 1000. Detail: `design.md` - Code Review 20260716, item 13.
+- ✅ Code Review 20260716 item 13: Python formatter recurses and crashes on deep nesting.
+	- Fixed: emit walks an explicit stack; the CLI recursion-limit bump is gone. Depth 25000 formats fine from both the CLI and library callers.
+	- Detail: `design.md` - Code Review 20260716, item 13.
 
 - 🔘 Code Review 20260716 item 14: PowerShell wrapper exits 0 when the resolved binary will not launch.
 	- Resolution accepts any plain file (no executable check); a stale non-executable `shcl` yields empty output and exit 0.

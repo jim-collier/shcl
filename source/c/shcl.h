@@ -948,7 +948,57 @@ static int parse_datetime(Arena *a, S text, shcl_datetime *out) {
 
 // --- parser ------------------------------------------------------------------
 
-typedef struct { shcl_doc *d; VecStack stack; } Parser;
+/* Per-node (name, value-key) -> first matching child. Pure lookup accelerator
+   for select_or_create (the linear scan was O(children^2) per parent); the
+   children vec keeps the order. Chained buckets, entries arena-allocated; a
+   value that mutates in place (empty field filled, star element added) moves
+   its entry via remap_child. */
+typedef struct CMapEnt { struct CMapEnt *next; uint64_t hash; S name; S key; size_t val; } CMapEnt;
+typedef struct { CMapEnt **buckets; size_t cap, len; } CMap;
+DEFINE_VEC(VecMap, CMap)
+
+static uint64_t cmap_hash(S name, S key) {
+	uint64_t h = 1469598103934665603ull;
+	for (size_t i = 0; i < name.n; i++) { h ^= (unsigned char)name.p[i]; h *= 1099511628211ull; }
+	h ^= 0xFFu; h *= 1099511628211ull; /* separator; equality still compares both parts */
+	for (size_t i = 0; i < key.n; i++) { h ^= (unsigned char)key.p[i]; h *= 1099511628211ull; }
+	return h;
+}
+static size_t cmap_get(const CMap *m, uint64_t h, S name, S key) {
+	if (!m->cap) return (size_t)-1;
+	for (CMapEnt *e = m->buckets[h & (m->cap - 1)]; e; e = e->next)
+		if (e->hash == h && s_eq(e->name, name) && s_eq(e->key, key)) return e->val;
+	return (size_t)-1;
+}
+static void cmap_put(Arena *a, CMap *m, uint64_t h, S name, S key, size_t val) {
+	if (m->len + 1 > m->cap - m->cap / 4) { /* grow at 75%; also covers cap 0 */
+		size_t nc = m->cap ? m->cap * 2 : 8;
+		CMapEnt **nb = (CMapEnt **)arena_alloc(a, nc * sizeof(CMapEnt *));
+		memset(nb, 0, nc * sizeof(CMapEnt *));
+		for (size_t b = 0; b < m->cap; b++)
+			for (CMapEnt *e = m->buckets[b], *nx; e; e = nx) {
+				nx = e->next;
+				size_t d = e->hash & (nc - 1);
+				e->next = nb[d]; nb[d] = e;
+			}
+		m->buckets = nb; m->cap = nc;
+	}
+	CMapEnt *e = (CMapEnt *)arena_alloc(a, sizeof *e);
+	e->hash = h; e->name = name; e->key = key; e->val = val;
+	size_t b = h & (m->cap - 1);
+	e->next = m->buckets[b]; m->buckets[b] = e;
+	m->len++;
+}
+/* Unlink the (name, key) entry, but only if it points at this node. */
+static void cmap_del(CMap *m, uint64_t h, S name, S key, size_t val) {
+	if (!m->cap) return;
+	for (CMapEnt **pp = &m->buckets[h & (m->cap - 1)]; *pp; pp = &(*pp)->next) {
+		CMapEnt *e = *pp;
+		if (e->hash == h && e->val == val && s_eq(e->name, name) && s_eq(e->key, key)) { *pp = e->next; m->len--; return; }
+	}
+}
+
+typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; } Parser;
 
 static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, S msg) {
 	Diag dg; dg.line = line; dg.sev = sev; dg.message = msg;
@@ -959,20 +1009,33 @@ static void p_err(Parser *P, size_t line, S msg) { push_diag(P->d, line, SHCL_SE
 static size_t select_or_create(Parser *P, size_t parent, S name, Value value, size_t line) {
 	Arena *a = &P->d->arena;
 	S key = value_key(a, &value);
-	VecSize ch = NODE(P->d, parent).children;
-	for (size_t k = 0; k < ch.len; k++) {
-		size_t c = ch.data[k];
-		if (s_eq(NODE(P->d, c).name, name)) {
-			S ck = value_key(a, &NODE(P->d, c).value);
-			if (s_eq(ck, key)) return c;
-		}
-	}
+	uint64_t h = cmap_hash(name, key);
+	size_t found = cmap_get(&P->cmaps.data[parent], h, name, key);
+	if (found != (size_t)-1) return found;
 	size_t idx = P->d->nodes.len;
 	Node n; memset(&n, 0, sizeof n);
 	n.name = s_dup(a, name); n.value = value; n.parent = parent; n.line = line; n.star_list = 0; n.star_mixed = 0;
 	VecNode_push(a, &P->d->nodes, n);
 	VecSize_push(a, &NODE(P->d, parent).children, idx);
+	CMap empty; memset(&empty, 0, sizeof empty);
+	VecMap_push(a, &P->cmaps, empty);
+	/* store the arena-owned name; the caller's may point into the input buffer */
+	cmap_put(a, &P->cmaps.data[parent], h, NODE(P->d, idx).name, key, idx);
 	return idx;
+}
+
+/* A node's value mutated in place: move its map entry from the old key to the
+   new one. First-wins on both sides so lookups keep matching the earliest
+   sibling, like the scan did. */
+static void remap_child(Parser *P, size_t node, S old_key) {
+	Arena *a = &P->d->arena;
+	size_t parent = NODE(P->d, node).parent;
+	S name = NODE(P->d, node).name;
+	CMap *m = &P->cmaps.data[parent];
+	cmap_del(m, cmap_hash(name, old_key), name, old_key, node);
+	S new_key = value_key(a, &NODE(P->d, node).value);
+	uint64_t h = cmap_hash(name, new_key);
+	if (cmap_get(m, h, name, new_key) == (size_t)-1) cmap_put(a, m, h, name, new_key, node);
 }
 
 static int resolve_parent(Parser *P, S indent, size_t *out) {
@@ -1079,8 +1142,11 @@ static Value consume_raw(Parser *P, S *lines, size_t nlines, size_t i, size_t op
 
 static void bind_block(Parser *P, size_t parent, Value value, size_t line) {
 	if (parent == ROOT) { p_err(P, line, s_lit("raw block with no parent field")); return; }
-	if (v_is_empty(&NODE(P->d, parent).value)) NODE(P->d, parent).value = value;
-	else {
+	if (v_is_empty(&NODE(P->d, parent).value)) {
+		S old_key = value_key(&P->d->arena, &NODE(P->d, parent).value);
+		NODE(P->d, parent).value = value;
+		remap_child(P, parent, old_key);
+	} else {
 		S name = NODE(P->d, parent).name; size_t gp = NODE(P->d, parent).parent;
 		select_or_create(P, gp, name, value, line);
 	}
@@ -1097,13 +1163,16 @@ static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
 	Element el;
 	if (!parse_element(a, trimmed, &el)) { p_err(P, line, s_lit("empty list element")); return; }
 	Node *node = &NODE(P->d, parent);
+	S old_key = value_key(a, &node->value);
 	if (node->value.kind == V_EMPTY) {
 		Element *arr = (Element *)arena_alloc(a, sizeof(Element)); arr[0] = el;
 		node->value.kind = V_CELL; node->value.els = arr; node->value.nels = 1; node->star_list = 1;
+		remap_child(P, parent, old_key);
 	} else if (node->value.kind == V_CELL && node->star_list) {
 		Element *arr = (Element *)arena_alloc(a, (node->value.nels + 1) * sizeof(Element));
 		memcpy(arr, node->value.els, node->value.nels * sizeof(Element)); arr[node->value.nels] = el;
 		node->value.els = arr; node->value.nels++;
+		remap_child(P, parent, old_key);
 	} else {
 		p_err(P, line, s_lit("field already has a value; list element ignored"));
 	}
@@ -1113,15 +1182,17 @@ static void emit_repeated_leaf_hints(Parser *P) {
 	Arena *a = &P->d->arena;
 	for (size_t parent = 0; parent < P->d->nodes.len; parent++) {
 		VecS names = {0}; VecSize *groups = NULL; size_t ngroups = 0, cgroups = 0;
+		CMap group_of; memset(&group_of, 0, sizeof group_of);
 		VecSize ch = NODE(P->d, parent).children;
 		for (size_t k = 0; k < ch.len; k++) {
 			size_t c = ch.data[k]; S nm = NODE(P->d, c).name;
-			size_t g = (size_t)-1;
-			for (size_t j = 0; j < names.len; j++) if (s_eq(names.data[j], nm)) { g = j; break; }
+			uint64_t h = cmap_hash(nm, s_empty());
+			size_t g = cmap_get(&group_of, h, nm, s_empty());
 			if (g == (size_t)-1) {
 				VecS_push(a, &names, nm);
 				if (ngroups == cgroups) { size_t nc = cgroups ? cgroups * 2 : 8; groups = (VecSize *)arena_grow(a, groups, cgroups, nc, sizeof(VecSize)); cgroups = nc; }
 				memset(&groups[ngroups], 0, sizeof(VecSize)); g = ngroups++;
+				cmap_put(a, &group_of, h, nm, s_empty(), g);
 			}
 			VecSize_push(a, &groups[g], c);
 		}
@@ -1150,8 +1221,9 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	Arena *a = &d->arena;
 	Node root; memset(&root, 0, sizeof root); root.value = v_empty(); root.parent = 0; root.line = 0;
 	VecNode_push(a, &d->nodes, root);
-	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack);
+	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps);
 	StackEnt e0; e0.indent = s_empty(); e0.node = ROOT; VecStack_push(a, &P.stack, e0);
+	CMap m0; memset(&m0, 0, sizeof m0); VecMap_push(a, &P.cmaps, m0);
 
 	S full; full.p = text ? text : ""; full.n = len;
 	if (full.n >= 3 && (unsigned char)full.p[0] == 0xEF && (unsigned char)full.p[1] == 0xBB && (unsigned char)full.p[2] == 0xBF) full = s_slice(full, 3, full.n);

@@ -547,21 +547,37 @@ class _Parser:
 		self.diags = []
 		# (indent string, node) for each open level; [0] is the virtual root.
 		self.stack = [("", ROOT)]
+		# Per-node (name, value-key) -> first matching child, parallel to arena.
+		# Pure lookup accelerator for _select_or_create; children keeps the order.
+		self.child_map = [{}]
 
 	def _err(self, line, msg):
 		self.diags.append(Diagnostic(line, Severity.Error, msg))
 
 	def _select_or_create(self, parent, name, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
-		key = value.key()
-		for c in self.arena[parent].children:
-			if self.arena[c].name == name and self.arena[c].value.key() == key:
-				return c
+		map_key = (name, value.key())
+		found = self.child_map[parent].get(map_key)
+		if found is not None:
+			return found
 		idx = len(self.arena)
 		node = _Node(name, value, parent, line)
 		self.arena.append(node)
 		self.arena[parent].children.append(idx)
+		self.child_map.append({})
+		self.child_map[parent][map_key] = idx
 		return idx
+
+	def _remap_child(self, node, old_key):
+		"""A node's value mutated in place (empty field filled, star element added):
+		move its map entry from the old key to the new one. First-wins on both
+		sides so lookups keep matching the earliest sibling, like the scan did."""
+		parent = self.arena[node].parent
+		name = self.arena[node].name
+		cmap = self.child_map[parent]
+		if cmap.get((name, old_key)) == node:
+			del cmap[(name, old_key)]
+		cmap.setdefault((name, self.arena[node].value.key()), node)
 
 	def _resolve_parent(self, indent):
 		"""Resolve which open level this indent belongs to. Child only when the
@@ -684,7 +700,9 @@ class _Parser:
 			self._err(line, "raw block with no parent field")
 			return
 		if self.arena[parent].value.is_empty():
+			old_key = self.arena[parent].value.key()
 			self.arena[parent].value = value
+			self._remap_child(parent, old_key)
 		else:
 			name = self.arena[parent].name
 			grandparent = self.arena[parent].parent
@@ -712,11 +730,14 @@ class _Parser:
 			self._err(line, "empty list element")
 			return
 		node = self.arena[parent]
+		old_key = node.value.key()
 		if node.value.kind == "empty":
 			node.value = _cell([el])
 			node.star_list = True
+			self._remap_child(parent, old_key)
 		elif node.value.kind == "cell" and node.star_list:
 			node.value.els.append(el)
+			self._remap_child(parent, old_key)
 		else:
 			self._err(line, "field already has a value; list element ignored")
 
@@ -728,16 +749,14 @@ class _Parser:
 			# Group by name in first-appearance order: hint order must be
 			# deterministic or the cross-binding check can't compare `check` output.
 			by_name = []
+			group_of = {}
 			for c in self.arena[parent].children:
 				name = self.arena[c].name
-				found = None
-				for entry in by_name:
-					if entry[0] == name:
-						found = entry
-						break
-				if found is not None:
-					found[1].append(c)
+				g = group_of.get(name)
+				if g is not None:
+					by_name[g][1].append(c)
 				else:
+					group_of[name] = len(by_name)
 					by_name.append((name, [c]))
 			for name, group in by_name:
 				if len(group) < 2:
@@ -881,9 +900,15 @@ class Document:
 	def to_canonical(self):
 		"""Canonical form: block layout, tabs, insertion order, minimal quoting,
 		redundancy collapsed, comments dropped. Scalar text is never rewritten."""
+		# Explicit stack, children pushed in reverse: the reference handles depths
+		# far past Python's recursion limit, so emit must not recurse.
 		out = []
-		for c in self.arena[ROOT].children:
-			self._emit_node(c, 0, out)
+		stack = [(c, 0) for c in reversed(self.arena[ROOT].children)]
+		while stack:
+			idx, depth = stack.pop()
+			self._emit_node(idx, depth, out)
+			for c in reversed(self.arena[idx].children):
+				stack.append((c, depth + 1))
 		return "".join(out)
 
 	def _emit_node(self, idx, depth, out):
@@ -933,8 +958,6 @@ class Document:
 			out.append(pad)
 			out.append(fence)
 			out.append("\n")
-		for c in node.children:
-			self._emit_node(c, depth + 1, out)
 
 	# ----- accessor: path resolution -----
 
