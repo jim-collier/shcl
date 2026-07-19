@@ -32,10 +32,13 @@ Types (default --string):
 
 Options:
   --default=VALUE                        value to print when the read is not Good
-                                         (implies --on-bad=default)
+                                         (implies --on-bad=default; for arrays,
+                                         substituted per bad slot)
   --on-bad=error|default|flag            error: fail loudly; default: print the
                                          default; flag: print the value anyway and
                                          report via exit code (the default mode)
+  --slots                                prefix each line with its slot status and
+                                         a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
 
 FILE may be '-' for stdin.
@@ -50,11 +53,12 @@ def status_code(st):
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "default", "on_bad", "strictness", "write", "args")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "args")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
 		self.array = False
+		self.slots = False
 		self.default = None
 		self.on_bad = "flag"     # error|default|flag
 		self.strictness = shcl.Strictness.Standard
@@ -69,6 +73,8 @@ def parse_opts(argv):
 			o.kind = a[2:]
 		elif a == "--array":
 			o.array = True
+		elif a == "--slots":
+			o.slots = True
 		elif a in ("--write", "-w"):
 			o.write = True
 		elif a.startswith("--default="):
@@ -161,6 +167,7 @@ def do_get(o):
 			r = doc.read_string_array(path)
 			lines = r.value
 		status = r.status
+		slots = r.slots
 	else:
 		if o.kind == "int":
 			r = doc.read_int(path)
@@ -179,20 +186,37 @@ def do_get(o):
 		else:
 			lines = [_fmt_scalar(o.kind, r.value)]
 		status = r.status
+		slots = []
+
+	def slot_at(i):
+		# Per-line slot status: falls back to the aggregate for scalar reads.
+		return slots[i] if i < len(slots) else status
+
+	def emit(lns):
+		for i, ln in enumerate(lns):
+			if o.slots:
+				print("{}\t{}".format(slot_at(i).name, ln))
+			else:
+				print(ln)
 
 	if status == shcl.Status.Good or (status == shcl.Status.Empty and o.on_bad == "flag"):
-		for ln in lines:
-			print(ln)
+		emit(lines)
 		return status_code(status)
 	if o.on_bad == "default":
-		print(o.default if o.default is not None else "")
+		dv = o.default if o.default is not None else ""
+		if slots:
+			# Array read: the default substitutes per bad slot; alignment holds.
+			emit([ln if slot_at(i) == shcl.Status.Good else dv for i, ln in enumerate(lines)])
+		elif o.slots:
+			print("{}\t{}".format(status.name, dv))
+		else:
+			print(dv)
 		return 0
 	if o.on_bad == "error":
 		sys.stderr.write("{}: {}\n".format(path, status.name))
 		return status_code(status)
 	# flag: print the zero/empty value anyway; the exit code carries the status.
-	for ln in lines:
-		print(ln)
+	emit(lines)
 	return status_code(status)
 
 

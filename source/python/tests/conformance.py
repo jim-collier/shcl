@@ -57,40 +57,40 @@ def _read(path):
 
 
 def scalar_read(doc, kind, query):
-	# Returns (value_string, status).
+	# Returns (value_string, status, slot_statuses).
 	if kind == "int":
 		r = doc.read_int(query)
-		return str(r.value), r.status
+		return str(r.value), r.status, r.slots
 	if kind == "float":
 		r = doc.read_float(query)
-		return shcl.format_float(r.value), r.status
+		return shcl.format_float(r.value), r.status, r.slots
 	if kind == "bool":
 		r = doc.read_bool(query)
-		return ("true" if r.value else "false"), r.status
+		return ("true" if r.value else "false"), r.status, r.slots
 	if kind == "datetime":
 		r = doc.read_datetime(query)
-		return str(r.value), r.status
+		return str(r.value), r.status, r.slots
 	if kind == "string":
 		r = doc.read_string(query)
-		return tsv_escape(r.value), r.status
+		return tsv_escape(r.value), r.status, r.slots
 	if kind == "raw":
 		r = doc.read_raw(query)
-		return tsv_escape(r.value), r.status
+		return tsv_escape(r.value), r.status, r.slots
 	if kind == "int[]":
 		r = doc.read_int_array(query)
-		return "|".join(str(v) for v in r.value), r.status
+		return "|".join(str(v) for v in r.value), r.status, r.slots
 	if kind == "float[]":
 		r = doc.read_float_array(query)
-		return "|".join(shcl.format_float(v) for v in r.value), r.status
+		return "|".join(shcl.format_float(v) for v in r.value), r.status, r.slots
 	if kind == "bool[]":
 		r = doc.read_bool_array(query)
-		return "|".join("true" if v else "false" for v in r.value), r.status
+		return "|".join("true" if v else "false" for v in r.value), r.status, r.slots
 	if kind == "datetime[]":
 		r = doc.read_datetime_array(query)
-		return "|".join(str(v) for v in r.value), r.status
+		return "|".join(str(v) for v in r.value), r.status, r.slots
 	if kind == "string[]":
 		r = doc.read_string_array(query)
-		return "|".join(tsv_escape(v) for v in r.value), r.status
+		return "|".join(tsv_escape(v) for v in r.value), r.status, r.slots
 	raise SystemExit("unknown type '{}'".format(kind))
 
 
@@ -149,11 +149,16 @@ def main():
 					fails.append("{}: instances got {!r} want {!r}".format(at, got, expected))
 				continue
 
-			got_value, got_status = scalar_read(doc, kind, query)
+			got_value, got_status, got_slots = scalar_read(doc, kind, query)
 			if got_status.name != status:
 				fails.append("{}: status got {} want {}".format(at, got_status.name, status))
 			if expected != "-" and got_value != expected:
 				fails.append("{}: value got {!r} want {!r}".format(at, got_value, expected))
+			# Optional 6th column: per-slot statuses, |-joined (needs col 5 set).
+			if len(cols) > 5:
+				got = "|".join(st.name for st in got_slots)
+				if got != cols[5]:
+					fails.append("{}: slots got {!r} want {!r}".format(at, got, cols[5]))
 
 	if fails:
 		for f in fails:

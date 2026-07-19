@@ -136,30 +136,31 @@ fn reads_match_expected() {
 				continue;
 			}
 
-			let (got_value, got_status): (String, shcl::Status) = match kind {
+			let (got_value, got_status, got_slots): (String, shcl::Status, Vec<shcl::Status>) =
+				match kind {
 				"int" => {
 					let r = doc.read_int(query);
-					(r.value.to_string(), r.status)
+					(r.value.to_string(), r.status, r.slots)
 				}
 				"float" => {
 					let r = doc.read_float(query);
-					(r.value.to_string(), r.status)
+					(r.value.to_string(), r.status, r.slots)
 				}
 				"bool" => {
 					let r = doc.read_bool(query);
-					(r.value.to_string(), r.status)
+					(r.value.to_string(), r.status, r.slots)
 				}
 				"datetime" => {
 					let r = doc.read_datetime(query);
-					(r.value.to_string(), r.status)
+					(r.value.to_string(), r.status, r.slots)
 				}
 				"string" => {
 					let r = doc.read_string(query);
-					(tsv_escape(&r.value), r.status)
+					(tsv_escape(&r.value), r.status, r.slots)
 				}
 				"raw" => {
 					let r = doc.read_raw(query);
-					(tsv_escape(&r.value), r.status)
+					(tsv_escape(&r.value), r.status, r.slots)
 				}
 				"int[]" => {
 					let r = doc.read_int_array(query);
@@ -170,6 +171,7 @@ fn reads_match_expected() {
 							.collect::<Vec<_>>()
 							.join("|"),
 						r.status,
+						r.slots,
 					)
 				}
 				"float[]" => {
@@ -181,6 +183,7 @@ fn reads_match_expected() {
 							.collect::<Vec<_>>()
 							.join("|"),
 						r.status,
+						r.slots,
 					)
 				}
 				"bool[]" => {
@@ -192,6 +195,7 @@ fn reads_match_expected() {
 							.collect::<Vec<_>>()
 							.join("|"),
 						r.status,
+						r.slots,
 					)
 				}
 				"datetime[]" => {
@@ -203,6 +207,7 @@ fn reads_match_expected() {
 							.collect::<Vec<_>>()
 							.join("|"),
 						r.status,
+						r.slots,
 					)
 				}
 				"string[]" => {
@@ -214,6 +219,7 @@ fn reads_match_expected() {
 							.collect::<Vec<_>>()
 							.join("|"),
 						r.status,
+						r.slots,
 					)
 				}
 				other => panic!("{}: unknown type '{}'", at, other),
@@ -221,6 +227,15 @@ fn reads_match_expected() {
 			assert_eq!(format!("{:?}", got_status), status, "{}: status", at);
 			if expected != "-" {
 				assert_eq!(got_value, expected, "{}: value", at);
+			}
+			// Optional 6th column: per-slot statuses, |-joined (needs col 5 set).
+			if let Some(want_slots) = cols.get(5) {
+				let got = got_slots
+					.iter()
+					.map(|s| format!("{:?}", s))
+					.collect::<Vec<_>>()
+					.join("|");
+				assert_eq!(&got, want_slots, "{}: slots", at);
 			}
 		}
 	}

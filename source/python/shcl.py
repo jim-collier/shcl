@@ -58,13 +58,16 @@ class Diagnostic:
 
 
 class Read:
-	"""Value plus status plus the original raw text (when the path resolved)."""
-	__slots__ = ("value", "status", "raw")
+	"""Value plus status plus the original raw text (when the path resolved).
+	Array reads also carry one status per slot (element, or wildcard instance)
+	in .slots; .status is then the worst slot. Scalar reads leave .slots empty."""
+	__slots__ = ("value", "status", "raw", "slots")
 
-	def __init__(self, value, status, raw):
+	def __init__(self, value, status, raw, slots=None):
 		self.value = value
 		self.status = status
 		self.raw = raw
+		self.slots = slots if slots is not None else []
 
 	def ok(self):
 		return self.status in (Status.Good, Status.Empty)
@@ -916,7 +919,9 @@ class Document:
 		return [c for c in self.arena[parent].children if self.arena[c].name == name]
 
 	def _resolve_from(self, start, segs):
-		# Returns ("none",) | ("one", idx) | ("many", [idx]) | ("slots", [idx|None]).
+		# Returns ("none",) | ("one", idx) | ("many", [idx]) | ("slots", [entry]).
+		# A slots entry is a node idx, or the Status saying why the sub-path did
+		# not land on one node (NotFound missing, Multiple ambiguous).
 		cur = list(start)
 		for i, seg in enumerate(segs):
 			nxt = []
@@ -940,7 +945,12 @@ class Document:
 						slots.append(inst)
 					else:
 						r = self._resolve_from([inst], rest)
-						slots.append(r[1] if r[0] == "one" else None)
+						if r[0] == "one":
+							slots.append(r[1])
+						elif r[0] == "none":
+							slots.append(Status.NotFound)
+						else:
+							slots.append(Status.Multiple)
 				return ("slots", slots)
 		if len(cur) == 0:
 			return ("none",)
@@ -969,18 +979,18 @@ class Document:
 		return 0
 
 	def instances(self, path):
-		"""Instance values at a path, in file order."""
+		"""Instance values at a path, in file order. Wildcard slots that did not
+		resolve stay in the list as "" so indices keep matching count()."""
 		r = self._resolve(path)
 		tag = r[0]
 		if tag == "one":
-			nodes = [r[1]]
-		elif tag == "many":
-			nodes = r[1]
-		elif tag == "slots":
-			nodes = [n for n in r[1] if n is not None]
-		else:
-			nodes = []
-		return [self.arena[n].value.display() for n in nodes]
+			return [self.arena[r[1]].value.display()]
+		if tag == "many":
+			return [self.arena[n].value.display() for n in r[1]]
+		if tag == "slots":
+			return [self.arena[n].value.display() if isinstance(n, int) else ""
+				for n in r[1]]
+		return []
 
 	# ----- accessor: typed reads -----
 
@@ -1080,26 +1090,29 @@ class Document:
 		if tag == "err":
 			return Read([], r[1], None)
 		if tag == "slots":
-			slots = r[1]
+			# Each slot reads like a scalar of the target type and records its
+			# own status; the aggregate is the worst one (never silently Good).
 			out = []
-			status = Status.Good
-			for slot in slots:
-				if slot is None:
+			sts = []
+			for slot in r[1]:
+				if not isinstance(slot, int):
 					out.append(default)
+					sts.append(slot)
 					continue
 				se = self._scalar_element(self.arena[slot].value)
 				if se[0] == "err":
 					out.append(default)
+					sts.append(se[1])
 					continue
 				v = coerce(se[1])
 				if v is None:
 					out.append(default)
-					status = Status.BadType
+					sts.append(Status.BadType)
 				else:
 					out.append(v)
-			if not slots:
-				status = Status.Empty
-			return Read(out, status, None)
+					sts.append(Status.Good)
+			status = max(sts, key=lambda s: s.value) if sts else Status.Empty
+			return Read(out, status, None, sts)
 		if tag == "none":
 			return Read([], Status.NotFound, None)
 		if tag == "many":
@@ -1112,15 +1125,18 @@ class Document:
 		if value.kind == "raw":
 			return Read([], Status.BadType, raw)
 		out = []
+		sts = []
 		status = Status.Good
 		for el in value.els:
 			v = coerce(el)
 			if v is None:
 				out.append(default)
+				sts.append(Status.BadType)
 				status = Status.BadType
 			else:
 				out.append(v)
-		return Read(out, status, raw)
+				sts.append(Status.Good)
+		return Read(out, status, raw, sts)
 
 	def read_int_array(self, path):
 		lvl = self._strictness

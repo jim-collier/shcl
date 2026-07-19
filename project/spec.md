@@ -359,6 +359,9 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 - Selector forms: `[Boston]` (bare non-numeric = value), `[0]` (bare numeric = index), `["2020"]` (quoted = value even if numeric), `[#2]` (explicit index).
 
 - `field[*]` is a wildcard returning every instance's value as an array: `GetIntArray("base[*].metrics.population")`. The result is positionally aligned to the instances - one slot per instance, in file order. If an instance lacks the sub-path, its slot is kept (status `NotFound`, taking the zero/default per `onBad`); slots are never silently dropped, so indices stay aligned with `Instances(field)`/`Count(field)`. A legitimately absent sub-path is not malformed, so it produces no diagnostic.
+	- Every array read carries one status per slot alongside the values (a slot list on the result). Each slot reads like a scalar of the target type: `Good`, `Empty` (empty value), `NotFound` (missing sub-path), `BadType` (uncoercible, raw block, or array where one scalar is expected), or `Multiple` (sub-path ambiguous within that instance). The read's aggregate status is the worst slot, so a partial miss can never report `Good`.
+	- `Instances` on a wildcard path keeps unresolved slots in the enumeration as empty strings, preserving index alignment with the read and with `Count` (which counts slots).
+	- With `onBad=default`, the supplied default substitutes per bad slot; resolved slots keep their values.
 
 - `Instances(field)` and `Count(field)` enumerate instances by value or index.
 
