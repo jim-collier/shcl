@@ -95,11 +95,14 @@ func (s Status) String() string {
 
 // Read is the full-tier read result: value plus status plus the original raw
 // text (when the path resolved), so a caller can always recover what was
-// actually in the file.
+// actually in the file. Array reads also carry one status per slot (element,
+// or wildcard instance) in Slots; Status is then the worst slot. Scalar reads
+// leave Slots nil.
 type Read[T any] struct {
 	Value  T
 	Status Status
 	Raw    *string
+	Slots  []Status
 }
 
 func (r Read[T]) OK() bool {
@@ -1271,7 +1274,8 @@ const (
 	resNone resolvedKind = iota
 	resOne
 	resMany
-	// resSlots (wildcard): one slot per instance, in file order; -1 = sub-path missing.
+	// resSlots (wildcard): one slot per instance, in file order; negative =
+	// the sub-path did not land on one node (-1 missing, -2 ambiguous).
 	resSlots
 )
 
@@ -1327,10 +1331,13 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 					continue
 				}
 				r := d.resolveFrom([]int{inst}, rest)
-				if r.kind == resOne {
+				switch r.kind {
+				case resOne:
 					slots = append(slots, r.one)
-				} else {
+				case resNone:
 					slots = append(slots, -1)
+				default:
+					slots = append(slots, -2)
 				}
 			}
 			return resolved{kind: resSlots, slots: slots}
@@ -1370,28 +1377,35 @@ func (d *Document) Count(path string) int {
 	return 0
 }
 
-// Instances returns the instance values at a path, in file order.
+// Instances returns the instance values at a path, in file order. Wildcard
+// slots that did not resolve stay in the list as "" so indices keep matching
+// Count().
 func (d *Document) Instances(path string) []string {
-	var nodes []int
-	if r, ok := d.resolve(path); ok {
-		switch r.kind {
-		case resOne:
-			nodes = []int{r.one}
-		case resMany:
-			nodes = r.many
-		case resSlots:
-			for _, s := range r.slots {
-				if s >= 0 {
-					nodes = append(nodes, s)
-				}
+	r, ok := d.resolve(path)
+	if !ok {
+		return nil
+	}
+	switch r.kind {
+	case resOne:
+		return []string{d.arena[r.one].value.display()}
+	case resMany:
+		out := make([]string, 0, len(r.many))
+		for _, n := range r.many {
+			out = append(out, d.arena[n].value.display())
+		}
+		return out
+	case resSlots:
+		out := make([]string, 0, len(r.slots))
+		for _, s := range r.slots {
+			if s >= 0 {
+				out = append(out, d.arena[s].value.display())
+			} else {
+				out = append(out, "")
 			}
 		}
+		return out
 	}
-	out := make([]string, 0, len(nodes))
-	for _, n := range nodes {
-		out = append(out, d.arena[n].value.display())
-	}
-	return out
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2003,7 +2017,9 @@ func (d *Document) ReadRawInfo(path string) Read[string] {
 
 func readArray[T any](d *Document, path string, coerce func(*element) (T, bool)) Read[[]T] {
 	var zero T
-	// Wildcard paths: one slot per instance, missing sub-paths keep their slot.
+	// Wildcard paths: one slot per instance, missing sub-paths keep their slot
+	// (spec: never silently dropped). Each slot reads like a scalar of the
+	// target type and records its own status; the aggregate is the worst one.
 	r, ok := d.resolve(path)
 	if !ok {
 		return Read[[]T]{Value: []T{}, Status: NotFound}
@@ -2011,28 +2027,42 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 	switch r.kind {
 	case resSlots:
 		out := make([]T, 0, len(r.slots))
-		status := Good
+		sts := make([]Status, 0, len(r.slots))
 		for _, slot := range r.slots {
-			if slot < 0 {
+			if slot == -1 {
 				out = append(out, zero)
+				sts = append(sts, NotFound)
 				continue
 			}
-			el, _ := scalarElement(&d.arena[slot].value)
+			if slot < 0 {
+				out = append(out, zero)
+				sts = append(sts, Multiple)
+				continue
+			}
+			el, est := scalarElement(&d.arena[slot].value)
 			if el == nil {
 				out = append(out, zero)
+				sts = append(sts, est)
 				continue
 			}
 			if val, cok := coerce(el); cok {
 				out = append(out, val)
+				sts = append(sts, Good)
 			} else {
 				out = append(out, zero)
-				status = BadType
+				sts = append(sts, BadType)
 			}
 		}
-		if len(r.slots) == 0 {
-			status = Empty
+		status := Empty
+		if len(sts) > 0 {
+			status = Good
+			for _, s := range sts {
+				if s > status {
+					status = s
+				}
+			}
 		}
-		return Read[[]T]{Value: out, Status: status}
+		return Read[[]T]{Value: out, Status: status, Slots: sts}
 	case resNone:
 		return Read[[]T]{Value: []T{}, Status: NotFound}
 	case resMany:
@@ -2047,16 +2077,19 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 		return Read[[]T]{Value: []T{}, Status: BadType, Raw: &raw}
 	}
 	out := make([]T, 0, len(v.els))
+	sts := make([]Status, 0, len(v.els))
 	status := Good
 	for i := range v.els {
 		if val, cok := coerce(&v.els[i]); cok {
 			out = append(out, val)
+			sts = append(sts, Good)
 		} else {
 			out = append(out, zero)
+			sts = append(sts, BadType)
 			status = BadType
 		}
 	}
-	return Read[[]T]{Value: out, Status: status, Raw: &raw}
+	return Read[[]T]{Value: out, Status: status, Raw: &raw, Slots: sts}
 }
 
 func (d *Document) ReadIntArray(path string) Read[[]int64] {

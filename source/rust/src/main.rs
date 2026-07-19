@@ -23,10 +23,13 @@ Types (default --string):
 
 Options:
   --default=VALUE                        value to print when the read is not Good
-                                         (implies --on-bad=default)
+                                         (implies --on-bad=default; for arrays,
+                                         substituted per bad slot)
   --on-bad=error|default|flag            error: fail loudly; default: print the
                                          default; flag: print the value anyway and
                                          report via exit code (the default mode)
+  --slots                                prefix each line with its slot status and
+                                         a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
 
 FILE may be '-' for stdin.
@@ -48,6 +51,7 @@ fn status_code(st: Status) -> u8 {
 struct Opts {
 	kind: String, // int|float|bool|datetime|string|raw
 	array: bool,
+	slots: bool,
 	default: Option<String>,
 	on_bad: String, // error|default|flag
 	strictness: Strictness,
@@ -59,6 +63,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	let mut o = Opts {
 		kind: "string".into(),
 		array: false,
+		slots: false,
 		default: None,
 		on_bad: "flag".into(),
 		strictness: Strictness::Standard,
@@ -71,6 +76,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 				o.kind = a[2..].to_string();
 			}
 			"--array" => o.array = true,
+			"--slots" => o.slots = true,
 			"--write" | "-w" => o.write = true,
 			_ if a.starts_with("--default=") => {
 				o.default = Some(a["--default=".len()..].to_string());
@@ -144,23 +150,23 @@ fn do_get(o: &Opts) -> u8 {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	let (lines, status): (Vec<String>, Status) = if o.array {
+	let (lines, status, slots): (Vec<String>, Status, Vec<Status>) = if o.array {
 		match o.kind.as_str() {
 			"int" => {
 				let r = doc.read_int_array(path);
-				(r.value.iter().map(|v| v.to_string()).collect(), r.status)
+				(r.value.iter().map(|v| v.to_string()).collect(), r.status, r.slots)
 			}
 			"float" => {
 				let r = doc.read_float_array(path);
-				(r.value.iter().map(|v| v.to_string()).collect(), r.status)
+				(r.value.iter().map(|v| v.to_string()).collect(), r.status, r.slots)
 			}
 			"bool" => {
 				let r = doc.read_bool_array(path);
-				(r.value.iter().map(|v| v.to_string()).collect(), r.status)
+				(r.value.iter().map(|v| v.to_string()).collect(), r.status, r.slots)
 			}
 			"datetime" => {
 				let r = doc.read_datetime_array(path);
-				(r.value.iter().map(|v| v.to_string()).collect(), r.status)
+				(r.value.iter().map(|v| v.to_string()).collect(), r.status, r.slots)
 			}
 			"raw" => {
 				eprintln!("--raw has no --array form");
@@ -168,46 +174,71 @@ fn do_get(o: &Opts) -> u8 {
 			}
 			_ => {
 				let r = doc.read_string_array(path);
-				(r.value, r.status)
+				(r.value, r.status, r.slots)
 			}
 		}
 	} else {
 		match o.kind.as_str() {
 			"int" => {
 				let r = doc.read_int(path);
-				(vec![r.value.to_string()], r.status)
+				(vec![r.value.to_string()], r.status, Vec::new())
 			}
 			"float" => {
 				let r = doc.read_float(path);
-				(vec![r.value.to_string()], r.status)
+				(vec![r.value.to_string()], r.status, Vec::new())
 			}
 			"bool" => {
 				let r = doc.read_bool(path);
-				(vec![r.value.to_string()], r.status)
+				(vec![r.value.to_string()], r.status, Vec::new())
 			}
 			"datetime" => {
 				let r = doc.read_datetime(path);
-				(vec![r.value.to_string()], r.status)
+				(vec![r.value.to_string()], r.status, Vec::new())
 			}
 			"raw" => {
 				let r = doc.read_raw(path);
-				(vec![r.value], r.status)
+				(vec![r.value], r.status, Vec::new())
 			}
 			_ => {
 				let r = doc.read_string(path);
-				(vec![r.value], r.status)
+				(vec![r.value], r.status, Vec::new())
+			}
+		}
+	};
+	// Per-line slot status: falls back to the aggregate for scalar reads.
+	let slot_at = |i: usize| slots.get(i).copied().unwrap_or(status);
+	let emit = |lines: &[String]| {
+		for (i, l) in lines.iter().enumerate() {
+			if o.slots {
+				println!("{:?}\t{}", slot_at(i), l);
+			} else {
+				println!("{}", l);
 			}
 		}
 	};
 	match (status, o.on_bad.as_str()) {
 		(Status::Good, _) | (Status::Empty, "flag") => {
-			for l in lines {
-				println!("{}", l);
-			}
+			emit(&lines);
 			status_code(status)
 		}
 		(_, "default") => {
-			println!("{}", o.default.clone().unwrap_or_default());
+			if !slots.is_empty() {
+				// Array read: the default substitutes per bad slot; alignment holds.
+				let dv = o.default.clone().unwrap_or_default();
+				let subbed: Vec<String> = lines
+					.iter()
+					.enumerate()
+					.map(|(i, l)| if slot_at(i) == Status::Good { l.clone() } else { dv.clone() })
+					.collect();
+				emit(&subbed);
+			} else {
+				let dv = o.default.clone().unwrap_or_default();
+				if o.slots {
+					println!("{:?}\t{}", status, dv);
+				} else {
+					println!("{}", dv);
+				}
+			}
 			0
 		}
 		(_, "error") => {
@@ -216,9 +247,7 @@ fn do_get(o: &Opts) -> u8 {
 		}
 		(_, _) => {
 			// flag: print the zero/empty value anyway; the exit code carries the status
-			for l in lines {
-				println!("{}", l);
-			}
+			emit(&lines);
 			status_code(status)
 		}
 	}

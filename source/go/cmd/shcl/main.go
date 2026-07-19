@@ -34,10 +34,13 @@ Types (default --string):
 
 Options:
   --default=VALUE                        value to print when the read is not Good
-                                         (implies --on-bad=default)
+                                         (implies --on-bad=default; for arrays,
+                                         substituted per bad slot)
   --on-bad=error|default|flag            error: fail loudly; default: print the
                                          default; flag: print the value anyway and
                                          report via exit code (the default mode)
+  --slots                                prefix each line with its slot status and
+                                         a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
 
 FILE may be '-' for stdin.
@@ -65,6 +68,7 @@ func statusCode(st shcl.Status) int {
 type opts struct {
 	kind       string // int|float|bool|datetime|string|raw
 	array      bool
+	slots      bool
 	def        string
 	onBad      string // error|default|flag
 	strictness shcl.Strictness
@@ -80,6 +84,8 @@ func parseOpts(argv []string) (*opts, error) {
 			o.kind = a[2:]
 		case a == "--array":
 			o.array = true
+		case a == "--slots":
+			o.slots = true
 		case a == "--write" || a == "-w":
 			o.write = true
 		case strings.HasPrefix(a, "--default="):
@@ -160,6 +166,7 @@ func doGet(o *opts) int {
 	}
 	var lines []string
 	var status shcl.Status
+	var slots []shcl.Status
 	if o.array {
 		switch o.kind {
 		case "int":
@@ -168,24 +175,28 @@ func doGet(o *opts) int {
 				lines = append(lines, fmt.Sprintf("%d", v))
 			}
 			status = r.Status
+			slots = r.Slots
 		case "float":
 			r := doc.ReadFloatArray(path)
 			for _, v := range r.Value {
 				lines = append(lines, shcl.FormatFloat(v))
 			}
 			status = r.Status
+			slots = r.Slots
 		case "bool":
 			r := doc.ReadBoolArray(path)
 			for _, v := range r.Value {
 				lines = append(lines, fmt.Sprintf("%t", v))
 			}
 			status = r.Status
+			slots = r.Slots
 		case "datetime":
 			r := doc.ReadDateTimeArray(path)
 			for _, v := range r.Value {
 				lines = append(lines, v.String())
 			}
 			status = r.Status
+			slots = r.Slots
 		case "raw":
 			fmt.Fprintln(os.Stderr, "--raw has no --array form")
 			return 1
@@ -193,6 +204,7 @@ func doGet(o *opts) int {
 			r := doc.ReadStringArray(path)
 			lines = r.Value
 			status = r.Status
+			slots = r.Slots
 		}
 	} else {
 		switch o.kind {
@@ -222,23 +234,50 @@ func doGet(o *opts) int {
 			status = r.Status
 		}
 	}
+	// Per-line slot status: falls back to the aggregate for scalar reads.
+	slotAt := func(i int) shcl.Status {
+		if i < len(slots) {
+			return slots[i]
+		}
+		return status
+	}
+	emit := func(lines []string) {
+		for i, l := range lines {
+			if o.slots {
+				fmt.Printf("%s\t%s\n", slotAt(i), l)
+			} else {
+				fmt.Println(l)
+			}
+		}
+	}
 	switch {
 	case status == shcl.Good || (status == shcl.Empty && o.onBad == "flag"):
-		for _, l := range lines {
-			fmt.Println(l)
-		}
+		emit(lines)
 		return statusCode(status)
 	case o.onBad == "default":
-		fmt.Println(o.def)
+		if len(slots) > 0 {
+			// Array read: the default substitutes per bad slot; alignment holds.
+			subbed := make([]string, len(lines))
+			for i, l := range lines {
+				if slotAt(i) == shcl.Good {
+					subbed[i] = l
+				} else {
+					subbed[i] = o.def
+				}
+			}
+			emit(subbed)
+		} else if o.slots {
+			fmt.Printf("%s\t%s\n", status, o.def)
+		} else {
+			fmt.Println(o.def)
+		}
 		return 0
 	case o.onBad == "error":
 		fmt.Fprintf(os.Stderr, "%s: %s\n", path, status)
 		return statusCode(status)
 	default:
 		// flag: print the zero/empty value anyway; the exit code carries the status
-		for _, l := range lines {
-			fmt.Println(l)
-		}
+		emit(lines)
 		return statusCode(status)
 	}
 }

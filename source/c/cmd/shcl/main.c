@@ -33,10 +33,13 @@ static const char *HELP =
 	"\n"
 	"Options:\n"
 	"  --default=VALUE                        value to print when the read is not Good\n"
-	"                                         (implies --on-bad=default)\n"
+	"                                         (implies --on-bad=default; for arrays,\n"
+	"                                         substituted per bad slot)\n"
 	"  --on-bad=error|default|flag            error: fail loudly; default: print the\n"
 	"                                         default; flag: print the value anyway and\n"
 	"                                         report via exit code (the default mode)\n"
+	"  --slots                                prefix each line with its slot status and\n"
+	"                                         a tab (per element, or per wildcard slot)\n"
 	"  --strictness=loose|standard|strict     or 1|2|3 (default standard)\n"
 	"\n"
 	"FILE may be '-' for stdin.\n"
@@ -47,6 +50,7 @@ static const char *HELP =
 typedef struct {
 	const char *kind;         // int|float|bool|datetime|string|raw
 	int array;
+	int slots;
 	const char *deflt;        // NULL if unset
 	const char *on_bad;       // error|default|flag
 	shcl_strictness strictness;
@@ -125,6 +129,7 @@ static int do_get(Opts *o) {
 	if (gate) { shcl_free(d); free(text); return gate; }
 
 	shcl_status status = SHCL_GOOD;
+	const shcl_status *slotSts = NULL; size_t nSlots = 0;
 	char fbuf[SHCL_F64_BUF];
 	// Buffer output lines so the on-bad modes can suppress them uniformly. Each
 	// line either borrows arena/const memory (owned=0) or is formatted into own[].
@@ -138,12 +143,12 @@ static int do_get(Opts *o) {
 	#define PUSHLINE_BUF(B, N) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } memcpy(lines[nlines].own, (B), (N)); lines[nlines].p = NULL; lines[nlines].n = (N); lines[nlines].owned = 1; nlines++; } while (0)
 
 	if (o->array) {
-		if (!strcmp(o->kind, "int")) { shcl_read_i64_arr r = shcl_read_int_array(d, path, plen); status = r.status; for (size_t i = 0; i < r.n; i++) PUSHLINE_FMT("%" PRId64, r.values[i]); }
-		else if (!strcmp(o->kind, "float")) { shcl_read_f64_arr r = shcl_read_float_array(d, path, plen); status = r.status; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_format_f64(r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
-		else if (!strcmp(o->kind, "bool")) { shcl_read_bool_arr r = shcl_read_bool_array(d, path, plen); status = r.status; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i] ? "true" : "false", r.values[i] ? 4 : 5); }
-		else if (!strcmp(o->kind, "datetime")) { shcl_read_dt_arr r = shcl_read_datetime_array(d, path, plen); status = r.status; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_datetime_str(&r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
+		if (!strcmp(o->kind, "int")) { shcl_read_i64_arr r = shcl_read_int_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_FMT("%" PRId64, r.values[i]); }
+		else if (!strcmp(o->kind, "float")) { shcl_read_f64_arr r = shcl_read_float_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_format_f64(r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
+		else if (!strcmp(o->kind, "bool")) { shcl_read_bool_arr r = shcl_read_bool_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i] ? "true" : "false", r.values[i] ? 4 : 5); }
+		else if (!strcmp(o->kind, "datetime")) { shcl_read_dt_arr r = shcl_read_datetime_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_datetime_str(&r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
 		else if (!strcmp(o->kind, "raw")) { fprintf(stderr, "--raw has no --array form\n"); free(lines); shcl_free(d); free(text); return 1; }
-		else { shcl_read_str_arr r = shcl_read_string_array(d, path, plen); status = r.status; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i].p, r.values[i].n); }
+		else { shcl_read_str_arr r = shcl_read_string_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i].p, r.values[i].n); }
 	} else {
 		if (!strcmp(o->kind, "int")) { shcl_read_i64 r = shcl_read_int(d, path, plen); status = r.status; PUSHLINE_FMT("%" PRId64, r.value); }
 		else if (!strcmp(o->kind, "float")) { shcl_read_f64 r = shcl_read_float(d, path, plen); status = r.status; size_t k = shcl_format_f64(r.value, fbuf); PUSHLINE_BUF(fbuf, k); }
@@ -153,18 +158,31 @@ static int do_get(Opts *o) {
 		else { shcl_read_str r = shcl_read_string(d, path, plen); status = r.status; PUSHLINE_BYTES(r.value.p, r.value.n); }
 	}
 
+	// Per-line slot status: falls back to the aggregate for scalar reads.
+	#define SLOT_AT(I) (slotSts && (I) < nSlots ? slotSts[I] : status)
+	#define EMITLINE(I, P, N) do { if (o->slots) printf("%s\t", shcl_status_name(SLOT_AT(I))); outln((P), (N)); } while (0)
 	int rc;
 	int flag_ok = (status == SHCL_GOOD) || (status == SHCL_EMPTY && !strcmp(o->on_bad, "flag"));
 	if (flag_ok) {
-		for (size_t i = 0; i < nlines; i++) outln(LINEPTR(i), lines[i].n);
+		for (size_t i = 0; i < nlines; i++) EMITLINE(i, LINEPTR(i), lines[i].n);
 		rc = shcl_status_code(status);
 	} else if (!strcmp(o->on_bad, "default")) {
 		const char *dv = o->deflt ? o->deflt : "";
-		outln(dv, strlen(dv)); rc = 0;
+		if (slotSts && nSlots > 0) {
+			// Array read: the default substitutes per bad slot; alignment holds.
+			for (size_t i = 0; i < nlines; i++) {
+				if (SLOT_AT(i) == SHCL_GOOD) EMITLINE(i, LINEPTR(i), lines[i].n);
+				else EMITLINE(i, dv, strlen(dv));
+			}
+		} else {
+			if (o->slots) printf("%s\t", shcl_status_name(status));
+			outln(dv, strlen(dv));
+		}
+		rc = 0;
 	} else if (!strcmp(o->on_bad, "error")) {
 		fprintf(stderr, "%s: %s\n", path, shcl_status_name(status)); rc = shcl_status_code(status);
 	} else {
-		for (size_t i = 0; i < nlines; i++) outln(LINEPTR(i), lines[i].n);
+		for (size_t i = 0; i < nlines; i++) EMITLINE(i, LINEPTR(i), lines[i].n);
 		rc = shcl_status_code(status);
 	}
 	free(lines); shcl_free(d); free(text); return rc;
@@ -223,12 +241,13 @@ static int do_enum(Opts *o, int want_count) {
 }
 
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
-	o->kind = "string"; o->array = 0; o->deflt = NULL; o->on_bad = "flag";
+	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
 	o->strictness = SHCL_STANDARD; o->write = 0; o->nargs = 0;
 	for (int i = from; i < argc; i++) {
 		const char *a = argv[i];
 		if (!strcmp(a, "--int") || !strcmp(a, "--float") || !strcmp(a, "--bool") || !strcmp(a, "--datetime") || !strcmp(a, "--string") || !strcmp(a, "--raw")) o->kind = a + 2;
 		else if (!strcmp(a, "--array")) o->array = 1;
+		else if (!strcmp(a, "--slots")) o->slots = 1;
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) o->write = 1;
 		else if (!strncmp(a, "--default=", 10)) { o->deflt = a + 10; o->on_bad = "default"; }
 		else if (!strncmp(a, "--on-bad=", 9)) {

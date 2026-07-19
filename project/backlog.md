@@ -109,9 +109,10 @@ In each section, items are listed approximately from newest to oldest.
 	- Fixed: zone tail is now checked byte-wise, so no str slice can land mid-char; corpus 007 `bad5` pins BadType across all bindings.
 	- Detail: `design.md` - Code Review 20260716, item 2.
 
-- 🔘 Code Review 20260716 item 3: wildcard array reads swallow per-slot NotFound/BadType.
+- ✅ Code Review 20260716 item 3: wildcard array reads swallow per-slot NotFound/BadType.
 	- A missing sub-path yields a silent zero with status Good - the exact trap the fallback design exists to prevent.
 	- `count` and `instances` also disagree on the same wildcard path, breaking index alignment.
+	- Fixed in all four bindings: array reads carry per-slot statuses, aggregate = worst slot, `instances` keeps unresolved slots as "", CLI grows `--slots` and per-slot `--default` substitution. Spec pinned, corpus case 009 + a slots column in reads.tsv, crosscheck replays `--slots`.
 	- Detail: `design.md` - Code Review 20260716, item 3.
 
 - 🔘 Code Review 20260716 item 7: `fmt` ignores `--strictness`.

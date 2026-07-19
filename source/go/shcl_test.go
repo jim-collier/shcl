@@ -162,6 +162,7 @@ func TestReadsMatchExpected(t *testing.T) {
 
 			var gotValue string
 			var gotStatus Status
+			var gotSlots []Status
 			switch kind {
 			case "int":
 				r := doc.ReadInt(query)
@@ -183,6 +184,7 @@ func TestReadsMatchExpected(t *testing.T) {
 				gotValue, gotStatus = tsvEscape(r.Value), r.Status
 			case "int[]":
 				r := doc.ReadIntArray(query)
+				gotSlots = r.Slots
 				parts := make([]string, len(r.Value))
 				for i, v := range r.Value {
 					parts[i] = strconv.FormatInt(v, 10)
@@ -190,6 +192,7 @@ func TestReadsMatchExpected(t *testing.T) {
 				gotValue, gotStatus = strings.Join(parts, "|"), r.Status
 			case "float[]":
 				r := doc.ReadFloatArray(query)
+				gotSlots = r.Slots
 				parts := make([]string, len(r.Value))
 				for i, v := range r.Value {
 					parts[i] = FormatFloat(v)
@@ -197,6 +200,7 @@ func TestReadsMatchExpected(t *testing.T) {
 				gotValue, gotStatus = strings.Join(parts, "|"), r.Status
 			case "bool[]":
 				r := doc.ReadBoolArray(query)
+				gotSlots = r.Slots
 				parts := make([]string, len(r.Value))
 				for i, v := range r.Value {
 					parts[i] = strconv.FormatBool(v)
@@ -204,6 +208,7 @@ func TestReadsMatchExpected(t *testing.T) {
 				gotValue, gotStatus = strings.Join(parts, "|"), r.Status
 			case "datetime[]":
 				r := doc.ReadDateTimeArray(query)
+				gotSlots = r.Slots
 				parts := make([]string, len(r.Value))
 				for i, v := range r.Value {
 					parts[i] = v.String()
@@ -211,6 +216,7 @@ func TestReadsMatchExpected(t *testing.T) {
 				gotValue, gotStatus = strings.Join(parts, "|"), r.Status
 			case "string[]":
 				r := doc.ReadStringArray(query)
+				gotSlots = r.Slots
 				parts := make([]string, len(r.Value))
 				for i, v := range r.Value {
 					parts[i] = tsvEscape(v)
@@ -224,6 +230,16 @@ func TestReadsMatchExpected(t *testing.T) {
 			}
 			if expected != "-" && gotValue != expected {
 				t.Errorf("%s: value: got %q want %q", at, gotValue, expected)
+			}
+			// Optional 6th column: per-slot statuses, |-joined (needs col 5 set).
+			if len(cols) > 5 {
+				parts := make([]string, len(gotSlots))
+				for i, st := range gotSlots {
+					parts[i] = st.String()
+				}
+				if got := strings.Join(parts, "|"); got != cols[5] {
+					t.Errorf("%s: slots: got %q want %q", at, got, cols[5])
+				}
 			}
 		}
 	}

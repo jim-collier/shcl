@@ -46,7 +46,8 @@ pub struct Diagnostic {
 }
 
 /// Read status sentinels. `Empty` is informational - the empty value is still returned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Ordered by severity so a worst-of aggregate is just `max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Status {
 	Good,
 	Empty,
@@ -57,16 +58,22 @@ pub enum Status {
 
 /// Full-tier read result: value plus status plus the original raw text (when the
 /// path resolved), so a caller can always recover what was actually in the file.
+/// Array reads also carry one status per slot (element, or wildcard instance) in
+/// `slots`; `status` is then the worst slot. Scalar reads leave `slots` empty.
 #[derive(Debug, Clone)]
 pub struct Read<T> {
 	pub value: T,
 	pub status: Status,
 	pub raw: Option<String>,
+	pub slots: Vec<Status>,
 }
 
 impl<T> Read<T> {
 	fn new(value: T, status: Status, raw: Option<String>) -> Read<T> {
-		Read { value, status, raw }
+		Read { value, status, raw, slots: Vec::new() }
+	}
+	fn with_slots(value: T, status: Status, raw: Option<String>, slots: Vec<Status>) -> Read<T> {
+		Read { value, status, raw, slots }
 	}
 	pub fn ok(&self) -> bool {
 		matches!(self.status, Status::Good | Status::Empty)
@@ -1116,8 +1123,9 @@ enum Resolved {
 	None,
 	One(usize),
 	Many(Vec<usize>),
-	// Wildcard: one slot per instance, in file order; None = sub-path missing.
-	Slots(Vec<Option<usize>>),
+	// Wildcard: one slot per instance, in file order; Err = why the sub-path
+	// did not land on one node (NotFound missing, Multiple ambiguous).
+	Slots(Vec<Result<usize, Status>>),
 }
 
 impl Document {
@@ -1151,14 +1159,15 @@ impl Document {
 				Some(Selector::Wildcard) => {
 					// Remaining path resolves per-instance; slots stay aligned.
 					let rest = &segs[i + 1..];
-					let mut slots: Vec<Option<usize>> = Vec::new();
+					let mut slots: Vec<Result<usize, Status>> = Vec::new();
 					for inst in next {
 						if rest.is_empty() {
-							slots.push(Some(inst));
+							slots.push(Ok(inst));
 						} else {
 							match self.resolve_from(&[inst], rest) {
-								Resolved::One(x) => slots.push(Some(x)),
-								_ => slots.push(None),
+								Resolved::One(x) => slots.push(Ok(x)),
+								Resolved::None => slots.push(Err(Status::NotFound)),
+								_ => slots.push(Err(Status::Multiple)),
 							}
 						}
 					}
@@ -1191,18 +1200,21 @@ impl Document {
 		}
 	}
 
-	/// Instance values at a path, in file order.
+	/// Instance values at a path, in file order. Wildcard slots that did not
+	/// resolve stay in the list as "" so indices keep matching count().
 	pub fn instances(&self, path: &str) -> Vec<String> {
-		let nodes: Vec<usize> = match self.resolve(path) {
-			Ok(Resolved::One(n)) => vec![n],
-			Ok(Resolved::Many(v)) => v,
-			Ok(Resolved::Slots(s)) => s.into_iter().flatten().collect(),
+		match self.resolve(path) {
+			Ok(Resolved::One(n)) => vec![self.arena[n].value.display()],
+			Ok(Resolved::Many(v)) => v.iter().map(|&n| self.arena[n].value.display()).collect(),
+			Ok(Resolved::Slots(s)) => s
+				.into_iter()
+				.map(|r| match r {
+					Ok(n) => self.arena[n].value.display(),
+					Err(_) => String::new(),
+				})
+				.collect(),
 			_ => Vec::new(),
-		};
-		nodes
-			.iter()
-			.map(|&n| self.arena[n].value.display())
-			.collect()
+		}
 	}
 }
 
@@ -1726,31 +1738,44 @@ impl Document {
 		path: &str,
 		coerce: impl Fn(&Element) -> Option<T>,
 	) -> Read<Vec<T>> {
-		// Wildcard paths: one slot per instance, missing sub-paths keep their slot.
+		// Wildcard paths: one slot per instance, missing sub-paths keep their slot
+		// (spec: never silently dropped). Each slot reads like a scalar of the
+		// target type and records its own status; the aggregate is the worst one.
 		match self.resolve(path) {
 			Err(st) => Read::new(Vec::new(), st, None),
 			Ok(Resolved::Slots(slots)) => {
 				let mut out: Vec<T> = Vec::new();
-				let mut status = Status::Good;
+				let mut sts: Vec<Status> = Vec::new();
 				for slot in &slots {
 					match slot {
-						None => out.push(T::default()),
-						Some(n) => match self.scalar_element(&self.arena[*n].value) {
+						Err(st) => {
+							out.push(T::default());
+							sts.push(*st);
+						}
+						Ok(n) => match self.scalar_element(&self.arena[*n].value) {
 							Ok(el) => match coerce(el) {
-								Some(v) => out.push(v),
+								Some(v) => {
+									out.push(v);
+									sts.push(Status::Good);
+								}
 								None => {
 									out.push(T::default());
-									status = Status::BadType;
+									sts.push(Status::BadType);
 								}
 							},
-							Err(_) => out.push(T::default()),
+							Err(st) => {
+								out.push(T::default());
+								sts.push(st);
+							}
 						},
 					}
 				}
-				if slots.is_empty() {
-					status = Status::Empty;
-				}
-				Read::new(out, status, None)
+				let status = if sts.is_empty() {
+					Status::Empty
+				} else {
+					sts.iter().copied().max().unwrap_or(Status::Good)
+				};
+				Read::with_slots(out, status, None, sts)
 			}
 			Ok(Resolved::None) => Read::new(Vec::new(), Status::NotFound, None),
 			Ok(Resolved::Many(_)) => Read::new(Vec::new(), Status::Multiple, None),
@@ -1762,17 +1787,21 @@ impl Document {
 					Value::Raw { .. } => Read::new(Vec::new(), Status::BadType, raw),
 					Value::Cell(els) => {
 						let mut out = Vec::with_capacity(els.len());
-						let mut status = Status::Good;
+						let mut sts = Vec::with_capacity(els.len());
 						for el in els {
 							match coerce(el) {
-								Some(v) => out.push(v),
+								Some(v) => {
+									out.push(v);
+									sts.push(Status::Good);
+								}
 								None => {
 									out.push(T::default());
-									status = Status::BadType;
+									sts.push(Status::BadType);
 								}
 							}
 						}
-						Read::new(out, status, raw)
+						let status = sts.iter().copied().max().unwrap_or(Status::Good);
+						Read::with_slots(out, status, raw, sts)
 					}
 				}
 			}

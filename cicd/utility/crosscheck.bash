@@ -87,7 +87,8 @@ fReadRow(){
 		load)         fCompare "load" check "${strictArg[@]}" "$input" ;;
 		count)        fCompare "count ${query}" count "${strictArg[@]}" "$input" "$query" ;;
 		instances)    fCompare "instances ${query}" instances "${strictArg[@]}" "$input" "$query" ;;
-		*'[]')        fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query" ;;
+		*'[]')        fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
+		              fCompare "get ${query} ${type} slots" get "--${type%[]}" --array --slots "${strictArg[@]}" "$input" "$query" ;;
 		*)            fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query" ;;
 	esac
 }

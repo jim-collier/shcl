@@ -51,11 +51,13 @@ typedef struct { int     value;  shcl_status status; } shcl_read_bool;
 typedef struct { shcl_str value; shcl_status status; } shcl_read_str;
 typedef struct { shcl_datetime value; shcl_status status; } shcl_read_dt;
 
-typedef struct { int64_t *values; size_t n; shcl_status status; } shcl_read_i64_arr;
-typedef struct { double  *values; size_t n; shcl_status status; } shcl_read_f64_arr;
-typedef struct { int     *values; size_t n; shcl_status status; } shcl_read_bool_arr;
-typedef struct { shcl_str *values; size_t n; shcl_status status; } shcl_read_str_arr;
-typedef struct { shcl_datetime *values; size_t n; shcl_status status; } shcl_read_dt_arr;
+// Array results also carry one status per slot (element, or wildcard instance)
+// in statuses[0..n); status is then the worst slot. NULL on whole-path errors.
+typedef struct { int64_t *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_i64_arr;
+typedef struct { double  *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_f64_arr;
+typedef struct { int     *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_bool_arr;
+typedef struct { shcl_str *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_str_arr;
+typedef struct { shcl_datetime *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_dt_arr;
 
 // Parse never fails: bad lines are skipped and diagnosed. Text need not be NUL
 // terminated. Free with shcl_free.
@@ -594,7 +596,7 @@ static int s_contains_char(S s, char c) { for (size_t i = 0; i < s.n; i++) if (s
 DEFINE_VEC(VecS, S)
 typedef struct { S indent; size_t node; } StackEnt;
 DEFINE_VEC(VecStack, StackEnt)
-typedef struct { int present; size_t idx; } Slot;
+typedef struct { int present; size_t idx; shcl_status miss; } Slot;
 DEFINE_VEC(VecSlot, Slot)
 
 // --- coercion ("intelligent but safe"; Loose re-admits a closed list) --------
@@ -1223,9 +1225,13 @@ static Resolved resolve_from(shcl_doc *d, size_t *start, size_t nstart, Segment 
 			Segment *rest = segs + si + 1; size_t nrest = nsegs - si - 1;
 			VecSlot slots = {0};
 			for (size_t k = 0; k < next.len; k++) {
-				Slot sl; sl.present = 0; sl.idx = 0;
+				Slot sl; sl.present = 0; sl.idx = 0; sl.miss = SHCL_NOT_FOUND;
 				if (nrest == 0) { sl.present = 1; sl.idx = next.data[k]; }
-				else { size_t inst = next.data[k]; Resolved r = resolve_from(d, &inst, 1, rest, nrest); if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; } }
+				else {
+					size_t inst = next.data[k]; Resolved r = resolve_from(d, &inst, 1, rest, nrest);
+					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
+					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
+				}
 				VecSlot_push(a, &slots, sl);
 			}
 			Resolved R; R.kind = R_SLOTS; R.slots = slots; memset(&R.many, 0, sizeof R.many); R.one = 0;
@@ -1262,29 +1268,45 @@ static shcl_status scalar_at(shcl_doc *d, S path, Element **el) {
 	*el = NULL; return SHCL_BAD_TYPE;
 }
 
-// Element list for array reads; NULL entry => default slot (no BadType).
-static shcl_status array_elements(shcl_doc *d, S path, Element ***els, size_t *n) {
+// Element list for array reads plus a per-slot pre-status: NULL entry => the
+// slot has no coercible scalar and sts[i] already says why (a present element
+// can still turn BadType if coercion fails). Wildcard slots stay aligned - the
+// spec never drops one silently.
+static shcl_status array_elements(shcl_doc *d, S path, Element ***els, shcl_status **sts, size_t *n) {
 	Arena *a = &d->arena;
 	Resolved r;
-	if (!resolve(d, path, &r)) { *els = NULL; *n = 0; return SHCL_NOT_FOUND; }
+	*els = NULL; *sts = NULL; *n = 0;
+	if (!resolve(d, path, &r)) return SHCL_NOT_FOUND;
 	if (r.kind == R_SLOTS) {
 		size_t m = r.slots.len;
 		Element **arr = (Element **)arena_alloc(a, (m ? m : 1) * sizeof(Element *));
+		shcl_status *st = (shcl_status *)arena_alloc(a, (m ? m : 1) * sizeof(shcl_status));
 		for (size_t i = 0; i < m; i++) {
 			arr[i] = NULL;
-			if (r.slots.data[i].present) { Value *v = &NODE(d, r.slots.data[i].idx).value; if (v->kind == V_CELL && v->nels == 1) arr[i] = &v->els[0]; }
+			if (!r.slots.data[i].present) { st[i] = r.slots.data[i].miss; continue; }
+			Value *v = &NODE(d, r.slots.data[i].idx).value;
+			if (v->kind == V_EMPTY) st[i] = SHCL_EMPTY;
+			else if (v->kind == V_CELL && v->nels == 1) { arr[i] = &v->els[0]; st[i] = SHCL_GOOD; }
+			else st[i] = SHCL_BAD_TYPE; // raw block, or an array is not one scalar
 		}
-		*els = arr; *n = m; return m == 0 ? SHCL_EMPTY : SHCL_GOOD;
+		*els = arr; *sts = st; *n = m; return m == 0 ? SHCL_EMPTY : SHCL_GOOD;
 	}
-	if (r.kind == R_NONE) { *els = NULL; *n = 0; return SHCL_NOT_FOUND; }
-	if (r.kind == R_MANY) { *els = NULL; *n = 0; return SHCL_MULTIPLE; }
+	if (r.kind == R_NONE) return SHCL_NOT_FOUND;
+	if (r.kind == R_MANY) return SHCL_MULTIPLE;
 	Value *v = &NODE(d, r.one).value;
-	if (v->kind == V_EMPTY) { *els = NULL; *n = 0; return SHCL_EMPTY; }
-	if (v->kind == V_RAW) { *els = NULL; *n = 0; return SHCL_BAD_TYPE; }
+	if (v->kind == V_EMPTY) return SHCL_EMPTY;
+	if (v->kind == V_RAW) return SHCL_BAD_TYPE;
 	size_t m = v->nels;
 	Element **arr = (Element **)arena_alloc(a, (m ? m : 1) * sizeof(Element *));
-	for (size_t i = 0; i < m; i++) arr[i] = &v->els[i];
-	*els = arr; *n = m; return SHCL_GOOD;
+	shcl_status *st = (shcl_status *)arena_alloc(a, (m ? m : 1) * sizeof(shcl_status));
+	for (size_t i = 0; i < m; i++) { arr[i] = &v->els[i]; st[i] = SHCL_GOOD; }
+	*els = arr; *sts = st; *n = m; return SHCL_GOOD;
+}
+
+static shcl_status worst_slot(const shcl_status *sts, size_t n, shcl_status floor_) {
+	shcl_status w = floor_;
+	for (size_t i = 0; i < n; i++) if (sts[i] > w) w = sts[i];
+	return w;
 }
 
 size_t shcl_count(shcl_doc *d, const char *path, size_t plen) {
@@ -1294,13 +1316,21 @@ size_t shcl_count(shcl_doc *d, const char *path, size_t plen) {
 	return 0;
 }
 size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {
+	// Wildcard slots that did not resolve stay in the list as "" so indices
+	// keep matching shcl_count.
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
-	VecSize nodes = {0}; Resolved r;
-	if (resolve(d, p, &r)) {
-		if (r.kind == R_ONE) VecSize_push(a, &nodes, r.one);
-		else if (r.kind == R_MANY) for (size_t k = 0; k < r.many.len; k++) VecSize_push(a, &nodes, r.many.data[k]);
-		else if (r.kind == R_SLOTS) for (size_t k = 0; k < r.slots.len; k++) if (r.slots.data[k].present) VecSize_push(a, &nodes, r.slots.data[k].idx);
+	Resolved r;
+	if (!resolve(d, p, &r)) { *out = (shcl_str *)arena_alloc(a, sizeof(shcl_str)); return 0; }
+	if (r.kind == R_SLOTS) {
+		size_t m = r.slots.len;
+		shcl_str *arr = (shcl_str *)arena_alloc(a, (m ? m : 1) * sizeof(shcl_str));
+		for (size_t k = 0; k < m; k++)
+			arr[k] = r.slots.data[k].present ? value_display(a, &NODE(d, r.slots.data[k].idx).value) : s_empty();
+		*out = arr; return m;
 	}
+	VecSize nodes = {0};
+	if (r.kind == R_ONE) VecSize_push(a, &nodes, r.one);
+	else if (r.kind == R_MANY) for (size_t k = 0; k < r.many.len; k++) VecSize_push(a, &nodes, r.many.data[k]);
 	shcl_str *arr = (shcl_str *)arena_alloc(a, (nodes.len ? nodes.len : 1) * sizeof(shcl_str));
 	for (size_t k = 0; k < nodes.len; k++) arr[k] = value_display(a, &NODE(d, nodes.data[k]).value);
 	*out = arr; return nodes.len;
@@ -1361,47 +1391,47 @@ shcl_read_str shcl_read_raw_info(shcl_doc *d, const char *path, size_t plen) {
 }
 
 shcl_read_i64_arr shcl_read_int_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_i64_arr R; S p; p.p = path; p.n = plen; Element **els; size_t n;
-	shcl_status st = array_elements(d, p, &els, &n);
-	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; return R; }
-	int64_t *out = (int64_t *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(int64_t)); shcl_status fin = st;
-	for (size_t i = 0; i < n; i++) { int64_t v; if (els[i] && parse_int_text(&d->arena, els[i], d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) fin = SHCL_BAD_TYPE; } }
-	R.values = out; R.n = n; R.status = fin; return R;
+	shcl_read_i64_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_status st = array_elements(d, p, &els, &sts, &n);
+	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
+	int64_t *out = (int64_t *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(int64_t));
+	for (size_t i = 0; i < n; i++) { int64_t v; if (els[i] && parse_int_text(&d->arena, els[i], d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) sts[i] = SHCL_BAD_TYPE; } }
+	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_f64_arr shcl_read_float_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_f64_arr R; S p; p.p = path; p.n = plen; Element **els; size_t n;
-	shcl_status st = array_elements(d, p, &els, &n);
-	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; return R; }
-	double *out = (double *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(double)); shcl_status fin = st;
-	for (size_t i = 0; i < n; i++) { double v; if (els[i] && parse_float_text(&d->arena, els[i], d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) fin = SHCL_BAD_TYPE; } }
-	R.values = out; R.n = n; R.status = fin; return R;
+	shcl_read_f64_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_status st = array_elements(d, p, &els, &sts, &n);
+	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
+	double *out = (double *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(double));
+	for (size_t i = 0; i < n; i++) { double v; if (els[i] && parse_float_text(&d->arena, els[i], d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) sts[i] = SHCL_BAD_TYPE; } }
+	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_bool_arr shcl_read_bool_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_bool_arr R; S p; p.p = path; p.n = plen; Element **els; size_t n;
-	shcl_status st = array_elements(d, p, &els, &n);
-	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; return R; }
-	int *out = (int *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(int)); shcl_status fin = st;
-	for (size_t i = 0; i < n; i++) { int v; if (els[i] && parse_bool_text(&d->arena, els[i]->text, d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) fin = SHCL_BAD_TYPE; } }
-	R.values = out; R.n = n; R.status = fin; return R;
+	shcl_read_bool_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_status st = array_elements(d, p, &els, &sts, &n);
+	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
+	int *out = (int *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(int));
+	for (size_t i = 0; i < n; i++) { int v; if (els[i] && parse_bool_text(&d->arena, els[i]->text, d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) sts[i] = SHCL_BAD_TYPE; } }
+	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_dt_arr shcl_read_datetime_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_dt_arr R; S p; p.p = path; p.n = plen; Element **els; size_t n;
-	shcl_status st = array_elements(d, p, &els, &n);
-	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; return R; }
-	shcl_datetime *out = (shcl_datetime *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_datetime)); shcl_status fin = st;
+	shcl_read_dt_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_status st = array_elements(d, p, &els, &sts, &n);
+	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
+	shcl_datetime *out = (shcl_datetime *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_datetime));
 	for (size_t i = 0; i < n; i++) {
 		memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE;
-		if (els[i]) { if (!parse_datetime(&d->arena, els[i]->text, &out[i])) { memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE; fin = SHCL_BAD_TYPE; } }
+		if (els[i]) { if (!parse_datetime(&d->arena, els[i]->text, &out[i])) { memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE; sts[i] = SHCL_BAD_TYPE; } }
 	}
-	R.values = out; R.n = n; R.status = fin; return R;
+	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_str_arr shcl_read_string_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_str_arr R; S p; p.p = path; p.n = plen; Element **els; size_t n;
-	shcl_status st = array_elements(d, p, &els, &n);
-	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; return R; }
+	shcl_read_str_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_status st = array_elements(d, p, &els, &sts, &n);
+	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
 	shcl_str *out = (shcl_str *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_str));
 	for (size_t i = 0; i < n; i++) out[i] = els[i] ? apply_escapes(&d->arena, els[i]->text) : s_empty();
-	R.values = out; R.n = n; R.status = st; return R;
+	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 
 // --- formatter (canonical output) -------------------------------------------
