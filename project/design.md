@@ -226,6 +226,7 @@ Technical detail behind the backlog's "Code Review 20260716" items. Item numbers
 - **Item 10 - raw-block identity vs info-string** (`source/rust/src/lib.rs:177`)
 	- `Value::key()` keys Raw on content only; two fences under one header with infos `sql` and `python` merge to one instance, the second info silently gone. The identical pair spelled as two headers stays two instances, so the accidental rule is not even applied consistently across spellings the spec calls equivalent.
 	- Spec decision needed: include info-string (and fence style) in identity, or keep content-only and emit a hint when a merge drops a differing info. Corpus case either way - currently unpinned behavior all bindings merely share.
+	- Resolved: we decided identity = content + info-string, fence style excluded. It is the data-preserving choice, and it makes the one-header-two-fences spelling behave like the two-header spelling the spec already calls equivalent. Pinned in spec.md (Raw blocks) and corpus case 012.
 
 - **Item 11 - array-as-string read** (`source/rust/src/lib.rs:1689`)
 	- Single element: escapes applied. Multi-element cell: `display()` - bare `, `-join, no re-quoting, no escapes; contradicts the doc comment, spec line 135, and `read_string_array` (which does escape per element). `Read.raw` shares display(), so "original raw text" is not the original text either.

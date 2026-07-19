@@ -115,24 +115,24 @@ In each section, items are listed approximately from newest to oldest.
 	- Fixed in all four bindings: array reads carry per-slot statuses, aggregate = worst slot, `instances` keeps unresolved slots as "", CLI grows `--slots` and per-slot `--default` substitution. Spec pinned, corpus case 009 + a slots column in reads.tsv, crosscheck replays `--slots`.
 	- Detail: `design.md` - Code Review 20260716, item 3.
 
-- 🔘 Code Review 20260716 item 7: `fmt` ignores `--strictness`.
-	- A strict-mode load failure prints silently repaired output and exits 0; `check`/`get` on the same file exit 6.
+- ✅ Code Review 20260716 item 7: `fmt` ignores `--strictness`.
+	- Fixed: `fmt` loads at the requested strictness in all four CLIs; strict failure exits 6 with diagnostics, no output. Crosscheck now replays `fmt` at each `load` row's level.
 	- Same in all four CLIs. Detail: `design.md` - Code Review 20260716, item 7.
 
-- 🔘 Code Review 20260716 item 8: mixed `*`/field child lines silently build a block array.
-	- Spec and grammar both say a mix at the child indent is not a block array; the parser accepts it with zero diagnostics.
+- ✅ Code Review 20260716 item 8: mixed `*`/field child lines silently build a block array.
+	- Fixed: uniform-or-nothing enforced in all four parsers - first mixed field diagnoses an Error (field kept), later `*` lines under that parent are Errors and dropped. Corpus case 010.
 	- Detail: `design.md` - Code Review 20260716, item 8.
 
-- 🔘 Code Review 20260716 item 9: `field[disc]` matches differently at parse-time vs query-time.
-	- An array-valued discriminator creates a duplicate instance instead of selecting the existing one.
+- ✅ Code Review 20260716 item 9: `field[disc]` matches differently at parse-time vs query-time.
+	- Fixed: parse-side selectors match the display form like queries do; create only when nothing matches. Corpus case 011; spec's selector bullet updated.
 	- Detail: `design.md` - Code Review 20260716, item 9.
 
-- 🔘 Code Review 20260716 item 10: raw-block merge identity ignores the info-string.
-	- Two same-content blocks with different labels merge silently; one label is lost with no diagnostic.
-	- Spec never says whether the info-string is part of value identity - decide, then pin. Detail: `design.md` - Code Review 20260716, item 10.
+- ✅ Code Review 20260716 item 10: raw-block merge identity ignores the info-string.
+	- Decided: info-string is part of a block's identity (fence style is not); equal bodies with different infos stay two instances. All four parsers; corpus case 012; spec updated.
+	- Detail: `design.md` - Code Review 20260716, item 10.
 
-- 🔘 Code Review 20260716 item 11: reading an array as a string drops quoting and escapes.
-	- `tags: "a, b", c` reads back as `a, b, c` - not round-trippable, and escape handling differs from the scalar path.
+- ✅ Code Review 20260716 item 11: reading an array as a string drops quoting and escapes.
+	- Fixed: array-as-string is the canonical inline form (minimal quoting, escapes intact, re-parses to the same array) in all four bindings. Corpus rows in case 011; spec's Strings section updated.
 	- Detail: `design.md` - Code Review 20260716, item 11.
 
 - 🔘 Code Review 20260716 item 12: parse time is quadratic in siblings.

@@ -168,7 +168,9 @@ class _Value:
 				parts.append("\x00")
 				parts.append(e.text)
 			return "".join(parts)
-		return "r:" + self.content
+		# Info-string is part of identity (a `sql` and a `python` block are
+		# different values even with equal bodies); fence style is not.
+		return "r:" + self.info + "\x00" + self.content
 
 	def display(self):
 		"""Human/display form; also what selectors match against (case-sensitive)."""
@@ -199,7 +201,7 @@ def _raw(content, info, fence_char, fence_len):
 
 
 class _Node:
-	__slots__ = ("name", "value", "children", "parent", "line", "star_list")
+	__slots__ = ("name", "value", "children", "parent", "line", "star_list", "star_mixed")
 
 	def __init__(self, name, value, parent, line):
 		self.name = name          # ASCII-folded to lower; non-ASCII never folds
@@ -208,6 +210,7 @@ class _Node:
 		self.parent = parent
 		self.line = line
 		self.star_list = False    # value built from stacked "* " lines
+		self.star_mixed = False   # mix of "* " and field children already diagnosed
 
 
 ROOT = 0
@@ -580,14 +583,30 @@ class _Parser:
 	def _attach_path(self, parent, segs, value, line):
 		"""Walk path segments under `parent`, select-or-creating; returns the node
 		for the last segment carrying `value`. None aborts the line (diagnosed)."""
+		# Field child under a stacked list: diagnose the mix once, keep the field.
+		pnode = self.arena[parent]
+		if pnode.star_list and not pnode.star_mixed:
+			pnode.star_mixed = True
+			self._err(line, "field mixed with list elements")
 		cur = parent
 		last = len(segs) - 1
 		for i, seg in enumerate(segs):
 			is_last = i == last
 			sel = seg.selector
 			if sel is not None and sel[0] == "val":
-				disc = _cell([_Element(sel[1], False)])
-				cur = self._select_or_create(cur, seg.name, disc, line)
+				# Same display() predicate resolution uses, so a selector also
+				# selects an array-valued instance instead of creating a
+				# spurious second one. Create only when nothing matches.
+				found = None
+				for c in self.arena[cur].children:
+					if self.arena[c].name == seg.name and self.arena[c].value.display() == sel[1]:
+						found = c
+						break
+				if found is not None:
+					cur = found
+				else:
+					disc = _cell([_Element(sel[1], False)])
+					cur = self._select_or_create(cur, seg.name, disc, line)
 				if is_last and not value.is_empty():
 					# `a.b[X]: v` - the discriminator is the value; a second
 					# value has nowhere unambiguous to go.
@@ -675,6 +694,10 @@ class _Parser:
 		"""One stacked-list element (`* scalar`) appends to the parent's array."""
 		if parent == ROOT:
 			self._err(line, "list element with no parent field")
+			return
+		# Uniform-or-nothing (spec): a mix with field children is not a block array.
+		if self.arena[parent].children:
+			self._err(line, "list element mixed with field children; ignored")
 			return
 		trimmed = _trim(body)
 		if not trimmed:
@@ -1059,7 +1082,9 @@ class Document:
 			return Read(value.content, Status.Good, raw)
 		if len(value.els) == 1:
 			return Read(_apply_escapes(value.els[0].text), Status.Good, raw)
-		return Read(value.display(), Status.Good, raw)
+		# Canonical inline form (quoting + escapes intact), so the string
+		# re-parses to the same array - not the bare display join.
+		return Read(", ".join(_emit_element(e) for e in value.els), Status.Good, raw)
 
 	def read_raw(self, path):
 		"""Raw-block content (verbatim). Non-block values are BadType."""

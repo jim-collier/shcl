@@ -193,7 +193,9 @@ static int do_fmt(Opts *o) {
 	const char *file = o->args[0];
 	size_t len; char *text = read_input(file, &len);
 	if (!text) return 1;
-	shcl_doc *d = shcl_parse(text, len);
+	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
+	int gate = strict_gate(d);
+	if (gate) { shcl_free(d); free(text); return gate; }
 	shcl_str c = shcl_to_canonical(d);
 	int rc = 0;
 	if (o->write && strcmp(file, "-") != 0) {

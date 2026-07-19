@@ -293,7 +293,11 @@ func doFmt(o *opts) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	canonical := shcl.Parse(text).ToCanonical()
+	doc, code := loadDoc(text, o.strictness)
+	if doc == nil {
+		return code
+	}
+	canonical := doc.ToCanonical()
 	if o.write && file != "-" {
 		if werr := os.WriteFile(file, []byte(canonical), 0o644); werr != nil {
 			fmt.Fprintf(os.Stderr, "%s: %s\n", file, werr)

@@ -230,7 +230,10 @@ def do_fmt(o):
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
-	canonical = shcl.Document.parse(text).to_canonical()
+	doc, code = load_doc(text, o.strictness)
+	if doc is None:
+		return code
+	canonical = doc.to_canonical()
 	if o.write and file != "-":
 		try:
 			with open(file, "w", encoding="utf-8", newline="") as f:

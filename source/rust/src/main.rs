@@ -268,7 +268,10 @@ fn do_fmt(o: &Opts) -> u8 {
 			return 1;
 		}
 	};
-	let canonical = Document::parse(&text).to_canonical();
+	let canonical = match load(&text, o.strictness) {
+		Ok(d) => d.to_canonical(),
+		Err(code) => return code,
+	};
 	if o.write && file != "-" {
 		if let Err(e) = std::fs::write(file, &canonical) {
 			eprintln!("{}: {}", file, e);

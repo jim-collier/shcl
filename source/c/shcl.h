@@ -306,7 +306,8 @@ typedef struct {
 	VecSize children;
 	size_t parent;
 	size_t line;
-	int star_list;
+	int star_list;  /* value built from stacked "* " lines */
+	int star_mixed; /* mix of "* " and field children already diagnosed */
 } Node;
 DEFINE_VEC(VecNode, Node)
 
@@ -335,7 +336,9 @@ static S value_key(Arena *a, const Value *v) {
 		for (size_t i = 0; i < v->nels; i++) { sb_putc(a, &s, '\0'); sb_putS(a, &s, v->els[i].text); }
 		return sb_S(&s);
 	}
-	sb_puts(a, &s, "r:"); sb_putS(a, &s, v->content); return sb_S(&s);
+	/* Info-string is part of identity (a `sql` and a `python` block are
+	   different values even with equal bodies); fence style is not. */
+	sb_puts(a, &s, "r:"); sb_putS(a, &s, v->info); sb_putc(a, &s, '\0'); sb_putS(a, &s, v->content); return sb_S(&s);
 }
 static S value_display(Arena *a, const Value *v) {
 	if (v->kind == V_EMPTY) return s_empty();
@@ -966,7 +969,7 @@ static size_t select_or_create(Parser *P, size_t parent, S name, Value value, si
 	}
 	size_t idx = P->d->nodes.len;
 	Node n; memset(&n, 0, sizeof n);
-	n.name = s_dup(a, name); n.value = value; n.parent = parent; n.line = line; n.star_list = 0;
+	n.name = s_dup(a, name); n.value = value; n.parent = parent; n.line = line; n.star_list = 0; n.star_mixed = 0;
 	VecNode_push(a, &P->d->nodes, n);
 	VecSize_push(a, &NODE(P->d, parent).children, idx);
 	return idx;
@@ -988,17 +991,35 @@ static int resolve_parent(Parser *P, S indent, size_t *out) {
 
 static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Value value, size_t line, size_t *out) {
 	Arena *a = &P->d->arena;
+	/* Field child under a stacked list: diagnose the mix once, keep the field. */
+	if (NODE(P->d, parent).star_list && !NODE(P->d, parent).star_mixed) {
+		NODE(P->d, parent).star_mixed = 1;
+		p_err(P, line, s_lit("field mixed with list elements"));
+	}
 	size_t cur = parent;
 	for (size_t i = 0; i < nsegs; i++) {
 		Segment *seg = &segs[i];
 		int is_last = (i + 1 == nsegs);
 		switch (seg->sel.tag) {
 		case SEL_VALUE: {
-			Value disc; memset(&disc, 0, sizeof disc); disc.kind = V_CELL;
-			Element *e = (Element *)arena_alloc(a, sizeof(Element));
-			e->text = s_dup(a, seg->sel.value); e->quoted = 0;
-			disc.els = e; disc.nels = 1;
-			cur = select_or_create(P, cur, seg->name, disc, line);
+			/* Same display() predicate resolution uses, so a selector also
+			   selects an array-valued instance instead of creating a spurious
+			   second one. Create only when nothing matches. */
+			VecSize ch = NODE(P->d, cur).children;
+			size_t found = (size_t)-1;
+			for (size_t k = 0; k < ch.len; k++) {
+				size_t c = ch.data[k];
+				if (s_eq(NODE(P->d, c).name, seg->name) && s_eq(value_display(a, &NODE(P->d, c).value), seg->sel.value)) { found = c; break; }
+			}
+			if (found != (size_t)-1) {
+				cur = found;
+			} else {
+				Value disc; memset(&disc, 0, sizeof disc); disc.kind = V_CELL;
+				Element *e = (Element *)arena_alloc(a, sizeof(Element));
+				e->text = s_dup(a, seg->sel.value); e->quoted = 0;
+				disc.els = e; disc.nels = 1;
+				cur = select_or_create(P, cur, seg->name, disc, line);
+			}
 			if (is_last && !v_is_empty(&value)) {
 				SB m = {0}; sb_puts(a, &m, "value after selector on '"); sb_putS(a, &m, seg->name); sb_puts(a, &m, "' ignored");
 				p_err(P, line, sb_S(&m));
@@ -1068,6 +1089,8 @@ static void bind_block(Parser *P, size_t parent, Value value, size_t line) {
 static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
 	Arena *a = &P->d->arena;
 	if (parent == ROOT) { p_err(P, line, s_lit("list element with no parent field")); return; }
+	/* Uniform-or-nothing (spec): a mix with field children is not a block array. */
+	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, s_lit("list element mixed with field children; ignored")); return; }
 	S trimmed = s_trim(body);
 	if (trimmed.n == 0) { p_err(P, line, s_lit("empty list element")); return; }
 	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, s_lit("bare comma in list element (one element per line)")); return; }
@@ -1365,13 +1388,21 @@ shcl_read_dt shcl_read_datetime(shcl_doc *d, const char *path, size_t plen) {
 	else { memset(&R.value, 0, sizeof R.value); R.value.zone = SHCL_ZONE_NONE; R.status = SHCL_BAD_TYPE; }
 	return R;
 }
+static S emit_element(Arena *a, const Element *e);
+
 shcl_read_str shcl_read_string(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_str R; S p; p.p = path; p.n = plen; Value *v; shcl_status st = value_at(d, p, &v);
 	if (st != SHCL_GOOD) { R.value = s_empty(); R.status = st; return R; }
 	if (v->kind == V_EMPTY) { R.value = s_empty(); R.status = SHCL_EMPTY; }
 	else if (v->kind == V_RAW) { R.value = v->content; R.status = SHCL_GOOD; }
 	else if (v->nels == 1) { R.value = apply_escapes(&d->arena, v->els[0].text); R.status = SHCL_GOOD; }
-	else { R.value = value_display(&d->arena, v); R.status = SHCL_GOOD; }
+	else {
+		/* Canonical inline form (quoting + escapes intact), so the string
+		   re-parses to the same array - not the bare display join. */
+		Arena *a = &d->arena; SB s = {0};
+		for (size_t i = 0; i < v->nels; i++) { if (i) sb_puts(a, &s, ", "); sb_putS(a, &s, emit_element(a, &v->els[i])); }
+		R.value = sb_S(&s); R.status = SHCL_GOOD;
+	}
 	return R;
 }
 shcl_read_str shcl_read_raw(shcl_doc *d, const char *path, size_t plen) {
