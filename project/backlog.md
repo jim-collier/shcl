@@ -99,12 +99,14 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Bugs
 
-- 🔘 Code Review 20260716 item 1: C CLI reads freed memory on typed array output.
+- ✅ Code Review 20260716 item 1: C CLI reads freed memory on typed array output.
 	- `get --int|--float|--datetime --array` with more than 8 elements prints from a stale pointer after the line buffer grows; large arrays segfault.
+	- Fixed: owned line entries no longer store a pointer into the growable array; corpus case 008 pins 10-element typed arrays of every kind.
 	- Detail: `design.md` - Code Review 20260716, item 1.
 
-- 🔘 Code Review 20260716 item 2: Rust parser panics on a multibyte char in the timezone tail of a datetime value.
+- ✅ Code Review 20260716 item 2: Rust parser panics on a multibyte char in the timezone tail of a datetime value.
 	- A garbled or hostile config aborts the consumer (exit 134) instead of returning BadType.
+	- Fixed: zone tail is now checked byte-wise, so no str slice can land mid-char; corpus 007 `bad5` pins BadType across all bindings.
 	- Detail: `design.md` - Code Review 20260716, item 2.
 
 - 🔘 Code Review 20260716 item 3: wildcard array reads swallow per-slot NotFound/BadType.

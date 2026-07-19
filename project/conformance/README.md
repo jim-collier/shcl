@@ -27,4 +27,8 @@ Case `005` pins raw-block binding: a fence is a value line for its parent field 
 
 Case `006` pins forgiving inline arrays: stray commas never error. Leading, doubled, and trailing commas drop their empty slots (`red,,blue` -> `red, blue`), an all-comma value (`,,,`) is the empty array, and a `""`-quoted element is the one way to keep a deliberately empty slot.
 
+Case `007` also pins that a multibyte char inside a time-shaped value's zone tail is a plain `BadType`, never a crash.
+
+Case `008` pins 10-element typed arrays of every kind (int, float, bool, datetime) - large enough to force output-buffer growth in the CLIs, which is where per-element formatted output can go stale.
+
 Not yet modeled: the raw-block info-string accessor, and diagnostic expectations (count, severity, the mandatory repeated-leaf hint). Needs a `diags.tsv` or similar once the reference parser defines the diagnostic shape.

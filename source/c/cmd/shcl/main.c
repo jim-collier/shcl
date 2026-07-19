@@ -128,11 +128,14 @@ static int do_get(Opts *o) {
 	char fbuf[SHCL_F64_BUF];
 	// Buffer output lines so the on-bad modes can suppress them uniformly. Each
 	// line either borrows arena/const memory (owned=0) or is formatted into own[].
+	// Owned entries keep p NULL: own[] lives inside the growable array, so a stored
+	// self-pointer goes stale on realloc - LINEPTR picks the live one at print time.
 	struct { const char *p; size_t n; char own[SHCL_F64_BUF]; int owned; } *lines = NULL;
 	size_t nlines = 0, clines = 0;
+	#define LINEPTR(I) (lines[I].owned ? lines[I].own : lines[I].p)
 	#define PUSHLINE_BYTES(P, N) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } lines[nlines].p = (P); lines[nlines].n = (N); lines[nlines].owned = 0; nlines++; } while (0)
-	#define PUSHLINE_FMT(FMT, ...) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } int k = snprintf(lines[nlines].own, SHCL_F64_BUF, FMT, __VA_ARGS__); lines[nlines].p = lines[nlines].own; lines[nlines].n = (size_t)k; lines[nlines].owned = 1; nlines++; } while (0)
-	#define PUSHLINE_BUF(B, N) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } memcpy(lines[nlines].own, (B), (N)); lines[nlines].p = lines[nlines].own; lines[nlines].n = (N); lines[nlines].owned = 1; nlines++; } while (0)
+	#define PUSHLINE_FMT(FMT, ...) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } int k = snprintf(lines[nlines].own, SHCL_F64_BUF, FMT, __VA_ARGS__); lines[nlines].p = NULL; lines[nlines].n = (size_t)k; lines[nlines].owned = 1; nlines++; } while (0)
+	#define PUSHLINE_BUF(B, N) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } memcpy(lines[nlines].own, (B), (N)); lines[nlines].p = NULL; lines[nlines].n = (N); lines[nlines].owned = 1; nlines++; } while (0)
 
 	if (o->array) {
 		if (!strcmp(o->kind, "int")) { shcl_read_i64_arr r = shcl_read_int_array(d, path, plen); status = r.status; for (size_t i = 0; i < r.n; i++) PUSHLINE_FMT("%" PRId64, r.values[i]); }
@@ -153,7 +156,7 @@ static int do_get(Opts *o) {
 	int rc;
 	int flag_ok = (status == SHCL_GOOD) || (status == SHCL_EMPTY && !strcmp(o->on_bad, "flag"));
 	if (flag_ok) {
-		for (size_t i = 0; i < nlines; i++) outln(lines[i].p, lines[i].n);
+		for (size_t i = 0; i < nlines; i++) outln(LINEPTR(i), lines[i].n);
 		rc = shcl_status_code(status);
 	} else if (!strcmp(o->on_bad, "default")) {
 		const char *dv = o->deflt ? o->deflt : "";
@@ -161,7 +164,7 @@ static int do_get(Opts *o) {
 	} else if (!strcmp(o->on_bad, "error")) {
 		fprintf(stderr, "%s: %s\n", path, shcl_status_name(status)); rc = shcl_status_code(status);
 	} else {
-		for (size_t i = 0; i < nlines; i++) outln(lines[i].p, lines[i].n);
+		for (size_t i = 0; i < nlines; i++) outln(LINEPTR(i), lines[i].n);
 		rc = shcl_status_code(status);
 	}
 	free(lines); shcl_free(d); free(text); return rc;
