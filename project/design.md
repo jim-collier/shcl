@@ -240,7 +240,7 @@ Technical detail behind the backlog's "Code Review 20260716" items. Item numbers
 - **Item 13 - Python recursion** (`source/python/shcl.py:863`)
 	- `_emit_node` recurses per level. The CLI's `setrecursionlimit(20000)` caps around depth 19992; the reference handles ~5x that. Library users at the default limit crash near depth 1000 even though parse (iterative) succeeded.
 	- Fix: iterative emit with an explicit (node, depth) stack, children pushed in reverse; then delete the recursion-limit bump in the CLI. Output already appends to a list, so the conversion is mechanical and byte-identical.
-	- Resolved: to_canonical drives the stack, _emit_node emits one node; the CLI bump is deleted. Depth 25000 formats byte-identical to the reference from the CLI and at the default limit as a library.
+	- Resolved: `to_canonical` drives the stack, `_emit_node` emits one node; the CLI bump is deleted. Depth 25000 formats byte-identical to the reference from the CLI and at the default limit as a library.
 
 - **Item 14 - ps1 resolution accepts non-executables** (`source/powershell/shcl.ps1:59-85,125`)
 	- All resolution sites test `Test-Path -PathType Leaf` only (bash checks `-x` everywhere). On pwsh/Linux, `&` on a non-executable file produces no output, no error record, `$LASTEXITCODE` stays null; `exit $LASTEXITCODE` then exits 0. Worse, the OS may hand the file to the desktop opener, launching a GUI editor.
