@@ -1478,16 +1478,21 @@ fn parse_time_part(s: &str) -> Option<TimeParts> {
 	if let Some(rest) = t.strip_suffix(['Z', 'z']) {
 		zone = Some(ZoneSpec::Utc);
 		t = rest.trim_end();
-	} else if t.len() >= 6 && t.is_char_boundary(t.len() - 6) {
-		let tail = &t[t.len() - 6..];
-		let sign = tail.as_bytes()[0];
+	} else if t.len() >= 6 {
+		// Byte-wise on purpose: a str slice here can land mid-char and panic when
+		// the tail holds multibyte text. All-ASCII match implies the cut is a
+		// char boundary, so the later &t[..len-6] is safe.
+		let tail = &t.as_bytes()[t.len() - 6..];
+		let sign = tail[0];
 		if (sign == b'+' || sign == b'-')
-			&& tail[1..3].bytes().all(|b| b.is_ascii_digit())
-			&& tail.as_bytes()[3] == b':'
-			&& tail[4..6].bytes().all(|b| b.is_ascii_digit())
+			&& tail[1].is_ascii_digit()
+			&& tail[2].is_ascii_digit()
+			&& tail[3] == b':'
+			&& tail[4].is_ascii_digit()
+			&& tail[5].is_ascii_digit()
 		{
-			let hh: i32 = tail[1..3].parse().ok()?;
-			let mm: i32 = tail[4..6].parse().ok()?;
+			let hh = i32::from(tail[1] - b'0') * 10 + i32::from(tail[2] - b'0');
+			let mm = i32::from(tail[4] - b'0') * 10 + i32::from(tail[5] - b'0');
 			if hh <= 23 && mm <= 59 {
 				let mut off = hh * 60 + mm;
 				if sign == b'-' {
