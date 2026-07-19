@@ -6,6 +6,8 @@
 //! The language spec lives in project/spec.md; the conformance corpus in
 //! project/conformance/ pins every behavior here.
 
+use std::collections::HashMap;
+
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
@@ -537,6 +539,9 @@ struct Parser {
 	diags: Vec<Diagnostic>,
 	// (indent string, node) for each open level; [0] is the virtual root.
 	stack: Vec<(String, usize)>,
+	// Per-node (name, value-key) -> first matching child, parallel to arena.
+	// Pure lookup accelerator for select_or_create; children keeps the order.
+	child_map: Vec<HashMap<(String, String), usize>>,
 }
 
 impl Parser {
@@ -553,6 +558,7 @@ impl Parser {
 			}],
 			diags: Vec::new(),
 			stack: vec![(String::new(), ROOT)],
+			child_map: vec![HashMap::new()],
 		}
 	}
 
@@ -566,11 +572,9 @@ impl Parser {
 
 	/// Find (or create by merge rule) the child of `parent` with this (name, value).
 	fn select_or_create(&mut self, parent: usize, name: &str, value: Value, line: usize) -> usize {
-		let key = value.key();
-		for &c in &self.arena[parent].children {
-			if self.arena[c].name == name && self.arena[c].value.key() == key {
-				return c;
-			}
+		let map_key = (name.to_string(), value.key());
+		if let Some(&c) = self.child_map[parent].get(&map_key) {
+			return c;
 		}
 		let idx = self.arena.len();
 		self.arena.push(NodeData {
@@ -583,7 +587,22 @@ impl Parser {
 			star_mixed: false,
 		});
 		self.arena[parent].children.push(idx);
+		self.child_map.push(HashMap::new());
+		self.child_map[parent].insert(map_key, idx);
 		idx
+	}
+
+	/// A node's value mutated in place (empty field filled, star element added):
+	/// move its map entry from the old key to the new one. First-wins on both
+	/// sides so lookups keep matching the earliest sibling, like the scan did.
+	fn remap_child(&mut self, node: usize, old_key: String) {
+		let parent = self.arena[node].parent;
+		let name = self.arena[node].name.clone();
+		if self.child_map[parent].get(&(name.clone(), old_key.clone())) == Some(&node) {
+			self.child_map[parent].remove(&(name.clone(), old_key));
+		}
+		let new_key = self.arena[node].value.key();
+		self.child_map[parent].entry((name, new_key)).or_insert(node);
 	}
 
 	/// Resolve which open level this indent belongs to. Child only when the
@@ -756,7 +775,9 @@ impl Parser {
 			return;
 		}
 		if self.arena[parent].value.is_empty() {
+			let old_key = self.arena[parent].value.key();
 			self.arena[parent].value = value;
+			self.remap_child(parent, old_key);
 		} else {
 			let (name, grandparent) = (self.arena[parent].name.clone(), self.arena[parent].parent);
 			self.select_or_create(grandparent, &name, value, line);
@@ -791,14 +812,24 @@ impl Parser {
 				return;
 			}
 		};
+		let old_key = self.arena[parent].value.key();
 		let node = &mut self.arena[parent];
-		match &mut node.value {
+		let mutated = match &mut node.value {
 			Value::Empty => {
 				node.value = Value::Cell(vec![el]);
 				node.star_list = true;
+				true
 			}
-			Value::Cell(els) if node.star_list => els.push(el),
-			_ => self.err(line, "field already has a value; list element ignored"),
+			Value::Cell(els) if node.star_list => {
+				els.push(el);
+				true
+			}
+			_ => false,
+		};
+		if mutated {
+			self.remap_child(parent, old_key);
+		} else {
+			self.err(line, "field already has a value; list element ignored");
 		}
 	}
 
@@ -809,12 +840,16 @@ impl Parser {
 		for parent in 0..self.arena.len() {
 			// Group by name in first-appearance order: hint order must be
 			// deterministic or the cross-binding check can't compare `check` output.
+			let mut group_of: HashMap<&str, usize> = HashMap::new();
 			let mut by_name: Vec<(&str, Vec<usize>)> = Vec::new();
 			for &c in &self.arena[parent].children {
 				let name = self.arena[c].name.as_str();
-				match by_name.iter_mut().find(|(n, _)| *n == name) {
-					Some((_, g)) => g.push(c),
-					None => by_name.push((name, vec![c])),
+				match group_of.get(name) {
+					Some(&g) => by_name[g].1.push(c),
+					None => {
+						group_of.insert(name, by_name.len());
+						by_name.push((name, vec![c]));
+					}
 				}
 			}
 			for (name, group) in by_name {

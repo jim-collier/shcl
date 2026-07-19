@@ -235,10 +235,12 @@ Technical detail behind the backlog's "Code Review 20260716" items. Item numbers
 - **Item 12 - quadratic parse** (`source/rust/src/lib.rs:559`, `source/python/shcl.py:548`)
 	- `select_or_create` linearly scans siblings per line, recomputing `value.key()` (a String build) per same-name candidate; `emit_repeated_leaf_hints` does a linear group-find per child. Both O(children^2) per parent. Measured (release): 12.5k lines 0.8s, 25k 2.9s, 50k 16s, 100k does not finish in 2 min. Python: 5k 0.7s, 20k 9.5s, 50k 72s.
 	- Fix in the reference and each port: per-parent map (name, value-key) -> child index for select_or_create (keep the Vec for order), cache the key at node creation, and group hints via map + first-appearance list (hint order stays deterministic).
+	- Resolved: per-parent map landed in all four parsers (C got a small arena-backed chained hash table). Values that mutate in place (an empty field filled by a raw block, star-list appends) move their map entry with first-wins semantics on both remove and insert, so lookups keep matching the earliest sibling exactly as the scan did. Hint grouping now indexes by name. Measured after: 100k flat lines rust 0.2s / go 1.0s / python 1.5s / c 0.2s.
 
 - **Item 13 - Python recursion** (`source/python/shcl.py:863`)
 	- `_emit_node` recurses per level. The CLI's `setrecursionlimit(20000)` caps around depth 19992; the reference handles ~5x that. Library users at the default limit crash near depth 1000 even though parse (iterative) succeeded.
 	- Fix: iterative emit with an explicit (node, depth) stack, children pushed in reverse; then delete the recursion-limit bump in the CLI. Output already appends to a list, so the conversion is mechanical and byte-identical.
+	- Resolved: to_canonical drives the stack, _emit_node emits one node; the CLI bump is deleted. Depth 25000 formats byte-identical to the reference from the CLI and at the default limit as a library.
 
 - **Item 14 - ps1 resolution accepts non-executables** (`source/powershell/shcl.ps1:59-85,125`)
 	- All resolution sites test `Test-Path -PathType Leaf` only (bash checks `-x` everywhere). On pwsh/Linux, `&` on a non-executable file produces no output, no error record, `$LASTEXITCODE` stays null; `exit $LASTEXITCODE` then exits 0. Worse, the OS may hand the file to the desktop opener, launching a GUI editor.
