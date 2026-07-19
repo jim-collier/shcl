@@ -8,6 +8,7 @@ First off, thanks for taking the time to contribute!
 All types of contributions are encouraged and valued. See the [Table of Contents](#table-of-contents) for different ways to help and details about how this project handles them. Please make sure to read the relevant section before making your contribution. It will make it a lot easier for us maintainers and smooth out the experience for all involved. The community looks forward to your contributions.
 
 > And if you like the project, but just don't have time to contribute, that's fine. There are other easy ways to support the project and show your appreciation, which we would also be very happy about:
+>
 > - Star the project
 > - Tweet/skeet/post about it
 > - Refer this project in your project's readme
@@ -21,14 +22,13 @@ All types of contributions are encouraged and valued. See the [Table of Contents
 - [I Want To Contribute](#i-want-to-contribute)
 	- [Reporting Bugs](#reporting-bugs)
 	- [Suggesting Enhancements](#suggesting-enhancements)
-
+- [How to develop](#how-to-develop)
 
 ## Code of Conduct
 
 This project and everyone participating in it is governed by the
 [SHCL Code of Conduct](https://github.com/jim-collier/shcl/blob/main/code_of_conduct.md).
 By participating, you are expected to uphold this code. Please report unacceptable behavior to <shcl@ubx9.com>.
-
 
 ## I Have a Question
 
@@ -60,6 +60,7 @@ Depending on how large the project is, you may want to outsource the questioning
 ## I Want To Contribute
 
 > ### Legal Notice <!-- omit in toc -->
+>
 > When contributing to this project, you must agree that you have authored 100% of the content, that you have the necessary rights to the content and that the content you contribute may be provided under the project licence.
 
 ### Reporting Bugs
@@ -97,10 +98,9 @@ Once it's filed:
 
 - The project team will label the issue accordingly.
 - A team member will try to reproduce the issue with your provided steps. If there are no reproduction steps or no obvious way to reproduce the issue, the team will ask you for those steps and mark the issue as `needs-repro`. Bugs with the `needs-repro` tag will not be addressed until they are reproduced.
-- If the team is able to reproduce the issue, it will be marked `needs-fix`, as well as possibly other tags (such as `critical`), and the issue will be left to be [implemented by someone](#your-first-code-contribution).
+- If the team is able to reproduce the issue, it will be marked `needs-fix`, as well as possibly other tags (such as `critical`), and the issue will be left to be [implemented by someone](#how-to-develop).
 
 <!-- You might want to create an issue template for bugs and errors that can be used as a guide and that defines the structure of the information to be included. If you do so, reference it here in the description. -->
-
 
 ### Suggesting Enhancements
 
@@ -126,21 +126,52 @@ Enhancement suggestions are tracked as [GitHub issues](https://github.com/jim-co
 
 <!-- You might want to create an issue template for enhancement suggestions that can be used as a guide and that defines the structure of the information to be included. If you do so, reference it here in the description. -->
 
-<!-- TODO
-### Your First Code Contribution
-include Setup of env, IDE and typical getting started instructions?
+## How to develop
 
--->
+Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/cicd.bash --ci` run locally is the same gate GitHub CI runs, so if it passes on your box it passes upstream.
+
+### Toolchains
+
+- Rust via rustup - `rust-toolchain.toml` pins the version and cross targets; `rustfmt` and `clippy` come with it.
+- Go - version in `source/go/go.mod`; `gofmt` and `go vet` are built in.
+- Python 3.9+ - the binding and its tests are stdlib-only.
+- C - gcc and g++; the build gate is a plain `-std=c11 -Wall -Wextra -Werror` compile.
+- PowerShell 7+ - only needed if you touch the ps1 wrapper.
+
+### Build and test
+
+- Fast loop: `cargo test --manifest-path source/rust/Cargo.toml` - runs the conformance corpus plus the fuzz smoke against the reference.
+- Each binding also tests natively:
+	- Go: `go -C source/go test ./...`
+	- Python: `python3 source/python/tests/conformance.py`
+	- C: compile and run `source/c/tests/conformance.c` with `-Isource/c`, passing `project/conformance` as the corpus dir.
+- Everything at once: `cicd/cicd.bash --ci` - format check, build, lint, tests, and the cross-binding crosscheck. Every binding must match the reference byte for byte on stdout and exit codes; stderr text is not part of the contract.
+
+### Linters
+
+- Gating (the lint stage fails the run on any finding):
+	- `rustfmt` + `clippy` - rustup components.
+	- `gofmt` + `go vet` - ship with Go.
+	- `shellcheck` - the pipeline's own scripts and the bash wrapper.
+	- `ruff` + `mypy` - Python: `pipx install ruff` and `pipx install mypy`.
+	- `cppcheck` - C: `pipx install cppcheck` (PyPI wheel bundles the real binary).
+	- `markdownlint-cli2` - docs: `npm install -g markdownlint-cli2`; repo config in `.markdownlint-cli2.jsonc`.
+	- `PSScriptAnalyzer` - ps1 wrapper: `pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser'`.
+- Installed-but-optional: `shfmt` and `clang-tidy`/`clang-format` are useful interactively but do not gate (shfmt's output differs from the house shell style, so it never rewrites files here).
+
+### Style
+
+- Tabs for indentation, spaces for alignment.
+- Markdown never hard-wraps - one paragraph or bullet is one physical line.
+- Comments are terse and explain why, not what.
+
+### Branches
+
+- Work on a short-named feature branch and PR against `dev`; `main` is release-only.
 
 <!-- TODO
 ### Improving The Documentation
 Updating, improving and correcting the documentation
-
--->
-
-<!-- TODO
-## Styleguides
-### Commit Messages
 
 -->
 
@@ -150,4 +181,5 @@ Updating, improving and correcting the documentation
 
 <!-- omit in toc -->
 ## Attribution
+
 This guide is based on the [contributing.md generator](https://contributing.md/generator)!

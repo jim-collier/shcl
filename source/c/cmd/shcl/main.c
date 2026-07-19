@@ -75,6 +75,13 @@ static int utf8_valid(const char *p, size_t n) {
 	return 1;
 }
 
+// realloc that never returns NULL: on OOM, free the old block and exit 1.
+static void *xrealloc(void *p, size_t n) {
+	void *q = realloc(p, n);
+	if (!q) { free(p); fprintf(stderr, "out of memory\n"); exit(1); }
+	return q;
+}
+
 // Reads FILE (or stdin for "-") fully. Returns malloc'd buffer + len, or NULL on
 // error (message printed to stderr). Rejects invalid UTF-8 like the reference.
 static char *read_input(const char *file, size_t *len) {
@@ -83,7 +90,7 @@ static char *read_input(const char *file, size_t *len) {
 	if (!f) { fprintf(stderr, "%s: %s\n", file, strerror(errno)); return NULL; }
 	char chunk[65536]; size_t r;
 	while ((r = fread(chunk, 1, sizeof chunk, f)) > 0) {
-		if (n + r > cap) { cap = (n + r) * 2; buf = (char *)realloc(buf, cap ? cap : 1); }
+		if (n + r > cap) { cap = (n + r) * 2; buf = (char *)xrealloc(buf, cap ? cap : 1); }
 		memcpy(buf + n, chunk, r); n += r;
 	}
 	int ferr = ferror(f);
@@ -123,9 +130,9 @@ static int do_get(Opts *o) {
 	// line either borrows arena/const memory (owned=0) or is formatted into own[].
 	struct { const char *p; size_t n; char own[SHCL_F64_BUF]; int owned; } *lines = NULL;
 	size_t nlines = 0, clines = 0;
-	#define PUSHLINE_BYTES(P, N) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = realloc(lines, clines * sizeof *lines); } lines[nlines].p = (P); lines[nlines].n = (N); lines[nlines].owned = 0; nlines++; } while (0)
-	#define PUSHLINE_FMT(FMT, ...) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = realloc(lines, clines * sizeof *lines); } int k = snprintf(lines[nlines].own, SHCL_F64_BUF, FMT, __VA_ARGS__); lines[nlines].p = lines[nlines].own; lines[nlines].n = (size_t)k; lines[nlines].owned = 1; nlines++; } while (0)
-	#define PUSHLINE_BUF(B, N) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = realloc(lines, clines * sizeof *lines); } memcpy(lines[nlines].own, (B), (N)); lines[nlines].p = lines[nlines].own; lines[nlines].n = (N); lines[nlines].owned = 1; nlines++; } while (0)
+	#define PUSHLINE_BYTES(P, N) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } lines[nlines].p = (P); lines[nlines].n = (N); lines[nlines].owned = 0; nlines++; } while (0)
+	#define PUSHLINE_FMT(FMT, ...) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } int k = snprintf(lines[nlines].own, SHCL_F64_BUF, FMT, __VA_ARGS__); lines[nlines].p = lines[nlines].own; lines[nlines].n = (size_t)k; lines[nlines].owned = 1; nlines++; } while (0)
+	#define PUSHLINE_BUF(B, N) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } memcpy(lines[nlines].own, (B), (N)); lines[nlines].p = lines[nlines].own; lines[nlines].n = (N); lines[nlines].owned = 1; nlines++; } while (0)
 
 	if (o->array) {
 		if (!strcmp(o->kind, "int")) { shcl_read_i64_arr r = shcl_read_int_array(d, path, plen); status = r.status; for (size_t i = 0; i < r.n; i++) PUSHLINE_FMT("%" PRId64, r.values[i]); }

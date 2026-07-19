@@ -38,7 +38,6 @@ This is an easier way to brainstorm and prioritize tasks, before creating issues
 | 2026     |      |     |   |   |   |   |          |    |           |
 -->
 
-
 ## Status: Started
 
 | Created  |Issue#|Score|Imp|Urg|Eff|Aff| Started  | by | Completed | Description | Notes

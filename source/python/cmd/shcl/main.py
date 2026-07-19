@@ -181,8 +181,8 @@ def do_get(o):
 		status = r.status
 
 	if status == shcl.Status.Good or (status == shcl.Status.Empty and o.on_bad == "flag"):
-		for l in lines:
-			print(l)
+		for ln in lines:
+			print(ln)
 		return status_code(status)
 	if o.on_bad == "default":
 		print(o.default if o.default is not None else "")
@@ -191,8 +191,8 @@ def do_get(o):
 		sys.stderr.write("{}: {}\n".format(path, status.name))
 		return status_code(status)
 	# flag: print the zero/empty value anyway; the exit code carries the status.
-	for l in lines:
-		print(l)
+	for ln in lines:
+		print(ln)
 	return status_code(status)
 
 

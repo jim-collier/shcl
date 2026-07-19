@@ -586,6 +586,7 @@ static void sb_put_u64(Arena *a, SB *s, uint64_t v) {
 	if (v == 0) t[j++] = '0';
 	while (v) { t[j++] = (char)('0' + (v % 10)); v /= 10; }
 	char o[24]; for (int k = 0; k < j; k++) o[k] = t[j - 1 - k];
+	// cppcheck-suppress uninitvar  ## j >= 1 always (v==0 writes '0'), so o[0..j-1] is filled
 	sb_put(a, s, o, (size_t)j);
 }
 static int s_contains_char(S s, char c) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == c) return 1; return 0; }

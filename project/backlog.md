@@ -55,7 +55,7 @@ In each section, items are listed approximately from newest to oldest.
 	- Done: bindings re-tiered. Tier 1 reference plus CLI; Tier 2 Go, C, Python; Tier 3 the rest, post-v1.0.
 	- Done: raw-block binding reworked. A fence is a value line for its parent field. Child-indent spelling is canonical.
 	- Done: inline-array commas made fully forgiving. Stray commas drop their empty slots and never error.
-	- Next: model diagnostic expectations (count, severity, the mandatory repeated-leaf hint) in the corpus. See conformance item below.
+	- 🔘 Next: model diagnostic expectations (count, severity, the mandatory repeated-leaf hint) in the corpus. See conformance item below.
 
 - 🛠️ Ports to the remaining binding languages, in tiers. Tier 2 done; Tier 3 (C#, Java, JavaScript) after v1.0. Each drop-in where possible, corpus-green before shipping. Type via a typed entry point or compile-time generic, never a runtime type field.
 	- Done: Go, C (with a C++ veneer), and Python, each an independent parser with the same flags, output, and exit codes as the reference. All corpus-green and held byte-for-byte to the reference on every build.
@@ -75,6 +75,7 @@ In each section, items are listed approximately from newest to oldest.
 	- Done: `--ci` mode is the correctness gate the GitHub workflow runs, so local and CI share one definition of passing.
 	- Done: cross-binding differential check. Every binding CLI must agree with the reference byte-for-byte on the corpus and a fuzz-dumped input set.
 	- Done: dogfood stage installs the fresh release binary to a fixed local dir. Off under `--ci`, no sudo path.
+	- Done: lint stage widened to every binding. ruff and mypy for Python, cppcheck for C, markdownlint for docs, PSScriptAnalyzer for the ps1 wrapper. All gating, locally and in CI; setup steps in `contributing.md`.
 	- 🔘 Packaging (.deb, .rpm, NSIS). Wire it when release cuts start.
 
 - 🔘 Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.

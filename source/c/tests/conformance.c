@@ -19,11 +19,18 @@
 static int nfail = 0;
 static void fail(const char *at, const char *msg) { fprintf(stderr, "FAIL %s: %s\n", at, msg); nfail++; }
 
+// realloc that never returns NULL: on OOM, free the old block and exit 2.
+static void *xrealloc(void *p, size_t n) {
+	void *q = realloc(p, n);
+	if (!q) { free(p); fprintf(stderr, "out of memory\n"); exit(2); }
+	return q;
+}
+
 static char *read_file(const char *path, size_t *len) {
 	FILE *f = fopen(path, "rb");
 	if (!f) { *len = 0; return NULL; }
 	char *buf = NULL; size_t cap = 0, n = 0, r; char chunk[65536];
-	while ((r = fread(chunk, 1, sizeof chunk, f)) > 0) { if (n + r > cap) { cap = (n + r) * 2; buf = realloc(buf, cap); } memcpy(buf + n, chunk, r); n += r; }
+	while ((r = fread(chunk, 1, sizeof chunk, f)) > 0) { if (n + r > cap) { cap = (n + r) * 2; buf = xrealloc(buf, cap); } memcpy(buf + n, chunk, r); n += r; }
 	fclose(f);
 	if (!buf) buf = malloc(1);
 	*len = n; return buf;
@@ -35,7 +42,7 @@ static void tsv_escape(const char *s, size_t n, char **out, size_t *olen, size_t
 		const char *rep = NULL;
 		if (s[i] == '\n') rep = "\\n"; else if (s[i] == '\t') rep = "\\t";
 		size_t add = rep ? 2 : 1;
-		if (*olen + add + 1 > *ocap) { *ocap = (*olen + add + 1) * 2; *out = realloc(*out, *ocap); }
+		if (*olen + add + 1 > *ocap) { *ocap = (*olen + add + 1) * 2; *out = xrealloc(*out, *ocap); }
 		if (rep) { (*out)[(*olen)++] = rep[0]; (*out)[(*olen)++] = rep[1]; }
 		else (*out)[(*olen)++] = s[i];
 	}
@@ -51,8 +58,8 @@ static shcl_strictness parse_level(const char *s) {
 
 // Renders a scalar/array read into a malloc'd string (caller frees); sets *st.
 static char *scalar_read(shcl_doc *d, const char *kind, const char *q, size_t qn, shcl_status *st) {
-	char *out = calloc(1, 8); size_t olen = 0, ocap = 8; char nb[SHCL_F64_BUF];
-	#define AS_STR(P, N) do { if ((N) + 1 > ocap) { ocap = (N) + 1; out = realloc(out, ocap); } memcpy(out, (P), (N)); out[(N)] = '\0'; olen = (N); } while (0)
+	char *out = xrealloc(NULL, 8); memset(out, 0, 8); size_t olen = 0, ocap = 8; char nb[SHCL_F64_BUF];
+	#define AS_STR(P, N) do { if ((N) + 1 > ocap) { ocap = (N) + 1; out = xrealloc(out, ocap); } memcpy(out, (P), (N)); out[(N)] = '\0'; olen = (N); } while (0)
 	if (!strcmp(kind, "int")) { shcl_read_i64 r = shcl_read_int(d, q, qn); *st = r.status; int k = snprintf(nb, sizeof nb, "%" PRId64, r.value); AS_STR(nb, (size_t)k); }
 	else if (!strcmp(kind, "float")) { shcl_read_f64 r = shcl_read_float(d, q, qn); *st = r.status; size_t k = shcl_format_f64(r.value, nb); AS_STR(nb, k); }
 	else if (!strcmp(kind, "bool")) { shcl_read_bool r = shcl_read_bool_(d, q, qn); *st = r.status; AS_STR(r.value ? "true" : "false", r.value ? 4u : 5u); }
@@ -76,7 +83,7 @@ static size_t split_lines(char *buf, size_t n, char ***out) {
 	size_t cap = 16, cnt = 0; char **lines = malloc(cap * sizeof *lines);
 	size_t start = 0;
 	for (size_t i = 0; i <= n; i++) if (i == n || buf[i] == '\n') {
-		if (cnt == cap) { cap *= 2; lines = realloc(lines, cap * sizeof *lines); }
+		if (cnt == cap) { cap *= 2; lines = xrealloc(lines, cap * sizeof *lines); }
 		buf[i] = '\0'; lines[cnt++] = buf + start; start = i + 1;
 	}
 	*out = lines; return cnt;
@@ -93,7 +100,7 @@ int main(int argc, char **argv) {
 		if (de->d_name[0] == '.') continue;
 		char path[4096]; snprintf(path, sizeof path, "%s/%s/input.shcl", corpus, de->d_name);
 		FILE *t = fopen(path, "rb"); if (!t) continue; fclose(t);
-		if (nn == cn) { cn = cn ? cn * 2 : 8; names = realloc(names, cn * sizeof *names); }
+		if (nn == cn) { cn = cn ? cn * 2 : 8; names = xrealloc(names, cn * sizeof *names); }
 		names[nn++] = strdup(de->d_name);
 	}
 	closedir(dir);
@@ -146,8 +153,8 @@ int main(int argc, char **argv) {
 				}
 				if (!strcmp(kind, "instances")) {
 					shcl_str *vals; size_t n = shcl_instances(rd, query, qn, &vals);
-					char *joined = calloc(1, 8); size_t jl = 0, jc = 8;
-					for (size_t i = 0; i < n; i++) { if (i) { if (jl + 2 > jc) { jc = jl + 2; joined = realloc(joined, jc); } joined[jl++] = '|'; joined[jl] = '\0'; } if (jl + vals[i].n + 1 > jc) { jc = jl + vals[i].n + 1; joined = realloc(joined, jc); } memcpy(joined + jl, vals[i].p, vals[i].n); jl += vals[i].n; joined[jl] = '\0'; }
+					char *joined = xrealloc(NULL, 8); joined[0] = '\0'; size_t jl = 0, jc = 8;
+					for (size_t i = 0; i < n; i++) { if (i) { if (jl + 2 > jc) { jc = jl + 2; joined = xrealloc(joined, jc); } joined[jl++] = '|'; joined[jl] = '\0'; } if (jl + vals[i].n + 1 > jc) { jc = jl + vals[i].n + 1; joined = xrealloc(joined, jc); } memcpy(joined + jl, vals[i].p, vals[i].n); jl += vals[i].n; joined[jl] = '\0'; }
 					if (strcmp(joined, exp)) fail(at, "instances mismatch");
 					free(joined); shcl_free(rd); continue;
 				}
