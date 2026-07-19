@@ -154,19 +154,35 @@ fn do_get(o: &Opts) -> u8 {
 		match o.kind.as_str() {
 			"int" => {
 				let r = doc.read_int_array(path);
-				(r.value.iter().map(|v| v.to_string()).collect(), r.status, r.slots)
+				(
+					r.value.iter().map(|v| v.to_string()).collect(),
+					r.status,
+					r.slots,
+				)
 			}
 			"float" => {
 				let r = doc.read_float_array(path);
-				(r.value.iter().map(|v| v.to_string()).collect(), r.status, r.slots)
+				(
+					r.value.iter().map(|v| v.to_string()).collect(),
+					r.status,
+					r.slots,
+				)
 			}
 			"bool" => {
 				let r = doc.read_bool_array(path);
-				(r.value.iter().map(|v| v.to_string()).collect(), r.status, r.slots)
+				(
+					r.value.iter().map(|v| v.to_string()).collect(),
+					r.status,
+					r.slots,
+				)
 			}
 			"datetime" => {
 				let r = doc.read_datetime_array(path);
-				(r.value.iter().map(|v| v.to_string()).collect(), r.status, r.slots)
+				(
+					r.value.iter().map(|v| v.to_string()).collect(),
+					r.status,
+					r.slots,
+				)
 			}
 			"raw" => {
 				eprintln!("--raw has no --array form");
@@ -228,7 +244,13 @@ fn do_get(o: &Opts) -> u8 {
 				let subbed: Vec<String> = lines
 					.iter()
 					.enumerate()
-					.map(|(i, l)| if slot_at(i) == Status::Good { l.clone() } else { dv.clone() })
+					.map(|(i, l)| {
+						if slot_at(i) == Status::Good {
+							l.clone()
+						} else {
+							dv.clone()
+						}
+					})
 					.collect();
 				emit(&subbed);
 			} else {

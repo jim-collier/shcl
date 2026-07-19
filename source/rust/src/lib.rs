@@ -72,10 +72,20 @@ pub struct Read<T> {
 
 impl<T> Read<T> {
 	fn new(value: T, status: Status, raw: Option<String>) -> Read<T> {
-		Read { value, status, raw, slots: Vec::new() }
+		Read {
+			value,
+			status,
+			raw,
+			slots: Vec::new(),
+		}
 	}
 	fn with_slots(value: T, status: Status, raw: Option<String>, slots: Vec<Status>) -> Read<T> {
-		Read { value, status, raw, slots }
+		Read {
+			value,
+			status,
+			raw,
+			slots,
+		}
 	}
 	pub fn ok(&self) -> bool {
 		matches!(self.status, Status::Good | Status::Empty)
@@ -602,7 +612,9 @@ impl Parser {
 			self.child_map[parent].remove(&(name.clone(), old_key));
 		}
 		let new_key = self.arena[node].value.key();
-		self.child_map[parent].entry((name, new_key)).or_insert(node);
+		self.child_map[parent]
+			.entry((name, new_key))
+			.or_insert(node);
 	}
 
 	/// Resolve which open level this indent belongs to. Child only when the
