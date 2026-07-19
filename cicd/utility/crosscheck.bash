@@ -84,7 +84,8 @@ fReadRow(){
 	local -a strictArg=()
 	[[ -n "$level" ]] && strictArg=("--strictness=${level}")
 	case "$type" in
-		load)         fCompare "load" check "${strictArg[@]}" "$input" ;;
+		load)         fCompare "load" check "${strictArg[@]}" "$input"
+		              fCompare "fmt ${level:-standard}" fmt "${strictArg[@]}" "$input" ;;
 		count)        fCompare "count ${query}" count "${strictArg[@]}" "$input" "$query" ;;
 		instances)    fCompare "instances ${query}" instances "${strictArg[@]}" "$input" "$query" ;;
 		*'[]')        fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"

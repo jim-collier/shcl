@@ -181,7 +181,9 @@ impl Value {
 				}
 				k
 			}
-			Value::Raw { content, .. } => format!("r:{}", content),
+			// Info-string is part of identity (a `sql` and a `python` block are
+			// different values even with equal bodies); fence style is not.
+			Value::Raw { content, info, .. } => format!("r:{}\u{0}{}", info, content),
 		}
 	}
 	/// Human/display form; also what selectors match against (case-sensitive).
@@ -208,7 +210,8 @@ struct NodeData {
 	children: Vec<usize>,
 	parent: usize,
 	line: usize,
-	star_list: bool, // value built from stacked "* " lines
+	star_list: bool,  // value built from stacked "* " lines
+	star_mixed: bool, // mix of "* " and field children already diagnosed
 }
 
 /// A parsed SHCL document: the tree, its diagnostics, and its strictness level.
@@ -546,6 +549,7 @@ impl Parser {
 				parent: 0,
 				line: 0,
 				star_list: false,
+				star_mixed: false,
 			}],
 			diags: Vec::new(),
 			stack: vec![(String::new(), ROOT)],
@@ -576,6 +580,7 @@ impl Parser {
 			parent,
 			line,
 			star_list: false,
+			star_mixed: false,
 		});
 		self.arena[parent].children.push(idx);
 		idx
@@ -613,16 +618,32 @@ impl Parser {
 		value: Value,
 		line: usize,
 	) -> Option<usize> {
+		// Field child under a stacked list: diagnose the mix once, keep the field.
+		if self.arena[parent].star_list && !self.arena[parent].star_mixed {
+			self.arena[parent].star_mixed = true;
+			self.err(line, "field mixed with list elements");
+		}
 		let mut cur = parent;
 		for (i, seg) in segs.iter().enumerate() {
 			let is_last = i + 1 == segs.len();
 			match (&seg.selector, is_last) {
 				(Some(Selector::ByValue(v)), _) => {
-					let disc = Value::Cell(vec![Element {
-						text: v.clone(),
-						quoted: false,
-					}]);
-					cur = self.select_or_create(cur, &seg.name, disc, line);
+					// Same display() predicate resolve_from uses, so a selector
+					// also selects an array-valued instance instead of creating
+					// a spurious second one. Create only when nothing matches.
+					let found = self.arena[cur].children.iter().copied().find(|&c| {
+						self.arena[c].name == seg.name && self.arena[c].value.display() == *v
+					});
+					cur = match found {
+						Some(c) => c,
+						None => {
+							let disc = Value::Cell(vec![Element {
+								text: v.clone(),
+								quoted: false,
+							}]);
+							self.select_or_create(cur, &seg.name, disc, line)
+						}
+					};
 					if is_last && !value.is_empty() {
 						// `a.b[X]: v` - the discriminator is the value; a second
 						// value has nowhere unambiguous to go.
@@ -746,6 +767,11 @@ impl Parser {
 	fn add_star_element(&mut self, parent: usize, body: &str, line: usize) {
 		if parent == ROOT {
 			self.err(line, "list element with no parent field");
+			return;
+		}
+		// Uniform-or-nothing (spec): a mix with field children is not a block array.
+		if !self.arena[parent].children.is_empty() {
+			self.err(line, "list element mixed with field children; ignored");
 			return;
 		}
 		let trimmed = body.trim();
@@ -1703,7 +1729,13 @@ impl Document {
 			Value::Cell(els) if els.len() == 1 => {
 				Read::new(apply_escapes(&els[0].text), Status::Good, raw)
 			}
-			Value::Cell(_) => Read::new(value.display(), Status::Good, raw),
+			// Canonical inline form (quoting + escapes intact), so the string
+			// re-parses to the same array - not the bare display join.
+			Value::Cell(els) => Read::new(
+				els.iter().map(emit_element).collect::<Vec<_>>().join(", "),
+				Status::Good,
+				raw,
+			),
 		}
 	}
 

@@ -112,7 +112,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 - `a.b.c: v` is exactly `a:` / (indent) `b:` / (indent) `c: v`. The `.` stands in for "newline + one deeper indent".
 
-- `field[disc]` selects (or creates) the instance of `field` whose discriminator value is `disc`, then continues the path under it. `base[Boston].metrics.population: 700` is identical to writing `base: Boston` then nesting `metrics` then `population: 700`. The colon before a selector is optional sugar, so `field[disc]` and `field:[disc]` are the same; the colon-less form is also the Accessor's lookup syntax, so a path reads identically whether authored in a file or passed to `Get`.
+- `field[disc]` selects (or creates) the instance of `field` whose discriminator value is `disc`, then continues the path under it. `base[Boston].metrics.population: 700` is identical to writing `base: Boston` then nesting `metrics` then `population: 700`. The colon before a selector is optional sugar, so `field[disc]` and `field:[disc]` are the same; the colon-less form is also the Accessor's lookup syntax, so a path reads identically whether authored in a file or passed to `Get`. Matching is against the instance's **display form** (elements joined with `, `) in both places, so a selector also selects an array-valued instance (`base[Boston, MA]` finds `base: Boston, MA`); a new instance is created only when nothing matches.
 
 - Inline and block forms may be freely mixed; the parser normalizes both to the same tree.
 
@@ -132,7 +132,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 ### Strings
 
-Any value can be read as a string. On read: trim surrounding whitespace, strip the outermost quotes (keeping inner whitespace), and apply escapes. A string containing a reserved character must be quoted in the file.
+Any value can be read as a string. On read: trim surrounding whitespace, strip the outermost quotes (keeping inner whitespace), and apply escapes. A string containing a reserved character must be quoted in the file. A multi-element array read as a single string yields its **canonical inline form** - elements minimally quoted, escapes intact, joined with `, ` - so the string re-parses to the same array; per-element unquoting and escapes belong to the array-of-strings read.
 
 ### Integers
 
@@ -251,7 +251,7 @@ A raw block embeds verbatim multi-line content - a DDL, a code snippet, a templa
 
 - **Fenced, Markdown-style.** A block opens with a run of at least three identical fence characters, `` ``` `` or `~~~`. The opening run's character and length define the block; it closes at the first later line whose trimmed text is a run of the *same* character with length **>=** the opener. (So content may itself contain shorter fences.) An optional info-string may follow the opening fence (e.g. `~~~sql`); it is a free-form advisory label - captured and exposed to the consumer (a raw-block accessor returns it), but never interpreted by the parser. No values are reserved; a consumer may treat it as a content-type hint if it wants.
 
-- **Binding: a fence is a value line for its parent field.** A fence line at child indent binds the block as its parent field's value. If the parent's value is empty, the block fills that instance's value; if the parent already carries a value (or already received a block), the fence creates a **new instance** of the parent field with the block as its value - the same rule as a repeated leaf line. There is no separate "anonymous block" concept: blocks are instances, selected with the normal selectors (`notes[0]`, `notes[#2]`), and identical `(field-name, value)` blocks merge like any other instances.
+- **Binding: a fence is a value line for its parent field.** A fence line at child indent binds the block as its parent field's value. If the parent's value is empty, the block fills that instance's value; if the parent already carries a value (or already received a block), the fence creates a **new instance** of the parent field with the block as its value - the same rule as a repeated leaf line. There is no separate "anonymous block" concept: blocks are instances, selected with the normal selectors (`notes[0]`, `notes[#2]`), and identical `(field-name, value)` blocks merge like any other instances. A block's identity is its content **plus its info-string** (a `sql` and a `python` block are distinct even with equal bodies); the fence character and length are spelling, not identity.
 
 - **Same-line spelling:** the fence may also open on the field's own line (`path.name: ~~~sql` ... close fence). Identical tree; the child-indent spelling is canonical. The info-string rides the fence line in both spellings.
 
@@ -375,7 +375,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 
 ## Canonical formatter
 
-The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`).
+The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`). It loads at the requested strictness like every other operation; a strict-failing document formats nothing (the load failure is the result).
 
 - Block (indented) form, tabs for indentation.
 

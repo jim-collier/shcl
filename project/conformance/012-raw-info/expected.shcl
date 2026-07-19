@@ -1,0 +1,8 @@
+query:
+	```sql
+	select 1
+	```
+query:
+	```python
+	select 1
+	```

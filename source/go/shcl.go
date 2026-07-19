@@ -244,7 +244,9 @@ func (v *value) key() string {
 		}
 		return b.String()
 	}
-	return "r:" + v.raw.content
+	// Info-string is part of identity (a `sql` and a `python` block are
+	// different values even with equal bodies); fence style is not.
+	return "r:" + v.raw.info + "\x00" + v.raw.content
 }
 
 // display is the human form; also what selectors match against (case-sensitive).
@@ -267,12 +269,13 @@ func (v *value) isEmpty() bool {
 }
 
 type nodeData struct {
-	name     string // ASCII-folded to lower; non-ASCII never folds
-	value    value
-	children []int
-	parent   int
-	line     int
-	starList bool // value built from stacked "* " lines
+	name      string // ASCII-folded to lower; non-ASCII never folds
+	value     value
+	children  []int
+	parent    int
+	line      int
+	starList  bool // value built from stacked "* " lines
+	starMixed bool // mix of "* " and field children already diagnosed
 }
 
 // Document is a parsed SHCL document: the tree, its diagnostics, and its
@@ -770,14 +773,33 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 // attachPath walks path segments under parent, select-or-creating; returns the
 // node for the last segment carrying v. ok=false aborts the line (diagnosed).
 func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int, bool) {
+	// Field child under a stacked list: diagnose the mix once, keep the field.
+	if p.arena[parent].starList && !p.arena[parent].starMixed {
+		p.arena[parent].starMixed = true
+		p.err(line, "field mixed with list elements")
+	}
 	cur := parent
 	for i := range segs {
 		seg := &segs[i]
 		isLast := i+1 == len(segs)
 		switch {
 		case seg.sel != nil && seg.sel.kind == selByValue:
-			disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
-			cur = p.selectOrCreate(cur, seg.name, disc, line)
+			// Same display() predicate resolution uses, so a selector also
+			// selects an array-valued instance instead of creating a spurious
+			// second one. Create only when nothing matches.
+			found := -1
+			for _, c := range p.arena[cur].children {
+				if p.arena[c].name == seg.name && p.arena[c].value.display() == seg.sel.value {
+					found = c
+					break
+				}
+			}
+			if found >= 0 {
+				cur = found
+			} else {
+				disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
+				cur = p.selectOrCreate(cur, seg.name, disc, line)
+			}
 			if isLast && !v.isEmpty() {
 				// `a.b[X]: v` - the discriminator is the value; a second
 				// value has nowhere unambiguous to go.
@@ -879,6 +901,11 @@ func (p *parser) bindBlock(parent int, v value, line int) {
 func (p *parser) addStarElement(parent int, body string, line int) {
 	if parent == root {
 		p.err(line, "list element with no parent field")
+		return
+	}
+	// Uniform-or-nothing (spec): a mix with field children is not a block array.
+	if len(p.arena[parent].children) != 0 {
+		p.err(line, "list element mixed with field children; ignored")
 		return
 	}
 	trimmed := strings.TrimSpace(body)
@@ -1983,7 +2010,13 @@ func (d *Document) ReadString(path string) Read[string] {
 	case len(v.els) == 1:
 		return Read[string]{Value: applyEscapes(v.els[0].text), Status: Good, Raw: &raw}
 	}
-	return Read[string]{Value: v.display(), Status: Good, Raw: &raw}
+	// Canonical inline form (quoting + escapes intact), so the string
+	// re-parses to the same array - not the bare display join.
+	parts := make([]string, len(v.els))
+	for k := range v.els {
+		parts[k] = emitElement(&v.els[k])
+	}
+	return Read[string]{Value: strings.Join(parts, ", "), Status: Good, Raw: &raw}
 }
 
 // ReadRaw: raw-block content (verbatim). Non-block values are BadType.
