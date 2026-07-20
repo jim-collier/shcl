@@ -299,6 +299,7 @@ typedef struct {
 } Value;
 
 DEFINE_VEC(VecSize, size_t)
+DEFINE_VEC(VecS, S)
 
 typedef struct {
 	S name;
@@ -308,6 +309,11 @@ typedef struct {
 	size_t line;
 	int star_list;  /* value built from stacked "* " lines */
 	int star_mixed; /* mix of "* " and field children already diagnosed */
+	/* Comment trivia, verbatim from `#` to end of line. Never part of identity
+	   or reads; merged instances concatenate leading, first trailing wins
+	   (later ones demote to leading - a canonical line has room for one). */
+	VecS leading;
+	S trailing; /* n == 0 = none */
 } Node;
 DEFINE_VEC(VecNode, Node)
 
@@ -319,6 +325,7 @@ struct shcl_doc {
 	VecNode nodes;
 	VecDiag diags;
 	shcl_strictness strictness;
+	VecS orphans; /* comments after the last binding line */
 };
 #define ROOT ((size_t)0)
 #define NODE(d, i) ((d)->nodes.data[i])
@@ -350,16 +357,19 @@ static S value_display(Arena *a, const Value *v) {
 
 // --- lexical helpers ---------------------------------------------------------
 
-// Strip an unquoted trailing comment. A backslash shields the next char.
-static S strip_comment(S s) {
+// Split off an unquoted trailing comment: returns the content, *comment gets
+// the tail from `#` on (n == 0 = none). A backslash shields the next char.
+// Comments are kept as trivia.
+static S split_comment(S s, S *comment) {
 	uint32_t inq = 0; // 0 = none, else the open quote codepoint
 	size_t i = 0;
+	*comment = s_empty();
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
 		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
 		if (inq) { if (c == inq) inq = 0; }
 		else if (c == '"' || c == '\'') inq = c;
-		else if (c == '#') return s_slice(s, 0, i);
+		else if (c == '#') { *comment = s_slice(s, i, s.n); return s_slice(s, 0, i); }
 		i += l;
 	}
 	return s;
@@ -596,7 +606,6 @@ static void sb_put_u64(Arena *a, SB *s, uint64_t v) {
 }
 static int s_contains_char(S s, char c) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == c) return 1; return 0; }
 
-DEFINE_VEC(VecS, S)
 typedef struct { S indent; size_t node; } StackEnt;
 DEFINE_VEC(VecStack, StackEnt)
 typedef struct { int present; size_t idx; shcl_status miss; } Slot;
@@ -998,7 +1007,8 @@ static void cmap_del(CMap *m, uint64_t h, S name, S key, size_t val) {
 	}
 }
 
-typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; } Parser;
+/* pending: whole-line comments waiting for the next line that binds a node. */
+typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecS pending; } Parser;
 
 static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, S msg) {
 	Diag dg; dg.line = line; dg.sev = sev; dg.message = msg;
@@ -1036,6 +1046,24 @@ static void remap_child(Parser *P, size_t node, S old_key) {
 	S new_key = value_key(a, &NODE(P->d, node).value);
 	uint64_t h = cmap_hash(name, new_key);
 	if (cmap_get(m, h, name, new_key) == (size_t)-1) cmap_put(a, m, h, name, new_key, node);
+}
+
+/* Hand pending leading comments (and this line's trailing one) to a node.
+   First trailing wins; a later one demotes to leading so nothing is lost.
+   Comments are dup'd into the arena; the caller's text buffer may not outlive
+   the document. */
+static void attach_trivia(Parser *P, size_t node, S trailing) {
+	Arena *a = &P->d->arena;
+	for (size_t k = 0; k < P->pending.len; k++) {
+		S c = s_dup(a, P->pending.data[k]);
+		VecS_push(a, &NODE(P->d, node).leading, c);
+	}
+	P->pending.len = 0;
+	if (trailing.n) {
+		S t = s_dup(a, trailing);
+		if (NODE(P->d, node).trailing.n == 0) NODE(P->d, node).trailing = t;
+		else VecS_push(a, &NODE(P->d, node).leading, t);
+	}
 }
 
 static int resolve_parent(Parser *P, S indent, size_t *out) {
@@ -1140,16 +1168,17 @@ static Value consume_raw(Parser *P, S *lines, size_t nlines, size_t i, size_t op
 	return v;
 }
 
-static void bind_block(Parser *P, size_t parent, Value value, size_t line) {
-	if (parent == ROOT) { p_err(P, line, s_lit("raw block with no parent field")); return; }
+/* Returns the node the block landed on ((size_t)-1 = no parent, diagnosed). */
+static size_t bind_block(Parser *P, size_t parent, Value value, size_t line) {
+	if (parent == ROOT) { p_err(P, line, s_lit("raw block with no parent field")); return (size_t)-1; }
 	if (v_is_empty(&NODE(P->d, parent).value)) {
 		S old_key = value_key(&P->d->arena, &NODE(P->d, parent).value);
 		NODE(P->d, parent).value = value;
 		remap_child(P, parent, old_key);
-	} else {
-		S name = NODE(P->d, parent).name; size_t gp = NODE(P->d, parent).parent;
-		select_or_create(P, gp, name, value, line);
+		return parent;
 	}
+	S name = NODE(P->d, parent).name; size_t gp = NODE(P->d, parent).parent;
+	return select_or_create(P, gp, name, value, line);
 }
 
 static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
@@ -1221,7 +1250,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	Arena *a = &d->arena;
 	Node root; memset(&root, 0, sizeof root); root.value = v_empty(); root.parent = 0; root.line = 0;
 	VecNode_push(a, &d->nodes, root);
-	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps);
+	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps); memset(&P.pending, 0, sizeof P.pending);
 	StackEnt e0; e0.indent = s_empty(); e0.node = ROOT; VecStack_push(a, &P.stack, e0);
 	CMap m0; memset(&m0, 0, sizeof m0); VecMap_push(a, &P.cmaps, m0);
 
@@ -1246,25 +1275,37 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		size_t ind = 0; while (ind < line.n && (line.p[ind] == ' ' || line.p[ind] == '\t')) ind++;
 		S indent = s_slice(line, 0, ind);
 		S rest = s_slice(line, ind, line.n);
-		if (rest.n == 0 || rest.p[0] == '#') { i++; continue; }
+		if (rest.n == 0) { i++; continue; }
+		/* Whole-line comment: hold it for the next line that binds a node. */
+		if (rest.p[0] == '#') { VecS_push(a, &P.pending, rest); i++; continue; }
 		Fence f = fence_open(a, rest);
 		if (f.ok) {
 			size_t parent;
 			if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); i++; continue; }
 			size_t next; Value val = consume_raw(&P, lines.data, lines.len, i + 1, lineno, f.ch, f.len, f.info, &next);
-			bind_block(&P, parent, val, lineno); i = next; continue;
+			size_t bnode = bind_block(&P, parent, val, lineno);
+			if (bnode != (size_t)-1) attach_trivia(&P, bnode, s_empty());
+			i = next; continue;
 		}
 		if (rest.n >= 1 && rest.p[0] == '*') {
 			S after = s_slice(rest, 1, rest.n);
 			if (after.n >= 1 && (after.p[0] == ' ' || after.p[0] == '\t')) {
 				size_t parent;
 				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); i++; continue; }
-				add_star_element(&P, parent, strip_comment(after), lineno); i++; continue;
+				S ecomment; S body = split_comment(after, &ecomment);
+				/* Elements have no node of their own; trivia rides the field. */
+				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
+				add_star_element(&P, parent, body, lineno); i++; continue;
 			}
 			p_err(&P, lineno, s_lit("malformed line: '*' must be followed by a space")); i++; continue;
 		}
-		S content = trim_end(strip_comment(rest));
-		if (content.n == 0) { i++; continue; }
+		S comment; S before = split_comment(rest, &comment);
+		S content = trim_end(before);
+		if (content.n == 0) {
+			/* Only a comment survived (e.g. an escaped lead-in); keep it. */
+			if (comment.n) VecS_push(a, &P.pending, comment);
+			i++; continue;
+		}
 		size_t parent;
 		if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); i++; continue; }
 		PathScan scan = scan_path(a, content);
@@ -1280,11 +1321,15 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		}
 		size_t node;
 		if (attach_path(&P, parent, scan.segs.data, scan.segs.len, value, lineno, &node)) {
+			attach_trivia(&P, node, comment);
 			StackEnt se; se.indent = s_dup(a, indent); se.node = node; VecStack_push(a, &P.stack, se);
 		}
 		i = next;
 	}
 	emit_repeated_leaf_hints(&P);
+	/* Comments that never found a following line; dup - they point into the
+	   caller's text buffer. */
+	for (size_t k = 0; k < P.pending.len; k++) VecS_push(a, &d->orphans, s_dup(a, P.pending.data[k]));
 	return d;
 }
 
@@ -1583,26 +1628,45 @@ static S emit_name(Arena *a, S name) {
 	}
 	return quote_text(a, name);
 }
+/* Inline comment, canonically two spaces before the `#`. */
+static void emit_trailing(Arena *a, SB *out, S trailing) {
+	if (trailing.n) { sb_puts(a, out, "  "); sb_putS(a, out, trailing); }
+}
 static void emit_node(shcl_doc *d, size_t idx, size_t depth, SB *out) {
 	Arena *a = &d->arena;
 	Node *node = &NODE(d, idx);
-	for (size_t k = 0; k < depth; k++) sb_putc(a, out, '\t');
-	sb_putS(a, out, emit_name(a, node->name));
-	sb_putc(a, out, ':');
 	Value *v = &node->value;
-	if (v->kind == V_EMPTY) sb_putc(a, out, '\n');
-	else if (v->kind == V_CELL) {
-		sb_putc(a, out, ' ');
-		for (size_t i = 0; i < v->nels; i++) { if (i) sb_puts(a, out, ", "); sb_putS(a, out, emit_element(a, &v->els[i])); }
-		sb_putc(a, out, '\n');
-	} else {
+	/* Same-line fence spelling can't carry an inline comment (an unbalanced
+	   quote in the info-string could hide the `#` on reparse), so its trailing
+	   comment joins the leading lines instead. */
+	int would_merge = 0;
+	if (v->kind == V_RAW) {
 		size_t parent = node->parent;
 		VecSize pch = NODE(d, parent).children; size_t mypos = (size_t)-1;
 		for (size_t k = 0; k < pch.len; k++) if (pch.data[k] == idx) { mypos = k; break; }
-		int would_merge = 0;
 		if (mypos != (size_t)-1)
 			for (size_t k = 0; k < mypos; k++) { size_t c = pch.data[k]; if (s_eq(NODE(d, c).name, node->name) && v_is_empty(&NODE(d, c).value)) { would_merge = 1; break; } }
-		if (would_merge) sb_putc(a, out, ' '); else sb_putc(a, out, '\n');
+	}
+	for (size_t k = 0; k < node->leading.len; k++) {
+		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
+		sb_putS(a, out, node->leading.data[k]); sb_putc(a, out, '\n');
+	}
+	if (would_merge && node->trailing.n) {
+		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
+		sb_putS(a, out, node->trailing); sb_putc(a, out, '\n');
+	}
+	for (size_t k = 0; k < depth; k++) sb_putc(a, out, '\t');
+	sb_putS(a, out, emit_name(a, node->name));
+	sb_putc(a, out, ':');
+	if (v->kind == V_EMPTY) { emit_trailing(a, out, node->trailing); sb_putc(a, out, '\n'); }
+	else if (v->kind == V_CELL) {
+		sb_putc(a, out, ' ');
+		for (size_t i = 0; i < v->nels; i++) { if (i) sb_puts(a, out, ", "); sb_putS(a, out, emit_element(a, &v->els[i])); }
+		emit_trailing(a, out, node->trailing);
+		sb_putc(a, out, '\n');
+	} else {
+		if (would_merge) sb_putc(a, out, ' ');
+		else { emit_trailing(a, out, node->trailing); sb_putc(a, out, '\n'); }
 		if (!would_merge) for (size_t k = 0; k < depth + 1; k++) sb_putc(a, out, '\t');
 		for (size_t k = 0; k < v->fence_len; k++) sb_putc(a, out, (char)v->fence_char);
 		if (v->info.n > 0) { if ((unsigned char)v->info.p[0] == v->fence_char) sb_putc(a, out, ' '); sb_putS(a, out, v->info); }
@@ -1627,6 +1691,8 @@ shcl_str shcl_to_canonical(shcl_doc *d) {
 	SB out = {0};
 	VecSize rc = NODE(d, ROOT).children;
 	for (size_t k = 0; k < rc.len; k++) emit_node(d, rc.data[k], 0, &out);
+	/* Comments that never found a following line re-emit at the end. */
+	for (size_t k = 0; k < d->orphans.len; k++) { sb_putS(&d->arena, &out, d->orphans.data[k]); sb_putc(&d->arena, &out, '\n'); }
 	return sb_S(&out);
 }
 

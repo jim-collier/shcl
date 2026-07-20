@@ -1,7 +1,9 @@
+# Forgiving inline arrays: stray commas never error, empty slots drop.
 trail: red, green, blue
 double: red, blue
 lead: red, green
 allcomma:
 onecomma:
 spaced:
+# Quote an element to keep it deliberately empty.
 emptyish: red, "", blue

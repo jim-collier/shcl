@@ -1,3 +1,4 @@
+# Block value, canonical child-indent spelling
 config:
 	ddl:
 		~~~sql
@@ -6,16 +7,19 @@ config:
 		  name TEXT NOT NULL
 		);
 		~~~
+# Same-line spelling (canonicalizes to child-indent)
 notes:
 	```
 	line one, kept verbatim   # not a comment
 	  deeper indent preserved
 	```
+# Parent already carries a value: the fence creates a second instance of host
 host: web1
 host:
 	~~~
 	block instance
 	~~~
+# First fence fills the empty value; the second is another instance of misc
 misc:
 	~~~
 	first block

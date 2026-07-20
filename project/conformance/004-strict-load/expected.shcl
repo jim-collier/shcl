@@ -1,2 +1,3 @@
+# One malformed line (no colon, not a clean path) among good ones.
 name: demo
 port: 8080

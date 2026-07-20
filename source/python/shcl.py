@@ -201,7 +201,10 @@ def _raw(content, info, fence_char, fence_len):
 
 
 class _Node:
-	__slots__ = ("name", "value", "children", "parent", "line", "star_list", "star_mixed")
+	__slots__ = (
+		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
+		"leading", "trailing",
+	)
 
 	def __init__(self, name, value, parent, line):
 		self.name = name          # ASCII-folded to lower; non-ASCII never folds
@@ -211,6 +214,11 @@ class _Node:
 		self.line = line
 		self.star_list = False    # value built from stacked "* " lines
 		self.star_mixed = False   # mix of "* " and field children already diagnosed
+		# Comment trivia, verbatim from `#` to end of line. Never part of identity
+		# or reads; merged instances concatenate leading, first trailing wins
+		# (later ones demote to leading - a canonical line has room for one).
+		self.leading = []
+		self.trailing = ""        # empty = none
 
 
 ROOT = 0
@@ -273,8 +281,10 @@ def _is_bare_name_char(c):
 	return (c.isascii() and c.isalnum()) or c == "-" or c == "_"
 
 
-def _strip_comment(s):
-	"""Strip an unquoted trailing comment. A `\\` shields the next char throughout."""
+def _split_comment(s):
+	"""Split off an unquoted trailing comment: (content, comment from `#` on,
+	"" = none). A `\\` shields the next char throughout. Comments are kept as
+	trivia."""
 	in_quote = None
 	i = 0
 	n = len(s)
@@ -289,9 +299,9 @@ def _strip_comment(s):
 		elif c == '"' or c == "'":
 			in_quote = c
 		elif c == "#":
-			return s[:i]
+			return s[:i], s[i:]
 		i += 1
-	return s
+	return s, ""
 
 
 def _split_unquoted_commas(s):
@@ -550,6 +560,8 @@ class _Parser:
 		# Per-node (name, value-key) -> first matching child, parallel to arena.
 		# Pure lookup accelerator for _select_or_create; children keeps the order.
 		self.child_map = [{}]
+		# Whole-line comments waiting for the next line that binds a node.
+		self.pending = []
 
 	def _err(self, line, msg):
 		self.diags.append(Diagnostic(line, Severity.Error, msg))
@@ -578,6 +590,19 @@ class _Parser:
 		if cmap.get((name, old_key)) == node:
 			del cmap[(name, old_key)]
 		cmap.setdefault((name, self.arena[node].value.key()), node)
+
+	def _attach_trivia(self, node, trailing):
+		"""Hand pending leading comments (and this line's trailing one) to a node.
+		First trailing wins; a later one demotes to leading so nothing is lost."""
+		n = self.arena[node]
+		if self.pending:
+			n.leading.extend(self.pending)
+			self.pending = []
+		if trailing:
+			if not n.trailing:
+				n.trailing = trailing
+			else:
+				n.leading.append(trailing)
 
 	def _resolve_parent(self, indent):
 		"""Resolve which open level this indent belongs to. Child only when the
@@ -695,18 +720,19 @@ class _Parser:
 
 	def _bind_block(self, parent, value, line):
 		"""A bare fence line is a value line for its parent field: fills an empty
-		value, else creates a new instance of that field (the repeated-leaf rule)."""
+		value, else creates a new instance of that field (the repeated-leaf rule).
+		Returns the node the block landed on (None = no parent, diagnosed)."""
 		if parent == ROOT:
 			self._err(line, "raw block with no parent field")
-			return
+			return None
 		if self.arena[parent].value.is_empty():
 			old_key = self.arena[parent].value.key()
 			self.arena[parent].value = value
 			self._remap_child(parent, old_key)
-		else:
-			name = self.arena[parent].name
-			grandparent = self.arena[parent].parent
-			self._select_or_create(grandparent, name, value, line)
+			return parent
+		name = self.arena[parent].name
+		grandparent = self.arena[parent].parent
+		return self._select_or_create(grandparent, name, value, line)
 
 	def _add_star_element(self, parent, body, line):
 		"""One stacked-list element (`* scalar`) appends to the parent's array."""
@@ -789,7 +815,12 @@ class _Parser:
 				j += 1
 			indent = line[:j]
 			rest = line[j:]
-			if not rest or rest.startswith("#"):
+			if not rest:
+				i += 1
+				continue
+			# Whole-line comment: hold it for the next line that binds a node.
+			if rest.startswith("#"):
+				self.pending.append(rest)
 				i += 1
 				continue
 			# Child-indent fence: a value line for its parent field.
@@ -802,7 +833,9 @@ class _Parser:
 					i += 1
 					continue
 				value, nxt = self._consume_raw(lines, i + 1, lineno, ch, length, info)
-				self._bind_block(parent, value, lineno)
+				node = self._bind_block(parent, value, lineno)
+				if node is not None:
+					self._attach_trivia(node, "")
 				i = nxt
 				continue
 			# Stacked-list element: colon-less by construction ('*' can't begin a name).
@@ -814,7 +847,10 @@ class _Parser:
 						self._err(lineno, "indentation matches no open level")
 						i += 1
 						continue
-					body = _strip_comment(after)
+					body, comment = _split_comment(after)
+					# Elements have no node of their own; trivia rides the field.
+					if parent != ROOT:
+						self._attach_trivia(parent, comment)
 					self._add_star_element(parent, body, lineno)
 					i += 1
 					continue
@@ -822,9 +858,13 @@ class _Parser:
 				i += 1
 				continue
 			# Field line.
-			content = _trim_end(_strip_comment(rest))
+			before, comment = _split_comment(rest)
+			content = _trim_end(before)
 			if not content:
-				i += 1   # the line was only a comment
+				# Only a comment survived (e.g. an escaped lead-in); keep it.
+				if comment:
+					self.pending.append(comment)
+				i += 1
 				continue
 			parent = self._resolve_parent(indent)
 			if parent is None:
@@ -855,10 +895,11 @@ class _Parser:
 					value = _parse_cell(value_text)
 			node = self._attach_path(parent, segments, value, lineno)
 			if node is not None:
+				self._attach_trivia(node, comment)
 				self.stack.append((indent, node))
 			i = nxt
 		self._emit_repeated_leaf_hints()
-		return Document(self.arena, self.diags, strictness)
+		return Document(self.arena, self.diags, strictness, self.pending)
 
 
 # ---------------------------------------------------------------------------
@@ -868,12 +909,13 @@ class _Parser:
 
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
-	__slots__ = ("arena", "diags", "_strictness")
+	__slots__ = ("arena", "diags", "_strictness", "orphans")
 
-	def __init__(self, arena, diags, strictness):
+	def __init__(self, arena, diags, strictness, orphans=None):
 		self.arena = arena
 		self.diags = diags
 		self._strictness = strictness
+		self.orphans = orphans if orphans is not None else []
 
 	@staticmethod
 	def parse(text):
@@ -899,7 +941,8 @@ class Document:
 
 	def to_canonical(self):
 		"""Canonical form: block layout, tabs, insertion order, minimal quoting,
-		redundancy collapsed, comments dropped. Scalar text is never rewritten."""
+		redundancy collapsed, comments re-emitted as attached trivia. Scalar
+		text is never rewritten."""
 		# Explicit stack, children pushed in reverse: the reference handles depths
 		# far past Python's recursion limit, so emit must not recurse.
 		out = []
@@ -909,26 +952,21 @@ class Document:
 			self._emit_node(idx, depth, out)
 			for c in reversed(self.arena[idx].children):
 				stack.append((c, depth + 1))
+		# Comments that never found a following line re-emit at the end.
+		for c in self.orphans:
+			out.append(c)
+			out.append("\n")
 		return "".join(out)
 
 	def _emit_node(self, idx, depth, out):
 		node = self.arena[idx]
-		out.append("\t" * depth)
-		out.append(_emit_name(node.name))
-		out.append(":")
+		pad = "\t" * depth
 		v = node.value
-		if v.kind == "empty":
-			out.append("\n")
-		elif v.kind == "cell":
-			out.append(" ")
-			out.append(", ".join(_emit_element(e) for e in v.els))
-			out.append("\n")
-		else:
-			# Child-indent spelling is canonical: bare name line, fenced block one
-			# level deeper, verbatim content. Exception: if an earlier same-name
-			# sibling is empty, the bare `name:` header would merge into it on
-			# reparse and the fence would fill that instance instead - so use the
-			# same-line spelling there.
+		# Same-line fence spelling can't carry an inline comment (an unbalanced
+		# quote in the info-string could hide the `#` on reparse), so its
+		# trailing comment joins the leading lines instead.
+		would_merge = False
+		if v.kind == "raw":
 			parent = node.parent
 			siblings = self.arena[parent].children
 			me = siblings.index(idx)
@@ -936,11 +974,46 @@ class Document:
 				self.arena[c].name == node.name and self.arena[c].value.is_empty()
 				for c in siblings[:me]
 			)
-			out.append(" " if would_merge else "\n")
-			pad = "\t" * (depth + 1)
+		for c in node.leading:
+			out.append(pad)
+			out.append(c)
+			out.append("\n")
+		if would_merge and node.trailing:
+			out.append(pad)
+			out.append(node.trailing)
+			out.append("\n")
+		out.append(pad)
+		out.append(_emit_name(node.name))
+		out.append(":")
+		if v.kind == "empty":
+			if node.trailing:
+				out.append("  ")
+				out.append(node.trailing)
+			out.append("\n")
+		elif v.kind == "cell":
+			out.append(" ")
+			out.append(", ".join(_emit_element(e) for e in v.els))
+			if node.trailing:
+				out.append("  ")
+				out.append(node.trailing)
+			out.append("\n")
+		else:
+			# Child-indent spelling is canonical: bare name line, fenced block one
+			# level deeper, verbatim content. Exception: if an earlier same-name
+			# sibling is empty, the bare `name:` header would merge into it on
+			# reparse and the fence would fill that instance instead - so use the
+			# same-line spelling there.
+			if would_merge:
+				out.append(" ")
+			else:
+				if node.trailing:
+					out.append("  ")
+					out.append(node.trailing)
+				out.append("\n")
+			body_pad = "\t" * (depth + 1)
 			fence = v.fence_char * v.fence_len
 			if not would_merge:
-				out.append(pad)
+				out.append(body_pad)
 			out.append(fence)
 			if v.info:
 				# An info-string starting with the fence char would extend the run
@@ -952,10 +1025,10 @@ class Document:
 			if v.content:
 				for ln in v.content.split("\n"):
 					if ln:
-						out.append(pad)
+						out.append(body_pad)
 					out.append(ln)
 					out.append("\n")
-			out.append(pad)
+			out.append(body_pad)
 			out.append(fence)
 			out.append("\n")
 
