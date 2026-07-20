@@ -195,9 +195,10 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Features and enhancements
 
-- 🔘 Code Review 20260716 item 4: `fmt` deletes every comment with no warning, and the spec never discloses it.
+- ✅ Code Review 20260716 item 4: `fmt` deletes every comment with no warning, and the spec never discloses it.
 	- Direct hit on the hand-author audience; retrofitting comment storage later touches all five codebases.
 	- Decide before 1.0: preserve comments as trivia, or spec the loss and warn on `fmt --write`. Detail: `design.md` - Code Review 20260716, item 4.
+	- Done: comments survive `fmt` in all four parsers - whole-line comments re-emit above the node the next line binds, trailing ones stay on their line, end-of-file comments land at the end. Spec'd under Comments + Canonical formatter; corpus case 013 pins it and the older cases' expected files now keep their comments.
 
 - 🔘 Code Review 20260716 item 5: the Writer half of the spec'd API exists in no binding and has no backlog item.
 	- Spec presents Accessor+Writer as the two halves; schema-driven generation depends on it.

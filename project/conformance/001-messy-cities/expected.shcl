@@ -1,3 +1,5 @@
+# Indented style
+# Redundant path (collapses into Chicago)
 base: Chicago
 	metrics:
 		population: 30200
@@ -5,10 +7,11 @@ base: Chicago
 		square-miles: 300
 base: "Cleveland, OH"
 	metrics:
-		population: 700
+		# Inline style
+		population: 700  # Why only 700?
 base: Boston
 	metrics:
-		population:
+		population:  # Empty value
 base: Philly
 	metrics:
 		population: 1024

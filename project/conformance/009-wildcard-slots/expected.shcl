@@ -1,3 +1,4 @@
+# Wildcard reads: every instance keeps its slot, resolved or not.
 base: Boston
 	pop: 1
 base: Philly

@@ -276,6 +276,11 @@ type nodeData struct {
 	line      int
 	starList  bool // value built from stacked "* " lines
 	starMixed bool // mix of "* " and field children already diagnosed
+	// Comment trivia, verbatim from `#` to end of line. Never part of identity
+	// or reads; merged instances concatenate leading, first trailing wins
+	// (later ones demote to leading - a canonical line has room for one).
+	leading  []string
+	trailing string // empty = none
 }
 
 // Document is a parsed SHCL document: the tree, its diagnostics, and its
@@ -284,6 +289,7 @@ type Document struct {
 	arena      []nodeData
 	diags      []Diagnostic
 	strictness Strictness
+	orphans    []string // comments after the last binding line
 }
 
 const root = 0
@@ -356,9 +362,10 @@ func leadingWS(s string) string {
 	return s[:i]
 }
 
-// stripComment strips an unquoted trailing comment. A `\` shields the next
-// char throughout.
-func stripComment(s string) string {
+// splitComment splits off an unquoted trailing comment: (content, comment from
+// `#` on, "" = none). A `\` shields the next char throughout. Comments are
+// kept as trivia.
+func splitComment(s string) (string, string) {
 	var inQuote rune
 	skip := false
 	for i, c := range s {
@@ -376,10 +383,10 @@ func stripComment(s string) string {
 		case inQuote == 0 && (c == '"' || c == '\''):
 			inQuote = c
 		case inQuote == 0 && c == '#':
-			return s[:i]
+			return s[:i], s[i:]
 		}
 	}
-	return s
+	return s, ""
 }
 
 // splitUnquotedCommas splits on unquoted commas; `\` shields the next char.
@@ -718,6 +725,8 @@ type parser struct {
 	// Per-node (name, value-key) -> first matching child, parallel to arena.
 	// Pure lookup accelerator for selectOrCreate; children keeps the order.
 	childMap []map[[2]string]int
+	// Whole-line comments waiting for the next line that binds a node.
+	pending []string
 }
 
 func newParser() *parser {
@@ -759,6 +768,21 @@ func (p *parser) remapChild(node int, oldKey string) {
 	newKey := [2]string{name, p.arena[node].value.key()}
 	if _, ok := p.childMap[parent][newKey]; !ok {
 		p.childMap[parent][newKey] = node
+	}
+}
+
+// attachTrivia hands pending leading comments (and this line's trailing one)
+// to a node. First trailing wins; a later one demotes to leading so nothing
+// is lost.
+func (p *parser) attachTrivia(node int, trailing string) {
+	p.arena[node].leading = append(p.arena[node].leading, p.pending...)
+	p.pending = p.pending[:0]
+	if trailing != "" {
+		if p.arena[node].trailing == "" {
+			p.arena[node].trailing = trailing
+		} else {
+			p.arena[node].leading = append(p.arena[node].leading, trailing)
+		}
 	}
 }
 
@@ -901,20 +925,21 @@ func (p *parser) consumeRaw(lines []string, i, openLine int, ch byte, length int
 }
 
 // bindBlock: a bare fence line is a value line for its parent field: fills an
-// empty value, else creates a new instance of that field (the repeated-leaf rule).
-func (p *parser) bindBlock(parent int, v value, line int) {
+// empty value, else creates a new instance of that field (the repeated-leaf
+// rule). Returns the node the block landed on (-1 = no parent, diagnosed).
+func (p *parser) bindBlock(parent int, v value, line int) int {
 	if parent == root {
 		p.err(line, "raw block with no parent field")
-		return
+		return -1
 	}
 	if p.arena[parent].value.isEmpty() {
 		oldKey := p.arena[parent].value.key()
 		p.arena[parent].value = v
 		p.remapChild(parent, oldKey)
-	} else {
-		name, grand := p.arena[parent].name, p.arena[parent].parent
-		p.selectOrCreate(grand, name, v, line)
+		return parent
 	}
+	name, grand := p.arena[parent].name, p.arena[parent].parent
+	return p.selectOrCreate(grand, name, v, line)
 }
 
 // addStarElement: one stacked-list element (`* scalar`) appends to the
@@ -1025,7 +1050,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		line := trimEndWS(lines[i])
 		indent := leadingWS(line)
 		rest := line[len(indent):]
-		if rest == "" || strings.HasPrefix(rest, "#") {
+		if rest == "" {
+			i++
+			continue
+		}
+		// Whole-line comment: hold it for the next line that binds a node.
+		if strings.HasPrefix(rest, "#") {
+			p.pending = append(p.pending, rest)
 			i++
 			continue
 		}
@@ -1038,7 +1069,9 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				continue
 			}
 			v, next := p.consumeRaw(lines, i+1, lineno, ch, length, info)
-			p.bindBlock(parent, v, lineno)
+			if node := p.bindBlock(parent, v, lineno); node >= 0 {
+				p.attachTrivia(node, "")
+			}
 			i = next
 			continue
 		}
@@ -1052,7 +1085,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 					i++
 					continue
 				}
-				p.addStarElement(parent, stripComment(after), lineno)
+				body, comment := splitComment(after)
+				// Elements have no node of their own; trivia rides the field.
+				if parent != root {
+					p.attachTrivia(parent, comment)
+				}
+				p.addStarElement(parent, body, lineno)
 				i++
 				continue
 			}
@@ -1061,9 +1099,14 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			continue
 		}
 		// Field line.
-		content := trimEndWS(stripComment(rest))
+		before, comment := splitComment(rest)
+		content := trimEndWS(before)
 		if content == "" {
-			i++ // the line was only a comment
+			// Only a comment survived (e.g. an escaped lead-in); keep it.
+			if comment != "" {
+				p.pending = append(p.pending, comment)
+			}
+			i++
 			continue
 		}
 		parent, okp := p.resolveParent(indent)
@@ -1097,12 +1140,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			}
 		}
 		if node, ok := p.attachPath(parent, scan.segments, v, lineno); ok {
+			p.attachTrivia(node, comment)
 			p.stack = append(p.stack, stackEnt{indent: indent, node: node})
 		}
 		i = next
 	}
 	p.emitRepeatedLeafHints()
-	return &Document{arena: p.arena, diags: p.diags, strictness: strictness}
+	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: p.pending}
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,42 +1182,37 @@ func (d *Document) Strictness() Strictness {
 }
 
 // ToCanonical emits the canonical form: block layout, tabs, insertion order,
-// minimal quoting, redundancy collapsed, comments dropped. Scalar text is
-// never rewritten.
+// minimal quoting, redundancy collapsed, comments re-emitted as attached
+// trivia. Scalar text is never rewritten.
 func (d *Document) ToCanonical() string {
 	var out strings.Builder
 	for _, c := range d.arena[root].children {
 		d.emitNode(c, 0, &out)
 	}
+	// Comments that never found a following line re-emit at the end.
+	for _, c := range d.orphans {
+		out.WriteString(c)
+		out.WriteByte('\n')
+	}
 	return out.String()
+}
+
+// writeTrailing writes an inline comment, canonically two spaces before the `#`.
+func writeTrailing(out *strings.Builder, trailing string) {
+	if trailing != "" {
+		out.WriteString("  ")
+		out.WriteString(trailing)
+	}
 }
 
 func (d *Document) emitNode(idx, depth int, out *strings.Builder) {
 	node := &d.arena[idx]
-	for k := 0; k < depth; k++ {
-		out.WriteByte('\t')
-	}
-	out.WriteString(emitName(node.name))
-	out.WriteByte(':')
-	switch node.value.kind {
-	case vEmpty:
-		out.WriteByte('\n')
-	case vCell:
-		out.WriteByte(' ')
-		parts := make([]string, len(node.value.els))
-		for k := range node.value.els {
-			parts[k] = emitElement(&node.value.els[k])
-		}
-		out.WriteString(strings.Join(parts, ", "))
-		out.WriteByte('\n')
-	default:
-		// Child-indent spelling is canonical: bare name line, fenced block one
-		// level deeper, verbatim content. Exception: if an earlier same-name
-		// sibling is empty, the bare `name:` header would merge into it on
-		// reparse and the fence would fill that instance instead - so use the
-		// same-line spelling there.
-		r := &node.value.raw
-		wouldMerge := false
+	pad := strings.Repeat("\t", depth)
+	// Same-line fence spelling can't carry an inline comment (an unbalanced
+	// quote in the info-string could hide the `#` on reparse), so its trailing
+	// comment joins the leading lines instead.
+	wouldMerge := false
+	if node.value.kind == vRaw {
 		for _, c := range d.arena[node.parent].children {
 			if c == idx {
 				break
@@ -1183,15 +1222,50 @@ func (d *Document) emitNode(idx, depth int, out *strings.Builder) {
 				break
 			}
 		}
+	}
+	for _, c := range node.leading {
+		out.WriteString(pad)
+		out.WriteString(c)
+		out.WriteByte('\n')
+	}
+	if wouldMerge && node.trailing != "" {
+		out.WriteString(pad)
+		out.WriteString(node.trailing)
+		out.WriteByte('\n')
+	}
+	out.WriteString(pad)
+	out.WriteString(emitName(node.name))
+	out.WriteByte(':')
+	switch node.value.kind {
+	case vEmpty:
+		writeTrailing(out, node.trailing)
+		out.WriteByte('\n')
+	case vCell:
+		out.WriteByte(' ')
+		parts := make([]string, len(node.value.els))
+		for k := range node.value.els {
+			parts[k] = emitElement(&node.value.els[k])
+		}
+		out.WriteString(strings.Join(parts, ", "))
+		writeTrailing(out, node.trailing)
+		out.WriteByte('\n')
+	default:
+		// Child-indent spelling is canonical: bare name line, fenced block one
+		// level deeper, verbatim content. Exception: if an earlier same-name
+		// sibling is empty, the bare `name:` header would merge into it on
+		// reparse and the fence would fill that instance instead - so use the
+		// same-line spelling there.
+		r := &node.value.raw
 		if wouldMerge {
 			out.WriteByte(' ')
 		} else {
+			writeTrailing(out, node.trailing)
 			out.WriteByte('\n')
 		}
-		pad := strings.Repeat("\t", depth+1)
+		bodyPad := strings.Repeat("\t", depth+1)
 		fence := strings.Repeat(string(rune(r.fenceChar)), r.fenceLen)
 		if !wouldMerge {
-			out.WriteString(pad)
+			out.WriteString(bodyPad)
 		}
 		out.WriteString(fence)
 		if r.info != "" {
@@ -1206,13 +1280,13 @@ func (d *Document) emitNode(idx, depth int, out *strings.Builder) {
 		if r.content != "" {
 			for _, l := range strings.Split(r.content, "\n") {
 				if l != "" {
-					out.WriteString(pad)
+					out.WriteString(bodyPad)
 				}
 				out.WriteString(l)
 				out.WriteByte('\n')
 			}
 		}
-		out.WriteString(pad)
+		out.WriteString(bodyPad)
 		out.WriteString(fence)
 		out.WriteByte('\n')
 	}

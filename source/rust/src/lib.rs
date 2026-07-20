@@ -224,6 +224,11 @@ struct NodeData {
 	line: usize,
 	star_list: bool,  // value built from stacked "* " lines
 	star_mixed: bool, // mix of "* " and field children already diagnosed
+	// Comment trivia, verbatim from `#` to end of line. Never part of identity
+	// or reads; merged instances concatenate leading, first trailing wins
+	// (later ones demote to leading - a canonical line has room for one).
+	leading: Vec<String>,
+	trailing: String, // empty = none
 }
 
 /// A parsed SHCL document: the tree, its diagnostics, and its strictness level.
@@ -232,6 +237,7 @@ pub struct Document {
 	arena: Vec<NodeData>,
 	diags: Vec<Diagnostic>,
 	strictness: Strictness,
+	orphans: Vec<String>, // comments after the last binding line
 }
 
 const ROOT: usize = 0;
@@ -248,8 +254,9 @@ fn is_bare_name_char(c: char) -> bool {
 	c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
-/// Strip an unquoted trailing comment. A `\` shields the next char throughout.
-fn strip_comment(s: &str) -> &str {
+/// Split off an unquoted trailing comment: (content, comment from `#` on).
+/// A `\` shields the next char throughout. Comments are kept as trivia.
+fn split_comment(s: &str) -> (&str, Option<&str>) {
 	let mut in_quote: Option<char> = None;
 	let mut it = s.char_indices();
 	while let Some((byte, c)) = it.next() {
@@ -260,11 +267,11 @@ fn strip_comment(s: &str) -> &str {
 		match in_quote {
 			Some(q) if c == q => in_quote = None,
 			None if c == '"' || c == '\'' => in_quote = Some(c),
-			None if c == '#' => return &s[..byte],
+			None if c == '#' => return (&s[..byte], Some(&s[byte..])),
 			_ => {}
 		}
 	}
-	s
+	(s, None)
 }
 
 /// Split on unquoted commas; `\` shields the next char.
@@ -552,6 +559,8 @@ struct Parser {
 	// Per-node (name, value-key) -> first matching child, parallel to arena.
 	// Pure lookup accelerator for select_or_create; children keeps the order.
 	child_map: Vec<HashMap<(String, String), usize>>,
+	// Whole-line comments waiting for the next line that binds a node.
+	pending: Vec<String>,
 }
 
 impl Parser {
@@ -565,10 +574,13 @@ impl Parser {
 				line: 0,
 				star_list: false,
 				star_mixed: false,
+				leading: Vec::new(),
+				trailing: String::new(),
 			}],
 			diags: Vec::new(),
 			stack: vec![(String::new(), ROOT)],
 			child_map: vec![HashMap::new()],
+			pending: Vec::new(),
 		}
 	}
 
@@ -595,6 +607,8 @@ impl Parser {
 			line,
 			star_list: false,
 			star_mixed: false,
+			leading: Vec::new(),
+			trailing: String::new(),
 		});
 		self.arena[parent].children.push(idx);
 		self.child_map.push(HashMap::new());
@@ -615,6 +629,19 @@ impl Parser {
 		self.child_map[parent]
 			.entry((name, new_key))
 			.or_insert(node);
+	}
+
+	/// Hand pending leading comments (and this line's trailing one) to a node.
+	/// First trailing wins; a later one demotes to leading so nothing is lost.
+	fn attach_trivia(&mut self, node: usize, trailing: Option<&str>) {
+		self.arena[node].leading.append(&mut self.pending);
+		if let Some(t) = trailing {
+			if self.arena[node].trailing.is_empty() {
+				self.arena[node].trailing = t.to_string();
+			} else {
+				self.arena[node].leading.push(t.to_string());
+			}
+		}
 	}
 
 	/// Resolve which open level this indent belongs to. Child only when the
@@ -781,18 +808,20 @@ impl Parser {
 
 	/// A bare fence line is a value line for its parent field: fills an empty
 	/// value, else creates a new instance of that field (the repeated-leaf rule).
-	fn bind_block(&mut self, parent: usize, value: Value, line: usize) {
+	/// Returns the node the block landed on (None = no parent, diagnosed).
+	fn bind_block(&mut self, parent: usize, value: Value, line: usize) -> Option<usize> {
 		if parent == ROOT {
 			self.err(line, "raw block with no parent field");
-			return;
+			return None;
 		}
 		if self.arena[parent].value.is_empty() {
 			let old_key = self.arena[parent].value.key();
 			self.arena[parent].value = value;
 			self.remap_child(parent, old_key);
+			Some(parent)
 		} else {
 			let (name, grandparent) = (self.arena[parent].name.clone(), self.arena[parent].parent);
-			self.select_or_create(grandparent, &name, value, line);
+			Some(self.select_or_create(grandparent, &name, value, line))
 		}
 	}
 
@@ -915,7 +944,13 @@ impl Parser {
 				.take_while(|c| *c == ' ' || *c == '\t')
 				.collect();
 			let rest = &line[indent.len()..];
-			if rest.is_empty() || rest.starts_with('#') {
+			if rest.is_empty() {
+				i += 1;
+				continue;
+			}
+			// Whole-line comment: hold it for the next line that binds a node.
+			if rest.starts_with('#') {
+				self.pending.push(rest.to_string());
 				i += 1;
 				continue;
 			}
@@ -930,7 +965,9 @@ impl Parser {
 					}
 				};
 				let (value, next) = self.consume_raw(&lines, i + 1, lineno, ch, len, info);
-				self.bind_block(parent, value, lineno);
+				if let Some(node) = self.bind_block(parent, value, lineno) {
+					self.attach_trivia(node, None);
+				}
 				i = next;
 				continue;
 			}
@@ -945,7 +982,11 @@ impl Parser {
 							continue;
 						}
 					};
-					let body = strip_comment(after);
+					let (body, comment) = split_comment(after);
+					// Elements have no node of their own; trivia rides the field.
+					if parent != ROOT {
+						self.attach_trivia(parent, comment);
+					}
 					self.add_star_element(parent, body, lineno);
 					i += 1;
 					continue;
@@ -955,9 +996,14 @@ impl Parser {
 				continue;
 			}
 			// Field line.
-			let content = strip_comment(rest).trim_end();
+			let (before, comment) = split_comment(rest);
+			let content = before.trim_end();
 			if content.is_empty() {
-				i += 1; // the line was only a comment
+				// Only a comment survived (e.g. an escaped lead-in); keep it.
+				if let Some(c) = comment {
+					self.pending.push(c.to_string());
+				}
+				i += 1;
 				continue;
 			}
 			let parent = match self.resolve_parent(&indent) {
@@ -997,6 +1043,7 @@ impl Parser {
 				}
 			};
 			if let Some(node) = self.attach_path(parent, &scan.segments, value, lineno) {
+				self.attach_trivia(node, comment);
 				self.stack.push((indent, node));
 			}
 			i = next;
@@ -1006,6 +1053,7 @@ impl Parser {
 			arena: self.arena,
 			diags: self.diags,
 			strictness,
+			orphans: self.pending,
 		}
 	}
 }
@@ -1043,28 +1091,61 @@ impl Document {
 	}
 
 	/// Canonical form: block layout, tabs, insertion order, minimal quoting,
-	/// redundancy collapsed, comments dropped. Scalar text is never rewritten.
+	/// redundancy collapsed, comments re-emitted as attached trivia. Scalar
+	/// text is never rewritten.
 	pub fn to_canonical(&self) -> String {
 		let mut out = String::new();
 		for &c in &self.arena[ROOT].children {
 			self.emit_node(c, 0, &mut out);
+		}
+		// Comments that never found a following line re-emit at the end.
+		for c in &self.orphans {
+			out.push_str(c);
+			out.push('\n');
 		}
 		out
 	}
 
 	fn emit_node(&self, idx: usize, depth: usize, out: &mut String) {
 		let node = &self.arena[idx];
-		for _ in 0..depth {
-			out.push('\t');
+		let pad: String = "\t".repeat(depth);
+		// Same-line fence spelling can't carry an inline comment (an unbalanced
+		// quote in the info-string could hide the `#` on reparse), so its
+		// trailing comment joins the leading lines instead.
+		let would_merge = if let Value::Raw { .. } = &node.value {
+			let parent = node.parent;
+			let me = self.arena[parent].children.iter().position(|&c| c == idx);
+			me.is_some_and(|p| {
+				self.arena[parent].children[..p]
+					.iter()
+					.any(|&c| self.arena[c].name == node.name && self.arena[c].value.is_empty())
+			})
+		} else {
+			false
+		};
+		for c in &node.leading {
+			out.push_str(&pad);
+			out.push_str(c);
+			out.push('\n');
 		}
+		if would_merge && !node.trailing.is_empty() {
+			out.push_str(&pad);
+			out.push_str(&node.trailing);
+			out.push('\n');
+		}
+		out.push_str(&pad);
 		out.push_str(&emit_name(&node.name));
 		out.push(':');
 		match &node.value {
-			Value::Empty => out.push('\n'),
+			Value::Empty => {
+				push_trailing(out, &node.trailing);
+				out.push('\n');
+			}
 			Value::Cell(els) => {
 				out.push(' ');
 				let joined = els.iter().map(emit_element).collect::<Vec<_>>().join(", ");
 				out.push_str(&joined);
+				push_trailing(out, &node.trailing);
 				out.push('\n');
 			}
 			Value::Raw {
@@ -1078,19 +1159,13 @@ impl Document {
 				// earlier same-name sibling is empty, the bare `name:` header
 				// would merge into it on reparse and the fence would fill that
 				// instance instead - so use the same-line spelling there.
-				let parent = node.parent;
-				let me = self.arena[parent].children.iter().position(|&c| c == idx);
-				let would_merge = me.is_some_and(|p| {
-					self.arena[parent].children[..p]
-						.iter()
-						.any(|&c| self.arena[c].name == node.name && self.arena[c].value.is_empty())
-				});
 				if would_merge {
 					out.push(' ');
 				} else {
+					push_trailing(out, &node.trailing);
 					out.push('\n');
 				}
-				let pad: String = "\t".repeat(depth + 1);
+				let pad: String = "\t".repeat(depth + 1); // block body pad, one deeper
 				let fence: String = std::iter::repeat_n(*fence_char as char, *fence_len).collect();
 				if !would_merge {
 					out.push_str(&pad);
@@ -1122,6 +1197,14 @@ impl Document {
 		for &c in &self.arena[idx].children {
 			self.emit_node(c, depth + 1, out);
 		}
+	}
+}
+
+/// Inline comment, canonically two spaces before the `#`.
+fn push_trailing(out: &mut String, trailing: &str) {
+	if !trailing.is_empty() {
+		out.push_str("  ");
+		out.push_str(trailing);
 	}
 }
 

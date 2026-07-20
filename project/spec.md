@@ -78,6 +78,8 @@ The Accessor reads in two modes:
 
 - A `#` inside quotes is literal (`url: "http://h/#frag"`), and a `#` inside a raw block is literal.
 
+- Comments are never discarded: the parser carries each one as trivia attached to the tree, and the canonical formatter re-emits them (see Canonical formatter). They play no part in merging, reads, or diagnostics.
+
 ### Whitespace, quoting, and reserved characters
 
 - Whitespace around dots, colons, brackets, commas, and values is insignificant and trimmed. `a . b : "x"` == `a.b:"x"`.
@@ -383,11 +385,15 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 
 - Collapse and merge redundant sections and paths.
 
+- Preserve comments as attached trivia. A whole-line comment attaches to the node bound by the next non-comment line and re-emits just above that node's line, at its indent; a trailing comment stays on its line, two spaces before the `#`. Comment text is never rewritten.
+
+- When instances merge, their comments concatenate in encounter order; a second trailing comment moves to the lines above (a canonical line has room for one). Comments among stacked-list elements ride the list's field line. Comments after the last binding line re-emit at the end of the output, unindented.
+
 - Quote a value only when a reserved character requires it (minimal quoting).
 
 - Leave scalar text exactly as authored; raw blocks are re-emitted verbatim. A block value canonicalizes to the child-indent spelling - bare `name:`, fence (with its info-string) on the next line at child indent - one field line per block instance.
 
-- Two narrow exceptions keep round-trips exact. If an *earlier* instance of the same field under the same parent is empty, the child-indent header line would merge into it on re-read and the fence would fill that instance - so the formatter emits that block in the same-line spelling instead. And an info-string that *starts with* the fence character gets one space after the fence, so it cannot lengthen the fence run on re-read.
+- Two narrow exceptions keep round-trips exact. If an *earlier* instance of the same field under the same parent is empty, the child-indent header line would merge into it on re-read and the fence would fill that instance - so the formatter emits that block in the same-line spelling instead. And an info-string that *starts with* the fence character gets one space after the fence, so it cannot lengthen the fence run on re-read. A block emitted in the same-line spelling also moves any trailing comment to the lines above - after the fence it could read as part of the info-string on re-read.
 
 ## Error handling philosophy
 
