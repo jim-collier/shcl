@@ -230,9 +230,9 @@ In each section, items are listed approximately from newest to oldest.
 	- `check` prints prose to stdout and crosscheck compares it, so every English message is frozen across bindings - contradicting design.md's per-binding-voice rule.
 	- Give diagnostics stable codes; compare codes, free the prose. Detail: `design.md` - Code Review 20260716, item 19.
 
-- 🔘 Code Review 20260716 item 20: README still says no tagged release exists.
+- ✅ Code Review 20260716 item 20: README still says no tagged release exists.
 	- Contradicts the v1.0.0-beta1 tag, the changelog, and the published prerelease binaries; badge still says Alpha.
-	- Add a README status pass to the release-cut checklist.
+	- Done: lifecycle badge Alpha -> Beta, Status/Installing sections now reflect the `v1.0.0-beta1` pre-release and its prebuilt binaries; release-cut checklist in `design.md` gained a "README status pass" step so it can't drift again.
 
 - 🔘 Code Review 20260716 item 22: `--on-bad=error` messages are bare enum names.
 	- `app.name: BadType` - no value, no requested type, no file, no suggested fix. Stderr is not contract, so this is free to improve.
@@ -256,8 +256,9 @@ In each section, items are listed approximately from newest to oldest.
 - 🔘 Code Review 20260716 item 37: `--version`/`-h` are undiscoverable.
 	- Help text never mentions them; `shcl help` and `shcl version` are rejected; `-w` is accepted but undocumented.
 
-- 🔘 Code Review 20260716 item 38: wrapper documentation drift.
+- ✅ Code Review 20260716 item 38: wrapper documentation drift.
 	- README omits the PowerShell wrapper; spec says "POSIX sh" but the shell wrapper is deliberately Bash. Align the words with the artifacts.
+	- Done: README blurb + Status now name both the Bash and PowerShell wrappers; spec's two concrete "shipped wrapper" claims say Bash instead of POSIX sh (the illustrative two-tier table row stays, like the other not-yet-shipped language rows).
 
 - 🛠️ Accessor: two-tier junior-friendly surface (convenience default plus full status), consistent across all bindings. A supplied default implies default mode.
 
