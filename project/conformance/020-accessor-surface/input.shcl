@@ -1,0 +1,11 @@
+# Accessor surface: wildcards across instances (one with a missing sub-path),
+# and a raw block read for both its content and its info-string.
+server: web1
+	port: 8080
+	region: us-east
+server: web2
+	port: 8081
+query:
+	~~~sql
+	SELECT count(*) FROM t;
+	~~~

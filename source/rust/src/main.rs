@@ -29,8 +29,9 @@ prints the canonical document. FILE is the base ('-' = empty base). Ops:
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 
 Types (default --string):
-  --int --float --bool --datetime --string --raw
+  --int --float --bool --datetime --string --raw --rawinfo
   --array                                read the value as an array of the type
+  --rawinfo reads a raw block's info-string (the fence tag), not its content
 
 Options:
   --default=VALUE                        value to print when the read is not Good
@@ -87,7 +88,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	while i < argv.len() {
 		let a = argv[i].as_str();
 		match a {
-			"--int" | "--float" | "--bool" | "--datetime" | "--string" | "--raw" => {
+			"--int" | "--float" | "--bool" | "--datetime" | "--string" | "--raw" | "--rawinfo" => {
 				o.kind = a[2..].to_string();
 			}
 			"--array" => o.array = true,
@@ -215,8 +216,8 @@ fn do_get(o: &Opts) -> u8 {
 					r.slots,
 				)
 			}
-			"raw" => {
-				eprintln!("--raw has no --array form");
+			"raw" | "rawinfo" => {
+				eprintln!("--{} has no --array form", o.kind);
 				return 1;
 			}
 			_ => {
@@ -244,6 +245,10 @@ fn do_get(o: &Opts) -> u8 {
 			}
 			"raw" => {
 				let r = doc.read_raw(path);
+				(vec![r.value], r.status, Vec::new())
+			}
+			"rawinfo" => {
+				let r = doc.read_raw_info(path);
 				(vec![r.value], r.status, Vec::new())
 			}
 			_ => {

@@ -270,6 +270,10 @@ fn reads_match_expected() {
 						let r = doc.read_raw(query);
 						(tsv_escape(&r.value), r.status, r.slots)
 					}
+					"rawinfo" => {
+						let r = doc.read_raw_info(query);
+						(tsv_escape(&r.value), r.status, r.slots)
+					}
 					"int[]" => {
 						let r = doc.read_int_array(query);
 						(

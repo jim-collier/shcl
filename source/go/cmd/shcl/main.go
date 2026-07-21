@@ -41,8 +41,9 @@ prints the canonical document. FILE is the base ('-' = empty base). Ops:
 string/raw values decode \n \t \\; a line starting with # is a script comment.
 
 Types (default --string):
-  --int --float --bool --datetime --string --raw
+  --int --float --bool --datetime --string --raw --rawinfo
   --array                                read the value as an array of the type
+  --rawinfo reads a raw block's info-string (the fence tag), not its content
 
 Options:
   --default=VALUE                        value to print when the read is not Good
@@ -115,7 +116,7 @@ func parseOpts(argv []string) (*opts, error) {
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		switch {
-		case a == "--int" || a == "--float" || a == "--bool" || a == "--datetime" || a == "--string" || a == "--raw":
+		case a == "--int" || a == "--float" || a == "--bool" || a == "--datetime" || a == "--string" || a == "--raw" || a == "--rawinfo":
 			o.kind = a[2:]
 		case a == "--array":
 			o.array = true
@@ -236,8 +237,8 @@ func doGet(o *opts) int {
 			}
 			status = r.Status
 			slots = r.Slots
-		case "raw":
-			fmt.Fprintln(os.Stderr, "--raw has no --array form")
+		case "raw", "rawinfo":
+			fmt.Fprintf(os.Stderr, "--%s has no --array form\n", o.kind)
 			return 1
 		default:
 			r := doc.ReadStringArray(path)
@@ -265,6 +266,10 @@ func doGet(o *opts) int {
 			status = r.Status
 		case "raw":
 			r := doc.ReadRaw(path)
+			lines = []string{r.Value}
+			status = r.Status
+		case "rawinfo":
+			r := doc.ReadRawInfo(path)
 			lines = []string{r.Value}
 			status = r.Status
 		default:

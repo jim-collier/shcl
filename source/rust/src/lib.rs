@@ -1405,6 +1405,39 @@ impl Document {
 		}
 	}
 
+	/// Every field path in the document, in file order, deduplicated - a query
+	/// recipe for tooling (the differential harness derives reads over the fuzz
+	/// set from it). Only bare-name-safe segments are emitted, so each path is a
+	/// well-formed CLI query; a subtree under a quoted/non-ASCII name is skipped.
+	pub fn paths(&self) -> Vec<String> {
+		let mut out = Vec::new();
+		let mut seen = std::collections::HashSet::new();
+		let mut stack: Vec<(usize, String)> = self.arena[ROOT]
+			.children
+			.iter()
+			.rev()
+			.map(|&c| (c, String::new()))
+			.collect();
+		while let Some((node, prefix)) = stack.pop() {
+			let name = &self.arena[node].name;
+			if name.is_empty() || !name.chars().all(is_bare_name_char) {
+				continue; // not a bare query segment; skip it and its subtree
+			}
+			let path = if prefix.is_empty() {
+				name.clone()
+			} else {
+				format!("{}.{}", prefix, name)
+			};
+			if seen.insert(path.clone()) {
+				out.push(path.clone());
+			}
+			for &c in self.arena[node].children.iter().rev() {
+				stack.push((c, path.clone()));
+			}
+		}
+		out
+	}
+
 	/// Instance values at a path, in file order. Wildcard slots that did not
 	/// resolve stay in the list as "" so indices keep matching count().
 	pub fn instances(&self, path: &str) -> Vec<String> {

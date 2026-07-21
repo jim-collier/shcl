@@ -222,9 +222,10 @@ In each section, items are listed approximately from newest to oldest.
 	- `GetIntOr(...)` (Go), `get_int(..., default=)` (Python), `get_or<T>` (C++) are all missing; a new user's first copy-paste fails.
 	- Done: implemented the spec's convenience tier (not gutted the examples), so the README calls are now real as written. Go `GetIntOr`/`Get*Or` + array forms; Python `get_*`/`get_*_array` gained a `default=` param (must-exist and raises without one); C `shcl_get_int/float/bool`; C++ `get_or<T>`. Rust's is the native `get_int(path).unwrap_or(def)` and gained matching `get_*_array` so arrays have the same tier. Semantic pinned everywhere: value only on `Good`, else the call-site fallback (Empty falls back too). Reference unit test + Go test + C++ veneer CHECKs added.
 
-- 🔘 Code Review 20260716 item 18: query-side behavior is barely pinned.
+- ✅ Code Review 20260716 item 18: query-side behavior is barely pinned.
 	- No corpus rows for wildcards, on-bad modes, or defaults; the fuzz differential compares `fmt` only.
 	- The accessor side is where five hand-written ports diverge most easily. Detail: `design.md` - Code Review 20260716, item 18.
+	- Done: added a `--rawinfo` CLI type (+ the `rawinfo` reads.tsv type in all four runners) so the info-string read is pinnable; the reference `Document::paths()` drives a fuzz-dump-derived `<name>.reads.tsv` that the crosscheck `--extra` replays (reads over fuzz soup, not just fmt); every scalar read row is also replayed under `--on-bad=error` and `--default=<x>`; corpus case 020-accessor-surface pins wildcards (with a missing slot), a `[value]` selector, and both raw reads. Crosscheck ~1983 -> ~4203 comparisons.
 
 - ✅ Code Review 20260716 item 19: diagnostic wording became a byte-for-byte 5-way contract by accident.
 	- `check` prints prose to stdout and crosscheck compares it, so every English message is frozen across bindings - contradicting design.md's per-binding-voice rule.

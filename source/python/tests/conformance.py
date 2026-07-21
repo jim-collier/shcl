@@ -83,6 +83,9 @@ def scalar_read(doc, kind, query):
 	if kind == "raw":
 		r = doc.read_raw(query)
 		return tsv_escape(r.value), r.status, r.slots
+	if kind == "rawinfo":
+		r = doc.read_raw_info(query)
+		return tsv_escape(r.value), r.status, r.slots
 	if kind == "int[]":
 		r = doc.read_int_array(query)
 		return "|".join(str(v) for v in r.value), r.status, r.slots

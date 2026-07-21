@@ -39,8 +39,9 @@ prints the canonical document. FILE is the base ('-' = empty base). Ops:
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 
 Types (default --string):
-  --int --float --bool --datetime --string --raw
+  --int --float --bool --datetime --string --raw --rawinfo
   --array                                read the value as an array of the type
+  --rawinfo reads a raw block's info-string (the fence tag), not its content
 
 Options:
   --default=VALUE                        value to print when the read is not Good
@@ -100,7 +101,7 @@ def parse_opts(argv):
 	i = 0
 	while i < len(argv):
 		a = argv[i]
-		if a in ("--int", "--float", "--bool", "--datetime", "--string", "--raw"):
+		if a in ("--int", "--float", "--bool", "--datetime", "--string", "--raw", "--rawinfo"):
 			o.kind = a[2:]
 		elif a == "--array":
 			o.array = True
@@ -189,8 +190,8 @@ def do_get(o):
 		elif o.kind == "datetime":
 			r = doc.read_datetime_array(path)
 			lines = [str(v) for v in r.value]
-		elif o.kind == "raw":
-			sys.stderr.write("--raw has no --array form\n")
+		elif o.kind in ("raw", "rawinfo"):
+			sys.stderr.write("--{} has no --array form\n".format(o.kind))
 			return 1
 		else:
 			r = doc.read_string_array(path)
@@ -208,9 +209,11 @@ def do_get(o):
 			r = doc.read_datetime(path)
 		elif o.kind == "raw":
 			r = doc.read_raw(path)
+		elif o.kind == "rawinfo":
+			r = doc.read_raw_info(path)
 		else:
 			r = doc.read_string(path)
-		if o.kind in ("string", "raw"):
+		if o.kind in ("string", "raw", "rawinfo"):
 			lines = [r.value]
 		else:
 			lines = [_fmt_scalar(o.kind, r.value)]
