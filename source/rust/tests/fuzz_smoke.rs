@@ -91,6 +91,26 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 			&& i < dump_max
 		{
 			let _ = std::fs::write(format!("{}/fuzz_{:05}.shcl", dir, i), &text);
+			// Also emit a derived reads.tsv for a small subset, so the differential
+			// check exercises the accessor surface (coercion, levels, arrays) over
+			// fuzz soup, not just fmt. Capped so the cross-binding replay stays cheap.
+			if i < 30 {
+				let paths = Document::parse(&text).paths();
+				if !paths.is_empty() {
+					let mut tsv = String::from("query\ttype\texpected\tstatus\tlevel\n");
+					for p in paths.iter().take(3) {
+						for (ty, lvl) in [
+							("string", ""),
+							("int", "loose"),
+							("bool", "strict"),
+							("string[]", ""),
+						] {
+							tsv.push_str(&format!("{}\t{}\t-\t-\t{}\n", p, ty, lvl));
+						}
+					}
+					let _ = std::fs::write(format!("{}/fuzz_{:05}.reads.tsv", dir, i), tsv);
+				}
+			}
 		}
 		// Must never panic at any strictness; Strict may (validly) refuse the load.
 		let _ = Document::parse_with(&text, Strictness::Loose);

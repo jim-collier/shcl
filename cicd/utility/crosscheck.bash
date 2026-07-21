@@ -122,7 +122,12 @@ fReadRow(){
 		instances)    fCompare "instances ${query}" instances "${strictArg[@]}" "$input" "$query" ;;
 		*'[]')        fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
 		              fCompare "get ${query} ${type} slots" get "--${type%[]}" --array --slots "${strictArg[@]}" "$input" "$query" ;;
-		*)            fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query" ;;
+		*)            fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query"
+		              # on-bad=error (exit-code differential; message goes to dropped stderr)
+		              # and a default substitution (stdout differential) - the accessor
+		              # policy surface, where hand-written ports diverge most easily.
+		              fCompare "get ${query} ${type} on-bad=error" get "--${type}" --on-bad=error "${strictArg[@]}" "$input" "$query"
+		              fCompare "get ${query} ${type} default" get "--${type}" "--default=<x>" "${strictArg[@]}" "$input" "$query" ;;
 	esac
 }
 
@@ -157,6 +162,15 @@ if [[ -n "$extra" && -d "$extra" ]]; then
 		# Same NUL limitation as the corpus loop; silently skip (a dump can be large).
 		[[ "$(LC_ALL=C tr -dc '\000' < "$f" | wc -c)" -ne 0 ]] && continue
 		fCompare "fmt $(basename "$f")" fmt "$f"
+		# Derived reads.tsv (the reference dumps one per input, paths it knows exist):
+		# replay the accessor rows too, so the fuzz set covers reads, not just fmt.
+		reads="${f%.shcl}.reads.tsv"
+		if [[ -f "$reads" ]]; then
+			while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do
+				[[ -z "$query" || "$query" == "query" ]] && continue
+				fReadRow "$f" "$query" "$type" "${level:-}"
+			done < "$reads"
+		fi
 	done
 	if ((nExtra == 0)); then
 		echo "crosscheck: --extra ${extra} matched no *.shcl (empty fuzz dump?)" >&2

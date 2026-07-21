@@ -375,6 +375,9 @@ func TestReadsMatchExpected(t *testing.T) {
 			case "raw":
 				r := doc.ReadRaw(query)
 				gotValue, gotStatus = tsvEscape(r.Value), r.Status
+			case "rawinfo":
+				r := doc.ReadRawInfo(query)
+				gotValue, gotStatus = tsvEscape(r.Value), r.Status
 			case "int[]":
 				r := doc.ReadIntArray(query)
 				gotSlots = r.Slots
