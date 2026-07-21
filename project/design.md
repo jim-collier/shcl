@@ -271,9 +271,11 @@ Technical detail behind the backlog's "Code Review 20260716" items. Item numbers
 
 - **Item 24 - argv encoding** (`source/rust/src/main.rs`)
 	- `std::env::args()` panics (with panic=abort: exit 134) on non-UTF-8 argv; Go/Python/C exit 3. Fix the reference: `args_os` + a graceful "invalid argument encoding" error, exit 1 - and mirror the check in C, or document non-UTF-8 argv as out of contract.
+	- Resolved: uniform rather than reference-only. All four validate every argv entry as UTF-8 before dispatch and exit 1 with the same message; a garbled arg is a usage error, and up-front validation removes the position-dependent exit-3 (bad PATH read as NotFound vs bad FILE as I/O). Rust uses `args_os().into_string()`, C reuses `utf8_valid`, Go uses `utf8.ValidString`, Python catches the surrogate-escape `encode` failure. Not corpus-pinnable (the crosscheck harness can't carry non-UTF-8 argv), so it lives in code + this note.
 
 - **Item 25 - broken-pipe exits** (`source/go/cmd/shcl/main.go:227`, `source/python/cmd/shcl/main.py:299`)
 	- Rust panics on EPIPE (134), Go dies by SIGPIPE (141), Python catches BrokenPipeError and returns 0. Decide the contract (conventional Unix = die by SIGPIPE, or a common clean exit) and implement it in all four; note in parity docs since crosscheck cannot exercise pipes.
+	- Resolved: conventional Unix - die by SIGPIPE, exit 141. Rust and Python both install SIG_IGN by default, so both restore SIG_DFL at startup (Rust via a self-contained `signal` extern to stay zero-dep; Python via `signal.signal`, and its BrokenPipeError-to-0 catch is removed). Go and C already carry the default disposition. Not crosscheck-exercisable (pipes), so pinned here.
 
 - **Item 30 - merge-key injectivity** (`source/rust/src/lib.rs:172`)
 	- Cell elements join with bare NUL, so `[a, b]` collides with the single element `"a<NUL>b"` (NUL is grammar-legal in quoted strings); the later value silently merges away. Fix: length-prefix each element in the key (or include element count). Reference first, then ports, plus a NUL corpus case.

@@ -300,11 +300,15 @@ fn do_fmt(o: &Opts) -> u8 {
 			return 1;
 		}
 	};
+	if o.write && file == "-" {
+		eprintln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
+		return 1;
+	}
 	let canonical = match load(&text, o.strictness) {
 		Ok(d) => d.to_canonical(),
 		Err(code) => return code,
 	};
-	if o.write && file != "-" {
+	if o.write {
 		if let Err(e) = std::fs::write(file, &canonical) {
 			eprintln!("{}: {}", file, e);
 			return 1;
@@ -568,8 +572,37 @@ fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
 	code
 }
 
+/// Rust's runtime sets SIGPIPE to SIG_IGN, so a closed stdout surfaces as an
+/// EPIPE write error and the next println! panics (exit 134). Restore SIG_DFL so
+/// a broken pipe kills us by signal - the conventional 141 - like head/cat, and
+/// matching the other bindings. Self-contained extern to stay zero-dep.
+#[cfg(unix)]
+fn reset_sigpipe() {
+	const SIGPIPE: i32 = 13;
+	const SIG_DFL: usize = 0;
+	unsafe {
+		unsafe extern "C" {
+			fn signal(signum: i32, handler: usize) -> usize;
+		}
+		signal(SIGPIPE, SIG_DFL);
+	}
+}
+#[cfg(not(unix))]
+fn reset_sigpipe() {}
+
 fn main() -> ExitCode {
-	let argv: Vec<String> = std::env::args().skip(1).collect();
+	reset_sigpipe();
+	let argv: Vec<String> = match std::env::args_os()
+		.skip(1)
+		.map(|a| a.into_string())
+		.collect::<Result<Vec<_>, _>>()
+	{
+		Ok(v) => v,
+		Err(_) => {
+			eprintln!("invalid argument encoding (expected UTF-8)");
+			return ExitCode::from(1);
+		}
+	};
 	if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") {
 		print!("{}", HELP);
 		return ExitCode::from(if argv.is_empty() { 1 } else { 0 });

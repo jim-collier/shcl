@@ -163,23 +163,27 @@ In each section, items are listed approximately from newest to oldest.
 	- Fixed: a step whose exit differs from `expect_exit` (default 0) aborts the render, so cicd skips the publish `cp`.
 	- Detail: `design.md` - Code Review 20260716, item 17.
 
-- 🔘 Code Review 20260716 item 21: `fmt --write -` silently drops `--write` and exits 0.
+- ✅ Code Review 20260716 item 21: `fmt --write -` silently drops `--write` and exits 0.
 	- Should be a usage error pointing at piping stdout instead. Same in all four CLIs.
+	- Fixed: `--write` with stdin is a usage error (exit 1) in all four CLIs; `--write FILE` still rewrites.
 
 - 🔘 Code Review 20260716 item 23: `field[sel]: value` is grammar-legal but has no spec'd meaning.
 	- The value is dropped with an Error diagnostic, so strict loads fail on a line the grammar allows. Align spec, grammar, and code.
 	- Detail: `design.md` - Code Review 20260716, item 23.
 
-- 🔘 Code Review 20260716 item 24: invalid-UTF-8 command-line args abort the reference.
+- ✅ Code Review 20260716 item 24: invalid-UTF-8 command-line args abort the reference.
 	- Rust exits 134 (panic); Go/Python/C all exit 3. The reference is the outlier on its own exit-code contract.
+	- Fixed: all four validate argv as UTF-8 up front and exit 1 (`invalid argument encoding`); the reference uses `args_os` instead of the panicking `args`.
 	- Detail: `design.md` - Code Review 20260716, item 24.
 
-- 🔘 Code Review 20260716 item 25: broken stdout pipe gives three different exit codes.
+- ✅ Code Review 20260716 item 25: broken stdout pipe gives three different exit codes.
 	- `shcl fmt big | head`: Rust 134, Go 141, Python 0. Pick one behavior and pin it.
+	- Fixed: uniform die-by-SIGPIPE (141). Rust and Python restore the default SIGPIPE disposition; Go and C already died by signal.
 	- Detail: `design.md` - Code Review 20260716, item 25.
 
-- 🔘 Code Review 20260716 item 26: C CLI has unchecked `realloc` on input/output paths.
+- ✅ Code Review 20260716 item 26: C CLI has unchecked `realloc` on input/output paths.
 	- OOM segfaults instead of taking the clean exit-70 path the arena already has.
+	- Fixed: every CLI allocation goes through `xrealloc`, which now exits 70 with the library's message on OOM.
 
 - ✅ Code Review 20260716 item 27: crosscheck skips the last `reads.tsv` row if the file lacks a trailing newline.
 	- One-line `|| [[ -n "$query" ]]` guard fixes it.

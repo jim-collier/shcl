@@ -299,6 +299,10 @@ func doFmt(o *opts) int {
 		return 1
 	}
 	file := o.args[0]
+	if o.write && file == "-" {
+		fmt.Fprintln(os.Stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE")
+		return 1
+	}
 	text, err := readInput(file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -309,7 +313,7 @@ func doFmt(o *opts) int {
 		return code
 	}
 	canonical := doc.ToCanonical()
-	if o.write && file != "-" {
+	if o.write {
 		if werr := os.WriteFile(file, []byte(canonical), 0o644); werr != nil {
 			fmt.Fprintf(os.Stderr, "%s: %s\n", file, werr)
 			return 1
@@ -610,6 +614,12 @@ func doEnum(o *opts, wantCount bool) int {
 
 func run() int {
 	argv := os.Args[1:]
+	for _, a := range argv {
+		if !utf8.ValidString(a) {
+			fmt.Fprintln(os.Stderr, "invalid argument encoding (expected UTF-8)")
+			return 1
+		}
+	}
 	wantsHelp := false
 	wantsVersion := false
 	for _, a := range argv {
