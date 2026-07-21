@@ -238,8 +238,9 @@ In each section, items are listed approximately from newest to oldest.
 	- `app.name: BadType` - no value, no requested type, no file, no suggested fix. Stderr is not contract, so this is free to improve.
 	- Done in all four CLIs: `shcl: cannot read <path> as <type>: <reason> (in <file>)`, where a BadType names the offending raw value (`value "$1200" is not a valid int`), and NotFound/Empty/Multiple get a plain-English reason. Array reads say `<type> array`. Stderr, so not crosscheck-pinned.
 
-- 🔘 Code Review 20260716 item 28: dogfood install is a non-atomic in-place `cp`.
+- ✅ Code Review 20260716 item 28: dogfood install is a non-atomic in-place `cp`.
 	- A launch during the copy sees a torn binary, and the synced dest dir can propagate it. Copy to a temp name, then `mv` over.
+	- Done: the dogfood stage now copies the binary and each wrapper to a hidden temp name in the same dest dir, then `mv -f` (atomic rename) over the target, so a hand-launched copy only ever sees the complete old or new file; a failed copy is cleaned up and warned, not left torn.
 
 - ✅ Code Review 20260716 item 29: selector index parses as `usize` in the reference but `u64` in Go.
 	- Latent divergence on any future 32-bit build. Pin the reference to `u64`.
