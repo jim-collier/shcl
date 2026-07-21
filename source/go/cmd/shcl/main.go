@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -23,10 +24,20 @@ const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
+  shcl set [options] FILE                apply write-ops (stdin) and print canonical
   shcl fmt [--write] FILE                print (or rewrite) the canonical form
   shcl check [options] FILE              load and print diagnostics
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+
+set reads a write-ops script from stdin (one op per line, tab-separated) and
+prints the canonical document. FILE is the base ('-' = empty base). Ops:
+  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
+  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
+  <type>[-array]-default<TAB>...                          set only if absent
+  raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block
+  empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
+string/raw values decode \n \t \\; a line starting with # is a script comment.
 
 Types (default --string):
   --int --float --bool --datetime --string --raw
@@ -309,6 +320,243 @@ func doFmt(o *opts) int {
 	return 0
 }
 
+// unescapeOps decodes an ops value: \n \t \\ only; other `\x` stays verbatim.
+func unescapeOps(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		switch s[i] {
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case '\\':
+			b.WriteByte('\\')
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
+func applyOp(doc *shcl.Document, line string) error {
+	f := strings.Split(line, "\t")
+	get := func(i int) string {
+		if i < len(f) {
+			return f[i]
+		}
+		return ""
+	}
+	path, v := get(1), get(2)
+	var arr []string
+	if len(f) > 2 {
+		arr = f[2:]
+	}
+	pint := func(s string) (int64, error) { return strconv.ParseInt(s, 10, 64) }
+	pflt := func(s string) (float64, error) { return strconv.ParseFloat(s, 64) }
+	ints := func(xs []string) ([]int64, error) {
+		out := make([]int64, len(xs))
+		for i, s := range xs {
+			n, err := pint(s)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = n
+		}
+		return out, nil
+	}
+	flts := func(xs []string) ([]float64, error) {
+		out := make([]float64, len(xs))
+		for i, s := range xs {
+			n, err := pflt(s)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = n
+		}
+		return out, nil
+	}
+	bools := func(xs []string) []bool {
+		out := make([]bool, len(xs))
+		for i, s := range xs {
+			out[i] = s == "true"
+		}
+		return out
+	}
+	strs := func(xs []string) []string {
+		out := make([]string, len(xs))
+		for i, s := range xs {
+			out[i] = unescapeOps(s)
+		}
+		return out
+	}
+	dt := func(s string) (shcl.DateTime, error) {
+		x, ok := shcl.ParseDateTime(s)
+		if !ok {
+			return x, fmt.Errorf("bad datetime: %s", s)
+		}
+		return x, nil
+	}
+	dts := func(xs []string) ([]shcl.DateTime, error) {
+		out := make([]shcl.DateTime, len(xs))
+		for i, s := range xs {
+			x, err := dt(s)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = x
+		}
+		return out, nil
+	}
+	switch f[0] {
+	case "int":
+		n, err := pint(v)
+		if err != nil {
+			return err
+		}
+		doc.SetInt(path, n)
+	case "float":
+		n, err := pflt(v)
+		if err != nil {
+			return err
+		}
+		doc.SetFloat(path, n)
+	case "bool":
+		doc.SetBool(path, v == "true")
+	case "string":
+		doc.SetString(path, unescapeOps(v))
+	case "datetime":
+		x, err := dt(v)
+		if err != nil {
+			return err
+		}
+		doc.SetDateTime(path, x)
+	case "int-default":
+		n, err := pint(v)
+		if err != nil {
+			return err
+		}
+		doc.SetIntDefault(path, n)
+	case "float-default":
+		n, err := pflt(v)
+		if err != nil {
+			return err
+		}
+		doc.SetFloatDefault(path, n)
+	case "bool-default":
+		doc.SetBoolDefault(path, v == "true")
+	case "string-default":
+		doc.SetStringDefault(path, unescapeOps(v))
+	case "datetime-default":
+		x, err := dt(v)
+		if err != nil {
+			return err
+		}
+		doc.SetDateTimeDefault(path, x)
+	case "int-array":
+		xs, err := ints(arr)
+		if err != nil {
+			return err
+		}
+		doc.SetIntArray(path, xs)
+	case "float-array":
+		xs, err := flts(arr)
+		if err != nil {
+			return err
+		}
+		doc.SetFloatArray(path, xs)
+	case "bool-array":
+		doc.SetBoolArray(path, bools(arr))
+	case "string-array":
+		doc.SetStringArray(path, strs(arr))
+	case "datetime-array":
+		xs, err := dts(arr)
+		if err != nil {
+			return err
+		}
+		doc.SetDateTimeArray(path, xs)
+	case "int-array-default":
+		xs, err := ints(arr)
+		if err != nil {
+			return err
+		}
+		doc.SetIntArrayDefault(path, xs)
+	case "float-array-default":
+		xs, err := flts(arr)
+		if err != nil {
+			return err
+		}
+		doc.SetFloatArrayDefault(path, xs)
+	case "bool-array-default":
+		doc.SetBoolArrayDefault(path, bools(arr))
+	case "string-array-default":
+		doc.SetStringArrayDefault(path, strs(arr))
+	case "datetime-array-default":
+		xs, err := dts(arr)
+		if err != nil {
+			return err
+		}
+		doc.SetDateTimeArrayDefault(path, xs)
+	case "raw":
+		doc.SetRaw(path, unescapeOps(get(3)), v)
+	case "raw-default":
+		doc.SetRawDefault(path, unescapeOps(get(3)), v)
+	case "empty":
+		doc.SetEmpty(path)
+	case "comment":
+		doc.SetComment(path, v)
+	case "remove":
+		doc.Remove(path)
+	default:
+		return fmt.Errorf("unknown op: %s", f[0])
+	}
+	return nil
+}
+
+func doSet(o *opts) int {
+	if len(o.args) != 1 {
+		fmt.Fprintln(os.Stderr, "set needs FILE (ops on stdin; see --help)")
+		return 1
+	}
+	file := o.args[0]
+	// Base doc: '-' means an empty base, since stdin carries the ops script.
+	text := ""
+	if file != "-" {
+		t, err := readInput(file)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		text = t
+	}
+	doc, code := loadDoc(text, o.strictness)
+	if doc == nil {
+		return code
+	}
+	ops, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
+		return 1
+	}
+	for n, line := range strings.Split(string(ops), "\n") {
+		line = strings.TrimSuffix(line, "\r") // match Rust lines() CRLF handling
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if aerr := applyOp(doc, line); aerr != nil {
+			fmt.Fprintf(os.Stderr, "op line %d: %s\n", n+1, aerr)
+			return 1
+		}
+	}
+	fmt.Print(doc.ToCanonical())
+	return 0
+}
+
 func doCheck(o *opts) int {
 	if len(o.args) != 1 {
 		fmt.Fprintln(os.Stderr, "check needs FILE (see --help)")
@@ -391,6 +639,8 @@ func run() int {
 	switch argv[0] {
 	case "get":
 		return doGet(o)
+	case "set":
+		return doSet(o)
 	case "fmt":
 		return doFmt(o)
 	case "check":

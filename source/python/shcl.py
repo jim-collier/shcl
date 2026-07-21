@@ -200,6 +200,44 @@ def _raw(content, info, fence_char, fence_len):
 	return v
 
 
+def _cell_of(text):
+	return _cell([_Element(text, False)])
+
+
+def _array_cell(texts):
+	# Inline-array value; the empty array is an empty value (reads back Empty).
+	if not texts:
+		return _empty()
+	return _cell([_Element(t, False) for t in texts])
+
+
+def _encode_string(s):
+	"""Inverse of a scalar string read (_apply_escapes): only backslash, newline,
+	and tab need encoding; _emit_element wraps quote/reserved chars itself and
+	reparse strips that wrapping."""
+	out = []
+	for c in s:
+		if c == "\\":
+			out.append("\\\\")
+		elif c == "\n":
+			out.append("\\n")
+		elif c == "\t":
+			out.append("\\t")
+		else:
+			out.append(c)
+	return "".join(out)
+
+
+def _choose_fence(content):
+	"""Pick a backtick fence long enough that no content line closes it early."""
+	maxrun = 0
+	for line in content.split("\n"):
+		t = _trim(line)
+		if t and all(ch == "`" for ch in t):
+			maxrun = max(maxrun, len(t))
+	return ("`", max(3, maxrun + 1))
+
+
 class _Node:
 	__slots__ = (
 		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
@@ -1110,6 +1148,186 @@ class Document:
 			return [self.arena[n].value.display() if isinstance(n, int) else ""
 				for n in r[1]]
 		return []
+
+	# ----- writer: typed emit, defaults, comments, structural edits -----
+	# The reverse of the Accessor. A setter builds the canonical stored text for a
+	# typed value (the inverse of the matching read) and places it at a path,
+	# creating intermediate nodes on the way. Reads and to_canonical walk the
+	# children lists, so mutating the arena directly is enough.
+
+	@staticmethod
+	def new():
+		"""A fresh document with no bindings - the start point for schema-driven
+		generation. Set values, then to_canonical()."""
+		return Document.parse("")
+
+	def _new_child(self, parent, name, value):
+		idx = len(self.arena)
+		self.arena.append(_Node(name, value, parent, 0))
+		self.arena[parent].children.append(idx)
+		return idx
+
+	def _child_or_create(self, parent, name):
+		for c in self.arena[parent].children:
+			if self.arena[c].name == name:
+				return c
+		return self._new_child(parent, name, _empty())
+
+	def _place(self, path):
+		"""Walk (creating as needed) to the node a write targets, or None if the
+		path is unusable for a write (bad scan, a value part, a wildcard, or a
+		missing indexed instance)."""
+		try:
+			segments, value_text = _scan_path(path)
+		except _PathError:
+			return None
+		if value_text is not None or not segments:
+			return None
+		cur = ROOT
+		for seg in segments:
+			sel = seg.selector
+			if sel is None:
+				cur = self._child_or_create(cur, seg.name)
+			elif sel[0] == "val":
+				found = None
+				for c in self.arena[cur].children:
+					if self.arena[c].name == seg.name and self.arena[c].value.display() == sel[1]:
+						found = c
+						break
+				cur = found if found is not None else self._new_child(cur, seg.name, _cell_of(sel[1]))
+			elif sel[0] == "idx":
+				matches = [c for c in self.arena[cur].children if self.arena[c].name == seg.name]
+				if sel[1] >= len(matches):
+					return None
+				cur = matches[sel[1]]
+			else:
+				return None   # wildcard is query-only
+		return cur
+
+	def _set_value(self, path, value):
+		idx = self._place(path)
+		if idx is not None:
+			self.arena[idx].value = value
+
+	def exists(self, path):
+		"""True when the path resolves to at least one real node."""
+		r = self._resolve(path)
+		tag = r[0]
+		if tag == "one" or tag == "many":
+			return True
+		if tag == "slots":
+			return any(isinstance(n, int) for n in r[1])
+		return False
+
+	def remove(self, path):
+		"""Delete the node(s) at a path (with their subtrees); returns how many."""
+		r = self._resolve(path)
+		tag = r[0]
+		if tag == "one":
+			targets = [r[1]]
+		elif tag == "many":
+			targets = list(r[1])
+		elif tag == "slots":
+			targets = [n for n in r[1] if isinstance(n, int)]
+		else:
+			targets = []
+		for t in targets:
+			p = self.arena[t].parent
+			self.arena[p].children = [c for c in self.arena[p].children if c != t]
+		return len(targets)
+
+	def set_comment(self, path, text):
+		"""Attach a leading comment line to the node at a path (creating an empty
+		node if absent). A missing '#' is added; only the first line is kept."""
+		idx = self._place(path)
+		if idx is None:
+			return
+		line = text.split("\n", 1)[0]
+		if not line.startswith("#"):
+			line = "# " + line
+		self.arena[idx].leading.append(line)
+
+	def set_int(self, path, v):
+		self._set_value(path, _cell_of(str(v)))
+
+	def set_float(self, path, v):
+		self._set_value(path, _cell_of(format_float(v)))
+
+	def set_bool(self, path, v):
+		self._set_value(path, _cell_of("true" if v else "false"))
+
+	def set_string(self, path, v):
+		self._set_value(path, _cell_of(_encode_string(v)))
+
+	def set_datetime(self, path, v):
+		self._set_value(path, _cell_of(str(v)))
+
+	def set_raw(self, path, content, info):
+		fc, fl = _choose_fence(content)
+		self._set_value(path, _raw(content, info, fc, fl))
+
+	def set_empty(self, path):
+		self._set_value(path, _empty())
+
+	def set_int_array(self, path, v):
+		self._set_value(path, _array_cell([str(x) for x in v]))
+
+	def set_float_array(self, path, v):
+		self._set_value(path, _array_cell([format_float(x) for x in v]))
+
+	def set_bool_array(self, path, v):
+		self._set_value(path, _array_cell(["true" if x else "false" for x in v]))
+
+	def set_string_array(self, path, v):
+		self._set_value(path, _array_cell([_encode_string(x) for x in v]))
+
+	def set_datetime_array(self, path, v):
+		self._set_value(path, _array_cell([str(x) for x in v]))
+
+	# Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+	def set_int_default(self, path, v):
+		if not self.exists(path):
+			self.set_int(path, v)
+
+	def set_float_default(self, path, v):
+		if not self.exists(path):
+			self.set_float(path, v)
+
+	def set_bool_default(self, path, v):
+		if not self.exists(path):
+			self.set_bool(path, v)
+
+	def set_string_default(self, path, v):
+		if not self.exists(path):
+			self.set_string(path, v)
+
+	def set_datetime_default(self, path, v):
+		if not self.exists(path):
+			self.set_datetime(path, v)
+
+	def set_raw_default(self, path, content, info):
+		if not self.exists(path):
+			self.set_raw(path, content, info)
+
+	def set_int_array_default(self, path, v):
+		if not self.exists(path):
+			self.set_int_array(path, v)
+
+	def set_float_array_default(self, path, v):
+		if not self.exists(path):
+			self.set_float_array(path, v)
+
+	def set_bool_array_default(self, path, v):
+		if not self.exists(path):
+			self.set_bool_array(path, v)
+
+	def set_string_array_default(self, path, v):
+		if not self.exists(path):
+			self.set_string_array(path, v)
+
+	def set_datetime_array_default(self, path, v):
+		if not self.exists(path):
+			self.set_datetime_array(path, v)
 
 	# ----- accessor: typed reads -----
 

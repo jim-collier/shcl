@@ -1375,6 +1375,311 @@ impl Document {
 }
 
 // ---------------------------------------------------------------------------
+// Writer: typed emit, defaults, comments, structural edits
+// ---------------------------------------------------------------------------
+// The reverse of the Accessor. A setter builds the canonical stored text for a
+// typed value (the inverse of the matching read) and places it at a path,
+// creating intermediate nodes on the way. Reads and to_canonical walk children
+// vecs, so mutating the arena directly is enough - the parser's child_map is
+// already gone and is not maintained here.
+
+fn cell_of(text: String) -> Value {
+	Value::Cell(vec![Element {
+		text,
+		quoted: false,
+	}])
+}
+
+/// Encode a logical string into stored element text so a scalar read
+/// (apply_escapes) hands it back verbatim and an emit/reparse round-trips. Only
+/// backslash, newline, and tab need encoding; emit_element wraps quote/reserved
+/// chars itself, and reparse strips that wrapping.
+fn encode_string(s: &str) -> String {
+	let mut out = String::with_capacity(s.len());
+	for c in s.chars() {
+		match c {
+			'\\' => out.push_str("\\\\"),
+			'\n' => out.push_str("\\n"),
+			'\t' => out.push_str("\\t"),
+			_ => out.push(c),
+		}
+	}
+	out
+}
+
+/// Pick a backtick fence long enough that no content line closes it early.
+fn choose_fence(content: &str) -> (u8, usize) {
+	let mut maxrun = 0usize;
+	for line in content.split('\n') {
+		let t = line.trim();
+		if !t.is_empty() && t.bytes().all(|b| b == b'`') {
+			maxrun = maxrun.max(t.len());
+		}
+	}
+	(b'`', (maxrun + 1).max(3))
+}
+
+/// Inline-array value; the empty array is an empty value (reads back Empty).
+fn array_cell(texts: Vec<String>) -> Value {
+	if texts.is_empty() {
+		Value::Empty
+	} else {
+		Value::Cell(
+			texts
+				.into_iter()
+				.map(|text| Element {
+					text,
+					quoted: false,
+				})
+				.collect(),
+		)
+	}
+}
+
+impl Document {
+	/// A fresh document with no bindings - the start point for schema-driven
+	/// generation. Loads at Standard; set values, then to_canonical().
+	pub fn new() -> Document {
+		Document::parse("")
+	}
+
+	fn new_child(&mut self, parent: usize, name: &str, value: Value) -> usize {
+		let idx = self.arena.len();
+		self.arena.push(NodeData {
+			name: name.to_string(),
+			value,
+			children: Vec::new(),
+			parent,
+			line: 0,
+			star_list: false,
+			star_mixed: false,
+			leading: Vec::new(),
+			trailing: String::new(),
+		});
+		self.arena[parent].children.push(idx);
+		idx
+	}
+
+	fn child_or_create(&mut self, parent: usize, name: &str) -> usize {
+		match self.arena[parent]
+			.children
+			.iter()
+			.copied()
+			.find(|&c| self.arena[c].name == name)
+		{
+			Some(c) => c,
+			None => self.new_child(parent, name, Value::Empty),
+		}
+	}
+
+	/// Walk (creating as needed) to the node a write targets. A trailing name
+	/// with no selector hits the first same-named instance (or a new one); a
+	/// `[value]` selector selects the matching instance or creates it; `[#k]`
+	/// must already exist. None = path unusable for a write (bad scan, a value
+	/// part, a wildcard, or a missing indexed instance).
+	fn place(&mut self, path: &str) -> Option<usize> {
+		let scan = scan_path(path).ok()?;
+		if scan.value_text.is_some() || scan.segments.is_empty() {
+			return None;
+		}
+		let mut cur = ROOT;
+		for seg in &scan.segments {
+			cur = match &seg.selector {
+				None => self.child_or_create(cur, &seg.name),
+				Some(Selector::ByValue(v)) => {
+					let found = self.arena[cur].children.iter().copied().find(|&c| {
+						self.arena[c].name == seg.name && self.arena[c].value.display() == *v
+					});
+					match found {
+						Some(c) => c,
+						None => self.new_child(cur, &seg.name, cell_of(v.clone())),
+					}
+				}
+				Some(Selector::ByIndex(k)) => {
+					let matches: Vec<usize> = self.arena[cur]
+						.children
+						.iter()
+						.copied()
+						.filter(|&c| self.arena[c].name == seg.name)
+						.collect();
+					*matches.get(*k)?
+				}
+				Some(Selector::Wildcard) => return None,
+			};
+		}
+		Some(cur)
+	}
+
+	fn set_value(&mut self, path: &str, value: Value) {
+		if let Some(node) = self.place(path) {
+			self.arena[node].value = value;
+		}
+	}
+
+	/// True when the path resolves to at least one real node.
+	pub fn exists(&self, path: &str) -> bool {
+		match self.resolve(path) {
+			Ok(Resolved::One(_)) | Ok(Resolved::Many(_)) => true,
+			Ok(Resolved::Slots(s)) => s.iter().any(|r| r.is_ok()),
+			_ => false,
+		}
+	}
+
+	/// Delete the node(s) at a path (with their subtrees); returns how many.
+	pub fn remove(&mut self, path: &str) -> usize {
+		let targets: Vec<usize> = match self.resolve(path) {
+			Ok(Resolved::One(n)) => vec![n],
+			Ok(Resolved::Many(v)) => v,
+			Ok(Resolved::Slots(s)) => s.into_iter().filter_map(|r| r.ok()).collect(),
+			_ => Vec::new(),
+		};
+		for &t in &targets {
+			let p = self.arena[t].parent;
+			self.arena[p].children.retain(|&c| c != t);
+		}
+		targets.len()
+	}
+
+	/// Attach a leading comment line to the node at a path (creating an empty
+	/// node if it does not exist yet, so a section can be annotated). A missing
+	/// `#` is added; only the first line is kept (a comment is one line).
+	pub fn set_comment(&mut self, path: &str, text: &str) {
+		if let Some(node) = self.place(path) {
+			let line = text.split('\n').next().unwrap_or("");
+			let c = if line.starts_with('#') {
+				line.to_string()
+			} else {
+				format!("# {}", line)
+			};
+			self.arena[node].leading.push(c);
+		}
+	}
+
+	pub fn set_int(&mut self, path: &str, v: i64) {
+		self.set_value(path, cell_of(v.to_string()));
+	}
+	pub fn set_float(&mut self, path: &str, v: f64) {
+		self.set_value(path, cell_of(format!("{}", v)));
+	}
+	pub fn set_bool(&mut self, path: &str, v: bool) {
+		self.set_value(path, cell_of(if v { "true" } else { "false" }.to_string()));
+	}
+	pub fn set_string(&mut self, path: &str, v: &str) {
+		self.set_value(path, cell_of(encode_string(v)));
+	}
+	pub fn set_datetime(&mut self, path: &str, v: &ShclDateTime) {
+		self.set_value(path, cell_of(v.to_string()));
+	}
+	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) {
+		let (fence_char, fence_len) = choose_fence(content);
+		self.set_value(
+			path,
+			Value::Raw {
+				content: content.to_string(),
+				info: info.to_string(),
+				fence_char,
+				fence_len,
+			},
+		);
+	}
+	pub fn set_empty(&mut self, path: &str) {
+		self.set_value(path, Value::Empty);
+	}
+
+	pub fn set_int_array(&mut self, path: &str, v: &[i64]) {
+		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()));
+	}
+	pub fn set_float_array(&mut self, path: &str, v: &[f64]) {
+		self.set_value(
+			path,
+			array_cell(v.iter().map(|x| format!("{}", x)).collect()),
+		);
+	}
+	pub fn set_bool_array(&mut self, path: &str, v: &[bool]) {
+		self.set_value(
+			path,
+			array_cell(
+				v.iter()
+					.map(|x| if *x { "true" } else { "false" }.to_string())
+					.collect(),
+			),
+		);
+	}
+	pub fn set_string_array(&mut self, path: &str, v: &[&str]) {
+		self.set_value(
+			path,
+			array_cell(v.iter().map(|x| encode_string(x)).collect()),
+		);
+	}
+	pub fn set_datetime_array(&mut self, path: &str, v: &[ShclDateTime]) {
+		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()));
+	}
+
+	// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+	pub fn set_int_default(&mut self, path: &str, v: i64) {
+		if !self.exists(path) {
+			self.set_int(path, v);
+		}
+	}
+	pub fn set_float_default(&mut self, path: &str, v: f64) {
+		if !self.exists(path) {
+			self.set_float(path, v);
+		}
+	}
+	pub fn set_bool_default(&mut self, path: &str, v: bool) {
+		if !self.exists(path) {
+			self.set_bool(path, v);
+		}
+	}
+	pub fn set_string_default(&mut self, path: &str, v: &str) {
+		if !self.exists(path) {
+			self.set_string(path, v);
+		}
+	}
+	pub fn set_datetime_default(&mut self, path: &str, v: &ShclDateTime) {
+		if !self.exists(path) {
+			self.set_datetime(path, v);
+		}
+	}
+	pub fn set_raw_default(&mut self, path: &str, content: &str, info: &str) {
+		if !self.exists(path) {
+			self.set_raw(path, content, info);
+		}
+	}
+	pub fn set_int_array_default(&mut self, path: &str, v: &[i64]) {
+		if !self.exists(path) {
+			self.set_int_array(path, v);
+		}
+	}
+	pub fn set_float_array_default(&mut self, path: &str, v: &[f64]) {
+		if !self.exists(path) {
+			self.set_float_array(path, v);
+		}
+	}
+	pub fn set_bool_array_default(&mut self, path: &str, v: &[bool]) {
+		if !self.exists(path) {
+			self.set_bool_array(path, v);
+		}
+	}
+	pub fn set_string_array_default(&mut self, path: &str, v: &[&str]) {
+		if !self.exists(path) {
+			self.set_string_array(path, v);
+		}
+	}
+	pub fn set_datetime_array_default(&mut self, path: &str, v: &[ShclDateTime]) {
+		if !self.exists(path) {
+			self.set_datetime_array(path, v);
+		}
+	}
+}
+
+impl Default for Document {
+	fn default() -> Document {
+		Document::new()
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Coercion ("intelligent but safe"; Loose re-admits a closed list of tricks)
 // ---------------------------------------------------------------------------
 

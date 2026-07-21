@@ -45,6 +45,10 @@ type corpusCase struct {
 	input       string
 	expectedFmt string
 	reads       string
+	// Write dimension (optional): an ops script and its golden canonical output.
+	writeOps      string
+	expectedWrite string
+	hasWrite      bool
 }
 
 func loadCases(t *testing.T) []corpusCase {
@@ -71,12 +75,20 @@ func loadCases(t *testing.T) []corpusCase {
 		if err != nil {
 			t.Fatalf("%s: %v", entry.Name(), err)
 		}
-		cases = append(cases, corpusCase{
+		cc := corpusCase{
 			name:        entry.Name(),
 			input:       string(input),
 			expectedFmt: string(expected),
 			reads:       string(reads),
-		})
+		}
+		if ops, err := os.ReadFile(filepath.Join(caseDir, "write.ops")); err == nil {
+			ew, err2 := os.ReadFile(filepath.Join(caseDir, "expected-write.shcl"))
+			if err2 != nil {
+				t.Fatalf("%s: write.ops without expected-write.shcl", entry.Name())
+			}
+			cc.writeOps, cc.expectedWrite, cc.hasWrite = string(ops), string(ew), true
+		}
+		cases = append(cases, cc)
 	}
 	sort.Slice(cases, func(i, j int) bool { return cases[i].name < cases[j].name })
 	if len(cases) == 0 {
@@ -103,6 +115,167 @@ func TestCanonicalFormatMatchesExpected(t *testing.T) {
 		// The formatter must be a fixpoint: canonicalizing its own output changes nothing.
 		if again := Parse(got).ToCanonical(); again != got {
 			t.Errorf("%s: formatter is not idempotent", c.name)
+		}
+	}
+}
+
+// unescapeOpsTest decodes an ops value: \n \t \\ only (mirrors the CLI).
+func unescapeOpsTest(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		switch s[i] {
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case '\\':
+			b.WriteByte('\\')
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
+func applyOpTest(t *testing.T, doc *Document, line, at string) {
+	f := strings.Split(line, "\t")
+	get := func(i int) string {
+		if i < len(f) {
+			return f[i]
+		}
+		return ""
+	}
+	path, v := get(1), get(2)
+	arr := []string{}
+	if len(f) > 2 {
+		arr = f[2:]
+	}
+	i64 := func(s string) int64 { n, _ := strconv.ParseInt(s, 10, 64); return n }
+	f64 := func(s string) float64 { n, _ := strconv.ParseFloat(s, 64); return n }
+	ints := func(xs []string) []int64 {
+		o := make([]int64, len(xs))
+		for i, s := range xs {
+			o[i] = i64(s)
+		}
+		return o
+	}
+	flts := func(xs []string) []float64 {
+		o := make([]float64, len(xs))
+		for i, s := range xs {
+			o[i] = f64(s)
+		}
+		return o
+	}
+	bools := func(xs []string) []bool {
+		o := make([]bool, len(xs))
+		for i, s := range xs {
+			o[i] = s == "true"
+		}
+		return o
+	}
+	strs := func(xs []string) []string {
+		o := make([]string, len(xs))
+		for i, s := range xs {
+			o[i] = unescapeOpsTest(s)
+		}
+		return o
+	}
+	dt := func(s string) DateTime {
+		x, ok := ParseDateTime(s)
+		if !ok {
+			t.Fatalf("%s: bad datetime %s", at, s)
+		}
+		return x
+	}
+	dts := func(xs []string) []DateTime {
+		o := make([]DateTime, len(xs))
+		for i, s := range xs {
+			o[i] = dt(s)
+		}
+		return o
+	}
+	switch f[0] {
+	case "int":
+		doc.SetInt(path, i64(v))
+	case "float":
+		doc.SetFloat(path, f64(v))
+	case "bool":
+		doc.SetBool(path, v == "true")
+	case "string":
+		doc.SetString(path, unescapeOpsTest(v))
+	case "datetime":
+		doc.SetDateTime(path, dt(v))
+	case "int-default":
+		doc.SetIntDefault(path, i64(v))
+	case "float-default":
+		doc.SetFloatDefault(path, f64(v))
+	case "bool-default":
+		doc.SetBoolDefault(path, v == "true")
+	case "string-default":
+		doc.SetStringDefault(path, unescapeOpsTest(v))
+	case "datetime-default":
+		doc.SetDateTimeDefault(path, dt(v))
+	case "int-array":
+		doc.SetIntArray(path, ints(arr))
+	case "float-array":
+		doc.SetFloatArray(path, flts(arr))
+	case "bool-array":
+		doc.SetBoolArray(path, bools(arr))
+	case "string-array":
+		doc.SetStringArray(path, strs(arr))
+	case "datetime-array":
+		doc.SetDateTimeArray(path, dts(arr))
+	case "int-array-default":
+		doc.SetIntArrayDefault(path, ints(arr))
+	case "float-array-default":
+		doc.SetFloatArrayDefault(path, flts(arr))
+	case "bool-array-default":
+		doc.SetBoolArrayDefault(path, bools(arr))
+	case "string-array-default":
+		doc.SetStringArrayDefault(path, strs(arr))
+	case "datetime-array-default":
+		doc.SetDateTimeArrayDefault(path, dts(arr))
+	case "raw":
+		doc.SetRaw(path, unescapeOpsTest(get(3)), v)
+	case "raw-default":
+		doc.SetRawDefault(path, unescapeOpsTest(get(3)), v)
+	case "empty":
+		doc.SetEmpty(path)
+	case "comment":
+		doc.SetComment(path, v)
+	case "remove":
+		doc.Remove(path)
+	default:
+		t.Fatalf("%s: unknown op '%s'", at, f[0])
+	}
+}
+
+func TestWriteOpsMatchExpected(t *testing.T) {
+	for _, c := range loadCases(t) {
+		if !c.hasWrite {
+			continue
+		}
+		doc := Parse(c.input)
+		for n, line := range strings.Split(c.writeOps, "\n") {
+			line = strings.TrimSuffix(line, "\r")
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			applyOpTest(t, doc, line, fmt.Sprintf("%s: write.ops line %d", c.name, n+1))
+		}
+		got := doc.ToCanonical()
+		if got != c.expectedWrite {
+			t.Errorf("%s: writer output differs from expected-write.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedWrite)
+			continue
+		}
+		if again := Parse(got).ToCanonical(); again != got {
+			t.Errorf("%s: written output is not a fmt fixpoint", c.name)
 		}
 	}
 }

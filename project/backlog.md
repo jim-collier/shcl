@@ -200,9 +200,9 @@ In each section, items are listed approximately from newest to oldest.
 	- Decide before 1.0: preserve comments as trivia, or spec the loss and warn on `fmt --write`. Detail: `design.md` - Code Review 20260716, item 4.
 	- Done: comments survive `fmt` in all four parsers - whole-line comments re-emit above the node the next line binds, trailing ones stay on their line, end-of-file comments land at the end. Spec'd under Comments + Canonical formatter; corpus case 013 pins it and the older cases' expected files now keep their comments.
 
-- 🔘 Code Review 20260716 item 5: the Writer half of the spec'd API exists in no binding and has no backlog item.
+- ✅ Code Review 20260716 item 5: the Writer half of the spec'd API exists in no binding and has no backlog item.
 	- Spec presents Accessor+Writer as the two halves; schema-driven generation depends on it.
-	- Decide before 1.0: implement in the reference with write-corpus cases, or descope it from the 1.0 spec. Detail: `design.md` - Code Review 20260716, item 5.
+	- Done: Writer implemented in all four bindings (full CRUD - typed `set_<T>`/arrays/`raw`/`empty`, `_default` only-if-absent forms, `exists`, `set_comment`, `remove`), each setter the exact inverse of its read. New `shcl set` CLI applies a tab-delimited write-ops script from stdin. Corpus cases 014-016 pair `write.ops` with golden `expected-write.shcl` (matched by every binding's runner + a fixpoint check), the cross-binding differential replays `set`, and a 50k reference fuzz pins the string round-trip. Spec Writer bullet + `design.md` item 5 updated.
 
 - 🔘 Code Review 20260716 item 6: README lead code examples call APIs that do not exist.
 	- `GetIntOr(...)` (Go), `get_int(..., default=)` (Python), `get_or<T>` (C++) are all missing; a new user's first copy-paste fails.

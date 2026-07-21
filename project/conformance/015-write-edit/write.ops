@@ -1,0 +1,9 @@
+# edit an existing document
+int	a	99
+comment	a	# tweaked
+string-default	b	nope
+string	group.x	new
+remove	group.y
+int	list	5
+string	city[Boston].zip	02101
+string-default	city[Boston].country	US

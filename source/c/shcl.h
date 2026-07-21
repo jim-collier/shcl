@@ -98,6 +98,42 @@ shcl_read_bool_arr shcl_read_bool_array(shcl_doc *d, const char *path, size_t pl
 shcl_read_dt_arr   shcl_read_datetime_array(shcl_doc *d, const char *path, size_t plen);
 shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t plen);
 
+// --- Writer: typed emit, defaults, comments, structural edits ---------------
+// The reverse of the reads. Each setter builds the canonical stored text for a
+// typed value and places it at a path (creating intermediate nodes). New values
+// are copied into the arena, so the caller's buffers need not outlive the call.
+shcl_doc *shcl_new(void); // an empty document (start point for generation)
+int shcl_exists(shcl_doc *d, const char *path, size_t plen);       // 0/1
+size_t shcl_remove(shcl_doc *d, const char *path, size_t plen);    // count deleted
+void shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
+void shcl_set_empty(shcl_doc *d, const char *path, size_t plen);
+
+void shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v);
+void shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v);
+void shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v);
+void shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen);
+void shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt);
+void shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen);
+
+void shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n);
+void shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n);
+void shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n);
+void shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n);
+void shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n);
+
+// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+void shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v);
+void shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v);
+void shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v);
+void shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen);
+void shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt);
+void shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen);
+void shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n);
+void shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n);
+void shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n);
+void shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n);
+void shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n);
+
 // CLI/aliases: 1|2|3 or loose|standard|strict. Returns 1 on success.
 int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out);
 
@@ -1475,6 +1511,197 @@ size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out
 	for (size_t k = 0; k < nodes.len; k++) arr[k] = value_display(a, &NODE(d, nodes.data[k]).value);
 	*out = arr; return nodes.len;
 }
+
+// --- Writer ------------------------------------------------------------------
+// The reverse of the reads. Reads and shcl_to_canonical walk the children vecs,
+// so mutating the arena directly is enough - the parser's child map is gone by
+// now. New value text is dup'd into the arena; the caller's buffers may go away.
+
+static S w_dupz(Arena *a, const char *p, size_t n) { S s; s.p = p; s.n = n; return s_dup(a, s); }
+static S w_int_text(Arena *a, int64_t v) { char b[32]; int n = snprintf(b, sizeof b, "%lld", (long long)v); return w_dupz(a, b, (size_t)n); }
+static S w_float_text(Arena *a, double v) { char b[SHCL_F64_BUF]; size_t n = shcl_format_f64(v, b); return w_dupz(a, b, n); }
+static S w_bool_text(int v) { return v ? s_lit("true") : s_lit("false"); }
+static S w_dt_text(Arena *a, const shcl_datetime *dt) { char b[64]; size_t n = shcl_datetime_str(dt, b); return w_dupz(a, b, n); }
+
+// Inverse of a scalar string read (apply_escapes): only backslash, newline, and
+// tab need encoding; emit_element wraps quote/reserved chars, reparse strips it.
+static S w_encode_string(Arena *a, S s) {
+	SB b = {0};
+	for (size_t i = 0; i < s.n; i++) {
+		char c = s.p[i];
+		if (c == '\\') sb_puts(a, &b, "\\\\");
+		else if (c == '\n') sb_puts(a, &b, "\\n");
+		else if (c == '\t') sb_puts(a, &b, "\\t");
+		else sb_putc(a, &b, c);
+	}
+	return sb_S(&b);
+}
+
+// Pick a backtick fence long enough that no content line closes it early.
+static void w_choose_fence(S content, unsigned char *fc, size_t *fl) {
+	size_t maxrun = 0, start = 0;
+	for (size_t i = 0;; i++) {
+		if (i == content.n || content.p[i] == '\n') {
+			S t = s_trim(s_slice(content, start, i));
+			if (t.n > 0) {
+				int all = 1;
+				for (size_t k = 0; k < t.n; k++) if (t.p[k] != '`') { all = 0; break; }
+				if (all && t.n > maxrun) maxrun = t.n;
+			}
+			if (i == content.n) break;
+			start = i + 1;
+		}
+	}
+	*fc = '`'; *fl = maxrun + 1 < 3 ? 3 : maxrun + 1;
+}
+
+static Value w_cell1(Arena *a, S text) {
+	Value v; memset(&v, 0, sizeof v); v.kind = V_CELL;
+	Element *e = (Element *)arena_alloc(a, sizeof(Element)); e->text = text; e->quoted = 0;
+	v.els = e; v.nels = 1; return v;
+}
+// Inline-array value; the empty array is an empty value (reads back Empty).
+static Value w_array(Arena *a, S *texts, size_t n) {
+	if (n == 0) return v_empty();
+	Value v; memset(&v, 0, sizeof v); v.kind = V_CELL;
+	Element *els = (Element *)arena_alloc(a, n * sizeof(Element));
+	for (size_t i = 0; i < n; i++) { els[i].text = texts[i]; els[i].quoted = 0; }
+	v.els = els; v.nels = n; return v;
+}
+
+static size_t w_new_child(shcl_doc *d, size_t parent, S name, Value value) {
+	Arena *a = &d->arena;
+	size_t idx = d->nodes.len;
+	Node n; memset(&n, 0, sizeof n);
+	n.name = s_dup(a, name); n.value = value; n.parent = parent;
+	VecNode_push(a, &d->nodes, n);
+	VecSize_push(a, &NODE(d, parent).children, idx);
+	return idx;
+}
+
+// Walk (creating as needed) to the node a write targets. Returns 1 + *out, or 0
+// if the path is unusable for a write (bad scan, a value part, a wildcard, or a
+// missing indexed instance).
+static int w_place(shcl_doc *d, S path, size_t *out) {
+	Arena *a = &d->arena;
+	PathScan ps = scan_path(a, path);
+	if (!ps.ok || ps.has_value || ps.segs.len == 0) return 0;
+	size_t cur = ROOT;
+	for (size_t i = 0; i < ps.segs.len; i++) {
+		Segment *seg = &ps.segs.data[i];
+		if (seg->sel.tag == SEL_NONE) {
+			size_t found = (size_t)-1;
+			VecSize ch = NODE(d, cur).children;
+			for (size_t k = 0; k < ch.len; k++) if (s_eq(NODE(d, ch.data[k]).name, seg->name)) { found = ch.data[k]; break; }
+			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, v_empty());
+		} else if (seg->sel.tag == SEL_VALUE) {
+			size_t found = (size_t)-1;
+			VecSize ch = NODE(d, cur).children;
+			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(d, c).name, seg->name) && s_eq(value_display(a, &NODE(d, c).value), seg->sel.value)) { found = c; break; } }
+			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, w_cell1(a, s_dup(a, seg->sel.value)));
+		} else if (seg->sel.tag == SEL_INDEX) {
+			size_t match = (size_t)-1, cnt = 0;
+			VecSize ch = NODE(d, cur).children;
+			for (size_t k = 0; k < ch.len; k++) if (s_eq(NODE(d, ch.data[k]).name, seg->name)) { if (cnt == seg->sel.index) { match = ch.data[k]; break; } cnt++; }
+			if (match == (size_t)-1) return 0;
+			cur = match;
+		} else return 0; // wildcard is query-only
+	}
+	*out = cur; return 1;
+}
+
+static void w_set(shcl_doc *d, S path, Value v) {
+	size_t idx; if (w_place(d, path, &idx)) NODE(d, idx).value = v;
+}
+
+shcl_doc *shcl_new(void) { return shcl_parse("", 0); }
+
+int shcl_exists(shcl_doc *d, const char *path, size_t plen) {
+	S p; p.p = path; p.n = plen; Resolved r;
+	if (!resolve(d, p, &r)) return 0;
+	if (r.kind == R_ONE || r.kind == R_MANY) return 1;
+	if (r.kind == R_SLOTS) for (size_t i = 0; i < r.slots.len; i++) if (r.slots.data[i].present) return 1;
+	return 0;
+}
+
+size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; Resolved r;
+	if (!resolve(d, p, &r)) return 0;
+	VecSize targets = {0};
+	if (r.kind == R_ONE) VecSize_push(a, &targets, r.one);
+	else if (r.kind == R_MANY) targets = r.many;
+	else if (r.kind == R_SLOTS) for (size_t i = 0; i < r.slots.len; i++) if (r.slots.data[i].present) VecSize_push(a, &targets, r.slots.data[i].idx);
+	for (size_t i = 0; i < targets.len; i++) {
+		size_t t = targets.data[i]; VecSize *kids = &NODE(d, NODE(d, t).parent).children;
+		size_t w = 0;
+		for (size_t k = 0; k < kids->len; k++) if (kids->data[k] != t) kids->data[w++] = kids->data[k];
+		kids->len = w;
+	}
+	return targets.len;
+}
+
+void shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; size_t idx;
+	if (!w_place(d, p, &idx)) return;
+	S line; line.p = text; line.n = tlen;
+	for (size_t i = 0; i < line.n; i++) if (line.p[i] == '\n') { line.n = i; break; }
+	S out;
+	if (line.n == 0 || line.p[0] != '#') { SB b = {0}; sb_puts(a, &b, "# "); sb_putS(a, &b, line); out = sb_S(&b); }
+	else out = s_dup(a, line);
+	VecS_push(a, &NODE(d, idx).leading, out);
+}
+
+void shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { S p; p.p = path; p.n = plen; w_set(d, p, v_empty()); }
+void shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_int_text(a, v))); }
+void shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_float_text(a, v))); }
+void shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_bool_text(v))); }
+void shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; S in; in.p = s; in.n = slen; w_set(d, p, w_cell1(a, w_encode_string(a, in))); }
+void shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
+void shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
+	S c = w_dupz(a, content, clen), inf = w_dupz(a, info, ilen);
+	unsigned char fc; size_t fl; w_choose_fence(c, &fc, &fl);
+	Value v; memset(&v, 0, sizeof v); v.kind = V_RAW; v.content = c; v.info = inf; v.fence_char = fc; v.fence_len = fl;
+	w_set(d, p, v);
+}
+
+void shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	for (size_t i = 0; i < n; i++) t[i] = w_int_text(a, v[i]);
+	w_set(d, p, w_array(a, t, n));
+}
+void shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	for (size_t i = 0; i < n; i++) t[i] = w_float_text(a, v[i]);
+	w_set(d, p, w_array(a, t, n));
+}
+void shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	for (size_t i = 0; i < n; i++) t[i] = w_bool_text(v[i]);
+	w_set(d, p, w_array(a, t, n));
+}
+void shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	for (size_t i = 0; i < n; i++) { S in; in.p = v[i]; in.n = lens[i]; t[i] = w_encode_string(a, in); }
+	w_set(d, p, w_array(a, t, n));
+}
+void shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	for (size_t i = 0; i < n; i++) t[i] = w_dt_text(a, &v[i]);
+	w_set(d, p, w_array(a, t, n));
+}
+
+void shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) shcl_set_int(d, path, plen, v); }
+void shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v) { if (!shcl_exists(d, path, plen)) shcl_set_float(d, path, plen, v); }
+void shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v) { if (!shcl_exists(d, path, plen)) shcl_set_bool(d, path, plen, v); }
+void shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { if (!shcl_exists(d, path, plen)) shcl_set_string(d, path, plen, s, slen); }
+void shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!shcl_exists(d, path, plen)) shcl_set_datetime(d, path, plen, dt); }
+void shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) { if (!shcl_exists(d, path, plen)) shcl_set_raw(d, path, plen, content, clen, info, ilen); }
+void shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_int_array(d, path, plen, v, n); }
+void shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_float_array(d, path, plen, v, n); }
+void shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_bool_array(d, path, plen, v, n); }
+void shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_string_array(d, path, plen, v, lens, n); }
+void shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_datetime_array(d, path, plen, v, n); }
 
 shcl_read_i64 shcl_read_int(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_i64 R; S p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);

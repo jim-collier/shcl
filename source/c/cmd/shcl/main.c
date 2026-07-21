@@ -22,10 +22,20 @@ static const char *HELP =
 	"\n"
 	"Usage:\n"
 	"  shcl get [type] [options] FILE PATH    read one value (or array) at a path\n"
+	"  shcl set [options] FILE                apply write-ops (stdin) and print canonical\n"
 	"  shcl fmt [--write] FILE                print (or rewrite) the canonical form\n"
 	"  shcl check [options] FILE              load and print diagnostics\n"
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
+	"\n"
+	"set reads a write-ops script from stdin (one op per line, tab-separated) and\n"
+	"prints the canonical document. FILE is the base ('-' = empty base). Ops:\n"
+	"  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar\n"
+	"  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array\n"
+	"  <type>[-array]-default<TAB>...                          set only if absent\n"
+	"  raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block\n"
+	"  empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH\n"
+	"string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.\n"
 	"\n"
 	"Types (default --string):\n"
 	"  --int --float --bool --datetime --string --raw\n"
@@ -100,7 +110,7 @@ static char *read_input(const char *file, size_t *len) {
 	int ferr = ferror(f);
 	if (f != stdin) fclose(f);
 	if (ferr) { fprintf(stderr, "%s: read error\n", file); free(buf); return NULL; }
-	if (!buf) { buf = (char *)malloc(1); }
+	if (!buf) { buf = (char *)xrealloc(NULL, 1); }
 	if (!utf8_valid(buf, n)) { fprintf(stderr, "%s: stream did not contain valid UTF-8\n", file); free(buf); return NULL; }
 	*len = n; return buf;
 }
@@ -208,6 +218,109 @@ static int do_fmt(Opts *o) {
 	shcl_free(d); free(text); return rc;
 }
 
+// Reads an open stream fully into a malloc'd buffer (ops script; no UTF-8 gate).
+static char *read_all_fp(FILE *f, size_t *len) {
+	char *buf = NULL; size_t cap = 0, n = 0, r; char chunk[65536];
+	while ((r = fread(chunk, 1, sizeof chunk, f)) > 0) {
+		if (n + r > cap) { cap = (n + r) * 2; buf = (char *)xrealloc(buf, cap ? cap : 1); }
+		memcpy(buf + n, chunk, r); n += r;
+	}
+	if (!buf) buf = (char *)xrealloc(NULL, 1);
+	*len = n; return buf;
+}
+
+// ops-value unescape: \n \t \\ only; other `\x` stays verbatim. out >= inlen.
+static size_t unescape_ops(const char *in, size_t inlen, char *out) {
+	size_t w = 0;
+	for (size_t i = 0; i < inlen; i++) {
+		if (in[i] != '\\' || i + 1 >= inlen) { out[w++] = in[i]; continue; }
+		char c = in[++i];
+		if (c == 'n') out[w++] = '\n';
+		else if (c == 't') out[w++] = '\t';
+		else if (c == '\\') out[w++] = '\\';
+		else { out[w++] = '\\'; out[w++] = c; }
+	}
+	return w;
+}
+
+static int64_t p_i64(const char *p, size_t n) { char b[32]; size_t m = n < 31 ? n : 31; memcpy(b, p, m); b[m] = 0; return strtoll(b, NULL, 10); }
+static double p_f64(const char *p, size_t n) { char b[64]; size_t m = n < 63 ? n : 63; memcpy(b, p, m); b[m] = 0; return strtod(b, NULL); }
+static int p_bool(const char *p, size_t n) { return n == 4 && memcmp(p, "true", 4) == 0; }
+
+// Apply one write-ops line. A "-default" suffix means "only if absent": we probe
+// existence, then dispatch the base op (suffix stripped). Returns 0 or 1 (error).
+static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
+	size_t nf = 1;
+	for (size_t i = 0; i < linelen; i++) if (line[i] == '\t') nf++;
+	const char **fp = (const char **)xrealloc(NULL, nf * sizeof *fp);
+	size_t *fn = (size_t *)xrealloc(NULL, nf * sizeof *fn);
+	{ size_t k = 0, start = 0; for (size_t i = 0; i <= linelen; i++) if (i == linelen || line[i] == '\t') { fp[k] = line + start; fn[k] = i - start; k++; start = i + 1; } }
+	const char *path = nf > 1 ? fp[1] : ""; size_t plen = nf > 1 ? fn[1] : 0;
+	const char *v = nf > 2 ? fp[2] : ""; size_t vn = nf > 2 ? fn[2] : 0;
+	int rc = 0;
+	if (fn[0] >= 8 && memcmp(fp[0] + fn[0] - 8, "-default", 8) == 0) {
+		if (shcl_exists(d, path, plen)) { free(fp); free(fn); return 0; }
+		fn[0] -= 8; // strip suffix; the base op handles the actual write
+	}
+	#define OP(s) (fn[0] == strlen(s) && memcmp(fp[0], s, fn[0]) == 0)
+	size_t an = nf > 2 ? nf - 2 : 0; // array element count (fields from index 2)
+	if (OP("int")) shcl_set_int(d, path, plen, p_i64(v, vn));
+	else if (OP("float")) shcl_set_float(d, path, plen, p_f64(v, vn));
+	else if (OP("bool")) shcl_set_bool(d, path, plen, p_bool(v, vn));
+	else if (OP("string")) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = unescape_ops(v, vn, b); shcl_set_string(d, path, plen, b, m); free(b); }
+	else if (OP("datetime")) { shcl_datetime dt; S sv; sv.p = v; sv.n = vn; if (parse_datetime(&d->arena, sv, &dt)) shcl_set_datetime(d, path, plen, &dt); else rc = 1; }
+	else if (OP("int-array")) { int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an; i++) a[i] = p_i64(fp[2 + i], fn[2 + i]); shcl_set_int_array(d, path, plen, a, an); free(a); }
+	else if (OP("float-array")) { double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an; i++) a[i] = p_f64(fp[2 + i], fn[2 + i]); shcl_set_float_array(d, path, plen, a, an); free(a); }
+	else if (OP("bool-array")) { int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an; i++) a[i] = p_bool(fp[2 + i], fn[2 + i]); shcl_set_bool_array(d, path, plen, a, an); free(a); }
+	else if (OP("string-array")) {
+		char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
+		for (size_t i = 0; i < an; i++) { char *b = (char *)xrealloc(NULL, fn[2 + i] ? fn[2 + i] : 1); sl[i] = unescape_ops(fp[2 + i], fn[2 + i], b); sv[i] = b; }
+		shcl_set_string_array(d, path, plen, (const char *const *)sv, sl, an);
+		for (size_t i = 0; i < an; i++) free(sv[i]);
+		free(sv); free(sl);
+	}
+	else if (OP("datetime-array")) {
+		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a); int ok = 1;
+		for (size_t i = 0; i < an; i++) { S sv; sv.p = fp[2 + i]; sv.n = fn[2 + i]; if (!parse_datetime(&d->arena, sv, &a[i])) ok = 0; }
+		if (ok) shcl_set_datetime_array(d, path, plen, a, an); else rc = 1;
+		free(a);
+	}
+	else if (OP("raw")) { const char *cont = nf > 3 ? fp[3] : ""; size_t contn = nf > 3 ? fn[3] : 0; char *b = (char *)xrealloc(NULL, contn ? contn : 1); size_t m = unescape_ops(cont, contn, b); shcl_set_raw(d, path, plen, b, m, v, vn); free(b); }
+	else if (OP("empty")) shcl_set_empty(d, path, plen);
+	else if (OP("comment")) shcl_set_comment(d, path, plen, v, vn);
+	else if (OP("remove")) shcl_remove(d, path, plen);
+	else { fprintf(stderr, "unknown op\n"); rc = 1; }
+	#undef OP
+	free(fp); free(fn);
+	return rc;
+}
+
+static int do_set(Opts *o) {
+	if (o->nargs != 1) { fprintf(stderr, "set needs FILE (ops on stdin; see --help)\n"); return 1; }
+	const char *file = o->args[0];
+	// Base doc: '-' means an empty base, since stdin carries the ops script.
+	char *text; size_t len;
+	if (!strcmp(file, "-")) { text = (char *)xrealloc(NULL, 1); len = 0; }
+	else { text = read_input(file, &len); if (!text) return 1; }
+	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
+	int gate = strict_gate(d);
+	if (gate) { shcl_free(d); free(text); return gate; }
+	size_t opslen; char *ops = read_all_fp(stdin, &opslen);
+	int rc = 0; size_t start = 0;
+	for (size_t i = 0; i <= opslen; i++) {
+		if (i == opslen || ops[i] == '\n') {
+			size_t end = i;
+			if (end > start && ops[end - 1] == '\r') end--; // match Rust lines() CRLF
+			size_t n = end - start;
+			if (n > 0 && ops[start] != '#') { if (apply_op(d, ops + start, n)) { rc = 1; break; } }
+			if (i == opslen) break;
+			start = i + 1;
+		}
+	}
+	if (rc == 0) { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
+	free(ops); shcl_free(d); free(text); return rc;
+}
+
 static int do_check(Opts *o) {
 	if (o->nargs != 1) { fprintf(stderr, "check needs FILE (see --help)\n"); return 1; }
 	size_t len; char *text = read_input(o->args[0], &len);
@@ -278,6 +391,7 @@ int main(int argc, char **argv) {
 	Opts o;
 	if (parse_opts(argc, argv, 2, &o)) return 1;
 	if (!strcmp(cmd, "get")) return do_get(&o);
+	if (!strcmp(cmd, "set")) return do_set(&o);
 	if (!strcmp(cmd, "fmt")) return do_fmt(&o);
 	if (!strcmp(cmd, "check")) return do_check(&o);
 	if (!strcmp(cmd, "count")) return do_enum(&o, 1);
