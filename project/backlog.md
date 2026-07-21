@@ -143,8 +143,9 @@ In each section, items are listed approximately from newest to oldest.
 	- Fixed: emit walks an explicit stack; the CLI recursion-limit bump is gone. Depth 25000 formats fine from both the CLI and library callers.
 	- Detail: `design.md` - Code Review 20260716, item 13.
 
-- 🔘 Code Review 20260716 item 14: PowerShell wrapper exits 0 when the resolved binary will not launch.
+- ✅ Code Review 20260716 item 14: PowerShell wrapper exits 0 when the resolved binary will not launch.
 	- Resolution accepts any plain file (no executable check); a stale non-executable `shcl` yields empty output and exit 0.
+	- Fixed: every ps1 resolution site now goes through `_shcl_executable` (Unix requires an execute bit, Windows keeps a bare leaf); the run-path passthrough is `exit ($LASTEXITCODE ?? 1)`.
 	- Detail: `design.md` - Code Review 20260716, item 14.
 
 - 🔘 Code Review 20260716 item 15: crosscheck cannot see trailing-newline differences.
@@ -184,14 +185,17 @@ In each section, items are listed approximately from newest to oldest.
 	- `x: a, b` and `x: "a<NUL>b"` merge to one instance; the second value is silently lost. Make the key injective.
 	- Detail: `design.md` - Code Review 20260716, item 30.
 
-- 🔘 Code Review 20260716 item 32: wrappers invoked via symlink lose the sibling-binary and repo-build fallbacks.
+- ✅ Code Review 20260716 item 32: wrappers invoked via symlink lose the sibling-binary and repo-build fallbacks.
 	- Both wrappers compute the script dir without resolving links; resolve the real path first.
+	- Fixed: bash follows `${BASH_SOURCE[0]}` through symlinks by hand (bare `readlink` loop, POSIX); ps1 resolves `$PSCommandPath` via `ResolveLinkTarget` into `$script:_SHCL_ROOT`.
 
-- 🔘 Code Review 20260716 item 33: ps1 header's own usage example assigns to read-only `$host`.
+- ✅ Code Review 20260716 item 33: ps1 header's own usage example assigns to read-only `$host`.
 	- Copying the documented example fails; rename the example variable.
+	- Fixed: header example now uses `$svrhost`.
 
-- 🔘 Code Review 20260716 item 34: ps1 `SHCL_BIN` probe skips the `.exe` fallback its header promises.
+- ✅ Code Review 20260716 item 34: ps1 `SHCL_BIN` probe skips the `.exe` fallback its header promises.
 	- Route the pin through the same `_shcl_exe` helper the other probes use.
+	- Fixed: the `SHCL_BIN` pin resolves through `_shcl_exe`, so a base name matches its `.exe`.
 
 ### Features and enhancements
 
