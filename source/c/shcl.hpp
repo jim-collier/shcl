@@ -96,6 +96,13 @@ public:
 
 	// Compile-time-typed read: get<int64_t>/get<double>/get<bool>/get<std::string>.
 	template <class T> Read<T> get(std::string_view p) const;
+
+	// Convenience tier: the value, or the call-site fallback unless Good - so a
+	// missing/empty/bad/ambiguous read cannot masquerade as a real zero.
+	template <class T> T get_or(std::string_view p, T def) const {
+		auto r = get<T>(p);
+		return r.status == Status::Good ? r.value : def;
+	}
 };
 
 template <> inline Read<int64_t> Document::get<int64_t>(std::string_view p) const { return read_int(p); }

@@ -2595,3 +2595,86 @@ func (d *Document) GetDateTime(path string) (DateTime, Status) {
 	r := d.ReadDateTime(path)
 	return r.Value, r.Status
 }
+
+// Convenience tier: one value, one call-site fallback, no status to inspect.
+// The fallback is returned unless the read is Good (matching the reference's
+// get_int(path).unwrap_or(def)), so an empty/missing/bad/ambiguous read can
+// never masquerade as a real zero. Array forms fall back to the whole default
+// array; per-slot substitution is the ReadIntArray tier or the CLI --default.
+
+func (d *Document) GetIntOr(path string, def int64) int64 {
+	if r := d.ReadInt(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetFloatOr(path string, def float64) float64 {
+	if r := d.ReadFloat(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetBoolOr(path string, def bool) bool {
+	if r := d.ReadBool(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetStringOr(path string, def string) string {
+	if r := d.ReadString(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetRawOr(path string, def string) string {
+	if r := d.ReadRaw(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetDateTimeOr(path string, def DateTime) DateTime {
+	if r := d.ReadDateTime(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetIntArrayOr(path string, def []int64) []int64 {
+	if r := d.ReadIntArray(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetFloatArrayOr(path string, def []float64) []float64 {
+	if r := d.ReadFloatArray(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetBoolArrayOr(path string, def []bool) []bool {
+	if r := d.ReadBoolArray(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetStringArrayOr(path string, def []string) []string {
+	if r := d.ReadStringArray(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetDateTimeArrayOr(path string, def []DateTime) []DateTime {
+	if r := d.ReadDateTimeArray(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}

@@ -218,9 +218,9 @@ In each section, items are listed approximately from newest to oldest.
 	- Spec presents Accessor+Writer as the two halves; schema-driven generation depends on it.
 	- Done: Writer implemented in all four bindings (full CRUD - typed `set_<T>`/arrays/`raw`/`empty`, `_default` only-if-absent forms, `exists`, `set_comment`, `remove`), each setter the exact inverse of its read. New `shcl set` CLI applies a tab-delimited write-ops script from stdin. Corpus cases 014-016 pair `write.ops` with golden `expected-write.shcl` (matched by every binding's runner + a fixpoint check), the cross-binding differential replays `set`, and a 50k reference fuzz pins the string round-trip. Spec Writer bullet + `design.md` item 5 updated.
 
-- 🔘 Code Review 20260716 item 6: README lead code examples call APIs that do not exist.
+- ✅ Code Review 20260716 item 6: README lead code examples call APIs that do not exist.
 	- `GetIntOr(...)` (Go), `get_int(..., default=)` (Python), `get_or<T>` (C++) are all missing; a new user's first copy-paste fails.
-	- Either implement the spec's convenience tier (already 🛠️ above) or rewrite the examples to the shipped API.
+	- Done: implemented the spec's convenience tier (not gutted the examples), so the README calls are now real as written. Go `GetIntOr`/`Get*Or` + array forms; Python `get_*`/`get_*_array` gained a `default=` param (must-exist and raises without one); C `shcl_get_int/float/bool`; C++ `get_or<T>`. Rust's is the native `get_int(path).unwrap_or(def)` and gained matching `get_*_array` so arrays have the same tier. Semantic pinned everywhere: value only on `Good`, else the call-site fallback (Empty falls back too). Reference unit test + Go test + C++ veneer CHECKs added.
 
 - 🔘 Code Review 20260716 item 18: query-side behavior is barely pinned.
 	- No corpus rows for wildcards, on-bad modes, or defaults; the fuzz differential compares `fmt` only.
@@ -260,7 +260,8 @@ In each section, items are listed approximately from newest to oldest.
 	- README omits the PowerShell wrapper; spec says "POSIX sh" but the shell wrapper is deliberately Bash. Align the words with the artifacts.
 	- Done: README blurb + Status now name both the Bash and PowerShell wrappers; spec's two concrete "shipped wrapper" claims say Bash instead of POSIX sh (the illustrative two-tier table row stays, like the other not-yet-shipped language rows).
 
-- 🛠️ Accessor: two-tier junior-friendly surface (convenience default plus full status), consistent across all bindings. A supplied default implies default mode.
+- ✅ Accessor: two-tier junior-friendly surface (convenience default plus full status), consistent across all bindings. A supplied default implies default mode.
+	- Done alongside review item 6: the full status tier (`Read`/`read_*`) already shipped; the convenience default tier now ships in every library binding (`GetIntOr`/`get_*(default=)`/`shcl_get_*`/`get_or<T>`/native `unwrap_or`), plus the CLI `--default` for the wrapper bindings. Supplying the fallback is Default mode - value on `Good`, fallback otherwise.
 
 - 🔘 Schema-as-SHCL validation. The schema is a plain SHCL file (type, required, allowed values). `Validate(doc, schemaDoc)` returns structured diagnostics and catches unknown or misspelled fields. See `design.md` "Power layer".
 	- Note: needs the reference parser first, then spec the schema vocabulary alongside it.

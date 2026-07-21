@@ -339,7 +339,7 @@ The convenience tier has the same shape everywhere - a mandatory, call-site-visi
 | PowerShell | `[int]$pop = $doc.GetIntOr($path, 0)`         | `$r = $doc.GetInt($path)  # .Value .Status`        |
 | POSIX sh   | `pop=$(shcl get --int --default=0 f 'path')`  | `shcl get --int f 'path'; status=$?`               |
 
-The array, bool, float, datetime, string, and raw forms follow the same two-tier pattern (`GetIntArrayOr`, `GetBoolOr`, ...); only the coercion target changes. The full tier is one representation of the `Flag`-mode status described above; the convenience tier is `Default` mode with the fallback the caller passed.
+The array, bool, float, datetime, string, and raw forms follow the same two-tier pattern (`GetIntArrayOr`, `GetBoolOr`, ...); only the coercion target changes. The full tier is one representation of the `Flag`-mode status described above; the convenience tier is `Default` mode with the fallback the caller passed. For array reads the convenience fallback is the whole default array (returned unless the read is `Good`); per-slot substitution into a partially-resolved array is the full tier's per-slot status or the CLI's `--default`, not the convenience form.
 
 ### Status sentinels
 

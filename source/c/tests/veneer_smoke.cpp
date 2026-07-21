@@ -62,6 +62,11 @@ int main() {
 	auto missing = doc.read_int("nope");
 	CHECK(missing.status == shcl::Status::NotFound);
 
+	// Convenience tier: value on Good, call-site fallback otherwise.
+	CHECK(doc.get_or<int64_t>("port", 9) == 8080);
+	CHECK(doc.get_or<int64_t>("nope", 9) == 9);
+	CHECK(doc.get_or<std::string>("nope", std::string("fb")) == "fb");
+
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");
 	return 0;

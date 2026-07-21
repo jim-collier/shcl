@@ -182,6 +182,20 @@ fn canonical_format_matches_expected() {
 }
 
 #[test]
+fn convenience_tier_falls_back_only_on_good() {
+	// The get-tier value survives only on Good; Empty/BadType/NotFound all fall
+	// back to the call-site default, so a real zero can't be faked. This pins the
+	// semantic every port's *Or/get_*(default=) mirrors.
+	let doc = Document::parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\n");
+	assert_eq!(doc.get_int("a").unwrap_or(9), 42); // Good
+	assert_eq!(doc.get_int("b").unwrap_or(9), 9); // BadType
+	assert_eq!(doc.get_int("e").unwrap_or(9), 9); // Empty still falls back
+	assert_eq!(doc.get_int("missing").unwrap_or(9), 9); // NotFound
+	assert_eq!(doc.get_int_array("arr").unwrap_or(vec![7]), vec![1, 2, 3]);
+	assert_eq!(doc.get_int_array("missing").unwrap_or(vec![7]), vec![7]);
+}
+
+#[test]
 fn reads_match_expected() {
 	for case in load_cases() {
 		for (n, line) in case.reads.lines().enumerate() {
