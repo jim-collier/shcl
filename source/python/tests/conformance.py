@@ -40,12 +40,19 @@ def load_cases():
 		inp = os.path.join(d, "input.shcl")
 		if not os.path.exists(inp):
 			continue
-		cases.append({
+		case = {
 			"name": name,
 			"input": _read(inp),
 			"expected": _read(os.path.join(d, "expected.shcl")),
 			"reads": _read(os.path.join(d, "reads.tsv")),
-		})
+			"write_ops": None,
+			"expected_write": None,
+		}
+		ops = os.path.join(d, "write.ops")
+		if os.path.exists(ops):
+			case["write_ops"] = _read(ops)
+			case["expected_write"] = _read(os.path.join(d, "expected-write.shcl"))
+		cases.append(case)
 	if not cases:
 		raise SystemExit("no corpus cases found under {}".format(CORPUS))
 	return cases
@@ -94,9 +101,112 @@ def scalar_read(doc, kind, query):
 	raise SystemExit("unknown type '{}'".format(kind))
 
 
+def _unescape_ops(s):
+	# Decode an ops value: \n \t \\ only; other `\x` stays verbatim.
+	out = []
+	i = 0
+	while i < len(s):
+		c = s[i]
+		if c != "\\" or i + 1 >= len(s):
+			out.append(c)
+			i += 1
+			continue
+		nxt = s[i + 1]
+		out.append({"n": "\n", "t": "\t", "\\": "\\"}.get(nxt, "\\" + nxt))
+		i += 2
+	return "".join(out)
+
+
+def _op_dt(s):
+	dt = shcl.parse_datetime(s)
+	if dt is None:
+		raise SystemExit("bad datetime: {}".format(s))
+	return dt
+
+
+def apply_op(doc, line, at):
+	f = line.split("\t")
+
+	def g(i):
+		return f[i] if i < len(f) else ""
+
+	path, v = g(1), g(2)
+	arr = f[2:] if len(f) > 2 else []
+	op = f[0]
+	if op == "int":
+		doc.set_int(path, int(v))
+	elif op == "float":
+		doc.set_float(path, float(v))
+	elif op == "bool":
+		doc.set_bool(path, v == "true")
+	elif op == "string":
+		doc.set_string(path, _unescape_ops(v))
+	elif op == "datetime":
+		doc.set_datetime(path, _op_dt(v))
+	elif op == "int-default":
+		doc.set_int_default(path, int(v))
+	elif op == "float-default":
+		doc.set_float_default(path, float(v))
+	elif op == "bool-default":
+		doc.set_bool_default(path, v == "true")
+	elif op == "string-default":
+		doc.set_string_default(path, _unescape_ops(v))
+	elif op == "datetime-default":
+		doc.set_datetime_default(path, _op_dt(v))
+	elif op == "int-array":
+		doc.set_int_array(path, [int(x) for x in arr])
+	elif op == "float-array":
+		doc.set_float_array(path, [float(x) for x in arr])
+	elif op == "bool-array":
+		doc.set_bool_array(path, [x == "true" for x in arr])
+	elif op == "string-array":
+		doc.set_string_array(path, [_unescape_ops(x) for x in arr])
+	elif op == "datetime-array":
+		doc.set_datetime_array(path, [_op_dt(x) for x in arr])
+	elif op == "int-array-default":
+		doc.set_int_array_default(path, [int(x) for x in arr])
+	elif op == "float-array-default":
+		doc.set_float_array_default(path, [float(x) for x in arr])
+	elif op == "bool-array-default":
+		doc.set_bool_array_default(path, [x == "true" for x in arr])
+	elif op == "string-array-default":
+		doc.set_string_array_default(path, [_unescape_ops(x) for x in arr])
+	elif op == "datetime-array-default":
+		doc.set_datetime_array_default(path, [_op_dt(x) for x in arr])
+	elif op == "raw":
+		doc.set_raw(path, _unescape_ops(g(3)), v)
+	elif op == "raw-default":
+		doc.set_raw_default(path, _unescape_ops(g(3)), v)
+	elif op == "empty":
+		doc.set_empty(path)
+	elif op == "comment":
+		doc.set_comment(path, v)
+	elif op == "remove":
+		doc.remove(path)
+	else:
+		raise SystemExit("{}: unknown op '{}'".format(at, op))
+
+
 def main():
 	fails = []
 	cases = load_cases()
+
+	# Write dimension: the library Writer must reproduce expected-write.shcl and
+	# the result must be a formatter fixpoint.
+	for case in cases:
+		if case["write_ops"] is None:
+			continue
+		doc = shcl.Document.parse(case["input"])
+		for n, line in enumerate(case["write_ops"].split("\n")):
+			line = line[:-1] if line.endswith("\r") else line
+			if line == "" or line.startswith("#"):
+				continue
+			apply_op(doc, line, "{}: write.ops line {}".format(case["name"], n + 1))
+		got = doc.to_canonical()
+		if got != case["expected_write"]:
+			fails.append("{}: writer output differs from expected-write.shcl".format(case["name"]))
+		if shcl.Document.parse(got).to_canonical() != got:
+			fails.append("{}: written output is not a fmt fixpoint".format(case["name"]))
 
 	# The canonical formatter must match expected.shcl and be a fixpoint.
 	for case in cases:

@@ -21,10 +21,20 @@ HELP = """shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
+  shcl set [options] FILE                apply write-ops (stdin) and print canonical
   shcl fmt [--write] FILE                print (or rewrite) the canonical form
   shcl check [options] FILE              load and print diagnostics
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+
+set reads a write-ops script from stdin (one op per line, tab-separated) and
+prints the canonical document. FILE is the base ('-' = empty base). Ops:
+  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
+  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
+  <type>[-array]-default<TAB>...                          set only if absent
+  raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block
+  empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
+string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 
 Types (default --string):
   --int --float --bool --datetime --string --raw
@@ -246,6 +256,131 @@ def do_fmt(o):
 	return 0
 
 
+def _unescape_ops(s):
+	# Decode an ops value: \n \t \\ only; other `\x` stays verbatim.
+	out = []
+	i = 0
+	while i < len(s):
+		c = s[i]
+		if c != "\\" or i + 1 >= len(s):
+			out.append(c)
+			i += 1
+			continue
+		nxt = s[i + 1]
+		if nxt == "n":
+			out.append("\n")
+		elif nxt == "t":
+			out.append("\t")
+		elif nxt == "\\":
+			out.append("\\")
+		else:
+			out.append("\\")
+			out.append(nxt)
+		i += 2
+	return "".join(out)
+
+
+def _op_dt(s):
+	dt = shcl.parse_datetime(s)
+	if dt is None:
+		raise ValueError("bad datetime: {}".format(s))
+	return dt
+
+
+def apply_op(doc, line):
+	f = line.split("\t")
+
+	def get(i):
+		return f[i] if i < len(f) else ""
+
+	path, v = get(1), get(2)
+	arr = f[2:] if len(f) > 2 else []
+	op = f[0]
+	if op == "int":
+		doc.set_int(path, int(v))
+	elif op == "float":
+		doc.set_float(path, float(v))
+	elif op == "bool":
+		doc.set_bool(path, v == "true")
+	elif op == "string":
+		doc.set_string(path, _unescape_ops(v))
+	elif op == "datetime":
+		doc.set_datetime(path, _op_dt(v))
+	elif op == "int-default":
+		doc.set_int_default(path, int(v))
+	elif op == "float-default":
+		doc.set_float_default(path, float(v))
+	elif op == "bool-default":
+		doc.set_bool_default(path, v == "true")
+	elif op == "string-default":
+		doc.set_string_default(path, _unescape_ops(v))
+	elif op == "datetime-default":
+		doc.set_datetime_default(path, _op_dt(v))
+	elif op == "int-array":
+		doc.set_int_array(path, [int(x) for x in arr])
+	elif op == "float-array":
+		doc.set_float_array(path, [float(x) for x in arr])
+	elif op == "bool-array":
+		doc.set_bool_array(path, [x == "true" for x in arr])
+	elif op == "string-array":
+		doc.set_string_array(path, [_unescape_ops(x) for x in arr])
+	elif op == "datetime-array":
+		doc.set_datetime_array(path, [_op_dt(x) for x in arr])
+	elif op == "int-array-default":
+		doc.set_int_array_default(path, [int(x) for x in arr])
+	elif op == "float-array-default":
+		doc.set_float_array_default(path, [float(x) for x in arr])
+	elif op == "bool-array-default":
+		doc.set_bool_array_default(path, [x == "true" for x in arr])
+	elif op == "string-array-default":
+		doc.set_string_array_default(path, [_unescape_ops(x) for x in arr])
+	elif op == "datetime-array-default":
+		doc.set_datetime_array_default(path, [_op_dt(x) for x in arr])
+	elif op == "raw":
+		doc.set_raw(path, _unescape_ops(get(3)), v)
+	elif op == "raw-default":
+		doc.set_raw_default(path, _unescape_ops(get(3)), v)
+	elif op == "empty":
+		doc.set_empty(path)
+	elif op == "comment":
+		doc.set_comment(path, v)
+	elif op == "remove":
+		doc.remove(path)
+	else:
+		raise ValueError("unknown op: {}".format(op))
+
+
+def do_set(o):
+	if len(o.args) != 1:
+		sys.stderr.write("set needs FILE (ops on stdin; see --help)\n")
+		return 1
+	file = o.args[0]
+	# Base doc: '-' means an empty base, since stdin carries the ops script.
+	if file == "-":
+		text = ""
+	else:
+		try:
+			text = read_input(file)
+		except (OSError, ValueError) as e:
+			sys.stderr.write(str(e) + "\n")
+			return 1
+	doc, code = load_doc(text, o.strictness)
+	if doc is None:
+		return code
+	ops = sys.stdin.buffer.read().decode("utf-8", "replace")
+	for n, line in enumerate(ops.split("\n")):
+		line = line[:-1] if line.endswith("\r") else line
+		if line == "" or line.startswith("#"):
+			continue
+		try:
+			apply_op(doc, line)
+		except ValueError as e:
+			sys.stderr.write("op line {}: {}\n".format(n + 1, e))
+			return 1
+	sys.stdout.write(doc.to_canonical())
+	return 0
+
+
 def do_check(o):
 	if len(o.args) != 1:
 		sys.stderr.write("check needs FILE (see --help)\n")
@@ -306,6 +441,8 @@ def run(argv):
 	cmd = argv[0]
 	if cmd == "get":
 		return do_get(o)
+	if cmd == "set":
+		return do_set(o)
 	if cmd == "fmt":
 		return do_fmt(o)
 	if cmd == "check":

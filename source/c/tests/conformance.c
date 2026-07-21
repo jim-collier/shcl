@@ -32,7 +32,7 @@ static char *read_file(const char *path, size_t *len) {
 	char *buf = NULL; size_t cap = 0, n = 0, r; char chunk[65536];
 	while ((r = fread(chunk, 1, sizeof chunk, f)) > 0) { if (n + r > cap) { cap = (n + r) * 2; buf = xrealloc(buf, cap); } memcpy(buf + n, chunk, r); n += r; }
 	fclose(f);
-	if (!buf) buf = malloc(1);
+	if (!buf) buf = xrealloc(NULL, 1);
 	*len = n; return buf;
 }
 
@@ -78,11 +78,81 @@ static char *scalar_read(shcl_doc *d, const char *kind, const char *q, size_t qn
 	return out;
 }
 
+// ops-value unescape (\n \t \\); out >= inlen. Returns length.
+static size_t cf_unescape(const char *in, size_t inlen, char *out) {
+	size_t w = 0;
+	for (size_t i = 0; i < inlen; i++) {
+		if (in[i] != '\\' || i + 1 >= inlen) { out[w++] = in[i]; continue; }
+		char c = in[++i];
+		if (c == 'n') out[w++] = '\n';
+		else if (c == 't') out[w++] = '\t';
+		else if (c == '\\') out[w++] = '\\';
+		else { out[w++] = '\\'; out[w++] = c; }
+	}
+	return w;
+}
+
+// Apply one write-ops line (NUL-terminated, tab-split in place) via the library
+// Writer. A "-default" suffix means "only if absent".
+static void apply_op_c(shcl_doc *d, char *line) {
+	size_t cap = 8, nf = 0; char **f = (char **)xrealloc(NULL, cap * sizeof *f);
+	f[nf++] = line;
+	for (char *p = line; *p; p++) if (*p == '\t') { *p = '\0'; if (nf == cap) { cap *= 2; f = (char **)xrealloc(f, cap * sizeof *f); } f[nf++] = p + 1; }
+	char *op = f[0];
+	const char *path = nf > 1 ? f[1] : ""; size_t plen = nf > 1 ? strlen(f[1]) : 0;
+	const char *v = nf > 2 ? f[2] : ""; size_t vn = nf > 2 ? strlen(f[2]) : 0;
+	size_t an = nf > 2 ? nf - 2 : 0;
+	size_t oplen = strlen(op);
+	if (oplen >= 8 && !strcmp(op + oplen - 8, "-default")) {
+		if (shcl_exists(d, path, plen)) { free(f); return; }
+		op[oplen - 8] = '\0';
+	}
+	if (!strcmp(op, "int")) shcl_set_int(d, path, plen, strtoll(v, NULL, 10));
+	else if (!strcmp(op, "float")) shcl_set_float(d, path, plen, strtod(v, NULL));
+	else if (!strcmp(op, "bool")) shcl_set_bool(d, path, plen, !strcmp(v, "true"));
+	else if (!strcmp(op, "string")) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); shcl_set_string(d, path, plen, b, m); free(b); }
+	else if (!strcmp(op, "datetime")) { shcl_datetime dt; S sv; sv.p = v; sv.n = vn; if (parse_datetime(&d->arena, sv, &dt)) shcl_set_datetime(d, path, plen, &dt); }
+	else if (!strcmp(op, "int-array")) {
+		int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
+		for (size_t i = 0; i < an; i++) a[i] = strtoll(f[2 + i], NULL, 10);
+		shcl_set_int_array(d, path, plen, a, an); free(a);
+	}
+	else if (!strcmp(op, "float-array")) {
+		double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
+		for (size_t i = 0; i < an; i++) a[i] = strtod(f[2 + i], NULL);
+		shcl_set_float_array(d, path, plen, a, an); free(a);
+	}
+	else if (!strcmp(op, "bool-array")) {
+		int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
+		for (size_t i = 0; i < an; i++) a[i] = !strcmp(f[2 + i], "true");
+		shcl_set_bool_array(d, path, plen, a, an); free(a);
+	}
+	else if (!strcmp(op, "string-array")) {
+		char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
+		for (size_t i = 0; i < an; i++) { size_t L = strlen(f[2 + i]); char *b = (char *)xrealloc(NULL, L ? L : 1); sl[i] = cf_unescape(f[2 + i], L, b); sv[i] = b; }
+		shcl_set_string_array(d, path, plen, (const char *const *)sv, sl, an);
+		for (size_t i = 0; i < an; i++) free(sv[i]);
+		free(sv); free(sl);
+	}
+	else if (!strcmp(op, "datetime-array")) {
+		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a); int ok = 1;
+		for (size_t i = 0; i < an; i++) { S sv; sv.p = f[2 + i]; sv.n = strlen(f[2 + i]); if (!parse_datetime(&d->arena, sv, &a[i])) ok = 0; }
+		if (ok) shcl_set_datetime_array(d, path, plen, a, an);
+		free(a);
+	}
+	else if (!strcmp(op, "raw")) { const char *cont = nf > 3 ? f[3] : ""; size_t cn = nf > 3 ? strlen(f[3]) : 0; char *b = (char *)xrealloc(NULL, cn ? cn : 1); size_t m = cf_unescape(cont, cn, b); shcl_set_raw(d, path, plen, b, m, v, vn); free(b); }
+	else if (!strcmp(op, "empty")) shcl_set_empty(d, path, plen);
+	else if (!strcmp(op, "comment")) shcl_set_comment(d, path, plen, v, vn);
+	else if (!strcmp(op, "remove")) shcl_remove(d, path, plen);
+	else { fprintf(stderr, "unknown op %s\n", op); nfail++; }
+	free(f);
+}
+
 static int cmp_str(const void *a, const void *b) { return strcmp(*(const char **)a, *(const char **)b); }
 
 // Splits raw TSV/text buffer into an array of NUL-terminated lines (in place).
 static size_t split_lines(char *buf, size_t n, char ***out) {
-	size_t cap = 16, cnt = 0; char **lines = malloc(cap * sizeof *lines);
+	size_t cap = 16, cnt = 0; char **lines = xrealloc(NULL, cap * sizeof *lines);
 	size_t start = 0;
 	for (size_t i = 0; i <= n; i++) if (i == n || buf[i] == '\n') {
 		if (cnt == cap) { cap *= 2; lines = xrealloc(lines, cap * sizeof *lines); }
@@ -174,6 +244,24 @@ int main(int argc, char **argv) {
 				free(val); shcl_free(rd);
 			}
 			free(lines);
+		}
+
+		// Write dimension (optional): apply write.ops and match expected-write.shcl.
+		snprintf(path, sizeof path, "%s/%s/write.ops", corpus, names[ci]); size_t olen; char *ops = read_file(path, &olen);
+		if (ops) {
+			snprintf(path, sizeof path, "%s/%s/expected-write.shcl", corpus, names[ci]); size_t wlen; char *ew = read_file(path, &wlen);
+			shcl_doc *wd = shcl_parse(input, ilen);
+			char **olines; size_t nol = split_lines(ops, olen, &olines);
+			for (size_t li = 0; li < nol; li++) {
+				if (olines[li][0] == '\0' || olines[li][0] == '#') continue;
+				apply_op_c(wd, olines[li]);
+			}
+			shcl_str wgot = shcl_to_canonical(wd);
+			if (!ew || wgot.n != wlen || (wlen && memcmp(wgot.p, ew, wlen) != 0)) fail(names[ci], "writer output differs from expected-write.shcl");
+			shcl_doc *wd2 = shcl_parse(wgot.p, wgot.n);
+			shcl_str wagain = shcl_to_canonical(wd2);
+			if (wagain.n != wgot.n || (wgot.n && memcmp(wagain.p, wgot.p, wgot.n) != 0)) fail(names[ci], "written output is not a fmt fixpoint");
+			shcl_free(wd2); shcl_free(wd); free(olines); free(ops); free(ew);
 		}
 		free(input); free(expected); free(reads);
 	}

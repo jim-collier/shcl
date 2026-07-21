@@ -58,6 +58,31 @@ fRun(){
 	printf '%s\n%s' "$rc" "$out"
 }
 
+##	Like fRun, but feeds a file to stdin (the `set` write-ops script).
+fRunStdin(){
+	local cli="$1" stdinFile="$2"; shift 2
+	local out rc=0
+	out="$("$cli" "$@" <"$stdinFile" 2>/dev/null)" || rc=$?
+	printf '%s\n%s' "$rc" "$out"
+}
+
+##	Compare every other binding against the reference for one stdin-fed call.
+fCompareStdin(){
+	local what="$1" stdinFile="$2"; shift 2
+	local want got b name cli
+	want="$(fRunStdin "$refCli" "$stdinFile" "$@")"
+	for b in "${bindings[@]:1}"; do
+		name="${b%%|*}"; cli="${b#*|}"
+		got="$(fRunStdin "$cli" "$stdinFile" "$@")"
+		nCompared+=1
+		if [[ "$got" != "$want" ]]; then
+			nBad+=1
+			echo "DIVERGE ${what}: ${name} vs ${refName} (shcl $* <${stdinFile})"
+			diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | head -12
+		fi
+	done
+}
+
 ##	Compare every other binding against the reference for one invocation.
 fCompare(){
 	local what="$1"; shift
@@ -98,6 +123,9 @@ for caseDir in "$corpus"/*/; do
 	input="${caseDir}input.shcl"
 	[[ -f "$input" ]] || continue
 	fCompare "fmt $(basename "$caseDir")" fmt "$input"
+	# Write dimension: apply the case's ops script and compare canonical output.
+	ops="${caseDir}write.ops"
+	[[ -f "$ops" ]] && fCompareStdin "set $(basename "$caseDir")" "$ops" set "$input"
 	tsv="${caseDir}reads.tsv"
 	if [[ -f "$tsv" ]]; then
 		while IFS=$'\t' read -r query type _expected _status level _rest; do

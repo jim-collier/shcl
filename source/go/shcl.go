@@ -1530,6 +1530,321 @@ func (d *Document) Instances(path string) []string {
 }
 
 // ---------------------------------------------------------------------------
+// Writer: typed emit, defaults, comments, structural edits
+// ---------------------------------------------------------------------------
+// The reverse of the Accessor. A setter builds the canonical stored text for a
+// typed value (the inverse of the matching read) and places it at a path,
+// creating intermediate nodes on the way. Reads and ToCanonical walk children
+// slices, so mutating the arena directly is enough - the parser's child map is
+// already gone and is not maintained here.
+
+func boolText(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
+}
+
+func cellOf(text string) value {
+	return value{kind: vCell, els: []element{{text: text}}}
+}
+
+// encodeString is the inverse of a scalar string read (applyEscapes): only
+// backslash, newline, and tab need encoding; emitElement wraps quote/reserved
+// chars itself, and reparse strips that wrapping.
+func encodeString(s string) string {
+	var b strings.Builder
+	for _, c := range s {
+		switch c {
+		case '\\':
+			b.WriteString("\\\\")
+		case '\n':
+			b.WriteString("\\n")
+		case '\t':
+			b.WriteString("\\t")
+		default:
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
+}
+
+// chooseFence picks a backtick fence long enough that no content line closes it.
+func chooseFence(content string) (byte, int) {
+	maxrun := 0
+	for _, line := range strings.Split(content, "\n") {
+		t := strings.TrimSpace(line)
+		if t != "" && strings.Trim(t, "`") == "" && len(t) > maxrun {
+			maxrun = len(t)
+		}
+	}
+	if maxrun+1 < 3 {
+		return '`', 3
+	}
+	return '`', maxrun + 1
+}
+
+// arrayCell builds an inline-array value; the empty array is an empty value.
+func arrayCell(texts []string) value {
+	if len(texts) == 0 {
+		return value{kind: vEmpty}
+	}
+	els := make([]element, len(texts))
+	for i, t := range texts {
+		els[i] = element{text: t}
+	}
+	return value{kind: vCell, els: els}
+}
+
+// New returns a fresh document with no bindings - the start point for
+// schema-driven generation. Set values, then ToCanonical().
+func New() *Document {
+	return Parse("")
+}
+
+func (d *Document) newChild(parent int, name string, v value) int {
+	idx := len(d.arena)
+	d.arena = append(d.arena, nodeData{name: name, value: v, parent: parent})
+	d.arena[parent].children = append(d.arena[parent].children, idx)
+	return idx
+}
+
+func (d *Document) childOrCreate(parent int, name string) int {
+	for _, c := range d.arena[parent].children {
+		if d.arena[c].name == name {
+			return c
+		}
+	}
+	return d.newChild(parent, name, value{kind: vEmpty})
+}
+
+// place walks (creating as needed) to the node a write targets. A trailing name
+// with no selector hits the first same-named instance (or a new one); a [value]
+// selector selects the matching instance or creates it; [#k] must already
+// exist. ok=false means the path is unusable for a write.
+func (d *Document) place(path string) (int, bool) {
+	scan, err := scanPath(path)
+	if err != nil || scan.valueText != nil || len(scan.segments) == 0 {
+		return 0, false
+	}
+	cur := root
+	for i := range scan.segments {
+		seg := &scan.segments[i]
+		switch {
+		case seg.sel == nil:
+			cur = d.childOrCreate(cur, seg.name)
+		case seg.sel.kind == selByValue:
+			found := -1
+			for _, c := range d.arena[cur].children {
+				if d.arena[c].name == seg.name && d.arena[c].value.display() == seg.sel.value {
+					found = c
+					break
+				}
+			}
+			if found >= 0 {
+				cur = found
+			} else {
+				cur = d.newChild(cur, seg.name, cellOf(seg.sel.value))
+			}
+		case seg.sel.kind == selByIndex:
+			var matches []int
+			for _, c := range d.arena[cur].children {
+				if d.arena[c].name == seg.name {
+					matches = append(matches, c)
+				}
+			}
+			if seg.sel.index >= uint64(len(matches)) {
+				return 0, false
+			}
+			cur = matches[seg.sel.index]
+		default:
+			return 0, false // wildcard is query-only
+		}
+	}
+	return cur, true
+}
+
+func (d *Document) setValue(path string, v value) {
+	if idx, ok := d.place(path); ok {
+		d.arena[idx].value = v
+	}
+}
+
+// Exists is true when the path resolves to at least one real node.
+func (d *Document) Exists(path string) bool {
+	r, ok := d.resolve(path)
+	if !ok {
+		return false
+	}
+	switch r.kind {
+	case resOne, resMany:
+		return true
+	case resSlots:
+		for _, s := range r.slots {
+			if s >= 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Remove deletes the node(s) at a path (with their subtrees); returns how many.
+func (d *Document) Remove(path string) int {
+	r, ok := d.resolve(path)
+	if !ok {
+		return 0
+	}
+	var targets []int
+	switch r.kind {
+	case resOne:
+		targets = []int{r.one}
+	case resMany:
+		targets = r.many
+	case resSlots:
+		for _, s := range r.slots {
+			if s >= 0 {
+				targets = append(targets, s)
+			}
+		}
+	}
+	for _, t := range targets {
+		p := d.arena[t].parent
+		kids := d.arena[p].children[:0]
+		for _, c := range d.arena[p].children {
+			if c != t {
+				kids = append(kids, c)
+			}
+		}
+		d.arena[p].children = kids
+	}
+	return len(targets)
+}
+
+// SetComment attaches a leading comment line to the node at a path (creating an
+// empty node if absent, so a section can be annotated). A missing '#' is added;
+// only the first line is kept (a comment is one line).
+func (d *Document) SetComment(path, text string) {
+	idx, ok := d.place(path)
+	if !ok {
+		return
+	}
+	line := text
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	if !strings.HasPrefix(line, "#") {
+		line = "# " + line
+	}
+	d.arena[idx].leading = append(d.arena[idx].leading, line)
+}
+
+func (d *Document) SetInt(path string, v int64)         { d.setValue(path, cellOf(strconv.FormatInt(v, 10))) }
+func (d *Document) SetFloat(path string, v float64)     { d.setValue(path, cellOf(FormatFloat(v))) }
+func (d *Document) SetBool(path string, v bool)         { d.setValue(path, cellOf(boolText(v))) }
+func (d *Document) SetString(path, v string)            { d.setValue(path, cellOf(encodeString(v))) }
+func (d *Document) SetDateTime(path string, v DateTime) { d.setValue(path, cellOf(v.String())) }
+func (d *Document) SetEmpty(path string)                { d.setValue(path, value{kind: vEmpty}) }
+
+func (d *Document) SetRaw(path, content, info string) {
+	fc, fl := chooseFence(content)
+	d.setValue(path, value{kind: vRaw, raw: rawValue{content: content, info: info, fenceChar: fc, fenceLen: fl}})
+}
+
+func (d *Document) SetIntArray(path string, v []int64) {
+	texts := make([]string, len(v))
+	for i, x := range v {
+		texts[i] = strconv.FormatInt(x, 10)
+	}
+	d.setValue(path, arrayCell(texts))
+}
+func (d *Document) SetFloatArray(path string, v []float64) {
+	texts := make([]string, len(v))
+	for i, x := range v {
+		texts[i] = FormatFloat(x)
+	}
+	d.setValue(path, arrayCell(texts))
+}
+func (d *Document) SetBoolArray(path string, v []bool) {
+	texts := make([]string, len(v))
+	for i, x := range v {
+		texts[i] = boolText(x)
+	}
+	d.setValue(path, arrayCell(texts))
+}
+func (d *Document) SetStringArray(path string, v []string) {
+	texts := make([]string, len(v))
+	for i, x := range v {
+		texts[i] = encodeString(x)
+	}
+	d.setValue(path, arrayCell(texts))
+}
+func (d *Document) SetDateTimeArray(path string, v []DateTime) {
+	texts := make([]string, len(v))
+	for i, x := range v {
+		texts[i] = x.String()
+	}
+	d.setValue(path, arrayCell(texts))
+}
+
+// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+func (d *Document) SetIntDefault(path string, v int64) {
+	if !d.Exists(path) {
+		d.SetInt(path, v)
+	}
+}
+func (d *Document) SetFloatDefault(path string, v float64) {
+	if !d.Exists(path) {
+		d.SetFloat(path, v)
+	}
+}
+func (d *Document) SetBoolDefault(path string, v bool) {
+	if !d.Exists(path) {
+		d.SetBool(path, v)
+	}
+}
+func (d *Document) SetStringDefault(path, v string) {
+	if !d.Exists(path) {
+		d.SetString(path, v)
+	}
+}
+func (d *Document) SetDateTimeDefault(path string, v DateTime) {
+	if !d.Exists(path) {
+		d.SetDateTime(path, v)
+	}
+}
+func (d *Document) SetRawDefault(path, content, info string) {
+	if !d.Exists(path) {
+		d.SetRaw(path, content, info)
+	}
+}
+func (d *Document) SetIntArrayDefault(path string, v []int64) {
+	if !d.Exists(path) {
+		d.SetIntArray(path, v)
+	}
+}
+func (d *Document) SetFloatArrayDefault(path string, v []float64) {
+	if !d.Exists(path) {
+		d.SetFloatArray(path, v)
+	}
+}
+func (d *Document) SetBoolArrayDefault(path string, v []bool) {
+	if !d.Exists(path) {
+		d.SetBoolArray(path, v)
+	}
+}
+func (d *Document) SetStringArrayDefault(path string, v []string) {
+	if !d.Exists(path) {
+		d.SetStringArray(path, v)
+	}
+}
+func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) {
+	if !d.Exists(path) {
+		d.SetDateTimeArray(path, v)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Coercion ("intelligent but safe"; Loose re-admits a closed list of tricks)
 // ---------------------------------------------------------------------------
 
