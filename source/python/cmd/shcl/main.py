@@ -428,16 +428,28 @@ def do_check(o):
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
+	strict_failed = False
 	try:
-		doc = shcl.Document.parse_with(text, o.strictness)
+		diags = shcl.Document.parse_with(text, o.strictness).diagnostics()
 	except shcl.LoadError as le:
-		for d in le.diagnostics:
-			print("line {}: {}: {}".format(d.line, d.severity.name, d.message))
-		print(str(le))
+		diags = le.diagnostics
+		strict_failed = True
+	# stdout carries the stable codes - the cross-binding contract. The prose is
+	# per-binding voice and goes to stderr (which the differential check drops).
+	errors = 0
+	for d in diags:
+		print("line {}: {}: {}".format(d.line, d.severity.name, d.code))
+		sys.stderr.write("line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+		if d.severity == shcl.Severity.Error:
+			errors += 1
+	if strict_failed:
+		print("strict load failed: {} diagnostic(s)".format(len(diags)))
 		return 6
-	for d in doc.diagnostics():
-		print("line {}: {}: {}".format(d.line, d.severity.name, d.message))
-	print("ok ({} diagnostic(s))".format(len(doc.diagnostics())))
+	if errors > 0:
+		# Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
+		print("failed: {} diagnostic(s), {} error(s)".format(len(diags), errors))
+		return 6
+	print("ok ({} diagnostic(s))".format(len(diags)))
 	return 0
 
 

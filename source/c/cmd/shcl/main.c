@@ -348,16 +348,23 @@ static int do_check(Opts *o) {
 	size_t len; char *text = read_input(o->args[0], &len);
 	if (!text) return 1;
 	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
-	size_t n = shcl_diag_count(d);
+	size_t n = shcl_diag_count(d), nerr = 0;
+	// stdout carries the stable codes - the cross-binding contract. The prose is
+	// per-binding voice and goes to stderr (which the differential check drops).
 	for (size_t i = 0; i < n; i++) {
+		const char *sev = shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+		if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
+		printf("line %zu: %s: %s\n", shcl_diag_line(d, i), sev, shcl_diag_code(d, i));
 		shcl_str m = shcl_diag_message(d, i);
-		printf("line %zu: %s: ", shcl_diag_line(d, i), shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint");
-		fwrite(m.p, 1, m.n, stdout); fputc('\n', stdout);
+		fprintf(stderr, "line %zu: %s: ", shcl_diag_line(d, i), sev);
+		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 	}
 	int rc;
 	if (shcl_strict_failed(d)) {
-		size_t nerr = 0; for (size_t i = 0; i < n; i++) if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
-		printf("strict load failed: %zu error diagnostic(s)\n", nerr); rc = 6;
+		printf("strict load failed: %zu diagnostic(s)\n", n); rc = 6;
+	} else if (nerr > 0) {
+		// Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
+		printf("failed: %zu diagnostic(s), %zu error(s)\n", n, nerr); rc = 6;
 	} else {
 		printf("ok (%zu diagnostic(s))\n", n); rc = 0;
 	}

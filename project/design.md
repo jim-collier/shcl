@@ -266,6 +266,11 @@ Technical detail behind the backlog's "Code Review 20260716" items. Item numbers
 - **Item 19 - diagnostic wording contract** (`source/rust/src/main.rs:272`)
 	- `check` prints prose diagnostics to stdout and crosscheck compares stdout byte-for-byte, so every format string in lib.rs is frozen five-way - the opposite of design.md's "wording is per-binding voice" rule (see Testing section above).
 	- Direction: stable machine codes per diagnostic (E001, H001, ...); compared stdout becomes `line N: severity: code`; prose moves to stderr or behind a stripped delimiter. Load behavior (count, lines, severities, kinds) stays pinned; wording becomes free again.
+	- Resolved: `Diagnostic` gained a `code` field (`E001..`/`H001..`) in all four bindings, set by a single `diag_code` map that keys off the message kind (the one place prose couples to a code; the reference threads it through `err`, the ports match by message prefix, and the sole hint kind is `H001`). `check` now prints `line N: severity: CODE` to stdout and the prose to stderr, so the differential check (which drops stderr) compares codes + the summary line + exit, freeing the wording. The C library exposes it via `shcl_diag_code`. Folds in item 36 (below). Crosscheck stays at 585 (the `load` rows now agree on codes instead of prose).
+
+- **Item 36 - check exits 0 on errors** (folded into item 19)
+	- `check` reported `ok` and exited 0 even when diagnostics included errors, so a CI gate on `check` passed configs whose lines were dropped.
+	- Resolved (owner-pinned: nonzero exit): `check` exits 6 whenever any `error` diagnostic is present - a strict load failure prints `strict load failed: N diagnostic(s)`, and a standard/loose load that dropped lines prints `failed: N diagnostic(s), M error(s)`; a clean load still prints `ok (N diagnostic(s))` and exits 0. Same summary strings and exit in all four bindings (compared by the differential check).
 
 - **Item 23 - `field[sel]: value`** (`source/rust/src/lib.rs:624`)
 	- Grammar allows it, spec never defines it, implementation drops the value with an Error diagnostic - so strict loads fail on a grammar-legal line. Align the three: forbid in grammar, or spec the drop-with-Error as the defined meaning. Corpus case with a strict-level load row.

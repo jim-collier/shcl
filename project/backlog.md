@@ -226,9 +226,10 @@ In each section, items are listed approximately from newest to oldest.
 	- No corpus rows for wildcards, on-bad modes, or defaults; the fuzz differential compares `fmt` only.
 	- The accessor side is where five hand-written ports diverge most easily. Detail: `design.md` - Code Review 20260716, item 18.
 
-- 🔘 Code Review 20260716 item 19: diagnostic wording became a byte-for-byte 5-way contract by accident.
+- ✅ Code Review 20260716 item 19: diagnostic wording became a byte-for-byte 5-way contract by accident.
 	- `check` prints prose to stdout and crosscheck compares it, so every English message is frozen across bindings - contradicting design.md's per-binding-voice rule.
 	- Give diagnostics stable codes; compare codes, free the prose. Detail: `design.md` - Code Review 20260716, item 19.
+	- Done: `Diagnostic` carries a stable `code` (`E001..`/`H001..`) in all four bindings; `check` prints `line N: severity: CODE` to stdout and the prose to stderr, so the differential check compares codes (not wording). C exposes `shcl_diag_code`. Includes item 36 (below).
 
 - ✅ Code Review 20260716 item 20: README still says no tagged release exists.
 	- Contradicts the v1.0.0-beta1 tag, the changelog, and the published prerelease binaries; badge still says Alpha.
@@ -255,8 +256,9 @@ In each section, items are listed approximately from newest to oldest.
 	- `--default 99` reports "unknown option: --default". Accept the space form or explain the `=` requirement.
 	- Done: all four CLIs now accept both `--default=VALUE` and `--default VALUE` (same for `--on-bad`/`--strictness`), via an index loop that consumes the next arg; a value option with nothing after it says `missing value for --default (try --default=VALUE)`. Help text notes both spellings.
 
-- 🔘 Code Review 20260716 item 36: `check` reports "ok" and exits 0 even when diagnostics include Errors.
+- ✅ Code Review 20260716 item 36: `check` reports "ok" and exits 0 even when diagnostics include Errors.
 	- A CI gate on `check` passes configs whose lines were dropped. Nonzero exit or clearer wording; note it is corpus-pinned, so change everywhere at once.
+	- Done (folded into item 19): `check` exits 6 whenever any error diagnostic is present, at any strictness - `failed: N diagnostic(s), M error(s)` for a standard/loose load that dropped lines, `strict load failed: N diagnostic(s)` for a strict failure, `ok (N diagnostic(s))` + exit 0 only when clean. Same strings and exit in all four bindings.
 
 - ✅ Code Review 20260716 item 37: `--version`/`-h` are undiscoverable.
 	- Help text never mentions them; `shcl help` and `shcl version` are rejected; `-w` is accepted but undocumented.

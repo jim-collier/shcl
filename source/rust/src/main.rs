@@ -4,7 +4,7 @@
 //! `shcl` CLI - the Tier 1 command binding. POSIX sh and PowerShell wrap this,
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
-use shcl::{Document, Status, Strictness, parse_datetime};
+use shcl::{Document, Severity, Status, Strictness, parse_datetime};
 use std::process::ExitCode;
 
 const HELP: &str = "\
@@ -518,21 +518,30 @@ fn do_check(o: &Opts) -> u8 {
 			return 1;
 		}
 	};
-	match Document::parse_with(&text, o.strictness) {
-		Ok(doc) => {
-			for d in doc.diagnostics() {
-				println!("line {}: {:?}: {}", d.line, d.severity, d.message);
-			}
-			println!("ok ({} diagnostic(s))", doc.diagnostics().len());
-			0
-		}
-		Err(e) => {
-			for d in &e.diagnostics {
-				println!("line {}: {:?}: {}", d.line, d.severity, d.message);
-			}
-			println!("{}", e);
-			6
-		}
+	let (diags, strict_failed) = match Document::parse_with(&text, o.strictness) {
+		Ok(doc) => (doc.diagnostics().to_vec(), false),
+		Err(e) => (e.diagnostics.clone(), true),
+	};
+	// stdout carries the stable codes - the cross-binding contract. The prose is
+	// per-binding voice and goes to stderr (which the differential check drops).
+	for d in &diags {
+		println!("line {}: {:?}: {}", d.line, d.severity, d.code);
+		eprintln!("line {}: {:?}: {}", d.line, d.severity, d.message);
+	}
+	let errors = diags
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.count();
+	if strict_failed {
+		println!("strict load failed: {} diagnostic(s)", diags.len());
+		6
+	} else if errors > 0 {
+		// Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
+		println!("failed: {} diagnostic(s), {} error(s)", diags.len(), errors);
+		6
+	} else {
+		println!("ok ({} diagnostic(s))", diags.len());
+		0
 	}
 }
 

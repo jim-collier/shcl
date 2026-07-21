@@ -49,12 +49,37 @@ class Status(Enum):
 
 
 class Diagnostic:
-	__slots__ = ("line", "severity", "message")
+	__slots__ = ("line", "severity", "message", "code")
 
-	def __init__(self, line, severity, message):
+	def __init__(self, line, severity, message, code):
 		self.line = line          # 1-based
 		self.severity = severity
 		self.message = message
+		self.code = code          # stable machine code (E001.., H001..); the contract
+
+
+# The one place prose couples to a code, so the wording stays free everywhere else.
+def _diag_code(msg):
+	for prefix, code in (
+		("field mixed with list elements", "E001"),
+		("value after selector on ", "E002"),
+		("no instance ", "E003"),
+		("wildcard selector is query-only", "E004"),
+		("unterminated raw block", "E005"),
+		("raw block with no parent field", "E006"),
+		("list element with no parent field", "E007"),
+		("list element mixed with field children", "E008"),
+		("empty list element", "E009"),
+		("bare comma in list element", "E010"),
+		("field already has a value", "E011"),
+		("indentation matches no open level", "E012"),
+		("malformed line skipped", "E014"),
+		("malformed line: ", "E013"),
+		("missing colon", "E015"),
+	):
+		if msg.startswith(prefix):
+			return code
+	return "E000"
 
 
 class Read:
@@ -607,7 +632,7 @@ class _Parser:
 		self.pending = []
 
 	def _err(self, line, msg):
-		self.diags.append(Diagnostic(line, Severity.Error, msg))
+		self.diags.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
 
 	def _select_or_create(self, parent, name, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
@@ -841,7 +866,7 @@ class _Parser:
 					joined = ", ".join(self.arena[c].value.display() for c in group)
 					hints.append((line, "'{}' repeats as a bare leaf - did you mean '{}: {}'?".format(name, name, joined)))
 		for line, message in hints:
-			self.diags.append(Diagnostic(line, Severity.Hint, message))
+			self.diags.append(Diagnostic(line, Severity.Hint, message, "H001"))
 
 	def parse(self, text, strictness):
 		# UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
