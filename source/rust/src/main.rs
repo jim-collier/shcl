@@ -13,10 +13,11 @@ shcl - Simple Hierarchical Config Language (reference CLI)
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
   shcl set [options] FILE                apply write-ops (stdin) and print canonical
-  shcl fmt [--write] FILE                print (or rewrite) the canonical form
+  shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+  shcl help | version                    this help, or the version (also -h/--help, -V/--version)
 
 set reads a write-ops script from stdin (one op per line, tab-separated) and
 prints the canonical document. FILE is the base ('-' = empty base). Ops:
@@ -42,6 +43,7 @@ Options:
                                          a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
 
+Value options accept either spelling: --default=VALUE or --default VALUE.
 FILE may be '-' for stdin.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
@@ -80,37 +82,56 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		write: false,
 		args: Vec::new(),
 	};
-	for a in argv {
-		match a.as_str() {
+	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
+	let mut i = 0;
+	while i < argv.len() {
+		let a = argv[i].as_str();
+		match a {
 			"--int" | "--float" | "--bool" | "--datetime" | "--string" | "--raw" => {
 				o.kind = a[2..].to_string();
 			}
 			"--array" => o.array = true,
 			"--slots" => o.slots = true,
 			"--write" | "-w" => o.write = true,
-			_ if a.starts_with("--default=") => {
-				o.default = Some(a["--default=".len()..].to_string());
-				o.on_bad = "default".into();
+			"--default" | "--on-bad" | "--strictness" => {
+				i += 1;
+				let v = argv
+					.get(i)
+					.ok_or_else(|| format!("missing value for {} (try {}=VALUE)", a, a))?;
+				set_value_opt(&mut o, a, v)?;
 			}
-			_ if a.starts_with("--on-bad=") => {
-				let v = &a["--on-bad=".len()..];
-				if !matches!(v, "error" | "default" | "flag") {
-					return Err(format!("bad --on-bad value: {}", v));
-				}
-				o.on_bad = v.to_string();
-			}
-			_ if a.starts_with("--strictness=") => {
-				let v = &a["--strictness=".len()..];
-				o.strictness = Strictness::from_arg(v)
-					.ok_or_else(|| format!("bad --strictness value: {}", v))?;
-			}
+			_ if a.starts_with("--default=") => set_value_opt(&mut o, "--default", &a[10..])?,
+			_ if a.starts_with("--on-bad=") => set_value_opt(&mut o, "--on-bad", &a[9..])?,
+			_ if a.starts_with("--strictness=") => set_value_opt(&mut o, "--strictness", &a[13..])?,
 			_ if a.starts_with('-') && a.len() > 1 => {
 				return Err(format!("unknown option: {}", a));
 			}
-			_ => o.args.push(a.clone()),
+			_ => o.args.push(argv[i].clone()),
 		}
+		i += 1;
 	}
 	Ok(o)
+}
+
+fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
+	match name {
+		"--default" => {
+			o.default = Some(v.to_string());
+			o.on_bad = "default".into();
+		}
+		"--on-bad" => {
+			if !matches!(v, "error" | "default" | "flag") {
+				return Err(format!("bad --on-bad value: {}", v));
+			}
+			o.on_bad = v.to_string();
+		}
+		"--strictness" => {
+			o.strictness =
+				Strictness::from_arg(v).ok_or_else(|| format!("bad --strictness value: {}", v))?;
+		}
+		_ => unreachable!(),
+	}
+	Ok(())
 }
 
 fn read_input(file: &str) -> Result<String, String> {
@@ -274,7 +295,25 @@ fn do_get(o: &Opts) -> u8 {
 			0
 		}
 		(_, "error") => {
-			eprintln!("{}: {:?}", path, status);
+			let type_name = if o.array {
+				format!("{} array", o.kind)
+			} else {
+				o.kind.clone()
+			};
+			let reason = match status {
+				Status::BadType => match doc.read_string(path).raw {
+					Some(raw) => format!("value {:?} is not a valid {}", raw, type_name),
+					None => format!("value is not a valid {}", type_name),
+				},
+				Status::NotFound => "no value at that path".to_string(),
+				Status::Empty => "the value is empty".to_string(),
+				Status::Multiple => "the path matches multiple instances".to_string(),
+				Status::Good => unreachable!("Good is handled above"),
+			};
+			eprintln!(
+				"shcl: cannot read {} as {}: {} (in {})",
+				path, type_name, reason, file
+			);
 			status_code(status)
 		}
 		(_, _) => {
@@ -603,11 +642,12 @@ fn main() -> ExitCode {
 			return ExitCode::from(1);
 		}
 	};
-	if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") {
+	let first = argv.first().map(|s| s.as_str());
+	if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") || first == Some("help") {
 		print!("{}", HELP);
 		return ExitCode::from(if argv.is_empty() { 1 } else { 0 });
 	}
-	if argv.iter().any(|a| a == "-V" || a == "--version") {
+	if argv.iter().any(|a| a == "-V" || a == "--version") || first == Some("version") {
 		println!("shcl {}", env!("CARGO_PKG_VERSION"));
 		return ExitCode::from(0);
 	}

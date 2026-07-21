@@ -23,10 +23,11 @@ static const char *HELP =
 	"Usage:\n"
 	"  shcl get [type] [options] FILE PATH    read one value (or array) at a path\n"
 	"  shcl set [options] FILE                apply write-ops (stdin) and print canonical\n"
-	"  shcl fmt [--write] FILE                print (or rewrite) the canonical form\n"
+	"  shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form\n"
 	"  shcl check [options] FILE              load and print diagnostics\n"
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
+	"  shcl help | version                    this help, or the version (also -h/--help, -V/--version)\n"
 	"\n"
 	"set reads a write-ops script from stdin (one op per line, tab-separated) and\n"
 	"prints the canonical document. FILE is the base ('-' = empty base). Ops:\n"
@@ -52,6 +53,7 @@ static const char *HELP =
 	"                                         a tab (per element, or per wildcard slot)\n"
 	"  --strictness=loose|standard|strict     or 1|2|3 (default standard)\n"
 	"\n"
+	"Value options accept either spelling: --default=VALUE or --default VALUE.\n"
 	"FILE may be '-' for stdin.\n"
 	"\n"
 	"Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,\n"
@@ -191,7 +193,22 @@ static int do_get(Opts *o) {
 		}
 		rc = 0;
 	} else if (!strcmp(o->on_bad, "error")) {
-		fprintf(stderr, "%s: %s\n", path, shcl_status_name(status)); rc = shcl_status_code(status);
+		char tbuf[32];
+		snprintf(tbuf, sizeof tbuf, o->array ? "%s array" : "%s", o->kind);
+		if (status == SHCL_BAD_TYPE) {
+			shcl_read_str rs = shcl_read_string(d, path, plen);
+			if (rs.status == SHCL_GOOD)
+				fprintf(stderr, "shcl: cannot read %s as %s: value \"%.*s\" is not a valid %s (in %s)\n", path, tbuf, (int)rs.value.n, rs.value.p, tbuf, file);
+			else
+				fprintf(stderr, "shcl: cannot read %s as %s: value is not a valid %s (in %s)\n", path, tbuf, tbuf, file);
+		} else if (status == SHCL_NOT_FOUND) {
+			fprintf(stderr, "shcl: cannot read %s as %s: no value at that path (in %s)\n", path, tbuf, file);
+		} else if (status == SHCL_EMPTY) {
+			fprintf(stderr, "shcl: cannot read %s as %s: the value is empty (in %s)\n", path, tbuf, file);
+		} else {
+			fprintf(stderr, "shcl: cannot read %s as %s: the path matches multiple instances (in %s)\n", path, tbuf, file);
+		}
+		rc = shcl_status_code(status);
 	} else {
 		for (size_t i = 0; i < nlines; i++) EMITLINE(i, LINEPTR(i), lines[i].n);
 		rc = shcl_status_code(status);
@@ -360,24 +377,36 @@ static int do_enum(Opts *o, int want_count) {
 	shcl_free(d); free(text); return 0;
 }
 
+// Apply a value-taking option's value. Returns 0 ok, 1 on a bad value.
+static int set_value_opt(Opts *o, const char *name, const char *v) {
+	if (!strcmp(name, "--default")) { o->deflt = v; o->on_bad = "default"; }
+	else if (!strcmp(name, "--on-bad")) {
+		if (strcmp(v, "error") && strcmp(v, "default") && strcmp(v, "flag")) { fprintf(stderr, "bad --on-bad value: %s\n", v); return 1; }
+		o->on_bad = v;
+	} else if (!strcmp(name, "--strictness")) {
+		if (!shcl_strictness_from_arg(v, strlen(v), &o->strictness)) { fprintf(stderr, "bad --strictness value: %s\n", v); return 1; }
+	}
+	return 0;
+}
+
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
 	o->strictness = SHCL_STANDARD; o->write = 0; o->nargs = 0;
+	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
 		const char *a = argv[i];
 		if (!strcmp(a, "--int") || !strcmp(a, "--float") || !strcmp(a, "--bool") || !strcmp(a, "--datetime") || !strcmp(a, "--string") || !strcmp(a, "--raw")) o->kind = a + 2;
 		else if (!strcmp(a, "--array")) o->array = 1;
 		else if (!strcmp(a, "--slots")) o->slots = 1;
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) o->write = 1;
-		else if (!strncmp(a, "--default=", 10)) { o->deflt = a + 10; o->on_bad = "default"; }
-		else if (!strncmp(a, "--on-bad=", 9)) {
-			const char *v = a + 9;
-			if (strcmp(v, "error") && strcmp(v, "default") && strcmp(v, "flag")) { fprintf(stderr, "bad --on-bad value: %s\n", v); return 1; }
-			o->on_bad = v;
-		} else if (!strncmp(a, "--strictness=", 13)) {
-			const char *v = a + 13;
-			if (!shcl_strictness_from_arg(v, strlen(v), &o->strictness)) { fprintf(stderr, "bad --strictness value: %s\n", v); return 1; }
-		} else if (a[0] == '-' && a[1] != '\0') { fprintf(stderr, "unknown option: %s\n", a); return 1; }
+		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness")) {
+			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
+			if (set_value_opt(o, a, argv[++i])) return 1;
+		}
+		else if (!strncmp(a, "--default=", 10)) { if (set_value_opt(o, "--default", a + 10)) return 1; }
+		else if (!strncmp(a, "--on-bad=", 9)) { if (set_value_opt(o, "--on-bad", a + 9)) return 1; }
+		else if (!strncmp(a, "--strictness=", 13)) { if (set_value_opt(o, "--strictness", a + 13)) return 1; }
+		else if (a[0] == '-' && a[1] != '\0') { fprintf(stderr, "unknown option: %s\n", a); return 1; }
 		else { if (o->nargs < 8) o->args[o->nargs++] = a; }
 	}
 	return 0;
@@ -398,8 +427,8 @@ int main(int argc, char **argv) {
 		if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) has_help = 1;
 		if (!strcmp(argv[i], "-V") || !strcmp(argv[i], "--version")) has_version = 1;
 	}
-	if (argc <= 1 || has_help) { fputs(HELP, stdout); return argc <= 1 ? 1 : 0; }
-	if (has_version) { printf("shcl %s\n", VERSION); return 0; }
+	if (argc <= 1 || has_help || !strcmp(argv[1], "help")) { fputs(HELP, stdout); return argc <= 1 ? 1 : 0; }
+	if (has_version || !strcmp(argv[1], "version")) { printf("shcl %s\n", VERSION); return 0; }
 	const char *cmd = argv[1];
 	Opts o;
 	if (parse_opts(argc, argv, 2, &o)) return 1;
