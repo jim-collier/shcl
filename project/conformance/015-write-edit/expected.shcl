@@ -1,0 +1,8 @@
+a: 1
+b: keep
+group:
+	x: old
+	y: 2
+list: one
+list: two
+city: Boston

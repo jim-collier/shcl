@@ -4,7 +4,7 @@
 //! `shcl` CLI - the Tier 1 command binding. POSIX sh and PowerShell wrap this,
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
-use shcl::{Document, Status, Strictness};
+use shcl::{Document, Status, Strictness, parse_datetime};
 use std::process::ExitCode;
 
 const HELP: &str = "\
@@ -12,10 +12,20 @@ shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
+  shcl set [options] FILE                apply write-ops (stdin) and print canonical
   shcl fmt [--write] FILE                print (or rewrite) the canonical form
   shcl check [options] FILE              load and print diagnostics
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+
+set reads a write-ops script from stdin (one op per line, tab-separated) and
+prints the canonical document. FILE is the base ('-' = empty base). Ops:
+  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
+  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
+  <type>[-array]-default<TAB>...                          set only if absent
+  raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block
+  empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
+string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 
 Types (default --string):
   --int --float --bool --datetime --string --raw
@@ -305,6 +315,151 @@ fn do_fmt(o: &Opts) -> u8 {
 	0
 }
 
+/// Decode an ops-script value: \n \t \\ only; other `\x` stays verbatim. The
+/// setters re-encode, so this is just for embedding newlines/tabs on one line.
+fn unescape_ops(s: &str) -> String {
+	let mut out = String::with_capacity(s.len());
+	let mut it = s.chars();
+	while let Some(c) = it.next() {
+		if c != '\\' {
+			out.push(c);
+			continue;
+		}
+		match it.next() {
+			Some('n') => out.push('\n'),
+			Some('t') => out.push('\t'),
+			Some('\\') => out.push('\\'),
+			Some(other) => {
+				out.push('\\');
+				out.push(other);
+			}
+			None => out.push('\\'),
+		}
+	}
+	out
+}
+
+fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
+	let f: Vec<&str> = line.split('\t').collect();
+	let path = f.get(1).copied().unwrap_or("");
+	let val = || f.get(2).copied().unwrap_or("");
+	let pint = |s: &str| s.parse::<i64>().map_err(|_| format!("bad int: {}", s));
+	let pflt = |s: &str| s.parse::<f64>().map_err(|_| format!("bad float: {}", s));
+	let arr = &f[2.min(f.len())..];
+	match f.first().copied().unwrap_or("") {
+		"int" => doc.set_int(path, pint(val())?),
+		"float" => doc.set_float(path, pflt(val())?),
+		"bool" => doc.set_bool(path, val() == "true"),
+		"string" => doc.set_string(path, &unescape_ops(val())),
+		"datetime" => {
+			let dt = parse_datetime(val()).ok_or_else(|| format!("bad datetime: {}", val()))?;
+			doc.set_datetime(path, &dt);
+		}
+		"int-default" => doc.set_int_default(path, pint(val())?),
+		"float-default" => doc.set_float_default(path, pflt(val())?),
+		"bool-default" => doc.set_bool_default(path, val() == "true"),
+		"string-default" => doc.set_string_default(path, &unescape_ops(val())),
+		"datetime-default" => {
+			let dt = parse_datetime(val()).ok_or_else(|| format!("bad datetime: {}", val()))?;
+			doc.set_datetime_default(path, &dt);
+		}
+		"int-array" => doc.set_int_array(
+			path,
+			&arr.iter().map(|s| pint(s)).collect::<Result<Vec<_>, _>>()?,
+		),
+		"float-array" => doc.set_float_array(
+			path,
+			&arr.iter().map(|s| pflt(s)).collect::<Result<Vec<_>, _>>()?,
+		),
+		"bool-array" => {
+			doc.set_bool_array(path, &arr.iter().map(|s| *s == "true").collect::<Vec<_>>())
+		}
+		"string-array" => {
+			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
+			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+		}
+		"datetime-array" => {
+			let dts: Vec<_> = arr
+				.iter()
+				.map(|s| parse_datetime(s).ok_or_else(|| format!("bad datetime: {}", s)))
+				.collect::<Result<Vec<_>, _>>()?;
+			doc.set_datetime_array(path, &dts);
+		}
+		"int-array-default" => doc.set_int_array_default(
+			path,
+			&arr.iter().map(|s| pint(s)).collect::<Result<Vec<_>, _>>()?,
+		),
+		"float-array-default" => doc.set_float_array_default(
+			path,
+			&arr.iter().map(|s| pflt(s)).collect::<Result<Vec<_>, _>>()?,
+		),
+		"bool-array-default" => {
+			doc.set_bool_array_default(path, &arr.iter().map(|s| *s == "true").collect::<Vec<_>>())
+		}
+		"string-array-default" => {
+			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
+			doc.set_string_array_default(
+				path,
+				&owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+			);
+		}
+		"raw" => doc.set_raw(path, &unescape_ops(f.get(3).copied().unwrap_or("")), val()),
+		"raw-default" => {
+			doc.set_raw_default(path, &unescape_ops(f.get(3).copied().unwrap_or("")), val())
+		}
+		"empty" => doc.set_empty(path),
+		"comment" => doc.set_comment(path, val()),
+		"remove" => {
+			doc.remove(path);
+		}
+		other => return Err(format!("unknown op: {}", other)),
+	}
+	Ok(())
+}
+
+fn do_set(o: &Opts) -> u8 {
+	let file = match o.args.as_slice() {
+		[f] => f,
+		_ => {
+			eprintln!("set needs FILE (ops on stdin; see --help)");
+			return 1;
+		}
+	};
+	// Base doc: '-' means an empty base, since stdin carries the ops script.
+	let text = if file == "-" {
+		String::new()
+	} else {
+		match read_input(file) {
+			Ok(t) => t,
+			Err(e) => {
+				eprintln!("{}", e);
+				return 1;
+			}
+		}
+	};
+	let mut doc = match load(&text, o.strictness) {
+		Ok(d) => d,
+		Err(code) => return code,
+	};
+	let mut ops = String::new();
+	use std::io::Read;
+	if let Err(e) = std::io::stdin().read_to_string(&mut ops) {
+		eprintln!("stdin: {}", e);
+		return 1;
+	}
+	for (n, line) in ops.lines().enumerate() {
+		if line.is_empty() || line.starts_with('#') {
+			continue;
+		}
+		if let Err(e) = apply_op(&mut doc, line) {
+			eprintln!("op line {}: {}", n + 1, e);
+			return 1;
+		}
+	}
+	print!("{}", doc.to_canonical());
+	0
+}
+
 fn do_check(o: &Opts) -> u8 {
 	let file = match o.args.as_slice() {
 		[f] => f,
@@ -370,6 +525,7 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 fn run(cmd: &str, o: &Opts) -> u8 {
 	match cmd {
 		"get" => do_get(o),
+		"set" => do_set(o),
 		"fmt" => do_fmt(o),
 		"check" => do_check(o),
 		"count" => do_enum(o, true),
