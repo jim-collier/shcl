@@ -23,10 +23,11 @@ HELP = """shcl - Simple Hierarchical Config Language (reference CLI)
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
   shcl set [options] FILE                apply write-ops (stdin) and print canonical
-  shcl fmt [--write] FILE                print (or rewrite) the canonical form
+  shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+  shcl help | version                    this help, or the version (also -h/--help, -V/--version)
 
 set reads a write-ops script from stdin (one op per line, tab-separated) and
 prints the canonical document. FILE is the base ('-' = empty base). Ops:
@@ -52,6 +53,7 @@ Options:
                                          a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
 
+Value options accept either spelling: --default=VALUE or --default VALUE.
 FILE may be '-' for stdin.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
@@ -77,9 +79,27 @@ class _Opts:
 		self.args = []           # positional: FILE [PATH]
 
 
+def _set_value_opt(o, name, v):
+	if name == "--default":
+		o.default = v
+		o.on_bad = "default"
+	elif name == "--on-bad":
+		if v not in ("error", "default", "flag"):
+			raise ValueError("bad --on-bad value: {}".format(v))
+		o.on_bad = v
+	elif name == "--strictness":
+		s = shcl.Strictness.from_arg(v)
+		if s is None:
+			raise ValueError("bad --strictness value: {}".format(v))
+		o.strictness = s
+
+
 def parse_opts(argv):
 	o = _Opts()
-	for a in argv:
+	# Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
+	i = 0
+	while i < len(argv):
+		a = argv[i]
 		if a in ("--int", "--float", "--bool", "--datetime", "--string", "--raw"):
 			o.kind = a[2:]
 		elif a == "--array":
@@ -88,24 +108,22 @@ def parse_opts(argv):
 			o.slots = True
 		elif a in ("--write", "-w"):
 			o.write = True
+		elif a in ("--default", "--on-bad", "--strictness"):
+			i += 1
+			if i >= len(argv):
+				raise ValueError("missing value for {0} (try {0}=VALUE)".format(a))
+			_set_value_opt(o, a, argv[i])
 		elif a.startswith("--default="):
-			o.default = a[len("--default="):]
-			o.on_bad = "default"
+			_set_value_opt(o, "--default", a[len("--default="):])
 		elif a.startswith("--on-bad="):
-			v = a[len("--on-bad="):]
-			if v not in ("error", "default", "flag"):
-				raise ValueError("bad --on-bad value: {}".format(v))
-			o.on_bad = v
+			_set_value_opt(o, "--on-bad", a[len("--on-bad="):])
 		elif a.startswith("--strictness="):
-			v = a[len("--strictness="):]
-			s = shcl.Strictness.from_arg(v)
-			if s is None:
-				raise ValueError("bad --strictness value: {}".format(v))
-			o.strictness = s
+			_set_value_opt(o, "--strictness", a[len("--strictness="):])
 		elif a.startswith("-") and len(a) > 1:
 			raise ValueError("unknown option: {}".format(a))
 		else:
 			o.args.append(a)
+		i += 1
 	return o
 
 
@@ -224,7 +242,23 @@ def do_get(o):
 			print(dv)
 		return 0
 	if o.on_bad == "error":
-		sys.stderr.write("{}: {}\n".format(path, status.name))
+		type_name = "{} array".format(o.kind) if o.array else o.kind
+		if status == shcl.Status.BadType:
+			raw = doc.read_string(path).raw
+			reason = (
+				'value "{}" is not a valid {}'.format(raw, type_name)
+				if raw is not None
+				else "value is not a valid {}".format(type_name)
+			)
+		elif status == shcl.Status.NotFound:
+			reason = "no value at that path"
+		elif status == shcl.Status.Empty:
+			reason = "the value is empty"
+		else:
+			reason = "the path matches multiple instances"
+		sys.stderr.write(
+			"shcl: cannot read {} as {}: {} (in {})\n".format(path, type_name, reason, file)
+		)
 		return status_code(status)
 	# flag: print the zero/empty value anyway; the exit code carries the status.
 	emit(lines)
@@ -439,10 +473,10 @@ def run(argv):
 			return 1
 	wants_help = any(a in ("-h", "--help") for a in argv)
 	wants_version = any(a in ("-V", "--version") for a in argv)
-	if not argv or wants_help:
+	if not argv or wants_help or argv[0] == "help":
 		sys.stdout.write(HELP)
 		return 1 if not argv else 0
-	if wants_version:
+	if wants_version or argv[0] == "version":
 		print("shcl {}".format(VERSION))
 		return 0
 	try:

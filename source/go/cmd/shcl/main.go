@@ -25,10 +25,11 @@ const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
   shcl set [options] FILE                apply write-ops (stdin) and print canonical
-  shcl fmt [--write] FILE                print (or rewrite) the canonical form
+  shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+  shcl help | version                    this help, or the version (also -h/--help, -V/--version)
 
 set reads a write-ops script from stdin (one op per line, tab-separated) and
 prints the canonical document. FILE is the base ('-' = empty base). Ops:
@@ -54,6 +55,7 @@ Options:
                                          a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
 
+Value options accept either spelling: --default=VALUE or --default VALUE.
 FILE may be '-' for stdin.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
@@ -87,9 +89,31 @@ type opts struct {
 	args       []string // positional: FILE [PATH]
 }
 
+func setValueOpt(o *opts, name, v string) error {
+	switch name {
+	case "--default":
+		o.def = v
+		o.onBad = "default"
+	case "--on-bad":
+		if v != "error" && v != "default" && v != "flag" {
+			return fmt.Errorf("bad --on-bad value: %s", v)
+		}
+		o.onBad = v
+	case "--strictness":
+		s, ok := shcl.StrictnessFromArg(v)
+		if !ok {
+			return fmt.Errorf("bad --strictness value: %s", v)
+		}
+		o.strictness = s
+	}
+	return nil
+}
+
 func parseOpts(argv []string) (*opts, error) {
 	o := &opts{kind: "string", onBad: "flag", strictness: shcl.Standard}
-	for _, a := range argv {
+	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
 		switch {
 		case a == "--int" || a == "--float" || a == "--bool" || a == "--datetime" || a == "--string" || a == "--raw":
 			o.kind = a[2:]
@@ -99,22 +123,26 @@ func parseOpts(argv []string) (*opts, error) {
 			o.slots = true
 		case a == "--write" || a == "-w":
 			o.write = true
+		case a == "--default" || a == "--on-bad" || a == "--strictness":
+			i++
+			if i >= len(argv) {
+				return nil, fmt.Errorf("missing value for %s (try %s=VALUE)", a, a)
+			}
+			if err := setValueOpt(o, a, argv[i]); err != nil {
+				return nil, err
+			}
 		case strings.HasPrefix(a, "--default="):
-			o.def = a[len("--default="):]
-			o.onBad = "default"
+			if err := setValueOpt(o, "--default", a[len("--default="):]); err != nil {
+				return nil, err
+			}
 		case strings.HasPrefix(a, "--on-bad="):
-			v := a[len("--on-bad="):]
-			if v != "error" && v != "default" && v != "flag" {
-				return nil, fmt.Errorf("bad --on-bad value: %s", v)
+			if err := setValueOpt(o, "--on-bad", a[len("--on-bad="):]); err != nil {
+				return nil, err
 			}
-			o.onBad = v
 		case strings.HasPrefix(a, "--strictness="):
-			v := a[len("--strictness="):]
-			s, ok := shcl.StrictnessFromArg(v)
-			if !ok {
-				return nil, fmt.Errorf("bad --strictness value: %s", v)
+			if err := setValueOpt(o, "--strictness", a[len("--strictness="):]); err != nil {
+				return nil, err
 			}
-			o.strictness = s
 		case strings.HasPrefix(a, "-") && len(a) > 1:
 			return nil, fmt.Errorf("unknown option: %s", a)
 		default:
@@ -284,7 +312,26 @@ func doGet(o *opts) int {
 		}
 		return 0
 	case o.onBad == "error":
-		fmt.Fprintf(os.Stderr, "%s: %s\n", path, status)
+		typeName := o.kind
+		if o.array {
+			typeName = o.kind + " array"
+		}
+		var reason string
+		switch status {
+		case shcl.BadType:
+			if raw := doc.ReadString(path).Raw; raw != nil {
+				reason = fmt.Sprintf("value %q is not a valid %s", *raw, typeName)
+			} else {
+				reason = fmt.Sprintf("value is not a valid %s", typeName)
+			}
+		case shcl.NotFound:
+			reason = "no value at that path"
+		case shcl.Empty:
+			reason = "the value is empty"
+		case shcl.Multiple:
+			reason = "the path matches multiple instances"
+		}
+		fmt.Fprintf(os.Stderr, "shcl: cannot read %s as %s: %s (in %s)\n", path, typeName, reason, file)
 		return statusCode(status)
 	default:
 		// flag: print the zero/empty value anyway; the exit code carries the status
@@ -630,14 +677,14 @@ func run() int {
 			wantsVersion = true
 		}
 	}
-	if len(argv) == 0 || wantsHelp {
+	if len(argv) == 0 || wantsHelp || argv[0] == "help" {
 		fmt.Print(help)
 		if len(argv) == 0 {
 			return 1
 		}
 		return 0
 	}
-	if wantsVersion {
+	if wantsVersion || argv[0] == "version" {
 		fmt.Printf("shcl %s\n", version)
 		return 0
 	}

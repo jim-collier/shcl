@@ -234,8 +234,9 @@ In each section, items are listed approximately from newest to oldest.
 	- Contradicts the v1.0.0-beta1 tag, the changelog, and the published prerelease binaries; badge still says Alpha.
 	- Done: lifecycle badge Alpha -> Beta, Status/Installing sections now reflect the `v1.0.0-beta1` pre-release and its prebuilt binaries; release-cut checklist in `design.md` gained a "README status pass" step so it can't drift again.
 
-- 🔘 Code Review 20260716 item 22: `--on-bad=error` messages are bare enum names.
+- ✅ Code Review 20260716 item 22: `--on-bad=error` messages are bare enum names.
 	- `app.name: BadType` - no value, no requested type, no file, no suggested fix. Stderr is not contract, so this is free to improve.
+	- Done in all four CLIs: `shcl: cannot read <path> as <type>: <reason> (in <file>)`, where a BadType names the offending raw value (`value "$1200" is not a valid int`), and NotFound/Empty/Multiple get a plain-English reason. Array reads say `<type> array`. Stderr, so not crosscheck-pinned.
 
 - 🔘 Code Review 20260716 item 28: dogfood install is a non-atomic in-place `cp`.
 	- A launch during the copy sees a torn binary, and the synced dest dir can propagate it. Copy to a temp name, then `mv` over.
@@ -249,14 +250,16 @@ In each section, items are listed approximately from newest to oldest.
 	- Also: hex `-0x8000000000000000` (i64 min) reads BadType while the decimal spelling works. Detail: `design.md` - Code Review 20260716, item 31.
 	- Done: aligned prose to the code (grammar, `is_bare_name_char`, and the emit predicate already agreed) - a bare field name is ASCII letters/digits/`-`/`_` only; anything else, including non-ASCII, must be quoted, and the `Straße` examples are now shown quoted. Hex fixed in all four parsers: parse the magnitude as u64, then range-check against the sign, so `-0x8000000000000000` reads i64-min like its decimal spelling and `+0x8000000000000000` stays BadType. Corpus case 019-hex-int-bounds pins it (crosscheck now 585).
 
-- 🔘 Code Review 20260716 item 35: value-taking options reject the space-separated form with a misleading error.
+- ✅ Code Review 20260716 item 35: value-taking options reject the space-separated form with a misleading error.
 	- `--default 99` reports "unknown option: --default". Accept the space form or explain the `=` requirement.
+	- Done: all four CLIs now accept both `--default=VALUE` and `--default VALUE` (same for `--on-bad`/`--strictness`), via an index loop that consumes the next arg; a value option with nothing after it says `missing value for --default (try --default=VALUE)`. Help text notes both spellings.
 
 - 🔘 Code Review 20260716 item 36: `check` reports "ok" and exits 0 even when diagnostics include Errors.
 	- A CI gate on `check` passes configs whose lines were dropped. Nonzero exit or clearer wording; note it is corpus-pinned, so change everywhere at once.
 
-- 🔘 Code Review 20260716 item 37: `--version`/`-h` are undiscoverable.
+- ✅ Code Review 20260716 item 37: `--version`/`-h` are undiscoverable.
 	- Help text never mentions them; `shcl help` and `shcl version` are rejected; `-w` is accepted but undocumented.
+	- Done in all four CLIs: the usage block gained a `shcl help | version` line noting `-h/--help` and `-V/--version`; `shcl help` and `shcl version` are now accepted subcommands; the `fmt` line shows `[--write|-w]`.
 
 - ✅ Code Review 20260716 item 38: wrapper documentation drift.
 	- README omits the PowerShell wrapper; spec says "POSIX sh" but the shell wrapper is deliberately Bash. Align the words with the artifacts.
