@@ -45,6 +45,47 @@ pub struct Diagnostic {
 	pub line: usize, // 1-based
 	pub severity: Severity,
 	pub message: String,
+	/// Stable machine code (E001.., H001..) identifying the diagnostic kind. The
+	/// contract lives here; the `message` prose is a free, per-binding voice.
+	pub code: &'static str,
+}
+
+/// Map a diagnostic message to its stable code. The one place prose couples to a
+/// code, so the wording stays free everywhere else.
+fn diag_code(msg: &str) -> &'static str {
+	if msg.starts_with("field mixed with list elements") {
+		"E001"
+	} else if msg.starts_with("value after selector on ") {
+		"E002"
+	} else if msg.starts_with("no instance ") {
+		"E003"
+	} else if msg.starts_with("wildcard selector is query-only") {
+		"E004"
+	} else if msg.starts_with("unterminated raw block") {
+		"E005"
+	} else if msg.starts_with("raw block with no parent field") {
+		"E006"
+	} else if msg.starts_with("list element with no parent field") {
+		"E007"
+	} else if msg.starts_with("list element mixed with field children") {
+		"E008"
+	} else if msg.starts_with("empty list element") {
+		"E009"
+	} else if msg.starts_with("bare comma in list element") {
+		"E010"
+	} else if msg.starts_with("field already has a value") {
+		"E011"
+	} else if msg.starts_with("indentation matches no open level") {
+		"E012"
+	} else if msg.starts_with("malformed line skipped") {
+		"E014"
+	} else if msg.starts_with("malformed line: ") {
+		"E013"
+	} else if msg.starts_with("missing colon") {
+		"E015"
+	} else {
+		"E000" // uncategorized error (should not happen; keeps the map total)
+	}
 }
 
 /// Read status sentinels. `Empty` is informational - the empty value is still returned.
@@ -589,10 +630,13 @@ impl Parser {
 	}
 
 	fn err(&mut self, line: usize, msg: impl Into<String>) {
+		let message = msg.into();
+		let code = diag_code(&message);
 		self.diags.push(Diagnostic {
 			line,
 			severity: Severity::Error,
-			message: msg.into(),
+			message,
+			code,
 		});
 	}
 
@@ -928,6 +972,7 @@ impl Parser {
 				line,
 				severity: Severity::Hint,
 				message,
+				code: "H001", // the only hint kind: repeated bare leaf
 			});
 		}
 	}

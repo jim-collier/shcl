@@ -63,6 +63,48 @@ type Diagnostic struct {
 	Line     int // 1-based
 	Severity Severity
 	Message  string
+	// Code is the stable machine code (E001.., H001..) identifying the diagnostic
+	// kind - the contract; Message is a free, per-binding voice.
+	Code string
+}
+
+// diagCode maps a diagnostic message to its stable code: the one place prose
+// couples to a code, so the wording stays free everywhere else.
+func diagCode(msg string) string {
+	switch {
+	case strings.HasPrefix(msg, "field mixed with list elements"):
+		return "E001"
+	case strings.HasPrefix(msg, "value after selector on "):
+		return "E002"
+	case strings.HasPrefix(msg, "no instance "):
+		return "E003"
+	case strings.HasPrefix(msg, "wildcard selector is query-only"):
+		return "E004"
+	case strings.HasPrefix(msg, "unterminated raw block"):
+		return "E005"
+	case strings.HasPrefix(msg, "raw block with no parent field"):
+		return "E006"
+	case strings.HasPrefix(msg, "list element with no parent field"):
+		return "E007"
+	case strings.HasPrefix(msg, "list element mixed with field children"):
+		return "E008"
+	case strings.HasPrefix(msg, "empty list element"):
+		return "E009"
+	case strings.HasPrefix(msg, "bare comma in list element"):
+		return "E010"
+	case strings.HasPrefix(msg, "field already has a value"):
+		return "E011"
+	case strings.HasPrefix(msg, "indentation matches no open level"):
+		return "E012"
+	case strings.HasPrefix(msg, "malformed line skipped"):
+		return "E014"
+	case strings.HasPrefix(msg, "malformed line: "):
+		return "E013"
+	case strings.HasPrefix(msg, "missing colon"):
+		return "E015"
+	default:
+		return "E000"
+	}
 }
 
 // Status is the read sentinel. Empty is informational - the empty value is
@@ -743,7 +785,7 @@ func newParser() *parser {
 }
 
 func (p *parser) err(line int, msg string) {
-	p.diags = append(p.diags, Diagnostic{Line: line, Severity: SeverityError, Message: msg})
+	p.diags = append(p.diags, Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: diagCode(msg)})
 }
 
 // selectOrCreate finds (or creates by merge rule) the child of parent with
@@ -1037,6 +1079,7 @@ func (p *parser) emitRepeatedLeafHints() {
 				Line:     line,
 				Severity: SeverityHint,
 				Message:  fmt.Sprintf("'%s' repeats as a bare leaf - did you mean '%s: %s'?", g.name, g.name, strings.Join(vals, ", ")),
+				Code:     "H001",
 			})
 		}
 	}

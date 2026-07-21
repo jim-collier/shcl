@@ -75,6 +75,9 @@ size_t shcl_diag_count(const shcl_doc *d);
 size_t shcl_diag_line(const shcl_doc *d, size_t i);
 shcl_severity shcl_diag_severity(const shcl_doc *d, size_t i);
 shcl_str shcl_diag_message(const shcl_doc *d, size_t i);
+// Stable machine code (E001.., H001..) identifying the diagnostic kind - the
+// contract; the message prose is a free, per-binding voice. NUL-terminated.
+const char *shcl_diag_code(const shcl_doc *d, size_t i);
 
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The
 // returned bytes live in the document's arena; valid until shcl_free.
@@ -360,7 +363,7 @@ typedef struct {
 } Node;
 DEFINE_VEC(VecNode, Node)
 
-typedef struct { size_t line; shcl_severity sev; S message; } Diag;
+typedef struct { size_t line; shcl_severity sev; S message; const char *code; } Diag;
 DEFINE_VEC(VecDiag, Diag)
 
 struct shcl_doc {
@@ -1075,8 +1078,28 @@ static void cmap_del(CMap *m, uint64_t h, S name, S key, size_t val) {
 /* pending: whole-line comments waiting for the next line that binds a node. */
 typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecS pending; } Parser;
 
+// The one place prose couples to a code, so the wording stays free everywhere else.
+static const char *diag_code(shcl_severity sev, S msg) {
+	if (sev == SHCL_SEV_HINT) return "H001"; // the only hint kind
+	if (s_starts(msg, "field mixed with list elements")) return "E001";
+	if (s_starts(msg, "value after selector on ")) return "E002";
+	if (s_starts(msg, "no instance ")) return "E003";
+	if (s_starts(msg, "wildcard selector is query-only")) return "E004";
+	if (s_starts(msg, "unterminated raw block")) return "E005";
+	if (s_starts(msg, "raw block with no parent field")) return "E006";
+	if (s_starts(msg, "list element with no parent field")) return "E007";
+	if (s_starts(msg, "list element mixed with field children")) return "E008";
+	if (s_starts(msg, "empty list element")) return "E009";
+	if (s_starts(msg, "bare comma in list element")) return "E010";
+	if (s_starts(msg, "field already has a value")) return "E011";
+	if (s_starts(msg, "indentation matches no open level")) return "E012";
+	if (s_starts(msg, "malformed line skipped")) return "E014";
+	if (s_starts(msg, "malformed line: ")) return "E013";
+	if (s_starts(msg, "missing colon")) return "E015";
+	return "E000";
+}
 static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, S msg) {
-	Diag dg; dg.line = line; dg.sev = sev; dg.message = msg;
+	Diag dg; dg.line = line; dg.sev = sev; dg.message = msg; dg.code = diag_code(sev, msg);
 	VecDiag_push(&d->arena, &d->diags, dg);
 }
 static void p_err(Parser *P, size_t line, S msg) { push_diag(P->d, line, SHCL_SEV_ERROR, msg); }
@@ -2028,6 +2051,7 @@ size_t shcl_diag_count(const shcl_doc *d) { return d->diags.len; }
 size_t shcl_diag_line(const shcl_doc *d, size_t i) { return d->diags.data[i].line; }
 shcl_severity shcl_diag_severity(const shcl_doc *d, size_t i) { return d->diags.data[i].sev; }
 shcl_str shcl_diag_message(const shcl_doc *d, size_t i) { return d->diags.data[i].message; }
+const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i].code; }
 
 #endif // SHCL_IMPLEMENTATION
 #endif // SHCL_H

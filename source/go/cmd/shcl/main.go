@@ -618,20 +618,36 @@ func doCheck(o *opts) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	doc, perr := shcl.ParseWith(text, o.strictness)
-	if perr != nil {
-		le := perr.(*shcl.LoadError)
-		for _, d := range le.Diagnostics {
-			fmt.Printf("line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+	var diags []shcl.Diagnostic
+	strictFailed := false
+	if doc, perr := shcl.ParseWith(text, o.strictness); perr != nil {
+		diags = perr.(*shcl.LoadError).Diagnostics
+		strictFailed = true
+	} else {
+		diags = doc.Diagnostics()
+	}
+	// stdout carries the stable codes - the cross-binding contract. The prose is
+	// per-binding voice and goes to stderr (which the differential check drops).
+	errors := 0
+	for _, d := range diags {
+		fmt.Printf("line %d: %s: %s\n", d.Line, d.Severity, d.Code)
+		fmt.Fprintf(os.Stderr, "line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+		if d.Severity == shcl.SeverityError {
+			errors++
 		}
-		fmt.Println(le.Error())
+	}
+	switch {
+	case strictFailed:
+		fmt.Printf("strict load failed: %d diagnostic(s)\n", len(diags))
 		return 6
+	case errors > 0:
+		// Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
+		fmt.Printf("failed: %d diagnostic(s), %d error(s)\n", len(diags), errors)
+		return 6
+	default:
+		fmt.Printf("ok (%d diagnostic(s))\n", len(diags))
+		return 0
 	}
-	for _, d := range doc.Diagnostics() {
-		fmt.Printf("line %d: %s: %s\n", d.Line, d.Severity, d.Message)
-	}
-	fmt.Printf("ok (%d diagnostic(s))\n", len(doc.Diagnostics()))
-	return 0
 }
 
 func doEnum(o *opts, wantCount bool) int {
