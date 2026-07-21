@@ -16,7 +16,7 @@
 ##		. ./shcl.ps1
 ##		$port = shcl get --int app.shcl server.port     ## the whole CLI
 ##		$port = shcl_int app.shcl server.port           ## same, typed helper
-##		$host = shcl_get app.shcl server.host
+##		$svrhost = shcl_get app.shcl server.host        ## ($host is read-only)
 ##		if ((shcl_bool app.shcl features.debug) -eq 'true') { Enable-Debug }
 ##		$hosts = shcl_array --string app.shcl cluster.hosts
 ##
@@ -54,13 +54,40 @@
 ## Plain one-line stderr message (Write-Error decorates with a multi-line block).
 function _shcl_err([string]$msg) { [Console]::Error.WriteLine($msg) }
 
-## A base path is a match if it exists, or (Windows) if base.exe does. Returns
-## the concrete path or $null.
+## Launchable? On Unix require an execute bit (any of user/group/other); on
+## Windows (or pre-6 PowerShell, where $IsWindows is undefined) a leaf is enough,
+## the OS decides by extension. Mirrors bash's `-x` test at every resolution site.
+function _shcl_executable([string]$path) {
+	if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+	if ($IsWindows -or ($null -eq $IsWindows))              { return $true }
+	$mode = (Get-Item -LiteralPath $path).UnixFileMode
+	$exec = [System.IO.UnixFileMode]::UserExecute  -bor `
+	        [System.IO.UnixFileMode]::GroupExecute -bor `
+	        [System.IO.UnixFileMode]::OtherExecute
+	return ($mode -band $exec) -ne 0
+}
+
+## A base path is a match if it is launchable, or (Windows) if base.exe is.
+## Returns the concrete path or $null.
 function _shcl_exe([string]$base) {
-	if (Test-Path -LiteralPath $base -PathType Leaf)        { return $base }
-	if (Test-Path -LiteralPath "$base.exe" -PathType Leaf)  { return "$base.exe" }
+	if (_shcl_executable $base)        { return $base }
+	if (_shcl_executable "$base.exe")  { return "$base.exe" }
 	return $null
 }
+
+## Real directory of this file, following symlinks, so a linked-in copy still
+## finds its sibling binary and the repo release/debug build tree.
+function _shcl_scriptdir {
+	$self = $PSCommandPath
+	if (-not $self) { return $PSScriptRoot }
+	$item = Get-Item -LiteralPath $self -ErrorAction SilentlyContinue
+	if ($item) {
+		$target = $item.ResolveLinkTarget($true)
+		if ($target) { $self = $target.FullName }
+	}
+	return [System.IO.Path]::GetDirectoryName($self)
+}
+$script:_SHCL_ROOT = _shcl_scriptdir
 
 ## Locate the shcl binary and cache it in $script:_SHCL_BIN. SHCL_BIN, if set,
 ## always wins; the PATH probe asks for an Application so our own shcl() function
@@ -68,21 +95,22 @@ function _shcl_exe([string]$base) {
 $script:_SHCL_BIN = $null
 function _shcl_resolve {
 	if ($env:SHCL_BIN) {
-		if (Test-Path -LiteralPath $env:SHCL_BIN -PathType Leaf) { $script:_SHCL_BIN = $env:SHCL_BIN; return $true }
-		_shcl_err "shcl.ps1: SHCL_BIN is set but not found: $($env:SHCL_BIN)"
+		$pinned = _shcl_exe $env:SHCL_BIN         ## same .exe fallback the others get
+		if ($pinned) { $script:_SHCL_BIN = $pinned; return $true }
+		_shcl_err "shcl.ps1: SHCL_BIN is set but not executable: $($env:SHCL_BIN)"
 		return $false
 	}
-	if ($script:_SHCL_BIN -and (Test-Path -LiteralPath $script:_SHCL_BIN -PathType Leaf)) { return $true }
+	if ($script:_SHCL_BIN -and (_shcl_executable $script:_SHCL_BIN)) { return $true }
 	$onPath = Get-Command shcl -CommandType Application -ErrorAction SilentlyContinue |
 		Select-Object -First 1 -ExpandProperty Source
 	$candidates = @(
-		(_shcl_exe (Join-Path $PSScriptRoot 'shcl')),
+		(_shcl_exe (Join-Path $script:_SHCL_ROOT 'shcl')),
 		$onPath,
-		(_shcl_exe (Join-Path $PSScriptRoot '../rust/target/release/shcl')),
-		(_shcl_exe (Join-Path $PSScriptRoot '../rust/target/debug/shcl'))
+		(_shcl_exe (Join-Path $script:_SHCL_ROOT '../rust/target/release/shcl')),
+		(_shcl_exe (Join-Path $script:_SHCL_ROOT '../rust/target/debug/shcl'))
 	)
 	foreach ($candidate in $candidates) {
-		if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+		if ($candidate -and (_shcl_executable $candidate)) {
 			$script:_SHCL_BIN = $candidate
 			return $true
 		}
@@ -122,5 +150,5 @@ function shcl_instances { shcl instances @args }
 ## InvocationName is '.' only when dot-sourced.
 if ($MyInvocation.InvocationName -ne '.') {
 	shcl @args
-	exit $LASTEXITCODE
+	exit ($LASTEXITCODE ?? 1)      ## null only if nothing ran; treat as usage/IO
 }

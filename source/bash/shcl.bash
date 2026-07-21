@@ -50,8 +50,16 @@
 declare -i _shcl_sourced=0
 [[ "${BASH_SOURCE[0]}" == "${0}" ]] || _shcl_sourced=1
 
-## Where this file lives, resolved once (used to find a co-located binary).
-_SHCL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+## Where this file really lives, resolved once. Follow symlinks by hand (bare
+## readlink is POSIX; -f is GNU-only) so a linked-in copy still finds its sibling
+## binary and the repo build tree.
+_shcl_self="${BASH_SOURCE[0]}"
+while [[ -h "${_shcl_self}" ]]; do
+	_shcl_link="$(readlink -- "${_shcl_self}")"
+	[[ "${_shcl_link}" == /* ]] && _shcl_self="${_shcl_link}" || _shcl_self="$(dirname -- "${_shcl_self}")/${_shcl_link}"
+done
+_SHCL_DIR="$(cd -- "$(dirname -- "${_shcl_self}")" && pwd)"
+unset _shcl_self _shcl_link
 
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 # Core
