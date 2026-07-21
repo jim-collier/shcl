@@ -51,4 +51,8 @@ Cases `014`-`016` pin the **Writer**. `014` builds a document from an empty base
 
 Case `013` pins comment preservation through `fmt`: a whole-line comment re-emits above the node bound by the next line (merged instances concatenate theirs), a trailing comment stays on its line (a second one from a merged instance moves above), comments among `*` elements ride the field line, a comment between a bare header and its fence attaches to that field, `#` inside a raw block stays content, and comments after the last binding line re-emit at the end. The older cases' expected files carry their inputs' comments too.
 
+Case `017` pins merge-key injectivity: a single element holding a literal NUL (`x: "a<NUL>b"`) stays distinct from the two-element array `x: a, b` (`count = 2`), where a bare-NUL-joined key would merge them and drop the second. The input carries an actual NUL byte, so the cross-binding differential skips it (bash cannot hold a NUL) and the four native runners do the pinning.
+
+Case `018` pins `field[disc]: value`: a value after a last-segment selector is an `error` (the instance is created from the discriminator, the value dropped), so the document loads at `standard` but fails at `strict`, and `city` ends up with the two discriminator instances.
+
 Not yet modeled: the raw-block info-string accessor, and diagnostic expectations (count, severity, the mandatory repeated-leaf hint). Needs a `diags.tsv` or similar once the reference parser defines the diagnostic shape.

@@ -186,16 +186,21 @@ impl Value {
 		match self {
 			Value::Empty => "e".to_string(),
 			Value::Cell(els) => {
+				// Length-prefix each element so the joined key is injective: a bare
+				// NUL separator lets `[a, b]` collide with the single element
+				// "a\0b" (NUL is legal in a quoted string), silently merging them.
 				let mut k = String::from("c:");
 				for e in els {
-					k.push('\u{0}');
+					k.push_str(&e.text.len().to_string());
+					k.push(':');
 					k.push_str(&e.text);
 				}
 				k
 			}
 			// Info-string is part of identity (a `sql` and a `python` block are
-			// different values even with equal bodies); fence style is not.
-			Value::Raw { content, info, .. } => format!("r:{}\u{0}{}", info, content),
+			// different values even with equal bodies); fence style is not. Info is
+			// length-prefixed for the same injectivity reason as cell elements.
+			Value::Raw { content, info, .. } => format!("r:{}:{}{}", info.len(), info, content),
 		}
 	}
 	/// Human/display form; also what selectors match against (case-sensitive).

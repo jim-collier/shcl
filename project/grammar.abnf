@@ -28,6 +28,11 @@ comment         = "#" *non-newline           ; to end of line; only outside quot
 
 field-line      = indent path *wsp ":" *wsp [ value ] *wsp [ comment ]
                 / indent path *wsp ":" *wsp fence-open   ; raw block, same-line spelling
+                ; Semantic (not expressible in ABNF): a selector on the LAST path
+                ; segment already supplies that instance's value, so a trailing
+                ; value (field[disc]: value) is grammar-legal but not a valid
+                ; binding - the instance is created from the discriminator and the
+                ; value is reported (Error) and dropped. See spec.md "Selectors".
 
 indent          = *( SP / HTAB )              ; one kind per subtree (see spec)
 

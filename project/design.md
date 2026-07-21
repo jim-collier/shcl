@@ -268,6 +268,7 @@ Technical detail behind the backlog's "Code Review 20260716" items. Item numbers
 
 - **Item 23 - `field[sel]: value`** (`source/rust/src/lib.rs:624`)
 	- Grammar allows it, spec never defines it, implementation drops the value with an Error diagnostic - so strict loads fail on a grammar-legal line. Align the three: forbid in grammar, or spec the drop-with-Error as the defined meaning. Corpus case with a strict-level load row.
+	- Resolved by spec'ing the drop-with-Error as the defined meaning (the code already did it, and a selector can legitimately appear on a non-last segment, so tightening the grammar would over-restrict). A selector on the last path segment already supplies the instance's value; a trailing value is an `error` and dropped, failing Strict. spec.md "Selectors" gained the rule, grammar.abnf a semantic note by `field-line`, and corpus case 018-selector-value pins standard-ok / strict-fail plus the discriminator instance.
 
 - **Item 24 - argv encoding** (`source/rust/src/main.rs`)
 	- `std::env::args()` panics (with panic=abort: exit 134) on non-UTF-8 argv; Go/Python/C exit 3. Fix the reference: `args_os` + a graceful "invalid argument encoding" error, exit 1 - and mirror the check in C, or document non-UTF-8 argv as out of contract.
@@ -279,6 +280,7 @@ Technical detail behind the backlog's "Code Review 20260716" items. Item numbers
 
 - **Item 30 - merge-key injectivity** (`source/rust/src/lib.rs:172`)
 	- Cell elements join with bare NUL, so `[a, b]` collides with the single element `"a<NUL>b"` (NUL is grammar-legal in quoted strings); the later value silently merges away. Fix: length-prefix each element in the key (or include element count). Reference first, then ports, plus a NUL corpus case.
+	- Resolved: each cell element is length-prefixed (`c:<len>:<text>...`) and the raw key length-prefixes the info-string (`r:<len>:<info><content>`), making both injective. The length metric is per-binding-native (bytes in Rust/Go/C, code points in Python) - merge decisions only depend on injectivity, which holds in each, so cross-binding behavior is identical. Corpus case 017-nul-merge-key pins `count = 2`; the crosscheck skips NUL-bearing inputs (bash cannot hold a NUL byte), so the four native conformance runners are what pin the cross-binding agreement.
 
 - **Item 31 - bare-name charset and hex i64 min** (`spec.md:85`, `grammar.abnf:52`, `source/rust/src/lib.rs:225,1245`)
 	- Spec prose: quotes only needed for reserved chars (and shows a non-ASCII field name); grammar/parser: bare names are ALPHA/DIGIT/-/_ only, so the prose's own example is dropped as a malformed line. Pick one truth and align prose, grammar, `is_bare_name_char`, and the emit quoting predicate.

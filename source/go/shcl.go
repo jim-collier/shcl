@@ -236,17 +236,22 @@ func (v *value) key() string {
 	case vEmpty:
 		return "e"
 	case vCell:
+		// Length-prefix each element so the joined key is injective: a bare NUL
+		// separator lets `[a, b]` collide with the single element "a\0b" (NUL is
+		// legal in a quoted string), silently merging them.
 		var b strings.Builder
 		b.WriteString("c:")
 		for _, e := range v.els {
-			b.WriteByte(0)
+			b.WriteString(strconv.Itoa(len(e.text)))
+			b.WriteByte(':')
 			b.WriteString(e.text)
 		}
 		return b.String()
 	}
 	// Info-string is part of identity (a `sql` and a `python` block are
-	// different values even with equal bodies); fence style is not.
-	return "r:" + v.raw.info + "\x00" + v.raw.content
+	// different values even with equal bodies); fence style is not. Info is
+	// length-prefixed for the same injectivity reason as cell elements.
+	return "r:" + strconv.Itoa(len(v.raw.info)) + ":" + v.raw.info + v.raw.content
 }
 
 // display is the human form; also what selectors match against (case-sensitive).

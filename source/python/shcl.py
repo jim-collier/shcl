@@ -163,14 +163,19 @@ class _Value:
 		if self.kind == "empty":
 			return "e"
 		if self.kind == "cell":
+			# Length-prefix each element so the joined key is injective: a bare NUL
+			# separator lets `[a, b]` collide with the single element "a\0b" (NUL is
+			# legal in a quoted string), silently merging them.
 			parts = ["c:"]
 			for e in self.els:
-				parts.append("\x00")
+				parts.append(str(len(e.text)))
+				parts.append(":")
 				parts.append(e.text)
 			return "".join(parts)
 		# Info-string is part of identity (a `sql` and a `python` block are
-		# different values even with equal bodies); fence style is not.
-		return "r:" + self.info + "\x00" + self.content
+		# different values even with equal bodies); fence style is not. Info is
+		# length-prefixed for the same injectivity reason as cell elements.
+		return "r:" + str(len(self.info)) + ":" + self.info + self.content
 
 	def display(self):
 		"""Human/display form; also what selectors match against (case-sensitive)."""
