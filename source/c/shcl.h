@@ -540,13 +540,13 @@ static int is_fence_close(S line, unsigned char ch, size_t min_len) {
 // --- path scanner ------------------------------------------------------------
 
 typedef enum { SEL_NONE, SEL_VALUE, SEL_INDEX, SEL_WILDCARD } seltag;
-typedef struct { seltag tag; S value; size_t index; } Selector;
+typedef struct { seltag tag; S value; uint64_t index; } Selector; // u64: width must not vary with target pointer size
 typedef struct { S name; Selector sel; } Segment;
 DEFINE_VEC(VecSeg, Segment)
 typedef struct { int ok; VecSeg segs; int has_value; S value_text; S err; } PathScan;
 
 // usize parse: optional single leading '+', >=1 digit, no overflow.
-static int parse_usize(S s, size_t *out) {
+static int parse_u64(S s, uint64_t *out) {
 	size_t i = 0;
 	if (i < s.n && s.p[i] == '+') i++;
 	if (i >= s.n) return 0;
@@ -557,7 +557,7 @@ static int parse_usize(S s, size_t *out) {
 		if (v > (UINT64_MAX - (c - '0')) / 10) return 0;
 		v = v * 10 + (c - '0');
 	}
-	*out = (size_t)v; return 1;
+	*out = v; return 1;
 }
 
 static void skip_ws_cp(CPs c, size_t *pos) {
@@ -614,12 +614,12 @@ static PathScan scan_path(Arena *a, S input) {
 				size_t start = pos;
 				while (pos < c.n && c.cp[pos] != ']') pos++;
 				S body = s_trim(cps_slice(input, c, start, pos));
-				size_t idx;
+				uint64_t idx;
 				if (body.n == 1 && body.p[0] == '*') {
 					sel.tag = SEL_WILDCARD;
-				} else if (body.n >= 1 && body.p[0] == '#' && parse_usize(s_slice(body, 1, body.n), &idx)) {
+				} else if (body.n >= 1 && body.p[0] == '#' && parse_u64(s_slice(body, 1, body.n), &idx)) {
 					sel.tag = SEL_INDEX; sel.index = idx;
-				} else if (parse_usize(body, &idx)) {
+				} else if (parse_u64(body, &idx)) {
 					sel.tag = SEL_INDEX; sel.index = idx;
 				} else if (body.n == 0) {
 					ps.err = s_lit("empty selector"); return ps;
@@ -694,7 +694,9 @@ static int parse_i64_s(S t, int64_t *out) {
 	return 1;
 }
 // magnitude hex in [0, INT64_MAX]; overflow -> fail.
-static int parse_hex_i64(S h, int64_t *out) {
+// The magnitude, as u64 (guarded against u64 overflow). The sign range-check is
+// the caller's, so the negative i64_min magnitude (0x8000000000000000) reads.
+static int parse_hex_u64(S h, uint64_t *out) {
 	uint64_t v = 0;
 	for (size_t i = 0; i < h.n; i++) {
 		unsigned char c = (unsigned char)h.p[i]; int d;
@@ -702,10 +704,10 @@ static int parse_hex_i64(S h, int64_t *out) {
 		else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
 		else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
 		else return 0;
-		if (v > ((uint64_t)INT64_MAX - d) / 16) return 0;
-		v = v * 16 + d;
+		if (v > (UINT64_MAX - (uint64_t)d) / 16) return 0;
+		v = v * 16 + (uint64_t)d;
 	}
-	*out = (int64_t)v; return 1;
+	*out = v; return 1;
 }
 static void split_byte(Arena *a, S s, char sep, VecS *out) {
 	size_t start = 0;
@@ -770,7 +772,18 @@ static int parse_int_text(Arena *a, const Element *e, shcl_strictness level, int
 	else if (t.n > 0 && t.p[0] == '+') { hex = s_slice(t, 1, t.n); }
 	if (s_starts(hex, "0x") || s_starts(hex, "0X")) {
 		S h = s_slice(hex, 2, hex.n);
-		if (all_ahex(h)) { int64_t v; if (!parse_hex_i64(h, &v)) return 0; *out = neg ? -v : v; return 1; }
+		if (all_ahex(h)) {
+			uint64_t m; if (!parse_hex_u64(h, &m)) return 0;
+			if (neg) {
+				if (m == (uint64_t)INT64_MAX + 1) *out = INT64_MIN;
+				else if (m <= (uint64_t)INT64_MAX) *out = -(int64_t)m;
+				else return 0;
+			} else {
+				if (m <= (uint64_t)INT64_MAX) *out = (int64_t)m;
+				else return 0;
+			}
+			return 1;
+		}
 	}
 	if (e->quoted && s_contains_char(t, ',')) {
 		S sign_body = t;

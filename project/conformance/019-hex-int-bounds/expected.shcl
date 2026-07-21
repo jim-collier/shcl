@@ -1,0 +1,6 @@
+# i64 bounds via hex vs decimal. Stored as text; the int read range-checks the
+# magnitude against the sign, so the negative i64-min magnitude reads either way.
+neg-min-hex: -0x8000000000000000
+neg-min-dec: -9223372036854775808
+max-hex: 0x7fffffffffffffff
+over-pos-hex: 0x8000000000000000

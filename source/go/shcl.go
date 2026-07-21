@@ -1890,14 +1890,26 @@ func parseIntText(e *element, level Strictness) (int64, bool) {
 	if strings.HasPrefix(hex, "0x") || strings.HasPrefix(hex, "0X") {
 		h := hex[2:]
 		if h != "" && allHexDigits(h) {
-			v, err := strconv.ParseInt(h, 16, 64)
+			// Parse the magnitude as u64, then range-check against the sign, so the
+			// negative math.MinInt64 magnitude (0x8000000000000000) reads like its
+			// decimal spelling instead of overflowing a signed parse.
+			m, err := strconv.ParseUint(h, 16, 64)
 			if err != nil {
 				return 0, false
 			}
 			if neg {
-				v = -v
+				if m == uint64(math.MaxInt64)+1 {
+					return math.MinInt64, true
+				}
+				if m <= uint64(math.MaxInt64) {
+					return -int64(m), true
+				}
+				return 0, false
 			}
-			return v, true
+			if m <= uint64(math.MaxInt64) {
+				return int64(m), true
+			}
+			return 0, false
 		}
 	}
 	// Thousands separators, only inside quotes (bare commas are reserved).

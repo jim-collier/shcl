@@ -240,12 +240,14 @@ In each section, items are listed approximately from newest to oldest.
 - 🔘 Code Review 20260716 item 28: dogfood install is a non-atomic in-place `cp`.
 	- A launch during the copy sees a torn binary, and the synced dest dir can propagate it. Copy to a temp name, then `mv` over.
 
-- 🔘 Code Review 20260716 item 29: selector index parses as `usize` in the reference but `u64` in Go.
+- ✅ Code Review 20260716 item 29: selector index parses as `usize` in the reference but `u64` in Go.
 	- Latent divergence on any future 32-bit build. Pin the reference to `u64`.
+	- Done: reference `Selector::ByIndex` is now `u64` (cast to `usize` only at the Vec index sites); C's `Selector.index` likewise moved from `size_t` to `uint64_t` (`parse_usize` -> `parse_u64`), closing the same latent 32-bit truncation. Go was already `u64`, Python is unbounded. No 64-bit behavior change.
 
-- 🔘 Code Review 20260716 item 31: spec prose contradicts grammar and code on bare non-ASCII field names.
+- ✅ Code Review 20260716 item 31: spec prose contradicts grammar and code on bare non-ASCII field names.
 	- Prose says only reserved chars need quotes (and uses `Strasse` with a sharp s as an example); grammar and parser reject them.
 	- Also: hex `-0x8000000000000000` (i64 min) reads BadType while the decimal spelling works. Detail: `design.md` - Code Review 20260716, item 31.
+	- Done: aligned prose to the code (grammar, `is_bare_name_char`, and the emit predicate already agreed) - a bare field name is ASCII letters/digits/`-`/`_` only; anything else, including non-ASCII, must be quoted, and the `Straße` examples are now shown quoted. Hex fixed in all four parsers: parse the magnitude as u64, then range-check against the sign, so `-0x8000000000000000` reads i64-min like its decimal spelling and `+0x8000000000000000` stays BadType. Corpus case 019-hex-int-bounds pins it (crosscheck now 585).
 
 - 🔘 Code Review 20260716 item 35: value-taking options reject the space-separated form with a misleading error.
 	- `--default 99` reports "unknown option: --default". Accept the space form or explain the `=` requirement.

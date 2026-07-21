@@ -1666,10 +1666,12 @@ def _parse_int_text(e, level):
 	if hexs[:2] in ("0x", "0X"):
 		h = hexs[2:]
 		if h and all(c in "0123456789abcdefABCDEF" for c in h):
-			val = int(h, 16)
-			if val > _I64_MAX:
+			# Range-check the magnitude against the sign, so the negative i64-min
+			# magnitude (0x8000000000000000) reads like its decimal spelling.
+			mag = int(h, 16)
+			if mag > (_I64_MAX + 1 if neg else _I64_MAX):
 				return None
-			return -val if neg else val
+			return -mag if neg else mag
 	# Thousands separators, only inside quotes (bare commas are reserved).
 	if e.quoted and "," in t:
 		sign_body = t[1:] if t[:1] in ("+", "-") else t
