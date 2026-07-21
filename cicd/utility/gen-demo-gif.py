@@ -154,6 +154,7 @@ def fLoadScenario(path):
 	##	  note = "shown as a typed # comment first"     (optional)
 	##	  show = "{prog} 255 16"        the command line as typed
 	##	  run  = "echo hi | {bin} ..."  what actually executes (default: show)
+	##	  expect_exit = 0               step's expected exit; a mismatch aborts the render
 	##	  pause = 2.6                   read time after the output, seconds
 	##	  overflow = "truncate"         or "wrap" for real feature output
 	##	  scrollrate = 260              px/s smooth scroll during this step's output
@@ -178,6 +179,12 @@ def fRunStep(step, prog, binpath):
 		                     timeout=30, errors="replace")
 	except subprocess.TimeoutExpired:
 		fSkip(f"command timed out: {cmd}")
+	##	A step that exits off-script (e.g. a renamed flag) prints an error the demo
+	##	would otherwise render and publish as if it were real output. Refuse the
+	##	render instead; expect_exit lets a step opt into a deliberate nonzero.
+	expect = step.get("expect_exit", 0)
+	if res.returncode != expect:
+		fSkip(f"step exited {res.returncode}, expected {expect}: {cmd}")
 	out = ANSI_RE.sub("", res.stdout + res.stderr)
 	return [ln.expandtabs(8).rstrip() for ln in out.rstrip("\n").split("\n")]
 

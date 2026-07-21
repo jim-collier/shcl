@@ -148,16 +148,19 @@ In each section, items are listed approximately from newest to oldest.
 	- Fixed: every ps1 resolution site now goes through `_shcl_executable` (Unix requires an execute bit, Windows keeps a bare leaf); the run-path passthrough is `exit ($LASTEXITCODE ?? 1)`.
 	- Detail: `design.md` - Code Review 20260716, item 14.
 
-- 🔘 Code Review 20260716 item 15: crosscheck cannot see trailing-newline differences.
+- ✅ Code Review 20260716 item 15: crosscheck cannot see trailing-newline differences.
 	- Command substitution strips them before compare, so a binding that drops or doubles the final newline ships green.
+	- Fixed: capture helpers append a trailing sentinel so `$()` has nothing to strip; a dropped or doubled final newline is now a divergence.
 	- Detail: `design.md` - Code Review 20260716, item 15.
 
-- 🔘 Code Review 20260716 item 16: crosscheck passes with zero comparisons.
+- ✅ Code Review 20260716 item 16: crosscheck passes with zero comparisons.
 	- An empty fuzz dump or a corpus layout change silently drops most of the 1764 comparisons and the gate still passes.
+	- Fixed: exits 2 when no comparison ran, when `--extra` matches no `*.shcl`, or below an optional `--min N` floor.
 	- Detail: `design.md` - Code Review 20260716, item 16.
 
-- 🔘 Code Review 20260716 item 17: demo gif generator ignores step exit codes.
+- ✅ Code Review 20260716 item 17: demo gif generator ignores step exit codes.
 	- A renamed flag renders the error text into the gif and the pipeline publishes it onto the committed asset.
+	- Fixed: a step whose exit differs from `expect_exit` (default 0) aborts the render, so cicd skips the publish `cp`.
 	- Detail: `design.md` - Code Review 20260716, item 17.
 
 - 🔘 Code Review 20260716 item 21: `fmt --write -` silently drops `--write` and exits 0.
@@ -178,8 +181,9 @@ In each section, items are listed approximately from newest to oldest.
 - 🔘 Code Review 20260716 item 26: C CLI has unchecked `realloc` on input/output paths.
 	- OOM segfaults instead of taking the clean exit-70 path the arena already has.
 
-- 🔘 Code Review 20260716 item 27: crosscheck skips the last `reads.tsv` row if the file lacks a trailing newline.
+- ✅ Code Review 20260716 item 27: crosscheck skips the last `reads.tsv` row if the file lacks a trailing newline.
 	- One-line `|| [[ -n "$query" ]]` guard fixes it.
+	- Fixed with exactly that guard on the read loop.
 
 - 🔘 Code Review 20260716 item 30: NUL-joined merge key conflates distinct values.
 	- `x: a, b` and `x: "a<NUL>b"` merge to one instance; the second value is silently lost. Make the key injective.
