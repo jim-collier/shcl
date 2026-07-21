@@ -7,6 +7,7 @@
 # byte for byte, so any drift here fails the pipeline.
 
 import os
+import signal
 import sys
 
 # The single-file library sits two directories up (lib in source/python/, CLI in
@@ -235,6 +236,9 @@ def do_fmt(o):
 		sys.stderr.write("fmt needs FILE (see --help)\n")
 		return 1
 	file = o.args[0]
+	if o.write and file == "-":
+		sys.stderr.write("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
+		return 1
 	try:
 		text = read_input(file)
 	except (OSError, ValueError) as e:
@@ -244,7 +248,7 @@ def do_fmt(o):
 	if doc is None:
 		return code
 	canonical = doc.to_canonical()
-	if o.write and file != "-":
+	if o.write:
 		try:
 			with open(file, "w", encoding="utf-8", newline="") as f:
 				f.write(canonical)
@@ -425,6 +429,14 @@ def do_enum(o, want_count):
 
 
 def run(argv):
+	# Undecodable argv bytes arrive as surrogate-escaped chars; reject like the
+	# reference (exit 1) instead of feeding a garbled path or query downstream.
+	for a in argv:
+		try:
+			a.encode("utf-8")
+		except UnicodeEncodeError:
+			sys.stderr.write("invalid argument encoding (expected UTF-8)\n")
+			return 1
 	wants_help = any(a in ("-h", "--help") for a in argv)
 	wants_version = any(a in ("-V", "--version") for a in argv)
 	if not argv or wants_help:
@@ -456,10 +468,13 @@ def run(argv):
 
 
 def main():
-	try:
-		return run(sys.argv[1:])
-	except BrokenPipeError:
-		return 0
+	# Restore the default SIGPIPE disposition: Python installs SIG_IGN, which turns
+	# a closed stdout into a BrokenPipeError instead of the conventional signal
+	# death (exit 141). With SIG_DFL a broken pipe kills us like head/cat, matching
+	# the other bindings; no BrokenPipeError to catch.
+	if hasattr(signal, "SIGPIPE"):
+		signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+	return run(sys.argv[1:])
 
 
 if __name__ == "__main__":

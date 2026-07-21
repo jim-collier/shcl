@@ -89,10 +89,11 @@ static int utf8_valid(const char *p, size_t n) {
 	return 1;
 }
 
-// realloc that never returns NULL: on OOM, free the old block and exit 1.
+// realloc that never returns NULL: on OOM, free the old block and take the same
+// exit-70 path the library arena uses (was a silent segfault on unchecked realloc).
 static void *xrealloc(void *p, size_t n) {
 	void *q = realloc(p, n);
-	if (!q) { free(p); fprintf(stderr, "out of memory\n"); exit(1); }
+	if (!q) { free(p); fprintf(stderr, "shcl: out of memory\n"); exit(70); }
 	return q;
 }
 
@@ -201,6 +202,10 @@ static int do_get(Opts *o) {
 static int do_fmt(Opts *o) {
 	if (o->nargs != 1) { fprintf(stderr, "fmt needs FILE (see --help)\n"); return 1; }
 	const char *file = o->args[0];
+	if (o->write && strcmp(file, "-") == 0) {
+		fprintf(stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
+		return 1;
+	}
 	size_t len; char *text = read_input(file, &len);
 	if (!text) return 1;
 	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
@@ -208,7 +213,7 @@ static int do_fmt(Opts *o) {
 	if (gate) { shcl_free(d); free(text); return gate; }
 	shcl_str c = shcl_to_canonical(d);
 	int rc = 0;
-	if (o->write && strcmp(file, "-") != 0) {
+	if (o->write) {
 		FILE *f = fopen(file, "wb");
 		if (!f) { fprintf(stderr, "%s: %s\n", file, strerror(errno)); rc = 1; }
 		else { fwrite(c.p, 1, c.n, f); fclose(f); }
@@ -380,6 +385,14 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 
 int main(int argc, char **argv) {
 	setlocale(LC_ALL, "C"); // strtod/printf must use '.' regardless of environment
+	// Reject non-UTF-8 argv up front (exit 1), matching the reference; the parser
+	// assumes valid UTF-8, and a garbled arg is a usage error, not a real miss.
+	for (int i = 1; i < argc; i++) {
+		if (!utf8_valid(argv[i], strlen(argv[i]))) {
+			fprintf(stderr, "invalid argument encoding (expected UTF-8)\n");
+			return 1;
+		}
+	}
 	int has_help = 0, has_version = 0;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) has_help = 1;
