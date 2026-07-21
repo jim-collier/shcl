@@ -949,6 +949,8 @@ class _Parser:
 # Document: load, diagnostics, formatter
 # ---------------------------------------------------------------------------
 
+_NO_DEFAULT = object()  # get_* sentinel: no call-site default -> must-exist (raises)
+
 
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
@@ -1500,43 +1502,52 @@ class Document:
 	def read_string_array(self, path):
 		return self._read_array(path, lambda e: _apply_escapes(e.text), "")
 
-	# Full tier, Result form: value on Good; the sentinel Status raised otherwise.
+	# Convenience/get tier: value on Good, else the call-site default. Pass a
+	# `default` to make the read forgiving (Default mode - the call a beginner
+	# writes 90% of the time; a missing/empty/bad/ambiguous read can't sneak in
+	# as a real zero). With no default it must-exist, raising the Status. Array
+	# forms fall back to the whole default list; per-slot substitution is the
+	# read_*_array tier or the CLI --default.
 
-	def get_int(self, path):
-		r = self.read_int(path)
+	def _get(self, r, default):
 		if r.status == Status.Good:
 			return r.value
-		raise _StatusError(r.status)
+		if default is _NO_DEFAULT:
+			raise _StatusError(r.status)
+		return default
 
-	def get_float(self, path):
-		r = self.read_float(path)
-		if r.status == Status.Good:
-			return r.value
-		raise _StatusError(r.status)
+	def get_int(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_int(path), default)
 
-	def get_bool(self, path):
-		r = self.read_bool(path)
-		if r.status == Status.Good:
-			return r.value
-		raise _StatusError(r.status)
+	def get_float(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_float(path), default)
 
-	def get_string(self, path):
-		r = self.read_string(path)
-		if r.status == Status.Good:
-			return r.value
-		raise _StatusError(r.status)
+	def get_bool(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_bool(path), default)
 
-	def get_raw(self, path):
-		r = self.read_raw(path)
-		if r.status == Status.Good:
-			return r.value
-		raise _StatusError(r.status)
+	def get_string(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_string(path), default)
 
-	def get_datetime(self, path):
-		r = self.read_datetime(path)
-		if r.status == Status.Good:
-			return r.value
-		raise _StatusError(r.status)
+	def get_raw(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_raw(path), default)
+
+	def get_datetime(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_datetime(path), default)
+
+	def get_int_array(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_int_array(path), default)
+
+	def get_float_array(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_float_array(path), default)
+
+	def get_bool_array(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_bool_array(path), default)
+
+	def get_string_array(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_string_array(path), default)
+
+	def get_datetime_array(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_datetime_array(path), default)
 
 
 class _StatusError(Exception):

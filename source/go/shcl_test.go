@@ -280,6 +280,26 @@ func TestWriteOpsMatchExpected(t *testing.T) {
 	}
 }
 
+func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {
+	// Mirror of the reference: the *Or value survives only on Good; Empty,
+	// BadType, and NotFound all yield the call-site fallback.
+	d := Parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\n")
+	if got := d.GetIntOr("a", 9); got != 42 {
+		t.Fatalf("GetIntOr Good = %d, want 42", got)
+	}
+	for _, p := range []string{"b", "e", "missing"} {
+		if got := d.GetIntOr(p, 9); got != 9 {
+			t.Fatalf("GetIntOr(%q) = %d, want fallback 9", p, got)
+		}
+	}
+	if got := d.GetIntArrayOr("arr", []int64{7}); len(got) != 3 || got[0] != 1 || got[2] != 3 {
+		t.Fatalf("GetIntArrayOr Good = %v, want [1 2 3]", got)
+	}
+	if got := d.GetIntArrayOr("missing", []int64{7}); len(got) != 1 || got[0] != 7 {
+		t.Fatalf("GetIntArrayOr missing = %v, want fallback [7]", got)
+	}
+}
+
 func TestReadsMatchExpected(t *testing.T) {
 	for _, c := range loadCases(t) {
 		for n, line := range strings.Split(c.reads, "\n") {

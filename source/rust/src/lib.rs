@@ -2359,4 +2359,53 @@ impl Document {
 			Err(r.status)
 		}
 	}
+
+	// Array get-tier: Ok only when the whole read is Good, so `.unwrap_or(def)`
+	// gives the convenience "the array, or this fallback array" - the array
+	// analogue of the scalar get_*. Per-slot substitution is the full read_*
+	// tier (its `slots`) or the CLI's --default, not this.
+	pub fn get_int_array(&self, path: &str) -> Result<Vec<i64>, Status> {
+		let r = self.read_int_array(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
+
+	pub fn get_float_array(&self, path: &str) -> Result<Vec<f64>, Status> {
+		let r = self.read_float_array(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
+
+	pub fn get_bool_array(&self, path: &str) -> Result<Vec<bool>, Status> {
+		let r = self.read_bool_array(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
+
+	pub fn get_string_array(&self, path: &str) -> Result<Vec<String>, Status> {
+		let r = self.read_string_array(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
+
+	pub fn get_datetime_array(&self, path: &str) -> Result<Vec<ShclDateTime>, Status> {
+		let r = self.read_datetime_array(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
 }

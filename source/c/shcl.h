@@ -98,6 +98,13 @@ shcl_read_bool_arr shcl_read_bool_array(shcl_doc *d, const char *path, size_t pl
 shcl_read_dt_arr   shcl_read_datetime_array(shcl_doc *d, const char *path, size_t plen);
 shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t plen);
 
+// Convenience tier: the value, or the call-site fallback unless the read is Good
+// - so a missing/empty/bad/ambiguous read cannot masquerade as a real zero. The
+// string/datetime/raw and array reads keep the shcl_read_* status tier above.
+int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def);
+double  shcl_get_float(shcl_doc *d, const char *path, size_t plen, double def);
+int     shcl_get_bool(shcl_doc *d, const char *path, size_t plen, int def);
+
 // --- Writer: typed emit, defaults, comments, structural edits ---------------
 // The reverse of the reads. Each setter builds the canonical stored text for a
 // typed value and places it at a path (creating intermediate nodes). New values
@@ -1711,6 +1718,16 @@ void shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, co
 void shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_bool_array(d, path, plen, v, n); }
 void shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_string_array(d, path, plen, v, lens, n); }
 void shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_datetime_array(d, path, plen, v, n); }
+
+int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def) {
+	shcl_read_i64 r = shcl_read_int(d, path, plen); return r.status == SHCL_GOOD ? r.value : def;
+}
+double shcl_get_float(shcl_doc *d, const char *path, size_t plen, double def) {
+	shcl_read_f64 r = shcl_read_float(d, path, plen); return r.status == SHCL_GOOD ? r.value : def;
+}
+int shcl_get_bool(shcl_doc *d, const char *path, size_t plen, int def) {
+	shcl_read_bool r = shcl_read_bool_(d, path, plen); return r.status == SHCL_GOOD ? r.value : def;
+}
 
 shcl_read_i64 shcl_read_int(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_i64 R; S p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);
