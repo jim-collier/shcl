@@ -369,19 +369,28 @@ struct shcl_doc {
 static Value v_empty(void) { Value v; memset(&v, 0, sizeof v); v.kind = V_EMPTY; return v; }
 static int v_is_empty(const Value *v) { return v->kind == V_EMPTY; }
 
-// Merge key: nodes with equal (name, key) collapse into one. Built exactly like
-// the reference (NUL-separated cell texts) so any pathological collision matches.
+// Merge key: nodes with equal (name, key) collapse into one. Each cell element
+// (and the raw info-string) is length-prefixed so the joined key is injective: a
+// bare NUL separator lets `[a, b]` collide with the single element "a\0b" (NUL is
+// legal in a quoted string), silently merging them.
 static S value_key(Arena *a, const Value *v) {
 	SB s = {0};
+	char nb[24];
 	if (v->kind == V_EMPTY) { sb_putc(a, &s, 'e'); return sb_S(&s); }
 	if (v->kind == V_CELL) {
 		sb_puts(a, &s, "c:");
-		for (size_t i = 0; i < v->nels; i++) { sb_putc(a, &s, '\0'); sb_putS(a, &s, v->els[i].text); }
+		for (size_t i = 0; i < v->nels; i++) {
+			snprintf(nb, sizeof nb, "%zu:", v->els[i].text.n);
+			sb_puts(a, &s, nb);
+			sb_putS(a, &s, v->els[i].text);
+		}
 		return sb_S(&s);
 	}
 	/* Info-string is part of identity (a `sql` and a `python` block are
 	   different values even with equal bodies); fence style is not. */
-	sb_puts(a, &s, "r:"); sb_putS(a, &s, v->info); sb_putc(a, &s, '\0'); sb_putS(a, &s, v->content); return sb_S(&s);
+	snprintf(nb, sizeof nb, "%zu:", v->info.n);
+	sb_puts(a, &s, "r:"); sb_puts(a, &s, nb); sb_putS(a, &s, v->info); sb_putS(a, &s, v->content);
+	return sb_S(&s);
 }
 static S value_display(Arena *a, const Value *v) {
 	if (v->kind == V_EMPTY) return s_empty();

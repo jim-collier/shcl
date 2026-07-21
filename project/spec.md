@@ -115,6 +115,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 - `a.b.c: v` is exactly `a:` / (indent) `b:` / (indent) `c: v`. The `.` stands in for "newline + one deeper indent".
 
 - `field[disc]` selects (or creates) the instance of `field` whose discriminator value is `disc`, then continues the path under it. `base[Boston].metrics.population: 700` is identical to writing `base: Boston` then nesting `metrics` then `population: 700`. The colon before a selector is optional sugar, so `field[disc]` and `field:[disc]` are the same; the colon-less form is also the Accessor's lookup syntax, so a path reads identically whether authored in a file or passed to `Get`. Matching is against the instance's **display form** (elements joined with `, `) in both places, so a selector also selects an array-valued instance (`base[Boston, MA]` finds `base: Boston, MA`); a new instance is created only when nothing matches.
+	- A selector on the **last** path segment already supplies that instance's value (the discriminator), so a trailing value has nowhere to bind: `field[disc]: value` is grammar-legal but not a valid binding. The instance is still selected/created from the discriminator, and the trailing value is reported as an `error` diagnostic and dropped. Being an `error`, it fails a Strict load like any other. (A value is fine after a selector that is *not* last, e.g. `base[Boston].population: 700`, where it binds the deeper leaf.)
 
 - Inline and block forms may be freely mixed; the parser normalizes both to the same tree.
 

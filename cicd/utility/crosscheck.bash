@@ -129,6 +129,13 @@ fReadRow(){
 for caseDir in "$corpus"/*/; do
 	input="${caseDir}input.shcl"
 	[[ -f "$input" ]] || continue
+	# bash variables cannot hold a NUL, so $() capture would silently drop it and
+	# warn. Such cases (e.g. the merge-key NUL case) are pinned by the native
+	# conformance runners instead; skip them here, out loud.
+	if [[ "$(LC_ALL=C tr -dc '\000' < "$input" | wc -c)" -ne 0 ]]; then
+		echo "crosscheck: skipping $(basename "$caseDir") (NUL in input; native runners pin it)"
+		continue
+	fi
 	fCompare "fmt $(basename "$caseDir")" fmt "$input"
 	# Write dimension: apply the case's ops script and compare canonical output.
 	ops="${caseDir}write.ops"
@@ -147,6 +154,8 @@ if [[ -n "$extra" && -d "$extra" ]]; then
 	for f in "$extra"/*.shcl; do
 		[[ -e "$f" ]] || continue
 		nExtra+=1
+		# Same NUL limitation as the corpus loop; silently skip (a dump can be large).
+		[[ "$(LC_ALL=C tr -dc '\000' < "$f" | wc -c)" -ne 0 ]] && continue
 		fCompare "fmt $(basename "$f")" fmt "$f"
 	done
 	if ((nExtra == 0)); then
@@ -170,4 +179,5 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 ##		- 20260712 JC: Created.
 ##		- 20260721 JC: Preserve trailing newlines in compares; zero-comparison and
 ##		               empty-extra floors; keep the last reads.tsv row when the
-##		               file has no trailing newline.
+##		               file has no trailing newline; skip NUL-bearing inputs (bash
+##		               can't hold a NUL; native runners pin those).

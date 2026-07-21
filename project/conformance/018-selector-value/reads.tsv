@@ -1,0 +1,5 @@
+query	type	expected	status	level
+-	load	ok	-
+-	load	fail	-	strict
+city	count	2	-
+city	instances	Portland|Boston	-

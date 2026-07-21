@@ -167,8 +167,9 @@ In each section, items are listed approximately from newest to oldest.
 	- Should be a usage error pointing at piping stdout instead. Same in all four CLIs.
 	- Fixed: `--write` with stdin is a usage error (exit 1) in all four CLIs; `--write FILE` still rewrites.
 
-- 🔘 Code Review 20260716 item 23: `field[sel]: value` is grammar-legal but has no spec'd meaning.
+- ✅ Code Review 20260716 item 23: `field[sel]: value` is grammar-legal but has no spec'd meaning.
 	- The value is dropped with an Error diagnostic, so strict loads fail on a line the grammar allows. Align spec, grammar, and code.
+	- Fixed by spec'ing the code's existing behavior: a value after a last-segment selector is defined as an `error` (instance kept from the discriminator, value dropped; fails Strict). spec.md Selectors + grammar.abnf note updated; corpus case 018.
 	- Detail: `design.md` - Code Review 20260716, item 23.
 
 - ✅ Code Review 20260716 item 24: invalid-UTF-8 command-line args abort the reference.
@@ -189,8 +190,9 @@ In each section, items are listed approximately from newest to oldest.
 	- One-line `|| [[ -n "$query" ]]` guard fixes it.
 	- Fixed with exactly that guard on the read loop.
 
-- 🔘 Code Review 20260716 item 30: NUL-joined merge key conflates distinct values.
+- ✅ Code Review 20260716 item 30: NUL-joined merge key conflates distinct values.
 	- `x: a, b` and `x: "a<NUL>b"` merge to one instance; the second value is silently lost. Make the key injective.
+	- Fixed in all four parsers: each cell element (and the raw info-string) is length-prefixed, so the key is injective. Corpus case 017 (count = 2) pins it; the crosscheck skips it (bash can't carry a NUL) and the native runners do the pinning.
 	- Detail: `design.md` - Code Review 20260716, item 30.
 
 - ✅ Code Review 20260716 item 32: wrappers invoked via symlink lose the sibling-binary and repo-build fallbacks.
