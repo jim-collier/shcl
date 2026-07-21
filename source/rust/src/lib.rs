@@ -407,7 +407,7 @@ fn is_fence_close(line: &str, ch: u8, min_len: usize) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 enum Selector {
 	ByValue(String),
-	ByIndex(usize),
+	ByIndex(u64), // u64, not usize: index width must not vary with the target's pointer size
 	Wildcard,
 }
 
@@ -507,10 +507,9 @@ fn scan_path(input: &str) -> Result<PathScan, String> {
 					.to_string();
 				selector = Some(if body == "*" {
 					Selector::Wildcard
-				} else if let Some(n) = body.strip_prefix('#').and_then(|d| d.parse::<usize>().ok())
-				{
+				} else if let Some(n) = body.strip_prefix('#').and_then(|d| d.parse::<u64>().ok()) {
 					Selector::ByIndex(n)
-				} else if let Ok(n) = body.parse::<usize>() {
+				} else if let Ok(n) = body.parse::<u64>() {
 					Selector::ByIndex(n)
 				} else if body.is_empty() {
 					return Err("empty selector".into());
@@ -723,7 +722,7 @@ impl Parser {
 						.copied()
 						.filter(|&c| self.arena[c].name == seg.name)
 						.collect();
-					if let Some(&found) = matches.get(*n) {
+					if let Some(&found) = matches.get(*n as usize) {
 						cur = found;
 					} else {
 						self.err(line, format!("no instance {} of '{}'", n, seg.name));
@@ -1315,7 +1314,7 @@ impl Document {
 						.collect();
 				}
 				Some(Selector::ByIndex(k)) => {
-					cur = next.get(*k).map(|&c| vec![c]).unwrap_or_default();
+					cur = next.get(*k as usize).map(|&c| vec![c]).unwrap_or_default();
 				}
 				Some(Selector::Wildcard) => {
 					// Remaining path resolves per-instance; slots stay aligned.
@@ -1507,7 +1506,7 @@ impl Document {
 						.copied()
 						.filter(|&c| self.arena[c].name == seg.name)
 						.collect();
-					*matches.get(*k)?
+					*matches.get(*k as usize)?
 				}
 				Some(Selector::Wildcard) => return None,
 			};
@@ -1720,8 +1719,23 @@ fn parse_int_text(e: &Element, level: Strictness) -> Option<i64> {
 		&& !h.is_empty()
 		&& h.bytes().all(|b| b.is_ascii_hexdigit())
 	{
-		let v = i64::from_str_radix(h, 16).ok()?;
-		return Some(if neg { -v } else { v });
+		// Parse the magnitude as u64, then range-check against the sign, so the
+		// negative i64::MIN magnitude (0x8000000000000000) reads like its decimal
+		// spelling instead of overflowing an i64 parse.
+		let m = u64::from_str_radix(h, 16).ok()?;
+		return if neg {
+			if m == (i64::MAX as u64) + 1 {
+				Some(i64::MIN)
+			} else if m <= i64::MAX as u64 {
+				Some(-(m as i64))
+			} else {
+				None
+			}
+		} else if m <= i64::MAX as u64 {
+			Some(m as i64)
+		} else {
+			None
+		};
 	}
 	// Thousands separators, only inside quotes (bare commas are reserved).
 	if e.quoted && t.contains(',') {

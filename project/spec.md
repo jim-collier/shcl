@@ -84,7 +84,8 @@ The Accessor reads in two modes:
 
 - Whitespace around dots, colons, brackets, commas, and values is insignificant and trimmed. `a . b : "x"` == `a.b:"x"`.
 
-- Quotes are optional. A value or name only *needs* quotes when it contains a **reserved character**: whitespace, `,` `:` `#` `"` `'` `[` `]`. (A `.` is reserved only in *field/path* position, not inside a value: `host: example.com` is fine bare.)
+- Quotes are optional. A **value** only *needs* quotes when it contains a **reserved character**: whitespace, `,` `:` `#` `"` `'` `[` `]`. (A `.` is reserved only in *field/path* position, not inside a value: `host: example.com` is fine bare.)
+- A **field name** is more restricted than a value: bare, it may contain only ASCII letters, digits, `-`, and `_`. A name that contains anything else - a space, a reserved character, or a **non-ASCII** character - must be quoted (`"Straße"`, `"user name"`). A bare name with such a character is a malformed line and is skipped; quote it to keep it.
 
 - Either single or double quotes may wrap a string. Programming-quote rules apply: an unescaped `'` is literal inside `"..."` and vice-versa.
 
@@ -127,7 +128,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 - A **repeated leaf line** (`tags: red` then `tags: blue`, no children) is two *instances* of `tags` - not the array `tags: red, blue`. Instances and arrays are separate mechanisms (see below).
 
-- Field names are case-**insensitive**, folding **ASCII `A-Z`/`a-z` only** (`Metrics` == `metrics`). Non-ASCII characters in names never fold (`Straße` != `STRASSE`, `İ` != `i`) - full Unicode case folding is locale-trapped (Turkish dotless-I) and unportable across bindings, so it is deliberately excluded. Discriminator **values** are case-**sensitive** after trimming and quote-stripping (`base: Chicago` and `base: chicago` are two instances).
+- Field names are case-**insensitive**, folding **ASCII `A-Z`/`a-z` only** (`Metrics` == `metrics`). Non-ASCII characters in names never fold (`"Straße"` != `"STRASSE"`, `"İ"` != `"i"`) - full Unicode case folding is locale-trapped (Turkish dotless-I) and unportable across bindings, so it is deliberately excluded. (Such names must be quoted, per the quoting rule above; only their ASCII letters fold.) Discriminator **values** are case-**sensitive** after trimming and quote-stripping (`base: Chicago` and `base: chicago` are two instances).
 
 ## Values and types
 
