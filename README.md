@@ -231,13 +231,14 @@ Beta, and spec-first on purpose. Several parsers that "mostly agree" would be wo
 - **Rust reference parser + the `shcl` CLI** - done, corpus-green. This is the source of truth every other binding is measured against.
 - **Independent parsers in Go, C (with a C++ veneer), and Python** - done, corpus-green, and checked byte-for-byte against the reference on every build.
 - **Bash and PowerShell wrappers** - done. They call the CLI, so they inherit conformance for free.
-- **First tagged pre-release** - `v1.0.0-beta1`, with prebuilt binaries and checksums on the releases page.
+- **Read and write** - done. Every binding reads and writes, comments survive a format round-trip, and `check` reports stable diagnostic codes.
+- **Latest pre-release** - `v1.0.0-beta2`, with prebuilt binaries and checksums on the releases page.
 
 What is not done yet: packages for the common package managers, the schema and layered-loading power layer, and the remaining Tier 3 bindings. Star or watch the repo to follow along.
 
 ## Installing
 
-The first pre-release, `v1.0.0-beta1`, has prebuilt CLI binaries and checksums on the [releases page](https://github.com/jim-collier/shcl/releases). No package-manager packages yet. Three options:
+The latest pre-release, `v1.0.0-beta2`, has prebuilt CLI binaries and checksums on the [releases page](https://github.com/jim-collier/shcl/releases). No package-manager packages yet. Three options:
 
 - **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page.
 - **Drop-in** - copy one source file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
