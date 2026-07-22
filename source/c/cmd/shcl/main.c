@@ -15,7 +15,7 @@
 #include <errno.h>
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
-#define VERSION "1.0.0-beta1"
+#define VERSION "1.0.0-beta2"
 
 static const char *HELP =
 	"shcl - Simple Hierarchical Config Language (reference CLI)\n"
