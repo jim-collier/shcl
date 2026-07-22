@@ -6,6 +6,8 @@
 //! The language spec lives in project/spec.md; the conformance corpus in
 //! project/conformance/ pins every behavior here.
 
+use std::collections::HashMap;
+
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
@@ -43,10 +45,52 @@ pub struct Diagnostic {
 	pub line: usize, // 1-based
 	pub severity: Severity,
 	pub message: String,
+	/// Stable machine code (E001.., H001..) identifying the diagnostic kind. The
+	/// contract lives here; the `message` prose is a free, per-binding voice.
+	pub code: &'static str,
+}
+
+/// Map a diagnostic message to its stable code. The one place prose couples to a
+/// code, so the wording stays free everywhere else.
+fn diag_code(msg: &str) -> &'static str {
+	if msg.starts_with("field mixed with list elements") {
+		"E001"
+	} else if msg.starts_with("value after selector on ") {
+		"E002"
+	} else if msg.starts_with("no instance ") {
+		"E003"
+	} else if msg.starts_with("wildcard selector is query-only") {
+		"E004"
+	} else if msg.starts_with("unterminated raw block") {
+		"E005"
+	} else if msg.starts_with("raw block with no parent field") {
+		"E006"
+	} else if msg.starts_with("list element with no parent field") {
+		"E007"
+	} else if msg.starts_with("list element mixed with field children") {
+		"E008"
+	} else if msg.starts_with("empty list element") {
+		"E009"
+	} else if msg.starts_with("bare comma in list element") {
+		"E010"
+	} else if msg.starts_with("field already has a value") {
+		"E011"
+	} else if msg.starts_with("indentation matches no open level") {
+		"E012"
+	} else if msg.starts_with("malformed line skipped") {
+		"E014"
+	} else if msg.starts_with("malformed line: ") {
+		"E013"
+	} else if msg.starts_with("missing colon") {
+		"E015"
+	} else {
+		"E000" // uncategorized error (should not happen; keeps the map total)
+	}
 }
 
 /// Read status sentinels. `Empty` is informational - the empty value is still returned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Ordered by severity so a worst-of aggregate is just `max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Status {
 	Good,
 	Empty,
@@ -57,16 +101,32 @@ pub enum Status {
 
 /// Full-tier read result: value plus status plus the original raw text (when the
 /// path resolved), so a caller can always recover what was actually in the file.
+/// Array reads also carry one status per slot (element, or wildcard instance) in
+/// `slots`; `status` is then the worst slot. Scalar reads leave `slots` empty.
 #[derive(Debug, Clone)]
 pub struct Read<T> {
 	pub value: T,
 	pub status: Status,
 	pub raw: Option<String>,
+	pub slots: Vec<Status>,
 }
 
 impl<T> Read<T> {
 	fn new(value: T, status: Status, raw: Option<String>) -> Read<T> {
-		Read { value, status, raw }
+		Read {
+			value,
+			status,
+			raw,
+			slots: Vec::new(),
+		}
+	}
+	fn with_slots(value: T, status: Status, raw: Option<String>, slots: Vec<Status>) -> Read<T> {
+		Read {
+			value,
+			status,
+			raw,
+			slots,
+		}
 	}
 	pub fn ok(&self) -> bool {
 		matches!(self.status, Status::Good | Status::Empty)
@@ -167,14 +227,21 @@ impl Value {
 		match self {
 			Value::Empty => "e".to_string(),
 			Value::Cell(els) => {
+				// Length-prefix each element so the joined key is injective: a bare
+				// NUL separator lets `[a, b]` collide with the single element
+				// "a\0b" (NUL is legal in a quoted string), silently merging them.
 				let mut k = String::from("c:");
 				for e in els {
-					k.push('\u{0}');
+					k.push_str(&e.text.len().to_string());
+					k.push(':');
 					k.push_str(&e.text);
 				}
 				k
 			}
-			Value::Raw { content, .. } => format!("r:{}", content),
+			// Info-string is part of identity (a `sql` and a `python` block are
+			// different values even with equal bodies); fence style is not. Info is
+			// length-prefixed for the same injectivity reason as cell elements.
+			Value::Raw { content, info, .. } => format!("r:{}:{}{}", info.len(), info, content),
 		}
 	}
 	/// Human/display form; also what selectors match against (case-sensitive).
@@ -201,7 +268,13 @@ struct NodeData {
 	children: Vec<usize>,
 	parent: usize,
 	line: usize,
-	star_list: bool, // value built from stacked "* " lines
+	star_list: bool,  // value built from stacked "* " lines
+	star_mixed: bool, // mix of "* " and field children already diagnosed
+	// Comment trivia, verbatim from `#` to end of line. Never part of identity
+	// or reads; merged instances concatenate leading, first trailing wins
+	// (later ones demote to leading - a canonical line has room for one).
+	leading: Vec<String>,
+	trailing: String, // empty = none
 }
 
 /// A parsed SHCL document: the tree, its diagnostics, and its strictness level.
@@ -210,6 +283,7 @@ pub struct Document {
 	arena: Vec<NodeData>,
 	diags: Vec<Diagnostic>,
 	strictness: Strictness,
+	orphans: Vec<String>, // comments after the last binding line
 }
 
 const ROOT: usize = 0;
@@ -226,8 +300,9 @@ fn is_bare_name_char(c: char) -> bool {
 	c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
-/// Strip an unquoted trailing comment. A `\` shields the next char throughout.
-fn strip_comment(s: &str) -> &str {
+/// Split off an unquoted trailing comment: (content, comment from `#` on).
+/// A `\` shields the next char throughout. Comments are kept as trivia.
+fn split_comment(s: &str) -> (&str, Option<&str>) {
 	let mut in_quote: Option<char> = None;
 	let mut it = s.char_indices();
 	while let Some((byte, c)) = it.next() {
@@ -238,11 +313,11 @@ fn strip_comment(s: &str) -> &str {
 		match in_quote {
 			Some(q) if c == q => in_quote = None,
 			None if c == '"' || c == '\'' => in_quote = Some(c),
-			None if c == '#' => return &s[..byte],
+			None if c == '#' => return (&s[..byte], Some(&s[byte..])),
 			_ => {}
 		}
 	}
-	s
+	(s, None)
 }
 
 /// Split on unquoted commas; `\` shields the next char.
@@ -373,7 +448,7 @@ fn is_fence_close(line: &str, ch: u8, min_len: usize) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 enum Selector {
 	ByValue(String),
-	ByIndex(usize),
+	ByIndex(u64), // u64, not usize: index width must not vary with the target's pointer size
 	Wildcard,
 }
 
@@ -473,10 +548,9 @@ fn scan_path(input: &str) -> Result<PathScan, String> {
 					.to_string();
 				selector = Some(if body == "*" {
 					Selector::Wildcard
-				} else if let Some(n) = body.strip_prefix('#').and_then(|d| d.parse::<usize>().ok())
-				{
+				} else if let Some(n) = body.strip_prefix('#').and_then(|d| d.parse::<u64>().ok()) {
 					Selector::ByIndex(n)
-				} else if let Ok(n) = body.parse::<usize>() {
+				} else if let Ok(n) = body.parse::<u64>() {
 					Selector::ByIndex(n)
 				} else if body.is_empty() {
 					return Err("empty selector".into());
@@ -527,6 +601,11 @@ struct Parser {
 	diags: Vec<Diagnostic>,
 	// (indent string, node) for each open level; [0] is the virtual root.
 	stack: Vec<(String, usize)>,
+	// Per-node (name, value-key) -> first matching child, parallel to arena.
+	// Pure lookup accelerator for select_or_create; children keeps the order.
+	child_map: Vec<HashMap<(String, String), usize>>,
+	// Whole-line comments waiting for the next line that binds a node.
+	pending: Vec<String>,
 }
 
 impl Parser {
@@ -539,27 +618,33 @@ impl Parser {
 				parent: 0,
 				line: 0,
 				star_list: false,
+				star_mixed: false,
+				leading: Vec::new(),
+				trailing: String::new(),
 			}],
 			diags: Vec::new(),
 			stack: vec![(String::new(), ROOT)],
+			child_map: vec![HashMap::new()],
+			pending: Vec::new(),
 		}
 	}
 
 	fn err(&mut self, line: usize, msg: impl Into<String>) {
+		let message = msg.into();
+		let code = diag_code(&message);
 		self.diags.push(Diagnostic {
 			line,
 			severity: Severity::Error,
-			message: msg.into(),
+			message,
+			code,
 		});
 	}
 
 	/// Find (or create by merge rule) the child of `parent` with this (name, value).
 	fn select_or_create(&mut self, parent: usize, name: &str, value: Value, line: usize) -> usize {
-		let key = value.key();
-		for &c in &self.arena[parent].children {
-			if self.arena[c].name == name && self.arena[c].value.key() == key {
-				return c;
-			}
+		let map_key = (name.to_string(), value.key());
+		if let Some(&c) = self.child_map[parent].get(&map_key) {
+			return c;
 		}
 		let idx = self.arena.len();
 		self.arena.push(NodeData {
@@ -569,9 +654,42 @@ impl Parser {
 			parent,
 			line,
 			star_list: false,
+			star_mixed: false,
+			leading: Vec::new(),
+			trailing: String::new(),
 		});
 		self.arena[parent].children.push(idx);
+		self.child_map.push(HashMap::new());
+		self.child_map[parent].insert(map_key, idx);
 		idx
+	}
+
+	/// A node's value mutated in place (empty field filled, star element added):
+	/// move its map entry from the old key to the new one. First-wins on both
+	/// sides so lookups keep matching the earliest sibling, like the scan did.
+	fn remap_child(&mut self, node: usize, old_key: String) {
+		let parent = self.arena[node].parent;
+		let name = self.arena[node].name.clone();
+		if self.child_map[parent].get(&(name.clone(), old_key.clone())) == Some(&node) {
+			self.child_map[parent].remove(&(name.clone(), old_key));
+		}
+		let new_key = self.arena[node].value.key();
+		self.child_map[parent]
+			.entry((name, new_key))
+			.or_insert(node);
+	}
+
+	/// Hand pending leading comments (and this line's trailing one) to a node.
+	/// First trailing wins; a later one demotes to leading so nothing is lost.
+	fn attach_trivia(&mut self, node: usize, trailing: Option<&str>) {
+		self.arena[node].leading.append(&mut self.pending);
+		if let Some(t) = trailing {
+			if self.arena[node].trailing.is_empty() {
+				self.arena[node].trailing = t.to_string();
+			} else {
+				self.arena[node].leading.push(t.to_string());
+			}
+		}
 	}
 
 	/// Resolve which open level this indent belongs to. Child only when the
@@ -606,16 +724,32 @@ impl Parser {
 		value: Value,
 		line: usize,
 	) -> Option<usize> {
+		// Field child under a stacked list: diagnose the mix once, keep the field.
+		if self.arena[parent].star_list && !self.arena[parent].star_mixed {
+			self.arena[parent].star_mixed = true;
+			self.err(line, "field mixed with list elements");
+		}
 		let mut cur = parent;
 		for (i, seg) in segs.iter().enumerate() {
 			let is_last = i + 1 == segs.len();
 			match (&seg.selector, is_last) {
 				(Some(Selector::ByValue(v)), _) => {
-					let disc = Value::Cell(vec![Element {
-						text: v.clone(),
-						quoted: false,
-					}]);
-					cur = self.select_or_create(cur, &seg.name, disc, line);
+					// Same display() predicate resolve_from uses, so a selector
+					// also selects an array-valued instance instead of creating
+					// a spurious second one. Create only when nothing matches.
+					let found = self.arena[cur].children.iter().copied().find(|&c| {
+						self.arena[c].name == seg.name && self.arena[c].value.display() == *v
+					});
+					cur = match found {
+						Some(c) => c,
+						None => {
+							let disc = Value::Cell(vec![Element {
+								text: v.clone(),
+								quoted: false,
+							}]);
+							self.select_or_create(cur, &seg.name, disc, line)
+						}
+					};
 					if is_last && !value.is_empty() {
 						// `a.b[X]: v` - the discriminator is the value; a second
 						// value has nowhere unambiguous to go.
@@ -632,7 +766,7 @@ impl Parser {
 						.copied()
 						.filter(|&c| self.arena[c].name == seg.name)
 						.collect();
-					if let Some(&found) = matches.get(*n) {
+					if let Some(&found) = matches.get(*n as usize) {
 						cur = found;
 					} else {
 						self.err(line, format!("no instance {} of '{}'", n, seg.name));
@@ -722,16 +856,20 @@ impl Parser {
 
 	/// A bare fence line is a value line for its parent field: fills an empty
 	/// value, else creates a new instance of that field (the repeated-leaf rule).
-	fn bind_block(&mut self, parent: usize, value: Value, line: usize) {
+	/// Returns the node the block landed on (None = no parent, diagnosed).
+	fn bind_block(&mut self, parent: usize, value: Value, line: usize) -> Option<usize> {
 		if parent == ROOT {
 			self.err(line, "raw block with no parent field");
-			return;
+			return None;
 		}
 		if self.arena[parent].value.is_empty() {
+			let old_key = self.arena[parent].value.key();
 			self.arena[parent].value = value;
+			self.remap_child(parent, old_key);
+			Some(parent)
 		} else {
 			let (name, grandparent) = (self.arena[parent].name.clone(), self.arena[parent].parent);
-			self.select_or_create(grandparent, &name, value, line);
+			Some(self.select_or_create(grandparent, &name, value, line))
 		}
 	}
 
@@ -739,6 +877,11 @@ impl Parser {
 	fn add_star_element(&mut self, parent: usize, body: &str, line: usize) {
 		if parent == ROOT {
 			self.err(line, "list element with no parent field");
+			return;
+		}
+		// Uniform-or-nothing (spec): a mix with field children is not a block array.
+		if !self.arena[parent].children.is_empty() {
+			self.err(line, "list element mixed with field children; ignored");
 			return;
 		}
 		let trimmed = body.trim();
@@ -758,14 +901,24 @@ impl Parser {
 				return;
 			}
 		};
+		let old_key = self.arena[parent].value.key();
 		let node = &mut self.arena[parent];
-		match &mut node.value {
+		let mutated = match &mut node.value {
 			Value::Empty => {
 				node.value = Value::Cell(vec![el]);
 				node.star_list = true;
+				true
 			}
-			Value::Cell(els) if node.star_list => els.push(el),
-			_ => self.err(line, "field already has a value; list element ignored"),
+			Value::Cell(els) if node.star_list => {
+				els.push(el);
+				true
+			}
+			_ => false,
+		};
+		if mutated {
+			self.remap_child(parent, old_key);
+		} else {
+			self.err(line, "field already has a value; list element ignored");
 		}
 	}
 
@@ -776,12 +929,16 @@ impl Parser {
 		for parent in 0..self.arena.len() {
 			// Group by name in first-appearance order: hint order must be
 			// deterministic or the cross-binding check can't compare `check` output.
+			let mut group_of: HashMap<&str, usize> = HashMap::new();
 			let mut by_name: Vec<(&str, Vec<usize>)> = Vec::new();
 			for &c in &self.arena[parent].children {
 				let name = self.arena[c].name.as_str();
-				match by_name.iter_mut().find(|(n, _)| *n == name) {
-					Some((_, g)) => g.push(c),
-					None => by_name.push((name, vec![c])),
+				match group_of.get(name) {
+					Some(&g) => by_name[g].1.push(c),
+					None => {
+						group_of.insert(name, by_name.len());
+						by_name.push((name, vec![c]));
+					}
 				}
 			}
 			for (name, group) in by_name {
@@ -815,6 +972,7 @@ impl Parser {
 				line,
 				severity: Severity::Hint,
 				message,
+				code: "H001", // the only hint kind: repeated bare leaf
 			});
 		}
 	}
@@ -835,7 +993,13 @@ impl Parser {
 				.take_while(|c| *c == ' ' || *c == '\t')
 				.collect();
 			let rest = &line[indent.len()..];
-			if rest.is_empty() || rest.starts_with('#') {
+			if rest.is_empty() {
+				i += 1;
+				continue;
+			}
+			// Whole-line comment: hold it for the next line that binds a node.
+			if rest.starts_with('#') {
+				self.pending.push(rest.to_string());
 				i += 1;
 				continue;
 			}
@@ -850,7 +1014,9 @@ impl Parser {
 					}
 				};
 				let (value, next) = self.consume_raw(&lines, i + 1, lineno, ch, len, info);
-				self.bind_block(parent, value, lineno);
+				if let Some(node) = self.bind_block(parent, value, lineno) {
+					self.attach_trivia(node, None);
+				}
 				i = next;
 				continue;
 			}
@@ -865,7 +1031,11 @@ impl Parser {
 							continue;
 						}
 					};
-					let body = strip_comment(after);
+					let (body, comment) = split_comment(after);
+					// Elements have no node of their own; trivia rides the field.
+					if parent != ROOT {
+						self.attach_trivia(parent, comment);
+					}
 					self.add_star_element(parent, body, lineno);
 					i += 1;
 					continue;
@@ -875,9 +1045,14 @@ impl Parser {
 				continue;
 			}
 			// Field line.
-			let content = strip_comment(rest).trim_end();
+			let (before, comment) = split_comment(rest);
+			let content = before.trim_end();
 			if content.is_empty() {
-				i += 1; // the line was only a comment
+				// Only a comment survived (e.g. an escaped lead-in); keep it.
+				if let Some(c) = comment {
+					self.pending.push(c.to_string());
+				}
+				i += 1;
 				continue;
 			}
 			let parent = match self.resolve_parent(&indent) {
@@ -917,6 +1092,7 @@ impl Parser {
 				}
 			};
 			if let Some(node) = self.attach_path(parent, &scan.segments, value, lineno) {
+				self.attach_trivia(node, comment);
 				self.stack.push((indent, node));
 			}
 			i = next;
@@ -926,6 +1102,7 @@ impl Parser {
 			arena: self.arena,
 			diags: self.diags,
 			strictness,
+			orphans: self.pending,
 		}
 	}
 }
@@ -963,28 +1140,61 @@ impl Document {
 	}
 
 	/// Canonical form: block layout, tabs, insertion order, minimal quoting,
-	/// redundancy collapsed, comments dropped. Scalar text is never rewritten.
+	/// redundancy collapsed, comments re-emitted as attached trivia. Scalar
+	/// text is never rewritten.
 	pub fn to_canonical(&self) -> String {
 		let mut out = String::new();
 		for &c in &self.arena[ROOT].children {
 			self.emit_node(c, 0, &mut out);
+		}
+		// Comments that never found a following line re-emit at the end.
+		for c in &self.orphans {
+			out.push_str(c);
+			out.push('\n');
 		}
 		out
 	}
 
 	fn emit_node(&self, idx: usize, depth: usize, out: &mut String) {
 		let node = &self.arena[idx];
-		for _ in 0..depth {
-			out.push('\t');
+		let pad: String = "\t".repeat(depth);
+		// Same-line fence spelling can't carry an inline comment (an unbalanced
+		// quote in the info-string could hide the `#` on reparse), so its
+		// trailing comment joins the leading lines instead.
+		let would_merge = if let Value::Raw { .. } = &node.value {
+			let parent = node.parent;
+			let me = self.arena[parent].children.iter().position(|&c| c == idx);
+			me.is_some_and(|p| {
+				self.arena[parent].children[..p]
+					.iter()
+					.any(|&c| self.arena[c].name == node.name && self.arena[c].value.is_empty())
+			})
+		} else {
+			false
+		};
+		for c in &node.leading {
+			out.push_str(&pad);
+			out.push_str(c);
+			out.push('\n');
 		}
+		if would_merge && !node.trailing.is_empty() {
+			out.push_str(&pad);
+			out.push_str(&node.trailing);
+			out.push('\n');
+		}
+		out.push_str(&pad);
 		out.push_str(&emit_name(&node.name));
 		out.push(':');
 		match &node.value {
-			Value::Empty => out.push('\n'),
+			Value::Empty => {
+				push_trailing(out, &node.trailing);
+				out.push('\n');
+			}
 			Value::Cell(els) => {
 				out.push(' ');
 				let joined = els.iter().map(emit_element).collect::<Vec<_>>().join(", ");
 				out.push_str(&joined);
+				push_trailing(out, &node.trailing);
 				out.push('\n');
 			}
 			Value::Raw {
@@ -998,19 +1208,13 @@ impl Document {
 				// earlier same-name sibling is empty, the bare `name:` header
 				// would merge into it on reparse and the fence would fill that
 				// instance instead - so use the same-line spelling there.
-				let parent = node.parent;
-				let me = self.arena[parent].children.iter().position(|&c| c == idx);
-				let would_merge = me.is_some_and(|p| {
-					self.arena[parent].children[..p]
-						.iter()
-						.any(|&c| self.arena[c].name == node.name && self.arena[c].value.is_empty())
-				});
 				if would_merge {
 					out.push(' ');
 				} else {
+					push_trailing(out, &node.trailing);
 					out.push('\n');
 				}
-				let pad: String = "\t".repeat(depth + 1);
+				let pad: String = "\t".repeat(depth + 1); // block body pad, one deeper
 				let fence: String = std::iter::repeat_n(*fence_char as char, *fence_len).collect();
 				if !would_merge {
 					out.push_str(&pad);
@@ -1042,6 +1246,14 @@ impl Document {
 		for &c in &self.arena[idx].children {
 			self.emit_node(c, depth + 1, out);
 		}
+	}
+}
+
+/// Inline comment, canonically two spaces before the `#`.
+fn push_trailing(out: &mut String, trailing: &str) {
+	if !trailing.is_empty() {
+		out.push_str("  ");
+		out.push_str(trailing);
 	}
 }
 
@@ -1116,8 +1328,9 @@ enum Resolved {
 	None,
 	One(usize),
 	Many(Vec<usize>),
-	// Wildcard: one slot per instance, in file order; None = sub-path missing.
-	Slots(Vec<Option<usize>>),
+	// Wildcard: one slot per instance, in file order; Err = why the sub-path
+	// did not land on one node (NotFound missing, Multiple ambiguous).
+	Slots(Vec<Result<usize, Status>>),
 }
 
 impl Document {
@@ -1146,19 +1359,20 @@ impl Document {
 						.collect();
 				}
 				Some(Selector::ByIndex(k)) => {
-					cur = next.get(*k).map(|&c| vec![c]).unwrap_or_default();
+					cur = next.get(*k as usize).map(|&c| vec![c]).unwrap_or_default();
 				}
 				Some(Selector::Wildcard) => {
 					// Remaining path resolves per-instance; slots stay aligned.
 					let rest = &segs[i + 1..];
-					let mut slots: Vec<Option<usize>> = Vec::new();
+					let mut slots: Vec<Result<usize, Status>> = Vec::new();
 					for inst in next {
 						if rest.is_empty() {
-							slots.push(Some(inst));
+							slots.push(Ok(inst));
 						} else {
 							match self.resolve_from(&[inst], rest) {
-								Resolved::One(x) => slots.push(Some(x)),
-								_ => slots.push(None),
+								Resolved::One(x) => slots.push(Ok(x)),
+								Resolved::None => slots.push(Err(Status::NotFound)),
+								_ => slots.push(Err(Status::Multiple)),
 							}
 						}
 					}
@@ -1191,18 +1405,359 @@ impl Document {
 		}
 	}
 
-	/// Instance values at a path, in file order.
+	/// Every field path in the document, in file order, deduplicated - a query
+	/// recipe for tooling (the differential harness derives reads over the fuzz
+	/// set from it). Only bare-name-safe segments are emitted, so each path is a
+	/// well-formed CLI query; a subtree under a quoted/non-ASCII name is skipped.
+	pub fn paths(&self) -> Vec<String> {
+		let mut out = Vec::new();
+		let mut seen = std::collections::HashSet::new();
+		let mut stack: Vec<(usize, String)> = self.arena[ROOT]
+			.children
+			.iter()
+			.rev()
+			.map(|&c| (c, String::new()))
+			.collect();
+		while let Some((node, prefix)) = stack.pop() {
+			let name = &self.arena[node].name;
+			if name.is_empty() || !name.chars().all(is_bare_name_char) {
+				continue; // not a bare query segment; skip it and its subtree
+			}
+			let path = if prefix.is_empty() {
+				name.clone()
+			} else {
+				format!("{}.{}", prefix, name)
+			};
+			if seen.insert(path.clone()) {
+				out.push(path.clone());
+			}
+			for &c in self.arena[node].children.iter().rev() {
+				stack.push((c, path.clone()));
+			}
+		}
+		out
+	}
+
+	/// Instance values at a path, in file order. Wildcard slots that did not
+	/// resolve stay in the list as "" so indices keep matching count().
 	pub fn instances(&self, path: &str) -> Vec<String> {
-		let nodes: Vec<usize> = match self.resolve(path) {
+		match self.resolve(path) {
+			Ok(Resolved::One(n)) => vec![self.arena[n].value.display()],
+			Ok(Resolved::Many(v)) => v.iter().map(|&n| self.arena[n].value.display()).collect(),
+			Ok(Resolved::Slots(s)) => s
+				.into_iter()
+				.map(|r| match r {
+					Ok(n) => self.arena[n].value.display(),
+					Err(_) => String::new(),
+				})
+				.collect(),
+			_ => Vec::new(),
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Writer: typed emit, defaults, comments, structural edits
+// ---------------------------------------------------------------------------
+// The reverse of the Accessor. A setter builds the canonical stored text for a
+// typed value (the inverse of the matching read) and places it at a path,
+// creating intermediate nodes on the way. Reads and to_canonical walk children
+// vecs, so mutating the arena directly is enough - the parser's child_map is
+// already gone and is not maintained here.
+
+fn cell_of(text: String) -> Value {
+	Value::Cell(vec![Element {
+		text,
+		quoted: false,
+	}])
+}
+
+/// Encode a logical string into stored element text so a scalar read
+/// (apply_escapes) hands it back verbatim and an emit/reparse round-trips. Only
+/// backslash, newline, and tab need encoding; emit_element wraps quote/reserved
+/// chars itself, and reparse strips that wrapping.
+fn encode_string(s: &str) -> String {
+	let mut out = String::with_capacity(s.len());
+	for c in s.chars() {
+		match c {
+			'\\' => out.push_str("\\\\"),
+			'\n' => out.push_str("\\n"),
+			'\t' => out.push_str("\\t"),
+			_ => out.push(c),
+		}
+	}
+	out
+}
+
+/// Pick a backtick fence long enough that no content line closes it early.
+fn choose_fence(content: &str) -> (u8, usize) {
+	let mut maxrun = 0usize;
+	for line in content.split('\n') {
+		let t = line.trim();
+		if !t.is_empty() && t.bytes().all(|b| b == b'`') {
+			maxrun = maxrun.max(t.len());
+		}
+	}
+	(b'`', (maxrun + 1).max(3))
+}
+
+/// Inline-array value; the empty array is an empty value (reads back Empty).
+fn array_cell(texts: Vec<String>) -> Value {
+	if texts.is_empty() {
+		Value::Empty
+	} else {
+		Value::Cell(
+			texts
+				.into_iter()
+				.map(|text| Element {
+					text,
+					quoted: false,
+				})
+				.collect(),
+		)
+	}
+}
+
+impl Document {
+	/// A fresh document with no bindings - the start point for schema-driven
+	/// generation. Loads at Standard; set values, then to_canonical().
+	pub fn new() -> Document {
+		Document::parse("")
+	}
+
+	fn new_child(&mut self, parent: usize, name: &str, value: Value) -> usize {
+		let idx = self.arena.len();
+		self.arena.push(NodeData {
+			name: name.to_string(),
+			value,
+			children: Vec::new(),
+			parent,
+			line: 0,
+			star_list: false,
+			star_mixed: false,
+			leading: Vec::new(),
+			trailing: String::new(),
+		});
+		self.arena[parent].children.push(idx);
+		idx
+	}
+
+	fn child_or_create(&mut self, parent: usize, name: &str) -> usize {
+		match self.arena[parent]
+			.children
+			.iter()
+			.copied()
+			.find(|&c| self.arena[c].name == name)
+		{
+			Some(c) => c,
+			None => self.new_child(parent, name, Value::Empty),
+		}
+	}
+
+	/// Walk (creating as needed) to the node a write targets. A trailing name
+	/// with no selector hits the first same-named instance (or a new one); a
+	/// `[value]` selector selects the matching instance or creates it; `[#k]`
+	/// must already exist. None = path unusable for a write (bad scan, a value
+	/// part, a wildcard, or a missing indexed instance).
+	fn place(&mut self, path: &str) -> Option<usize> {
+		let scan = scan_path(path).ok()?;
+		if scan.value_text.is_some() || scan.segments.is_empty() {
+			return None;
+		}
+		let mut cur = ROOT;
+		for seg in &scan.segments {
+			cur = match &seg.selector {
+				None => self.child_or_create(cur, &seg.name),
+				Some(Selector::ByValue(v)) => {
+					let found = self.arena[cur].children.iter().copied().find(|&c| {
+						self.arena[c].name == seg.name && self.arena[c].value.display() == *v
+					});
+					match found {
+						Some(c) => c,
+						None => self.new_child(cur, &seg.name, cell_of(v.clone())),
+					}
+				}
+				Some(Selector::ByIndex(k)) => {
+					let matches: Vec<usize> = self.arena[cur]
+						.children
+						.iter()
+						.copied()
+						.filter(|&c| self.arena[c].name == seg.name)
+						.collect();
+					*matches.get(*k as usize)?
+				}
+				Some(Selector::Wildcard) => return None,
+			};
+		}
+		Some(cur)
+	}
+
+	fn set_value(&mut self, path: &str, value: Value) {
+		if let Some(node) = self.place(path) {
+			self.arena[node].value = value;
+		}
+	}
+
+	/// True when the path resolves to at least one real node.
+	pub fn exists(&self, path: &str) -> bool {
+		match self.resolve(path) {
+			Ok(Resolved::One(_)) | Ok(Resolved::Many(_)) => true,
+			Ok(Resolved::Slots(s)) => s.iter().any(|r| r.is_ok()),
+			_ => false,
+		}
+	}
+
+	/// Delete the node(s) at a path (with their subtrees); returns how many.
+	pub fn remove(&mut self, path: &str) -> usize {
+		let targets: Vec<usize> = match self.resolve(path) {
 			Ok(Resolved::One(n)) => vec![n],
 			Ok(Resolved::Many(v)) => v,
-			Ok(Resolved::Slots(s)) => s.into_iter().flatten().collect(),
+			Ok(Resolved::Slots(s)) => s.into_iter().filter_map(|r| r.ok()).collect(),
 			_ => Vec::new(),
 		};
-		nodes
-			.iter()
-			.map(|&n| self.arena[n].value.display())
-			.collect()
+		for &t in &targets {
+			let p = self.arena[t].parent;
+			self.arena[p].children.retain(|&c| c != t);
+		}
+		targets.len()
+	}
+
+	/// Attach a leading comment line to the node at a path (creating an empty
+	/// node if it does not exist yet, so a section can be annotated). A missing
+	/// `#` is added; only the first line is kept (a comment is one line).
+	pub fn set_comment(&mut self, path: &str, text: &str) {
+		if let Some(node) = self.place(path) {
+			let line = text.split('\n').next().unwrap_or("");
+			let c = if line.starts_with('#') {
+				line.to_string()
+			} else {
+				format!("# {}", line)
+			};
+			self.arena[node].leading.push(c);
+		}
+	}
+
+	pub fn set_int(&mut self, path: &str, v: i64) {
+		self.set_value(path, cell_of(v.to_string()));
+	}
+	pub fn set_float(&mut self, path: &str, v: f64) {
+		self.set_value(path, cell_of(format!("{}", v)));
+	}
+	pub fn set_bool(&mut self, path: &str, v: bool) {
+		self.set_value(path, cell_of(if v { "true" } else { "false" }.to_string()));
+	}
+	pub fn set_string(&mut self, path: &str, v: &str) {
+		self.set_value(path, cell_of(encode_string(v)));
+	}
+	pub fn set_datetime(&mut self, path: &str, v: &ShclDateTime) {
+		self.set_value(path, cell_of(v.to_string()));
+	}
+	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) {
+		let (fence_char, fence_len) = choose_fence(content);
+		self.set_value(
+			path,
+			Value::Raw {
+				content: content.to_string(),
+				info: info.to_string(),
+				fence_char,
+				fence_len,
+			},
+		);
+	}
+	pub fn set_empty(&mut self, path: &str) {
+		self.set_value(path, Value::Empty);
+	}
+
+	pub fn set_int_array(&mut self, path: &str, v: &[i64]) {
+		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()));
+	}
+	pub fn set_float_array(&mut self, path: &str, v: &[f64]) {
+		self.set_value(
+			path,
+			array_cell(v.iter().map(|x| format!("{}", x)).collect()),
+		);
+	}
+	pub fn set_bool_array(&mut self, path: &str, v: &[bool]) {
+		self.set_value(
+			path,
+			array_cell(
+				v.iter()
+					.map(|x| if *x { "true" } else { "false" }.to_string())
+					.collect(),
+			),
+		);
+	}
+	pub fn set_string_array(&mut self, path: &str, v: &[&str]) {
+		self.set_value(
+			path,
+			array_cell(v.iter().map(|x| encode_string(x)).collect()),
+		);
+	}
+	pub fn set_datetime_array(&mut self, path: &str, v: &[ShclDateTime]) {
+		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()));
+	}
+
+	// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+	pub fn set_int_default(&mut self, path: &str, v: i64) {
+		if !self.exists(path) {
+			self.set_int(path, v);
+		}
+	}
+	pub fn set_float_default(&mut self, path: &str, v: f64) {
+		if !self.exists(path) {
+			self.set_float(path, v);
+		}
+	}
+	pub fn set_bool_default(&mut self, path: &str, v: bool) {
+		if !self.exists(path) {
+			self.set_bool(path, v);
+		}
+	}
+	pub fn set_string_default(&mut self, path: &str, v: &str) {
+		if !self.exists(path) {
+			self.set_string(path, v);
+		}
+	}
+	pub fn set_datetime_default(&mut self, path: &str, v: &ShclDateTime) {
+		if !self.exists(path) {
+			self.set_datetime(path, v);
+		}
+	}
+	pub fn set_raw_default(&mut self, path: &str, content: &str, info: &str) {
+		if !self.exists(path) {
+			self.set_raw(path, content, info);
+		}
+	}
+	pub fn set_int_array_default(&mut self, path: &str, v: &[i64]) {
+		if !self.exists(path) {
+			self.set_int_array(path, v);
+		}
+	}
+	pub fn set_float_array_default(&mut self, path: &str, v: &[f64]) {
+		if !self.exists(path) {
+			self.set_float_array(path, v);
+		}
+	}
+	pub fn set_bool_array_default(&mut self, path: &str, v: &[bool]) {
+		if !self.exists(path) {
+			self.set_bool_array(path, v);
+		}
+	}
+	pub fn set_string_array_default(&mut self, path: &str, v: &[&str]) {
+		if !self.exists(path) {
+			self.set_string_array(path, v);
+		}
+	}
+	pub fn set_datetime_array_default(&mut self, path: &str, v: &[ShclDateTime]) {
+		if !self.exists(path) {
+			self.set_datetime_array(path, v);
+		}
+	}
+}
+
+impl Default for Document {
+	fn default() -> Document {
+		Document::new()
 	}
 }
 
@@ -1242,8 +1797,23 @@ fn parse_int_text(e: &Element, level: Strictness) -> Option<i64> {
 		&& !h.is_empty()
 		&& h.bytes().all(|b| b.is_ascii_hexdigit())
 	{
-		let v = i64::from_str_radix(h, 16).ok()?;
-		return Some(if neg { -v } else { v });
+		// Parse the magnitude as u64, then range-check against the sign, so the
+		// negative i64::MIN magnitude (0x8000000000000000) reads like its decimal
+		// spelling instead of overflowing an i64 parse.
+		let m = u64::from_str_radix(h, 16).ok()?;
+		return if neg {
+			if m == (i64::MAX as u64) + 1 {
+				Some(i64::MIN)
+			} else if m <= i64::MAX as u64 {
+				Some(-(m as i64))
+			} else {
+				None
+			}
+		} else if m <= i64::MAX as u64 {
+			Some(m as i64)
+		} else {
+			None
+		};
 	}
 	// Thousands separators, only inside quotes (bare commas are reserved).
 	if e.quoted && t.contains(',') {
@@ -1478,16 +2048,21 @@ fn parse_time_part(s: &str) -> Option<TimeParts> {
 	if let Some(rest) = t.strip_suffix(['Z', 'z']) {
 		zone = Some(ZoneSpec::Utc);
 		t = rest.trim_end();
-	} else if t.len() >= 6 && t.is_char_boundary(t.len() - 6) {
-		let tail = &t[t.len() - 6..];
-		let sign = tail.as_bytes()[0];
+	} else if t.len() >= 6 {
+		// Byte-wise on purpose: a str slice here can land mid-char and panic when
+		// the tail holds multibyte text. All-ASCII match implies the cut is a
+		// char boundary, so the later &t[..len-6] is safe.
+		let tail = &t.as_bytes()[t.len() - 6..];
+		let sign = tail[0];
 		if (sign == b'+' || sign == b'-')
-			&& tail[1..3].bytes().all(|b| b.is_ascii_digit())
-			&& tail.as_bytes()[3] == b':'
-			&& tail[4..6].bytes().all(|b| b.is_ascii_digit())
+			&& tail[1].is_ascii_digit()
+			&& tail[2].is_ascii_digit()
+			&& tail[3] == b':'
+			&& tail[4].is_ascii_digit()
+			&& tail[5].is_ascii_digit()
 		{
-			let hh: i32 = tail[1..3].parse().ok()?;
-			let mm: i32 = tail[4..6].parse().ok()?;
+			let hh = i32::from(tail[1] - b'0') * 10 + i32::from(tail[2] - b'0');
+			let mm = i32::from(tail[4] - b'0') * 10 + i32::from(tail[5] - b'0');
 			if hh <= 23 && mm <= 59 {
 				let mut off = hh * 60 + mm;
 				if sign == b'-' {
@@ -1686,7 +2261,13 @@ impl Document {
 			Value::Cell(els) if els.len() == 1 => {
 				Read::new(apply_escapes(&els[0].text), Status::Good, raw)
 			}
-			Value::Cell(_) => Read::new(value.display(), Status::Good, raw),
+			// Canonical inline form (quoting + escapes intact), so the string
+			// re-parses to the same array - not the bare display join.
+			Value::Cell(els) => Read::new(
+				els.iter().map(emit_element).collect::<Vec<_>>().join(", "),
+				Status::Good,
+				raw,
+			),
 		}
 	}
 
@@ -1721,31 +2302,44 @@ impl Document {
 		path: &str,
 		coerce: impl Fn(&Element) -> Option<T>,
 	) -> Read<Vec<T>> {
-		// Wildcard paths: one slot per instance, missing sub-paths keep their slot.
+		// Wildcard paths: one slot per instance, missing sub-paths keep their slot
+		// (spec: never silently dropped). Each slot reads like a scalar of the
+		// target type and records its own status; the aggregate is the worst one.
 		match self.resolve(path) {
 			Err(st) => Read::new(Vec::new(), st, None),
 			Ok(Resolved::Slots(slots)) => {
 				let mut out: Vec<T> = Vec::new();
-				let mut status = Status::Good;
+				let mut sts: Vec<Status> = Vec::new();
 				for slot in &slots {
 					match slot {
-						None => out.push(T::default()),
-						Some(n) => match self.scalar_element(&self.arena[*n].value) {
+						Err(st) => {
+							out.push(T::default());
+							sts.push(*st);
+						}
+						Ok(n) => match self.scalar_element(&self.arena[*n].value) {
 							Ok(el) => match coerce(el) {
-								Some(v) => out.push(v),
+								Some(v) => {
+									out.push(v);
+									sts.push(Status::Good);
+								}
 								None => {
 									out.push(T::default());
-									status = Status::BadType;
+									sts.push(Status::BadType);
 								}
 							},
-							Err(_) => out.push(T::default()),
+							Err(st) => {
+								out.push(T::default());
+								sts.push(st);
+							}
 						},
 					}
 				}
-				if slots.is_empty() {
-					status = Status::Empty;
-				}
-				Read::new(out, status, None)
+				let status = if sts.is_empty() {
+					Status::Empty
+				} else {
+					sts.iter().copied().max().unwrap_or(Status::Good)
+				};
+				Read::with_slots(out, status, None, sts)
 			}
 			Ok(Resolved::None) => Read::new(Vec::new(), Status::NotFound, None),
 			Ok(Resolved::Many(_)) => Read::new(Vec::new(), Status::Multiple, None),
@@ -1757,17 +2351,21 @@ impl Document {
 					Value::Raw { .. } => Read::new(Vec::new(), Status::BadType, raw),
 					Value::Cell(els) => {
 						let mut out = Vec::with_capacity(els.len());
-						let mut status = Status::Good;
+						let mut sts = Vec::with_capacity(els.len());
 						for el in els {
 							match coerce(el) {
-								Some(v) => out.push(v),
+								Some(v) => {
+									out.push(v);
+									sts.push(Status::Good);
+								}
 								None => {
 									out.push(T::default());
-									status = Status::BadType;
+									sts.push(Status::BadType);
 								}
 							}
 						}
-						Read::new(out, status, raw)
+						let status = sts.iter().copied().max().unwrap_or(Status::Good);
+						Read::with_slots(out, status, raw, sts)
 					}
 				}
 			}
@@ -1847,6 +2445,55 @@ impl Document {
 
 	pub fn get_datetime(&self, path: &str) -> Result<ShclDateTime, Status> {
 		let r = self.read_datetime(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
+
+	// Array get-tier: Ok only when the whole read is Good, so `.unwrap_or(def)`
+	// gives the convenience "the array, or this fallback array" - the array
+	// analogue of the scalar get_*. Per-slot substitution is the full read_*
+	// tier (its `slots`) or the CLI's --default, not this.
+	pub fn get_int_array(&self, path: &str) -> Result<Vec<i64>, Status> {
+		let r = self.read_int_array(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
+
+	pub fn get_float_array(&self, path: &str) -> Result<Vec<f64>, Status> {
+		let r = self.read_float_array(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
+
+	pub fn get_bool_array(&self, path: &str) -> Result<Vec<bool>, Status> {
+		let r = self.read_bool_array(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
+
+	pub fn get_string_array(&self, path: &str) -> Result<Vec<String>, Status> {
+		let r = self.read_string_array(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
+
+	pub fn get_datetime_array(&self, path: &str) -> Result<Vec<ShclDateTime>, Status> {
+		let r = self.read_datetime_array(path);
 		if r.status == Status::Good {
 			Ok(r.value)
 		} else {

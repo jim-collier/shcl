@@ -78,11 +78,14 @@ The Accessor reads in two modes:
 
 - A `#` inside quotes is literal (`url: "http://h/#frag"`), and a `#` inside a raw block is literal.
 
+- Comments are never discarded: the parser carries each one as trivia attached to the tree, and the canonical formatter re-emits them (see Canonical formatter). They play no part in merging, reads, or diagnostics.
+
 ### Whitespace, quoting, and reserved characters
 
 - Whitespace around dots, colons, brackets, commas, and values is insignificant and trimmed. `a . b : "x"` == `a.b:"x"`.
 
-- Quotes are optional. A value or name only *needs* quotes when it contains a **reserved character**: whitespace, `,` `:` `#` `"` `'` `[` `]`. (A `.` is reserved only in *field/path* position, not inside a value: `host: example.com` is fine bare.)
+- Quotes are optional. A **value** only *needs* quotes when it contains a **reserved character**: whitespace, `,` `:` `#` `"` `'` `[` `]`. (A `.` is reserved only in *field/path* position, not inside a value: `host: example.com` is fine bare.)
+- A **field name** is more restricted than a value: bare, it may contain only ASCII letters, digits, `-`, and `_`. A name that contains anything else - a space, a reserved character, or a **non-ASCII** character - must be quoted (`"Straße"`, `"user name"`). A bare name with such a character is a malformed line and is skipped; quote it to keep it.
 
 - Either single or double quotes may wrap a string. Programming-quote rules apply: an unescaped `'` is literal inside `"..."` and vice-versa.
 
@@ -112,7 +115,8 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 - `a.b.c: v` is exactly `a:` / (indent) `b:` / (indent) `c: v`. The `.` stands in for "newline + one deeper indent".
 
-- `field[disc]` selects (or creates) the instance of `field` whose discriminator value is `disc`, then continues the path under it. `base[Boston].metrics.population: 700` is identical to writing `base: Boston` then nesting `metrics` then `population: 700`. The colon before a selector is optional sugar, so `field[disc]` and `field:[disc]` are the same; the colon-less form is also the Accessor's lookup syntax, so a path reads identically whether authored in a file or passed to `Get`.
+- `field[disc]` selects (or creates) the instance of `field` whose discriminator value is `disc`, then continues the path under it. `base[Boston].metrics.population: 700` is identical to writing `base: Boston` then nesting `metrics` then `population: 700`. The colon before a selector is optional sugar, so `field[disc]` and `field:[disc]` are the same; the colon-less form is also the Accessor's lookup syntax, so a path reads identically whether authored in a file or passed to `Get`. Matching is against the instance's **display form** (elements joined with `, `) in both places, so a selector also selects an array-valued instance (`base[Boston, MA]` finds `base: Boston, MA`); a new instance is created only when nothing matches.
+	- A selector on the **last** path segment already supplies that instance's value (the discriminator), so a trailing value has nowhere to bind: `field[disc]: value` is grammar-legal but not a valid binding. The instance is still selected/created from the discriminator, and the trailing value is reported as an `error` diagnostic and dropped. Being an `error`, it fails a Strict load like any other. (A value is fine after a selector that is *not* last, e.g. `base[Boston].population: 700`, where it binds the deeper leaf.)
 
 - Inline and block forms may be freely mixed; the parser normalizes both to the same tree.
 
@@ -124,7 +128,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 - A **repeated leaf line** (`tags: red` then `tags: blue`, no children) is two *instances* of `tags` - not the array `tags: red, blue`. Instances and arrays are separate mechanisms (see below).
 
-- Field names are case-**insensitive**, folding **ASCII `A-Z`/`a-z` only** (`Metrics` == `metrics`). Non-ASCII characters in names never fold (`Straße` != `STRASSE`, `İ` != `i`) - full Unicode case folding is locale-trapped (Turkish dotless-I) and unportable across bindings, so it is deliberately excluded. Discriminator **values** are case-**sensitive** after trimming and quote-stripping (`base: Chicago` and `base: chicago` are two instances).
+- Field names are case-**insensitive**, folding **ASCII `A-Z`/`a-z` only** (`Metrics` == `metrics`). Non-ASCII characters in names never fold (`"Straße"` != `"STRASSE"`, `"İ"` != `"i"`) - full Unicode case folding is locale-trapped (Turkish dotless-I) and unportable across bindings, so it is deliberately excluded. (Such names must be quoted, per the quoting rule above; only their ASCII letters fold.) Discriminator **values** are case-**sensitive** after trimming and quote-stripping (`base: Chicago` and `base: chicago` are two instances).
 
 ## Values and types
 
@@ -132,7 +136,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 ### Strings
 
-Any value can be read as a string. On read: trim surrounding whitespace, strip the outermost quotes (keeping inner whitespace), and apply escapes. A string containing a reserved character must be quoted in the file.
+Any value can be read as a string. On read: trim surrounding whitespace, strip the outermost quotes (keeping inner whitespace), and apply escapes. A string containing a reserved character must be quoted in the file. A multi-element array read as a single string yields its **canonical inline form** - elements minimally quoted, escapes intact, joined with `, ` - so the string re-parses to the same array; per-element unquoting and escapes belong to the array-of-strings read.
 
 ### Integers
 
@@ -210,7 +214,7 @@ An array is multiple values in a **single cell**. It has two interchangeable spe
 
 **Stacked (`*`) form** - an empty-valued field whose child lines are all `*`-marked is the same array, one element per line:
 
-```
+```text
 sizes:
 	* small
 	* medium
@@ -251,7 +255,7 @@ A raw block embeds verbatim multi-line content - a DDL, a code snippet, a templa
 
 - **Fenced, Markdown-style.** A block opens with a run of at least three identical fence characters, `` ``` `` or `~~~`. The opening run's character and length define the block; it closes at the first later line whose trimmed text is a run of the *same* character with length **>=** the opener. (So content may itself contain shorter fences.) An optional info-string may follow the opening fence (e.g. `~~~sql`); it is a free-form advisory label - captured and exposed to the consumer (a raw-block accessor returns it), but never interpreted by the parser. No values are reserved; a consumer may treat it as a content-type hint if it wants.
 
-- **Binding: a fence is a value line for its parent field.** A fence line at child indent binds the block as its parent field's value. If the parent's value is empty, the block fills that instance's value; if the parent already carries a value (or already received a block), the fence creates a **new instance** of the parent field with the block as its value - the same rule as a repeated leaf line. There is no separate "anonymous block" concept: blocks are instances, selected with the normal selectors (`notes[0]`, `notes[#2]`), and identical `(field-name, value)` blocks merge like any other instances.
+- **Binding: a fence is a value line for its parent field.** A fence line at child indent binds the block as its parent field's value. If the parent's value is empty, the block fills that instance's value; if the parent already carries a value (or already received a block), the fence creates a **new instance** of the parent field with the block as its value - the same rule as a repeated leaf line. There is no separate "anonymous block" concept: blocks are instances, selected with the normal selectors (`notes[0]`, `notes[#2]`), and identical `(field-name, value)` blocks merge like any other instances. A block's identity is its content **plus its info-string** (a `sql` and a `python` block are distinct even with equal bodies); the fence character and length are spelling, not identity.
 
 - **Same-line spelling:** the fence may also open on the field's own line (`path.name: ~~~sql` ... close fence). Identical tree; the child-indent spelling is canonical. The info-string rides the fence line in both spellings.
 
@@ -286,7 +290,7 @@ The library is uniform across languages; each binding realizes the same concepts
 
 - **Tier 3**: everything else (C#, Java (+ Kotlin), JavaScript (+ TypeScript), ...) - after v1.0, corpus-gated, designed-for from the start.
 
-- **CLI wrappers**: POSIX sh and PowerShell are thin wrappers around the `shcl` CLI, not independent parsers - they inherit conformance from Tier 1 for free.
+- **CLI wrappers**: Bash and PowerShell are thin wrappers around the `shcl` CLI, not independent parsers - they inherit conformance from Tier 1 for free.
 
 The consumer-facing surface has two halves: the **Accessor** reads values (by lookup or traversal), and the **Writer** emits them.
 
@@ -336,7 +340,7 @@ The convenience tier has the same shape everywhere - a mandatory, call-site-visi
 | PowerShell | `[int]$pop = $doc.GetIntOr($path, 0)`         | `$r = $doc.GetInt($path)  # .Value .Status`        |
 | POSIX sh   | `pop=$(shcl get --int --default=0 f 'path')`  | `shcl get --int f 'path'; status=$?`               |
 
-The array, bool, float, datetime, string, and raw forms follow the same two-tier pattern (`GetIntArrayOr`, `GetBoolOr`, ...); only the coercion target changes. The full tier is one representation of the `Flag`-mode status described above; the convenience tier is `Default` mode with the fallback the caller passed.
+The array, bool, float, datetime, string, and raw forms follow the same two-tier pattern (`GetIntArrayOr`, `GetBoolOr`, ...); only the coercion target changes. The full tier is one representation of the `Flag`-mode status described above; the convenience tier is `Default` mode with the fallback the caller passed. For array reads the convenience fallback is the whole default array (returned unless the read is `Good`); per-slot substitution into a partially-resolved array is the full tier's per-slot status or the CLI's `--default`, not the convenience form.
 
 ### Status sentinels
 
@@ -359,6 +363,9 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 - Selector forms: `[Boston]` (bare non-numeric = value), `[0]` (bare numeric = index), `["2020"]` (quoted = value even if numeric), `[#2]` (explicit index).
 
 - `field[*]` is a wildcard returning every instance's value as an array: `GetIntArray("base[*].metrics.population")`. The result is positionally aligned to the instances - one slot per instance, in file order. If an instance lacks the sub-path, its slot is kept (status `NotFound`, taking the zero/default per `onBad`); slots are never silently dropped, so indices stay aligned with `Instances(field)`/`Count(field)`. A legitimately absent sub-path is not malformed, so it produces no diagnostic.
+	- Every array read carries one status per slot alongside the values (a slot list on the result). Each slot reads like a scalar of the target type: `Good`, `Empty` (empty value), `NotFound` (missing sub-path), `BadType` (uncoercible, raw block, or array where one scalar is expected), or `Multiple` (sub-path ambiguous within that instance). The read's aggregate status is the worst slot, so a partial miss can never report `Good`.
+	- `Instances` on a wildcard path keeps unresolved slots in the enumeration as empty strings, preserving index alignment with the read and with `Count` (which counts slots).
+	- With `onBad=default`, the supplied default substitutes per bad slot; resolved slots keep their values.
 
 - `Instances(field)` and `Count(field)` enumerate instances by value or index.
 
@@ -366,13 +373,14 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 
 ### Diagnostics and writing
 
-- Loading also yields a list of structured **diagnostics** (line number + reason + severity) for every skipped or repaired line, which the consumer may inspect or ignore. Severity is `error` (a line was skipped or repaired) or `hint` (legal input that looks like a common mistake, e.g. the repeated-leaf array hint). The split matters for Strict mode: only `error` diagnostics fail a strict load.
+- Loading also yields a list of structured **diagnostics** (line number + severity + a stable **code** + a human message) for every skipped or repaired line, which the consumer may inspect or ignore. Severity is `error` (a line was skipped or repaired) or `hint` (legal input that looks like a common mistake, e.g. the repeated-leaf array hint). The split matters for Strict mode: only `error` diagnostics fail a strict load.
+	- The **code** (`E001..`, `H001..`) is the portable contract - the same kind of problem carries the same code in every binding. The human **message** is a free, per-binding voice and is not part of the contract. The `shcl check` CLI reflects this: it prints `line N: severity: CODE` to stdout (compared across bindings) and the prose message to stderr (dropped by the differential check). `check` exits nonzero when any `error` diagnostic is present - not only on a strict load failure - so a CI gate on `check` catches dropped lines at any strictness.
 
-- The **Writer** handles the reverse of the Accessor: emit values, defaults, and comment sections, and canonicalize a file (see below).
+- The **Writer** handles the reverse of the Accessor: emit values, defaults, and comment sections, and canonicalize a file (see below). It mirrors the Accessor's typed-entry-point shape - a `Set<T>` per type (`SetInt`/`SetString`/.../`SetRaw`) and their array forms - so a programmatic value lands as canonical text with no consumer-side formatting. Each setter is the exact inverse of the matching read: `SetString` re-quotes and escapes so the value reads back verbatim; `SetFloat`/`SetInt` emit the same canonical number text the reader accepts; `SetDateTime` stores the canonical spelling; `SetRaw` picks a fence long enough that the content cannot close it early. A **set** creates the path (intermediate nodes as needed) and replaces the value at the leaf; a `[value]`/`[#index]` selector on the path targets a specific instance (a `[value]` selector creates the instance if absent). Companions round out the surface: `Set<T>Default` writes only when the path does not already resolve (the "emit defaults" half), `Exists` reports presence, `SetComment` attaches a leading comment line (creating an empty node so a section can be annotated), and `Remove` deletes the node(s) at a path. After any edits, the canonical formatter emits the result; a written document is a formatter fixpoint like any other canonical output.
 
 ## Canonical formatter
 
-The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`).
+The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`). It loads at the requested strictness like every other operation; a strict-failing document formats nothing (the load failure is the result).
 
 - Block (indented) form, tabs for indentation.
 
@@ -380,11 +388,15 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 
 - Collapse and merge redundant sections and paths.
 
+- Preserve comments as attached trivia. A whole-line comment attaches to the node bound by the next non-comment line and re-emits just above that node's line, at its indent; a trailing comment stays on its line, two spaces before the `#`. Comment text is never rewritten.
+
+- When instances merge, their comments concatenate in encounter order; a second trailing comment moves to the lines above (a canonical line has room for one). Comments among stacked-list elements ride the list's field line. Comments after the last binding line re-emit at the end of the output, unindented.
+
 - Quote a value only when a reserved character requires it (minimal quoting).
 
 - Leave scalar text exactly as authored; raw blocks are re-emitted verbatim. A block value canonicalizes to the child-indent spelling - bare `name:`, fence (with its info-string) on the next line at child indent - one field line per block instance.
 
-- Two narrow exceptions keep round-trips exact. If an *earlier* instance of the same field under the same parent is empty, the child-indent header line would merge into it on re-read and the fence would fill that instance - so the formatter emits that block in the same-line spelling instead. And an info-string that *starts with* the fence character gets one space after the fence, so it cannot lengthen the fence run on re-read.
+- Two narrow exceptions keep round-trips exact. If an *earlier* instance of the same field under the same parent is empty, the child-indent header line would merge into it on re-read and the fence would fill that instance - so the formatter emits that block in the same-line spelling instead. And an info-string that *starts with* the fence character gets one space after the fence, so it cannot lengthen the fence run on re-read. A block emitted in the same-line spelling also moves any trailing comment to the lines above - after the fence it could read as part of the info-string on re-read.
 
 ## Error handling philosophy
 
@@ -418,7 +430,7 @@ Notes:
 
 ## Cross-language parity and conformance
 
-The guarantee is the corpus, not the binding count: **every shipped binding is corpus-green**. A binding that has not passed the full conformance corpus is not shipped, full stop. A companion surface (C++/Kotlin/TypeScript) inherits its core's conformance for free, and the CLI-wrapper bindings (POSIX sh, PowerShell) inherit the Tier 1 CLI's. The safeguards:
+The guarantee is the corpus, not the binding count: **every shipped binding is corpus-green**. A binding that has not passed the full conformance corpus is not shipped, full stop. A companion surface (C++/Kotlin/TypeScript) inherits its core's conformance for free, and the CLI-wrapper bindings (Bash, PowerShell) inherit the Tier 1 CLI's. The safeguards:
 
 - This spec plus `grammar.abnf` are the single source of truth; behavior is specified, not left to each implementation.
 

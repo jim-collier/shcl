@@ -91,6 +91,26 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 			&& i < dump_max
 		{
 			let _ = std::fs::write(format!("{}/fuzz_{:05}.shcl", dir, i), &text);
+			// Also emit a derived reads.tsv for a small subset, so the differential
+			// check exercises the accessor surface (coercion, levels, arrays) over
+			// fuzz soup, not just fmt. Capped so the cross-binding replay stays cheap.
+			if i < 30 {
+				let paths = Document::parse(&text).paths();
+				if !paths.is_empty() {
+					let mut tsv = String::from("query\ttype\texpected\tstatus\tlevel\n");
+					for p in paths.iter().take(3) {
+						for (ty, lvl) in [
+							("string", ""),
+							("int", "loose"),
+							("bool", "strict"),
+							("string[]", ""),
+						] {
+							tsv.push_str(&format!("{}\t{}\t-\t-\t{}\n", p, ty, lvl));
+						}
+					}
+					let _ = std::fs::write(format!("{}/fuzz_{:05}.reads.tsv", dir, i), tsv);
+				}
+			}
 		}
 		// Must never panic at any strictness; Strict may (validly) refuse the load.
 		let _ = Document::parse_with(&text, Strictness::Loose);
@@ -107,6 +127,54 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 			twice, once,
 			"formatter not idempotent at iteration {} for mutated input:\n{}",
 			i, text
+		);
+	}
+}
+
+/// Writer round-trip: a set_string value must read back verbatim (encode is the
+/// exact inverse of the string read), survive emit + reparse, and leave the
+/// document a formatter fixpoint - even for the reserved/escape/fence hazards.
+#[test]
+fn writer_roundtrips_and_stays_fixpoint() {
+	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(300);
+	let mut rng = Rng(0x5EED_0000_1234_ABCD);
+	let rand_str = |rng: &mut Rng| -> String {
+		let len = rng.below(12);
+		(0..len)
+			.map(|_| INTERESTING[rng.below(INTERESTING.len())])
+			.collect()
+	};
+	for i in 0..iters {
+		let s = rand_str(&mut rng);
+		let mut d = Document::new();
+		d.set_string("k", &s);
+		// In-memory: encode is the exact inverse of the scalar string read.
+		let mem = d.read_string("k");
+		assert_eq!(mem.value, s, "in-memory set/read #{} for {:?}", i, s);
+		// Through emit + reparse: the value survives quoting/escaping intact.
+		let text = d.to_canonical();
+		let rt = Document::parse(&text).read_string("k");
+		assert_eq!(rt.value, s, "reparse round-trip #{} for {:?}", i, s);
+		assert_eq!(
+			Document::parse(&text).to_canonical(),
+			text,
+			"writer output not a fixpoint #{} for {:?}",
+			i,
+			s
+		);
+		// Array form: each element unquotes/unescapes back to itself.
+		let b = rand_str(&mut rng);
+		let mut da = Document::new();
+		da.set_string_array("k", &[s.as_str(), b.as_str()]);
+		let ra = Document::parse(&da.to_canonical()).read_string_array("k");
+		assert_eq!(
+			ra.value,
+			vec![s.clone(), b.clone()],
+			"array round-trip #{}",
+			i
 		);
 	}
 }

@@ -1,0 +1,12 @@
+# build a config from an empty base
+comment	port	# listen port
+int	port	8080
+string	name	web 01
+bool	debug	false
+float	ratio	0.5
+int-array	ports	80	443	8080
+string-array	hosts	alpha	beta	gamma
+datetime	when	2026-07-12T10:00:00Z
+empty	section
+int-default	port	1
+int-default	timeout	30

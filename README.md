@@ -10,7 +10,7 @@
 [![made-with-python](https://img.shields.io/badge/Made%20with-Python-1f425f.svg)](https://www.python.org/)
 ![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
 [![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
-![Lifecycle: Alpha](https://img.shields.io/badge/Lifecycle-Alpha-orange)
+![Lifecycle: Beta](https://img.shields.io/badge/Lifecycle-Beta-yellow)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Support](https://img.shields.io/badge/Support-Maintained-brightgreen)
 
@@ -59,7 +59,7 @@
 
 </div>
 
-> *Ships as: a complete specification and grammar; plus one drop-in source file per language; plus Rust (reference), Go, Python, and C/C++ bindings + CLI. Bindings are byte-for-byte identical. Plus a thin Bash wrapper over the Rust binary. MIT License.*
+> *Ships as: a complete specification and grammar; plus one drop-in source file per language; plus Rust (reference), Go, Python, and C/C++ bindings + CLI. Bindings are byte-for-byte identical. Plus thin Bash and PowerShell wrappers over the CLI. MIT License.*
 
 <!-- TOC ignore:true -->
 ## Table of contents
@@ -224,20 +224,23 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 ## Status
 
-Alpha, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
+Beta, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
 
 - **Language spec and formal grammar** - done. [`project/spec.md`](project/spec.md), [`project/grammar.abnf`](project/grammar.abnf).
 - **Conformance corpus** - the golden cases every binding must pass. Green and growing.
 - **Rust reference parser + the `shcl` CLI** - done, corpus-green. This is the source of truth every other binding is measured against.
 - **Independent parsers in Go, C (with a C++ veneer), and Python** - done, corpus-green, and checked byte-for-byte against the reference on every build.
-- **Bash wrapper** - done. It calls the CLI, so it inherits conformance for free.
+- **Bash and PowerShell wrappers** - done. They call the CLI, so they inherit conformance for free.
+- **Read and write** - done. Every binding reads and writes, comments survive a format round-trip, and `check` reports stable diagnostic codes.
+- **Latest pre-release** - `v1.0.0-beta2`, with prebuilt binaries and checksums on the releases page.
 
-What is not done yet: a tagged release with prebuilt binaries and packages, the schema and layered-loading power layer, and the remaining Tier 3 bindings. Star or watch the repo to catch the first release.
+What is not done yet: packages for the common package managers, the schema and layered-loading power layer, and the remaining Tier 3 bindings. Star or watch the repo to follow along.
 
 ## Installing
 
-No tagged release yet, so there are no prebuilt binaries or packages to install. Two options in the meantime:
+The latest pre-release, `v1.0.0-beta2`, has prebuilt CLI binaries and checksums on the [releases page](https://github.com/jim-collier/shcl/releases). No package-manager packages yet. Three options:
 
+- **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page.
 - **Drop-in** - copy one source file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
 - **Build the CLI from source** - see below.
 

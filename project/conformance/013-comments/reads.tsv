@@ -1,0 +1,14 @@
+query	type	expected	status	level
+-	load	ok	-
+-	load	ok	-	loose
+-	load	fail	-	strict
+app	string	-	Multiple
+app[0]	string	demo	Good
+app	count	2	Good
+app.deep.path	string	-	Empty
+server.host	string	example.com	Good
+server.port	int	8080	Good
+items	string[]	one|two	Good
+items	count	1	Good
+flag	bool	true	Good
+logs	raw	# not a comment, content	Good

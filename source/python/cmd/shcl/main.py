@@ -7,6 +7,7 @@
 # byte for byte, so any drift here fails the pipeline.
 
 import os
+import signal
 import sys
 
 # The single-file library sits two directories up (lib in source/python/, CLI in
@@ -15,29 +16,45 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realp
 import shcl  # noqa: E402
 
 # Keep in step with source/rust/Cargo.toml, the canonical version source.
-VERSION = "1.0.0-beta1"
+VERSION = "1.0.0-beta2"
 
 HELP = """shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
-  shcl fmt [--write] FILE                print (or rewrite) the canonical form
+  shcl set [options] FILE                apply write-ops (stdin) and print canonical
+  shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+  shcl help | version                    this help, or the version (also -h/--help, -V/--version)
+
+set reads a write-ops script from stdin (one op per line, tab-separated) and
+prints the canonical document. FILE is the base ('-' = empty base). Ops:
+  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
+  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
+  <type>[-array]-default<TAB>...                          set only if absent
+  raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block
+  empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
+string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 
 Types (default --string):
-  --int --float --bool --datetime --string --raw
+  --int --float --bool --datetime --string --raw --rawinfo
   --array                                read the value as an array of the type
+  --rawinfo reads a raw block's info-string (the fence tag), not its content
 
 Options:
   --default=VALUE                        value to print when the read is not Good
-                                         (implies --on-bad=default)
+                                         (implies --on-bad=default; for arrays,
+                                         substituted per bad slot)
   --on-bad=error|default|flag            error: fail loudly; default: print the
                                          default; flag: print the value anyway and
                                          report via exit code (the default mode)
+  --slots                                prefix each line with its slot status and
+                                         a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
 
+Value options accept either spelling: --default=VALUE or --default VALUE.
 FILE may be '-' for stdin.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
@@ -50,11 +67,12 @@ def status_code(st):
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "default", "on_bad", "strictness", "write", "args")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "args")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
 		self.array = False
+		self.slots = False
 		self.default = None
 		self.on_bad = "flag"     # error|default|flag
 		self.strictness = shcl.Strictness.Standard
@@ -62,33 +80,51 @@ class _Opts:
 		self.args = []           # positional: FILE [PATH]
 
 
+def _set_value_opt(o, name, v):
+	if name == "--default":
+		o.default = v
+		o.on_bad = "default"
+	elif name == "--on-bad":
+		if v not in ("error", "default", "flag"):
+			raise ValueError("bad --on-bad value: {}".format(v))
+		o.on_bad = v
+	elif name == "--strictness":
+		s = shcl.Strictness.from_arg(v)
+		if s is None:
+			raise ValueError("bad --strictness value: {}".format(v))
+		o.strictness = s
+
+
 def parse_opts(argv):
 	o = _Opts()
-	for a in argv:
-		if a in ("--int", "--float", "--bool", "--datetime", "--string", "--raw"):
+	# Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
+	i = 0
+	while i < len(argv):
+		a = argv[i]
+		if a in ("--int", "--float", "--bool", "--datetime", "--string", "--raw", "--rawinfo"):
 			o.kind = a[2:]
 		elif a == "--array":
 			o.array = True
+		elif a == "--slots":
+			o.slots = True
 		elif a in ("--write", "-w"):
 			o.write = True
+		elif a in ("--default", "--on-bad", "--strictness"):
+			i += 1
+			if i >= len(argv):
+				raise ValueError("missing value for {0} (try {0}=VALUE)".format(a))
+			_set_value_opt(o, a, argv[i])
 		elif a.startswith("--default="):
-			o.default = a[len("--default="):]
-			o.on_bad = "default"
+			_set_value_opt(o, "--default", a[len("--default="):])
 		elif a.startswith("--on-bad="):
-			v = a[len("--on-bad="):]
-			if v not in ("error", "default", "flag"):
-				raise ValueError("bad --on-bad value: {}".format(v))
-			o.on_bad = v
+			_set_value_opt(o, "--on-bad", a[len("--on-bad="):])
 		elif a.startswith("--strictness="):
-			v = a[len("--strictness="):]
-			s = shcl.Strictness.from_arg(v)
-			if s is None:
-				raise ValueError("bad --strictness value: {}".format(v))
-			o.strictness = s
+			_set_value_opt(o, "--strictness", a[len("--strictness="):])
 		elif a.startswith("-") and len(a) > 1:
 			raise ValueError("unknown option: {}".format(a))
 		else:
 			o.args.append(a)
+		i += 1
 	return o
 
 
@@ -154,13 +190,14 @@ def do_get(o):
 		elif o.kind == "datetime":
 			r = doc.read_datetime_array(path)
 			lines = [str(v) for v in r.value]
-		elif o.kind == "raw":
-			sys.stderr.write("--raw has no --array form\n")
+		elif o.kind in ("raw", "rawinfo"):
+			sys.stderr.write("--{} has no --array form\n".format(o.kind))
 			return 1
 		else:
 			r = doc.read_string_array(path)
 			lines = r.value
 		status = r.status
+		slots = r.slots
 	else:
 		if o.kind == "int":
 			r = doc.read_int(path)
@@ -172,27 +209,62 @@ def do_get(o):
 			r = doc.read_datetime(path)
 		elif o.kind == "raw":
 			r = doc.read_raw(path)
+		elif o.kind == "rawinfo":
+			r = doc.read_raw_info(path)
 		else:
 			r = doc.read_string(path)
-		if o.kind in ("string", "raw"):
+		if o.kind in ("string", "raw", "rawinfo"):
 			lines = [r.value]
 		else:
 			lines = [_fmt_scalar(o.kind, r.value)]
 		status = r.status
+		slots = []
+
+	def slot_at(i):
+		# Per-line slot status: falls back to the aggregate for scalar reads.
+		return slots[i] if i < len(slots) else status
+
+	def emit(lns):
+		for i, ln in enumerate(lns):
+			if o.slots:
+				print("{}\t{}".format(slot_at(i).name, ln))
+			else:
+				print(ln)
 
 	if status == shcl.Status.Good or (status == shcl.Status.Empty and o.on_bad == "flag"):
-		for l in lines:
-			print(l)
+		emit(lines)
 		return status_code(status)
 	if o.on_bad == "default":
-		print(o.default if o.default is not None else "")
+		dv = o.default if o.default is not None else ""
+		if slots:
+			# Array read: the default substitutes per bad slot; alignment holds.
+			emit([ln if slot_at(i) == shcl.Status.Good else dv for i, ln in enumerate(lines)])
+		elif o.slots:
+			print("{}\t{}".format(status.name, dv))
+		else:
+			print(dv)
 		return 0
 	if o.on_bad == "error":
-		sys.stderr.write("{}: {}\n".format(path, status.name))
+		type_name = "{} array".format(o.kind) if o.array else o.kind
+		if status == shcl.Status.BadType:
+			raw = doc.read_string(path).raw
+			reason = (
+				'value "{}" is not a valid {}'.format(raw, type_name)
+				if raw is not None
+				else "value is not a valid {}".format(type_name)
+			)
+		elif status == shcl.Status.NotFound:
+			reason = "no value at that path"
+		elif status == shcl.Status.Empty:
+			reason = "the value is empty"
+		else:
+			reason = "the path matches multiple instances"
+		sys.stderr.write(
+			"shcl: cannot read {} as {}: {} (in {})\n".format(path, type_name, reason, file)
+		)
 		return status_code(status)
 	# flag: print the zero/empty value anyway; the exit code carries the status.
-	for l in lines:
-		print(l)
+	emit(lines)
 	return status_code(status)
 
 
@@ -201,13 +273,19 @@ def do_fmt(o):
 		sys.stderr.write("fmt needs FILE (see --help)\n")
 		return 1
 	file = o.args[0]
+	if o.write and file == "-":
+		sys.stderr.write("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
+		return 1
 	try:
 		text = read_input(file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
-	canonical = shcl.Document.parse(text).to_canonical()
-	if o.write and file != "-":
+	doc, code = load_doc(text, o.strictness)
+	if doc is None:
+		return code
+	canonical = doc.to_canonical()
+	if o.write:
 		try:
 			with open(file, "w", encoding="utf-8", newline="") as f:
 				f.write(canonical)
@@ -216,6 +294,131 @@ def do_fmt(o):
 			return 1
 	else:
 		sys.stdout.write(canonical)
+	return 0
+
+
+def _unescape_ops(s):
+	# Decode an ops value: \n \t \\ only; other `\x` stays verbatim.
+	out = []
+	i = 0
+	while i < len(s):
+		c = s[i]
+		if c != "\\" or i + 1 >= len(s):
+			out.append(c)
+			i += 1
+			continue
+		nxt = s[i + 1]
+		if nxt == "n":
+			out.append("\n")
+		elif nxt == "t":
+			out.append("\t")
+		elif nxt == "\\":
+			out.append("\\")
+		else:
+			out.append("\\")
+			out.append(nxt)
+		i += 2
+	return "".join(out)
+
+
+def _op_dt(s):
+	dt = shcl.parse_datetime(s)
+	if dt is None:
+		raise ValueError("bad datetime: {}".format(s))
+	return dt
+
+
+def apply_op(doc, line):
+	f = line.split("\t")
+
+	def get(i):
+		return f[i] if i < len(f) else ""
+
+	path, v = get(1), get(2)
+	arr = f[2:] if len(f) > 2 else []
+	op = f[0]
+	if op == "int":
+		doc.set_int(path, int(v))
+	elif op == "float":
+		doc.set_float(path, float(v))
+	elif op == "bool":
+		doc.set_bool(path, v == "true")
+	elif op == "string":
+		doc.set_string(path, _unescape_ops(v))
+	elif op == "datetime":
+		doc.set_datetime(path, _op_dt(v))
+	elif op == "int-default":
+		doc.set_int_default(path, int(v))
+	elif op == "float-default":
+		doc.set_float_default(path, float(v))
+	elif op == "bool-default":
+		doc.set_bool_default(path, v == "true")
+	elif op == "string-default":
+		doc.set_string_default(path, _unescape_ops(v))
+	elif op == "datetime-default":
+		doc.set_datetime_default(path, _op_dt(v))
+	elif op == "int-array":
+		doc.set_int_array(path, [int(x) for x in arr])
+	elif op == "float-array":
+		doc.set_float_array(path, [float(x) for x in arr])
+	elif op == "bool-array":
+		doc.set_bool_array(path, [x == "true" for x in arr])
+	elif op == "string-array":
+		doc.set_string_array(path, [_unescape_ops(x) for x in arr])
+	elif op == "datetime-array":
+		doc.set_datetime_array(path, [_op_dt(x) for x in arr])
+	elif op == "int-array-default":
+		doc.set_int_array_default(path, [int(x) for x in arr])
+	elif op == "float-array-default":
+		doc.set_float_array_default(path, [float(x) for x in arr])
+	elif op == "bool-array-default":
+		doc.set_bool_array_default(path, [x == "true" for x in arr])
+	elif op == "string-array-default":
+		doc.set_string_array_default(path, [_unescape_ops(x) for x in arr])
+	elif op == "datetime-array-default":
+		doc.set_datetime_array_default(path, [_op_dt(x) for x in arr])
+	elif op == "raw":
+		doc.set_raw(path, _unescape_ops(get(3)), v)
+	elif op == "raw-default":
+		doc.set_raw_default(path, _unescape_ops(get(3)), v)
+	elif op == "empty":
+		doc.set_empty(path)
+	elif op == "comment":
+		doc.set_comment(path, v)
+	elif op == "remove":
+		doc.remove(path)
+	else:
+		raise ValueError("unknown op: {}".format(op))
+
+
+def do_set(o):
+	if len(o.args) != 1:
+		sys.stderr.write("set needs FILE (ops on stdin; see --help)\n")
+		return 1
+	file = o.args[0]
+	# Base doc: '-' means an empty base, since stdin carries the ops script.
+	if file == "-":
+		text = ""
+	else:
+		try:
+			text = read_input(file)
+		except (OSError, ValueError) as e:
+			sys.stderr.write(str(e) + "\n")
+			return 1
+	doc, code = load_doc(text, o.strictness)
+	if doc is None:
+		return code
+	ops = sys.stdin.buffer.read().decode("utf-8", "replace")
+	for n, line in enumerate(ops.split("\n")):
+		line = line[:-1] if line.endswith("\r") else line
+		if line == "" or line.startswith("#"):
+			continue
+		try:
+			apply_op(doc, line)
+		except ValueError as e:
+			sys.stderr.write("op line {}: {}\n".format(n + 1, e))
+			return 1
+	sys.stdout.write(doc.to_canonical())
 	return 0
 
 
@@ -228,16 +431,28 @@ def do_check(o):
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
+	strict_failed = False
 	try:
-		doc = shcl.Document.parse_with(text, o.strictness)
+		diags = shcl.Document.parse_with(text, o.strictness).diagnostics()
 	except shcl.LoadError as le:
-		for d in le.diagnostics:
-			print("line {}: {}: {}".format(d.line, d.severity.name, d.message))
-		print(str(le))
+		diags = le.diagnostics
+		strict_failed = True
+	# stdout carries the stable codes - the cross-binding contract. The prose is
+	# per-binding voice and goes to stderr (which the differential check drops).
+	errors = 0
+	for d in diags:
+		print("line {}: {}: {}".format(d.line, d.severity.name, d.code))
+		sys.stderr.write("line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+		if d.severity == shcl.Severity.Error:
+			errors += 1
+	if strict_failed:
+		print("strict load failed: {} diagnostic(s)".format(len(diags)))
 		return 6
-	for d in doc.diagnostics():
-		print("line {}: {}: {}".format(d.line, d.severity.name, d.message))
-	print("ok ({} diagnostic(s))".format(len(doc.diagnostics())))
+	if errors > 0:
+		# Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
+		print("failed: {} diagnostic(s), {} error(s)".format(len(diags), errors))
+		return 6
+	print("ok ({} diagnostic(s))".format(len(diags)))
 	return 0
 
 
@@ -263,12 +478,20 @@ def do_enum(o, want_count):
 
 
 def run(argv):
+	# Undecodable argv bytes arrive as surrogate-escaped chars; reject like the
+	# reference (exit 1) instead of feeding a garbled path or query downstream.
+	for a in argv:
+		try:
+			a.encode("utf-8")
+		except UnicodeEncodeError:
+			sys.stderr.write("invalid argument encoding (expected UTF-8)\n")
+			return 1
 	wants_help = any(a in ("-h", "--help") for a in argv)
 	wants_version = any(a in ("-V", "--version") for a in argv)
-	if not argv or wants_help:
+	if not argv or wants_help or argv[0] == "help":
 		sys.stdout.write(HELP)
 		return 1 if not argv else 0
-	if wants_version:
+	if wants_version or argv[0] == "version":
 		print("shcl {}".format(VERSION))
 		return 0
 	try:
@@ -279,6 +502,8 @@ def run(argv):
 	cmd = argv[0]
 	if cmd == "get":
 		return do_get(o)
+	if cmd == "set":
+		return do_set(o)
 	if cmd == "fmt":
 		return do_fmt(o)
 	if cmd == "check":
@@ -292,12 +517,13 @@ def run(argv):
 
 
 def main():
-	# Deep nesting is bounded in practice, but give the recursive formatter margin.
-	sys.setrecursionlimit(20000)
-	try:
-		return run(sys.argv[1:])
-	except BrokenPipeError:
-		return 0
+	# Restore the default SIGPIPE disposition: Python installs SIG_IGN, which turns
+	# a closed stdout into a BrokenPipeError instead of the conventional signal
+	# death (exit 141). With SIG_DFL a broken pipe kills us like head/cat, matching
+	# the other bindings; no BrokenPipeError to catch.
+	if hasattr(signal, "SIGPIPE"):
+		signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+	return run(sys.argv[1:])
 
 
 if __name__ == "__main__":

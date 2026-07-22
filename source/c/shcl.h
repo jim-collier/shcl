@@ -51,11 +51,13 @@ typedef struct { int     value;  shcl_status status; } shcl_read_bool;
 typedef struct { shcl_str value; shcl_status status; } shcl_read_str;
 typedef struct { shcl_datetime value; shcl_status status; } shcl_read_dt;
 
-typedef struct { int64_t *values; size_t n; shcl_status status; } shcl_read_i64_arr;
-typedef struct { double  *values; size_t n; shcl_status status; } shcl_read_f64_arr;
-typedef struct { int     *values; size_t n; shcl_status status; } shcl_read_bool_arr;
-typedef struct { shcl_str *values; size_t n; shcl_status status; } shcl_read_str_arr;
-typedef struct { shcl_datetime *values; size_t n; shcl_status status; } shcl_read_dt_arr;
+// Array results also carry one status per slot (element, or wildcard instance)
+// in statuses[0..n); status is then the worst slot. NULL on whole-path errors.
+typedef struct { int64_t *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_i64_arr;
+typedef struct { double  *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_f64_arr;
+typedef struct { int     *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_bool_arr;
+typedef struct { shcl_str *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_str_arr;
+typedef struct { shcl_datetime *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_dt_arr;
 
 // Parse never fails: bad lines are skipped and diagnosed. Text need not be NUL
 // terminated. Free with shcl_free.
@@ -73,6 +75,9 @@ size_t shcl_diag_count(const shcl_doc *d);
 size_t shcl_diag_line(const shcl_doc *d, size_t i);
 shcl_severity shcl_diag_severity(const shcl_doc *d, size_t i);
 shcl_str shcl_diag_message(const shcl_doc *d, size_t i);
+// Stable machine code (E001.., H001..) identifying the diagnostic kind - the
+// contract; the message prose is a free, per-binding voice. NUL-terminated.
+const char *shcl_diag_code(const shcl_doc *d, size_t i);
 
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The
 // returned bytes live in the document's arena; valid until shcl_free.
@@ -95,6 +100,49 @@ shcl_read_f64_arr  shcl_read_float_array(shcl_doc *d, const char *path, size_t p
 shcl_read_bool_arr shcl_read_bool_array(shcl_doc *d, const char *path, size_t plen);
 shcl_read_dt_arr   shcl_read_datetime_array(shcl_doc *d, const char *path, size_t plen);
 shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t plen);
+
+// Convenience tier: the value, or the call-site fallback unless the read is Good
+// - so a missing/empty/bad/ambiguous read cannot masquerade as a real zero. The
+// string/datetime/raw and array reads keep the shcl_read_* status tier above.
+int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def);
+double  shcl_get_float(shcl_doc *d, const char *path, size_t plen, double def);
+int     shcl_get_bool(shcl_doc *d, const char *path, size_t plen, int def);
+
+// --- Writer: typed emit, defaults, comments, structural edits ---------------
+// The reverse of the reads. Each setter builds the canonical stored text for a
+// typed value and places it at a path (creating intermediate nodes). New values
+// are copied into the arena, so the caller's buffers need not outlive the call.
+shcl_doc *shcl_new(void); // an empty document (start point for generation)
+int shcl_exists(shcl_doc *d, const char *path, size_t plen);       // 0/1
+size_t shcl_remove(shcl_doc *d, const char *path, size_t plen);    // count deleted
+void shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
+void shcl_set_empty(shcl_doc *d, const char *path, size_t plen);
+
+void shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v);
+void shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v);
+void shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v);
+void shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen);
+void shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt);
+void shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen);
+
+void shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n);
+void shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n);
+void shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n);
+void shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n);
+void shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n);
+
+// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+void shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v);
+void shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v);
+void shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v);
+void shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen);
+void shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt);
+void shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen);
+void shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n);
+void shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n);
+void shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n);
+void shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n);
+void shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n);
 
 // CLI/aliases: 1|2|3 or loose|standard|strict. Returns 1 on success.
 int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out);
@@ -297,6 +345,7 @@ typedef struct {
 } Value;
 
 DEFINE_VEC(VecSize, size_t)
+DEFINE_VEC(VecS, S)
 
 typedef struct {
 	S name;
@@ -304,11 +353,17 @@ typedef struct {
 	VecSize children;
 	size_t parent;
 	size_t line;
-	int star_list;
+	int star_list;  /* value built from stacked "* " lines */
+	int star_mixed; /* mix of "* " and field children already diagnosed */
+	/* Comment trivia, verbatim from `#` to end of line. Never part of identity
+	   or reads; merged instances concatenate leading, first trailing wins
+	   (later ones demote to leading - a canonical line has room for one). */
+	VecS leading;
+	S trailing; /* n == 0 = none */
 } Node;
 DEFINE_VEC(VecNode, Node)
 
-typedef struct { size_t line; shcl_severity sev; S message; } Diag;
+typedef struct { size_t line; shcl_severity sev; S message; const char *code; } Diag;
 DEFINE_VEC(VecDiag, Diag)
 
 struct shcl_doc {
@@ -316,6 +371,7 @@ struct shcl_doc {
 	VecNode nodes;
 	VecDiag diags;
 	shcl_strictness strictness;
+	VecS orphans; /* comments after the last binding line */
 };
 #define ROOT ((size_t)0)
 #define NODE(d, i) ((d)->nodes.data[i])
@@ -323,17 +379,28 @@ struct shcl_doc {
 static Value v_empty(void) { Value v; memset(&v, 0, sizeof v); v.kind = V_EMPTY; return v; }
 static int v_is_empty(const Value *v) { return v->kind == V_EMPTY; }
 
-// Merge key: nodes with equal (name, key) collapse into one. Built exactly like
-// the reference (NUL-separated cell texts) so any pathological collision matches.
+// Merge key: nodes with equal (name, key) collapse into one. Each cell element
+// (and the raw info-string) is length-prefixed so the joined key is injective: a
+// bare NUL separator lets `[a, b]` collide with the single element "a\0b" (NUL is
+// legal in a quoted string), silently merging them.
 static S value_key(Arena *a, const Value *v) {
 	SB s = {0};
+	char nb[24];
 	if (v->kind == V_EMPTY) { sb_putc(a, &s, 'e'); return sb_S(&s); }
 	if (v->kind == V_CELL) {
 		sb_puts(a, &s, "c:");
-		for (size_t i = 0; i < v->nels; i++) { sb_putc(a, &s, '\0'); sb_putS(a, &s, v->els[i].text); }
+		for (size_t i = 0; i < v->nels; i++) {
+			snprintf(nb, sizeof nb, "%zu:", v->els[i].text.n);
+			sb_puts(a, &s, nb);
+			sb_putS(a, &s, v->els[i].text);
+		}
 		return sb_S(&s);
 	}
-	sb_puts(a, &s, "r:"); sb_putS(a, &s, v->content); return sb_S(&s);
+	/* Info-string is part of identity (a `sql` and a `python` block are
+	   different values even with equal bodies); fence style is not. */
+	snprintf(nb, sizeof nb, "%zu:", v->info.n);
+	sb_puts(a, &s, "r:"); sb_puts(a, &s, nb); sb_putS(a, &s, v->info); sb_putS(a, &s, v->content);
+	return sb_S(&s);
 }
 static S value_display(Arena *a, const Value *v) {
 	if (v->kind == V_EMPTY) return s_empty();
@@ -345,16 +412,19 @@ static S value_display(Arena *a, const Value *v) {
 
 // --- lexical helpers ---------------------------------------------------------
 
-// Strip an unquoted trailing comment. A backslash shields the next char.
-static S strip_comment(S s) {
+// Split off an unquoted trailing comment: returns the content, *comment gets
+// the tail from `#` on (n == 0 = none). A backslash shields the next char.
+// Comments are kept as trivia.
+static S split_comment(S s, S *comment) {
 	uint32_t inq = 0; // 0 = none, else the open quote codepoint
 	size_t i = 0;
+	*comment = s_empty();
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
 		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
 		if (inq) { if (c == inq) inq = 0; }
 		else if (c == '"' || c == '\'') inq = c;
-		else if (c == '#') return s_slice(s, 0, i);
+		else if (c == '#') { *comment = s_slice(s, i, s.n); return s_slice(s, 0, i); }
 		i += l;
 	}
 	return s;
@@ -473,13 +543,13 @@ static int is_fence_close(S line, unsigned char ch, size_t min_len) {
 // --- path scanner ------------------------------------------------------------
 
 typedef enum { SEL_NONE, SEL_VALUE, SEL_INDEX, SEL_WILDCARD } seltag;
-typedef struct { seltag tag; S value; size_t index; } Selector;
+typedef struct { seltag tag; S value; uint64_t index; } Selector; // u64: width must not vary with target pointer size
 typedef struct { S name; Selector sel; } Segment;
 DEFINE_VEC(VecSeg, Segment)
 typedef struct { int ok; VecSeg segs; int has_value; S value_text; S err; } PathScan;
 
 // usize parse: optional single leading '+', >=1 digit, no overflow.
-static int parse_usize(S s, size_t *out) {
+static int parse_u64(S s, uint64_t *out) {
 	size_t i = 0;
 	if (i < s.n && s.p[i] == '+') i++;
 	if (i >= s.n) return 0;
@@ -490,7 +560,7 @@ static int parse_usize(S s, size_t *out) {
 		if (v > (UINT64_MAX - (c - '0')) / 10) return 0;
 		v = v * 10 + (c - '0');
 	}
-	*out = (size_t)v; return 1;
+	*out = v; return 1;
 }
 
 static void skip_ws_cp(CPs c, size_t *pos) {
@@ -547,12 +617,12 @@ static PathScan scan_path(Arena *a, S input) {
 				size_t start = pos;
 				while (pos < c.n && c.cp[pos] != ']') pos++;
 				S body = s_trim(cps_slice(input, c, start, pos));
-				size_t idx;
+				uint64_t idx;
 				if (body.n == 1 && body.p[0] == '*') {
 					sel.tag = SEL_WILDCARD;
-				} else if (body.n >= 1 && body.p[0] == '#' && parse_usize(s_slice(body, 1, body.n), &idx)) {
+				} else if (body.n >= 1 && body.p[0] == '#' && parse_u64(s_slice(body, 1, body.n), &idx)) {
 					sel.tag = SEL_INDEX; sel.index = idx;
-				} else if (parse_usize(body, &idx)) {
+				} else if (parse_u64(body, &idx)) {
 					sel.tag = SEL_INDEX; sel.index = idx;
 				} else if (body.n == 0) {
 					ps.err = s_lit("empty selector"); return ps;
@@ -586,14 +656,14 @@ static void sb_put_u64(Arena *a, SB *s, uint64_t v) {
 	if (v == 0) t[j++] = '0';
 	while (v) { t[j++] = (char)('0' + (v % 10)); v /= 10; }
 	char o[24]; for (int k = 0; k < j; k++) o[k] = t[j - 1 - k];
+	// cppcheck-suppress uninitvar  ## j >= 1 always (v==0 writes '0'), so o[0..j-1] is filled
 	sb_put(a, s, o, (size_t)j);
 }
 static int s_contains_char(S s, char c) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == c) return 1; return 0; }
 
-DEFINE_VEC(VecS, S)
 typedef struct { S indent; size_t node; } StackEnt;
 DEFINE_VEC(VecStack, StackEnt)
-typedef struct { int present; size_t idx; } Slot;
+typedef struct { int present; size_t idx; shcl_status miss; } Slot;
 DEFINE_VEC(VecSlot, Slot)
 
 // --- coercion ("intelligent but safe"; Loose re-admits a closed list) --------
@@ -627,7 +697,9 @@ static int parse_i64_s(S t, int64_t *out) {
 	return 1;
 }
 // magnitude hex in [0, INT64_MAX]; overflow -> fail.
-static int parse_hex_i64(S h, int64_t *out) {
+// The magnitude, as u64 (guarded against u64 overflow). The sign range-check is
+// the caller's, so the negative i64_min magnitude (0x8000000000000000) reads.
+static int parse_hex_u64(S h, uint64_t *out) {
 	uint64_t v = 0;
 	for (size_t i = 0; i < h.n; i++) {
 		unsigned char c = (unsigned char)h.p[i]; int d;
@@ -635,10 +707,10 @@ static int parse_hex_i64(S h, int64_t *out) {
 		else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
 		else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
 		else return 0;
-		if (v > ((uint64_t)INT64_MAX - d) / 16) return 0;
-		v = v * 16 + d;
+		if (v > (UINT64_MAX - (uint64_t)d) / 16) return 0;
+		v = v * 16 + (uint64_t)d;
 	}
-	*out = (int64_t)v; return 1;
+	*out = v; return 1;
 }
 static void split_byte(Arena *a, S s, char sep, VecS *out) {
 	size_t start = 0;
@@ -703,7 +775,18 @@ static int parse_int_text(Arena *a, const Element *e, shcl_strictness level, int
 	else if (t.n > 0 && t.p[0] == '+') { hex = s_slice(t, 1, t.n); }
 	if (s_starts(hex, "0x") || s_starts(hex, "0X")) {
 		S h = s_slice(hex, 2, hex.n);
-		if (all_ahex(h)) { int64_t v; if (!parse_hex_i64(h, &v)) return 0; *out = neg ? -v : v; return 1; }
+		if (all_ahex(h)) {
+			uint64_t m; if (!parse_hex_u64(h, &m)) return 0;
+			if (neg) {
+				if (m == (uint64_t)INT64_MAX + 1) *out = INT64_MIN;
+				else if (m <= (uint64_t)INT64_MAX) *out = -(int64_t)m;
+				else return 0;
+			} else {
+				if (m <= (uint64_t)INT64_MAX) *out = (int64_t)m;
+				else return 0;
+			}
+			return 1;
+		}
 	}
 	if (e->quoted && s_contains_char(t, ',')) {
 		S sign_body = t;
@@ -942,10 +1025,81 @@ static int parse_datetime(Arena *a, S text, shcl_datetime *out) {
 
 // --- parser ------------------------------------------------------------------
 
-typedef struct { shcl_doc *d; VecStack stack; } Parser;
+/* Per-node (name, value-key) -> first matching child. Pure lookup accelerator
+   for select_or_create (the linear scan was O(children^2) per parent); the
+   children vec keeps the order. Chained buckets, entries arena-allocated; a
+   value that mutates in place (empty field filled, star element added) moves
+   its entry via remap_child. */
+typedef struct CMapEnt { struct CMapEnt *next; uint64_t hash; S name; S key; size_t val; } CMapEnt;
+typedef struct { CMapEnt **buckets; size_t cap, len; } CMap;
+DEFINE_VEC(VecMap, CMap)
 
+static uint64_t cmap_hash(S name, S key) {
+	uint64_t h = 1469598103934665603ull;
+	for (size_t i = 0; i < name.n; i++) { h ^= (unsigned char)name.p[i]; h *= 1099511628211ull; }
+	h ^= 0xFFu; h *= 1099511628211ull; /* separator; equality still compares both parts */
+	for (size_t i = 0; i < key.n; i++) { h ^= (unsigned char)key.p[i]; h *= 1099511628211ull; }
+	return h;
+}
+static size_t cmap_get(const CMap *m, uint64_t h, S name, S key) {
+	if (!m->cap) return (size_t)-1;
+	for (CMapEnt *e = m->buckets[h & (m->cap - 1)]; e; e = e->next)
+		if (e->hash == h && s_eq(e->name, name) && s_eq(e->key, key)) return e->val;
+	return (size_t)-1;
+}
+static void cmap_put(Arena *a, CMap *m, uint64_t h, S name, S key, size_t val) {
+	if (m->len + 1 > m->cap - m->cap / 4) { /* grow at 75%; also covers cap 0 */
+		size_t nc = m->cap ? m->cap * 2 : 8;
+		CMapEnt **nb = (CMapEnt **)arena_alloc(a, nc * sizeof(CMapEnt *));
+		memset(nb, 0, nc * sizeof(CMapEnt *));
+		for (size_t b = 0; b < m->cap; b++)
+			for (CMapEnt *e = m->buckets[b], *nx; e; e = nx) {
+				nx = e->next;
+				size_t d = e->hash & (nc - 1);
+				e->next = nb[d]; nb[d] = e;
+			}
+		m->buckets = nb; m->cap = nc;
+	}
+	CMapEnt *e = (CMapEnt *)arena_alloc(a, sizeof *e);
+	e->hash = h; e->name = name; e->key = key; e->val = val;
+	size_t b = h & (m->cap - 1);
+	e->next = m->buckets[b]; m->buckets[b] = e;
+	m->len++;
+}
+/* Unlink the (name, key) entry, but only if it points at this node. */
+static void cmap_del(CMap *m, uint64_t h, S name, S key, size_t val) {
+	if (!m->cap) return;
+	for (CMapEnt **pp = &m->buckets[h & (m->cap - 1)]; *pp; pp = &(*pp)->next) {
+		CMapEnt *e = *pp;
+		if (e->hash == h && e->val == val && s_eq(e->name, name) && s_eq(e->key, key)) { *pp = e->next; m->len--; return; }
+	}
+}
+
+/* pending: whole-line comments waiting for the next line that binds a node. */
+typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecS pending; } Parser;
+
+// The one place prose couples to a code, so the wording stays free everywhere else.
+static const char *diag_code(shcl_severity sev, S msg) {
+	if (sev == SHCL_SEV_HINT) return "H001"; // the only hint kind
+	if (s_starts(msg, "field mixed with list elements")) return "E001";
+	if (s_starts(msg, "value after selector on ")) return "E002";
+	if (s_starts(msg, "no instance ")) return "E003";
+	if (s_starts(msg, "wildcard selector is query-only")) return "E004";
+	if (s_starts(msg, "unterminated raw block")) return "E005";
+	if (s_starts(msg, "raw block with no parent field")) return "E006";
+	if (s_starts(msg, "list element with no parent field")) return "E007";
+	if (s_starts(msg, "list element mixed with field children")) return "E008";
+	if (s_starts(msg, "empty list element")) return "E009";
+	if (s_starts(msg, "bare comma in list element")) return "E010";
+	if (s_starts(msg, "field already has a value")) return "E011";
+	if (s_starts(msg, "indentation matches no open level")) return "E012";
+	if (s_starts(msg, "malformed line skipped")) return "E014";
+	if (s_starts(msg, "malformed line: ")) return "E013";
+	if (s_starts(msg, "missing colon")) return "E015";
+	return "E000";
+}
 static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, S msg) {
-	Diag dg; dg.line = line; dg.sev = sev; dg.message = msg;
+	Diag dg; dg.line = line; dg.sev = sev; dg.message = msg; dg.code = diag_code(sev, msg);
 	VecDiag_push(&d->arena, &d->diags, dg);
 }
 static void p_err(Parser *P, size_t line, S msg) { push_diag(P->d, line, SHCL_SEV_ERROR, msg); }
@@ -953,20 +1107,51 @@ static void p_err(Parser *P, size_t line, S msg) { push_diag(P->d, line, SHCL_SE
 static size_t select_or_create(Parser *P, size_t parent, S name, Value value, size_t line) {
 	Arena *a = &P->d->arena;
 	S key = value_key(a, &value);
-	VecSize ch = NODE(P->d, parent).children;
-	for (size_t k = 0; k < ch.len; k++) {
-		size_t c = ch.data[k];
-		if (s_eq(NODE(P->d, c).name, name)) {
-			S ck = value_key(a, &NODE(P->d, c).value);
-			if (s_eq(ck, key)) return c;
-		}
-	}
+	uint64_t h = cmap_hash(name, key);
+	size_t found = cmap_get(&P->cmaps.data[parent], h, name, key);
+	if (found != (size_t)-1) return found;
 	size_t idx = P->d->nodes.len;
 	Node n; memset(&n, 0, sizeof n);
-	n.name = s_dup(a, name); n.value = value; n.parent = parent; n.line = line; n.star_list = 0;
+	n.name = s_dup(a, name); n.value = value; n.parent = parent; n.line = line; n.star_list = 0; n.star_mixed = 0;
 	VecNode_push(a, &P->d->nodes, n);
 	VecSize_push(a, &NODE(P->d, parent).children, idx);
+	CMap empty; memset(&empty, 0, sizeof empty);
+	VecMap_push(a, &P->cmaps, empty);
+	/* store the arena-owned name; the caller's may point into the input buffer */
+	cmap_put(a, &P->cmaps.data[parent], h, NODE(P->d, idx).name, key, idx);
 	return idx;
+}
+
+/* A node's value mutated in place: move its map entry from the old key to the
+   new one. First-wins on both sides so lookups keep matching the earliest
+   sibling, like the scan did. */
+static void remap_child(Parser *P, size_t node, S old_key) {
+	Arena *a = &P->d->arena;
+	size_t parent = NODE(P->d, node).parent;
+	S name = NODE(P->d, node).name;
+	CMap *m = &P->cmaps.data[parent];
+	cmap_del(m, cmap_hash(name, old_key), name, old_key, node);
+	S new_key = value_key(a, &NODE(P->d, node).value);
+	uint64_t h = cmap_hash(name, new_key);
+	if (cmap_get(m, h, name, new_key) == (size_t)-1) cmap_put(a, m, h, name, new_key, node);
+}
+
+/* Hand pending leading comments (and this line's trailing one) to a node.
+   First trailing wins; a later one demotes to leading so nothing is lost.
+   Comments are dup'd into the arena; the caller's text buffer may not outlive
+   the document. */
+static void attach_trivia(Parser *P, size_t node, S trailing) {
+	Arena *a = &P->d->arena;
+	for (size_t k = 0; k < P->pending.len; k++) {
+		S c = s_dup(a, P->pending.data[k]);
+		VecS_push(a, &NODE(P->d, node).leading, c);
+	}
+	P->pending.len = 0;
+	if (trailing.n) {
+		S t = s_dup(a, trailing);
+		if (NODE(P->d, node).trailing.n == 0) NODE(P->d, node).trailing = t;
+		else VecS_push(a, &NODE(P->d, node).leading, t);
+	}
 }
 
 static int resolve_parent(Parser *P, S indent, size_t *out) {
@@ -985,17 +1170,35 @@ static int resolve_parent(Parser *P, S indent, size_t *out) {
 
 static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Value value, size_t line, size_t *out) {
 	Arena *a = &P->d->arena;
+	/* Field child under a stacked list: diagnose the mix once, keep the field. */
+	if (NODE(P->d, parent).star_list && !NODE(P->d, parent).star_mixed) {
+		NODE(P->d, parent).star_mixed = 1;
+		p_err(P, line, s_lit("field mixed with list elements"));
+	}
 	size_t cur = parent;
 	for (size_t i = 0; i < nsegs; i++) {
 		Segment *seg = &segs[i];
 		int is_last = (i + 1 == nsegs);
 		switch (seg->sel.tag) {
 		case SEL_VALUE: {
-			Value disc; memset(&disc, 0, sizeof disc); disc.kind = V_CELL;
-			Element *e = (Element *)arena_alloc(a, sizeof(Element));
-			e->text = s_dup(a, seg->sel.value); e->quoted = 0;
-			disc.els = e; disc.nels = 1;
-			cur = select_or_create(P, cur, seg->name, disc, line);
+			/* Same display() predicate resolution uses, so a selector also
+			   selects an array-valued instance instead of creating a spurious
+			   second one. Create only when nothing matches. */
+			VecSize ch = NODE(P->d, cur).children;
+			size_t found = (size_t)-1;
+			for (size_t k = 0; k < ch.len; k++) {
+				size_t c = ch.data[k];
+				if (s_eq(NODE(P->d, c).name, seg->name) && s_eq(value_display(a, &NODE(P->d, c).value), seg->sel.value)) { found = c; break; }
+			}
+			if (found != (size_t)-1) {
+				cur = found;
+			} else {
+				Value disc; memset(&disc, 0, sizeof disc); disc.kind = V_CELL;
+				Element *e = (Element *)arena_alloc(a, sizeof(Element));
+				e->text = s_dup(a, seg->sel.value); e->quoted = 0;
+				disc.els = e; disc.nels = 1;
+				cur = select_or_create(P, cur, seg->name, disc, line);
+			}
 			if (is_last && !v_is_empty(&value)) {
 				SB m = {0}; sb_puts(a, &m, "value after selector on '"); sb_putS(a, &m, seg->name); sb_puts(a, &m, "' ignored");
 				p_err(P, line, sb_S(&m));
@@ -1053,31 +1256,40 @@ static Value consume_raw(Parser *P, S *lines, size_t nlines, size_t i, size_t op
 	return v;
 }
 
-static void bind_block(Parser *P, size_t parent, Value value, size_t line) {
-	if (parent == ROOT) { p_err(P, line, s_lit("raw block with no parent field")); return; }
-	if (v_is_empty(&NODE(P->d, parent).value)) NODE(P->d, parent).value = value;
-	else {
-		S name = NODE(P->d, parent).name; size_t gp = NODE(P->d, parent).parent;
-		select_or_create(P, gp, name, value, line);
+/* Returns the node the block landed on ((size_t)-1 = no parent, diagnosed). */
+static size_t bind_block(Parser *P, size_t parent, Value value, size_t line) {
+	if (parent == ROOT) { p_err(P, line, s_lit("raw block with no parent field")); return (size_t)-1; }
+	if (v_is_empty(&NODE(P->d, parent).value)) {
+		S old_key = value_key(&P->d->arena, &NODE(P->d, parent).value);
+		NODE(P->d, parent).value = value;
+		remap_child(P, parent, old_key);
+		return parent;
 	}
+	S name = NODE(P->d, parent).name; size_t gp = NODE(P->d, parent).parent;
+	return select_or_create(P, gp, name, value, line);
 }
 
 static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
 	Arena *a = &P->d->arena;
 	if (parent == ROOT) { p_err(P, line, s_lit("list element with no parent field")); return; }
+	/* Uniform-or-nothing (spec): a mix with field children is not a block array. */
+	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, s_lit("list element mixed with field children; ignored")); return; }
 	S trimmed = s_trim(body);
 	if (trimmed.n == 0) { p_err(P, line, s_lit("empty list element")); return; }
 	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, s_lit("bare comma in list element (one element per line)")); return; }
 	Element el;
 	if (!parse_element(a, trimmed, &el)) { p_err(P, line, s_lit("empty list element")); return; }
 	Node *node = &NODE(P->d, parent);
+	S old_key = value_key(a, &node->value);
 	if (node->value.kind == V_EMPTY) {
 		Element *arr = (Element *)arena_alloc(a, sizeof(Element)); arr[0] = el;
 		node->value.kind = V_CELL; node->value.els = arr; node->value.nels = 1; node->star_list = 1;
+		remap_child(P, parent, old_key);
 	} else if (node->value.kind == V_CELL && node->star_list) {
 		Element *arr = (Element *)arena_alloc(a, (node->value.nels + 1) * sizeof(Element));
 		memcpy(arr, node->value.els, node->value.nels * sizeof(Element)); arr[node->value.nels] = el;
 		node->value.els = arr; node->value.nels++;
+		remap_child(P, parent, old_key);
 	} else {
 		p_err(P, line, s_lit("field already has a value; list element ignored"));
 	}
@@ -1087,15 +1299,17 @@ static void emit_repeated_leaf_hints(Parser *P) {
 	Arena *a = &P->d->arena;
 	for (size_t parent = 0; parent < P->d->nodes.len; parent++) {
 		VecS names = {0}; VecSize *groups = NULL; size_t ngroups = 0, cgroups = 0;
+		CMap group_of; memset(&group_of, 0, sizeof group_of);
 		VecSize ch = NODE(P->d, parent).children;
 		for (size_t k = 0; k < ch.len; k++) {
 			size_t c = ch.data[k]; S nm = NODE(P->d, c).name;
-			size_t g = (size_t)-1;
-			for (size_t j = 0; j < names.len; j++) if (s_eq(names.data[j], nm)) { g = j; break; }
+			uint64_t h = cmap_hash(nm, s_empty());
+			size_t g = cmap_get(&group_of, h, nm, s_empty());
 			if (g == (size_t)-1) {
 				VecS_push(a, &names, nm);
 				if (ngroups == cgroups) { size_t nc = cgroups ? cgroups * 2 : 8; groups = (VecSize *)arena_grow(a, groups, cgroups, nc, sizeof(VecSize)); cgroups = nc; }
 				memset(&groups[ngroups], 0, sizeof(VecSize)); g = ngroups++;
+				cmap_put(a, &group_of, h, nm, s_empty(), g);
 			}
 			VecSize_push(a, &groups[g], c);
 		}
@@ -1124,8 +1338,9 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	Arena *a = &d->arena;
 	Node root; memset(&root, 0, sizeof root); root.value = v_empty(); root.parent = 0; root.line = 0;
 	VecNode_push(a, &d->nodes, root);
-	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack);
+	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps); memset(&P.pending, 0, sizeof P.pending);
 	StackEnt e0; e0.indent = s_empty(); e0.node = ROOT; VecStack_push(a, &P.stack, e0);
+	CMap m0; memset(&m0, 0, sizeof m0); VecMap_push(a, &P.cmaps, m0);
 
 	S full; full.p = text ? text : ""; full.n = len;
 	if (full.n >= 3 && (unsigned char)full.p[0] == 0xEF && (unsigned char)full.p[1] == 0xBB && (unsigned char)full.p[2] == 0xBF) full = s_slice(full, 3, full.n);
@@ -1148,25 +1363,37 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		size_t ind = 0; while (ind < line.n && (line.p[ind] == ' ' || line.p[ind] == '\t')) ind++;
 		S indent = s_slice(line, 0, ind);
 		S rest = s_slice(line, ind, line.n);
-		if (rest.n == 0 || rest.p[0] == '#') { i++; continue; }
+		if (rest.n == 0) { i++; continue; }
+		/* Whole-line comment: hold it for the next line that binds a node. */
+		if (rest.p[0] == '#') { VecS_push(a, &P.pending, rest); i++; continue; }
 		Fence f = fence_open(a, rest);
 		if (f.ok) {
 			size_t parent;
 			if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); i++; continue; }
 			size_t next; Value val = consume_raw(&P, lines.data, lines.len, i + 1, lineno, f.ch, f.len, f.info, &next);
-			bind_block(&P, parent, val, lineno); i = next; continue;
+			size_t bnode = bind_block(&P, parent, val, lineno);
+			if (bnode != (size_t)-1) attach_trivia(&P, bnode, s_empty());
+			i = next; continue;
 		}
 		if (rest.n >= 1 && rest.p[0] == '*') {
 			S after = s_slice(rest, 1, rest.n);
 			if (after.n >= 1 && (after.p[0] == ' ' || after.p[0] == '\t')) {
 				size_t parent;
 				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); i++; continue; }
-				add_star_element(&P, parent, strip_comment(after), lineno); i++; continue;
+				S ecomment; S body = split_comment(after, &ecomment);
+				/* Elements have no node of their own; trivia rides the field. */
+				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
+				add_star_element(&P, parent, body, lineno); i++; continue;
 			}
 			p_err(&P, lineno, s_lit("malformed line: '*' must be followed by a space")); i++; continue;
 		}
-		S content = trim_end(strip_comment(rest));
-		if (content.n == 0) { i++; continue; }
+		S comment; S before = split_comment(rest, &comment);
+		S content = trim_end(before);
+		if (content.n == 0) {
+			/* Only a comment survived (e.g. an escaped lead-in); keep it. */
+			if (comment.n) VecS_push(a, &P.pending, comment);
+			i++; continue;
+		}
 		size_t parent;
 		if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); i++; continue; }
 		PathScan scan = scan_path(a, content);
@@ -1182,11 +1409,15 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		}
 		size_t node;
 		if (attach_path(&P, parent, scan.segs.data, scan.segs.len, value, lineno, &node)) {
+			attach_trivia(&P, node, comment);
 			StackEnt se; se.indent = s_dup(a, indent); se.node = node; VecStack_push(a, &P.stack, se);
 		}
 		i = next;
 	}
 	emit_repeated_leaf_hints(&P);
+	/* Comments that never found a following line; dup - they point into the
+	   caller's text buffer. */
+	for (size_t k = 0; k < P.pending.len; k++) VecS_push(a, &d->orphans, s_dup(a, P.pending.data[k]));
 	return d;
 }
 
@@ -1222,9 +1453,13 @@ static Resolved resolve_from(shcl_doc *d, size_t *start, size_t nstart, Segment 
 			Segment *rest = segs + si + 1; size_t nrest = nsegs - si - 1;
 			VecSlot slots = {0};
 			for (size_t k = 0; k < next.len; k++) {
-				Slot sl; sl.present = 0; sl.idx = 0;
+				Slot sl; sl.present = 0; sl.idx = 0; sl.miss = SHCL_NOT_FOUND;
 				if (nrest == 0) { sl.present = 1; sl.idx = next.data[k]; }
-				else { size_t inst = next.data[k]; Resolved r = resolve_from(d, &inst, 1, rest, nrest); if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; } }
+				else {
+					size_t inst = next.data[k]; Resolved r = resolve_from(d, &inst, 1, rest, nrest);
+					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
+					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
+				}
 				VecSlot_push(a, &slots, sl);
 			}
 			Resolved R; R.kind = R_SLOTS; R.slots = slots; memset(&R.many, 0, sizeof R.many); R.one = 0;
@@ -1261,29 +1496,45 @@ static shcl_status scalar_at(shcl_doc *d, S path, Element **el) {
 	*el = NULL; return SHCL_BAD_TYPE;
 }
 
-// Element list for array reads; NULL entry => default slot (no BadType).
-static shcl_status array_elements(shcl_doc *d, S path, Element ***els, size_t *n) {
+// Element list for array reads plus a per-slot pre-status: NULL entry => the
+// slot has no coercible scalar and sts[i] already says why (a present element
+// can still turn BadType if coercion fails). Wildcard slots stay aligned - the
+// spec never drops one silently.
+static shcl_status array_elements(shcl_doc *d, S path, Element ***els, shcl_status **sts, size_t *n) {
 	Arena *a = &d->arena;
 	Resolved r;
-	if (!resolve(d, path, &r)) { *els = NULL; *n = 0; return SHCL_NOT_FOUND; }
+	*els = NULL; *sts = NULL; *n = 0;
+	if (!resolve(d, path, &r)) return SHCL_NOT_FOUND;
 	if (r.kind == R_SLOTS) {
 		size_t m = r.slots.len;
 		Element **arr = (Element **)arena_alloc(a, (m ? m : 1) * sizeof(Element *));
+		shcl_status *st = (shcl_status *)arena_alloc(a, (m ? m : 1) * sizeof(shcl_status));
 		for (size_t i = 0; i < m; i++) {
 			arr[i] = NULL;
-			if (r.slots.data[i].present) { Value *v = &NODE(d, r.slots.data[i].idx).value; if (v->kind == V_CELL && v->nels == 1) arr[i] = &v->els[0]; }
+			if (!r.slots.data[i].present) { st[i] = r.slots.data[i].miss; continue; }
+			Value *v = &NODE(d, r.slots.data[i].idx).value;
+			if (v->kind == V_EMPTY) st[i] = SHCL_EMPTY;
+			else if (v->kind == V_CELL && v->nels == 1) { arr[i] = &v->els[0]; st[i] = SHCL_GOOD; }
+			else st[i] = SHCL_BAD_TYPE; // raw block, or an array is not one scalar
 		}
-		*els = arr; *n = m; return m == 0 ? SHCL_EMPTY : SHCL_GOOD;
+		*els = arr; *sts = st; *n = m; return m == 0 ? SHCL_EMPTY : SHCL_GOOD;
 	}
-	if (r.kind == R_NONE) { *els = NULL; *n = 0; return SHCL_NOT_FOUND; }
-	if (r.kind == R_MANY) { *els = NULL; *n = 0; return SHCL_MULTIPLE; }
+	if (r.kind == R_NONE) return SHCL_NOT_FOUND;
+	if (r.kind == R_MANY) return SHCL_MULTIPLE;
 	Value *v = &NODE(d, r.one).value;
-	if (v->kind == V_EMPTY) { *els = NULL; *n = 0; return SHCL_EMPTY; }
-	if (v->kind == V_RAW) { *els = NULL; *n = 0; return SHCL_BAD_TYPE; }
+	if (v->kind == V_EMPTY) return SHCL_EMPTY;
+	if (v->kind == V_RAW) return SHCL_BAD_TYPE;
 	size_t m = v->nels;
 	Element **arr = (Element **)arena_alloc(a, (m ? m : 1) * sizeof(Element *));
-	for (size_t i = 0; i < m; i++) arr[i] = &v->els[i];
-	*els = arr; *n = m; return SHCL_GOOD;
+	shcl_status *st = (shcl_status *)arena_alloc(a, (m ? m : 1) * sizeof(shcl_status));
+	for (size_t i = 0; i < m; i++) { arr[i] = &v->els[i]; st[i] = SHCL_GOOD; }
+	*els = arr; *sts = st; *n = m; return SHCL_GOOD;
+}
+
+static shcl_status worst_slot(const shcl_status *sts, size_t n, shcl_status floor_) {
+	shcl_status w = floor_;
+	for (size_t i = 0; i < n; i++) if (sts[i] > w) w = sts[i];
+	return w;
 }
 
 size_t shcl_count(shcl_doc *d, const char *path, size_t plen) {
@@ -1293,16 +1544,225 @@ size_t shcl_count(shcl_doc *d, const char *path, size_t plen) {
 	return 0;
 }
 size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {
+	// Wildcard slots that did not resolve stay in the list as "" so indices
+	// keep matching shcl_count.
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
-	VecSize nodes = {0}; Resolved r;
-	if (resolve(d, p, &r)) {
-		if (r.kind == R_ONE) VecSize_push(a, &nodes, r.one);
-		else if (r.kind == R_MANY) for (size_t k = 0; k < r.many.len; k++) VecSize_push(a, &nodes, r.many.data[k]);
-		else if (r.kind == R_SLOTS) for (size_t k = 0; k < r.slots.len; k++) if (r.slots.data[k].present) VecSize_push(a, &nodes, r.slots.data[k].idx);
+	Resolved r;
+	if (!resolve(d, p, &r)) { *out = (shcl_str *)arena_alloc(a, sizeof(shcl_str)); return 0; }
+	if (r.kind == R_SLOTS) {
+		size_t m = r.slots.len;
+		shcl_str *arr = (shcl_str *)arena_alloc(a, (m ? m : 1) * sizeof(shcl_str));
+		for (size_t k = 0; k < m; k++)
+			arr[k] = r.slots.data[k].present ? value_display(a, &NODE(d, r.slots.data[k].idx).value) : s_empty();
+		*out = arr; return m;
 	}
+	VecSize nodes = {0};
+	if (r.kind == R_ONE) VecSize_push(a, &nodes, r.one);
+	else if (r.kind == R_MANY) for (size_t k = 0; k < r.many.len; k++) VecSize_push(a, &nodes, r.many.data[k]);
 	shcl_str *arr = (shcl_str *)arena_alloc(a, (nodes.len ? nodes.len : 1) * sizeof(shcl_str));
 	for (size_t k = 0; k < nodes.len; k++) arr[k] = value_display(a, &NODE(d, nodes.data[k]).value);
 	*out = arr; return nodes.len;
+}
+
+// --- Writer ------------------------------------------------------------------
+// The reverse of the reads. Reads and shcl_to_canonical walk the children vecs,
+// so mutating the arena directly is enough - the parser's child map is gone by
+// now. New value text is dup'd into the arena; the caller's buffers may go away.
+
+static S w_dupz(Arena *a, const char *p, size_t n) { S s; s.p = p; s.n = n; return s_dup(a, s); }
+static S w_int_text(Arena *a, int64_t v) { char b[32]; int n = snprintf(b, sizeof b, "%lld", (long long)v); return w_dupz(a, b, (size_t)n); }
+static S w_float_text(Arena *a, double v) { char b[SHCL_F64_BUF]; size_t n = shcl_format_f64(v, b); return w_dupz(a, b, n); }
+static S w_bool_text(int v) { return v ? s_lit("true") : s_lit("false"); }
+static S w_dt_text(Arena *a, const shcl_datetime *dt) { char b[64]; size_t n = shcl_datetime_str(dt, b); return w_dupz(a, b, n); }
+
+// Inverse of a scalar string read (apply_escapes): only backslash, newline, and
+// tab need encoding; emit_element wraps quote/reserved chars, reparse strips it.
+static S w_encode_string(Arena *a, S s) {
+	SB b = {0};
+	for (size_t i = 0; i < s.n; i++) {
+		char c = s.p[i];
+		if (c == '\\') sb_puts(a, &b, "\\\\");
+		else if (c == '\n') sb_puts(a, &b, "\\n");
+		else if (c == '\t') sb_puts(a, &b, "\\t");
+		else sb_putc(a, &b, c);
+	}
+	return sb_S(&b);
+}
+
+// Pick a backtick fence long enough that no content line closes it early.
+static void w_choose_fence(S content, unsigned char *fc, size_t *fl) {
+	size_t maxrun = 0, start = 0;
+	for (size_t i = 0;; i++) {
+		if (i == content.n || content.p[i] == '\n') {
+			S t = s_trim(s_slice(content, start, i));
+			if (t.n > 0) {
+				int all = 1;
+				for (size_t k = 0; k < t.n; k++) if (t.p[k] != '`') { all = 0; break; }
+				if (all && t.n > maxrun) maxrun = t.n;
+			}
+			if (i == content.n) break;
+			start = i + 1;
+		}
+	}
+	*fc = '`'; *fl = maxrun + 1 < 3 ? 3 : maxrun + 1;
+}
+
+static Value w_cell1(Arena *a, S text) {
+	Value v; memset(&v, 0, sizeof v); v.kind = V_CELL;
+	Element *e = (Element *)arena_alloc(a, sizeof(Element)); e->text = text; e->quoted = 0;
+	v.els = e; v.nels = 1; return v;
+}
+// Inline-array value; the empty array is an empty value (reads back Empty).
+static Value w_array(Arena *a, S *texts, size_t n) {
+	if (n == 0) return v_empty();
+	Value v; memset(&v, 0, sizeof v); v.kind = V_CELL;
+	Element *els = (Element *)arena_alloc(a, n * sizeof(Element));
+	for (size_t i = 0; i < n; i++) { els[i].text = texts[i]; els[i].quoted = 0; }
+	v.els = els; v.nels = n; return v;
+}
+
+static size_t w_new_child(shcl_doc *d, size_t parent, S name, Value value) {
+	Arena *a = &d->arena;
+	size_t idx = d->nodes.len;
+	Node n; memset(&n, 0, sizeof n);
+	n.name = s_dup(a, name); n.value = value; n.parent = parent;
+	VecNode_push(a, &d->nodes, n);
+	VecSize_push(a, &NODE(d, parent).children, idx);
+	return idx;
+}
+
+// Walk (creating as needed) to the node a write targets. Returns 1 + *out, or 0
+// if the path is unusable for a write (bad scan, a value part, a wildcard, or a
+// missing indexed instance).
+static int w_place(shcl_doc *d, S path, size_t *out) {
+	Arena *a = &d->arena;
+	PathScan ps = scan_path(a, path);
+	if (!ps.ok || ps.has_value || ps.segs.len == 0) return 0;
+	size_t cur = ROOT;
+	for (size_t i = 0; i < ps.segs.len; i++) {
+		Segment *seg = &ps.segs.data[i];
+		if (seg->sel.tag == SEL_NONE) {
+			size_t found = (size_t)-1;
+			VecSize ch = NODE(d, cur).children;
+			for (size_t k = 0; k < ch.len; k++) if (s_eq(NODE(d, ch.data[k]).name, seg->name)) { found = ch.data[k]; break; }
+			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, v_empty());
+		} else if (seg->sel.tag == SEL_VALUE) {
+			size_t found = (size_t)-1;
+			VecSize ch = NODE(d, cur).children;
+			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(d, c).name, seg->name) && s_eq(value_display(a, &NODE(d, c).value), seg->sel.value)) { found = c; break; } }
+			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, w_cell1(a, s_dup(a, seg->sel.value)));
+		} else if (seg->sel.tag == SEL_INDEX) {
+			size_t match = (size_t)-1, cnt = 0;
+			VecSize ch = NODE(d, cur).children;
+			for (size_t k = 0; k < ch.len; k++) if (s_eq(NODE(d, ch.data[k]).name, seg->name)) { if (cnt == seg->sel.index) { match = ch.data[k]; break; } cnt++; }
+			if (match == (size_t)-1) return 0;
+			cur = match;
+		} else return 0; // wildcard is query-only
+	}
+	*out = cur; return 1;
+}
+
+static void w_set(shcl_doc *d, S path, Value v) {
+	size_t idx; if (w_place(d, path, &idx)) NODE(d, idx).value = v;
+}
+
+shcl_doc *shcl_new(void) { return shcl_parse("", 0); }
+
+int shcl_exists(shcl_doc *d, const char *path, size_t plen) {
+	S p; p.p = path; p.n = plen; Resolved r;
+	if (!resolve(d, p, &r)) return 0;
+	if (r.kind == R_ONE || r.kind == R_MANY) return 1;
+	if (r.kind == R_SLOTS) for (size_t i = 0; i < r.slots.len; i++) if (r.slots.data[i].present) return 1;
+	return 0;
+}
+
+size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; Resolved r;
+	if (!resolve(d, p, &r)) return 0;
+	VecSize targets = {0};
+	if (r.kind == R_ONE) VecSize_push(a, &targets, r.one);
+	else if (r.kind == R_MANY) targets = r.many;
+	else if (r.kind == R_SLOTS) for (size_t i = 0; i < r.slots.len; i++) if (r.slots.data[i].present) VecSize_push(a, &targets, r.slots.data[i].idx);
+	for (size_t i = 0; i < targets.len; i++) {
+		size_t t = targets.data[i]; VecSize *kids = &NODE(d, NODE(d, t).parent).children;
+		size_t w = 0;
+		for (size_t k = 0; k < kids->len; k++) if (kids->data[k] != t) kids->data[w++] = kids->data[k];
+		kids->len = w;
+	}
+	return targets.len;
+}
+
+void shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; size_t idx;
+	if (!w_place(d, p, &idx)) return;
+	S line; line.p = text; line.n = tlen;
+	for (size_t i = 0; i < line.n; i++) if (line.p[i] == '\n') { line.n = i; break; }
+	S out;
+	if (line.n == 0 || line.p[0] != '#') { SB b = {0}; sb_puts(a, &b, "# "); sb_putS(a, &b, line); out = sb_S(&b); }
+	else out = s_dup(a, line);
+	VecS_push(a, &NODE(d, idx).leading, out);
+}
+
+void shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { S p; p.p = path; p.n = plen; w_set(d, p, v_empty()); }
+void shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_int_text(a, v))); }
+void shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_float_text(a, v))); }
+void shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_bool_text(v))); }
+void shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; S in; in.p = s; in.n = slen; w_set(d, p, w_cell1(a, w_encode_string(a, in))); }
+void shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
+void shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
+	S c = w_dupz(a, content, clen), inf = w_dupz(a, info, ilen);
+	unsigned char fc; size_t fl; w_choose_fence(c, &fc, &fl);
+	Value v; memset(&v, 0, sizeof v); v.kind = V_RAW; v.content = c; v.info = inf; v.fence_char = fc; v.fence_len = fl;
+	w_set(d, p, v);
+}
+
+void shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	for (size_t i = 0; i < n; i++) t[i] = w_int_text(a, v[i]);
+	w_set(d, p, w_array(a, t, n));
+}
+void shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	for (size_t i = 0; i < n; i++) t[i] = w_float_text(a, v[i]);
+	w_set(d, p, w_array(a, t, n));
+}
+void shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	for (size_t i = 0; i < n; i++) t[i] = w_bool_text(v[i]);
+	w_set(d, p, w_array(a, t, n));
+}
+void shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	for (size_t i = 0; i < n; i++) { S in; in.p = v[i]; in.n = lens[i]; t[i] = w_encode_string(a, in); }
+	w_set(d, p, w_array(a, t, n));
+}
+void shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	for (size_t i = 0; i < n; i++) t[i] = w_dt_text(a, &v[i]);
+	w_set(d, p, w_array(a, t, n));
+}
+
+void shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) shcl_set_int(d, path, plen, v); }
+void shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v) { if (!shcl_exists(d, path, plen)) shcl_set_float(d, path, plen, v); }
+void shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v) { if (!shcl_exists(d, path, plen)) shcl_set_bool(d, path, plen, v); }
+void shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { if (!shcl_exists(d, path, plen)) shcl_set_string(d, path, plen, s, slen); }
+void shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!shcl_exists(d, path, plen)) shcl_set_datetime(d, path, plen, dt); }
+void shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) { if (!shcl_exists(d, path, plen)) shcl_set_raw(d, path, plen, content, clen, info, ilen); }
+void shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_int_array(d, path, plen, v, n); }
+void shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_float_array(d, path, plen, v, n); }
+void shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_bool_array(d, path, plen, v, n); }
+void shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_string_array(d, path, plen, v, lens, n); }
+void shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_datetime_array(d, path, plen, v, n); }
+
+int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def) {
+	shcl_read_i64 r = shcl_read_int(d, path, plen); return r.status == SHCL_GOOD ? r.value : def;
+}
+double shcl_get_float(shcl_doc *d, const char *path, size_t plen, double def) {
+	shcl_read_f64 r = shcl_read_float(d, path, plen); return r.status == SHCL_GOOD ? r.value : def;
+}
+int shcl_get_bool(shcl_doc *d, const char *path, size_t plen, int def) {
+	shcl_read_bool r = shcl_read_bool_(d, path, plen); return r.status == SHCL_GOOD ? r.value : def;
 }
 
 shcl_read_i64 shcl_read_int(shcl_doc *d, const char *path, size_t plen) {
@@ -1334,13 +1794,21 @@ shcl_read_dt shcl_read_datetime(shcl_doc *d, const char *path, size_t plen) {
 	else { memset(&R.value, 0, sizeof R.value); R.value.zone = SHCL_ZONE_NONE; R.status = SHCL_BAD_TYPE; }
 	return R;
 }
+static S emit_element(Arena *a, const Element *e);
+
 shcl_read_str shcl_read_string(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_str R; S p; p.p = path; p.n = plen; Value *v; shcl_status st = value_at(d, p, &v);
 	if (st != SHCL_GOOD) { R.value = s_empty(); R.status = st; return R; }
 	if (v->kind == V_EMPTY) { R.value = s_empty(); R.status = SHCL_EMPTY; }
 	else if (v->kind == V_RAW) { R.value = v->content; R.status = SHCL_GOOD; }
 	else if (v->nels == 1) { R.value = apply_escapes(&d->arena, v->els[0].text); R.status = SHCL_GOOD; }
-	else { R.value = value_display(&d->arena, v); R.status = SHCL_GOOD; }
+	else {
+		/* Canonical inline form (quoting + escapes intact), so the string
+		   re-parses to the same array - not the bare display join. */
+		Arena *a = &d->arena; SB s = {0};
+		for (size_t i = 0; i < v->nels; i++) { if (i) sb_puts(a, &s, ", "); sb_putS(a, &s, emit_element(a, &v->els[i])); }
+		R.value = sb_S(&s); R.status = SHCL_GOOD;
+	}
 	return R;
 }
 shcl_read_str shcl_read_raw(shcl_doc *d, const char *path, size_t plen) {
@@ -1360,47 +1828,47 @@ shcl_read_str shcl_read_raw_info(shcl_doc *d, const char *path, size_t plen) {
 }
 
 shcl_read_i64_arr shcl_read_int_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_i64_arr R; S p; p.p = path; p.n = plen; Element **els; size_t n;
-	shcl_status st = array_elements(d, p, &els, &n);
-	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; return R; }
-	int64_t *out = (int64_t *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(int64_t)); shcl_status fin = st;
-	for (size_t i = 0; i < n; i++) { int64_t v; if (els[i] && parse_int_text(&d->arena, els[i], d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) fin = SHCL_BAD_TYPE; } }
-	R.values = out; R.n = n; R.status = fin; return R;
+	shcl_read_i64_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_status st = array_elements(d, p, &els, &sts, &n);
+	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
+	int64_t *out = (int64_t *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(int64_t));
+	for (size_t i = 0; i < n; i++) { int64_t v; if (els[i] && parse_int_text(&d->arena, els[i], d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) sts[i] = SHCL_BAD_TYPE; } }
+	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_f64_arr shcl_read_float_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_f64_arr R; S p; p.p = path; p.n = plen; Element **els; size_t n;
-	shcl_status st = array_elements(d, p, &els, &n);
-	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; return R; }
-	double *out = (double *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(double)); shcl_status fin = st;
-	for (size_t i = 0; i < n; i++) { double v; if (els[i] && parse_float_text(&d->arena, els[i], d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) fin = SHCL_BAD_TYPE; } }
-	R.values = out; R.n = n; R.status = fin; return R;
+	shcl_read_f64_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_status st = array_elements(d, p, &els, &sts, &n);
+	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
+	double *out = (double *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(double));
+	for (size_t i = 0; i < n; i++) { double v; if (els[i] && parse_float_text(&d->arena, els[i], d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) sts[i] = SHCL_BAD_TYPE; } }
+	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_bool_arr shcl_read_bool_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_bool_arr R; S p; p.p = path; p.n = plen; Element **els; size_t n;
-	shcl_status st = array_elements(d, p, &els, &n);
-	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; return R; }
-	int *out = (int *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(int)); shcl_status fin = st;
-	for (size_t i = 0; i < n; i++) { int v; if (els[i] && parse_bool_text(&d->arena, els[i]->text, d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) fin = SHCL_BAD_TYPE; } }
-	R.values = out; R.n = n; R.status = fin; return R;
+	shcl_read_bool_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_status st = array_elements(d, p, &els, &sts, &n);
+	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
+	int *out = (int *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(int));
+	for (size_t i = 0; i < n; i++) { int v; if (els[i] && parse_bool_text(&d->arena, els[i]->text, d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) sts[i] = SHCL_BAD_TYPE; } }
+	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_dt_arr shcl_read_datetime_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_dt_arr R; S p; p.p = path; p.n = plen; Element **els; size_t n;
-	shcl_status st = array_elements(d, p, &els, &n);
-	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; return R; }
-	shcl_datetime *out = (shcl_datetime *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_datetime)); shcl_status fin = st;
+	shcl_read_dt_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_status st = array_elements(d, p, &els, &sts, &n);
+	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
+	shcl_datetime *out = (shcl_datetime *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_datetime));
 	for (size_t i = 0; i < n; i++) {
 		memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE;
-		if (els[i]) { if (!parse_datetime(&d->arena, els[i]->text, &out[i])) { memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE; fin = SHCL_BAD_TYPE; } }
+		if (els[i]) { if (!parse_datetime(&d->arena, els[i]->text, &out[i])) { memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE; sts[i] = SHCL_BAD_TYPE; } }
 	}
-	R.values = out; R.n = n; R.status = fin; return R;
+	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_str_arr shcl_read_string_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_str_arr R; S p; p.p = path; p.n = plen; Element **els; size_t n;
-	shcl_status st = array_elements(d, p, &els, &n);
-	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; return R; }
+	shcl_read_str_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_status st = array_elements(d, p, &els, &sts, &n);
+	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
 	shcl_str *out = (shcl_str *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_str));
 	for (size_t i = 0; i < n; i++) out[i] = els[i] ? apply_escapes(&d->arena, els[i]->text) : s_empty();
-	R.values = out; R.n = n; R.status = st; return R;
+	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 
 // --- formatter (canonical output) -------------------------------------------
@@ -1449,26 +1917,45 @@ static S emit_name(Arena *a, S name) {
 	}
 	return quote_text(a, name);
 }
+/* Inline comment, canonically two spaces before the `#`. */
+static void emit_trailing(Arena *a, SB *out, S trailing) {
+	if (trailing.n) { sb_puts(a, out, "  "); sb_putS(a, out, trailing); }
+}
 static void emit_node(shcl_doc *d, size_t idx, size_t depth, SB *out) {
 	Arena *a = &d->arena;
 	Node *node = &NODE(d, idx);
-	for (size_t k = 0; k < depth; k++) sb_putc(a, out, '\t');
-	sb_putS(a, out, emit_name(a, node->name));
-	sb_putc(a, out, ':');
 	Value *v = &node->value;
-	if (v->kind == V_EMPTY) sb_putc(a, out, '\n');
-	else if (v->kind == V_CELL) {
-		sb_putc(a, out, ' ');
-		for (size_t i = 0; i < v->nels; i++) { if (i) sb_puts(a, out, ", "); sb_putS(a, out, emit_element(a, &v->els[i])); }
-		sb_putc(a, out, '\n');
-	} else {
+	/* Same-line fence spelling can't carry an inline comment (an unbalanced
+	   quote in the info-string could hide the `#` on reparse), so its trailing
+	   comment joins the leading lines instead. */
+	int would_merge = 0;
+	if (v->kind == V_RAW) {
 		size_t parent = node->parent;
 		VecSize pch = NODE(d, parent).children; size_t mypos = (size_t)-1;
 		for (size_t k = 0; k < pch.len; k++) if (pch.data[k] == idx) { mypos = k; break; }
-		int would_merge = 0;
 		if (mypos != (size_t)-1)
 			for (size_t k = 0; k < mypos; k++) { size_t c = pch.data[k]; if (s_eq(NODE(d, c).name, node->name) && v_is_empty(&NODE(d, c).value)) { would_merge = 1; break; } }
-		if (would_merge) sb_putc(a, out, ' '); else sb_putc(a, out, '\n');
+	}
+	for (size_t k = 0; k < node->leading.len; k++) {
+		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
+		sb_putS(a, out, node->leading.data[k]); sb_putc(a, out, '\n');
+	}
+	if (would_merge && node->trailing.n) {
+		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
+		sb_putS(a, out, node->trailing); sb_putc(a, out, '\n');
+	}
+	for (size_t k = 0; k < depth; k++) sb_putc(a, out, '\t');
+	sb_putS(a, out, emit_name(a, node->name));
+	sb_putc(a, out, ':');
+	if (v->kind == V_EMPTY) { emit_trailing(a, out, node->trailing); sb_putc(a, out, '\n'); }
+	else if (v->kind == V_CELL) {
+		sb_putc(a, out, ' ');
+		for (size_t i = 0; i < v->nels; i++) { if (i) sb_puts(a, out, ", "); sb_putS(a, out, emit_element(a, &v->els[i])); }
+		emit_trailing(a, out, node->trailing);
+		sb_putc(a, out, '\n');
+	} else {
+		if (would_merge) sb_putc(a, out, ' ');
+		else { emit_trailing(a, out, node->trailing); sb_putc(a, out, '\n'); }
 		if (!would_merge) for (size_t k = 0; k < depth + 1; k++) sb_putc(a, out, '\t');
 		for (size_t k = 0; k < v->fence_len; k++) sb_putc(a, out, (char)v->fence_char);
 		if (v->info.n > 0) { if ((unsigned char)v->info.p[0] == v->fence_char) sb_putc(a, out, ' '); sb_putS(a, out, v->info); }
@@ -1493,6 +1980,8 @@ shcl_str shcl_to_canonical(shcl_doc *d) {
 	SB out = {0};
 	VecSize rc = NODE(d, ROOT).children;
 	for (size_t k = 0; k < rc.len; k++) emit_node(d, rc.data[k], 0, &out);
+	/* Comments that never found a following line re-emit at the end. */
+	for (size_t k = 0; k < d->orphans.len; k++) { sb_putS(&d->arena, &out, d->orphans.data[k]); sb_putc(&d->arena, &out, '\n'); }
 	return sb_S(&out);
 }
 
@@ -1562,6 +2051,7 @@ size_t shcl_diag_count(const shcl_doc *d) { return d->diags.len; }
 size_t shcl_diag_line(const shcl_doc *d, size_t i) { return d->diags.data[i].line; }
 shcl_severity shcl_diag_severity(const shcl_doc *d, size_t i) { return d->diags.data[i].sev; }
 shcl_str shcl_diag_message(const shcl_doc *d, size_t i) { return d->diags.data[i].message; }
+const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i].code; }
 
 #endif // SHCL_IMPLEMENTATION
 #endif // SHCL_H

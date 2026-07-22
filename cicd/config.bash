@@ -37,12 +37,16 @@ FMT_CHECK_CMD=(cargo fmt --check --manifest-path "${MANIFEST}")
 FMT_EXTRA=('gofmt -w source/go')
 FMT_CHECK_EXTRA=('gofmt_diff="$(gofmt -l source/go)"; [[ -z "${gofmt_diff}" ]] || { echo "gofmt: needs formatting: ${gofmt_diff}" >&2; false; }')
 
-## Pinned versions of the cargo-installed helpers the pipeline uses; the engine
+## Pinned versions of the external helper tools the pipeline uses; the engine
 ## warns (non-gating) when an installed tool has drifted from its pin, so a box
 ## update can't silently change results. Format: "name|version|command...".
 ## The rustc/clippy toolchain itself is pinned by rust-toolchain.toml at repo root.
 TOOL_PINS=(
 	"cargo-zigbuild|0.23.0|cargo-zigbuild --version"
+	"ruff|0.15.22|ruff --version"
+	"mypy|2.3.0|mypy --version"
+	"cppcheck|2.17.1|cppcheck --version"
+	"markdownlint-cli2|0.23.1|markdownlint-cli2 --help"
 )
 
 ## Stage 2: debug build (what the tests exercise). Capped at half the cores.
@@ -57,9 +61,20 @@ BUILD_EXTRA=(
 )
 
 ## Stage 3: lint. clippy gates (-D warnings); shellcheck covers the pipeline's own
-## scripts so cicd can't rot silently.
+## scripts so cicd can't rot silently. The extras gate every other binding too:
+## go vet, ruff + mypy (Python), cppcheck (C, exhaustive - ~20s), markdownlint
+## over all tracked .md (config in .markdownlint-cli2.jsonc at repo root), and
+## PSScriptAnalyzer on the ps1 wrapper. shfmt is deliberately NOT here - its
+## output fights the hand-formatted shell style, so it stays interactive-only.
 LINT_CMD=(cargo clippy -j "${CPU_CAP}" --manifest-path "${MANIFEST}" --all-targets -- -D warnings)
-LINT_EXTRA=('go -C source/go vet ./...')
+LINT_EXTRA=(
+	'go -C source/go vet ./...'
+	'ruff check source/python'
+	'env MYPYPATH=source/python mypy source/python/shcl.py source/python/cmd/shcl/main.py source/python/tests/conformance.py'
+	'cppcheck --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
+	'markdownlint-cli2'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Severity Warning,Error -EnableExit"'
+)
 ## n8git_backup-and-publish is excluded: SC1083 false-hits its legitimate git
 ## @{u} upstream refs, and the script is a proven drop-in kept byte-close to its
 ## sibling copies.
@@ -133,14 +148,20 @@ DOGFOOD_FIXED_DESTS=(
 	"${HOME}/synced/0-0/common/exec/util/linux/bin"
 	"/usr/local/sbin"
 )
-## The bash wrapper rides along, renamed to <EXE_NAME>.bash. A missing file is
-## skipped silently. Fix the path here if the wrapper lands elsewhere.
-DOGFOOD_WRAPPER="source/bash/shcl.bash"
-## The wrapper has its own preferred dests (first existing+writable wins), separate
-## from the binary - it's a sourceable include, so it belongs with the bash includes,
-## not on PATH beside the binary. Falls back to the binary's dest if none exist.
-DOGFOOD_WRAPPER_DESTS=(
+## Shell wrappers ride along, each renamed to <EXE_NAME>.<ext>. A missing source is
+## skipped silently. Each has its own preferred dest list (first existing+writable
+## wins), matched by file extension below - a wrapper is a sourceable include, so it
+## belongs with its kind, not on PATH beside the binary; falls back to the binary's
+## dest if none of its own exist.
+DOGFOOD_WRAPPERS=(
+	"source/bash/shcl.bash"
+	"source/powershell/shcl.ps1"
+)
+DOGFOOD_WRAPPER_DESTS_bash=(
 	"${HOME}/synced/0-0/common/exec/util/linux/bash/include"
+)
+DOGFOOD_WRAPPER_DESTS_ps1=(
+	"${HOME}/synced/0-0/common/exec/util/0_crossplatform"
 )
 
 ## Stage 8: demo gif for the README. Rendered from a scripted scenario against the
@@ -171,3 +192,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-07-12 JC: Python binding wired in: py_compile build gate + conformance test extra + third crosscheck entry.
 ##		- 2026-07-13 JC: Dogfood stage: install the native release binary (+ bash wrapper when it exists) to a fixed local dir.
 ##		- 2026-07-13 JC: C binding wired in: cc build extra (-Werror) + conformance/veneer test extras + fourth crosscheck entry.
+##		- 2026-07-18 JC: Lint stage widened: ruff + mypy, cppcheck, markdownlint, PSScriptAnalyzer, with tool pins.

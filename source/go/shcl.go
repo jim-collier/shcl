@@ -63,6 +63,48 @@ type Diagnostic struct {
 	Line     int // 1-based
 	Severity Severity
 	Message  string
+	// Code is the stable machine code (E001.., H001..) identifying the diagnostic
+	// kind - the contract; Message is a free, per-binding voice.
+	Code string
+}
+
+// diagCode maps a diagnostic message to its stable code: the one place prose
+// couples to a code, so the wording stays free everywhere else.
+func diagCode(msg string) string {
+	switch {
+	case strings.HasPrefix(msg, "field mixed with list elements"):
+		return "E001"
+	case strings.HasPrefix(msg, "value after selector on "):
+		return "E002"
+	case strings.HasPrefix(msg, "no instance "):
+		return "E003"
+	case strings.HasPrefix(msg, "wildcard selector is query-only"):
+		return "E004"
+	case strings.HasPrefix(msg, "unterminated raw block"):
+		return "E005"
+	case strings.HasPrefix(msg, "raw block with no parent field"):
+		return "E006"
+	case strings.HasPrefix(msg, "list element with no parent field"):
+		return "E007"
+	case strings.HasPrefix(msg, "list element mixed with field children"):
+		return "E008"
+	case strings.HasPrefix(msg, "empty list element"):
+		return "E009"
+	case strings.HasPrefix(msg, "bare comma in list element"):
+		return "E010"
+	case strings.HasPrefix(msg, "field already has a value"):
+		return "E011"
+	case strings.HasPrefix(msg, "indentation matches no open level"):
+		return "E012"
+	case strings.HasPrefix(msg, "malformed line skipped"):
+		return "E014"
+	case strings.HasPrefix(msg, "malformed line: "):
+		return "E013"
+	case strings.HasPrefix(msg, "missing colon"):
+		return "E015"
+	default:
+		return "E000"
+	}
 }
 
 // Status is the read sentinel. Empty is informational - the empty value is
@@ -95,11 +137,14 @@ func (s Status) String() string {
 
 // Read is the full-tier read result: value plus status plus the original raw
 // text (when the path resolved), so a caller can always recover what was
-// actually in the file.
+// actually in the file. Array reads also carry one status per slot (element,
+// or wildcard instance) in Slots; Status is then the worst slot. Scalar reads
+// leave Slots nil.
 type Read[T any] struct {
 	Value  T
 	Status Status
 	Raw    *string
+	Slots  []Status
 }
 
 func (r Read[T]) OK() bool {
@@ -233,15 +278,22 @@ func (v *value) key() string {
 	case vEmpty:
 		return "e"
 	case vCell:
+		// Length-prefix each element so the joined key is injective: a bare NUL
+		// separator lets `[a, b]` collide with the single element "a\0b" (NUL is
+		// legal in a quoted string), silently merging them.
 		var b strings.Builder
 		b.WriteString("c:")
 		for _, e := range v.els {
-			b.WriteByte(0)
+			b.WriteString(strconv.Itoa(len(e.text)))
+			b.WriteByte(':')
 			b.WriteString(e.text)
 		}
 		return b.String()
 	}
-	return "r:" + v.raw.content
+	// Info-string is part of identity (a `sql` and a `python` block are
+	// different values even with equal bodies); fence style is not. Info is
+	// length-prefixed for the same injectivity reason as cell elements.
+	return "r:" + strconv.Itoa(len(v.raw.info)) + ":" + v.raw.info + v.raw.content
 }
 
 // display is the human form; also what selectors match against (case-sensitive).
@@ -264,12 +316,18 @@ func (v *value) isEmpty() bool {
 }
 
 type nodeData struct {
-	name     string // ASCII-folded to lower; non-ASCII never folds
-	value    value
-	children []int
-	parent   int
-	line     int
-	starList bool // value built from stacked "* " lines
+	name      string // ASCII-folded to lower; non-ASCII never folds
+	value     value
+	children  []int
+	parent    int
+	line      int
+	starList  bool // value built from stacked "* " lines
+	starMixed bool // mix of "* " and field children already diagnosed
+	// Comment trivia, verbatim from `#` to end of line. Never part of identity
+	// or reads; merged instances concatenate leading, first trailing wins
+	// (later ones demote to leading - a canonical line has room for one).
+	leading  []string
+	trailing string // empty = none
 }
 
 // Document is a parsed SHCL document: the tree, its diagnostics, and its
@@ -278,6 +336,7 @@ type Document struct {
 	arena      []nodeData
 	diags      []Diagnostic
 	strictness Strictness
+	orphans    []string // comments after the last binding line
 }
 
 const root = 0
@@ -350,9 +409,10 @@ func leadingWS(s string) string {
 	return s[:i]
 }
 
-// stripComment strips an unquoted trailing comment. A `\` shields the next
-// char throughout.
-func stripComment(s string) string {
+// splitComment splits off an unquoted trailing comment: (content, comment from
+// `#` on, "" = none). A `\` shields the next char throughout. Comments are
+// kept as trivia.
+func splitComment(s string) (string, string) {
 	var inQuote rune
 	skip := false
 	for i, c := range s {
@@ -370,10 +430,10 @@ func stripComment(s string) string {
 		case inQuote == 0 && (c == '"' || c == '\''):
 			inQuote = c
 		case inQuote == 0 && c == '#':
-			return s[:i]
+			return s[:i], s[i:]
 		}
 	}
-	return s
+	return s, ""
 }
 
 // splitUnquotedCommas splits on unquoted commas; `\` shields the next char.
@@ -709,32 +769,68 @@ type parser struct {
 	diags []Diagnostic
 	// (indent, node) for each open level; [0] is the virtual root.
 	stack []stackEnt
+	// Per-node (name, value-key) -> first matching child, parallel to arena.
+	// Pure lookup accelerator for selectOrCreate; children keeps the order.
+	childMap []map[[2]string]int
+	// Whole-line comments waiting for the next line that binds a node.
+	pending []string
 }
 
 func newParser() *parser {
 	return &parser{
-		arena: []nodeData{{}},
-		stack: []stackEnt{{}},
+		arena:    []nodeData{{}},
+		stack:    []stackEnt{{}},
+		childMap: []map[[2]string]int{{}},
 	}
 }
 
 func (p *parser) err(line int, msg string) {
-	p.diags = append(p.diags, Diagnostic{Line: line, Severity: SeverityError, Message: msg})
+	p.diags = append(p.diags, Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: diagCode(msg)})
 }
 
 // selectOrCreate finds (or creates by merge rule) the child of parent with
 // this (name, value).
 func (p *parser) selectOrCreate(parent int, name string, v value, line int) int {
-	key := v.key()
-	for _, c := range p.arena[parent].children {
-		if p.arena[c].name == name && p.arena[c].value.key() == key {
-			return c
-		}
+	mapKey := [2]string{name, v.key()}
+	if c, ok := p.childMap[parent][mapKey]; ok {
+		return c
 	}
 	idx := len(p.arena)
 	p.arena = append(p.arena, nodeData{name: name, value: v, parent: parent, line: line})
 	p.arena[parent].children = append(p.arena[parent].children, idx)
+	p.childMap = append(p.childMap, map[[2]string]int{})
+	p.childMap[parent][mapKey] = idx
 	return idx
+}
+
+// remapChild: a node's value mutated in place (empty field filled, star element
+// added): move its map entry from the old key to the new one. First-wins on
+// both sides so lookups keep matching the earliest sibling, like the scan did.
+func (p *parser) remapChild(node int, oldKey string) {
+	parent := p.arena[node].parent
+	name := p.arena[node].name
+	if c, ok := p.childMap[parent][[2]string{name, oldKey}]; ok && c == node {
+		delete(p.childMap[parent], [2]string{name, oldKey})
+	}
+	newKey := [2]string{name, p.arena[node].value.key()}
+	if _, ok := p.childMap[parent][newKey]; !ok {
+		p.childMap[parent][newKey] = node
+	}
+}
+
+// attachTrivia hands pending leading comments (and this line's trailing one)
+// to a node. First trailing wins; a later one demotes to leading so nothing
+// is lost.
+func (p *parser) attachTrivia(node int, trailing string) {
+	p.arena[node].leading = append(p.arena[node].leading, p.pending...)
+	p.pending = p.pending[:0]
+	if trailing != "" {
+		if p.arena[node].trailing == "" {
+			p.arena[node].trailing = trailing
+		} else {
+			p.arena[node].leading = append(p.arena[node].leading, trailing)
+		}
+	}
 }
 
 // resolveParent resolves which open level this indent belongs to. Child only
@@ -767,14 +863,33 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 // attachPath walks path segments under parent, select-or-creating; returns the
 // node for the last segment carrying v. ok=false aborts the line (diagnosed).
 func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int, bool) {
+	// Field child under a stacked list: diagnose the mix once, keep the field.
+	if p.arena[parent].starList && !p.arena[parent].starMixed {
+		p.arena[parent].starMixed = true
+		p.err(line, "field mixed with list elements")
+	}
 	cur := parent
 	for i := range segs {
 		seg := &segs[i]
 		isLast := i+1 == len(segs)
 		switch {
 		case seg.sel != nil && seg.sel.kind == selByValue:
-			disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
-			cur = p.selectOrCreate(cur, seg.name, disc, line)
+			// Same display() predicate resolution uses, so a selector also
+			// selects an array-valued instance instead of creating a spurious
+			// second one. Create only when nothing matches.
+			found := -1
+			for _, c := range p.arena[cur].children {
+				if p.arena[c].name == seg.name && p.arena[c].value.display() == seg.sel.value {
+					found = c
+					break
+				}
+			}
+			if found >= 0 {
+				cur = found
+			} else {
+				disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
+				cur = p.selectOrCreate(cur, seg.name, disc, line)
+			}
 			if isLast && !v.isEmpty() {
 				// `a.b[X]: v` - the discriminator is the value; a second
 				// value has nowhere unambiguous to go.
@@ -857,18 +972,21 @@ func (p *parser) consumeRaw(lines []string, i, openLine int, ch byte, length int
 }
 
 // bindBlock: a bare fence line is a value line for its parent field: fills an
-// empty value, else creates a new instance of that field (the repeated-leaf rule).
-func (p *parser) bindBlock(parent int, v value, line int) {
+// empty value, else creates a new instance of that field (the repeated-leaf
+// rule). Returns the node the block landed on (-1 = no parent, diagnosed).
+func (p *parser) bindBlock(parent int, v value, line int) int {
 	if parent == root {
 		p.err(line, "raw block with no parent field")
-		return
+		return -1
 	}
 	if p.arena[parent].value.isEmpty() {
+		oldKey := p.arena[parent].value.key()
 		p.arena[parent].value = v
-	} else {
-		name, grand := p.arena[parent].name, p.arena[parent].parent
-		p.selectOrCreate(grand, name, v, line)
+		p.remapChild(parent, oldKey)
+		return parent
 	}
+	name, grand := p.arena[parent].name, p.arena[parent].parent
+	return p.selectOrCreate(grand, name, v, line)
 }
 
 // addStarElement: one stacked-list element (`* scalar`) appends to the
@@ -876,6 +994,11 @@ func (p *parser) bindBlock(parent int, v value, line int) {
 func (p *parser) addStarElement(parent int, body string, line int) {
 	if parent == root {
 		p.err(line, "list element with no parent field")
+		return
+	}
+	// Uniform-or-nothing (spec): a mix with field children is not a block array.
+	if len(p.arena[parent].children) != 0 {
+		p.err(line, "list element mixed with field children; ignored")
 		return
 	}
 	trimmed := strings.TrimSpace(body)
@@ -894,12 +1017,15 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 		return
 	}
 	node := &p.arena[parent]
+	oldKey := node.value.key()
 	switch {
 	case node.value.isEmpty():
 		node.value = value{kind: vCell, els: []element{el}}
 		node.starList = true
+		p.remapChild(parent, oldKey)
 	case node.value.kind == vCell && node.starList:
 		node.value.els = append(node.value.els, el)
+		p.remapChild(parent, oldKey)
 	default:
 		p.err(line, "field already has a value; list element ignored")
 	}
@@ -916,17 +1042,13 @@ func (p *parser) emitRepeatedLeafHints() {
 	}
 	for parent := range p.arena {
 		var byName []group
+		groupOf := make(map[string]int)
 		for _, c := range p.arena[parent].children {
 			name := p.arena[c].name
-			found := false
-			for k := range byName {
-				if byName[k].name == name {
-					byName[k].nodes = append(byName[k].nodes, c)
-					found = true
-					break
-				}
-			}
-			if !found {
+			if g, ok := groupOf[name]; ok {
+				byName[g].nodes = append(byName[g].nodes, c)
+			} else {
+				groupOf[name] = len(byName)
 				byName = append(byName, group{name: name, nodes: []int{c}})
 			}
 		}
@@ -957,6 +1079,7 @@ func (p *parser) emitRepeatedLeafHints() {
 				Line:     line,
 				Severity: SeverityHint,
 				Message:  fmt.Sprintf("'%s' repeats as a bare leaf - did you mean '%s: %s'?", g.name, g.name, strings.Join(vals, ", ")),
+				Code:     "H001",
 			})
 		}
 	}
@@ -975,7 +1098,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		line := trimEndWS(lines[i])
 		indent := leadingWS(line)
 		rest := line[len(indent):]
-		if rest == "" || strings.HasPrefix(rest, "#") {
+		if rest == "" {
+			i++
+			continue
+		}
+		// Whole-line comment: hold it for the next line that binds a node.
+		if strings.HasPrefix(rest, "#") {
+			p.pending = append(p.pending, rest)
 			i++
 			continue
 		}
@@ -988,7 +1117,9 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				continue
 			}
 			v, next := p.consumeRaw(lines, i+1, lineno, ch, length, info)
-			p.bindBlock(parent, v, lineno)
+			if node := p.bindBlock(parent, v, lineno); node >= 0 {
+				p.attachTrivia(node, "")
+			}
 			i = next
 			continue
 		}
@@ -1002,7 +1133,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 					i++
 					continue
 				}
-				p.addStarElement(parent, stripComment(after), lineno)
+				body, comment := splitComment(after)
+				// Elements have no node of their own; trivia rides the field.
+				if parent != root {
+					p.attachTrivia(parent, comment)
+				}
+				p.addStarElement(parent, body, lineno)
 				i++
 				continue
 			}
@@ -1011,9 +1147,14 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			continue
 		}
 		// Field line.
-		content := trimEndWS(stripComment(rest))
+		before, comment := splitComment(rest)
+		content := trimEndWS(before)
 		if content == "" {
-			i++ // the line was only a comment
+			// Only a comment survived (e.g. an escaped lead-in); keep it.
+			if comment != "" {
+				p.pending = append(p.pending, comment)
+			}
+			i++
 			continue
 		}
 		parent, okp := p.resolveParent(indent)
@@ -1047,12 +1188,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			}
 		}
 		if node, ok := p.attachPath(parent, scan.segments, v, lineno); ok {
+			p.attachTrivia(node, comment)
 			p.stack = append(p.stack, stackEnt{indent: indent, node: node})
 		}
 		i = next
 	}
 	p.emitRepeatedLeafHints()
-	return &Document{arena: p.arena, diags: p.diags, strictness: strictness}
+	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: p.pending}
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,42 +1230,37 @@ func (d *Document) Strictness() Strictness {
 }
 
 // ToCanonical emits the canonical form: block layout, tabs, insertion order,
-// minimal quoting, redundancy collapsed, comments dropped. Scalar text is
-// never rewritten.
+// minimal quoting, redundancy collapsed, comments re-emitted as attached
+// trivia. Scalar text is never rewritten.
 func (d *Document) ToCanonical() string {
 	var out strings.Builder
 	for _, c := range d.arena[root].children {
 		d.emitNode(c, 0, &out)
 	}
+	// Comments that never found a following line re-emit at the end.
+	for _, c := range d.orphans {
+		out.WriteString(c)
+		out.WriteByte('\n')
+	}
 	return out.String()
+}
+
+// writeTrailing writes an inline comment, canonically two spaces before the `#`.
+func writeTrailing(out *strings.Builder, trailing string) {
+	if trailing != "" {
+		out.WriteString("  ")
+		out.WriteString(trailing)
+	}
 }
 
 func (d *Document) emitNode(idx, depth int, out *strings.Builder) {
 	node := &d.arena[idx]
-	for k := 0; k < depth; k++ {
-		out.WriteByte('\t')
-	}
-	out.WriteString(emitName(node.name))
-	out.WriteByte(':')
-	switch node.value.kind {
-	case vEmpty:
-		out.WriteByte('\n')
-	case vCell:
-		out.WriteByte(' ')
-		parts := make([]string, len(node.value.els))
-		for k := range node.value.els {
-			parts[k] = emitElement(&node.value.els[k])
-		}
-		out.WriteString(strings.Join(parts, ", "))
-		out.WriteByte('\n')
-	default:
-		// Child-indent spelling is canonical: bare name line, fenced block one
-		// level deeper, verbatim content. Exception: if an earlier same-name
-		// sibling is empty, the bare `name:` header would merge into it on
-		// reparse and the fence would fill that instance instead - so use the
-		// same-line spelling there.
-		r := &node.value.raw
-		wouldMerge := false
+	pad := strings.Repeat("\t", depth)
+	// Same-line fence spelling can't carry an inline comment (an unbalanced
+	// quote in the info-string could hide the `#` on reparse), so its trailing
+	// comment joins the leading lines instead.
+	wouldMerge := false
+	if node.value.kind == vRaw {
 		for _, c := range d.arena[node.parent].children {
 			if c == idx {
 				break
@@ -1133,15 +1270,50 @@ func (d *Document) emitNode(idx, depth int, out *strings.Builder) {
 				break
 			}
 		}
+	}
+	for _, c := range node.leading {
+		out.WriteString(pad)
+		out.WriteString(c)
+		out.WriteByte('\n')
+	}
+	if wouldMerge && node.trailing != "" {
+		out.WriteString(pad)
+		out.WriteString(node.trailing)
+		out.WriteByte('\n')
+	}
+	out.WriteString(pad)
+	out.WriteString(emitName(node.name))
+	out.WriteByte(':')
+	switch node.value.kind {
+	case vEmpty:
+		writeTrailing(out, node.trailing)
+		out.WriteByte('\n')
+	case vCell:
+		out.WriteByte(' ')
+		parts := make([]string, len(node.value.els))
+		for k := range node.value.els {
+			parts[k] = emitElement(&node.value.els[k])
+		}
+		out.WriteString(strings.Join(parts, ", "))
+		writeTrailing(out, node.trailing)
+		out.WriteByte('\n')
+	default:
+		// Child-indent spelling is canonical: bare name line, fenced block one
+		// level deeper, verbatim content. Exception: if an earlier same-name
+		// sibling is empty, the bare `name:` header would merge into it on
+		// reparse and the fence would fill that instance instead - so use the
+		// same-line spelling there.
+		r := &node.value.raw
 		if wouldMerge {
 			out.WriteByte(' ')
 		} else {
+			writeTrailing(out, node.trailing)
 			out.WriteByte('\n')
 		}
-		pad := strings.Repeat("\t", depth+1)
+		bodyPad := strings.Repeat("\t", depth+1)
 		fence := strings.Repeat(string(rune(r.fenceChar)), r.fenceLen)
 		if !wouldMerge {
-			out.WriteString(pad)
+			out.WriteString(bodyPad)
 		}
 		out.WriteString(fence)
 		if r.info != "" {
@@ -1156,13 +1328,13 @@ func (d *Document) emitNode(idx, depth int, out *strings.Builder) {
 		if r.content != "" {
 			for _, l := range strings.Split(r.content, "\n") {
 				if l != "" {
-					out.WriteString(pad)
+					out.WriteString(bodyPad)
 				}
 				out.WriteString(l)
 				out.WriteByte('\n')
 			}
 		}
-		out.WriteString(pad)
+		out.WriteString(bodyPad)
 		out.WriteString(fence)
 		out.WriteByte('\n')
 	}
@@ -1271,7 +1443,8 @@ const (
 	resNone resolvedKind = iota
 	resOne
 	resMany
-	// resSlots (wildcard): one slot per instance, in file order; -1 = sub-path missing.
+	// resSlots (wildcard): one slot per instance, in file order; negative =
+	// the sub-path did not land on one node (-1 missing, -2 ambiguous).
 	resSlots
 )
 
@@ -1327,10 +1500,13 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 					continue
 				}
 				r := d.resolveFrom([]int{inst}, rest)
-				if r.kind == resOne {
+				switch r.kind {
+				case resOne:
 					slots = append(slots, r.one)
-				} else {
+				case resNone:
 					slots = append(slots, -1)
+				default:
+					slots = append(slots, -2)
 				}
 			}
 			return resolved{kind: resSlots, slots: slots}
@@ -1370,28 +1546,350 @@ func (d *Document) Count(path string) int {
 	return 0
 }
 
-// Instances returns the instance values at a path, in file order.
+// Instances returns the instance values at a path, in file order. Wildcard
+// slots that did not resolve stay in the list as "" so indices keep matching
+// Count().
 func (d *Document) Instances(path string) []string {
-	var nodes []int
-	if r, ok := d.resolve(path); ok {
-		switch r.kind {
-		case resOne:
-			nodes = []int{r.one}
-		case resMany:
-			nodes = r.many
-		case resSlots:
-			for _, s := range r.slots {
-				if s >= 0 {
-					nodes = append(nodes, s)
+	r, ok := d.resolve(path)
+	if !ok {
+		return nil
+	}
+	switch r.kind {
+	case resOne:
+		return []string{d.arena[r.one].value.display()}
+	case resMany:
+		out := make([]string, 0, len(r.many))
+		for _, n := range r.many {
+			out = append(out, d.arena[n].value.display())
+		}
+		return out
+	case resSlots:
+		out := make([]string, 0, len(r.slots))
+		for _, s := range r.slots {
+			if s >= 0 {
+				out = append(out, d.arena[s].value.display())
+			} else {
+				out = append(out, "")
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Writer: typed emit, defaults, comments, structural edits
+// ---------------------------------------------------------------------------
+// The reverse of the Accessor. A setter builds the canonical stored text for a
+// typed value (the inverse of the matching read) and places it at a path,
+// creating intermediate nodes on the way. Reads and ToCanonical walk children
+// slices, so mutating the arena directly is enough - the parser's child map is
+// already gone and is not maintained here.
+
+func boolText(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
+}
+
+func cellOf(text string) value {
+	return value{kind: vCell, els: []element{{text: text}}}
+}
+
+// encodeString is the inverse of a scalar string read (applyEscapes): only
+// backslash, newline, and tab need encoding; emitElement wraps quote/reserved
+// chars itself, and reparse strips that wrapping.
+func encodeString(s string) string {
+	var b strings.Builder
+	for _, c := range s {
+		switch c {
+		case '\\':
+			b.WriteString("\\\\")
+		case '\n':
+			b.WriteString("\\n")
+		case '\t':
+			b.WriteString("\\t")
+		default:
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
+}
+
+// chooseFence picks a backtick fence long enough that no content line closes it.
+func chooseFence(content string) (byte, int) {
+	maxrun := 0
+	for _, line := range strings.Split(content, "\n") {
+		t := strings.TrimSpace(line)
+		if t != "" && strings.Trim(t, "`") == "" && len(t) > maxrun {
+			maxrun = len(t)
+		}
+	}
+	if maxrun+1 < 3 {
+		return '`', 3
+	}
+	return '`', maxrun + 1
+}
+
+// arrayCell builds an inline-array value; the empty array is an empty value.
+func arrayCell(texts []string) value {
+	if len(texts) == 0 {
+		return value{kind: vEmpty}
+	}
+	els := make([]element, len(texts))
+	for i, t := range texts {
+		els[i] = element{text: t}
+	}
+	return value{kind: vCell, els: els}
+}
+
+// New returns a fresh document with no bindings - the start point for
+// schema-driven generation. Set values, then ToCanonical().
+func New() *Document {
+	return Parse("")
+}
+
+func (d *Document) newChild(parent int, name string, v value) int {
+	idx := len(d.arena)
+	d.arena = append(d.arena, nodeData{name: name, value: v, parent: parent})
+	d.arena[parent].children = append(d.arena[parent].children, idx)
+	return idx
+}
+
+func (d *Document) childOrCreate(parent int, name string) int {
+	for _, c := range d.arena[parent].children {
+		if d.arena[c].name == name {
+			return c
+		}
+	}
+	return d.newChild(parent, name, value{kind: vEmpty})
+}
+
+// place walks (creating as needed) to the node a write targets. A trailing name
+// with no selector hits the first same-named instance (or a new one); a [value]
+// selector selects the matching instance or creates it; [#k] must already
+// exist. ok=false means the path is unusable for a write.
+func (d *Document) place(path string) (int, bool) {
+	scan, err := scanPath(path)
+	if err != nil || scan.valueText != nil || len(scan.segments) == 0 {
+		return 0, false
+	}
+	cur := root
+	for i := range scan.segments {
+		seg := &scan.segments[i]
+		switch {
+		case seg.sel == nil:
+			cur = d.childOrCreate(cur, seg.name)
+		case seg.sel.kind == selByValue:
+			found := -1
+			for _, c := range d.arena[cur].children {
+				if d.arena[c].name == seg.name && d.arena[c].value.display() == seg.sel.value {
+					found = c
+					break
 				}
+			}
+			if found >= 0 {
+				cur = found
+			} else {
+				cur = d.newChild(cur, seg.name, cellOf(seg.sel.value))
+			}
+		case seg.sel.kind == selByIndex:
+			var matches []int
+			for _, c := range d.arena[cur].children {
+				if d.arena[c].name == seg.name {
+					matches = append(matches, c)
+				}
+			}
+			if seg.sel.index >= uint64(len(matches)) {
+				return 0, false
+			}
+			cur = matches[seg.sel.index]
+		default:
+			return 0, false // wildcard is query-only
+		}
+	}
+	return cur, true
+}
+
+func (d *Document) setValue(path string, v value) {
+	if idx, ok := d.place(path); ok {
+		d.arena[idx].value = v
+	}
+}
+
+// Exists is true when the path resolves to at least one real node.
+func (d *Document) Exists(path string) bool {
+	r, ok := d.resolve(path)
+	if !ok {
+		return false
+	}
+	switch r.kind {
+	case resOne, resMany:
+		return true
+	case resSlots:
+		for _, s := range r.slots {
+			if s >= 0 {
+				return true
 			}
 		}
 	}
-	out := make([]string, 0, len(nodes))
-	for _, n := range nodes {
-		out = append(out, d.arena[n].value.display())
+	return false
+}
+
+// Remove deletes the node(s) at a path (with their subtrees); returns how many.
+func (d *Document) Remove(path string) int {
+	r, ok := d.resolve(path)
+	if !ok {
+		return 0
 	}
-	return out
+	var targets []int
+	switch r.kind {
+	case resOne:
+		targets = []int{r.one}
+	case resMany:
+		targets = r.many
+	case resSlots:
+		for _, s := range r.slots {
+			if s >= 0 {
+				targets = append(targets, s)
+			}
+		}
+	}
+	for _, t := range targets {
+		p := d.arena[t].parent
+		kids := d.arena[p].children[:0]
+		for _, c := range d.arena[p].children {
+			if c != t {
+				kids = append(kids, c)
+			}
+		}
+		d.arena[p].children = kids
+	}
+	return len(targets)
+}
+
+// SetComment attaches a leading comment line to the node at a path (creating an
+// empty node if absent, so a section can be annotated). A missing '#' is added;
+// only the first line is kept (a comment is one line).
+func (d *Document) SetComment(path, text string) {
+	idx, ok := d.place(path)
+	if !ok {
+		return
+	}
+	line := text
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	if !strings.HasPrefix(line, "#") {
+		line = "# " + line
+	}
+	d.arena[idx].leading = append(d.arena[idx].leading, line)
+}
+
+func (d *Document) SetInt(path string, v int64)         { d.setValue(path, cellOf(strconv.FormatInt(v, 10))) }
+func (d *Document) SetFloat(path string, v float64)     { d.setValue(path, cellOf(FormatFloat(v))) }
+func (d *Document) SetBool(path string, v bool)         { d.setValue(path, cellOf(boolText(v))) }
+func (d *Document) SetString(path, v string)            { d.setValue(path, cellOf(encodeString(v))) }
+func (d *Document) SetDateTime(path string, v DateTime) { d.setValue(path, cellOf(v.String())) }
+func (d *Document) SetEmpty(path string)                { d.setValue(path, value{kind: vEmpty}) }
+
+func (d *Document) SetRaw(path, content, info string) {
+	fc, fl := chooseFence(content)
+	d.setValue(path, value{kind: vRaw, raw: rawValue{content: content, info: info, fenceChar: fc, fenceLen: fl}})
+}
+
+func (d *Document) SetIntArray(path string, v []int64) {
+	texts := make([]string, len(v))
+	for i, x := range v {
+		texts[i] = strconv.FormatInt(x, 10)
+	}
+	d.setValue(path, arrayCell(texts))
+}
+func (d *Document) SetFloatArray(path string, v []float64) {
+	texts := make([]string, len(v))
+	for i, x := range v {
+		texts[i] = FormatFloat(x)
+	}
+	d.setValue(path, arrayCell(texts))
+}
+func (d *Document) SetBoolArray(path string, v []bool) {
+	texts := make([]string, len(v))
+	for i, x := range v {
+		texts[i] = boolText(x)
+	}
+	d.setValue(path, arrayCell(texts))
+}
+func (d *Document) SetStringArray(path string, v []string) {
+	texts := make([]string, len(v))
+	for i, x := range v {
+		texts[i] = encodeString(x)
+	}
+	d.setValue(path, arrayCell(texts))
+}
+func (d *Document) SetDateTimeArray(path string, v []DateTime) {
+	texts := make([]string, len(v))
+	for i, x := range v {
+		texts[i] = x.String()
+	}
+	d.setValue(path, arrayCell(texts))
+}
+
+// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+func (d *Document) SetIntDefault(path string, v int64) {
+	if !d.Exists(path) {
+		d.SetInt(path, v)
+	}
+}
+func (d *Document) SetFloatDefault(path string, v float64) {
+	if !d.Exists(path) {
+		d.SetFloat(path, v)
+	}
+}
+func (d *Document) SetBoolDefault(path string, v bool) {
+	if !d.Exists(path) {
+		d.SetBool(path, v)
+	}
+}
+func (d *Document) SetStringDefault(path, v string) {
+	if !d.Exists(path) {
+		d.SetString(path, v)
+	}
+}
+func (d *Document) SetDateTimeDefault(path string, v DateTime) {
+	if !d.Exists(path) {
+		d.SetDateTime(path, v)
+	}
+}
+func (d *Document) SetRawDefault(path, content, info string) {
+	if !d.Exists(path) {
+		d.SetRaw(path, content, info)
+	}
+}
+func (d *Document) SetIntArrayDefault(path string, v []int64) {
+	if !d.Exists(path) {
+		d.SetIntArray(path, v)
+	}
+}
+func (d *Document) SetFloatArrayDefault(path string, v []float64) {
+	if !d.Exists(path) {
+		d.SetFloatArray(path, v)
+	}
+}
+func (d *Document) SetBoolArrayDefault(path string, v []bool) {
+	if !d.Exists(path) {
+		d.SetBoolArray(path, v)
+	}
+}
+func (d *Document) SetStringArrayDefault(path string, v []string) {
+	if !d.Exists(path) {
+		d.SetStringArray(path, v)
+	}
+}
+func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) {
+	if !d.Exists(path) {
+		d.SetDateTimeArray(path, v)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1435,14 +1933,26 @@ func parseIntText(e *element, level Strictness) (int64, bool) {
 	if strings.HasPrefix(hex, "0x") || strings.HasPrefix(hex, "0X") {
 		h := hex[2:]
 		if h != "" && allHexDigits(h) {
-			v, err := strconv.ParseInt(h, 16, 64)
+			// Parse the magnitude as u64, then range-check against the sign, so the
+			// negative math.MinInt64 magnitude (0x8000000000000000) reads like its
+			// decimal spelling instead of overflowing a signed parse.
+			m, err := strconv.ParseUint(h, 16, 64)
 			if err != nil {
 				return 0, false
 			}
 			if neg {
-				v = -v
+				if m == uint64(math.MaxInt64)+1 {
+					return math.MinInt64, true
+				}
+				if m <= uint64(math.MaxInt64) {
+					return -int64(m), true
+				}
+				return 0, false
 			}
-			return v, true
+			if m <= uint64(math.MaxInt64) {
+				return int64(m), true
+			}
+			return 0, false
 		}
 	}
 	// Thousands separators, only inside quotes (bare commas are reserved).
@@ -1969,7 +2479,13 @@ func (d *Document) ReadString(path string) Read[string] {
 	case len(v.els) == 1:
 		return Read[string]{Value: applyEscapes(v.els[0].text), Status: Good, Raw: &raw}
 	}
-	return Read[string]{Value: v.display(), Status: Good, Raw: &raw}
+	// Canonical inline form (quoting + escapes intact), so the string
+	// re-parses to the same array - not the bare display join.
+	parts := make([]string, len(v.els))
+	for k := range v.els {
+		parts[k] = emitElement(&v.els[k])
+	}
+	return Read[string]{Value: strings.Join(parts, ", "), Status: Good, Raw: &raw}
 }
 
 // ReadRaw: raw-block content (verbatim). Non-block values are BadType.
@@ -2003,7 +2519,9 @@ func (d *Document) ReadRawInfo(path string) Read[string] {
 
 func readArray[T any](d *Document, path string, coerce func(*element) (T, bool)) Read[[]T] {
 	var zero T
-	// Wildcard paths: one slot per instance, missing sub-paths keep their slot.
+	// Wildcard paths: one slot per instance, missing sub-paths keep their slot
+	// (spec: never silently dropped). Each slot reads like a scalar of the
+	// target type and records its own status; the aggregate is the worst one.
 	r, ok := d.resolve(path)
 	if !ok {
 		return Read[[]T]{Value: []T{}, Status: NotFound}
@@ -2011,28 +2529,42 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 	switch r.kind {
 	case resSlots:
 		out := make([]T, 0, len(r.slots))
-		status := Good
+		sts := make([]Status, 0, len(r.slots))
 		for _, slot := range r.slots {
-			if slot < 0 {
+			if slot == -1 {
 				out = append(out, zero)
+				sts = append(sts, NotFound)
 				continue
 			}
-			el, _ := scalarElement(&d.arena[slot].value)
+			if slot < 0 {
+				out = append(out, zero)
+				sts = append(sts, Multiple)
+				continue
+			}
+			el, est := scalarElement(&d.arena[slot].value)
 			if el == nil {
 				out = append(out, zero)
+				sts = append(sts, est)
 				continue
 			}
 			if val, cok := coerce(el); cok {
 				out = append(out, val)
+				sts = append(sts, Good)
 			} else {
 				out = append(out, zero)
-				status = BadType
+				sts = append(sts, BadType)
 			}
 		}
-		if len(r.slots) == 0 {
-			status = Empty
+		status := Empty
+		if len(sts) > 0 {
+			status = Good
+			for _, s := range sts {
+				if s > status {
+					status = s
+				}
+			}
 		}
-		return Read[[]T]{Value: out, Status: status}
+		return Read[[]T]{Value: out, Status: status, Slots: sts}
 	case resNone:
 		return Read[[]T]{Value: []T{}, Status: NotFound}
 	case resMany:
@@ -2047,16 +2579,19 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 		return Read[[]T]{Value: []T{}, Status: BadType, Raw: &raw}
 	}
 	out := make([]T, 0, len(v.els))
+	sts := make([]Status, 0, len(v.els))
 	status := Good
 	for i := range v.els {
 		if val, cok := coerce(&v.els[i]); cok {
 			out = append(out, val)
+			sts = append(sts, Good)
 		} else {
 			out = append(out, zero)
+			sts = append(sts, BadType)
 			status = BadType
 		}
 	}
-	return Read[[]T]{Value: out, Status: status, Raw: &raw}
+	return Read[[]T]{Value: out, Status: status, Raw: &raw, Slots: sts}
 }
 
 func (d *Document) ReadIntArray(path string) Read[[]int64] {
@@ -2114,4 +2649,87 @@ func (d *Document) GetRaw(path string) (string, Status) {
 func (d *Document) GetDateTime(path string) (DateTime, Status) {
 	r := d.ReadDateTime(path)
 	return r.Value, r.Status
+}
+
+// Convenience tier: one value, one call-site fallback, no status to inspect.
+// The fallback is returned unless the read is Good (matching the reference's
+// get_int(path).unwrap_or(def)), so an empty/missing/bad/ambiguous read can
+// never masquerade as a real zero. Array forms fall back to the whole default
+// array; per-slot substitution is the ReadIntArray tier or the CLI --default.
+
+func (d *Document) GetIntOr(path string, def int64) int64 {
+	if r := d.ReadInt(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetFloatOr(path string, def float64) float64 {
+	if r := d.ReadFloat(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetBoolOr(path string, def bool) bool {
+	if r := d.ReadBool(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetStringOr(path string, def string) string {
+	if r := d.ReadString(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetRawOr(path string, def string) string {
+	if r := d.ReadRaw(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetDateTimeOr(path string, def DateTime) DateTime {
+	if r := d.ReadDateTime(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetIntArrayOr(path string, def []int64) []int64 {
+	if r := d.ReadIntArray(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetFloatArrayOr(path string, def []float64) []float64 {
+	if r := d.ReadFloatArray(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetBoolArrayOr(path string, def []bool) []bool {
+	if r := d.ReadBoolArray(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetStringArrayOr(path string, def []string) []string {
+	if r := d.ReadStringArray(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+func (d *Document) GetDateTimeArrayOr(path string, def []DateTime) []DateTime {
+	if r := d.ReadDateTimeArray(path); r.Status == Good {
+		return r.Value
+	}
+	return def
 }

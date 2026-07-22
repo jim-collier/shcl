@@ -1,0 +1,31 @@
+# App config
+# (hand-authored)
+app: demo  # name
+
+# server section
+server:
+	host: example.com  # public
+	port: 8080
+
+# a merged duplicate line, both commented
+app: demo  # again
+
+items:
+	# first element
+	* one
+	* two  # second
+
+logs:
+# note between header and fence
+	~~~text
+	# not a comment, content
+	~~~
+
+this is ! not parseable
+# after a skipped line
+flag: on
+
+app.deep.path  # colon-less repair
+
+# trailing orphan 1
+# trailing orphan 2

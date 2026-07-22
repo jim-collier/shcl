@@ -1,0 +1,10 @@
+# raw blocks, tricky strings, datetimes
+raw	query	sql	SELECT *\nFROM t\nWHERE x = 1;
+raw	code	python	print("hi")
+string	tricky	tab\there quote " and backslash \\ end
+string	fence	```not a real fence```
+string	emptystr	
+datetime	shortdate	20260712
+int	neg	-7
+float	big	100000000000000000000
+int-array	nums	-1	0	1

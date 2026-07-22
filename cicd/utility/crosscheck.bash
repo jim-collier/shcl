@@ -13,11 +13,13 @@
 ##		With fewer than two bindings there is nothing to compare - prints a note
 ##		and exits 0, so it can stay wired into cicd from day one.
 ##	Syntax:
-##		crosscheck.bash --corpus DIR [--extra DIR] NAME|CLI [NAME|CLI ...]
+##		crosscheck.bash --corpus DIR [--extra DIR] [--min N] NAME|CLI [NAME|CLI ...]
 ##		  --corpus DIR  conformance corpus root (case dirs with input.shcl etc.)
 ##		  --extra DIR   also compare `fmt` over every *.shcl in this directory
+##		  --min N       fail unless at least N comparisons ran (default 1, so a
+##		                collapsed corpus/dump can't pass on zero)
 ##		  NAME|CLI      binding name + its CLI path; first entry is the reference
-##	Exit: 0 all agree (or nothing to compare), 1 divergence, 2 usage/missing input.
+##	Exit: 0 all agree, 1 divergence, 2 usage/missing input or too few comparisons.
 ##	History: At bottom of script.
 
 ##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
@@ -28,10 +30,11 @@
 
 set -Eeuo pipefail
 
-corpus=""; extra=""; bindings=()
+corpus=""; extra=""; bindings=(); declare -i minCompared=1
 while (($#)); do case "$1" in
 	--corpus)  corpus="${2:-}"; shift 2 ;;
 	--extra)   extra="${2:-}"; shift 2 ;;
+	--min)     minCompared="${2:-1}"; shift 2 ;;
 	-h|--help) grep -E '^##' "$0" | sed 's/^##\t\?//'; exit 0 ;;
 	*)         bindings+=("$1"); shift ;;
 esac; done
@@ -49,13 +52,42 @@ done
 refName="${bindings[0]%%|*}"; refCli="${bindings[0]#*|}"
 declare -i nCompared=0 nBad=0
 
-##	Run one CLI invocation, capturing stdout and exit code ("<code>\n<stdout>").
+##	Run one CLI invocation, capturing stdout and exit code as "<code>\n<stdout>X".
 ##	stderr is dropped: diagnostics wording is per-binding voice, not contract.
+##	Two sentinel tricks: the inner 'X<rc>' rides rc inside the capture so the
+##	substitution always exits 0 (no -e trip) and no separate rc grab is needed;
+##	the trailing 'X' on our own output means the caller's `want="$(fRun ...)"`
+##	has nothing to strip, so a dropped or doubled final newline stays visible.
 fRun(){
 	local cli="$1"; shift
-	local out rc=0
-	out="$("$cli" "$@" 2>/dev/null)" || rc=$?
-	printf '%s\n%s' "$rc" "$out"
+	local out
+	out="$("$cli" "$@" 2>/dev/null; printf 'X%d' "$?")"
+	printf '%s\n%sX' "${out##*X}" "${out%X*}"
+}
+
+##	Like fRun, but feeds a file to stdin (the `set` write-ops script).
+fRunStdin(){
+	local cli="$1" stdinFile="$2"; shift 2
+	local out
+	out="$("$cli" "$@" <"$stdinFile" 2>/dev/null; printf 'X%d' "$?")"
+	printf '%s\n%sX' "${out##*X}" "${out%X*}"
+}
+
+##	Compare every other binding against the reference for one stdin-fed call.
+fCompareStdin(){
+	local what="$1" stdinFile="$2"; shift 2
+	local want got b name cli
+	want="$(fRunStdin "$refCli" "$stdinFile" "$@")"
+	for b in "${bindings[@]:1}"; do
+		name="${b%%|*}"; cli="${b#*|}"
+		got="$(fRunStdin "$cli" "$stdinFile" "$@")"
+		nCompared+=1
+		if [[ "$got" != "$want" ]]; then
+			nBad+=1
+			echo "DIVERGE ${what}: ${name} vs ${refName} (shcl $* <${stdinFile})"
+			diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | head -12
+		fi
+	done
 }
 
 ##	Compare every other binding against the reference for one invocation.
@@ -84,21 +116,38 @@ fReadRow(){
 	local -a strictArg=()
 	[[ -n "$level" ]] && strictArg=("--strictness=${level}")
 	case "$type" in
-		load)         fCompare "load" check "${strictArg[@]}" "$input" ;;
+		load)         fCompare "load" check "${strictArg[@]}" "$input"
+		              fCompare "fmt ${level:-standard}" fmt "${strictArg[@]}" "$input" ;;
 		count)        fCompare "count ${query}" count "${strictArg[@]}" "$input" "$query" ;;
 		instances)    fCompare "instances ${query}" instances "${strictArg[@]}" "$input" "$query" ;;
-		*'[]')        fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query" ;;
-		*)            fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query" ;;
+		*'[]')        fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
+		              fCompare "get ${query} ${type} slots" get "--${type%[]}" --array --slots "${strictArg[@]}" "$input" "$query" ;;
+		*)            fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query"
+		              # on-bad=error (exit-code differential; message goes to dropped stderr)
+		              # and a default substitution (stdout differential) - the accessor
+		              # policy surface, where hand-written ports diverge most easily.
+		              fCompare "get ${query} ${type} on-bad=error" get "--${type}" --on-bad=error "${strictArg[@]}" "$input" "$query"
+		              fCompare "get ${query} ${type} default" get "--${type}" "--default=<x>" "${strictArg[@]}" "$input" "$query" ;;
 	esac
 }
 
 for caseDir in "$corpus"/*/; do
 	input="${caseDir}input.shcl"
 	[[ -f "$input" ]] || continue
+	# bash variables cannot hold a NUL, so $() capture would silently drop it and
+	# warn. Such cases (e.g. the merge-key NUL case) are pinned by the native
+	# conformance runners instead; skip them here, out loud.
+	if [[ "$(LC_ALL=C tr -dc '\000' < "$input" | wc -c)" -ne 0 ]]; then
+		echo "crosscheck: skipping $(basename "$caseDir") (NUL in input; native runners pin it)"
+		continue
+	fi
 	fCompare "fmt $(basename "$caseDir")" fmt "$input"
+	# Write dimension: apply the case's ops script and compare canonical output.
+	ops="${caseDir}write.ops"
+	[[ -f "$ops" ]] && fCompareStdin "set $(basename "$caseDir")" "$ops" set "$input"
 	tsv="${caseDir}reads.tsv"
 	if [[ -f "$tsv" ]]; then
-		while IFS=$'\t' read -r query type _expected _status level _rest; do
+		while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do
 			[[ -z "$query" || "$query" == "query" ]] && continue
 			fReadRow "$input" "$query" "$type" "${level:-}"
 		done < "$tsv"
@@ -106,18 +155,43 @@ for caseDir in "$corpus"/*/; do
 done
 
 if [[ -n "$extra" && -d "$extra" ]]; then
+	declare -i nExtra=0
 	for f in "$extra"/*.shcl; do
 		[[ -e "$f" ]] || continue
+		nExtra+=1
+		# Same NUL limitation as the corpus loop; silently skip (a dump can be large).
+		[[ "$(LC_ALL=C tr -dc '\000' < "$f" | wc -c)" -ne 0 ]] && continue
 		fCompare "fmt $(basename "$f")" fmt "$f"
+		# Derived reads.tsv (the reference dumps one per input, paths it knows exist):
+		# replay the accessor rows too, so the fuzz set covers reads, not just fmt.
+		reads="${f%.shcl}.reads.tsv"
+		if [[ -f "$reads" ]]; then
+			while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do
+				[[ -z "$query" || "$query" == "query" ]] && continue
+				fReadRow "$f" "$query" "$type" "${level:-}"
+			done < "$reads"
+		fi
 	done
+	if ((nExtra == 0)); then
+		echo "crosscheck: --extra ${extra} matched no *.shcl (empty fuzz dump?)" >&2
+		exit 2
+	fi
 fi
 
 if ((nBad)); then
 	echo "crosscheck: ${nBad}/${nCompared} comparison(s) diverged"
 	exit 1
 fi
+if ((nCompared < minCompared)); then
+	echo "crosscheck: only ${nCompared} comparison(s), need at least ${minCompared} (corpus/dump collapsed?)" >&2
+	exit 2
+fi
 echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 
 
 ##	Script history:
 ##		- 20260712 JC: Created.
+##		- 20260721 JC: Preserve trailing newlines in compares; zero-comparison and
+##		               empty-extra floors; keep the last reads.tsv row when the
+##		               file has no trailing newline; skip NUL-bearing inputs (bash
+##		               can't hold a NUL; native runners pin those).

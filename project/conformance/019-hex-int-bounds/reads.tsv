@@ -1,0 +1,6 @@
+query	type	expected	status	level
+-	load	ok	-
+neg-min-hex	int	-9223372036854775808	Good
+neg-min-dec	int	-9223372036854775808	Good
+max-hex	int	9223372036854775807	Good
+over-pos-hex	int	-	BadType

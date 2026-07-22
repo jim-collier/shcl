@@ -49,22 +49,50 @@ class Status(Enum):
 
 
 class Diagnostic:
-	__slots__ = ("line", "severity", "message")
+	__slots__ = ("line", "severity", "message", "code")
 
-	def __init__(self, line, severity, message):
+	def __init__(self, line, severity, message, code):
 		self.line = line          # 1-based
 		self.severity = severity
 		self.message = message
+		self.code = code          # stable machine code (E001.., H001..); the contract
+
+
+# The one place prose couples to a code, so the wording stays free everywhere else.
+def _diag_code(msg):
+	for prefix, code in (
+		("field mixed with list elements", "E001"),
+		("value after selector on ", "E002"),
+		("no instance ", "E003"),
+		("wildcard selector is query-only", "E004"),
+		("unterminated raw block", "E005"),
+		("raw block with no parent field", "E006"),
+		("list element with no parent field", "E007"),
+		("list element mixed with field children", "E008"),
+		("empty list element", "E009"),
+		("bare comma in list element", "E010"),
+		("field already has a value", "E011"),
+		("indentation matches no open level", "E012"),
+		("malformed line skipped", "E014"),
+		("malformed line: ", "E013"),
+		("missing colon", "E015"),
+	):
+		if msg.startswith(prefix):
+			return code
+	return "E000"
 
 
 class Read:
-	"""Value plus status plus the original raw text (when the path resolved)."""
-	__slots__ = ("value", "status", "raw")
+	"""Value plus status plus the original raw text (when the path resolved).
+	Array reads also carry one status per slot (element, or wildcard instance)
+	in .slots; .status is then the worst slot. Scalar reads leave .slots empty."""
+	__slots__ = ("value", "status", "raw", "slots")
 
-	def __init__(self, value, status, raw):
+	def __init__(self, value, status, raw, slots=None):
 		self.value = value
 		self.status = status
 		self.raw = raw
+		self.slots = slots if slots is not None else []
 
 	def ok(self):
 		return self.status in (Status.Good, Status.Empty)
@@ -160,12 +188,19 @@ class _Value:
 		if self.kind == "empty":
 			return "e"
 		if self.kind == "cell":
+			# Length-prefix each element so the joined key is injective: a bare NUL
+			# separator lets `[a, b]` collide with the single element "a\0b" (NUL is
+			# legal in a quoted string), silently merging them.
 			parts = ["c:"]
 			for e in self.els:
-				parts.append("\x00")
+				parts.append(str(len(e.text)))
+				parts.append(":")
 				parts.append(e.text)
 			return "".join(parts)
-		return "r:" + self.content
+		# Info-string is part of identity (a `sql` and a `python` block are
+		# different values even with equal bodies); fence style is not. Info is
+		# length-prefixed for the same injectivity reason as cell elements.
+		return "r:" + str(len(self.info)) + ":" + self.info + self.content
 
 	def display(self):
 		"""Human/display form; also what selectors match against (case-sensitive)."""
@@ -195,8 +230,49 @@ def _raw(content, info, fence_char, fence_len):
 	return v
 
 
+def _cell_of(text):
+	return _cell([_Element(text, False)])
+
+
+def _array_cell(texts):
+	# Inline-array value; the empty array is an empty value (reads back Empty).
+	if not texts:
+		return _empty()
+	return _cell([_Element(t, False) for t in texts])
+
+
+def _encode_string(s):
+	"""Inverse of a scalar string read (_apply_escapes): only backslash, newline,
+	and tab need encoding; _emit_element wraps quote/reserved chars itself and
+	reparse strips that wrapping."""
+	out = []
+	for c in s:
+		if c == "\\":
+			out.append("\\\\")
+		elif c == "\n":
+			out.append("\\n")
+		elif c == "\t":
+			out.append("\\t")
+		else:
+			out.append(c)
+	return "".join(out)
+
+
+def _choose_fence(content):
+	"""Pick a backtick fence long enough that no content line closes it early."""
+	maxrun = 0
+	for line in content.split("\n"):
+		t = _trim(line)
+		if t and all(ch == "`" for ch in t):
+			maxrun = max(maxrun, len(t))
+	return ("`", max(3, maxrun + 1))
+
+
 class _Node:
-	__slots__ = ("name", "value", "children", "parent", "line", "star_list")
+	__slots__ = (
+		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
+		"leading", "trailing",
+	)
 
 	def __init__(self, name, value, parent, line):
 		self.name = name          # ASCII-folded to lower; non-ASCII never folds
@@ -205,6 +281,12 @@ class _Node:
 		self.parent = parent
 		self.line = line
 		self.star_list = False    # value built from stacked "* " lines
+		self.star_mixed = False   # mix of "* " and field children already diagnosed
+		# Comment trivia, verbatim from `#` to end of line. Never part of identity
+		# or reads; merged instances concatenate leading, first trailing wins
+		# (later ones demote to leading - a canonical line has room for one).
+		self.leading = []
+		self.trailing = ""        # empty = none
 
 
 ROOT = 0
@@ -267,8 +349,10 @@ def _is_bare_name_char(c):
 	return (c.isascii() and c.isalnum()) or c == "-" or c == "_"
 
 
-def _strip_comment(s):
-	"""Strip an unquoted trailing comment. A `\\` shields the next char throughout."""
+def _split_comment(s):
+	"""Split off an unquoted trailing comment: (content, comment from `#` on,
+	"" = none). A `\\` shields the next char throughout. Comments are kept as
+	trivia."""
 	in_quote = None
 	i = 0
 	n = len(s)
@@ -283,9 +367,9 @@ def _strip_comment(s):
 		elif c == '"' or c == "'":
 			in_quote = c
 		elif c == "#":
-			return s[:i]
+			return s[:i], s[i:]
 		i += 1
-	return s
+	return s, ""
 
 
 def _split_unquoted_commas(s):
@@ -541,21 +625,52 @@ class _Parser:
 		self.diags = []
 		# (indent string, node) for each open level; [0] is the virtual root.
 		self.stack = [("", ROOT)]
+		# Per-node (name, value-key) -> first matching child, parallel to arena.
+		# Pure lookup accelerator for _select_or_create; children keeps the order.
+		self.child_map = [{}]
+		# Whole-line comments waiting for the next line that binds a node.
+		self.pending = []
 
 	def _err(self, line, msg):
-		self.diags.append(Diagnostic(line, Severity.Error, msg))
+		self.diags.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
 
 	def _select_or_create(self, parent, name, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
-		key = value.key()
-		for c in self.arena[parent].children:
-			if self.arena[c].name == name and self.arena[c].value.key() == key:
-				return c
+		map_key = (name, value.key())
+		found = self.child_map[parent].get(map_key)
+		if found is not None:
+			return found
 		idx = len(self.arena)
 		node = _Node(name, value, parent, line)
 		self.arena.append(node)
 		self.arena[parent].children.append(idx)
+		self.child_map.append({})
+		self.child_map[parent][map_key] = idx
 		return idx
+
+	def _remap_child(self, node, old_key):
+		"""A node's value mutated in place (empty field filled, star element added):
+		move its map entry from the old key to the new one. First-wins on both
+		sides so lookups keep matching the earliest sibling, like the scan did."""
+		parent = self.arena[node].parent
+		name = self.arena[node].name
+		cmap = self.child_map[parent]
+		if cmap.get((name, old_key)) == node:
+			del cmap[(name, old_key)]
+		cmap.setdefault((name, self.arena[node].value.key()), node)
+
+	def _attach_trivia(self, node, trailing):
+		"""Hand pending leading comments (and this line's trailing one) to a node.
+		First trailing wins; a later one demotes to leading so nothing is lost."""
+		n = self.arena[node]
+		if self.pending:
+			n.leading.extend(self.pending)
+			self.pending = []
+		if trailing:
+			if not n.trailing:
+				n.trailing = trailing
+			else:
+				n.leading.append(trailing)
 
 	def _resolve_parent(self, indent):
 		"""Resolve which open level this indent belongs to. Child only when the
@@ -577,14 +692,30 @@ class _Parser:
 	def _attach_path(self, parent, segs, value, line):
 		"""Walk path segments under `parent`, select-or-creating; returns the node
 		for the last segment carrying `value`. None aborts the line (diagnosed)."""
+		# Field child under a stacked list: diagnose the mix once, keep the field.
+		pnode = self.arena[parent]
+		if pnode.star_list and not pnode.star_mixed:
+			pnode.star_mixed = True
+			self._err(line, "field mixed with list elements")
 		cur = parent
 		last = len(segs) - 1
 		for i, seg in enumerate(segs):
 			is_last = i == last
 			sel = seg.selector
 			if sel is not None and sel[0] == "val":
-				disc = _cell([_Element(sel[1], False)])
-				cur = self._select_or_create(cur, seg.name, disc, line)
+				# Same display() predicate resolution uses, so a selector also
+				# selects an array-valued instance instead of creating a
+				# spurious second one. Create only when nothing matches.
+				found = None
+				for c in self.arena[cur].children:
+					if self.arena[c].name == seg.name and self.arena[c].value.display() == sel[1]:
+						found = c
+						break
+				if found is not None:
+					cur = found
+				else:
+					disc = _cell([_Element(sel[1], False)])
+					cur = self._select_or_create(cur, seg.name, disc, line)
 				if is_last and not value.is_empty():
 					# `a.b[X]: v` - the discriminator is the value; a second
 					# value has nowhere unambiguous to go.
@@ -623,11 +754,11 @@ class _Parser:
 			self._err(open_line, "unterminated raw block")
 		# Strip the common leading whitespace (the visual nesting); keep the rest.
 		common = None
-		for l in content:
-			if not _trim(l):
+		for ln in content:
+			if not _trim(ln):
 				continue
 			lead = []
-			for c in l:
+			for c in ln:
 				if c == " " or c == "\t":
 					lead.append(c)
 				else:
@@ -646,32 +777,39 @@ class _Parser:
 		if common is None:
 			common = ""
 		stripped = []
-		for l in content:
-			if not _trim(l):
+		for ln in content:
+			if not _trim(ln):
 				stripped.append("")
-			elif l.startswith(common):
-				stripped.append(l[len(common):])
+			elif ln.startswith(common):
+				stripped.append(ln[len(common):])
 			else:
-				stripped.append(l)
+				stripped.append(ln)
 		return _raw("\n".join(stripped), info, ch, length), i
 
 	def _bind_block(self, parent, value, line):
 		"""A bare fence line is a value line for its parent field: fills an empty
-		value, else creates a new instance of that field (the repeated-leaf rule)."""
+		value, else creates a new instance of that field (the repeated-leaf rule).
+		Returns the node the block landed on (None = no parent, diagnosed)."""
 		if parent == ROOT:
 			self._err(line, "raw block with no parent field")
-			return
+			return None
 		if self.arena[parent].value.is_empty():
+			old_key = self.arena[parent].value.key()
 			self.arena[parent].value = value
-		else:
-			name = self.arena[parent].name
-			grandparent = self.arena[parent].parent
-			self._select_or_create(grandparent, name, value, line)
+			self._remap_child(parent, old_key)
+			return parent
+		name = self.arena[parent].name
+		grandparent = self.arena[parent].parent
+		return self._select_or_create(grandparent, name, value, line)
 
 	def _add_star_element(self, parent, body, line):
 		"""One stacked-list element (`* scalar`) appends to the parent's array."""
 		if parent == ROOT:
 			self._err(line, "list element with no parent field")
+			return
+		# Uniform-or-nothing (spec): a mix with field children is not a block array.
+		if self.arena[parent].children:
+			self._err(line, "list element mixed with field children; ignored")
 			return
 		trimmed = _trim(body)
 		if not trimmed:
@@ -686,11 +824,14 @@ class _Parser:
 			self._err(line, "empty list element")
 			return
 		node = self.arena[parent]
+		old_key = node.value.key()
 		if node.value.kind == "empty":
 			node.value = _cell([el])
 			node.star_list = True
+			self._remap_child(parent, old_key)
 		elif node.value.kind == "cell" and node.star_list:
 			node.value.els.append(el)
+			self._remap_child(parent, old_key)
 		else:
 			self._err(line, "field already has a value; list element ignored")
 
@@ -702,16 +843,14 @@ class _Parser:
 			# Group by name in first-appearance order: hint order must be
 			# deterministic or the cross-binding check can't compare `check` output.
 			by_name = []
+			group_of = {}
 			for c in self.arena[parent].children:
 				name = self.arena[c].name
-				found = None
-				for entry in by_name:
-					if entry[0] == name:
-						found = entry
-						break
-				if found is not None:
-					found[1].append(c)
+				g = group_of.get(name)
+				if g is not None:
+					by_name[g][1].append(c)
 				else:
+					group_of[name] = len(by_name)
 					by_name.append((name, [c]))
 			for name, group in by_name:
 				if len(group) < 2:
@@ -727,13 +866,13 @@ class _Parser:
 					joined = ", ".join(self.arena[c].value.display() for c in group)
 					hints.append((line, "'{}' repeats as a bare leaf - did you mean '{}: {}'?".format(name, name, joined)))
 		for line, message in hints:
-			self.diags.append(Diagnostic(line, Severity.Hint, message))
+			self.diags.append(Diagnostic(line, Severity.Hint, message, "H001"))
 
 	def parse(self, text, strictness):
 		# UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
 		if text.startswith("﻿"):
 			text = text[1:]
-		lines = [l[:-1] if l.endswith("\r") else l for l in text.split("\n")]
+		lines = [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
 		i = 0
 		nlines = len(lines)
 		while i < nlines:
@@ -744,7 +883,12 @@ class _Parser:
 				j += 1
 			indent = line[:j]
 			rest = line[j:]
-			if not rest or rest.startswith("#"):
+			if not rest:
+				i += 1
+				continue
+			# Whole-line comment: hold it for the next line that binds a node.
+			if rest.startswith("#"):
+				self.pending.append(rest)
 				i += 1
 				continue
 			# Child-indent fence: a value line for its parent field.
@@ -757,7 +901,9 @@ class _Parser:
 					i += 1
 					continue
 				value, nxt = self._consume_raw(lines, i + 1, lineno, ch, length, info)
-				self._bind_block(parent, value, lineno)
+				node = self._bind_block(parent, value, lineno)
+				if node is not None:
+					self._attach_trivia(node, "")
 				i = nxt
 				continue
 			# Stacked-list element: colon-less by construction ('*' can't begin a name).
@@ -769,7 +915,10 @@ class _Parser:
 						self._err(lineno, "indentation matches no open level")
 						i += 1
 						continue
-					body = _strip_comment(after)
+					body, comment = _split_comment(after)
+					# Elements have no node of their own; trivia rides the field.
+					if parent != ROOT:
+						self._attach_trivia(parent, comment)
 					self._add_star_element(parent, body, lineno)
 					i += 1
 					continue
@@ -777,9 +926,13 @@ class _Parser:
 				i += 1
 				continue
 			# Field line.
-			content = _trim_end(_strip_comment(rest))
+			before, comment = _split_comment(rest)
+			content = _trim_end(before)
 			if not content:
-				i += 1   # the line was only a comment
+				# Only a comment survived (e.g. an escaped lead-in); keep it.
+				if comment:
+					self.pending.append(comment)
+				i += 1
 				continue
 			parent = self._resolve_parent(indent)
 			if parent is None:
@@ -810,25 +963,29 @@ class _Parser:
 					value = _parse_cell(value_text)
 			node = self._attach_path(parent, segments, value, lineno)
 			if node is not None:
+				self._attach_trivia(node, comment)
 				self.stack.append((indent, node))
 			i = nxt
 		self._emit_repeated_leaf_hints()
-		return Document(self.arena, self.diags, strictness)
+		return Document(self.arena, self.diags, strictness, self.pending)
 
 
 # ---------------------------------------------------------------------------
 # Document: load, diagnostics, formatter
 # ---------------------------------------------------------------------------
 
+_NO_DEFAULT = object()  # get_* sentinel: no call-site default -> must-exist (raises)
+
 
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
-	__slots__ = ("arena", "diags", "_strictness")
+	__slots__ = ("arena", "diags", "_strictness", "orphans")
 
-	def __init__(self, arena, diags, strictness):
+	def __init__(self, arena, diags, strictness, orphans=None):
 		self.arena = arena
 		self.diags = diags
 		self._strictness = strictness
+		self.orphans = orphans if orphans is not None else []
 
 	@staticmethod
 	def parse(text):
@@ -854,30 +1011,32 @@ class Document:
 
 	def to_canonical(self):
 		"""Canonical form: block layout, tabs, insertion order, minimal quoting,
-		redundancy collapsed, comments dropped. Scalar text is never rewritten."""
+		redundancy collapsed, comments re-emitted as attached trivia. Scalar
+		text is never rewritten."""
+		# Explicit stack, children pushed in reverse: the reference handles depths
+		# far past Python's recursion limit, so emit must not recurse.
 		out = []
-		for c in self.arena[ROOT].children:
-			self._emit_node(c, 0, out)
+		stack = [(c, 0) for c in reversed(self.arena[ROOT].children)]
+		while stack:
+			idx, depth = stack.pop()
+			self._emit_node(idx, depth, out)
+			for c in reversed(self.arena[idx].children):
+				stack.append((c, depth + 1))
+		# Comments that never found a following line re-emit at the end.
+		for c in self.orphans:
+			out.append(c)
+			out.append("\n")
 		return "".join(out)
 
 	def _emit_node(self, idx, depth, out):
 		node = self.arena[idx]
-		out.append("\t" * depth)
-		out.append(_emit_name(node.name))
-		out.append(":")
+		pad = "\t" * depth
 		v = node.value
-		if v.kind == "empty":
-			out.append("\n")
-		elif v.kind == "cell":
-			out.append(" ")
-			out.append(", ".join(_emit_element(e) for e in v.els))
-			out.append("\n")
-		else:
-			# Child-indent spelling is canonical: bare name line, fenced block one
-			# level deeper, verbatim content. Exception: if an earlier same-name
-			# sibling is empty, the bare `name:` header would merge into it on
-			# reparse and the fence would fill that instance instead - so use the
-			# same-line spelling there.
+		# Same-line fence spelling can't carry an inline comment (an unbalanced
+		# quote in the info-string could hide the `#` on reparse), so its
+		# trailing comment joins the leading lines instead.
+		would_merge = False
+		if v.kind == "raw":
 			parent = node.parent
 			siblings = self.arena[parent].children
 			me = siblings.index(idx)
@@ -885,11 +1044,46 @@ class Document:
 				self.arena[c].name == node.name and self.arena[c].value.is_empty()
 				for c in siblings[:me]
 			)
-			out.append(" " if would_merge else "\n")
-			pad = "\t" * (depth + 1)
+		for c in node.leading:
+			out.append(pad)
+			out.append(c)
+			out.append("\n")
+		if would_merge and node.trailing:
+			out.append(pad)
+			out.append(node.trailing)
+			out.append("\n")
+		out.append(pad)
+		out.append(_emit_name(node.name))
+		out.append(":")
+		if v.kind == "empty":
+			if node.trailing:
+				out.append("  ")
+				out.append(node.trailing)
+			out.append("\n")
+		elif v.kind == "cell":
+			out.append(" ")
+			out.append(", ".join(_emit_element(e) for e in v.els))
+			if node.trailing:
+				out.append("  ")
+				out.append(node.trailing)
+			out.append("\n")
+		else:
+			# Child-indent spelling is canonical: bare name line, fenced block one
+			# level deeper, verbatim content. Exception: if an earlier same-name
+			# sibling is empty, the bare `name:` header would merge into it on
+			# reparse and the fence would fill that instance instead - so use the
+			# same-line spelling there.
+			if would_merge:
+				out.append(" ")
+			else:
+				if node.trailing:
+					out.append("  ")
+					out.append(node.trailing)
+				out.append("\n")
+			body_pad = "\t" * (depth + 1)
 			fence = v.fence_char * v.fence_len
 			if not would_merge:
-				out.append(pad)
+				out.append(body_pad)
 			out.append(fence)
 			if v.info:
 				# An info-string starting with the fence char would extend the run
@@ -899,16 +1093,14 @@ class Document:
 				out.append(v.info)
 			out.append("\n")
 			if v.content:
-				for l in v.content.split("\n"):
-					if l:
-						out.append(pad)
-					out.append(l)
+				for ln in v.content.split("\n"):
+					if ln:
+						out.append(body_pad)
+					out.append(ln)
 					out.append("\n")
-			out.append(pad)
+			out.append(body_pad)
 			out.append(fence)
 			out.append("\n")
-		for c in node.children:
-			self._emit_node(c, depth + 1, out)
 
 	# ----- accessor: path resolution -----
 
@@ -916,7 +1108,9 @@ class Document:
 		return [c for c in self.arena[parent].children if self.arena[c].name == name]
 
 	def _resolve_from(self, start, segs):
-		# Returns ("none",) | ("one", idx) | ("many", [idx]) | ("slots", [idx|None]).
+		# Returns ("none",) | ("one", idx) | ("many", [idx]) | ("slots", [entry]).
+		# A slots entry is a node idx, or the Status saying why the sub-path did
+		# not land on one node (NotFound missing, Multiple ambiguous).
 		cur = list(start)
 		for i, seg in enumerate(segs):
 			nxt = []
@@ -940,7 +1134,12 @@ class Document:
 						slots.append(inst)
 					else:
 						r = self._resolve_from([inst], rest)
-						slots.append(r[1] if r[0] == "one" else None)
+						if r[0] == "one":
+							slots.append(r[1])
+						elif r[0] == "none":
+							slots.append(Status.NotFound)
+						else:
+							slots.append(Status.Multiple)
 				return ("slots", slots)
 		if len(cur) == 0:
 			return ("none",)
@@ -969,18 +1168,198 @@ class Document:
 		return 0
 
 	def instances(self, path):
-		"""Instance values at a path, in file order."""
+		"""Instance values at a path, in file order. Wildcard slots that did not
+		resolve stay in the list as "" so indices keep matching count()."""
 		r = self._resolve(path)
 		tag = r[0]
 		if tag == "one":
-			nodes = [r[1]]
+			return [self.arena[r[1]].value.display()]
+		if tag == "many":
+			return [self.arena[n].value.display() for n in r[1]]
+		if tag == "slots":
+			return [self.arena[n].value.display() if isinstance(n, int) else ""
+				for n in r[1]]
+		return []
+
+	# ----- writer: typed emit, defaults, comments, structural edits -----
+	# The reverse of the Accessor. A setter builds the canonical stored text for a
+	# typed value (the inverse of the matching read) and places it at a path,
+	# creating intermediate nodes on the way. Reads and to_canonical walk the
+	# children lists, so mutating the arena directly is enough.
+
+	@staticmethod
+	def new():
+		"""A fresh document with no bindings - the start point for schema-driven
+		generation. Set values, then to_canonical()."""
+		return Document.parse("")
+
+	def _new_child(self, parent, name, value):
+		idx = len(self.arena)
+		self.arena.append(_Node(name, value, parent, 0))
+		self.arena[parent].children.append(idx)
+		return idx
+
+	def _child_or_create(self, parent, name):
+		for c in self.arena[parent].children:
+			if self.arena[c].name == name:
+				return c
+		return self._new_child(parent, name, _empty())
+
+	def _place(self, path):
+		"""Walk (creating as needed) to the node a write targets, or None if the
+		path is unusable for a write (bad scan, a value part, a wildcard, or a
+		missing indexed instance)."""
+		try:
+			segments, value_text = _scan_path(path)
+		except _PathError:
+			return None
+		if value_text is not None or not segments:
+			return None
+		cur = ROOT
+		for seg in segments:
+			sel = seg.selector
+			if sel is None:
+				cur = self._child_or_create(cur, seg.name)
+			elif sel[0] == "val":
+				found = None
+				for c in self.arena[cur].children:
+					if self.arena[c].name == seg.name and self.arena[c].value.display() == sel[1]:
+						found = c
+						break
+				cur = found if found is not None else self._new_child(cur, seg.name, _cell_of(sel[1]))
+			elif sel[0] == "idx":
+				matches = [c for c in self.arena[cur].children if self.arena[c].name == seg.name]
+				if sel[1] >= len(matches):
+					return None
+				cur = matches[sel[1]]
+			else:
+				return None   # wildcard is query-only
+		return cur
+
+	def _set_value(self, path, value):
+		idx = self._place(path)
+		if idx is not None:
+			self.arena[idx].value = value
+
+	def exists(self, path):
+		"""True when the path resolves to at least one real node."""
+		r = self._resolve(path)
+		tag = r[0]
+		if tag == "one" or tag == "many":
+			return True
+		if tag == "slots":
+			return any(isinstance(n, int) for n in r[1])
+		return False
+
+	def remove(self, path):
+		"""Delete the node(s) at a path (with their subtrees); returns how many."""
+		r = self._resolve(path)
+		tag = r[0]
+		if tag == "one":
+			targets = [r[1]]
 		elif tag == "many":
-			nodes = r[1]
+			targets = list(r[1])
 		elif tag == "slots":
-			nodes = [n for n in r[1] if n is not None]
+			targets = [n for n in r[1] if isinstance(n, int)]
 		else:
-			nodes = []
-		return [self.arena[n].value.display() for n in nodes]
+			targets = []
+		for t in targets:
+			p = self.arena[t].parent
+			self.arena[p].children = [c for c in self.arena[p].children if c != t]
+		return len(targets)
+
+	def set_comment(self, path, text):
+		"""Attach a leading comment line to the node at a path (creating an empty
+		node if absent). A missing '#' is added; only the first line is kept."""
+		idx = self._place(path)
+		if idx is None:
+			return
+		line = text.split("\n", 1)[0]
+		if not line.startswith("#"):
+			line = "# " + line
+		self.arena[idx].leading.append(line)
+
+	def set_int(self, path, v):
+		self._set_value(path, _cell_of(str(v)))
+
+	def set_float(self, path, v):
+		self._set_value(path, _cell_of(format_float(v)))
+
+	def set_bool(self, path, v):
+		self._set_value(path, _cell_of("true" if v else "false"))
+
+	def set_string(self, path, v):
+		self._set_value(path, _cell_of(_encode_string(v)))
+
+	def set_datetime(self, path, v):
+		self._set_value(path, _cell_of(str(v)))
+
+	def set_raw(self, path, content, info):
+		fc, fl = _choose_fence(content)
+		self._set_value(path, _raw(content, info, fc, fl))
+
+	def set_empty(self, path):
+		self._set_value(path, _empty())
+
+	def set_int_array(self, path, v):
+		self._set_value(path, _array_cell([str(x) for x in v]))
+
+	def set_float_array(self, path, v):
+		self._set_value(path, _array_cell([format_float(x) for x in v]))
+
+	def set_bool_array(self, path, v):
+		self._set_value(path, _array_cell(["true" if x else "false" for x in v]))
+
+	def set_string_array(self, path, v):
+		self._set_value(path, _array_cell([_encode_string(x) for x in v]))
+
+	def set_datetime_array(self, path, v):
+		self._set_value(path, _array_cell([str(x) for x in v]))
+
+	# Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+	def set_int_default(self, path, v):
+		if not self.exists(path):
+			self.set_int(path, v)
+
+	def set_float_default(self, path, v):
+		if not self.exists(path):
+			self.set_float(path, v)
+
+	def set_bool_default(self, path, v):
+		if not self.exists(path):
+			self.set_bool(path, v)
+
+	def set_string_default(self, path, v):
+		if not self.exists(path):
+			self.set_string(path, v)
+
+	def set_datetime_default(self, path, v):
+		if not self.exists(path):
+			self.set_datetime(path, v)
+
+	def set_raw_default(self, path, content, info):
+		if not self.exists(path):
+			self.set_raw(path, content, info)
+
+	def set_int_array_default(self, path, v):
+		if not self.exists(path):
+			self.set_int_array(path, v)
+
+	def set_float_array_default(self, path, v):
+		if not self.exists(path):
+			self.set_float_array(path, v)
+
+	def set_bool_array_default(self, path, v):
+		if not self.exists(path):
+			self.set_bool_array(path, v)
+
+	def set_string_array_default(self, path, v):
+		if not self.exists(path):
+			self.set_string_array(path, v)
+
+	def set_datetime_array_default(self, path, v):
+		if not self.exists(path):
+			self.set_datetime_array(path, v)
 
 	# ----- accessor: typed reads -----
 
@@ -1049,7 +1428,9 @@ class Document:
 			return Read(value.content, Status.Good, raw)
 		if len(value.els) == 1:
 			return Read(_apply_escapes(value.els[0].text), Status.Good, raw)
-		return Read(value.display(), Status.Good, raw)
+		# Canonical inline form (quoting + escapes intact), so the string
+		# re-parses to the same array - not the bare display join.
+		return Read(", ".join(_emit_element(e) for e in value.els), Status.Good, raw)
 
 	def read_raw(self, path):
 		"""Raw-block content (verbatim). Non-block values are BadType."""
@@ -1080,26 +1461,29 @@ class Document:
 		if tag == "err":
 			return Read([], r[1], None)
 		if tag == "slots":
-			slots = r[1]
+			# Each slot reads like a scalar of the target type and records its
+			# own status; the aggregate is the worst one (never silently Good).
 			out = []
-			status = Status.Good
-			for slot in slots:
-				if slot is None:
+			sts = []
+			for slot in r[1]:
+				if not isinstance(slot, int):
 					out.append(default)
+					sts.append(slot)
 					continue
 				se = self._scalar_element(self.arena[slot].value)
 				if se[0] == "err":
 					out.append(default)
+					sts.append(se[1])
 					continue
 				v = coerce(se[1])
 				if v is None:
 					out.append(default)
-					status = Status.BadType
+					sts.append(Status.BadType)
 				else:
 					out.append(v)
-			if not slots:
-				status = Status.Empty
-			return Read(out, status, None)
+					sts.append(Status.Good)
+			status = max(sts, key=lambda s: s.value) if sts else Status.Empty
+			return Read(out, status, None, sts)
 		if tag == "none":
 			return Read([], Status.NotFound, None)
 		if tag == "many":
@@ -1112,15 +1496,18 @@ class Document:
 		if value.kind == "raw":
 			return Read([], Status.BadType, raw)
 		out = []
+		sts = []
 		status = Status.Good
 		for el in value.els:
 			v = coerce(el)
 			if v is None:
 				out.append(default)
+				sts.append(Status.BadType)
 				status = Status.BadType
 			else:
 				out.append(v)
-		return Read(out, status, raw)
+				sts.append(Status.Good)
+		return Read(out, status, raw, sts)
 
 	def read_int_array(self, path):
 		lvl = self._strictness
@@ -1140,43 +1527,52 @@ class Document:
 	def read_string_array(self, path):
 		return self._read_array(path, lambda e: _apply_escapes(e.text), "")
 
-	# Full tier, Result form: value on Good; the sentinel Status raised otherwise.
+	# Convenience/get tier: value on Good, else the call-site default. Pass a
+	# `default` to make the read forgiving (Default mode - the call a beginner
+	# writes 90% of the time; a missing/empty/bad/ambiguous read can't sneak in
+	# as a real zero). With no default it must-exist, raising the Status. Array
+	# forms fall back to the whole default list; per-slot substitution is the
+	# read_*_array tier or the CLI --default.
 
-	def get_int(self, path):
-		r = self.read_int(path)
+	def _get(self, r, default):
 		if r.status == Status.Good:
 			return r.value
-		raise _StatusError(r.status)
+		if default is _NO_DEFAULT:
+			raise _StatusError(r.status)
+		return default
 
-	def get_float(self, path):
-		r = self.read_float(path)
-		if r.status == Status.Good:
-			return r.value
-		raise _StatusError(r.status)
+	def get_int(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_int(path), default)
 
-	def get_bool(self, path):
-		r = self.read_bool(path)
-		if r.status == Status.Good:
-			return r.value
-		raise _StatusError(r.status)
+	def get_float(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_float(path), default)
 
-	def get_string(self, path):
-		r = self.read_string(path)
-		if r.status == Status.Good:
-			return r.value
-		raise _StatusError(r.status)
+	def get_bool(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_bool(path), default)
 
-	def get_raw(self, path):
-		r = self.read_raw(path)
-		if r.status == Status.Good:
-			return r.value
-		raise _StatusError(r.status)
+	def get_string(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_string(path), default)
 
-	def get_datetime(self, path):
-		r = self.read_datetime(path)
-		if r.status == Status.Good:
-			return r.value
-		raise _StatusError(r.status)
+	def get_raw(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_raw(path), default)
+
+	def get_datetime(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_datetime(path), default)
+
+	def get_int_array(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_int_array(path), default)
+
+	def get_float_array(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_float_array(path), default)
+
+	def get_bool_array(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_bool_array(path), default)
+
+	def get_string_array(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_string_array(path), default)
+
+	def get_datetime_array(self, path, default=_NO_DEFAULT):
+		return self._get(self.read_datetime_array(path), default)
 
 
 class _StatusError(Exception):
@@ -1295,10 +1691,12 @@ def _parse_int_text(e, level):
 	if hexs[:2] in ("0x", "0X"):
 		h = hexs[2:]
 		if h and all(c in "0123456789abcdefABCDEF" for c in h):
-			val = int(h, 16)
-			if val > _I64_MAX:
+			# Range-check the magnitude against the sign, so the negative i64-min
+			# magnitude (0x8000000000000000) reads like its decimal spelling.
+			mag = int(h, 16)
+			if mag > (_I64_MAX + 1 if neg else _I64_MAX):
 				return None
-			return -val if neg else val
+			return -mag if neg else mag
 	# Thousands separators, only inside quotes (bare commas are reserved).
 	if e.quoted and "," in t:
 		sign_body = t[1:] if t[:1] in ("+", "-") else t
