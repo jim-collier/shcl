@@ -209,6 +209,10 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Features and enhancements
 
+- ✅ Style guide: write `style-guide.md` (canonical coding + prose style) and point everything at it.
+	- Key decision made prominent everywhere: parity over idiom - bindings mirror the reference's structure over per-language idiom, so byte-for-byte sync stays maintainable and fixes port by diff.
+	- Done: guide at repo root with per-language sections and each accepted deviation explained; pointers added in README (Docs), contributing.md (Style), design.md (Direction decisions), and all four binding headers.
+
 - ✅ Code Review 20260716 item 4: `fmt` deletes every comment with no warning, and the spec never discloses it.
 	- Direct hit on the hand-author audience; retrofitting comment storage later touches all five codebases.
 	- Decide before 1.0: preserve comments as trivia, or spec the loss and warn on `fmt --write`. Detail: `design.md` - Code Review 20260716, item 4.

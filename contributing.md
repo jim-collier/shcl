@@ -161,6 +161,8 @@ Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/ci
 
 ### Style
 
+The full rules live in [`style-guide.md`](style-guide.md) - read it before touching a binding. The single most important rule there: every binding deliberately mirrors the Rust reference's structure, function-for-function, even where the host language would idiomatically do it differently. That is what keeps the bindings byte-for-byte identical and a fix portable by mechanical diff. Quick basics:
+
 - Tabs for indentation, spaces for alignment.
 - Markdown never hard-wraps - one paragraph or bullet is one physical line.
 - Comments are terse and explain why, not what.

@@ -7,6 +7,8 @@ Single file on purpose - the drop-in story is "copy this file into your tree".
 Behaviour tracks the Rust reference (source/rust/src/lib.rs) byte for byte; the
 conformance corpus in project/conformance/ pins every behaviour here, and the
 cicd cross-binding check compares this against the reference on every run.
+Structure deliberately mirrors the reference over Python idiom, so a fix there
+ports here by mechanical diff (parity over idiom - see style-guide.md).
 """
 
 import math

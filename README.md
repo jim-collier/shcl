@@ -261,6 +261,7 @@ Each other binding builds with its own toolchain (`go build`, a C compiler, a Py
 - [`project/grammar.abnf`](project/grammar.abnf): the formal grammar.
 - [`project/design.md`](project/design.md): the why behind the decisions.
 - [`contributing.md`](contributing.md): how to help.
+- [`style-guide.md`](style-guide.md): coding and prose style. Notably: the bindings deliberately mirror the reference's structure over per-language idiom, so they stay byte-for-byte in sync.
 
 ## Contributing and support
 
