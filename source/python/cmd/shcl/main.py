@@ -25,6 +25,8 @@ Usage:
   shcl set [options] FILE                apply write-ops (stdin) and print canonical
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
+                                         (--schema=SCHEMA also validates FILE
+                                         against a schema, itself a .shcl file)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
@@ -53,6 +55,8 @@ Options:
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
+  --schema=SCHEMA                        (check only) validate FILE against a
+                                         schema; adds V### diagnostics
 
 Value options accept either spelling: --default=VALUE or --default VALUE.
 FILE may be '-' for stdin.
@@ -67,7 +71,7 @@ def status_code(st):
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "args")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "schema", "args")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -76,6 +80,7 @@ class _Opts:
 		self.default = None
 		self.on_bad = "flag"     # error|default|flag
 		self.strictness = shcl.Strictness.Standard
+		self.schema = None
 		self.write = False
 		self.args = []           # positional: FILE [PATH]
 
@@ -93,6 +98,8 @@ def _set_value_opt(o, name, v):
 		if s is None:
 			raise ValueError("bad --strictness value: {}".format(v))
 		o.strictness = s
+	elif name == "--schema":
+		o.schema = v
 
 
 def parse_opts(argv):
@@ -109,7 +116,7 @@ def parse_opts(argv):
 			o.slots = True
 		elif a in ("--write", "-w"):
 			o.write = True
-		elif a in ("--default", "--on-bad", "--strictness"):
+		elif a in ("--default", "--on-bad", "--strictness", "--schema"):
 			i += 1
 			if i >= len(argv):
 				raise ValueError("missing value for {0} (try {0}=VALUE)".format(a))
@@ -120,6 +127,8 @@ def parse_opts(argv):
 			_set_value_opt(o, "--on-bad", a[len("--on-bad="):])
 		elif a.startswith("--strictness="):
 			_set_value_opt(o, "--strictness", a[len("--strictness="):])
+		elif a.startswith("--schema="):
+			_set_value_opt(o, "--schema", a[len("--schema="):])
 		elif a.startswith("-") and len(a) > 1:
 			raise ValueError("unknown option: {}".format(a))
 		else:
@@ -433,7 +442,24 @@ def do_check(o):
 		return 1
 	strict_failed = False
 	try:
-		diags = shcl.Document.parse_with(text, o.strictness).diagnostics()
+		doc = shcl.Document.parse_with(text, o.strictness)
+		diags = list(doc.diagnostics())
+		# --schema: append validation diagnostics under the same contract. The
+		# schema itself always loads at Standard (a program artifact); one that
+		# does not load cleanly is a single V099 schema fault.
+		if o.schema is not None:
+			try:
+				stext = read_input(o.schema)
+			except (OSError, ValueError) as e:
+				sys.stderr.write(str(e) + "\n")
+				return 1
+			sdoc = shcl.Document.parse(stext)
+			if any(sd.severity == shcl.Severity.Error for sd in sdoc.diagnostics()):
+				for sd in sdoc.diagnostics():
+					sys.stderr.write("schema line {}: {}: {}\n".format(sd.line, sd.severity.name, sd.message))
+				diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
+			else:
+				diags.extend(doc.validate(sdoc))
 	except shcl.LoadError as le:
 		diags = le.diagnostics
 		strict_failed = True

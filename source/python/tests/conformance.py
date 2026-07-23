@@ -53,6 +53,12 @@ def load_cases():
 		if os.path.exists(ops):
 			case["write_ops"] = _read(ops)
 			case["expected_write"] = _read(os.path.join(d, "expected-write.shcl"))
+		case["schema"] = None
+		case["expected_validate"] = None
+		sch = os.path.join(d, "schema.shcl")
+		if os.path.exists(sch):
+			case["schema"] = _read(sch)
+			case["expected_validate"] = _read(os.path.join(d, "expected-validate.txt"))
 		cases.append(case)
 	if not cases:
 		raise SystemExit("no corpus cases found under {}".format(CORPUS))
@@ -228,6 +234,32 @@ def main():
 			got += "ok ({} diagnostic(s))\n".format(len(diags))
 		if got != case["expected_diags"]:
 			fails.append("{}: diagnostics differ from expected-diags.txt".format(case["name"]))
+
+	# Schema dimension: golden = the exact `check --schema` stdout at Standard
+	# (doc parse diags, then validation diags, then the summary). A schema that
+	# does not load cleanly is a single V099, mirroring the CLI.
+	for case in cases:
+		if case["schema"] is None:
+			continue
+		doc = shcl.Document.parse(case["input"])
+		diags = list(doc.diagnostics())
+		sdoc = shcl.Document.parse(case["schema"])
+		if any(sd.severity == shcl.Severity.Error for sd in sdoc.diagnostics()):
+			diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
+		else:
+			diags.extend(doc.validate(sdoc))
+		got = ""
+		errors = 0
+		for d in diags:
+			got += "line {}: {}: {}\n".format(d.line, d.severity.name, d.code)
+			if d.severity == shcl.Severity.Error:
+				errors += 1
+		if errors > 0:
+			got += "failed: {} diagnostic(s), {} error(s)\n".format(len(diags), errors)
+		else:
+			got += "ok ({} diagnostic(s))\n".format(len(diags))
+		if got != case["expected_validate"]:
+			fails.append("{}: validation output differs from expected-validate.txt".format(case["name"]))
 
 	# The canonical formatter must match expected.shcl and be a fixpoint.
 	for case in cases:
