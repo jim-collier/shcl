@@ -67,6 +67,17 @@ int main() {
 	CHECK(doc.get_or<int64_t>("nope", 9) == 9);
 	CHECK(doc.get_or<std::string>("nope", std::string("fb")) == "fb");
 
+	// Schema validation rides through the veneer: a conforming doc is clean, a
+	// violation carries its stable V-code, a schema fault suppresses the rest.
+	auto schema = shcl::Document::parse("field: port\n\ttype: int\n\tmin: 1\nfield: city\nfield: ratio\nfield: name\nfield: on\nfield: tags\n");
+	CHECK(doc.validate(schema).empty());
+	auto badschema = shcl::Document::parse("field: port\n\ttype: int\n\tmin: 90000\n");
+	auto vd = doc.validate(badschema);
+	CHECK(vd.size() >= 1 && vd[0].code == "V005");
+	auto broken = shcl::Document::parse("field: port\n\tfrobnicate: 1\n");
+	auto fd = doc.validate(broken);
+	CHECK(fd.size() == 1 && fd[0].code == "V090");
+
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");
 	return 0;

@@ -287,6 +287,49 @@ int main(int argc, char **argv) {
 			if (wagain.n != wgot.n || (wgot.n && memcmp(wagain.p, wgot.p, wgot.n) != 0)) fail(names[ci], "written output is not a fmt fixpoint");
 			shcl_free(wd2); shcl_free(wd); free(olines); free(ops); free(ew);
 		}
+
+		// Schema dimension (optional): golden = the exact `check --schema` stdout
+		// at Standard (doc parse diags, then validation diags, then the summary).
+		// A schema that does not load cleanly is a single V099, mirroring the CLI.
+		snprintf(path, sizeof path, "%s/%s/schema.shcl", corpus, names[ci]); size_t schlen; char *sch = read_file(path, &schlen);
+		if (sch) {
+			snprintf(path, sizeof path, "%s/%s/expected-validate.txt", corpus, names[ci]); size_t evlen; char *ev = read_file(path, &evlen);
+			if (!ev) { fail(names[ci], "schema.shcl without expected-validate.txt"); free(sch); }
+			else {
+				shcl_doc *vd = shcl_parse(input, ilen);
+				shcl_doc *sd = shcl_parse(sch, schlen);
+				int v99 = 0;
+				for (size_t i = 0; i < shcl_diag_count(sd); i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) v99 = 1;
+				shcl_validation *vv = v99 ? NULL : shcl_validate(vd, sd);
+				size_t nd = shcl_diag_count(vd), nv = vv ? shcl_validation_count(vv) : 0, nerr = 0;
+				size_t total = nd + nv + (v99 ? 1 : 0);
+				char *vj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
+				for (size_t i = 0; i < nd + nv + (size_t)(v99 ? 1 : 0); i++) {
+					char ln[128]; int w;
+					if (i < nd) {
+						if (shcl_diag_severity(vd, i) == SHCL_SEV_ERROR) nerr++;
+						w = snprintf(ln, sizeof ln, "line %zu: %s: %s\n", shcl_diag_line(vd, i), shcl_diag_severity(vd, i) == SHCL_SEV_ERROR ? "Error" : "Hint", shcl_diag_code(vd, i));
+					} else if (v99) {
+						nerr++;
+						w = snprintf(ln, sizeof ln, "line 0: Error: V099\n");
+					} else {
+						size_t k = i - nd;
+						if (shcl_validation_severity(vv, k) == SHCL_SEV_ERROR) nerr++;
+						w = snprintf(ln, sizeof ln, "line %zu: %s: %s\n", shcl_validation_line(vv, k), shcl_validation_severity(vv, k) == SHCL_SEV_ERROR ? "Error" : "Hint", shcl_validation_code(vv, k));
+					}
+					if (jl + (size_t)w + 1 > jc) { jc = (jl + (size_t)w + 1) * 2; vj = xrealloc(vj, jc); }
+					memcpy(vj + jl, ln, (size_t)w); jl += (size_t)w;
+				}
+				char sum[96]; int sw;
+				if (nerr) sw = snprintf(sum, sizeof sum, "failed: %zu diagnostic(s), %zu error(s)\n", total, nerr);
+				else sw = snprintf(sum, sizeof sum, "ok (%zu diagnostic(s))\n", total);
+				if (jl + (size_t)sw + 1 > jc) { jc = jl + (size_t)sw + 1; vj = xrealloc(vj, jc); }
+				memcpy(vj + jl, sum, (size_t)sw); jl += (size_t)sw;
+				if (jl != evlen || (evlen && memcmp(vj, ev, evlen) != 0)) fail(names[ci], "validation output differs from expected-validate.txt");
+				free(vj);
+				shcl_validation_free(vv); shcl_free(sd); shcl_free(vd); free(sch); free(ev);
+			}
+		}
 		free(input); free(expected); free(reads);
 	}
 	for (size_t i = 0; i < nn; i++) free(names[i]);
