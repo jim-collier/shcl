@@ -27,6 +27,8 @@ Usage:
   shcl set [options] FILE                apply write-ops (stdin) and print canonical
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
+                                         (--schema=SCHEMA also validates FILE
+                                         against a schema, itself a .shcl file)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
@@ -55,6 +57,8 @@ Options:
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
+  --schema=SCHEMA                        (check only) validate FILE against a
+                                         schema; adds V### diagnostics
 
 Value options accept either spelling: --default=VALUE or --default VALUE.
 FILE may be '-' for stdin.
@@ -87,6 +91,7 @@ type opts struct {
 	onBad      string // error|default|flag
 	strictness shcl.Strictness
 	write      bool
+	schema     string
 	args       []string // positional: FILE [PATH]
 }
 
@@ -106,6 +111,8 @@ func setValueOpt(o *opts, name, v string) error {
 			return fmt.Errorf("bad --strictness value: %s", v)
 		}
 		o.strictness = s
+	case "--schema":
+		o.schema = v
 	}
 	return nil
 }
@@ -124,7 +131,7 @@ func parseOpts(argv []string) (*opts, error) {
 			o.slots = true
 		case a == "--write" || a == "-w":
 			o.write = true
-		case a == "--default" || a == "--on-bad" || a == "--strictness":
+		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema":
 			i++
 			if i >= len(argv) {
 				return nil, fmt.Errorf("missing value for %s (try %s=VALUE)", a, a)
@@ -138,6 +145,10 @@ func parseOpts(argv []string) (*opts, error) {
 			}
 		case strings.HasPrefix(a, "--on-bad="):
 			if err := setValueOpt(o, "--on-bad", a[len("--on-bad="):]); err != nil {
+				return nil, err
+			}
+		case strings.HasPrefix(a, "--schema="):
+			if err := setValueOpt(o, "--schema", a[len("--schema="):]); err != nil {
 				return nil, err
 			}
 		case strings.HasPrefix(a, "--strictness="):
@@ -630,6 +641,31 @@ func doCheck(o *opts) int {
 		strictFailed = true
 	} else {
 		diags = doc.Diagnostics()
+		// --schema: append validation diagnostics under the same contract. The
+		// schema itself always loads at Standard (a program artifact); one that
+		// does not load cleanly is a single V099 schema fault.
+		if o.schema != "" {
+			stext, serr := readInput(o.schema)
+			if serr != nil {
+				fmt.Fprintln(os.Stderr, serr)
+				return 1
+			}
+			sdoc := shcl.Parse(stext)
+			bad := false
+			for _, sd := range sdoc.Diagnostics() {
+				if sd.Severity == shcl.SeverityError {
+					bad = true
+				}
+			}
+			if bad {
+				for _, sd := range sdoc.Diagnostics() {
+					fmt.Fprintf(os.Stderr, "schema line %d: %s: %s\n", sd.Line, sd.Severity, sd.Message)
+				}
+				diags = append(diags, shcl.Diagnostic{Line: 0, Severity: shcl.SeverityError, Message: "schema failed to load", Code: "V099"})
+			} else {
+				diags = append(diags, doc.Validate(sdoc)...)
+			}
+		}
 	}
 	// stdout carries the stable codes - the cross-binding contract. The prose is
 	// per-binding voice and goes to stderr (which the differential check drops).

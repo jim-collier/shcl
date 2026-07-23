@@ -51,6 +51,10 @@ type corpusCase struct {
 	writeOps      string
 	expectedWrite string
 	hasWrite      bool
+	// Schema dimension (optional): a schema and the golden `check --schema` stdout.
+	schema           string
+	expectedValidate string
+	hasSchema        bool
 }
 
 func loadCases(t *testing.T) []corpusCase {
@@ -94,6 +98,13 @@ func loadCases(t *testing.T) []corpusCase {
 				t.Fatalf("%s: write.ops without expected-write.shcl", entry.Name())
 			}
 			cc.writeOps, cc.expectedWrite, cc.hasWrite = string(ops), string(ew), true
+		}
+		if sch, err := os.ReadFile(filepath.Join(caseDir, "schema.shcl")); err == nil {
+			ev, err2 := os.ReadFile(filepath.Join(caseDir, "expected-validate.txt"))
+			if err2 != nil {
+				t.Fatalf("%s: schema.shcl without expected-validate.txt", entry.Name())
+			}
+			cc.schema, cc.expectedValidate, cc.hasSchema = string(sch), string(ev), true
 		}
 		cases = append(cases, cc)
 	}
@@ -283,6 +294,47 @@ func TestDiagnosticsMatchExpected(t *testing.T) {
 		}
 		if got.String() != c.expectedDiags {
 			t.Errorf("%s: diagnostics differ from expected-diags.txt\ngot:\n%s\nwant:\n%s", c.name, got.String(), c.expectedDiags)
+		}
+	}
+}
+
+func TestValidationMatchesExpected(t *testing.T) {
+	// Schema dimension: golden = the exact `check --schema` stdout at Standard
+	// (doc parse diags, then validation diags, then the summary). A schema that
+	// does not load cleanly is a single V099, mirroring the CLI.
+	for _, c := range loadCases(t) {
+		if !c.hasSchema {
+			continue
+		}
+		doc := Parse(c.input)
+		diags := append([]Diagnostic{}, doc.Diagnostics()...)
+		sdoc := Parse(c.schema)
+		bad := false
+		for _, sd := range sdoc.Diagnostics() {
+			if sd.Severity == SeverityError {
+				bad = true
+			}
+		}
+		if bad {
+			diags = append(diags, Diagnostic{Line: 0, Severity: SeverityError, Message: "schema failed to load", Code: "V099"})
+		} else {
+			diags = append(diags, doc.Validate(sdoc)...)
+		}
+		var got strings.Builder
+		errors := 0
+		for _, d := range diags {
+			fmt.Fprintf(&got, "line %d: %s: %s\n", d.Line, d.Severity, d.Code)
+			if d.Severity == SeverityError {
+				errors++
+			}
+		}
+		if errors > 0 {
+			fmt.Fprintf(&got, "failed: %d diagnostic(s), %d error(s)\n", len(diags), errors)
+		} else {
+			fmt.Fprintf(&got, "ok (%d diagnostic(s))\n", len(diags))
+		}
+		if got.String() != c.expectedValidate {
+			t.Errorf("%s: validation output differs from expected-validate.txt\ngot:\n%s\nwant:\n%s", c.name, got.String(), c.expectedValidate)
 		}
 	}
 }
