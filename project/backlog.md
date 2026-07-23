@@ -79,10 +79,11 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Configuration and persistence
 
-- 🔘 Default configuration hard-coded.
-	- 🔘 Overridden by a per-user config file, created the first time a default is changed.
-		- 🔘 Settings live under `~/.config`, resistant to errors (do not bail on the whole file over one bad line).
-	- 🔘 Overridden by program options at run time.
+- 🚫 Default configuration hard-coded.
+	- 🚫 Overridden by a per-user config file, created the first time a default is changed.
+		- 🚫 Settings live under `~/.config`, resistant to errors (do not bail on the whole file over one bad line).
+	- 🚫 Overridden by program options at run time.
+	- Dropped: strictness and on-bad are the consuming program's contract, not the user's - a user-level override would silently weaken guarantees an app makes about its own config handling, and would make the same `shcl` command mean different things on different machines. Nothing else the CLI exposes is presentation-only, so there is nothing left for a config file to hold. Rationale in `design.md`; runtime options and the library's per-document strictness argument stay as they are.
 
 ## Backlog
 
@@ -91,6 +92,8 @@ In each section, items are listed approximately from newest to oldest.
 ### Bugs
 
 ### Features and enhancements
+
+- 🔘 Glossary of terms
 
 - ✅ Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.
 	- Done: `install-dev.bash` at repo root. Linux + macOS directly; Windows via WSL (the dev pipeline is bash). Clones (or detects an existing clone), installs the no-sudo pieces itself (rustup, ruff/mypy/cppcheck via pipx, markdownlint via npm, PSScriptAnalyzer via pwsh), and prints the exact package-manager hint for what needs root (go, python3, gcc, shellcheck). Shellcheck-gated.
