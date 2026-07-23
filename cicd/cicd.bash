@@ -16,7 +16,8 @@
 ##	   3. lint (project lint + shellcheck of the cicd scripts themselves)
 ##	   4. tests (conformance corpus + fuzz smoke + cross-binding differential check)
 ##	   5. profiler (flamegraph SVG + hot-spot report; non-gating artifact, local only)
-##	   6. release + cross-compile + versioned artifacts + sha256sums (local only)
+##	   6. release + cross-compile + versioned artifacts + packages (.deb/.rpm/
+##	      NSIS setup) + sha256sums (local only)
 ##	   7. dogfood (install the native release build to a fixed local dir; local only)
 ##	   8. demo gif for the README (local only; non-gating)
 ##	   9. backup + publish to git (local only)
@@ -33,6 +34,7 @@
 ##	   --no-fmt            skip the formatter stage
 ##	   --no-lint           skip the lint stage
 ##	   --no-cross          skip the cross-compile targets (native release still builds)
+##	   --no-package        skip building installer packages (.deb/.rpm/NSIS setup)
 ##	   --no-profile        skip the profiler stage
 ##	   --no-dogfood        skip installing the native release build locally
 ##	   --no-gif            skip the demo gif refresh
@@ -69,6 +71,7 @@ export CPU_CAP
 ## second binding (Go, C, ...) adds its fmt/build/lint/test commands in config
 ## without touching engine code. All default empty.
 FMT_EXTRA=(); FMT_CHECK_EXTRA=(); BUILD_EXTRA=(); LINT_EXTRA=(); TEST_EXTRA=()
+PACKAGE_ENABLE=0   ## config opts in; installer packages built off the release artifacts
 fRunExtras(){ local c; for c in "$@"; do fEcho_Clean "extra: ${c}"; eval "${c}"; done; }
 
 ## shellcheck source=config.bash
@@ -87,6 +90,7 @@ while (($#)); do case "$1" in
 	--no-fmt)                 FMT_CMD=(); FMT_CHECK_CMD=(); FMT_EXTRA=(); FMT_CHECK_EXTRA=(); shift ;;
 	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); LINT_EXTRA=(); shift ;;
 	--no-cross)               CROSS_TARGETS=(); shift ;;
+	--no-package)             PACKAGE_ENABLE=0; shift ;;
 	--no-profile)             PROFILE_ENABLE=0; shift ;;
 	--no-dogfood)             DOGFOOD_FIXED_DESTS=(); shift ;;
 	--no-gif)                 GIF_ENABLE=0; shift ;;
@@ -102,6 +106,7 @@ if ((ci_mode)); then
 	FMT_CMD=()          ## check-only via FMT_CHECK_CMD; never rewrite in CI
 	CROSS_TARGETS=()
 	RELEASE_NATIVE_CMD=()
+	PACKAGE_ENABLE=0
 	PROFILE_ENABLE=0
 	DOGFOOD_FIXED_DESTS=()   ## no local install from the read-only gate (and no stale-binary risk)
 	GIF_ENABLE=0
@@ -111,6 +116,7 @@ else
 fi
 if ((quick)); then
 	CROSS_TARGETS=()
+	PACKAGE_ENABLE=0   ## artifact set is partial without cross targets
 	PROFILE_ENABLE=0
 	GIF_ENABLE=0
 fi
@@ -161,6 +167,7 @@ if ((! quiet)); then
 	else
 		fEcho_Clean "Release ........: (skipped)"
 	fi
+	fEcho_Clean "Packages .......: $( ((PACKAGE_ENABLE)) && echo '.deb/.rpm + NSIS setup (per built binary)' || echo '(skipped)')"
 	fEcho_Clean "Dogfood ........: $( if ((${#DOGFOOD_FIXED_DESTS[@]})); then _dfd=""; for d in "${DOGFOOD_FIXED_DESTS[@]}"; do [[ -d "$d" && -w "$d" ]] && { _dfd="$d"; break; }; done; [[ -n "$_dfd" ]] && echo "${_dfd}/${EXE_NAME}" || echo '(no writable dest; will skip)'; else echo '(skipped)'; fi )"
 	fEcho_Clean "Demo gif .......: $( ((GIF_ENABLE)) && echo "${GIF_OUT}" || echo '(skipped)')"
 	if ((${#GIT_PUBLISH[@]})); then
@@ -335,6 +342,9 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 			p_ext=""; [[ "$p_src" == *.exe ]] && p_ext=".exe"
 			cp -f "${p_src}" "${art_dir}/${EXE_NAME}-${ver}-${p_osarch}${p_ext}"
 		done
+		## Installer packages (.deb/.rpm via nfpm, NSIS setup per Windows exe) join
+		## the artifact family before the sums are written, so they ship verified too.
+		((PACKAGE_ENABLE)) && "${here}/utility/package.bash" "${root}" "${art_dir}" "${ver}"
 		fWriteSums
 		fEcho "OK: ${#built_arts[@]} release artifact(s) + ${sums} -> ${RELEASE_ARTIFACT_DIR}/"
 		((${#CROSS_TARGETS[@]})) || fEcho_Clean "note: cross targets skipped - artifact set is partial (native only)"
@@ -444,3 +454,4 @@ fEcho_Clean
 ##		- 2026-07-12 JC: Dropped the dev version guard; added the profiler stage (flamegraph + flame-report) and the cross-binding crosscheck after tests.
 ##		- 2026-07-12 JC: Per-stage extras (FMT/BUILD/LINT/TEST_EXTRA eval lists) so additional bindings wire in via config only; first consumer is the Go binding.
 ##		- 2026-07-13 JC: Dogfood stage (7/9) between release and demo gif: installs the native release binary + bash wrapper (when present) to a fixed local dir; --no-dogfood, off under --ci.
+##		- 2026-07-22 JC: Installer packages in stage 6 (utility/package.bash: nfpm .deb/.rpm + NSIS setup), before the sums write; --no-package, off under --ci/--quick.
