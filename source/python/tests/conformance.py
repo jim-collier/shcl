@@ -45,6 +45,7 @@ def load_cases():
 			"input": _read(inp),
 			"expected": _read(os.path.join(d, "expected.shcl")),
 			"reads": _read(os.path.join(d, "reads.tsv")),
+			"expected_diags": _read(os.path.join(d, "expected-diags.txt")),
 			"write_ops": None,
 			"expected_write": None,
 		}
@@ -210,6 +211,23 @@ def main():
 			fails.append("{}: writer output differs from expected-write.shcl".format(case["name"]))
 		if shcl.Document.parse(got).to_canonical() != got:
 			fails.append("{}: written output is not a fmt fixpoint".format(case["name"]))
+
+	# Diagnostics: count, line, severity, and stable code per case - the same
+	# shape `check` prints to stdout at Standard (its cross-binding contract).
+	for case in cases:
+		diags = shcl.Document.parse(case["input"]).diagnostics()
+		got = ""
+		errors = 0
+		for d in diags:
+			got += "line {}: {}: {}\n".format(d.line, d.severity.name, d.code)
+			if d.severity == shcl.Severity.Error:
+				errors += 1
+		if errors > 0:
+			got += "failed: {} diagnostic(s), {} error(s)\n".format(len(diags), errors)
+		else:
+			got += "ok ({} diagnostic(s))\n".format(len(diags))
+		if got != case["expected_diags"]:
+			fails.append("{}: diagnostics differ from expected-diags.txt".format(case["name"]))
 
 	# The canonical formatter must match expected.shcl and be a fixpoint.
 	for case in cases:

@@ -31,6 +31,8 @@ struct Case {
 	input: String,
 	expected_fmt: String,
 	reads: String,
+	// Golden `check` stdout at Standard: diag lines (line/severity/code) + summary.
+	expected_diags: String,
 	// Write dimension (optional): an ops script and its golden canonical output.
 	write_ops: Option<String>,
 	expected_write: Option<String>,
@@ -144,6 +146,7 @@ fn load_cases() -> Vec<Case> {
 			input: std::fs::read_to_string(&input).unwrap(),
 			expected_fmt: std::fs::read_to_string(path.join("expected.shcl")).unwrap(),
 			reads: std::fs::read_to_string(path.join("reads.tsv")).unwrap(),
+			expected_diags: std::fs::read_to_string(path.join("expected-diags.txt")).unwrap(),
 			write_ops: read_opt("write.ops"),
 			expected_write: read_opt("expected-write.shcl"),
 		});
@@ -178,6 +181,38 @@ fn canonical_format_matches_expected() {
 		// The formatter must be a fixpoint: canonicalizing its own output changes nothing.
 		let again = Document::parse(&got).to_canonical();
 		assert_eq!(again, got, "{}: formatter is not idempotent", case.name);
+	}
+}
+
+#[test]
+fn diagnostics_match_expected() {
+	// Pins count, line, severity, and stable code per case - the same shape
+	// `check` prints to stdout at Standard (its cross-binding contract).
+	for case in load_cases() {
+		let doc = Document::parse(&case.input);
+		let diags = doc.diagnostics();
+		let mut got = String::new();
+		for d in diags {
+			got.push_str(&format!("line {}: {:?}: {}\n", d.line, d.severity, d.code));
+		}
+		let errors = diags
+			.iter()
+			.filter(|d| d.severity == shcl::Severity::Error)
+			.count();
+		if errors > 0 {
+			got.push_str(&format!(
+				"failed: {} diagnostic(s), {} error(s)\n",
+				diags.len(),
+				errors
+			));
+		} else {
+			got.push_str(&format!("ok ({} diagnostic(s))\n", diags.len()));
+		}
+		assert_eq!(
+			got, case.expected_diags,
+			"{}: diagnostics differ from expected-diags.txt",
+			case.name
+		);
 	}
 }
 

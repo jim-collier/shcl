@@ -1,3 +1,8 @@
+<!-- markdownlint-disable MD007 -- Unordered list indentation -->
+<!-- markdownlint-disable MD010 -- hard tabs -->
+<!-- markdownlint-disable MD033 -- inline html -->
+<!-- markdownlint-disable MD055 -- Table pipe style [Expected: leading_and_trailing; Actual: leading_only; Missing trailing pipe] -->
+<!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
 # Style guide
 
 The canonical coding and prose style for this repo. `contributing.md` covers process; this file covers how the code and docs are written, and why. Where this guide and a general-purpose "best practice" disagree, this guide wins on purpose - the deviations are listed per language, each with its reason.

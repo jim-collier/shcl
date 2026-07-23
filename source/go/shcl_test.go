@@ -45,6 +45,8 @@ type corpusCase struct {
 	input       string
 	expectedFmt string
 	reads       string
+	// Golden `check` stdout at Standard: diag lines (line/severity/code) + summary.
+	expectedDiags string
 	// Write dimension (optional): an ops script and its golden canonical output.
 	writeOps      string
 	expectedWrite string
@@ -75,11 +77,16 @@ func loadCases(t *testing.T) []corpusCase {
 		if err != nil {
 			t.Fatalf("%s: %v", entry.Name(), err)
 		}
+		diags, err := os.ReadFile(filepath.Join(caseDir, "expected-diags.txt"))
+		if err != nil {
+			t.Fatalf("%s: %v", entry.Name(), err)
+		}
 		cc := corpusCase{
-			name:        entry.Name(),
-			input:       string(input),
-			expectedFmt: string(expected),
-			reads:       string(reads),
+			name:          entry.Name(),
+			input:         string(input),
+			expectedFmt:   string(expected),
+			reads:         string(reads),
+			expectedDiags: string(diags),
 		}
 		if ops, err := os.ReadFile(filepath.Join(caseDir, "write.ops")); err == nil {
 			ew, err2 := os.ReadFile(filepath.Join(caseDir, "expected-write.shcl"))
@@ -253,6 +260,30 @@ func applyOpTest(t *testing.T, doc *Document, line, at string) {
 		doc.Remove(path)
 	default:
 		t.Fatalf("%s: unknown op '%s'", at, f[0])
+	}
+}
+
+func TestDiagnosticsMatchExpected(t *testing.T) {
+	// Pins count, line, severity, and stable code per case - the same shape
+	// `check` prints to stdout at Standard (its cross-binding contract).
+	for _, c := range loadCases(t) {
+		diags := Parse(c.input).Diagnostics()
+		var got strings.Builder
+		errors := 0
+		for _, d := range diags {
+			fmt.Fprintf(&got, "line %d: %s: %s\n", d.Line, d.Severity, d.Code)
+			if d.Severity == SeverityError {
+				errors++
+			}
+		}
+		if errors > 0 {
+			fmt.Fprintf(&got, "failed: %d diagnostic(s), %d error(s)\n", len(diags), errors)
+		} else {
+			fmt.Fprintf(&got, "ok (%d diagnostic(s))\n", len(diags))
+		}
+		if got.String() != c.expectedDiags {
+			t.Errorf("%s: diagnostics differ from expected-diags.txt\ngot:\n%s\nwant:\n%s", c.name, got.String(), c.expectedDiags)
+		}
 	}
 }
 
