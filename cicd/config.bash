@@ -74,6 +74,7 @@ LINT_EXTRA=(
 	'cppcheck --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
 	'markdownlint-cli2'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Severity Warning,Error -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error -EnableExit"'
 )
 ## n8git_backup-and-publish is excluded: SC1083 false-hits its legitimate git
 ## @{u} upstream refs, and the script is a proven drop-in kept byte-close to its
@@ -86,6 +87,8 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/git-auto-msg.bash
 	cicd/utility/include/gfs-rotate.bash
 	source/bash/shcl.bash
+	install.bash
+	install-dev.bash
 )
 
 ## Stage 4: tests. cargo test runs the conformance corpus (project/conformance/)
