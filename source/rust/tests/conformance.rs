@@ -36,6 +36,9 @@ struct Case {
 	// Write dimension (optional): an ops script and its golden canonical output.
 	write_ops: Option<String>,
 	expected_write: Option<String>,
+	// Schema dimension (optional): a schema and the golden `check --schema` stdout.
+	schema: Option<String>,
+	expected_validate: Option<String>,
 }
 
 /// Decode an ops value: \n \t \\ only, others verbatim (mirrors the CLI).
@@ -149,6 +152,8 @@ fn load_cases() -> Vec<Case> {
 			expected_diags: std::fs::read_to_string(path.join("expected-diags.txt")).unwrap(),
 			write_ops: read_opt("write.ops"),
 			expected_write: read_opt("expected-write.shcl"),
+			schema: read_opt("schema.shcl"),
+			expected_validate: read_opt("expected-validate.txt"),
 		});
 	}
 	cases.sort_by(|a, b| a.name.cmp(&b.name));
@@ -211,6 +216,62 @@ fn diagnostics_match_expected() {
 		assert_eq!(
 			got, case.expected_diags,
 			"{}: diagnostics differ from expected-diags.txt",
+			case.name
+		);
+	}
+}
+
+#[test]
+fn validation_matches_expected() {
+	// Schema dimension: golden = the exact `check --schema` stdout at Standard
+	// (doc parse diags, then validation diags, then the summary). A schema that
+	// does not load cleanly is a single V099, mirroring the CLI.
+	for case in load_cases() {
+		let (schema_text, want) = match (&case.schema, &case.expected_validate) {
+			(Some(s), Some(w)) => (s, w),
+			(None, None) => continue,
+			_ => panic!(
+				"{}: schema.shcl and expected-validate.txt must come as a pair",
+				case.name
+			),
+		};
+		let doc = Document::parse(&case.input);
+		let mut diags: Vec<shcl::Diagnostic> = doc.diagnostics().to_vec();
+		let sdoc = Document::parse(schema_text);
+		if sdoc
+			.diagnostics()
+			.iter()
+			.any(|d| d.severity == shcl::Severity::Error)
+		{
+			diags.push(shcl::Diagnostic {
+				line: 0,
+				severity: shcl::Severity::Error,
+				message: "schema failed to load".to_string(),
+				code: "V099",
+			});
+		} else {
+			diags.extend(doc.validate(&sdoc));
+		}
+		let mut got = String::new();
+		for d in &diags {
+			got.push_str(&format!("line {}: {:?}: {}\n", d.line, d.severity, d.code));
+		}
+		let errors = diags
+			.iter()
+			.filter(|d| d.severity == shcl::Severity::Error)
+			.count();
+		if errors > 0 {
+			got.push_str(&format!(
+				"failed: {} diagnostic(s), {} error(s)\n",
+				diags.len(),
+				errors
+			));
+		} else {
+			got.push_str(&format!("ok ({} diagnostic(s))\n", diags.len()));
+		}
+		assert_eq!(
+			got, *want,
+			"{}: validation output differs from expected-validate.txt",
 			case.name
 		);
 	}

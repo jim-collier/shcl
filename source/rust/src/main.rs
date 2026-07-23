@@ -4,7 +4,7 @@
 //! `shcl` CLI - the Tier 1 command binding. POSIX sh and PowerShell wrap this,
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
-use shcl::{Document, Severity, Status, Strictness, parse_datetime};
+use shcl::{Diagnostic, Document, Severity, Status, Strictness, parse_datetime};
 use std::process::ExitCode;
 
 const HELP: &str = "\
@@ -15,6 +15,8 @@ Usage:
   shcl set [options] FILE                apply write-ops (stdin) and print canonical
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
+                                         (--schema=SCHEMA also validates FILE
+                                         against a schema, itself a .shcl file)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
@@ -43,6 +45,8 @@ Options:
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
+  --schema=SCHEMA                        (check only) validate FILE against a
+                                         schema; adds V### diagnostics
 
 Value options accept either spelling: --default=VALUE or --default VALUE.
 FILE may be '-' for stdin.
@@ -69,6 +73,7 @@ struct Opts {
 	on_bad: String, // error|default|flag
 	strictness: Strictness,
 	write: bool,
+	schema: Option<String>,
 	args: Vec<String>, // positional: FILE [PATH]
 }
 
@@ -81,6 +86,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		on_bad: "flag".into(),
 		strictness: Strictness::Standard,
 		write: false,
+		schema: None,
 		args: Vec::new(),
 	};
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
@@ -94,7 +100,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			"--array" => o.array = true,
 			"--slots" => o.slots = true,
 			"--write" | "-w" => o.write = true,
-			"--default" | "--on-bad" | "--strictness" => {
+			"--default" | "--on-bad" | "--strictness" | "--schema" => {
 				i += 1;
 				let v = argv
 					.get(i)
@@ -104,6 +110,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			_ if a.starts_with("--default=") => set_value_opt(&mut o, "--default", &a[10..])?,
 			_ if a.starts_with("--on-bad=") => set_value_opt(&mut o, "--on-bad", &a[9..])?,
 			_ if a.starts_with("--strictness=") => set_value_opt(&mut o, "--strictness", &a[13..])?,
+			_ if a.starts_with("--schema=") => set_value_opt(&mut o, "--schema", &a[9..])?,
 			_ if a.starts_with('-') && a.len() > 1 => {
 				return Err(format!("unknown option: {}", a));
 			}
@@ -130,6 +137,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			o.strictness =
 				Strictness::from_arg(v).ok_or_else(|| format!("bad --strictness value: {}", v))?;
 		}
+		"--schema" => o.schema = Some(v.to_string()),
 		_ => unreachable!(),
 	}
 	Ok(())
@@ -524,7 +532,40 @@ fn do_check(o: &Opts) -> u8 {
 		}
 	};
 	let (diags, strict_failed) = match Document::parse_with(&text, o.strictness) {
-		Ok(doc) => (doc.diagnostics().to_vec(), false),
+		Ok(doc) => {
+			let mut diags = doc.diagnostics().to_vec();
+			// --schema: append validation diagnostics under the same contract.
+			// The schema itself always loads at Standard (a program artifact);
+			// one that does not load cleanly is a single V099 schema fault.
+			if let Some(schema_file) = &o.schema {
+				let stext = match read_input(schema_file) {
+					Ok(t) => t,
+					Err(e) => {
+						eprintln!("{}", e);
+						return 1;
+					}
+				};
+				let sdoc = Document::parse(&stext);
+				if sdoc
+					.diagnostics()
+					.iter()
+					.any(|d| d.severity == Severity::Error)
+				{
+					for d in sdoc.diagnostics() {
+						eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
+					}
+					diags.push(Diagnostic {
+						line: 0,
+						severity: Severity::Error,
+						message: "schema failed to load".to_string(),
+						code: "V099",
+					});
+				} else {
+					diags.extend(doc.validate(&sdoc));
+				}
+			}
+			(diags, false)
+		}
 		Err(e) => (e.diagnostics.clone(), true),
 	};
 	// stdout carries the stable codes - the cross-binding contract. The prose is

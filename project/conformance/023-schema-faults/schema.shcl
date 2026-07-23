@@ -1,0 +1,17 @@
+version: 2
+field: title
+	type: strnig
+field: workers
+	type: int
+	type: float
+	min: yes
+	frobnicate: 1
+field:
+	required: yes
+field: "server[*"
+	type: int
+field: motd
+	type: raw
+	allowed: hi
+field: count
+	repeat: 5, 1

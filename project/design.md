@@ -132,7 +132,7 @@ Consequences of the flat form, all verified against the current binary:
 
 **Wildcards carry the repeated-instance story.** `server[*].port` constrains every instance of `server`, which is how a schema says "each server needs a port" in a language whose core idea is repeated instances. `repeat` (on the parent path) bounds the instance count itself - the one constraint with no equivalent in tree-shaped schema languages.
 
-**The vocabulary stays small and closed**, in the same spirit as the Loose coercion list: `type`, `required`, `allowed` (an enum, written as an ordinary array), `min`/`max` (numeric and datetime ranges, inclusive), `repeat`, plus `default` and `desc` which only the generator reads. Nothing joins that list without a spec change.
+**The vocabulary stays small and closed**, in the same spirit as the Loose coercion list: `type`, `required`, `allowed` (an enum, written as an ordinary array), `min`/`max` (numeric ranges, inclusive), `repeat`, plus `default` and `desc` which only the generator reads. Nothing joins that list without a spec change. Datetime ranges were considered and dropped for the same reason as regex below: comparing datetimes across zone suffixes needs calendar arithmetic (an offset can roll the date), no parser has any, and four hand-written implementations of it is a parity minefield.
 
 **Regular-expression constraints are rejected outright**, and this is the one real capability given up. No two of the target languages share a regex engine - character classes, Unicode properties, and anchoring all differ - so a `pattern` key could not hold byte-for-byte agreement across bindings, which is the product's core guarantee. An enum covers the common case; anything past that belongs in the consuming program.
 
@@ -150,11 +150,11 @@ The "did you mean `enabled`?" suggestion rides in the prose message, not the cod
 
 **CLI surface: `shcl check --schema SCHEMA FILE`**, rather than a new subcommand. Loading and validating are the same question ("is this file good?"), the output shape and exit codes are already defined by `check`, and folding it in avoids a second nearly identical command.
 
-Open, and worth settling before implementation:
+Both open points are settled:
 
-- Whether `Validate` lives in the single drop-in file or a second optional one. In-file keeps the one-file promise that the README leads with, at the cost of growing every binding's single file (`shcl.h` most visibly). A companion file keeps the core lean but makes schema users copy two.
+- `Validate` lives in each binding's single drop-in file. The one-file promise the README leads with outranks keeping the core lean; a schema user copying two files would quietly break the pitch.
 
-- Whether string/array length bounds are worth having. They reopen the byte-versus-code-point metric already settled for merge keys, for modest benefit.
+- No string/array length bounds. They would reopen the byte-versus-code-point metric already settled for merge keys, for modest benefit; an `allowed` enum or the consuming program covers the need.
 
 ### Formatter
 
