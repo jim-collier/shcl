@@ -85,6 +85,30 @@ fn diag_code(msg: &str) -> &'static str {
 		"E013"
 	} else if msg.starts_with("missing colon") {
 		"E015"
+	} else if msg.starts_with("unknown field ") {
+		"V001"
+	} else if msg.starts_with("required path missing") {
+		"V002"
+	} else if msg.starts_with("wrong type at ") {
+		"V003"
+	} else if msg.starts_with("value not allowed at ") {
+		"V004"
+	} else if msg.starts_with("value below min at ") {
+		"V005"
+	} else if msg.starts_with("value above max at ") {
+		"V006"
+	} else if msg.starts_with("instance count out of bounds at ") {
+		"V007"
+	} else if msg.starts_with("unknown schema key ") {
+		"V090"
+	} else if msg.starts_with("unknown schema type ") {
+		"V091"
+	} else if msg.starts_with("bad schema constraint ") {
+		"V092"
+	} else if msg.starts_with("bad schema path") {
+		"V093"
+	} else if msg.starts_with("schema failed to load") {
+		"V099"
 	} else {
 		"E000" // uncategorized error (should not happen; keeps the map total)
 	}
@@ -2501,5 +2525,656 @@ impl Document {
 		} else {
 			Err(r.status)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Validator: schema-as-SHCL
+// ---------------------------------------------------------------------------
+// The schema is an ordinary parsed document: a flat list of `field: <path>`
+// instances whose children are the constraints (closed vocabulary - see
+// spec.md "Schema validation"). Validation reuses the accessor's path scan and
+// the typed coercions, so document strictness composes for free. Any schema
+// fault (V09x) suppresses data validation - one line-number space per result.
+
+const SCHEMA_TYPES: [&str; 11] = [
+	"int",
+	"float",
+	"bool",
+	"string",
+	"datetime",
+	"raw",
+	"int-array",
+	"float-array",
+	"bool-array",
+	"string-array",
+	"datetime-array",
+];
+
+// The allowed set, pre-coerced at schema-build time into the constraint's type
+// space so per-node checks are a plain contains().
+enum AllowedSet {
+	Ints(Vec<i64>),
+	Floats(Vec<f64>),
+	Bools(Vec<bool>),
+	Dates(Vec<ShclDateTime>),
+	Strings(Vec<String>),
+}
+
+struct Constraint {
+	path: String, // as written in the schema; message text only
+	segs: Vec<Segment>,
+	ty: Option<String>, // member of SCHEMA_TYPES
+	required: bool,
+	allowed: Option<AllowedSet>,
+	min_i: Option<i64>,
+	max_i: Option<i64>,
+	min_f: Option<f64>,
+	max_f: Option<f64>,
+	repeat: Option<(u64, u64)>,
+}
+
+fn vdiag(out: &mut Vec<Diagnostic>, line: usize, msg: String) {
+	let code = diag_code(&msg);
+	out.push(Diagnostic {
+		line,
+		severity: Severity::Error,
+		message: msg,
+		code,
+	});
+}
+
+/// One scalar constraint value (escapes applied), or None for anything else.
+fn single_text(v: &Value) -> Option<String> {
+	match v {
+		Value::Cell(els) if els.len() == 1 => Some(apply_escapes(&els[0].text)),
+		_ => None,
+	}
+}
+
+/// Interpret a parsed schema document into constraints. Err = schema faults
+/// (V09x, schema-file lines); the caller reports those and validates nothing.
+fn build_schema(schema: &Document) -> Result<Vec<Constraint>, Vec<Diagnostic>> {
+	let mut faults: Vec<Diagnostic> = Vec::new();
+	let mut cons: Vec<Constraint> = Vec::new();
+	for &f in &schema.arena[ROOT].children {
+		let node = &schema.arena[f];
+		if node.name != "field" {
+			vdiag(
+				&mut faults,
+				node.line,
+				format!("unknown schema key '{}'", node.name),
+			);
+			continue;
+		}
+		let path = match single_text(&node.value) {
+			Some(p) => p,
+			None => {
+				vdiag(&mut faults, node.line, "bad schema path".to_string());
+				continue;
+			}
+		};
+		let segs = match scan_path(&path) {
+			Ok(s) if s.value_text.is_none() => s.segments,
+			_ => {
+				vdiag(&mut faults, node.line, format!("bad schema path: {}", path));
+				continue;
+			}
+		};
+		let mut c = Constraint {
+			path,
+			segs,
+			ty: None,
+			required: false,
+			allowed: None,
+			min_i: None,
+			max_i: None,
+			min_f: None,
+			max_f: None,
+			repeat: None,
+		};
+		// Deferred so `min: 1` may precede `type: int` in the file.
+		let mut required: Option<bool> = None;
+		let mut allowed_at: Option<usize> = None;
+		let mut min_at: Option<usize> = None;
+		let mut max_at: Option<usize> = None;
+		for &k in &schema.arena[f].children {
+			let kid = &schema.arena[k];
+			if kid.value.is_empty() {
+				continue; // dangling key: treated as absent
+			}
+			match kid.name.as_str() {
+				"type" => match single_text(&kid.value).map(|t| t.to_ascii_lowercase()) {
+					Some(t) if SCHEMA_TYPES.contains(&t.as_str()) => {
+						if c.ty.is_some() {
+							vdiag(
+								&mut faults,
+								kid.line,
+								"bad schema constraint 'type'".to_string(),
+							);
+						} else {
+							c.ty = Some(t);
+						}
+					}
+					Some(t) => {
+						vdiag(
+							&mut faults,
+							kid.line,
+							format!("unknown schema type '{}'", t),
+						);
+					}
+					None => vdiag(
+						&mut faults,
+						kid.line,
+						"bad schema constraint 'type'".to_string(),
+					),
+				},
+				"required" => {
+					let v = single_text(&kid.value)
+						.and_then(|t| parse_bool_text(&t, Strictness::Standard));
+					match v {
+						Some(b) if required.is_none() => required = Some(b),
+						_ => vdiag(
+							&mut faults,
+							kid.line,
+							"bad schema constraint 'required'".to_string(),
+						),
+					}
+				}
+				"allowed" => match &kid.value {
+					Value::Cell(_) if allowed_at.is_none() => allowed_at = Some(k),
+					_ => vdiag(
+						&mut faults,
+						kid.line,
+						"bad schema constraint 'allowed'".to_string(),
+					),
+				},
+				"min" => match &kid.value {
+					Value::Cell(els) if els.len() == 1 && min_at.is_none() => min_at = Some(k),
+					_ => vdiag(
+						&mut faults,
+						kid.line,
+						"bad schema constraint 'min'".to_string(),
+					),
+				},
+				"max" => match &kid.value {
+					Value::Cell(els) if els.len() == 1 && max_at.is_none() => max_at = Some(k),
+					_ => vdiag(
+						&mut faults,
+						kid.line,
+						"bad schema constraint 'max'".to_string(),
+					),
+				},
+				"repeat" => match &kid.value {
+					Value::Cell(els) if c.repeat.is_none() && matches!(els.len(), 1 | 2) => {
+						let lo = els[0].text.parse::<u64>().ok();
+						let hi = els.last().and_then(|e| e.text.parse::<u64>().ok());
+						match (lo, hi) {
+							(Some(a), Some(b)) if a <= b => c.repeat = Some((a, b)),
+							_ => vdiag(
+								&mut faults,
+								kid.line,
+								"bad schema constraint 'repeat'".to_string(),
+							),
+						}
+					}
+					_ => vdiag(
+						&mut faults,
+						kid.line,
+						"bad schema constraint 'repeat'".to_string(),
+					),
+				},
+				"default" | "desc" => {} // generator-only; validation ignores them
+				other => vdiag(
+					&mut faults,
+					kid.line,
+					format!("unknown schema key '{}'", other),
+				),
+			}
+		}
+		c.required = required.unwrap_or(false);
+		let base =
+			c.ty.as_deref()
+				.map(|t| t.strip_suffix("-array").unwrap_or(t))
+				.unwrap_or("string");
+		if let Some(a) = allowed_at {
+			let kid = &schema.arena[a];
+			let els = match &kid.value {
+				Value::Cell(els) => els,
+				_ => unreachable!("allowed_at only set for Cell"),
+			};
+			// Schema values are read at Standard; only the document's values
+			// coerce at the document's strictness.
+			let set = match base {
+				"int" => els
+					.iter()
+					.map(|e| parse_int_text(e, Strictness::Standard))
+					.collect::<Option<Vec<_>>>()
+					.map(AllowedSet::Ints),
+				"float" => els
+					.iter()
+					.map(|e| parse_float_text(e, Strictness::Standard))
+					.collect::<Option<Vec<_>>>()
+					.map(AllowedSet::Floats),
+				"bool" => els
+					.iter()
+					.map(|e| parse_bool_text(&e.text, Strictness::Standard))
+					.collect::<Option<Vec<_>>>()
+					.map(AllowedSet::Bools),
+				"datetime" => els
+					.iter()
+					.map(|e| parse_datetime(&e.text))
+					.collect::<Option<Vec<_>>>()
+					.map(AllowedSet::Dates),
+				"raw" => None, // a raw body has no element space to enumerate
+				_ => Some(AllowedSet::Strings(
+					els.iter().map(|e| apply_escapes(&e.text)).collect(),
+				)),
+			};
+			match set {
+				Some(s) => c.allowed = Some(s),
+				None => vdiag(
+					&mut faults,
+					kid.line,
+					"bad schema constraint 'allowed'".to_string(),
+				),
+			}
+		}
+		for (at, is_min) in [(min_at, true), (max_at, false)] {
+			let Some(m) = at else { continue };
+			let kid = &schema.arena[m];
+			let el = match &kid.value {
+				Value::Cell(els) if els.len() == 1 => &els[0],
+				_ => unreachable!("min/max only set for one-element Cell"),
+			};
+			let key = if is_min { "min" } else { "max" };
+			match base {
+				"int" => match parse_int_text(el, Strictness::Standard) {
+					Some(v) if is_min => c.min_i = Some(v),
+					Some(v) => c.max_i = Some(v),
+					None => vdiag(
+						&mut faults,
+						kid.line,
+						format!("bad schema constraint '{}'", key),
+					),
+				},
+				"float" => match parse_float_text(el, Strictness::Standard) {
+					Some(v) if is_min => c.min_f = Some(v),
+					Some(v) => c.max_f = Some(v),
+					None => vdiag(
+						&mut faults,
+						kid.line,
+						format!("bad schema constraint '{}'", key),
+					),
+				},
+				_ => vdiag(
+					&mut faults,
+					kid.line,
+					format!("bad schema constraint '{}'", key),
+				),
+			}
+		}
+		cons.push(c);
+	}
+	if faults.is_empty() {
+		Ok(cons)
+	} else {
+		// One constraint per line in practice, so line order = file order.
+		faults.sort_by_key(|d| d.line);
+		Err(faults)
+	}
+}
+
+/// Two-row Levenshtein; powers the "did you mean" prose (never the code).
+fn edit_distance(a: &str, b: &str) -> usize {
+	let a: Vec<char> = a.chars().collect();
+	let b: Vec<char> = b.chars().collect();
+	let mut prev: Vec<usize> = (0..=b.len()).collect();
+	let mut cur = vec![0usize; b.len() + 1];
+	for i in 1..=a.len() {
+		cur[0] = i;
+		for j in 1..=b.len() {
+			let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+			cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+		}
+		std::mem::swap(&mut prev, &mut cur);
+	}
+	prev[b.len()]
+}
+
+impl Document {
+	/// Validate this document against a schema document (itself plain SHCL -
+	/// spec.md "Schema validation"). Empty result = the document conforms.
+	/// Diagnostic lines are document lines (0 = document scope); schema faults
+	/// (V09x, schema-file lines) suppress data validation entirely.
+	pub fn validate(&self, schema: &Document) -> Vec<Diagnostic> {
+		let cons = match build_schema(schema) {
+			Ok(c) => c,
+			Err(faults) => return faults,
+		};
+		let mut out: Vec<Diagnostic> = Vec::new();
+		for c in &cons {
+			self.v_check(c, &mut out);
+		}
+		self.v_unknown(&cons, &mut out);
+		out
+	}
+
+	// Resolution contexts: the whole document for a plain path; each enclosing
+	// instance for the part of a path after a wildcard. required/repeat evaluate
+	// per context (anchor line 0 = document scope), so `server[*].port` +
+	// required means a port under EACH server - vacuously true with no servers.
+	fn v_contexts(
+		&self,
+		start: Vec<usize>,
+		segs: &[Segment],
+		anchor: usize,
+		out: &mut Vec<(usize, Vec<usize>)>,
+	) {
+		let mut cur = start;
+		for (i, seg) in segs.iter().enumerate() {
+			let mut next: Vec<usize> = Vec::new();
+			for &n in &cur {
+				next.extend(self.children_named(n, &seg.name));
+			}
+			match &seg.selector {
+				None => cur = next,
+				Some(Selector::ByValue(v)) => {
+					cur = next
+						.into_iter()
+						.filter(|&c| self.arena[c].value.display() == *v)
+						.collect();
+				}
+				Some(Selector::ByIndex(k)) => {
+					cur = next.get(*k as usize).map(|&c| vec![c]).unwrap_or_default();
+				}
+				Some(Selector::Wildcard) => {
+					let rest = &segs[i + 1..];
+					if rest.is_empty() {
+						out.push((anchor, next));
+					} else {
+						for inst in next {
+							let line = self.arena[inst].line;
+							self.v_contexts(vec![inst], rest, line, out);
+						}
+					}
+					return;
+				}
+			}
+		}
+		out.push((anchor, cur));
+	}
+
+	fn v_check(&self, c: &Constraint, out: &mut Vec<Diagnostic>) {
+		let mut ctxs: Vec<(usize, Vec<usize>)> = Vec::new();
+		self.v_contexts(vec![ROOT], &c.segs, 0, &mut ctxs);
+		for (anchor, found) in &ctxs {
+			if c.required && found.is_empty() {
+				vdiag(out, *anchor, format!("required path missing: {}", c.path));
+			}
+			if let Some((lo, hi)) = c.repeat {
+				let n = found.len() as u64;
+				if n < lo || n > hi {
+					vdiag(
+						out,
+						*anchor,
+						format!(
+							"instance count out of bounds at '{}': {} not in {}..{}",
+							c.path, n, lo, hi
+						),
+					);
+				}
+			}
+			for &n in found {
+				self.v_node(c, n, out);
+			}
+		}
+	}
+
+	fn v_node(&self, c: &Constraint, n: usize, out: &mut Vec<Diagnostic>) {
+		let node = &self.arena[n];
+		let line = node.line;
+		let kind = c.ty.as_deref();
+		let base = kind
+			.map(|t| t.strip_suffix("-array").unwrap_or(t))
+			.unwrap_or("string");
+		let is_array = kind.is_some_and(|t| t.ends_with("-array"));
+		let wrong = |out: &mut Vec<Diagnostic>| {
+			vdiag(
+				out,
+				line,
+				format!(
+					"wrong type at '{}': value is not a valid {}",
+					c.path,
+					kind.unwrap_or("string")
+				),
+			);
+		};
+		match &node.value {
+			// Empty passes everything; required already counted it as present.
+			Value::Empty => {}
+			Value::Raw { content, .. } => {
+				// A raw block satisfies `raw` and scalar `string` (any value
+				// reads as a string); every other kind is a type miss.
+				if kind.is_some() && (base != "raw" && base != "string" || is_array) {
+					wrong(out);
+					return;
+				}
+				if let Some(AllowedSet::Strings(set)) = &c.allowed
+					&& !set.contains(content)
+				{
+					vdiag(
+						out,
+						line,
+						format!("value not allowed at '{}': {}", c.path, content),
+					);
+				}
+			}
+			Value::Cell(els) => {
+				if base == "raw" {
+					wrong(out);
+					return;
+				}
+				// A scalar kind on a multi-element value is the array-where-one-
+				// scalar-expected miss - except string, which reads arrays.
+				if kind.is_some() && !is_array && base != "string" && els.len() > 1 {
+					wrong(out);
+					return;
+				}
+				match base {
+					"int" => {
+						let mut vals: Vec<i64> = Vec::with_capacity(els.len());
+						for e in els {
+							match parse_int_text(e, self.strictness) {
+								Some(v) => vals.push(v),
+								None => {
+									wrong(out);
+									return;
+								}
+							}
+						}
+						if let Some(AllowedSet::Ints(set)) = &c.allowed
+							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
+						{
+							vdiag(
+								out,
+								line,
+								format!("value not allowed at '{}': {}", c.path, els[i].text),
+							);
+						}
+						if let Some(lo) = c.min_i
+							&& vals.iter().any(|v| *v < lo)
+						{
+							vdiag(out, line, format!("value below min at '{}'", c.path));
+						}
+						if let Some(hi) = c.max_i
+							&& vals.iter().any(|v| *v > hi)
+						{
+							vdiag(out, line, format!("value above max at '{}'", c.path));
+						}
+					}
+					"float" => {
+						let mut vals: Vec<f64> = Vec::with_capacity(els.len());
+						for e in els {
+							match parse_float_text(e, self.strictness) {
+								Some(v) => vals.push(v),
+								None => {
+									wrong(out);
+									return;
+								}
+							}
+						}
+						if let Some(AllowedSet::Floats(set)) = &c.allowed
+							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
+						{
+							vdiag(
+								out,
+								line,
+								format!("value not allowed at '{}': {}", c.path, els[i].text),
+							);
+						}
+						if let Some(lo) = c.min_f
+							&& vals.iter().any(|v| *v < lo)
+						{
+							vdiag(out, line, format!("value below min at '{}'", c.path));
+						}
+						if let Some(hi) = c.max_f
+							&& vals.iter().any(|v| *v > hi)
+						{
+							vdiag(out, line, format!("value above max at '{}'", c.path));
+						}
+					}
+					"bool" => {
+						let mut vals: Vec<bool> = Vec::with_capacity(els.len());
+						for e in els {
+							match parse_bool_text(&e.text, self.strictness) {
+								Some(v) => vals.push(v),
+								None => {
+									wrong(out);
+									return;
+								}
+							}
+						}
+						if let Some(AllowedSet::Bools(set)) = &c.allowed
+							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
+						{
+							vdiag(
+								out,
+								line,
+								format!("value not allowed at '{}': {}", c.path, els[i].text),
+							);
+						}
+					}
+					"datetime" => {
+						let mut vals: Vec<ShclDateTime> = Vec::with_capacity(els.len());
+						for e in els {
+							match parse_datetime(&e.text) {
+								Some(v) => vals.push(v),
+								None => {
+									wrong(out);
+									return;
+								}
+							}
+						}
+						if let Some(AllowedSet::Dates(set)) = &c.allowed
+							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
+						{
+							vdiag(
+								out,
+								line,
+								format!("value not allowed at '{}': {}", c.path, els[i].text),
+							);
+						}
+					}
+					// string kind or untyped: every element coerces; only the
+					// allowed set can fail, in logical-string space.
+					_ => {
+						if let Some(AllowedSet::Strings(set)) = &c.allowed {
+							let bad = els
+								.iter()
+								.map(|e| apply_escapes(&e.text))
+								.find(|s| !set.contains(s));
+							if let Some(b) = bad {
+								vdiag(
+									out,
+									line,
+									format!("value not allowed at '{}': {}", c.path, b),
+								);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Unknown-field sweep: a schema path legalizes its name chain and every
+	// prefix (selectors ignored). Only the topmost unknown node is reported;
+	// its subtree is implied unknown and skipped.
+	fn v_unknown(&self, cons: &[Constraint], out: &mut Vec<Diagnostic>) {
+		let mut legal: std::collections::HashSet<String> = std::collections::HashSet::new();
+		for c in cons {
+			let mut chain = String::new();
+			for s in &c.segs {
+				if !chain.is_empty() {
+					chain.push('\0');
+				}
+				chain.push_str(&s.name);
+				legal.insert(chain.clone());
+			}
+		}
+		let mut stack: Vec<(usize, String, String)> = self.arena[ROOT]
+			.children
+			.iter()
+			.rev()
+			.map(|&c| (c, String::new(), String::new()))
+			.collect();
+		while let Some((n, pchain, pshown)) = stack.pop() {
+			let node = &self.arena[n];
+			let chain = if pchain.is_empty() {
+				node.name.clone()
+			} else {
+				format!("{}\0{}", pchain, node.name)
+			};
+			let shown = if pshown.is_empty() {
+				node.name.clone()
+			} else {
+				format!("{}.{}", pshown, node.name)
+			};
+			if !legal.contains(&chain) {
+				let hint = v_suggest(cons, &pchain, &node.name);
+				vdiag(out, node.line, format!("unknown field '{}'{}", shown, hint));
+				continue;
+			}
+			for &k in node.children.iter().rev() {
+				stack.push((k, chain.clone(), shown.clone()));
+			}
+		}
+	}
+}
+
+/// Closest legal sibling name (same parent chain, schema order, edit distance
+/// <= 2) as "; did you mean 'x'?" - or nothing. Prose only, never contract.
+fn v_suggest(cons: &[Constraint], parent_chain: &str, name: &str) -> String {
+	let mut best: Option<(usize, String)> = None;
+	for c in cons {
+		let mut pc = String::new();
+		for s in &c.segs {
+			if pc == parent_chain {
+				let dist = edit_distance(name, &s.name);
+				if dist <= 2 && best.as_ref().is_none_or(|(bd, _)| dist < *bd) {
+					best = Some((dist, s.name.clone()));
+				}
+			}
+			if pc.is_empty() {
+				pc = s.name.clone();
+			} else {
+				pc = format!("{}\0{}", pc, s.name);
+			}
+		}
+	}
+	match best {
+		Some((_, n)) => format!("; did you mean '{}'?", n),
+		None => String::new(),
 	}
 }

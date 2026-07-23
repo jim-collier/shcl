@@ -25,6 +25,8 @@ static const char *HELP =
 	"  shcl set [options] FILE                apply write-ops (stdin) and print canonical\n"
 	"  shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form\n"
 	"  shcl check [options] FILE              load and print diagnostics\n"
+	"                                         (--schema=SCHEMA also validates FILE\n"
+	"                                         against a schema, itself a .shcl file)\n"
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
 	"  shcl help | version                    this help, or the version (also -h/--help, -V/--version)\n"
@@ -53,6 +55,8 @@ static const char *HELP =
 	"  --slots                                prefix each line with its slot status and\n"
 	"                                         a tab (per element, or per wildcard slot)\n"
 	"  --strictness=loose|standard|strict     or 1|2|3 (default standard)\n"
+	"  --schema=SCHEMA                        (check only) validate FILE against a\n"
+	"                                         schema; adds V### diagnostics\n"
 	"\n"
 	"Value options accept either spelling: --default=VALUE or --default VALUE.\n"
 	"FILE may be '-' for stdin.\n"
@@ -68,6 +72,7 @@ typedef struct {
 	const char *on_bad;       // error|default|flag
 	shcl_strictness strictness;
 	int write;
+	const char *schema;       // NULL if unset
 	const char *args[8]; int nargs; // positional: FILE [PATH]
 } Opts;
 
@@ -350,7 +355,33 @@ static int do_check(Opts *o) {
 	size_t len; char *text = read_input(o->args[0], &len);
 	if (!text) return 1;
 	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
+	// --schema: append validation diagnostics under the same contract. The
+	// schema itself always loads at Standard (a program artifact); one that
+	// does not load cleanly is a single V099 schema fault.
+	shcl_validation *val = NULL;
+	shcl_doc *sd = NULL;
+	char *stext = NULL;
+	int v99 = 0;
+	if (!shcl_strict_failed(d) && o->schema) {
+		size_t slen; stext = read_input(o->schema, &slen);
+		if (!stext) { shcl_free(d); free(text); return 1; }
+		sd = shcl_parse(stext, slen);
+		size_t sn = shcl_diag_count(sd);
+		for (size_t i = 0; i < sn; i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) v99 = 1;
+		if (v99) {
+			for (size_t i = 0; i < sn; i++) {
+				const char *sev = shcl_diag_severity(sd, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+				shcl_str m = shcl_diag_message(sd, i);
+				fprintf(stderr, "schema line %zu: %s: ", shcl_diag_line(sd, i), sev);
+				fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
+			}
+		} else {
+			val = shcl_validate(d, sd);
+		}
+	}
 	size_t n = shcl_diag_count(d), nerr = 0;
+	size_t nval = val ? shcl_validation_count(val) : 0;
+	size_t total = n + nval + (v99 ? 1 : 0);
 	// stdout carries the stable codes - the cross-binding contract. The prose is
 	// per-binding voice and goes to stderr (which the differential check drops).
 	for (size_t i = 0; i < n; i++) {
@@ -361,15 +392,31 @@ static int do_check(Opts *o) {
 		fprintf(stderr, "line %zu: %s: ", shcl_diag_line(d, i), sev);
 		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 	}
+	if (v99) {
+		printf("line 0: Error: V099\n");
+		fprintf(stderr, "line 0: Error: schema failed to load\n");
+		nerr++;
+	}
+	for (size_t i = 0; i < nval; i++) {
+		const char *sev = shcl_validation_severity(val, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+		if (shcl_validation_severity(val, i) == SHCL_SEV_ERROR) nerr++;
+		printf("line %zu: %s: %s\n", shcl_validation_line(val, i), sev, shcl_validation_code(val, i));
+		shcl_str m = shcl_validation_message(val, i);
+		fprintf(stderr, "line %zu: %s: ", shcl_validation_line(val, i), sev);
+		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
+	}
 	int rc;
 	if (shcl_strict_failed(d)) {
-		printf("strict load failed: %zu diagnostic(s)\n", n); rc = 6;
+		printf("strict load failed: %zu diagnostic(s)\n", total); rc = 6;
 	} else if (nerr > 0) {
 		// Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
-		printf("failed: %zu diagnostic(s), %zu error(s)\n", n, nerr); rc = 6;
+		printf("failed: %zu diagnostic(s), %zu error(s)\n", total, nerr); rc = 6;
 	} else {
-		printf("ok (%zu diagnostic(s))\n", n); rc = 0;
+		printf("ok (%zu diagnostic(s))\n", total); rc = 0;
 	}
+	shcl_validation_free(val);
+	if (sd) shcl_free(sd);
+	free(stext);
 	shcl_free(d); free(text); return rc;
 }
 
@@ -394,13 +441,15 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 		o->on_bad = v;
 	} else if (!strcmp(name, "--strictness")) {
 		if (!shcl_strictness_from_arg(v, strlen(v), &o->strictness)) { fprintf(stderr, "bad --strictness value: %s\n", v); return 1; }
+	} else if (!strcmp(name, "--schema")) {
+		o->schema = v;
 	}
 	return 0;
 }
 
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
-	o->strictness = SHCL_STANDARD; o->write = 0; o->nargs = 0;
+	o->strictness = SHCL_STANDARD; o->write = 0; o->schema = NULL; o->nargs = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
 		const char *a = argv[i];
@@ -408,13 +457,14 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strcmp(a, "--array")) o->array = 1;
 		else if (!strcmp(a, "--slots")) o->slots = 1;
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) o->write = 1;
-		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness")) {
+		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema")) {
 			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
 			if (set_value_opt(o, a, argv[++i])) return 1;
 		}
 		else if (!strncmp(a, "--default=", 10)) { if (set_value_opt(o, "--default", a + 10)) return 1; }
 		else if (!strncmp(a, "--on-bad=", 9)) { if (set_value_opt(o, "--on-bad", a + 9)) return 1; }
 		else if (!strncmp(a, "--strictness=", 13)) { if (set_value_opt(o, "--strictness", a + 13)) return 1; }
+		else if (!strncmp(a, "--schema=", 9)) { if (set_value_opt(o, "--schema", a + 9)) return 1; }
 		else if (a[0] == '-' && a[1] != '\0') { fprintf(stderr, "unknown option: %s\n", a); return 1; }
 		else { if (o->nargs < 8) o->args[o->nargs++] = a; }
 	}

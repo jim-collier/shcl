@@ -1,0 +1,20 @@
+field: title
+	type: string
+field: name
+	required: yes
+field: server
+	repeat: 1, 2
+field: "server[*].port"
+	type: int
+	required: yes
+	min: 1
+	max: 65535
+	repeat: 1
+field: "server[*].region"
+	type: string-array
+	allowed: us, eu
+field: retries
+	type: int
+field: workers
+	type: int
+	min: 1

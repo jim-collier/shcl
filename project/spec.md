@@ -398,6 +398,66 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 
 - Two narrow exceptions keep round-trips exact. If an *earlier* instance of the same field under the same parent is empty, the child-indent header line would merge into it on re-read and the fence would fill that instance - so the formatter emits that block in the same-line spelling instead. And an info-string that *starts with* the fence character gets one space after the fence, so it cannot lengthen the fence run on re-read. A block emitted in the same-line spelling also moves any trailing comment to the lines above - after the fence it could read as part of the info-string on re-read.
 
+## Schema validation
+
+A schema is an ordinary SHCL file: a flat list of instances of one field named `field`, each whose *value* is a document path and whose children are the constraints on it. Document paths appear in value position, never as field names, so the schema vocabulary can never collide with a document's own field names. `Validate(doc, schemaDoc)` returns the same structured diagnostics loading produces; the `shcl check --schema SCHEMA FILE` CLI appends them to `check`'s normal output under the same stdout/exit contract. No grammar change is involved: the schema vocabulary is interpreted by the validator, the parser knows nothing of it.
+
+```shcl
+field: server.port
+	type: int
+	required: yes
+	min: 1
+	max: 65535
+
+field: "server[*].host"
+	type: string
+```
+
+A path containing a bracket selector must be quoted (a bare selector's scan ends at the first `]`); the canonical formatter applies that quoting itself. Two `field` instances with the same path merge by the language's own merge rule, so constraints for one path can be written in one place or several.
+
+The constraint vocabulary is closed - nothing joins it without a spec change:
+
+| Key | Value | Meaning
+| :-- | :-- | :--
+| `type` | `int` `float` `bool` `string` `datetime` `raw`, or `<scalar>-array` (no `raw-array`) | every value at the path must coerce to this type, at the *document's* strictness
+| `required` | boolean | the path must resolve (see wildcard rule below)
+| `allowed` | inline array | closed set of permitted element values, compared in the coerced space of `type`
+| `min` / `max` | number | inclusive bounds, `int`/`float` kinds only, checked per element on arrays
+| `repeat` | one integer (exact) or two (min, max) | bounds the instance count at the path, per resolution context
+| `default` / `desc` | any | reserved for the schema-driven generator; validation ignores them
+
+Semantics:
+
+- The schema file itself always loads at Standard, and its constraint values (booleans, numbers, the `allowed` set) are read at Standard - a schema is a program artifact, not user data. The *document's* values coerce at the document's strictness, so `type: int` against `3.5` passes at Loose (which rounds) and fails at Standard.
+
+- An empty value passes `type`, `allowed`, `min`, and `max` (present-but-no-value is what `Empty` means everywhere else) and counts as present for `required`.
+
+- On a path with no wildcard, `required` means at least one instance resolves. Through a wildcard, it is a per-instance rule - `server[*].port` requires a port under *each* server - and is vacuously satisfied when no instances exist (require the parent separately if it must exist).
+
+- `repeat` and `required` evaluate per *resolution context*: the whole document for a plain path, each enclosing instance for the part of a path after a wildcard. So `field: server` + `repeat: 1, 10` bounds the server count, while `field: "server[*].port"` + `repeat: 1` means exactly one port per server.
+
+- A field in the document that no schema path covers is an unknown field. Legality is by name chain (selectors ignored): every schema path legalizes its own chain and every prefix of it. Only the topmost unknown node is diagnosed; its subtree is skipped. The "did you mean" suggestion lives in the prose message only, never the code - edit-distance output is not parity-pinnable.
+
+- All validation diagnostics are `error` severity, and their order is deterministic: schema faults in schema order (which then suppress everything else); otherwise per schema instance in schema order - `required`, `repeat`, then per resolved node in file order `type`, `allowed`, `min`, `max` (a node failing `type` skips its remaining checks) - then unknown fields in document order.
+
+Diagnostic codes ride the existing structure (line, severity, stable code, prose) in a `V###` range disjoint from the parser's `E###`/`H###`. Line numbers are document lines; line 0 means document scope (nothing was written); through a wildcard, a per-instance `required` miss carries the enclosing instance's line:
+
+| Code | Meaning | Line
+| :-- | :-- | :--
+| `V001` | unknown field | the topmost unknown node
+| `V002` | required path missing | 0, or the enclosing instance under a wildcard
+| `V003` | wrong type | the node
+| `V004` | value not in the allowed set | the node (first offending element)
+| `V005` / `V006` | below `min` / above `max` | the node (first offending element)
+| `V007` | instance count out of `repeat` bounds | 0, or the enclosing instance under a wildcard
+| `V090` | unknown schema key | schema file
+| `V091` | unknown schema type name | schema file
+| `V092` | bad schema constraint value (also: `min`/`max` without a numeric `type`, `allowed` with `type: raw`) | schema file
+| `V093` | bad schema path | schema file
+| `V099` | schema failed to load (schema had error diagnostics) | 0
+
+A schema fault (`V090`+) suppresses data validation entirely - there is nothing meaningful to say about a document checked against a broken schema - which also keeps one line-number space per result set. `check --schema` folds validation diagnostics into `check`'s existing output: same `line N: severity: CODE` stdout lines, prose to stderr, same summary line and exit-6-on-any-error rule.
+
 ## Error handling philosophy
 
 SHCL never bails on a whole file for one bad line (at Loose and Standard strictness; Strict turns any `error` diagnostic into a load failure by request - see Strictness levels). The parser skips or best-effort-repairs the offending line, emits a diagnostic, and continues. The Accessor never errors when it can unambiguously reach a value; malformed content before or after a clean section does not poison that section. Errors are reserved for genuine ambiguity (or surfaced on request via `onBad: Error`).

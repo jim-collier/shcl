@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -104,6 +105,30 @@ func diagCode(msg string) string {
 		return "E013"
 	case strings.HasPrefix(msg, "missing colon"):
 		return "E015"
+	case strings.HasPrefix(msg, "unknown field "):
+		return "V001"
+	case strings.HasPrefix(msg, "required path missing"):
+		return "V002"
+	case strings.HasPrefix(msg, "wrong type at "):
+		return "V003"
+	case strings.HasPrefix(msg, "value not allowed at "):
+		return "V004"
+	case strings.HasPrefix(msg, "value below min at "):
+		return "V005"
+	case strings.HasPrefix(msg, "value above max at "):
+		return "V006"
+	case strings.HasPrefix(msg, "instance count out of bounds at "):
+		return "V007"
+	case strings.HasPrefix(msg, "unknown schema key "):
+		return "V090"
+	case strings.HasPrefix(msg, "unknown schema type "):
+		return "V091"
+	case strings.HasPrefix(msg, "bad schema constraint "):
+		return "V092"
+	case strings.HasPrefix(msg, "bad schema path"):
+		return "V093"
+	case strings.HasPrefix(msg, "schema failed to load"):
+		return "V099"
 	default:
 		return "E000"
 	}
@@ -2734,4 +2759,713 @@ func (d *Document) GetDateTimeArrayOr(path string, def []DateTime) []DateTime {
 		return r.Value
 	}
 	return def
+}
+
+// ---------------------------------------------------------------------------
+// Validator: schema-as-SHCL
+// ---------------------------------------------------------------------------
+// The schema is an ordinary parsed document: a flat list of `field: <path>`
+// instances whose children are the constraints (closed vocabulary - see
+// spec.md "Schema validation"). Validation reuses the accessor's path scan and
+// the typed coercions, so document strictness composes for free. Any schema
+// fault (V09x) suppresses data validation - one line-number space per result.
+
+var schemaTypes = []string{
+	"int",
+	"float",
+	"bool",
+	"string",
+	"datetime",
+	"raw",
+	"int-array",
+	"float-array",
+	"bool-array",
+	"string-array",
+	"datetime-array",
+}
+
+type allowedKind int
+
+const (
+	allowInts allowedKind = iota
+	allowFloats
+	allowBools
+	allowDates
+	allowStrings
+)
+
+// The allowed set, pre-coerced at schema-build time into the constraint's type
+// space so per-node checks are a plain contains.
+type allowedSet struct {
+	kind   allowedKind
+	ints   []int64
+	floats []float64
+	bools  []bool
+	dates  []DateTime
+	strs   []string
+}
+
+type constraint struct {
+	path     string // as written in the schema; message text only
+	segs     []segment
+	ty       string // member of schemaTypes; "" = untyped
+	required bool
+	allowed  *allowedSet
+	minI     *int64
+	maxI     *int64
+	minF     *float64
+	maxF     *float64
+	repeat   *[2]uint64
+}
+
+func vdiag(out *[]Diagnostic, line int, msg string) {
+	*out = append(*out, Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: diagCode(msg)})
+}
+
+// singleText is one scalar constraint value (escapes applied), or not.
+func singleText(v *value) (string, bool) {
+	if v.kind == vCell && len(v.els) == 1 {
+		return applyEscapes(v.els[0].text), true
+	}
+	return "", false
+}
+
+// dtEqual compares datetimes field-wise (Zone is a pointer, so == would
+// compare identity, not value).
+func dtEqual(a, b DateTime) bool {
+	if (a.Zone == nil) != (b.Zone == nil) {
+		return false
+	}
+	if a.Zone != nil && *a.Zone != *b.Zone {
+		return false
+	}
+	a.Zone, b.Zone = nil, nil
+	return a == b
+}
+
+// buildSchema interprets a parsed schema document into constraints. A non-empty
+// fault list (V09x, schema-file lines) means the caller reports those and
+// validates nothing.
+func buildSchema(schema *Document) ([]constraint, []Diagnostic) {
+	var faults []Diagnostic
+	var cons []constraint
+	for _, f := range schema.arena[root].children {
+		node := &schema.arena[f]
+		if node.name != "field" {
+			vdiag(&faults, node.line, fmt.Sprintf("unknown schema key '%s'", node.name))
+			continue
+		}
+		path, ok := singleText(&node.value)
+		if !ok {
+			vdiag(&faults, node.line, "bad schema path")
+			continue
+		}
+		scan, err := scanPath(path)
+		if err != nil || scan.valueText != nil {
+			vdiag(&faults, node.line, fmt.Sprintf("bad schema path: %s", path))
+			continue
+		}
+		c := constraint{path: path, segs: scan.segments}
+		// Deferred so `min: 1` may precede `type: int` in the file.
+		var required *bool
+		allowedAt := -1
+		minAt := -1
+		maxAt := -1
+		for _, k := range schema.arena[f].children {
+			kid := &schema.arena[k]
+			if kid.value.isEmpty() {
+				continue // dangling key: treated as absent
+			}
+			switch kid.name {
+			case "type":
+				t, ok := singleText(&kid.value)
+				if ok {
+					t = asciiLower(t)
+				}
+				switch {
+				case ok && containsString(schemaTypes, t):
+					if c.ty != "" {
+						vdiag(&faults, kid.line, "bad schema constraint 'type'")
+					} else {
+						c.ty = t
+					}
+				case ok:
+					vdiag(&faults, kid.line, fmt.Sprintf("unknown schema type '%s'", t))
+				default:
+					vdiag(&faults, kid.line, "bad schema constraint 'type'")
+				}
+			case "required":
+				t, ok := singleText(&kid.value)
+				var b bool
+				if ok {
+					b, ok = parseBoolText(t, Standard)
+				}
+				if ok && required == nil {
+					required = &b
+				} else {
+					vdiag(&faults, kid.line, "bad schema constraint 'required'")
+				}
+			case "allowed":
+				if kid.value.kind == vCell && allowedAt < 0 {
+					allowedAt = k
+				} else {
+					vdiag(&faults, kid.line, "bad schema constraint 'allowed'")
+				}
+			case "min":
+				if kid.value.kind == vCell && len(kid.value.els) == 1 && minAt < 0 {
+					minAt = k
+				} else {
+					vdiag(&faults, kid.line, "bad schema constraint 'min'")
+				}
+			case "max":
+				if kid.value.kind == vCell && len(kid.value.els) == 1 && maxAt < 0 {
+					maxAt = k
+				} else {
+					vdiag(&faults, kid.line, "bad schema constraint 'max'")
+				}
+			case "repeat":
+				if kid.value.kind == vCell && c.repeat == nil && (len(kid.value.els) == 1 || len(kid.value.els) == 2) {
+					lo, okLo := parseIndex(kid.value.els[0].text)
+					hi, okHi := parseIndex(kid.value.els[len(kid.value.els)-1].text)
+					if okLo && okHi && lo <= hi {
+						c.repeat = &[2]uint64{lo, hi}
+					} else {
+						vdiag(&faults, kid.line, "bad schema constraint 'repeat'")
+					}
+				} else {
+					vdiag(&faults, kid.line, "bad schema constraint 'repeat'")
+				}
+			case "default", "desc":
+				// generator-only; validation ignores them
+			default:
+				vdiag(&faults, kid.line, fmt.Sprintf("unknown schema key '%s'", kid.name))
+			}
+		}
+		if required != nil {
+			c.required = *required
+		}
+		base := strings.TrimSuffix(c.ty, "-array")
+		if base == "" {
+			base = "string"
+		}
+		if allowedAt >= 0 {
+			kid := &schema.arena[allowedAt]
+			els := kid.value.els
+			// Schema values are read at Standard; only the document's values
+			// coerce at the document's strictness.
+			set := &allowedSet{}
+			ok := true
+			switch base {
+			case "int":
+				set.kind = allowInts
+				for i := range els {
+					v, o := parseIntText(&els[i], Standard)
+					if !o {
+						ok = false
+						break
+					}
+					set.ints = append(set.ints, v)
+				}
+			case "float":
+				set.kind = allowFloats
+				for i := range els {
+					v, o := parseFloatText(&els[i], Standard)
+					if !o {
+						ok = false
+						break
+					}
+					set.floats = append(set.floats, v)
+				}
+			case "bool":
+				set.kind = allowBools
+				for i := range els {
+					v, o := parseBoolText(els[i].text, Standard)
+					if !o {
+						ok = false
+						break
+					}
+					set.bools = append(set.bools, v)
+				}
+			case "datetime":
+				set.kind = allowDates
+				for i := range els {
+					v, o := ParseDateTime(els[i].text)
+					if !o {
+						ok = false
+						break
+					}
+					set.dates = append(set.dates, v)
+				}
+			case "raw":
+				ok = false // a raw body has no element space to enumerate
+			default:
+				set.kind = allowStrings
+				for i := range els {
+					set.strs = append(set.strs, applyEscapes(els[i].text))
+				}
+			}
+			if ok {
+				c.allowed = set
+			} else {
+				vdiag(&faults, kid.line, "bad schema constraint 'allowed'")
+			}
+		}
+		for _, mm := range []struct {
+			at    int
+			isMin bool
+		}{{minAt, true}, {maxAt, false}} {
+			if mm.at < 0 {
+				continue
+			}
+			kid := &schema.arena[mm.at]
+			el := &kid.value.els[0]
+			key := "max"
+			if mm.isMin {
+				key = "min"
+			}
+			switch base {
+			case "int":
+				if v, ok := parseIntText(el, Standard); ok {
+					if mm.isMin {
+						c.minI = &v
+					} else {
+						c.maxI = &v
+					}
+				} else {
+					vdiag(&faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
+				}
+			case "float":
+				if v, ok := parseFloatText(el, Standard); ok {
+					if mm.isMin {
+						c.minF = &v
+					} else {
+						c.maxF = &v
+					}
+				} else {
+					vdiag(&faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
+				}
+			default:
+				vdiag(&faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
+			}
+		}
+		cons = append(cons, c)
+	}
+	if len(faults) > 0 {
+		// One constraint per line in practice, so line order = file order.
+		sort.SliceStable(faults, func(i, j int) bool { return faults[i].Line < faults[j].Line })
+		return nil, faults
+	}
+	return cons, nil
+}
+
+func containsString(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// editDistance is two-row Levenshtein; powers the "did you mean" prose (never
+// the code).
+func editDistance(a, b string) int {
+	ar := []rune(a)
+	br := []rune(b)
+	prev := make([]int, len(br)+1)
+	cur := make([]int, len(br)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ar); i++ {
+		cur[0] = i
+		for j := 1; j <= len(br); j++ {
+			cost := 1
+			if ar[i-1] == br[j-1] {
+				cost = 0
+			}
+			cur[j] = min3(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(br)]
+}
+
+func min3(a, b, c int) int {
+	if b < a {
+		a = b
+	}
+	if c < a {
+		a = c
+	}
+	return a
+}
+
+// Validate checks this document against a schema document (itself plain SHCL -
+// spec.md "Schema validation"). An empty result means the document conforms.
+// Diagnostic lines are document lines (0 = document scope); schema faults
+// (V09x, schema-file lines) suppress data validation entirely.
+func (d *Document) Validate(schema *Document) []Diagnostic {
+	cons, faults := buildSchema(schema)
+	if len(faults) > 0 {
+		return faults
+	}
+	var out []Diagnostic
+	for i := range cons {
+		d.vCheck(&cons[i], &out)
+	}
+	d.vUnknown(cons, &out)
+	return out
+}
+
+// vContexts collects resolution contexts: the whole document for a plain path;
+// each enclosing instance for the part of a path after a wildcard. required/
+// repeat evaluate per context (anchor line 0 = document scope), so
+// `server[*].port` + required means a port under EACH server - vacuously true
+// with no servers.
+type vContext struct {
+	anchor int
+	found  []int
+}
+
+func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vContext) {
+	cur := start
+	for i, seg := range segs {
+		var next []int
+		for _, n := range cur {
+			next = append(next, d.childrenNamed(n, seg.name)...)
+		}
+		if seg.sel == nil {
+			cur = next
+			continue
+		}
+		switch seg.sel.kind {
+		case selByValue:
+			cur = nil
+			for _, c := range next {
+				if d.arena[c].value.display() == seg.sel.value {
+					cur = append(cur, c)
+				}
+			}
+		case selByIndex:
+			if int(seg.sel.index) < len(next) {
+				cur = []int{next[seg.sel.index]}
+			} else {
+				cur = nil
+			}
+		case selWildcard:
+			rest := segs[i+1:]
+			if len(rest) == 0 {
+				*out = append(*out, vContext{anchor: anchor, found: next})
+			} else {
+				for _, inst := range next {
+					d.vContexts([]int{inst}, rest, d.arena[inst].line, out)
+				}
+			}
+			return
+		}
+	}
+	*out = append(*out, vContext{anchor: anchor, found: cur})
+}
+
+func (d *Document) vCheck(c *constraint, out *[]Diagnostic) {
+	var ctxs []vContext
+	d.vContexts([]int{root}, c.segs, 0, &ctxs)
+	for _, ctx := range ctxs {
+		if c.required && len(ctx.found) == 0 {
+			vdiag(out, ctx.anchor, fmt.Sprintf("required path missing: %s", c.path))
+		}
+		if c.repeat != nil {
+			n := uint64(len(ctx.found))
+			if n < c.repeat[0] || n > c.repeat[1] {
+				vdiag(out, ctx.anchor, fmt.Sprintf("instance count out of bounds at '%s': %d not in %d..%d", c.path, n, c.repeat[0], c.repeat[1]))
+			}
+		}
+		for _, n := range ctx.found {
+			d.vNode(c, n, out)
+		}
+	}
+}
+
+func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
+	node := &d.arena[n]
+	line := node.line
+	base := strings.TrimSuffix(c.ty, "-array")
+	isArray := strings.HasSuffix(c.ty, "-array")
+	wrong := func() {
+		vdiag(out, line, fmt.Sprintf("wrong type at '%s': value is not a valid %s", c.path, c.ty))
+	}
+	switch node.value.kind {
+	// Empty passes everything; required already counted it as present.
+	case vEmpty:
+	case vRaw:
+		// A raw block satisfies `raw` and scalar `string` (any value reads as a
+		// string); every other kind is a type miss.
+		if c.ty != "" && (base != "raw" && base != "string" || isArray) {
+			wrong()
+			return
+		}
+		if c.allowed != nil && c.allowed.kind == allowStrings {
+			if !containsString(c.allowed.strs, node.value.raw.content) {
+				vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, node.value.raw.content))
+			}
+		}
+	case vCell:
+		els := node.value.els
+		if base == "raw" {
+			wrong()
+			return
+		}
+		// A scalar kind on a multi-element value is the array-where-one-scalar-
+		// expected miss - except string, which reads arrays.
+		if c.ty != "" && !isArray && base != "string" && len(els) > 1 {
+			wrong()
+			return
+		}
+		switch base {
+		case "int":
+			vals := make([]int64, 0, len(els))
+			for i := range els {
+				v, ok := parseIntText(&els[i], d.strictness)
+				if !ok {
+					wrong()
+					return
+				}
+				vals = append(vals, v)
+			}
+			if c.allowed != nil && c.allowed.kind == allowInts {
+				for i, v := range vals {
+					if !containsInt(c.allowed.ints, v) {
+						vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						break
+					}
+				}
+			}
+			if c.minI != nil && anyIntBelow(vals, *c.minI) {
+				vdiag(out, line, fmt.Sprintf("value below min at '%s'", c.path))
+			}
+			if c.maxI != nil && anyIntAbove(vals, *c.maxI) {
+				vdiag(out, line, fmt.Sprintf("value above max at '%s'", c.path))
+			}
+		case "float":
+			vals := make([]float64, 0, len(els))
+			for i := range els {
+				v, ok := parseFloatText(&els[i], d.strictness)
+				if !ok {
+					wrong()
+					return
+				}
+				vals = append(vals, v)
+			}
+			if c.allowed != nil && c.allowed.kind == allowFloats {
+				for i, v := range vals {
+					if !containsFloat(c.allowed.floats, v) {
+						vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						break
+					}
+				}
+			}
+			if c.minF != nil && anyFloatBelow(vals, *c.minF) {
+				vdiag(out, line, fmt.Sprintf("value below min at '%s'", c.path))
+			}
+			if c.maxF != nil && anyFloatAbove(vals, *c.maxF) {
+				vdiag(out, line, fmt.Sprintf("value above max at '%s'", c.path))
+			}
+		case "bool":
+			vals := make([]bool, 0, len(els))
+			for i := range els {
+				v, ok := parseBoolText(els[i].text, d.strictness)
+				if !ok {
+					wrong()
+					return
+				}
+				vals = append(vals, v)
+			}
+			if c.allowed != nil && c.allowed.kind == allowBools {
+				for i, v := range vals {
+					if !containsBool(c.allowed.bools, v) {
+						vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						break
+					}
+				}
+			}
+		case "datetime":
+			vals := make([]DateTime, 0, len(els))
+			for i := range els {
+				v, ok := ParseDateTime(els[i].text)
+				if !ok {
+					wrong()
+					return
+				}
+				vals = append(vals, v)
+			}
+			if c.allowed != nil && c.allowed.kind == allowDates {
+				for i, v := range vals {
+					if !containsDate(c.allowed.dates, v) {
+						vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						break
+					}
+				}
+			}
+		default:
+			// string kind or untyped: every element coerces; only the allowed
+			// set can fail, in logical-string space.
+			if c.allowed != nil && c.allowed.kind == allowStrings {
+				for i := range els {
+					s := applyEscapes(els[i].text)
+					if !containsString(c.allowed.strs, s) {
+						vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, s))
+						break
+					}
+				}
+			}
+		}
+	}
+}
+
+func containsInt(xs []int64, v int64) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func containsFloat(xs []float64, v float64) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func containsBool(xs []bool, v bool) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func containsDate(xs []DateTime, v DateTime) bool {
+	for _, x := range xs {
+		if dtEqual(x, v) {
+			return true
+		}
+	}
+	return false
+}
+
+func anyIntBelow(xs []int64, lo int64) bool {
+	for _, x := range xs {
+		if x < lo {
+			return true
+		}
+	}
+	return false
+}
+
+func anyIntAbove(xs []int64, hi int64) bool {
+	for _, x := range xs {
+		if x > hi {
+			return true
+		}
+	}
+	return false
+}
+
+func anyFloatBelow(xs []float64, lo float64) bool {
+	for _, x := range xs {
+		if x < lo {
+			return true
+		}
+	}
+	return false
+}
+
+func anyFloatAbove(xs []float64, hi float64) bool {
+	for _, x := range xs {
+		if x > hi {
+			return true
+		}
+	}
+	return false
+}
+
+// vUnknown is the unknown-field sweep: a schema path legalizes its name chain
+// and every prefix (selectors ignored). Only the topmost unknown node is
+// reported; its subtree is implied unknown and skipped.
+func (d *Document) vUnknown(cons []constraint, out *[]Diagnostic) {
+	legal := map[string]bool{}
+	for i := range cons {
+		chain := ""
+		for _, s := range cons[i].segs {
+			if chain != "" {
+				chain += "\x00"
+			}
+			chain += s.name
+			legal[chain] = true
+		}
+	}
+	type frame struct {
+		node  int
+		chain string
+		shown string
+	}
+	var stack []frame
+	kids := d.arena[root].children
+	for i := len(kids) - 1; i >= 0; i-- {
+		stack = append(stack, frame{node: kids[i]})
+	}
+	for len(stack) > 0 {
+		fr := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		node := &d.arena[fr.node]
+		chain := node.name
+		shown := node.name
+		if fr.chain != "" {
+			chain = fr.chain + "\x00" + node.name
+			shown = fr.shown + "." + node.name
+		}
+		if !legal[chain] {
+			hint := vSuggest(cons, fr.chain, node.name)
+			vdiag(out, node.line, fmt.Sprintf("unknown field '%s'%s", shown, hint))
+			continue
+		}
+		for i := len(node.children) - 1; i >= 0; i-- {
+			stack = append(stack, frame{node: node.children[i], chain: chain, shown: shown})
+		}
+	}
+}
+
+// vSuggest finds the closest legal sibling name (same parent chain, schema
+// order, edit distance <= 2) as "; did you mean 'x'?" - or nothing. Prose
+// only, never contract.
+func vSuggest(cons []constraint, parentChain, name string) string {
+	bestDist := -1
+	bestName := ""
+	for i := range cons {
+		pc := ""
+		for _, s := range cons[i].segs {
+			if pc == parentChain {
+				dist := editDistance(name, s.name)
+				if dist <= 2 && (bestDist < 0 || dist < bestDist) {
+					bestDist = dist
+					bestName = s.name
+				}
+			}
+			if pc == "" {
+				pc = s.name
+			} else {
+				pc = pc + "\x00" + s.name
+			}
+		}
+	}
+	if bestDist < 0 {
+		return ""
+	}
+	return fmt.Sprintf("; did you mean '%s'?", bestName)
 }

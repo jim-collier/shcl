@@ -27,7 +27,7 @@ template <class T> struct Read {
 	bool ok() const { return status == Status::Good || status == Status::Empty; }
 };
 
-struct Diagnostic { std::size_t line; bool is_error; std::string message; };
+struct Diagnostic { std::size_t line; bool is_error; std::string message; std::string code; };
 
 inline std::string to_str(shcl_str s) { return std::string(s.p, s.n); }
 
@@ -53,7 +53,19 @@ public:
 	std::vector<Diagnostic> diagnostics() const {
 		std::vector<Diagnostic> v; std::size_t n = shcl_diag_count(d_);
 		for (std::size_t i = 0; i < n; i++)
-			v.push_back({shcl_diag_line(d_, i), shcl_diag_severity(d_, i) == SHCL_SEV_ERROR, to_str(shcl_diag_message(d_, i))});
+			v.push_back({shcl_diag_line(d_, i), shcl_diag_severity(d_, i) == SHCL_SEV_ERROR, to_str(shcl_diag_message(d_, i)), shcl_diag_code(d_, i)});
+		return v;
+	}
+
+	// Schema validation (spec.md "Schema validation"): empty result = conforms.
+	// Schema faults (V09x, schema-file lines) suppress data validation.
+	std::vector<Diagnostic> validate(const Document &schema) const {
+		std::vector<Diagnostic> v;
+		shcl_validation *r = shcl_validate(d_, schema.d_);
+		std::size_t n = shcl_validation_count(r);
+		for (std::size_t i = 0; i < n; i++)
+			v.push_back({shcl_validation_line(r, i), shcl_validation_severity(r, i) == SHCL_SEV_ERROR, to_str(shcl_validation_message(r, i)), shcl_validation_code(r, i)});
+		shcl_validation_free(r);
 		return v;
 	}
 

@@ -81,6 +81,20 @@ shcl_str shcl_diag_message(const shcl_doc *d, size_t i);
 // contract; the message prose is a free, per-binding voice. NUL-terminated.
 const char *shcl_diag_code(const shcl_doc *d, size_t i);
 
+// Schema validation (spec.md "Schema validation"): check d against a schema
+// document (itself plain SHCL). Zero diagnostics = the document conforms.
+// Diagnostic lines are document lines (0 = document scope); schema faults
+// (V09x, schema-file lines) suppress data validation entirely. The result owns
+// copies of all its strings - free with shcl_validation_free.
+typedef struct shcl_validation shcl_validation;
+shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema);
+size_t shcl_validation_count(const shcl_validation *v);
+size_t shcl_validation_line(const shcl_validation *v, size_t i);
+shcl_severity shcl_validation_severity(const shcl_validation *v, size_t i);
+shcl_str shcl_validation_message(const shcl_validation *v, size_t i);
+const char *shcl_validation_code(const shcl_validation *v, size_t i);
+void shcl_validation_free(shcl_validation *v);
+
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The
 // returned bytes live in the document's arena; valid until shcl_free.
 shcl_str shcl_to_canonical(shcl_doc *d);
@@ -1098,6 +1112,18 @@ static const char *diag_code(shcl_severity sev, S msg) {
 	if (s_starts(msg, "malformed line skipped")) return "E014";
 	if (s_starts(msg, "malformed line: ")) return "E013";
 	if (s_starts(msg, "missing colon")) return "E015";
+	if (s_starts(msg, "unknown field ")) return "V001";
+	if (s_starts(msg, "required path missing")) return "V002";
+	if (s_starts(msg, "wrong type at ")) return "V003";
+	if (s_starts(msg, "value not allowed at ")) return "V004";
+	if (s_starts(msg, "value below min at ")) return "V005";
+	if (s_starts(msg, "value above max at ")) return "V006";
+	if (s_starts(msg, "instance count out of bounds at ")) return "V007";
+	if (s_starts(msg, "unknown schema key ")) return "V090";
+	if (s_starts(msg, "unknown schema type ")) return "V091";
+	if (s_starts(msg, "bad schema constraint ")) return "V092";
+	if (s_starts(msg, "bad schema path")) return "V093";
+	if (s_starts(msg, "schema failed to load")) return "V099";
 	return "E000";
 }
 static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, S msg) {
@@ -2054,6 +2080,526 @@ size_t shcl_diag_line(const shcl_doc *d, size_t i) { return d->diags.data[i].lin
 shcl_severity shcl_diag_severity(const shcl_doc *d, size_t i) { return d->diags.data[i].sev; }
 shcl_str shcl_diag_message(const shcl_doc *d, size_t i) { return d->diags.data[i].message; }
 const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i].code; }
+
+//•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+// Validator: schema-as-SHCL
+// The schema is an ordinary parsed document: a flat list of `field: <path>`
+// instances whose children are the constraints (closed vocabulary - see
+// spec.md "Schema validation"). Validation reuses the accessor's path scan and
+// the typed coercions, so document strictness composes for free. Any schema
+// fault (V09x) suppresses data validation - one line-number space per result.
+// Everything (scratch and results) lives in the validation's own arena.
+
+struct shcl_validation { Arena arena; VecDiag diags; };
+
+static const char *v_schema_types[] = {
+	"int", "float", "bool", "string", "datetime", "raw",
+	"int-array", "float-array", "bool-array", "string-array", "datetime-array",
+};
+
+typedef enum { ALLOW_INTS, ALLOW_FLOATS, ALLOW_BOOLS, ALLOW_DATES, ALLOW_STRINGS } allowkind;
+
+typedef struct {
+	S path; // as written in the schema; message text only
+	VecSeg segs;
+	const char *ty; // member of v_schema_types; NULL = untyped
+	int required;
+	int has_allowed; allowkind akind; size_t a_n;
+	int64_t *a_ints; double *a_floats; int *a_bools; shcl_datetime *a_dates; S *a_strs;
+	int has_min_i, has_max_i, has_min_f, has_max_f;
+	int64_t min_i, max_i; double min_f, max_f;
+	int has_repeat; uint64_t rep_lo, rep_hi;
+} VCons;
+DEFINE_VEC(VecVCons, VCons)
+
+static void v_diag(Arena *a, VecDiag *out, size_t line, S msg) {
+	Diag dg; dg.line = line; dg.sev = SHCL_SEV_ERROR; dg.message = msg; dg.code = diag_code(SHCL_SEV_ERROR, msg);
+	VecDiag_push(a, out, dg);
+}
+static S v_msgz(Arena *a, const char *z) { S s; s.p = z; s.n = strlen(z); return s_dup(a, s); }
+static S v_msg3(Arena *a, const char *pre, S mid, const char *post) {
+	SB s = {0, 0, 0};
+	sb_puts(a, &s, pre); sb_putS(a, &s, mid); sb_puts(a, &s, post);
+	return sb_S(&s);
+}
+static S v_msg_key(Arena *a, const char *key) {
+	SB s = {0, 0, 0};
+	sb_puts(a, &s, "bad schema constraint '"); sb_puts(a, &s, key); sb_puts(a, &s, "'");
+	return sb_S(&s);
+}
+
+// One scalar constraint value (escapes applied), or 0.
+static int v_single_text(Arena *a, const Value *v, S *out) {
+	if (v->kind != V_CELL || v->nels != 1) return 0;
+	*out = apply_escapes(a, v->els[0].text);
+	return 1;
+}
+
+// Field-wise datetime equality (struct compare would read unset fields).
+static int v_dt_equal(const shcl_datetime *x, const shcl_datetime *y) {
+	if (x->has_date != y->has_date || x->has_time != y->has_time) return 0;
+	if (x->has_date && (x->year != y->year || x->month != y->month || x->day != y->day)) return 0;
+	if (x->has_time) {
+		if (x->hour != y->hour || x->minute != y->minute || x->has_sec != y->has_sec) return 0;
+		if (x->has_sec && x->sec != y->sec) return 0;
+	}
+	if (x->has_frac != y->has_frac) return 0;
+	if (x->has_frac) {
+		S a; a.p = x->frac.p; a.n = x->frac.n;
+		S b; b.p = y->frac.p; b.n = y->frac.n;
+		if (!s_eq(a, b)) return 0;
+	}
+	if (x->zone != y->zone) return 0;
+	if (x->zone == SHCL_ZONE_OFFSET && x->off_min != y->off_min) return 0;
+	return 1;
+}
+
+// Interpret a parsed schema document into constraints. Nonzero fault count
+// (V09x, schema-file lines) means the caller reports those and validates
+// nothing.
+static void v_build_schema(Arena *a, shcl_doc *schema, VecVCons *cons, VecDiag *faults) {
+	VecSize top = NODE(schema, ROOT).children;
+	for (size_t fi = 0; fi < top.len; fi++) {
+		Node *node = &NODE(schema, top.data[fi]);
+		if (!s_eq(node->name, s_lit("field"))) {
+			v_diag(a, faults, node->line, v_msg3(a, "unknown schema key '", node->name, "'"));
+			continue;
+		}
+		S path;
+		if (!v_single_text(a, &node->value, &path)) {
+			v_diag(a, faults, node->line, v_msgz(a, "bad schema path"));
+			continue;
+		}
+		PathScan ps = scan_path(a, path);
+		if (!ps.ok || ps.has_value) {
+			v_diag(a, faults, node->line, v_msg3(a, "bad schema path: ", path, ""));
+			continue;
+		}
+		VCons c; memset(&c, 0, sizeof c);
+		c.path = path; c.segs = ps.segs;
+		// Deferred so `min: 1` may precede `type: int` in the file.
+		int required = -1;
+		size_t allowed_at = (size_t)-1, min_at = (size_t)-1, max_at = (size_t)-1;
+		VecSize kids = NODE(schema, top.data[fi]).children;
+		for (size_t ki = 0; ki < kids.len; ki++) {
+			Node *kid = &NODE(schema, kids.data[ki]);
+			if (v_is_empty(&kid->value)) continue; // dangling key: treated as absent
+			if (s_eq(kid->name, s_lit("type"))) {
+				S t;
+				int ok = v_single_text(a, &kid->value, &t);
+				const char *canon = NULL;
+				if (ok) {
+					S low = ascii_lower(a, t);
+					for (size_t x = 0; x < sizeof v_schema_types / sizeof v_schema_types[0]; x++)
+						if (s_eq(low, s_lit(v_schema_types[x]))) { canon = v_schema_types[x]; break; }
+					if (canon) {
+						if (c.ty) v_diag(a, faults, kid->line, v_msg_key(a, "type"));
+						else c.ty = canon;
+					} else {
+						v_diag(a, faults, kid->line, v_msg3(a, "unknown schema type '", low, "'"));
+					}
+				} else {
+					v_diag(a, faults, kid->line, v_msg_key(a, "type"));
+				}
+			} else if (s_eq(kid->name, s_lit("required"))) {
+				S t; int b = 0;
+				int ok = v_single_text(a, &kid->value, &t) && parse_bool_text(a, t, SHCL_STANDARD, &b);
+				if (ok && required < 0) required = b;
+				else v_diag(a, faults, kid->line, v_msg_key(a, "required"));
+			} else if (s_eq(kid->name, s_lit("allowed"))) {
+				if (kid->value.kind == V_CELL && allowed_at == (size_t)-1) allowed_at = kids.data[ki];
+				else v_diag(a, faults, kid->line, v_msg_key(a, "allowed"));
+			} else if (s_eq(kid->name, s_lit("min"))) {
+				if (kid->value.kind == V_CELL && kid->value.nels == 1 && min_at == (size_t)-1) min_at = kids.data[ki];
+				else v_diag(a, faults, kid->line, v_msg_key(a, "min"));
+			} else if (s_eq(kid->name, s_lit("max"))) {
+				if (kid->value.kind == V_CELL && kid->value.nels == 1 && max_at == (size_t)-1) max_at = kids.data[ki];
+				else v_diag(a, faults, kid->line, v_msg_key(a, "max"));
+			} else if (s_eq(kid->name, s_lit("repeat"))) {
+				if (kid->value.kind == V_CELL && !c.has_repeat && (kid->value.nels == 1 || kid->value.nels == 2)) {
+					uint64_t lo, hi;
+					if (parse_u64(kid->value.els[0].text, &lo) && parse_u64(kid->value.els[kid->value.nels - 1].text, &hi) && lo <= hi) {
+						c.has_repeat = 1; c.rep_lo = lo; c.rep_hi = hi;
+					} else {
+						v_diag(a, faults, kid->line, v_msg_key(a, "repeat"));
+					}
+				} else {
+					v_diag(a, faults, kid->line, v_msg_key(a, "repeat"));
+				}
+			} else if (s_eq(kid->name, s_lit("default")) || s_eq(kid->name, s_lit("desc"))) {
+				// generator-only; validation ignores them
+			} else {
+				v_diag(a, faults, kid->line, v_msg3(a, "unknown schema key '", kid->name, "'"));
+			}
+		}
+		c.required = required > 0;
+		const char *base = c.ty ? c.ty : "string";
+		size_t blen = strlen(base);
+		if (blen > 6 && memcmp(base + blen - 6, "-array", 6) == 0) {
+			// Base kind name, without the -array suffix (still a literal member).
+			for (size_t x = 0; x < sizeof v_schema_types / sizeof v_schema_types[0]; x++)
+				if (strlen(v_schema_types[x]) == blen - 6 && memcmp(v_schema_types[x], base, blen - 6) == 0) { base = v_schema_types[x]; break; }
+		}
+		if (allowed_at != (size_t)-1) {
+			Node *kid = &NODE(schema, allowed_at);
+			Element *els = kid->value.els; size_t n = kid->value.nels;
+			// Schema values are read at Standard; only the document's values
+			// coerce at the document's strictness.
+			int ok = 1;
+			c.a_n = n;
+			if (strcmp(base, "int") == 0) {
+				c.akind = ALLOW_INTS;
+				c.a_ints = (int64_t *)arena_alloc(a, (n ? n : 1) * sizeof(int64_t));
+				for (size_t x = 0; x < n && ok; x++) ok = parse_int_text(a, &els[x], SHCL_STANDARD, &c.a_ints[x]);
+			} else if (strcmp(base, "float") == 0) {
+				c.akind = ALLOW_FLOATS;
+				c.a_floats = (double *)arena_alloc(a, (n ? n : 1) * sizeof(double));
+				for (size_t x = 0; x < n && ok; x++) ok = parse_float_text(a, &els[x], SHCL_STANDARD, &c.a_floats[x]);
+			} else if (strcmp(base, "bool") == 0) {
+				c.akind = ALLOW_BOOLS;
+				c.a_bools = (int *)arena_alloc(a, (n ? n : 1) * sizeof(int));
+				for (size_t x = 0; x < n && ok; x++) ok = parse_bool_text(a, els[x].text, SHCL_STANDARD, &c.a_bools[x]);
+			} else if (strcmp(base, "datetime") == 0) {
+				c.akind = ALLOW_DATES;
+				c.a_dates = (shcl_datetime *)arena_alloc(a, (n ? n : 1) * sizeof(shcl_datetime));
+				for (size_t x = 0; x < n && ok; x++) ok = parse_datetime(a, els[x].text, &c.a_dates[x]);
+			} else if (strcmp(base, "raw") == 0) {
+				ok = 0; // a raw body has no element space to enumerate
+			} else {
+				c.akind = ALLOW_STRINGS;
+				c.a_strs = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+				for (size_t x = 0; x < n; x++) c.a_strs[x] = apply_escapes(a, els[x].text);
+			}
+			if (ok) c.has_allowed = 1;
+			else v_diag(a, faults, kid->line, v_msg_key(a, "allowed"));
+		}
+		for (int mm = 0; mm < 2; mm++) {
+			int is_min = mm == 0;
+			size_t at = is_min ? min_at : max_at;
+			if (at == (size_t)-1) continue;
+			Node *kid = &NODE(schema, at);
+			Element *el = &kid->value.els[0];
+			const char *key = is_min ? "min" : "max";
+			if (strcmp(base, "int") == 0) {
+				int64_t v;
+				if (parse_int_text(a, el, SHCL_STANDARD, &v)) {
+					if (is_min) { c.has_min_i = 1; c.min_i = v; }
+					else { c.has_max_i = 1; c.max_i = v; }
+				} else v_diag(a, faults, kid->line, v_msg_key(a, key));
+			} else if (strcmp(base, "float") == 0) {
+				double v;
+				if (parse_float_text(a, el, SHCL_STANDARD, &v)) {
+					if (is_min) { c.has_min_f = 1; c.min_f = v; }
+					else { c.has_max_f = 1; c.max_f = v; }
+				} else v_diag(a, faults, kid->line, v_msg_key(a, key));
+			} else {
+				v_diag(a, faults, kid->line, v_msg_key(a, key));
+			}
+		}
+		VecVCons_push(a, cons, c);
+	}
+	// One constraint per line in practice, so line order = file order. Insertion
+	// sort keeps equal lines stable (qsort is not stable).
+	for (size_t i = 1; i < faults->len; i++) {
+		Diag key = faults->data[i];
+		size_t j = i;
+		while (j > 0 && faults->data[j - 1].line > key.line) { faults->data[j] = faults->data[j - 1]; j--; }
+		faults->data[j] = key;
+	}
+}
+
+// Two-row Levenshtein over codepoints; powers the "did you mean" prose (never
+// the code).
+static size_t v_edit_distance(Arena *a, S sa, S sb) {
+	CPs ca = decode_cps(a, sa);
+	CPs cb = decode_cps(a, sb);
+	size_t *prev = (size_t *)arena_alloc(a, (cb.n + 1) * sizeof(size_t));
+	size_t *cur = (size_t *)arena_alloc(a, (cb.n + 1) * sizeof(size_t));
+	for (size_t j = 0; j <= cb.n; j++) prev[j] = j;
+	for (size_t i = 1; i <= ca.n; i++) {
+		cur[0] = i;
+		for (size_t j = 1; j <= cb.n; j++) {
+			size_t cost = ca.cp[i - 1] == cb.cp[j - 1] ? 0 : 1;
+			size_t m = prev[j] + 1;
+			if (cur[j - 1] + 1 < m) m = cur[j - 1] + 1;
+			if (prev[j - 1] + cost < m) m = prev[j - 1] + cost;
+			cur[j] = m;
+		}
+		size_t *t = prev; prev = cur; cur = t;
+	}
+	return prev[cb.n];
+}
+
+// Closest legal sibling name (same parent chain, schema order, edit distance
+// <= 2) appended as "; did you mean 'x'?" - or nothing. Prose only.
+static void v_suggest(Arena *a, const VecVCons *cons, S parent_chain, S name, SB *msg) {
+	int have = 0; size_t best_dist = 0; S best_name = s_empty();
+	for (size_t i = 0; i < cons->len; i++) {
+		const VCons *c = &cons->data[i];
+		SB pc = {0, 0, 0};
+		for (size_t si = 0; si < c->segs.len; si++) {
+			if (s_eq(sb_S(&pc), parent_chain)) {
+				size_t dist = v_edit_distance(a, name, c->segs.data[si].name);
+				if (dist <= 2 && (!have || dist < best_dist)) { have = 1; best_dist = dist; best_name = c->segs.data[si].name; }
+			}
+			if (pc.len) sb_putc(a, &pc, '\0');
+			sb_putS(a, &pc, c->segs.data[si].name);
+		}
+	}
+	if (have) {
+		sb_puts(a, msg, "; did you mean '");
+		sb_putS(a, msg, best_name);
+		sb_puts(a, msg, "'?");
+	}
+}
+
+// Resolution contexts: the whole document for a plain path; each enclosing
+// instance for the part of a path after a wildcard. required/repeat evaluate
+// per context (anchor line 0 = document scope), so `server[*].port` + required
+// means a port under EACH server - vacuously true with no servers.
+typedef struct { size_t anchor; VecSize found; } VCtx;
+DEFINE_VEC(VecVCtx, VCtx)
+
+static void v_contexts(Arena *a, shcl_doc *d, const size_t *start, size_t nstart, Segment *segs, size_t nsegs, size_t anchor, VecVCtx *out) {
+	VecSize cur = {0};
+	for (size_t i = 0; i < nstart; i++) VecSize_push(a, &cur, start[i]);
+	for (size_t si = 0; si < nsegs; si++) {
+		Segment *seg = &segs[si];
+		VecSize next = {0};
+		for (size_t k = 0; k < cur.len; k++) {
+			VecSize ch = NODE(d, cur.data[k]).children;
+			for (size_t j = 0; j < ch.len; j++) { size_t c = ch.data[j]; if (s_eq(NODE(d, c).name, seg->name)) VecSize_push(a, &next, c); }
+		}
+		switch (seg->sel.tag) {
+		case SEL_NONE: cur = next; break;
+		case SEL_VALUE: {
+			VecSize f = {0};
+			for (size_t k = 0; k < next.len; k++) if (s_eq(value_display(a, &NODE(d, next.data[k]).value), seg->sel.value)) VecSize_push(a, &f, next.data[k]);
+			cur = f; break;
+		}
+		case SEL_INDEX: {
+			VecSize f = {0};
+			if (seg->sel.index < next.len) VecSize_push(a, &f, next.data[seg->sel.index]);
+			cur = f; break;
+		}
+		case SEL_WILDCARD: {
+			Segment *rest = segs + si + 1; size_t nrest = nsegs - si - 1;
+			if (nrest == 0) {
+				VCtx ctx; ctx.anchor = anchor; ctx.found = next; VecVCtx_push(a, out, ctx);
+			} else {
+				for (size_t k = 0; k < next.len; k++) {
+					size_t inst = next.data[k];
+					v_contexts(a, d, &inst, 1, rest, nrest, NODE(d, inst).line, out);
+				}
+			}
+			return;
+		}
+		}
+	}
+	VCtx ctx; ctx.anchor = anchor; ctx.found = cur; VecVCtx_push(a, out, ctx);
+}
+
+static void v_wrong_type(Arena *a, VecDiag *out, size_t line, const VCons *c) {
+	SB s = {0, 0, 0};
+	sb_puts(a, &s, "wrong type at '"); sb_putS(a, &s, c->path);
+	sb_puts(a, &s, "': value is not a valid "); sb_puts(a, &s, c->ty ? c->ty : "string");
+	v_diag(a, out, line, sb_S(&s));
+}
+static void v_not_allowed(Arena *a, VecDiag *out, size_t line, const VCons *c, S text) {
+	SB s = {0, 0, 0};
+	sb_puts(a, &s, "value not allowed at '"); sb_putS(a, &s, c->path);
+	sb_puts(a, &s, "': "); sb_putS(a, &s, text);
+	v_diag(a, out, line, sb_S(&s));
+}
+
+static void v_node(Arena *a, shcl_doc *d, const VCons *c, size_t n, VecDiag *out) {
+	Node *node = &NODE(d, n);
+	size_t line = node->line;
+	const char *ty = c->ty;
+	size_t tlen = ty ? strlen(ty) : 0;
+	int is_array = ty && tlen > 6 && memcmp(ty + tlen - 6, "-array", 6) == 0;
+	size_t blen = is_array ? tlen - 6 : tlen;
+	// base kind compare helper against a literal
+	#define V_BASE_IS(z) (ty && blen == strlen(z) && memcmp(ty, z, blen) == 0)
+	if (node->value.kind == V_EMPTY) {
+		// Empty passes everything; required already counted it as present.
+		return;
+	}
+	if (node->value.kind == V_RAW) {
+		// A raw block satisfies `raw` and scalar `string` (any value reads as a
+		// string); every other kind is a type miss.
+		if (ty && ((!V_BASE_IS("raw") && !V_BASE_IS("string")) || is_array)) { v_wrong_type(a, out, line, c); return; }
+		if (c->has_allowed && c->akind == ALLOW_STRINGS) {
+			int found = 0;
+			for (size_t x = 0; x < c->a_n; x++) if (s_eq(c->a_strs[x], node->value.content)) { found = 1; break; }
+			if (!found) v_not_allowed(a, out, line, c, node->value.content);
+		}
+		return;
+	}
+	Element *els = node->value.els; size_t nels = node->value.nels;
+	if (V_BASE_IS("raw")) { v_wrong_type(a, out, line, c); return; }
+	// A scalar kind on a multi-element value is the array-where-one-scalar-
+	// expected miss - except string, which reads arrays.
+	if (ty && !is_array && !V_BASE_IS("string") && nels > 1) { v_wrong_type(a, out, line, c); return; }
+	if (V_BASE_IS("int")) {
+		int64_t *vals = (int64_t *)arena_alloc(a, (nels ? nels : 1) * sizeof(int64_t));
+		for (size_t x = 0; x < nels; x++)
+			if (!parse_int_text(a, &els[x], d->strictness, &vals[x])) { v_wrong_type(a, out, line, c); return; }
+		if (c->has_allowed && c->akind == ALLOW_INTS) {
+			for (size_t x = 0; x < nels; x++) {
+				int found = 0;
+				for (size_t y = 0; y < c->a_n; y++) if (c->a_ints[y] == vals[x]) { found = 1; break; }
+				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
+			}
+		}
+		if (c->has_min_i) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_i) { v_diag(a, out, line, v_msg3(a, "value below min at '", c->path, "'")); break; } }
+		if (c->has_max_i) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_i) { v_diag(a, out, line, v_msg3(a, "value above max at '", c->path, "'")); break; } }
+	} else if (V_BASE_IS("float")) {
+		double *vals = (double *)arena_alloc(a, (nels ? nels : 1) * sizeof(double));
+		for (size_t x = 0; x < nels; x++)
+			if (!parse_float_text(a, &els[x], d->strictness, &vals[x])) { v_wrong_type(a, out, line, c); return; }
+		if (c->has_allowed && c->akind == ALLOW_FLOATS) {
+			for (size_t x = 0; x < nels; x++) {
+				int found = 0;
+				for (size_t y = 0; y < c->a_n; y++) if (c->a_floats[y] == vals[x]) { found = 1; break; }
+				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
+			}
+		}
+		if (c->has_min_f) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_f) { v_diag(a, out, line, v_msg3(a, "value below min at '", c->path, "'")); break; } }
+		if (c->has_max_f) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_f) { v_diag(a, out, line, v_msg3(a, "value above max at '", c->path, "'")); break; } }
+	} else if (V_BASE_IS("bool")) {
+		int *vals = (int *)arena_alloc(a, (nels ? nels : 1) * sizeof(int));
+		for (size_t x = 0; x < nels; x++)
+			if (!parse_bool_text(a, els[x].text, d->strictness, &vals[x])) { v_wrong_type(a, out, line, c); return; }
+		if (c->has_allowed && c->akind == ALLOW_BOOLS) {
+			for (size_t x = 0; x < nels; x++) {
+				int found = 0;
+				for (size_t y = 0; y < c->a_n; y++) if ((c->a_bools[y] != 0) == (vals[x] != 0)) { found = 1; break; }
+				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
+			}
+		}
+	} else if (V_BASE_IS("datetime")) {
+		shcl_datetime *vals = (shcl_datetime *)arena_alloc(a, (nels ? nels : 1) * sizeof(shcl_datetime));
+		for (size_t x = 0; x < nels; x++)
+			if (!parse_datetime(a, els[x].text, &vals[x])) { v_wrong_type(a, out, line, c); return; }
+		if (c->has_allowed && c->akind == ALLOW_DATES) {
+			for (size_t x = 0; x < nels; x++) {
+				int found = 0;
+				for (size_t y = 0; y < c->a_n; y++) if (v_dt_equal(&c->a_dates[y], &vals[x])) { found = 1; break; }
+				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
+			}
+		}
+	} else {
+		// string kind or untyped: every element coerces; only the allowed set
+		// can fail, in logical-string space.
+		if (c->has_allowed && c->akind == ALLOW_STRINGS) {
+			for (size_t x = 0; x < nels; x++) {
+				S s = apply_escapes(a, els[x].text);
+				int found = 0;
+				for (size_t y = 0; y < c->a_n; y++) if (s_eq(c->a_strs[y], s)) { found = 1; break; }
+				if (!found) { v_not_allowed(a, out, line, c, s); break; }
+			}
+		}
+	}
+	#undef V_BASE_IS
+}
+
+static void v_check(Arena *a, shcl_doc *d, const VCons *c, VecDiag *out) {
+	VecVCtx ctxs = {0};
+	size_t start = ROOT;
+	v_contexts(a, d, &start, 1, c->segs.data, c->segs.len, 0, &ctxs);
+	for (size_t i = 0; i < ctxs.len; i++) {
+		VCtx *ctx = &ctxs.data[i];
+		if (c->required && ctx->found.len == 0)
+			v_diag(a, out, ctx->anchor, v_msg3(a, "required path missing: ", c->path, ""));
+		if (c->has_repeat) {
+			uint64_t n = (uint64_t)ctx->found.len;
+			if (n < c->rep_lo || n > c->rep_hi) {
+				SB s = {0, 0, 0};
+				sb_puts(a, &s, "instance count out of bounds at '"); sb_putS(a, &s, c->path);
+				sb_puts(a, &s, "': "); sb_put_u64(a, &s, n);
+				sb_puts(a, &s, " not in "); sb_put_u64(a, &s, c->rep_lo);
+				sb_puts(a, &s, ".."); sb_put_u64(a, &s, c->rep_hi);
+				v_diag(a, out, ctx->anchor, sb_S(&s));
+			}
+		}
+		for (size_t k = 0; k < ctx->found.len; k++) v_node(a, d, c, ctx->found.data[k], out);
+	}
+}
+
+// Unknown-field sweep: a schema path legalizes its name chain and every prefix
+// (selectors ignored). Only the topmost unknown node is reported; its subtree
+// is implied unknown and skipped.
+static void v_unknown(Arena *a, shcl_doc *d, const VecVCons *cons, VecDiag *out) {
+	VecS legal = {0};
+	for (size_t i = 0; i < cons->len; i++) {
+		SB chain = {0, 0, 0};
+		for (size_t si = 0; si < cons->data[i].segs.len; si++) {
+			if (chain.len) sb_putc(a, &chain, '\0');
+			sb_putS(a, &chain, cons->data[i].segs.data[si].name);
+			VecS_push(a, &legal, s_dup(a, sb_S(&chain)));
+		}
+	}
+	VecSize snode = {0}; VecS schain = {0}; VecS sshown = {0};
+	VecSize top = NODE(d, ROOT).children;
+	for (size_t i = top.len; i > 0; i--) {
+		VecSize_push(a, &snode, top.data[i - 1]);
+		VecS_push(a, &schain, s_empty());
+		VecS_push(a, &sshown, s_empty());
+	}
+	while (snode.len) {
+		size_t n = snode.data[snode.len - 1];
+		S pchain = schain.data[snode.len - 1];
+		S pshown = sshown.data[snode.len - 1];
+		snode.len--; schain.len--; sshown.len--;
+		Node *node = &NODE(d, n);
+		SB cb = {0, 0, 0};
+		if (pchain.n) { sb_putS(a, &cb, pchain); sb_putc(a, &cb, '\0'); }
+		sb_putS(a, &cb, node->name);
+		S chain = sb_S(&cb);
+		SB sb2 = {0, 0, 0};
+		if (pshown.n) { sb_putS(a, &sb2, pshown); sb_putc(a, &sb2, '.'); }
+		sb_putS(a, &sb2, node->name);
+		S shown = sb_S(&sb2);
+		int found = 0;
+		for (size_t i = 0; i < legal.len; i++) if (s_eq(legal.data[i], chain)) { found = 1; break; }
+		if (!found) {
+			SB msg = {0, 0, 0};
+			sb_puts(a, &msg, "unknown field '"); sb_putS(a, &msg, shown); sb_puts(a, &msg, "'");
+			v_suggest(a, cons, pchain, node->name, &msg);
+			v_diag(a, out, node->line, sb_S(&msg));
+			continue;
+		}
+		VecSize ch = node->children;
+		for (size_t i = ch.len; i > 0; i--) {
+			VecSize_push(a, &snode, ch.data[i - 1]);
+			VecS_push(a, &schain, chain);
+			VecS_push(a, &sshown, shown);
+		}
+	}
+}
+
+shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
+	shcl_validation *v = (shcl_validation *)malloc(sizeof *v);
+	if (!v) { fprintf(stderr, "shcl: out of memory\n"); exit(70); }
+	memset(v, 0, sizeof *v);
+	Arena *a = &v->arena;
+	VecVCons cons = {0};
+	VecDiag faults = {0};
+	v_build_schema(a, schema, &cons, &faults);
+	if (faults.len) { v->diags = faults; return v; }
+	for (size_t i = 0; i < cons.len; i++) v_check(a, d, &cons.data[i], &v->diags);
+	v_unknown(a, d, &cons, &v->diags);
+	return v;
+}
+size_t shcl_validation_count(const shcl_validation *v) { return v->diags.len; }
+size_t shcl_validation_line(const shcl_validation *v, size_t i) { return v->diags.data[i].line; }
+shcl_severity shcl_validation_severity(const shcl_validation *v, size_t i) { return v->diags.data[i].sev; }
+shcl_str shcl_validation_message(const shcl_validation *v, size_t i) {
+	shcl_str s; s.p = v->diags.data[i].message.p; s.n = v->diags.data[i].message.n; return s;
+}
+const char *shcl_validation_code(const shcl_validation *v, size_t i) { return v->diags.data[i].code; }
+void shcl_validation_free(shcl_validation *v) { if (!v) return; arena_free(&v->arena); free(v); }
 
 #endif // SHCL_IMPLEMENTATION
 #endif // SHCL_H

@@ -145,6 +145,9 @@ for caseDir in "$corpus"/*/; do
 	# Write dimension: apply the case's ops script and compare canonical output.
 	ops="${caseDir}write.ops"
 	[[ -f "$ops" ]] && fCompareStdin "set $(basename "$caseDir")" "$ops" set "$input"
+	# Schema dimension: replay check --schema (codes + summary + exit are the contract).
+	schema="${caseDir}schema.shcl"
+	[[ -f "$schema" ]] && fCompare "check --schema $(basename "$caseDir")" check "--schema=${schema}" "$input"
 	tsv="${caseDir}reads.tsv"
 	if [[ -f "$tsv" ]]; then
 		while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do

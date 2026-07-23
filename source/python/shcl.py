@@ -78,6 +78,18 @@ def _diag_code(msg):
 		("malformed line skipped", "E014"),
 		("malformed line: ", "E013"),
 		("missing colon", "E015"),
+		("unknown field ", "V001"),
+		("required path missing", "V002"),
+		("wrong type at ", "V003"),
+		("value not allowed at ", "V004"),
+		("value below min at ", "V005"),
+		("value above max at ", "V006"),
+		("instance count out of bounds at ", "V007"),
+		("unknown schema key ", "V090"),
+		("unknown schema type ", "V091"),
+		("bad schema constraint ", "V092"),
+		("bad schema path", "V093"),
+		("schema failed to load", "V099"),
 	):
 		if msg.startswith(prefix):
 			return code
@@ -1576,6 +1588,193 @@ class Document:
 	def get_datetime_array(self, path, default=_NO_DEFAULT):
 		return self._get(self.read_datetime_array(path), default)
 
+	# --- Validator: schema-as-SHCL (see spec.md "Schema validation") ---------
+	# The schema is an ordinary parsed document: a flat list of `field: <path>`
+	# instances whose children are the constraints (closed vocabulary).
+	# Validation reuses the accessor's path scan and the typed coercions, so
+	# document strictness composes for free. Any schema fault (V09x) suppresses
+	# data validation - one line-number space per result.
+
+	def validate(self, schema):
+		"""Validate against a schema document (itself plain SHCL). Empty result
+		= the document conforms. Diagnostic lines are document lines (0 =
+		document scope); schema faults (V09x, schema-file lines) suppress data
+		validation entirely."""
+		cons, faults = _build_schema(schema)
+		if faults:
+			return faults
+		out = []
+		for c in cons:
+			self._v_check(c, out)
+		self._v_unknown(cons, out)
+		return out
+
+	def _v_contexts(self, start, segs, anchor, out):
+		# Resolution contexts: the whole document for a plain path; each
+		# enclosing instance for the part of a path after a wildcard. required/
+		# repeat evaluate per context (anchor line 0 = document scope), so
+		# `server[*].port` + required means a port under EACH server -
+		# vacuously true with no servers.
+		cur = list(start)
+		for i, seg in enumerate(segs):
+			nxt = []
+			for n in cur:
+				nxt.extend(self._children_named(n, seg.name))
+			sel = seg.selector
+			if sel is None:
+				cur = nxt
+			elif sel[0] == "val":
+				cur = [c for c in nxt if self.arena[c].value.display() == sel[1]]
+			elif sel[0] == "idx":
+				cur = [nxt[sel[1]]] if sel[1] < len(nxt) else []
+			else:
+				rest = segs[i + 1:]
+				if not rest:
+					out.append((anchor, nxt))
+				else:
+					for inst in nxt:
+						self._v_contexts([inst], rest, self.arena[inst].line, out)
+				return
+		out.append((anchor, cur))
+
+	def _v_check(self, c, out):
+		ctxs = []
+		self._v_contexts([ROOT], c.segs, 0, ctxs)
+		for anchor, found in ctxs:
+			if c.required and not found:
+				_vdiag(out, anchor, "required path missing: {}".format(c.path))
+			if c.repeat is not None:
+				lo, hi = c.repeat
+				n = len(found)
+				if n < lo or n > hi:
+					_vdiag(out, anchor, "instance count out of bounds at '{}': {} not in {}..{}".format(c.path, n, lo, hi))
+			for n in found:
+				self._v_node(c, n, out)
+
+	def _v_node(self, c, n, out):
+		node = self.arena[n]
+		line = node.line
+		base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
+		is_array = c.ty is not None and c.ty.endswith("-array")
+
+		def wrong():
+			_vdiag(out, line, "wrong type at '{}': value is not a valid {}".format(c.path, c.ty))
+
+		if node.value.kind == "empty":
+			# Empty passes everything; required already counted it as present.
+			return
+		if node.value.kind == "raw":
+			# A raw block satisfies `raw` and scalar `string` (any value reads
+			# as a string); every other kind is a type miss.
+			if c.ty is not None and ((base != "raw" and base != "string") or is_array):
+				wrong()
+				return
+			if c.allowed is not None and c.allowed[0] == "strings":
+				if node.value.content not in c.allowed[1]:
+					_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, node.value.content))
+			return
+		els = node.value.els
+		if base == "raw":
+			wrong()
+			return
+		# A scalar kind on a multi-element value is the array-where-one-scalar-
+		# expected miss - except string, which reads arrays.
+		if c.ty is not None and not is_array and base != "string" and len(els) > 1:
+			wrong()
+			return
+		if base == "int":
+			vals = []
+			for e in els:
+				v = _parse_int_text(e, self._strictness)
+				if v is None:
+					wrong()
+					return
+				vals.append(v)
+			if c.allowed is not None and c.allowed[0] == "ints":
+				for i, v in enumerate(vals):
+					if v not in c.allowed[1]:
+						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						break
+			if c.min_i is not None and any(v < c.min_i for v in vals):
+				_vdiag(out, line, "value below min at '{}'".format(c.path))
+			if c.max_i is not None and any(v > c.max_i for v in vals):
+				_vdiag(out, line, "value above max at '{}'".format(c.path))
+		elif base == "float":
+			vals = []
+			for e in els:
+				v = _parse_float_text(e, self._strictness)
+				if v is None:
+					wrong()
+					return
+				vals.append(v)
+			if c.allowed is not None and c.allowed[0] == "floats":
+				for i, v in enumerate(vals):
+					if v not in c.allowed[1]:
+						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						break
+			if c.min_f is not None and any(v < c.min_f for v in vals):
+				_vdiag(out, line, "value below min at '{}'".format(c.path))
+			if c.max_f is not None and any(v > c.max_f for v in vals):
+				_vdiag(out, line, "value above max at '{}'".format(c.path))
+		elif base == "bool":
+			vals = []
+			for e in els:
+				v = _parse_bool_text(e.text, self._strictness)
+				if v is None:
+					wrong()
+					return
+				vals.append(v)
+			if c.allowed is not None and c.allowed[0] == "bools":
+				for i, v in enumerate(vals):
+					if v not in c.allowed[1]:
+						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						break
+		elif base == "datetime":
+			vals = []
+			for e in els:
+				v = parse_datetime(e.text)
+				if v is None:
+					wrong()
+					return
+				vals.append(v)
+			if c.allowed is not None and c.allowed[0] == "dates":
+				for i, v in enumerate(vals):
+					if not any(_dt_equal(v, a) for a in c.allowed[1]):
+						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						break
+		else:
+			# string kind or untyped: every element coerces; only the allowed
+			# set can fail, in logical-string space.
+			if c.allowed is not None and c.allowed[0] == "strings":
+				for e in els:
+					s = _apply_escapes(e.text)
+					if s not in c.allowed[1]:
+						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, s))
+						break
+
+	def _v_unknown(self, cons, out):
+		# Unknown-field sweep: a schema path legalizes its name chain and every
+		# prefix (selectors ignored). Only the topmost unknown node is
+		# reported; its subtree is implied unknown and skipped.
+		legal = set()
+		for c in cons:
+			chain = ""
+			for s in c.segs:
+				chain = s.name if not chain else chain + "\0" + s.name
+				legal.add(chain)
+		stack = [(c, "", "") for c in reversed(self.arena[ROOT].children)]
+		while stack:
+			n, pchain, pshown = stack.pop()
+			node = self.arena[n]
+			chain = node.name if not pchain else pchain + "\0" + node.name
+			shown = node.name if not pshown else pshown + "." + node.name
+			if chain not in legal:
+				hint = _v_suggest(cons, pchain, node.name)
+				_vdiag(out, node.line, "unknown field '{}'{}".format(shown, hint))
+				continue
+			for k in reversed(node.children):
+				stack.append((k, chain, shown))
+
 
 class _StatusError(Exception):
 	def __init__(self, status):
@@ -2048,3 +2247,228 @@ def parse_datetime(text):
 	if date is None:
 		return None
 	return ShclDateTime(date=date, time=None, frac=None, zone=None)
+
+
+# ---------------------------------------------------------------------------
+# Validator: schema build helpers (module level; methods live on Document)
+# ---------------------------------------------------------------------------
+
+_SCHEMA_TYPES = (
+	"int", "float", "bool", "string", "datetime", "raw",
+	"int-array", "float-array", "bool-array", "string-array", "datetime-array",
+)
+
+
+class _Constraint:
+	__slots__ = (
+		"path", "segs", "ty", "required", "allowed",
+		"min_i", "max_i", "min_f", "max_f", "repeat",
+	)
+
+	def __init__(self, path, segs):
+		self.path = path          # as written in the schema; message text only
+		self.segs = segs
+		self.ty = None            # member of _SCHEMA_TYPES
+		self.required = False
+		self.allowed = None       # ("ints"|"floats"|"bools"|"dates"|"strings", list)
+		self.min_i = None
+		self.max_i = None
+		self.min_f = None
+		self.max_f = None
+		self.repeat = None        # (lo, hi)
+
+
+def _vdiag(out, line, msg):
+	out.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
+
+
+def _single_text(v):
+	# One scalar constraint value (escapes applied), or None for anything else.
+	if v.kind == "cell" and len(v.els) == 1:
+		return _apply_escapes(v.els[0].text)
+	return None
+
+
+def _dt_equal(a, b):
+	# Field-wise; tuples/None compare by value already.
+	return a.date == b.date and a.time == b.time and a.frac == b.frac and a.zone == b.zone
+
+
+def _build_schema(schema):
+	"""Interpret a parsed schema document into constraints. A non-empty fault
+	list (V09x, schema-file lines) means the caller reports those and validates
+	nothing."""
+	faults = []
+	cons = []
+	for f in schema.arena[ROOT].children:
+		node = schema.arena[f]
+		if node.name != "field":
+			_vdiag(faults, node.line, "unknown schema key '{}'".format(node.name))
+			continue
+		path = _single_text(node.value)
+		if path is None:
+			_vdiag(faults, node.line, "bad schema path")
+			continue
+		try:
+			segs, value_text = _scan_path(path)
+		except _PathError:
+			segs, value_text = None, None
+		if segs is None or value_text is not None:
+			_vdiag(faults, node.line, "bad schema path: {}".format(path))
+			continue
+		c = _Constraint(path, segs)
+		# Deferred so `min: 1` may precede `type: int` in the file.
+		required = None
+		allowed_at = None
+		min_at = None
+		max_at = None
+		for k in schema.arena[f].children:
+			kid = schema.arena[k]
+			if kid.value.is_empty():
+				continue  # dangling key: treated as absent
+			if kid.name == "type":
+				t = _single_text(kid.value)
+				if t is not None:
+					t = _ascii_lower(t)
+				if t in _SCHEMA_TYPES:
+					if c.ty is not None:
+						_vdiag(faults, kid.line, "bad schema constraint 'type'")
+					else:
+						c.ty = t
+				elif t is not None:
+					_vdiag(faults, kid.line, "unknown schema type '{}'".format(t))
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'type'")
+			elif kid.name == "required":
+				t = _single_text(kid.value)
+				b = _parse_bool_text(t, Strictness.Standard) if t is not None else None
+				if b is not None and required is None:
+					required = b
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'required'")
+			elif kid.name == "allowed":
+				if kid.value.kind == "cell" and allowed_at is None:
+					allowed_at = k
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+			elif kid.name == "min":
+				if kid.value.kind == "cell" and len(kid.value.els) == 1 and min_at is None:
+					min_at = k
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'min'")
+			elif kid.name == "max":
+				if kid.value.kind == "cell" and len(kid.value.els) == 1 and max_at is None:
+					max_at = k
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'max'")
+			elif kid.name == "repeat":
+				if kid.value.kind == "cell" and c.repeat is None and len(kid.value.els) in (1, 2):
+					lo = _parse_uint(kid.value.els[0].text)
+					hi = _parse_uint(kid.value.els[-1].text)
+					if lo is not None and hi is not None and lo <= hi:
+						c.repeat = (lo, hi)
+					else:
+						_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+			elif kid.name in ("default", "desc"):
+				pass  # generator-only; validation ignores them
+			else:
+				_vdiag(faults, kid.line, "unknown schema key '{}'".format(kid.name))
+		if required is not None:
+			c.required = required
+		base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
+		if base is None:
+			base = "string"
+		if allowed_at is not None:
+			kid = schema.arena[allowed_at]
+			els = kid.value.els
+			# Schema values are read at Standard; only the document's values
+			# coerce at the document's strictness.
+			ok = True
+			if base == "int":
+				vals = [_parse_int_text(e, Strictness.Standard) for e in els]
+				ok = all(v is not None for v in vals)
+				setv = ("ints", vals)
+			elif base == "float":
+				vals = [_parse_float_text(e, Strictness.Standard) for e in els]
+				ok = all(v is not None for v in vals)
+				setv = ("floats", vals)
+			elif base == "bool":
+				vals = [_parse_bool_text(e.text, Strictness.Standard) for e in els]
+				ok = all(v is not None for v in vals)
+				setv = ("bools", vals)
+			elif base == "datetime":
+				vals = [parse_datetime(e.text) for e in els]
+				ok = all(v is not None for v in vals)
+				setv = ("dates", vals)
+			elif base == "raw":
+				ok = False  # a raw body has no element space to enumerate
+				setv = None
+			else:
+				setv = ("strings", [_apply_escapes(e.text) for e in els])
+			if ok:
+				c.allowed = setv
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+		for at, is_min in ((min_at, True), (max_at, False)):
+			if at is None:
+				continue
+			kid = schema.arena[at]
+			el = kid.value.els[0]
+			key = "min" if is_min else "max"
+			if base == "int":
+				v = _parse_int_text(el, Strictness.Standard)
+				if v is None:
+					_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+				elif is_min:
+					c.min_i = v
+				else:
+					c.max_i = v
+			elif base == "float":
+				v = _parse_float_text(el, Strictness.Standard)
+				if v is None:
+					_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+				elif is_min:
+					c.min_f = v
+				else:
+					c.max_f = v
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+		cons.append(c)
+	if faults:
+		# One constraint per line in practice, so line order = file order.
+		faults.sort(key=lambda d: d.line)
+		return None, faults
+	return cons, []
+
+
+def _edit_distance(a, b):
+	# Two-row Levenshtein; powers the "did you mean" prose (never the code).
+	prev = list(range(len(b) + 1))
+	cur = [0] * (len(b) + 1)
+	for i in range(1, len(a) + 1):
+		cur[0] = i
+		for j in range(1, len(b) + 1):
+			cost = 0 if a[i - 1] == b[j - 1] else 1
+			cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+		prev, cur = cur, prev
+	return prev[len(b)]
+
+
+def _v_suggest(cons, parent_chain, name):
+	"""Closest legal sibling name (same parent chain, schema order, edit
+	distance <= 2) as "; did you mean 'x'?" - or nothing. Prose only, never
+	contract."""
+	best = None
+	for c in cons:
+		pc = ""
+		for s in c.segs:
+			if pc == parent_chain:
+				dist = _edit_distance(name, s.name)
+				if dist <= 2 and (best is None or dist < best[0]):
+					best = (dist, s.name)
+			pc = s.name if not pc else pc + "\0" + s.name
+	if best is None:
+		return ""
+	return "; did you mean '{}'?".format(best[1])
