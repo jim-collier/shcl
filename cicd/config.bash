@@ -84,6 +84,7 @@ SHELLCHECK_TARGETS=(
 	cicd/config.bash
 	cicd/utility/crosscheck.bash
 	cicd/utility/lint-report.bash
+	cicd/utility/package.bash
 	cicd/utility/git-auto-msg.bash
 	cicd/utility/include/gfs-rotate.bash
 	source/bash/shcl.bash
@@ -142,6 +143,13 @@ CROSS_TARGETS=(
 )
 RELEASE_ARTIFACT_DIR="cicd/artifacts/release"   ## relative to repo root; gitignored
 
+## Stage 6b: installer packages over the artifact dir (utility/package.bash):
+## .deb + .rpm via nfpm per Linux binary, an NSIS setup per Windows binary, all
+## named into the shcl-<version>-* family so the sha256sums rewrite covers them.
+## Config template: cicd/packaging/nfpm.yaml; installer script: packaging/shcl.nsi.
+## Off under --ci (no release builds there) and --quick (partial artifact set).
+PACKAGE_ENABLE=1
+
 ## Stage 7: dogfood. Drop the freshly built native release binary into the first
 ## existing+writable dir below, under EXE_NAME, so the copy you launch by hand is
 ## always current (same fixed path the sister project uses). Only runs when a
@@ -196,3 +204,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-07-13 JC: Dogfood stage: install the native release binary (+ bash wrapper when it exists) to a fixed local dir.
 ##		- 2026-07-13 JC: C binding wired in: cc build extra (-Werror) + conformance/veneer test extras + fourth crosscheck entry.
 ##		- 2026-07-18 JC: Lint stage widened: ruff + mypy, cppcheck, markdownlint, PSScriptAnalyzer, with tool pins.
+##		- 2026-07-22 JC: Packaging wired: PACKAGE_ENABLE + package.bash in the shellcheck list.
