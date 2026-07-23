@@ -137,7 +137,8 @@ In each section, items are listed approximately from newest to oldest.
 				- macOS: ?
 				- BSD: ?
 
-- 🔘 Schema-as-SHCL validation. The schema is a plain SHCL file (type, required, allowed values). `Validate(doc, schemaDoc)` returns structured diagnostics and catches unknown or misspelled fields. See `design.md` "Power layer".
+- 🛠️ Schema-as-SHCL validation. The schema is a plain SHCL file (type, required, allowed values). `Validate(doc, schemaDoc)` returns structured diagnostics and catches unknown or misspelled fields. See `design.md` "Schema validation".
+	- Designed, awaiting review before any code. Schema is a flat list of `field: <path>` instances with constraints as children - no grammar change, no reserved words, prototyped against the shipped binary. Regex constraints rejected (no two target languages share an engine, so byte-for-byte parity is impossible). `V###` diagnostic range; `shcl check --schema S FILE` rather than a new subcommand. Two questions left open in `design.md`: drop-in file placement, and whether length bounds are worth the byte-vs-code-point question.
 	- Note: needs the reference parser first, then spec the schema vocabulary alongside it.
 
 - 🔘 Layered loading. `Load(defaults, site, user, ...)` merges later over earlier via the existing merge rule, with CLI and env overrides on top.
