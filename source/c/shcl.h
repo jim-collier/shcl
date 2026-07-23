@@ -8,6 +8,8 @@
 // Everything is byte-for-byte with the Rust reference (source/rust); the cicd
 // cross-binding check compares CLI stdout + exit codes across every binding.
 // The language spec lives in project/spec.md; project/conformance/ pins behavior.
+// Structure deliberately mirrors the reference over C-local shortcuts, so a fix
+// there ports here by mechanical diff (parity over idiom - see style-guide.md).
 //
 // A companion C++ typed veneer (get<int64_t>() etc.) sits in shcl.hpp; it wraps
 // this core, it is not a second parser.

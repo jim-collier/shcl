@@ -5,6 +5,8 @@
 //! Single file on purpose - the drop-in story is "copy this file into your tree".
 //! The language spec lives in project/spec.md; the conformance corpus in
 //! project/conformance/ pins every behavior here.
+//! Every other binding mirrors this file's structure on purpose (parity over
+//! idiom - see style-guide.md), so restructuring here means restructuring all.
 
 use std::collections::HashMap;
 

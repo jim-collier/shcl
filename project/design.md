@@ -43,6 +43,8 @@ The guiding tension is acknowledging "simplest possible" versus "expressive enou
 
 - A fence is just a value line for its parent field. The same-line spelling (`name: ~~~sql`) read badly, so the canonical spelling puts the fence on the next line at child indent - and rather than special-case that, the rule is uniform. A fence fills the parent's empty value, or creates a new instance if the parent already has one (the repeated-leaf rule). Blocks are then ordinary instances: no index-addressing syntax to invent, and the existing `[0]`/`[#N]` selectors just work.
 
+- Parity over idiom in the bindings: each port deliberately mirrors the reference's structure - same function inventory, same call flow, same contract strings - even where the host language would idiomatically do it differently. Byte-for-byte agreement is the product's core guarantee, and structural parallelism is what makes it maintainable: a fix ports by mechanical diff instead of re-derivation. Per-language idiom keeps the surface (formatters, naming case, doc comments); it yields on structure. The full rules and each accepted deviation live in `../style-guide.md`.
+
 - Positioning: the pitch is "forgiving to write, predictable to read, with the friendliest read API in the space" - not "simplest possible", which overpromises and invites the takedown. Versus schema-bearing languages (Pkl, CUE): the file stays dumb, the library is powerful (see Power layer).
 
 Full, itemized decisions live in project memory (`shcl-spec-decisions`); `spec.md` is their normative form.
@@ -271,7 +273,7 @@ Technical detail behind the backlog's "Code Review 20260716" items. Item numbers
 
 - **Item 36 - check exits 0 on errors** (folded into item 19)
 	- `check` reported `ok` and exited 0 even when diagnostics included errors, so a CI gate on `check` passed configs whose lines were dropped.
-	- Resolved (owner-pinned: nonzero exit): `check` exits 6 whenever any `error` diagnostic is present - a strict load failure prints `strict load failed: N diagnostic(s)`, and a standard/loose load that dropped lines prints `failed: N diagnostic(s), M error(s)`; a clean load still prints `ok (N diagnostic(s))` and exits 0. Same summary strings and exit in all four bindings (compared by the differential check).
+	- Resolved (decided: nonzero exit): `check` exits 6 whenever any `error` diagnostic is present - a strict load failure prints `strict load failed: N diagnostic(s)`, and a standard/loose load that dropped lines prints `failed: N diagnostic(s), M error(s)`; a clean load still prints `ok (N diagnostic(s))` and exits 0. Same summary strings and exit in all four bindings (compared by the differential check).
 
 - **Item 23 - `field[sel]: value`** (`source/rust/src/lib.rs:624`)
 	- Grammar allows it, spec never defines it, implementation drops the value with an Error diagnostic - so strict loads fail on a grammar-legal line. Align the three: forbid in grammar, or spec the drop-with-Error as the defined meaning. Corpus case with a strict-level load row.

@@ -6,6 +6,8 @@
 // Behavior is pinned to the Rust reference: the conformance corpus in
 // project/conformance/ plus the cicd cross-binding differential check keep the
 // two byte-for-byte identical, so any divergence here is a bug by definition.
+// Structure deliberately mirrors the reference over Go idiom, so a fix there
+// ports here by mechanical diff (parity over idiom - see style-guide.md).
 package shcl
 
 import (
