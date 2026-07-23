@@ -193,7 +193,30 @@ int main(int argc, char **argv) {
 		shcl_doc *d2 = shcl_parse(got.p, got.n);
 		shcl_str again = shcl_to_canonical(d2);
 		if (again.n != got.n || (got.n && memcmp(again.p, got.p, got.n) != 0)) fail(names[ci], "formatter is not idempotent");
-		shcl_free(d2); shcl_free(d);
+		shcl_free(d2);
+
+		// Diagnostics: count, line, severity, and stable code must match the golden
+		// (the same shape `check` prints to stdout at Standard).
+		snprintf(path, sizeof path, "%s/%s/expected-diags.txt", corpus, names[ci]); size_t dlen; char *ediags = read_file(path, &dlen);
+		if (!ediags) fail(names[ci], "missing expected-diags.txt");
+		else {
+			size_t ndiag = shcl_diag_count(d), nerr = 0;
+			char *dj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
+			for (size_t i = 0; i < ndiag; i++) {
+				if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
+				char ln[128]; int w = snprintf(ln, sizeof ln, "line %zu: %s: %s\n", shcl_diag_line(d, i), shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint", shcl_diag_code(d, i));
+				if (jl + (size_t)w + 1 > jc) { jc = (jl + (size_t)w + 1) * 2; dj = xrealloc(dj, jc); }
+				memcpy(dj + jl, ln, (size_t)w); jl += (size_t)w;
+			}
+			char sum[96]; int sw;
+			if (nerr) sw = snprintf(sum, sizeof sum, "failed: %zu diagnostic(s), %zu error(s)\n", ndiag, nerr);
+			else sw = snprintf(sum, sizeof sum, "ok (%zu diagnostic(s))\n", ndiag);
+			if (jl + (size_t)sw + 1 > jc) { jc = jl + (size_t)sw + 1; dj = xrealloc(dj, jc); }
+			memcpy(dj + jl, sum, (size_t)sw); jl += (size_t)sw;
+			if (jl != dlen || (dlen && memcmp(dj, ediags, dlen) != 0)) fail(names[ci], "diagnostics differ from expected-diags.txt");
+			free(dj); free(ediags);
+		}
+		shcl_free(d);
 
 		if (reads) {
 			char **lines; size_t nl = split_lines(reads, rlen, &lines);

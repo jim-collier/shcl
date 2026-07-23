@@ -1,0 +1,3 @@
+line 24: Error: E014
+line 28: Error: E015
+failed: 2 diagnostic(s), 2 error(s)
