@@ -91,9 +91,12 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Features and enhancements
 
-- 🔘 Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.
+- ✅ Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.
+	- Done: `install-dev.bash` at repo root. Linux + macOS directly; Windows via WSL (the dev pipeline is bash). Clones (or detects an existing clone), installs the no-sudo pieces itself (rustup, ruff/mypy/cppcheck via pipx, markdownlint via npm, PSScriptAnalyzer via pwsh), and prints the exact package-manager hint for what needs root (go, python3, gcc, shellcheck). Shellcheck-gated.
 
-- 🔘 Release-install script, `install.bash` and cross-platform `install.ps1`. In [repo] root, usage instructions in README.md.
+- ✅ Release-install script, `install.bash` and cross-platform `install.ps1`. In [repo] root, usage instructions in README.md.
+	- Done: both at repo root, README Installing has the one-liners. Latest release via the GitHub API (`--release dev` = newest incl. pre-releases, default; `stable` = newest full release), binary picked by OS/arch, sha256-verified, `code/` (drop-in files) and `scripts/` (wrappers) pulled from the tag's source tarball. Idempotent (atomic binary swap); states the plan and confirms first.
+	- Decisions along the way: `objects/` skipped - nothing statically-linkable is published yet (revisit with packaging). Linux user install lands in `~/.local/share/shcl` with the `~/.local/bin/shcl` symlink (one path can't be both the dir and the symlink). Windows user install copies the exe beside the dir instead of symlinking (symlinks need elevation) and adds to the user PATH. macOS/BSD get a clear "no prebuilt binaries yet" pointer at build-from-source.
 	- Behavior:
 		- Runnable via a single `curl` or `wget`. Downloads, installs, and runs the latest release, with an option to abort.
 		- Idempotent. Updates existing.

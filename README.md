@@ -238,11 +238,24 @@ What is not done yet: packages for the common package managers, the schema and l
 
 ## Installing
 
-The latest pre-release, `v1.0.0-beta2`, has prebuilt CLI binaries and checksums on the [releases page](https://github.com/jim-collier/shcl/releases). No package-manager packages yet. Three options:
+The latest pre-release, `v1.0.0-beta2`, has prebuilt CLI binaries and checksums on the [releases page](https://github.com/jim-collier/shcl/releases). No package-manager packages yet. Four options:
 
+- **Install script** - downloads the latest release, verifies the checksum, and installs the binary plus the drop-in files and wrappers. Idempotent; states its plan and asks before touching anything. Linux:
+
+	```sh
+	curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+	```
+
+	Windows (PowerShell):
+
+	```powershell
+	irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1 | iex
+	```
+
+	Both take `--release <dev|stable>` and `--target <user|system>` (`-Release`/`-Target` on Windows) - pass them via `bash -s -- --target=user`, or download the script first. The default is a system install (`/opt/shcl` + a `/usr/local/sbin/shcl` symlink, or `C:\Program Files\Shcl` on PATH); `user` installs under your home dir with no sudo/elevation.
 - **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page.
 - **Drop-in** - copy one source file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
-- **Build the CLI from source** - see below.
+- **Build the CLI from source** - see below. To set up a full dev environment instead (toolchains + linters + a clone), there is also `install-dev.bash`, same one-liner shape.
 
 ## Building from source
 
