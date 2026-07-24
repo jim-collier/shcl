@@ -55,6 +55,12 @@ type corpusCase struct {
 	schema           string
 	expectedValidate string
 	hasSchema        bool
+	// Layered-load dimension (optional): lower-priority layer files (in filename
+	// order), optional `path=value` overrides, and the golden merged canonical.
+	layers         []string
+	mergeSets      string
+	expectedMerged string
+	hasMerge       bool
 }
 
 func loadCases(t *testing.T) []corpusCase {
@@ -105,6 +111,29 @@ func loadCases(t *testing.T) []corpusCase {
 				t.Fatalf("%s: schema.shcl without expected-validate.txt", entry.Name())
 			}
 			cc.schema, cc.expectedValidate, cc.hasSchema = string(sch), string(ev), true
+		}
+		if em, err := os.ReadFile(filepath.Join(caseDir, "expected-merged.shcl")); err == nil {
+			// Layer files: every layer*.shcl, in filename (= priority) order.
+			dirEntries, _ := os.ReadDir(caseDir)
+			var layerNames []string
+			for _, de := range dirEntries {
+				n := de.Name()
+				if strings.HasPrefix(n, "layer") && strings.HasSuffix(n, ".shcl") {
+					layerNames = append(layerNames, n)
+				}
+			}
+			sort.Strings(layerNames)
+			for _, n := range layerNames {
+				lb, lerr := os.ReadFile(filepath.Join(caseDir, n))
+				if lerr != nil {
+					t.Fatalf("%s: %v", entry.Name(), lerr)
+				}
+				cc.layers = append(cc.layers, string(lb))
+			}
+			if ms, err2 := os.ReadFile(filepath.Join(caseDir, "merge.sets")); err2 == nil {
+				cc.mergeSets = string(ms)
+			}
+			cc.expectedMerged, cc.hasMerge = string(em), true
 		}
 		cases = append(cases, cc)
 	}
@@ -359,6 +388,40 @@ func TestWriteOpsMatchExpected(t *testing.T) {
 		}
 		if again := Parse(got).ToCanonical(); again != got {
 			t.Errorf("%s: written output is not a fmt fixpoint", c.name)
+		}
+	}
+}
+
+func TestLayeredMergeMatchesExpected(t *testing.T) {
+	// Layered-load dimension: fold the layer files (lowest first) and input.shcl
+	// (highest file layer) via the library Merge, apply the path=value overrides
+	// as the top layer, and match the golden merged canonical.
+	for _, c := range loadCases(t) {
+		if !c.hasMerge {
+			continue
+		}
+		texts := append(append([]string(nil), c.layers...), c.input)
+		doc := Parse(texts[0])
+		for _, t2 := range texts[1:] {
+			doc.Merge(Parse(t2))
+		}
+		for _, line := range strings.Split(c.mergeSets, "\n") {
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			eq := strings.IndexByte(line, '=')
+			if eq < 0 {
+				t.Fatalf("%s: bad merge.sets line: %s", c.name, line)
+			}
+			doc.SetString(line[:eq], line[eq+1:])
+		}
+		got := doc.ToCanonical()
+		if got != c.expectedMerged {
+			t.Errorf("%s: merged output differs from expected-merged.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedMerged)
+			continue
+		}
+		if again := Parse(got).ToCanonical(); again != got {
+			t.Errorf("%s: merged output is not a fmt fixpoint", c.name)
 		}
 	}
 }

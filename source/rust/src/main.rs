@@ -47,9 +47,16 @@ Options:
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check only) validate FILE against a
                                          schema; adds V### diagnostics
+  --layer=FILE                           (get/fmt/count/instances/set) merge a
+                                         lower-priority layer under FILE;
+                                         repeatable, earlier = lower priority
+  --set=PATH=VALUE                       override one path as the top layer,
+                                         after all files; repeatable
 
 Value options accept either spelling: --default=VALUE or --default VALUE.
-FILE may be '-' for stdin.
+FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
+each --layer is merged under it in order; --set applies last. 'fmt' with
+layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 strict load failure.
@@ -74,7 +81,9 @@ struct Opts {
 	strictness: Strictness,
 	write: bool,
 	schema: Option<String>,
-	args: Vec<String>, // positional: FILE [PATH]
+	layers: Vec<String>,         // lower-priority layers, in listed order
+	sets: Vec<(String, String)>, // final override layer: path=value
+	args: Vec<String>,           // positional: FILE [PATH]
 }
 
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
@@ -87,6 +96,8 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		strictness: Strictness::Standard,
 		write: false,
 		schema: None,
+		layers: Vec::new(),
+		sets: Vec::new(),
 		args: Vec::new(),
 	};
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
@@ -100,7 +111,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			"--array" => o.array = true,
 			"--slots" => o.slots = true,
 			"--write" | "-w" => o.write = true,
-			"--default" | "--on-bad" | "--strictness" | "--schema" => {
+			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set" => {
 				i += 1;
 				let v = argv
 					.get(i)
@@ -111,6 +122,8 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			_ if a.starts_with("--on-bad=") => set_value_opt(&mut o, "--on-bad", &a[9..])?,
 			_ if a.starts_with("--strictness=") => set_value_opt(&mut o, "--strictness", &a[13..])?,
 			_ if a.starts_with("--schema=") => set_value_opt(&mut o, "--schema", &a[9..])?,
+			_ if a.starts_with("--layer=") => set_value_opt(&mut o, "--layer", &a[8..])?,
+			_ if a.starts_with("--set=") => set_value_opt(&mut o, "--set", &a[6..])?,
 			_ if a.starts_with('-') && a.len() > 1 => {
 				return Err(format!("unknown option: {}", a));
 			}
@@ -138,7 +151,52 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 				Strictness::from_arg(v).ok_or_else(|| format!("bad --strictness value: {}", v))?;
 		}
 		"--schema" => o.schema = Some(v.to_string()),
+		"--layer" => o.layers.push(v.to_string()),
+		"--set" => {
+			let (p, val) = v
+				.split_once('=')
+				.ok_or_else(|| format!("bad --set value (want PATH=VALUE): {}", v))?;
+			o.sets.push((p.to_string(), val.to_string()));
+		}
 		_ => unreachable!(),
+	}
+	Ok(())
+}
+
+/// Load `file` with `o`'s lower-priority `--layer` files underneath it and its
+/// `--set` overrides on top - the layered-load fold. Every layer parses at the
+/// requested strictness; a strict-load failure on any layer aborts like a
+/// single-file strict failure (exit 6, nothing printed).
+fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
+	// Lowest -> highest file layer: the --layer files in order, then FILE.
+	let mut texts: Vec<String> = Vec::with_capacity(o.layers.len() + 1);
+	for lf in &o.layers {
+		texts.push(read_input(lf).map_err(|e| {
+			eprintln!("{}", e);
+			1u8
+		})?);
+	}
+	let base_text = read_input(file).map_err(|e| {
+		eprintln!("{}", e);
+		1u8
+	})?;
+	texts.push(base_text);
+	let mut doc = load(&texts[0], o.strictness)?;
+	for t in &texts[1..] {
+		let over = load(t, o.strictness)?;
+		doc.merge(&over);
+	}
+	for (p, v) in &o.sets {
+		doc.set_string(p, v);
+	}
+	Ok(doc)
+}
+
+/// Reject --layer/--set on subcommands that do not load a document to read from.
+fn reject_layers(o: &Opts, cmd: &str) -> Result<(), u8> {
+	if !o.layers.is_empty() || !o.sets.is_empty() {
+		eprintln!("{}: --layer/--set are not supported here", cmd);
+		return Err(1);
 	}
 	Ok(())
 }
@@ -179,14 +237,7 @@ fn do_get(o: &Opts) -> u8 {
 			return 1;
 		}
 	};
-	let text = match read_input(file) {
-		Ok(t) => t,
-		Err(e) => {
-			eprintln!("{}", e);
-			return 1;
-		}
-	};
-	let doc = match load(&text, o.strictness) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
@@ -345,18 +396,11 @@ fn do_fmt(o: &Opts) -> u8 {
 			return 1;
 		}
 	};
-	let text = match read_input(file) {
-		Ok(t) => t,
-		Err(e) => {
-			eprintln!("{}", e);
-			return 1;
-		}
-	};
 	if o.write && file == "-" {
 		eprintln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	let canonical = match load(&text, o.strictness) {
+	let canonical = match load_layered(o, file) {
 		Ok(d) => d.to_canonical(),
 		Err(code) => return code,
 	};
@@ -482,7 +526,18 @@ fn do_set(o: &Opts) -> u8 {
 		}
 	};
 	// Base doc: '-' means an empty base, since stdin carries the ops script.
-	let text = if file == "-" {
+	// Any --layer files sit under it and --set overrides sit on top, before ops.
+	let mut layer_texts: Vec<String> = Vec::new();
+	for lf in &o.layers {
+		match read_input(lf) {
+			Ok(t) => layer_texts.push(t),
+			Err(e) => {
+				eprintln!("{}", e);
+				return 1;
+			}
+		}
+	}
+	let base_text = if file == "-" {
 		String::new()
 	} else {
 		match read_input(file) {
@@ -493,10 +548,20 @@ fn do_set(o: &Opts) -> u8 {
 			}
 		}
 	};
-	let mut doc = match load(&text, o.strictness) {
+	layer_texts.push(base_text);
+	let mut doc = match load(&layer_texts[0], o.strictness) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
+	for t in &layer_texts[1..] {
+		match load(t, o.strictness) {
+			Ok(over) => doc.merge(&over),
+			Err(code) => return code,
+		}
+	}
+	for (p, v) in &o.sets {
+		doc.set_string(p, v);
+	}
 	let mut ops = String::new();
 	use std::io::Read;
 	if let Err(e) = std::io::stdin().read_to_string(&mut ops) {
@@ -517,6 +582,9 @@ fn do_set(o: &Opts) -> u8 {
 }
 
 fn do_check(o: &Opts) -> u8 {
+	if let Err(code) = reject_layers(o, "check") {
+		return code;
+	}
 	let file = match o.args.as_slice() {
 		[f] => f,
 		_ => {
@@ -599,14 +667,7 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 			return 1;
 		}
 	};
-	let text = match read_input(file) {
-		Ok(t) => t,
-		Err(e) => {
-			eprintln!("{}", e);
-			return 1;
-		}
-	};
-	let doc = match load(&text, o.strictness) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};

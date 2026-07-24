@@ -1781,6 +1781,121 @@ impl Document {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Layered loading: overlay a higher-priority document onto a lower one.
+// ---------------------------------------------------------------------------
+
+impl Document {
+	/// Overlay `over` (a higher-priority layer) onto self (the lower one).
+	/// Container instances merge by `(name, value)` exactly like the in-file
+	/// rule; a leaf name present in `over` *replaces* self's same-named children
+	/// at that scope, so scalars, arrays, and raw blocks get real override.
+	/// over-only nodes are appended. Comment trivia rides with each node.
+	/// `Load(defaults, site, user)` is a left fold of this: each later file
+	/// overlaid on the accumulation of the earlier ones.
+	pub fn merge(&mut self, over: &Document) {
+		self.overlay(ROOT, over, ROOT);
+		for o in &over.orphans {
+			self.orphans.push(o.clone());
+		}
+	}
+
+	fn overlay(&mut self, base_parent: usize, over: &Document, over_parent: usize) {
+		let over_kids = over.arena[over_parent].children.clone();
+		// Distinct child names of `over`, in first-appearance order.
+		let mut names: Vec<String> = Vec::new();
+		for &k in &over_kids {
+			let n = &over.arena[k].name;
+			if !names.iter().any(|x| x == n) {
+				names.push(n.clone());
+			}
+		}
+		for name in &names {
+			let group: Vec<usize> = over_kids
+				.iter()
+				.copied()
+				.filter(|&k| &over.arena[k].name == name)
+				.collect();
+			// A name whose over-side nodes are all leaves is an override; a name
+			// with any container instance merges instance-by-instance instead.
+			if group.iter().all(|&k| over.arena[k].children.is_empty()) {
+				self.replace_leaf_group(base_parent, name, over, &group);
+			} else {
+				for &ok in &group {
+					let okey = over.arena[ok].value.key();
+					let m = self.arena[base_parent].children.iter().copied().find(|&b| {
+						self.arena[b].name == *name && self.arena[b].value.key() == okey
+					});
+					match m {
+						Some(b) => self.overlay(b, over, ok),
+						None => {
+							let c = self.clone_subtree(over, ok, base_parent);
+							self.arena[base_parent].children.push(c);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/// Drop every base child named `name` and splice `over`'s group in at the
+	/// first dropped position (append if base had none). Dropped nodes stay in
+	/// the arena, unreferenced - reads and emit walk children from the root.
+	fn replace_leaf_group(
+		&mut self,
+		base_parent: usize,
+		name: &str,
+		over: &Document,
+		group: &[usize],
+	) {
+		let clones: Vec<usize> = group
+			.iter()
+			.map(|&ok| self.clone_subtree(over, ok, base_parent))
+			.collect();
+		let old = self.arena[base_parent].children.clone();
+		let mut newkids: Vec<usize> = Vec::with_capacity(old.len() + clones.len());
+		let mut spliced = false;
+		for &b in &old {
+			if self.arena[b].name == name {
+				if !spliced {
+					newkids.extend(clones.iter().copied());
+					spliced = true;
+				}
+			} else {
+				newkids.push(b);
+			}
+		}
+		if !spliced {
+			newkids.extend(clones.iter().copied());
+		}
+		self.arena[base_parent].children = newkids;
+	}
+
+	/// Deep-copy `over`'s subtree at `oi` into self's arena under `parent`.
+	fn clone_subtree(&mut self, over: &Document, oi: usize, parent: usize) -> usize {
+		let src = &over.arena[oi];
+		let node = NodeData {
+			name: src.name.clone(),
+			value: src.value.clone(),
+			children: Vec::new(),
+			parent,
+			line: src.line,
+			star_list: src.star_list,
+			star_mixed: src.star_mixed,
+			leading: src.leading.clone(),
+			trailing: src.trailing.clone(),
+		};
+		let idx = self.arena.len();
+		self.arena.push(node);
+		let okids = over.arena[oi].children.clone();
+		for ok in okids {
+			let c = self.clone_subtree(over, ok, idx);
+			self.arena[idx].children.push(c);
+		}
+		idx
+	}
+}
+
 impl Default for Document {
 	fn default() -> Document {
 		Document::new()

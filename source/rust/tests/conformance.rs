@@ -39,6 +39,11 @@ struct Case {
 	// Schema dimension (optional): a schema and the golden `check --schema` stdout.
 	schema: Option<String>,
 	expected_validate: Option<String>,
+	// Layered-load dimension (optional): lower-priority layer files (in filename
+	// order), optional `path=value` overrides, and the golden merged canonical.
+	layers: Vec<String>,
+	merge_sets: Option<String>,
+	expected_merged: Option<String>,
 }
 
 /// Decode an ops value: \n \t \\ only, others verbatim (mirrors the CLI).
@@ -144,6 +149,17 @@ fn load_cases() -> Vec<Case> {
 			continue;
 		}
 		let read_opt = |name: &str| std::fs::read_to_string(path.join(name)).ok();
+		// Layer files: every `layer*.shcl`, read in filename (= priority) order.
+		let mut layer_names: Vec<String> = std::fs::read_dir(&path)
+			.unwrap()
+			.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+			.filter(|n| n.starts_with("layer") && n.ends_with(".shcl"))
+			.collect();
+		layer_names.sort();
+		let layers: Vec<String> = layer_names
+			.iter()
+			.map(|n| std::fs::read_to_string(path.join(n)).unwrap())
+			.collect();
 		cases.push(Case {
 			name: path.file_name().unwrap().to_string_lossy().into_owned(),
 			input: std::fs::read_to_string(&input).unwrap(),
@@ -154,6 +170,9 @@ fn load_cases() -> Vec<Case> {
 			expected_write: read_opt("expected-write.shcl"),
 			schema: read_opt("schema.shcl"),
 			expected_validate: read_opt("expected-validate.txt"),
+			layers,
+			merge_sets: read_opt("merge.sets"),
+			expected_merged: read_opt("expected-merged.shcl"),
 		});
 	}
 	cases.sort_by(|a, b| a.name.cmp(&b.name));
@@ -483,6 +502,49 @@ fn write_ops_match_expected() {
 		assert_eq!(
 			again, got,
 			"{}: written output is not a fmt fixpoint",
+			case.name
+		);
+	}
+}
+
+#[test]
+fn layered_merge_matches_expected() {
+	// Layered-load dimension: fold the layer files (lowest first) and input.shcl
+	// (highest file layer) via the library `merge`, apply the `path=value`
+	// overrides as the top layer, and match the golden merged canonical.
+	for case in load_cases() {
+		let Some(want) = &case.expected_merged else {
+			continue;
+		};
+		// Ordered lowest -> highest: the layer*.shcl files, then input.shcl.
+		let mut texts: Vec<&str> = case.layers.iter().map(|s| s.as_str()).collect();
+		texts.push(&case.input);
+		let mut doc = Document::parse(texts[0]);
+		for t in &texts[1..] {
+			doc.merge(&Document::parse(t));
+		}
+		if let Some(sets) = &case.merge_sets {
+			for line in sets.lines() {
+				if line.is_empty() || line.starts_with('#') {
+					continue;
+				}
+				let (p, v) = line
+					.split_once('=')
+					.unwrap_or_else(|| panic!("{}: bad merge.sets line: {}", case.name, line));
+				doc.set_string(p, v);
+			}
+		}
+		let got = doc.to_canonical();
+		assert_eq!(
+			&got, want,
+			"{}: merged output differs from expected-merged.shcl",
+			case.name
+		);
+		// The merged doc must be a formatter fixpoint like any canonical output.
+		let again = Document::parse(&got).to_canonical();
+		assert_eq!(
+			again, got,
+			"{}: merged output is not a fmt fixpoint",
 			case.name
 		);
 	}

@@ -145,6 +145,20 @@ for caseDir in "$corpus"/*/; do
 	# Write dimension: apply the case's ops script and compare canonical output.
 	ops="${caseDir}write.ops"
 	[[ -f "$ops" ]] && fCompareStdin "set $(basename "$caseDir")" "$ops" set "$input"
+	# Layered-load dimension: replay `fmt` with the case's layer*.shcl merged under
+	# input.shcl (filename order = priority) plus any merge.sets --set overrides.
+	if [[ -f "${caseDir}expected-merged.shcl" ]]; then
+		layerArgs=()
+		for lf in "${caseDir}"layer*.shcl; do [[ -f "$lf" ]] && layerArgs+=("--layer=$lf"); done
+		setArgs=()
+		if [[ -f "${caseDir}merge.sets" ]]; then
+			while IFS= read -r sline || [[ -n "$sline" ]]; do
+				[[ -z "$sline" || "$sline" == \#* ]] && continue
+				setArgs+=("--set=$sline")
+			done < "${caseDir}merge.sets"
+		fi
+		fCompare "merge $(basename "$caseDir")" fmt "${layerArgs[@]}" "${setArgs[@]}" "$input"
+	fi
 	# Schema dimension: replay check --schema (codes + summary + exit are the contract).
 	schema="${caseDir}schema.shcl"
 	[[ -f "$schema" ]] && fCompare "check --schema $(basename "$caseDir")" check "--schema=${schema}" "$input"
@@ -198,3 +212,5 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 ##		               empty-extra floors; keep the last reads.tsv row when the
 ##		               file has no trailing newline; skip NUL-bearing inputs (bash
 ##		               can't hold a NUL; native runners pin those).
+##		- 20260724 JC: Layered-load dimension (fmt with --layer/--set) for cases
+##		               carrying expected-merged.shcl.

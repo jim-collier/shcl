@@ -330,6 +330,59 @@ int main(int argc, char **argv) {
 				shcl_validation_free(vv); shcl_free(sd); shcl_free(vd); free(sch); free(ev);
 			}
 		}
+
+		// Layered-load dimension (optional): fold the layer*.shcl files (lowest
+		// first) and input.shcl (highest file layer) via the library shcl_merge,
+		// apply the merge.sets path=value overrides, match expected-merged.shcl.
+		snprintf(path, sizeof path, "%s/%s/expected-merged.shcl", corpus, names[ci]); size_t emlen; char *em = read_file(path, &emlen);
+		if (em) {
+			// Collect layer file names in the case dir, sorted (filename = priority).
+			char layerNames[64][256]; int nlayer = 0;
+			snprintf(path, sizeof path, "%s/%s", corpus, names[ci]);
+			DIR *cd = opendir(path);
+			if (cd) {
+				struct dirent *de;
+				while ((de = readdir(cd))) {
+					size_t dn = strlen(de->d_name);
+					if (dn > 5 && !strncmp(de->d_name, "layer", 5) && !strcmp(de->d_name + dn - 5, ".shcl") && nlayer < 64)
+						snprintf(layerNames[nlayer++], 256, "%s", de->d_name);
+				}
+				closedir(cd);
+			}
+			for (int a = 0; a < nlayer; a++) for (int b = a + 1; b < nlayer; b++) if (strcmp(layerNames[a], layerNames[b]) > 0) { char tmp[256]; memcpy(tmp, layerNames[a], 256); memcpy(layerNames[a], layerNames[b], 256); memcpy(layerNames[b], tmp, 256); }
+			// Fold: layer0 (base) then each higher layer, then input.shcl.
+			char *ltexts[65]; size_t llens[65]; int nt = 0;
+			shcl_doc *md = NULL;
+			for (int li = 0; li < nlayer; li++) {
+				snprintf(path, sizeof path, "%s/%s/%s", corpus, names[ci], layerNames[li]);
+				ltexts[nt] = read_file(path, &llens[nt]);
+				shcl_doc *dd = shcl_parse(ltexts[nt], llens[nt]); nt++;
+				if (!md) md = dd; else { shcl_merge(md, dd); shcl_free(dd); }
+			}
+			{
+				shcl_doc *dd = shcl_parse(input, ilen);
+				if (!md) md = dd; else { shcl_merge(md, dd); shcl_free(dd); }
+			}
+			// merge.sets: one path=value per line, applied as the top layer.
+			snprintf(path, sizeof path, "%s/%s/merge.sets", corpus, names[ci]); size_t mslen; char *ms = read_file(path, &mslen);
+			if (ms) {
+				char **slines; size_t nsl = split_lines(ms, mslen, &slines);
+				for (size_t li = 0; li < nsl; li++) {
+					if (slines[li][0] == '\0' || slines[li][0] == '#') continue;
+					char *eq = strchr(slines[li], '=');
+					if (eq) shcl_set_string(md, slines[li], (size_t)(eq - slines[li]), eq + 1, strlen(eq + 1));
+				}
+				free(slines); free(ms);
+			}
+			shcl_str mgot = shcl_to_canonical(md);
+			if (mgot.n != emlen || (emlen && memcmp(mgot.p, em, emlen) != 0)) fail(names[ci], "merged output differs from expected-merged.shcl");
+			shcl_doc *md2 = shcl_parse(mgot.p, mgot.n);
+			shcl_str magain = shcl_to_canonical(md2);
+			if (magain.n != mgot.n || (mgot.n && memcmp(magain.p, mgot.p, mgot.n) != 0)) fail(names[ci], "merged output is not a fmt fixpoint");
+			shcl_free(md2); shcl_free(md);
+			for (int li = 0; li < nt; li++) free(ltexts[li]);
+			free(em);
+		}
 		free(input); free(expected); free(reads);
 	}
 	for (size_t i = 0; i < nn; i++) free(names[i]);

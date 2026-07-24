@@ -458,6 +458,20 @@ Diagnostic codes ride the existing structure (line, severity, stable code, prose
 
 A schema fault (`V090`+) suppresses data validation entirely - there is nothing meaningful to say about a document checked against a broken schema - which also keeps one line-number space per result set. `check --schema` folds validation diagnostics into `check`'s existing output: same `line N: severity: CODE` stdout lines, prose to stderr, same summary line and exit-6-on-any-error rule.
 
+## Layered loading
+
+Composing a config from defaults, then a site file, then a user file, is `merge` applied as a left fold: `Load(defaults, site, user)` overlays each later document on the accumulation of the earlier ones, so the last file wins. `merge(base, over)` takes two already-parsed documents and overlays `over` (higher priority) onto `base`; it is a library operation, no grammar change.
+
+The overlay rule, per parent scope:
+
+- A **leaf** name present in `over` (its `over`-side nodes all have no children - a scalar, an inline array, or a raw block) **replaces** every `base` child of that name, spliced in at the first replaced position. This is real override: a later `port: 9090` wins over an earlier `port: 8080`, and a later `tags: green` replaces the earlier repeated-leaf list `tags: red` / `tags: blue` wholesale (override, not append).
+
+- A name with any **container** instance (a node with children) in `over` merges instance-by-instance: each `over` instance matches a `base` instance by `(field-name, value)` - the same key the in-file merge rule uses - and recurses; an unmatched `over` instance is appended in file order. So two layers' children under `server: web1` combine, while a new `server: web3` is added.
+
+Comment trivia rides with the nodes that carry it, and the merged document is a formatter fixpoint like any other. `over`'s content is copied into `base`, so `base` stays valid after `over` is released.
+
+On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `set`) accepts repeated `--layer=FILE` (each merged under the positional `FILE`, in listed order = lowest first) and repeated `--set=PATH=VALUE` (each written as literal text via the Writer, as the final top layer, after all files). `fmt` with layers prints the merged canonical document, so it doubles as the merge command. `check` does not take layers - its diagnostics are inherently single-file. The precedence, low to high, is: `--layer` files in order, then `FILE`, then `--set`. Environment-variable mapping is deliberately not provided: the env namespace and its naming convention belong to the consuming program, which can map env vars onto `--set` itself.
+
 ## Error handling philosophy
 
 SHCL never bails on a whole file for one bad line (at Loose and Standard strictness; Strict turns any `error` diagnostic into a load failure by request - see Strictness levels). The parser skips or best-effort-repairs the offending line, emits a diagnostic, and continues. The Accessor never errors when it can unambiguously reach a value; malformed content before or after a clean section does not poison that section. Errors are reserved for genuine ambiguity (or surfaced on request via `onBad: Error`).

@@ -57,9 +57,16 @@ static const char *HELP =
 	"  --strictness=loose|standard|strict     or 1|2|3 (default standard)\n"
 	"  --schema=SCHEMA                        (check only) validate FILE against a\n"
 	"                                         schema; adds V### diagnostics\n"
+	"  --layer=FILE                           (get/fmt/count/instances/set) merge a\n"
+	"                                         lower-priority layer under FILE;\n"
+	"                                         repeatable, earlier = lower priority\n"
+	"  --set=PATH=VALUE                       override one path as the top layer,\n"
+	"                                         after all files; repeatable\n"
 	"\n"
 	"Value options accept either spelling: --default=VALUE or --default VALUE.\n"
-	"FILE may be '-' for stdin.\n"
+	"FILE may be '-' for stdin. With --layer, FILE is the highest file layer and\n"
+	"each --layer is merged under it in order; --set applies last. 'fmt' with\n"
+	"layers prints the merged canonical document.\n"
 	"\n"
 	"Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,\n"
 	"5 multiple instances, 6 strict load failure.\n";
@@ -73,6 +80,8 @@ typedef struct {
 	shcl_strictness strictness;
 	int write;
 	const char *schema;       // NULL if unset
+	const char *layers[64]; int nlayers; // lower-priority layers, in listed order
+	const char *sets[64]; int nsets;      // final override layer: "path=value"
 	const char *args[8]; int nargs; // positional: FILE [PATH]
 } Opts;
 
@@ -138,14 +147,59 @@ static int strict_gate(shcl_doc *d) {
 	return 6;
 }
 
+// Holds a merged doc and the input buffers its nodes still reference (the base
+// layer's node strings are not dup'd off its text). Free everything with
+// layered_free once the doc is done.
+typedef struct { shcl_doc *doc; char *texts[65]; int ntexts; } LayeredDoc;
+
+static void layered_free(LayeredDoc *L) {
+	if (L->doc) shcl_free(L->doc);
+	for (int i = 0; i < L->ntexts; i++) free(L->texts[i]);
+	L->doc = NULL; L->ntexts = 0;
+}
+
+// Load `file` with o's lower-priority --layer files underneath it and its --set
+// overrides on top - the layered-load fold. Every layer parses at the requested
+// strictness; a strict-load failure on any aborts (exit 6). Returns 0 and fills
+// *out on success, else an exit code (nothing to free on failure).
+static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
+	out->doc = NULL; out->ntexts = 0;
+	// Lowest -> highest file layer: the --layer files in order, then FILE.
+	const char *files[65];
+	int nf = 0;
+	for (int i = 0; i < o->nlayers; i++) files[nf++] = o->layers[i];
+	files[nf++] = file;
+	for (int i = 0; i < nf; i++) {
+		size_t len; char *t = read_input(files[i], &len);
+		if (!t) { layered_free(out); return 1; }
+		out->texts[out->ntexts++] = t;
+		shcl_doc *dd = shcl_parse_with(t, len, o->strictness);
+		int g = strict_gate(dd);
+		if (g) { shcl_free(dd); layered_free(out); return g; }
+		if (!out->doc) out->doc = dd;
+		else { shcl_merge(out->doc, dd); shcl_free(dd); }
+	}
+	for (int i = 0; i < o->nsets; i++) {
+		const char *eq = strchr(o->sets[i], '=');
+		const char *path = o->sets[i]; size_t plen = (size_t)(eq - path);
+		const char *val = eq + 1; size_t vlen = strlen(val);
+		shcl_set_string(out->doc, path, plen, val, vlen);
+	}
+	return 0;
+}
+
+// Refuse --layer/--set on subcommands that do not load a document to read from.
+static int reject_layers(Opts *o, const char *cmd) {
+	if (o->nlayers > 0 || o->nsets > 0) { fprintf(stderr, "%s: --layer/--set are not supported here\n", cmd); return 1; }
+	return 0;
+}
+
 static int do_get(Opts *o) {
 	if (o->nargs != 2) { fprintf(stderr, "get needs FILE and PATH (see --help)\n"); return 1; }
 	const char *file = o->args[0], *path = o->args[1]; size_t plen = strlen(path);
-	size_t len; char *text = read_input(file, &len);
-	if (!text) return 1;
-	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
-	int gate = strict_gate(d);
-	if (gate) { shcl_free(d); free(text); return gate; }
+	LayeredDoc L; int gate = load_layered(o, file, &L);
+	if (gate) return gate;
+	shcl_doc *d = L.doc;
 
 	shcl_status status = SHCL_GOOD;
 	const shcl_status *slotSts = NULL; size_t nSlots = 0;
@@ -166,7 +220,7 @@ static int do_get(Opts *o) {
 		else if (!strcmp(o->kind, "float")) { shcl_read_f64_arr r = shcl_read_float_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_format_f64(r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
 		else if (!strcmp(o->kind, "bool")) { shcl_read_bool_arr r = shcl_read_bool_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i] ? "true" : "false", r.values[i] ? 4 : 5); }
 		else if (!strcmp(o->kind, "datetime")) { shcl_read_dt_arr r = shcl_read_datetime_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_datetime_str(&r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
-		else if (!strcmp(o->kind, "raw") || !strcmp(o->kind, "rawinfo")) { fprintf(stderr, "--%s has no --array form\n", o->kind); free(lines); shcl_free(d); free(text); return 1; }
+		else if (!strcmp(o->kind, "raw") || !strcmp(o->kind, "rawinfo")) { fprintf(stderr, "--%s has no --array form\n", o->kind); free(lines); layered_free(&L); return 1; }
 		else { shcl_read_str_arr r = shcl_read_string_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i].p, r.values[i].n); }
 	} else {
 		if (!strcmp(o->kind, "int")) { shcl_read_i64 r = shcl_read_int(d, path, plen); status = r.status; PUSHLINE_FMT("%" PRId64, r.value); }
@@ -220,7 +274,7 @@ static int do_get(Opts *o) {
 		for (size_t i = 0; i < nlines; i++) EMITLINE(i, LINEPTR(i), lines[i].n);
 		rc = shcl_status_code(status);
 	}
-	free(lines); shcl_free(d); free(text); return rc;
+	free(lines); layered_free(&L); return rc;
 }
 
 static int do_fmt(Opts *o) {
@@ -230,12 +284,9 @@ static int do_fmt(Opts *o) {
 		fprintf(stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
-	size_t len; char *text = read_input(file, &len);
-	if (!text) return 1;
-	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
-	int gate = strict_gate(d);
-	if (gate) { shcl_free(d); free(text); return gate; }
-	shcl_str c = shcl_to_canonical(d);
+	LayeredDoc L; int gate = load_layered(o, file, &L);
+	if (gate) return gate;
+	shcl_str c = shcl_to_canonical(L.doc);
 	int rc = 0;
 	if (o->write) {
 		FILE *f = fopen(file, "wb");
@@ -244,7 +295,7 @@ static int do_fmt(Opts *o) {
 	} else {
 		fwrite(c.p, 1, c.n, stdout);
 	}
-	shcl_free(d); free(text); return rc;
+	layered_free(&L); return rc;
 }
 
 // Reads an open stream fully into a malloc'd buffer (ops script; no UTF-8 gate).
@@ -327,13 +378,34 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
 static int do_set(Opts *o) {
 	if (o->nargs != 1) { fprintf(stderr, "set needs FILE (ops on stdin; see --help)\n"); return 1; }
 	const char *file = o->args[0];
-	// Base doc: '-' means an empty base, since stdin carries the ops script.
+	// Base doc: '-' means an empty base, since stdin carries the ops script. Any
+	// --layer files sit under it and --set overrides sit on top, before ops. The
+	// base layer's node strings are not dup'd off its text, so keep all buffers.
+	char *texts[65]; int ntexts = 0;
+	shcl_doc *d = NULL;
+	for (int i = 0; i < o->nlayers; i++) {
+		size_t llen; char *lt = read_input(o->layers[i], &llen);
+		if (!lt) { if (d) shcl_free(d); for (int k = 0; k < ntexts; k++) free(texts[k]); return 1; }
+		texts[ntexts++] = lt;
+		shcl_doc *dd = shcl_parse_with(lt, llen, o->strictness);
+		int g = strict_gate(dd);
+		if (g) { shcl_free(dd); if (d) shcl_free(d); for (int k = 0; k < ntexts; k++) free(texts[k]); return g; }
+		if (!d) d = dd; else { shcl_merge(d, dd); shcl_free(dd); }
+	}
 	char *text; size_t len;
 	if (!strcmp(file, "-")) { text = (char *)xrealloc(NULL, 1); len = 0; }
-	else { text = read_input(file, &len); if (!text) return 1; }
-	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
-	int gate = strict_gate(d);
-	if (gate) { shcl_free(d); free(text); return gate; }
+	else { text = read_input(file, &len); if (!text) { if (d) shcl_free(d); for (int k = 0; k < ntexts; k++) free(texts[k]); return 1; } }
+	texts[ntexts++] = text;
+	{
+		shcl_doc *dd = shcl_parse_with(text, len, o->strictness);
+		int gate = strict_gate(dd);
+		if (gate) { shcl_free(dd); if (d) shcl_free(d); for (int k = 0; k < ntexts; k++) free(texts[k]); return gate; }
+		if (!d) d = dd; else { shcl_merge(d, dd); shcl_free(dd); }
+	}
+	for (int i = 0; i < o->nsets; i++) {
+		const char *eq = strchr(o->sets[i], '=');
+		shcl_set_string(d, o->sets[i], (size_t)(eq - o->sets[i]), eq + 1, strlen(eq + 1));
+	}
 	size_t opslen; char *ops = read_all_fp(stdin, &opslen);
 	int rc = 0; size_t start = 0;
 	for (size_t i = 0; i <= opslen; i++) {
@@ -347,10 +419,11 @@ static int do_set(Opts *o) {
 		}
 	}
 	if (rc == 0) { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
-	free(ops); shcl_free(d); free(text); return rc;
+	free(ops); shcl_free(d); for (int k = 0; k < ntexts; k++) free(texts[k]); return rc;
 }
 
 static int do_check(Opts *o) {
+	if (reject_layers(o, "check")) return 1;
 	if (o->nargs != 1) { fprintf(stderr, "check needs FILE (see --help)\n"); return 1; }
 	size_t len; char *text = read_input(o->args[0], &len);
 	if (!text) return 1;
@@ -423,14 +496,12 @@ static int do_check(Opts *o) {
 static int do_enum(Opts *o, int want_count) {
 	if (o->nargs != 2) { fprintf(stderr, "count/instances need FILE and PATH (see --help)\n"); return 1; }
 	const char *file = o->args[0], *path = o->args[1]; size_t plen = strlen(path);
-	size_t len; char *text = read_input(file, &len);
-	if (!text) return 1;
-	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
-	int gate = strict_gate(d);
-	if (gate) { shcl_free(d); free(text); return gate; }
+	LayeredDoc L; int gate = load_layered(o, file, &L);
+	if (gate) return gate;
+	shcl_doc *d = L.doc;
 	if (want_count) printf("%zu\n", shcl_count(d, path, plen));
 	else { shcl_str *vals; size_t n = shcl_instances(d, path, plen, &vals); for (size_t i = 0; i < n; i++) outln(vals[i].p, vals[i].n); }
-	shcl_free(d); free(text); return 0;
+	layered_free(&L); return 0;
 }
 
 // Apply a value-taking option's value. Returns 0 ok, 1 on a bad value.
@@ -443,13 +514,20 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 		if (!shcl_strictness_from_arg(v, strlen(v), &o->strictness)) { fprintf(stderr, "bad --strictness value: %s\n", v); return 1; }
 	} else if (!strcmp(name, "--schema")) {
 		o->schema = v;
+	} else if (!strcmp(name, "--layer")) {
+		if (o->nlayers >= 64) { fprintf(stderr, "too many --layer options (max 64)\n"); return 1; }
+		o->layers[o->nlayers++] = v;
+	} else if (!strcmp(name, "--set")) {
+		if (!strchr(v, '=')) { fprintf(stderr, "bad --set value (want PATH=VALUE): %s\n", v); return 1; }
+		if (o->nsets >= 64) { fprintf(stderr, "too many --set options (max 64)\n"); return 1; }
+		o->sets[o->nsets++] = v;
 	}
 	return 0;
 }
 
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
-	o->strictness = SHCL_STANDARD; o->write = 0; o->schema = NULL; o->nargs = 0;
+	o->strictness = SHCL_STANDARD; o->write = 0; o->schema = NULL; o->nlayers = 0; o->nsets = 0; o->nargs = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
 		const char *a = argv[i];
@@ -457,7 +535,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strcmp(a, "--array")) o->array = 1;
 		else if (!strcmp(a, "--slots")) o->slots = 1;
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) o->write = 1;
-		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema")) {
+		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set")) {
 			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
 			if (set_value_opt(o, a, argv[++i])) return 1;
 		}
@@ -465,6 +543,8 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strncmp(a, "--on-bad=", 9)) { if (set_value_opt(o, "--on-bad", a + 9)) return 1; }
 		else if (!strncmp(a, "--strictness=", 13)) { if (set_value_opt(o, "--strictness", a + 13)) return 1; }
 		else if (!strncmp(a, "--schema=", 9)) { if (set_value_opt(o, "--schema", a + 9)) return 1; }
+		else if (!strncmp(a, "--layer=", 8)) { if (set_value_opt(o, "--layer", a + 8)) return 1; }
+		else if (!strncmp(a, "--set=", 6)) { if (set_value_opt(o, "--set", a + 6)) return 1; }
 		else if (a[0] == '-' && a[1] != '\0') { fprintf(stderr, "unknown option: %s\n", a); return 1; }
 		else { if (o->nargs < 8) o->args[o->nargs++] = a; }
 	}

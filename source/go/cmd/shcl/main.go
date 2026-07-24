@@ -59,9 +59,16 @@ Options:
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check only) validate FILE against a
                                          schema; adds V### diagnostics
+  --layer=FILE                           (get/fmt/count/instances/set) merge a
+                                         lower-priority layer under FILE;
+                                         repeatable, earlier = lower priority
+  --set=PATH=VALUE                       override one path as the top layer,
+                                         after all files; repeatable
 
 Value options accept either spelling: --default=VALUE or --default VALUE.
-FILE may be '-' for stdin.
+FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
+each --layer is merged under it in order; --set applies last. 'fmt' with
+layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 strict load failure.
@@ -92,7 +99,9 @@ type opts struct {
 	strictness shcl.Strictness
 	write      bool
 	schema     string
-	args       []string // positional: FILE [PATH]
+	layers     []string    // lower-priority layers, in listed order
+	sets       [][2]string // final override layer: path=value
+	args       []string    // positional: FILE [PATH]
 }
 
 func setValueOpt(o *opts, name, v string) error {
@@ -113,6 +122,14 @@ func setValueOpt(o *opts, name, v string) error {
 		o.strictness = s
 	case "--schema":
 		o.schema = v
+	case "--layer":
+		o.layers = append(o.layers, v)
+	case "--set":
+		eq := strings.IndexByte(v, '=')
+		if eq < 0 {
+			return fmt.Errorf("bad --set value (want PATH=VALUE): %s", v)
+		}
+		o.sets = append(o.sets, [2]string{v[:eq], v[eq+1:]})
 	}
 	return nil
 }
@@ -131,12 +148,20 @@ func parseOpts(argv []string) (*opts, error) {
 			o.slots = true
 		case a == "--write" || a == "-w":
 			o.write = true
-		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema":
+		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" || a == "--layer" || a == "--set":
 			i++
 			if i >= len(argv) {
 				return nil, fmt.Errorf("missing value for %s (try %s=VALUE)", a, a)
 			}
 			if err := setValueOpt(o, a, argv[i]); err != nil {
+				return nil, err
+			}
+		case strings.HasPrefix(a, "--layer="):
+			if err := setValueOpt(o, "--layer", a[len("--layer="):]); err != nil {
+				return nil, err
+			}
+		case strings.HasPrefix(a, "--set="):
+			if err := setValueOpt(o, "--set", a[len("--set="):]); err != nil {
 				return nil, err
 			}
 		case strings.HasPrefix(a, "--default="):
@@ -198,6 +223,53 @@ func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
 	return doc, 0
 }
 
+// loadLayered loads file with o's lower-priority --layer files underneath and
+// its --set overrides on top - the layered-load fold. Every layer parses at the
+// requested strictness; a strict-load failure on any layer aborts like a
+// single-file strict failure (exit 6). Returns (doc, 0) or (nil, code).
+func loadLayered(o *opts, file string) (*shcl.Document, int) {
+	texts := make([]string, 0, len(o.layers)+1)
+	for _, lf := range o.layers {
+		t, err := readInput(lf)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return nil, 1
+		}
+		texts = append(texts, t)
+	}
+	base, err := readInput(file)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return nil, 1
+	}
+	texts = append(texts, base)
+	doc, code := loadDoc(texts[0], o.strictness)
+	if code != 0 {
+		return nil, code
+	}
+	for _, t := range texts[1:] {
+		over, c := loadDoc(t, o.strictness)
+		if c != 0 {
+			return nil, c
+		}
+		doc.Merge(over)
+	}
+	for _, s := range o.sets {
+		doc.SetString(s[0], s[1])
+	}
+	return doc, 0
+}
+
+// rejectLayers refuses --layer/--set on subcommands that do not load a document
+// to read from.
+func rejectLayers(o *opts, cmd string) int {
+	if len(o.layers) > 0 || len(o.sets) > 0 {
+		fmt.Fprintf(os.Stderr, "%s: --layer/--set are not supported here\n", cmd)
+		return 1
+	}
+	return 0
+}
+
 // doGet: one value read, formatted for the shell: scalars print as one line,
 // arrays one element per line.
 func doGet(o *opts) int {
@@ -206,12 +278,7 @@ func doGet(o *opts) int {
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
-	text, err := readInput(file)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	doc, code := loadDoc(text, o.strictness)
+	doc, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
@@ -366,12 +433,7 @@ func doFmt(o *opts) int {
 		fmt.Fprintln(os.Stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
-	text, err := readInput(file)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	doc, code := loadDoc(text, o.strictness)
+	doc, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
@@ -592,18 +654,39 @@ func doSet(o *opts) int {
 	}
 	file := o.args[0]
 	// Base doc: '-' means an empty base, since stdin carries the ops script.
-	text := ""
+	// Any --layer files sit under it and --set overrides sit on top, before ops.
+	layerTexts := make([]string, 0, len(o.layers)+1)
+	for _, lf := range o.layers {
+		t, err := readInput(lf)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		layerTexts = append(layerTexts, t)
+	}
+	base := ""
 	if file != "-" {
 		t, err := readInput(file)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		text = t
+		base = t
 	}
-	doc, code := loadDoc(text, o.strictness)
+	layerTexts = append(layerTexts, base)
+	doc, code := loadDoc(layerTexts[0], o.strictness)
 	if doc == nil {
 		return code
+	}
+	for _, t := range layerTexts[1:] {
+		over, c := loadDoc(t, o.strictness)
+		if over == nil {
+			return c
+		}
+		doc.Merge(over)
+	}
+	for _, s := range o.sets {
+		doc.SetString(s[0], s[1])
 	}
 	ops, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -625,6 +708,9 @@ func doSet(o *opts) int {
 }
 
 func doCheck(o *opts) int {
+	if code := rejectLayers(o, "check"); code != 0 {
+		return code
+	}
 	if len(o.args) != 1 {
 		fmt.Fprintln(os.Stderr, "check needs FILE (see --help)")
 		return 1
@@ -697,12 +783,7 @@ func doEnum(o *opts, wantCount bool) int {
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
-	text, err := readInput(file)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	doc, code := loadDoc(text, o.strictness)
+	doc, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}

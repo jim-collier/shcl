@@ -69,6 +69,10 @@ public:
 		return v;
 	}
 
+	// Layered loading: overlay `over` (a higher-priority layer) onto this doc.
+	// Leaf names in `over` override; container instances merge by (name, value).
+	void merge(const Document &over) { shcl_merge(d_, over.d_); }
+
 	std::size_t count(std::string_view p) const { return shcl_count(d_, p.data(), p.size()); }
 	std::vector<std::string> instances(std::string_view p) const {
 		shcl_str *a; std::size_t n = shcl_instances(d_, p.data(), p.size(), &a);

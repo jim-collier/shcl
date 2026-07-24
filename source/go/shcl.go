@@ -1920,6 +1920,127 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) {
 }
 
 // ---------------------------------------------------------------------------
+// Layered loading: overlay a higher-priority document onto a lower one.
+// ---------------------------------------------------------------------------
+
+// Merge overlays over (a higher-priority layer) onto d (the lower one).
+// Container instances merge by (name, value) exactly like the in-file rule; a
+// leaf name present in over replaces d's same-named children at that scope, so
+// scalars, arrays, and raw blocks get real override. over-only nodes are
+// appended. Comment trivia rides with each node. Load(defaults, site, user) is
+// a left fold of this: each later file overlaid on the earlier ones.
+func (d *Document) Merge(over *Document) {
+	d.overlay(root, over, root)
+	d.orphans = append(d.orphans, over.orphans...)
+}
+
+func (d *Document) overlay(baseParent int, over *Document, overParent int) {
+	overKids := append([]int(nil), over.arena[overParent].children...)
+	// Distinct child names of over, in first-appearance order.
+	var names []string
+	for _, k := range overKids {
+		n := over.arena[k].name
+		seen := false
+		for _, x := range names {
+			if x == n {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			names = append(names, n)
+		}
+	}
+	for _, name := range names {
+		var group []int
+		for _, k := range overKids {
+			if over.arena[k].name == name {
+				group = append(group, k)
+			}
+		}
+		// A name whose over-side nodes are all leaves is an override; a name with
+		// any container instance merges instance-by-instance instead.
+		allLeaves := true
+		for _, k := range group {
+			if len(over.arena[k].children) > 0 {
+				allLeaves = false
+				break
+			}
+		}
+		if allLeaves {
+			d.replaceLeafGroup(baseParent, name, over, group)
+			continue
+		}
+		for _, ok := range group {
+			okey := over.arena[ok].value.key()
+			match := -1
+			for _, b := range d.arena[baseParent].children {
+				if d.arena[b].name == name && d.arena[b].value.key() == okey {
+					match = b
+					break
+				}
+			}
+			if match >= 0 {
+				d.overlay(match, over, ok)
+			} else {
+				c := d.cloneSubtree(over, ok, baseParent)
+				d.arena[baseParent].children = append(d.arena[baseParent].children, c)
+			}
+		}
+	}
+}
+
+// replaceLeafGroup drops every base child named name and splices over's group
+// in at the first dropped position (append if base had none). Dropped nodes
+// stay in the arena, unreferenced - reads and emit walk children from the root.
+func (d *Document) replaceLeafGroup(baseParent int, name string, over *Document, group []int) {
+	clones := make([]int, len(group))
+	for i, ok := range group {
+		clones[i] = d.cloneSubtree(over, ok, baseParent)
+	}
+	old := d.arena[baseParent].children
+	newKids := make([]int, 0, len(old)+len(clones))
+	spliced := false
+	for _, b := range old {
+		if d.arena[b].name == name {
+			if !spliced {
+				newKids = append(newKids, clones...)
+				spliced = true
+			}
+		} else {
+			newKids = append(newKids, b)
+		}
+	}
+	if !spliced {
+		newKids = append(newKids, clones...)
+	}
+	d.arena[baseParent].children = newKids
+}
+
+// cloneSubtree deep-copies over's subtree at oi into d's arena under parent.
+func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
+	src := over.arena[oi]
+	nd := nodeData{
+		name:      src.name,
+		value:     src.value,
+		parent:    parent,
+		line:      src.line,
+		starList:  src.starList,
+		starMixed: src.starMixed,
+		leading:   append([]string(nil), src.leading...),
+		trailing:  src.trailing,
+	}
+	idx := len(d.arena)
+	d.arena = append(d.arena, nd)
+	okids := append([]int(nil), over.arena[oi].children...)
+	for _, ok := range okids {
+		c := d.cloneSubtree(over, ok, idx)
+		d.arena[idx].children = append(d.arena[idx].children, c)
+	}
+	return idx
+}
+
+// ---------------------------------------------------------------------------
 // Coercion ("intelligent but safe"; Loose re-admits a closed list of tricks)
 // ---------------------------------------------------------------------------
 
