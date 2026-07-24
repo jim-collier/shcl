@@ -59,6 +59,19 @@ def load_cases():
 		if os.path.exists(sch):
 			case["schema"] = _read(sch)
 			case["expected_validate"] = _read(os.path.join(d, "expected-validate.txt"))
+		case["layers"] = []
+		case["merge_sets"] = ""
+		case["expected_merged"] = None
+		em = os.path.join(d, "expected-merged.shcl")
+		if os.path.exists(em):
+			# Layer files: every layer*.shcl, in filename (= priority) order.
+			for n in sorted(os.listdir(d)):
+				if n.startswith("layer") and n.endswith(".shcl"):
+					case["layers"].append(_read(os.path.join(d, n)))
+			ms = os.path.join(d, "merge.sets")
+			if os.path.exists(ms):
+				case["merge_sets"] = _read(ms)
+			case["expected_merged"] = _read(em)
 		cases.append(case)
 	if not cases:
 		raise SystemExit("no corpus cases found under {}".format(CORPUS))
@@ -217,6 +230,29 @@ def main():
 			fails.append("{}: writer output differs from expected-write.shcl".format(case["name"]))
 		if shcl.Document.parse(got).to_canonical() != got:
 			fails.append("{}: written output is not a fmt fixpoint".format(case["name"]))
+
+	# Layered-load dimension: fold the layer files (lowest first) and input.shcl
+	# (highest file layer) via the library merge, apply the path=value overrides
+	# as the top layer, and match the golden merged canonical.
+	for case in cases:
+		if case["expected_merged"] is None:
+			continue
+		texts = list(case["layers"]) + [case["input"]]
+		doc = shcl.Document.parse(texts[0])
+		for t in texts[1:]:
+			doc.merge(shcl.Document.parse(t))
+		for line in case["merge_sets"].split("\n"):
+			if line == "" or line.startswith("#"):
+				continue
+			eq = line.find("=")
+			if eq < 0:
+				raise SystemExit("{}: bad merge.sets line: {}".format(case["name"], line))
+			doc.set_string(line[:eq], line[eq + 1:])
+		got = doc.to_canonical()
+		if got != case["expected_merged"]:
+			fails.append("{}: merged output differs from expected-merged.shcl".format(case["name"]))
+		if shcl.Document.parse(got).to_canonical() != got:
+			fails.append("{}: merged output is not a fmt fixpoint".format(case["name"]))
 
 	# Diagnostics: count, line, severity, and stable code per case - the same
 	# shape `check` prints to stdout at Standard (its cross-binding contract).

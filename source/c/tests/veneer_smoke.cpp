@@ -78,6 +78,14 @@ int main() {
 	auto fd = doc.validate(broken);
 	CHECK(fd.size() == 1 && fd[0].code == "V090");
 
+	// Layered loading: overlay a higher-priority doc; leaf override, container merge.
+	auto base = shcl::Document::parse("port: 8080\nserver: web1\n\tport: 80\n");
+	auto over = shcl::Document::parse("port: 9090\nserver: web1\n\thost: h1\n");
+	base.merge(over);
+	CHECK(base.get_or<int64_t>("port", 0) == 9090);
+	CHECK(base.get_or<int64_t>("server[web1].port", 0) == 80);
+	CHECK(base.get_or<std::string>("server[web1].host", std::string()) == "h1");
+
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");
 	return 0;

@@ -160,6 +160,14 @@ void shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, con
 void shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n);
 void shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n);
 
+// --- Layered loading --------------------------------------------------------
+// Overlay `over` (a higher-priority layer) onto `d` (the lower one). Container
+// instances merge by (name, value) like the in-file rule; a leaf name present
+// in `over` replaces d's same-named children at that scope (real override for
+// scalars, arrays, raw blocks); over-only nodes are appended. `over`'s content
+// is deep-copied into d's arena, so d stays valid after `over` is freed.
+void shcl_merge(shcl_doc *d, const shcl_doc *over);
+
 // CLI/aliases: 1|2|3 or loose|standard|strict. Returns 1 on success.
 int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out);
 
@@ -1782,6 +1790,118 @@ void shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, co
 void shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_bool_array(d, path, plen, v, n); }
 void shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_string_array(d, path, plen, v, lens, n); }
 void shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_datetime_array(d, path, plen, v, n); }
+
+// --- Layered loading: overlay a higher-priority document onto a lower one ----
+
+// Deep-copy a value from `over`'s arena into `d`'s, so the merged doc is
+// self-contained (over may be freed after the merge).
+static Value w_dup_value(Arena *a, const Value *v) {
+	Value r; memset(&r, 0, sizeof r); r.kind = v->kind;
+	if (v->kind == V_CELL) {
+		r.nels = v->nels;
+		r.els = (Element *)arena_alloc(a, (v->nels ? v->nels : 1) * sizeof(Element));
+		for (size_t i = 0; i < v->nels; i++) { r.els[i].text = s_dup(a, v->els[i].text); r.els[i].quoted = v->els[i].quoted; }
+	} else if (v->kind == V_RAW) {
+		r.content = s_dup(a, v->content); r.info = s_dup(a, v->info);
+		r.fence_char = v->fence_char; r.fence_len = v->fence_len;
+	}
+	return r;
+}
+
+// Deep-copy over's subtree at `oi` into d's arena under `parent`. d->nodes may
+// reallocate on push, so parent's children vec is fetched only via NODE().
+static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size_t parent) {
+	Arena *a = &d->arena;
+	const Node *src = &over->nodes.data[oi];
+	Node n; memset(&n, 0, sizeof n);
+	n.name = s_dup(a, src->name);
+	n.value = w_dup_value(a, &src->value);
+	n.parent = parent;
+	n.line = src->line;
+	n.star_list = src->star_list;
+	n.star_mixed = src->star_mixed;
+	n.trailing = s_dup(a, src->trailing);
+	for (size_t i = 0; i < src->leading.len; i++) VecS_push(a, &n.leading, s_dup(a, src->leading.data[i]));
+	size_t idx = d->nodes.len;
+	VecNode_push(a, &d->nodes, n);
+	// Snapshot the source children (const, stable) before recursing.
+	size_t nk = over->nodes.data[oi].children.len;
+	for (size_t i = 0; i < nk; i++) {
+		size_t ok = over->nodes.data[oi].children.data[i];
+		size_t c = w_clone_subtree(d, over, ok, idx);
+		VecSize_push(a, &NODE(d, idx).children, c);
+	}
+	return idx;
+}
+
+// Drop every base child named `name` and splice over's group (its children of
+// `op` named `name`, in order) in at the first dropped position (append if none).
+static void w_replace_leaf_group(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op, S name) {
+	Arena *a = &d->arena;
+	VecSize clones = {0};
+	size_t nk = over->nodes.data[op].children.len;
+	for (size_t i = 0; i < nk; i++) {
+		size_t ok = over->nodes.data[op].children.data[i];
+		if (s_eq(over->nodes.data[ok].name, name))
+			VecSize_push(a, &clones, w_clone_subtree(d, over, ok, bp));
+	}
+	VecSize old = NODE(d, bp).children;
+	VecSize nw = {0};
+	int spliced = 0;
+	for (size_t i = 0; i < old.len; i++) {
+		size_t b = old.data[i];
+		if (s_eq(NODE(d, b).name, name)) {
+			if (!spliced) { for (size_t k = 0; k < clones.len; k++) VecSize_push(a, &nw, clones.data[k]); spliced = 1; }
+		} else VecSize_push(a, &nw, b);
+	}
+	if (!spliced) for (size_t k = 0; k < clones.len; k++) VecSize_push(a, &nw, clones.data[k]);
+	NODE(d, bp).children = nw;
+}
+
+static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
+	Arena *a = &d->arena;
+	size_t nk = over->nodes.data[op].children.len;
+	for (size_t gi = 0; gi < nk; gi++) {
+		size_t first = over->nodes.data[op].children.data[gi];
+		S name = over->nodes.data[first].name;
+		// Process each distinct name once, at its first occurrence.
+		int isfirst = 1;
+		for (size_t j = 0; j < gi; j++)
+			if (s_eq(over->nodes.data[over->nodes.data[op].children.data[j]].name, name)) { isfirst = 0; break; }
+		if (!isfirst) continue;
+		// A name whose over-side nodes are all leaves is an override; a name with
+		// any container instance merges instance-by-instance instead.
+		int all_leaves = 1;
+		for (size_t i = 0; i < nk; i++) {
+			size_t ok = over->nodes.data[op].children.data[i];
+			if (s_eq(over->nodes.data[ok].name, name) && over->nodes.data[ok].children.len > 0) { all_leaves = 0; break; }
+		}
+		if (all_leaves) { w_replace_leaf_group(d, bp, over, op, name); continue; }
+		for (size_t i = 0; i < nk; i++) {
+			size_t ok = over->nodes.data[op].children.data[i];
+			if (!s_eq(over->nodes.data[ok].name, name)) continue;
+			S okey = value_key(a, &over->nodes.data[ok].value);
+			size_t match = (size_t)-1;
+			VecSize bch = NODE(d, bp).children;
+			for (size_t k = 0; k < bch.len; k++) {
+				size_t b = bch.data[k];
+				if (s_eq(NODE(d, b).name, name) && s_eq(value_key(a, &NODE(d, b).value), okey)) { match = b; break; }
+			}
+			if (match != (size_t)-1) {
+				w_overlay(d, match, over, ok);
+			} else {
+				size_t c = w_clone_subtree(d, over, ok, bp);
+				VecSize_push(a, &NODE(d, bp).children, c);
+			}
+		}
+	}
+}
+
+void shcl_merge(shcl_doc *d, const shcl_doc *over) {
+	Arena *a = &d->arena;
+	w_overlay(d, ROOT, over, ROOT);
+	for (size_t i = 0; i < over->orphans.len; i++) VecS_push(a, &d->orphans, s_dup(a, over->orphans.data[i]));
+}
 
 int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def) {
 	shcl_read_i64 r = shcl_read_int(d, path, plen); return r.status == SHCL_GOOD ? r.value : def;

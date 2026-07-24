@@ -1,0 +1,12 @@
+# user layer (highest file): override port and tags, extend web1, add web3
+port: 9090
+tags: green
+timeout: 60
+server: web1
+	port: 80
+	tls: yes
+	host: h1
+server: web2
+	port: 8081
+server: web3
+	port: 90

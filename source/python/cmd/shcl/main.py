@@ -57,9 +57,16 @@ Options:
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check only) validate FILE against a
                                          schema; adds V### diagnostics
+  --layer=FILE                           (get/fmt/count/instances/set) merge a
+                                         lower-priority layer under FILE;
+                                         repeatable, earlier = lower priority
+  --set=PATH=VALUE                       override one path as the top layer,
+                                         after all files; repeatable
 
 Value options accept either spelling: --default=VALUE or --default VALUE.
-FILE may be '-' for stdin.
+FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
+each --layer is merged under it in order; --set applies last. 'fmt' with
+layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 strict load failure.
@@ -71,7 +78,7 @@ def status_code(st):
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "schema", "args")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "schema", "layers", "sets", "args")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -82,6 +89,8 @@ class _Opts:
 		self.strictness = shcl.Strictness.Standard
 		self.schema = None
 		self.write = False
+		self.layers = []         # lower-priority layers, in listed order
+		self.sets = []           # final override layer: (path, value)
 		self.args = []           # positional: FILE [PATH]
 
 
@@ -100,6 +109,13 @@ def _set_value_opt(o, name, v):
 		o.strictness = s
 	elif name == "--schema":
 		o.schema = v
+	elif name == "--layer":
+		o.layers.append(v)
+	elif name == "--set":
+		eq = v.find("=")
+		if eq < 0:
+			raise ValueError("bad --set value (want PATH=VALUE): {}".format(v))
+		o.sets.append((v[:eq], v[eq + 1:]))
 
 
 def parse_opts(argv):
@@ -116,7 +132,7 @@ def parse_opts(argv):
 			o.slots = True
 		elif a in ("--write", "-w"):
 			o.write = True
-		elif a in ("--default", "--on-bad", "--strictness", "--schema"):
+		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set"):
 			i += 1
 			if i >= len(argv):
 				raise ValueError("missing value for {0} (try {0}=VALUE)".format(a))
@@ -129,6 +145,10 @@ def parse_opts(argv):
 			_set_value_opt(o, "--strictness", a[len("--strictness="):])
 		elif a.startswith("--schema="):
 			_set_value_opt(o, "--schema", a[len("--schema="):])
+		elif a.startswith("--layer="):
+			_set_value_opt(o, "--layer", a[len("--layer="):])
+		elif a.startswith("--set="):
+			_set_value_opt(o, "--set", a[len("--set="):])
 		elif a.startswith("-") and len(a) > 1:
 			raise ValueError("unknown option: {}".format(a))
 		else:
@@ -162,6 +182,36 @@ def load_doc(text, strictness):
 		return None, 6
 
 
+def load_layered(o, file):
+	# Load file with o's lower-priority --layer files underneath and its --set
+	# overrides on top - the layered-load fold. Every layer parses at the
+	# requested strictness; a strict-load failure on any layer aborts like a
+	# single-file strict failure. Returns (doc, None) or (None, code).
+	texts = []
+	for lf in o.layers:
+		texts.append(read_input(lf))
+	texts.append(read_input(file))
+	doc, code = load_doc(texts[0], o.strictness)
+	if doc is None:
+		return None, code
+	for t in texts[1:]:
+		over, c = load_doc(t, o.strictness)
+		if over is None:
+			return None, c
+		doc.merge(over)
+	for path, val in o.sets:
+		doc.set_string(path, val)
+	return doc, None
+
+
+def reject_layers(o, cmd):
+	# Refuse --layer/--set on subcommands that do not load a document to read from.
+	if o.layers or o.sets:
+		sys.stderr.write("{}: --layer/--set are not supported here\n".format(cmd))
+		return 1
+	return None
+
+
 def _fmt_scalar(kind, value):
 	if kind == "int":
 		return str(value)
@@ -179,11 +229,10 @@ def do_get(o):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		text = read_input(file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
-	doc, code = load_doc(text, o.strictness)
 	if doc is None:
 		return code
 	if o.array:
@@ -286,11 +335,10 @@ def do_fmt(o):
 		sys.stderr.write("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
 	try:
-		text = read_input(file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
-	doc, code = load_doc(text, o.strictness)
 	if doc is None:
 		return code
 	canonical = doc.to_canonical()
@@ -406,17 +454,24 @@ def do_set(o):
 		return 1
 	file = o.args[0]
 	# Base doc: '-' means an empty base, since stdin carries the ops script.
-	if file == "-":
-		text = ""
-	else:
-		try:
-			text = read_input(file)
-		except (OSError, ValueError) as e:
-			sys.stderr.write(str(e) + "\n")
-			return 1
-	doc, code = load_doc(text, o.strictness)
+	# Any --layer files sit under it and --set overrides sit on top, before ops.
+	try:
+		layer_texts = [read_input(lf) for lf in o.layers]
+		base = "" if file == "-" else read_input(file)
+	except (OSError, ValueError) as e:
+		sys.stderr.write(str(e) + "\n")
+		return 1
+	layer_texts.append(base)
+	doc, code = load_doc(layer_texts[0], o.strictness)
 	if doc is None:
 		return code
+	for t in layer_texts[1:]:
+		over, c = load_doc(t, o.strictness)
+		if over is None:
+			return c
+		doc.merge(over)
+	for path, val in o.sets:
+		doc.set_string(path, val)
 	ops = sys.stdin.buffer.read().decode("utf-8", "replace")
 	for n, line in enumerate(ops.split("\n")):
 		line = line[:-1] if line.endswith("\r") else line
@@ -432,6 +487,9 @@ def do_set(o):
 
 
 def do_check(o):
+	code = reject_layers(o, "check")
+	if code is not None:
+		return code
 	if len(o.args) != 1:
 		sys.stderr.write("check needs FILE (see --help)\n")
 		return 1
@@ -488,11 +546,10 @@ def do_enum(o, want_count):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		text = read_input(file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
-	doc, code = load_doc(text, o.strictness)
 	if doc is None:
 		return code
 	if want_count:

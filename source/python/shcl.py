@@ -1375,6 +1375,81 @@ class Document:
 		if not self.exists(path):
 			self.set_datetime_array(path, v)
 
+	# ----- layered loading: overlay a higher-priority document -----
+
+	def merge(self, over):
+		"""Overlay `over` (a higher-priority layer) onto self (the lower one).
+		Container instances merge by (name, value) exactly like the in-file rule;
+		a leaf name present in `over` replaces self's same-named children at that
+		scope, so scalars, arrays, and raw blocks get real override. over-only
+		nodes are appended. Comment trivia rides with each node. Load(defaults,
+		site, user) is a left fold of this: each later file overlaid on the
+		earlier ones."""
+		self._overlay(ROOT, over, ROOT)
+		self.orphans.extend(over.orphans)
+
+	def _overlay(self, base_parent, over, over_parent):
+		over_kids = list(over.arena[over_parent].children)
+		# Distinct child names of `over`, in first-appearance order.
+		names = []
+		for k in over_kids:
+			n = over.arena[k].name
+			if n not in names:
+				names.append(n)
+		for name in names:
+			group = [k for k in over_kids if over.arena[k].name == name]
+			# A name whose over-side nodes are all leaves is an override; a name
+			# with any container instance merges instance-by-instance instead.
+			if all(not over.arena[k].children for k in group):
+				self._replace_leaf_group(base_parent, name, over, group)
+				continue
+			for ok in group:
+				okey = over.arena[ok].value.key()
+				match = None
+				for b in self.arena[base_parent].children:
+					if self.arena[b].name == name and self.arena[b].value.key() == okey:
+						match = b
+						break
+				if match is not None:
+					self._overlay(match, over, ok)
+				else:
+					c = self._clone_subtree(over, ok, base_parent)
+					self.arena[base_parent].children.append(c)
+
+	def _replace_leaf_group(self, base_parent, name, over, group):
+		"""Drop every base child named `name` and splice `over`'s group in at the
+		first dropped position (append if base had none). Dropped nodes stay in
+		the arena, unreferenced - reads and emit walk children from the root."""
+		clones = [self._clone_subtree(over, ok, base_parent) for ok in group]
+		old = self.arena[base_parent].children
+		new_kids = []
+		spliced = False
+		for b in old:
+			if self.arena[b].name == name:
+				if not spliced:
+					new_kids.extend(clones)
+					spliced = True
+			else:
+				new_kids.append(b)
+		if not spliced:
+			new_kids.extend(clones)
+		self.arena[base_parent].children = new_kids
+
+	def _clone_subtree(self, over, oi, parent):
+		"""Deep-copy `over`'s subtree at `oi` into self's arena under `parent`."""
+		src = over.arena[oi]
+		node = _Node(src.name, src.value, parent, src.line)
+		node.star_list = src.star_list
+		node.star_mixed = src.star_mixed
+		node.leading = list(src.leading)
+		node.trailing = src.trailing
+		idx = len(self.arena)
+		self.arena.append(node)
+		for ok in list(over.arena[oi].children):
+			c = self._clone_subtree(over, ok, idx)
+			self.arena[idx].children.append(c)
+		return idx
+
 	# ----- accessor: typed reads -----
 
 	def _value_at(self, path):
