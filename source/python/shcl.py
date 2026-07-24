@@ -2338,6 +2338,7 @@ class _Constraint:
 	__slots__ = (
 		"path", "segs", "ty", "required", "allowed",
 		"min_i", "max_i", "min_f", "max_f", "repeat",
+		"desc", "default_text",
 	)
 
 	def __init__(self, path, segs):
@@ -2351,6 +2352,9 @@ class _Constraint:
 		self.min_f = None
 		self.max_f = None
 		self.repeat = None        # (lo, hi)
+		# Generator-only (`shcl init`): validation ignores both.
+		self.desc = None          # `desc`, a one-line description
+		self.default_text = None  # `default`, emitted as an inline value
 
 
 def _vdiag(out, line, msg):
@@ -2446,8 +2450,13 @@ def _build_schema(schema):
 						_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
 				else:
 					_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
-			elif kid.name in ("default", "desc"):
-				pass  # generator-only; validation ignores them
+			elif kid.name == "desc":
+				# Generator-only (`shcl init`); validation ignores it. First wins.
+				if c.desc is None:
+					c.desc = _single_text(kid.value)
+			elif kid.name == "default":
+				if c.default_text is None:
+					c.default_text = _emit_value_inline(kid.value)
 			else:
 				_vdiag(faults, kid.line, "unknown schema key '{}'".format(kid.name))
 		if required is not None:
@@ -2516,6 +2525,93 @@ def _build_schema(schema):
 		faults.sort(key=lambda d: d.line)
 		return None, faults
 	return cons, []
+
+
+def _emit_value_inline(v):
+	# Re-emit a schema `default`/`allowed` value as an inline value (minimal
+	# quoting, array elements joined by ", "). None for empty or raw - neither has
+	# a usable one-line form. Used by the generator, not the validator.
+	if v.kind != "cell":
+		return None
+	return ", ".join(_emit_element(e) for e in v.els)
+
+
+def _allowed_join(a):
+	kind, items = a
+	if kind == "ints":
+		return ", ".join(str(x) for x in items)
+	if kind == "floats":
+		return ", ".join(format_float(x) for x in items)
+	if kind == "bools":
+		return ", ".join("true" if x else "false" for x in items)
+	if kind == "dates":
+		return ", ".join(str(x) for x in items)
+	return ", ".join(items)  # strings
+
+
+def _gen_annotation(c, tyname):
+	# The `# type, ...` line summarizing a constraint, ASCII only.
+	parts = [tyname]
+	if c.allowed is not None:
+		parts.append("one of: " + _allowed_join(c.allowed))
+	elif c.min_i is not None or c.max_i is not None:
+		if c.min_i is not None and c.max_i is not None:
+			parts.append("{}-{}".format(c.min_i, c.max_i))
+		elif c.min_i is not None:
+			parts.append(">= {}".format(c.min_i))
+		else:
+			parts.append("<= {}".format(c.max_i))
+	elif c.min_f is not None or c.max_f is not None:
+		if c.min_f is not None and c.max_f is not None:
+			parts.append(format_float(c.min_f) + "-" + format_float(c.max_f))
+		elif c.min_f is not None:
+			parts.append(">= " + format_float(c.min_f))
+		else:
+			parts.append("<= " + format_float(c.max_f))
+	if c.repeat is not None:
+		lo, hi = c.repeat
+		parts.append("repeat {}".format(lo) if lo == hi else "repeat {}-{}".format(lo, hi))
+	if c.required:
+		parts.append("required")
+	return ", ".join(parts)
+
+
+def generate(schema):
+	"""Emit a commented, typed starter config from a schema (`shcl init
+	--schema`). Required paths are live (their `default`, or an empty value);
+	optional paths are commented out; wildcard paths cannot be materialized and
+	are listed in a trailing comment block. Returns (text, faults): a non-empty
+	fault list (V09x) means the schema is broken and text is empty."""
+	cons, faults = _build_schema(schema)
+	if faults:
+		return "", faults
+	out = []
+	wild = []
+	first = True
+	for c in cons:
+		tyname = c.ty if c.ty is not None else "any"
+		if any(s.selector is not None and s.selector[0] == "wild" for s in c.segs):
+			wild.append((c.path, tyname))
+			continue
+		if not first:
+			out.append("\n")
+		first = False
+		if c.desc is not None:
+			for line in c.desc.split("\n"):
+				out.append("# " + line + "\n")
+		out.append("# " + _gen_annotation(c, tyname) + "\n")
+		prefix = "" if c.required else "#"
+		if c.default_text is not None:
+			out.append("{}{}: {}\n".format(prefix, c.path, c.default_text))
+		else:
+			out.append("{}{}:\n".format(prefix, c.path))
+	if wild:
+		if not first:
+			out.append("\n")
+		out.append("# Paths needing an instance name (not generated):\n")
+		for path, tyname in wild:
+			out.append("#   {}   {}\n".format(path, tyname))
+	return "".join(out), []
 
 
 def _edit_distance(a, b):

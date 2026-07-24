@@ -95,6 +95,13 @@ shcl_str shcl_validation_message(const shcl_validation *v, size_t i);
 const char *shcl_validation_code(const shcl_validation *v, size_t i);
 void shcl_validation_free(shcl_validation *v);
 
+// Schema-driven generation (`shcl init --schema`): a commented, typed starter
+// config from a schema document. Required paths are live (their `default`, or an
+// empty value); optional paths are commented out; wildcard paths are listed in a
+// trailing comment block. *ok is set to 1 on success, 0 if the schema has faults
+// (V09x) - then the returned string is empty. Bytes live in the schema's arena.
+shcl_str shcl_generate(shcl_doc *schema, int *ok);
+
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The
 // returned bytes live in the document's arena; valid until shcl_free.
 shcl_str shcl_to_canonical(shcl_doc *d);
@@ -2229,6 +2236,9 @@ typedef struct {
 	int has_min_i, has_max_i, has_min_f, has_max_f;
 	int64_t min_i, max_i; double min_f, max_f;
 	int has_repeat; uint64_t rep_lo, rep_hi;
+	// Generator-only (`shcl init`): validation ignores both. has_* gates them.
+	int has_desc; S desc;
+	int has_default; S default_text;
 } VCons;
 DEFINE_VEC(VecVCons, VCons)
 
@@ -2346,8 +2356,16 @@ static void v_build_schema(Arena *a, shcl_doc *schema, VecVCons *cons, VecDiag *
 				} else {
 					v_diag(a, faults, kid->line, v_msg_key(a, "repeat"));
 				}
-			} else if (s_eq(kid->name, s_lit("default")) || s_eq(kid->name, s_lit("desc"))) {
-				// generator-only; validation ignores them
+			} else if (s_eq(kid->name, s_lit("desc"))) {
+				// Generator-only (`shcl init`); validation ignores it. First wins.
+				S t;
+				if (!c.has_desc && v_single_text(a, &kid->value, &t)) { c.has_desc = 1; c.desc = t; }
+			} else if (s_eq(kid->name, s_lit("default"))) {
+				if (!c.has_default && kid->value.kind == V_CELL) {
+					SB s = {0, 0, 0};
+					for (size_t x = 0; x < kid->value.nels; x++) { if (x) sb_puts(a, &s, ", "); sb_putS(a, &s, emit_element(a, &kid->value.els[x])); }
+					c.has_default = 1; c.default_text = sb_S(&s);
+				}
 			} else {
 				v_diag(a, faults, kid->line, v_msg3(a, "unknown schema key '", kid->name, "'"));
 			}
@@ -2720,6 +2738,107 @@ shcl_str shcl_validation_message(const shcl_validation *v, size_t i) {
 }
 const char *shcl_validation_code(const shcl_validation *v, size_t i) { return v->diags.data[i].code; }
 void shcl_validation_free(shcl_validation *v) { if (!v) return; arena_free(&v->arena); free(v); }
+
+// --- Schema-driven generation (`shcl init --schema`) ------------------------
+
+static S v_allowed_join(Arena *a, const VCons *c) {
+	SB s = {0, 0, 0};
+	char nb[64];
+	for (size_t i = 0; i < c->a_n; i++) {
+		if (i) sb_puts(a, &s, ", ");
+		switch (c->akind) {
+			case ALLOW_INTS: { snprintf(nb, sizeof nb, "%" PRId64, c->a_ints[i]); sb_puts(a, &s, nb); break; }
+			case ALLOW_FLOATS: { char fb[SHCL_F64_BUF]; S f; f.p = fb; f.n = shcl_format_f64(c->a_floats[i], fb); sb_putS(a, &s, f); break; }
+			case ALLOW_BOOLS: sb_puts(a, &s, c->a_bools[i] ? "true" : "false"); break;
+			case ALLOW_DATES: { char db[64]; S d; d.p = db; d.n = shcl_datetime_str(&c->a_dates[i], db); sb_putS(a, &s, d); break; }
+			case ALLOW_STRINGS: sb_putS(a, &s, c->a_strs[i]); break;
+		}
+	}
+	return sb_S(&s);
+}
+
+// The `# type, ...` annotation line summarizing a constraint, ASCII only.
+static S v_gen_annotation(Arena *a, const VCons *c, S tyname) {
+	SB s = {0, 0, 0};
+	char nb[80];
+	sb_putS(a, &s, tyname);
+	if (c->has_allowed) {
+		sb_puts(a, &s, ", one of: "); sb_putS(a, &s, v_allowed_join(a, c));
+	} else if (c->has_min_i || c->has_max_i) {
+		if (c->has_min_i && c->has_max_i) snprintf(nb, sizeof nb, ", %" PRId64 "-%" PRId64, c->min_i, c->max_i);
+		else if (c->has_min_i) snprintf(nb, sizeof nb, ", >= %" PRId64, c->min_i);
+		else snprintf(nb, sizeof nb, ", <= %" PRId64, c->max_i);
+		sb_puts(a, &s, nb);
+	} else if (c->has_min_f || c->has_max_f) {
+		char fb[SHCL_F64_BUF];
+		sb_puts(a, &s, ", ");
+		if (c->has_min_f && c->has_max_f) {
+			S f; f.p = fb; f.n = shcl_format_f64(c->min_f, fb); sb_putS(a, &s, f);
+			sb_putc(a, &s, '-');
+			S g; g.p = fb; g.n = shcl_format_f64(c->max_f, fb); sb_putS(a, &s, g);
+		} else if (c->has_min_f) {
+			sb_puts(a, &s, ">= "); S f; f.p = fb; f.n = shcl_format_f64(c->min_f, fb); sb_putS(a, &s, f);
+		} else {
+			sb_puts(a, &s, "<= "); S f; f.p = fb; f.n = shcl_format_f64(c->max_f, fb); sb_putS(a, &s, f);
+		}
+	}
+	if (c->has_repeat) {
+		if (c->rep_lo == c->rep_hi) snprintf(nb, sizeof nb, ", repeat %" PRIu64, c->rep_lo);
+		else snprintf(nb, sizeof nb, ", repeat %" PRIu64 "-%" PRIu64, c->rep_lo, c->rep_hi);
+		sb_puts(a, &s, nb);
+	}
+	if (c->required) sb_puts(a, &s, ", required");
+	return sb_S(&s);
+}
+
+shcl_str shcl_generate(shcl_doc *schema, int *ok) {
+	Arena *a = &schema->arena;
+	VecVCons cons = {0, 0, 0};
+	VecDiag faults = {0, 0, 0};
+	v_build_schema(a, schema, &cons, &faults);
+	shcl_str r;
+	if (faults.len) { if (ok) *ok = 0; S e = s_empty(); r.p = e.p; r.n = e.n; return r; }
+	if (ok) *ok = 1;
+	SB out = {0, 0, 0};
+	VecS wild_path = {0, 0, 0}, wild_type = {0, 0, 0};
+	int first = 1;
+	for (size_t i = 0; i < cons.len; i++) {
+		VCons *c = &cons.data[i];
+		S tyname;
+		if (c->ty) { tyname.p = c->ty; tyname.n = strlen(c->ty); } else tyname = s_lit("any");
+		int has_wild = 0;
+		for (size_t si = 0; si < c->segs.len; si++) if (c->segs.data[si].sel.tag == SEL_WILDCARD) { has_wild = 1; break; }
+		if (has_wild) { VecS_push(a, &wild_path, c->path); VecS_push(a, &wild_type, tyname); continue; }
+		if (!first) sb_putc(a, &out, '\n');
+		first = 0;
+		if (c->has_desc) {
+			size_t start = 0;
+			for (size_t k = 0; k <= c->desc.n; k++) {
+				if (k == c->desc.n || c->desc.p[k] == '\n') {
+					sb_puts(a, &out, "# ");
+					S ln; ln.p = c->desc.p + start; ln.n = k - start; sb_putS(a, &out, ln);
+					sb_putc(a, &out, '\n');
+					start = k + 1;
+				}
+			}
+		}
+		sb_puts(a, &out, "# "); sb_putS(a, &out, v_gen_annotation(a, c, tyname)); sb_putc(a, &out, '\n');
+		if (!c->required) sb_putc(a, &out, '#');
+		sb_putS(a, &out, c->path);
+		if (c->has_default) { sb_puts(a, &out, ": "); sb_putS(a, &out, c->default_text); }
+		else sb_putc(a, &out, ':');
+		sb_putc(a, &out, '\n');
+	}
+	if (wild_path.len) {
+		if (!first) sb_putc(a, &out, '\n');
+		sb_puts(a, &out, "# Paths needing an instance name (not generated):\n");
+		for (size_t i = 0; i < wild_path.len; i++) {
+			sb_puts(a, &out, "#   "); sb_putS(a, &out, wild_path.data[i]);
+			sb_puts(a, &out, "   "); sb_putS(a, &out, wild_type.data[i]); sb_putc(a, &out, '\n');
+		}
+	}
+	S s = sb_S(&out); r.p = s.p; r.n = s.n; return r;
+}
 
 #endif // SHCL_IMPLEMENTATION
 #endif // SHCL_H

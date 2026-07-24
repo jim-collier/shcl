@@ -27,6 +27,9 @@ Usage:
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
+  shcl init --schema=SCHEMA              print a commented starter config from
+                                         a schema (required fields live, optional
+                                         commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
@@ -540,6 +543,35 @@ def do_check(o):
 	return 0
 
 
+def do_init(o):
+	code = reject_layers(o, "init")
+	if code is not None:
+		return code
+	if o.schema is None:
+		sys.stderr.write("init needs --schema=FILE (see --help)\n")
+		return 1
+	try:
+		stext = read_input(o.schema)
+	except (OSError, ValueError) as e:
+		sys.stderr.write(str(e) + "\n")
+		return 1
+	# The schema always loads at Standard - a program artifact, not user data.
+	sdoc = shcl.Document.parse(stext)
+	if any(d.severity == shcl.Severity.Error for d in sdoc.diagnostics()):
+		for d in sdoc.diagnostics():
+			sys.stderr.write("schema line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+		sys.stderr.write("init: schema failed to load\n")
+		return 1
+	text, faults = shcl.generate(sdoc)
+	if faults:
+		for d in faults:
+			sys.stderr.write("schema line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+		sys.stderr.write("init: schema has faults\n")
+		return 1
+	sys.stdout.write(text)
+	return 0
+
+
 def do_enum(o, want_count):
 	if len(o.args) != 2:
 		sys.stderr.write("count/instances need FILE and PATH (see --help)\n")
@@ -591,6 +623,8 @@ def run(argv):
 		return do_fmt(o)
 	if cmd == "check":
 		return do_check(o)
+	if cmd == "init":
+		return do_init(o)
 	if cmd == "count":
 		return do_enum(o, True)
 	if cmd == "instances":

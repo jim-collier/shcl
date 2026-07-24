@@ -2687,6 +2687,9 @@ struct Constraint {
 	min_f: Option<f64>,
 	max_f: Option<f64>,
 	repeat: Option<(u64, u64)>,
+	// Generator-only (`shcl init`): validation ignores both.
+	desc: Option<String>,         // `desc`, a one-line description
+	default_text: Option<String>, // `default`, emitted as an inline value
 }
 
 fn vdiag(out: &mut Vec<Diagnostic>, line: usize, msg: String) {
@@ -2747,6 +2750,8 @@ fn build_schema(schema: &Document) -> Result<Vec<Constraint>, Vec<Diagnostic>> {
 			min_f: None,
 			max_f: None,
 			repeat: None,
+			desc: None,
+			default_text: None,
 		};
 		// Deferred so `min: 1` may precede `type: int` in the file.
 		let mut required: Option<bool> = None;
@@ -2839,7 +2844,18 @@ fn build_schema(schema: &Document) -> Result<Vec<Constraint>, Vec<Diagnostic>> {
 						"bad schema constraint 'repeat'".to_string(),
 					),
 				},
-				"default" | "desc" => {} // generator-only; validation ignores them
+				// Generator-only (`shcl init`); validation ignores both. First
+				// occurrence wins (a merged schema could carry two).
+				"desc" => {
+					if c.desc.is_none() {
+						c.desc = single_text(&kid.value);
+					}
+				}
+				"default" => {
+					if c.default_text.is_none() {
+						c.default_text = emit_value_inline(&kid.value);
+					}
+				}
 				other => vdiag(
 					&mut faults,
 					kid.line,
@@ -2938,6 +2954,130 @@ fn build_schema(schema: &Document) -> Result<Vec<Constraint>, Vec<Diagnostic>> {
 		faults.sort_by_key(|d| d.line);
 		Err(faults)
 	}
+}
+
+/// A schema `default`/`allowed` value re-emitted as an inline value (minimal
+/// quoting, array elements joined by ", "). None for empty or raw - neither has
+/// a usable one-line form. Used by the generator, not the validator.
+fn emit_value_inline(v: &Value) -> Option<String> {
+	match v {
+		Value::Cell(els) => Some(els.iter().map(emit_element).collect::<Vec<_>>().join(", ")),
+		_ => None,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Schema-driven generation: a schema + the Writer -> a commented starter config.
+// ---------------------------------------------------------------------------
+
+fn allowed_join(a: &AllowedSet) -> String {
+	match a {
+		AllowedSet::Ints(v) => v
+			.iter()
+			.map(|x| x.to_string())
+			.collect::<Vec<_>>()
+			.join(", "),
+		AllowedSet::Floats(v) => v
+			.iter()
+			.map(|x| x.to_string())
+			.collect::<Vec<_>>()
+			.join(", "),
+		AllowedSet::Bools(v) => v
+			.iter()
+			.map(|x| if *x { "true" } else { "false" }.to_string())
+			.collect::<Vec<_>>()
+			.join(", "),
+		AllowedSet::Dates(v) => v
+			.iter()
+			.map(|x| x.to_string())
+			.collect::<Vec<_>>()
+			.join(", "),
+		AllowedSet::Strings(v) => v.join(", "),
+	}
+}
+
+/// The `# type, ...` annotation line summarizing a constraint, ASCII only.
+fn gen_annotation(c: &Constraint, tyname: &str) -> String {
+	let mut parts: Vec<String> = vec![tyname.to_string()];
+	if let Some(a) = &c.allowed {
+		parts.push(format!("one of: {}", allowed_join(a)));
+	} else if c.min_i.is_some() || c.max_i.is_some() {
+		parts.push(match (c.min_i, c.max_i) {
+			(Some(lo), Some(hi)) => format!("{}-{}", lo, hi),
+			(Some(lo), None) => format!(">= {}", lo),
+			(None, Some(hi)) => format!("<= {}", hi),
+			(None, None) => unreachable!(),
+		});
+	} else if c.min_f.is_some() || c.max_f.is_some() {
+		parts.push(match (c.min_f, c.max_f) {
+			(Some(lo), Some(hi)) => format!("{}-{}", lo, hi),
+			(Some(lo), None) => format!(">= {}", lo),
+			(None, Some(hi)) => format!("<= {}", hi),
+			(None, None) => unreachable!(),
+		});
+	}
+	if let Some((lo, hi)) = c.repeat {
+		parts.push(if lo == hi {
+			format!("repeat {}", lo)
+		} else {
+			format!("repeat {}-{}", lo, hi)
+		});
+	}
+	if c.required {
+		parts.push("required".to_string());
+	}
+	parts.join(", ")
+}
+
+/// Emit a commented, typed starter config from a schema (`shcl init --schema`).
+/// Required paths are live (their `default`, or an empty value); optional paths
+/// are commented out so the file is valid and minimal as-is; wildcard paths
+/// cannot be materialized and are listed in a trailing comment block. Err =
+/// schema faults (V09x), same as `validate`/`check --schema`.
+pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
+	let cons = build_schema(schema)?;
+	let mut out = String::new();
+	let mut wild: Vec<(String, String)> = Vec::new();
+	let mut first = true;
+	for c in &cons {
+		let tyname = c.ty.clone().unwrap_or_else(|| "any".to_string());
+		if c.segs
+			.iter()
+			.any(|s| matches!(s.selector, Some(Selector::Wildcard)))
+		{
+			wild.push((c.path.clone(), tyname));
+			continue;
+		}
+		if !first {
+			out.push('\n');
+		}
+		first = false;
+		if let Some(d) = &c.desc {
+			for line in d.split('\n') {
+				out.push_str("# ");
+				out.push_str(line);
+				out.push('\n');
+			}
+		}
+		out.push_str("# ");
+		out.push_str(&gen_annotation(c, &tyname));
+		out.push('\n');
+		let prefix = if c.required { "" } else { "#" };
+		match &c.default_text {
+			Some(v) => out.push_str(&format!("{}{}: {}\n", prefix, c.path, v)),
+			None => out.push_str(&format!("{}{}:\n", prefix, c.path)),
+		}
+	}
+	if !wild.is_empty() {
+		if !first {
+			out.push('\n');
+		}
+		out.push_str("# Paths needing an instance name (not generated):\n");
+		for (p, t) in &wild {
+			out.push_str(&format!("#   {}   {}\n", p, t));
+		}
+	}
+	Ok(out)
 }
 
 /// Two-row Levenshtein; powers the "did you mean" prose (never the code).

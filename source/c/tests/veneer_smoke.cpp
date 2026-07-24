@@ -86,6 +86,12 @@ int main() {
 	CHECK(base.get_or<int64_t>("server[web1].port", 0) == 80);
 	CHECK(base.get_or<std::string>("server[web1].host", std::string()) == "h1");
 
+	// Schema-driven generation: a starter config with a required live field.
+	auto gschema = shcl::Document::parse("field: port\n\ttype: int\n\trequired: yes\n\tdefault: 8080\n");
+	bool gok = false;
+	std::string starter = gschema.generate(gok);
+	CHECK(gok && starter == "# int, required\nport: 8080\n");
+
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");
 	return 0;

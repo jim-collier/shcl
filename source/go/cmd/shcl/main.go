@@ -29,6 +29,9 @@ Usage:
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
+  shcl init --schema=SCHEMA              print a commented starter config from
+                                         a schema (required fields live, optional
+                                         commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
@@ -777,6 +780,46 @@ func doCheck(o *opts) int {
 	}
 }
 
+func doInit(o *opts) int {
+	if code := rejectLayers(o, "init"); code != 0 {
+		return code
+	}
+	if o.schema == "" {
+		fmt.Fprintln(os.Stderr, "init needs --schema=FILE (see --help)")
+		return 1
+	}
+	stext, err := readInput(o.schema)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	// The schema always loads at Standard - a program artifact, not user data.
+	sdoc := shcl.Parse(stext)
+	bad := false
+	for _, d := range sdoc.Diagnostics() {
+		if d.Severity == shcl.SeverityError {
+			bad = true
+		}
+	}
+	if bad {
+		for _, d := range sdoc.Diagnostics() {
+			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+		}
+		fmt.Fprintln(os.Stderr, "init: schema failed to load")
+		return 1
+	}
+	text, faults := shcl.Generate(sdoc)
+	if faults != nil {
+		for _, d := range faults {
+			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+		}
+		fmt.Fprintln(os.Stderr, "init: schema has faults")
+		return 1
+	}
+	fmt.Print(text)
+	return 0
+}
+
 func doEnum(o *opts, wantCount bool) int {
 	if len(o.args) != 2 {
 		fmt.Fprintln(os.Stderr, "count/instances need FILE and PATH (see --help)")
@@ -840,6 +883,8 @@ func run() int {
 		return doFmt(o)
 	case "check":
 		return doCheck(o)
+	case "init":
+		return doInit(o)
 	case "count":
 		return doEnum(o, true)
 	case "instances":

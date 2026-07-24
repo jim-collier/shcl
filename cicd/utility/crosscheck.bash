@@ -162,6 +162,9 @@ for caseDir in "$corpus"/*/; do
 	# Schema dimension: replay check --schema (codes + summary + exit are the contract).
 	schema="${caseDir}schema.shcl"
 	[[ -f "$schema" ]] && fCompare "check --schema $(basename "$caseDir")" check "--schema=${schema}" "$input"
+	# Generation dimension: replay init --schema (the generated starter is the contract).
+	initschema="${caseDir}init-schema.shcl"
+	[[ -f "$initschema" ]] && fCompare "init $(basename "$caseDir")" init "--schema=${initschema}"
 	tsv="${caseDir}reads.tsv"
 	if [[ -f "$tsv" ]]; then
 		while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do
@@ -213,4 +216,5 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 ##		               file has no trailing newline; skip NUL-bearing inputs (bash
 ##		               can't hold a NUL; native runners pin those).
 ##		- 20260724 JC: Layered-load dimension (fmt with --layer/--set) for cases
-##		               carrying expected-merged.shcl.
+##		               carrying expected-merged.shcl; generation dimension (init
+##		               --schema) for cases carrying init-schema.shcl.

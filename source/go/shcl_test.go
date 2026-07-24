@@ -61,6 +61,10 @@ type corpusCase struct {
 	mergeSets      string
 	expectedMerged string
 	hasMerge       bool
+	// Generation dimension (optional): a schema and the golden `init` output.
+	initSchema   string
+	expectedInit string
+	hasInit      bool
 }
 
 func loadCases(t *testing.T) []corpusCase {
@@ -134,6 +138,13 @@ func loadCases(t *testing.T) []corpusCase {
 				cc.mergeSets = string(ms)
 			}
 			cc.expectedMerged, cc.hasMerge = string(em), true
+		}
+		if is, err := os.ReadFile(filepath.Join(caseDir, "init-schema.shcl")); err == nil {
+			ei, err2 := os.ReadFile(filepath.Join(caseDir, "expected-init.shcl"))
+			if err2 != nil {
+				t.Fatalf("%s: init-schema.shcl without expected-init.shcl", entry.Name())
+			}
+			cc.initSchema, cc.expectedInit, cc.hasInit = string(is), string(ei), true
 		}
 		cases = append(cases, cc)
 	}
@@ -422,6 +433,30 @@ func TestLayeredMergeMatchesExpected(t *testing.T) {
 		}
 		if again := Parse(got).ToCanonical(); again != got {
 			t.Errorf("%s: merged output is not a fmt fixpoint", c.name)
+		}
+	}
+}
+
+func TestInitGenerationMatchesExpected(t *testing.T) {
+	// Generation dimension: Generate on the schema must reproduce the golden
+	// starter config, and that output must itself load cleanly.
+	for _, c := range loadCases(t) {
+		if !c.hasInit {
+			continue
+		}
+		got, faults := Generate(Parse(c.initSchema))
+		if faults != nil {
+			t.Fatalf("%s: init schema has faults", c.name)
+		}
+		if got != c.expectedInit {
+			t.Errorf("%s: init output differs from expected-init.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedInit)
+			continue
+		}
+		for _, d := range Parse(got).Diagnostics() {
+			if d.Severity == SeverityError {
+				t.Errorf("%s: generated starter does not load cleanly", c.name)
+				break
+			}
 		}
 	}
 }

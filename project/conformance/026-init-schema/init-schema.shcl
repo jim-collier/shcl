@@ -1,0 +1,32 @@
+# Schema for the init generator. `desc`/`default` are generator-only vocabulary.
+field: server.port
+	type: int
+	required: yes
+	min: 1
+	max: 65535
+	desc: Port the server listens on.
+	default: 8080
+
+field: log.level
+	type: string
+	allowed: debug, info, warn
+	desc: Log verbosity.
+	default: info
+
+field: server.timeout
+	type: float
+	min: 0.5
+	desc: Request timeout in seconds.
+
+field: features
+	type: string-array
+	desc: Enabled feature flags.
+
+field: "server[*].host"
+	type: string
+	required: yes
+	desc: Hostname per server.
+
+field: replicas
+	type: int
+	repeat: 1, 5
