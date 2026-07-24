@@ -73,6 +73,15 @@ public:
 	// Leaf names in `over` override; container instances merge by (name, value).
 	void merge(const Document &over) { shcl_merge(d_, over.d_); }
 
+	// Schema-driven generation (`shcl init`): a commented, typed starter config
+	// from this document read as a schema. ok is set false on schema faults.
+	std::string generate(bool &ok) const {
+		int iok = 0;
+		std::string s = to_str(shcl_generate(d_, &iok));
+		ok = iok != 0;
+		return s;
+	}
+
 	std::size_t count(std::string_view p) const { return shcl_count(d_, p.data(), p.size()); }
 	std::vector<std::string> instances(std::string_view p) const {
 		shcl_str *a; std::size_t n = shcl_instances(d_, p.data(), p.size(), &a);

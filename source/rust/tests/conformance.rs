@@ -5,7 +5,7 @@
 //! the Rust reference runs it natively here. Case layout and reads.tsv column
 //! meanings are documented in project/conformance/README.md.
 
-use shcl::{Document, Strictness, parse_datetime};
+use shcl::{Document, Strictness, generate, parse_datetime};
 use std::path::{Path, PathBuf};
 
 fn corpus_dir() -> PathBuf {
@@ -44,6 +44,9 @@ struct Case {
 	layers: Vec<String>,
 	merge_sets: Option<String>,
 	expected_merged: Option<String>,
+	// Generation dimension (optional): a schema and the golden `init` output.
+	init_schema: Option<String>,
+	expected_init: Option<String>,
 }
 
 /// Decode an ops value: \n \t \\ only, others verbatim (mirrors the CLI).
@@ -173,6 +176,8 @@ fn load_cases() -> Vec<Case> {
 			layers,
 			merge_sets: read_opt("merge.sets"),
 			expected_merged: read_opt("expected-merged.shcl"),
+			init_schema: read_opt("init-schema.shcl"),
+			expected_init: read_opt("expected-init.shcl"),
 		});
 	}
 	cases.sort_by(|a, b| a.name.cmp(&b.name));
@@ -545,6 +550,38 @@ fn layered_merge_matches_expected() {
 		assert_eq!(
 			again, got,
 			"{}: merged output is not a fmt fixpoint",
+			case.name
+		);
+	}
+}
+
+#[test]
+fn init_generation_matches_expected() {
+	// Generation dimension: `generate` on the schema must reproduce the golden
+	// starter config, and that output must itself load cleanly.
+	for case in load_cases() {
+		let (schema, want) = match (&case.init_schema, &case.expected_init) {
+			(Some(s), Some(w)) => (s, w),
+			(None, None) => continue,
+			_ => panic!(
+				"{}: init-schema.shcl and expected-init.shcl must come as a pair",
+				case.name
+			),
+		};
+		let got = generate(&Document::parse(schema))
+			.unwrap_or_else(|_| panic!("{}: init schema has faults", case.name));
+		assert_eq!(
+			&got, want,
+			"{}: init output differs from expected-init.shcl",
+			case.name
+		);
+		// The generated starter must be valid SHCL (loads with no error diagnostics).
+		let doc = Document::parse(&got);
+		assert!(
+			!doc.diagnostics()
+				.iter()
+				.any(|d| d.severity == shcl::Severity::Error),
+			"{}: generated starter does not load cleanly",
 			case.name
 		);
 	}

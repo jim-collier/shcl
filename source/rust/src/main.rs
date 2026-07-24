@@ -4,7 +4,7 @@
 //! `shcl` CLI - the Tier 1 command binding. POSIX sh and PowerShell wrap this,
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
-use shcl::{Diagnostic, Document, Severity, Status, Strictness, parse_datetime};
+use shcl::{Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime};
 use std::process::ExitCode;
 
 const HELP: &str = "\
@@ -17,6 +17,9 @@ Usage:
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
+  shcl init --schema=SCHEMA              print a commented starter config from
+                                         a schema (required fields live, optional
+                                         commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
@@ -659,6 +662,52 @@ fn do_check(o: &Opts) -> u8 {
 	}
 }
 
+fn do_init(o: &Opts) -> u8 {
+	if let Err(code) = reject_layers(o, "init") {
+		return code;
+	}
+	let schema_file = match &o.schema {
+		Some(s) => s,
+		None => {
+			eprintln!("init needs --schema=FILE (see --help)");
+			return 1;
+		}
+	};
+	let stext = match read_input(schema_file) {
+		Ok(t) => t,
+		Err(e) => {
+			eprintln!("{}", e);
+			return 1;
+		}
+	};
+	// The schema always loads at Standard - a program artifact, not user data.
+	let sdoc = Document::parse(&stext);
+	if sdoc
+		.diagnostics()
+		.iter()
+		.any(|d| d.severity == Severity::Error)
+	{
+		for d in sdoc.diagnostics() {
+			eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
+		}
+		eprintln!("init: schema failed to load");
+		return 1;
+	}
+	match generate(&sdoc) {
+		Ok(text) => {
+			print!("{}", text);
+			0
+		}
+		Err(faults) => {
+			for d in &faults {
+				eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
+			}
+			eprintln!("init: schema has faults");
+			1
+		}
+	}
+}
+
 fn do_enum(o: &Opts, want_count: bool) -> u8 {
 	let (file, path) = match o.args.as_slice() {
 		[f, p] => (f, p),
@@ -687,6 +736,7 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 		"set" => do_set(o),
 		"fmt" => do_fmt(o),
 		"check" => do_check(o),
+		"init" => do_init(o),
 		"count" => do_enum(o, true),
 		"instances" => do_enum(o, false),
 		other => {

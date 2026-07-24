@@ -72,6 +72,12 @@ def load_cases():
 			if os.path.exists(ms):
 				case["merge_sets"] = _read(ms)
 			case["expected_merged"] = _read(em)
+		case["init_schema"] = None
+		case["expected_init"] = None
+		isch = os.path.join(d, "init-schema.shcl")
+		if os.path.exists(isch):
+			case["init_schema"] = _read(isch)
+			case["expected_init"] = _read(os.path.join(d, "expected-init.shcl"))
 		cases.append(case)
 	if not cases:
 		raise SystemExit("no corpus cases found under {}".format(CORPUS))
@@ -253,6 +259,20 @@ def main():
 			fails.append("{}: merged output differs from expected-merged.shcl".format(case["name"]))
 		if shcl.Document.parse(got).to_canonical() != got:
 			fails.append("{}: merged output is not a fmt fixpoint".format(case["name"]))
+
+	# Generation dimension: generate on the schema must reproduce the golden
+	# starter config, and that output must itself load cleanly.
+	for case in cases:
+		if case["init_schema"] is None:
+			continue
+		text, ifaults = shcl.generate(shcl.Document.parse(case["init_schema"]))
+		if ifaults:
+			fails.append("{}: init schema has faults".format(case["name"]))
+			continue
+		if text != case["expected_init"]:
+			fails.append("{}: init output differs from expected-init.shcl".format(case["name"]))
+		if any(d.severity == shcl.Severity.Error for d in shcl.Document.parse(text).diagnostics()):
+			fails.append("{}: generated starter does not load cleanly".format(case["name"]))
 
 	# Diagnostics: count, line, severity, and stable code per case - the same
 	# shape `check` prints to stdout at Standard (its cross-binding contract).

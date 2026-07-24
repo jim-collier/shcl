@@ -2937,6 +2937,9 @@ type constraint struct {
 	minF     *float64
 	maxF     *float64
 	repeat   *[2]uint64
+	// Generator-only (`shcl init`): validation ignores both.
+	desc        *string // `desc`, a one-line description
+	defaultText *string // `default`, emitted as an inline value
 }
 
 func vdiag(out *[]Diagnostic, line int, msg string) {
@@ -3056,8 +3059,20 @@ func buildSchema(schema *Document) ([]constraint, []Diagnostic) {
 				} else {
 					vdiag(&faults, kid.line, "bad schema constraint 'repeat'")
 				}
-			case "default", "desc":
-				// generator-only; validation ignores them
+			// Generator-only (`shcl init`); validation ignores both. First
+			// occurrence wins (a merged schema could carry two).
+			case "desc":
+				if c.desc == nil {
+					if t, ok := singleText(&kid.value); ok {
+						c.desc = &t
+					}
+				}
+			case "default":
+				if c.defaultText == nil {
+					if t, ok := emitValueInline(&kid.value); ok {
+						c.defaultText = &t
+					}
+				}
 			default:
 				vdiag(&faults, kid.line, fmt.Sprintf("unknown schema key '%s'", kid.name))
 			}
@@ -3186,6 +3201,157 @@ func containsString(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// emitValueInline re-emits a schema `default`/`allowed` value as an inline value
+// (minimal quoting, array elements joined by ", "). ok=false for empty or raw -
+// neither has a usable one-line form. Used by the generator, not the validator.
+func emitValueInline(v *value) (string, bool) {
+	if v.kind != vCell {
+		return "", false
+	}
+	parts := make([]string, len(v.els))
+	for i := range v.els {
+		parts[i] = emitElement(&v.els[i])
+	}
+	return strings.Join(parts, ", "), true
+}
+
+// ---------------------------------------------------------------------------
+// Schema-driven generation: a schema + the Writer -> a commented starter config.
+// ---------------------------------------------------------------------------
+
+func allowedJoin(a *allowedSet) string {
+	var parts []string
+	switch a.kind {
+	case allowInts:
+		for _, x := range a.ints {
+			parts = append(parts, strconv.FormatInt(x, 10))
+		}
+	case allowFloats:
+		for _, x := range a.floats {
+			parts = append(parts, FormatFloat(x))
+		}
+	case allowBools:
+		for _, x := range a.bools {
+			if x {
+				parts = append(parts, "true")
+			} else {
+				parts = append(parts, "false")
+			}
+		}
+	case allowDates:
+		for _, x := range a.dates {
+			parts = append(parts, x.String())
+		}
+	case allowStrings:
+		parts = append(parts, a.strs...)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// genAnnotation is the `# type, ...` line summarizing a constraint, ASCII only.
+func genAnnotation(c *constraint, tyname string) string {
+	parts := []string{tyname}
+	switch {
+	case c.allowed != nil:
+		parts = append(parts, "one of: "+allowedJoin(c.allowed))
+	case c.minI != nil || c.maxI != nil:
+		switch {
+		case c.minI != nil && c.maxI != nil:
+			parts = append(parts, fmt.Sprintf("%d-%d", *c.minI, *c.maxI))
+		case c.minI != nil:
+			parts = append(parts, fmt.Sprintf(">= %d", *c.minI))
+		default:
+			parts = append(parts, fmt.Sprintf("<= %d", *c.maxI))
+		}
+	case c.minF != nil || c.maxF != nil:
+		switch {
+		case c.minF != nil && c.maxF != nil:
+			parts = append(parts, FormatFloat(*c.minF)+"-"+FormatFloat(*c.maxF))
+		case c.minF != nil:
+			parts = append(parts, ">= "+FormatFloat(*c.minF))
+		default:
+			parts = append(parts, "<= "+FormatFloat(*c.maxF))
+		}
+	}
+	if c.repeat != nil {
+		if c.repeat[0] == c.repeat[1] {
+			parts = append(parts, fmt.Sprintf("repeat %d", c.repeat[0]))
+		} else {
+			parts = append(parts, fmt.Sprintf("repeat %d-%d", c.repeat[0], c.repeat[1]))
+		}
+	}
+	if c.required {
+		parts = append(parts, "required")
+	}
+	return strings.Join(parts, ", ")
+}
+
+// Generate emits a commented, typed starter config from a schema (`shcl init
+// --schema`). Required paths are live (their `default`, or an empty value);
+// optional paths are commented out; wildcard paths cannot be materialized and
+// are listed in a trailing comment block. faults != nil = schema faults (V09x),
+// same as Validate / check --schema.
+func Generate(schema *Document) (string, []Diagnostic) {
+	cons, faults := buildSchema(schema)
+	if faults != nil {
+		return "", faults
+	}
+	var b strings.Builder
+	var wild [][2]string
+	first := true
+	for i := range cons {
+		c := &cons[i]
+		tyname := c.ty
+		if tyname == "" {
+			tyname = "any"
+		}
+		hasWild := false
+		for _, s := range c.segs {
+			if s.sel != nil && s.sel.kind == selWildcard {
+				hasWild = true
+				break
+			}
+		}
+		if hasWild {
+			wild = append(wild, [2]string{c.path, tyname})
+			continue
+		}
+		if !first {
+			b.WriteByte('\n')
+		}
+		first = false
+		if c.desc != nil {
+			for _, line := range strings.Split(*c.desc, "\n") {
+				b.WriteString("# ")
+				b.WriteString(line)
+				b.WriteByte('\n')
+			}
+		}
+		b.WriteString("# ")
+		b.WriteString(genAnnotation(c, tyname))
+		b.WriteByte('\n')
+		prefix := "#"
+		if c.required {
+			prefix = ""
+		}
+		if c.defaultText != nil {
+			fmt.Fprintf(&b, "%s%s: %s\n", prefix, c.path, *c.defaultText)
+		} else {
+			fmt.Fprintf(&b, "%s%s:\n", prefix, c.path)
+		}
+	}
+	if len(wild) > 0 {
+		if !first {
+			b.WriteByte('\n')
+		}
+		b.WriteString("# Paths needing an instance name (not generated):\n")
+		for _, w := range wild {
+			fmt.Fprintf(&b, "#   %s   %s\n", w[0], w[1])
+		}
+	}
+	return b.String(), nil
 }
 
 // editDistance is two-row Levenshtein; powers the "did you mean" prose (never

@@ -383,6 +383,29 @@ int main(int argc, char **argv) {
 			for (int li = 0; li < nt; li++) free(ltexts[li]);
 			free(em);
 		}
+
+		// Generation dimension (optional): Generate on the schema must reproduce
+		// the golden starter config, and that output must itself load cleanly.
+		snprintf(path, sizeof path, "%s/%s/init-schema.shcl", corpus, names[ci]); size_t islen; char *isch = read_file(path, &islen);
+		if (isch) {
+			snprintf(path, sizeof path, "%s/%s/expected-init.shcl", corpus, names[ci]); size_t eilen; char *ei = read_file(path, &eilen);
+			if (!ei) { fail(names[ci], "init-schema.shcl without expected-init.shcl"); free(isch); }
+			else {
+				shcl_doc *isd = shcl_parse(isch, islen);
+				int ok = 0;
+				shcl_str it = shcl_generate(isd, &ok);
+				if (!ok) fail(names[ci], "init schema has faults");
+				else {
+					if (it.n != eilen || (eilen && memcmp(it.p, ei, eilen) != 0)) fail(names[ci], "init output differs from expected-init.shcl");
+					shcl_doc *gd = shcl_parse(it.p, it.n);
+					int cln = 1;
+					for (size_t i = 0; i < shcl_diag_count(gd); i++) if (shcl_diag_severity(gd, i) == SHCL_SEV_ERROR) cln = 0;
+					if (!cln) fail(names[ci], "generated starter does not load cleanly");
+					shcl_free(gd);
+				}
+				shcl_free(isd); free(isch); free(ei);
+			}
+		}
 		free(input); free(expected); free(reads);
 	}
 	for (size_t i = 0; i < nn; i++) free(names[i]);

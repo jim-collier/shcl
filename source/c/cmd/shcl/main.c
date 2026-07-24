@@ -27,6 +27,9 @@ static const char *HELP =
 	"  shcl check [options] FILE              load and print diagnostics\n"
 	"                                         (--schema=SCHEMA also validates FILE\n"
 	"                                         against a schema, itself a .shcl file)\n"
+	"  shcl init --schema=SCHEMA              print a commented starter config from\n"
+	"                                         a schema (required fields live, optional\n"
+	"                                         commented, wildcards noted)\n"
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
 	"  shcl help | version                    this help, or the version (also -h/--help, -V/--version)\n"
@@ -493,6 +496,32 @@ static int do_check(Opts *o) {
 	shcl_free(d); free(text); return rc;
 }
 
+static int do_init(Opts *o) {
+	if (reject_layers(o, "init")) return 1;
+	if (!o->schema) { fprintf(stderr, "init needs --schema=FILE (see --help)\n"); return 1; }
+	size_t slen; char *stext = read_input(o->schema, &slen);
+	if (!stext) return 1;
+	// The schema always loads at Standard - a program artifact, not user data.
+	shcl_doc *sd = shcl_parse(stext, slen);
+	int bad = 0; size_t sn = shcl_diag_count(sd);
+	for (size_t i = 0; i < sn; i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) bad = 1;
+	if (bad) {
+		for (size_t i = 0; i < sn; i++) {
+			const char *sev = shcl_diag_severity(sd, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+			shcl_str m = shcl_diag_message(sd, i);
+			fprintf(stderr, "schema line %zu: %s: ", shcl_diag_line(sd, i), sev);
+			fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
+		}
+		fprintf(stderr, "init: schema failed to load\n");
+		shcl_free(sd); free(stext); return 1;
+	}
+	int ok = 0;
+	shcl_str text = shcl_generate(sd, &ok);
+	if (!ok) { fprintf(stderr, "init: schema has faults\n"); shcl_free(sd); free(stext); return 1; }
+	fwrite(text.p, 1, text.n, stdout);
+	shcl_free(sd); free(stext); return 0;
+}
+
 static int do_enum(Opts *o, int want_count) {
 	if (o->nargs != 2) { fprintf(stderr, "count/instances need FILE and PATH (see --help)\n"); return 1; }
 	const char *file = o->args[0], *path = o->args[1]; size_t plen = strlen(path);
@@ -575,6 +604,7 @@ int main(int argc, char **argv) {
 	if (!strcmp(cmd, "set")) return do_set(&o);
 	if (!strcmp(cmd, "fmt")) return do_fmt(&o);
 	if (!strcmp(cmd, "check")) return do_check(&o);
+	if (!strcmp(cmd, "init")) return do_init(&o);
 	if (!strcmp(cmd, "count")) return do_enum(&o, 1);
 	if (!strcmp(cmd, "instances")) return do_enum(&o, 0);
 	fprintf(stderr, "unknown command: %s (see --help)\n", cmd);

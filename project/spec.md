@@ -472,6 +472,19 @@ Comment trivia rides with the nodes that carry it, and the merged document is a 
 
 On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `set`) accepts repeated `--layer=FILE` (each merged under the positional `FILE`, in listed order = lowest first) and repeated `--set=PATH=VALUE` (each written as literal text via the Writer, as the final top layer, after all files). `fmt` with layers prints the merged canonical document, so it doubles as the merge command. `check` does not take layers - its diagnostics are inherently single-file. The precedence, low to high, is: `--layer` files in order, then `FILE`, then `--set`. Environment-variable mapping is deliberately not provided: the env namespace and its naming convention belong to the consuming program, which can map env vars onto `--set` itself.
 
+## Schema-driven generation
+
+`generate(schema)` turns a schema into a commented, typed starter config - the schema's `desc`/`default` vocabulary (reserved by the validator, ignored there) put to work. `shcl init --schema=FILE` prints it to stdout.
+
+The output, per schema field in schema order:
+
+- A `desc` line becomes a leading `# ` comment.
+- A generated annotation line summarizes the type and constraints, ASCII only: `# <type>[, one of: v1, v2, ...][, <lo>-<hi> | >= <lo> | <= <hi>][, repeat <lo>[-<hi>]][, required]`. An untyped field shows `any`. Allowed values and numeric bounds are rendered in the type's canonical text (the same float formatter reads use). This annotation is part of the generated file, so it is a byte-for-byte cross-binding contract, not free prose.
+- The field line itself: **required** fields are live (`path: <default>`, or `path:` with an empty value when there is no `default`); **optional** fields are the same line commented out (`#path: ...`), so the starter is valid and minimal as-is.
+- Fields whose path contains a wildcard cannot be materialized (there is no concrete instance name), so they are collected into a trailing `# Paths needing an instance name (not generated):` comment block, one `#   <path>   <type>` per line.
+
+Paths are emitted in the schema's flat dotted/bracket form (mirroring the schema's own shape), not expanded to block form; the result is valid SHCL that loads with no error diagnostics. A schema fault (V09x) makes generation fail the same way validation does. `generate` is a library call in every binding (plus the C++ veneer); `init` reads no document, so it takes no `--layer`/`--set`.
+
 ## Error handling philosophy
 
 SHCL never bails on a whole file for one bad line (at Loose and Standard strictness; Strict turns any `error` diagnostic into a load failure by request - see Strictness levels). The parser skips or best-effort-repairs the offending line, emits a diagnostic, and continues. The Accessor never errors when it can unambiguously reach a value; malformed content before or after a clean section does not poison that section. Errors are reserved for genuine ambiguity (or surfaced on request via `onBad: Error`).
