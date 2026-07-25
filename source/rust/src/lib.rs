@@ -1789,8 +1789,10 @@ impl Document {
 	/// Overlay `over` (a higher-priority layer) onto self (the lower one).
 	/// Container instances merge by `(name, value)` exactly like the in-file
 	/// rule; a leaf name present in `over` *replaces* self's same-named children
-	/// at that scope, so scalars, arrays, and raw blocks get real override.
-	/// over-only nodes are appended. Comment trivia rides with each node.
+	/// at that scope - provided those base children are leaves too - so scalars,
+	/// arrays, and raw blocks get real override while a bare section header
+	/// merges instead of wiping. over-only nodes are appended. Comment trivia
+	/// rides with each node.
 	/// `Load(defaults, site, user)` is a left fold of this: each later file
 	/// overlaid on the accumulation of the earlier ones.
 	pub fn merge(&mut self, over: &Document) {
@@ -1816,9 +1818,17 @@ impl Document {
 				.copied()
 				.filter(|&k| &over.arena[k].name == name)
 				.collect();
-			// A name whose over-side nodes are all leaves is an override; a name
-			// with any container instance merges instance-by-instance instead.
-			if group.iter().all(|&k| over.arena[k].children.is_empty()) {
+			// A name whose over-side nodes are all leaves is an override - but
+			// only when the base side of the group is leaf-shaped too. Against a
+			// base container, a childless over-node is a wrapper mention, not a
+			// leaf, so it falls through to the instance merge: a bare section
+			// header in a higher layer never wipes the subtree below it.
+			let over_leafy = group.iter().all(|&k| over.arena[k].children.is_empty());
+			let base_container = self.arena[base_parent]
+				.children
+				.iter()
+				.any(|&b| self.arena[b].name == *name && !self.arena[b].children.is_empty());
+			if over_leafy && !base_container {
 				self.replace_leaf_group(base_parent, name, over, &group);
 			} else {
 				for &ok in &group {

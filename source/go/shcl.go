@@ -1925,10 +1925,12 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) {
 
 // Merge overlays over (a higher-priority layer) onto d (the lower one).
 // Container instances merge by (name, value) exactly like the in-file rule; a
-// leaf name present in over replaces d's same-named children at that scope, so
-// scalars, arrays, and raw blocks get real override. over-only nodes are
-// appended. Comment trivia rides with each node. Load(defaults, site, user) is
-// a left fold of this: each later file overlaid on the earlier ones.
+// leaf name present in over replaces d's same-named children at that scope -
+// provided those base children are leaves too - so scalars, arrays, and raw
+// blocks get real override while a bare section header merges instead of
+// wiping. over-only nodes are appended. Comment trivia rides with each node.
+// Load(defaults, site, user) is a left fold of this: each later file overlaid
+// on the earlier ones.
 func (d *Document) Merge(over *Document) {
 	d.overlay(root, over, root)
 	d.orphans = append(d.orphans, over.orphans...)
@@ -1958,16 +1960,26 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 				group = append(group, k)
 			}
 		}
-		// A name whose over-side nodes are all leaves is an override; a name with
-		// any container instance merges instance-by-instance instead.
-		allLeaves := true
+		// A name whose over-side nodes are all leaves is an override - but only
+		// when the base side of the group is leaf-shaped too. Against a base
+		// container, a childless over-node is a wrapper mention, not a leaf, so
+		// it falls through to the instance merge: a bare section header in a
+		// higher layer never wipes the subtree below it.
+		overLeafy := true
 		for _, k := range group {
 			if len(over.arena[k].children) > 0 {
-				allLeaves = false
+				overLeafy = false
 				break
 			}
 		}
-		if allLeaves {
+		baseContainer := false
+		for _, b := range d.arena[baseParent].children {
+			if d.arena[b].name == name && len(d.arena[b].children) > 0 {
+				baseContainer = true
+				break
+			}
+		}
+		if overLeafy && !baseContainer {
 			d.replaceLeafGroup(baseParent, name, over, group)
 			continue
 		}
@@ -2020,9 +2032,13 @@ func (d *Document) replaceLeafGroup(baseParent int, name string, over *Document,
 // cloneSubtree deep-copies over's subtree at oi into d's arena under parent.
 func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
 	src := over.arena[oi]
+	// Copy the element storage too - a struct copy would share the els backing
+	// array with `over`, and the clone must survive `over` being released.
+	cv := src.value
+	cv.els = append([]element(nil), cv.els...)
 	nd := nodeData{
 		name:      src.name,
-		value:     src.value,
+		value:     cv,
 		parent:    parent,
 		line:      src.line,
 		starList:  src.starList,

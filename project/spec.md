@@ -464,7 +464,9 @@ Composing a config from defaults, then a site file, then a user file, is `merge`
 
 The overlay rule, per parent scope:
 
-- A **leaf** name present in `over` (its `over`-side nodes all have no children - a scalar, an inline array, or a raw block) **replaces** every `base` child of that name, spliced in at the first replaced position. This is real override: a later `port: 9090` wins over an earlier `port: 8080`, and a later `tags: green` replaces the earlier repeated-leaf list `tags: red` / `tags: blue` wholesale (override, not append).
+- A **leaf** name present in `over` (its `over`-side nodes all have no children - a scalar, an inline array, or a raw block) **replaces** every `base` child of that name, spliced in at the first replaced position - provided the `base` children of that name are themselves all childless (or absent). This is real override: a later `port: 9090` wins over an earlier `port: 8080`, a later `tags: green` replaces the earlier repeated-leaf list `tags: red` / `tags: blue` wholesale (override, not append), and a bare `port:` clears the leaf.
+
+- A childless `over` node whose `base`-side name group has any **container** instance is a **wrapper mention**, not a leaf override: it merges by `(field-name, value)` like any container instance, so a matching instance is left untouched and an unmatched one is appended as a new empty instance. A bare section header (`server:`, or `server: web1` with no body) in a higher layer therefore never deletes the base subtree beneath it - the same choice JSON Merge Patch and kustomize make. The deliberate cost: there is no way to blank a whole section from a higher layer; an explicit deletion spelling may be added post-1.0 if one proves necessary.
 
 - A name with any **container** instance (a node with children) in `over` merges instance-by-instance: each `over` instance matches a `base` instance by `(field-name, value)` - the same key the in-file merge rule uses - and recurses; an unmatched `over` instance is appended in file order. So two layers' children under `server: web1` combine, while a new `server: web3` is added.
 
