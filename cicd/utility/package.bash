@@ -14,7 +14,7 @@
 ##	formats), nonzero = a package build failed.
 ##	History: At bottom of script.
 
-##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
+##	Copyright © 2026 Bubbles (ID: XଌฅრX۳ᛟԃლፀƅꓩหδლც)
 ##	Licensed under The MIT License (MIT). Full text at:
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
@@ -85,4 +85,4 @@ fi
 
 
 ##	History:
-##		- 2026-07-22 JC: Created: nfpm deb/rpm + NSIS setup over the release artifact dir.
+##		- 2026-07-22: Created: nfpm deb/rpm + NSIS setup over the release artifact dir.

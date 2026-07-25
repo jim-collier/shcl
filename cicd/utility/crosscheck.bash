@@ -22,7 +22,7 @@
 ##	Exit: 0 all agree, 1 divergence, 2 usage/missing input or too few comparisons.
 ##	History: At bottom of script.
 
-##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
+##	Copyright © 2026 Bubbles (ID: XଌฅრX۳ᛟԃლፀƅꓩหδლც)
 ##	Licensed under The MIT License (MIT). Full text at:
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
@@ -210,11 +210,11 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 
 
 ##	Script history:
-##		- 20260712 JC: Created.
-##		- 20260721 JC: Preserve trailing newlines in compares; zero-comparison and
+##		- 20260712: Created.
+##		- 20260721: Preserve trailing newlines in compares; zero-comparison and
 ##		               empty-extra floors; keep the last reads.tsv row when the
 ##		               file has no trailing newline; skip NUL-bearing inputs (bash
 ##		               can't hold a NUL; native runners pin those).
-##		- 20260724 JC: Layered-load dimension (fmt with --layer/--set) for cases
+##		- 20260724: Layered-load dimension (fmt with --layer/--set) for cases
 ##		               carrying expected-merged.shcl; generation dimension (init
 ##		               --schema) for cases carrying init-schema.shcl.
