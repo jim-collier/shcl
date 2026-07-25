@@ -170,9 +170,11 @@ void shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen,
 // --- Layered loading --------------------------------------------------------
 // Overlay `over` (a higher-priority layer) onto `d` (the lower one). Container
 // instances merge by (name, value) like the in-file rule; a leaf name present
-// in `over` replaces d's same-named children at that scope (real override for
-// scalars, arrays, raw blocks); over-only nodes are appended. `over`'s content
-// is deep-copied into d's arena, so d stays valid after `over` is freed.
+// in `over` replaces d's same-named children at that scope - provided those
+// base children are leaves too (real override for scalars, arrays, raw blocks;
+// a bare section header merges instead of wiping); over-only nodes are
+// appended. `over`'s content is deep-copied into d's arena, so d stays valid
+// after `over` is freed.
 void shcl_merge(shcl_doc *d, const shcl_doc *over);
 
 // CLI/aliases: 1|2|3 or loose|standard|strict. Returns 1 on success.
@@ -1876,14 +1878,25 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 		for (size_t j = 0; j < gi; j++)
 			if (s_eq(over->nodes.data[over->nodes.data[op].children.data[j]].name, name)) { isfirst = 0; break; }
 		if (!isfirst) continue;
-		// A name whose over-side nodes are all leaves is an override; a name with
-		// any container instance merges instance-by-instance instead.
-		int all_leaves = 1;
+		// A name whose over-side nodes are all leaves is an override - but only
+		// when the base side of the group is leaf-shaped too. Against a base
+		// container, a childless over-node is a wrapper mention, not a leaf, so
+		// it falls through to the instance merge: a bare section header in a
+		// higher layer never wipes the subtree below it.
+		int over_leafy = 1;
 		for (size_t i = 0; i < nk; i++) {
 			size_t ok = over->nodes.data[op].children.data[i];
-			if (s_eq(over->nodes.data[ok].name, name) && over->nodes.data[ok].children.len > 0) { all_leaves = 0; break; }
+			if (s_eq(over->nodes.data[ok].name, name) && over->nodes.data[ok].children.len > 0) { over_leafy = 0; break; }
 		}
-		if (all_leaves) { w_replace_leaf_group(d, bp, over, op, name); continue; }
+		int base_container = 0;
+		{
+			VecSize bch = NODE(d, bp).children;
+			for (size_t k = 0; k < bch.len; k++) {
+				size_t b = bch.data[k];
+				if (s_eq(NODE(d, b).name, name) && NODE(d, b).children.len > 0) { base_container = 1; break; }
+			}
+		}
+		if (over_leafy && !base_container) { w_replace_leaf_group(d, bp, over, op, name); continue; }
 		for (size_t i = 0; i < nk; i++) {
 			size_t ok = over->nodes.data[op].children.data[i];
 			if (!s_eq(over->nodes.data[ok].name, name)) continue;

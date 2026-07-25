@@ -1,0 +1,11 @@
+# base: two servers and a couple of leaves
+retries: 3
+server: web1
+	port: 8080
+	host: a.example
+server: web2
+	port: 9090
+mode:
+# over layer: wrapper mentions must merge, not wipe
+server:
+# just a note

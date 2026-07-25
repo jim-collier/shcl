@@ -91,11 +91,12 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Bugs
 
-- 🔘 Code Review 20260725 item 1: a higher layer that names a container with no children deletes the whole subtree below it.
+- ✅ Code Review 20260725 item 1: a higher layer that names a container with no children deletes the whole subtree below it.
 	- `server:` (or `server: web1` with an empty body) in an over layer wipes every child the lower layers put there, silently, exit 0.
 	- Worse than it reads: the wipe covers every same-named instance, so mentioning `server: web1` also deletes an untouched `server: web2`.
 	- A body that is only a comment counts as empty, because comments are trivia rather than children.
 	- Needs a decision, not just a fix: the code matches the spec's own wording, and the obvious narrowing removes the ability to blank a section from a higher layer.
+	- Decided and fixed: the leaf-override path now applies only when the base side of the name group is also all-childless, so a bare section header merges (matching instance untouched, unmatched appended as an empty instance) and leaf clearing still works. No way to blank a section from a higher layer; a deletion spelling is deferred post-1.0. All four bindings, spec reworded, corpus case 027.
 	- Detail: `design.md` - Code Review 20260725, item 1.
 
 - 🔘 Code Review 20260725 item 2: deep documents crash three of the four bindings, each at a different depth.
@@ -191,9 +192,10 @@ In each section, items are listed approximately from newest to oldest.
 	- The C rows drop the `plen` argument and name `shcl_get_int_ex`, which does not exist.
 	- This is the table the spec points a junior at.
 
-- 🔘 Code Review 20260725 item 20: Go and Python `clone_subtree` share element storage with the `over` document instead of copying it.
+- ✅ Code Review 20260725 item 20: Go and Python `clone_subtree` share element storage with the `over` document instead of copying it.
 	- Latent only - no public API mutates a value in place after parse today - but the docstrings and spec both say the content is copied.
 	- One line per port, and exactly the structural drift the parity rule exists to prevent.
+	- Fixed: the Go clone copies the element backing array, the Python clone builds a fresh value (elements included), matching the reference and C.
 
 - 🔘 Code Review 20260725 item 21: C and C++ `generate()` give no way to see which schema line is at fault.
 	- `shcl_generate` signals failure with a bare `ok` flag and discards the fault list the other three return, so C `init` prints only the summary.

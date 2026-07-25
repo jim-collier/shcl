@@ -1381,10 +1381,11 @@ class Document:
 		"""Overlay `over` (a higher-priority layer) onto self (the lower one).
 		Container instances merge by (name, value) exactly like the in-file rule;
 		a leaf name present in `over` replaces self's same-named children at that
-		scope, so scalars, arrays, and raw blocks get real override. over-only
-		nodes are appended. Comment trivia rides with each node. Load(defaults,
-		site, user) is a left fold of this: each later file overlaid on the
-		earlier ones."""
+		scope - provided those base children are leaves too - so scalars, arrays,
+		and raw blocks get real override while a bare section header merges
+		instead of wiping. over-only nodes are appended. Comment trivia rides
+		with each node. Load(defaults, site, user) is a left fold of this: each
+		later file overlaid on the earlier ones."""
 		self._overlay(ROOT, over, ROOT)
 		self.orphans.extend(over.orphans)
 
@@ -1398,9 +1399,17 @@ class Document:
 				names.append(n)
 		for name in names:
 			group = [k for k in over_kids if over.arena[k].name == name]
-			# A name whose over-side nodes are all leaves is an override; a name
-			# with any container instance merges instance-by-instance instead.
-			if all(not over.arena[k].children for k in group):
+			# A name whose over-side nodes are all leaves is an override - but
+			# only when the base side of the group is leaf-shaped too. Against a
+			# base container, a childless over-node is a wrapper mention, not a
+			# leaf, so it falls through to the instance merge: a bare section
+			# header in a higher layer never wipes the subtree below it.
+			over_leafy = all(not over.arena[k].children for k in group)
+			base_container = any(
+				self.arena[b].name == name and self.arena[b].children
+				for b in self.arena[base_parent].children
+			)
+			if over_leafy and not base_container:
 				self._replace_leaf_group(base_parent, name, over, group)
 				continue
 			for ok in group:
@@ -1438,7 +1447,15 @@ class Document:
 	def _clone_subtree(self, over, oi, parent):
 		"""Deep-copy `over`'s subtree at `oi` into self's arena under `parent`."""
 		src = over.arena[oi]
-		node = _Node(src.name, src.value, parent, src.line)
+		# Copy the value too - sharing the object (and its element list) with
+		# `over` would break the promise that the clone survives its release.
+		cv = _Value(src.value.kind)
+		cv.els = None if src.value.els is None else [_Element(e.text, e.quoted) for e in src.value.els]
+		cv.content = src.value.content
+		cv.info = src.value.info
+		cv.fence_char = src.value.fence_char
+		cv.fence_len = src.value.fence_len
+		node = _Node(src.name, cv, parent, src.line)
 		node.star_list = src.star_list
 		node.star_mixed = src.star_mixed
 		node.leading = list(src.leading)
