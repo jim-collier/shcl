@@ -61,6 +61,13 @@ typedef struct { int     *values; size_t n; shcl_status status; const shcl_statu
 typedef struct { shcl_str *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_str_arr;
 typedef struct { shcl_datetime *values; size_t n; shcl_status status; const shcl_status *statuses; } shcl_read_dt_arr;
 
+// Maximum nesting depth (levels below the document root), enforced at load and
+// by the Writer. Deeper lines are skipped with an E016 error. The cap is what
+// keeps the recursive tree walks (emit, merge, clone) safely inside every
+// binding's stack, so a hostile or machine-generated document can make a load
+// fail but never crash the consumer.
+#define SHCL_MAX_DEPTH ((size_t)512)
+
 // Parse never fails: bad lines are skipped and diagnosed. Text need not be NUL
 // terminated. Free with shcl_free.
 shcl_doc *shcl_parse(const char *text, size_t len);
@@ -1129,6 +1136,7 @@ static const char *diag_code(shcl_severity sev, S msg) {
 	if (s_starts(msg, "malformed line skipped")) return "E014";
 	if (s_starts(msg, "malformed line: ")) return "E013";
 	if (s_starts(msg, "missing colon")) return "E015";
+	if (s_starts(msg, "nesting deeper than")) return "E016";
 	if (s_starts(msg, "unknown field ")) return "V001";
 	if (s_starts(msg, "required path missing")) return "V002";
 	if (s_starts(msg, "wrong type at ")) return "V003";
@@ -1219,6 +1227,15 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 	if (NODE(P->d, parent).star_list && !NODE(P->d, parent).star_mixed) {
 		NODE(P->d, parent).star_mixed = 1;
 		p_err(P, line, s_lit("field mixed with list elements"));
+	}
+	/* Nesting cap: parent depth plus the segments this line adds. Checked
+	   before any node is created so a rejected line leaves nothing behind. */
+	size_t parent_depth = 0;
+	for (size_t up = parent; up != ROOT; up = NODE(P->d, up).parent) parent_depth++;
+	if (parent_depth + nsegs > SHCL_MAX_DEPTH) {
+		SB m = {0}; sb_puts(a, &m, "nesting deeper than "); sb_put_u64(a, &m, SHCL_MAX_DEPTH); sb_puts(a, &m, " levels; line skipped");
+		p_err(P, line, sb_S(&m));
+		return 0;
 	}
 	size_t cur = parent;
 	for (size_t i = 0; i < nsegs; i++) {
@@ -1683,6 +1700,8 @@ static int w_place(shcl_doc *d, S path, size_t *out) {
 	Arena *a = &d->arena;
 	PathScan ps = scan_path(a, path);
 	if (!ps.ok || ps.has_value || ps.segs.len == 0) return 0;
+	/* Writer side of the load-time nesting cap: never create deeper. */
+	if (ps.segs.len > SHCL_MAX_DEPTH) return 0;
 	size_t cur = ROOT;
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		Segment *seg = &ps.segs.data[i];

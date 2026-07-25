@@ -99,7 +99,8 @@ In each section, items are listed approximately from newest to oldest.
 	- Decided and fixed: the leaf-override path now applies only when the base side of the name group is also all-childless, so a bare section header merges (matching instance untouched, unmatched appended as an empty instance) and leaf clearing still works. No way to blank a section from a higher layer; a deletion spelling is deferred post-1.0. All four bindings, spec reworded, corpus case 027.
 	- Detail: `design.md` - Code Review 20260725, item 1.
 
-- 🔘 Code Review 20260725 item 2: deep documents crash three of the four bindings, each at a different depth.
+- ✅ Code Review 20260725 item 2: deep documents crash three of the four bindings, each at a different depth.
+	- Fixed with a load-time nesting cap: 512 levels, enforced in all four parsers before any node is created (`E016`, line skipped) and mirrored by the Writer's `place`. Every measured cliff sat far above the cap, so the existing recursion is now safe everywhere; the reference keeps its recursive walks on purpose (structural parity beats a one-binding rewrite). Spec gained the cap and the load-code table; corpus case 028 pins the error, a reference test pins the 512 boundary and the writer refusal.
 	- Emit and merge recurse per nesting level while the parser is iterative, so a document parses fine and then dies when anything formats or merges it.
 	- Python merge is the acute one - a 4.9 KB file is enough. The reference aborts on `fmt` around 33k levels; C segfaults; Go survives by growing to tens of GB.
 	- A dotted path buys one level per two bytes, so depth is cheap for an attacker and needs no odd syntax.
@@ -231,15 +232,17 @@ In each section, items are listed approximately from newest to oldest.
 	- Each raw node rescans the parent's children to decide whether it merges with the line above; the parent's own walk already has that information.
 	- 32k raw blocks under one field format in 2.8 s against a 0.05 s parse. Narrow, but free to fix and behavior-preserving.
 
-- 🔘 Code Review 20260725 item 28: give the loader opt-out limits.
+- 🛠️ Code Review 20260725 item 28: give the loader opt-out limits.
 	- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
 	- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
 	- The depth cap is the shared fix for item 2 and should land with it; the rest is the wider self-defense story.
+	- Depth half landed with item 2 (fixed 512-level cap, `E016`). Size/node/array limits still open.
 
-- 🔘 Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
+- 🛠️ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
 	- All four bindings recover the code from `msg.starts_with(...)` over ~30 hand-ordered prefixes, so rewording a message can change a code and the ordering is load-bearing.
 	- Separately, `V001`-`V099` are fully tabled but `E001`-`E015` and `H001` are enumerated nowhere, while users are told to gate CI on `check`.
 	- The doc half is cheap and should land before 1.0; threading the code through every call site is the larger, riskier half.
+	- Doc half landed with the item-2 depth work: `E001`-`E016` + `H001` now tabled in the spec's Diagnostics section. Code-threading half still open.
 
 - 🔘 Code Review 20260725 item 30: the canonical formatter discards blank-line grouping.
 	- Comments were rescued as trivia by the prior review's item 4; blank lines are the other half of the same thing and were left out, so `fmt` flattens a grouped config into a wall.

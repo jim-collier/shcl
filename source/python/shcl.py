@@ -78,6 +78,7 @@ def _diag_code(msg):
 		("malformed line skipped", "E014"),
 		("malformed line: ", "E013"),
 		("missing colon", "E015"),
+		("nesting deeper than", "E016"),
 		("unknown field ", "V001"),
 		("required path missing", "V002"),
 		("wrong type at ", "V003"),
@@ -304,6 +305,13 @@ class _Node:
 
 
 ROOT = 0
+
+# Maximum nesting depth (levels below the document root), enforced at load and
+# by the Writer. Deeper lines are skipped with an E016 error. The cap is what
+# keeps the recursive tree walks (emit, merge, clone) safely inside every
+# binding's stack, so a hostile or machine-generated document can make a load
+# fail but never crash the consumer.
+MAX_DEPTH = 512
 
 
 # ---------------------------------------------------------------------------
@@ -711,6 +719,16 @@ class _Parser:
 		if pnode.star_list and not pnode.star_mixed:
 			pnode.star_mixed = True
 			self._err(line, "field mixed with list elements")
+		# Nesting cap: parent depth plus the segments this line adds. Checked
+		# before any node is created so a rejected line leaves nothing behind.
+		parent_depth = 0
+		up = parent
+		while up != ROOT:
+			parent_depth += 1
+			up = self.arena[up].parent
+		if parent_depth + len(segs) > MAX_DEPTH:
+			self._err(line, "nesting deeper than {} levels; line skipped".format(MAX_DEPTH))
+			return None
 		cur = parent
 		last = len(segs) - 1
 		for i, seg in enumerate(segs):
@@ -1228,6 +1246,9 @@ class Document:
 		except _PathError:
 			return None
 		if value_text is not None or not segments:
+			return None
+		# Writer side of the load-time nesting cap: never create deeper.
+		if len(segments) > MAX_DEPTH:
 			return None
 		cur = ROOT
 		for seg in segments:

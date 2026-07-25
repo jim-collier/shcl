@@ -105,6 +105,8 @@ func diagCode(msg string) string {
 		return "E013"
 	case strings.HasPrefix(msg, "missing colon"):
 		return "E015"
+	case strings.HasPrefix(msg, "nesting deeper than"):
+		return "E016"
 	case strings.HasPrefix(msg, "unknown field "):
 		return "V001"
 	case strings.HasPrefix(msg, "required path missing"):
@@ -367,6 +369,13 @@ type Document struct {
 }
 
 const root = 0
+
+// MaxDepth is the maximum nesting depth (levels below the document root),
+// enforced at load and by the Writer. Deeper lines are skipped with an E016
+// error. The cap is what keeps the recursive tree walks (emit, merge, clone)
+// safely inside every binding's stack, so a hostile or machine-generated
+// document can make a load fail but never crash the consumer.
+const MaxDepth = 512
 
 // ---------------------------------------------------------------------------
 // Lexical helpers
@@ -894,6 +903,16 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 	if p.arena[parent].starList && !p.arena[parent].starMixed {
 		p.arena[parent].starMixed = true
 		p.err(line, "field mixed with list elements")
+	}
+	// Nesting cap: parent depth plus the segments this line adds. Checked
+	// before any node is created so a rejected line leaves nothing behind.
+	parentDepth := 0
+	for up := parent; up != root; up = p.arena[up].parent {
+		parentDepth++
+	}
+	if parentDepth+len(segs) > MaxDepth {
+		p.err(line, fmt.Sprintf("nesting deeper than %d levels; line skipped", MaxDepth))
+		return 0, false
 	}
 	cur := parent
 	for i := range segs {
@@ -1700,6 +1719,10 @@ func (d *Document) childOrCreate(parent int, name string) int {
 func (d *Document) place(path string) (int, bool) {
 	scan, err := scanPath(path)
 	if err != nil || scan.valueText != nil || len(scan.segments) == 0 {
+		return 0, false
+	}
+	// Writer side of the load-time nesting cap: never create deeper.
+	if len(scan.segments) > MaxDepth {
 		return 0, false
 	}
 	cur := root

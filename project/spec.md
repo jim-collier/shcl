@@ -375,6 +375,29 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 
 - Loading also yields a list of structured **diagnostics** (line number + severity + a stable **code** + a human message) for every skipped or repaired line, which the consumer may inspect or ignore. Severity is `error` (a line was skipped or repaired) or `hint` (legal input that looks like a common mistake, e.g. the repeated-leaf array hint). The split matters for Strict mode: only `error` diagnostics fail a strict load.
 	- The **code** (`E001..`, `H001..`) is the portable contract - the same kind of problem carries the same code in every binding. The human **message** is a free, per-binding voice and is not part of the contract. The `shcl check` CLI reflects this: it prints `line N: severity: CODE` to stdout (compared across bindings) and the prose message to stderr (dropped by the differential check). `check` exits nonzero when any `error` diagnostic is present - not only on a strict load failure - so a CI gate on `check` catches dropped lines at any strictness.
+	- The load-time codes, so a CI gate can key on them (validation adds the `V###` range, tabled under Schema validation):
+
+| Code | Meaning
+| :--: | :--
+| `E001` | field line under a parent already holding stacked `*` list elements (field kept)
+| `E002` | value after a last-segment selector (`a.b[X]: v`) - the value is ignored
+| `E003` | `[#N]` selector names an instance that does not exist
+| `E004` | wildcard selector on a binding line (wildcards are query-only)
+| `E005` | unterminated raw block (closing fence never found)
+| `E006` | raw-block fence with no parent field to bind to
+| `E007` | stacked `*` list element with no parent field
+| `E008` | stacked `*` list element under a parent with field children (element dropped)
+| `E009` | empty stacked `*` list element
+| `E010` | bare comma in a stacked `*` list element (one element per line)
+| `E011` | stacked `*` element for a field that already has a value (element ignored)
+| `E012` | indentation matches no open level
+| `E013` | malformed `*` line (`*` not followed by a space); line skipped
+| `E014` | malformed line skipped (with the reason named in the message)
+| `E015` | missing colon (repaired as an empty value)
+| `E016` | nesting deeper than the 512-level cap (line skipped)
+| `H001` | repeated bare leaf (array spelled as repeated lines) - the mandatory hint
+
+- **Limits**: nesting depth is capped at 512 levels below the document root. A line that would bind a node deeper than the cap is an `error` (`E016`) and is skipped; the Writer likewise refuses to create a deeper path. The cap is what makes any loadable document safe to format, merge, and copy in every binding - depth-linear recursion can never outrun a thread stack - and 512 is far beyond any hand-authored nesting.
 
 - The **Writer** handles the reverse of the Accessor: emit values, defaults, and comment sections, and canonicalize a file (see below). It mirrors the Accessor's typed-entry-point shape - a `Set<T>` per type (`SetInt`/`SetString`/.../`SetRaw`) and their array forms - so a programmatic value lands as canonical text with no consumer-side formatting. Each setter is the exact inverse of the matching read: `SetString` re-quotes and escapes so the value reads back verbatim; `SetFloat`/`SetInt` emit the same canonical number text the reader accepts; `SetDateTime` stores the canonical spelling; `SetRaw` picks a fence long enough that the content cannot close it early. A **set** creates the path (intermediate nodes as needed) and replaces the value at the leaf; a `[value]`/`[#index]` selector on the path targets a specific instance (a `[value]` selector creates the instance if absent). Companions round out the surface: `Set<T>Default` writes only when the path does not already resolve (the "emit defaults" half), `Exists` reports presence, `SetComment` attaches a leading comment line (creating an empty node so a section can be annotated), and `Remove` deletes the node(s) at a path. After any edits, the canonical formatter emits the result; a written document is a formatter fixpoint like any other canonical output.
 
