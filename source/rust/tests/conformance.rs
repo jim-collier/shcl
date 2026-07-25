@@ -586,3 +586,30 @@ fn init_generation_matches_expected() {
 		);
 	}
 }
+
+#[test]
+fn depth_cap_boundary_and_writer() {
+	// Exactly at the cap: loads clean, formats, and round-trips.
+	let segs: Vec<String> = (0..shcl::MAX_DEPTH).map(|i| format!("a{}", i)).collect();
+	let at_cap = format!("{}: 1", segs.join("."));
+	let doc = Document::parse(&at_cap);
+	assert!(doc.diagnostics().is_empty(), "at-cap doc must load clean");
+	let out = doc.to_canonical();
+	assert_eq!(Document::parse(&out).to_canonical(), out);
+	// One past the cap: a single E016, line skipped, strict load fails.
+	let over = format!("a.{}: 1", segs.join("."));
+	let doc2 = Document::parse(&over);
+	assert_eq!(doc2.diagnostics().len(), 1);
+	assert_eq!(doc2.diagnostics()[0].code, "E016");
+	assert_eq!(doc2.to_canonical(), "");
+	// The Writer refuses to create past the cap and stays a no-op.
+	let mut w = Document::new();
+	let deep_path = format!("a.{}", segs.join("."));
+	w.set_int(&deep_path, 1);
+	assert!(
+		!w.exists("a"),
+		"writer must not half-create a too-deep path"
+	);
+	w.set_int(&segs.join("."), 2);
+	assert!(w.exists("a0"), "writer must still create an at-cap path");
+}

@@ -85,6 +85,8 @@ fn diag_code(msg: &str) -> &'static str {
 		"E013"
 	} else if msg.starts_with("missing colon") {
 		"E015"
+	} else if msg.starts_with("nesting deeper than") {
+		"E016"
 	} else if msg.starts_with("unknown field ") {
 		"V001"
 	} else if msg.starts_with("required path missing") {
@@ -313,6 +315,13 @@ pub struct Document {
 }
 
 const ROOT: usize = 0;
+
+/// Maximum nesting depth (levels below the document root), enforced at load
+/// and by the Writer. Deeper lines are skipped with an `E016` error. The cap
+/// is what keeps the recursive tree walks (emit, merge, clone) safely inside
+/// every binding's stack, so a hostile or machine-generated document can make
+/// a load fail but never crash the consumer.
+pub const MAX_DEPTH: usize = 512;
 
 // ---------------------------------------------------------------------------
 // Lexical helpers
@@ -754,6 +763,21 @@ impl Parser {
 		if self.arena[parent].star_list && !self.arena[parent].star_mixed {
 			self.arena[parent].star_mixed = true;
 			self.err(line, "field mixed with list elements");
+		}
+		// Nesting cap: parent depth plus the segments this line adds. Checked
+		// before any node is created so a rejected line leaves nothing behind.
+		let mut parent_depth = 0usize;
+		let mut up = parent;
+		while up != ROOT {
+			parent_depth += 1;
+			up = self.arena[up].parent;
+		}
+		if parent_depth + segs.len() > MAX_DEPTH {
+			self.err(
+				line,
+				format!("nesting deeper than {} levels; line skipped", MAX_DEPTH),
+			);
+			return None;
 		}
 		let mut cur = parent;
 		for (i, seg) in segs.iter().enumerate() {
@@ -1588,6 +1612,10 @@ impl Document {
 	fn place(&mut self, path: &str) -> Option<usize> {
 		let scan = scan_path(path).ok()?;
 		if scan.value_text.is_some() || scan.segments.is_empty() {
+			return None;
+		}
+		// Writer side of the load-time nesting cap: never create deeper.
+		if scan.segments.len() > MAX_DEPTH {
 			return None;
 		}
 		let mut cur = ROOT;
