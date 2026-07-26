@@ -430,6 +430,9 @@ typedef struct {
 	   (later ones demote to leading - a canonical line has room for one). */
 	VecS leading;
 	S trailing; /* n == 0 = none */
+	/* Blank-line grouping is the other half of hand-authored layout: set when
+	   a blank line preceded this node's binding line (runs collapse to one). */
+	int blank_before;
 } Node;
 DEFINE_VEC(VecNode, Node)
 
@@ -1180,7 +1183,7 @@ static void cmap_del(CMap *m, uint64_t h, S name, S key, size_t val) {
    star_*: a stacked list defers its merge-key remap while it is the open field
    (rebuilding the key per element is O(list^2) time and arena garbage); the
    deferred remap flushes before any other map lookup. */
-typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecS pending; int star_open; size_t star_node; S star_key; } Parser;
+typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecS pending; int star_open; size_t star_node; S star_key; int saw_blank; } Parser;
 
 // The one place prose couples to a code, so the wording stays free everywhere else.
 static const char *diag_code(shcl_severity sev, S msg) {
@@ -1492,7 +1495,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	Node root; memset(&root, 0, sizeof root); root.value = v_empty(); root.parent = 0; root.line = 0;
 	VecNode_push(a, &d->nodes, root);
 	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps); memset(&P.pending, 0, sizeof P.pending);
-	P.star_open = 0; P.star_node = 0; P.star_key = s_empty();
+	P.star_open = 0; P.star_node = 0; P.star_key = s_empty(); P.saw_blank = 0;
 	StackEnt e0; e0.indent = s_empty(); e0.node = ROOT; VecStack_push(a, &P.stack, e0);
 	CMap m0; memset(&m0, 0, sizeof m0); VecMap_push(a, &P.cmaps, m0);
 
@@ -1517,9 +1520,13 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		size_t ind = 0; while (ind < line.n && (line.p[ind] == ' ' || line.p[ind] == '\t')) ind++;
 		S indent = s_slice(line, 0, ind);
 		S rest = s_slice(line, ind, line.n);
-		if (rest.n == 0) { i++; continue; }
-		/* Whole-line comment: hold it for the next line that binds a node. */
+		if (rest.n == 0) { P.saw_blank = 1; i++; continue; }
+		/* Whole-line comment: hold it for the next line that binds a node (a
+		   pending blank stays pending with it). */
 		if (rest.p[0] == '#') { VecS_push(a, &P.pending, rest); i++; continue; }
+		/* Any other line consumes the pending blank; only a field line that
+		   binds turns it into grouping. */
+		int had_blank = P.saw_blank; P.saw_blank = 0;
 		Fence f = fence_open(a, rest);
 		if (f.ok) {
 			size_t parent;
@@ -1566,6 +1573,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		}
 		size_t node;
 		if (attach_path(&P, parent, scan.segs.data, scan.segs.len, value, lineno, &node)) {
+			if (had_blank) NODE(d, node).blank_before = 1;
 			attach_trivia(&P, node, comment);
 			StackEnt se; se.indent = s_dup(a, indent); se.node = node; VecStack_push(a, &P.stack, se);
 		}
@@ -2054,6 +2062,7 @@ static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size
 	n.line = src->line;
 	n.star_list = src->star_list;
 	n.star_mixed = src->star_mixed;
+	n.blank_before = src->blank_before;
 	n.trailing = s_dup(a, src->trailing);
 	for (size_t i = 0; i < src->leading.len; i++) VecS_push(a, &n.leading, s_dup(a, src->leading.data[i]));
 	size_t idx = d->nodes.len;
@@ -2323,6 +2332,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, SB *out) {
 	Arena *a = &d->arena;
 	Node *node = &NODE(d, idx);
 	Value *v = &node->value;
+	if (node->blank_before && out->len) sb_putc(a, out, '\n');
 	/* Same-line fence spelling can't carry an inline comment (an unbalanced
 	   quote in the info-string could hide the `#` on reparse), so its trailing
 	   comment joins the leading lines instead. */

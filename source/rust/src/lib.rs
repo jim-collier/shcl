@@ -305,6 +305,9 @@ struct NodeData {
 	// (later ones demote to leading - a canonical line has room for one).
 	leading: Vec<String>,
 	trailing: String, // empty = none
+	// Blank-line grouping is the other half of hand-authored layout: set when
+	// a blank line preceded this node's binding line (runs collapse to one).
+	blank_before: bool,
 }
 
 /// A parsed SHCL document: the tree, its diagnostics, and its strictness level.
@@ -671,6 +674,7 @@ struct Parser {
 	child_map: Vec<HashMap<(String, String), usize>>,
 	// Whole-line comments waiting for the next line that binds a node.
 	pending: Vec<String>,
+	saw_blank: bool, // a blank line waits to become the next bound node's blank_before
 }
 
 impl Parser {
@@ -686,11 +690,13 @@ impl Parser {
 				star_mixed: false,
 				leading: Vec::new(),
 				trailing: String::new(),
+				blank_before: false,
 			}],
 			diags: Vec::new(),
 			stack: vec![(String::new(), ROOT)],
 			child_map: vec![HashMap::new()],
 			pending: Vec::new(),
+			saw_blank: false,
 		}
 	}
 
@@ -722,6 +728,7 @@ impl Parser {
 			star_mixed: false,
 			leading: Vec::new(),
 			trailing: String::new(),
+			blank_before: false,
 		});
 		self.arena[parent].children.push(idx);
 		self.child_map.push(HashMap::new());
@@ -1080,15 +1087,20 @@ impl Parser {
 				.collect();
 			let rest = &line[indent.len()..];
 			if rest.is_empty() {
+				self.saw_blank = true;
 				i += 1;
 				continue;
 			}
-			// Whole-line comment: hold it for the next line that binds a node.
+			// Whole-line comment: hold it for the next line that binds a node
+			// (a pending blank stays pending with it).
 			if rest.starts_with('#') {
 				self.pending.push(rest.to_string());
 				i += 1;
 				continue;
 			}
+			// Any other line consumes the pending blank; only a field line that
+			// binds turns it into grouping.
+			let had_blank = std::mem::take(&mut self.saw_blank);
 			// Child-indent fence: a value line for its parent field.
 			if let Some((ch, len, info)) = fence_open(rest) {
 				let parent = match self.resolve_parent(&indent) {
@@ -1181,6 +1193,9 @@ impl Parser {
 				}
 			};
 			if let Some(node) = self.attach_path(parent, &scan.segments, value, lineno) {
+				if had_blank {
+					self.arena[node].blank_before = true;
+				}
 				self.attach_trivia(node, comment);
 				self.stack.push((indent, node));
 			}
@@ -1247,6 +1262,9 @@ impl Document {
 	fn emit_node(&self, idx: usize, depth: usize, out: &mut String) {
 		let node = &self.arena[idx];
 		let pad: String = "\t".repeat(depth);
+		if node.blank_before && !out.is_empty() {
+			out.push('\n');
+		}
 		// Same-line fence spelling can't carry an inline comment (an unbalanced
 		// quote in the info-string could hide the `#` on reparse), so its
 		// trailing comment joins the leading lines instead.
@@ -1626,6 +1644,7 @@ impl Document {
 			star_mixed: false,
 			leading: Vec::new(),
 			trailing: String::new(),
+			blank_before: false,
 		});
 		self.arena[parent].children.push(idx);
 		idx
@@ -2064,6 +2083,7 @@ impl Document {
 			star_mixed: src.star_mixed,
 			leading: src.leading.clone(),
 			trailing: src.trailing.clone(),
+			blank_before: src.blank_before,
 		};
 		let idx = self.arena.len();
 		self.arena.push(node);

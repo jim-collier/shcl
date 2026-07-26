@@ -1,0 +1,11 @@
+a: 1
+
+
+b: 2
+
+# grouped note
+c: 3
+
+d:
+	e: 4
+g: 5
