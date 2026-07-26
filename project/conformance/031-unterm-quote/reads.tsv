@@ -1,0 +1,4 @@
+query	type	expected	status	level
+ok	int	1	Good
+-	load	ok	-
+-	load	fail	-	strict

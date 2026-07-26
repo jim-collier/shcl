@@ -395,6 +395,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 | `E014` | malformed line skipped (with the reason named in the message)
 | `E015` | missing colon (repaired as an empty value)
 | `E016` | nesting deeper than the 512-level cap (line skipped)
+| `E017` | a value (or array element) opens a quote it never closes - the piece is kept literally, including any `#` comment the open quote swallowed
 | `H001` | repeated bare leaf (array spelled as repeated lines) - the mandatory hint
 
 - **Limits**: nesting depth is capped at 512 levels below the document root. A line that would bind a node deeper than the cap is an `error` (`E016`) and is skipped; the Writer likewise refuses to create a deeper path. The cap is what makes any loadable document safe to format, merge, and copy in every binding - depth-linear recursion can never outrun a thread stack - and 512 is far beyond any hand-authored nesting.

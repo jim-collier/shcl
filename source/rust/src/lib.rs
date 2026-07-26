@@ -87,6 +87,8 @@ fn diag_code(msg: &str) -> &'static str {
 		"E015"
 	} else if msg.starts_with("nesting deeper than") {
 		"E016"
+	} else if msg.starts_with("unterminated quote in value") {
+		"E017"
 	} else if msg.starts_with("unknown field ") {
 		"V001"
 	} else if msg.starts_with("required path missing") {
@@ -392,6 +394,34 @@ fn normalize_dangling_backslash(mut t: String) -> String {
 
 /// Trim, then strip one matching outer quote pair if present. Unquoted empty
 /// slots return None (dropped, never an error).
+/// True when some piece starts with a quote that never closes (the closing
+/// quote missing or escaped). Such a piece stays literal - and a quote-aware
+/// comment strip has already swallowed any trailing `#` comment into it - so
+/// the parser calls it out instead of letting the typo look deliberate.
+/// Mid-text apostrophes (`it's fine`) are legal prose and stay silent.
+fn unterminated_quote(text: &str) -> bool {
+	for piece in split_unquoted_commas(text) {
+		let chars: Vec<char> = piece.trim().chars().collect();
+		let Some(&first) = chars.first() else {
+			continue;
+		};
+		if first != '"' && first != '\'' {
+			continue;
+		}
+		let closed = chars.len() >= 2 && *chars.last().unwrap() == first && {
+			let mut esc = false;
+			for &c in &chars[1..chars.len() - 1] {
+				esc = c == '\\' && !esc;
+			}
+			!esc
+		};
+		if !closed {
+			return true;
+		}
+	}
+	false
+}
+
 fn parse_element(piece: &str) -> Option<Element> {
 	let t = piece.trim();
 	if t.is_empty() {
@@ -944,6 +974,9 @@ impl Parser {
 			self.err(line, "bare comma in list element (one element per line)");
 			return;
 		}
+		if unterminated_quote(trimmed) {
+			self.err(line, "unterminated quote in value");
+		}
 		let el = match parse_element(trimmed) {
 			Some(e) => e,
 			None => {
@@ -1137,6 +1170,9 @@ impl Parser {
 						next = n;
 						val
 					} else {
+						if unterminated_quote(v) {
+							self.err(lineno, "unterminated quote in value");
+						}
 						parse_cell(v)
 					}
 				}
