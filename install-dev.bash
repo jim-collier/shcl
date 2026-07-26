@@ -120,7 +120,7 @@ fi
 ## Install the user-space pieces.
 if ! have cargo && [[ ! -x "${HOME}/.cargo/bin/cargo" ]]; then
 	echo "installing rustup..."
-	curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path
+	curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 https://sh.rustup.rs | sh -s -- -y --no-modify-path
 fi
 if have pipx; then
 	for t in ruff mypy cppcheck; do have "$t" || pipx install "$t"; done

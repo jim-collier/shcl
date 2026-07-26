@@ -61,6 +61,13 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
 	default { Fail "no prebuilt binary for $($env:PROCESSOR_ARCHITECTURE)" }
 }
 
+## Transport floor for every download: TLS 1.2+ (1.3 where the runtime knows it).
+try {
+	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+} catch {
+	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+}
+
 ## Resolve the tag. GitHub's /releases/latest is exactly "newest non-prerelease";
 ## dev takes the newest of everything.
 $api = if ($Release -eq 'stable') { "https://api.github.com/repos/$repo/releases/latest" }
@@ -133,12 +140,30 @@ try {
 		Move-Item -Force (Join-Path $pathDir '.shcl.exe.new') (Join-Path $pathDir 'shcl.exe')
 	}
 
-	## PATH, idempotently.
-	$current = [Environment]::GetEnvironmentVariable('Path', $pathScope)
+	## PATH, idempotently - straight at the registry. [Environment]::Get expands
+	## %VAR% references before returning and Set writes the result back REG_SZ,
+	## which freezes every reference and downgrades the value type (user PATHs
+	## commonly carry %USERPROFILE%). Reading unexpanded and writing
+	## REG_EXPAND_SZ keeps the stored value intact.
+	$hive = if ($pathScope -eq 'Machine') { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
+	$subkey = if ($pathScope -eq 'Machine') { 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment' } else { 'Environment' }
+	$envKey = $hive.OpenSubKey($subkey, $true)
+	$current = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
 	if (($current -split ';') -notcontains $pathDir) {
-		[Environment]::SetEnvironmentVariable('Path', "$current;$pathDir", $pathScope)
+		$joined = if ($current -and -not $current.EndsWith(';')) { "$current;$pathDir" } else { "$current$pathDir" }
+		$envKey.SetValue('Path', $joined, [Microsoft.Win32.RegistryValueKind]::ExpandString)
 		Write-Output "added $pathDir to the $pathScope PATH (new shells pick it up)"
+		## Nudge running shells; best-effort.
+		try {
+			$sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'
+			$w32 = Add-Type -MemberDefinition $sig -Name 'ShclEnvBroadcast' -Namespace 'Win32' -PassThru
+			$out = [UIntPtr]::Zero
+			$null = $w32::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$out)
+		} catch {
+			Write-Output 'PATH change broadcast skipped (new shells still pick it up)'
+		}
 	}
+	$envKey.Close()
 
 	Write-Output "installed shcl $version -> $dest\shcl.exe"
 	& (Join-Path $dest 'shcl.exe') version

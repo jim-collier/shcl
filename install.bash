@@ -71,11 +71,12 @@ case "$(uname -m)" in
 	*) die "no prebuilt binary for $(uname -m)" ;;
 esac
 
-## curl or wget, whichever is present.
+## curl or wget, whichever is present. https is pinned through redirects and
+## TLS floored at 1.2, so a bounced download can't silently downgrade.
 if command -v curl >/dev/null; then
-	fetch() { curl -fsSL -o "$2" "$1"; }
+	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1"; }
 elif command -v wget >/dev/null; then
-	fetch() { wget -qO "$2" "$1"; }
+	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"; }
 else
 	die "need curl or wget"
 fi
