@@ -115,10 +115,11 @@ In each section, items are listed approximately from newest to oldest.
 	- Detail: `design.md` - Code Review 20260725, item 3.
 	- Fixed: go/python/C now gate op values with the reference's exact grammar (sign + ASCII digits + i64 range for ints, the Rust f64 grammar for floats - overflow stores `inf`); C's truncating staging buffers are gone; the ops stdin gets the same UTF-8 gate as file input in all four. Corpus case 029 pins accept and reject sets cross-binding (`write-bad.ops` dimension in all four runners + the differential harness).
 
-- 🔘 Code Review 20260725 item 4: Go `Validate` panics on a schema path with a `[#N]` selector at N >= 2^63.
+- ✅ Code Review 20260725 item 4: Go `Validate` panics on a schema path with a `[#N]` selector at N >= 2^63.
 	- `int(seg.sel.index)` wraps negative, the bounds check passes, and the index panics. The three sibling sites in the same file compare against `uint64(len(...))` correctly.
 	- Hard process abort inside a library call, which is exactly what the status-as-data design exists to avoid.
 	- One-line fix, Go only.
+	- Fixed: the bounds check compares in uint64 like the sibling sites.
 
 - 🔘 Code Review 20260725 item 5: C keeps every transient allocation in the never-freed document arena.
 	- Reads, merges and validation all allocate scratch there, so a read-only document grows without bound in a long-running process.
@@ -143,15 +144,17 @@ In each section, items are listed approximately from newest to oldest.
 	- The two Windows install paths also disagree with each other about how to test for an existing entry.
 	- Detail: `design.md` - Code Review 20260725, item 8.
 
-- 🔘 Code Review 20260725 item 9: `shcl init --schema=X` generates a config that `shcl check --schema=X` rejects.
+- ✅ Code Review 20260725 item 9: `shcl init --schema=X` generates a config that `shcl check --schema=X` rejects.
 	- The generator only consults `required`; `repeat` with a lower bound of 1 or more is ignored entirely.
 	- A wildcard `required` bites whenever some other live path materializes the wildcard's parent.
 	- The project's own corpus golden fails against its own schema, so the two newest features contradict each other on the fixture that is supposed to pin them.
+	- Fixed in all four generators: fields with a `repeat` lower bound of 1+ generate live like `required`, and a must-exist wildcard whose parent gets materialized by another live line is generated in dotted form under that instance. Generated output now validates clean against its own schema (asserted by every runner; the one documented exception is a repeat lower bound of 2+, which cannot be auto-satisfied). Case 026's golden regenerated.
 
-- 🔘 Code Review 20260725 item 10: `shcl init --schema` can emit lines that do not parse.
+- ✅ Code Review 20260725 item 10: `shcl init --schema` can emit lines that do not parse.
 	- A `[#N]` selector puts a `#` on the field line, which starts a comment, so the line truncates and reports E014.
 	- A newline inside an `allowed` value breaks out of the annotation comment and injects a live binding.
 	- The spec promises the generated file loads with no error diagnostics.
+	- Fixed: `[#N]` paths (and paths carrying a literal newline) go to the trailing not-generated block instead of emitting a broken line; newlines in the annotation are escaped to `\n`; a default with a newline is written in its quoted escaped spelling. Corpus case 030 pins all three.
 
 - 🔘 Code Review 20260725 item 11: an unterminated quote in a value is accepted silently and swallows the trailing comment.
 	- The stray opening quote stays in the value, no diagnostic at any strictness, and `fmt` then re-quotes it so the typo looks deliberate.
@@ -185,10 +188,11 @@ In each section, items are listed approximately from newest to oldest.
 	- Either implement `set --write` or reject it; silently dropping it is the one case that must not stay.
 	- Fixed: `set --write` is implemented (atomic in-place rewrite, `-` rejected), and every subcommand now validates its options against an allow-list - an option it does not use is a usage error (exit 1), in all four CLIs.
 
-- 🔘 Code Review 20260725 item 17: `check --schema` cannot tell a schema line number from a document line number.
+- ✅ Code Review 20260725 item 17: `check --schema` cannot tell a schema line number from a document line number.
 	- Both files' diagnostics interleave in one list with nothing marking which file a line belongs to.
 	- `init` already prefixes `schema line N`, so the same fault renders two ways in two commands.
 	- Detail: `design.md` - Code Review 20260725, item 17.
+	- Fixed with the cheap half: the stderr prose spells `schema line N` for `V090`-`V093` (whose numbers are schema-file lines per the code table) in all four CLIs; the compared stdout keeps the uniform shape since the code already names the space. The structural `source`/`column` fields stay future work, noted in design.md.
 
 - 🔘 Code Review 20260725 item 18: `Load(defaults, site, user)` is documented but exists in no binding.
 	- README presents it as the layered-loading API; only `merge(base, over)` exists, so a reader's first call does not compile.
@@ -205,13 +209,15 @@ In each section, items are listed approximately from newest to oldest.
 	- One line per port, and exactly the structural drift the parity rule exists to prevent.
 	- Fixed: the Go clone copies the element backing array, the Python clone builds a fresh value (elements included), matching the reference and C.
 
-- 🔘 Code Review 20260725 item 21: C and C++ `generate()` give no way to see which schema line is at fault.
+- ✅ Code Review 20260725 item 21: C and C++ `generate()` give no way to see which schema line is at fault.
 	- `shcl_generate` signals failure with a bare `ok` flag and discards the fault list the other three return, so C `init` prints only the summary.
 	- Reachable today through `shcl_validate` against an empty document, so the CLI can be fixed without reshaping the API.
+	- Fixed via the review's own suggestion: on a generation failure the C CLI validates an empty document against the schema and prints the reproduced V09x fault list; the veneer documents the same trick. No API reshape.
 
-- 🔘 Code Review 20260725 item 22: the same schema fault exits 1 through `init` and 6 through `check --schema`.
+- ✅ Code Review 20260725 item 22: the same schema fault exits 1 through `init` and 6 through `check --schema`.
 	- Exit 1 is documented as "usage or I/O error", which a semantically broken schema is neither.
 	- A pipeline that reads 1 as "invoked wrong" and 6 as "config is bad" gets the wrong answer from `init`.
+	- Fixed: `init` exits 6 for a schema that fails to load or has faults, in all four CLIs; exit 1 stays usage/IO.
 
 - 🔘 Code Review 20260725 item 23: `shcl.h` does not compile as a drop-in under `g++ -Wall -Wextra -Werror`.
 	- The bare `{0}` initializers trip `-Wmissing-field-initializers` in C++ mode; the file is already inconsistent, spelling one of them out in full.

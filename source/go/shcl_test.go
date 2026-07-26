@@ -643,9 +643,20 @@ func TestInitGenerationMatchesExpected(t *testing.T) {
 			t.Errorf("%s: init output differs from expected-init.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedInit)
 			continue
 		}
-		for _, d := range Parse(got).Diagnostics() {
+		doc := Parse(got)
+		for _, d := range doc.Diagnostics() {
 			if d.Severity == SeverityError {
 				t.Errorf("%s: generated starter does not load cleanly", c.name)
+				break
+			}
+		}
+		// And it must satisfy the very schema that produced it - case 026's
+		// golden once failed its own schema (repeat lower bound and a
+		// materialized wildcard were ignored).
+		vs := doc.Validate(Parse(c.initSchema))
+		for _, d := range vs {
+			if d.Severity == SeverityError {
+				t.Errorf("%s: generated starter fails its own schema: %+v", c.name, vs)
 				break
 			}
 		}

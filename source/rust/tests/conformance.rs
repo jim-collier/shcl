@@ -594,6 +594,17 @@ fn init_generation_matches_expected() {
 			"{}: generated starter does not load cleanly",
 			case.name
 		);
+		// And it must satisfy the very schema that produced it - case 026's
+		// golden once failed its own schema (repeat lower bound and a
+		// materialized wildcard were ignored).
+		let sdoc = Document::parse(schema);
+		let vs = doc.validate(&sdoc);
+		assert!(
+			!vs.iter().any(|d| d.severity == shcl::Severity::Error),
+			"{}: generated starter fails its own schema: {:?}",
+			case.name,
+			vs
+		);
 	}
 }
 

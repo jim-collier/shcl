@@ -3170,23 +3170,98 @@ fn gen_annotation(c: &Constraint, tyname: &str) -> String {
 	parts.join(", ")
 }
 
+/// A default carrying a literal newline cannot sit on a value line; the quoted
+/// escaped spelling reads back to the same string.
+fn gen_default_text(v: &str) -> String {
+	if !v.contains('\n') {
+		return v.to_string();
+	}
+	let mut s = String::from("\"");
+	for ch in v.chars() {
+		match ch {
+			'\\' => s.push_str("\\\\"),
+			'"' => s.push_str("\\\""),
+			'\n' => s.push_str("\\n"),
+			'\t' => s.push_str("\\t"),
+			c => s.push(c),
+		}
+	}
+	s.push('"');
+	s
+}
+
 /// Emit a commented, typed starter config from a schema (`shcl init --schema`).
-/// Required paths are live (their `default`, or an empty value); optional paths
-/// are commented out so the file is valid and minimal as-is; wildcard paths
-/// cannot be materialized and are listed in a trailing comment block. Err =
-/// schema faults (V09x), same as `validate`/`check --schema`.
+/// Paths that must exist (required, or a repeat lower bound of 1+) are live
+/// (their `default`, or an empty value); optional paths are commented out so
+/// the file is valid and minimal as-is. A must-exist wildcard path whose
+/// parent gets materialized by another live line is generated too, in dotted
+/// form - otherwise the file would fail the very schema that produced it -
+/// and remaining wildcard or `[#N]` paths (which cannot be materialized) are
+/// listed in a trailing comment block. The output always loads clean and
+/// validates clean against its schema, except a repeat lower bound of 2+
+/// (identical generated lines would merge, so the shortfall is reported).
+/// Err = schema faults (V09x), same as `validate`/`check --schema`.
 pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 	let cons = build_schema(schema)?;
+	let must_exist = |c: &Constraint| c.required || matches!(c.repeat, Some((lo, _)) if lo >= 1);
+	let has_wild = |c: &Constraint| {
+		c.segs
+			.iter()
+			.any(|s| matches!(s.selector, Some(Selector::Wildcard)))
+	};
+	// `[#N]` needs a pre-existing instance and its `#` would start a comment
+	// on a binding line; a path with a literal newline cannot be written at
+	// all. Both go to the trailing note instead of emitting a broken line.
+	let unwritable = |c: &Constraint| {
+		c.segs
+			.iter()
+			.any(|s| matches!(s.selector, Some(Selector::ByIndex(_))))
+			|| c.path.contains('\n')
+	};
+	// Live concrete paths materialize instances; decide which must-exist
+	// wildcards get filled (their first-wildcard parent chain is a prefix of
+	// some live path). Fixpoint: a fill can materialize another's parent.
+	fn names_of(segs: &[Segment]) -> Vec<&str> {
+		segs.iter().map(|s| s.name.as_str()).collect()
+	}
+	let mut live: Vec<Vec<&str>> = cons
+		.iter()
+		.filter(|c| !has_wild(c) && !unwritable(c) && must_exist(c))
+		.map(|c| names_of(&c.segs))
+		.collect();
+	let mut fill = vec![false; cons.len()];
+	loop {
+		let mut changed = false;
+		for (i, c) in cons.iter().enumerate() {
+			if fill[i] || !has_wild(c) || unwritable(c) || !must_exist(c) {
+				continue;
+			}
+			let k = c
+				.segs
+				.iter()
+				.position(|s| matches!(s.selector, Some(Selector::Wildcard)))
+				.unwrap();
+			let parent = names_of(&c.segs[..k + 1]);
+			if live
+				.iter()
+				.any(|p| p.len() >= parent.len() && p[..parent.len()] == parent[..])
+			{
+				fill[i] = true;
+				live.push(names_of(&c.segs));
+				changed = true;
+			}
+		}
+		if !changed {
+			break;
+		}
+	}
 	let mut out = String::new();
 	let mut wild: Vec<(String, String)> = Vec::new();
 	let mut first = true;
-	for c in &cons {
+	for (i, c) in cons.iter().enumerate() {
 		let tyname = c.ty.clone().unwrap_or_else(|| "any".to_string());
-		if c.segs
-			.iter()
-			.any(|s| matches!(s.selector, Some(Selector::Wildcard)))
-		{
-			wild.push((c.path.clone(), tyname));
+		if unwritable(c) || (has_wild(c) && !fill[i]) {
+			wild.push((c.path.replace('\n', "\\n"), tyname));
 			continue;
 		}
 		if !first {
@@ -3201,12 +3276,21 @@ pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 			}
 		}
 		out.push_str("# ");
-		out.push_str(&gen_annotation(c, &tyname));
+		// The annotation is a comment: a newline smuggled in via an allowed
+		// string value must not break out of it.
+		out.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
 		out.push('\n');
-		let prefix = if c.required { "" } else { "#" };
+		// A filled wildcard emits in dotted form, targeting the first (the
+		// materialized) instance.
+		let path = if fill[i] {
+			c.path.replace("[*]", "")
+		} else {
+			c.path.clone()
+		};
+		let prefix = if must_exist(c) { "" } else { "#" };
 		match &c.default_text {
-			Some(v) => out.push_str(&format!("{}{}: {}\n", prefix, c.path, v)),
-			None => out.push_str(&format!("{}{}:\n", prefix, c.path)),
+			Some(v) => out.push_str(&format!("{}{}: {}\n", prefix, path, gen_default_text(v))),
+			None => out.push_str(&format!("{}{}:\n", prefix, path)),
 		}
 	}
 	if !wild.is_empty() {

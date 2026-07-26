@@ -14,8 +14,9 @@ server.port: 8080
 # string-array
 #features:
 
-# int, repeat 1-5
-#replicas:
+# Hostname per server.
+# string, required
+server.host:
 
-# Paths needing an instance name (not generated):
-#   server[*].host   string
+# int, repeat 1-5
+replicas:

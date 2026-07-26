@@ -669,10 +669,13 @@ def do_check(o):
 		strict_failed = True
 	# stdout carries the stable codes - the cross-binding contract. The prose is
 	# per-binding voice and goes to stderr (which the differential check drops).
+	# A V090-V093 line number is a SCHEMA line (the code table says so); the
+	# prose names the file so the two number spaces cannot be confused.
 	errors = 0
 	for d in diags:
 		print("line {}: {}: {}".format(d.line, d.severity.name, d.code))
-		sys.stderr.write("line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+		space = "schema line" if d.code.startswith("V09") and d.code != "V099" else "line"
+		sys.stderr.write("{} {}: {}: {}\n".format(space, d.line, d.severity.name, d.message))
 		if d.severity == shcl.Severity.Error:
 			errors += 1
 	if strict_failed:
@@ -701,13 +704,15 @@ def do_init(o):
 		for d in sdoc.diagnostics():
 			sys.stderr.write("schema line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
 		sys.stderr.write("init: schema failed to load\n")
-		return 1
+		# A broken schema is a config-semantics failure, not a usage error:
+		# same exit as `check --schema` reporting it.
+		return 6
 	text, faults = shcl.generate(sdoc)
 	if faults:
 		for d in faults:
 			sys.stderr.write("schema line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
 		sys.stderr.write("init: schema has faults\n")
-		return 1
+		return 6
 	sys.stdout.write(text)
 	return 0
 

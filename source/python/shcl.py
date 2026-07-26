@@ -2698,22 +2698,84 @@ def _gen_annotation(c, tyname):
 	return ", ".join(parts)
 
 
+def _gen_default_text(v):
+	# A default carrying a literal newline cannot sit on a value line; the
+	# quoted escaped spelling reads back to the same string.
+	if "\n" not in v:
+		return v
+	s = ['"']
+	for ch in v:
+		if ch == "\\":
+			s.append("\\\\")
+		elif ch == '"':
+			s.append('\\"')
+		elif ch == "\n":
+			s.append("\\n")
+		elif ch == "\t":
+			s.append("\\t")
+		else:
+			s.append(ch)
+	s.append('"')
+	return "".join(s)
+
+
 def generate(schema):
 	"""Emit a commented, typed starter config from a schema (`shcl init
-	--schema`). Required paths are live (their `default`, or an empty value);
-	optional paths are commented out; wildcard paths cannot be materialized and
-	are listed in a trailing comment block. Returns (text, faults): a non-empty
-	fault list (V09x) means the schema is broken and text is empty."""
+	--schema`). Paths that must exist (required, or a repeat lower bound of 1+)
+	are live (their `default`, or an empty value); optional paths are commented
+	out so the file is valid and minimal as-is. A must-exist wildcard path
+	whose parent gets materialized by another live line is generated too, in
+	dotted form - otherwise the file would fail the very schema that produced
+	it - and remaining wildcard or `[#N]` paths (which cannot be materialized)
+	are listed in a trailing comment block. The output always loads clean and
+	validates clean against its schema, except a repeat lower bound of 2+
+	(identical generated lines would merge, so the shortfall is reported).
+	Returns (text, faults): a non-empty fault list (V09x) means the schema is
+	broken and text is empty."""
 	cons, faults = _build_schema(schema)
 	if faults:
 		return "", faults
+
+	def must_exist(c):
+		return c.required or (c.repeat is not None and c.repeat[0] >= 1)
+
+	def has_wild(c):
+		return any(s.selector is not None and s.selector[0] == "wild" for s in c.segs)
+
+	# `[#N]` needs a pre-existing instance and its `#` would start a comment
+	# on a binding line; a path with a literal newline cannot be written at
+	# all. Both go to the trailing note instead of emitting a broken line.
+	def unwritable(c):
+		return any(s.selector is not None and s.selector[0] == "idx" for s in c.segs) or "\n" in c.path
+
+	# Live concrete paths materialize instances; decide which must-exist
+	# wildcards get filled (their first-wildcard parent chain is a prefix of
+	# some live path). Fixpoint: a fill can materialize another's parent.
+	def names_of(segs):
+		return [s.name for s in segs]
+
+	live = [names_of(c.segs) for c in cons if not has_wild(c) and not unwritable(c) and must_exist(c)]
+	fill = [False] * len(cons)
+	while True:
+		changed = False
+		for i, c in enumerate(cons):
+			if fill[i] or not has_wild(c) or unwritable(c) or not must_exist(c):
+				continue
+			k = next(j for j, s in enumerate(c.segs) if s.selector is not None and s.selector[0] == "wild")
+			parent = names_of(c.segs[: k + 1])
+			if any(len(p) >= len(parent) and p[: len(parent)] == parent for p in live):
+				fill[i] = True
+				live.append(names_of(c.segs))
+				changed = True
+		if not changed:
+			break
 	out = []
 	wild = []
 	first = True
-	for c in cons:
+	for i, c in enumerate(cons):
 		tyname = c.ty if c.ty is not None else "any"
-		if any(s.selector is not None and s.selector[0] == "wild" for s in c.segs):
-			wild.append((c.path, tyname))
+		if unwritable(c) or (has_wild(c) and not fill[i]):
+			wild.append((c.path.replace("\n", "\\n"), tyname))
 			continue
 		if not first:
 			out.append("\n")
@@ -2721,12 +2783,17 @@ def generate(schema):
 		if c.desc is not None:
 			for line in c.desc.split("\n"):
 				out.append("# " + line + "\n")
-		out.append("# " + _gen_annotation(c, tyname) + "\n")
-		prefix = "" if c.required else "#"
+		# The annotation is a comment: a newline smuggled in via an allowed
+		# string value must not break out of it.
+		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
+		# A filled wildcard emits in dotted form, targeting the first (the
+		# materialized) instance.
+		path = c.path.replace("[*]", "") if fill[i] else c.path
+		prefix = "" if must_exist(c) else "#"
 		if c.default_text is not None:
-			out.append("{}{}: {}\n".format(prefix, c.path, c.default_text))
+			out.append("{}{}: {}\n".format(prefix, path, _gen_default_text(c.default_text)))
 		else:
-			out.append("{}{}:\n".format(prefix, c.path))
+			out.append("{}{}:\n".format(prefix, path))
 	if wild:
 		if not first:
 			out.append("\n")

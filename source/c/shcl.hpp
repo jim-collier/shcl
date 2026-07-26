@@ -74,7 +74,9 @@ public:
 	void merge(const Document &over) { shcl_merge(d_, over.d_); }
 
 	// Schema-driven generation (`shcl init`): a commented, typed starter config
-	// from this document read as a schema. ok is set false on schema faults.
+	// from this document read as a schema. ok is set false on schema faults;
+	// for the fault list, validate() an empty document against this schema -
+	// it reproduces the same V09x diagnostics.
 	std::string generate(bool &ok) const {
 		int iok = 0;
 		std::string s = to_str(shcl_generate(d_, &iok));
