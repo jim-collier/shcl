@@ -45,6 +45,8 @@ TOOL_PINS=(
 	"cargo-zigbuild|0.23.0|cargo-zigbuild --version"
 	"ruff|0.15.22|ruff --version"
 	"mypy|2.3.0|mypy --version"
+	## Version of the Cppcheck binary, which is NOT the PyPI wheel's version -
+	## package 1.5.1 carries 2.17.1. ci.yml has to install the package version.
 	"cppcheck|2.17.1|cppcheck --version"
 	"markdownlint-cli2|0.23.1|markdownlint-cli2 --help"
 )
