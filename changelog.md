@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A bare section header in a higher layer merged over a base document deleted the whole subtree below it. It now merges. Clearing a leaf from a layer still works.
 - A write to an unusable path (a wildcard, or a missing `[#N]`) reported success and could leave a half-created path behind. Setters now report whether the write applied, and nothing is created unless the whole path is usable.
 - `fmt --write` could leave a truncated file if interrupted, and C reported success on a failed write. Both writers are now atomic.
+- An in-place write no longer discards what it replaces. The target's permission bits are preserved, and a symlinked config is written through instead of being replaced by a regular file. Any other hard link to the file still keeps the old content, which a rename cannot avoid.
 - The Writer could create two siblings that a reparse would merge, so its output was not a formatter fixpoint.
 - `shcl set` op values were validated four different ways across the bindings. All four now use the reference's grammar.
 - `shcl init --schema` could generate a file that its own schema rejected, and could emit lines that do not parse.

@@ -91,7 +91,7 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Bugs
 
-- 🔘 Code Review 20260726 item 1: an in-place write does not preserve the file it replaces.
+- ✅ Code Review 20260726 item 1: an in-place write does not preserve the file it replaces.
 	- `fmt --write` and `set --write` build a temp file and rename it over the target, so the target's own identity is discarded.
 	- Permission bits are lost. A config at mode 600 comes back at the umask default, which on a normal box means world-readable. This is the one that matters, because config files are exactly where secrets sit.
 	- A symlinked config is replaced by a regular file. The link breaks and the real file behind it is left untouched, so the edit appears to vanish. Dotfile managers make this a common layout.
@@ -99,6 +99,7 @@ In each section, items are listed approximately from newest to oldest.
 	- All four bindings share the shape, so the fix is one mechanical diff. Resolve the target through symlinks first, then copy the original's mode onto the temp file before the rename.
 	- Hard links cannot survive a rename at all. That one is a documented limitation, not a fix.
 	- Detail: `design.md` - Code Review 20260726, item 1.
+	- Fixed in all four: the write resolves the path through symlinks before picking the temp directory and the rename target, and copies the original's mode onto the temp file. Mode copying is best effort, so a filesystem that cannot carry it still completes the write. The differential harness gained an in-place-write dimension that compares the tree a write leaves behind (mode, symlink, link count, content), which pins all three cases across the bindings.
 
 - ✅ Code Review 20260726 item 2: C datetime reads accumulate in the never-freed document arena.
 	- The read path passes the document arena to the datetime parser for its split temporaries, so a long-running reader grows without bound. Every other C read path was moved to the per-call scratch arena; this one was missed.
@@ -110,6 +111,12 @@ In each section, items are listed approximately from newest to oldest.
 	- Visible in the pipeline: the cross-binding comparison count moves by a few hundred between runs on an unchanged tree, which makes the number useless as a regression signal.
 	- A failing case also cannot be reproduced by re-running, which is the main thing a fuzz gate is for.
 	- Fixed: the seed list is sorted before use. Two runs on the same tree now produce an identical input set.
+
+- ✅ Code Review 20260726 item 4: the cross-binding harness reports only the first divergence.
+	- It prints a divergence, then runs `diff` into `head` to show it. Under the script's own strict settings that pipeline's nonzero status aborts the whole run, so every later divergence is lost and the "N of M diverged" summary never prints.
+	- The run still exits nonzero, so nothing ever escaped the gate. The cost is diagnosis: one divergence at a time, with no count and no idea how wide the damage is.
+	- Found only because a new check was deliberately run against a known-bad build.
+	- Fixed: the diff is allowed to fail. All divergences now print, followed by the summary.
 
 ### Features and enhancements
 

@@ -448,6 +448,8 @@ Technical detail behind the backlog's "Code Review 20260726" items, in the same 
 		- Stat the original and apply its mode to the temp file before the rename. Best-effort: a failure here should not fail the write.
 	- Hard links are not fixable this way. Preserving them means writing through the existing inode, which is the non-atomic behavior the earlier fix removed. Atomicity is worth more, so this becomes a documented limitation rather than a fix.
 	- Windows needs its own branch. The C writer already special-cases `MoveFileExA`; symlink resolution and mode there are not the same problem and should be left alone rather than emulated.
+	- Resolved as described. One wrinkle worth recording: glibc hides `realpath` behind XSI rather than plain POSIX, so the C CLI's feature-test block needed `_XOPEN_SOURCE 700` alongside the `_POSIX_C_SOURCE` it already declared.
+	- Pinned by a new dimension in the differential harness rather than the corpus. The corpus compares stdout, and none of this is visible there; the new check compares the tree a write leaves behind, so all four bindings are held to the same file-level outcome.
 
 - **Item 2 - C datetime reads allocate in the document arena** (`source/c/shcl.h:2237,2305`)
 	- The 20260725 review's item 5 moved every per-call temporary in the C read paths to a scratch arena that resets at each `resolve`. The two datetime read sites kept passing `&d->arena`.
@@ -458,3 +460,8 @@ Technical detail behind the backlog's "Code Review 20260726" items, in the same 
 	- The file's own header calls the run deterministic, and the PRNG is. The seed corpus is not: it comes from `read_dir`, whose order is unspecified, and the seed index is the first thing every mutation draws against.
 	- The practical cost showed up in the pipeline rather than the test. The cross-binding comparison count is derived from the dumped fuzz inputs, so it drifted by a few hundred between runs on an identical tree, which hides a real change in coverage.
 	- Sorting the seed list is the whole fix. Two runs on the same tree now dump byte-identical input sets.
+
+- **Item 4 - the differential harness stops at the first divergence** (`cicd/utility/crosscheck.bash`)
+	- The script runs under `set -Eeuo pipefail`. Its divergence report ends in `diff ... | head`, and `diff` exits nonzero exactly when it has something to show, so reporting a divergence terminated the run.
+	- Never a correctness hole - the run still exited nonzero and the gate still failed - but a purely diagnostic one, and the kind that only surfaces when something is already broken. It went unnoticed because the harness had never reported a divergence in a real run.
+	- Letting the diff fail is the whole fix. Worth remembering as a shape: an error path that is itself fatal is untested by definition until the day it is needed.

@@ -176,6 +176,8 @@ Behavior changes land with a corpus case, or they are not pinned.
 - Generate the golden files from the Rust reference and eyeball them. Never hand-edit a golden to make a test pass.
 - All four runners pick up a new case automatically. Run `cicd/cicd.bash --ci`; every binding must agree on it before it ships.
 
+Behavior the corpus cannot see, because it is not stdout, belongs in `cicd/utility/crosscheck.bash` instead. In-place writes are the current example: the check there compares the file tree a write leaves behind, so all four bindings are held to the same mode, symlink and content outcome.
+
 ### Linters
 
 - Gating (the lint stage fails the run on any finding):

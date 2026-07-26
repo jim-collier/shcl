@@ -260,25 +260,40 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 /// Write atomically: temp file in the same dir, then rename over the target,
 /// so an interrupted write can never truncate the config it rewrites. The data
 /// is synced before the rename so a crash cannot publish an empty file.
+///
+/// A rename publishes a new inode, so the target is resolved through symlinks
+/// first (otherwise a linked-in config gets replaced by a regular file and the
+/// real one is left stale) and the original's mode is copied onto the temp file
+/// (otherwise a 600 config comes back at whatever the umask allows). Other hard
+/// links to the old inode cannot survive a rename and keep the old content.
 fn write_atomic(file: &str, data: &str) -> Result<(), String> {
 	use std::io::Write;
-	let p = std::path::Path::new(file);
-	let dir = match p.parent() {
+	// canonicalize fails when the target does not exist yet; that is a plain
+	// create, so the path as given is already the right one.
+	let target = std::fs::canonicalize(file).unwrap_or_else(|_| std::path::PathBuf::from(file));
+	let dir = match target.parent() {
 		Some(d) if !d.as_os_str().is_empty() => d,
 		_ => std::path::Path::new("."),
 	};
-	let base = p
+	let base = target
 		.file_name()
 		.map(|b| b.to_string_lossy().into_owned())
 		.unwrap_or_else(|| file.to_string());
 	let tmp = dir.join(format!(".{}.tmp{}", base, std::process::id()));
-	let res = std::fs::File::create(&tmp)
-		.and_then(|mut f| f.write_all(data.as_bytes()).and_then(|_| f.sync_all()));
+	let res = std::fs::File::create(&tmp).and_then(|mut f| {
+		f.write_all(data.as_bytes())?;
+		// Best effort: a filesystem that cannot carry the mode is not a reason
+		// to fail a write that otherwise succeeded.
+		if let Ok(m) = std::fs::metadata(&target) {
+			let _ = f.set_permissions(m.permissions());
+		}
+		f.sync_all()
+	});
 	if let Err(e) = res {
 		let _ = std::fs::remove_file(&tmp);
 		return Err(format!("{}: {}", file, e));
 	}
-	std::fs::rename(&tmp, p).map_err(|e| {
+	std::fs::rename(&tmp, &target).map_err(|e| {
 		let _ = std::fs::remove_file(&tmp);
 		format!("{}: {}", file, e)
 	})

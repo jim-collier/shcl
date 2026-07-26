@@ -7,7 +7,9 @@
 
 #ifndef _WIN32
 	// fileno/fsync/getpid under -std=c11 need an explicit POSIX feature request.
+	// realpath sits behind XSI rather than plain POSIX in glibc, hence both.
 	#define _POSIX_C_SOURCE 200809L
+	#define _XOPEN_SOURCE 700
 #endif
 
 #define SHCL_IMPLEMENTATION
@@ -25,6 +27,7 @@
 	#define getpid _getpid
 #else
 	#include <unistd.h>
+	#include <sys/stat.h>
 #endif
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
@@ -300,28 +303,63 @@ static int do_get(Opts *o) {
 // an interrupted write can never truncate the config it rewrites. Every stdio
 // call is checked (a failed write must not report success) and the data is
 // synced before the rename so a crash cannot publish an empty file.
+// A rename publishes a new inode, so the target is resolved through symlinks
+// first (otherwise a linked-in config gets replaced by a regular file and the
+// real one is left stale) and the original's mode is copied onto the temp file
+// (otherwise a 600 config comes back at whatever the umask allows). Other hard
+// links to the old inode cannot survive a rename and keep the old content.
 static int write_atomic(const char *file, const char *data, size_t n) {
-	const char *slash = strrchr(file, '/');
-	char *tmp = (char *)xrealloc(NULL, strlen(file) + 32);
-	if (slash) sprintf(tmp, "%.*s.%s.tmp%ld", (int)(slash - file + 1), file, slash + 1, (long)getpid());
-	else sprintf(tmp, ".%s.tmp%ld", file, (long)getpid());
+	const char *target = file;
+#ifndef _WIN32
+	// realpath returns NULL when the target does not exist yet; that is a plain
+	// create, so the path as given is already the right one.
+	char *real = realpath(file, NULL);
+	if (real) target = real;
+#endif
+	const char *slash = strrchr(target, '/');
+	char *tmp = (char *)xrealloc(NULL, strlen(target) + 32);
+	if (slash) sprintf(tmp, "%.*s.%s.tmp%ld", (int)(slash - target + 1), target, slash + 1, (long)getpid());
+	else sprintf(tmp, ".%s.tmp%ld", target, (long)getpid());
 	FILE *f = fopen(tmp, "wb");
-	if (!f) { fprintf(stderr, "%s: %s\n", file, strerror(errno)); free(tmp); return 1; }
+	if (!f) {
+		fprintf(stderr, "%s: %s\n", file, strerror(errno));
+		free(tmp);
+#ifndef _WIN32
+		free(real);
+#endif
+		return 1;
+	}
 	int ok = fwrite(data, 1, n, f) == n && fflush(f) == 0;
 #ifdef _WIN32
 	ok = ok && _commit(_fileno(f)) == 0;
 #else
+	// Best effort: a filesystem that cannot carry the mode is not a reason to
+	// fail a write that otherwise succeeded.
+	struct stat st;
+	if (ok && stat(target, &st) == 0) (void)fchmod(fileno(f), st.st_mode & 07777);
 	ok = ok && fsync(fileno(f)) == 0;
 #endif
 	ok = (fclose(f) == 0) && ok;
 #ifdef _WIN32
 	// C rename() will not replace an existing file on Windows.
-	ok = ok && MoveFileExA(tmp, file, MOVEFILE_REPLACE_EXISTING);
+	ok = ok && MoveFileExA(tmp, target, MOVEFILE_REPLACE_EXISTING);
 #else
-	ok = ok && rename(tmp, file) == 0;
+	ok = ok && rename(tmp, target) == 0;
 #endif
-	if (!ok) { fprintf(stderr, "%s: %s\n", file, strerror(errno)); remove(tmp); free(tmp); return 1; }
-	free(tmp); return 0;
+	if (!ok) {
+		fprintf(stderr, "%s: %s\n", file, strerror(errno));
+		remove(tmp);
+		free(tmp);
+#ifndef _WIN32
+		free(real);
+#endif
+		return 1;
+	}
+	free(tmp);
+#ifndef _WIN32
+	free(real);
+#endif
+	return 0;
 }
 
 static int do_fmt(Opts *o) {
