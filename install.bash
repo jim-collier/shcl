@@ -92,7 +92,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 fetch "${api}" "${tmp}/rel.json" || die "cannot fetch the ${release} release (none published yet, or network down)"
 tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | head -n1 | sed 's/.*"\(v[^"]*\)"/\1/')"
-[[ -n "${tag}" ]] && [[ "${tag}" != null ]] || die "no ${release} release found"
+[[ -n "${tag}" && "${tag}" != null ]] || die "no ${release} release found"
 version="${tag#v}"
 
 ## Destinations.
