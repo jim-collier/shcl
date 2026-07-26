@@ -201,7 +201,7 @@ They are all good at what they do. The shared cost is that once a config file ca
 SHCL deliberately stays off that cliff. The file stays dumb, and the power moves into the library instead:
 
 - **Schema validation.** A schema is just another SHCL file. `Validate(doc, schema)` catches unknown fields, wrong types, and out-of-range values, including the "did you mean `enabled`?" typo case.
-- **Layered loading.** `Load(defaults, site, user)` merges files in order, with CLI and environment overrides on top. That covers most of what people actually use imports for.
+- **Layered loading.** `merge(base, over)` folds files in order - defaults, then site, then user, last wins - and the CLI stacks the same way with repeatable `--layer=FILE` plus `--set=PATH=VALUE` overrides on top. That covers most of what people actually use imports for. (Environment-variable mapping is deliberately your program's job: the env namespace and its naming convention belong to the app, which can map env vars onto `--set` itself.)
 - **Generated starter configs.** The schema plus the writer can emit a fully commented, correctly typed starting file.
 
 Your config never needs a debugger, and a non-programmer can still edit it.
@@ -232,9 +232,11 @@ Beta, and spec-first on purpose. Several parsers that "mostly agree" would be wo
 - **Independent parsers in Go, C (with a C++ veneer), and Python** - done, corpus-green, and checked byte-for-byte against the reference on every build.
 - **Bash and PowerShell wrappers** - done. They call the CLI, so they inherit conformance for free.
 - **Read and write** - done. Every binding reads and writes, comments survive a format round-trip, and `check` reports stable diagnostic codes.
+- **Schema validation, layered loading, and schema-driven generation** - done in every binding: `check --schema`, `--layer`/`--set` on the loading subcommands, and `shcl init --schema` for a commented starter config.
+- **Installer packages** - done: `.deb`, `.rpm`, and a Windows setup are built alongside the binaries.
 - **Latest pre-release** - `v1.0.0-beta2`, with prebuilt binaries and checksums on the releases page.
 
-What is not done yet: packages for the common package managers, the schema and layered-loading power layer, and the remaining Tier 3 bindings. Star or watch the repo to follow along.
+What is not done yet: the remaining Tier 3 bindings (C#, Java, JavaScript). Star or watch the repo to follow along.
 
 ## Installing
 

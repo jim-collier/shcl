@@ -209,6 +209,15 @@ const char *shcl_status_name(shcl_status s);
 // ===========================================================================
 #ifdef SHCL_IMPLEMENTATION
 
+#ifdef __cplusplus
+// The implementation zero-initializes aggregates with the C idiom `{0}`; C++
+// -Wextra flags every one as a missing-field-initializer, which would break a
+// consumer compiling this header into a C++ TU with -Werror. Scoped to the
+// implementation only.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -3138,6 +3147,10 @@ shcl_str shcl_generate(shcl_doc *schema, int *ok) {
 	}
 	S s = sb_S(&out); r.p = s.p; r.n = s.n; return r;
 }
+
+#ifdef __cplusplus
+#pragma GCC diagnostic pop
+#endif
 
 #endif // SHCL_IMPLEMENTATION
 #endif // SHCL_H

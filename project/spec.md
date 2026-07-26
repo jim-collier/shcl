@@ -330,8 +330,8 @@ The convenience tier has the same shape everywhere - a mandatory, call-site-visi
 |------------|-----------------------------------------------|----------------------------------------------------|
 | Go         | `pop := doc.GetIntOr(path, 0)`                | `pop, st := doc.GetInt(path)`                      |
 | Rust       | `let pop = doc.get_int(path).unwrap_or(0);`   | `let r = doc.get_int(path); // Result<i64, Status>`|
-| C          | `int pop = shcl_get_int(doc, path, 0);`       | `shcl_get_int_ex(doc, path, &pop); // -> status`   |
-| C++        | `int pop = doc.get_or<int>(path, 0);`         | `auto r = doc.get<int>(path); // .value / .status` |
+| C          | `int64_t pop = shcl_get_int(d, p, n, 0);`     | `shcl_read_i64 r = shcl_read_int(d, p, n);`        |
+| C++        | `auto pop = doc.get_or<int64_t>(path, 0);`    | `auto r = doc.get<int64_t>(path); // .value`       |
 | C#         | `int pop = doc.GetIntOr(path, 0);`            | `var r = doc.GetInt(path); // .Value / .Status`    |
 | Java       | `int pop = doc.getIntOr(path, 0);`            | `var r = doc.getInt(path); // .value() .status()`  |
 | Kotlin     | `val pop = doc.getIntOr(path, 0)`             | `val r = doc.getInt(path)`                         |

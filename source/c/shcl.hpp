@@ -122,7 +122,13 @@ public:
 	}
 
 	// Compile-time-typed read: get<int64_t>/get<double>/get<bool>/get<std::string>.
-	template <class T> Read<T> get(std::string_view p) const;
+	// Any other T - a bare `int` included - fails right here with this message,
+	// not as a bare undefined-symbol link error.
+	template <class T> Read<T> get(std::string_view) const {
+		static_assert(sizeof(T) == 0,
+			"shcl::Document::get<T>: T must be exactly int64_t, double, bool, or std::string");
+		return {};
+	}
 
 	// Convenience tier: the value, or the call-site fallback unless Good - so a
 	// missing/empty/bad/ambiguous read cannot masquerade as a real zero.
