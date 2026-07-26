@@ -138,6 +138,15 @@ Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/ci
 - C - gcc and g++; the build gate is a plain `-std=c11 -Wall -Wextra -Werror` compile.
 - PowerShell 7+ - only needed if you touch the ps1 wrapper.
 
+`install-dev.bash` at the repo root sets up as much of this as it can without sudo, and prints package-manager hints for the rest.
+
+A full (non-`--quick`) pipeline run also wants the cross and packaging tools:
+
+- `cargo-zigbuild` and a mingw toolchain, for the Windows and ARM64 builds. Missing tools fail that stage, so pass `--no-cross` if you do not have them.
+- `nfpm` for `.deb`/`.rpm`, and `makensis` for the Windows setup. Either one missing just warns and skips its own packages.
+
+None of this is needed for `--ci`, which is the gate that matters for a pull request.
+
 ### Build and test
 
 - Fast loop: `cargo test --manifest-path source/rust/Cargo.toml` - runs the conformance corpus plus the fuzz smoke against the reference.
@@ -149,7 +158,23 @@ Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/ci
 
 ### Adding a conformance case
 
-Behavior changes land with a corpus case, or they are not pinned. A case is a directory under `project/conformance/NNN-short-name/` (next free number) containing at minimum `input.shcl`, `expected.shcl` (the exact `fmt` stdout), `expected-diags.txt` (the exact `check` stdout at Standard), and `reads.tsv`. Optional paired files add dimensions: `write.ops`/`expected-write.shcl` (Writer), `write-bad.ops` (ops that must be rejected), `schema.shcl`/`expected-validate.txt` (validation), `layer*.shcl`/`merge.sets`/`expected-merged.shcl` (layered loading), `init-schema.shcl`/`expected-init.shcl` (generation). Column meanings and file grammars are in `project/conformance/README.md`, which also carries a one-paragraph note per case - add one for yours. Generate the golden files from the Rust reference (`shcl fmt`, `shcl check`, etc.), eyeball them, and never hand-edit a golden to make a test pass. All four native runners pick a new case up automatically; run `cicd/cicd.bash --ci` and every binding must agree on it before it ships.
+Behavior changes land with a corpus case, or they are not pinned.
+
+- A case is a directory under `project/conformance/NNN-short-name/`, using the next free number.
+- Every case needs four files:
+	- `input.shcl` - the document under test.
+	- `expected.shcl` - the exact `fmt` stdout.
+	- `expected-diags.txt` - the exact `check` stdout at standard strictness.
+	- `reads.tsv` - one row per read to replay.
+- Optional paired files add a dimension:
+	- `write.ops` + `expected-write.shcl` - the Writer.
+	- `write-bad.ops` - ops that must be rejected.
+	- `schema.shcl` + `expected-validate.txt` - schema validation.
+	- `layer*.shcl` + `merge.sets` + `expected-merged.shcl` - layered loading.
+	- `init-schema.shcl` + `expected-init.shcl` - starter-config generation.
+- Column meanings and file grammars are in `project/conformance/README.md`. It also carries a short note per case, so add one for yours.
+- Generate the golden files from the Rust reference and eyeball them. Never hand-edit a golden to make a test pass.
+- All four runners pick up a new case automatically. Run `cicd/cicd.bash --ci`; every binding must agree on it before it ships.
 
 ### Linters
 

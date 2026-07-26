@@ -63,6 +63,9 @@ fn seed_texts() -> Vec<String> {
 			}
 		}
 	}
+	// read_dir order is unspecified, and the seed order drives every mutation
+	// the PRNG makes. Sort so a run is actually reproducible.
+	seeds.sort();
 	seeds.push("a: 1\n\tb: 2\n".to_string());
 	seeds.push("x:\n\t* one\n\t* two\n".to_string());
 	seeds.push("r:\n\t~~~\n\tbody\n\t~~~\n".to_string());

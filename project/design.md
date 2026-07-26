@@ -424,10 +424,37 @@ Technical detail behind the backlog's "Code Review 20260725" items, in the same 
 	- Exactly the pattern the prior review's item 12 removed from `select_or_create`, reintroduced in the newest feature. Parsing 32k keys costs 56 ms; merging them costs 16 s in the reference, 73 s in C, ~70 s in Python.
 	- Fix is the same accelerator: one grouping pass building name -> child-index buckets plus a first-appearance order vector (HashMap, Go map, dict, and the arena-backed chained hash table C already has), and a `(name, value-key) -> base-child-index` map built once per `overlay` call for the instance branch, with each node's key cached rather than rebuilt.
 	- Realistic sizes are fine - N=2000 merges in 0.02 s - so this needs thousands of same-parent siblings, which means machine-generated config rather than hand-authored.
-	- Resolved with exactly that accelerator, plus one structural change: `overlay` now does the decision work first (recursions and clone lists) and rebuilds the parent's children vector once, splicing each replaced group at its name's first original position - provably order-identical to the sequential shape, verified against the old-algorithm ports byte-for-byte on the corpus and a 300-trial random merge battery. The `[value]`-selector index (item 25) landed alongside as a display-keyed sibling map maintained at the same mutation sites, with the stacked-list deferred-remap flush extended to cover it.
+	- Resolved with exactly that accelerator, plus one structural change.
+		- `overlay` now decides everything first (recursions and clone lists), then rebuilds the parent's children vector once, splicing each replaced group back at its name's first original position.
+		- That splice is order-identical to the old sequential shape, so merged output does not move.
+		- The `[value]`-selector index (item 25) landed alongside it: a display-keyed sibling map maintained at the same mutation sites, with the stacked-list deferred-remap flush extended to cover it.
 
 - **Item 30 - blank lines and name case** (`source/rust/src/lib.rs:595,1171`, `spec.md:77,381`)
 	- Blank lines are the half of the trivia problem that item 4 left behind. spec.md:77 says they are ignored, so `fmt` collapses grouping that an author deliberately created - in a format that markets hand-editability as its edge.
 	- The trivia model already carries a per-node leading comment list, so this is a `blank_before` flag set when the parser saw a blank line before a node's binding line, plus one emit line. Fixpoint-preserving, roughly ten lines per binding. gofmt, rustfmt and prettier all preserve a single blank line between items.
 	- Name folding to lowercase happens at parse (lib.rs:595), so the README's own showcase loses `Max-Upload-MB`. Arguably correct for a canonical formatter - names are case-insensitive by spec, so the folded spelling is the canonical one - but the formatter section never says so, which makes `fmt --write` a surprise. Doc fix unless display names are wanted.
 	- `shcl set` re-emitting the whole document is the documented design, not a defect. Worth naming the comparison anyway: this is the problem that produced toml_edit, whose answer was a lossless syntax tree with `Decor`/`Repr` so unedited regions come back byte-identical. That is a much larger change than the blank-line flag and is not proposed here.
+
+## Code Review 20260726
+
+Technical detail behind the backlog's "Code Review 20260726" items, in the same shape as the sections above. This was the short pre-rc1 pass over what landed during the 20260725 burn-down, not a full sweep.
+
+- **Item 1 - in-place writes do not preserve the target file** (`source/rust/src/main.rs:263`, `source/go/cmd/shcl/main.go:325`, `source/python/cmd/shcl/main.py:253`, `source/c/cmd/shcl/main.c`)
+	- The temp-file-and-rename that fixed the 20260725 review's item 7 traded one hazard for another. A rename publishes a brand new inode, so everything the old file carried is dropped: its mode, its identity as a symlink target, and any other hard link to it.
+	- Mode is the serious one. A file at 600 comes back at whatever the umask allows, typically 664. Nothing warns. For a format whose pitch is config files, that is a quiet permission widening on exactly the files most likely to hold a credential.
+	- The symlink case is the most likely to be noticed and the most confusing: the link is replaced by a regular file holding the new content, and the file it used to point at still holds the old content. Stow, chezmoi and plain hand-linked dotfiles all produce this layout.
+	- Fix in two parts, both small and identical in shape across the four bindings:
+		- Resolve the path through symlinks before choosing the temp directory and the rename target, falling back to the given path when it does not exist yet.
+		- Stat the original and apply its mode to the temp file before the rename. Best-effort: a failure here should not fail the write.
+	- Hard links are not fixable this way. Preserving them means writing through the existing inode, which is the non-atomic behavior the earlier fix removed. Atomicity is worth more, so this becomes a documented limitation rather than a fix.
+	- Windows needs its own branch. The C writer already special-cases `MoveFileExA`; symlink resolution and mode there are not the same problem and should be left alone rather than emulated.
+
+- **Item 2 - C datetime reads allocate in the document arena** (`source/c/shcl.h:2237,2305`)
+	- The 20260725 review's item 5 moved every per-call temporary in the C read paths to a scratch arena that resets at each `resolve`. The two datetime read sites kept passing `&d->arena`.
+	- `parse_datetime` uses its arena argument only for the split vectors inside `parse_date_part` and `parse_time_part`. The one value that escapes, the fractional-seconds slice, points into the element text in the document arena, so it survives a scratch reset regardless.
+	- That makes the fix a one-word change per site with no lifetime consequence. 1M reads of a single datetime field went from 377 MB to flat.
+
+- **Item 3 - fuzz seed order is not deterministic** (`source/rust/tests/fuzz_smoke.rs:55`)
+	- The file's own header calls the run deterministic, and the PRNG is. The seed corpus is not: it comes from `read_dir`, whose order is unspecified, and the seed index is the first thing every mutation draws against.
+	- The practical cost showed up in the pipeline rather than the test. The cross-binding comparison count is derived from the dumped fuzz inputs, so it drifted by a few hundred between runs on an identical tree, which hides a real change in coverage.
+	- Sorting the seed list is the whole fix. Two runs on the same tree now dump byte-identical input sets.

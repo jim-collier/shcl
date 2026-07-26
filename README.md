@@ -10,9 +10,12 @@
 [![made-with-python](https://img.shields.io/badge/Made%20with-Python-1f425f.svg)](https://www.python.org/)
 ![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
 [![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
-![Lifecycle: Beta](https://img.shields.io/badge/Lifecycle-Beta-yellow)
+![Lifecycle: RC](https://img.shields.io/badge/Lifecycle-RC-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Support](https://img.shields.io/badge/Support-Maintained-brightgreen)
+
+[![CI](https://github.com/jim-collier/shcl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jim-collier/shcl/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/jim-collier/shcl?include_prereleases&sort=semver)](https://github.com/jim-collier/shcl/releases)
 
 </div>
 <!--
@@ -54,6 +57,8 @@
 *Forgiving to write. Predictable to read. The friendliest read API around.*
 
 <img src="assets/demo.gif" alt="SHCL demo"/>
+
+<!-- [Watch the walkthrough](https://www.youtube.com/watch?v=VIDEO_ID) -->
 
 <br />
 
@@ -167,7 +172,7 @@ limit=$(shcl get --int --default=10 server.shcl 'site[example.com].max-upload-mb
 
 When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`.
 
-Wildcards read across instances (`site[*].root` gives you every site's document root, in file order).
+Wildcards read across instances: an array read of `site[*].root` gives you every site's document root, in file order, with a status per slot.
 
 ## How it compares
 
@@ -224,7 +229,7 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 ## Status
 
-Beta, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
+Release candidate, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
 
 - **Language spec and formal grammar** - done. [`project/spec.md`](project/spec.md), [`project/grammar.abnf`](project/grammar.abnf).
 - **Conformance corpus** - the golden cases every binding must pass. Green and growing.
@@ -234,15 +239,26 @@ Beta, and spec-first on purpose. Several parsers that "mostly agree" would be wo
 - **Read and write** - done. Every binding reads and writes, comments survive a format round-trip, and `check` reports stable diagnostic codes.
 - **Schema validation, layered loading, and schema-driven generation** - done in every binding: `check --schema`, `--layer`/`--set` on the loading subcommands, and `shcl init --schema` for a commented starter config.
 - **Installer packages** - done: `.deb`, `.rpm`, and a Windows setup are built alongside the binaries.
-- **Latest pre-release** - `v1.0.0-beta2`, with prebuilt binaries and checksums on the releases page.
+- **Latest pre-release** - `v1.0.0-rc1`, with packages, prebuilt binaries, and checksums on the releases page.
 
 What is not done yet: the remaining Tier 3 bindings (C#, Java, JavaScript). Star or watch the repo to follow along.
 
 ## Installing
 
-The latest pre-release, `v1.0.0-beta2`, has prebuilt CLI binaries and checksums on the [releases page](https://github.com/jim-collier/shcl/releases). No package-manager packages yet. Four options:
+The latest pre-release, `v1.0.0-rc1`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases). Pick whichever fits:
 
-- **Install script** - downloads the latest release, verifies the checksum, and installs the binary plus the drop-in files and wrappers. Idempotent; states its plan and asks before touching anything. Linux:
+- **Native package** - the simplest route if your system uses one. Download the `.deb`, `.rpm`, or Windows setup for your architecture (`x86_64` or `arm64`) from the releases page:
+
+	```sh
+	sudo dpkg -i shcl-1.0.0-rc1-linux-x86_64.deb     # Debian, Ubuntu
+	sudo rpm -i  shcl-1.0.0-rc1-linux-x86_64.rpm     # Fedora, RHEL, openSUSE
+	```
+
+	On Windows, run `shcl-1.0.0-rc1-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
+
+	Packages put the binary at `/usr/bin/shcl` and the drop-in sources and shell wrappers under `/usr/share/shcl/`.
+
+- **Install script** - downloads the latest release, verifies the checksum, and installs the binary plus the drop-in files and wrappers. Idempotent; states its plan and asks before touching anything. Linux, macOS, BSD, WSL:
 
 	```sh
 	curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
@@ -254,13 +270,13 @@ The latest pre-release, `v1.0.0-beta2`, has prebuilt CLI binaries and checksums 
 	irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1 | iex
 	```
 
-	Both take `--release <dev|stable>` and `--target <user|system>` (`-Release`/`-Target` on Windows) - pass them via `bash -s -- --target=user`, or download the script first. The default is a system install (`/opt/shcl` + a `/usr/local/sbin/shcl` symlink, or `C:\Program Files\Shcl` on PATH); `user` installs under your home dir with no sudo/elevation.
+	Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows). Pass them through the pipe with `bash -s -- --target=user`, or download the script first. The default is a system install (`/opt/shcl` plus a `/usr/local/sbin/shcl` symlink, or `C:\Program Files\Shcl` on `PATH`); `user` installs under your home directory and needs no sudo or elevation.
 
-- **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page.
+- **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page and put it anywhere on your `PATH`.
 
 - **Drop-in** - copy one source file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
 
-- **Build the CLI from source** - see below. To set up a full dev environment instead (toolchains + linters + a clone), there is also `install-dev.bash`, same one-liner shape.
+- **Build the CLI from source** - see below. To set up a full dev environment instead (toolchains, linters, and a clone), there is also `install-dev.bash`, same one-liner shape.
 
 ## Building from source
 

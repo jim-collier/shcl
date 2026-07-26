@@ -91,6 +91,64 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Bugs
 
+- 🔘 Code Review 20260726 item 1: an in-place write does not preserve the file it replaces.
+	- `fmt --write` and `set --write` build a temp file and rename it over the target, so the target's own identity is discarded.
+	- Permission bits are lost. A config at mode 600 comes back at the umask default, which on a normal box means world-readable. This is the one that matters, because config files are exactly where secrets sit.
+	- A symlinked config is replaced by a regular file. The link breaks and the real file behind it is left untouched, so the edit appears to vanish. Dotfile managers make this a common layout.
+	- Hard links break the same way: the other name keeps the old content.
+	- All four bindings share the shape, so the fix is one mechanical diff. Resolve the target through symlinks first, then copy the original's mode onto the temp file before the rename.
+	- Hard links cannot survive a rename at all. That one is a documented limitation, not a fix.
+	- Detail: `design.md` - Code Review 20260726, item 1.
+
+- ✅ Code Review 20260726 item 2: C datetime reads accumulate in the never-freed document arena.
+	- The read path passes the document arena to the datetime parser for its split temporaries, so a long-running reader grows without bound. Every other C read path was moved to the per-call scratch arena; this one was missed.
+	- 1M datetime reads of a 45-byte document reach 377 MB. The same loop reading an int stays flat at 2 MB.
+	- Fixed: the two datetime read paths allocate their temporaries from scratch. The fractional-seconds value they hand back points into the document text, which outlives the call, so the return contract is unchanged. 1M reads now stay flat.
+
+- ✅ Code Review 20260726 item 3: the fuzz run is documented as deterministic but is not reproducible.
+	- The mutation PRNG is fixed-seed, but its seed inputs are read from the corpus directory in whatever order the filesystem hands back. That order decides every mutation, so two runs on the same tree explore different inputs.
+	- Visible in the pipeline: the cross-binding comparison count moves by a few hundred between runs on an unchanged tree, which makes the number useless as a regression signal.
+	- A failing case also cannot be reproduced by re-running, which is the main thing a fuzz gate is for.
+	- Fixed: the seed list is sorted before use. Two runs on the same tree now produce an identical input set.
+
+### Features and enhancements
+
+- ✋ Code Review 20260725 item 28: give the loader opt-out limits.
+	- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
+	- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
+	- The depth cap is the shared fix for item 2 and should land with it; the rest is the wider self-defense story.
+	- Depth half landed with item 2 (fixed 512-level cap, `E016`). Size/node/array limits still open.
+	- Deferred post-1.0: the depth cap closed the crash class; size/node/array knobs are additive API that can land without breaking anything. A consuming program can bound input size itself before calling parse.
+
+- ✋ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
+	- All four bindings recover the code from `msg.starts_with(...)` over ~30 hand-ordered prefixes, so rewording a message can change a code and the ordering is load-bearing.
+	- Separately, `V001`-`V099` are fully tabled but `E001`-`E015` and `H001` are enumerated nowhere, while users are told to gate CI on `check`.
+	- The doc half is cheap and should land before 1.0; threading the code through every call site is the larger, riskier half.
+	- Doc half landed with the item-2 depth work: `E001`-`E016` + `H001` now tabled in the spec's Diagnostics section. Code-threading half still open.
+	- Doc half done (the E-table); the code-threading half is deferred - large, mechanical, no user-visible payoff, and every corpus case pins code-per-line so the practical exposure is messages no case exercises.
+
+- 🛠️ Code Review 20260725 item 37: harden the installers' transport and integrity story.
+	- `curl`/`wget` follow redirects with no protocol pin or TLS floor.
+	- The sums file arrives over the same channel as the binary, so it catches corruption but not substitution; the source tarball, which supplies the drop-in files consumers compile in, is not verified at all.
+	- A detached signature over the sums file with the key inlined in the installer is what would make it a real trust root.
+	- Transport half done: curl/wget pin https through redirects with a TLS 1.2 floor (install.bash, install-dev.bash's rustup fetch), and install.ps1 floors TLS 1.2/1.3 for every download. The detached-signature trust root still needs a signing-key decision before it can land.
+
+- 🔘 Glossary of terms
+
+### Done
+
+#### Done - Initial requirements
+
+- ✅ Initialize the git repo at `github/` and wire the remote. `main` plus a feature-branch flow.
+
+- ✅ Resolve the open minor items at the end of `spec.md` (currency set, wildcard-missing behavior, `onBad` surface, percent-to-int, fence info-string). All settled inline under "Resolved minor items".
+
+- ✅ Rust reference parser (Tier 1) implementing the full spec, driven by the corpus. The `shcl` CLI builds from it.
+	- Done: single-file zero-dependency library plus the CLI (`get`, `fmt`, `check`, `count`, `instances`). Corpus-green, with fuzz smoke in the test run.
+	- Note: fuzzing surfaced two formatter rules, now in `spec.md`.
+
+#### Done - Bugs
+
 - ✅ Code Review 20260725 item 1: a higher layer that names a container with no children deletes the whole subtree below it.
 	- `server:` (or `server: web1` with an empty body) in an over layer wipes every child the lower layers put there, silently, exit 0.
 	- Worse than it reads: the wipe covers every same-named instance, so mentioning `server: web1` also deletes an untouched `server: web2`.
@@ -230,177 +288,6 @@ In each section, items are listed approximately from newest to oldest.
 	- The veneer gate compiles with `-Wall -Werror` only, so the repo's own build hides it.
 	- Fixed: the implementation section suppresses `-Wmissing-field-initializers` for C++ TUs only (the `{0}` zero-init idiom is correct C; C++ -Wextra flags every one), and the veneer gate now compiles with `-Wextra` so the repo's own build proves it.
 
-### Features and enhancements
-
-- ✅ Code Review 20260725 item 24: `merge()` is O(children^2) per parent in all four bindings.
-	- The over-side name dedup, the per-name group filter and the base-side instance match are all linear scans, and each rebuilds merge keys as it goes.
-	- Parsing 32k keys costs 56 ms; merging them costs 16 s in the reference. The marquee feature is the slowest thing in the product.
-	- The same accelerator the prior review's item 12 added to the parser applies here.
-	- Detail: `design.md` - Code Review 20260725, item 24.
-	- Fixed in all four: one grouping pass per side (over-side name buckets in first-appearance order; base-side has-container flags and a (name, key) -> child map, every key computed once) and a single children rebuild per parent. 32k keys: reference 16 s -> 0.07 s, C 14.4 s -> 0.05 s, byte-identical (proved against the old-algorithm ports with the corpus plus a 300-trial random merge battery). The reference/Go/Python stacked-list key-rebuild time rode along via the same deferred-remap flush C already had.
-
-- ✅ Code Review 20260725 item 25: a `[value]` selector is looked up by linear scan, so the inline spelling is quadratic.
-	- 20k lines of `srv[hostN].port: N` take 9 s against 0.06 s for the equivalent block form.
-	- Both spellings are spec-equal, so the user hits a 150x cliff for a cosmetic choice.
-	- The read and write paths scan siblings the same way, since the parser's child index is deliberately dropped at load. That part is fine at hand-authored sizes; if it is ever worth touching, name interning is the low-risk option - a cached side index has to be invalidated at five mutation sites in four bindings, and a missed invalidation is a silent wrong value rather than a slow one.
-	- Fixed at parse in all four: a display-keyed sibling map beside the merge-key map (same first-wins discipline, same mutation sites, flushed with the stacked-list deferral before any lookup). 20k inline-selector lines: 9 s -> 0.09 s. The read/write-path scans stay linear on purpose, as the item itself recommended.
-
-- ✅ Code Review 20260725 item 26: the validator's "did you mean" rebuilds the whole schema index once per unknown field.
-	- Bites when a document is wholesale unmatched - the wrong file, or a schema for another app - which is the case the feature exists for.
-	- C compounds it with a linear scan of the legal-chain set where the other three use a hash set.
-	- Output is stderr prose, so the fix needs no corpus change.
-	- Fixed in all four: legal chains and per-parent-chain sibling-name lists are built once per validate and handed to the suggester; C also swapped its linear legal-chain scan for the hash set the other three use.
-
-- ✅ Code Review 20260725 item 27: `to_canonical` is O(raw-siblings^2).
-	- Each raw node rescans the parent's children to decide whether it merges with the line above; the parent's own walk already has that information.
-	- 32k raw blocks under one field format in 2.8 s against a 0.05 s parse. Narrow, but free to fix and behavior-preserving.
-	- Fixed in all four: the parent's walk carries a seen-empties set and passes each child its would-merge flag, so no node rescans its siblings. 32k raw siblings: 2.8 s -> 0.05 s.
-
-- ✋ Code Review 20260725 item 28: give the loader opt-out limits.
-	- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
-	- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
-	- The depth cap is the shared fix for item 2 and should land with it; the rest is the wider self-defense story.
-	- Depth half landed with item 2 (fixed 512-level cap, `E016`). Size/node/array limits still open.
-	- Deferred post-1.0: the depth cap closed the crash class; size/node/array knobs are additive API that can land without breaking anything. A consuming program can bound input size itself before calling parse.
-
-- ✋ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
-	- All four bindings recover the code from `msg.starts_with(...)` over ~30 hand-ordered prefixes, so rewording a message can change a code and the ordering is load-bearing.
-	- Separately, `V001`-`V099` are fully tabled but `E001`-`E015` and `H001` are enumerated nowhere, while users are told to gate CI on `check`.
-	- The doc half is cheap and should land before 1.0; threading the code through every call site is the larger, riskier half.
-	- Doc half landed with the item-2 depth work: `E001`-`E016` + `H001` now tabled in the spec's Diagnostics section. Code-threading half still open.
-	- Doc half done (the E-table); the code-threading half is deferred - large, mechanical, no user-visible payoff, and every corpus case pins code-per-line so the practical exposure is messages no case exercises.
-
-- ✅ Code Review 20260725 item 30: the canonical formatter discards blank-line grouping.
-	- Comments were rescued as trivia by the prior review's item 4; blank lines are the other half of the same thing and were left out, so `fmt` flattens a grouped config into a wall.
-	- Field names are also folded to lowercase and the spec never says so, which makes `fmt --write` a surprise.
-	- The trivia model already exists, so this is a per-node flag and one emit line per binding.
-	- Detail: `design.md` - Code Review 20260725, item 30.
-	- Fixed: a `blank_before` trivia flag in all four parsers preserves one blank line before a binding (runs collapse; a blank before a comment group rides with it; fixpoint holds). Four goldens regenerated, case 032 pins it. The name folding was decided as correct-and-documented: the spec's formatter section now states lowercase is the canonical spelling.
-
-- ✅ Code Review 20260725 item 31: `paths()` exists only in the reference.
-	- Go, Python and C consumers handed an unknown document cannot enumerate it; `Count` and `Instances` both require knowing the path already.
-	- Straight violation of the guide's "same function inventory" rule on a public method, and about 20 lines per port.
-	- Fixed: `Paths()`/`paths()`/`shcl_paths` (and the veneer's `paths()`) now exist in every binding, mirroring the reference's walk (file order, deduplicated, bare-name-safe segments only); a shared fixture is pinned in all four native runners.
-
-- ✅ Code Review 20260725 item 32: `--set` is described as the top layer but behaves as a first-instance edit.
-	- A real top layer replaces every same-named leaf; `--set` targets the first instance and leaves the rest, so the two disagree on repeated leaves.
-	- The spec already names the Writer as the mechanism, so this is a missing clause rather than wrong behavior.
-	- Fixed with the missing spec clause: `--set` is a Writer edit targeting the first matching instance; whole-group override belongs in a `--layer` file.
-
-- ✅ Code Review 20260725 item 33: the convenience read tier is incomplete in C (3 of 11 types) and C++ (4 of 11).
-	- No convenience read for string - the most common config read - or for raw, datetime, or any array.
-	- The omission has a real C rationale (those types return borrowed memory), but the spec claims full coverage and the style guide's deviation list does not mention it.
-	- Resolved as documentation (the C rationale is real - borrowed memory and lengths do not fit a value-or-default signature): the spec's ergonomic-tier section and the style guide's C deviation list now both state the exact coverage.
-
-- ✅ Code Review 20260725 item 34: Python's public `get_*` raises a private-named `_StatusError`.
-	- A caller cannot catch it without reaching into a private name, so in practice they will write a bare `except Exception`.
-	- Fixed: the class is public `StatusError` now (docstring included), so callers can catch it by name.
-
-- ✅ Code Review 20260725 item 35: the profiler stage samples only `fmt`, on a workload where everything is still linear.
-	- The read path, `merge`, `validate`, `generate` and the Writer are never sampled, so all three 2026-07-23/24 features could go quadratic without moving a sample.
-	- The cheapest half of the fix is a wall-clock number per workload in the run log: a flamegraph shows where time goes, not that total time grew 4x.
-	- Fixed with the cheap half the review named first: the profiler stage now logs a wall-clock line per surface (fmt, merge, reads, validate, generate, set) from a `PROFILE_TIMED` list in config, so any of them going quadratic shows as a number moving even though the flamegraph still samples fmt.
-
-- ✅ Code Review 20260725 item 36: CI installs its lint toolchain unpinned every run.
-	- `TOOL_PINS` already tracks the versions the local gate uses, so CI and local disagree about what "passing" was tested against.
-	- Actions are also referenced by floating tag rather than commit SHA - generic hardening, small blast radius here.
-	- Fixed: ci.yml installs ruff/mypy/cppcheck/markdownlint at the exact `TOOL_PINS` versions, and every action is referenced by commit SHA with the tag in a comment.
-
-- 🛠️ Code Review 20260725 item 37: harden the installers' transport and integrity story.
-	- `curl`/`wget` follow redirects with no protocol pin or TLS floor.
-	- The sums file arrives over the same channel as the binary, so it catches corruption but not substitution; the source tarball, which supplies the drop-in files consumers compile in, is not verified at all.
-	- A detached signature over the sums file with the key inlined in the installer is what would make it a real trust root.
-	- Transport half done: curl/wget pin https through redirects with a TLS 1.2 floor (install.bash, install-dev.bash's rustup fetch), and install.ps1 floors TLS 1.2/1.3 for every download. The detached-signature trust root still needs a signing-key decision before it can land.
-
-- ✅ Code Review 20260725 item 38: the style guide bans the section rules the code actually uses.
-	- "No banner dividers" against 28 of them in the reference, 28 in Go, 18 in Python, 12 in C - and the guide is what a Tier 3 author is told to read first.
-	- The code is right: in a 3400-line drop-in file the section rules are the only navigation aid. Amend the rule and pin one spelling per language.
-	- One real inconsistency alongside it: `shcl.h` uses the shell house `//•••` rule, which is both off-style for C and the only non-ASCII comment character in the C bindings.
-	- Fixed: the guide now sanctions section rules as the one allowed banner and pins each binding's exact spelling; the lone `//•••` shell-style rule in `shcl.h` became the C `// ===` divider.
-
-- ✅ Code Review 20260725 item 39: panic macros are used outside tests in the reference.
-	- Eight sites - six `unreachable!` (four of them in the newest validator and generator code) and two `unwrap()`.
-	- Each is provably unreachable today, but they are invariants asserted by a panic in a library whose contract is that it never bails on a whole file, and three ports copy the structure.
-	- Fixed: every non-test `unreachable!`/`unwrap()` now degrades instead of aborting - a slipped invariant skips the constraint, returns no-parent, or keeps the match total with an empty string. Zero panic macros left outside tests (the feature-gated profiling `expect`s never ship).
-
-- ✅ Code Review 20260725 item 40: the CLI usage block is hand-duplicated across four CLIs with no drift check, and its exit-code line is wrong.
-	- It still says exit 6 means a strict load failure; the prior review's item 36 made `check` exit 6 on any error diagnostic, at any strictness.
-	- `help`, `version`, a bare invocation and an unknown subcommand are the largest user-visible output in the project and the crosscheck never runs them.
-	- Fixed: the exit-code sentence now says `6 check failed or strict load failure` in all four, and the crosscheck pins the whole usage surface - `help`, `version`, a bare invocation, and an unknown subcommand are compared byte-for-byte across bindings on every run.
-
-- ✅ Code Review 20260725 item 41: changelog has no Unreleased section, and contributing.md never explains the corpus workflow.
-	- Five landed feature sets since the beta2 tag are recorded only in git; populating it now is also the raw material for the 1.0 notes.
-	- contributing.md does state the parity rule, but nothing points a first-time contributor at how to add a conformance case, so their PR will be structurally wrong.
-	- Fixed: changelog.md gained an Unreleased section covering everything since beta2 (the 1.0 notes' raw material), and contributing.md gained an "Adding a conformance case" walkthrough.
-
-- 🔘 Glossary of terms
-
-- ✅ Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.
-	- Done: `install-dev.bash` at repo root. Linux + macOS directly; Windows via WSL (the dev pipeline is bash). Clones (or detects an existing clone), installs the no-sudo pieces itself (rustup, ruff/mypy/cppcheck via pipx, markdownlint via npm, PSScriptAnalyzer via pwsh), and prints the exact package-manager hint for what needs root (go, python3, gcc, shellcheck). Shellcheck-gated.
-
-- ✅ Release-install script, `install.bash` and cross-platform `install.ps1`. In [repo] root, usage instructions in README.md.
-	- Done: both at repo root, README Installing has the one-liners. Latest release via the GitHub API (`--release dev` = newest incl. pre-releases, default; `stable` = newest full release), binary picked by OS/arch, sha256-verified, `code/` (drop-in files) and `scripts/` (wrappers) pulled from the tag's source tarball. Idempotent (atomic binary swap); states the plan and confirms first.
-	- Decisions along the way: `objects/` skipped - nothing statically-linkable is published yet (revisit with packaging). Linux user install lands in `~/.local/share/shcl` with the `~/.local/bin/shcl` symlink (one path can't be both the dir and the symlink). Windows user install copies the exe beside the dir instead of symlinking (symlinks need elevation) and adds to the user PATH. macOS/BSD get a clear "no prebuilt binaries yet" pointer at build-from-source.
-	- Behavior:
-		- Runnable via a single `curl` or `wget`. Downloads, installs, and runs the latest release, with an option to abort.
-		- Idempotent. Updates existing.
-	- Args:
-		- `--release[=]<dev[elopment]|stable>` Install latest dev rather than
-		- `--target[=]<user|system>`
-			- System (default):
-				- Linux:
-					- /opt/shcl/
-						- shcl  ## Rust binary
-						- code/  ## Drop-in code files.
-						- objects/  ## Or a better name for per-language statically-linkable objects)
-						- scripts/  ## .bash and cross-platform .ps1 wrappers
-					- /usr/local/sbin/shcl  ## Symlink
-				- Windows:
-					- C:\Program Files\Shcl\
-						- shcl.exe  ## Rust binary
-						- code/  ## Drop-in code files.
-						- objects/  ## Or a better name for per-language statically-linkable objects)
-						- scripts/  ## .ps1 wrapper
-					- Add C:\Program Files\Shcl to %PATH%.
-				- macOS: ?
-				- BSD: ?
-			- User:
-				- Linux:
-					- ~/.local/bin/shcl/
-						- (Same subdirs under here as system install)
-					~/.local/bin/shcl  ## Symlink
-				- Windows:
-					- %USERPROFILE%\bin\Shcl
-						- (Same subdirs under here as system install)
-					- %USERPROFILE%\bin\shcl.exe  ## Symlink
-					- Add %USERPROFILE%\bin\ to %PATH%.
-				- macOS: ?
-				- BSD: ?
-
-- ✅ Schema-as-SHCL validation. The schema is a plain SHCL file (type, required, allowed values). `Validate(doc, schemaDoc)` returns structured diagnostics and catches unknown or misspelled fields. See `design.md` "Schema validation".
-	- Done: flat `field: <path>` schema shape, no grammar change; `Validate` in all four drop-ins plus the C++ veneer; `shcl check --schema` in all four CLIs; `V###` diagnostic codes; corpus cases 021-024 with a validate golden per case; crosscheck replays `check --schema`. Regex constraints and datetime ranges rejected for cross-binding parity; normative section in `spec.md`.
-	- Note: needs the reference parser first, then spec the schema vocabulary alongside it.
-
-- ✅ Layered loading. `Load(defaults, site, user, ...)` merges later over earlier via the existing merge rule, with CLI and env overrides on top.
-	- Done: `merge(base, over)` in all four drop-ins plus the C++ veneer; leaf names override, containers merge by `(name, value)`. CLI `--layer=FILE` (repeatable) on get/fmt/count/instances/set, `--set=PATH=VALUE` as the top layer; `fmt` doubles as merge. Env mapping dropped (belongs to the consuming program). Corpus case `025-layered` + `expected-merged.shcl` golden, all four native runners, crosscheck replays `fmt --layer/--set`; normative spec section.
-
-- ✅ Schema-driven generation. Writer plus schema emits a commented, typed starter config (`shcl init --schema ...`). Depends on schema validation.
-	- Done: `generate(schema)` in all four drop-ins plus the C++ veneer; `shcl init --schema=FILE` in all four CLIs. Required fields live, optional commented, wildcards in a trailing block; `desc` -> comment, a fixed-format annotation line summarizes type/constraints (byte-for-byte parity contract). Uses the schema's `default`/`desc` vocabulary. Corpus case `026-init-schema` + `expected-init.shcl` golden, all four native runners assert output + clean reload, crosscheck replays `init --schema`; normative spec section.
-
-### Done
-
-#### Done - Initial requirements
-
-- ✅ Initialize the git repo at `github/` and wire the remote. `main` plus a feature-branch flow.
-
-- ✅ Resolve the open minor items at the end of `spec.md` (currency set, wildcard-missing behavior, `onBad` surface, percent-to-int, fence info-string). All settled inline under "Resolved minor items".
-
-- ✅ Rust reference parser (Tier 1) implementing the full spec, driven by the corpus. The `shcl` CLI builds from it.
-	- Done: single-file zero-dependency library plus the CLI (`get`, `fmt`, `check`, `count`, `instances`). Corpus-green, with fuzz smoke in the test run.
-	- Note: fuzzing surfaced two formatter rules, now in `spec.md`.
-
-#### Done - Bugs
-
 - ✅ Code Review 20260716 item 1: C CLI reads freed memory on typed array output.
 	- `get --int|--float|--datetime --array` with more than 8 elements prints from a stale pointer after the line buffer grows; large arrays segfault.
 	- Fixed: owned line entries no longer store a pointer into the growable array; corpus case 008 pins 10-element typed arrays of every kind.
@@ -510,6 +397,142 @@ In each section, items are listed approximately from newest to oldest.
 	- Fixed: the `SHCL_BIN` pin resolves through `_shcl_exe`, so a base name matches its `.exe`.
 
 #### Done - Features and enhancements
+
+- ✅ Code Review 20260725 item 24: `merge()` is O(children^2) per parent in all four bindings.
+	- The over-side name dedup, the per-name group filter and the base-side instance match are all linear scans, and each rebuilds merge keys as it goes.
+	- Parsing 32k keys costs 56 ms; merging them costs 16 s in the reference. The marquee feature is the slowest thing in the product.
+	- The same accelerator the prior review's item 12 added to the parser applies here.
+	- Detail: `design.md` - Code Review 20260725, item 24.
+	- Fixed in all four bindings.
+		- One grouping pass per side, with every merge key computed once, and a single children rebuild per parent.
+		- 32k keys: the reference went from 16 s to 0.07 s, C from 14.4 s to 0.05 s. Output is byte-identical, and instance order is unchanged.
+		- The stacked-list key rebuild in the reference, Go and Python went the same way, reusing the deferred flush C already had.
+
+- ✅ Code Review 20260725 item 25: a `[value]` selector is looked up by linear scan, so the inline spelling is quadratic.
+	- 20k lines of `srv[hostN].port: N` take 9 s against 0.06 s for the equivalent block form.
+	- Both spellings are spec-equal, so the user hits a 150x cliff for a cosmetic choice.
+	- The read and write paths scan siblings the same way, since the parser's child index is deliberately dropped at load. That part is fine at hand-authored sizes; if it is ever worth touching, name interning is the low-risk option - a cached side index has to be invalidated at five mutation sites in four bindings, and a missed invalidation is a silent wrong value rather than a slow one.
+	- Fixed at parse in all four: a display-keyed sibling map beside the merge-key map (same first-wins discipline, same mutation sites, flushed with the stacked-list deferral before any lookup). 20k inline-selector lines: 9 s -> 0.09 s. The read/write-path scans stay linear on purpose, as the item itself recommended.
+
+- ✅ Code Review 20260725 item 26: the validator's "did you mean" rebuilds the whole schema index once per unknown field.
+	- Bites when a document is wholesale unmatched - the wrong file, or a schema for another app - which is the case the feature exists for.
+	- C compounds it with a linear scan of the legal-chain set where the other three use a hash set.
+	- Output is stderr prose, so the fix needs no corpus change.
+	- Fixed in all four: legal chains and per-parent-chain sibling-name lists are built once per validate and handed to the suggester; C also swapped its linear legal-chain scan for the hash set the other three use.
+
+- ✅ Code Review 20260725 item 27: `to_canonical` is O(raw-siblings^2).
+	- Each raw node rescans the parent's children to decide whether it merges with the line above; the parent's own walk already has that information.
+	- 32k raw blocks under one field format in 2.8 s against a 0.05 s parse. Narrow, but free to fix and behavior-preserving.
+	- Fixed in all four: the parent's walk carries a seen-empties set and passes each child its would-merge flag, so no node rescans its siblings. 32k raw siblings: 2.8 s -> 0.05 s.
+
+- ✅ Code Review 20260725 item 30: the canonical formatter discards blank-line grouping.
+	- Comments were rescued as trivia by the prior review's item 4; blank lines are the other half of the same thing and were left out, so `fmt` flattens a grouped config into a wall.
+	- Field names are also folded to lowercase and the spec never says so, which makes `fmt --write` a surprise.
+	- The trivia model already exists, so this is a per-node flag and one emit line per binding.
+	- Detail: `design.md` - Code Review 20260725, item 30.
+	- Fixed: a `blank_before` trivia flag in all four parsers preserves one blank line before a binding (runs collapse; a blank before a comment group rides with it; fixpoint holds). Four goldens regenerated, case 032 pins it. The name folding was decided as correct-and-documented: the spec's formatter section now states lowercase is the canonical spelling.
+
+- ✅ Code Review 20260725 item 31: `paths()` exists only in the reference.
+	- Go, Python and C consumers handed an unknown document cannot enumerate it; `Count` and `Instances` both require knowing the path already.
+	- Straight violation of the guide's "same function inventory" rule on a public method, and about 20 lines per port.
+	- Fixed: `Paths()`/`paths()`/`shcl_paths` (and the veneer's `paths()`) now exist in every binding, mirroring the reference's walk (file order, deduplicated, bare-name-safe segments only); a shared fixture is pinned in all four native runners.
+
+- ✅ Code Review 20260725 item 32: `--set` is described as the top layer but behaves as a first-instance edit.
+	- A real top layer replaces every same-named leaf; `--set` targets the first instance and leaves the rest, so the two disagree on repeated leaves.
+	- The spec already names the Writer as the mechanism, so this is a missing clause rather than wrong behavior.
+	- Fixed with the missing spec clause: `--set` is a Writer edit targeting the first matching instance; whole-group override belongs in a `--layer` file.
+
+- ✅ Code Review 20260725 item 33: the convenience read tier is incomplete in C (3 of 11 types) and C++ (4 of 11).
+	- No convenience read for string - the most common config read - or for raw, datetime, or any array.
+	- The omission has a real C rationale (those types return borrowed memory), but the spec claims full coverage and the style guide's deviation list does not mention it.
+	- Resolved as documentation (the C rationale is real - borrowed memory and lengths do not fit a value-or-default signature): the spec's ergonomic-tier section and the style guide's C deviation list now both state the exact coverage.
+
+- ✅ Code Review 20260725 item 34: Python's public `get_*` raises a private-named `_StatusError`.
+	- A caller cannot catch it without reaching into a private name, so in practice they will write a bare `except Exception`.
+	- Fixed: the class is public `StatusError` now (docstring included), so callers can catch it by name.
+
+- ✅ Code Review 20260725 item 35: the profiler stage samples only `fmt`, on a workload where everything is still linear.
+	- The read path, `merge`, `validate`, `generate` and the Writer are never sampled, so all three 2026-07-23/24 features could go quadratic without moving a sample.
+	- The cheapest half of the fix is a wall-clock number per workload in the run log: a flamegraph shows where time goes, not that total time grew 4x.
+	- Fixed with the cheap half the review named first: the profiler stage now logs a wall-clock line per surface (fmt, merge, reads, validate, generate, set) from a `PROFILE_TIMED` list in config, so any of them going quadratic shows as a number moving even though the flamegraph still samples fmt.
+
+- ✅ Code Review 20260725 item 36: CI installs its lint toolchain unpinned every run.
+	- `TOOL_PINS` already tracks the versions the local gate uses, so CI and local disagree about what "passing" was tested against.
+	- Actions are also referenced by floating tag rather than commit SHA - generic hardening, small blast radius here.
+	- Fixed: ci.yml installs ruff/mypy/cppcheck/markdownlint at the exact `TOOL_PINS` versions, and every action is referenced by commit SHA with the tag in a comment.
+
+- ✅ Code Review 20260725 item 38: the style guide bans the section rules the code actually uses.
+	- "No banner dividers" against 28 of them in the reference, 28 in Go, 18 in Python, 12 in C - and the guide is what a Tier 3 author is told to read first.
+	- The code is right: in a 3400-line drop-in file the section rules are the only navigation aid. Amend the rule and pin one spelling per language.
+	- One real inconsistency alongside it: `shcl.h` uses the shell house `//•••` rule, which is both off-style for C and the only non-ASCII comment character in the C bindings.
+	- Fixed: the guide now sanctions section rules as the one allowed banner and pins each binding's exact spelling; the lone `//•••` shell-style rule in `shcl.h` became the C `// ===` divider.
+
+- ✅ Code Review 20260725 item 39: panic macros are used outside tests in the reference.
+	- Eight sites - six `unreachable!` (four of them in the newest validator and generator code) and two `unwrap()`.
+	- Each is provably unreachable today, but they are invariants asserted by a panic in a library whose contract is that it never bails on a whole file, and three ports copy the structure.
+	- Fixed: every non-test `unreachable!`/`unwrap()` now degrades instead of aborting - a slipped invariant skips the constraint, returns no-parent, or keeps the match total with an empty string. Zero panic macros left outside tests (the feature-gated profiling `expect`s never ship).
+
+- ✅ Code Review 20260725 item 40: the CLI usage block is hand-duplicated across four CLIs with no drift check, and its exit-code line is wrong.
+	- It still says exit 6 means a strict load failure; the prior review's item 36 made `check` exit 6 on any error diagnostic, at any strictness.
+	- `help`, `version`, a bare invocation and an unknown subcommand are the largest user-visible output in the project and the crosscheck never runs them.
+	- Fixed: the exit-code sentence now says `6 check failed or strict load failure` in all four, and the crosscheck pins the whole usage surface - `help`, `version`, a bare invocation, and an unknown subcommand are compared byte-for-byte across bindings on every run.
+
+- ✅ Code Review 20260725 item 41: changelog has no Unreleased section, and contributing.md never explains the corpus workflow.
+	- Five landed feature sets since the beta2 tag are recorded only in git; populating it now is also the raw material for the 1.0 notes.
+	- contributing.md does state the parity rule, but nothing points a first-time contributor at how to add a conformance case, so their PR will be structurally wrong.
+	- Fixed: changelog.md gained an Unreleased section covering everything since beta2 (the 1.0 notes' raw material), and contributing.md gained an "Adding a conformance case" walkthrough.
+
+- ✅ Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.
+	- Done: `install-dev.bash` at repo root. Linux + macOS directly; Windows via WSL (the dev pipeline is bash). Clones (or detects an existing clone), installs the no-sudo pieces itself (rustup, ruff/mypy/cppcheck via pipx, markdownlint via npm, PSScriptAnalyzer via pwsh), and prints the exact package-manager hint for what needs root (go, python3, gcc, shellcheck). Shellcheck-gated.
+
+- ✅ Release-install script, `install.bash` and cross-platform `install.ps1`. In [repo] root, usage instructions in README.md.
+	- Done: both at repo root, README Installing has the one-liners. Latest release via the GitHub API (`--release dev` = newest incl. pre-releases, default; `stable` = newest full release), binary picked by OS/arch, sha256-verified, `code/` (drop-in files) and `scripts/` (wrappers) pulled from the tag's source tarball. Idempotent (atomic binary swap); states the plan and confirms first.
+	- Decisions along the way: `objects/` skipped - nothing statically-linkable is published yet (revisit with packaging). Linux user install lands in `~/.local/share/shcl` with the `~/.local/bin/shcl` symlink (one path can't be both the dir and the symlink). Windows user install copies the exe beside the dir instead of symlinking (symlinks need elevation) and adds to the user PATH. macOS/BSD get a clear "no prebuilt binaries yet" pointer at build-from-source.
+	- Behavior:
+		- Runnable via a single `curl` or `wget`. Downloads, installs, and runs the latest release, with an option to abort.
+		- Idempotent. Updates existing.
+	- Args:
+		- `--release[=]<dev[elopment]|stable>` Install latest dev rather than
+		- `--target[=]<user|system>`
+			- System (default):
+				- Linux:
+					- /opt/shcl/
+						- shcl  ## Rust binary
+						- code/  ## Drop-in code files.
+						- objects/  ## Or a better name for per-language statically-linkable objects)
+						- scripts/  ## .bash and cross-platform .ps1 wrappers
+					- /usr/local/sbin/shcl  ## Symlink
+				- Windows:
+					- C:\Program Files\Shcl\
+						- shcl.exe  ## Rust binary
+						- code/  ## Drop-in code files.
+						- objects/  ## Or a better name for per-language statically-linkable objects)
+						- scripts/  ## .ps1 wrapper
+					- Add C:\Program Files\Shcl to %PATH%.
+				- macOS: ?
+				- BSD: ?
+			- User:
+				- Linux:
+					- ~/.local/bin/shcl/
+						- (Same subdirs under here as system install)
+					~/.local/bin/shcl  ## Symlink
+				- Windows:
+					- %USERPROFILE%\bin\Shcl
+						- (Same subdirs under here as system install)
+					- %USERPROFILE%\bin\shcl.exe  ## Symlink
+					- Add %USERPROFILE%\bin\ to %PATH%.
+				- macOS: ?
+				- BSD: ?
+
+- ✅ Schema-as-SHCL validation. The schema is a plain SHCL file (type, required, allowed values). `Validate(doc, schemaDoc)` returns structured diagnostics and catches unknown or misspelled fields. See `design.md` "Schema validation".
+	- Done: flat `field: <path>` schema shape, no grammar change; `Validate` in all four drop-ins plus the C++ veneer; `shcl check --schema` in all four CLIs; `V###` diagnostic codes; corpus cases 021-024 with a validate golden per case; crosscheck replays `check --schema`. Regex constraints and datetime ranges rejected for cross-binding parity; normative section in `spec.md`.
+	- Note: needs the reference parser first, then spec the schema vocabulary alongside it.
+
+- ✅ Layered loading. `Load(defaults, site, user, ...)` merges later over earlier via the existing merge rule, with CLI and env overrides on top.
+	- Done: `merge(base, over)` in all four drop-ins plus the C++ veneer; leaf names override, containers merge by `(name, value)`. CLI `--layer=FILE` (repeatable) on get/fmt/count/instances/set, `--set=PATH=VALUE` as the top layer; `fmt` doubles as merge. Env mapping dropped (belongs to the consuming program). Corpus case `025-layered` + `expected-merged.shcl` golden, all four native runners, crosscheck replays `fmt --layer/--set`; normative spec section.
+
+- ✅ Schema-driven generation. Writer plus schema emits a commented, typed starter config (`shcl init --schema ...`). Depends on schema validation.
+	- Done: `generate(schema)` in all four drop-ins plus the C++ veneer; `shcl init --schema=FILE` in all four CLIs. Required fields live, optional commented, wildcards in a trailing block; `desc` -> comment, a fixed-format annotation line summarizes type/constraints (byte-for-byte parity contract). Uses the schema's `default`/`desc` vocabulary. Corpus case `026-init-schema` + `expected-init.shcl` golden, all four native runners assert output + clean reload, crosscheck replays `init --schema`; normative spec section.
 
 - ✅ Style guide: write `style-guide.md` (canonical coding + prose style) and point everything at it.
 	- Key decision made prominent everywhere: parity over idiom - bindings mirror the reference's structure over per-language idiom, so byte-for-byte sync stays maintainable and fixes port by diff.
