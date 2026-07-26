@@ -2418,7 +2418,7 @@ shcl_severity shcl_diag_severity(const shcl_doc *d, size_t i) { return d->diags.
 shcl_str shcl_diag_message(const shcl_doc *d, size_t i) { return d->diags.data[i].message; }
 const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i].code; }
 
-//•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+// ===========================================================================
 // Validator: schema-as-SHCL
 // The schema is an ordinary parsed document: a flat list of `field: <path>`
 // instances whose children are the constraints (closed vocabulary - see

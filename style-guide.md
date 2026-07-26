@@ -32,7 +32,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - Formatters win. Where a canonical formatter exists (rustfmt, gofmt), its output is the law - run it, don't hand-format against it. Intentional data tables get the formatter's skip pragma rather than a fight.
 - Tabs for indentation, spaces for alignment, in every language that allows it. This repo pins rustfmt to `hard_tabs`; gofmt is tabs natively; Python and shell follow suit. Yes, PEP 8 prefers spaces - one indentation style across a multi-language repo is worth more than per-language purity here.
 - Names are meaningful and human-searchable: `upperBound`, not `ub`. Short conventional names are fine where they are idiomatic - loop indices (`i`), a local `err`, a receiver letter in Go, and few-line locals in the compact parser cores (`t` for a just-trimmed line, `q` for the current quote char) where the same short name means the same thing at the same site in every binding. The test is "can a reader find and search-replace what you mean", not maximal length.
-- Comments are terse and explain *why*, not *what*. No narration of the next line, no banner dividers, ASCII only (`->` not arrows; `©` is fine). If a line needs a what-comment, rewrite the line.
+- Comments are terse and explain *why*, not *what*. No narration of the next line, ASCII only (`->` not arrows; `©` is fine). If a line needs a what-comment, rewrite the line.
+- **Section rules are the one sanctioned banner.** In a single-file drop-in binding of a few thousand lines they are the only navigation aid, so each binding uses exactly one spelling for its major-section dividers and nothing else: Rust and Go a full-width `// ----...` line with the section title on the following comment line; Python `# ----- <title> -----`; C `// --- <title> ---...` padded to the margin, with `// ====...` reserved for the header/implementation split; shell keeps the house `#•••` rule. No other decorative comment forms.
 - Every source file starts with the SPDX line and copyright, then a short purpose block. Library files also state the drop-in story and the parity contract.
 - Single file per binding, zero dependencies. That is the product ("copy this file into your tree"), so no module splits, no helper crates/packages, and no dependency however good.
 - Small standalone utility scripts are MIT regardless of anything else, and carry their license in the header.
@@ -67,6 +68,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - Memory model: one bump arena per document, `shcl_free` frees everything, no per-object ownership. Raw pointers are fine here - this is C working as designed, not a RAII gap.
 - Strings are length-delimited byte spans with explicit UTF-8 iteration helpers, because the reference iterates `char`s and byte-wise shortcuts mis-handle multibyte input.
 - The C++ veneer (`shcl.hpp`) is a thin typed wrapper over the C core - not a second parser, and kept intentionally small. C++17 (the gate's pin, for broad compiler reach), no exceptions: it surfaces the same `Status` values the core returns.
+- Deliberate deviation: the convenience read tier covers only the value types (`shcl_get_int`/`_float`/`_bool`; `get_or<T>` for the veneer's four `get<T>` types). String, raw, datetime, and array reads hand back borrowed memory or lengths that a value-or-default signature cannot express, so those stay on the full `shcl_read_*` tier. The spec's ergonomic-tier section says the same.
 
 ### Bash and PowerShell (wrappers)
 

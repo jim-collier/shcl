@@ -74,7 +74,7 @@ each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
-5 multiple instances, 6 strict load failure.
+5 multiple instances, 6 check failed or strict load failure.
 """
 
 
