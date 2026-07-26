@@ -19,7 +19,7 @@ import (
 )
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
-const version = "1.0.0-beta2"
+const version = "1.0.0-rc1"
 
 const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 
@@ -322,15 +322,32 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 // writeAtomic writes via a temp file in the same dir, then renames over the
 // target, so an interrupted write can never truncate the config it rewrites.
 // The data is synced before the rename so a crash cannot publish an empty file.
+//
+// A rename publishes a new inode, so the target is resolved through symlinks
+// first (otherwise a linked-in config gets replaced by a regular file and the
+// real one is left stale) and the original's mode is copied onto the temp file
+// (otherwise a 600 config comes back at whatever the umask allows). Other hard
+// links to the old inode cannot survive a rename and keep the old content.
 func writeAtomic(file, data string) error {
-	dir := filepath.Dir(file)
-	base := filepath.Base(file)
+	// EvalSymlinks fails when the target does not exist yet; that is a plain
+	// create, so the path as given is already the right one.
+	target := file
+	if resolved, rerr := filepath.EvalSymlinks(file); rerr == nil {
+		target = resolved
+	}
+	dir := filepath.Dir(target)
+	base := filepath.Base(target)
 	tmp := filepath.Join(dir, "."+base+".tmp"+strconv.Itoa(os.Getpid()))
 	f, err := os.Create(tmp)
 	if err == nil {
 		if _, werr := f.WriteString(data); werr != nil {
 			err = werr
 		} else {
+			// Best effort: a filesystem that cannot carry the mode is not a
+			// reason to fail a write that otherwise succeeded.
+			if st, serr := os.Stat(target); serr == nil {
+				_ = f.Chmod(st.Mode().Perm())
+			}
 			err = f.Sync()
 		}
 		f.Close()
@@ -339,7 +356,7 @@ func writeAtomic(file, data string) error {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %s", file, err)
 	}
-	if rerr := os.Rename(tmp, file); rerr != nil {
+	if rerr := os.Rename(tmp, target); rerr != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %s", file, rerr)
 	}

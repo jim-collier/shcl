@@ -81,5 +81,5 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Markdown never hard-wraps: one paragraph or bullet is one physical line.
 - Short sentences. Nested bullets over comma-chained clauses. Minimal bold/italics/caps, no drama, no unicode beyond what the content needs.
-- Filenames are lowercase, except `README.md` and `CLAUDE.md`.
+- Filenames are lowercase, except `README.md`.
 - Docs update in the same change as the code they describe, not after.

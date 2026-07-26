@@ -2,32 +2,43 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v1.0.0-rc1 - 2026-07-26
 
 ### Added
 
-- Schema validation: a schema is itself a plain SHCL file; `validate(doc, schema)` in every binding and `shcl check --schema=FILE` with stable `V###` codes.
-- Layered loading: `merge(base, over)` in every binding; repeatable `--layer=FILE` plus `--set=PATH=VALUE` overrides on the loading subcommands.
+- Schema validation: a schema is itself a plain SHCL file. `validate(doc, schema)` in every binding, and `shcl check --schema=FILE` with stable `V###` codes.
+- Layered loading: `merge(base, over)` in every binding, plus repeatable `--layer=FILE` and `--set=PATH=VALUE` overrides on the loading subcommands.
 - Schema-driven generation: `generate(schema)` and `shcl init --schema=FILE` emit a commented, typed starter config that validates clean against its own schema.
-- Installer packages: `.deb` and `.rpm` per Linux binary and an NSIS Windows setup, covered by the release checksums.
-- `set --write` rewrites the base file in place; `fmt --write` and `set --write` are both atomic (temp file + rename).
-- A nesting-depth cap (512 levels, `E016`) so deep or hostile documents fail loading cleanly instead of crashing formatting or merging.
-- An `E017` diagnostic for a value that opens a quote it never closes (previously silent, and it swallowed the trailing comment).
-- Writer setters report whether the write applied; an unusable path (wildcard, missing `[#N]`) is a loud failure with nothing half-created.
-- `paths()` in every binding (and the C++ veneer): enumerate a document's field paths in file order.
-- Blank-line grouping survives the canonical formatter (one blank between bindings; runs collapse), and the spec now states that lowercase is a field name's canonical spelling.
-- An unterminated-quote-in-value diagnostic (`E017`) - previously the typo was silent and swallowed the trailing comment.
+- Installer packages: a `.deb` and `.rpm` per Linux binary and a Windows setup, all covered by the release checksums.
+- `paths()` in every binding and the C++ veneer, to enumerate a document's field paths in file order.
+- `set --write` rewrites the base file in place, matching `fmt --write`.
+- Two new diagnostics: `E016` for a document nested past the 512-level cap, and `E017` for a value that opens a quote it never closes.
 
 ### Changed
 
-- A bare section header in a higher layer now merges instead of silently deleting the base subtree; clearing a leaf from a layer still works.
-- `shcl set` op values are validated with the reference's grammar in every binding (malformed, out-of-range, or non-ASCII-digit values are rejected identically).
+- Blank lines between bindings now survive the canonical formatter instead of being discarded. Runs of them collapse to one.
 - Every subcommand rejects options it does not use instead of silently ignoring them.
-- `init` exits 6 on a broken schema, matching `check --schema`; its stderr lists the schema faults in every binding.
-- The C binding's memory use is flat for read-heavy and merge-heavy workloads (per-call scratch arena, in-place merges, geometric stacked-list growth).
-- The Windows installers edit `PATH` at the registry, segment-wise and type-preserving; installer downloads pin https with a TLS 1.2 floor.
-- Large-document performance: merging, inline `[value]` selectors, stacked lists, raw-block formatting, and schema "did you mean" suggestions all dropped from quadratic to linear (a 32k-key merge went from 16 s to 0.07 s in the reference), byte-identical output.
-- The library never panics on a slipped invariant; every non-test assert degrades gracefully.
+- `init` exits 6 on a broken schema, matching `check --schema`, and lists the schema faults.
+- Large-document performance: merging, inline `[value]` selectors, stacked lists, raw-block formatting, and schema suggestions all dropped from quadratic to linear. A 32k-key merge went from 16 seconds to 0.07 in the reference, with byte-identical output.
+- C memory use is flat for read-heavy and merge-heavy workloads, where it previously grew without bound.
+- The Windows installers edit `PATH` in the registry segment-wise and preserve its type. Installer downloads require https with a TLS 1.2 floor.
+- The library degrades gracefully on a slipped internal invariant rather than aborting.
+- The spec states that lowercase is a field name's canonical spelling.
+
+### Fixed
+
+- A bare section header in a higher layer merged over a base document deleted the whole subtree below it. It now merges. Clearing a leaf from a layer still works.
+- A write to an unusable path (a wildcard, or a missing `[#N]`) reported success and could leave a half-created path behind. Setters now report whether the write applied, and nothing is created unless the whole path is usable.
+- `fmt --write` could leave a truncated file if interrupted, and C reported success on a failed write. Both writers are now atomic.
+- An in-place write no longer discards what it replaces. The target's permission bits are preserved, and a symlinked config is written through instead of being replaced by a regular file. Any other hard link to the file still keeps the old content, which a rename cannot avoid.
+- The Writer could create two siblings that a reparse would merge, so its output was not a formatter fixpoint.
+- `shcl set` op values were validated four different ways across the bindings. All four now use the reference's grammar.
+- `shcl init --schema` could generate a file that its own schema rejected, and could emit lines that do not parse.
+- Go `Validate` aborted the process on a schema path with a `[#N]` selector at or above 2^63.
+- Deeply nested documents crashed three of the four bindings, each at a different depth. The nesting cap catches them at load.
+- The C CLI silently capped `--layer` and `--set` at 64 each.
+- `shcl.h` did not compile as a drop-in C++ translation unit under `-Wall -Wextra -Werror`.
+- README and spec examples that named APIs which do not exist.
 
 ## v1.0.0-beta2 - 2026-07-21
 

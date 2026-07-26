@@ -86,7 +86,7 @@ fCompareStdin(){
 		if [[ "$got" != "$want" ]]; then
 			nBad+=1
 			echo "DIVERGE ${what}: ${name} vs ${refName} (shcl $* <${stdinFile})"
-			diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | head -12
+			diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | head -12 || true
 		fi
 	done
 }
@@ -103,10 +103,62 @@ fCompare(){
 		if [[ "$got" != "$want" ]]; then
 			nBad+=1
 			echo "DIVERGE ${what}: ${name} vs ${refName} (shcl $*)"
-			diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | head -12
+			diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | head -12 || true
 		fi
 	done
 }
+
+##	Describe a tree so an in-place write can be compared by its side effects.
+##	One sorted line per path: relative name, type, mode, link count, symlink
+##	target, content. Anything the writer leaves behind (a stray temp file, a
+##	replaced symlink, a widened mode) shows up as a diff.
+fWriteState(){
+	local root="$1" p rel
+	while IFS= read -r p; do
+		rel="${p#"${root}/"}"
+		if [[ -L "$p" ]]; then
+			printf '%s\tsymlink -> %s\n' "$rel" "$(readlink "$p")"
+		elif [[ -d "$p" ]]; then
+			printf '%s\t%s\n' "$rel" "$(stat -c '%F mode=%a' "$p")"
+		else
+			printf '%s\t%s\t%s\n' "$rel" "$(stat -c '%F mode=%a links=%h' "$p")" "$(tr '\n' '|' <"$p")"
+		fi
+	done < <(find "$root" -mindepth 1 | sort)
+}
+
+##	Compare the filesystem side effects of an in-place write, not just stdout.
+##	The writer publishes a new inode, so it can silently drop the target's mode
+##	or replace a symlink with a regular file - neither of which a stdout compare
+##	can see. fixture builds a fresh tree under $1 and echoes the path to pass the
+##	CLI; every binding gets its own identical copy.
+fCompareWrite(){
+	local what="$1" fixture="$2"; shift 2
+	local want got b name cli root target
+	root="${tmpDir}/write-${refName}"; rm -rf "$root"; mkdir -p "$root"
+	target="$("$fixture" "$root")"
+	fRun "$refCli" "$@" "$target" >/dev/null
+	want="$(fWriteState "$root")"
+	for b in "${bindings[@]:1}"; do
+		name="${b%%|*}"; cli="${b#*|}"
+		root="${tmpDir}/write-${name}"; rm -rf "$root"; mkdir -p "$root"
+		target="$("$fixture" "$root")"
+		fRun "$cli" "$@" "$target" >/dev/null
+		got="$(fWriteState "$root")"
+		nCompared+=1
+		if [[ "$got" != "$want" ]]; then
+			nBad+=1
+			echo "DIVERGE ${what}: ${name} vs ${refName} (shcl $* <fixture>)"
+			diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | head -12 || true
+		fi
+	done
+}
+
+##	Fixtures for fCompareWrite. Each builds its tree and echoes the path to hand
+##	the CLI. The unformatted spacing is deliberate: the write must actually
+##	rewrite the file, or the checks below prove nothing.
+fFixMode(){    printf 'a:  1\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
+fFixSymlink(){ mkdir -p "$1/real"; printf 'a:  1\n' >"$1/real/c.shcl"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.shcl"; }
+fFixHardlink(){ printf 'a:  1\n' >"$1/c.shcl"; ln "$1/c.shcl" "$1/other.shcl"; echo "$1/c.shcl"; }
 
 ##	Map one reads.tsv row to a CLI call. Columns: query, type, expected, status,
 ##	optional level. expected/status are the corpus contract (each binding's own
@@ -218,6 +270,14 @@ fCompare "usage version" version
 fCompare "usage bare"
 fCompare "usage unknown" definitely-not-a-subcommand
 
+# In-place writes: the rename that makes them atomic also replaces the inode, so
+# these pin what the target keeps. Mode must survive (config files hold secrets)
+# and a symlinked config must be written through, not replaced. The hard-link
+# case pins the documented limitation: rename cannot preserve the other name.
+fCompareWrite "write keeps mode" fFixMode fmt --write
+fCompareWrite "write follows symlink" fFixSymlink fmt --write
+fCompareWrite "write breaks hard link" fFixHardlink fmt --write
+
 if ((nBad)); then
 	echo "crosscheck: ${nBad}/${nCompared} comparison(s) diverged"
 	exit 1
@@ -238,3 +298,8 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 ##		- 20260724: Layered-load dimension (fmt with --layer/--set) for cases
 ##		               carrying expected-merged.shcl; generation dimension (init
 ##		               --schema) for cases carrying init-schema.shcl.
+##		- 20260726: In-place write dimension: compare the tree an in-place write
+##		               leaves behind (mode, symlink, link count, content), not
+##		               just stdout. Also made the DIVERGE diff non-fatal - under
+##		               pipefail its nonzero status was aborting the run, so only
+##		               the first divergence ever printed and the summary never did.

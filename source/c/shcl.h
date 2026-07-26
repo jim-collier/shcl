@@ -2234,7 +2234,9 @@ shcl_read_dt shcl_read_datetime(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_dt R; S p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);
 	memset(&R.value, 0, sizeof R.value); R.value.zone = SHCL_ZONE_NONE;
 	if (st != SHCL_GOOD) { R.status = st; return R; }
-	if (parse_datetime(&d->arena, el->text, &R.value)) R.status = SHCL_GOOD;
+	// scratch, not the doc arena: parse_datetime only allocates split temporaries
+	// there, and the frac it hands back slices el->text, which outlives the call.
+	if (parse_datetime(&d->scratch, el->text, &R.value)) R.status = SHCL_GOOD;
 	else { memset(&R.value, 0, sizeof R.value); R.value.zone = SHCL_ZONE_NONE; R.status = SHCL_BAD_TYPE; }
 	return R;
 }
@@ -2302,7 +2304,7 @@ shcl_read_dt_arr shcl_read_datetime_array(shcl_doc *d, const char *path, size_t 
 	shcl_datetime *out = (shcl_datetime *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_datetime));
 	for (size_t i = 0; i < n; i++) {
 		memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE;
-		if (els[i]) { if (!parse_datetime(&d->arena, els[i]->text, &out[i])) { memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE; sts[i] = SHCL_BAD_TYPE; } }
+		if (els[i]) { if (!parse_datetime(&d->scratch, els[i]->text, &out[i])) { memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE; sts[i] = SHCL_BAD_TYPE; } }
 	}
 	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }

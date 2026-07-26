@@ -8,6 +8,7 @@
 
 import os
 import signal
+import stat
 import sys
 
 # The single-file library sits two directories up (lib in source/python/, CLI in
@@ -16,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realp
 import shcl  # noqa: E402
 
 # Keep in step with source/rust/Cargo.toml, the canonical version source.
-VERSION = "1.0.0-beta2"
+VERSION = "1.0.0-rc1"
 
 HELP = """shcl - Simple Hierarchical Config Language (reference CLI)
 
@@ -255,18 +256,31 @@ def write_atomic(file, data):
 	# so an interrupted write can never truncate the config it rewrites. The data
 	# is synced before the rename so a crash cannot publish an empty file.
 	# Returns None on success, or the error message to report.
-	d = os.path.dirname(file)
+	#
+	# A rename publishes a new inode, so the target is resolved through symlinks
+	# first (otherwise a linked-in config gets replaced by a regular file and the
+	# real one is left stale) and the original's mode is copied onto the temp file
+	# (otherwise a 600 config comes back at whatever the umask allows). Other hard
+	# links to the old inode cannot survive a rename and keep the old content.
+	target = os.path.realpath(file)
+	d = os.path.dirname(target)
 	if d == "":
 		d = "."
-	base = os.path.basename(file)
+	base = os.path.basename(target)
 	if base == "":
-		base = file
+		base = target
 	tmp = os.path.join(d, ".{}.tmp{}".format(base, os.getpid()))
 	try:
 		f = open(tmp, "w", encoding="utf-8", newline="")
 		try:
 			f.write(data)
 			f.flush()
+			# Best effort: a filesystem that cannot carry the mode is not a
+			# reason to fail a write that otherwise succeeded.
+			try:
+				os.chmod(tmp, stat.S_IMODE(os.stat(target).st_mode))
+			except OSError:
+				pass
 			os.fsync(f.fileno())
 		finally:
 			f.close()
@@ -277,7 +291,7 @@ def write_atomic(file, data):
 			pass
 		return "{}: {}".format(file, e)
 	try:
-		os.replace(tmp, file)
+		os.replace(tmp, target)
 	except OSError as e:
 		try:
 			os.remove(tmp)
