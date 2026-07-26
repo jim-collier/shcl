@@ -121,17 +121,19 @@ In each section, items are listed approximately from newest to oldest.
 	- One-line fix, Go only.
 	- Fixed: the bounds check compares in uint64 like the sibling sites.
 
-- 🔘 Code Review 20260725 item 5: C keeps every transient allocation in the never-freed document arena.
+- ✅ Code Review 20260725 item 5: C keeps every transient allocation in the never-freed document arena.
 	- Reads, merges and validation all allocate scratch there, so a read-only document grows without bound in a long-running process.
 	- Measured: 1M reads of a 30-byte document reach 1.13 GB; a 626 KB layer merge peaks at 9.8 GB where the reference uses 27 MB.
 	- Rust, Go and Python free the same temporaries per call, so this is C-only.
 	- Detail: `design.md` - Code Review 20260725, item 5.
+	- Fixed: the doc gained a scratch arena reset on entry to every resolve (path scans, resolver vectors, compare strings, int/float/bool coercion temps) and on merge entry; `w_replace_leaf_group` rebuilds the children vector in place; `v_suggest` gets a per-field-reset scratch for its DP rows and chains. Returned bytes still live in the persistent arena per the documented contract (string reads accumulate only their returned copies). Measured: 1M int reads 1.13 GB -> flat 2 MB; 16k-sibling merge 2.53 GB -> 38 MB; 2k-field validation 1.38 GB -> 17 MB.
 
-- 🔘 Code Review 20260725 item 6: C grows a stacked `*` list one element at a time, so parsing it is quadratic in memory.
+- ✅ Code Review 20260725 item 6: C grows a stacked `*` list one element at a time, so parsing it is quadratic in memory.
 	- A fresh array is allocated and copied per `* ` line, and the arena keeps every discarded copy.
 	- An 11 KB file already costs 38 MB; 95 KB costs 2.4 GB; 249 KB costs 14.8 GB.
 	- Reachable from a plain `fmt` or `check` on an ordinary-looking config.
 	- Detail: `design.md` - Code Review 20260725, item 6.
+	- Fixed: the element array grows geometrically, and the per-element merge-key rebuild is deferred while the list is the open field (flushed before any other map lookup, so behavior is unchanged). 20k elements: 14.8 GB and 40 s -> 7.6 MB, instant; output byte-identical to the reference. The other bindings' key-rebuild time cost is item 24's territory.
 
 - ✅ Code Review 20260725 item 7: `fmt --write` truncates the config in place, and C reports success when the write fails.
 	- C never checks `fwrite`/`fclose`, so a failed write prints nothing and exits 0 while the other three exit 1 - a live exit-code divergence.
