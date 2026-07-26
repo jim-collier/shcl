@@ -678,15 +678,24 @@ class _Parser:
 		# Per-node (name, value-key) -> first matching child, parallel to arena.
 		# Pure lookup accelerator for _select_or_create; children keeps the order.
 		self.child_map = [{}]
+		# Per-node (name, display) -> first matching child: the `[value]` selector
+		# accelerator (its predicate is display(), a different and non-injective
+		# key from child_map's). Same first-wins discipline, same mutation sites.
+		self.disp_map = [{}]
 		# Whole-line comments waiting for the next line that binds a node.
 		self.pending = []
 		self.saw_blank = False  # a blank line waits to become the next bound node's blank_before
+		# An open stacked list defers its merge-key remap (rebuilding the key per
+		# element is O(list^2) time); (node, key, display) at deferral start,
+		# flushed before any map lookup and at end of parse.
+		self.star_open = None
 
 	def _err(self, line, msg):
 		self.diags.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
 
 	def _select_or_create(self, parent, name, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
+		self._star_flush()
 		map_key = (name, value.key())
 		found = self.child_map[parent].get(map_key)
 		if found is not None:
@@ -697,9 +706,19 @@ class _Parser:
 		self.arena[parent].children.append(idx)
 		self.child_map.append({})
 		self.child_map[parent][map_key] = idx
+		self.disp_map.append({})
+		self.disp_map[parent].setdefault((name, node.value.display()), idx)
 		return idx
 
-	def _remap_child(self, node, old_key):
+	def _star_flush(self):
+		"""Apply an open stacked list's deferred remap. Runs before any map lookup
+		(and at end of parse), so both maps are always fresh when queried."""
+		if self.star_open is not None:
+			node, key, disp = self.star_open
+			self.star_open = None
+			self._remap_child(node, key, disp)
+
+	def _remap_child(self, node, old_key, old_disp):
 		"""A node's value mutated in place (empty field filled, star element added):
 		move its map entry from the old key to the new one. First-wins on both
 		sides so lookups keep matching the earliest sibling, like the scan did."""
@@ -709,6 +728,10 @@ class _Parser:
 		if cmap.get((name, old_key)) == node:
 			del cmap[(name, old_key)]
 		cmap.setdefault((name, self.arena[node].value.key()), node)
+		dmap = self.disp_map[parent]
+		if dmap.get((name, old_disp)) == node:
+			del dmap[(name, old_disp)]
+		dmap.setdefault((name, self.arena[node].value.display()), node)
 
 	def _attach_trivia(self, node, trailing):
 		"""Hand pending leading comments (and this line's trailing one) to a node.
@@ -743,6 +766,7 @@ class _Parser:
 	def _attach_path(self, parent, segs, value, line):
 		"""Walk path segments under `parent`, select-or-creating; returns the node
 		for the last segment carrying `value`. None aborts the line (diagnosed)."""
+		self._star_flush()
 		# Field child under a stacked list: diagnose the mix once, keep the field.
 		pnode = self.arena[parent]
 		if pnode.star_list and not pnode.star_mixed:
@@ -766,12 +790,10 @@ class _Parser:
 			if sel is not None and sel[0] == "val":
 				# Same display() predicate resolution uses, so a selector also
 				# selects an array-valued instance instead of creating a
-				# spurious second one. Create only when nothing matches.
-				found = None
-				for c in self.arena[cur].children:
-					if self.arena[c].name == seg.name and self.arena[c].value.display() == sel[1]:
-						found = c
-						break
+				# spurious second one - via the disp_map accelerator (the
+				# inline spelling was quadratic in siblings without it).
+				# Create only when nothing matches.
+				found = self.disp_map[cur].get((seg.name, sel[1]))
 				if found is not None:
 					cur = found
 				else:
@@ -856,8 +878,9 @@ class _Parser:
 			return None
 		if self.arena[parent].value.is_empty():
 			old_key = self.arena[parent].value.key()
+			old_disp = self.arena[parent].value.display()
 			self.arena[parent].value = value
-			self._remap_child(parent, old_key)
+			self._remap_child(parent, old_key, old_disp)
 			return parent
 		name = self.arena[parent].name
 		grandparent = self.arena[parent].parent
@@ -887,14 +910,26 @@ class _Parser:
 			self._err(line, "empty list element")
 			return
 		node = self.arena[parent]
-		old_key = node.value.key()
 		if node.value.kind == "empty":
+			old_key = node.value.key()
+			old_disp = node.value.display()
 			node.value = _cell([el])
 			node.star_list = True
-			self._remap_child(parent, old_key)
+			# First element: remap now (Empty -> cell changes both keys), then
+			# open the deferral window with the current keys. Rebuilding the
+			# keys per appended element was O(list^2) time; the maps only need
+			# to be fresh when queried, and every query flushes first.
+			self._remap_child(parent, old_key, old_disp)
+			k = node.value.key()
+			d = node.value.display()
+			self.star_open = (parent, k, d)
 		elif node.value.kind == "cell" and node.star_list:
+			if self.star_open is None or self.star_open[0] != parent:
+				self._star_flush()
+				old_key = node.value.key()
+				old_disp = node.value.display()
+				self.star_open = (parent, old_key, old_disp)
 			node.value.els.append(el)
-			self._remap_child(parent, old_key)
 		else:
 			self._err(line, "field already has a value; list element ignored")
 
@@ -1039,6 +1074,7 @@ class _Parser:
 				self._attach_trivia(node, comment)
 				self.stack.append((indent, node))
 			i = nxt
+		self._star_flush()
 		self._emit_repeated_leaf_hints()
 		return Document(self.arena, self.diags, strictness, self.pending)
 
@@ -1089,19 +1125,34 @@ class Document:
 		# Explicit stack, children pushed in reverse: the reference handles depths
 		# far past Python's recursion limit, so emit must not recurse.
 		out = []
-		stack = [(c, 0) for c in reversed(self.arena[ROOT].children)]
+		stack = []
+		self._emit_children(self.arena[ROOT].children, 0, stack)
 		while stack:
-			idx, depth = stack.pop()
-			self._emit_node(idx, depth, out)
-			for c in reversed(self.arena[idx].children):
-				stack.append((c, depth + 1))
+			idx, depth, would_merge = stack.pop()
+			self._emit_node(idx, depth, would_merge, out)
+			self._emit_children(self.arena[idx].children, depth + 1, stack)
 		# Comments that never found a following line re-emit at the end.
 		for c in self.orphans:
 			out.append(c)
 			out.append("\n")
 		return "".join(out)
 
-	def _emit_node(self, idx, depth, out):
+	def _emit_children(self, kids, depth, stack):
+		"""Emit a sibling run. The parent walk already knows whether an earlier
+		same-name sibling is empty (the raw same-line-fence hazard), so one
+		seen-empties set here replaces a per-child rescan of the whole run.
+		Iterative shape: the flags are computed per run and ride the stack."""
+		entries = []
+		empties = set()
+		for c in kids:
+			n = self.arena[c]
+			wm = n.value.kind == "raw" and n.name in empties
+			if n.value.is_empty():
+				empties.add(n.name)
+			entries.append((c, depth, wm))
+		stack.extend(reversed(entries))
+
+	def _emit_node(self, idx, depth, would_merge, out):
 		node = self.arena[idx]
 		pad = "\t" * depth
 		if node.blank_before and out:
@@ -1109,16 +1160,8 @@ class Document:
 		v = node.value
 		# Same-line fence spelling can't carry an inline comment (an unbalanced
 		# quote in the info-string could hide the `#` on reparse), so its
-		# trailing comment joins the leading lines instead.
-		would_merge = False
-		if v.kind == "raw":
-			parent = node.parent
-			siblings = self.arena[parent].children
-			me = siblings.index(idx)
-			would_merge = any(
-				self.arena[c].name == node.name and self.arena[c].value.is_empty()
-				for c in siblings[:me]
-			)
+		# trailing comment joins the leading lines instead; the flag comes from
+		# the parent's walk.
 		for c in node.leading:
 			out.append(pad)
 			out.append(c)
@@ -1558,59 +1601,76 @@ class Document:
 		self._overlay(ROOT, over, ROOT)
 		self.orphans.extend(over.orphans)
 
+	# One grouping pass over each side, then a single children rebuild: the
+	# old shape re-filtered the over side per distinct name and re-scanned
+	# (and re-keyed) the base side per over node - three O(K^2) terms at one
+	# parent, plus a full list rebuild per replaced name.
 	def _overlay(self, base_parent, over, over_parent):
 		over_kids = list(over.arena[over_parent].children)
-		# Distinct child names of `over`, in first-appearance order.
-		names = []
+		# Over side: name -> node bucket, in first-appearance order.
+		order = []
+		groups = {}
 		for k in over_kids:
 			n = over.arena[k].name
-			if n not in names:
-				names.append(n)
-		for name in names:
-			group = [k for k in over_kids if over.arena[k].name == name]
-			# A name whose over-side nodes are all leaves is an override - but
-			# only when the base side of the group is leaf-shaped too. Against a
-			# base container, a childless over-node is a wrapper mention, not a
-			# leaf, so it falls through to the instance merge: a bare section
-			# header in a higher layer never wipes the subtree below it.
+			g = groups.get(n)
+			if g is None:
+				order.append(n)
+				g = []
+				groups[n] = g
+			g.append(k)
+		# Base side, one pass: does the name have a container instance, and
+		# which child carries each (name, key) - every key computed once.
+		base_kids = list(self.arena[base_parent].children)
+		has_container = {}
+		by_key = {}
+		for b in base_kids:
+			name = self.arena[b].name
+			has_container[name] = has_container.get(name, False) or bool(self.arena[b].children)
+			by_key.setdefault((name, self.arena[b].value.key()), b)
+		# Decide per name. A name whose over-side nodes are all leaves is an
+		# override - but only when the base side of the group is leaf-shaped
+		# too. Against a base container, a childless over-node is a wrapper
+		# mention, not a leaf, so it falls through to the instance merge: a
+		# bare section header in a higher layer never wipes the subtree below.
+		# Replaced groups splice in the rebuild; everything appended (unmatched
+		# instances, and replaced names base never had) keeps processing order.
+		replace = {}
+		appended = []
+		for name in order:
+			group = groups[name]
 			over_leafy = all(not over.arena[k].children for k in group)
-			base_container = any(
-				self.arena[b].name == name and self.arena[b].children
-				for b in self.arena[base_parent].children
-			)
+			in_base = name in has_container
+			base_container = has_container.get(name, False)
 			if over_leafy and not base_container:
-				self._replace_leaf_group(base_parent, name, over, group)
-				continue
-			for ok in group:
-				okey = over.arena[ok].value.key()
-				match = None
-				for b in self.arena[base_parent].children:
-					if self.arena[b].name == name and self.arena[b].value.key() == okey:
-						match = b
-						break
-				if match is not None:
-					self._overlay(match, over, ok)
+				clones = [self._clone_subtree(over, ok, base_parent) for ok in group]
+				if in_base:
+					replace[name] = clones
 				else:
-					c = self._clone_subtree(over, ok, base_parent)
-					self.arena[base_parent].children.append(c)
-
-	def _replace_leaf_group(self, base_parent, name, over, group):
-		"""Drop every base child named `name` and splice `over`'s group in at the
-		first dropped position (append if base had none). Dropped nodes stay in
-		the arena, unreferenced - reads and emit walk children from the root."""
-		clones = [self._clone_subtree(over, ok, base_parent) for ok in group]
-		old = self.arena[base_parent].children
-		new_kids = []
-		spliced = False
-		for b in old:
-			if self.arena[b].name == name:
-				if not spliced:
-					new_kids.extend(clones)
-					spliced = True
+					appended.extend(clones)
 			else:
+				for ok in group:
+					okey = over.arena[ok].value.key()
+					b = by_key.get((name, okey))
+					if b is not None:
+						self._overlay(b, over, ok)
+					else:
+						appended.append(self._clone_subtree(over, ok, base_parent))
+		if not replace and not appended:
+			return
+		# Rebuild once: each replaced group lands at its name's first original
+		# position (dropped nodes stay in the arena, unreferenced - reads and
+		# emit walk children from the root), appends go at the end.
+		new_kids = []
+		spliced = set()
+		for b in base_kids:
+			name = self.arena[b].name
+			clones = replace.get(name)
+			if clones is None:
 				new_kids.append(b)
-		if not spliced:
-			new_kids.extend(clones)
+			elif name not in spliced:
+				spliced.add(name)
+				new_kids.extend(clones)
+		new_kids.extend(appended)
 		self.arena[base_parent].children = new_kids
 
 	def _clone_subtree(self, over, oi, parent):
@@ -2019,9 +2079,14 @@ class Document:
 		# prefix (selectors ignored). Only the topmost unknown node is
 		# reported; its subtree is implied unknown and skipped.
 		legal = set()
+		# Sibling names per parent chain, built once (schema order): _v_suggest
+		# used to rebuild every chain per unknown field, which bit hardest on
+		# the wholesale-unmatched documents the feature exists for.
+		siblings = {}
 		for c in cons:
 			chain = ""
 			for s in c.segs:
+				siblings.setdefault(chain, []).append(s.name)
 				chain = s.name if not chain else chain + "\0" + s.name
 				legal.add(chain)
 		stack = [(c, "", "") for c in reversed(self.arena[ROOT].children)]
@@ -2031,7 +2096,7 @@ class Document:
 			chain = node.name if not pchain else pchain + "\0" + node.name
 			shown = node.name if not pshown else pshown + "." + node.name
 			if chain not in legal:
-				hint = _v_suggest(cons, pchain, node.name)
+				hint = _v_suggest(siblings, pchain, node.name)
 				_vdiag(out, node.line, "unknown field '{}'{}".format(shown, hint))
 				continue
 			for k in reversed(node.children):
@@ -2884,19 +2949,15 @@ def _edit_distance(a, b):
 	return prev[len(b)]
 
 
-def _v_suggest(cons, parent_chain, name):
+def _v_suggest(siblings, parent_chain, name):
 	"""Closest legal sibling name (same parent chain, schema order, edit
 	distance <= 2) as "; did you mean 'x'?" - or nothing. Prose only, never
-	contract."""
+	contract. The sibling lists are prebuilt once per validate."""
 	best = None
-	for c in cons:
-		pc = ""
-		for s in c.segs:
-			if pc == parent_chain:
-				dist = _edit_distance(name, s.name)
-				if dist <= 2 and (best is None or dist < best[0]):
-					best = (dist, s.name)
-			pc = s.name if not pc else pc + "\0" + s.name
+	for s in siblings.get(parent_chain, ()):
+		dist = _edit_distance(name, s)
+		if dist <= 2 and (best is None or dist < best[0]):
+			best = (dist, s)
 	if best is None:
 		return ""
 	return "; did you mean '{}'?".format(best[1])

@@ -672,9 +672,17 @@ struct Parser {
 	// Per-node (name, value-key) -> first matching child, parallel to arena.
 	// Pure lookup accelerator for select_or_create; children keeps the order.
 	child_map: Vec<HashMap<(String, String), usize>>,
+	// Per-node (name, display) -> first matching child: the `[value]` selector
+	// accelerator (its predicate is display(), a different and non-injective
+	// key from child_map's). Same first-wins discipline, same mutation sites.
+	disp_map: Vec<HashMap<(String, String), usize>>,
 	// Whole-line comments waiting for the next line that binds a node.
 	pending: Vec<String>,
 	saw_blank: bool, // a blank line waits to become the next bound node's blank_before
+	// An open stacked list defers its merge-key remap (rebuilding the key per
+	// element is O(list^2) time); (node, key, display) at deferral start,
+	// flushed before any map lookup and at end of parse.
+	star_open: Option<(usize, String, String)>,
 }
 
 impl Parser {
@@ -695,8 +703,10 @@ impl Parser {
 			diags: Vec::new(),
 			stack: vec![(String::new(), ROOT)],
 			child_map: vec![HashMap::new()],
+			disp_map: vec![HashMap::new()],
 			pending: Vec::new(),
 			saw_blank: false,
+			star_open: None,
 		}
 	}
 
@@ -713,6 +723,7 @@ impl Parser {
 
 	/// Find (or create by merge rule) the child of `parent` with this (name, value).
 	fn select_or_create(&mut self, parent: usize, name: &str, value: Value, line: usize) -> usize {
+		self.star_flush();
 		let map_key = (name.to_string(), value.key());
 		if let Some(&c) = self.child_map[parent].get(&map_key) {
 			return c;
@@ -733,13 +744,24 @@ impl Parser {
 		self.arena[parent].children.push(idx);
 		self.child_map.push(HashMap::new());
 		self.child_map[parent].insert(map_key, idx);
+		self.disp_map.push(HashMap::new());
+		let disp = (name.to_string(), self.arena[idx].value.display());
+		self.disp_map[parent].entry(disp).or_insert(idx);
 		idx
+	}
+
+	/// Apply an open stacked list's deferred remap. Runs before any map lookup
+	/// (and at end of parse), so both maps are always fresh when queried.
+	fn star_flush(&mut self) {
+		if let Some((node, key, disp)) = self.star_open.take() {
+			self.remap_child(node, key, disp);
+		}
 	}
 
 	/// A node's value mutated in place (empty field filled, star element added):
 	/// move its map entry from the old key to the new one. First-wins on both
 	/// sides so lookups keep matching the earliest sibling, like the scan did.
-	fn remap_child(&mut self, node: usize, old_key: String) {
+	fn remap_child(&mut self, node: usize, old_key: String, old_disp: String) {
 		let parent = self.arena[node].parent;
 		let name = self.arena[node].name.clone();
 		if self.child_map[parent].get(&(name.clone(), old_key.clone())) == Some(&node) {
@@ -747,7 +769,14 @@ impl Parser {
 		}
 		let new_key = self.arena[node].value.key();
 		self.child_map[parent]
-			.entry((name, new_key))
+			.entry((name.clone(), new_key))
+			.or_insert(node);
+		if self.disp_map[parent].get(&(name.clone(), old_disp.clone())) == Some(&node) {
+			self.disp_map[parent].remove(&(name.clone(), old_disp));
+		}
+		let new_disp = self.arena[node].value.display();
+		self.disp_map[parent]
+			.entry((name, new_disp))
 			.or_insert(node);
 	}
 
@@ -799,6 +828,7 @@ impl Parser {
 		value: Value,
 		line: usize,
 	) -> Option<usize> {
+		self.star_flush();
 		// Field child under a stacked list: diagnose the mix once, keep the field.
 		if self.arena[parent].star_list && !self.arena[parent].star_mixed {
 			self.arena[parent].star_mixed = true;
@@ -826,10 +856,12 @@ impl Parser {
 				(Some(Selector::ByValue(v)), _) => {
 					// Same display() predicate resolve_from uses, so a selector
 					// also selects an array-valued instance instead of creating
-					// a spurious second one. Create only when nothing matches.
-					let found = self.arena[cur].children.iter().copied().find(|&c| {
-						self.arena[c].name == seg.name && self.arena[c].value.display() == *v
-					});
+					// a spurious second one - via the disp_map accelerator (the
+					// inline spelling was quadratic in siblings without it).
+					// Create only when nothing matches.
+					let found = self.disp_map[cur]
+						.get(&(seg.name.clone(), v.clone()))
+						.copied();
 					cur = match found {
 						Some(c) => c,
 						None => {
@@ -954,8 +986,9 @@ impl Parser {
 		}
 		if self.arena[parent].value.is_empty() {
 			let old_key = self.arena[parent].value.key();
+			let old_disp = self.arena[parent].value.display();
 			self.arena[parent].value = value;
-			self.remap_child(parent, old_key);
+			self.remap_child(parent, old_key, old_disp);
 			Some(parent)
 		} else {
 			let (name, grandparent) = (self.arena[parent].name.clone(), self.arena[parent].parent);
@@ -994,22 +1027,30 @@ impl Parser {
 				return;
 			}
 		};
-		let old_key = self.arena[parent].value.key();
-		let node = &mut self.arena[parent];
-		let mutated = match &mut node.value {
-			Value::Empty => {
-				node.value = Value::Cell(vec![el]);
-				node.star_list = true;
-				true
+		if self.arena[parent].value.is_empty() {
+			let old_key = self.arena[parent].value.key();
+			let old_disp = self.arena[parent].value.display();
+			self.arena[parent].value = Value::Cell(vec![el]);
+			self.arena[parent].star_list = true;
+			// First element: remap now (Empty -> cell changes both keys), then
+			// open the deferral window with the current keys. Rebuilding the
+			// keys per appended element was O(list^2) time; the maps only need
+			// to be fresh when queried, and every query flushes first.
+			self.remap_child(parent, old_key, old_disp);
+			let k = self.arena[parent].value.key();
+			let d = self.arena[parent].value.display();
+			self.star_open = Some((parent, k, d));
+		} else if matches!(self.arena[parent].value, Value::Cell(_)) && self.arena[parent].star_list
+		{
+			if !matches!(self.star_open, Some((n, _, _)) if n == parent) {
+				self.star_flush();
+				let old_key = self.arena[parent].value.key();
+				let old_disp = self.arena[parent].value.display();
+				self.star_open = Some((parent, old_key, old_disp));
 			}
-			Value::Cell(els) if node.star_list => {
+			if let Value::Cell(els) = &mut self.arena[parent].value {
 				els.push(el);
-				true
 			}
-			_ => false,
-		};
-		if mutated {
-			self.remap_child(parent, old_key);
 		} else {
 			self.err(line, "field already has a value; list element ignored");
 		}
@@ -1201,6 +1242,7 @@ impl Parser {
 			}
 			i = next;
 		}
+		self.star_flush();
 		self.emit_repeated_leaf_hints();
 		Document {
 			arena: self.arena,
@@ -1248,9 +1290,7 @@ impl Document {
 	/// text is never rewritten.
 	pub fn to_canonical(&self) -> String {
 		let mut out = String::new();
-		for &c in &self.arena[ROOT].children {
-			self.emit_node(c, 0, &mut out);
-		}
+		self.emit_children(&self.arena[ROOT].children, 0, &mut out);
 		// Comments that never found a following line re-emit at the end.
 		for c in &self.orphans {
 			out.push_str(c);
@@ -1259,7 +1299,22 @@ impl Document {
 		out
 	}
 
-	fn emit_node(&self, idx: usize, depth: usize, out: &mut String) {
+	/// Emit a sibling run. The parent walk already knows whether an earlier
+	/// same-name sibling is empty (the raw same-line-fence hazard), so one
+	/// seen-empties set here replaces a per-child rescan of the whole run.
+	fn emit_children(&self, kids: &[usize], depth: usize, out: &mut String) {
+		let mut empties: std::collections::HashSet<&str> = std::collections::HashSet::new();
+		for &c in kids {
+			let n = &self.arena[c];
+			let wm = matches!(n.value, Value::Raw { .. }) && empties.contains(n.name.as_str());
+			if n.value.is_empty() {
+				empties.insert(n.name.as_str());
+			}
+			self.emit_node(c, depth, wm, out);
+		}
+	}
+
+	fn emit_node(&self, idx: usize, depth: usize, would_merge: bool, out: &mut String) {
 		let node = &self.arena[idx];
 		let pad: String = "\t".repeat(depth);
 		if node.blank_before && !out.is_empty() {
@@ -1267,18 +1322,8 @@ impl Document {
 		}
 		// Same-line fence spelling can't carry an inline comment (an unbalanced
 		// quote in the info-string could hide the `#` on reparse), so its
-		// trailing comment joins the leading lines instead.
-		let would_merge = if let Value::Raw { .. } = &node.value {
-			let parent = node.parent;
-			let me = self.arena[parent].children.iter().position(|&c| c == idx);
-			me.is_some_and(|p| {
-				self.arena[parent].children[..p]
-					.iter()
-					.any(|&c| self.arena[c].name == node.name && self.arena[c].value.is_empty())
-			})
-		} else {
-			false
-		};
+		// trailing comment joins the leading lines instead; the flag comes from
+		// the parent's walk.
 		for c in &node.leading {
 			out.push_str(&pad);
 			out.push_str(c);
@@ -1350,9 +1395,7 @@ impl Document {
 				out.push('\n');
 			}
 		}
-		for &c in &self.arena[idx].children {
-			self.emit_node(c, depth + 1, out);
-		}
+		self.emit_children(&self.arena[idx].children, depth + 1, out);
 	}
 }
 
@@ -1991,82 +2034,93 @@ impl Document {
 		}
 	}
 
+	// One grouping pass over each side, then a single children rebuild: the
+	// old shape re-filtered the over side per distinct name and re-scanned
+	// (and re-keyed) the base side per over node - three O(K^2) terms at one
+	// parent, plus a full vector rebuild per replaced name.
 	fn overlay(&mut self, base_parent: usize, over: &Document, over_parent: usize) {
 		let over_kids = over.arena[over_parent].children.clone();
-		// Distinct child names of `over`, in first-appearance order.
-		let mut names: Vec<String> = Vec::new();
+		// Over side: name -> node bucket, in first-appearance order.
+		let mut order: Vec<String> = Vec::new();
+		let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
 		for &k in &over_kids {
 			let n = &over.arena[k].name;
-			if !names.iter().any(|x| x == n) {
-				names.push(n.clone());
-			}
+			groups
+				.entry(n.clone())
+				.or_insert_with(|| {
+					order.push(n.clone());
+					Vec::new()
+				})
+				.push(k);
 		}
-		for name in &names {
-			let group: Vec<usize> = over_kids
-				.iter()
-				.copied()
-				.filter(|&k| &over.arena[k].name == name)
-				.collect();
-			// A name whose over-side nodes are all leaves is an override - but
-			// only when the base side of the group is leaf-shaped too. Against a
-			// base container, a childless over-node is a wrapper mention, not a
-			// leaf, so it falls through to the instance merge: a bare section
-			// header in a higher layer never wipes the subtree below it.
+		// Base side, one pass: does the name have a container instance, and
+		// which child carries each (name, key) - every key computed once.
+		let base_kids = self.arena[base_parent].children.clone();
+		let mut has_container: HashMap<String, bool> = HashMap::new();
+		let mut by_key: HashMap<(String, String), usize> = HashMap::new();
+		for &b in &base_kids {
+			let name = self.arena[b].name.clone();
+			let e = has_container.entry(name.clone()).or_insert(false);
+			*e = *e || !self.arena[b].children.is_empty();
+			by_key.entry((name, self.arena[b].value.key())).or_insert(b);
+		}
+		// Decide per name. A name whose over-side nodes are all leaves is an
+		// override - but only when the base side of the group is leaf-shaped
+		// too. Against a base container, a childless over-node is a wrapper
+		// mention, not a leaf, so it falls through to the instance merge: a
+		// bare section header in a higher layer never wipes the subtree below.
+		// Replaced groups splice in the rebuild; everything appended (unmatched
+		// instances, and replaced names base never had) keeps processing order.
+		let mut replace: HashMap<String, Vec<usize>> = HashMap::new();
+		let mut appended: Vec<usize> = Vec::new();
+		for name in &order {
+			let group = &groups[name];
 			let over_leafy = group.iter().all(|&k| over.arena[k].children.is_empty());
-			let base_container = self.arena[base_parent]
-				.children
-				.iter()
-				.any(|&b| self.arena[b].name == *name && !self.arena[b].children.is_empty());
+			let in_base = has_container.contains_key(name);
+			let base_container = has_container.get(name).copied().unwrap_or(false);
 			if over_leafy && !base_container {
-				self.replace_leaf_group(base_parent, name, over, &group);
+				let clones: Vec<usize> = group
+					.iter()
+					.map(|&ok| self.clone_subtree(over, ok, base_parent))
+					.collect();
+				if in_base {
+					replace.insert(name.clone(), clones);
+				} else {
+					appended.extend(clones);
+				}
 			} else {
-				for &ok in &group {
+				for &ok in group {
 					let okey = over.arena[ok].value.key();
-					let m = self.arena[base_parent].children.iter().copied().find(|&b| {
-						self.arena[b].name == *name && self.arena[b].value.key() == okey
-					});
-					match m {
-						Some(b) => self.overlay(b, over, ok),
+					match by_key.get(&(name.clone(), okey)) {
+						Some(&b) => self.overlay(b, over, ok),
 						None => {
 							let c = self.clone_subtree(over, ok, base_parent);
-							self.arena[base_parent].children.push(c);
+							appended.push(c);
 						}
 					}
 				}
 			}
 		}
-	}
-
-	/// Drop every base child named `name` and splice `over`'s group in at the
-	/// first dropped position (append if base had none). Dropped nodes stay in
-	/// the arena, unreferenced - reads and emit walk children from the root.
-	fn replace_leaf_group(
-		&mut self,
-		base_parent: usize,
-		name: &str,
-		over: &Document,
-		group: &[usize],
-	) {
-		let clones: Vec<usize> = group
-			.iter()
-			.map(|&ok| self.clone_subtree(over, ok, base_parent))
-			.collect();
-		let old = self.arena[base_parent].children.clone();
-		let mut newkids: Vec<usize> = Vec::with_capacity(old.len() + clones.len());
-		let mut spliced = false;
-		for &b in &old {
-			if self.arena[b].name == name {
-				if !spliced {
-					newkids.extend(clones.iter().copied());
-					spliced = true;
+		if replace.is_empty() && appended.is_empty() {
+			return;
+		}
+		// Rebuild once: each replaced group lands at its name's first original
+		// position (dropped nodes stay in the arena, unreferenced - reads and
+		// emit walk children from the root), appends go at the end.
+		let mut newkids: Vec<usize> = Vec::with_capacity(base_kids.len() + appended.len());
+		let mut spliced: std::collections::HashSet<&str> = std::collections::HashSet::new();
+		for &b in &base_kids {
+			let name = self.arena[b].name.as_str();
+			match replace.get(name) {
+				Some(clones) => {
+					if spliced.insert(name) {
+						newkids.extend(clones.iter().copied());
+					}
 				}
-			} else {
-				newkids.push(b);
+				None => newkids.push(b),
 			}
 		}
-		if !spliced {
-			newkids.extend(clones.iter().copied());
-		}
+		newkids.extend(appended.iter().copied());
 		self.arena[base_parent].children = newkids;
 	}
 
@@ -3657,9 +3711,17 @@ impl Document {
 	// its subtree is implied unknown and skipped.
 	fn v_unknown(&self, cons: &[Constraint], out: &mut Vec<Diagnostic>) {
 		let mut legal: std::collections::HashSet<String> = std::collections::HashSet::new();
+		// Sibling names per parent chain, built once (schema order): v_suggest
+		// used to rebuild every chain per unknown field, which bit hardest on
+		// the wholesale-unmatched documents the feature exists for.
+		let mut siblings: HashMap<String, Vec<String>> = HashMap::new();
 		for c in cons {
 			let mut chain = String::new();
 			for s in &c.segs {
+				siblings
+					.entry(chain.clone())
+					.or_default()
+					.push(s.name.clone());
 				if !chain.is_empty() {
 					chain.push('\0');
 				}
@@ -3686,7 +3748,7 @@ impl Document {
 				format!("{}.{}", pshown, node.name)
 			};
 			if !legal.contains(&chain) {
-				let hint = v_suggest(cons, &pchain, &node.name);
+				let hint = v_suggest(&siblings, &pchain, &node.name);
 				vdiag(out, node.line, format!("unknown field '{}'{}", shown, hint));
 				continue;
 			}
@@ -3699,21 +3761,13 @@ impl Document {
 
 /// Closest legal sibling name (same parent chain, schema order, edit distance
 /// <= 2) as "; did you mean 'x'?" - or nothing. Prose only, never contract.
-fn v_suggest(cons: &[Constraint], parent_chain: &str, name: &str) -> String {
-	let mut best: Option<(usize, String)> = None;
-	for c in cons {
-		let mut pc = String::new();
-		for s in &c.segs {
-			if pc == parent_chain {
-				let dist = edit_distance(name, &s.name);
-				if dist <= 2 && best.as_ref().is_none_or(|(bd, _)| dist < *bd) {
-					best = Some((dist, s.name.clone()));
-				}
-			}
-			if pc.is_empty() {
-				pc = s.name.clone();
-			} else {
-				pc = format!("{}\0{}", pc, s.name);
+fn v_suggest(siblings: &HashMap<String, Vec<String>>, parent_chain: &str, name: &str) -> String {
+	let mut best: Option<(usize, &str)> = None;
+	if let Some(names) = siblings.get(parent_chain) {
+		for s in names {
+			let dist = edit_distance(name, s);
+			if dist <= 2 && best.is_none_or(|(bd, _)| dist < bd) {
+				best = Some((dist, s.as_str()));
 			}
 		}
 	}
