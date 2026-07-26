@@ -1,0 +1,3 @@
+query	type	expected	status
+c	int	3	Good
+-	load	ok	-

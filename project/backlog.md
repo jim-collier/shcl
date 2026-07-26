@@ -266,11 +266,12 @@ In each section, items are listed approximately from newest to oldest.
 	- Doc half landed with the item-2 depth work: `E001`-`E016` + `H001` now tabled in the spec's Diagnostics section. Code-threading half still open.
 	- Doc half done (the E-table); the code-threading half is deferred - large, mechanical, no user-visible payoff, and every corpus case pins code-per-line so the practical exposure is messages no case exercises.
 
-- 🔘 Code Review 20260725 item 30: the canonical formatter discards blank-line grouping.
+- ✅ Code Review 20260725 item 30: the canonical formatter discards blank-line grouping.
 	- Comments were rescued as trivia by the prior review's item 4; blank lines are the other half of the same thing and were left out, so `fmt` flattens a grouped config into a wall.
 	- Field names are also folded to lowercase and the spec never says so, which makes `fmt --write` a surprise.
 	- The trivia model already exists, so this is a per-node flag and one emit line per binding.
 	- Detail: `design.md` - Code Review 20260725, item 30.
+	- Fixed: a `blank_before` trivia flag in all four parsers preserves one blank line before a binding (runs collapse; a blank before a comment group rides with it; fixpoint holds). Four goldens regenerated, case 032 pins it. The name folding was decided as correct-and-documented: the spec's formatter section now states lowercase is the canonical spelling.
 
 - ✅ Code Review 20260725 item 31: `paths()` exists only in the reference.
 	- Go, Python and C consumers handed an unknown document cannot enumerate it; `Count` and `Instances` both require knowing the path already.

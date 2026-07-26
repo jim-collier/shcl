@@ -359,6 +359,9 @@ type nodeData struct {
 	// (later ones demote to leading - a canonical line has room for one).
 	leading  []string
 	trailing string // empty = none
+	// Blank-line grouping is the other half of hand-authored layout: set when
+	// a blank line preceded this node's binding line (runs collapse to one).
+	blankBefore bool
 }
 
 // Document is a parsed SHCL document: the tree, its diagnostics, and its
@@ -841,7 +844,8 @@ type parser struct {
 	// Pure lookup accelerator for selectOrCreate; children keeps the order.
 	childMap []map[[2]string]int
 	// Whole-line comments waiting for the next line that binds a node.
-	pending []string
+	pending  []string
+	sawBlank bool // a blank line waits to become the next bound node's blankBefore
 }
 
 func newParser() *parser {
@@ -1180,15 +1184,21 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		indent := leadingWS(line)
 		rest := line[len(indent):]
 		if rest == "" {
+			p.sawBlank = true
 			i++
 			continue
 		}
-		// Whole-line comment: hold it for the next line that binds a node.
+		// Whole-line comment: hold it for the next line that binds a node
+		// (a pending blank stays pending with it).
 		if strings.HasPrefix(rest, "#") {
 			p.pending = append(p.pending, rest)
 			i++
 			continue
 		}
+		// Any other line consumes the pending blank; only a field line that
+		// binds turns it into grouping.
+		hadBlank := p.sawBlank
+		p.sawBlank = false
 		// Child-indent fence: a value line for its parent field.
 		if ch, length, info, ok := fenceOpen(rest); ok {
 			parent, okp := p.resolveParent(indent)
@@ -1272,6 +1282,9 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			}
 		}
 		if node, ok := p.attachPath(parent, scan.segments, v, lineno); ok {
+			if hadBlank {
+				p.arena[node].blankBefore = true
+			}
 			p.attachTrivia(node, comment)
 			p.stack = append(p.stack, stackEnt{indent: indent, node: node})
 		}
@@ -1340,6 +1353,9 @@ func writeTrailing(out *strings.Builder, trailing string) {
 func (d *Document) emitNode(idx, depth int, out *strings.Builder) {
 	node := &d.arena[idx]
 	pad := strings.Repeat("\t", depth)
+	if node.blankBefore && out.Len() > 0 {
+		out.WriteByte('\n')
+	}
 	// Same-line fence spelling can't carry an inline comment (an unbalanced
 	// quote in the info-string could hide the `#` on reparse), so its trailing
 	// comment joins the leading lines instead.
@@ -2276,14 +2292,15 @@ func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
 	cv := src.value
 	cv.els = append([]element(nil), cv.els...)
 	nd := nodeData{
-		name:      src.name,
-		value:     cv,
-		parent:    parent,
-		line:      src.line,
-		starList:  src.starList,
-		starMixed: src.starMixed,
-		leading:   append([]string(nil), src.leading...),
-		trailing:  src.trailing,
+		name:        src.name,
+		value:       cv,
+		parent:      parent,
+		line:        src.line,
+		starList:    src.starList,
+		starMixed:   src.starMixed,
+		leading:     append([]string(nil), src.leading...),
+		trailing:    src.trailing,
+		blankBefore: src.blankBefore,
 	}
 	idx := len(d.arena)
 	d.arena = append(d.arena, nd)

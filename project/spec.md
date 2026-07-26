@@ -74,7 +74,7 @@ The Accessor reads in two modes:
 
 - Comments may be a whole line or trail a value (`pop: 700  # note`).
 
-- Blank lines are ignored.
+- Blank lines carry no data, but a blank line between bindings is grouping the author created: the parser notes it as trivia on the node below and the canonical formatter re-emits it (a run of blanks collapses to one). Like comments, blanks play no part in merging, reads, or diagnostics.
 
 - A `#` inside quotes is literal (`url: "http://h/#frag"`), and a `#` inside a raw block is literal.
 
@@ -404,7 +404,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 
 ## Canonical formatter
 
-The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`). It loads at the requested strictness like every other operation; a strict-failing document formats nothing (the load failure is the result).
+The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`). Two normalizations to know about: field names are case-insensitive, and the canonical spelling is the folded (ASCII-lowercase) one - `Max-Upload-MB:` comes back `max-upload-mb:` from `fmt`, matching how every read and merge already treats the name; and a blank line an author put between bindings survives (one blank; runs collapse), so grouped configs stay grouped through `fmt --write`. It loads at the requested strictness like every other operation; a strict-failing document formats nothing (the load failure is the result).
 
 - Block (indented) form, tabs for indentation.
 

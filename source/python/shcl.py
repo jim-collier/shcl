@@ -287,7 +287,7 @@ def _choose_fence(content):
 class _Node:
 	__slots__ = (
 		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
-		"leading", "trailing",
+		"leading", "trailing", "blank_before",
 	)
 
 	def __init__(self, name, value, parent, line):
@@ -303,6 +303,9 @@ class _Node:
 		# (later ones demote to leading - a canonical line has room for one).
 		self.leading = []
 		self.trailing = ""        # empty = none
+		# Blank-line grouping is the other half of hand-authored layout: set
+		# when a blank line preceded this node's binding line (runs collapse).
+		self.blank_before = False
 
 
 ROOT = 0
@@ -677,6 +680,7 @@ class _Parser:
 		self.child_map = [{}]
 		# Whole-line comments waiting for the next line that binds a node.
 		self.pending = []
+		self.saw_blank = False  # a blank line waits to become the next bound node's blank_before
 
 	def _err(self, line, msg):
 		self.diags.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
@@ -943,13 +947,19 @@ class _Parser:
 			indent = line[:j]
 			rest = line[j:]
 			if not rest:
+				self.saw_blank = True
 				i += 1
 				continue
-			# Whole-line comment: hold it for the next line that binds a node.
+			# Whole-line comment: hold it for the next line that binds a node
+			# (a pending blank stays pending with it).
 			if rest.startswith("#"):
 				self.pending.append(rest)
 				i += 1
 				continue
+			# Any other line consumes the pending blank; only a field line that
+			# binds turns it into grouping.
+			had_blank = self.saw_blank
+			self.saw_blank = False
 			# Child-indent fence: a value line for its parent field.
 			fo = _fence_open(rest)
 			if fo is not None:
@@ -1024,6 +1034,8 @@ class _Parser:
 					value = _parse_cell(value_text)
 			node = self._attach_path(parent, segments, value, lineno)
 			if node is not None:
+				if had_blank:
+					self.arena[node].blank_before = True
 				self._attach_trivia(node, comment)
 				self.stack.append((indent, node))
 			i = nxt
@@ -1092,6 +1104,8 @@ class Document:
 	def _emit_node(self, idx, depth, out):
 		node = self.arena[idx]
 		pad = "\t" * depth
+		if node.blank_before and out:
+			out.append("\n")
 		v = node.value
 		# Same-line fence spelling can't carry an inline comment (an unbalanced
 		# quote in the info-string could hide the `#` on reparse), so its
@@ -1615,6 +1629,7 @@ class Document:
 		node.star_mixed = src.star_mixed
 		node.leading = list(src.leading)
 		node.trailing = src.trailing
+		node.blank_before = src.blank_before
 		idx = len(self.arena)
 		self.arena.append(node)
 		for ok in list(over.arena[oi].children):
