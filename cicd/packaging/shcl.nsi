@@ -24,12 +24,30 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
 !include "WinMessages.nsh"
-!include "StrFunc.nsh"
-${Using:StrFunc} StrStr
-${Using:StrFunc} UnStrRep
 
 !define REG_UNINST "Software\Microsoft\Windows\CurrentVersion\Uninstall\Shcl"
-!define REG_ENV "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+
+; The machine PATH is edited by PowerShell against the registry directly, never
+; through NSIS variables: NSIS strings are capped at NSIS_MAX_STRLEN (1024), so
+; a longer PATH came back truncated - or empty, which no length guard can tell
+; from a genuinely empty value - and writing that back destroyed it. The script
+; also compares whole segments case-insensitively (a substring test let any
+; directory containing the name suppress the append) and keeps REG_EXPAND_SZ.
+!macro WriteShclPathPs1
+	FileOpen $0 "$PLUGINSDIR\shclpath.ps1" w
+	FileWrite $0 "param([string]$$Dir, [switch]$$Remove)$\r$\n"
+	FileWrite $0 "$$key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $$true)$\r$\n"
+	FileWrite $0 "$$cur = [string]$$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)$\r$\n"
+	FileWrite $0 "$$parts = @($$cur -split ';' | Where-Object { $$_ -ne '' })$\r$\n"
+	FileWrite $0 "if ($$Remove) {$\r$\n"
+	FileWrite $0 "	$$new = @($$parts | Where-Object { $$_ -ne $$Dir }) -join ';'$\r$\n"
+	FileWrite $0 "	if ($$new -ne $$cur) { $$key.SetValue('Path', $$new, [Microsoft.Win32.RegistryValueKind]::ExpandString) }$\r$\n"
+	FileWrite $0 "} elseif ($$parts -notcontains $$Dir) {$\r$\n"
+	FileWrite $0 "	$$key.SetValue('Path', (@($$parts + $$Dir) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)$\r$\n"
+	FileWrite $0 "}$\r$\n"
+	FileWrite $0 "$$key.Close()$\r$\n"
+	FileClose $0
+!macroend
 
 Section "Install"
 	SetOutPath "$INSTDIR"
@@ -49,24 +67,25 @@ Section "Install"
 	WriteRegDWORD HKLM "${REG_UNINST}" "NoModify" 1
 	WriteRegDWORD HKLM "${REG_UNINST}" "NoRepair" 1
 
-	; Append to the machine PATH once; keep the value REG_EXPAND_SZ.
-	ReadRegStr $0 HKLM "${REG_ENV}" "Path"
-	${StrStr} $1 "$0" "$INSTDIR"
-	StrCmp $1 "" 0 pathDone
-	WriteRegExpandStr HKLM "${REG_ENV}" "Path" "$0;$INSTDIR"
+	; Append to the machine PATH once (segment-wise, REG_EXPAND_SZ preserved).
+	InitPluginsDir
+	!insertmacro WriteShclPathPs1
+	nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\shclpath.ps1" -Dir "$INSTDIR"'
+	Pop $1
+	StrCmp $1 "0" +2
+	DetailPrint "PATH update failed; add $INSTDIR to the machine PATH manually"
 	SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
-pathDone:
 SectionEnd
 
 Section "Uninstall"
-	; Best-effort PATH removal (both separator spellings), then the files.
-	ReadRegStr $0 HKLM "${REG_ENV}" "Path"
-	${UnStrRep} $1 "$0" ";$INSTDIR" ""
-	${UnStrRep} $1 "$1" "$INSTDIR;" ""
-	StrCmp $1 "$0" envDone
-	WriteRegExpandStr HKLM "${REG_ENV}" "Path" "$1"
+	; Best-effort segment-wise PATH removal, then the files.
+	InitPluginsDir
+	!insertmacro WriteShclPathPs1
+	nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\shclpath.ps1" -Dir "$INSTDIR" -Remove'
+	Pop $1
+	StrCmp $1 "0" +2
+	DetailPrint "PATH cleanup failed; remove $INSTDIR from the machine PATH manually"
 	SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
-envDone:
 	Delete "$INSTDIR\shcl.exe"
 	Delete "$INSTDIR\code\*.*"
 	Delete "$INSTDIR\scripts\*.*"

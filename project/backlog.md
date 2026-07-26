@@ -140,11 +140,12 @@ In each section, items are listed approximately from newest to oldest.
 	- No binding uses temp-file-and-rename, so an interrupted write destroys the file the tool exists to protect. The dogfood installer was made atomic for this exact reason.
 	- Fixed: all four CLIs write through a temp-file-and-rename in the target's directory (data synced before the rename), and C checks every stdio call, so a failed or interrupted write exits 1 and never leaves a truncated file.
 
-- 🔘 Code Review 20260725 item 8: both Windows installers damage `PATH`.
+- ✅ Code Review 20260725 item 8: both Windows installers damage `PATH`.
 	- NSIS reads `PATH` through a 1024-char string and writes the truncated value back. Observed in a wine run: a 1427-char machine PATH came back as 22 chars. The uninstaller does the same.
 	- `install.ps1` reads `PATH` expanded and writes it back as `REG_SZ`, baking `%USERPROFILE%`-style references and downgrading the value type.
 	- The two Windows install paths also disagree with each other about how to test for an existing entry.
 	- Detail: `design.md` - Code Review 20260725, item 8.
+	- Fixed: the NSIS installer/uninstaller no longer pass PATH through NSIS strings at all - a generated PowerShell script edits the registry value directly (unexpanded read, segment-wise case-insensitive test, REG_EXPAND_SZ preserved), and a failed edit warns instead of writing back a truncated value. `install.ps1` likewise reads unexpanded and writes REG_EXPAND_SZ, with a settings-change broadcast.
 
 - ✅ Code Review 20260725 item 9: `shcl init --schema=X` generates a config that `shcl check --schema=X` rejects.
 	- The generator only consults `required`; `repeat` with a lower bound of 1 or more is ignored entirely.
@@ -289,10 +290,11 @@ In each section, items are listed approximately from newest to oldest.
 	- `TOOL_PINS` already tracks the versions the local gate uses, so CI and local disagree about what "passing" was tested against.
 	- Actions are also referenced by floating tag rather than commit SHA - generic hardening, small blast radius here.
 
-- 🔘 Code Review 20260725 item 37: harden the installers' transport and integrity story.
+- 🛠️ Code Review 20260725 item 37: harden the installers' transport and integrity story.
 	- `curl`/`wget` follow redirects with no protocol pin or TLS floor.
 	- The sums file arrives over the same channel as the binary, so it catches corruption but not substitution; the source tarball, which supplies the drop-in files consumers compile in, is not verified at all.
 	- A detached signature over the sums file with the key inlined in the installer is what would make it a real trust root.
+	- Transport half done: curl/wget pin https through redirects with a TLS 1.2 floor (install.bash, install-dev.bash's rustup fetch), and install.ps1 floors TLS 1.2/1.3 for every download. The detached-signature trust root still needs a signing-key decision before it can land.
 
 - 🔘 Code Review 20260725 item 38: the style guide bans the section rules the code actually uses.
 	- "No banner dividers" against 28 of them in the reference, 28 in Go, 18 in Python, 12 in C - and the guide is what a Tier 3 author is told to read first.
