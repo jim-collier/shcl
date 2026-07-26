@@ -45,8 +45,13 @@ TOOL_PINS=(
 	"cargo-zigbuild|0.23.0|cargo-zigbuild --version"
 	"ruff|0.15.22|ruff --version"
 	"mypy|2.3.0|mypy --version"
+	## Version of the Cppcheck binary, which is NOT the PyPI wheel's version -
+	## package 1.5.1 carries 2.17.1. ci.yml has to install the package version.
 	"cppcheck|2.17.1|cppcheck --version"
 	"markdownlint-cli2|0.23.1|markdownlint-cli2 --help"
+	## Gating, and its findings move between releases, so CI installs this exact
+	## version rather than using whatever the runner image ships.
+	"shellcheck|0.11.0|shellcheck --version"
 )
 
 ## Stage 2: debug build (what the tests exercise). Capped at half the cores.
