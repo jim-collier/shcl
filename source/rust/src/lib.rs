@@ -408,7 +408,7 @@ fn unterminated_quote(text: &str) -> bool {
 		if first != '"' && first != '\'' {
 			continue;
 		}
-		let closed = chars.len() >= 2 && *chars.last().unwrap() == first && {
+		let closed = chars.len() >= 2 && chars[chars.len() - 1] == first && {
 			let mut esc = false;
 			for &c in &chars[1..chars.len() - 1] {
 				esc = c == '\\' && !esc;
@@ -429,7 +429,7 @@ fn parse_element(piece: &str) -> Option<Element> {
 	}
 	let chars: Vec<char> = t.chars().collect();
 	let first = chars[0];
-	if (first == '"' || first == '\'') && chars.len() >= 2 && *chars.last().unwrap() == first {
+	if (first == '"' || first == '\'') && chars.len() >= 2 && chars[chars.len() - 1] == first {
 		// The closing quote must not itself be escaped (`"a\"` is not closed).
 		let mut esc = false;
 		for &c in &chars[1..chars.len() - 1] {
@@ -761,7 +761,10 @@ impl Parser {
 	/// current top's indent is a proper prefix; otherwise the indent must equal
 	/// an open level exactly (dedent), else it is a recoverable error.
 	fn resolve_parent(&mut self, indent: &str) -> Option<usize> {
-		let (top_indent, top_node) = self.stack.last().unwrap().clone();
+		let (top_indent, top_node) = match self.stack.last() {
+			Some(t) => t.clone(),
+			None => return None, // sentinel invariant; degrade, never abort
+		};
 		if indent.len() > top_indent.len() && indent.starts_with(&top_indent) {
 			return Some(top_node);
 		}
@@ -3047,9 +3050,10 @@ fn build_schema(schema: &Document) -> Result<Vec<Constraint>, Vec<Diagnostic>> {
 				.unwrap_or("string");
 		if let Some(a) = allowed_at {
 			let kid = &schema.arena[a];
-			let els = match &kid.value {
-				Value::Cell(els) => els,
-				_ => unreachable!("allowed_at only set for Cell"),
+			// allowed_at is only ever set for a Cell; if that invariant slips,
+			// skip the constraint rather than abort the consumer.
+			let Value::Cell(els) = &kid.value else {
+				continue;
 			};
 			// Schema values are read at Standard; only the document's values
 			// coerce at the document's strictness.
@@ -3091,9 +3095,11 @@ fn build_schema(schema: &Document) -> Result<Vec<Constraint>, Vec<Diagnostic>> {
 		for (at, is_min) in [(min_at, true), (max_at, false)] {
 			let Some(m) = at else { continue };
 			let kid = &schema.arena[m];
+			// min/max is only ever a one-element Cell; if that invariant slips,
+			// skip the constraint rather than abort the consumer.
 			let el = match &kid.value {
 				Value::Cell(els) if els.len() == 1 => &els[0],
-				_ => unreachable!("min/max only set for one-element Cell"),
+				_ => continue,
 			};
 			let key = if is_min { "min" } else { "max" };
 			match base {
@@ -3183,14 +3189,14 @@ fn gen_annotation(c: &Constraint, tyname: &str) -> String {
 			(Some(lo), Some(hi)) => format!("{}-{}", lo, hi),
 			(Some(lo), None) => format!(">= {}", lo),
 			(None, Some(hi)) => format!("<= {}", hi),
-			(None, None) => unreachable!(),
+			(None, None) => String::new(), // guarded above; keep the map total
 		});
 	} else if c.min_f.is_some() || c.max_f.is_some() {
 		parts.push(match (c.min_f, c.max_f) {
 			(Some(lo), Some(hi)) => format!("{}-{}", lo, hi),
 			(Some(lo), None) => format!(">= {}", lo),
 			(None, Some(hi)) => format!("<= {}", hi),
-			(None, None) => unreachable!(),
+			(None, None) => String::new(), // guarded above; keep the map total
 		});
 	}
 	if let Some((lo, hi)) = c.repeat {
@@ -3272,11 +3278,13 @@ pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 			if fill[i] || !has_wild(c) || unwritable(c) || !must_exist(c) {
 				continue;
 			}
-			let k = c
+			let Some(k) = c
 				.segs
 				.iter()
 				.position(|s| matches!(s.selector, Some(Selector::Wildcard)))
-				.unwrap();
+			else {
+				continue;
+			};
 			let parent = names_of(&c.segs[..k + 1]);
 			if live
 				.iter()

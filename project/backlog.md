@@ -311,9 +311,10 @@ In each section, items are listed approximately from newest to oldest.
 	- One real inconsistency alongside it: `shcl.h` uses the shell house `//•••` rule, which is both off-style for C and the only non-ASCII comment character in the C bindings.
 	- Fixed: the guide now sanctions section rules as the one allowed banner and pins each binding's exact spelling; the lone `//•••` shell-style rule in `shcl.h` became the C `// ===` divider.
 
-- 🔘 Code Review 20260725 item 39: panic macros are used outside tests in the reference.
+- ✅ Code Review 20260725 item 39: panic macros are used outside tests in the reference.
 	- Eight sites - six `unreachable!` (four of them in the newest validator and generator code) and two `unwrap()`.
 	- Each is provably unreachable today, but they are invariants asserted by a panic in a library whose contract is that it never bails on a whole file, and three ports copy the structure.
+	- Fixed: every non-test `unreachable!`/`unwrap()` now degrades instead of aborting - a slipped invariant skips the constraint, returns no-parent, or keeps the match total with an empty string. Zero panic macros left outside tests (the feature-gated profiling `expect`s never ship).
 
 - ✅ Code Review 20260725 item 40: the CLI usage block is hand-duplicated across four CLIs with no drift check, and its exit-code line is wrong.
 	- It still says exit 6 means a strict load failure; the prior review's item 36 made `check` exit 6 on any error diagnostic, at any strictness.

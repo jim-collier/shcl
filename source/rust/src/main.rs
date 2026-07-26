@@ -185,7 +185,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			o.sets.push((p.to_string(), val.to_string()));
 			o.seen.push("--set");
 		}
-		_ => unreachable!(),
+		_ => return Err(format!("unknown option: {}", name)),
 	}
 	Ok(())
 }
@@ -455,7 +455,7 @@ fn do_get(o: &Opts) -> u8 {
 				Status::NotFound => "no value at that path".to_string(),
 				Status::Empty => "the value is empty".to_string(),
 				Status::Multiple => "the path matches multiple instances".to_string(),
-				Status::Good => unreachable!("Good is handled above"),
+				Status::Good => String::new(), // handled above; keep the match total
 			};
 			eprintln!(
 				"shcl: cannot read {} as {}: {} (in {})",
