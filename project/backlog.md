@@ -252,17 +252,19 @@ In each section, items are listed approximately from newest to oldest.
 	- Each raw node rescans the parent's children to decide whether it merges with the line above; the parent's own walk already has that information.
 	- 32k raw blocks under one field format in 2.8 s against a 0.05 s parse. Narrow, but free to fix and behavior-preserving.
 
-- 🛠️ Code Review 20260725 item 28: give the loader opt-out limits.
+- ✋ Code Review 20260725 item 28: give the loader opt-out limits.
 	- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
 	- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
 	- The depth cap is the shared fix for item 2 and should land with it; the rest is the wider self-defense story.
 	- Depth half landed with item 2 (fixed 512-level cap, `E016`). Size/node/array limits still open.
+	- Deferred post-1.0: the depth cap closed the crash class; size/node/array knobs are additive API that can land without breaking anything. A consuming program can bound input size itself before calling parse.
 
-- 🛠️ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
+- ✋ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
 	- All four bindings recover the code from `msg.starts_with(...)` over ~30 hand-ordered prefixes, so rewording a message can change a code and the ordering is load-bearing.
 	- Separately, `V001`-`V099` are fully tabled but `E001`-`E015` and `H001` are enumerated nowhere, while users are told to gate CI on `check`.
 	- The doc half is cheap and should land before 1.0; threading the code through every call site is the larger, riskier half.
 	- Doc half landed with the item-2 depth work: `E001`-`E016` + `H001` now tabled in the spec's Diagnostics section. Code-threading half still open.
+	- Doc half done (the E-table); the code-threading half is deferred - large, mechanical, no user-visible payoff, and every corpus case pins code-per-line so the practical exposure is messages no case exercises.
 
 - 🔘 Code Review 20260725 item 30: the canonical formatter discards blank-line grouping.
 	- Comments were rescued as trivia by the prior review's item 4; blank lines are the other half of the same thing and were left out, so `fmt` flattens a grouped config into a wall.
@@ -274,16 +276,19 @@ In each section, items are listed approximately from newest to oldest.
 	- Go, Python and C consumers handed an unknown document cannot enumerate it; `Count` and `Instances` both require knowing the path already.
 	- Straight violation of the guide's "same function inventory" rule on a public method, and about 20 lines per port.
 
-- 🔘 Code Review 20260725 item 32: `--set` is described as the top layer but behaves as a first-instance edit.
+- ✅ Code Review 20260725 item 32: `--set` is described as the top layer but behaves as a first-instance edit.
 	- A real top layer replaces every same-named leaf; `--set` targets the first instance and leaves the rest, so the two disagree on repeated leaves.
 	- The spec already names the Writer as the mechanism, so this is a missing clause rather than wrong behavior.
+	- Fixed with the missing spec clause: `--set` is a Writer edit targeting the first matching instance; whole-group override belongs in a `--layer` file.
 
-- 🔘 Code Review 20260725 item 33: the convenience read tier is incomplete in C (3 of 11 types) and C++ (4 of 11).
+- ✅ Code Review 20260725 item 33: the convenience read tier is incomplete in C (3 of 11 types) and C++ (4 of 11).
 	- No convenience read for string - the most common config read - or for raw, datetime, or any array.
 	- The omission has a real C rationale (those types return borrowed memory), but the spec claims full coverage and the style guide's deviation list does not mention it.
+	- Resolved as documentation (the C rationale is real - borrowed memory and lengths do not fit a value-or-default signature): the spec's ergonomic-tier section and the style guide's C deviation list now both state the exact coverage.
 
-- 🔘 Code Review 20260725 item 34: Python's public `get_*` raises a private-named `_StatusError`.
+- ✅ Code Review 20260725 item 34: Python's public `get_*` raises a private-named `_StatusError`.
 	- A caller cannot catch it without reaching into a private name, so in practice they will write a bare `except Exception`.
+	- Fixed: the class is public `StatusError` now (docstring included), so callers can catch it by name.
 
 - 🔘 Code Review 20260725 item 35: the profiler stage samples only `fmt`, on a workload where everything is still linear.
 	- The read path, `merge`, `validate`, `generate` and the Writer are never sampled, so all three 2026-07-23/24 features could go quadratic without moving a sample.
@@ -299,22 +304,25 @@ In each section, items are listed approximately from newest to oldest.
 	- A detached signature over the sums file with the key inlined in the installer is what would make it a real trust root.
 	- Transport half done: curl/wget pin https through redirects with a TLS 1.2 floor (install.bash, install-dev.bash's rustup fetch), and install.ps1 floors TLS 1.2/1.3 for every download. The detached-signature trust root still needs a signing-key decision before it can land.
 
-- 🔘 Code Review 20260725 item 38: the style guide bans the section rules the code actually uses.
+- ✅ Code Review 20260725 item 38: the style guide bans the section rules the code actually uses.
 	- "No banner dividers" against 28 of them in the reference, 28 in Go, 18 in Python, 12 in C - and the guide is what a Tier 3 author is told to read first.
 	- The code is right: in a 3400-line drop-in file the section rules are the only navigation aid. Amend the rule and pin one spelling per language.
 	- One real inconsistency alongside it: `shcl.h` uses the shell house `//•••` rule, which is both off-style for C and the only non-ASCII comment character in the C bindings.
+	- Fixed: the guide now sanctions section rules as the one allowed banner and pins each binding's exact spelling; the lone `//•••` shell-style rule in `shcl.h` became the C `// ===` divider.
 
 - 🔘 Code Review 20260725 item 39: panic macros are used outside tests in the reference.
 	- Eight sites - six `unreachable!` (four of them in the newest validator and generator code) and two `unwrap()`.
 	- Each is provably unreachable today, but they are invariants asserted by a panic in a library whose contract is that it never bails on a whole file, and three ports copy the structure.
 
-- 🔘 Code Review 20260725 item 40: the CLI usage block is hand-duplicated across four CLIs with no drift check, and its exit-code line is wrong.
+- ✅ Code Review 20260725 item 40: the CLI usage block is hand-duplicated across four CLIs with no drift check, and its exit-code line is wrong.
 	- It still says exit 6 means a strict load failure; the prior review's item 36 made `check` exit 6 on any error diagnostic, at any strictness.
 	- `help`, `version`, a bare invocation and an unknown subcommand are the largest user-visible output in the project and the crosscheck never runs them.
+	- Fixed: the exit-code sentence now says `6 check failed or strict load failure` in all four, and the crosscheck pins the whole usage surface - `help`, `version`, a bare invocation, and an unknown subcommand are compared byte-for-byte across bindings on every run.
 
-- 🔘 Code Review 20260725 item 41: changelog has no Unreleased section, and contributing.md never explains the corpus workflow.
+- ✅ Code Review 20260725 item 41: changelog has no Unreleased section, and contributing.md never explains the corpus workflow.
 	- Five landed feature sets since the beta2 tag are recorded only in git; populating it now is also the raw material for the 1.0 notes.
 	- contributing.md does state the parity rule, but nothing points a first-time contributor at how to add a conformance case, so their PR will be structurally wrong.
+	- Fixed: changelog.md gained an Unreleased section covering everything since beta2 (the 1.0 notes' raw material), and contributing.md gained an "Adding a conformance case" walkthrough.
 
 - 🔘 Glossary of terms
 

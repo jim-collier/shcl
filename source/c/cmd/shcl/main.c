@@ -87,7 +87,7 @@ static const char *HELP =
 	"layers prints the merged canonical document.\n"
 	"\n"
 	"Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,\n"
-	"5 multiple instances, 6 strict load failure.\n";
+	"5 multiple instances, 6 check failed or strict load failure.\n";
 
 typedef struct {
 	const char *kind;         // int|float|bool|datetime|string|raw

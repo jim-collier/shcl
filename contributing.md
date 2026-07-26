@@ -147,6 +147,10 @@ Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/ci
 	- C: compile and run `source/c/tests/conformance.c` with `-Isource/c`, passing `project/conformance` as the corpus dir.
 - Everything at once: `cicd/cicd.bash --ci` - format check, build, lint, tests, and the cross-binding crosscheck. Every binding must match the reference byte for byte on stdout and exit codes; stderr text is not part of the contract.
 
+### Adding a conformance case
+
+Behavior changes land with a corpus case, or they are not pinned. A case is a directory under `project/conformance/NNN-short-name/` (next free number) containing at minimum `input.shcl`, `expected.shcl` (the exact `fmt` stdout), `expected-diags.txt` (the exact `check` stdout at Standard), and `reads.tsv`. Optional paired files add dimensions: `write.ops`/`expected-write.shcl` (Writer), `write-bad.ops` (ops that must be rejected), `schema.shcl`/`expected-validate.txt` (validation), `layer*.shcl`/`merge.sets`/`expected-merged.shcl` (layered loading), `init-schema.shcl`/`expected-init.shcl` (generation). Column meanings and file grammars are in `project/conformance/README.md`, which also carries a one-paragraph note per case - add one for yours. Generate the golden files from the Rust reference (`shcl fmt`, `shcl check`, etc.), eyeball them, and never hand-edit a golden to make a test pass. All four native runners pick a new case up automatically; run `cicd/cicd.bash --ci` and every binding must agree on it before it ships.
+
 ### Linters
 
 - Gating (the lint stage fails the run on any finding):

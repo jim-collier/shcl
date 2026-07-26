@@ -211,6 +211,13 @@ if [[ -n "$extra" && -d "$extra" ]]; then
 	fi
 fi
 
+# Usage surface: help/version/bare/unknown are the largest user-visible output
+# in the project and are hand-duplicated per CLI, so pin them here too.
+fCompare "usage help" help
+fCompare "usage version" version
+fCompare "usage bare"
+fCompare "usage unknown" definitely-not-a-subcommand
+
 if ((nBad)); then
 	echo "crosscheck: ${nBad}/${nCompared} comparison(s) diverged"
 	exit 1

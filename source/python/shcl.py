@@ -1778,7 +1778,7 @@ class Document:
 		if r.status == Status.Good:
 			return r.value
 		if default is _NO_DEFAULT:
-			raise _StatusError(r.status)
+			raise StatusError(r.status)
 		return default
 
 	def get_int(self, path, default=_NO_DEFAULT):
@@ -2002,7 +2002,10 @@ class Document:
 				stack.append((k, chain, shown))
 
 
-class _StatusError(Exception):
+class StatusError(Exception):
+	"""Raised by the must-exist convenience reads (get_* with no default): a
+	public name a caller can actually catch. Carries the Status in .status."""
+
 	def __init__(self, status):
 		self.status = status
 		super().__init__(status.name)

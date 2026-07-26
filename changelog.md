@@ -2,6 +2,28 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Schema validation: a schema is itself a plain SHCL file; `validate(doc, schema)` in every binding and `shcl check --schema=FILE` with stable `V###` codes.
+- Layered loading: `merge(base, over)` in every binding; repeatable `--layer=FILE` plus `--set=PATH=VALUE` overrides on the loading subcommands.
+- Schema-driven generation: `generate(schema)` and `shcl init --schema=FILE` emit a commented, typed starter config that validates clean against its own schema.
+- Installer packages: `.deb` and `.rpm` per Linux binary and an NSIS Windows setup, covered by the release checksums.
+- `set --write` rewrites the base file in place; `fmt --write` and `set --write` are both atomic (temp file + rename).
+- A nesting-depth cap (512 levels, `E016`) so deep or hostile documents fail loading cleanly instead of crashing formatting or merging.
+- An `E017` diagnostic for a value that opens a quote it never closes (previously silent, and it swallowed the trailing comment).
+- Writer setters report whether the write applied; an unusable path (wildcard, missing `[#N]`) is a loud failure with nothing half-created.
+
+### Changed
+
+- A bare section header in a higher layer now merges instead of silently deleting the base subtree; clearing a leaf from a layer still works.
+- `shcl set` op values are validated with the reference's grammar in every binding (malformed, out-of-range, or non-ASCII-digit values are rejected identically).
+- Every subcommand rejects options it does not use instead of silently ignoring them.
+- `init` exits 6 on a broken schema, matching `check --schema`; its stderr lists the schema faults in every binding.
+- The C binding's memory use is flat for read-heavy and merge-heavy workloads (per-call scratch arena, in-place merges, geometric stacked-list growth).
+- The Windows installers edit `PATH` at the registry, segment-wise and type-preserving; installer downloads pin https with a TLS 1.2 floor.
+
 ## v1.0.0-beta2 - 2026-07-21
 
 ### Added
