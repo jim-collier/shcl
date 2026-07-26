@@ -1725,6 +1725,53 @@ func (d *Document) place(path string) (int, bool) {
 	if len(scan.segments) > MaxDepth {
 		return 0, false
 	}
+	// Validate before creating anything, so a doomed path (wildcard, or a
+	// `[#k]` instance that does not and can never exist) leaves no
+	// half-created intermediates behind. Once this walk falls off the
+	// existing tree, a later `[#k]` can never match: fresh intermediates
+	// are created childless.
+	probe, alive := root, true
+	for i := range scan.segments {
+		seg := &scan.segments[i]
+		switch {
+		case seg.sel == nil:
+			if alive {
+				alive = false
+				for _, c := range d.arena[probe].children {
+					if d.arena[c].name == seg.name {
+						probe, alive = c, true
+						break
+					}
+				}
+			}
+		case seg.sel.kind == selByValue:
+			if alive {
+				alive = false
+				for _, c := range d.arena[probe].children {
+					if d.arena[c].name == seg.name && d.arena[c].value.display() == seg.sel.value {
+						probe, alive = c, true
+						break
+					}
+				}
+			}
+		case seg.sel.kind == selByIndex:
+			if !alive {
+				return 0, false
+			}
+			var matches []int
+			for _, c := range d.arena[probe].children {
+				if d.arena[c].name == seg.name {
+					matches = append(matches, c)
+				}
+			}
+			if seg.sel.index >= uint64(len(matches)) {
+				return 0, false
+			}
+			probe = matches[seg.sel.index]
+		default:
+			return 0, false // wildcard is query-only
+		}
+	}
 	cur := root
 	for i := range scan.segments {
 		seg := &scan.segments[i]
@@ -1762,10 +1809,71 @@ func (d *Document) place(path string) (int, bool) {
 	return cur, true
 }
 
-func (d *Document) setValue(path string, v value) {
-	if idx, ok := d.place(path); ok {
-		d.arena[idx].value = v
+func (d *Document) setValue(path string, v value) bool {
+	idx, ok := d.place(path)
+	if !ok {
+		return false
 	}
+	d.arena[idx].value = v
+	d.collapseDup(idx)
+	return true
+}
+
+// collapseDup: a written value may now collide with a same-named sibling under
+// the in-file merge rule; fold the pair the way a reparse would (earlier
+// sibling survives, later one folds children and trivia in) so Writer output
+// stays a formatter fixpoint.
+func (d *Document) collapseDup(node int) {
+	parent := d.arena[node].parent
+	name := d.arena[node].name
+	key := d.arena[node].value.key()
+	other := -1
+	for _, c := range d.arena[parent].children {
+		if c != node && d.arena[c].name == name && d.arena[c].value.key() == key {
+			other = c
+			break
+		}
+	}
+	if other < 0 {
+		return
+	}
+	pos := func(n int) int {
+		for i, c := range d.arena[parent].children {
+			if c == n {
+				return i
+			}
+		}
+		return int(^uint(0) >> 1)
+	}
+	survivor, loser := other, node
+	if pos(node) < pos(other) {
+		survivor, loser = node, other
+	}
+	kids := d.arena[loser].children
+	d.arena[loser].children = nil
+	for _, k := range kids {
+		d.arena[k].parent = survivor
+	}
+	d.arena[survivor].children = append(d.arena[survivor].children, kids...)
+	lead := d.arena[loser].leading
+	d.arena[loser].leading = nil
+	d.arena[survivor].leading = append(d.arena[survivor].leading, lead...)
+	trail := d.arena[loser].trailing
+	d.arena[loser].trailing = ""
+	if trail != "" {
+		if d.arena[survivor].trailing == "" {
+			d.arena[survivor].trailing = trail
+		} else {
+			d.arena[survivor].leading = append(d.arena[survivor].leading, trail)
+		}
+	}
+	keep := d.arena[parent].children[:0]
+	for _, c := range d.arena[parent].children {
+		if c != loser {
+			keep = append(keep, c)
+		}
+	}
+	d.arena[parent].children = keep
 }
 
 // Exists is true when the path resolves to at least one real node.
@@ -1822,10 +1930,10 @@ func (d *Document) Remove(path string) int {
 // SetComment attaches a leading comment line to the node at a path (creating an
 // empty node if absent, so a section can be annotated). A missing '#' is added;
 // only the first line is kept (a comment is one line).
-func (d *Document) SetComment(path, text string) {
+func (d *Document) SetComment(path, text string) bool {
 	idx, ok := d.place(path)
 	if !ok {
-		return
+		return false
 	}
 	line := text
 	if i := strings.IndexByte(line, '\n'); i >= 0 {
@@ -1835,111 +1943,135 @@ func (d *Document) SetComment(path, text string) {
 		line = "# " + line
 	}
 	d.arena[idx].leading = append(d.arena[idx].leading, line)
+	return true
 }
 
-func (d *Document) SetInt(path string, v int64)         { d.setValue(path, cellOf(strconv.FormatInt(v, 10))) }
-func (d *Document) SetFloat(path string, v float64)     { d.setValue(path, cellOf(FormatFloat(v))) }
-func (d *Document) SetBool(path string, v bool)         { d.setValue(path, cellOf(boolText(v))) }
-func (d *Document) SetString(path, v string)            { d.setValue(path, cellOf(encodeString(v))) }
-func (d *Document) SetDateTime(path string, v DateTime) { d.setValue(path, cellOf(v.String())) }
-func (d *Document) SetEmpty(path string)                { d.setValue(path, value{kind: vEmpty}) }
+func (d *Document) SetInt(path string, v int64) bool {
+	return d.setValue(path, cellOf(strconv.FormatInt(v, 10)))
+}
+func (d *Document) SetFloat(path string, v float64) bool {
+	return d.setValue(path, cellOf(FormatFloat(v)))
+}
+func (d *Document) SetBool(path string, v bool) bool {
+	return d.setValue(path, cellOf(boolText(v)))
+}
+func (d *Document) SetString(path, v string) bool {
+	return d.setValue(path, cellOf(encodeString(v)))
+}
+func (d *Document) SetDateTime(path string, v DateTime) bool {
+	return d.setValue(path, cellOf(v.String()))
+}
+func (d *Document) SetEmpty(path string) bool {
+	return d.setValue(path, value{kind: vEmpty})
+}
 
-func (d *Document) SetRaw(path, content, info string) {
+func (d *Document) SetRaw(path, content, info string) bool {
 	fc, fl := chooseFence(content)
-	d.setValue(path, value{kind: vRaw, raw: rawValue{content: content, info: info, fenceChar: fc, fenceLen: fl}})
+	return d.setValue(path, value{kind: vRaw, raw: rawValue{content: content, info: info, fenceChar: fc, fenceLen: fl}})
 }
 
-func (d *Document) SetIntArray(path string, v []int64) {
+func (d *Document) SetIntArray(path string, v []int64) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
 		texts[i] = strconv.FormatInt(x, 10)
 	}
-	d.setValue(path, arrayCell(texts))
+	return d.setValue(path, arrayCell(texts))
 }
-func (d *Document) SetFloatArray(path string, v []float64) {
+func (d *Document) SetFloatArray(path string, v []float64) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
 		texts[i] = FormatFloat(x)
 	}
-	d.setValue(path, arrayCell(texts))
+	return d.setValue(path, arrayCell(texts))
 }
-func (d *Document) SetBoolArray(path string, v []bool) {
+func (d *Document) SetBoolArray(path string, v []bool) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
 		texts[i] = boolText(x)
 	}
-	d.setValue(path, arrayCell(texts))
+	return d.setValue(path, arrayCell(texts))
 }
-func (d *Document) SetStringArray(path string, v []string) {
+func (d *Document) SetStringArray(path string, v []string) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
 		texts[i] = encodeString(x)
 	}
-	d.setValue(path, arrayCell(texts))
+	return d.setValue(path, arrayCell(texts))
 }
-func (d *Document) SetDateTimeArray(path string, v []DateTime) {
+func (d *Document) SetDateTimeArray(path string, v []DateTime) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
 		texts[i] = x.String()
 	}
-	d.setValue(path, arrayCell(texts))
+	return d.setValue(path, arrayCell(texts))
 }
 
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
-func (d *Document) SetIntDefault(path string, v int64) {
+func (d *Document) SetIntDefault(path string, v int64) bool {
 	if !d.Exists(path) {
-		d.SetInt(path, v)
+		return d.SetInt(path, v)
 	}
+	return true
 }
-func (d *Document) SetFloatDefault(path string, v float64) {
+func (d *Document) SetFloatDefault(path string, v float64) bool {
 	if !d.Exists(path) {
-		d.SetFloat(path, v)
+		return d.SetFloat(path, v)
 	}
+	return true
 }
-func (d *Document) SetBoolDefault(path string, v bool) {
+func (d *Document) SetBoolDefault(path string, v bool) bool {
 	if !d.Exists(path) {
-		d.SetBool(path, v)
+		return d.SetBool(path, v)
 	}
+	return true
 }
-func (d *Document) SetStringDefault(path, v string) {
+func (d *Document) SetStringDefault(path, v string) bool {
 	if !d.Exists(path) {
-		d.SetString(path, v)
+		return d.SetString(path, v)
 	}
+	return true
 }
-func (d *Document) SetDateTimeDefault(path string, v DateTime) {
+func (d *Document) SetDateTimeDefault(path string, v DateTime) bool {
 	if !d.Exists(path) {
-		d.SetDateTime(path, v)
+		return d.SetDateTime(path, v)
 	}
+	return true
 }
-func (d *Document) SetRawDefault(path, content, info string) {
+func (d *Document) SetRawDefault(path, content, info string) bool {
 	if !d.Exists(path) {
-		d.SetRaw(path, content, info)
+		return d.SetRaw(path, content, info)
 	}
+	return true
 }
-func (d *Document) SetIntArrayDefault(path string, v []int64) {
+func (d *Document) SetIntArrayDefault(path string, v []int64) bool {
 	if !d.Exists(path) {
-		d.SetIntArray(path, v)
+		return d.SetIntArray(path, v)
 	}
+	return true
 }
-func (d *Document) SetFloatArrayDefault(path string, v []float64) {
+func (d *Document) SetFloatArrayDefault(path string, v []float64) bool {
 	if !d.Exists(path) {
-		d.SetFloatArray(path, v)
+		return d.SetFloatArray(path, v)
 	}
+	return true
 }
-func (d *Document) SetBoolArrayDefault(path string, v []bool) {
+func (d *Document) SetBoolArrayDefault(path string, v []bool) bool {
 	if !d.Exists(path) {
-		d.SetBoolArray(path, v)
+		return d.SetBoolArray(path, v)
 	}
+	return true
 }
-func (d *Document) SetStringArrayDefault(path string, v []string) {
+func (d *Document) SetStringArrayDefault(path string, v []string) bool {
 	if !d.Exists(path) {
-		d.SetStringArray(path, v)
+		return d.SetStringArray(path, v)
 	}
+	return true
 }
-func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) {
+func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 	if !d.Exists(path) {
-		d.SetDateTimeArray(path, v)
+		return d.SetDateTimeArray(path, v)
 	}
+	return true
 }
 
 // ---------------------------------------------------------------------------

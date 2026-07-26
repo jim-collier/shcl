@@ -1250,6 +1250,39 @@ class Document:
 		# Writer side of the load-time nesting cap: never create deeper.
 		if len(segments) > MAX_DEPTH:
 			return None
+		# Validate before creating anything, so a doomed path (wildcard, or a
+		# `[#k]` instance that does not and can never exist) leaves no
+		# half-created intermediates behind. Once this walk falls off the
+		# existing tree, a later `[#k]` can never match: fresh intermediates
+		# are created childless.
+		probe = ROOT
+		for seg in segments:
+			sel = seg.selector
+			if sel is not None and sel[0] == "wild":
+				return None
+			if sel is not None and sel[0] == "idx":
+				if probe is None:
+					return None
+				matches = [c for c in self.arena[probe].children if self.arena[c].name == seg.name]
+				if sel[1] >= len(matches):
+					return None
+				probe = matches[sel[1]]
+			elif sel is not None and sel[0] == "val":
+				if probe is not None:
+					found = None
+					for c in self.arena[probe].children:
+						if self.arena[c].name == seg.name and self.arena[c].value.display() == sel[1]:
+							found = c
+							break
+					probe = found
+			else:
+				if probe is not None:
+					found = None
+					for c in self.arena[probe].children:
+						if self.arena[c].name == seg.name:
+							found = c
+							break
+					probe = found
 		cur = ROOT
 		for seg in segments:
 			sel = seg.selector
@@ -1273,8 +1306,47 @@ class Document:
 
 	def _set_value(self, path, value):
 		idx = self._place(path)
-		if idx is not None:
-			self.arena[idx].value = value
+		if idx is None:
+			return False
+		self.arena[idx].value = value
+		self._collapse_dup(idx)
+		return True
+
+	def _collapse_dup(self, node):
+		# A written value may now collide with a same-named sibling under the
+		# in-file merge rule; fold the pair the way a reparse would (earlier
+		# sibling survives, later one folds children and trivia in) so Writer
+		# output stays a formatter fixpoint.
+		parent = self.arena[node].parent
+		name = self.arena[node].name
+		key = self.arena[node].value.key()
+		other = None
+		for c in self.arena[parent].children:
+			if c != node and self.arena[c].name == name and self.arena[c].value.key() == key:
+				other = c
+				break
+		if other is None:
+			return
+		siblings = self.arena[parent].children
+		if siblings.index(other) < siblings.index(node):
+			survivor, loser = other, node
+		else:
+			survivor, loser = node, other
+		kids = self.arena[loser].children
+		self.arena[loser].children = []
+		for k in kids:
+			self.arena[k].parent = survivor
+		self.arena[survivor].children.extend(kids)
+		self.arena[survivor].leading.extend(self.arena[loser].leading)
+		self.arena[loser].leading = []
+		trail = self.arena[loser].trailing
+		self.arena[loser].trailing = ""
+		if trail:
+			if not self.arena[survivor].trailing:
+				self.arena[survivor].trailing = trail
+			else:
+				self.arena[survivor].leading.append(trail)
+		self.arena[parent].children = [c for c in self.arena[parent].children if c != loser]
 
 	def exists(self, path):
 		"""True when the path resolves to at least one real node."""
@@ -1308,93 +1380,105 @@ class Document:
 		node if absent). A missing '#' is added; only the first line is kept."""
 		idx = self._place(path)
 		if idx is None:
-			return
+			return False
 		line = text.split("\n", 1)[0]
 		if not line.startswith("#"):
 			line = "# " + line
 		self.arena[idx].leading.append(line)
+		return True
 
 	def set_int(self, path, v):
-		self._set_value(path, _cell_of(str(v)))
+		return self._set_value(path, _cell_of(str(v)))
 
 	def set_float(self, path, v):
-		self._set_value(path, _cell_of(format_float(v)))
+		return self._set_value(path, _cell_of(format_float(v)))
 
 	def set_bool(self, path, v):
-		self._set_value(path, _cell_of("true" if v else "false"))
+		return self._set_value(path, _cell_of("true" if v else "false"))
 
 	def set_string(self, path, v):
-		self._set_value(path, _cell_of(_encode_string(v)))
+		return self._set_value(path, _cell_of(_encode_string(v)))
 
 	def set_datetime(self, path, v):
-		self._set_value(path, _cell_of(str(v)))
+		return self._set_value(path, _cell_of(str(v)))
 
 	def set_raw(self, path, content, info):
 		fc, fl = _choose_fence(content)
-		self._set_value(path, _raw(content, info, fc, fl))
+		return self._set_value(path, _raw(content, info, fc, fl))
 
 	def set_empty(self, path):
-		self._set_value(path, _empty())
+		return self._set_value(path, _empty())
 
 	def set_int_array(self, path, v):
-		self._set_value(path, _array_cell([str(x) for x in v]))
+		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	def set_float_array(self, path, v):
-		self._set_value(path, _array_cell([format_float(x) for x in v]))
+		return self._set_value(path, _array_cell([format_float(x) for x in v]))
 
 	def set_bool_array(self, path, v):
-		self._set_value(path, _array_cell(["true" if x else "false" for x in v]))
+		return self._set_value(path, _array_cell(["true" if x else "false" for x in v]))
 
 	def set_string_array(self, path, v):
-		self._set_value(path, _array_cell([_encode_string(x) for x in v]))
+		return self._set_value(path, _array_cell([_encode_string(x) for x in v]))
 
 	def set_datetime_array(self, path, v):
-		self._set_value(path, _array_cell([str(x) for x in v]))
+		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	# Default (only-if-absent) forms - the "emit defaults" half of the Writer.
 	def set_int_default(self, path, v):
 		if not self.exists(path):
-			self.set_int(path, v)
+			return self.set_int(path, v)
+		return True
 
 	def set_float_default(self, path, v):
 		if not self.exists(path):
-			self.set_float(path, v)
+			return self.set_float(path, v)
+		return True
 
 	def set_bool_default(self, path, v):
 		if not self.exists(path):
-			self.set_bool(path, v)
+			return self.set_bool(path, v)
+		return True
 
 	def set_string_default(self, path, v):
 		if not self.exists(path):
-			self.set_string(path, v)
+			return self.set_string(path, v)
+		return True
 
 	def set_datetime_default(self, path, v):
 		if not self.exists(path):
-			self.set_datetime(path, v)
+			return self.set_datetime(path, v)
+		return True
 
 	def set_raw_default(self, path, content, info):
 		if not self.exists(path):
-			self.set_raw(path, content, info)
+			return self.set_raw(path, content, info)
+		return True
 
 	def set_int_array_default(self, path, v):
 		if not self.exists(path):
-			self.set_int_array(path, v)
+			return self.set_int_array(path, v)
+		return True
 
 	def set_float_array_default(self, path, v):
 		if not self.exists(path):
-			self.set_float_array(path, v)
+			return self.set_float_array(path, v)
+		return True
 
 	def set_bool_array_default(self, path, v):
 		if not self.exists(path):
-			self.set_bool_array(path, v)
+			return self.set_bool_array(path, v)
+		return True
 
 	def set_string_array_default(self, path, v):
 		if not self.exists(path):
-			self.set_string_array(path, v)
+			return self.set_string_array(path, v)
+		return True
 
 	def set_datetime_array_default(self, path, v):
 		if not self.exists(path):
-			self.set_datetime_array(path, v)
+			return self.set_datetime_array(path, v)
+		return True
 
 	# ----- layered loading: overlay a higher-priority document -----
 

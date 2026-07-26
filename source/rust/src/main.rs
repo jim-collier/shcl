@@ -12,7 +12,8 @@ shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
-  shcl set [options] FILE                apply write-ops (stdin) and print canonical
+  shcl set [--write|-w] [options] FILE   apply write-ops (stdin); print canonical
+                                         (or rewrite FILE in place with --write)
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
@@ -48,7 +49,7 @@ Options:
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
-  --schema=SCHEMA                        (check only) validate FILE against a
+  --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
   --layer=FILE                           (get/fmt/count/instances/set) merge a
                                          lower-priority layer under FILE;
@@ -57,6 +58,7 @@ Options:
                                          after all files; repeatable
 
 Value options accept either spelling: --default=VALUE or --default VALUE.
+An option a subcommand does not use is a usage error, not ignored.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
@@ -87,6 +89,7 @@ struct Opts {
 	layers: Vec<String>,         // lower-priority layers, in listed order
 	sets: Vec<(String, String)>, // final override layer: path=value
 	args: Vec<String>,           // positional: FILE [PATH]
+	seen: Vec<&'static str>,     // canonical names of options given, for per-command validation
 }
 
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
@@ -102,6 +105,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		layers: Vec::new(),
 		sets: Vec::new(),
 		args: Vec::new(),
+		seen: Vec::new(),
 	};
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	let mut i = 0;
@@ -110,10 +114,20 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		match a {
 			"--int" | "--float" | "--bool" | "--datetime" | "--string" | "--raw" | "--rawinfo" => {
 				o.kind = a[2..].to_string();
+				o.seen.push("--<type>");
 			}
-			"--array" => o.array = true,
-			"--slots" => o.slots = true,
-			"--write" | "-w" => o.write = true,
+			"--array" => {
+				o.array = true;
+				o.seen.push("--array");
+			}
+			"--slots" => {
+				o.slots = true;
+				o.seen.push("--slots");
+			}
+			"--write" | "-w" => {
+				o.write = true;
+				o.seen.push("--write");
+			}
 			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set" => {
 				i += 1;
 				let v = argv
@@ -142,26 +156,71 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 		"--default" => {
 			o.default = Some(v.to_string());
 			o.on_bad = "default".into();
+			o.seen.push("--default");
 		}
 		"--on-bad" => {
 			if !matches!(v, "error" | "default" | "flag") {
 				return Err(format!("bad --on-bad value: {}", v));
 			}
 			o.on_bad = v.to_string();
+			o.seen.push("--on-bad");
 		}
 		"--strictness" => {
 			o.strictness =
 				Strictness::from_arg(v).ok_or_else(|| format!("bad --strictness value: {}", v))?;
+			o.seen.push("--strictness");
 		}
-		"--schema" => o.schema = Some(v.to_string()),
-		"--layer" => o.layers.push(v.to_string()),
+		"--schema" => {
+			o.schema = Some(v.to_string());
+			o.seen.push("--schema");
+		}
+		"--layer" => {
+			o.layers.push(v.to_string());
+			o.seen.push("--layer");
+		}
 		"--set" => {
 			let (p, val) = v
 				.split_once('=')
 				.ok_or_else(|| format!("bad --set value (want PATH=VALUE): {}", v))?;
 			o.sets.push((p.to_string(), val.to_string()));
+			o.seen.push("--set");
 		}
 		_ => unreachable!(),
+	}
+	Ok(())
+}
+
+/// Every option must be meaningful for its subcommand; an option that would be
+/// silently ignored (`set --write` before it existed, `--schema` on `get`) is a
+/// usage error instead.
+fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
+	let allowed: &[&str] = match cmd {
+		"get" => &[
+			"--<type>",
+			"--array",
+			"--slots",
+			"--default",
+			"--on-bad",
+			"--strictness",
+			"--layer",
+			"--set",
+		],
+		"set" => &["--strictness", "--layer", "--set", "--write"],
+		"fmt" => &["--write", "--strictness", "--layer", "--set"],
+		"check" => &["--strictness", "--schema"],
+		"init" => &["--schema"],
+		"count" | "instances" => &["--strictness", "--layer", "--set"],
+		_ => &[],
+	};
+	for s in &o.seen {
+		if !allowed.contains(s) {
+			if *s == "--<type>" {
+				eprintln!("type options are not valid for {} (see --help)", cmd);
+			} else {
+				eprintln!("option {} not valid for {} (see --help)", s, cmd);
+			}
+			return Err(1);
+		}
 	}
 	Ok(())
 }
@@ -190,18 +249,39 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 		doc.merge(&over);
 	}
 	for (p, v) in &o.sets {
-		doc.set_string(p, v);
+		if !doc.set_string(p, v) {
+			eprintln!("shcl: cannot write {} (from --set)", p);
+			return Err(1);
+		}
 	}
 	Ok(doc)
 }
 
-/// Reject --layer/--set on subcommands that do not load a document to read from.
-fn reject_layers(o: &Opts, cmd: &str) -> Result<(), u8> {
-	if !o.layers.is_empty() || !o.sets.is_empty() {
-		eprintln!("{}: --layer/--set are not supported here", cmd);
-		return Err(1);
+/// Write atomically: temp file in the same dir, then rename over the target,
+/// so an interrupted write can never truncate the config it rewrites. The data
+/// is synced before the rename so a crash cannot publish an empty file.
+fn write_atomic(file: &str, data: &str) -> Result<(), String> {
+	use std::io::Write;
+	let p = std::path::Path::new(file);
+	let dir = match p.parent() {
+		Some(d) if !d.as_os_str().is_empty() => d,
+		_ => std::path::Path::new("."),
+	};
+	let base = p
+		.file_name()
+		.map(|b| b.to_string_lossy().into_owned())
+		.unwrap_or_else(|| file.to_string());
+	let tmp = dir.join(format!(".{}.tmp{}", base, std::process::id()));
+	let res = std::fs::File::create(&tmp)
+		.and_then(|mut f| f.write_all(data.as_bytes()).and_then(|_| f.sync_all()));
+	if let Err(e) = res {
+		let _ = std::fs::remove_file(&tmp);
+		return Err(format!("{}: {}", file, e));
 	}
-	Ok(())
+	std::fs::rename(&tmp, p).map_err(|e| {
+		let _ = std::fs::remove_file(&tmp);
+		format!("{}: {}", file, e)
+	})
 }
 
 fn read_input(file: &str) -> Result<String, String> {
@@ -408,8 +488,8 @@ fn do_fmt(o: &Opts) -> u8 {
 		Err(code) => return code,
 	};
 	if o.write {
-		if let Err(e) = std::fs::write(file, &canonical) {
-			eprintln!("{}: {}", file, e);
+		if let Err(e) = write_atomic(file, &canonical) {
+			eprintln!("{}", e);
 			return 1;
 		}
 	} else {
@@ -449,14 +529,14 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	let pint = |s: &str| s.parse::<i64>().map_err(|_| format!("bad int: {}", s));
 	let pflt = |s: &str| s.parse::<f64>().map_err(|_| format!("bad float: {}", s));
 	let arr = &f[2.min(f.len())..];
-	match f.first().copied().unwrap_or("") {
+	let wrote = match f.first().copied().unwrap_or("") {
 		"int" => doc.set_int(path, pint(val())?),
 		"float" => doc.set_float(path, pflt(val())?),
 		"bool" => doc.set_bool(path, val() == "true"),
 		"string" => doc.set_string(path, &unescape_ops(val())),
 		"datetime" => {
 			let dt = parse_datetime(val()).ok_or_else(|| format!("bad datetime: {}", val()))?;
-			doc.set_datetime(path, &dt);
+			doc.set_datetime(path, &dt)
 		}
 		"int-default" => doc.set_int_default(path, pint(val())?),
 		"float-default" => doc.set_float_default(path, pflt(val())?),
@@ -464,7 +544,7 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		"string-default" => doc.set_string_default(path, &unescape_ops(val())),
 		"datetime-default" => {
 			let dt = parse_datetime(val()).ok_or_else(|| format!("bad datetime: {}", val()))?;
-			doc.set_datetime_default(path, &dt);
+			doc.set_datetime_default(path, &dt)
 		}
 		"int-array" => doc.set_int_array(
 			path,
@@ -479,14 +559,14 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		}
 		"string-array" => {
 			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
-			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>())
 		}
 		"datetime-array" => {
 			let dts: Vec<_> = arr
 				.iter()
 				.map(|s| parse_datetime(s).ok_or_else(|| format!("bad datetime: {}", s)))
 				.collect::<Result<Vec<_>, _>>()?;
-			doc.set_datetime_array(path, &dts);
+			doc.set_datetime_array(path, &dts)
 		}
 		"int-array-default" => doc.set_int_array_default(
 			path,
@@ -504,7 +584,7 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			doc.set_string_array_default(
 				path,
 				&owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-			);
+			)
 		}
 		"raw" => doc.set_raw(path, &unescape_ops(f.get(3).copied().unwrap_or("")), val()),
 		"raw-default" => {
@@ -514,8 +594,12 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		"comment" => doc.set_comment(path, val()),
 		"remove" => {
 			doc.remove(path);
+			true
 		}
 		other => return Err(format!("unknown op: {}", other)),
+	};
+	if !wrote {
+		return Err(format!("cannot write {}", path));
 	}
 	Ok(())
 }
@@ -528,6 +612,10 @@ fn do_set(o: &Opts) -> u8 {
 			return 1;
 		}
 	};
+	if o.write && file == "-" {
+		eprintln!("set --write cannot rewrite stdin; drop --write to print, or pass a FILE");
+		return 1;
+	}
 	// Base doc: '-' means an empty base, since stdin carries the ops script.
 	// Any --layer files sit under it and --set overrides sit on top, before ops.
 	let mut layer_texts: Vec<String> = Vec::new();
@@ -563,7 +651,10 @@ fn do_set(o: &Opts) -> u8 {
 		}
 	}
 	for (p, v) in &o.sets {
-		doc.set_string(p, v);
+		if !doc.set_string(p, v) {
+			eprintln!("shcl: cannot write {} (from --set)", p);
+			return 1;
+		}
 	}
 	let mut ops = String::new();
 	use std::io::Read;
@@ -580,14 +671,19 @@ fn do_set(o: &Opts) -> u8 {
 			return 1;
 		}
 	}
-	print!("{}", doc.to_canonical());
+	let canonical = doc.to_canonical();
+	if o.write {
+		if let Err(e) = write_atomic(file, &canonical) {
+			eprintln!("{}", e);
+			return 1;
+		}
+	} else {
+		print!("{}", canonical);
+	}
 	0
 }
 
 fn do_check(o: &Opts) -> u8 {
-	if let Err(code) = reject_layers(o, "check") {
-		return code;
-	}
 	let file = match o.args.as_slice() {
 		[f] => f,
 		_ => {
@@ -663,9 +759,6 @@ fn do_check(o: &Opts) -> u8 {
 }
 
 fn do_init(o: &Opts) -> u8 {
-	if let Err(code) = reject_layers(o, "init") {
-		return code;
-	}
 	let schema_file = match &o.schema {
 		Some(s) => s,
 		None => {
@@ -731,6 +824,9 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 }
 
 fn run(cmd: &str, o: &Opts) -> u8 {
+	if let Err(code) = check_opts(cmd, o) {
+		return code;
+	}
 	match cmd {
 		"get" => do_get(o),
 		"set" => do_set(o),

@@ -40,6 +40,7 @@ while (($#)); do case "$1" in
 esac; done
 
 [[ -d "$corpus" ]] || { echo "crosscheck: no corpus dir: $corpus" >&2; exit 2; }
+tmpDir="$(mktemp -d)"; trap 'rm -rf "$tmpDir"' EXIT
 if ((${#bindings[@]} < 2)); then
 	echo "crosscheck: ${#bindings[@]} binding(s) configured - differential comparison activates when a second binding lands"
 	exit 0
@@ -145,6 +146,18 @@ for caseDir in "$corpus"/*/; do
 	# Write dimension: apply the case's ops script and compare canonical output.
 	ops="${caseDir}write.ops"
 	[[ -f "$ops" ]] && fCompareStdin "set $(basename "$caseDir")" "$ops" set "$input"
+	# Bad-op dimension: each write-bad.ops line, applied alone, must produce the
+	# same (empty) stdout and same nonzero exit in every binding.
+	badops="${caseDir}write-bad.ops"
+	if [[ -f "$badops" ]]; then
+		badN=0
+		while IFS= read -r bline || [[ -n "$bline" ]]; do
+			[[ -z "$bline" || "$bline" == \#* ]] && continue
+			badN=$((badN+1))
+			printf '%s\n' "$bline" > "${tmpDir}/badop.line"
+			fCompareStdin "set-bad $(basename "$caseDir") line ${badN}" "${tmpDir}/badop.line" set "$input"
+		done < "$badops"
+	fi
 	# Layered-load dimension: replay `fmt` with the case's layer*.shcl merged under
 	# input.shcl (filename order = priority) plus any merge.sets --set overrides.
 	if [[ -f "${caseDir}expected-merged.shcl" ]]; then

@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <locale.h>
+#include <errno.h>
 #include <dirent.h>
 
 static int nfail = 0;
@@ -93,9 +94,54 @@ static size_t cf_unescape(const char *in, size_t inlen, char *out) {
 	return w;
 }
 
+// Reference-equivalent op-value gates (same grammar the CLI applies): sign +
+// ASCII digits + i64 range for ints; the Rust f64 FromStr grammar for floats
+// (overflow yields +-inf, not an error).
+static int cf_i64(const char *p, size_t n, int64_t *out) {
+	size_t i = 0;
+	if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+	if (i == n) return 0;
+	for (size_t k = i; k < n; k++) if (p[k] < '0' || p[k] > '9') return 0;
+	char *b = (char *)xrealloc(NULL, n + 1); memcpy(b, p, n); b[n] = 0;
+	errno = 0; char *end; long long v = strtoll(b, &end, 10);
+	int ok = *end == 0 && errno != ERANGE;
+	free(b);
+	if (!ok) return 0;
+	*out = (int64_t)v; return 1;
+}
+static int cf_ci_eq(const char *p, size_t n, const char *kw) {
+	size_t kn = strlen(kw);
+	if (n != kn) return 0;
+	for (size_t i = 0; i < n; i++) { char c = p[i]; if (c >= 'A' && c <= 'Z') c += 32; if (c != kw[i]) return 0; }
+	return 1;
+}
+static int cf_f64(const char *p, size_t n, double *out) {
+	size_t i = 0;
+	if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+	if (!(cf_ci_eq(p + i, n - i, "inf") || cf_ci_eq(p + i, n - i, "infinity") || cf_ci_eq(p + i, n - i, "nan"))) {
+		size_t d1 = 0, d2 = 0;
+		while (i < n && p[i] >= '0' && p[i] <= '9') { i++; d1++; }
+		if (i < n && p[i] == '.') { i++; while (i < n && p[i] >= '0' && p[i] <= '9') { i++; d2++; } }
+		if (d1 + d2 == 0) return 0;
+		if (i < n && (p[i] == 'e' || p[i] == 'E')) {
+			i++;
+			if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+			size_t d3 = 0;
+			while (i < n && p[i] >= '0' && p[i] <= '9') { i++; d3++; }
+			if (d3 == 0) return 0;
+		}
+		if (i != n) return 0;
+	}
+	char *b = (char *)xrealloc(NULL, n + 1); memcpy(b, p, n); b[n] = 0;
+	*out = strtod(b, NULL);
+	free(b);
+	return 1;
+}
+
 // Apply one write-ops line (NUL-terminated, tab-split in place) via the library
-// Writer. A "-default" suffix means "only if absent".
-static void apply_op_c(shcl_doc *d, char *line) {
+// Writer, with the CLI's value gates. A "-default" suffix means "only if
+// absent"; values gate first, like the reference. Returns 0 ok, 1 rejected.
+static int try_apply_op_c(shcl_doc *d, char *line) {
 	size_t cap = 8, nf = 0; char **f = (char **)xrealloc(NULL, cap * sizeof *f);
 	f[nf++] = line;
 	for (char *p = line; *p; p++) if (*p == '\t') { *p = '\0'; if (nf == cap) { cap *= 2; f = (char **)xrealloc(f, cap * sizeof *f); } f[nf++] = p + 1; }
@@ -104,49 +150,65 @@ static void apply_op_c(shcl_doc *d, char *line) {
 	const char *v = nf > 2 ? f[2] : ""; size_t vn = nf > 2 ? strlen(f[2]) : 0;
 	size_t an = nf > 2 ? nf - 2 : 0;
 	size_t oplen = strlen(op);
+	int only_absent = 0, rc = 0, wrote = 1;
 	if (oplen >= 8 && !strcmp(op + oplen - 8, "-default")) {
-		if (shcl_exists(d, path, plen)) { free(f); return; }
+		only_absent = 1;
 		op[oplen - 8] = '\0';
 	}
-	if (!strcmp(op, "int")) shcl_set_int(d, path, plen, strtoll(v, NULL, 10));
-	else if (!strcmp(op, "float")) shcl_set_float(d, path, plen, strtod(v, NULL));
-	else if (!strcmp(op, "bool")) shcl_set_bool(d, path, plen, !strcmp(v, "true"));
-	else if (!strcmp(op, "string")) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); shcl_set_string(d, path, plen, b, m); free(b); }
-	else if (!strcmp(op, "datetime")) { shcl_datetime dt; S sv; sv.p = v; sv.n = vn; if (parse_datetime(&d->arena, sv, &dt)) shcl_set_datetime(d, path, plen, &dt); }
+	#define PRESENT (only_absent && shcl_exists(d, path, plen))
+	if (!strcmp(op, "int")) { int64_t x; if (!cf_i64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
+	else if (!strcmp(op, "float")) { double x; if (!cf_f64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
+	else if (!strcmp(op, "bool")) { if (!PRESENT) wrote = shcl_set_bool(d, path, plen, !strcmp(v, "true")); }
+	else if (!strcmp(op, "string")) { if (!PRESENT) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = shcl_set_string(d, path, plen, b, m); free(b); } }
+	else if (!strcmp(op, "datetime")) { shcl_datetime dt; S sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) rc = 1; else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
 	else if (!strcmp(op, "int-array")) {
 		int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
-		for (size_t i = 0; i < an; i++) a[i] = strtoll(f[2 + i], NULL, 10);
-		shcl_set_int_array(d, path, plen, a, an); free(a);
+		for (size_t i = 0; i < an && !rc; i++) if (!cf_i64(f[2 + i], strlen(f[2 + i]), &a[i])) rc = 1;
+		if (!rc && !PRESENT) wrote = shcl_set_int_array(d, path, plen, a, an);
+		free(a);
 	}
 	else if (!strcmp(op, "float-array")) {
 		double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
-		for (size_t i = 0; i < an; i++) a[i] = strtod(f[2 + i], NULL);
-		shcl_set_float_array(d, path, plen, a, an); free(a);
+		for (size_t i = 0; i < an && !rc; i++) if (!cf_f64(f[2 + i], strlen(f[2 + i]), &a[i])) rc = 1;
+		if (!rc && !PRESENT) wrote = shcl_set_float_array(d, path, plen, a, an);
+		free(a);
 	}
 	else if (!strcmp(op, "bool-array")) {
 		int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
 		for (size_t i = 0; i < an; i++) a[i] = !strcmp(f[2 + i], "true");
-		shcl_set_bool_array(d, path, plen, a, an); free(a);
-	}
-	else if (!strcmp(op, "string-array")) {
-		char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
-		for (size_t i = 0; i < an; i++) { size_t L = strlen(f[2 + i]); char *b = (char *)xrealloc(NULL, L ? L : 1); sl[i] = cf_unescape(f[2 + i], L, b); sv[i] = b; }
-		shcl_set_string_array(d, path, plen, (const char *const *)sv, sl, an);
-		for (size_t i = 0; i < an; i++) free(sv[i]);
-		free(sv); free(sl);
-	}
-	else if (!strcmp(op, "datetime-array")) {
-		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a); int ok = 1;
-		for (size_t i = 0; i < an; i++) { S sv; sv.p = f[2 + i]; sv.n = strlen(f[2 + i]); if (!parse_datetime(&d->arena, sv, &a[i])) ok = 0; }
-		if (ok) shcl_set_datetime_array(d, path, plen, a, an);
+		if (!PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an);
 		free(a);
 	}
-	else if (!strcmp(op, "raw")) { const char *cont = nf > 3 ? f[3] : ""; size_t cn = nf > 3 ? strlen(f[3]) : 0; char *b = (char *)xrealloc(NULL, cn ? cn : 1); size_t m = cf_unescape(cont, cn, b); shcl_set_raw(d, path, plen, b, m, v, vn); free(b); }
-	else if (!strcmp(op, "empty")) shcl_set_empty(d, path, plen);
-	else if (!strcmp(op, "comment")) shcl_set_comment(d, path, plen, v, vn);
-	else if (!strcmp(op, "remove")) shcl_remove(d, path, plen);
-	else { fprintf(stderr, "unknown op %s\n", op); nfail++; }
+	else if (!strcmp(op, "string-array")) {
+		if (!PRESENT) {
+			char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
+			sv[0] = NULL; sl[0] = 0; // silence -Wmaybe-uninitialized for the an==0 call
+			for (size_t i = 0; i < an; i++) { size_t L = strlen(f[2 + i]); char *b = (char *)xrealloc(NULL, L ? L : 1); sl[i] = cf_unescape(f[2 + i], L, b); sv[i] = b; }
+			wrote = shcl_set_string_array(d, path, plen, (const char *const *)sv, sl, an);
+			for (size_t i = 0; i < an; i++) free(sv[i]);
+			free(sv); free(sl);
+		}
+	}
+	else if (!strcmp(op, "datetime-array")) {
+		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
+		for (size_t i = 0; i < an && !rc; i++) { S sv; sv.p = f[2 + i]; sv.n = strlen(f[2 + i]); if (!parse_datetime(&d->arena, sv, &a[i])) rc = 1; }
+		if (!rc && !PRESENT) wrote = shcl_set_datetime_array(d, path, plen, a, an);
+		free(a);
+	}
+	else if (!strcmp(op, "raw")) { if (!PRESENT) { const char *cont = nf > 3 ? f[3] : ""; size_t cn = nf > 3 ? strlen(f[3]) : 0; char *b = (char *)xrealloc(NULL, cn ? cn : 1); size_t m = cf_unescape(cont, cn, b); wrote = shcl_set_raw(d, path, plen, b, m, v, vn); free(b); } }
+	else if (!strcmp(op, "empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
+	else if (!strcmp(op, "comment") && !only_absent) wrote = shcl_set_comment(d, path, plen, v, vn);
+	else if (!strcmp(op, "remove") && !only_absent) shcl_remove(d, path, plen);
+	else rc = 1; // unknown op
+	if (rc == 0 && !wrote) rc = 1;
+	#undef PRESENT
 	free(f);
+	return rc;
+}
+
+// Good-path wrapper: the op must apply.
+static void apply_op_c(shcl_doc *d, char *line) {
+	if (try_apply_op_c(d, line)) { fprintf(stderr, "write op rejected: %s\n", line); nfail++; }
 }
 
 static int cmp_str(const void *a, const void *b) { return strcmp(*(const char **)a, *(const char **)b); }
@@ -286,6 +348,25 @@ int main(int argc, char **argv) {
 			shcl_str wagain = shcl_to_canonical(wd2);
 			if (wagain.n != wgot.n || (wgot.n && memcmp(wagain.p, wgot.p, wgot.n) != 0)) fail(names[ci], "written output is not a fmt fixpoint");
 			shcl_free(wd2); shcl_free(wd); free(olines); free(ops); free(ew);
+		}
+
+		// Bad-op dimension (optional): each write-bad.ops line, applied alone,
+		// must be rejected and leave the document unchanged.
+		snprintf(path, sizeof path, "%s/%s/write-bad.ops", corpus, names[ci]); size_t blen; char *bops = read_file(path, &blen);
+		if (bops) {
+			char **blines; size_t nbl = split_lines(bops, blen, &blines);
+			for (size_t li = 0; li < nbl; li++) {
+				if (blines[li][0] == '\0' || blines[li][0] == '#') continue;
+				shcl_doc *bd = shcl_parse(input, ilen);
+				shcl_str before = shcl_to_canonical(bd);
+				char *before_copy = (char *)xrealloc(NULL, before.n ? before.n : 1);
+				memcpy(before_copy, before.p, before.n); size_t before_n = before.n;
+				if (!try_apply_op_c(bd, blines[li])) fail(names[ci], "write-bad.ops line was accepted");
+				shcl_str after = shcl_to_canonical(bd);
+				if (after.n != before_n || (before_n && memcmp(after.p, before_copy, before_n) != 0)) fail(names[ci], "write-bad.ops line changed the document");
+				free(before_copy); shcl_free(bd);
+			}
+			free(blines); free(bops);
 		}
 
 		// Schema dimension (optional): golden = the exact `check --schema` stdout
