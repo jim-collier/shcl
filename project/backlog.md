@@ -112,6 +112,12 @@ In each section, items are listed approximately from newest to oldest.
 	- A failing case also cannot be reproduced by re-running, which is the main thing a fuzz gate is for.
 	- Fixed: the seed list is sorted before use. Two runs on the same tree now produce an identical input set.
 
+- ✅ Code Review 20260726 item 5: hosted CI cannot install its own pinned lint toolchain.
+	- The tool pins list the Cppcheck binary's version, and the workflow installed that same string as a package version. There is no such package, so every hosted run failed at setup within seconds.
+	- The wheel carries a Cppcheck two major versions ahead of its own package number, which is what made the two look interchangeable.
+	- Only the hosted gate was affected. The local pipeline probes the installed binary, so it was right all along and stayed green, which is why this went unnoticed from the day the pins landed.
+	- Fixed: the workflow installs the package version and says why the two differ. The other three pins were checked and do resolve.
+
 - ✅ Code Review 20260726 item 4: the cross-binding harness reports only the first divergence.
 	- It prints a divergence, then runs `diff` into `head` to show it. Under the script's own strict settings that pipeline's nonzero status aborts the whole run, so every later divergence is lost and the "N of M diverged" summary never prints.
 	- The run still exits nonzero, so nothing ever escaped the gate. The cost is diagnosis: one divergence at a time, with no count and no idea how wide the damage is.
