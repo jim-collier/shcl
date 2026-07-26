@@ -85,6 +85,14 @@ public:
 	}
 
 	std::size_t count(std::string_view p) const { return shcl_count(d_, p.data(), p.size()); }
+	// Every field path, file order, deduplicated (bare-name-safe segments only).
+	std::vector<std::string> paths() const {
+		shcl_str *v; std::size_t n = shcl_paths(d_, &v);
+		std::vector<std::string> r; r.reserve(n);
+		for (std::size_t i = 0; i < n; i++) r.push_back(to_str(v[i]));
+		return r;
+	}
+
 	std::vector<std::string> instances(std::string_view p) const {
 		shcl_str *a; std::size_t n = shcl_instances(d_, p.data(), p.size(), &a);
 		std::vector<std::string> v; v.reserve(n);

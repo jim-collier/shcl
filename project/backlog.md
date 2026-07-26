@@ -272,9 +272,10 @@ In each section, items are listed approximately from newest to oldest.
 	- The trivia model already exists, so this is a per-node flag and one emit line per binding.
 	- Detail: `design.md` - Code Review 20260725, item 30.
 
-- 🔘 Code Review 20260725 item 31: `paths()` exists only in the reference.
+- ✅ Code Review 20260725 item 31: `paths()` exists only in the reference.
 	- Go, Python and C consumers handed an unknown document cannot enumerate it; `Count` and `Instances` both require knowing the path already.
 	- Straight violation of the guide's "same function inventory" rule on a public method, and about 20 lines per port.
+	- Fixed: `Paths()`/`paths()`/`shcl_paths` (and the veneer's `paths()`) now exist in every binding, mirroring the reference's walk (file order, deduplicated, bare-name-safe segments only); a shared fixture is pinned in all four native runners.
 
 - ✅ Code Review 20260725 item 32: `--set` is described as the top layer but behaves as a first-instance edit.
 	- A real top layer replaces every same-named leaf; `--set` targets the first instance and leaves the rest, so the two disagree on repeated leaves.

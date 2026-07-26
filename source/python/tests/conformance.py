@@ -484,6 +484,12 @@ def main():
 			sys.stderr.write("FAIL " + f + "\n")
 		sys.stderr.write("conformance: {} failure(s)\n".format(len(fails)))
 		return 1
+	# paths(): file order, deduplicated, bare-name-safe segments only (a
+	# quoted name hides its subtree). Same fixture is pinned in every runner.
+	pdoc = shcl.Document.parse('a: 1\na.b: 2\n"q n": 3\nx:\n\tb: 4\nx.b: 5\n')
+	if pdoc.paths() != ["a", "a.b", "x", "x.b"]:
+		raise SystemExit("paths() fixture mismatch: {}".format(pdoc.paths()))
+
 	print("conformance: {} case(s) pass".format(len(cases)))
 	return 0
 

@@ -1630,6 +1630,52 @@ func (d *Document) Count(path string) int {
 	return 0
 }
 
+// Paths returns every field path in the document, in file order, deduplicated -
+// a query recipe for tooling. Only bare-name-safe segments are emitted, so each
+// path is a well-formed CLI query; a subtree under a quoted/non-ASCII name is
+// skipped.
+func (d *Document) Paths() []string {
+	var out []string
+	seen := map[string]bool{}
+	type ent struct {
+		node   int
+		prefix string
+	}
+	var stack []ent
+	top := d.arena[root].children
+	for i := len(top) - 1; i >= 0; i-- {
+		stack = append(stack, ent{top[i], ""})
+	}
+	for len(stack) > 0 {
+		e := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		name := d.arena[e.node].name
+		bare := name != ""
+		for _, c := range name {
+			if !isBareNameChar(c) {
+				bare = false
+				break
+			}
+		}
+		if !bare {
+			continue // not a bare query segment; skip it and its subtree
+		}
+		path := name
+		if e.prefix != "" {
+			path = e.prefix + "." + name
+		}
+		if !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+		kids := d.arena[e.node].children
+		for i := len(kids) - 1; i >= 0; i-- {
+			stack = append(stack, ent{kids[i], path})
+		}
+	}
+	return out
+}
+
 // Instances returns the instance values at a path, in file order. Wildcard
 // slots that did not resolve stay in the list as "" so indices keep matching
 // Count().
