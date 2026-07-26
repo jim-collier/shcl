@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A nesting-depth cap (512 levels, `E016`) so deep or hostile documents fail loading cleanly instead of crashing formatting or merging.
 - An `E017` diagnostic for a value that opens a quote it never closes (previously silent, and it swallowed the trailing comment).
 - Writer setters report whether the write applied; an unusable path (wildcard, missing `[#N]`) is a loud failure with nothing half-created.
+- `paths()` in every binding (and the C++ veneer): enumerate a document's field paths in file order.
+- Blank-line grouping survives the canonical formatter (one blank between bindings; runs collapse), and the spec now states that lowercase is a field name's canonical spelling.
+- An unterminated-quote-in-value diagnostic (`E017`) - previously the typo was silent and swallowed the trailing comment.
 
 ### Changed
 
@@ -23,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `init` exits 6 on a broken schema, matching `check --schema`; its stderr lists the schema faults in every binding.
 - The C binding's memory use is flat for read-heavy and merge-heavy workloads (per-call scratch arena, in-place merges, geometric stacked-list growth).
 - The Windows installers edit `PATH` at the registry, segment-wise and type-preserving; installer downloads pin https with a TLS 1.2 floor.
+- Large-document performance: merging, inline `[value]` selectors, stacked lists, raw-block formatting, and schema "did you mean" suggestions all dropped from quadratic to linear (a 32k-key merge went from 16 s to 0.07 s in the reference), byte-identical output.
+- The library never panics on a slipped invariant; every non-test assert degrades gracefully.
 
 ## v1.0.0-beta2 - 2026-07-21
 
