@@ -1228,6 +1228,27 @@ class Document:
 			return len(r[1])
 		return 0
 
+	def paths(self):
+		"""Every field path in the document, in file order, deduplicated - a
+		query recipe for tooling. Only bare-name-safe segments are emitted, so
+		each path is a well-formed CLI query; a subtree under a quoted/non-ASCII
+		name is skipped."""
+		out = []
+		seen = set()
+		stack = [(c, "") for c in reversed(self.arena[ROOT].children)]
+		while stack:
+			node, prefix = stack.pop()
+			name = self.arena[node].name
+			if not name or not all(_is_bare_name_char(c) for c in name):
+				continue  # not a bare query segment; skip it and its subtree
+			path = name if not prefix else prefix + "." + name
+			if path not in seen:
+				seen.add(path)
+				out.append(path)
+			for c in reversed(self.arena[node].children):
+				stack.append((c, path))
+		return out
+
 	def instances(self, path):
 		"""Instance values at a path, in file order. Wildcard slots that did not
 		resolve stay in the list as "" so indices keep matching count()."""

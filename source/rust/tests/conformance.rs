@@ -668,3 +668,11 @@ fn write_bad_ops_are_rejected() {
 		}
 	}
 }
+
+#[test]
+fn paths_enumeration_shape() {
+	// paths(): file order, deduplicated, bare-name-safe segments only (a
+	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	let doc = Document::parse("a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n");
+	assert_eq!(doc.paths(), vec!["a", "a.b", "x", "x.b"]);
+}

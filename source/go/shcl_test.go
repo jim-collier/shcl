@@ -823,3 +823,19 @@ func TestReadsMatchExpected(t *testing.T) {
 		}
 	}
 }
+
+func TestPathsEnumerationShape(t *testing.T) {
+	// Paths(): file order, deduplicated, bare-name-safe segments only (a
+	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	doc := Parse("a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n")
+	got := doc.Paths()
+	want := []string{"a", "a.b", "x", "x.b"}
+	if len(got) != len(want) {
+		t.Fatalf("paths: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("paths: got %v want %v", got, want)
+		}
+	}
+}
