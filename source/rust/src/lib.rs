@@ -1618,6 +1618,43 @@ impl Document {
 		if scan.segments.len() > MAX_DEPTH {
 			return None;
 		}
+		// Validate before creating anything, so a doomed path (wildcard, or a
+		// `[#k]` instance that does not and can never exist) leaves no
+		// half-created intermediates behind. Once this walk falls off the
+		// existing tree, a later `[#k]` can never match: fresh intermediates
+		// are created childless.
+		let mut probe = Some(ROOT);
+		for seg in &scan.segments {
+			match &seg.selector {
+				Some(Selector::Wildcard) => return None,
+				Some(Selector::ByIndex(k)) => {
+					let c = probe?;
+					let matches: Vec<usize> = self.arena[c]
+						.children
+						.iter()
+						.copied()
+						.filter(|&n| self.arena[n].name == seg.name)
+						.collect();
+					probe = Some(*matches.get(*k as usize)?);
+				}
+				Some(Selector::ByValue(v)) => {
+					probe = probe.and_then(|c| {
+						self.arena[c].children.iter().copied().find(|&n| {
+							self.arena[n].name == seg.name && self.arena[n].value.display() == *v
+						})
+					});
+				}
+				None => {
+					probe = probe.and_then(|c| {
+						self.arena[c]
+							.children
+							.iter()
+							.copied()
+							.find(|&n| self.arena[n].name == seg.name)
+					});
+				}
+			}
+		}
 		let mut cur = ROOT;
 		for seg in &scan.segments {
 			cur = match &seg.selector {
@@ -1646,10 +1683,61 @@ impl Document {
 		Some(cur)
 	}
 
-	fn set_value(&mut self, path: &str, value: Value) {
-		if let Some(node) = self.place(path) {
-			self.arena[node].value = value;
+	fn set_value(&mut self, path: &str, value: Value) -> bool {
+		match self.place(path) {
+			Some(node) => {
+				self.arena[node].value = value;
+				self.collapse_dup(node);
+				true
+			}
+			None => false,
 		}
+	}
+
+	/// A written value may now collide with a same-named sibling under the
+	/// in-file merge rule; fold the pair the way a reparse would (earlier
+	/// sibling survives, later one folds children and trivia in) so Writer
+	/// output stays a formatter fixpoint.
+	fn collapse_dup(&mut self, node: usize) {
+		let parent = self.arena[node].parent;
+		let name = self.arena[node].name.clone();
+		let key = self.arena[node].value.key();
+		let siblings = &self.arena[parent].children;
+		let Some(other) = siblings
+			.iter()
+			.copied()
+			.find(|&c| c != node && self.arena[c].name == name && self.arena[c].value.key() == key)
+		else {
+			return;
+		};
+		let pos = |n: usize| {
+			self.arena[parent]
+				.children
+				.iter()
+				.position(|&c| c == n)
+				.unwrap_or(usize::MAX)
+		};
+		let (survivor, loser) = if pos(other) < pos(node) {
+			(other, node)
+		} else {
+			(node, other)
+		};
+		let kids = std::mem::take(&mut self.arena[loser].children);
+		for &k in &kids {
+			self.arena[k].parent = survivor;
+		}
+		self.arena[survivor].children.extend(kids);
+		let mut lead = std::mem::take(&mut self.arena[loser].leading);
+		self.arena[survivor].leading.append(&mut lead);
+		let trail = std::mem::take(&mut self.arena[loser].trailing);
+		if !trail.is_empty() {
+			if self.arena[survivor].trailing.is_empty() {
+				self.arena[survivor].trailing = trail;
+			} else {
+				self.arena[survivor].leading.push(trail);
+			}
+		}
+		self.arena[parent].children.retain(|&c| c != loser);
 	}
 
 	/// True when the path resolves to at least one real node.
@@ -1679,34 +1767,38 @@ impl Document {
 	/// Attach a leading comment line to the node at a path (creating an empty
 	/// node if it does not exist yet, so a section can be annotated). A missing
 	/// `#` is added; only the first line is kept (a comment is one line).
-	pub fn set_comment(&mut self, path: &str, text: &str) {
-		if let Some(node) = self.place(path) {
-			let line = text.split('\n').next().unwrap_or("");
-			let c = if line.starts_with('#') {
-				line.to_string()
-			} else {
-				format!("# {}", line)
-			};
-			self.arena[node].leading.push(c);
+	pub fn set_comment(&mut self, path: &str, text: &str) -> bool {
+		match self.place(path) {
+			Some(node) => {
+				let line = text.split('\n').next().unwrap_or("");
+				let c = if line.starts_with('#') {
+					line.to_string()
+				} else {
+					format!("# {}", line)
+				};
+				self.arena[node].leading.push(c);
+				true
+			}
+			None => false,
 		}
 	}
 
-	pub fn set_int(&mut self, path: &str, v: i64) {
-		self.set_value(path, cell_of(v.to_string()));
+	pub fn set_int(&mut self, path: &str, v: i64) -> bool {
+		self.set_value(path, cell_of(v.to_string()))
 	}
-	pub fn set_float(&mut self, path: &str, v: f64) {
-		self.set_value(path, cell_of(format!("{}", v)));
+	pub fn set_float(&mut self, path: &str, v: f64) -> bool {
+		self.set_value(path, cell_of(format!("{}", v)))
 	}
-	pub fn set_bool(&mut self, path: &str, v: bool) {
-		self.set_value(path, cell_of(if v { "true" } else { "false" }.to_string()));
+	pub fn set_bool(&mut self, path: &str, v: bool) -> bool {
+		self.set_value(path, cell_of(if v { "true" } else { "false" }.to_string()))
 	}
-	pub fn set_string(&mut self, path: &str, v: &str) {
-		self.set_value(path, cell_of(encode_string(v)));
+	pub fn set_string(&mut self, path: &str, v: &str) -> bool {
+		self.set_value(path, cell_of(encode_string(v)))
 	}
-	pub fn set_datetime(&mut self, path: &str, v: &ShclDateTime) {
-		self.set_value(path, cell_of(v.to_string()));
+	pub fn set_datetime(&mut self, path: &str, v: &ShclDateTime) -> bool {
+		self.set_value(path, cell_of(v.to_string()))
 	}
-	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) {
+	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
 		let (fence_char, fence_len) = choose_fence(content);
 		self.set_value(
 			path,
@@ -1716,22 +1808,22 @@ impl Document {
 				fence_char,
 				fence_len,
 			},
-		);
+		)
 	}
-	pub fn set_empty(&mut self, path: &str) {
-		self.set_value(path, Value::Empty);
+	pub fn set_empty(&mut self, path: &str) -> bool {
+		self.set_value(path, Value::Empty)
 	}
 
-	pub fn set_int_array(&mut self, path: &str, v: &[i64]) {
-		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()));
+	pub fn set_int_array(&mut self, path: &str, v: &[i64]) -> bool {
+		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
-	pub fn set_float_array(&mut self, path: &str, v: &[f64]) {
+	pub fn set_float_array(&mut self, path: &str, v: &[f64]) -> bool {
 		self.set_value(
 			path,
 			array_cell(v.iter().map(|x| format!("{}", x)).collect()),
-		);
+		)
 	}
-	pub fn set_bool_array(&mut self, path: &str, v: &[bool]) {
+	pub fn set_bool_array(&mut self, path: &str, v: &[bool]) -> bool {
 		self.set_value(
 			path,
 			array_cell(
@@ -1739,73 +1831,84 @@ impl Document {
 					.map(|x| if *x { "true" } else { "false" }.to_string())
 					.collect(),
 			),
-		);
+		)
 	}
-	pub fn set_string_array(&mut self, path: &str, v: &[&str]) {
+	pub fn set_string_array(&mut self, path: &str, v: &[&str]) -> bool {
 		self.set_value(
 			path,
 			array_cell(v.iter().map(|x| encode_string(x)).collect()),
-		);
+		)
 	}
-	pub fn set_datetime_array(&mut self, path: &str, v: &[ShclDateTime]) {
-		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()));
+	pub fn set_datetime_array(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
+		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
 
 	// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
-	pub fn set_int_default(&mut self, path: &str, v: i64) {
+	pub fn set_int_default(&mut self, path: &str, v: i64) -> bool {
 		if !self.exists(path) {
-			self.set_int(path, v);
+			return self.set_int(path, v);
 		}
+		true
 	}
-	pub fn set_float_default(&mut self, path: &str, v: f64) {
+	pub fn set_float_default(&mut self, path: &str, v: f64) -> bool {
 		if !self.exists(path) {
-			self.set_float(path, v);
+			return self.set_float(path, v);
 		}
+		true
 	}
-	pub fn set_bool_default(&mut self, path: &str, v: bool) {
+	pub fn set_bool_default(&mut self, path: &str, v: bool) -> bool {
 		if !self.exists(path) {
-			self.set_bool(path, v);
+			return self.set_bool(path, v);
 		}
+		true
 	}
-	pub fn set_string_default(&mut self, path: &str, v: &str) {
+	pub fn set_string_default(&mut self, path: &str, v: &str) -> bool {
 		if !self.exists(path) {
-			self.set_string(path, v);
+			return self.set_string(path, v);
 		}
+		true
 	}
-	pub fn set_datetime_default(&mut self, path: &str, v: &ShclDateTime) {
+	pub fn set_datetime_default(&mut self, path: &str, v: &ShclDateTime) -> bool {
 		if !self.exists(path) {
-			self.set_datetime(path, v);
+			return self.set_datetime(path, v);
 		}
+		true
 	}
-	pub fn set_raw_default(&mut self, path: &str, content: &str, info: &str) {
+	pub fn set_raw_default(&mut self, path: &str, content: &str, info: &str) -> bool {
 		if !self.exists(path) {
-			self.set_raw(path, content, info);
+			return self.set_raw(path, content, info);
 		}
+		true
 	}
-	pub fn set_int_array_default(&mut self, path: &str, v: &[i64]) {
+	pub fn set_int_array_default(&mut self, path: &str, v: &[i64]) -> bool {
 		if !self.exists(path) {
-			self.set_int_array(path, v);
+			return self.set_int_array(path, v);
 		}
+		true
 	}
-	pub fn set_float_array_default(&mut self, path: &str, v: &[f64]) {
+	pub fn set_float_array_default(&mut self, path: &str, v: &[f64]) -> bool {
 		if !self.exists(path) {
-			self.set_float_array(path, v);
+			return self.set_float_array(path, v);
 		}
+		true
 	}
-	pub fn set_bool_array_default(&mut self, path: &str, v: &[bool]) {
+	pub fn set_bool_array_default(&mut self, path: &str, v: &[bool]) -> bool {
 		if !self.exists(path) {
-			self.set_bool_array(path, v);
+			return self.set_bool_array(path, v);
 		}
+		true
 	}
-	pub fn set_string_array_default(&mut self, path: &str, v: &[&str]) {
+	pub fn set_string_array_default(&mut self, path: &str, v: &[&str]) -> bool {
 		if !self.exists(path) {
-			self.set_string_array(path, v);
+			return self.set_string_array(path, v);
 		}
+		true
 	}
-	pub fn set_datetime_array_default(&mut self, path: &str, v: &[ShclDateTime]) {
+	pub fn set_datetime_array_default(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
 		if !self.exists(path) {
-			self.set_datetime_array(path, v);
+			return self.set_datetime_array(path, v);
 		}
+		true
 	}
 }
 

@@ -51,6 +51,9 @@ type corpusCase struct {
 	writeOps      string
 	expectedWrite string
 	hasWrite      bool
+	// Bad-op dimension (optional): ops that must each be rejected, applied alone.
+	writeBadOps string
+	hasWriteBad bool
 	// Schema dimension (optional): a schema and the golden `check --schema` stdout.
 	schema           string
 	expectedValidate string
@@ -108,6 +111,9 @@ func loadCases(t *testing.T) []corpusCase {
 				t.Fatalf("%s: write.ops without expected-write.shcl", entry.Name())
 			}
 			cc.writeOps, cc.expectedWrite, cc.hasWrite = string(ops), string(ew), true
+		}
+		if bad, err := os.ReadFile(filepath.Join(caseDir, "write-bad.ops")); err == nil {
+			cc.writeBadOps, cc.hasWriteBad = string(bad), true
 		}
 		if sch, err := os.ReadFile(filepath.Join(caseDir, "schema.shcl")); err == nil {
 			ev, err2 := os.ReadFile(filepath.Join(caseDir, "expected-validate.txt"))
@@ -201,7 +207,73 @@ func unescapeOpsTest(s string) string {
 	return b.String()
 }
 
-func applyOpTest(t *testing.T, doc *Document, line, at string) {
+// Value gates mirror the CLI's exactly: grammar first (reference FromStr
+// shape), then range; float overflow yields +/-Inf, not an error.
+func intGrammarTest(s string) bool {
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func floatGrammarTest(s string) bool {
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	low := strings.ToLower(s)
+	if low == "inf" || low == "infinity" || low == "nan" {
+		return true
+	}
+	i := 0
+	digits := func() int {
+		n := 0
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+			n++
+		}
+		return n
+	}
+	if digits() > 0 {
+		if i < len(s) && s[i] == '.' {
+			i++
+			digits()
+		}
+	} else {
+		if s[i] != '.' {
+			return false
+		}
+		i++
+		if digits() == 0 {
+			return false
+		}
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		if digits() == 0 {
+			return false
+		}
+	}
+	return i == len(s)
+}
+
+// tryApplyOpTest applies one write-ops line via the library Writer, with the
+// same value gates the CLI applies. A non-nil error = the op must be rejected
+// (bad value or unusable path).
+func tryApplyOpTest(doc *Document, line string) error {
 	f := strings.Split(line, "\t")
 	get := func(i int) string {
 		if i < len(f) {
@@ -214,21 +286,49 @@ func applyOpTest(t *testing.T, doc *Document, line, at string) {
 	if len(f) > 2 {
 		arr = f[2:]
 	}
-	i64 := func(s string) int64 { n, _ := strconv.ParseInt(s, 10, 64); return n }
-	f64 := func(s string) float64 { n, _ := strconv.ParseFloat(s, 64); return n }
-	ints := func(xs []string) []int64 {
+	pint := func(s string) (int64, error) {
+		if !intGrammarTest(s) {
+			return 0, fmt.Errorf("bad int: %s", s)
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("bad int: %s", s)
+		}
+		return n, nil
+	}
+	pflt := func(s string) (float64, error) {
+		if !floatGrammarTest(s) {
+			return 0, fmt.Errorf("bad float: %s", s)
+		}
+		n, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			if ne, ok := err.(*strconv.NumError); !ok || ne.Err != strconv.ErrRange {
+				return 0, fmt.Errorf("bad float: %s", s)
+			}
+		}
+		return n, nil
+	}
+	ints := func(xs []string) ([]int64, error) {
 		o := make([]int64, len(xs))
 		for i, s := range xs {
-			o[i] = i64(s)
+			n, err := pint(s)
+			if err != nil {
+				return nil, err
+			}
+			o[i] = n
 		}
-		return o
+		return o, nil
 	}
-	flts := func(xs []string) []float64 {
+	flts := func(xs []string) ([]float64, error) {
 		o := make([]float64, len(xs))
 		for i, s := range xs {
-			o[i] = f64(s)
+			n, err := pflt(s)
+			if err != nil {
+				return nil, err
+			}
+			o[i] = n
 		}
-		return o
+		return o, nil
 	}
 	bools := func(xs []string) []bool {
 		o := make([]bool, len(xs))
@@ -244,73 +344,138 @@ func applyOpTest(t *testing.T, doc *Document, line, at string) {
 		}
 		return o
 	}
-	dt := func(s string) DateTime {
+	dt := func(s string) (DateTime, error) {
 		x, ok := ParseDateTime(s)
 		if !ok {
-			t.Fatalf("%s: bad datetime %s", at, s)
+			return x, fmt.Errorf("bad datetime: %s", s)
 		}
-		return x
+		return x, nil
 	}
-	dts := func(xs []string) []DateTime {
+	dts := func(xs []string) ([]DateTime, error) {
 		o := make([]DateTime, len(xs))
 		for i, s := range xs {
-			o[i] = dt(s)
+			x, err := dt(s)
+			if err != nil {
+				return nil, err
+			}
+			o[i] = x
 		}
-		return o
+		return o, nil
 	}
+	wrote := false
 	switch f[0] {
 	case "int":
-		doc.SetInt(path, i64(v))
+		n, err := pint(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetInt(path, n)
 	case "float":
-		doc.SetFloat(path, f64(v))
+		n, err := pflt(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetFloat(path, n)
 	case "bool":
-		doc.SetBool(path, v == "true")
+		wrote = doc.SetBool(path, v == "true")
 	case "string":
-		doc.SetString(path, unescapeOpsTest(v))
+		wrote = doc.SetString(path, unescapeOpsTest(v))
 	case "datetime":
-		doc.SetDateTime(path, dt(v))
+		x, err := dt(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetDateTime(path, x)
 	case "int-default":
-		doc.SetIntDefault(path, i64(v))
+		n, err := pint(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetIntDefault(path, n)
 	case "float-default":
-		doc.SetFloatDefault(path, f64(v))
+		n, err := pflt(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetFloatDefault(path, n)
 	case "bool-default":
-		doc.SetBoolDefault(path, v == "true")
+		wrote = doc.SetBoolDefault(path, v == "true")
 	case "string-default":
-		doc.SetStringDefault(path, unescapeOpsTest(v))
+		wrote = doc.SetStringDefault(path, unescapeOpsTest(v))
 	case "datetime-default":
-		doc.SetDateTimeDefault(path, dt(v))
+		x, err := dt(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetDateTimeDefault(path, x)
 	case "int-array":
-		doc.SetIntArray(path, ints(arr))
+		xs, err := ints(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetIntArray(path, xs)
 	case "float-array":
-		doc.SetFloatArray(path, flts(arr))
+		xs, err := flts(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetFloatArray(path, xs)
 	case "bool-array":
-		doc.SetBoolArray(path, bools(arr))
+		wrote = doc.SetBoolArray(path, bools(arr))
 	case "string-array":
-		doc.SetStringArray(path, strs(arr))
+		wrote = doc.SetStringArray(path, strs(arr))
 	case "datetime-array":
-		doc.SetDateTimeArray(path, dts(arr))
+		xs, err := dts(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetDateTimeArray(path, xs)
 	case "int-array-default":
-		doc.SetIntArrayDefault(path, ints(arr))
+		xs, err := ints(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetIntArrayDefault(path, xs)
 	case "float-array-default":
-		doc.SetFloatArrayDefault(path, flts(arr))
+		xs, err := flts(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetFloatArrayDefault(path, xs)
 	case "bool-array-default":
-		doc.SetBoolArrayDefault(path, bools(arr))
+		wrote = doc.SetBoolArrayDefault(path, bools(arr))
 	case "string-array-default":
-		doc.SetStringArrayDefault(path, strs(arr))
+		wrote = doc.SetStringArrayDefault(path, strs(arr))
 	case "datetime-array-default":
-		doc.SetDateTimeArrayDefault(path, dts(arr))
+		xs, err := dts(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetDateTimeArrayDefault(path, xs)
 	case "raw":
-		doc.SetRaw(path, unescapeOpsTest(get(3)), v)
+		wrote = doc.SetRaw(path, unescapeOpsTest(get(3)), v)
 	case "raw-default":
-		doc.SetRawDefault(path, unescapeOpsTest(get(3)), v)
+		wrote = doc.SetRawDefault(path, unescapeOpsTest(get(3)), v)
 	case "empty":
-		doc.SetEmpty(path)
+		wrote = doc.SetEmpty(path)
 	case "comment":
-		doc.SetComment(path, v)
+		wrote = doc.SetComment(path, v)
 	case "remove":
 		doc.Remove(path)
+		wrote = true
 	default:
-		t.Fatalf("%s: unknown op '%s'", at, f[0])
+		return fmt.Errorf("unknown op: %s", f[0])
+	}
+	if !wrote {
+		return fmt.Errorf("cannot write %s", path)
+	}
+	return nil
+}
+
+// applyOpTest is the good-path wrapper: the op must apply.
+func applyOpTest(t *testing.T, doc *Document, line, at string) {
+	if err := tryApplyOpTest(doc, line); err != nil {
+		t.Fatalf("%s: %s", at, err)
 	}
 }
 
@@ -399,6 +564,32 @@ func TestWriteOpsMatchExpected(t *testing.T) {
 		}
 		if again := Parse(got).ToCanonical(); again != got {
 			t.Errorf("%s: written output is not a fmt fixpoint", c.name)
+		}
+	}
+}
+
+func TestWriteBadOpsAreRejected(t *testing.T) {
+	// Bad-op dimension: each write-bad.ops line, applied alone to the case
+	// input, must be rejected (bad value, bad datetime, or unusable path) and
+	// leave the document unchanged.
+	for _, c := range loadCases(t) {
+		if !c.hasWriteBad {
+			continue
+		}
+		for n, line := range strings.Split(c.writeBadOps, "\n") {
+			line = strings.TrimSuffix(line, "\r")
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			doc := Parse(c.input)
+			before := doc.ToCanonical()
+			if err := tryApplyOpTest(doc, line); err == nil {
+				t.Errorf("%s: write-bad.ops line %d was accepted: %s", c.name, n+1, line)
+				continue
+			}
+			if got := doc.ToCanonical(); got != before {
+				t.Errorf("%s: write-bad.ops line %d changed the document: %s", c.name, n+1, line)
+			}
 		}
 	}
 }

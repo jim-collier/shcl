@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -24,7 +25,8 @@ const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
-  shcl set [options] FILE                apply write-ops (stdin) and print canonical
+  shcl set [--write|-w] [options] FILE   apply write-ops (stdin); print canonical
+                                         (or rewrite FILE in place with --write)
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
@@ -60,7 +62,7 @@ Options:
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
-  --schema=SCHEMA                        (check only) validate FILE against a
+  --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
   --layer=FILE                           (get/fmt/count/instances/set) merge a
                                          lower-priority layer under FILE;
@@ -69,6 +71,7 @@ Options:
                                          after all files; repeatable
 
 Value options accept either spelling: --default=VALUE or --default VALUE.
+An option a subcommand does not use is a usage error, not ignored.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
@@ -105,6 +108,7 @@ type opts struct {
 	layers     []string    // lower-priority layers, in listed order
 	sets       [][2]string // final override layer: path=value
 	args       []string    // positional: FILE [PATH]
+	seen       []string    // canonical names of options given, for per-command validation
 }
 
 func setValueOpt(o *opts, name, v string) error {
@@ -112,27 +116,33 @@ func setValueOpt(o *opts, name, v string) error {
 	case "--default":
 		o.def = v
 		o.onBad = "default"
+		o.seen = append(o.seen, "--default")
 	case "--on-bad":
 		if v != "error" && v != "default" && v != "flag" {
 			return fmt.Errorf("bad --on-bad value: %s", v)
 		}
 		o.onBad = v
+		o.seen = append(o.seen, "--on-bad")
 	case "--strictness":
 		s, ok := shcl.StrictnessFromArg(v)
 		if !ok {
 			return fmt.Errorf("bad --strictness value: %s", v)
 		}
 		o.strictness = s
+		o.seen = append(o.seen, "--strictness")
 	case "--schema":
 		o.schema = v
+		o.seen = append(o.seen, "--schema")
 	case "--layer":
 		o.layers = append(o.layers, v)
+		o.seen = append(o.seen, "--layer")
 	case "--set":
 		eq := strings.IndexByte(v, '=')
 		if eq < 0 {
 			return fmt.Errorf("bad --set value (want PATH=VALUE): %s", v)
 		}
 		o.sets = append(o.sets, [2]string{v[:eq], v[eq+1:]})
+		o.seen = append(o.seen, "--set")
 	}
 	return nil
 }
@@ -145,12 +155,16 @@ func parseOpts(argv []string) (*opts, error) {
 		switch {
 		case a == "--int" || a == "--float" || a == "--bool" || a == "--datetime" || a == "--string" || a == "--raw" || a == "--rawinfo":
 			o.kind = a[2:]
+			o.seen = append(o.seen, "--<type>")
 		case a == "--array":
 			o.array = true
+			o.seen = append(o.seen, "--array")
 		case a == "--slots":
 			o.slots = true
+			o.seen = append(o.seen, "--slots")
 		case a == "--write" || a == "-w":
 			o.write = true
+			o.seen = append(o.seen, "--write")
 		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" || a == "--layer" || a == "--set":
 			i++
 			if i >= len(argv) {
@@ -190,6 +204,45 @@ func parseOpts(argv []string) (*opts, error) {
 		}
 	}
 	return o, nil
+}
+
+// checkOpts: every option must be meaningful for its subcommand; an option that
+// would be silently ignored (`set --write` before it existed, `--schema` on
+// `get`) is a usage error instead.
+func checkOpts(cmd string, o *opts) int {
+	var allowed []string
+	switch cmd {
+	case "get":
+		allowed = []string{"--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set"}
+	case "set":
+		allowed = []string{"--strictness", "--layer", "--set", "--write"}
+	case "fmt":
+		allowed = []string{"--write", "--strictness", "--layer", "--set"}
+	case "check":
+		allowed = []string{"--strictness", "--schema"}
+	case "init":
+		allowed = []string{"--schema"}
+	case "count", "instances":
+		allowed = []string{"--strictness", "--layer", "--set"}
+	}
+	for _, s := range o.seen {
+		ok := false
+		for _, a := range allowed {
+			if s == a {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			if s == "--<type>" {
+				fmt.Fprintf(os.Stderr, "type options are not valid for %s (see --help)\n", cmd)
+			} else {
+				fmt.Fprintf(os.Stderr, "option %s not valid for %s (see --help)\n", s, cmd)
+			}
+			return 1
+		}
+	}
+	return 0
 }
 
 func readInput(file string) (string, error) {
@@ -258,19 +311,39 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 		doc.Merge(over)
 	}
 	for _, s := range o.sets {
-		doc.SetString(s[0], s[1])
+		if !doc.SetString(s[0], s[1]) {
+			fmt.Fprintf(os.Stderr, "shcl: cannot write %s (from --set)\n", s[0])
+			return nil, 1
+		}
 	}
 	return doc, 0
 }
 
-// rejectLayers refuses --layer/--set on subcommands that do not load a document
-// to read from.
-func rejectLayers(o *opts, cmd string) int {
-	if len(o.layers) > 0 || len(o.sets) > 0 {
-		fmt.Fprintf(os.Stderr, "%s: --layer/--set are not supported here\n", cmd)
-		return 1
+// writeAtomic writes via a temp file in the same dir, then renames over the
+// target, so an interrupted write can never truncate the config it rewrites.
+// The data is synced before the rename so a crash cannot publish an empty file.
+func writeAtomic(file, data string) error {
+	dir := filepath.Dir(file)
+	base := filepath.Base(file)
+	tmp := filepath.Join(dir, "."+base+".tmp"+strconv.Itoa(os.Getpid()))
+	f, err := os.Create(tmp)
+	if err == nil {
+		if _, werr := f.WriteString(data); werr != nil {
+			err = werr
+		} else {
+			err = f.Sync()
+		}
+		f.Close()
 	}
-	return 0
+	if err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("%s: %s", file, err)
+	}
+	if rerr := os.Rename(tmp, file); rerr != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("%s: %s", file, rerr)
+	}
+	return nil
 }
 
 // doGet: one value read, formatted for the shell: scalars print as one line,
@@ -442,14 +515,107 @@ func doFmt(o *opts) int {
 	}
 	canonical := doc.ToCanonical()
 	if o.write {
-		if werr := os.WriteFile(file, []byte(canonical), 0o644); werr != nil {
-			fmt.Fprintf(os.Stderr, "%s: %s\n", file, werr)
+		if werr := writeAtomic(file, canonical); werr != nil {
+			fmt.Fprintln(os.Stderr, werr)
 			return 1
 		}
 	} else {
 		fmt.Print(canonical)
 	}
 	return 0
+}
+
+// intGrammar matches the reference's i64 FromStr: optional single sign, then
+// one or more ASCII digits, nothing else.
+func intGrammar(s string) bool {
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// floatGrammar matches the reference's f64 FromStr: optional sign, then
+// inf|infinity|nan (any case) or ASCII-digit decimal with optional fraction
+// and exponent. No hex, no underscores, no whitespace.
+func floatGrammar(s string) bool {
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	low := strings.ToLower(s)
+	if low == "inf" || low == "infinity" || low == "nan" {
+		return true
+	}
+	i := 0
+	digits := func() int {
+		n := 0
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+			n++
+		}
+		return n
+	}
+	if digits() > 0 {
+		if i < len(s) && s[i] == '.' {
+			i++
+			digits()
+		}
+	} else {
+		if s[i] != '.' {
+			return false
+		}
+		i++
+		if digits() == 0 {
+			return false
+		}
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		if digits() == 0 {
+			return false
+		}
+	}
+	return i == len(s)
+}
+
+// parseOpInt gates an ops int like the reference: grammar first, then range.
+func parseOpInt(s string) (int64, error) {
+	if !intGrammar(s) {
+		return 0, fmt.Errorf("bad int: %s", s)
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("bad int: %s", s)
+	}
+	return n, nil
+}
+
+// parseOpFloat gates an ops float; overflow yields +/-Inf like the reference,
+// not an error.
+func parseOpFloat(s string) (float64, error) {
+	if !floatGrammar(s) {
+		return 0, fmt.Errorf("bad float: %s", s)
+	}
+	n, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		if ne, ok := err.(*strconv.NumError); !ok || ne.Err != strconv.ErrRange {
+			return 0, fmt.Errorf("bad float: %s", s)
+		}
+	}
+	return n, nil
 }
 
 // unescapeOps decodes an ops value: \n \t \\ only; other `\x` stays verbatim.
@@ -489,8 +655,8 @@ func applyOp(doc *shcl.Document, line string) error {
 	if len(f) > 2 {
 		arr = f[2:]
 	}
-	pint := func(s string) (int64, error) { return strconv.ParseInt(s, 10, 64) }
-	pflt := func(s string) (float64, error) { return strconv.ParseFloat(s, 64) }
+	pint := parseOpInt
+	pflt := parseOpFloat
 	ints := func(xs []string) ([]int64, error) {
 		out := make([]int64, len(xs))
 		for i, s := range xs {
@@ -545,107 +711,112 @@ func applyOp(doc *shcl.Document, line string) error {
 		}
 		return out, nil
 	}
+	wrote := false
 	switch f[0] {
 	case "int":
 		n, err := pint(v)
 		if err != nil {
 			return err
 		}
-		doc.SetInt(path, n)
+		wrote = doc.SetInt(path, n)
 	case "float":
 		n, err := pflt(v)
 		if err != nil {
 			return err
 		}
-		doc.SetFloat(path, n)
+		wrote = doc.SetFloat(path, n)
 	case "bool":
-		doc.SetBool(path, v == "true")
+		wrote = doc.SetBool(path, v == "true")
 	case "string":
-		doc.SetString(path, unescapeOps(v))
+		wrote = doc.SetString(path, unescapeOps(v))
 	case "datetime":
 		x, err := dt(v)
 		if err != nil {
 			return err
 		}
-		doc.SetDateTime(path, x)
+		wrote = doc.SetDateTime(path, x)
 	case "int-default":
 		n, err := pint(v)
 		if err != nil {
 			return err
 		}
-		doc.SetIntDefault(path, n)
+		wrote = doc.SetIntDefault(path, n)
 	case "float-default":
 		n, err := pflt(v)
 		if err != nil {
 			return err
 		}
-		doc.SetFloatDefault(path, n)
+		wrote = doc.SetFloatDefault(path, n)
 	case "bool-default":
-		doc.SetBoolDefault(path, v == "true")
+		wrote = doc.SetBoolDefault(path, v == "true")
 	case "string-default":
-		doc.SetStringDefault(path, unescapeOps(v))
+		wrote = doc.SetStringDefault(path, unescapeOps(v))
 	case "datetime-default":
 		x, err := dt(v)
 		if err != nil {
 			return err
 		}
-		doc.SetDateTimeDefault(path, x)
+		wrote = doc.SetDateTimeDefault(path, x)
 	case "int-array":
 		xs, err := ints(arr)
 		if err != nil {
 			return err
 		}
-		doc.SetIntArray(path, xs)
+		wrote = doc.SetIntArray(path, xs)
 	case "float-array":
 		xs, err := flts(arr)
 		if err != nil {
 			return err
 		}
-		doc.SetFloatArray(path, xs)
+		wrote = doc.SetFloatArray(path, xs)
 	case "bool-array":
-		doc.SetBoolArray(path, bools(arr))
+		wrote = doc.SetBoolArray(path, bools(arr))
 	case "string-array":
-		doc.SetStringArray(path, strs(arr))
+		wrote = doc.SetStringArray(path, strs(arr))
 	case "datetime-array":
 		xs, err := dts(arr)
 		if err != nil {
 			return err
 		}
-		doc.SetDateTimeArray(path, xs)
+		wrote = doc.SetDateTimeArray(path, xs)
 	case "int-array-default":
 		xs, err := ints(arr)
 		if err != nil {
 			return err
 		}
-		doc.SetIntArrayDefault(path, xs)
+		wrote = doc.SetIntArrayDefault(path, xs)
 	case "float-array-default":
 		xs, err := flts(arr)
 		if err != nil {
 			return err
 		}
-		doc.SetFloatArrayDefault(path, xs)
+		wrote = doc.SetFloatArrayDefault(path, xs)
 	case "bool-array-default":
-		doc.SetBoolArrayDefault(path, bools(arr))
+		wrote = doc.SetBoolArrayDefault(path, bools(arr))
 	case "string-array-default":
-		doc.SetStringArrayDefault(path, strs(arr))
+		wrote = doc.SetStringArrayDefault(path, strs(arr))
 	case "datetime-array-default":
 		xs, err := dts(arr)
 		if err != nil {
 			return err
 		}
-		doc.SetDateTimeArrayDefault(path, xs)
+		wrote = doc.SetDateTimeArrayDefault(path, xs)
 	case "raw":
-		doc.SetRaw(path, unescapeOps(get(3)), v)
+		wrote = doc.SetRaw(path, unescapeOps(get(3)), v)
 	case "raw-default":
-		doc.SetRawDefault(path, unescapeOps(get(3)), v)
+		wrote = doc.SetRawDefault(path, unescapeOps(get(3)), v)
 	case "empty":
-		doc.SetEmpty(path)
+		wrote = doc.SetEmpty(path)
 	case "comment":
-		doc.SetComment(path, v)
+		wrote = doc.SetComment(path, v)
 	case "remove":
 		doc.Remove(path)
+		wrote = true
 	default:
 		return fmt.Errorf("unknown op: %s", f[0])
+	}
+	if !wrote {
+		return fmt.Errorf("cannot write %s", path)
 	}
 	return nil
 }
@@ -656,6 +827,10 @@ func doSet(o *opts) int {
 		return 1
 	}
 	file := o.args[0]
+	if o.write && file == "-" {
+		fmt.Fprintln(os.Stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE")
+		return 1
+	}
 	// Base doc: '-' means an empty base, since stdin carries the ops script.
 	// Any --layer files sit under it and --set overrides sit on top, before ops.
 	layerTexts := make([]string, 0, len(o.layers)+1)
@@ -689,11 +864,19 @@ func doSet(o *opts) int {
 		doc.Merge(over)
 	}
 	for _, s := range o.sets {
-		doc.SetString(s[0], s[1])
+		if !doc.SetString(s[0], s[1]) {
+			fmt.Fprintf(os.Stderr, "shcl: cannot write %s (from --set)\n", s[0])
+			return 1
+		}
 	}
 	ops, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
+		return 1
+	}
+	// The reference reads ops via read_to_string; mirror its UTF-8 failure.
+	if !utf8.Valid(ops) {
+		fmt.Fprintln(os.Stderr, "stdin: invalid UTF-8")
 		return 1
 	}
 	for n, line := range strings.Split(string(ops), "\n") {
@@ -706,14 +889,19 @@ func doSet(o *opts) int {
 			return 1
 		}
 	}
-	fmt.Print(doc.ToCanonical())
+	canonical := doc.ToCanonical()
+	if o.write {
+		if werr := writeAtomic(file, canonical); werr != nil {
+			fmt.Fprintln(os.Stderr, werr)
+			return 1
+		}
+	} else {
+		fmt.Print(canonical)
+	}
 	return 0
 }
 
 func doCheck(o *opts) int {
-	if code := rejectLayers(o, "check"); code != 0 {
-		return code
-	}
 	if len(o.args) != 1 {
 		fmt.Fprintln(os.Stderr, "check needs FILE (see --help)")
 		return 1
@@ -781,9 +969,6 @@ func doCheck(o *opts) int {
 }
 
 func doInit(o *opts) int {
-	if code := rejectLayers(o, "init"); code != 0 {
-		return code
-	}
 	if o.schema == "" {
 		fmt.Fprintln(os.Stderr, "init needs --schema=FILE (see --help)")
 		return 1
@@ -873,6 +1058,9 @@ func run() int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
+	}
+	if code := checkOpts(argv[0], o); code != 0 {
+		return code
 	}
 	switch argv[0] {
 	case "get":

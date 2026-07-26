@@ -36,6 +36,8 @@ struct Case {
 	// Write dimension (optional): an ops script and its golden canonical output.
 	write_ops: Option<String>,
 	expected_write: Option<String>,
+	// Bad-op dimension (optional): ops that must each be rejected, applied alone.
+	write_bad_ops: Option<String>,
 	// Schema dimension (optional): a schema and the golden `check --schema` stdout.
 	schema: Option<String>,
 	expected_validate: Option<String>,
@@ -72,57 +74,54 @@ fn unescape_ops(s: &str) -> String {
 	out
 }
 
-/// Apply one write-ops line to the document via the library Writer.
-fn apply_op(doc: &mut Document, line: &str, at: &str) {
+/// Apply one write-ops line via the library Writer, with the same value gates
+/// the CLI applies. Err = the op must be rejected (bad value or unusable path).
+fn try_apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	let f: Vec<&str> = line.split('\t').collect();
 	let path = f.get(1).copied().unwrap_or("");
 	let v = f.get(2).copied().unwrap_or("");
-	let ints = |xs: &[&str]| {
-		xs.iter()
-			.map(|s| s.parse::<i64>().unwrap())
-			.collect::<Vec<_>>()
-	};
-	let flts = |xs: &[&str]| {
-		xs.iter()
-			.map(|s| s.parse::<f64>().unwrap())
-			.collect::<Vec<_>>()
-	};
+	let pint = |s: &str| s.parse::<i64>().map_err(|_| format!("bad int: {}", s));
+	let pflt = |s: &str| s.parse::<f64>().map_err(|_| format!("bad float: {}", s));
+	let ints = |xs: &[&str]| xs.iter().map(|s| pint(s)).collect::<Result<Vec<_>, _>>();
+	let flts = |xs: &[&str]| xs.iter().map(|s| pflt(s)).collect::<Result<Vec<_>, _>>();
 	let bools = |xs: &[&str]| xs.iter().map(|s| *s == "true").collect::<Vec<_>>();
-	let dt = |s: &str| parse_datetime(s).unwrap_or_else(|| panic!("{}: bad datetime {}", at, s));
+	let dt = |s: &str| parse_datetime(s).ok_or_else(|| format!("bad datetime: {}", s));
 	let arr = &f[2.min(f.len())..];
-	match f.first().copied().unwrap_or("") {
-		"int" => doc.set_int(path, v.parse().unwrap()),
-		"float" => doc.set_float(path, v.parse().unwrap()),
+	let wrote = match f.first().copied().unwrap_or("") {
+		"int" => doc.set_int(path, pint(v)?),
+		"float" => doc.set_float(path, pflt(v)?),
 		"bool" => doc.set_bool(path, v == "true"),
 		"string" => doc.set_string(path, &unescape_ops(v)),
-		"datetime" => doc.set_datetime(path, &dt(v)),
-		"int-default" => doc.set_int_default(path, v.parse().unwrap()),
-		"float-default" => doc.set_float_default(path, v.parse().unwrap()),
+		"datetime" => doc.set_datetime(path, &dt(v)?),
+		"int-default" => doc.set_int_default(path, pint(v)?),
+		"float-default" => doc.set_float_default(path, pflt(v)?),
 		"bool-default" => doc.set_bool_default(path, v == "true"),
 		"string-default" => doc.set_string_default(path, &unescape_ops(v)),
-		"datetime-default" => doc.set_datetime_default(path, &dt(v)),
-		"int-array" => doc.set_int_array(path, &ints(arr)),
-		"float-array" => doc.set_float_array(path, &flts(arr)),
+		"datetime-default" => doc.set_datetime_default(path, &dt(v)?),
+		"int-array" => doc.set_int_array(path, &ints(arr)?),
+		"float-array" => doc.set_float_array(path, &flts(arr)?),
 		"bool-array" => doc.set_bool_array(path, &bools(arr)),
 		"string-array" => {
 			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
-			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>())
 		}
 		"datetime-array" => {
-			doc.set_datetime_array(path, &arr.iter().map(|s| dt(s)).collect::<Vec<_>>())
+			let dts = arr.iter().map(|s| dt(s)).collect::<Result<Vec<_>, _>>()?;
+			doc.set_datetime_array(path, &dts)
 		}
-		"int-array-default" => doc.set_int_array_default(path, &ints(arr)),
-		"float-array-default" => doc.set_float_array_default(path, &flts(arr)),
+		"int-array-default" => doc.set_int_array_default(path, &ints(arr)?),
+		"float-array-default" => doc.set_float_array_default(path, &flts(arr)?),
 		"bool-array-default" => doc.set_bool_array_default(path, &bools(arr)),
 		"string-array-default" => {
 			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
 			doc.set_string_array_default(
 				path,
 				&owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-			);
+			)
 		}
 		"datetime-array-default" => {
-			doc.set_datetime_array_default(path, &arr.iter().map(|s| dt(s)).collect::<Vec<_>>())
+			let dts = arr.iter().map(|s| dt(s)).collect::<Result<Vec<_>, _>>()?;
+			doc.set_datetime_array_default(path, &dts)
 		}
 		"raw" => doc.set_raw(path, &unescape_ops(f.get(3).copied().unwrap_or("")), v),
 		"raw-default" => {
@@ -132,9 +131,19 @@ fn apply_op(doc: &mut Document, line: &str, at: &str) {
 		"comment" => doc.set_comment(path, v),
 		"remove" => {
 			doc.remove(path);
+			true
 		}
-		other => panic!("{}: unknown op '{}'", at, other),
+		other => return Err(format!("unknown op: {}", other)),
+	};
+	if !wrote {
+		return Err(format!("cannot write {}", path));
 	}
+	Ok(())
+}
+
+/// Good-path wrapper: the op must apply.
+fn apply_op(doc: &mut Document, line: &str, at: &str) {
+	try_apply_op(doc, line).unwrap_or_else(|e| panic!("{}: {}", at, e));
 }
 
 fn load_cases() -> Vec<Case> {
@@ -171,6 +180,7 @@ fn load_cases() -> Vec<Case> {
 			expected_diags: std::fs::read_to_string(path.join("expected-diags.txt")).unwrap(),
 			write_ops: read_opt("write.ops"),
 			expected_write: read_opt("expected-write.shcl"),
+			write_bad_ops: read_opt("write-bad.ops"),
 			schema: read_opt("schema.shcl"),
 			expected_validate: read_opt("expected-validate.txt"),
 			layers,
@@ -612,4 +622,38 @@ fn depth_cap_boundary_and_writer() {
 	);
 	w.set_int(&segs.join("."), 2);
 	assert!(w.exists("a0"), "writer must still create an at-cap path");
+}
+
+#[test]
+fn write_bad_ops_are_rejected() {
+	// Bad-op dimension: each write-bad.ops line, applied alone to the case
+	// input, must be rejected (bad value, bad datetime, or unusable path) and
+	// leave the document unchanged.
+	for case in load_cases() {
+		let Some(bad) = &case.write_bad_ops else {
+			continue;
+		};
+		for (n, line) in bad.lines().enumerate() {
+			if line.is_empty() || line.starts_with('#') {
+				continue;
+			}
+			let mut doc = Document::parse(&case.input);
+			let before = doc.to_canonical();
+			assert!(
+				try_apply_op(&mut doc, line).is_err(),
+				"{}: write-bad.ops line {} was accepted: {}",
+				case.name,
+				n + 1,
+				line
+			);
+			assert_eq!(
+				doc.to_canonical(),
+				before,
+				"{}: write-bad.ops line {} changed the document: {}",
+				case.name,
+				n + 1,
+				line
+			);
+		}
+	}
 }

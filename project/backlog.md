@@ -107,12 +107,13 @@ In each section, items are listed approximately from newest to oldest.
 	- Same input, four different exit codes: the inverse of the product guarantee.
 	- Detail: `design.md` - Code Review 20260725, item 2.
 
-- 🔘 Code Review 20260725 item 3: `shcl set` validates its op values four different ways.
+- ✅ Code Review 20260725 item 3: `shcl set` validates its op values four different ways.
 	- Rust and Go reject a malformed int; Python accepts unbounded ints, underscores, padding and non-ASCII digits; C silently writes 0 or a truncated/saturated value and exits 0.
 	- Python can emit an integer no binding can read back, so the Writer produces out-of-contract output.
 	- The ops script on stdin also skips the UTF-8 gate the file reader applies, so bad bytes become U+FFFD instead of exit 1.
 	- stdout and exit codes are contract here and the crosscheck replays `set`, so this only escapes CI because no corpus op line carries a malformed value.
 	- Detail: `design.md` - Code Review 20260725, item 3.
+	- Fixed: go/python/C now gate op values with the reference's exact grammar (sign + ASCII digits + i64 range for ints, the Rust f64 grammar for floats - overflow stores `inf`); C's truncating staging buffers are gone; the ops stdin gets the same UTF-8 gate as file input in all four. Corpus case 029 pins accept and reject sets cross-binding (`write-bad.ops` dimension in all four runners + the differential harness).
 
 - 🔘 Code Review 20260725 item 4: Go `Validate` panics on a schema path with a `[#N]` selector at N >= 2^63.
 	- `int(seg.sel.index)` wraps negative, the bounds check passes, and the index panics. The three sibling sites in the same file compare against `uint64(len(...))` correctly.
@@ -131,9 +132,10 @@ In each section, items are listed approximately from newest to oldest.
 	- Reachable from a plain `fmt` or `check` on an ordinary-looking config.
 	- Detail: `design.md` - Code Review 20260725, item 6.
 
-- 🔘 Code Review 20260725 item 7: `fmt --write` truncates the config in place, and C reports success when the write fails.
+- ✅ Code Review 20260725 item 7: `fmt --write` truncates the config in place, and C reports success when the write fails.
 	- C never checks `fwrite`/`fclose`, so a failed write prints nothing and exits 0 while the other three exit 1 - a live exit-code divergence.
 	- No binding uses temp-file-and-rename, so an interrupted write destroys the file the tool exists to protect. The dogfood installer was made atomic for this exact reason.
+	- Fixed: all four CLIs write through a temp-file-and-rename in the target's directory (data synced before the rename), and C checks every stdio call, so a failed or interrupted write exits 1 and never leaves a truncated file.
 
 - 🔘 Code Review 20260725 item 8: both Windows installers damage `PATH`.
 	- NSIS reads `PATH` through a 1024-char string and writes the truncated value back. Observed in a wine run: a 1427-char machine PATH came back as 22 chars. The uninstaller does the same.
@@ -156,27 +158,32 @@ In each section, items are listed approximately from newest to oldest.
 	- Comment stripping is quote-aware, so `listen: "0.0.0.0:443  # note` eats the author's comment into the value.
 	- One of the commonest hand-authoring mistakes, and the exact class of error the product markets itself as catching. Path position already diagnoses it; only value position is silent.
 
-- 🔘 Code Review 20260725 item 12: a write to an unusable path silently succeeds and can leave a half-created path behind.
+- ✅ Code Review 20260725 item 12: a write to an unusable path silently succeeds and can leave a half-created path behind.
 	- `place()` creates intermediates as it walks, then returns nothing on a wildcard or a missing `[#N]` - the nodes it already made stay.
 	- `--set=server[*].port=1`, `--set==v` and a typo'd path all print the untouched document and exit 0.
 	- For the mechanism the spec designates as the override surface, a typo that silently does not apply is the worst available failure mode.
+	- Fixed: `place` pre-validates the whole path before creating anything (wildcard, missing `[#N]`, value part, past the depth cap), every setter reports whether the write applied, and the CLIs exit 1 on a rejected op or `--set` instead of printing the untouched document.
 
-- 🔘 Code Review 20260725 item 13: the Writer can create two siblings with the same name and value, so its output is not a formatter fixpoint.
+- ✅ Code Review 20260725 item 13: the Writer can create two siblings with the same name and value, so its output is not a formatter fixpoint.
 	- The Writer deliberately skips the parser's merge index and nothing else applies the merge rule, so re-reading its output collapses the pair and loses an instance.
 	- The existing fuzz misses it because it always starts from an empty document and never has a sibling to collide with.
+	- Fixed: after a value write, a merge-rule collision with a sibling folds the pair the way a reparse would (earlier survives; children and trivia fold in), in all four bindings.
 
-- 🔘 Code Review 20260725 item 14: the C CLI caps `--layer` and `--set` at 64 each; the other three are unbounded.
+- ✅ Code Review 20260725 item 14: the C CLI caps `--layer` and `--set` at 64 each; the other three are unbounded.
 	- Past 64 the C CLI exits 1 with empty stdout while the others exit 0 and print the merged document.
 	- The cap appears in neither the spec nor the usage text, on an option the spec expects programs to generate in bulk.
+	- Fixed: layers, sets, and positional args all grow dynamically now (the fixed 64/65/8 arrays are gone); verified with a 70-layer merge.
 
-- 🔘 Code Review 20260725 item 15: `shcl_datetime_str` writes past its documented 64-byte buffer.
+- ✅ Code Review 20260725 item 15: `shcl_datetime_str` writes past its documented 64-byte buffer.
 	- `frac` is a public field with no cap and is `memcpy`'d unbounded; the public `shcl_set_datetime` passes a 64-byte stack array.
 	- Not reachable from parsed input - the parser bounds every component - so this is a defensiveness gap in a public API, not an input-driven hole.
+	- Fixed: the frac copy is capped so the render always fits the documented 64 bytes; header doc states the truncation.
 
-- 🔘 Code Review 20260725 item 16: option validation is per-subcommand for two options and global for everything else.
+- ✅ Code Review 20260725 item 16: option validation is per-subcommand for two options and global for everything else.
 	- `shcl set --write FILE` is accepted and discarded, so a user copying the habit from `fmt --write` gets exit 0 and an unmodified file.
 	- Also silently ignored: `--schema` on `get`, `--slots` on `count`, `--int` on `fmt`.
 	- Either implement `set --write` or reject it; silently dropping it is the one case that must not stay.
+	- Fixed: `set --write` is implemented (atomic in-place rewrite, `-` rejected), and every subcommand now validates its options against an allow-list - an option it does not use is a usage error (exit 1), in all four CLIs.
 
 - 🔘 Code Review 20260725 item 17: `check --schema` cannot tell a schema line number from a document line number.
 	- Both files' diagnostics interleave in one list with nothing marking which file a line belongs to.

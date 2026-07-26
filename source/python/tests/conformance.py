@@ -48,11 +48,15 @@ def load_cases():
 			"expected_diags": _read(os.path.join(d, "expected-diags.txt")),
 			"write_ops": None,
 			"expected_write": None,
+			"write_bad_ops": None,
 		}
 		ops = os.path.join(d, "write.ops")
 		if os.path.exists(ops):
 			case["write_ops"] = _read(ops)
 			case["expected_write"] = _read(os.path.join(d, "expected-write.shcl"))
+		bad = os.path.join(d, "write-bad.ops")
+		if os.path.exists(bad):
+			case["write_bad_ops"] = _read(bad)
 		case["schema"] = None
 		case["expected_validate"] = None
 		sch = os.path.join(d, "schema.shcl")
@@ -149,11 +153,69 @@ def _unescape_ops(s):
 def _op_dt(s):
 	dt = shcl.parse_datetime(s)
 	if dt is None:
-		raise SystemExit("bad datetime: {}".format(s))
+		raise ValueError("bad datetime: {}".format(s))
 	return dt
 
 
-def apply_op(doc, line, at):
+def _op_int(s):
+	# Rust i64 FromStr grammar by hand: int() alone is too lax (it accepts
+	# underscores, surrounding whitespace, and non-ASCII digits).
+	t = s[1:] if s[:1] in ("+", "-") else s
+	if t == "" or any(c < "0" or c > "9" for c in t):
+		raise ValueError("bad int: {}".format(s))
+	v = int(s)
+	if v < -(2 ** 63) or v > 2 ** 63 - 1:
+		raise ValueError("bad int: {}".format(s))
+	return v
+
+
+def _float_grammar_ok(s):
+	# Rust f64 FromStr grammar: optional sign, then inf|infinity|nan (ASCII
+	# case-insensitive) or digits['.'[digits]] / '.'digits, with an optional
+	# e|E[sign]digits exponent. ASCII digits only, whole string must match.
+	t = s[1:] if s[:1] in ("+", "-") else s
+	low = "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in t)
+	if low in ("inf", "infinity", "nan"):
+		return True
+	n = len(t)
+
+	def digits(j):
+		while j < n and "0" <= t[j] <= "9":
+			j += 1
+		return j
+
+	j = digits(0)
+	int_digits = j > 0
+	frac_digits = False
+	if j < n and t[j] == ".":
+		k = digits(j + 1)
+		frac_digits = k > j + 1
+		j = k
+	if not int_digits and not frac_digits:
+		return False
+	if j < n and t[j] in ("e", "E"):
+		j += 1
+		if j < n and t[j] in ("+", "-"):
+			j += 1
+		k = digits(j)
+		if k == j:
+			return False
+		j = k
+	return j == n
+
+
+def _op_flt(s):
+	# float() after the grammar gate is safe; overflow (1e400) yields inf,
+	# matching Rust's parse.
+	if not _float_grammar_ok(s):
+		raise ValueError("bad float: {}".format(s))
+	return float(s)
+
+
+def try_apply_op(doc, line):
+	# Apply one write-ops line via the library Writer, with the same value gates
+	# the CLI applies. A returned string = the op must be rejected (bad value or
+	# unusable path); None = applied.
 	f = line.split("\t")
 
 	def g(i):
@@ -162,58 +224,72 @@ def apply_op(doc, line, at):
 	path, v = g(1), g(2)
 	arr = f[2:] if len(f) > 2 else []
 	op = f[0]
-	if op == "int":
-		doc.set_int(path, int(v))
-	elif op == "float":
-		doc.set_float(path, float(v))
-	elif op == "bool":
-		doc.set_bool(path, v == "true")
-	elif op == "string":
-		doc.set_string(path, _unescape_ops(v))
-	elif op == "datetime":
-		doc.set_datetime(path, _op_dt(v))
-	elif op == "int-default":
-		doc.set_int_default(path, int(v))
-	elif op == "float-default":
-		doc.set_float_default(path, float(v))
-	elif op == "bool-default":
-		doc.set_bool_default(path, v == "true")
-	elif op == "string-default":
-		doc.set_string_default(path, _unescape_ops(v))
-	elif op == "datetime-default":
-		doc.set_datetime_default(path, _op_dt(v))
-	elif op == "int-array":
-		doc.set_int_array(path, [int(x) for x in arr])
-	elif op == "float-array":
-		doc.set_float_array(path, [float(x) for x in arr])
-	elif op == "bool-array":
-		doc.set_bool_array(path, [x == "true" for x in arr])
-	elif op == "string-array":
-		doc.set_string_array(path, [_unescape_ops(x) for x in arr])
-	elif op == "datetime-array":
-		doc.set_datetime_array(path, [_op_dt(x) for x in arr])
-	elif op == "int-array-default":
-		doc.set_int_array_default(path, [int(x) for x in arr])
-	elif op == "float-array-default":
-		doc.set_float_array_default(path, [float(x) for x in arr])
-	elif op == "bool-array-default":
-		doc.set_bool_array_default(path, [x == "true" for x in arr])
-	elif op == "string-array-default":
-		doc.set_string_array_default(path, [_unescape_ops(x) for x in arr])
-	elif op == "datetime-array-default":
-		doc.set_datetime_array_default(path, [_op_dt(x) for x in arr])
-	elif op == "raw":
-		doc.set_raw(path, _unescape_ops(g(3)), v)
-	elif op == "raw-default":
-		doc.set_raw_default(path, _unescape_ops(g(3)), v)
-	elif op == "empty":
-		doc.set_empty(path)
-	elif op == "comment":
-		doc.set_comment(path, v)
-	elif op == "remove":
-		doc.remove(path)
-	else:
-		raise SystemExit("{}: unknown op '{}'".format(at, op))
+	try:
+		if op == "int":
+			wrote = doc.set_int(path, _op_int(v))
+		elif op == "float":
+			wrote = doc.set_float(path, _op_flt(v))
+		elif op == "bool":
+			wrote = doc.set_bool(path, v == "true")
+		elif op == "string":
+			wrote = doc.set_string(path, _unescape_ops(v))
+		elif op == "datetime":
+			wrote = doc.set_datetime(path, _op_dt(v))
+		elif op == "int-default":
+			wrote = doc.set_int_default(path, _op_int(v))
+		elif op == "float-default":
+			wrote = doc.set_float_default(path, _op_flt(v))
+		elif op == "bool-default":
+			wrote = doc.set_bool_default(path, v == "true")
+		elif op == "string-default":
+			wrote = doc.set_string_default(path, _unescape_ops(v))
+		elif op == "datetime-default":
+			wrote = doc.set_datetime_default(path, _op_dt(v))
+		elif op == "int-array":
+			wrote = doc.set_int_array(path, [_op_int(x) for x in arr])
+		elif op == "float-array":
+			wrote = doc.set_float_array(path, [_op_flt(x) for x in arr])
+		elif op == "bool-array":
+			wrote = doc.set_bool_array(path, [x == "true" for x in arr])
+		elif op == "string-array":
+			wrote = doc.set_string_array(path, [_unescape_ops(x) for x in arr])
+		elif op == "datetime-array":
+			wrote = doc.set_datetime_array(path, [_op_dt(x) for x in arr])
+		elif op == "int-array-default":
+			wrote = doc.set_int_array_default(path, [_op_int(x) for x in arr])
+		elif op == "float-array-default":
+			wrote = doc.set_float_array_default(path, [_op_flt(x) for x in arr])
+		elif op == "bool-array-default":
+			wrote = doc.set_bool_array_default(path, [x == "true" for x in arr])
+		elif op == "string-array-default":
+			wrote = doc.set_string_array_default(path, [_unescape_ops(x) for x in arr])
+		elif op == "datetime-array-default":
+			wrote = doc.set_datetime_array_default(path, [_op_dt(x) for x in arr])
+		elif op == "raw":
+			wrote = doc.set_raw(path, _unescape_ops(g(3)), v)
+		elif op == "raw-default":
+			wrote = doc.set_raw_default(path, _unescape_ops(g(3)), v)
+		elif op == "empty":
+			wrote = doc.set_empty(path)
+		elif op == "comment":
+			wrote = doc.set_comment(path, v)
+		elif op == "remove":
+			doc.remove(path)
+			wrote = True
+		else:
+			return "unknown op: {}".format(op)
+	except ValueError as e:
+		return str(e)
+	if not wrote:
+		return "cannot write {}".format(path)
+	return None
+
+
+def apply_op(doc, line, at):
+	# Good-path wrapper: the op must apply.
+	err = try_apply_op(doc, line)
+	if err is not None:
+		raise SystemExit("{}: {}".format(at, err))
 
 
 def main():
@@ -236,6 +312,23 @@ def main():
 			fails.append("{}: writer output differs from expected-write.shcl".format(case["name"]))
 		if shcl.Document.parse(got).to_canonical() != got:
 			fails.append("{}: written output is not a fmt fixpoint".format(case["name"]))
+
+	# Bad-op dimension: each write-bad.ops line, applied alone to the case
+	# input, must be rejected (bad value, bad datetime, or unusable path) and
+	# leave the document unchanged.
+	for case in cases:
+		if case["write_bad_ops"] is None:
+			continue
+		for n, line in enumerate(case["write_bad_ops"].split("\n")):
+			line = line[:-1] if line.endswith("\r") else line
+			if line == "" or line.startswith("#"):
+				continue
+			doc = shcl.Document.parse(case["input"])
+			before = doc.to_canonical()
+			if try_apply_op(doc, line) is None:
+				fails.append("{}: write-bad.ops line {} was accepted: {}".format(case["name"], n + 1, line))
+			if doc.to_canonical() != before:
+				fails.append("{}: write-bad.ops line {} changed the document: {}".format(case["name"], n + 1, line))
 
 	# Layered-load dimension: fold the layer files (lowest first) and input.shcl
 	# (highest file layer) via the library merge, apply the path=value overrides

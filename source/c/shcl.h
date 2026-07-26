@@ -142,37 +142,40 @@ int     shcl_get_bool(shcl_doc *d, const char *path, size_t plen, int def);
 // The reverse of the reads. Each setter builds the canonical stored text for a
 // typed value and places it at a path (creating intermediate nodes). New values
 // are copied into the arena, so the caller's buffers need not outlive the call.
+// Setters return 1 when the write applied, 0 when the path is unusable
+// (wildcard, missing [#N] instance, a value part, or past the depth cap) -
+// nothing is created on failure. _default forms return 1 when already present.
 shcl_doc *shcl_new(void); // an empty document (start point for generation)
 int shcl_exists(shcl_doc *d, const char *path, size_t plen);       // 0/1
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen);    // count deleted
-void shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
-void shcl_set_empty(shcl_doc *d, const char *path, size_t plen);
+int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
+int shcl_set_empty(shcl_doc *d, const char *path, size_t plen);
 
-void shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v);
-void shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v);
-void shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v);
-void shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen);
-void shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt);
-void shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen);
+int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v);
+int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v);
+int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v);
+int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen);
+int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt);
+int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen);
 
-void shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n);
-void shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n);
-void shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n);
-void shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n);
-void shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n);
+int shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n);
+int shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n);
+int shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n);
+int shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n);
+int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n);
 
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
-void shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v);
-void shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v);
-void shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v);
-void shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen);
-void shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt);
-void shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen);
-void shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n);
-void shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n);
-void shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n);
-void shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n);
-void shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n);
+int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v);
+int shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v);
+int shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v);
+int shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen);
+int shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt);
+int shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen);
+int shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n);
+int shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n);
+int shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n);
+int shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n);
+int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n);
 
 // --- Layered loading --------------------------------------------------------
 // Overlay `over` (a higher-priority layer) onto `d` (the lower one). Container
@@ -191,7 +194,9 @@ int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out);
 // out must be at least SHCL_F64_BUF bytes; returns the byte length written.
 #define SHCL_F64_BUF 512
 size_t shcl_format_f64(double v, char *out);
-// Renders a datetime into out (>= 64 bytes); returns byte length.
+// Renders a datetime into out (>= 64 bytes); returns byte length. A frac
+// longer than 30 bytes is truncated so a hand-built value cannot overrun the
+// documented buffer (parsed input never gets near it).
 size_t shcl_datetime_str(const shcl_datetime *dt, char *out);
 // Status <-> the CLI exit code / textual name.
 int shcl_status_code(shcl_status s);
@@ -1702,6 +1707,36 @@ static int w_place(shcl_doc *d, S path, size_t *out) {
 	if (!ps.ok || ps.has_value || ps.segs.len == 0) return 0;
 	/* Writer side of the load-time nesting cap: never create deeper. */
 	if (ps.segs.len > SHCL_MAX_DEPTH) return 0;
+	/* Validate before creating anything, so a doomed path (wildcard, or a
+	   `[#k]` instance that does not and can never exist) leaves no
+	   half-created intermediates behind. Once this probe falls off the
+	   existing tree, a later `[#k]` can never match: fresh intermediates are
+	   created childless. */
+	{
+		int off = 0; size_t pr = ROOT;
+		for (size_t i = 0; i < ps.segs.len; i++) {
+			Segment *seg = &ps.segs.data[i];
+			if (seg->sel.tag == SEL_WILDCARD) return 0;
+			if (seg->sel.tag == SEL_INDEX) {
+				if (off) return 0;
+				size_t match = (size_t)-1, cnt = 0;
+				VecSize ch = NODE(d, pr).children;
+				for (size_t k = 0; k < ch.len; k++) if (s_eq(NODE(d, ch.data[k]).name, seg->name)) { if (cnt == seg->sel.index) { match = ch.data[k]; break; } cnt++; }
+				if (match == (size_t)-1) return 0;
+				pr = match;
+			} else if (!off) {
+				size_t found = (size_t)-1;
+				VecSize ch = NODE(d, pr).children;
+				for (size_t k = 0; k < ch.len; k++) {
+					size_t c = ch.data[k];
+					if (!s_eq(NODE(d, c).name, seg->name)) continue;
+					if (seg->sel.tag == SEL_VALUE && !s_eq(value_display(a, &NODE(d, c).value), seg->sel.value)) continue;
+					found = c; break;
+				}
+				if (found == (size_t)-1) off = 1; else pr = found;
+			}
+		}
+	}
 	size_t cur = ROOT;
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		Segment *seg = &ps.segs.data[i];
@@ -1726,8 +1761,50 @@ static int w_place(shcl_doc *d, S path, size_t *out) {
 	*out = cur; return 1;
 }
 
-static void w_set(shcl_doc *d, S path, Value v) {
-	size_t idx; if (w_place(d, path, &idx)) NODE(d, idx).value = v;
+/* A written value may now collide with a same-named sibling under the in-file
+   merge rule; fold the pair the way a reparse would (earlier sibling survives,
+   later one folds children and trivia in) so Writer output stays a formatter
+   fixpoint. */
+static void w_collapse_dup(shcl_doc *d, size_t node) {
+	Arena *a = &d->arena;
+	size_t parent = NODE(d, node).parent;
+	S name = NODE(d, node).name;
+	S key = value_key(a, &NODE(d, node).value);
+	VecSize ch = NODE(d, parent).children;
+	size_t other = (size_t)-1, pos_node = (size_t)-1, pos_other = (size_t)-1;
+	for (size_t k = 0; k < ch.len; k++) {
+		size_t c = ch.data[k];
+		if (c == node) { pos_node = k; continue; }
+		if (other == (size_t)-1 && s_eq(NODE(d, c).name, name) && s_eq(value_key(a, &NODE(d, c).value), key)) { other = c; pos_other = k; }
+	}
+	if (other == (size_t)-1) return;
+	size_t survivor = (pos_other < pos_node) ? other : node;
+	size_t loser = (survivor == node) ? other : node;
+	VecSize kids = NODE(d, loser).children;
+	for (size_t k = 0; k < kids.len; k++) {
+		NODE(d, kids.data[k]).parent = survivor;
+		VecSize_push(a, &NODE(d, survivor).children, kids.data[k]);
+	}
+	NODE(d, loser).children.len = 0;
+	for (size_t k = 0; k < NODE(d, loser).leading.len; k++) VecS_push(a, &NODE(d, survivor).leading, NODE(d, loser).leading.data[k]);
+	NODE(d, loser).leading.len = 0;
+	if (NODE(d, loser).trailing.n) {
+		if (NODE(d, survivor).trailing.n == 0) NODE(d, survivor).trailing = NODE(d, loser).trailing;
+		else VecS_push(a, &NODE(d, survivor).leading, NODE(d, loser).trailing);
+		NODE(d, loser).trailing.n = 0;
+	}
+	VecSize *pk = &NODE(d, parent).children;
+	size_t w = 0;
+	for (size_t k = 0; k < pk->len; k++) if (pk->data[k] != loser) pk->data[w++] = pk->data[k];
+	pk->len = w;
+}
+
+static int w_set(shcl_doc *d, S path, Value v) {
+	size_t idx;
+	if (!w_place(d, path, &idx)) return 0;
+	NODE(d, idx).value = v;
+	w_collapse_dup(d, idx);
+	return 1;
 }
 
 shcl_doc *shcl_new(void) { return shcl_parse("", 0); }
@@ -1756,68 +1833,69 @@ size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
 	return targets.len;
 }
 
-void shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
+int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen; size_t idx;
-	if (!w_place(d, p, &idx)) return;
+	if (!w_place(d, p, &idx)) return 0;
 	S line; line.p = text; line.n = tlen;
 	for (size_t i = 0; i < line.n; i++) if (line.p[i] == '\n') { line.n = i; break; }
 	S out;
 	if (line.n == 0 || line.p[0] != '#') { SB b = {0}; sb_puts(a, &b, "# "); sb_putS(a, &b, line); out = sb_S(&b); }
 	else out = s_dup(a, line);
 	VecS_push(a, &NODE(d, idx).leading, out);
+	return 1;
 }
 
-void shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { S p; p.p = path; p.n = plen; w_set(d, p, v_empty()); }
-void shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_int_text(a, v))); }
-void shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_float_text(a, v))); }
-void shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_bool_text(v))); }
-void shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; S in; in.p = s; in.n = slen; w_set(d, p, w_cell1(a, w_encode_string(a, in))); }
-void shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
-void shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) {
+int shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { S p; p.p = path; p.n = plen; return w_set(d, p, v_empty()); }
+int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_int_text(a, v))); }
+int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_float_text(a, v))); }
+int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_bool_text(v))); }
+int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; S in; in.p = s; in.n = slen; return w_set(d, p, w_cell1(a, w_encode_string(a, in))); }
+int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
+int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) {
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
 	S c = w_dupz(a, content, clen), inf = w_dupz(a, info, ilen);
 	unsigned char fc; size_t fl; w_choose_fence(c, &fc, &fl);
 	Value v; memset(&v, 0, sizeof v); v.kind = V_RAW; v.content = c; v.info = inf; v.fence_char = fc; v.fence_len = fl;
-	w_set(d, p, v);
+	return w_set(d, p, v);
 }
 
-void shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) {
+int shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) {
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
 	for (size_t i = 0; i < n; i++) t[i] = w_int_text(a, v[i]);
-	w_set(d, p, w_array(a, t, n));
+	return w_set(d, p, w_array(a, t, n));
 }
-void shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) {
+int shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) {
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
 	for (size_t i = 0; i < n; i++) t[i] = w_float_text(a, v[i]);
-	w_set(d, p, w_array(a, t, n));
+	return w_set(d, p, w_array(a, t, n));
 }
-void shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) {
+int shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) {
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
 	for (size_t i = 0; i < n; i++) t[i] = w_bool_text(v[i]);
-	w_set(d, p, w_array(a, t, n));
+	return w_set(d, p, w_array(a, t, n));
 }
-void shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) {
+int shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) {
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
 	for (size_t i = 0; i < n; i++) { S in; in.p = v[i]; in.n = lens[i]; t[i] = w_encode_string(a, in); }
-	w_set(d, p, w_array(a, t, n));
+	return w_set(d, p, w_array(a, t, n));
 }
-void shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) {
+int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) {
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
 	for (size_t i = 0; i < n; i++) t[i] = w_dt_text(a, &v[i]);
-	w_set(d, p, w_array(a, t, n));
+	return w_set(d, p, w_array(a, t, n));
 }
 
-void shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) shcl_set_int(d, path, plen, v); }
-void shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v) { if (!shcl_exists(d, path, plen)) shcl_set_float(d, path, plen, v); }
-void shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v) { if (!shcl_exists(d, path, plen)) shcl_set_bool(d, path, plen, v); }
-void shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { if (!shcl_exists(d, path, plen)) shcl_set_string(d, path, plen, s, slen); }
-void shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!shcl_exists(d, path, plen)) shcl_set_datetime(d, path, plen, dt); }
-void shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) { if (!shcl_exists(d, path, plen)) shcl_set_raw(d, path, plen, content, clen, info, ilen); }
-void shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_int_array(d, path, plen, v, n); }
-void shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_float_array(d, path, plen, v, n); }
-void shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_bool_array(d, path, plen, v, n); }
-void shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_string_array(d, path, plen, v, lens, n); }
-void shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) { if (!shcl_exists(d, path, plen)) shcl_set_datetime_array(d, path, plen, v, n); }
+int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) return shcl_set_int(d, path, plen, v); return 1; }
+int shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v) { if (!shcl_exists(d, path, plen)) return shcl_set_float(d, path, plen, v); return 1; }
+int shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v) { if (!shcl_exists(d, path, plen)) return shcl_set_bool(d, path, plen, v); return 1; }
+int shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { if (!shcl_exists(d, path, plen)) return shcl_set_string(d, path, plen, s, slen); return 1; }
+int shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime(d, path, plen, dt); return 1; }
+int shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) { if (!shcl_exists(d, path, plen)) return shcl_set_raw(d, path, plen, content, clen, info, ilen); return 1; }
+int shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_int_array(d, path, plen, v, n); return 1; }
+int shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_float_array(d, path, plen, v, n); return 1; }
+int shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_bool_array(d, path, plen, v, n); return 1; }
+int shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_string_array(d, path, plen, v, lens, n); return 1; }
+int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime_array(d, path, plen, v, n); return 1; }
 
 // --- Layered loading: overlay a higher-priority document onto a lower one ----
 
@@ -2201,7 +2279,12 @@ size_t shcl_datetime_str(const shcl_datetime *dt, char *out) {
 	if (dt->has_time) {
 		o += sprintf(o, "%02u:%02u", dt->hour, dt->minute);
 		if (dt->has_sec) o += sprintf(o, ":%02u", dt->sec);
-		if (dt->has_frac) { *o++ = '.'; memcpy(o, dt->frac.p, dt->frac.n); o += dt->frac.n; }
+		if (dt->has_frac) {
+			// frac is a public field: cap the copy so a hand-built value cannot
+			// overrun the documented 64-byte buffer (fixed parts use up to 33).
+			size_t fn = dt->frac.n > 30 ? 30 : dt->frac.n;
+			*o++ = '.'; memcpy(o, dt->frac.p, fn); o += fn;
+		}
 	}
 	if (dt->zone == SHCL_ZONE_UTC) *o++ = 'Z';
 	else if (dt->zone == SHCL_ZONE_OFFSET) { int off = dt->off_min; char sign = off < 0 ? '-' : '+'; int ao = off < 0 ? -off : off; o += sprintf(o, "%c%02d:%02d", sign, ao / 60, ao % 60); }
