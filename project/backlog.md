@@ -112,6 +112,12 @@ In each section, items are listed approximately from newest to oldest.
 	- A failing case also cannot be reproduced by re-running, which is the main thing a fuzz gate is for.
 	- Fixed: the seed list is sorted before use. Two runs on the same tree now produce an identical input set.
 
+- ✅ Code Review 20260726 item 6: shellcheck is a gating linter but the only one left unpinned.
+	- Hosted CI used whatever the runner image shipped, which is older and noisier than the local copy, so a script could pass the local gate and fail CI on a warning newer releases no longer emit. That is exactly what happened to `install.bash`.
+	- The pinning pass that covered the other linters missed it because it is preinstalled rather than installed by a step, so there was no version to write down.
+	- Fixed: CI installs the pinned version ahead of the image's copy, and the pin joins the others in the drift list. The one flagged line in `install.bash` was rewritten to the same shape the rest of that file uses, which reads better anyway.
+	- Also fixed alongside it: the drift probe only read the first line of a tool's version output, so a tool that leads with a banner always looked like it had drifted.
+
 - ✅ Code Review 20260726 item 5: hosted CI cannot install its own pinned lint toolchain.
 	- The tool pins list the Cppcheck binary's version, and the workflow installed that same string as a package version. There is no such package, so every hosted run failed at setup within seconds.
 	- The wheel carries a Cppcheck two major versions ahead of its own package number, which is what made the two look interchangeable.

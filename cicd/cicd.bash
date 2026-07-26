@@ -197,7 +197,9 @@ fi
 if declare -p TOOL_PINS &>/dev/null; then
 	for pin in "${TOOL_PINS[@]}"; do
 		pin_name="${pin%%|*}"; rest="${pin#*|}"; pin_ver="${rest%%|*}"; pin_cmd="${rest#*|}"
-		have="$(${pin_cmd} 2>/dev/null | head -1 || true)"
+		## Scan the first few lines, not just one: some tools (shellcheck) lead
+		## with a banner and put the version underneath.
+		have="$(${pin_cmd} 2>/dev/null | head -5 | tr '\n' ' ' || true)"
 		if [[ -z "$have" ]]; then
 			fEcho "WARNING: pinned tool missing: ${pin_name} (want ${pin_ver}); its stage will skip or fail"
 		elif [[ "$have" != *"${pin_ver}"* ]]; then

@@ -38,16 +38,26 @@ jobs:
           python-version: "3.13"
       ## Lint-stage tools beyond the toolchains. ruff/mypy/cppcheck ride the
       ## setup-python interpreter; markdownlint via npm; PSScriptAnalyzer into
-      ## the runner's preinstalled pwsh. shellcheck is already on the image.
-      ## Versions match cicd/config.bash TOOL_PINS, so CI and the local gate
-      ## agree about what "passing" was tested against. Exception: the cppcheck
-      ## wheel's own version is not the Cppcheck version it carries - package
-      ## 1.5.1 bundles the 2.17.1 binary that TOOL_PINS checks for. Pin the
-      ## package version here; "2.17.1" is not a package that exists.
+      ## the runner's preinstalled pwsh. Versions match cicd/config.bash
+      ## TOOL_PINS, so CI and the local gate agree about what "passing" was
+      ## tested against. Exception: the cppcheck wheel's own version is not the
+      ## Cppcheck version it carries - package 1.5.1 bundles the 2.17.1 binary
+      ## that TOOL_PINS checks for. Pin the package version here; "2.17.1" is
+      ## not a package that exists.
+      ##
+      ## shellcheck is preinstalled but at whatever version the image carries,
+      ## which is not the one the local gate runs - it warns about shapes newer
+      ## releases stopped flagging, so a script can pass locally and fail here.
+      ## Install the pinned version ahead of the image's copy on PATH.
       - run: |
           pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1
           npm install -g markdownlint-cli2@0.23.1
           pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -Force -Scope CurrentUser'
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz" \
+            | tar -xJ -C /tmp
+          sudo install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
+          shellcheck --version
       - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: |
