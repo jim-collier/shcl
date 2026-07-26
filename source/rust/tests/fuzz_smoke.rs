@@ -63,6 +63,9 @@ fn seed_texts() -> Vec<String> {
 			}
 		}
 	}
+	// read_dir order is unspecified, and the seed order drives every mutation
+	// the PRNG makes. Sort so a run is actually reproducible.
+	seeds.sort();
 	seeds.push("a: 1\n\tb: 2\n".to_string());
 	seeds.push("x:\n\t* one\n\t* two\n".to_string());
 	seeds.push("r:\n\t~~~\n\tbody\n\t~~~\n".to_string());
@@ -127,6 +130,34 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 			twice, once,
 			"formatter not idempotent at iteration {} for mutated input:\n{}",
 			i, text
+		);
+	}
+}
+
+/// Layered merge over mutated soup: overlaying one document on another must
+/// never panic and the merged result must be a formatter fixpoint - the same
+/// guarantee `fmt` gives, now for the composed document.
+#[test]
+fn merge_never_panics_and_stays_fixpoint() {
+	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(300);
+	let seeds = seed_texts();
+	let mut rng = Rng(0x5EED_CAFE_F00D_0007);
+	for i in 0..iters {
+		let ai = rng.below(seeds.len());
+		let a = mutate(&mut rng, &seeds[ai]);
+		let bi = rng.below(seeds.len());
+		let b = mutate(&mut rng, &seeds[bi]);
+		let mut doc = Document::parse(&a);
+		doc.merge(&Document::parse(&b));
+		let once = doc.to_canonical();
+		let twice = Document::parse(&once).to_canonical();
+		assert_eq!(
+			twice, once,
+			"merged output not idempotent at iteration {} for:\nA:\n{}\nB:\n{}",
+			i, a, b
 		);
 	}
 }

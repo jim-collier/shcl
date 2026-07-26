@@ -138,6 +138,15 @@ Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/ci
 - C - gcc and g++; the build gate is a plain `-std=c11 -Wall -Wextra -Werror` compile.
 - PowerShell 7+ - only needed if you touch the ps1 wrapper.
 
+`install-dev.bash` at the repo root sets up as much of this as it can without sudo, and prints package-manager hints for the rest.
+
+A full (non-`--quick`) pipeline run also wants the cross and packaging tools:
+
+- `cargo-zigbuild` and a mingw toolchain, for the Windows and ARM64 builds. Missing tools fail that stage, so pass `--no-cross` if you do not have them.
+- `nfpm` for `.deb`/`.rpm`, and `makensis` for the Windows setup. Either one missing just warns and skips its own packages.
+
+None of this is needed for `--ci`, which is the gate that matters for a pull request.
+
 ### Build and test
 
 - Fast loop: `cargo test --manifest-path source/rust/Cargo.toml` - runs the conformance corpus plus the fuzz smoke against the reference.
@@ -146,6 +155,28 @@ Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/ci
 	- Python: `python3 source/python/tests/conformance.py`
 	- C: compile and run `source/c/tests/conformance.c` with `-Isource/c`, passing `project/conformance` as the corpus dir.
 - Everything at once: `cicd/cicd.bash --ci` - format check, build, lint, tests, and the cross-binding crosscheck. Every binding must match the reference byte for byte on stdout and exit codes; stderr text is not part of the contract.
+
+### Adding a conformance case
+
+Behavior changes land with a corpus case, or they are not pinned.
+
+- A case is a directory under `project/conformance/NNN-short-name/`, using the next free number.
+- Every case needs four files:
+	- `input.shcl` - the document under test.
+	- `expected.shcl` - the exact `fmt` stdout.
+	- `expected-diags.txt` - the exact `check` stdout at standard strictness.
+	- `reads.tsv` - one row per read to replay.
+- Optional paired files add a dimension:
+	- `write.ops` + `expected-write.shcl` - the Writer.
+	- `write-bad.ops` - ops that must be rejected.
+	- `schema.shcl` + `expected-validate.txt` - schema validation.
+	- `layer*.shcl` + `merge.sets` + `expected-merged.shcl` - layered loading.
+	- `init-schema.shcl` + `expected-init.shcl` - starter-config generation.
+- Column meanings and file grammars are in `project/conformance/README.md`. It also carries a short note per case, so add one for yours.
+- Generate the golden files from the Rust reference and eyeball them. Never hand-edit a golden to make a test pass.
+- All four runners pick up a new case automatically. Run `cicd/cicd.bash --ci`; every binding must agree on it before it ships.
+
+Behavior the corpus cannot see, because it is not stdout, belongs in `cicd/utility/crosscheck.bash` instead. In-place writes are the current example: the check there compares the file tree a write leaves behind, so all four bindings are held to the same mode, symlink and content outcome.
 
 ### Linters
 
@@ -160,6 +191,8 @@ Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/ci
 - Installed-but-optional: `shfmt` and `clang-tidy`/`clang-format` are useful interactively but do not gate (shfmt's output differs from the house shell style, so it never rewrites files here).
 
 ### Style
+
+The full rules live in [`style-guide.md`](style-guide.md) - read it before touching a binding. The single most important rule there: every binding deliberately mirrors the Rust reference's structure, function-for-function, even where the host language would idiomatically do it differently. That is what keeps the bindings byte-for-byte identical and a fix portable by mechanical diff. Quick basics:
 
 - Tabs for indentation, spaces for alignment.
 - Markdown never hard-wraps - one paragraph or bullet is one physical line.

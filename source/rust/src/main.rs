@@ -4,7 +4,7 @@
 //! `shcl` CLI - the Tier 1 command binding. POSIX sh and PowerShell wrap this,
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
-use shcl::{Document, Severity, Status, Strictness, parse_datetime};
+use shcl::{Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime};
 use std::process::ExitCode;
 
 const HELP: &str = "\
@@ -12,9 +12,15 @@ shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
-  shcl set [options] FILE                apply write-ops (stdin) and print canonical
+  shcl set [--write|-w] [options] FILE   apply write-ops (stdin); print canonical
+                                         (or rewrite FILE in place with --write)
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
+                                         (--schema=SCHEMA also validates FILE
+                                         against a schema, itself a .shcl file)
+  shcl init --schema=SCHEMA              print a commented starter config from
+                                         a schema (required fields live, optional
+                                         commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
@@ -43,12 +49,22 @@ Options:
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
+  --schema=SCHEMA                        (check/init) validate FILE against a
+                                         schema; adds V### diagnostics
+  --layer=FILE                           (get/fmt/count/instances/set) merge a
+                                         lower-priority layer under FILE;
+                                         repeatable, earlier = lower priority
+  --set=PATH=VALUE                       override one path as the top layer,
+                                         after all files; repeatable
 
 Value options accept either spelling: --default=VALUE or --default VALUE.
-FILE may be '-' for stdin.
+An option a subcommand does not use is a usage error, not ignored.
+FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
+each --layer is merged under it in order; --set applies last. 'fmt' with
+layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
-5 multiple instances, 6 strict load failure.
+5 multiple instances, 6 check failed or strict load failure.
 ";
 
 fn status_code(st: Status) -> u8 {
@@ -69,7 +85,11 @@ struct Opts {
 	on_bad: String, // error|default|flag
 	strictness: Strictness,
 	write: bool,
-	args: Vec<String>, // positional: FILE [PATH]
+	schema: Option<String>,
+	layers: Vec<String>,         // lower-priority layers, in listed order
+	sets: Vec<(String, String)>, // final override layer: path=value
+	args: Vec<String>,           // positional: FILE [PATH]
+	seen: Vec<&'static str>,     // canonical names of options given, for per-command validation
 }
 
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
@@ -81,7 +101,11 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		on_bad: "flag".into(),
 		strictness: Strictness::Standard,
 		write: false,
+		schema: None,
+		layers: Vec::new(),
+		sets: Vec::new(),
 		args: Vec::new(),
+		seen: Vec::new(),
 	};
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	let mut i = 0;
@@ -90,11 +114,21 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		match a {
 			"--int" | "--float" | "--bool" | "--datetime" | "--string" | "--raw" | "--rawinfo" => {
 				o.kind = a[2..].to_string();
+				o.seen.push("--<type>");
 			}
-			"--array" => o.array = true,
-			"--slots" => o.slots = true,
-			"--write" | "-w" => o.write = true,
-			"--default" | "--on-bad" | "--strictness" => {
+			"--array" => {
+				o.array = true;
+				o.seen.push("--array");
+			}
+			"--slots" => {
+				o.slots = true;
+				o.seen.push("--slots");
+			}
+			"--write" | "-w" => {
+				o.write = true;
+				o.seen.push("--write");
+			}
+			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set" => {
 				i += 1;
 				let v = argv
 					.get(i)
@@ -104,6 +138,9 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			_ if a.starts_with("--default=") => set_value_opt(&mut o, "--default", &a[10..])?,
 			_ if a.starts_with("--on-bad=") => set_value_opt(&mut o, "--on-bad", &a[9..])?,
 			_ if a.starts_with("--strictness=") => set_value_opt(&mut o, "--strictness", &a[13..])?,
+			_ if a.starts_with("--schema=") => set_value_opt(&mut o, "--schema", &a[9..])?,
+			_ if a.starts_with("--layer=") => set_value_opt(&mut o, "--layer", &a[8..])?,
+			_ if a.starts_with("--set=") => set_value_opt(&mut o, "--set", &a[6..])?,
 			_ if a.starts_with('-') && a.len() > 1 => {
 				return Err(format!("unknown option: {}", a));
 			}
@@ -119,20 +156,147 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 		"--default" => {
 			o.default = Some(v.to_string());
 			o.on_bad = "default".into();
+			o.seen.push("--default");
 		}
 		"--on-bad" => {
 			if !matches!(v, "error" | "default" | "flag") {
 				return Err(format!("bad --on-bad value: {}", v));
 			}
 			o.on_bad = v.to_string();
+			o.seen.push("--on-bad");
 		}
 		"--strictness" => {
 			o.strictness =
 				Strictness::from_arg(v).ok_or_else(|| format!("bad --strictness value: {}", v))?;
+			o.seen.push("--strictness");
 		}
-		_ => unreachable!(),
+		"--schema" => {
+			o.schema = Some(v.to_string());
+			o.seen.push("--schema");
+		}
+		"--layer" => {
+			o.layers.push(v.to_string());
+			o.seen.push("--layer");
+		}
+		"--set" => {
+			let (p, val) = v
+				.split_once('=')
+				.ok_or_else(|| format!("bad --set value (want PATH=VALUE): {}", v))?;
+			o.sets.push((p.to_string(), val.to_string()));
+			o.seen.push("--set");
+		}
+		_ => return Err(format!("unknown option: {}", name)),
 	}
 	Ok(())
+}
+
+/// Every option must be meaningful for its subcommand; an option that would be
+/// silently ignored (`set --write` before it existed, `--schema` on `get`) is a
+/// usage error instead.
+fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
+	let allowed: &[&str] = match cmd {
+		"get" => &[
+			"--<type>",
+			"--array",
+			"--slots",
+			"--default",
+			"--on-bad",
+			"--strictness",
+			"--layer",
+			"--set",
+		],
+		"set" => &["--strictness", "--layer", "--set", "--write"],
+		"fmt" => &["--write", "--strictness", "--layer", "--set"],
+		"check" => &["--strictness", "--schema"],
+		"init" => &["--schema"],
+		"count" | "instances" => &["--strictness", "--layer", "--set"],
+		_ => &[],
+	};
+	for s in &o.seen {
+		if !allowed.contains(s) {
+			if *s == "--<type>" {
+				eprintln!("type options are not valid for {} (see --help)", cmd);
+			} else {
+				eprintln!("option {} not valid for {} (see --help)", s, cmd);
+			}
+			return Err(1);
+		}
+	}
+	Ok(())
+}
+
+/// Load `file` with `o`'s lower-priority `--layer` files underneath it and its
+/// `--set` overrides on top - the layered-load fold. Every layer parses at the
+/// requested strictness; a strict-load failure on any layer aborts like a
+/// single-file strict failure (exit 6, nothing printed).
+fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
+	// Lowest -> highest file layer: the --layer files in order, then FILE.
+	let mut texts: Vec<String> = Vec::with_capacity(o.layers.len() + 1);
+	for lf in &o.layers {
+		texts.push(read_input(lf).map_err(|e| {
+			eprintln!("{}", e);
+			1u8
+		})?);
+	}
+	let base_text = read_input(file).map_err(|e| {
+		eprintln!("{}", e);
+		1u8
+	})?;
+	texts.push(base_text);
+	let mut doc = load(&texts[0], o.strictness)?;
+	for t in &texts[1..] {
+		let over = load(t, o.strictness)?;
+		doc.merge(&over);
+	}
+	for (p, v) in &o.sets {
+		if !doc.set_string(p, v) {
+			eprintln!("shcl: cannot write {} (from --set)", p);
+			return Err(1);
+		}
+	}
+	Ok(doc)
+}
+
+/// Write atomically: temp file in the same dir, then rename over the target,
+/// so an interrupted write can never truncate the config it rewrites. The data
+/// is synced before the rename so a crash cannot publish an empty file.
+///
+/// A rename publishes a new inode, so the target is resolved through symlinks
+/// first (otherwise a linked-in config gets replaced by a regular file and the
+/// real one is left stale) and the original's mode is copied onto the temp file
+/// (otherwise a 600 config comes back at whatever the umask allows). Other hard
+/// links to the old inode cannot survive a rename and keep the old content.
+fn write_atomic(file: &str, data: &str) -> Result<(), String> {
+	use std::io::Write;
+	// canonicalize fails when the target does not exist yet; that is a plain
+	// create, so the path as given is already the right one.
+	let target = std::fs::canonicalize(file).unwrap_or_else(|_| std::path::PathBuf::from(file));
+	let dir = match target.parent() {
+		Some(d) if !d.as_os_str().is_empty() => d,
+		_ => std::path::Path::new("."),
+	};
+	let base = target
+		.file_name()
+		.map(|b| b.to_string_lossy().into_owned())
+		.unwrap_or_else(|| file.to_string());
+	let tmp = dir.join(format!(".{}.tmp{}", base, std::process::id()));
+	let res = std::fs::File::create(&tmp).and_then(|mut f| {
+		f.write_all(data.as_bytes())?;
+		// Best effort: a filesystem that cannot carry the mode is not a reason
+		// to fail a write that otherwise succeeded.
+		if let Ok(m) = std::fs::metadata(&target) {
+			let _ = f.set_permissions(m.permissions());
+		}
+		f.sync_all()
+	});
+	if let Err(e) = res {
+		let _ = std::fs::remove_file(&tmp);
+		return Err(format!("{}: {}", file, e));
+	}
+	std::fs::rename(&tmp, &target).map_err(|e| {
+		let _ = std::fs::remove_file(&tmp);
+		format!("{}: {}", file, e)
+	})
 }
 
 fn read_input(file: &str) -> Result<String, String> {
@@ -171,14 +335,7 @@ fn do_get(o: &Opts) -> u8 {
 			return 1;
 		}
 	};
-	let text = match read_input(file) {
-		Ok(t) => t,
-		Err(e) => {
-			eprintln!("{}", e);
-			return 1;
-		}
-	};
-	let doc = match load(&text, o.strictness) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
@@ -313,7 +470,7 @@ fn do_get(o: &Opts) -> u8 {
 				Status::NotFound => "no value at that path".to_string(),
 				Status::Empty => "the value is empty".to_string(),
 				Status::Multiple => "the path matches multiple instances".to_string(),
-				Status::Good => unreachable!("Good is handled above"),
+				Status::Good => String::new(), // handled above; keep the match total
 			};
 			eprintln!(
 				"shcl: cannot read {} as {}: {} (in {})",
@@ -337,24 +494,17 @@ fn do_fmt(o: &Opts) -> u8 {
 			return 1;
 		}
 	};
-	let text = match read_input(file) {
-		Ok(t) => t,
-		Err(e) => {
-			eprintln!("{}", e);
-			return 1;
-		}
-	};
 	if o.write && file == "-" {
 		eprintln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	let canonical = match load(&text, o.strictness) {
+	let canonical = match load_layered(o, file) {
 		Ok(d) => d.to_canonical(),
 		Err(code) => return code,
 	};
 	if o.write {
-		if let Err(e) = std::fs::write(file, &canonical) {
-			eprintln!("{}: {}", file, e);
+		if let Err(e) = write_atomic(file, &canonical) {
+			eprintln!("{}", e);
 			return 1;
 		}
 	} else {
@@ -394,14 +544,14 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	let pint = |s: &str| s.parse::<i64>().map_err(|_| format!("bad int: {}", s));
 	let pflt = |s: &str| s.parse::<f64>().map_err(|_| format!("bad float: {}", s));
 	let arr = &f[2.min(f.len())..];
-	match f.first().copied().unwrap_or("") {
+	let wrote = match f.first().copied().unwrap_or("") {
 		"int" => doc.set_int(path, pint(val())?),
 		"float" => doc.set_float(path, pflt(val())?),
 		"bool" => doc.set_bool(path, val() == "true"),
 		"string" => doc.set_string(path, &unescape_ops(val())),
 		"datetime" => {
 			let dt = parse_datetime(val()).ok_or_else(|| format!("bad datetime: {}", val()))?;
-			doc.set_datetime(path, &dt);
+			doc.set_datetime(path, &dt)
 		}
 		"int-default" => doc.set_int_default(path, pint(val())?),
 		"float-default" => doc.set_float_default(path, pflt(val())?),
@@ -409,7 +559,7 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		"string-default" => doc.set_string_default(path, &unescape_ops(val())),
 		"datetime-default" => {
 			let dt = parse_datetime(val()).ok_or_else(|| format!("bad datetime: {}", val()))?;
-			doc.set_datetime_default(path, &dt);
+			doc.set_datetime_default(path, &dt)
 		}
 		"int-array" => doc.set_int_array(
 			path,
@@ -424,14 +574,14 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		}
 		"string-array" => {
 			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
-			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>())
 		}
 		"datetime-array" => {
 			let dts: Vec<_> = arr
 				.iter()
 				.map(|s| parse_datetime(s).ok_or_else(|| format!("bad datetime: {}", s)))
 				.collect::<Result<Vec<_>, _>>()?;
-			doc.set_datetime_array(path, &dts);
+			doc.set_datetime_array(path, &dts)
 		}
 		"int-array-default" => doc.set_int_array_default(
 			path,
@@ -449,7 +599,7 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			doc.set_string_array_default(
 				path,
 				&owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-			);
+			)
 		}
 		"raw" => doc.set_raw(path, &unescape_ops(f.get(3).copied().unwrap_or("")), val()),
 		"raw-default" => {
@@ -459,8 +609,12 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		"comment" => doc.set_comment(path, val()),
 		"remove" => {
 			doc.remove(path);
+			true
 		}
 		other => return Err(format!("unknown op: {}", other)),
+	};
+	if !wrote {
+		return Err(format!("cannot write {}", path));
 	}
 	Ok(())
 }
@@ -473,8 +627,23 @@ fn do_set(o: &Opts) -> u8 {
 			return 1;
 		}
 	};
+	if o.write && file == "-" {
+		eprintln!("set --write cannot rewrite stdin; drop --write to print, or pass a FILE");
+		return 1;
+	}
 	// Base doc: '-' means an empty base, since stdin carries the ops script.
-	let text = if file == "-" {
+	// Any --layer files sit under it and --set overrides sit on top, before ops.
+	let mut layer_texts: Vec<String> = Vec::new();
+	for lf in &o.layers {
+		match read_input(lf) {
+			Ok(t) => layer_texts.push(t),
+			Err(e) => {
+				eprintln!("{}", e);
+				return 1;
+			}
+		}
+	}
+	let base_text = if file == "-" {
 		String::new()
 	} else {
 		match read_input(file) {
@@ -485,10 +654,23 @@ fn do_set(o: &Opts) -> u8 {
 			}
 		}
 	};
-	let mut doc = match load(&text, o.strictness) {
+	layer_texts.push(base_text);
+	let mut doc = match load(&layer_texts[0], o.strictness) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
+	for t in &layer_texts[1..] {
+		match load(t, o.strictness) {
+			Ok(over) => doc.merge(&over),
+			Err(code) => return code,
+		}
+	}
+	for (p, v) in &o.sets {
+		if !doc.set_string(p, v) {
+			eprintln!("shcl: cannot write {} (from --set)", p);
+			return 1;
+		}
+	}
 	let mut ops = String::new();
 	use std::io::Read;
 	if let Err(e) = std::io::stdin().read_to_string(&mut ops) {
@@ -504,7 +686,15 @@ fn do_set(o: &Opts) -> u8 {
 			return 1;
 		}
 	}
-	print!("{}", doc.to_canonical());
+	let canonical = doc.to_canonical();
+	if o.write {
+		if let Err(e) = write_atomic(file, &canonical) {
+			eprintln!("{}", e);
+			return 1;
+		}
+	} else {
+		print!("{}", canonical);
+	}
 	0
 }
 
@@ -524,14 +714,54 @@ fn do_check(o: &Opts) -> u8 {
 		}
 	};
 	let (diags, strict_failed) = match Document::parse_with(&text, o.strictness) {
-		Ok(doc) => (doc.diagnostics().to_vec(), false),
+		Ok(doc) => {
+			let mut diags = doc.diagnostics().to_vec();
+			// --schema: append validation diagnostics under the same contract.
+			// The schema itself always loads at Standard (a program artifact);
+			// one that does not load cleanly is a single V099 schema fault.
+			if let Some(schema_file) = &o.schema {
+				let stext = match read_input(schema_file) {
+					Ok(t) => t,
+					Err(e) => {
+						eprintln!("{}", e);
+						return 1;
+					}
+				};
+				let sdoc = Document::parse(&stext);
+				if sdoc
+					.diagnostics()
+					.iter()
+					.any(|d| d.severity == Severity::Error)
+				{
+					for d in sdoc.diagnostics() {
+						eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
+					}
+					diags.push(Diagnostic {
+						line: 0,
+						severity: Severity::Error,
+						message: "schema failed to load".to_string(),
+						code: "V099",
+					});
+				} else {
+					diags.extend(doc.validate(&sdoc));
+				}
+			}
+			(diags, false)
+		}
 		Err(e) => (e.diagnostics.clone(), true),
 	};
 	// stdout carries the stable codes - the cross-binding contract. The prose is
 	// per-binding voice and goes to stderr (which the differential check drops).
+	// A V090-V093 line number is a SCHEMA line (the code table says so); the
+	// prose names the file so the two number spaces cannot be confused.
 	for d in &diags {
 		println!("line {}: {:?}: {}", d.line, d.severity, d.code);
-		eprintln!("line {}: {:?}: {}", d.line, d.severity, d.message);
+		let space = if d.code.starts_with("V09") && d.code != "V099" {
+			"schema line"
+		} else {
+			"line"
+		};
+		eprintln!("{} {}: {:?}: {}", space, d.line, d.severity, d.message);
 	}
 	let errors = diags
 		.iter()
@@ -550,6 +780,51 @@ fn do_check(o: &Opts) -> u8 {
 	}
 }
 
+fn do_init(o: &Opts) -> u8 {
+	let schema_file = match &o.schema {
+		Some(s) => s,
+		None => {
+			eprintln!("init needs --schema=FILE (see --help)");
+			return 1;
+		}
+	};
+	let stext = match read_input(schema_file) {
+		Ok(t) => t,
+		Err(e) => {
+			eprintln!("{}", e);
+			return 1;
+		}
+	};
+	// The schema always loads at Standard - a program artifact, not user data.
+	let sdoc = Document::parse(&stext);
+	if sdoc
+		.diagnostics()
+		.iter()
+		.any(|d| d.severity == Severity::Error)
+	{
+		for d in sdoc.diagnostics() {
+			eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
+		}
+		eprintln!("init: schema failed to load");
+		// A broken schema is a config-semantics failure, not a usage error:
+		// same exit as `check --schema` reporting it.
+		return 6;
+	}
+	match generate(&sdoc) {
+		Ok(text) => {
+			print!("{}", text);
+			0
+		}
+		Err(faults) => {
+			for d in &faults {
+				eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
+			}
+			eprintln!("init: schema has faults");
+			6
+		}
+	}
+}
+
 fn do_enum(o: &Opts, want_count: bool) -> u8 {
 	let (file, path) = match o.args.as_slice() {
 		[f, p] => (f, p),
@@ -558,14 +833,7 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 			return 1;
 		}
 	};
-	let text = match read_input(file) {
-		Ok(t) => t,
-		Err(e) => {
-			eprintln!("{}", e);
-			return 1;
-		}
-	};
-	let doc = match load(&text, o.strictness) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
@@ -580,11 +848,15 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 }
 
 fn run(cmd: &str, o: &Opts) -> u8 {
+	if let Err(code) = check_opts(cmd, o) {
+		return code;
+	}
 	match cmd {
 		"get" => do_get(o),
 		"set" => do_set(o),
 		"fmt" => do_fmt(o),
 		"check" => do_check(o),
+		"init" => do_init(o),
 		"count" => do_enum(o, true),
 		"instances" => do_enum(o, false),
 		other => {

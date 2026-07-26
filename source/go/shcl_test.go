@@ -45,10 +45,29 @@ type corpusCase struct {
 	input       string
 	expectedFmt string
 	reads       string
+	// Golden `check` stdout at Standard: diag lines (line/severity/code) + summary.
+	expectedDiags string
 	// Write dimension (optional): an ops script and its golden canonical output.
 	writeOps      string
 	expectedWrite string
 	hasWrite      bool
+	// Bad-op dimension (optional): ops that must each be rejected, applied alone.
+	writeBadOps string
+	hasWriteBad bool
+	// Schema dimension (optional): a schema and the golden `check --schema` stdout.
+	schema           string
+	expectedValidate string
+	hasSchema        bool
+	// Layered-load dimension (optional): lower-priority layer files (in filename
+	// order), optional `path=value` overrides, and the golden merged canonical.
+	layers         []string
+	mergeSets      string
+	expectedMerged string
+	hasMerge       bool
+	// Generation dimension (optional): a schema and the golden `init` output.
+	initSchema   string
+	expectedInit string
+	hasInit      bool
 }
 
 func loadCases(t *testing.T) []corpusCase {
@@ -75,11 +94,16 @@ func loadCases(t *testing.T) []corpusCase {
 		if err != nil {
 			t.Fatalf("%s: %v", entry.Name(), err)
 		}
+		diags, err := os.ReadFile(filepath.Join(caseDir, "expected-diags.txt"))
+		if err != nil {
+			t.Fatalf("%s: %v", entry.Name(), err)
+		}
 		cc := corpusCase{
-			name:        entry.Name(),
-			input:       string(input),
-			expectedFmt: string(expected),
-			reads:       string(reads),
+			name:          entry.Name(),
+			input:         string(input),
+			expectedFmt:   string(expected),
+			reads:         string(reads),
+			expectedDiags: string(diags),
 		}
 		if ops, err := os.ReadFile(filepath.Join(caseDir, "write.ops")); err == nil {
 			ew, err2 := os.ReadFile(filepath.Join(caseDir, "expected-write.shcl"))
@@ -87,6 +111,46 @@ func loadCases(t *testing.T) []corpusCase {
 				t.Fatalf("%s: write.ops without expected-write.shcl", entry.Name())
 			}
 			cc.writeOps, cc.expectedWrite, cc.hasWrite = string(ops), string(ew), true
+		}
+		if bad, err := os.ReadFile(filepath.Join(caseDir, "write-bad.ops")); err == nil {
+			cc.writeBadOps, cc.hasWriteBad = string(bad), true
+		}
+		if sch, err := os.ReadFile(filepath.Join(caseDir, "schema.shcl")); err == nil {
+			ev, err2 := os.ReadFile(filepath.Join(caseDir, "expected-validate.txt"))
+			if err2 != nil {
+				t.Fatalf("%s: schema.shcl without expected-validate.txt", entry.Name())
+			}
+			cc.schema, cc.expectedValidate, cc.hasSchema = string(sch), string(ev), true
+		}
+		if em, err := os.ReadFile(filepath.Join(caseDir, "expected-merged.shcl")); err == nil {
+			// Layer files: every layer*.shcl, in filename (= priority) order.
+			dirEntries, _ := os.ReadDir(caseDir)
+			var layerNames []string
+			for _, de := range dirEntries {
+				n := de.Name()
+				if strings.HasPrefix(n, "layer") && strings.HasSuffix(n, ".shcl") {
+					layerNames = append(layerNames, n)
+				}
+			}
+			sort.Strings(layerNames)
+			for _, n := range layerNames {
+				lb, lerr := os.ReadFile(filepath.Join(caseDir, n))
+				if lerr != nil {
+					t.Fatalf("%s: %v", entry.Name(), lerr)
+				}
+				cc.layers = append(cc.layers, string(lb))
+			}
+			if ms, err2 := os.ReadFile(filepath.Join(caseDir, "merge.sets")); err2 == nil {
+				cc.mergeSets = string(ms)
+			}
+			cc.expectedMerged, cc.hasMerge = string(em), true
+		}
+		if is, err := os.ReadFile(filepath.Join(caseDir, "init-schema.shcl")); err == nil {
+			ei, err2 := os.ReadFile(filepath.Join(caseDir, "expected-init.shcl"))
+			if err2 != nil {
+				t.Fatalf("%s: init-schema.shcl without expected-init.shcl", entry.Name())
+			}
+			cc.initSchema, cc.expectedInit, cc.hasInit = string(is), string(ei), true
 		}
 		cases = append(cases, cc)
 	}
@@ -143,7 +207,73 @@ func unescapeOpsTest(s string) string {
 	return b.String()
 }
 
-func applyOpTest(t *testing.T, doc *Document, line, at string) {
+// Value gates mirror the CLI's exactly: grammar first (reference FromStr
+// shape), then range; float overflow yields +/-Inf, not an error.
+func intGrammarTest(s string) bool {
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func floatGrammarTest(s string) bool {
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	low := strings.ToLower(s)
+	if low == "inf" || low == "infinity" || low == "nan" {
+		return true
+	}
+	i := 0
+	digits := func() int {
+		n := 0
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+			n++
+		}
+		return n
+	}
+	if digits() > 0 {
+		if i < len(s) && s[i] == '.' {
+			i++
+			digits()
+		}
+	} else {
+		if s[i] != '.' {
+			return false
+		}
+		i++
+		if digits() == 0 {
+			return false
+		}
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		if digits() == 0 {
+			return false
+		}
+	}
+	return i == len(s)
+}
+
+// tryApplyOpTest applies one write-ops line via the library Writer, with the
+// same value gates the CLI applies. A non-nil error = the op must be rejected
+// (bad value or unusable path).
+func tryApplyOpTest(doc *Document, line string) error {
 	f := strings.Split(line, "\t")
 	get := func(i int) string {
 		if i < len(f) {
@@ -156,21 +286,49 @@ func applyOpTest(t *testing.T, doc *Document, line, at string) {
 	if len(f) > 2 {
 		arr = f[2:]
 	}
-	i64 := func(s string) int64 { n, _ := strconv.ParseInt(s, 10, 64); return n }
-	f64 := func(s string) float64 { n, _ := strconv.ParseFloat(s, 64); return n }
-	ints := func(xs []string) []int64 {
+	pint := func(s string) (int64, error) {
+		if !intGrammarTest(s) {
+			return 0, fmt.Errorf("bad int: %s", s)
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("bad int: %s", s)
+		}
+		return n, nil
+	}
+	pflt := func(s string) (float64, error) {
+		if !floatGrammarTest(s) {
+			return 0, fmt.Errorf("bad float: %s", s)
+		}
+		n, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			if ne, ok := err.(*strconv.NumError); !ok || ne.Err != strconv.ErrRange {
+				return 0, fmt.Errorf("bad float: %s", s)
+			}
+		}
+		return n, nil
+	}
+	ints := func(xs []string) ([]int64, error) {
 		o := make([]int64, len(xs))
 		for i, s := range xs {
-			o[i] = i64(s)
+			n, err := pint(s)
+			if err != nil {
+				return nil, err
+			}
+			o[i] = n
 		}
-		return o
+		return o, nil
 	}
-	flts := func(xs []string) []float64 {
+	flts := func(xs []string) ([]float64, error) {
 		o := make([]float64, len(xs))
 		for i, s := range xs {
-			o[i] = f64(s)
+			n, err := pflt(s)
+			if err != nil {
+				return nil, err
+			}
+			o[i] = n
 		}
-		return o
+		return o, nil
 	}
 	bools := func(xs []string) []bool {
 		o := make([]bool, len(xs))
@@ -186,73 +344,203 @@ func applyOpTest(t *testing.T, doc *Document, line, at string) {
 		}
 		return o
 	}
-	dt := func(s string) DateTime {
+	dt := func(s string) (DateTime, error) {
 		x, ok := ParseDateTime(s)
 		if !ok {
-			t.Fatalf("%s: bad datetime %s", at, s)
+			return x, fmt.Errorf("bad datetime: %s", s)
 		}
-		return x
+		return x, nil
 	}
-	dts := func(xs []string) []DateTime {
+	dts := func(xs []string) ([]DateTime, error) {
 		o := make([]DateTime, len(xs))
 		for i, s := range xs {
-			o[i] = dt(s)
+			x, err := dt(s)
+			if err != nil {
+				return nil, err
+			}
+			o[i] = x
 		}
-		return o
+		return o, nil
 	}
+	wrote := false
 	switch f[0] {
 	case "int":
-		doc.SetInt(path, i64(v))
+		n, err := pint(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetInt(path, n)
 	case "float":
-		doc.SetFloat(path, f64(v))
+		n, err := pflt(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetFloat(path, n)
 	case "bool":
-		doc.SetBool(path, v == "true")
+		wrote = doc.SetBool(path, v == "true")
 	case "string":
-		doc.SetString(path, unescapeOpsTest(v))
+		wrote = doc.SetString(path, unescapeOpsTest(v))
 	case "datetime":
-		doc.SetDateTime(path, dt(v))
+		x, err := dt(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetDateTime(path, x)
 	case "int-default":
-		doc.SetIntDefault(path, i64(v))
+		n, err := pint(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetIntDefault(path, n)
 	case "float-default":
-		doc.SetFloatDefault(path, f64(v))
+		n, err := pflt(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetFloatDefault(path, n)
 	case "bool-default":
-		doc.SetBoolDefault(path, v == "true")
+		wrote = doc.SetBoolDefault(path, v == "true")
 	case "string-default":
-		doc.SetStringDefault(path, unescapeOpsTest(v))
+		wrote = doc.SetStringDefault(path, unescapeOpsTest(v))
 	case "datetime-default":
-		doc.SetDateTimeDefault(path, dt(v))
+		x, err := dt(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetDateTimeDefault(path, x)
 	case "int-array":
-		doc.SetIntArray(path, ints(arr))
+		xs, err := ints(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetIntArray(path, xs)
 	case "float-array":
-		doc.SetFloatArray(path, flts(arr))
+		xs, err := flts(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetFloatArray(path, xs)
 	case "bool-array":
-		doc.SetBoolArray(path, bools(arr))
+		wrote = doc.SetBoolArray(path, bools(arr))
 	case "string-array":
-		doc.SetStringArray(path, strs(arr))
+		wrote = doc.SetStringArray(path, strs(arr))
 	case "datetime-array":
-		doc.SetDateTimeArray(path, dts(arr))
+		xs, err := dts(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetDateTimeArray(path, xs)
 	case "int-array-default":
-		doc.SetIntArrayDefault(path, ints(arr))
+		xs, err := ints(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetIntArrayDefault(path, xs)
 	case "float-array-default":
-		doc.SetFloatArrayDefault(path, flts(arr))
+		xs, err := flts(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetFloatArrayDefault(path, xs)
 	case "bool-array-default":
-		doc.SetBoolArrayDefault(path, bools(arr))
+		wrote = doc.SetBoolArrayDefault(path, bools(arr))
 	case "string-array-default":
-		doc.SetStringArrayDefault(path, strs(arr))
+		wrote = doc.SetStringArrayDefault(path, strs(arr))
 	case "datetime-array-default":
-		doc.SetDateTimeArrayDefault(path, dts(arr))
+		xs, err := dts(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetDateTimeArrayDefault(path, xs)
 	case "raw":
-		doc.SetRaw(path, unescapeOpsTest(get(3)), v)
+		wrote = doc.SetRaw(path, unescapeOpsTest(get(3)), v)
 	case "raw-default":
-		doc.SetRawDefault(path, unescapeOpsTest(get(3)), v)
+		wrote = doc.SetRawDefault(path, unescapeOpsTest(get(3)), v)
 	case "empty":
-		doc.SetEmpty(path)
+		wrote = doc.SetEmpty(path)
 	case "comment":
-		doc.SetComment(path, v)
+		wrote = doc.SetComment(path, v)
 	case "remove":
 		doc.Remove(path)
+		wrote = true
 	default:
-		t.Fatalf("%s: unknown op '%s'", at, f[0])
+		return fmt.Errorf("unknown op: %s", f[0])
+	}
+	if !wrote {
+		return fmt.Errorf("cannot write %s", path)
+	}
+	return nil
+}
+
+// applyOpTest is the good-path wrapper: the op must apply.
+func applyOpTest(t *testing.T, doc *Document, line, at string) {
+	if err := tryApplyOpTest(doc, line); err != nil {
+		t.Fatalf("%s: %s", at, err)
+	}
+}
+
+func TestDiagnosticsMatchExpected(t *testing.T) {
+	// Pins count, line, severity, and stable code per case - the same shape
+	// `check` prints to stdout at Standard (its cross-binding contract).
+	for _, c := range loadCases(t) {
+		diags := Parse(c.input).Diagnostics()
+		var got strings.Builder
+		errors := 0
+		for _, d := range diags {
+			fmt.Fprintf(&got, "line %d: %s: %s\n", d.Line, d.Severity, d.Code)
+			if d.Severity == SeverityError {
+				errors++
+			}
+		}
+		if errors > 0 {
+			fmt.Fprintf(&got, "failed: %d diagnostic(s), %d error(s)\n", len(diags), errors)
+		} else {
+			fmt.Fprintf(&got, "ok (%d diagnostic(s))\n", len(diags))
+		}
+		if got.String() != c.expectedDiags {
+			t.Errorf("%s: diagnostics differ from expected-diags.txt\ngot:\n%s\nwant:\n%s", c.name, got.String(), c.expectedDiags)
+		}
+	}
+}
+
+func TestValidationMatchesExpected(t *testing.T) {
+	// Schema dimension: golden = the exact `check --schema` stdout at Standard
+	// (doc parse diags, then validation diags, then the summary). A schema that
+	// does not load cleanly is a single V099, mirroring the CLI.
+	for _, c := range loadCases(t) {
+		if !c.hasSchema {
+			continue
+		}
+		doc := Parse(c.input)
+		diags := append([]Diagnostic{}, doc.Diagnostics()...)
+		sdoc := Parse(c.schema)
+		bad := false
+		for _, sd := range sdoc.Diagnostics() {
+			if sd.Severity == SeverityError {
+				bad = true
+			}
+		}
+		if bad {
+			diags = append(diags, Diagnostic{Line: 0, Severity: SeverityError, Message: "schema failed to load", Code: "V099"})
+		} else {
+			diags = append(diags, doc.Validate(sdoc)...)
+		}
+		var got strings.Builder
+		errors := 0
+		for _, d := range diags {
+			fmt.Fprintf(&got, "line %d: %s: %s\n", d.Line, d.Severity, d.Code)
+			if d.Severity == SeverityError {
+				errors++
+			}
+		}
+		if errors > 0 {
+			fmt.Fprintf(&got, "failed: %d diagnostic(s), %d error(s)\n", len(diags), errors)
+		} else {
+			fmt.Fprintf(&got, "ok (%d diagnostic(s))\n", len(diags))
+		}
+		if got.String() != c.expectedValidate {
+			t.Errorf("%s: validation output differs from expected-validate.txt\ngot:\n%s\nwant:\n%s", c.name, got.String(), c.expectedValidate)
+		}
 	}
 }
 
@@ -276,6 +564,101 @@ func TestWriteOpsMatchExpected(t *testing.T) {
 		}
 		if again := Parse(got).ToCanonical(); again != got {
 			t.Errorf("%s: written output is not a fmt fixpoint", c.name)
+		}
+	}
+}
+
+func TestWriteBadOpsAreRejected(t *testing.T) {
+	// Bad-op dimension: each write-bad.ops line, applied alone to the case
+	// input, must be rejected (bad value, bad datetime, or unusable path) and
+	// leave the document unchanged.
+	for _, c := range loadCases(t) {
+		if !c.hasWriteBad {
+			continue
+		}
+		for n, line := range strings.Split(c.writeBadOps, "\n") {
+			line = strings.TrimSuffix(line, "\r")
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			doc := Parse(c.input)
+			before := doc.ToCanonical()
+			if err := tryApplyOpTest(doc, line); err == nil {
+				t.Errorf("%s: write-bad.ops line %d was accepted: %s", c.name, n+1, line)
+				continue
+			}
+			if got := doc.ToCanonical(); got != before {
+				t.Errorf("%s: write-bad.ops line %d changed the document: %s", c.name, n+1, line)
+			}
+		}
+	}
+}
+
+func TestLayeredMergeMatchesExpected(t *testing.T) {
+	// Layered-load dimension: fold the layer files (lowest first) and input.shcl
+	// (highest file layer) via the library Merge, apply the path=value overrides
+	// as the top layer, and match the golden merged canonical.
+	for _, c := range loadCases(t) {
+		if !c.hasMerge {
+			continue
+		}
+		texts := append(append([]string(nil), c.layers...), c.input)
+		doc := Parse(texts[0])
+		for _, t2 := range texts[1:] {
+			doc.Merge(Parse(t2))
+		}
+		for _, line := range strings.Split(c.mergeSets, "\n") {
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			eq := strings.IndexByte(line, '=')
+			if eq < 0 {
+				t.Fatalf("%s: bad merge.sets line: %s", c.name, line)
+			}
+			doc.SetString(line[:eq], line[eq+1:])
+		}
+		got := doc.ToCanonical()
+		if got != c.expectedMerged {
+			t.Errorf("%s: merged output differs from expected-merged.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedMerged)
+			continue
+		}
+		if again := Parse(got).ToCanonical(); again != got {
+			t.Errorf("%s: merged output is not a fmt fixpoint", c.name)
+		}
+	}
+}
+
+func TestInitGenerationMatchesExpected(t *testing.T) {
+	// Generation dimension: Generate on the schema must reproduce the golden
+	// starter config, and that output must itself load cleanly.
+	for _, c := range loadCases(t) {
+		if !c.hasInit {
+			continue
+		}
+		got, faults := Generate(Parse(c.initSchema))
+		if faults != nil {
+			t.Fatalf("%s: init schema has faults", c.name)
+		}
+		if got != c.expectedInit {
+			t.Errorf("%s: init output differs from expected-init.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedInit)
+			continue
+		}
+		doc := Parse(got)
+		for _, d := range doc.Diagnostics() {
+			if d.Severity == SeverityError {
+				t.Errorf("%s: generated starter does not load cleanly", c.name)
+				break
+			}
+		}
+		// And it must satisfy the very schema that produced it - case 026's
+		// golden once failed its own schema (repeat lower bound and a
+		// materialized wildcard were ignored).
+		vs := doc.Validate(Parse(c.initSchema))
+		for _, d := range vs {
+			if d.Severity == SeverityError {
+				t.Errorf("%s: generated starter fails its own schema: %+v", c.name, vs)
+				break
+			}
 		}
 	}
 }
@@ -437,6 +820,22 @@ func TestReadsMatchExpected(t *testing.T) {
 					t.Errorf("%s: slots: got %q want %q", at, got, cols[5])
 				}
 			}
+		}
+	}
+}
+
+func TestPathsEnumerationShape(t *testing.T) {
+	// Paths(): file order, deduplicated, bare-name-safe segments only (a
+	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	doc := Parse("a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n")
+	got := doc.Paths()
+	want := []string{"a", "a.b", "x", "x.b"}
+	if len(got) != len(want) {
+		t.Fatalf("paths: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("paths: got %v want %v", got, want)
 		}
 	}
 }

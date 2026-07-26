@@ -1,0 +1,10 @@
+line 1: Error: V090
+line 3: Error: V091
+line 6: Error: V092
+line 7: Error: V092
+line 8: Error: V090
+line 9: Error: V093
+line 11: Error: V093
+line 15: Error: V092
+line 17: Error: V092
+failed: 9 diagnostic(s), 9 error(s)

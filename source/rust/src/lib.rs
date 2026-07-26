@@ -5,6 +5,8 @@
 //! Single file on purpose - the drop-in story is "copy this file into your tree".
 //! The language spec lives in project/spec.md; the conformance corpus in
 //! project/conformance/ pins every behavior here.
+//! Every other binding mirrors this file's structure on purpose (parity over
+//! idiom - see style-guide.md), so restructuring here means restructuring all.
 
 use std::collections::HashMap;
 
@@ -83,6 +85,34 @@ fn diag_code(msg: &str) -> &'static str {
 		"E013"
 	} else if msg.starts_with("missing colon") {
 		"E015"
+	} else if msg.starts_with("nesting deeper than") {
+		"E016"
+	} else if msg.starts_with("unterminated quote in value") {
+		"E017"
+	} else if msg.starts_with("unknown field ") {
+		"V001"
+	} else if msg.starts_with("required path missing") {
+		"V002"
+	} else if msg.starts_with("wrong type at ") {
+		"V003"
+	} else if msg.starts_with("value not allowed at ") {
+		"V004"
+	} else if msg.starts_with("value below min at ") {
+		"V005"
+	} else if msg.starts_with("value above max at ") {
+		"V006"
+	} else if msg.starts_with("instance count out of bounds at ") {
+		"V007"
+	} else if msg.starts_with("unknown schema key ") {
+		"V090"
+	} else if msg.starts_with("unknown schema type ") {
+		"V091"
+	} else if msg.starts_with("bad schema constraint ") {
+		"V092"
+	} else if msg.starts_with("bad schema path") {
+		"V093"
+	} else if msg.starts_with("schema failed to load") {
+		"V099"
 	} else {
 		"E000" // uncategorized error (should not happen; keeps the map total)
 	}
@@ -275,6 +305,9 @@ struct NodeData {
 	// (later ones demote to leading - a canonical line has room for one).
 	leading: Vec<String>,
 	trailing: String, // empty = none
+	// Blank-line grouping is the other half of hand-authored layout: set when
+	// a blank line preceded this node's binding line (runs collapse to one).
+	blank_before: bool,
 }
 
 /// A parsed SHCL document: the tree, its diagnostics, and its strictness level.
@@ -287,6 +320,13 @@ pub struct Document {
 }
 
 const ROOT: usize = 0;
+
+/// Maximum nesting depth (levels below the document root), enforced at load
+/// and by the Writer. Deeper lines are skipped with an `E016` error. The cap
+/// is what keeps the recursive tree walks (emit, merge, clone) safely inside
+/// every binding's stack, so a hostile or machine-generated document can make
+/// a load fail but never crash the consumer.
+pub const MAX_DEPTH: usize = 512;
 
 // ---------------------------------------------------------------------------
 // Lexical helpers
@@ -357,6 +397,34 @@ fn normalize_dangling_backslash(mut t: String) -> String {
 
 /// Trim, then strip one matching outer quote pair if present. Unquoted empty
 /// slots return None (dropped, never an error).
+/// True when some piece starts with a quote that never closes (the closing
+/// quote missing or escaped). Such a piece stays literal - and a quote-aware
+/// comment strip has already swallowed any trailing `#` comment into it - so
+/// the parser calls it out instead of letting the typo look deliberate.
+/// Mid-text apostrophes (`it's fine`) are legal prose and stay silent.
+fn unterminated_quote(text: &str) -> bool {
+	for piece in split_unquoted_commas(text) {
+		let chars: Vec<char> = piece.trim().chars().collect();
+		let Some(&first) = chars.first() else {
+			continue;
+		};
+		if first != '"' && first != '\'' {
+			continue;
+		}
+		let closed = chars.len() >= 2 && chars[chars.len() - 1] == first && {
+			let mut esc = false;
+			for &c in &chars[1..chars.len() - 1] {
+				esc = c == '\\' && !esc;
+			}
+			!esc
+		};
+		if !closed {
+			return true;
+		}
+	}
+	false
+}
+
 fn parse_element(piece: &str) -> Option<Element> {
 	let t = piece.trim();
 	if t.is_empty() {
@@ -364,7 +432,7 @@ fn parse_element(piece: &str) -> Option<Element> {
 	}
 	let chars: Vec<char> = t.chars().collect();
 	let first = chars[0];
-	if (first == '"' || first == '\'') && chars.len() >= 2 && *chars.last().unwrap() == first {
+	if (first == '"' || first == '\'') && chars.len() >= 2 && chars[chars.len() - 1] == first {
 		// The closing quote must not itself be escaped (`"a\"` is not closed).
 		let mut esc = false;
 		for &c in &chars[1..chars.len() - 1] {
@@ -604,8 +672,17 @@ struct Parser {
 	// Per-node (name, value-key) -> first matching child, parallel to arena.
 	// Pure lookup accelerator for select_or_create; children keeps the order.
 	child_map: Vec<HashMap<(String, String), usize>>,
+	// Per-node (name, display) -> first matching child: the `[value]` selector
+	// accelerator (its predicate is display(), a different and non-injective
+	// key from child_map's). Same first-wins discipline, same mutation sites.
+	disp_map: Vec<HashMap<(String, String), usize>>,
 	// Whole-line comments waiting for the next line that binds a node.
 	pending: Vec<String>,
+	saw_blank: bool, // a blank line waits to become the next bound node's blank_before
+	// An open stacked list defers its merge-key remap (rebuilding the key per
+	// element is O(list^2) time); (node, key, display) at deferral start,
+	// flushed before any map lookup and at end of parse.
+	star_open: Option<(usize, String, String)>,
 }
 
 impl Parser {
@@ -621,11 +698,15 @@ impl Parser {
 				star_mixed: false,
 				leading: Vec::new(),
 				trailing: String::new(),
+				blank_before: false,
 			}],
 			diags: Vec::new(),
 			stack: vec![(String::new(), ROOT)],
 			child_map: vec![HashMap::new()],
+			disp_map: vec![HashMap::new()],
 			pending: Vec::new(),
+			saw_blank: false,
+			star_open: None,
 		}
 	}
 
@@ -642,6 +723,7 @@ impl Parser {
 
 	/// Find (or create by merge rule) the child of `parent` with this (name, value).
 	fn select_or_create(&mut self, parent: usize, name: &str, value: Value, line: usize) -> usize {
+		self.star_flush();
 		let map_key = (name.to_string(), value.key());
 		if let Some(&c) = self.child_map[parent].get(&map_key) {
 			return c;
@@ -657,17 +739,29 @@ impl Parser {
 			star_mixed: false,
 			leading: Vec::new(),
 			trailing: String::new(),
+			blank_before: false,
 		});
 		self.arena[parent].children.push(idx);
 		self.child_map.push(HashMap::new());
 		self.child_map[parent].insert(map_key, idx);
+		self.disp_map.push(HashMap::new());
+		let disp = (name.to_string(), self.arena[idx].value.display());
+		self.disp_map[parent].entry(disp).or_insert(idx);
 		idx
+	}
+
+	/// Apply an open stacked list's deferred remap. Runs before any map lookup
+	/// (and at end of parse), so both maps are always fresh when queried.
+	fn star_flush(&mut self) {
+		if let Some((node, key, disp)) = self.star_open.take() {
+			self.remap_child(node, key, disp);
+		}
 	}
 
 	/// A node's value mutated in place (empty field filled, star element added):
 	/// move its map entry from the old key to the new one. First-wins on both
 	/// sides so lookups keep matching the earliest sibling, like the scan did.
-	fn remap_child(&mut self, node: usize, old_key: String) {
+	fn remap_child(&mut self, node: usize, old_key: String, old_disp: String) {
 		let parent = self.arena[node].parent;
 		let name = self.arena[node].name.clone();
 		if self.child_map[parent].get(&(name.clone(), old_key.clone())) == Some(&node) {
@@ -675,7 +769,14 @@ impl Parser {
 		}
 		let new_key = self.arena[node].value.key();
 		self.child_map[parent]
-			.entry((name, new_key))
+			.entry((name.clone(), new_key))
+			.or_insert(node);
+		if self.disp_map[parent].get(&(name.clone(), old_disp.clone())) == Some(&node) {
+			self.disp_map[parent].remove(&(name.clone(), old_disp));
+		}
+		let new_disp = self.arena[node].value.display();
+		self.disp_map[parent]
+			.entry((name, new_disp))
 			.or_insert(node);
 	}
 
@@ -696,7 +797,10 @@ impl Parser {
 	/// current top's indent is a proper prefix; otherwise the indent must equal
 	/// an open level exactly (dedent), else it is a recoverable error.
 	fn resolve_parent(&mut self, indent: &str) -> Option<usize> {
-		let (top_indent, top_node) = self.stack.last().unwrap().clone();
+		let (top_indent, top_node) = match self.stack.last() {
+			Some(t) => t.clone(),
+			None => return None, // sentinel invariant; degrade, never abort
+		};
 		if indent.len() > top_indent.len() && indent.starts_with(&top_indent) {
 			return Some(top_node);
 		}
@@ -724,10 +828,26 @@ impl Parser {
 		value: Value,
 		line: usize,
 	) -> Option<usize> {
+		self.star_flush();
 		// Field child under a stacked list: diagnose the mix once, keep the field.
 		if self.arena[parent].star_list && !self.arena[parent].star_mixed {
 			self.arena[parent].star_mixed = true;
 			self.err(line, "field mixed with list elements");
+		}
+		// Nesting cap: parent depth plus the segments this line adds. Checked
+		// before any node is created so a rejected line leaves nothing behind.
+		let mut parent_depth = 0usize;
+		let mut up = parent;
+		while up != ROOT {
+			parent_depth += 1;
+			up = self.arena[up].parent;
+		}
+		if parent_depth + segs.len() > MAX_DEPTH {
+			self.err(
+				line,
+				format!("nesting deeper than {} levels; line skipped", MAX_DEPTH),
+			);
+			return None;
 		}
 		let mut cur = parent;
 		for (i, seg) in segs.iter().enumerate() {
@@ -736,10 +856,12 @@ impl Parser {
 				(Some(Selector::ByValue(v)), _) => {
 					// Same display() predicate resolve_from uses, so a selector
 					// also selects an array-valued instance instead of creating
-					// a spurious second one. Create only when nothing matches.
-					let found = self.arena[cur].children.iter().copied().find(|&c| {
-						self.arena[c].name == seg.name && self.arena[c].value.display() == *v
-					});
+					// a spurious second one - via the disp_map accelerator (the
+					// inline spelling was quadratic in siblings without it).
+					// Create only when nothing matches.
+					let found = self.disp_map[cur]
+						.get(&(seg.name.clone(), v.clone()))
+						.copied();
 					cur = match found {
 						Some(c) => c,
 						None => {
@@ -864,8 +986,9 @@ impl Parser {
 		}
 		if self.arena[parent].value.is_empty() {
 			let old_key = self.arena[parent].value.key();
+			let old_disp = self.arena[parent].value.display();
 			self.arena[parent].value = value;
-			self.remap_child(parent, old_key);
+			self.remap_child(parent, old_key, old_disp);
 			Some(parent)
 		} else {
 			let (name, grandparent) = (self.arena[parent].name.clone(), self.arena[parent].parent);
@@ -894,6 +1017,9 @@ impl Parser {
 			self.err(line, "bare comma in list element (one element per line)");
 			return;
 		}
+		if unterminated_quote(trimmed) {
+			self.err(line, "unterminated quote in value");
+		}
 		let el = match parse_element(trimmed) {
 			Some(e) => e,
 			None => {
@@ -901,22 +1027,30 @@ impl Parser {
 				return;
 			}
 		};
-		let old_key = self.arena[parent].value.key();
-		let node = &mut self.arena[parent];
-		let mutated = match &mut node.value {
-			Value::Empty => {
-				node.value = Value::Cell(vec![el]);
-				node.star_list = true;
-				true
+		if self.arena[parent].value.is_empty() {
+			let old_key = self.arena[parent].value.key();
+			let old_disp = self.arena[parent].value.display();
+			self.arena[parent].value = Value::Cell(vec![el]);
+			self.arena[parent].star_list = true;
+			// First element: remap now (Empty -> cell changes both keys), then
+			// open the deferral window with the current keys. Rebuilding the
+			// keys per appended element was O(list^2) time; the maps only need
+			// to be fresh when queried, and every query flushes first.
+			self.remap_child(parent, old_key, old_disp);
+			let k = self.arena[parent].value.key();
+			let d = self.arena[parent].value.display();
+			self.star_open = Some((parent, k, d));
+		} else if matches!(self.arena[parent].value, Value::Cell(_)) && self.arena[parent].star_list
+		{
+			if !matches!(self.star_open, Some((n, _, _)) if n == parent) {
+				self.star_flush();
+				let old_key = self.arena[parent].value.key();
+				let old_disp = self.arena[parent].value.display();
+				self.star_open = Some((parent, old_key, old_disp));
 			}
-			Value::Cell(els) if node.star_list => {
+			if let Value::Cell(els) = &mut self.arena[parent].value {
 				els.push(el);
-				true
 			}
-			_ => false,
-		};
-		if mutated {
-			self.remap_child(parent, old_key);
 		} else {
 			self.err(line, "field already has a value; list element ignored");
 		}
@@ -994,15 +1128,20 @@ impl Parser {
 				.collect();
 			let rest = &line[indent.len()..];
 			if rest.is_empty() {
+				self.saw_blank = true;
 				i += 1;
 				continue;
 			}
-			// Whole-line comment: hold it for the next line that binds a node.
+			// Whole-line comment: hold it for the next line that binds a node
+			// (a pending blank stays pending with it).
 			if rest.starts_with('#') {
 				self.pending.push(rest.to_string());
 				i += 1;
 				continue;
 			}
+			// Any other line consumes the pending blank; only a field line that
+			// binds turns it into grouping.
+			let had_blank = std::mem::take(&mut self.saw_blank);
 			// Child-indent fence: a value line for its parent field.
 			if let Some((ch, len, info)) = fence_open(rest) {
 				let parent = match self.resolve_parent(&indent) {
@@ -1087,16 +1226,23 @@ impl Parser {
 						next = n;
 						val
 					} else {
+						if unterminated_quote(v) {
+							self.err(lineno, "unterminated quote in value");
+						}
 						parse_cell(v)
 					}
 				}
 			};
 			if let Some(node) = self.attach_path(parent, &scan.segments, value, lineno) {
+				if had_blank {
+					self.arena[node].blank_before = true;
+				}
 				self.attach_trivia(node, comment);
 				self.stack.push((indent, node));
 			}
 			i = next;
 		}
+		self.star_flush();
 		self.emit_repeated_leaf_hints();
 		Document {
 			arena: self.arena,
@@ -1144,9 +1290,7 @@ impl Document {
 	/// text is never rewritten.
 	pub fn to_canonical(&self) -> String {
 		let mut out = String::new();
-		for &c in &self.arena[ROOT].children {
-			self.emit_node(c, 0, &mut out);
-		}
+		self.emit_children(&self.arena[ROOT].children, 0, &mut out);
 		// Comments that never found a following line re-emit at the end.
 		for c in &self.orphans {
 			out.push_str(c);
@@ -1155,23 +1299,31 @@ impl Document {
 		out
 	}
 
-	fn emit_node(&self, idx: usize, depth: usize, out: &mut String) {
+	/// Emit a sibling run. The parent walk already knows whether an earlier
+	/// same-name sibling is empty (the raw same-line-fence hazard), so one
+	/// seen-empties set here replaces a per-child rescan of the whole run.
+	fn emit_children(&self, kids: &[usize], depth: usize, out: &mut String) {
+		let mut empties: std::collections::HashSet<&str> = std::collections::HashSet::new();
+		for &c in kids {
+			let n = &self.arena[c];
+			let wm = matches!(n.value, Value::Raw { .. }) && empties.contains(n.name.as_str());
+			if n.value.is_empty() {
+				empties.insert(n.name.as_str());
+			}
+			self.emit_node(c, depth, wm, out);
+		}
+	}
+
+	fn emit_node(&self, idx: usize, depth: usize, would_merge: bool, out: &mut String) {
 		let node = &self.arena[idx];
 		let pad: String = "\t".repeat(depth);
+		if node.blank_before && !out.is_empty() {
+			out.push('\n');
+		}
 		// Same-line fence spelling can't carry an inline comment (an unbalanced
 		// quote in the info-string could hide the `#` on reparse), so its
-		// trailing comment joins the leading lines instead.
-		let would_merge = if let Value::Raw { .. } = &node.value {
-			let parent = node.parent;
-			let me = self.arena[parent].children.iter().position(|&c| c == idx);
-			me.is_some_and(|p| {
-				self.arena[parent].children[..p]
-					.iter()
-					.any(|&c| self.arena[c].name == node.name && self.arena[c].value.is_empty())
-			})
-		} else {
-			false
-		};
+		// trailing comment joins the leading lines instead; the flag comes from
+		// the parent's walk.
 		for c in &node.leading {
 			out.push_str(&pad);
 			out.push_str(c);
@@ -1243,9 +1395,7 @@ impl Document {
 				out.push('\n');
 			}
 		}
-		for &c in &self.arena[idx].children {
-			self.emit_node(c, depth + 1, out);
-		}
+		self.emit_children(&self.arena[idx].children, depth + 1, out);
 	}
 }
 
@@ -1537,6 +1687,7 @@ impl Document {
 			star_mixed: false,
 			leading: Vec::new(),
 			trailing: String::new(),
+			blank_before: false,
 		});
 		self.arena[parent].children.push(idx);
 		idx
@@ -1563,6 +1714,47 @@ impl Document {
 		let scan = scan_path(path).ok()?;
 		if scan.value_text.is_some() || scan.segments.is_empty() {
 			return None;
+		}
+		// Writer side of the load-time nesting cap: never create deeper.
+		if scan.segments.len() > MAX_DEPTH {
+			return None;
+		}
+		// Validate before creating anything, so a doomed path (wildcard, or a
+		// `[#k]` instance that does not and can never exist) leaves no
+		// half-created intermediates behind. Once this walk falls off the
+		// existing tree, a later `[#k]` can never match: fresh intermediates
+		// are created childless.
+		let mut probe = Some(ROOT);
+		for seg in &scan.segments {
+			match &seg.selector {
+				Some(Selector::Wildcard) => return None,
+				Some(Selector::ByIndex(k)) => {
+					let c = probe?;
+					let matches: Vec<usize> = self.arena[c]
+						.children
+						.iter()
+						.copied()
+						.filter(|&n| self.arena[n].name == seg.name)
+						.collect();
+					probe = Some(*matches.get(*k as usize)?);
+				}
+				Some(Selector::ByValue(v)) => {
+					probe = probe.and_then(|c| {
+						self.arena[c].children.iter().copied().find(|&n| {
+							self.arena[n].name == seg.name && self.arena[n].value.display() == *v
+						})
+					});
+				}
+				None => {
+					probe = probe.and_then(|c| {
+						self.arena[c]
+							.children
+							.iter()
+							.copied()
+							.find(|&n| self.arena[n].name == seg.name)
+					});
+				}
+			}
 		}
 		let mut cur = ROOT;
 		for seg in &scan.segments {
@@ -1592,10 +1784,61 @@ impl Document {
 		Some(cur)
 	}
 
-	fn set_value(&mut self, path: &str, value: Value) {
-		if let Some(node) = self.place(path) {
-			self.arena[node].value = value;
+	fn set_value(&mut self, path: &str, value: Value) -> bool {
+		match self.place(path) {
+			Some(node) => {
+				self.arena[node].value = value;
+				self.collapse_dup(node);
+				true
+			}
+			None => false,
 		}
+	}
+
+	/// A written value may now collide with a same-named sibling under the
+	/// in-file merge rule; fold the pair the way a reparse would (earlier
+	/// sibling survives, later one folds children and trivia in) so Writer
+	/// output stays a formatter fixpoint.
+	fn collapse_dup(&mut self, node: usize) {
+		let parent = self.arena[node].parent;
+		let name = self.arena[node].name.clone();
+		let key = self.arena[node].value.key();
+		let siblings = &self.arena[parent].children;
+		let Some(other) = siblings
+			.iter()
+			.copied()
+			.find(|&c| c != node && self.arena[c].name == name && self.arena[c].value.key() == key)
+		else {
+			return;
+		};
+		let pos = |n: usize| {
+			self.arena[parent]
+				.children
+				.iter()
+				.position(|&c| c == n)
+				.unwrap_or(usize::MAX)
+		};
+		let (survivor, loser) = if pos(other) < pos(node) {
+			(other, node)
+		} else {
+			(node, other)
+		};
+		let kids = std::mem::take(&mut self.arena[loser].children);
+		for &k in &kids {
+			self.arena[k].parent = survivor;
+		}
+		self.arena[survivor].children.extend(kids);
+		let mut lead = std::mem::take(&mut self.arena[loser].leading);
+		self.arena[survivor].leading.append(&mut lead);
+		let trail = std::mem::take(&mut self.arena[loser].trailing);
+		if !trail.is_empty() {
+			if self.arena[survivor].trailing.is_empty() {
+				self.arena[survivor].trailing = trail;
+			} else {
+				self.arena[survivor].leading.push(trail);
+			}
+		}
+		self.arena[parent].children.retain(|&c| c != loser);
 	}
 
 	/// True when the path resolves to at least one real node.
@@ -1625,34 +1868,38 @@ impl Document {
 	/// Attach a leading comment line to the node at a path (creating an empty
 	/// node if it does not exist yet, so a section can be annotated). A missing
 	/// `#` is added; only the first line is kept (a comment is one line).
-	pub fn set_comment(&mut self, path: &str, text: &str) {
-		if let Some(node) = self.place(path) {
-			let line = text.split('\n').next().unwrap_or("");
-			let c = if line.starts_with('#') {
-				line.to_string()
-			} else {
-				format!("# {}", line)
-			};
-			self.arena[node].leading.push(c);
+	pub fn set_comment(&mut self, path: &str, text: &str) -> bool {
+		match self.place(path) {
+			Some(node) => {
+				let line = text.split('\n').next().unwrap_or("");
+				let c = if line.starts_with('#') {
+					line.to_string()
+				} else {
+					format!("# {}", line)
+				};
+				self.arena[node].leading.push(c);
+				true
+			}
+			None => false,
 		}
 	}
 
-	pub fn set_int(&mut self, path: &str, v: i64) {
-		self.set_value(path, cell_of(v.to_string()));
+	pub fn set_int(&mut self, path: &str, v: i64) -> bool {
+		self.set_value(path, cell_of(v.to_string()))
 	}
-	pub fn set_float(&mut self, path: &str, v: f64) {
-		self.set_value(path, cell_of(format!("{}", v)));
+	pub fn set_float(&mut self, path: &str, v: f64) -> bool {
+		self.set_value(path, cell_of(format!("{}", v)))
 	}
-	pub fn set_bool(&mut self, path: &str, v: bool) {
-		self.set_value(path, cell_of(if v { "true" } else { "false" }.to_string()));
+	pub fn set_bool(&mut self, path: &str, v: bool) -> bool {
+		self.set_value(path, cell_of(if v { "true" } else { "false" }.to_string()))
 	}
-	pub fn set_string(&mut self, path: &str, v: &str) {
-		self.set_value(path, cell_of(encode_string(v)));
+	pub fn set_string(&mut self, path: &str, v: &str) -> bool {
+		self.set_value(path, cell_of(encode_string(v)))
 	}
-	pub fn set_datetime(&mut self, path: &str, v: &ShclDateTime) {
-		self.set_value(path, cell_of(v.to_string()));
+	pub fn set_datetime(&mut self, path: &str, v: &ShclDateTime) -> bool {
+		self.set_value(path, cell_of(v.to_string()))
 	}
-	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) {
+	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
 		let (fence_char, fence_len) = choose_fence(content);
 		self.set_value(
 			path,
@@ -1662,22 +1909,22 @@ impl Document {
 				fence_char,
 				fence_len,
 			},
-		);
+		)
 	}
-	pub fn set_empty(&mut self, path: &str) {
-		self.set_value(path, Value::Empty);
+	pub fn set_empty(&mut self, path: &str) -> bool {
+		self.set_value(path, Value::Empty)
 	}
 
-	pub fn set_int_array(&mut self, path: &str, v: &[i64]) {
-		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()));
+	pub fn set_int_array(&mut self, path: &str, v: &[i64]) -> bool {
+		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
-	pub fn set_float_array(&mut self, path: &str, v: &[f64]) {
+	pub fn set_float_array(&mut self, path: &str, v: &[f64]) -> bool {
 		self.set_value(
 			path,
 			array_cell(v.iter().map(|x| format!("{}", x)).collect()),
-		);
+		)
 	}
-	pub fn set_bool_array(&mut self, path: &str, v: &[bool]) {
+	pub fn set_bool_array(&mut self, path: &str, v: &[bool]) -> bool {
 		self.set_value(
 			path,
 			array_cell(
@@ -1685,73 +1932,221 @@ impl Document {
 					.map(|x| if *x { "true" } else { "false" }.to_string())
 					.collect(),
 			),
-		);
+		)
 	}
-	pub fn set_string_array(&mut self, path: &str, v: &[&str]) {
+	pub fn set_string_array(&mut self, path: &str, v: &[&str]) -> bool {
 		self.set_value(
 			path,
 			array_cell(v.iter().map(|x| encode_string(x)).collect()),
-		);
+		)
 	}
-	pub fn set_datetime_array(&mut self, path: &str, v: &[ShclDateTime]) {
-		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()));
+	pub fn set_datetime_array(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
+		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
 
 	// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
-	pub fn set_int_default(&mut self, path: &str, v: i64) {
+	pub fn set_int_default(&mut self, path: &str, v: i64) -> bool {
 		if !self.exists(path) {
-			self.set_int(path, v);
+			return self.set_int(path, v);
+		}
+		true
+	}
+	pub fn set_float_default(&mut self, path: &str, v: f64) -> bool {
+		if !self.exists(path) {
+			return self.set_float(path, v);
+		}
+		true
+	}
+	pub fn set_bool_default(&mut self, path: &str, v: bool) -> bool {
+		if !self.exists(path) {
+			return self.set_bool(path, v);
+		}
+		true
+	}
+	pub fn set_string_default(&mut self, path: &str, v: &str) -> bool {
+		if !self.exists(path) {
+			return self.set_string(path, v);
+		}
+		true
+	}
+	pub fn set_datetime_default(&mut self, path: &str, v: &ShclDateTime) -> bool {
+		if !self.exists(path) {
+			return self.set_datetime(path, v);
+		}
+		true
+	}
+	pub fn set_raw_default(&mut self, path: &str, content: &str, info: &str) -> bool {
+		if !self.exists(path) {
+			return self.set_raw(path, content, info);
+		}
+		true
+	}
+	pub fn set_int_array_default(&mut self, path: &str, v: &[i64]) -> bool {
+		if !self.exists(path) {
+			return self.set_int_array(path, v);
+		}
+		true
+	}
+	pub fn set_float_array_default(&mut self, path: &str, v: &[f64]) -> bool {
+		if !self.exists(path) {
+			return self.set_float_array(path, v);
+		}
+		true
+	}
+	pub fn set_bool_array_default(&mut self, path: &str, v: &[bool]) -> bool {
+		if !self.exists(path) {
+			return self.set_bool_array(path, v);
+		}
+		true
+	}
+	pub fn set_string_array_default(&mut self, path: &str, v: &[&str]) -> bool {
+		if !self.exists(path) {
+			return self.set_string_array(path, v);
+		}
+		true
+	}
+	pub fn set_datetime_array_default(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
+		if !self.exists(path) {
+			return self.set_datetime_array(path, v);
+		}
+		true
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Layered loading: overlay a higher-priority document onto a lower one.
+// ---------------------------------------------------------------------------
+
+impl Document {
+	/// Overlay `over` (a higher-priority layer) onto self (the lower one).
+	/// Container instances merge by `(name, value)` exactly like the in-file
+	/// rule; a leaf name present in `over` *replaces* self's same-named children
+	/// at that scope - provided those base children are leaves too - so scalars,
+	/// arrays, and raw blocks get real override while a bare section header
+	/// merges instead of wiping. over-only nodes are appended. Comment trivia
+	/// rides with each node.
+	/// `Load(defaults, site, user)` is a left fold of this: each later file
+	/// overlaid on the accumulation of the earlier ones.
+	pub fn merge(&mut self, over: &Document) {
+		self.overlay(ROOT, over, ROOT);
+		for o in &over.orphans {
+			self.orphans.push(o.clone());
 		}
 	}
-	pub fn set_float_default(&mut self, path: &str, v: f64) {
-		if !self.exists(path) {
-			self.set_float(path, v);
+
+	// One grouping pass over each side, then a single children rebuild: the
+	// old shape re-filtered the over side per distinct name and re-scanned
+	// (and re-keyed) the base side per over node - three O(K^2) terms at one
+	// parent, plus a full vector rebuild per replaced name.
+	fn overlay(&mut self, base_parent: usize, over: &Document, over_parent: usize) {
+		let over_kids = over.arena[over_parent].children.clone();
+		// Over side: name -> node bucket, in first-appearance order.
+		let mut order: Vec<String> = Vec::new();
+		let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+		for &k in &over_kids {
+			let n = &over.arena[k].name;
+			groups
+				.entry(n.clone())
+				.or_insert_with(|| {
+					order.push(n.clone());
+					Vec::new()
+				})
+				.push(k);
 		}
+		// Base side, one pass: does the name have a container instance, and
+		// which child carries each (name, key) - every key computed once.
+		let base_kids = self.arena[base_parent].children.clone();
+		let mut has_container: HashMap<String, bool> = HashMap::new();
+		let mut by_key: HashMap<(String, String), usize> = HashMap::new();
+		for &b in &base_kids {
+			let name = self.arena[b].name.clone();
+			let e = has_container.entry(name.clone()).or_insert(false);
+			*e = *e || !self.arena[b].children.is_empty();
+			by_key.entry((name, self.arena[b].value.key())).or_insert(b);
+		}
+		// Decide per name. A name whose over-side nodes are all leaves is an
+		// override - but only when the base side of the group is leaf-shaped
+		// too. Against a base container, a childless over-node is a wrapper
+		// mention, not a leaf, so it falls through to the instance merge: a
+		// bare section header in a higher layer never wipes the subtree below.
+		// Replaced groups splice in the rebuild; everything appended (unmatched
+		// instances, and replaced names base never had) keeps processing order.
+		let mut replace: HashMap<String, Vec<usize>> = HashMap::new();
+		let mut appended: Vec<usize> = Vec::new();
+		for name in &order {
+			let group = &groups[name];
+			let over_leafy = group.iter().all(|&k| over.arena[k].children.is_empty());
+			let in_base = has_container.contains_key(name);
+			let base_container = has_container.get(name).copied().unwrap_or(false);
+			if over_leafy && !base_container {
+				let clones: Vec<usize> = group
+					.iter()
+					.map(|&ok| self.clone_subtree(over, ok, base_parent))
+					.collect();
+				if in_base {
+					replace.insert(name.clone(), clones);
+				} else {
+					appended.extend(clones);
+				}
+			} else {
+				for &ok in group {
+					let okey = over.arena[ok].value.key();
+					match by_key.get(&(name.clone(), okey)) {
+						Some(&b) => self.overlay(b, over, ok),
+						None => {
+							let c = self.clone_subtree(over, ok, base_parent);
+							appended.push(c);
+						}
+					}
+				}
+			}
+		}
+		if replace.is_empty() && appended.is_empty() {
+			return;
+		}
+		// Rebuild once: each replaced group lands at its name's first original
+		// position (dropped nodes stay in the arena, unreferenced - reads and
+		// emit walk children from the root), appends go at the end.
+		let mut newkids: Vec<usize> = Vec::with_capacity(base_kids.len() + appended.len());
+		let mut spliced: std::collections::HashSet<&str> = std::collections::HashSet::new();
+		for &b in &base_kids {
+			let name = self.arena[b].name.as_str();
+			match replace.get(name) {
+				Some(clones) => {
+					if spliced.insert(name) {
+						newkids.extend(clones.iter().copied());
+					}
+				}
+				None => newkids.push(b),
+			}
+		}
+		newkids.extend(appended.iter().copied());
+		self.arena[base_parent].children = newkids;
 	}
-	pub fn set_bool_default(&mut self, path: &str, v: bool) {
-		if !self.exists(path) {
-			self.set_bool(path, v);
+
+	/// Deep-copy `over`'s subtree at `oi` into self's arena under `parent`.
+	fn clone_subtree(&mut self, over: &Document, oi: usize, parent: usize) -> usize {
+		let src = &over.arena[oi];
+		let node = NodeData {
+			name: src.name.clone(),
+			value: src.value.clone(),
+			children: Vec::new(),
+			parent,
+			line: src.line,
+			star_list: src.star_list,
+			star_mixed: src.star_mixed,
+			leading: src.leading.clone(),
+			trailing: src.trailing.clone(),
+			blank_before: src.blank_before,
+		};
+		let idx = self.arena.len();
+		self.arena.push(node);
+		let okids = over.arena[oi].children.clone();
+		for ok in okids {
+			let c = self.clone_subtree(over, ok, idx);
+			self.arena[idx].children.push(c);
 		}
-	}
-	pub fn set_string_default(&mut self, path: &str, v: &str) {
-		if !self.exists(path) {
-			self.set_string(path, v);
-		}
-	}
-	pub fn set_datetime_default(&mut self, path: &str, v: &ShclDateTime) {
-		if !self.exists(path) {
-			self.set_datetime(path, v);
-		}
-	}
-	pub fn set_raw_default(&mut self, path: &str, content: &str, info: &str) {
-		if !self.exists(path) {
-			self.set_raw(path, content, info);
-		}
-	}
-	pub fn set_int_array_default(&mut self, path: &str, v: &[i64]) {
-		if !self.exists(path) {
-			self.set_int_array(path, v);
-		}
-	}
-	pub fn set_float_array_default(&mut self, path: &str, v: &[f64]) {
-		if !self.exists(path) {
-			self.set_float_array(path, v);
-		}
-	}
-	pub fn set_bool_array_default(&mut self, path: &str, v: &[bool]) {
-		if !self.exists(path) {
-			self.set_bool_array(path, v);
-		}
-	}
-	pub fn set_string_array_default(&mut self, path: &str, v: &[&str]) {
-		if !self.exists(path) {
-			self.set_string_array(path, v);
-		}
-	}
-	pub fn set_datetime_array_default(&mut self, path: &str, v: &[ShclDateTime]) {
-		if !self.exists(path) {
-			self.set_datetime_array(path, v);
-		}
+		idx
 	}
 }
 
@@ -2499,5 +2894,885 @@ impl Document {
 		} else {
 			Err(r.status)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Validator: schema-as-SHCL
+// ---------------------------------------------------------------------------
+// The schema is an ordinary parsed document: a flat list of `field: <path>`
+// instances whose children are the constraints (closed vocabulary - see
+// spec.md "Schema validation"). Validation reuses the accessor's path scan and
+// the typed coercions, so document strictness composes for free. Any schema
+// fault (V09x) suppresses data validation - one line-number space per result.
+
+const SCHEMA_TYPES: [&str; 11] = [
+	"int",
+	"float",
+	"bool",
+	"string",
+	"datetime",
+	"raw",
+	"int-array",
+	"float-array",
+	"bool-array",
+	"string-array",
+	"datetime-array",
+];
+
+// The allowed set, pre-coerced at schema-build time into the constraint's type
+// space so per-node checks are a plain contains().
+enum AllowedSet {
+	Ints(Vec<i64>),
+	Floats(Vec<f64>),
+	Bools(Vec<bool>),
+	Dates(Vec<ShclDateTime>),
+	Strings(Vec<String>),
+}
+
+struct Constraint {
+	path: String, // as written in the schema; message text only
+	segs: Vec<Segment>,
+	ty: Option<String>, // member of SCHEMA_TYPES
+	required: bool,
+	allowed: Option<AllowedSet>,
+	min_i: Option<i64>,
+	max_i: Option<i64>,
+	min_f: Option<f64>,
+	max_f: Option<f64>,
+	repeat: Option<(u64, u64)>,
+	// Generator-only (`shcl init`): validation ignores both.
+	desc: Option<String>,         // `desc`, a one-line description
+	default_text: Option<String>, // `default`, emitted as an inline value
+}
+
+fn vdiag(out: &mut Vec<Diagnostic>, line: usize, msg: String) {
+	let code = diag_code(&msg);
+	out.push(Diagnostic {
+		line,
+		severity: Severity::Error,
+		message: msg,
+		code,
+	});
+}
+
+/// One scalar constraint value (escapes applied), or None for anything else.
+fn single_text(v: &Value) -> Option<String> {
+	match v {
+		Value::Cell(els) if els.len() == 1 => Some(apply_escapes(&els[0].text)),
+		_ => None,
+	}
+}
+
+/// Interpret a parsed schema document into constraints. Err = schema faults
+/// (V09x, schema-file lines); the caller reports those and validates nothing.
+fn build_schema(schema: &Document) -> Result<Vec<Constraint>, Vec<Diagnostic>> {
+	let mut faults: Vec<Diagnostic> = Vec::new();
+	let mut cons: Vec<Constraint> = Vec::new();
+	for &f in &schema.arena[ROOT].children {
+		let node = &schema.arena[f];
+		if node.name != "field" {
+			vdiag(
+				&mut faults,
+				node.line,
+				format!("unknown schema key '{}'", node.name),
+			);
+			continue;
+		}
+		let path = match single_text(&node.value) {
+			Some(p) => p,
+			None => {
+				vdiag(&mut faults, node.line, "bad schema path".to_string());
+				continue;
+			}
+		};
+		let segs = match scan_path(&path) {
+			Ok(s) if s.value_text.is_none() => s.segments,
+			_ => {
+				vdiag(&mut faults, node.line, format!("bad schema path: {}", path));
+				continue;
+			}
+		};
+		let mut c = Constraint {
+			path,
+			segs,
+			ty: None,
+			required: false,
+			allowed: None,
+			min_i: None,
+			max_i: None,
+			min_f: None,
+			max_f: None,
+			repeat: None,
+			desc: None,
+			default_text: None,
+		};
+		// Deferred so `min: 1` may precede `type: int` in the file.
+		let mut required: Option<bool> = None;
+		let mut allowed_at: Option<usize> = None;
+		let mut min_at: Option<usize> = None;
+		let mut max_at: Option<usize> = None;
+		for &k in &schema.arena[f].children {
+			let kid = &schema.arena[k];
+			if kid.value.is_empty() {
+				continue; // dangling key: treated as absent
+			}
+			match kid.name.as_str() {
+				"type" => match single_text(&kid.value).map(|t| t.to_ascii_lowercase()) {
+					Some(t) if SCHEMA_TYPES.contains(&t.as_str()) => {
+						if c.ty.is_some() {
+							vdiag(
+								&mut faults,
+								kid.line,
+								"bad schema constraint 'type'".to_string(),
+							);
+						} else {
+							c.ty = Some(t);
+						}
+					}
+					Some(t) => {
+						vdiag(
+							&mut faults,
+							kid.line,
+							format!("unknown schema type '{}'", t),
+						);
+					}
+					None => vdiag(
+						&mut faults,
+						kid.line,
+						"bad schema constraint 'type'".to_string(),
+					),
+				},
+				"required" => {
+					let v = single_text(&kid.value)
+						.and_then(|t| parse_bool_text(&t, Strictness::Standard));
+					match v {
+						Some(b) if required.is_none() => required = Some(b),
+						_ => vdiag(
+							&mut faults,
+							kid.line,
+							"bad schema constraint 'required'".to_string(),
+						),
+					}
+				}
+				"allowed" => match &kid.value {
+					Value::Cell(_) if allowed_at.is_none() => allowed_at = Some(k),
+					_ => vdiag(
+						&mut faults,
+						kid.line,
+						"bad schema constraint 'allowed'".to_string(),
+					),
+				},
+				"min" => match &kid.value {
+					Value::Cell(els) if els.len() == 1 && min_at.is_none() => min_at = Some(k),
+					_ => vdiag(
+						&mut faults,
+						kid.line,
+						"bad schema constraint 'min'".to_string(),
+					),
+				},
+				"max" => match &kid.value {
+					Value::Cell(els) if els.len() == 1 && max_at.is_none() => max_at = Some(k),
+					_ => vdiag(
+						&mut faults,
+						kid.line,
+						"bad schema constraint 'max'".to_string(),
+					),
+				},
+				"repeat" => match &kid.value {
+					Value::Cell(els) if c.repeat.is_none() && matches!(els.len(), 1 | 2) => {
+						let lo = els[0].text.parse::<u64>().ok();
+						let hi = els.last().and_then(|e| e.text.parse::<u64>().ok());
+						match (lo, hi) {
+							(Some(a), Some(b)) if a <= b => c.repeat = Some((a, b)),
+							_ => vdiag(
+								&mut faults,
+								kid.line,
+								"bad schema constraint 'repeat'".to_string(),
+							),
+						}
+					}
+					_ => vdiag(
+						&mut faults,
+						kid.line,
+						"bad schema constraint 'repeat'".to_string(),
+					),
+				},
+				// Generator-only (`shcl init`); validation ignores both. First
+				// occurrence wins (a merged schema could carry two).
+				"desc" => {
+					if c.desc.is_none() {
+						c.desc = single_text(&kid.value);
+					}
+				}
+				"default" => {
+					if c.default_text.is_none() {
+						c.default_text = emit_value_inline(&kid.value);
+					}
+				}
+				other => vdiag(
+					&mut faults,
+					kid.line,
+					format!("unknown schema key '{}'", other),
+				),
+			}
+		}
+		c.required = required.unwrap_or(false);
+		let base =
+			c.ty.as_deref()
+				.map(|t| t.strip_suffix("-array").unwrap_or(t))
+				.unwrap_or("string");
+		if let Some(a) = allowed_at {
+			let kid = &schema.arena[a];
+			// allowed_at is only ever set for a Cell; if that invariant slips,
+			// skip the constraint rather than abort the consumer.
+			let Value::Cell(els) = &kid.value else {
+				continue;
+			};
+			// Schema values are read at Standard; only the document's values
+			// coerce at the document's strictness.
+			let set = match base {
+				"int" => els
+					.iter()
+					.map(|e| parse_int_text(e, Strictness::Standard))
+					.collect::<Option<Vec<_>>>()
+					.map(AllowedSet::Ints),
+				"float" => els
+					.iter()
+					.map(|e| parse_float_text(e, Strictness::Standard))
+					.collect::<Option<Vec<_>>>()
+					.map(AllowedSet::Floats),
+				"bool" => els
+					.iter()
+					.map(|e| parse_bool_text(&e.text, Strictness::Standard))
+					.collect::<Option<Vec<_>>>()
+					.map(AllowedSet::Bools),
+				"datetime" => els
+					.iter()
+					.map(|e| parse_datetime(&e.text))
+					.collect::<Option<Vec<_>>>()
+					.map(AllowedSet::Dates),
+				"raw" => None, // a raw body has no element space to enumerate
+				_ => Some(AllowedSet::Strings(
+					els.iter().map(|e| apply_escapes(&e.text)).collect(),
+				)),
+			};
+			match set {
+				Some(s) => c.allowed = Some(s),
+				None => vdiag(
+					&mut faults,
+					kid.line,
+					"bad schema constraint 'allowed'".to_string(),
+				),
+			}
+		}
+		for (at, is_min) in [(min_at, true), (max_at, false)] {
+			let Some(m) = at else { continue };
+			let kid = &schema.arena[m];
+			// min/max is only ever a one-element Cell; if that invariant slips,
+			// skip the constraint rather than abort the consumer.
+			let el = match &kid.value {
+				Value::Cell(els) if els.len() == 1 => &els[0],
+				_ => continue,
+			};
+			let key = if is_min { "min" } else { "max" };
+			match base {
+				"int" => match parse_int_text(el, Strictness::Standard) {
+					Some(v) if is_min => c.min_i = Some(v),
+					Some(v) => c.max_i = Some(v),
+					None => vdiag(
+						&mut faults,
+						kid.line,
+						format!("bad schema constraint '{}'", key),
+					),
+				},
+				"float" => match parse_float_text(el, Strictness::Standard) {
+					Some(v) if is_min => c.min_f = Some(v),
+					Some(v) => c.max_f = Some(v),
+					None => vdiag(
+						&mut faults,
+						kid.line,
+						format!("bad schema constraint '{}'", key),
+					),
+				},
+				_ => vdiag(
+					&mut faults,
+					kid.line,
+					format!("bad schema constraint '{}'", key),
+				),
+			}
+		}
+		cons.push(c);
+	}
+	if faults.is_empty() {
+		Ok(cons)
+	} else {
+		// One constraint per line in practice, so line order = file order.
+		faults.sort_by_key(|d| d.line);
+		Err(faults)
+	}
+}
+
+/// A schema `default`/`allowed` value re-emitted as an inline value (minimal
+/// quoting, array elements joined by ", "). None for empty or raw - neither has
+/// a usable one-line form. Used by the generator, not the validator.
+fn emit_value_inline(v: &Value) -> Option<String> {
+	match v {
+		Value::Cell(els) => Some(els.iter().map(emit_element).collect::<Vec<_>>().join(", ")),
+		_ => None,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Schema-driven generation: a schema + the Writer -> a commented starter config.
+// ---------------------------------------------------------------------------
+
+fn allowed_join(a: &AllowedSet) -> String {
+	match a {
+		AllowedSet::Ints(v) => v
+			.iter()
+			.map(|x| x.to_string())
+			.collect::<Vec<_>>()
+			.join(", "),
+		AllowedSet::Floats(v) => v
+			.iter()
+			.map(|x| x.to_string())
+			.collect::<Vec<_>>()
+			.join(", "),
+		AllowedSet::Bools(v) => v
+			.iter()
+			.map(|x| if *x { "true" } else { "false" }.to_string())
+			.collect::<Vec<_>>()
+			.join(", "),
+		AllowedSet::Dates(v) => v
+			.iter()
+			.map(|x| x.to_string())
+			.collect::<Vec<_>>()
+			.join(", "),
+		AllowedSet::Strings(v) => v.join(", "),
+	}
+}
+
+/// The `# type, ...` annotation line summarizing a constraint, ASCII only.
+fn gen_annotation(c: &Constraint, tyname: &str) -> String {
+	let mut parts: Vec<String> = vec![tyname.to_string()];
+	if let Some(a) = &c.allowed {
+		parts.push(format!("one of: {}", allowed_join(a)));
+	} else if c.min_i.is_some() || c.max_i.is_some() {
+		parts.push(match (c.min_i, c.max_i) {
+			(Some(lo), Some(hi)) => format!("{}-{}", lo, hi),
+			(Some(lo), None) => format!(">= {}", lo),
+			(None, Some(hi)) => format!("<= {}", hi),
+			(None, None) => String::new(), // guarded above; keep the map total
+		});
+	} else if c.min_f.is_some() || c.max_f.is_some() {
+		parts.push(match (c.min_f, c.max_f) {
+			(Some(lo), Some(hi)) => format!("{}-{}", lo, hi),
+			(Some(lo), None) => format!(">= {}", lo),
+			(None, Some(hi)) => format!("<= {}", hi),
+			(None, None) => String::new(), // guarded above; keep the map total
+		});
+	}
+	if let Some((lo, hi)) = c.repeat {
+		parts.push(if lo == hi {
+			format!("repeat {}", lo)
+		} else {
+			format!("repeat {}-{}", lo, hi)
+		});
+	}
+	if c.required {
+		parts.push("required".to_string());
+	}
+	parts.join(", ")
+}
+
+/// A default carrying a literal newline cannot sit on a value line; the quoted
+/// escaped spelling reads back to the same string.
+fn gen_default_text(v: &str) -> String {
+	if !v.contains('\n') {
+		return v.to_string();
+	}
+	let mut s = String::from("\"");
+	for ch in v.chars() {
+		match ch {
+			'\\' => s.push_str("\\\\"),
+			'"' => s.push_str("\\\""),
+			'\n' => s.push_str("\\n"),
+			'\t' => s.push_str("\\t"),
+			c => s.push(c),
+		}
+	}
+	s.push('"');
+	s
+}
+
+/// Emit a commented, typed starter config from a schema (`shcl init --schema`).
+/// Paths that must exist (required, or a repeat lower bound of 1+) are live
+/// (their `default`, or an empty value); optional paths are commented out so
+/// the file is valid and minimal as-is. A must-exist wildcard path whose
+/// parent gets materialized by another live line is generated too, in dotted
+/// form - otherwise the file would fail the very schema that produced it -
+/// and remaining wildcard or `[#N]` paths (which cannot be materialized) are
+/// listed in a trailing comment block. The output always loads clean and
+/// validates clean against its schema, except a repeat lower bound of 2+
+/// (identical generated lines would merge, so the shortfall is reported).
+/// Err = schema faults (V09x), same as `validate`/`check --schema`.
+pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
+	let cons = build_schema(schema)?;
+	let must_exist = |c: &Constraint| c.required || matches!(c.repeat, Some((lo, _)) if lo >= 1);
+	let has_wild = |c: &Constraint| {
+		c.segs
+			.iter()
+			.any(|s| matches!(s.selector, Some(Selector::Wildcard)))
+	};
+	// `[#N]` needs a pre-existing instance and its `#` would start a comment
+	// on a binding line; a path with a literal newline cannot be written at
+	// all. Both go to the trailing note instead of emitting a broken line.
+	let unwritable = |c: &Constraint| {
+		c.segs
+			.iter()
+			.any(|s| matches!(s.selector, Some(Selector::ByIndex(_))))
+			|| c.path.contains('\n')
+	};
+	// Live concrete paths materialize instances; decide which must-exist
+	// wildcards get filled (their first-wildcard parent chain is a prefix of
+	// some live path). Fixpoint: a fill can materialize another's parent.
+	fn names_of(segs: &[Segment]) -> Vec<&str> {
+		segs.iter().map(|s| s.name.as_str()).collect()
+	}
+	let mut live: Vec<Vec<&str>> = cons
+		.iter()
+		.filter(|c| !has_wild(c) && !unwritable(c) && must_exist(c))
+		.map(|c| names_of(&c.segs))
+		.collect();
+	let mut fill = vec![false; cons.len()];
+	loop {
+		let mut changed = false;
+		for (i, c) in cons.iter().enumerate() {
+			if fill[i] || !has_wild(c) || unwritable(c) || !must_exist(c) {
+				continue;
+			}
+			let Some(k) = c
+				.segs
+				.iter()
+				.position(|s| matches!(s.selector, Some(Selector::Wildcard)))
+			else {
+				continue;
+			};
+			let parent = names_of(&c.segs[..k + 1]);
+			if live
+				.iter()
+				.any(|p| p.len() >= parent.len() && p[..parent.len()] == parent[..])
+			{
+				fill[i] = true;
+				live.push(names_of(&c.segs));
+				changed = true;
+			}
+		}
+		if !changed {
+			break;
+		}
+	}
+	let mut out = String::new();
+	let mut wild: Vec<(String, String)> = Vec::new();
+	let mut first = true;
+	for (i, c) in cons.iter().enumerate() {
+		let tyname = c.ty.clone().unwrap_or_else(|| "any".to_string());
+		if unwritable(c) || (has_wild(c) && !fill[i]) {
+			wild.push((c.path.replace('\n', "\\n"), tyname));
+			continue;
+		}
+		if !first {
+			out.push('\n');
+		}
+		first = false;
+		if let Some(d) = &c.desc {
+			for line in d.split('\n') {
+				out.push_str("# ");
+				out.push_str(line);
+				out.push('\n');
+			}
+		}
+		out.push_str("# ");
+		// The annotation is a comment: a newline smuggled in via an allowed
+		// string value must not break out of it.
+		out.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
+		out.push('\n');
+		// A filled wildcard emits in dotted form, targeting the first (the
+		// materialized) instance.
+		let path = if fill[i] {
+			c.path.replace("[*]", "")
+		} else {
+			c.path.clone()
+		};
+		let prefix = if must_exist(c) { "" } else { "#" };
+		match &c.default_text {
+			Some(v) => out.push_str(&format!("{}{}: {}\n", prefix, path, gen_default_text(v))),
+			None => out.push_str(&format!("{}{}:\n", prefix, path)),
+		}
+	}
+	if !wild.is_empty() {
+		if !first {
+			out.push('\n');
+		}
+		out.push_str("# Paths needing an instance name (not generated):\n");
+		for (p, t) in &wild {
+			out.push_str(&format!("#   {}   {}\n", p, t));
+		}
+	}
+	Ok(out)
+}
+
+/// Two-row Levenshtein; powers the "did you mean" prose (never the code).
+fn edit_distance(a: &str, b: &str) -> usize {
+	let a: Vec<char> = a.chars().collect();
+	let b: Vec<char> = b.chars().collect();
+	let mut prev: Vec<usize> = (0..=b.len()).collect();
+	let mut cur = vec![0usize; b.len() + 1];
+	for i in 1..=a.len() {
+		cur[0] = i;
+		for j in 1..=b.len() {
+			let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+			cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+		}
+		std::mem::swap(&mut prev, &mut cur);
+	}
+	prev[b.len()]
+}
+
+impl Document {
+	/// Validate this document against a schema document (itself plain SHCL -
+	/// spec.md "Schema validation"). Empty result = the document conforms.
+	/// Diagnostic lines are document lines (0 = document scope); schema faults
+	/// (V09x, schema-file lines) suppress data validation entirely.
+	pub fn validate(&self, schema: &Document) -> Vec<Diagnostic> {
+		let cons = match build_schema(schema) {
+			Ok(c) => c,
+			Err(faults) => return faults,
+		};
+		let mut out: Vec<Diagnostic> = Vec::new();
+		for c in &cons {
+			self.v_check(c, &mut out);
+		}
+		self.v_unknown(&cons, &mut out);
+		out
+	}
+
+	// Resolution contexts: the whole document for a plain path; each enclosing
+	// instance for the part of a path after a wildcard. required/repeat evaluate
+	// per context (anchor line 0 = document scope), so `server[*].port` +
+	// required means a port under EACH server - vacuously true with no servers.
+	fn v_contexts(
+		&self,
+		start: Vec<usize>,
+		segs: &[Segment],
+		anchor: usize,
+		out: &mut Vec<(usize, Vec<usize>)>,
+	) {
+		let mut cur = start;
+		for (i, seg) in segs.iter().enumerate() {
+			let mut next: Vec<usize> = Vec::new();
+			for &n in &cur {
+				next.extend(self.children_named(n, &seg.name));
+			}
+			match &seg.selector {
+				None => cur = next,
+				Some(Selector::ByValue(v)) => {
+					cur = next
+						.into_iter()
+						.filter(|&c| self.arena[c].value.display() == *v)
+						.collect();
+				}
+				Some(Selector::ByIndex(k)) => {
+					cur = next.get(*k as usize).map(|&c| vec![c]).unwrap_or_default();
+				}
+				Some(Selector::Wildcard) => {
+					let rest = &segs[i + 1..];
+					if rest.is_empty() {
+						out.push((anchor, next));
+					} else {
+						for inst in next {
+							let line = self.arena[inst].line;
+							self.v_contexts(vec![inst], rest, line, out);
+						}
+					}
+					return;
+				}
+			}
+		}
+		out.push((anchor, cur));
+	}
+
+	fn v_check(&self, c: &Constraint, out: &mut Vec<Diagnostic>) {
+		let mut ctxs: Vec<(usize, Vec<usize>)> = Vec::new();
+		self.v_contexts(vec![ROOT], &c.segs, 0, &mut ctxs);
+		for (anchor, found) in &ctxs {
+			if c.required && found.is_empty() {
+				vdiag(out, *anchor, format!("required path missing: {}", c.path));
+			}
+			if let Some((lo, hi)) = c.repeat {
+				let n = found.len() as u64;
+				if n < lo || n > hi {
+					vdiag(
+						out,
+						*anchor,
+						format!(
+							"instance count out of bounds at '{}': {} not in {}..{}",
+							c.path, n, lo, hi
+						),
+					);
+				}
+			}
+			for &n in found {
+				self.v_node(c, n, out);
+			}
+		}
+	}
+
+	fn v_node(&self, c: &Constraint, n: usize, out: &mut Vec<Diagnostic>) {
+		let node = &self.arena[n];
+		let line = node.line;
+		let kind = c.ty.as_deref();
+		let base = kind
+			.map(|t| t.strip_suffix("-array").unwrap_or(t))
+			.unwrap_or("string");
+		let is_array = kind.is_some_and(|t| t.ends_with("-array"));
+		let wrong = |out: &mut Vec<Diagnostic>| {
+			vdiag(
+				out,
+				line,
+				format!(
+					"wrong type at '{}': value is not a valid {}",
+					c.path,
+					kind.unwrap_or("string")
+				),
+			);
+		};
+		match &node.value {
+			// Empty passes everything; required already counted it as present.
+			Value::Empty => {}
+			Value::Raw { content, .. } => {
+				// A raw block satisfies `raw` and scalar `string` (any value
+				// reads as a string); every other kind is a type miss.
+				if kind.is_some() && (base != "raw" && base != "string" || is_array) {
+					wrong(out);
+					return;
+				}
+				if let Some(AllowedSet::Strings(set)) = &c.allowed
+					&& !set.contains(content)
+				{
+					vdiag(
+						out,
+						line,
+						format!("value not allowed at '{}': {}", c.path, content),
+					);
+				}
+			}
+			Value::Cell(els) => {
+				if base == "raw" {
+					wrong(out);
+					return;
+				}
+				// A scalar kind on a multi-element value is the array-where-one-
+				// scalar-expected miss - except string, which reads arrays.
+				if kind.is_some() && !is_array && base != "string" && els.len() > 1 {
+					wrong(out);
+					return;
+				}
+				match base {
+					"int" => {
+						let mut vals: Vec<i64> = Vec::with_capacity(els.len());
+						for e in els {
+							match parse_int_text(e, self.strictness) {
+								Some(v) => vals.push(v),
+								None => {
+									wrong(out);
+									return;
+								}
+							}
+						}
+						if let Some(AllowedSet::Ints(set)) = &c.allowed
+							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
+						{
+							vdiag(
+								out,
+								line,
+								format!("value not allowed at '{}': {}", c.path, els[i].text),
+							);
+						}
+						if let Some(lo) = c.min_i
+							&& vals.iter().any(|v| *v < lo)
+						{
+							vdiag(out, line, format!("value below min at '{}'", c.path));
+						}
+						if let Some(hi) = c.max_i
+							&& vals.iter().any(|v| *v > hi)
+						{
+							vdiag(out, line, format!("value above max at '{}'", c.path));
+						}
+					}
+					"float" => {
+						let mut vals: Vec<f64> = Vec::with_capacity(els.len());
+						for e in els {
+							match parse_float_text(e, self.strictness) {
+								Some(v) => vals.push(v),
+								None => {
+									wrong(out);
+									return;
+								}
+							}
+						}
+						if let Some(AllowedSet::Floats(set)) = &c.allowed
+							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
+						{
+							vdiag(
+								out,
+								line,
+								format!("value not allowed at '{}': {}", c.path, els[i].text),
+							);
+						}
+						if let Some(lo) = c.min_f
+							&& vals.iter().any(|v| *v < lo)
+						{
+							vdiag(out, line, format!("value below min at '{}'", c.path));
+						}
+						if let Some(hi) = c.max_f
+							&& vals.iter().any(|v| *v > hi)
+						{
+							vdiag(out, line, format!("value above max at '{}'", c.path));
+						}
+					}
+					"bool" => {
+						let mut vals: Vec<bool> = Vec::with_capacity(els.len());
+						for e in els {
+							match parse_bool_text(&e.text, self.strictness) {
+								Some(v) => vals.push(v),
+								None => {
+									wrong(out);
+									return;
+								}
+							}
+						}
+						if let Some(AllowedSet::Bools(set)) = &c.allowed
+							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
+						{
+							vdiag(
+								out,
+								line,
+								format!("value not allowed at '{}': {}", c.path, els[i].text),
+							);
+						}
+					}
+					"datetime" => {
+						let mut vals: Vec<ShclDateTime> = Vec::with_capacity(els.len());
+						for e in els {
+							match parse_datetime(&e.text) {
+								Some(v) => vals.push(v),
+								None => {
+									wrong(out);
+									return;
+								}
+							}
+						}
+						if let Some(AllowedSet::Dates(set)) = &c.allowed
+							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
+						{
+							vdiag(
+								out,
+								line,
+								format!("value not allowed at '{}': {}", c.path, els[i].text),
+							);
+						}
+					}
+					// string kind or untyped: every element coerces; only the
+					// allowed set can fail, in logical-string space.
+					_ => {
+						if let Some(AllowedSet::Strings(set)) = &c.allowed {
+							let bad = els
+								.iter()
+								.map(|e| apply_escapes(&e.text))
+								.find(|s| !set.contains(s));
+							if let Some(b) = bad {
+								vdiag(
+									out,
+									line,
+									format!("value not allowed at '{}': {}", c.path, b),
+								);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Unknown-field sweep: a schema path legalizes its name chain and every
+	// prefix (selectors ignored). Only the topmost unknown node is reported;
+	// its subtree is implied unknown and skipped.
+	fn v_unknown(&self, cons: &[Constraint], out: &mut Vec<Diagnostic>) {
+		let mut legal: std::collections::HashSet<String> = std::collections::HashSet::new();
+		// Sibling names per parent chain, built once (schema order): v_suggest
+		// used to rebuild every chain per unknown field, which bit hardest on
+		// the wholesale-unmatched documents the feature exists for.
+		let mut siblings: HashMap<String, Vec<String>> = HashMap::new();
+		for c in cons {
+			let mut chain = String::new();
+			for s in &c.segs {
+				siblings
+					.entry(chain.clone())
+					.or_default()
+					.push(s.name.clone());
+				if !chain.is_empty() {
+					chain.push('\0');
+				}
+				chain.push_str(&s.name);
+				legal.insert(chain.clone());
+			}
+		}
+		let mut stack: Vec<(usize, String, String)> = self.arena[ROOT]
+			.children
+			.iter()
+			.rev()
+			.map(|&c| (c, String::new(), String::new()))
+			.collect();
+		while let Some((n, pchain, pshown)) = stack.pop() {
+			let node = &self.arena[n];
+			let chain = if pchain.is_empty() {
+				node.name.clone()
+			} else {
+				format!("{}\0{}", pchain, node.name)
+			};
+			let shown = if pshown.is_empty() {
+				node.name.clone()
+			} else {
+				format!("{}.{}", pshown, node.name)
+			};
+			if !legal.contains(&chain) {
+				let hint = v_suggest(&siblings, &pchain, &node.name);
+				vdiag(out, node.line, format!("unknown field '{}'{}", shown, hint));
+				continue;
+			}
+			for &k in node.children.iter().rev() {
+				stack.push((k, chain.clone(), shown.clone()));
+			}
+		}
+	}
+}
+
+/// Closest legal sibling name (same parent chain, schema order, edit distance
+/// <= 2) as "; did you mean 'x'?" - or nothing. Prose only, never contract.
+fn v_suggest(siblings: &HashMap<String, Vec<String>>, parent_chain: &str, name: &str) -> String {
+	let mut best: Option<(usize, &str)> = None;
+	if let Some(names) = siblings.get(parent_chain) {
+		for s in names {
+			let dist = edit_distance(name, s);
+			if dist <= 2 && best.is_none_or(|(bd, _)| dist < bd) {
+				best = Some((dist, s.as_str()));
+			}
+		}
+	}
+	match best {
+		Some((_, n)) => format!("; did you mean '{}'?", n),
+		None => String::new(),
 	}
 }

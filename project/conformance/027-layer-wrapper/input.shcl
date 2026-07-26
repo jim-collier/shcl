@@ -1,0 +1,6 @@
+# over layer: wrapper mentions must merge, not wipe
+server:
+server: web1
+mode:
+server: web2
+	# just a note

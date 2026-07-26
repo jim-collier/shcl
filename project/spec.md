@@ -74,7 +74,7 @@ The Accessor reads in two modes:
 
 - Comments may be a whole line or trail a value (`pop: 700  # note`).
 
-- Blank lines are ignored.
+- Blank lines carry no data, but a blank line between bindings is grouping the author created: the parser notes it as trivia on the node below and the canonical formatter re-emits it (a run of blanks collapses to one). Like comments, blanks play no part in merging, reads, or diagnostics.
 
 - A `#` inside quotes is literal (`url: "http://h/#frag"`), and a `#` inside a raw block is literal.
 
@@ -330,8 +330,8 @@ The convenience tier has the same shape everywhere - a mandatory, call-site-visi
 |------------|-----------------------------------------------|----------------------------------------------------|
 | Go         | `pop := doc.GetIntOr(path, 0)`                | `pop, st := doc.GetInt(path)`                      |
 | Rust       | `let pop = doc.get_int(path).unwrap_or(0);`   | `let r = doc.get_int(path); // Result<i64, Status>`|
-| C          | `int pop = shcl_get_int(doc, path, 0);`       | `shcl_get_int_ex(doc, path, &pop); // -> status`   |
-| C++        | `int pop = doc.get_or<int>(path, 0);`         | `auto r = doc.get<int>(path); // .value / .status` |
+| C          | `int64_t pop = shcl_get_int(d, p, n, 0);`     | `shcl_read_i64 r = shcl_read_int(d, p, n);`        |
+| C++        | `auto pop = doc.get_or<int64_t>(path, 0);`    | `auto r = doc.get<int64_t>(path); // .value`       |
 | C#         | `int pop = doc.GetIntOr(path, 0);`            | `var r = doc.GetInt(path); // .Value / .Status`    |
 | Java       | `int pop = doc.getIntOr(path, 0);`            | `var r = doc.getInt(path); // .value() .status()`  |
 | Kotlin     | `val pop = doc.getIntOr(path, 0)`             | `val r = doc.getInt(path)`                         |
@@ -340,7 +340,7 @@ The convenience tier has the same shape everywhere - a mandatory, call-site-visi
 | PowerShell | `[int]$pop = $doc.GetIntOr($path, 0)`         | `$r = $doc.GetInt($path)  # .Value .Status`        |
 | POSIX sh   | `pop=$(shcl get --int --default=0 f 'path')`  | `shcl get --int f 'path'; status=$?`               |
 
-The array, bool, float, datetime, string, and raw forms follow the same two-tier pattern (`GetIntArrayOr`, `GetBoolOr`, ...); only the coercion target changes. The full tier is one representation of the `Flag`-mode status described above; the convenience tier is `Default` mode with the fallback the caller passed. For array reads the convenience fallback is the whole default array (returned unless the read is `Good`); per-slot substitution into a partially-resolved array is the full tier's per-slot status or the CLI's `--default`, not the convenience form.
+The array, bool, float, datetime, string, and raw forms follow the same two-tier pattern (`GetIntArrayOr`, `GetBoolOr`, ...); only the coercion target changes. Deliberate exception: C's convenience tier covers the value types only (`shcl_get_int`/`_float`/`_bool`) - string, raw, datetime, and array reads hand back borrowed memory or lengths, which a value-or-default signature cannot express, so those use the full `shcl_read_*` tier; the C++ veneer's `get_or<T>` covers exactly its four `get<T>` types. The deviation is recorded in the style guide. The full tier is one representation of the `Flag`-mode status described above; the convenience tier is `Default` mode with the fallback the caller passed. For array reads the convenience fallback is the whole default array (returned unless the read is `Good`); per-slot substitution into a partially-resolved array is the full tier's per-slot status or the CLI's `--default`, not the convenience form.
 
 ### Status sentinels
 
@@ -375,12 +375,36 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 
 - Loading also yields a list of structured **diagnostics** (line number + severity + a stable **code** + a human message) for every skipped or repaired line, which the consumer may inspect or ignore. Severity is `error` (a line was skipped or repaired) or `hint` (legal input that looks like a common mistake, e.g. the repeated-leaf array hint). The split matters for Strict mode: only `error` diagnostics fail a strict load.
 	- The **code** (`E001..`, `H001..`) is the portable contract - the same kind of problem carries the same code in every binding. The human **message** is a free, per-binding voice and is not part of the contract. The `shcl check` CLI reflects this: it prints `line N: severity: CODE` to stdout (compared across bindings) and the prose message to stderr (dropped by the differential check). `check` exits nonzero when any `error` diagnostic is present - not only on a strict load failure - so a CI gate on `check` catches dropped lines at any strictness.
+	- The load-time codes, so a CI gate can key on them (validation adds the `V###` range, tabled under Schema validation):
 
-- The **Writer** handles the reverse of the Accessor: emit values, defaults, and comment sections, and canonicalize a file (see below). It mirrors the Accessor's typed-entry-point shape - a `Set<T>` per type (`SetInt`/`SetString`/.../`SetRaw`) and their array forms - so a programmatic value lands as canonical text with no consumer-side formatting. Each setter is the exact inverse of the matching read: `SetString` re-quotes and escapes so the value reads back verbatim; `SetFloat`/`SetInt` emit the same canonical number text the reader accepts; `SetDateTime` stores the canonical spelling; `SetRaw` picks a fence long enough that the content cannot close it early. A **set** creates the path (intermediate nodes as needed) and replaces the value at the leaf; a `[value]`/`[#index]` selector on the path targets a specific instance (a `[value]` selector creates the instance if absent). Companions round out the surface: `Set<T>Default` writes only when the path does not already resolve (the "emit defaults" half), `Exists` reports presence, `SetComment` attaches a leading comment line (creating an empty node so a section can be annotated), and `Remove` deletes the node(s) at a path. After any edits, the canonical formatter emits the result; a written document is a formatter fixpoint like any other canonical output.
+| Code | Meaning
+| :--: | :--
+| `E001` | field line under a parent already holding stacked `*` list elements (field kept)
+| `E002` | value after a last-segment selector (`a.b[X]: v`) - the value is ignored
+| `E003` | `[#N]` selector names an instance that does not exist
+| `E004` | wildcard selector on a binding line (wildcards are query-only)
+| `E005` | unterminated raw block (closing fence never found)
+| `E006` | raw-block fence with no parent field to bind to
+| `E007` | stacked `*` list element with no parent field
+| `E008` | stacked `*` list element under a parent with field children (element dropped)
+| `E009` | empty stacked `*` list element
+| `E010` | bare comma in a stacked `*` list element (one element per line)
+| `E011` | stacked `*` element for a field that already has a value (element ignored)
+| `E012` | indentation matches no open level
+| `E013` | malformed `*` line (`*` not followed by a space); line skipped
+| `E014` | malformed line skipped (with the reason named in the message)
+| `E015` | missing colon (repaired as an empty value)
+| `E016` | nesting deeper than the 512-level cap (line skipped)
+| `E017` | a value (or array element) opens a quote it never closes - the piece is kept literally, including any `#` comment the open quote swallowed
+| `H001` | repeated bare leaf (array spelled as repeated lines) - the mandatory hint
+
+- **Limits**: nesting depth is capped at 512 levels below the document root. A line that would bind a node deeper than the cap is an `error` (`E016`) and is skipped; the Writer likewise refuses to create a deeper path. The cap is what makes any loadable document safe to format, merge, and copy in every binding - depth-linear recursion can never outrun a thread stack - and 512 is far beyond any hand-authored nesting.
+
+- The **Writer** handles the reverse of the Accessor: emit values, defaults, and comment sections, and canonicalize a file (see below). It mirrors the Accessor's typed-entry-point shape - a `Set<T>` per type (`SetInt`/`SetString`/.../`SetRaw`) and their array forms - so a programmatic value lands as canonical text with no consumer-side formatting. Each setter is the exact inverse of the matching read: `SetString` re-quotes and escapes so the value reads back verbatim; `SetFloat`/`SetInt` emit the same canonical number text the reader accepts; `SetDateTime` stores the canonical spelling; `SetRaw` picks a fence long enough that the content cannot close it early. A **set** creates the path (intermediate nodes as needed) and replaces the value at the leaf; a `[value]`/`[#index]` selector on the path targets a specific instance (a `[value]` selector creates the instance if absent). Companions round out the surface: `Set<T>Default` writes only when the path does not already resolve (the "emit defaults" half), `Exists` reports presence, `SetComment` attaches a leading comment line (creating an empty node so a section can be annotated), and `Remove` deletes the node(s) at a path. Every setter reports whether the write applied: an unusable path (a wildcard, a `[#index]` instance that does not exist, a value part, or a path past the depth cap) applies nothing - no half-created intermediates - and reports failure, which the CLI surfaces as exit 1 rather than silently printing the untouched document. A write that makes a node collide with a same-named sibling under the in-file merge rule folds the pair the way a reparse would, so written output is a formatter fixpoint like any other canonical output. On the CLI, `set --write` (like `fmt --write`) rewrites FILE in place through a temp-file-and-rename in the same directory, so an interrupted write can never truncate the config it rewrites. The rename publishes a new file, so FILE is resolved through symlinks first (a linked-in config is written through, not replaced) and its permission bits are carried over. Any other hard link to the old file keeps the old content; that is inherent to the rename and is the one thing an in-place write does not preserve.
 
 ## Canonical formatter
 
-The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`). It loads at the requested strictness like every other operation; a strict-failing document formats nothing (the load failure is the result).
+The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`). Two normalizations to know about: field names are case-insensitive, and the canonical spelling is the folded (ASCII-lowercase) one - `Max-Upload-MB:` comes back `max-upload-mb:` from `fmt`, matching how every read and merge already treats the name; and a blank line an author put between bindings survives (one blank; runs collapse), so grouped configs stay grouped through `fmt --write`. It loads at the requested strictness like every other operation; a strict-failing document formats nothing (the load failure is the result).
 
 - Block (indented) form, tabs for indentation.
 
@@ -397,6 +421,95 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 - Leave scalar text exactly as authored; raw blocks are re-emitted verbatim. A block value canonicalizes to the child-indent spelling - bare `name:`, fence (with its info-string) on the next line at child indent - one field line per block instance.
 
 - Two narrow exceptions keep round-trips exact. If an *earlier* instance of the same field under the same parent is empty, the child-indent header line would merge into it on re-read and the fence would fill that instance - so the formatter emits that block in the same-line spelling instead. And an info-string that *starts with* the fence character gets one space after the fence, so it cannot lengthen the fence run on re-read. A block emitted in the same-line spelling also moves any trailing comment to the lines above - after the fence it could read as part of the info-string on re-read.
+
+## Schema validation
+
+A schema is an ordinary SHCL file: a flat list of instances of one field named `field`, each whose *value* is a document path and whose children are the constraints on it. Document paths appear in value position, never as field names, so the schema vocabulary can never collide with a document's own field names. `Validate(doc, schemaDoc)` returns the same structured diagnostics loading produces; the `shcl check --schema SCHEMA FILE` CLI appends them to `check`'s normal output under the same stdout/exit contract. No grammar change is involved: the schema vocabulary is interpreted by the validator, the parser knows nothing of it.
+
+```shcl
+field: server.port
+	type: int
+	required: yes
+	min: 1
+	max: 65535
+
+field: "server[*].host"
+	type: string
+```
+
+A path containing a bracket selector must be quoted (a bare selector's scan ends at the first `]`); the canonical formatter applies that quoting itself. Two `field` instances with the same path merge by the language's own merge rule, so constraints for one path can be written in one place or several.
+
+The constraint vocabulary is closed - nothing joins it without a spec change:
+
+| Key | Value | Meaning
+| :-- | :-- | :--
+| `type` | `int` `float` `bool` `string` `datetime` `raw`, or `<scalar>-array` (no `raw-array`) | every value at the path must coerce to this type, at the *document's* strictness
+| `required` | boolean | the path must resolve (see wildcard rule below)
+| `allowed` | inline array | closed set of permitted element values, compared in the coerced space of `type`
+| `min` / `max` | number | inclusive bounds, `int`/`float` kinds only, checked per element on arrays
+| `repeat` | one integer (exact) or two (min, max) | bounds the instance count at the path, per resolution context
+| `default` / `desc` | any | reserved for the schema-driven generator; validation ignores them
+
+Semantics:
+
+- The schema file itself always loads at Standard, and its constraint values (booleans, numbers, the `allowed` set) are read at Standard - a schema is a program artifact, not user data. The *document's* values coerce at the document's strictness, so `type: int` against `3.5` passes at Loose (which rounds) and fails at Standard.
+
+- An empty value passes `type`, `allowed`, `min`, and `max` (present-but-no-value is what `Empty` means everywhere else) and counts as present for `required`.
+
+- On a path with no wildcard, `required` means at least one instance resolves. Through a wildcard, it is a per-instance rule - `server[*].port` requires a port under *each* server - and is vacuously satisfied when no instances exist (require the parent separately if it must exist).
+
+- `repeat` and `required` evaluate per *resolution context*: the whole document for a plain path, each enclosing instance for the part of a path after a wildcard. So `field: server` + `repeat: 1, 10` bounds the server count, while `field: "server[*].port"` + `repeat: 1` means exactly one port per server.
+
+- A field in the document that no schema path covers is an unknown field. Legality is by name chain (selectors ignored): every schema path legalizes its own chain and every prefix of it. Only the topmost unknown node is diagnosed; its subtree is skipped. The "did you mean" suggestion lives in the prose message only, never the code - edit-distance output is not parity-pinnable.
+
+- All validation diagnostics are `error` severity, and their order is deterministic: schema faults in schema order (which then suppress everything else); otherwise per schema instance in schema order - `required`, `repeat`, then per resolved node in file order `type`, `allowed`, `min`, `max` (a node failing `type` skips its remaining checks) - then unknown fields in document order.
+
+Diagnostic codes ride the existing structure (line, severity, stable code, prose) in a `V###` range disjoint from the parser's `E###`/`H###`. Line numbers are document lines; line 0 means document scope (nothing was written); through a wildcard, a per-instance `required` miss carries the enclosing instance's line:
+
+| Code | Meaning | Line
+| :-- | :-- | :--
+| `V001` | unknown field | the topmost unknown node
+| `V002` | required path missing | 0, or the enclosing instance under a wildcard
+| `V003` | wrong type | the node
+| `V004` | value not in the allowed set | the node (first offending element)
+| `V005` / `V006` | below `min` / above `max` | the node (first offending element)
+| `V007` | instance count out of `repeat` bounds | 0, or the enclosing instance under a wildcard
+| `V090` | unknown schema key | schema file
+| `V091` | unknown schema type name | schema file
+| `V092` | bad schema constraint value (also: `min`/`max` without a numeric `type`, `allowed` with `type: raw`) | schema file
+| `V093` | bad schema path | schema file
+| `V099` | schema failed to load (schema had error diagnostics) | 0
+
+A schema fault (`V090`+) suppresses data validation entirely - there is nothing meaningful to say about a document checked against a broken schema - which also keeps one line-number space per result set. `check --schema` folds validation diagnostics into `check`'s existing output: same `line N: severity: CODE` stdout lines, prose to stderr, same summary line and exit-6-on-any-error rule. A `V090`-`V093` line number is a schema-file line (the table above says which); the stderr prose spells those `schema line N` so the two number spaces cannot be confused, while the compared stdout keeps the uniform `line N` shape - the code already names the space.
+
+## Layered loading
+
+Composing a config from defaults, then a site file, then a user file, is `merge` applied as a left fold: `Load(defaults, site, user)` overlays each later document on the accumulation of the earlier ones, so the last file wins. `merge(base, over)` takes two already-parsed documents and overlays `over` (higher priority) onto `base`; it is a library operation, no grammar change.
+
+The overlay rule, per parent scope:
+
+- A **leaf** name present in `over` (its `over`-side nodes all have no children - a scalar, an inline array, or a raw block) **replaces** every `base` child of that name, spliced in at the first replaced position - provided the `base` children of that name are themselves all childless (or absent). This is real override: a later `port: 9090` wins over an earlier `port: 8080`, a later `tags: green` replaces the earlier repeated-leaf list `tags: red` / `tags: blue` wholesale (override, not append), and a bare `port:` clears the leaf.
+
+- A childless `over` node whose `base`-side name group has any **container** instance is a **wrapper mention**, not a leaf override: it merges by `(field-name, value)` like any container instance, so a matching instance is left untouched and an unmatched one is appended as a new empty instance. A bare section header (`server:`, or `server: web1` with no body) in a higher layer therefore never deletes the base subtree beneath it - the same choice JSON Merge Patch and kustomize make. The deliberate cost: there is no way to blank a whole section from a higher layer; an explicit deletion spelling may be added post-1.0 if one proves necessary.
+
+- A name with any **container** instance (a node with children) in `over` merges instance-by-instance: each `over` instance matches a `base` instance by `(field-name, value)` - the same key the in-file merge rule uses - and recurses; an unmatched `over` instance is appended in file order. So two layers' children under `server: web1` combine, while a new `server: web3` is added.
+
+Comment trivia rides with the nodes that carry it, and the merged document is a formatter fixpoint like any other. `over`'s content is copied into `base`, so `base` stays valid after `over` is released.
+
+On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `set`) accepts repeated `--layer=FILE` (each merged under the positional `FILE`, in listed order = lowest first) and repeated `--set=PATH=VALUE` (each written as literal text via the Writer, as the final top layer, after all files). `fmt` with layers prints the merged canonical document, so it doubles as the merge command. `check` does not take layers - its diagnostics are inherently single-file. The precedence, low to high, is: `--layer` files in order, then `FILE`, then `--set`. A `--set` is a Writer edit, not a merged layer: it targets the first matching instance (or creates the path), so on a repeated leaf it edits one instance where a real top-layer file would replace the whole same-named group wholesale. When whole-group override is the intent, put it in a `--layer` file. Environment-variable mapping is deliberately not provided: the env namespace and its naming convention belong to the consuming program, which can map env vars onto `--set` itself.
+
+## Schema-driven generation
+
+`generate(schema)` turns a schema into a commented, typed starter config - the schema's `desc`/`default` vocabulary (reserved by the validator, ignored there) put to work. `shcl init --schema=FILE` prints it to stdout.
+
+The output, per schema field in schema order:
+
+- A `desc` line becomes a leading `# ` comment.
+- A generated annotation line summarizes the type and constraints, ASCII only: `# <type>[, one of: v1, v2, ...][, <lo>-<hi> | >= <lo> | <= <hi>][, repeat <lo>[-<hi>]][, required]`. An untyped field shows `any`. Allowed values and numeric bounds are rendered in the type's canonical text (the same float formatter reads use); a newline inside a rendered value is escaped to `\n` so it cannot break out of the comment. This annotation is part of the generated file, so it is a byte-for-byte cross-binding contract, not free prose.
+- The field line itself: fields that **must exist** (`required`, or a `repeat` lower bound of 1 or more) are live (`path: <default>`, or `path:` with an empty value when there is no `default`; a `default` containing a newline is written in its quoted escaped spelling); **optional** fields are the same line commented out (`#path: ...`), so the starter is valid and minimal as-is.
+- A must-exist field whose path contains a wildcard is generated in dotted form (the wildcard dropped, targeting the first instance) when some other live line materializes the wildcard's parent - otherwise the very instance that line creates would fail the schema. Remaining wildcard paths, and paths that cannot be written at all (`[#N]` needs a pre-existing instance and its `#` would start a comment; a path carrying a literal newline has no one-line spelling), are collected into a trailing `# Paths needing an instance name (not generated):` comment block, one `#   <path>   <type>` per line.
+
+Paths are emitted in the schema's flat dotted/bracket form (mirroring the schema's own shape), not expanded to block form; the result is valid SHCL that loads with no error diagnostics and **validates clean against the schema that produced it** - with one documented exception: a `repeat` lower bound of 2+ cannot be auto-satisfied (identical generated lines would merge into one instance), so such a field is emitted live once and validation reports the shortfall. A schema fault (V09x) makes generation fail the same way validation does; `init` then exits 6 like `check --schema` reporting the same fault (exit 1 stays a usage or I/O error). `generate` is a library call in every binding (plus the C++ veneer); `init` reads no document, so it takes no `--layer`/`--set`.
 
 ## Error handling philosophy
 

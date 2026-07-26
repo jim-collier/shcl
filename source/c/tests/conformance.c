@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <locale.h>
+#include <errno.h>
 #include <dirent.h>
 
 static int nfail = 0;
@@ -93,9 +94,54 @@ static size_t cf_unescape(const char *in, size_t inlen, char *out) {
 	return w;
 }
 
+// Reference-equivalent op-value gates (same grammar the CLI applies): sign +
+// ASCII digits + i64 range for ints; the Rust f64 FromStr grammar for floats
+// (overflow yields +-inf, not an error).
+static int cf_i64(const char *p, size_t n, int64_t *out) {
+	size_t i = 0;
+	if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+	if (i == n) return 0;
+	for (size_t k = i; k < n; k++) if (p[k] < '0' || p[k] > '9') return 0;
+	char *b = (char *)xrealloc(NULL, n + 1); memcpy(b, p, n); b[n] = 0;
+	errno = 0; char *end; long long v = strtoll(b, &end, 10);
+	int ok = *end == 0 && errno != ERANGE;
+	free(b);
+	if (!ok) return 0;
+	*out = (int64_t)v; return 1;
+}
+static int cf_ci_eq(const char *p, size_t n, const char *kw) {
+	size_t kn = strlen(kw);
+	if (n != kn) return 0;
+	for (size_t i = 0; i < n; i++) { char c = p[i]; if (c >= 'A' && c <= 'Z') c += 32; if (c != kw[i]) return 0; }
+	return 1;
+}
+static int cf_f64(const char *p, size_t n, double *out) {
+	size_t i = 0;
+	if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+	if (!(cf_ci_eq(p + i, n - i, "inf") || cf_ci_eq(p + i, n - i, "infinity") || cf_ci_eq(p + i, n - i, "nan"))) {
+		size_t d1 = 0, d2 = 0;
+		while (i < n && p[i] >= '0' && p[i] <= '9') { i++; d1++; }
+		if (i < n && p[i] == '.') { i++; while (i < n && p[i] >= '0' && p[i] <= '9') { i++; d2++; } }
+		if (d1 + d2 == 0) return 0;
+		if (i < n && (p[i] == 'e' || p[i] == 'E')) {
+			i++;
+			if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+			size_t d3 = 0;
+			while (i < n && p[i] >= '0' && p[i] <= '9') { i++; d3++; }
+			if (d3 == 0) return 0;
+		}
+		if (i != n) return 0;
+	}
+	char *b = (char *)xrealloc(NULL, n + 1); memcpy(b, p, n); b[n] = 0;
+	*out = strtod(b, NULL);
+	free(b);
+	return 1;
+}
+
 // Apply one write-ops line (NUL-terminated, tab-split in place) via the library
-// Writer. A "-default" suffix means "only if absent".
-static void apply_op_c(shcl_doc *d, char *line) {
+// Writer, with the CLI's value gates. A "-default" suffix means "only if
+// absent"; values gate first, like the reference. Returns 0 ok, 1 rejected.
+static int try_apply_op_c(shcl_doc *d, char *line) {
 	size_t cap = 8, nf = 0; char **f = (char **)xrealloc(NULL, cap * sizeof *f);
 	f[nf++] = line;
 	for (char *p = line; *p; p++) if (*p == '\t') { *p = '\0'; if (nf == cap) { cap *= 2; f = (char **)xrealloc(f, cap * sizeof *f); } f[nf++] = p + 1; }
@@ -104,49 +150,65 @@ static void apply_op_c(shcl_doc *d, char *line) {
 	const char *v = nf > 2 ? f[2] : ""; size_t vn = nf > 2 ? strlen(f[2]) : 0;
 	size_t an = nf > 2 ? nf - 2 : 0;
 	size_t oplen = strlen(op);
+	int only_absent = 0, rc = 0, wrote = 1;
 	if (oplen >= 8 && !strcmp(op + oplen - 8, "-default")) {
-		if (shcl_exists(d, path, plen)) { free(f); return; }
+		only_absent = 1;
 		op[oplen - 8] = '\0';
 	}
-	if (!strcmp(op, "int")) shcl_set_int(d, path, plen, strtoll(v, NULL, 10));
-	else if (!strcmp(op, "float")) shcl_set_float(d, path, plen, strtod(v, NULL));
-	else if (!strcmp(op, "bool")) shcl_set_bool(d, path, plen, !strcmp(v, "true"));
-	else if (!strcmp(op, "string")) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); shcl_set_string(d, path, plen, b, m); free(b); }
-	else if (!strcmp(op, "datetime")) { shcl_datetime dt; S sv; sv.p = v; sv.n = vn; if (parse_datetime(&d->arena, sv, &dt)) shcl_set_datetime(d, path, plen, &dt); }
+	#define PRESENT (only_absent && shcl_exists(d, path, plen))
+	if (!strcmp(op, "int")) { int64_t x; if (!cf_i64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
+	else if (!strcmp(op, "float")) { double x; if (!cf_f64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
+	else if (!strcmp(op, "bool")) { if (!PRESENT) wrote = shcl_set_bool(d, path, plen, !strcmp(v, "true")); }
+	else if (!strcmp(op, "string")) { if (!PRESENT) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = shcl_set_string(d, path, plen, b, m); free(b); } }
+	else if (!strcmp(op, "datetime")) { shcl_datetime dt; S sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) rc = 1; else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
 	else if (!strcmp(op, "int-array")) {
 		int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
-		for (size_t i = 0; i < an; i++) a[i] = strtoll(f[2 + i], NULL, 10);
-		shcl_set_int_array(d, path, plen, a, an); free(a);
+		for (size_t i = 0; i < an && !rc; i++) if (!cf_i64(f[2 + i], strlen(f[2 + i]), &a[i])) rc = 1;
+		if (!rc && !PRESENT) wrote = shcl_set_int_array(d, path, plen, a, an);
+		free(a);
 	}
 	else if (!strcmp(op, "float-array")) {
 		double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
-		for (size_t i = 0; i < an; i++) a[i] = strtod(f[2 + i], NULL);
-		shcl_set_float_array(d, path, plen, a, an); free(a);
+		for (size_t i = 0; i < an && !rc; i++) if (!cf_f64(f[2 + i], strlen(f[2 + i]), &a[i])) rc = 1;
+		if (!rc && !PRESENT) wrote = shcl_set_float_array(d, path, plen, a, an);
+		free(a);
 	}
 	else if (!strcmp(op, "bool-array")) {
 		int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
 		for (size_t i = 0; i < an; i++) a[i] = !strcmp(f[2 + i], "true");
-		shcl_set_bool_array(d, path, plen, a, an); free(a);
-	}
-	else if (!strcmp(op, "string-array")) {
-		char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
-		for (size_t i = 0; i < an; i++) { size_t L = strlen(f[2 + i]); char *b = (char *)xrealloc(NULL, L ? L : 1); sl[i] = cf_unescape(f[2 + i], L, b); sv[i] = b; }
-		shcl_set_string_array(d, path, plen, (const char *const *)sv, sl, an);
-		for (size_t i = 0; i < an; i++) free(sv[i]);
-		free(sv); free(sl);
-	}
-	else if (!strcmp(op, "datetime-array")) {
-		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a); int ok = 1;
-		for (size_t i = 0; i < an; i++) { S sv; sv.p = f[2 + i]; sv.n = strlen(f[2 + i]); if (!parse_datetime(&d->arena, sv, &a[i])) ok = 0; }
-		if (ok) shcl_set_datetime_array(d, path, plen, a, an);
+		if (!PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an);
 		free(a);
 	}
-	else if (!strcmp(op, "raw")) { const char *cont = nf > 3 ? f[3] : ""; size_t cn = nf > 3 ? strlen(f[3]) : 0; char *b = (char *)xrealloc(NULL, cn ? cn : 1); size_t m = cf_unescape(cont, cn, b); shcl_set_raw(d, path, plen, b, m, v, vn); free(b); }
-	else if (!strcmp(op, "empty")) shcl_set_empty(d, path, plen);
-	else if (!strcmp(op, "comment")) shcl_set_comment(d, path, plen, v, vn);
-	else if (!strcmp(op, "remove")) shcl_remove(d, path, plen);
-	else { fprintf(stderr, "unknown op %s\n", op); nfail++; }
+	else if (!strcmp(op, "string-array")) {
+		if (!PRESENT) {
+			char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
+			sv[0] = NULL; sl[0] = 0; // silence -Wmaybe-uninitialized for the an==0 call
+			for (size_t i = 0; i < an; i++) { size_t L = strlen(f[2 + i]); char *b = (char *)xrealloc(NULL, L ? L : 1); sl[i] = cf_unescape(f[2 + i], L, b); sv[i] = b; }
+			wrote = shcl_set_string_array(d, path, plen, (const char *const *)sv, sl, an);
+			for (size_t i = 0; i < an; i++) free(sv[i]);
+			free(sv); free(sl);
+		}
+	}
+	else if (!strcmp(op, "datetime-array")) {
+		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
+		for (size_t i = 0; i < an && !rc; i++) { S sv; sv.p = f[2 + i]; sv.n = strlen(f[2 + i]); if (!parse_datetime(&d->arena, sv, &a[i])) rc = 1; }
+		if (!rc && !PRESENT) wrote = shcl_set_datetime_array(d, path, plen, a, an);
+		free(a);
+	}
+	else if (!strcmp(op, "raw")) { if (!PRESENT) { const char *cont = nf > 3 ? f[3] : ""; size_t cn = nf > 3 ? strlen(f[3]) : 0; char *b = (char *)xrealloc(NULL, cn ? cn : 1); size_t m = cf_unescape(cont, cn, b); wrote = shcl_set_raw(d, path, plen, b, m, v, vn); free(b); } }
+	else if (!strcmp(op, "empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
+	else if (!strcmp(op, "comment") && !only_absent) wrote = shcl_set_comment(d, path, plen, v, vn);
+	else if (!strcmp(op, "remove") && !only_absent) shcl_remove(d, path, plen);
+	else rc = 1; // unknown op
+	if (rc == 0 && !wrote) rc = 1;
+	#undef PRESENT
 	free(f);
+	return rc;
+}
+
+// Good-path wrapper: the op must apply.
+static void apply_op_c(shcl_doc *d, char *line) {
+	if (try_apply_op_c(d, line)) { fprintf(stderr, "write op rejected: %s\n", line); nfail++; }
 }
 
 static int cmp_str(const void *a, const void *b) { return strcmp(*(const char **)a, *(const char **)b); }
@@ -193,7 +255,30 @@ int main(int argc, char **argv) {
 		shcl_doc *d2 = shcl_parse(got.p, got.n);
 		shcl_str again = shcl_to_canonical(d2);
 		if (again.n != got.n || (got.n && memcmp(again.p, got.p, got.n) != 0)) fail(names[ci], "formatter is not idempotent");
-		shcl_free(d2); shcl_free(d);
+		shcl_free(d2);
+
+		// Diagnostics: count, line, severity, and stable code must match the golden
+		// (the same shape `check` prints to stdout at Standard).
+		snprintf(path, sizeof path, "%s/%s/expected-diags.txt", corpus, names[ci]); size_t dlen; char *ediags = read_file(path, &dlen);
+		if (!ediags) fail(names[ci], "missing expected-diags.txt");
+		else {
+			size_t ndiag = shcl_diag_count(d), nerr = 0;
+			char *dj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
+			for (size_t i = 0; i < ndiag; i++) {
+				if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
+				char ln[128]; int w = snprintf(ln, sizeof ln, "line %zu: %s: %s\n", shcl_diag_line(d, i), shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint", shcl_diag_code(d, i));
+				if (jl + (size_t)w + 1 > jc) { jc = (jl + (size_t)w + 1) * 2; dj = xrealloc(dj, jc); }
+				memcpy(dj + jl, ln, (size_t)w); jl += (size_t)w;
+			}
+			char sum[96]; int sw;
+			if (nerr) sw = snprintf(sum, sizeof sum, "failed: %zu diagnostic(s), %zu error(s)\n", ndiag, nerr);
+			else sw = snprintf(sum, sizeof sum, "ok (%zu diagnostic(s))\n", ndiag);
+			if (jl + (size_t)sw + 1 > jc) { jc = jl + (size_t)sw + 1; dj = xrealloc(dj, jc); }
+			memcpy(dj + jl, sum, (size_t)sw); jl += (size_t)sw;
+			if (jl != dlen || (dlen && memcmp(dj, ediags, dlen) != 0)) fail(names[ci], "diagnostics differ from expected-diags.txt");
+			free(dj); free(ediags);
+		}
+		shcl_free(d);
 
 		if (reads) {
 			char **lines; size_t nl = split_lines(reads, rlen, &lines);
@@ -264,10 +349,164 @@ int main(int argc, char **argv) {
 			if (wagain.n != wgot.n || (wgot.n && memcmp(wagain.p, wgot.p, wgot.n) != 0)) fail(names[ci], "written output is not a fmt fixpoint");
 			shcl_free(wd2); shcl_free(wd); free(olines); free(ops); free(ew);
 		}
+
+		// Bad-op dimension (optional): each write-bad.ops line, applied alone,
+		// must be rejected and leave the document unchanged.
+		snprintf(path, sizeof path, "%s/%s/write-bad.ops", corpus, names[ci]); size_t blen; char *bops = read_file(path, &blen);
+		if (bops) {
+			char **blines; size_t nbl = split_lines(bops, blen, &blines);
+			for (size_t li = 0; li < nbl; li++) {
+				if (blines[li][0] == '\0' || blines[li][0] == '#') continue;
+				shcl_doc *bd = shcl_parse(input, ilen);
+				shcl_str before = shcl_to_canonical(bd);
+				char *before_copy = (char *)xrealloc(NULL, before.n ? before.n : 1);
+				memcpy(before_copy, before.p, before.n); size_t before_n = before.n;
+				if (!try_apply_op_c(bd, blines[li])) fail(names[ci], "write-bad.ops line was accepted");
+				shcl_str after = shcl_to_canonical(bd);
+				if (after.n != before_n || (before_n && memcmp(after.p, before_copy, before_n) != 0)) fail(names[ci], "write-bad.ops line changed the document");
+				free(before_copy); shcl_free(bd);
+			}
+			free(blines); free(bops);
+		}
+
+		// Schema dimension (optional): golden = the exact `check --schema` stdout
+		// at Standard (doc parse diags, then validation diags, then the summary).
+		// A schema that does not load cleanly is a single V099, mirroring the CLI.
+		snprintf(path, sizeof path, "%s/%s/schema.shcl", corpus, names[ci]); size_t schlen; char *sch = read_file(path, &schlen);
+		if (sch) {
+			snprintf(path, sizeof path, "%s/%s/expected-validate.txt", corpus, names[ci]); size_t evlen; char *ev = read_file(path, &evlen);
+			if (!ev) { fail(names[ci], "schema.shcl without expected-validate.txt"); free(sch); }
+			else {
+				shcl_doc *vd = shcl_parse(input, ilen);
+				shcl_doc *sd = shcl_parse(sch, schlen);
+				int v99 = 0;
+				for (size_t i = 0; i < shcl_diag_count(sd); i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) v99 = 1;
+				shcl_validation *vv = v99 ? NULL : shcl_validate(vd, sd);
+				size_t nd = shcl_diag_count(vd), nv = vv ? shcl_validation_count(vv) : 0, nerr = 0;
+				size_t total = nd + nv + (v99 ? 1 : 0);
+				char *vj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
+				for (size_t i = 0; i < nd + nv + (size_t)(v99 ? 1 : 0); i++) {
+					char ln[128]; int w;
+					if (i < nd) {
+						if (shcl_diag_severity(vd, i) == SHCL_SEV_ERROR) nerr++;
+						w = snprintf(ln, sizeof ln, "line %zu: %s: %s\n", shcl_diag_line(vd, i), shcl_diag_severity(vd, i) == SHCL_SEV_ERROR ? "Error" : "Hint", shcl_diag_code(vd, i));
+					} else if (v99) {
+						nerr++;
+						w = snprintf(ln, sizeof ln, "line 0: Error: V099\n");
+					} else {
+						size_t k = i - nd;
+						if (shcl_validation_severity(vv, k) == SHCL_SEV_ERROR) nerr++;
+						w = snprintf(ln, sizeof ln, "line %zu: %s: %s\n", shcl_validation_line(vv, k), shcl_validation_severity(vv, k) == SHCL_SEV_ERROR ? "Error" : "Hint", shcl_validation_code(vv, k));
+					}
+					if (jl + (size_t)w + 1 > jc) { jc = (jl + (size_t)w + 1) * 2; vj = xrealloc(vj, jc); }
+					memcpy(vj + jl, ln, (size_t)w); jl += (size_t)w;
+				}
+				char sum[96]; int sw;
+				if (nerr) sw = snprintf(sum, sizeof sum, "failed: %zu diagnostic(s), %zu error(s)\n", total, nerr);
+				else sw = snprintf(sum, sizeof sum, "ok (%zu diagnostic(s))\n", total);
+				if (jl + (size_t)sw + 1 > jc) { jc = jl + (size_t)sw + 1; vj = xrealloc(vj, jc); }
+				memcpy(vj + jl, sum, (size_t)sw); jl += (size_t)sw;
+				if (jl != evlen || (evlen && memcmp(vj, ev, evlen) != 0)) fail(names[ci], "validation output differs from expected-validate.txt");
+				free(vj);
+				shcl_validation_free(vv); shcl_free(sd); shcl_free(vd); free(sch); free(ev);
+			}
+		}
+
+		// Layered-load dimension (optional): fold the layer*.shcl files (lowest
+		// first) and input.shcl (highest file layer) via the library shcl_merge,
+		// apply the merge.sets path=value overrides, match expected-merged.shcl.
+		snprintf(path, sizeof path, "%s/%s/expected-merged.shcl", corpus, names[ci]); size_t emlen; char *em = read_file(path, &emlen);
+		if (em) {
+			// Collect layer file names in the case dir, sorted (filename = priority).
+			char layerNames[64][256]; int nlayer = 0;
+			snprintf(path, sizeof path, "%s/%s", corpus, names[ci]);
+			DIR *cd = opendir(path);
+			if (cd) {
+				struct dirent *de;
+				while ((de = readdir(cd))) {
+					size_t dn = strlen(de->d_name);
+					if (dn > 5 && !strncmp(de->d_name, "layer", 5) && !strcmp(de->d_name + dn - 5, ".shcl") && nlayer < 64)
+						snprintf(layerNames[nlayer++], 256, "%s", de->d_name);
+				}
+				closedir(cd);
+			}
+			for (int a = 0; a < nlayer; a++) for (int b = a + 1; b < nlayer; b++) if (strcmp(layerNames[a], layerNames[b]) > 0) { char tmp[256]; memcpy(tmp, layerNames[a], 256); memcpy(layerNames[a], layerNames[b], 256); memcpy(layerNames[b], tmp, 256); }
+			// Fold: layer0 (base) then each higher layer, then input.shcl.
+			char *ltexts[65]; size_t llens[65]; int nt = 0;
+			shcl_doc *md = NULL;
+			for (int li = 0; li < nlayer; li++) {
+				snprintf(path, sizeof path, "%s/%s/%s", corpus, names[ci], layerNames[li]);
+				ltexts[nt] = read_file(path, &llens[nt]);
+				shcl_doc *dd = shcl_parse(ltexts[nt], llens[nt]); nt++;
+				if (!md) md = dd; else { shcl_merge(md, dd); shcl_free(dd); }
+			}
+			{
+				shcl_doc *dd = shcl_parse(input, ilen);
+				if (!md) md = dd; else { shcl_merge(md, dd); shcl_free(dd); }
+			}
+			// merge.sets: one path=value per line, applied as the top layer.
+			snprintf(path, sizeof path, "%s/%s/merge.sets", corpus, names[ci]); size_t mslen; char *ms = read_file(path, &mslen);
+			if (ms) {
+				char **slines; size_t nsl = split_lines(ms, mslen, &slines);
+				for (size_t li = 0; li < nsl; li++) {
+					if (slines[li][0] == '\0' || slines[li][0] == '#') continue;
+					char *eq = strchr(slines[li], '=');
+					if (eq) shcl_set_string(md, slines[li], (size_t)(eq - slines[li]), eq + 1, strlen(eq + 1));
+				}
+				free(slines); free(ms);
+			}
+			shcl_str mgot = shcl_to_canonical(md);
+			if (mgot.n != emlen || (emlen && memcmp(mgot.p, em, emlen) != 0)) fail(names[ci], "merged output differs from expected-merged.shcl");
+			shcl_doc *md2 = shcl_parse(mgot.p, mgot.n);
+			shcl_str magain = shcl_to_canonical(md2);
+			if (magain.n != mgot.n || (mgot.n && memcmp(magain.p, mgot.p, mgot.n) != 0)) fail(names[ci], "merged output is not a fmt fixpoint");
+			shcl_free(md2); shcl_free(md);
+			for (int li = 0; li < nt; li++) free(ltexts[li]);
+			free(em);
+		}
+
+		// Generation dimension (optional): Generate on the schema must reproduce
+		// the golden starter config, and that output must itself load cleanly.
+		snprintf(path, sizeof path, "%s/%s/init-schema.shcl", corpus, names[ci]); size_t islen; char *isch = read_file(path, &islen);
+		if (isch) {
+			snprintf(path, sizeof path, "%s/%s/expected-init.shcl", corpus, names[ci]); size_t eilen; char *ei = read_file(path, &eilen);
+			if (!ei) { fail(names[ci], "init-schema.shcl without expected-init.shcl"); free(isch); }
+			else {
+				shcl_doc *isd = shcl_parse(isch, islen);
+				int ok = 0;
+				shcl_str it = shcl_generate(isd, &ok);
+				if (!ok) fail(names[ci], "init schema has faults");
+				else {
+					if (it.n != eilen || (eilen && memcmp(it.p, ei, eilen) != 0)) fail(names[ci], "init output differs from expected-init.shcl");
+					shcl_doc *gd = shcl_parse(it.p, it.n);
+					int cln = 1;
+					for (size_t i = 0; i < shcl_diag_count(gd); i++) if (shcl_diag_severity(gd, i) == SHCL_SEV_ERROR) cln = 0;
+					if (!cln) fail(names[ci], "generated starter does not load cleanly");
+					// And it must satisfy the very schema that produced it.
+					shcl_validation *gv = shcl_validate(gd, isd);
+					for (size_t i = 0; i < shcl_validation_count(gv); i++)
+						if (shcl_validation_severity(gv, i) == SHCL_SEV_ERROR) { fail(names[ci], "generated starter fails its own schema"); break; }
+					shcl_validation_free(gv);
+					shcl_free(gd);
+				}
+				shcl_free(isd); free(isch); free(ei);
+			}
+		}
 		free(input); free(expected); free(reads);
 	}
 	for (size_t i = 0; i < nn; i++) free(names[i]);
 	free(names);
+	// paths(): file order, deduplicated, bare-name-safe segments only (a
+	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	{
+		const char *pt = "a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n";
+		shcl_doc *pd = shcl_parse(pt, strlen(pt));
+		shcl_str *pv; size_t pn = shcl_paths(pd, &pv);
+		const char *want[] = { "a", "a.b", "x", "x.b" };
+		if (pn != 4) fail("paths", "count mismatch");
+		else for (size_t i = 0; i < 4; i++) if (pv[i].n != strlen(want[i]) || memcmp(pv[i].p, want[i], pv[i].n) != 0) { fail("paths", "fixture mismatch"); break; }
+		shcl_free(pd);
+	}
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }
 	printf("conformance: %zu case(s) pass\n", nn);
 	return 0;

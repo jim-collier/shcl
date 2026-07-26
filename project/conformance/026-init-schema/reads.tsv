@@ -1,0 +1,3 @@
+query	type	expected	status
+server.port	int	8080	Good
+-	load	ok	-

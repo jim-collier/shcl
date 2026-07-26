@@ -27,7 +27,7 @@ template <class T> struct Read {
 	bool ok() const { return status == Status::Good || status == Status::Empty; }
 };
 
-struct Diagnostic { std::size_t line; bool is_error; std::string message; };
+struct Diagnostic { std::size_t line; bool is_error; std::string message; std::string code; };
 
 inline std::string to_str(shcl_str s) { return std::string(s.p, s.n); }
 
@@ -53,11 +53,46 @@ public:
 	std::vector<Diagnostic> diagnostics() const {
 		std::vector<Diagnostic> v; std::size_t n = shcl_diag_count(d_);
 		for (std::size_t i = 0; i < n; i++)
-			v.push_back({shcl_diag_line(d_, i), shcl_diag_severity(d_, i) == SHCL_SEV_ERROR, to_str(shcl_diag_message(d_, i))});
+			v.push_back({shcl_diag_line(d_, i), shcl_diag_severity(d_, i) == SHCL_SEV_ERROR, to_str(shcl_diag_message(d_, i)), shcl_diag_code(d_, i)});
 		return v;
 	}
 
+	// Schema validation (spec.md "Schema validation"): empty result = conforms.
+	// Schema faults (V09x, schema-file lines) suppress data validation.
+	std::vector<Diagnostic> validate(const Document &schema) const {
+		std::vector<Diagnostic> v;
+		shcl_validation *r = shcl_validate(d_, schema.d_);
+		std::size_t n = shcl_validation_count(r);
+		for (std::size_t i = 0; i < n; i++)
+			v.push_back({shcl_validation_line(r, i), shcl_validation_severity(r, i) == SHCL_SEV_ERROR, to_str(shcl_validation_message(r, i)), shcl_validation_code(r, i)});
+		shcl_validation_free(r);
+		return v;
+	}
+
+	// Layered loading: overlay `over` (a higher-priority layer) onto this doc.
+	// Leaf names in `over` override; container instances merge by (name, value).
+	void merge(const Document &over) { shcl_merge(d_, over.d_); }
+
+	// Schema-driven generation (`shcl init`): a commented, typed starter config
+	// from this document read as a schema. ok is set false on schema faults;
+	// for the fault list, validate() an empty document against this schema -
+	// it reproduces the same V09x diagnostics.
+	std::string generate(bool &ok) const {
+		int iok = 0;
+		std::string s = to_str(shcl_generate(d_, &iok));
+		ok = iok != 0;
+		return s;
+	}
+
 	std::size_t count(std::string_view p) const { return shcl_count(d_, p.data(), p.size()); }
+	// Every field path, file order, deduplicated (bare-name-safe segments only).
+	std::vector<std::string> paths() const {
+		shcl_str *v; std::size_t n = shcl_paths(d_, &v);
+		std::vector<std::string> r; r.reserve(n);
+		for (std::size_t i = 0; i < n; i++) r.push_back(to_str(v[i]));
+		return r;
+	}
+
 	std::vector<std::string> instances(std::string_view p) const {
 		shcl_str *a; std::size_t n = shcl_instances(d_, p.data(), p.size(), &a);
 		std::vector<std::string> v; v.reserve(n);
@@ -95,7 +130,13 @@ public:
 	}
 
 	// Compile-time-typed read: get<int64_t>/get<double>/get<bool>/get<std::string>.
-	template <class T> Read<T> get(std::string_view p) const;
+	// Any other T - a bare `int` included - fails right here with this message,
+	// not as a bare undefined-symbol link error.
+	template <class T> Read<T> get(std::string_view) const {
+		static_assert(sizeof(T) == 0,
+			"shcl::Document::get<T>: T must be exactly int64_t, double, bool, or std::string");
+		return {};
+	}
 
 	// Convenience tier: the value, or the call-site fallback unless Good - so a
 	// missing/empty/bad/ambiguous read cannot masquerade as a real zero.

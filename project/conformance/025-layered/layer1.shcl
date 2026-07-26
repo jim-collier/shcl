@@ -1,0 +1,7 @@
+# base defaults (lowest layer)
+port: 8080
+tags: red
+tags: blue
+timeout: 30
+server: web1
+	port: 80

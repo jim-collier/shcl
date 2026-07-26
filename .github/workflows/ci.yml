@@ -20,28 +20,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      ## Actions by commit SHA (tag in the comment), so a moved tag cannot
+      ## silently change what runs.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       ## rustup on the runner reads rust-toolchain.toml and fetches the pinned
       ## toolchain on first cargo call; keep "what passing means" in the engine.
       ## Go version comes from go.mod (no go.sum - the binding is zero-dep, so
       ## the module cache is off).
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: source/go/go.mod
           cache: false
       ## Python binding is a zero-dep single file; pin the interpreter so a runner
       ## image bump can't silently shift float/coercion formatting under it.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       ## Lint-stage tools beyond the toolchains. ruff/mypy/cppcheck ride the
       ## setup-python interpreter; markdownlint via npm; PSScriptAnalyzer into
       ## the runner's preinstalled pwsh. shellcheck is already on the image.
+      ## Versions match cicd/config.bash TOOL_PINS, so CI and the local gate
+      ## agree about what "passing" was tested against.
       - run: |
-          pip install ruff mypy cppcheck
-          npm install -g markdownlint-cli2
+          pip install ruff==0.15.22 mypy==2.3.0 cppcheck==2.17.1
+          npm install -g markdownlint-cli2@0.23.1
           pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -Force -Scope CurrentUser'
-      - uses: actions/cache@v4
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: |
             ~/.cargo/registry

@@ -1,0 +1,4 @@
+query	type	expected	status	level
+server	count	3	-
+retries	float	2.5	Good
+retries	int	3	Good	loose

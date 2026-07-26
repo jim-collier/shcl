@@ -1,0 +1,15 @@
+int	k	0x10
+int	k	abc
+int	k	12x
+int	k	99999999999999999999
+int	k	1_0
+int	k	 5 
+int	k	١٢
+int	k	
+float	k	1_0.5
+float	k	0x10p2
+float	k	.
+float	k	5..5
+datetime	k	notadate
+string	server[*].x	v
+int	server[#9].x	1

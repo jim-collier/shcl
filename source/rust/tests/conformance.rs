@@ -5,7 +5,7 @@
 //! the Rust reference runs it natively here. Case layout and reads.tsv column
 //! meanings are documented in project/conformance/README.md.
 
-use shcl::{Document, Strictness, parse_datetime};
+use shcl::{Document, Strictness, generate, parse_datetime};
 use std::path::{Path, PathBuf};
 
 fn corpus_dir() -> PathBuf {
@@ -31,9 +31,24 @@ struct Case {
 	input: String,
 	expected_fmt: String,
 	reads: String,
+	// Golden `check` stdout at Standard: diag lines (line/severity/code) + summary.
+	expected_diags: String,
 	// Write dimension (optional): an ops script and its golden canonical output.
 	write_ops: Option<String>,
 	expected_write: Option<String>,
+	// Bad-op dimension (optional): ops that must each be rejected, applied alone.
+	write_bad_ops: Option<String>,
+	// Schema dimension (optional): a schema and the golden `check --schema` stdout.
+	schema: Option<String>,
+	expected_validate: Option<String>,
+	// Layered-load dimension (optional): lower-priority layer files (in filename
+	// order), optional `path=value` overrides, and the golden merged canonical.
+	layers: Vec<String>,
+	merge_sets: Option<String>,
+	expected_merged: Option<String>,
+	// Generation dimension (optional): a schema and the golden `init` output.
+	init_schema: Option<String>,
+	expected_init: Option<String>,
 }
 
 /// Decode an ops value: \n \t \\ only, others verbatim (mirrors the CLI).
@@ -59,57 +74,54 @@ fn unescape_ops(s: &str) -> String {
 	out
 }
 
-/// Apply one write-ops line to the document via the library Writer.
-fn apply_op(doc: &mut Document, line: &str, at: &str) {
+/// Apply one write-ops line via the library Writer, with the same value gates
+/// the CLI applies. Err = the op must be rejected (bad value or unusable path).
+fn try_apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	let f: Vec<&str> = line.split('\t').collect();
 	let path = f.get(1).copied().unwrap_or("");
 	let v = f.get(2).copied().unwrap_or("");
-	let ints = |xs: &[&str]| {
-		xs.iter()
-			.map(|s| s.parse::<i64>().unwrap())
-			.collect::<Vec<_>>()
-	};
-	let flts = |xs: &[&str]| {
-		xs.iter()
-			.map(|s| s.parse::<f64>().unwrap())
-			.collect::<Vec<_>>()
-	};
+	let pint = |s: &str| s.parse::<i64>().map_err(|_| format!("bad int: {}", s));
+	let pflt = |s: &str| s.parse::<f64>().map_err(|_| format!("bad float: {}", s));
+	let ints = |xs: &[&str]| xs.iter().map(|s| pint(s)).collect::<Result<Vec<_>, _>>();
+	let flts = |xs: &[&str]| xs.iter().map(|s| pflt(s)).collect::<Result<Vec<_>, _>>();
 	let bools = |xs: &[&str]| xs.iter().map(|s| *s == "true").collect::<Vec<_>>();
-	let dt = |s: &str| parse_datetime(s).unwrap_or_else(|| panic!("{}: bad datetime {}", at, s));
+	let dt = |s: &str| parse_datetime(s).ok_or_else(|| format!("bad datetime: {}", s));
 	let arr = &f[2.min(f.len())..];
-	match f.first().copied().unwrap_or("") {
-		"int" => doc.set_int(path, v.parse().unwrap()),
-		"float" => doc.set_float(path, v.parse().unwrap()),
+	let wrote = match f.first().copied().unwrap_or("") {
+		"int" => doc.set_int(path, pint(v)?),
+		"float" => doc.set_float(path, pflt(v)?),
 		"bool" => doc.set_bool(path, v == "true"),
 		"string" => doc.set_string(path, &unescape_ops(v)),
-		"datetime" => doc.set_datetime(path, &dt(v)),
-		"int-default" => doc.set_int_default(path, v.parse().unwrap()),
-		"float-default" => doc.set_float_default(path, v.parse().unwrap()),
+		"datetime" => doc.set_datetime(path, &dt(v)?),
+		"int-default" => doc.set_int_default(path, pint(v)?),
+		"float-default" => doc.set_float_default(path, pflt(v)?),
 		"bool-default" => doc.set_bool_default(path, v == "true"),
 		"string-default" => doc.set_string_default(path, &unescape_ops(v)),
-		"datetime-default" => doc.set_datetime_default(path, &dt(v)),
-		"int-array" => doc.set_int_array(path, &ints(arr)),
-		"float-array" => doc.set_float_array(path, &flts(arr)),
+		"datetime-default" => doc.set_datetime_default(path, &dt(v)?),
+		"int-array" => doc.set_int_array(path, &ints(arr)?),
+		"float-array" => doc.set_float_array(path, &flts(arr)?),
 		"bool-array" => doc.set_bool_array(path, &bools(arr)),
 		"string-array" => {
 			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
-			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>())
 		}
 		"datetime-array" => {
-			doc.set_datetime_array(path, &arr.iter().map(|s| dt(s)).collect::<Vec<_>>())
+			let dts = arr.iter().map(|s| dt(s)).collect::<Result<Vec<_>, _>>()?;
+			doc.set_datetime_array(path, &dts)
 		}
-		"int-array-default" => doc.set_int_array_default(path, &ints(arr)),
-		"float-array-default" => doc.set_float_array_default(path, &flts(arr)),
+		"int-array-default" => doc.set_int_array_default(path, &ints(arr)?),
+		"float-array-default" => doc.set_float_array_default(path, &flts(arr)?),
 		"bool-array-default" => doc.set_bool_array_default(path, &bools(arr)),
 		"string-array-default" => {
 			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
 			doc.set_string_array_default(
 				path,
 				&owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-			);
+			)
 		}
 		"datetime-array-default" => {
-			doc.set_datetime_array_default(path, &arr.iter().map(|s| dt(s)).collect::<Vec<_>>())
+			let dts = arr.iter().map(|s| dt(s)).collect::<Result<Vec<_>, _>>()?;
+			doc.set_datetime_array_default(path, &dts)
 		}
 		"raw" => doc.set_raw(path, &unescape_ops(f.get(3).copied().unwrap_or("")), v),
 		"raw-default" => {
@@ -119,9 +131,19 @@ fn apply_op(doc: &mut Document, line: &str, at: &str) {
 		"comment" => doc.set_comment(path, v),
 		"remove" => {
 			doc.remove(path);
+			true
 		}
-		other => panic!("{}: unknown op '{}'", at, other),
+		other => return Err(format!("unknown op: {}", other)),
+	};
+	if !wrote {
+		return Err(format!("cannot write {}", path));
 	}
+	Ok(())
+}
+
+/// Good-path wrapper: the op must apply.
+fn apply_op(doc: &mut Document, line: &str, at: &str) {
+	try_apply_op(doc, line).unwrap_or_else(|e| panic!("{}: {}", at, e));
 }
 
 fn load_cases() -> Vec<Case> {
@@ -139,13 +161,33 @@ fn load_cases() -> Vec<Case> {
 			continue;
 		}
 		let read_opt = |name: &str| std::fs::read_to_string(path.join(name)).ok();
+		// Layer files: every `layer*.shcl`, read in filename (= priority) order.
+		let mut layer_names: Vec<String> = std::fs::read_dir(&path)
+			.unwrap()
+			.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+			.filter(|n| n.starts_with("layer") && n.ends_with(".shcl"))
+			.collect();
+		layer_names.sort();
+		let layers: Vec<String> = layer_names
+			.iter()
+			.map(|n| std::fs::read_to_string(path.join(n)).unwrap())
+			.collect();
 		cases.push(Case {
 			name: path.file_name().unwrap().to_string_lossy().into_owned(),
 			input: std::fs::read_to_string(&input).unwrap(),
 			expected_fmt: std::fs::read_to_string(path.join("expected.shcl")).unwrap(),
 			reads: std::fs::read_to_string(path.join("reads.tsv")).unwrap(),
+			expected_diags: std::fs::read_to_string(path.join("expected-diags.txt")).unwrap(),
 			write_ops: read_opt("write.ops"),
 			expected_write: read_opt("expected-write.shcl"),
+			write_bad_ops: read_opt("write-bad.ops"),
+			schema: read_opt("schema.shcl"),
+			expected_validate: read_opt("expected-validate.txt"),
+			layers,
+			merge_sets: read_opt("merge.sets"),
+			expected_merged: read_opt("expected-merged.shcl"),
+			init_schema: read_opt("init-schema.shcl"),
+			expected_init: read_opt("expected-init.shcl"),
 		});
 	}
 	cases.sort_by(|a, b| a.name.cmp(&b.name));
@@ -178,6 +220,94 @@ fn canonical_format_matches_expected() {
 		// The formatter must be a fixpoint: canonicalizing its own output changes nothing.
 		let again = Document::parse(&got).to_canonical();
 		assert_eq!(again, got, "{}: formatter is not idempotent", case.name);
+	}
+}
+
+#[test]
+fn diagnostics_match_expected() {
+	// Pins count, line, severity, and stable code per case - the same shape
+	// `check` prints to stdout at Standard (its cross-binding contract).
+	for case in load_cases() {
+		let doc = Document::parse(&case.input);
+		let diags = doc.diagnostics();
+		let mut got = String::new();
+		for d in diags {
+			got.push_str(&format!("line {}: {:?}: {}\n", d.line, d.severity, d.code));
+		}
+		let errors = diags
+			.iter()
+			.filter(|d| d.severity == shcl::Severity::Error)
+			.count();
+		if errors > 0 {
+			got.push_str(&format!(
+				"failed: {} diagnostic(s), {} error(s)\n",
+				diags.len(),
+				errors
+			));
+		} else {
+			got.push_str(&format!("ok ({} diagnostic(s))\n", diags.len()));
+		}
+		assert_eq!(
+			got, case.expected_diags,
+			"{}: diagnostics differ from expected-diags.txt",
+			case.name
+		);
+	}
+}
+
+#[test]
+fn validation_matches_expected() {
+	// Schema dimension: golden = the exact `check --schema` stdout at Standard
+	// (doc parse diags, then validation diags, then the summary). A schema that
+	// does not load cleanly is a single V099, mirroring the CLI.
+	for case in load_cases() {
+		let (schema_text, want) = match (&case.schema, &case.expected_validate) {
+			(Some(s), Some(w)) => (s, w),
+			(None, None) => continue,
+			_ => panic!(
+				"{}: schema.shcl and expected-validate.txt must come as a pair",
+				case.name
+			),
+		};
+		let doc = Document::parse(&case.input);
+		let mut diags: Vec<shcl::Diagnostic> = doc.diagnostics().to_vec();
+		let sdoc = Document::parse(schema_text);
+		if sdoc
+			.diagnostics()
+			.iter()
+			.any(|d| d.severity == shcl::Severity::Error)
+		{
+			diags.push(shcl::Diagnostic {
+				line: 0,
+				severity: shcl::Severity::Error,
+				message: "schema failed to load".to_string(),
+				code: "V099",
+			});
+		} else {
+			diags.extend(doc.validate(&sdoc));
+		}
+		let mut got = String::new();
+		for d in &diags {
+			got.push_str(&format!("line {}: {:?}: {}\n", d.line, d.severity, d.code));
+		}
+		let errors = diags
+			.iter()
+			.filter(|d| d.severity == shcl::Severity::Error)
+			.count();
+		if errors > 0 {
+			got.push_str(&format!(
+				"failed: {} diagnostic(s), {} error(s)\n",
+				diags.len(),
+				errors
+			));
+		} else {
+			got.push_str(&format!("ok ({} diagnostic(s))\n", diags.len()));
+		}
+		assert_eq!(
+			got, *want,
+			"{}: validation output differs from expected-validate.txt",
+			case.name
+		);
 	}
 }
 
@@ -390,4 +520,159 @@ fn write_ops_match_expected() {
 			case.name
 		);
 	}
+}
+
+#[test]
+fn layered_merge_matches_expected() {
+	// Layered-load dimension: fold the layer files (lowest first) and input.shcl
+	// (highest file layer) via the library `merge`, apply the `path=value`
+	// overrides as the top layer, and match the golden merged canonical.
+	for case in load_cases() {
+		let Some(want) = &case.expected_merged else {
+			continue;
+		};
+		// Ordered lowest -> highest: the layer*.shcl files, then input.shcl.
+		let mut texts: Vec<&str> = case.layers.iter().map(|s| s.as_str()).collect();
+		texts.push(&case.input);
+		let mut doc = Document::parse(texts[0]);
+		for t in &texts[1..] {
+			doc.merge(&Document::parse(t));
+		}
+		if let Some(sets) = &case.merge_sets {
+			for line in sets.lines() {
+				if line.is_empty() || line.starts_with('#') {
+					continue;
+				}
+				let (p, v) = line
+					.split_once('=')
+					.unwrap_or_else(|| panic!("{}: bad merge.sets line: {}", case.name, line));
+				doc.set_string(p, v);
+			}
+		}
+		let got = doc.to_canonical();
+		assert_eq!(
+			&got, want,
+			"{}: merged output differs from expected-merged.shcl",
+			case.name
+		);
+		// The merged doc must be a formatter fixpoint like any canonical output.
+		let again = Document::parse(&got).to_canonical();
+		assert_eq!(
+			again, got,
+			"{}: merged output is not a fmt fixpoint",
+			case.name
+		);
+	}
+}
+
+#[test]
+fn init_generation_matches_expected() {
+	// Generation dimension: `generate` on the schema must reproduce the golden
+	// starter config, and that output must itself load cleanly.
+	for case in load_cases() {
+		let (schema, want) = match (&case.init_schema, &case.expected_init) {
+			(Some(s), Some(w)) => (s, w),
+			(None, None) => continue,
+			_ => panic!(
+				"{}: init-schema.shcl and expected-init.shcl must come as a pair",
+				case.name
+			),
+		};
+		let got = generate(&Document::parse(schema))
+			.unwrap_or_else(|_| panic!("{}: init schema has faults", case.name));
+		assert_eq!(
+			&got, want,
+			"{}: init output differs from expected-init.shcl",
+			case.name
+		);
+		// The generated starter must be valid SHCL (loads with no error diagnostics).
+		let doc = Document::parse(&got);
+		assert!(
+			!doc.diagnostics()
+				.iter()
+				.any(|d| d.severity == shcl::Severity::Error),
+			"{}: generated starter does not load cleanly",
+			case.name
+		);
+		// And it must satisfy the very schema that produced it - case 026's
+		// golden once failed its own schema (repeat lower bound and a
+		// materialized wildcard were ignored).
+		let sdoc = Document::parse(schema);
+		let vs = doc.validate(&sdoc);
+		assert!(
+			!vs.iter().any(|d| d.severity == shcl::Severity::Error),
+			"{}: generated starter fails its own schema: {:?}",
+			case.name,
+			vs
+		);
+	}
+}
+
+#[test]
+fn depth_cap_boundary_and_writer() {
+	// Exactly at the cap: loads clean, formats, and round-trips.
+	let segs: Vec<String> = (0..shcl::MAX_DEPTH).map(|i| format!("a{}", i)).collect();
+	let at_cap = format!("{}: 1", segs.join("."));
+	let doc = Document::parse(&at_cap);
+	assert!(doc.diagnostics().is_empty(), "at-cap doc must load clean");
+	let out = doc.to_canonical();
+	assert_eq!(Document::parse(&out).to_canonical(), out);
+	// One past the cap: a single E016, line skipped, strict load fails.
+	let over = format!("a.{}: 1", segs.join("."));
+	let doc2 = Document::parse(&over);
+	assert_eq!(doc2.diagnostics().len(), 1);
+	assert_eq!(doc2.diagnostics()[0].code, "E016");
+	assert_eq!(doc2.to_canonical(), "");
+	// The Writer refuses to create past the cap and stays a no-op.
+	let mut w = Document::new();
+	let deep_path = format!("a.{}", segs.join("."));
+	w.set_int(&deep_path, 1);
+	assert!(
+		!w.exists("a"),
+		"writer must not half-create a too-deep path"
+	);
+	w.set_int(&segs.join("."), 2);
+	assert!(w.exists("a0"), "writer must still create an at-cap path");
+}
+
+#[test]
+fn write_bad_ops_are_rejected() {
+	// Bad-op dimension: each write-bad.ops line, applied alone to the case
+	// input, must be rejected (bad value, bad datetime, or unusable path) and
+	// leave the document unchanged.
+	for case in load_cases() {
+		let Some(bad) = &case.write_bad_ops else {
+			continue;
+		};
+		for (n, line) in bad.lines().enumerate() {
+			if line.is_empty() || line.starts_with('#') {
+				continue;
+			}
+			let mut doc = Document::parse(&case.input);
+			let before = doc.to_canonical();
+			assert!(
+				try_apply_op(&mut doc, line).is_err(),
+				"{}: write-bad.ops line {} was accepted: {}",
+				case.name,
+				n + 1,
+				line
+			);
+			assert_eq!(
+				doc.to_canonical(),
+				before,
+				"{}: write-bad.ops line {} changed the document: {}",
+				case.name,
+				n + 1,
+				line
+			);
+		}
+	}
+}
+
+#[test]
+fn paths_enumeration_shape() {
+	// paths(): file order, deduplicated, bare-name-safe segments only (a
+	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	let doc = Document::parse("a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n");
+	assert_eq!(doc.paths(), vec!["a", "a.b", "x", "x.b"]);
 }

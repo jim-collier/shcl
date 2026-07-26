@@ -67,6 +67,31 @@ int main() {
 	CHECK(doc.get_or<int64_t>("nope", 9) == 9);
 	CHECK(doc.get_or<std::string>("nope", std::string("fb")) == "fb");
 
+	// Schema validation rides through the veneer: a conforming doc is clean, a
+	// violation carries its stable V-code, a schema fault suppresses the rest.
+	auto schema = shcl::Document::parse("field: port\n\ttype: int\n\tmin: 1\nfield: city\nfield: ratio\nfield: name\nfield: on\nfield: tags\n");
+	CHECK(doc.validate(schema).empty());
+	auto badschema = shcl::Document::parse("field: port\n\ttype: int\n\tmin: 90000\n");
+	auto vd = doc.validate(badschema);
+	CHECK(vd.size() >= 1 && vd[0].code == "V005");
+	auto broken = shcl::Document::parse("field: port\n\tfrobnicate: 1\n");
+	auto fd = doc.validate(broken);
+	CHECK(fd.size() == 1 && fd[0].code == "V090");
+
+	// Layered loading: overlay a higher-priority doc; leaf override, container merge.
+	auto base = shcl::Document::parse("port: 8080\nserver: web1\n\tport: 80\n");
+	auto over = shcl::Document::parse("port: 9090\nserver: web1\n\thost: h1\n");
+	base.merge(over);
+	CHECK(base.get_or<int64_t>("port", 0) == 9090);
+	CHECK(base.get_or<int64_t>("server[web1].port", 0) == 80);
+	CHECK(base.get_or<std::string>("server[web1].host", std::string()) == "h1");
+
+	// Schema-driven generation: a starter config with a required live field.
+	auto gschema = shcl::Document::parse("field: port\n\ttype: int\n\trequired: yes\n\tdefault: 8080\n");
+	bool gok = false;
+	std::string starter = gschema.generate(gok);
+	CHECK(gok && starter == "# int, required\nport: 8080\n");
+
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");
 	return 0;

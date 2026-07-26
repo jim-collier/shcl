@@ -74,6 +74,7 @@ LINT_EXTRA=(
 	'cppcheck --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
 	'markdownlint-cli2'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Severity Warning,Error -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error -EnableExit"'
 )
 ## n8git_backup-and-publish is excluded: SC1083 false-hits its legitimate git
 ## @{u} upstream refs, and the script is a proven drop-in kept byte-close to its
@@ -83,9 +84,12 @@ SHELLCHECK_TARGETS=(
 	cicd/config.bash
 	cicd/utility/crosscheck.bash
 	cicd/utility/lint-report.bash
+	cicd/utility/package.bash
 	cicd/utility/git-auto-msg.bash
 	cicd/utility/include/gfs-rotate.bash
 	source/bash/shcl.bash
+	install.bash
+	install-dev.bash
 )
 
 ## Stage 4: tests. cargo test runs the conformance corpus (project/conformance/)
@@ -96,7 +100,7 @@ TEST_EXTRA=(
 	'go -C source/go test ./...'
 	'python3 source/python/tests/conformance.py'
 	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
-	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
+	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
 )
 
 ## Stage 4b: cross-binding differential check (crosscheck.bash). Every entry is
@@ -125,6 +129,18 @@ PROFILE_BIN="source/rust/target/profiling/${EXE_NAME}"
 PROFILE_OUT_DIR="cicd/artifacts/profiling"   ## relative to repo root; gitignored
 PROFILE_WORKLOAD_GEN='{ for i in $(seq 40); do cat project/conformance/*/input.shcl cicd/demo/app.shcl; echo; done; } > "${PROFILE_WORKLOAD}"'
 PROFILE_RUN='SHCL_PROFILE_OUT="${PROFILE_OUT}" SHCL_PROFILE_SECS="${PROFILE_SECS}" "${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null'
+## Wall-clock per surface, logged after the flamegraph: the graph shows where
+## time goes inside fmt, these catch merge/validate/generate/set/read going
+## quadratic without moving a sample. "name|command"; nonzero exit = FAILED
+## (append `|| [ $? -eq N ]` where a nonzero exit is the expected outcome).
+PROFILE_TIMED=(
+	'fmt|"${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null'
+	'merge|"${PROFILE_BIN}" fmt --layer="${PROFILE_WORKLOAD}" "${PROFILE_WORKLOAD}" >/dev/null'
+	'reads|"${PROFILE_BIN}" instances "${PROFILE_WORKLOAD}" server >/dev/null && "${PROFILE_BIN}" count "${PROFILE_WORKLOAD}" server >/dev/null'
+	'validate|"${PROFILE_BIN}" check --schema=project/conformance/021-schema-valid/schema.shcl "${PROFILE_WORKLOAD}" >/dev/null 2>&1 || [ $? -eq 6 ]'
+	'generate|"${PROFILE_BIN}" init --schema=project/conformance/026-init-schema/init-schema.shcl >/dev/null'
+	'set|printf "int\tprofile.k\t1\nstring\tprofile.s\tv\nremove\tprofile.k\n" | "${PROFILE_BIN}" set "${PROFILE_WORKLOAD}" >/dev/null'
+)
 
 ## Stage 6: native release + cross targets. One per line:
 ## "label|os-arch|artifact|command...". os-arch feeds the versioned artifact name
@@ -138,6 +154,13 @@ CROSS_TARGETS=(
 	"Windows ARM64 (zig)|windows-arm64|source/rust/target/aarch64-pc-windows-gnullvm/release/${EXE_NAME}.exe|cargo zigbuild --release -j \${CPU_CAP} --manifest-path ${MANIFEST} --target aarch64-pc-windows-gnullvm"
 )
 RELEASE_ARTIFACT_DIR="cicd/artifacts/release"   ## relative to repo root; gitignored
+
+## Stage 6b: installer packages over the artifact dir (utility/package.bash):
+## .deb + .rpm via nfpm per Linux binary, an NSIS setup per Windows binary, all
+## named into the shcl-<version>-* family so the sha256sums rewrite covers them.
+## Config template: cicd/packaging/nfpm.yaml; installer script: packaging/shcl.nsi.
+## Off under --ci (no release builds there) and --quick (partial artifact set).
+PACKAGE_ENABLE=1
 
 ## Stage 7: dogfood. Drop the freshly built native release binary into the first
 ## existing+writable dir below, under EXE_NAME, so the copy you launch by hand is
@@ -193,3 +216,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-07-13 JC: Dogfood stage: install the native release binary (+ bash wrapper when it exists) to a fixed local dir.
 ##		- 2026-07-13 JC: C binding wired in: cc build extra (-Werror) + conformance/veneer test extras + fourth crosscheck entry.
 ##		- 2026-07-18 JC: Lint stage widened: ruff + mypy, cppcheck, markdownlint, PSScriptAnalyzer, with tool pins.
+##		- 2026-07-22 JC: Packaging wired: PACKAGE_ENABLE + package.bash in the shellcheck list.

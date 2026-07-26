@@ -8,6 +8,7 @@
 
 import os
 import signal
+import stat
 import sys
 
 # The single-file library sits two directories up (lib in source/python/, CLI in
@@ -16,15 +17,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realp
 import shcl  # noqa: E402
 
 # Keep in step with source/rust/Cargo.toml, the canonical version source.
-VERSION = "1.0.0-beta2"
+VERSION = "1.0.0-rc1"
 
 HELP = """shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
-  shcl set [options] FILE                apply write-ops (stdin) and print canonical
+  shcl set [--write|-w] [options] FILE   apply write-ops (stdin); print canonical
+                                         (or rewrite FILE in place with --write)
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
+                                         (--schema=SCHEMA also validates FILE
+                                         against a schema, itself a .shcl file)
+  shcl init --schema=SCHEMA              print a commented starter config from
+                                         a schema (required fields live, optional
+                                         commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
@@ -53,12 +60,22 @@ Options:
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
+  --schema=SCHEMA                        (check/init) validate FILE against a
+                                         schema; adds V### diagnostics
+  --layer=FILE                           (get/fmt/count/instances/set) merge a
+                                         lower-priority layer under FILE;
+                                         repeatable, earlier = lower priority
+  --set=PATH=VALUE                       override one path as the top layer,
+                                         after all files; repeatable
 
 Value options accept either spelling: --default=VALUE or --default VALUE.
-FILE may be '-' for stdin.
+An option a subcommand does not use is a usage error, not ignored.
+FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
+each --layer is merged under it in order; --set applies last. 'fmt' with
+layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
-5 multiple instances, 6 strict load failure.
+5 multiple instances, 6 check failed or strict load failure.
 """
 
 
@@ -67,7 +84,7 @@ def status_code(st):
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "args")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "schema", "layers", "sets", "args", "seen")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -76,23 +93,42 @@ class _Opts:
 		self.default = None
 		self.on_bad = "flag"     # error|default|flag
 		self.strictness = shcl.Strictness.Standard
+		self.schema = None
 		self.write = False
+		self.layers = []         # lower-priority layers, in listed order
+		self.sets = []           # final override layer: (path, value)
 		self.args = []           # positional: FILE [PATH]
+		self.seen = []           # canonical names of options given, for per-command validation
 
 
 def _set_value_opt(o, name, v):
 	if name == "--default":
 		o.default = v
 		o.on_bad = "default"
+		o.seen.append("--default")
 	elif name == "--on-bad":
 		if v not in ("error", "default", "flag"):
 			raise ValueError("bad --on-bad value: {}".format(v))
 		o.on_bad = v
+		o.seen.append("--on-bad")
 	elif name == "--strictness":
 		s = shcl.Strictness.from_arg(v)
 		if s is None:
 			raise ValueError("bad --strictness value: {}".format(v))
 		o.strictness = s
+		o.seen.append("--strictness")
+	elif name == "--schema":
+		o.schema = v
+		o.seen.append("--schema")
+	elif name == "--layer":
+		o.layers.append(v)
+		o.seen.append("--layer")
+	elif name == "--set":
+		eq = v.find("=")
+		if eq < 0:
+			raise ValueError("bad --set value (want PATH=VALUE): {}".format(v))
+		o.sets.append((v[:eq], v[eq + 1:]))
+		o.seen.append("--set")
 
 
 def parse_opts(argv):
@@ -103,13 +139,17 @@ def parse_opts(argv):
 		a = argv[i]
 		if a in ("--int", "--float", "--bool", "--datetime", "--string", "--raw", "--rawinfo"):
 			o.kind = a[2:]
+			o.seen.append("--<type>")
 		elif a == "--array":
 			o.array = True
+			o.seen.append("--array")
 		elif a == "--slots":
 			o.slots = True
+			o.seen.append("--slots")
 		elif a in ("--write", "-w"):
 			o.write = True
-		elif a in ("--default", "--on-bad", "--strictness"):
+			o.seen.append("--write")
+		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set"):
 			i += 1
 			if i >= len(argv):
 				raise ValueError("missing value for {0} (try {0}=VALUE)".format(a))
@@ -120,6 +160,12 @@ def parse_opts(argv):
 			_set_value_opt(o, "--on-bad", a[len("--on-bad="):])
 		elif a.startswith("--strictness="):
 			_set_value_opt(o, "--strictness", a[len("--strictness="):])
+		elif a.startswith("--schema="):
+			_set_value_opt(o, "--schema", a[len("--schema="):])
+		elif a.startswith("--layer="):
+			_set_value_opt(o, "--layer", a[len("--layer="):])
+		elif a.startswith("--set="):
+			_set_value_opt(o, "--set", a[len("--set="):])
 		elif a.startswith("-") and len(a) > 1:
 			raise ValueError("unknown option: {}".format(a))
 		else:
@@ -153,6 +199,108 @@ def load_doc(text, strictness):
 		return None, 6
 
 
+def load_layered(o, file):
+	# Load file with o's lower-priority --layer files underneath and its --set
+	# overrides on top - the layered-load fold. Every layer parses at the
+	# requested strictness; a strict-load failure on any layer aborts like a
+	# single-file strict failure. Returns (doc, None) or (None, code).
+	texts = []
+	for lf in o.layers:
+		texts.append(read_input(lf))
+	texts.append(read_input(file))
+	doc, code = load_doc(texts[0], o.strictness)
+	if doc is None:
+		return None, code
+	for t in texts[1:]:
+		over, c = load_doc(t, o.strictness)
+		if over is None:
+			return None, c
+		doc.merge(over)
+	for path, val in o.sets:
+		if not doc.set_string(path, val):
+			sys.stderr.write("shcl: cannot write {} (from --set)\n".format(path))
+			return None, 1
+	return doc, None
+
+
+def check_opts(cmd, o):
+	# Every option must be meaningful for its subcommand; an option that would be
+	# silently ignored (`set --write` before it existed, `--schema` on `get`) is a
+	# usage error instead. Returns an exit code, or None to proceed.
+	if cmd == "get":
+		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set")
+	elif cmd == "set":
+		allowed = ("--strictness", "--layer", "--set", "--write")
+	elif cmd == "fmt":
+		allowed = ("--write", "--strictness", "--layer", "--set")
+	elif cmd == "check":
+		allowed = ("--strictness", "--schema")
+	elif cmd == "init":
+		allowed = ("--schema",)
+	elif cmd in ("count", "instances"):
+		allowed = ("--strictness", "--layer", "--set")
+	else:
+		allowed = ()
+	for s in o.seen:
+		if s not in allowed:
+			if s == "--<type>":
+				sys.stderr.write("type options are not valid for {} (see --help)\n".format(cmd))
+			else:
+				sys.stderr.write("option {} not valid for {} (see --help)\n".format(s, cmd))
+			return 1
+	return None
+
+
+def write_atomic(file, data):
+	# Write atomically: temp file in the same dir, then rename over the target,
+	# so an interrupted write can never truncate the config it rewrites. The data
+	# is synced before the rename so a crash cannot publish an empty file.
+	# Returns None on success, or the error message to report.
+	#
+	# A rename publishes a new inode, so the target is resolved through symlinks
+	# first (otherwise a linked-in config gets replaced by a regular file and the
+	# real one is left stale) and the original's mode is copied onto the temp file
+	# (otherwise a 600 config comes back at whatever the umask allows). Other hard
+	# links to the old inode cannot survive a rename and keep the old content.
+	target = os.path.realpath(file)
+	d = os.path.dirname(target)
+	if d == "":
+		d = "."
+	base = os.path.basename(target)
+	if base == "":
+		base = target
+	tmp = os.path.join(d, ".{}.tmp{}".format(base, os.getpid()))
+	try:
+		f = open(tmp, "w", encoding="utf-8", newline="")
+		try:
+			f.write(data)
+			f.flush()
+			# Best effort: a filesystem that cannot carry the mode is not a
+			# reason to fail a write that otherwise succeeded.
+			try:
+				os.chmod(tmp, stat.S_IMODE(os.stat(target).st_mode))
+			except OSError:
+				pass
+			os.fsync(f.fileno())
+		finally:
+			f.close()
+	except OSError as e:
+		try:
+			os.remove(tmp)
+		except OSError:
+			pass
+		return "{}: {}".format(file, e)
+	try:
+		os.replace(tmp, target)
+	except OSError as e:
+		try:
+			os.remove(tmp)
+		except OSError:
+			pass
+		return "{}: {}".format(file, e)
+	return None
+
+
 def _fmt_scalar(kind, value):
 	if kind == "int":
 		return str(value)
@@ -170,11 +318,10 @@ def do_get(o):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		text = read_input(file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
-	doc, code = load_doc(text, o.strictness)
 	if doc is None:
 		return code
 	if o.array:
@@ -277,20 +424,17 @@ def do_fmt(o):
 		sys.stderr.write("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
 	try:
-		text = read_input(file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
-	doc, code = load_doc(text, o.strictness)
 	if doc is None:
 		return code
 	canonical = doc.to_canonical()
 	if o.write:
-		try:
-			with open(file, "w", encoding="utf-8", newline="") as f:
-				f.write(canonical)
-		except OSError as e:
-			sys.stderr.write("{}: {}\n".format(file, e))
+		err = write_atomic(file, canonical)
+		if err is not None:
+			sys.stderr.write(err + "\n")
 			return 1
 	else:
 		sys.stdout.write(canonical)
@@ -328,6 +472,61 @@ def _op_dt(s):
 	return dt
 
 
+def _op_int(s):
+	# Rust i64 FromStr grammar by hand: int() alone is too lax (it accepts
+	# underscores, surrounding whitespace, and non-ASCII digits).
+	t = s[1:] if s[:1] in ("+", "-") else s
+	if t == "" or any(c < "0" or c > "9" for c in t):
+		raise ValueError("bad int: {}".format(s))
+	v = int(s)
+	if v < -(2 ** 63) or v > 2 ** 63 - 1:
+		raise ValueError("bad int: {}".format(s))
+	return v
+
+
+def _float_grammar_ok(s):
+	# Rust f64 FromStr grammar: optional sign, then inf|infinity|nan (ASCII
+	# case-insensitive) or digits['.'[digits]] / '.'digits, with an optional
+	# e|E[sign]digits exponent. ASCII digits only, whole string must match.
+	t = s[1:] if s[:1] in ("+", "-") else s
+	low = "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in t)
+	if low in ("inf", "infinity", "nan"):
+		return True
+	n = len(t)
+
+	def digits(j):
+		while j < n and "0" <= t[j] <= "9":
+			j += 1
+		return j
+
+	j = digits(0)
+	int_digits = j > 0
+	frac_digits = False
+	if j < n and t[j] == ".":
+		k = digits(j + 1)
+		frac_digits = k > j + 1
+		j = k
+	if not int_digits and not frac_digits:
+		return False
+	if j < n and t[j] in ("e", "E"):
+		j += 1
+		if j < n and t[j] in ("+", "-"):
+			j += 1
+		k = digits(j)
+		if k == j:
+			return False
+		j = k
+	return j == n
+
+
+def _op_flt(s):
+	# float() after the grammar gate is safe; overflow (1e400) yields inf,
+	# matching Rust's parse.
+	if not _float_grammar_ok(s):
+		raise ValueError("bad float: {}".format(s))
+	return float(s)
+
+
 def apply_op(doc, line):
 	f = line.split("\t")
 
@@ -338,57 +537,60 @@ def apply_op(doc, line):
 	arr = f[2:] if len(f) > 2 else []
 	op = f[0]
 	if op == "int":
-		doc.set_int(path, int(v))
+		wrote = doc.set_int(path, _op_int(v))
 	elif op == "float":
-		doc.set_float(path, float(v))
+		wrote = doc.set_float(path, _op_flt(v))
 	elif op == "bool":
-		doc.set_bool(path, v == "true")
+		wrote = doc.set_bool(path, v == "true")
 	elif op == "string":
-		doc.set_string(path, _unescape_ops(v))
+		wrote = doc.set_string(path, _unescape_ops(v))
 	elif op == "datetime":
-		doc.set_datetime(path, _op_dt(v))
+		wrote = doc.set_datetime(path, _op_dt(v))
 	elif op == "int-default":
-		doc.set_int_default(path, int(v))
+		wrote = doc.set_int_default(path, _op_int(v))
 	elif op == "float-default":
-		doc.set_float_default(path, float(v))
+		wrote = doc.set_float_default(path, _op_flt(v))
 	elif op == "bool-default":
-		doc.set_bool_default(path, v == "true")
+		wrote = doc.set_bool_default(path, v == "true")
 	elif op == "string-default":
-		doc.set_string_default(path, _unescape_ops(v))
+		wrote = doc.set_string_default(path, _unescape_ops(v))
 	elif op == "datetime-default":
-		doc.set_datetime_default(path, _op_dt(v))
+		wrote = doc.set_datetime_default(path, _op_dt(v))
 	elif op == "int-array":
-		doc.set_int_array(path, [int(x) for x in arr])
+		wrote = doc.set_int_array(path, [_op_int(x) for x in arr])
 	elif op == "float-array":
-		doc.set_float_array(path, [float(x) for x in arr])
+		wrote = doc.set_float_array(path, [_op_flt(x) for x in arr])
 	elif op == "bool-array":
-		doc.set_bool_array(path, [x == "true" for x in arr])
+		wrote = doc.set_bool_array(path, [x == "true" for x in arr])
 	elif op == "string-array":
-		doc.set_string_array(path, [_unescape_ops(x) for x in arr])
+		wrote = doc.set_string_array(path, [_unescape_ops(x) for x in arr])
 	elif op == "datetime-array":
-		doc.set_datetime_array(path, [_op_dt(x) for x in arr])
+		wrote = doc.set_datetime_array(path, [_op_dt(x) for x in arr])
 	elif op == "int-array-default":
-		doc.set_int_array_default(path, [int(x) for x in arr])
+		wrote = doc.set_int_array_default(path, [_op_int(x) for x in arr])
 	elif op == "float-array-default":
-		doc.set_float_array_default(path, [float(x) for x in arr])
+		wrote = doc.set_float_array_default(path, [_op_flt(x) for x in arr])
 	elif op == "bool-array-default":
-		doc.set_bool_array_default(path, [x == "true" for x in arr])
+		wrote = doc.set_bool_array_default(path, [x == "true" for x in arr])
 	elif op == "string-array-default":
-		doc.set_string_array_default(path, [_unescape_ops(x) for x in arr])
+		wrote = doc.set_string_array_default(path, [_unescape_ops(x) for x in arr])
 	elif op == "datetime-array-default":
-		doc.set_datetime_array_default(path, [_op_dt(x) for x in arr])
+		wrote = doc.set_datetime_array_default(path, [_op_dt(x) for x in arr])
 	elif op == "raw":
-		doc.set_raw(path, _unescape_ops(get(3)), v)
+		wrote = doc.set_raw(path, _unescape_ops(get(3)), v)
 	elif op == "raw-default":
-		doc.set_raw_default(path, _unescape_ops(get(3)), v)
+		wrote = doc.set_raw_default(path, _unescape_ops(get(3)), v)
 	elif op == "empty":
-		doc.set_empty(path)
+		wrote = doc.set_empty(path)
 	elif op == "comment":
-		doc.set_comment(path, v)
+		wrote = doc.set_comment(path, v)
 	elif op == "remove":
 		doc.remove(path)
+		wrote = True
 	else:
 		raise ValueError("unknown op: {}".format(op))
+	if not wrote:
+		raise ValueError("cannot write {}".format(path))
 
 
 def do_set(o):
@@ -396,19 +598,37 @@ def do_set(o):
 		sys.stderr.write("set needs FILE (ops on stdin; see --help)\n")
 		return 1
 	file = o.args[0]
+	if o.write and file == "-":
+		sys.stderr.write("set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
+		return 1
 	# Base doc: '-' means an empty base, since stdin carries the ops script.
-	if file == "-":
-		text = ""
-	else:
-		try:
-			text = read_input(file)
-		except (OSError, ValueError) as e:
-			sys.stderr.write(str(e) + "\n")
-			return 1
-	doc, code = load_doc(text, o.strictness)
+	# Any --layer files sit under it and --set overrides sit on top, before ops.
+	try:
+		layer_texts = [read_input(lf) for lf in o.layers]
+		base = "" if file == "-" else read_input(file)
+	except (OSError, ValueError) as e:
+		sys.stderr.write(str(e) + "\n")
+		return 1
+	layer_texts.append(base)
+	doc, code = load_doc(layer_texts[0], o.strictness)
 	if doc is None:
 		return code
-	ops = sys.stdin.buffer.read().decode("utf-8", "replace")
+	for t in layer_texts[1:]:
+		over, c = load_doc(t, o.strictness)
+		if over is None:
+			return c
+		doc.merge(over)
+	for path, val in o.sets:
+		if not doc.set_string(path, val):
+			sys.stderr.write("shcl: cannot write {} (from --set)\n".format(path))
+			return 1
+	# The ops script is contract input like the reference's read_to_string:
+	# bad bytes are a hard error, never silently replaced.
+	try:
+		ops = sys.stdin.buffer.read().decode("utf-8")
+	except UnicodeDecodeError:
+		sys.stderr.write("stdin: invalid UTF-8\n")
+		return 1
 	for n, line in enumerate(ops.split("\n")):
 		line = line[:-1] if line.endswith("\r") else line
 		if line == "" or line.startswith("#"):
@@ -418,7 +638,14 @@ def do_set(o):
 		except ValueError as e:
 			sys.stderr.write("op line {}: {}\n".format(n + 1, e))
 			return 1
-	sys.stdout.write(doc.to_canonical())
+	canonical = doc.to_canonical()
+	if o.write:
+		err = write_atomic(file, canonical)
+		if err is not None:
+			sys.stderr.write(err + "\n")
+			return 1
+	else:
+		sys.stdout.write(canonical)
 	return 0
 
 
@@ -433,16 +660,36 @@ def do_check(o):
 		return 1
 	strict_failed = False
 	try:
-		diags = shcl.Document.parse_with(text, o.strictness).diagnostics()
+		doc = shcl.Document.parse_with(text, o.strictness)
+		diags = list(doc.diagnostics())
+		# --schema: append validation diagnostics under the same contract. The
+		# schema itself always loads at Standard (a program artifact); one that
+		# does not load cleanly is a single V099 schema fault.
+		if o.schema is not None:
+			try:
+				stext = read_input(o.schema)
+			except (OSError, ValueError) as e:
+				sys.stderr.write(str(e) + "\n")
+				return 1
+			sdoc = shcl.Document.parse(stext)
+			if any(sd.severity == shcl.Severity.Error for sd in sdoc.diagnostics()):
+				for sd in sdoc.diagnostics():
+					sys.stderr.write("schema line {}: {}: {}\n".format(sd.line, sd.severity.name, sd.message))
+				diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
+			else:
+				diags.extend(doc.validate(sdoc))
 	except shcl.LoadError as le:
 		diags = le.diagnostics
 		strict_failed = True
 	# stdout carries the stable codes - the cross-binding contract. The prose is
 	# per-binding voice and goes to stderr (which the differential check drops).
+	# A V090-V093 line number is a SCHEMA line (the code table says so); the
+	# prose names the file so the two number spaces cannot be confused.
 	errors = 0
 	for d in diags:
 		print("line {}: {}: {}".format(d.line, d.severity.name, d.code))
-		sys.stderr.write("line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+		space = "schema line" if d.code.startswith("V09") and d.code != "V099" else "line"
+		sys.stderr.write("{} {}: {}: {}\n".format(space, d.line, d.severity.name, d.message))
 		if d.severity == shcl.Severity.Error:
 			errors += 1
 	if strict_failed:
@@ -456,17 +703,44 @@ def do_check(o):
 	return 0
 
 
+def do_init(o):
+	if o.schema is None:
+		sys.stderr.write("init needs --schema=FILE (see --help)\n")
+		return 1
+	try:
+		stext = read_input(o.schema)
+	except (OSError, ValueError) as e:
+		sys.stderr.write(str(e) + "\n")
+		return 1
+	# The schema always loads at Standard - a program artifact, not user data.
+	sdoc = shcl.Document.parse(stext)
+	if any(d.severity == shcl.Severity.Error for d in sdoc.diagnostics()):
+		for d in sdoc.diagnostics():
+			sys.stderr.write("schema line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+		sys.stderr.write("init: schema failed to load\n")
+		# A broken schema is a config-semantics failure, not a usage error:
+		# same exit as `check --schema` reporting it.
+		return 6
+	text, faults = shcl.generate(sdoc)
+	if faults:
+		for d in faults:
+			sys.stderr.write("schema line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+		sys.stderr.write("init: schema has faults\n")
+		return 6
+	sys.stdout.write(text)
+	return 0
+
+
 def do_enum(o, want_count):
 	if len(o.args) != 2:
 		sys.stderr.write("count/instances need FILE and PATH (see --help)\n")
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		text = read_input(file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
-	doc, code = load_doc(text, o.strictness)
 	if doc is None:
 		return code
 	if want_count:
@@ -500,6 +774,9 @@ def run(argv):
 		sys.stderr.write(str(e) + "\n")
 		return 1
 	cmd = argv[0]
+	code = check_opts(cmd, o)
+	if code is not None:
+		return code
 	if cmd == "get":
 		return do_get(o)
 	if cmd == "set":
@@ -508,6 +785,8 @@ def run(argv):
 		return do_fmt(o)
 	if cmd == "check":
 		return do_check(o)
+	if cmd == "init":
+		return do_init(o)
 	if cmd == "count":
 		return do_enum(o, True)
 	if cmd == "instances":

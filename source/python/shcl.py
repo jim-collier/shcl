@@ -7,6 +7,8 @@ Single file on purpose - the drop-in story is "copy this file into your tree".
 Behaviour tracks the Rust reference (source/rust/src/lib.rs) byte for byte; the
 conformance corpus in project/conformance/ pins every behaviour here, and the
 cicd cross-binding check compares this against the reference on every run.
+Structure deliberately mirrors the reference over Python idiom, so a fix there
+ports here by mechanical diff (parity over idiom - see style-guide.md).
 """
 
 import math
@@ -76,6 +78,20 @@ def _diag_code(msg):
 		("malformed line skipped", "E014"),
 		("malformed line: ", "E013"),
 		("missing colon", "E015"),
+		("nesting deeper than", "E016"),
+		("unterminated quote in value", "E017"),
+		("unknown field ", "V001"),
+		("required path missing", "V002"),
+		("wrong type at ", "V003"),
+		("value not allowed at ", "V004"),
+		("value below min at ", "V005"),
+		("value above max at ", "V006"),
+		("instance count out of bounds at ", "V007"),
+		("unknown schema key ", "V090"),
+		("unknown schema type ", "V091"),
+		("bad schema constraint ", "V092"),
+		("bad schema path", "V093"),
+		("schema failed to load", "V099"),
 	):
 		if msg.startswith(prefix):
 			return code
@@ -271,7 +287,7 @@ def _choose_fence(content):
 class _Node:
 	__slots__ = (
 		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
-		"leading", "trailing",
+		"leading", "trailing", "blank_before",
 	)
 
 	def __init__(self, name, value, parent, line):
@@ -287,9 +303,19 @@ class _Node:
 		# (later ones demote to leading - a canonical line has room for one).
 		self.leading = []
 		self.trailing = ""        # empty = none
+		# Blank-line grouping is the other half of hand-authored layout: set
+		# when a blank line preceded this node's binding line (runs collapse).
+		self.blank_before = False
 
 
 ROOT = 0
+
+# Maximum nesting depth (levels below the document root), enforced at load and
+# by the Writer. Deeper lines are skipped with an E016 error. The cap is what
+# keeps the recursive tree walks (emit, merge, clone) safely inside every
+# binding's stack, so a hostile or machine-generated document can make a load
+# fail but never crash the consumer.
+MAX_DEPTH = 512
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +435,30 @@ def _normalize_dangling_backslash(t):
 	if run % 2 == 1:
 		t += "\\"
 	return t
+
+
+def _unterminated_quote(text):
+	"""True when some piece starts with a quote that never closes (missing or
+	escaped). Such a piece stays literal - and the quote-aware comment strip has
+	already swallowed any trailing # comment into it - so the parser calls it
+	out instead of letting the typo look deliberate. Mid-text apostrophes
+	(it's fine) are legal prose and stay silent."""
+	for piece in _split_unquoted_commas(text):
+		t = _trim(piece)
+		if not t:
+			continue
+		first = t[0]
+		if first != '"' and first != "'":
+			continue
+		closed = False
+		if len(t) >= 2 and t[-1] == first:
+			esc = False
+			for c in t[1:-1]:
+				esc = (c == "\\") and not esc
+			closed = not esc
+		if not closed:
+			return True
+	return False
 
 
 def _parse_element(piece):
@@ -628,14 +678,24 @@ class _Parser:
 		# Per-node (name, value-key) -> first matching child, parallel to arena.
 		# Pure lookup accelerator for _select_or_create; children keeps the order.
 		self.child_map = [{}]
+		# Per-node (name, display) -> first matching child: the `[value]` selector
+		# accelerator (its predicate is display(), a different and non-injective
+		# key from child_map's). Same first-wins discipline, same mutation sites.
+		self.disp_map = [{}]
 		# Whole-line comments waiting for the next line that binds a node.
 		self.pending = []
+		self.saw_blank = False  # a blank line waits to become the next bound node's blank_before
+		# An open stacked list defers its merge-key remap (rebuilding the key per
+		# element is O(list^2) time); (node, key, display) at deferral start,
+		# flushed before any map lookup and at end of parse.
+		self.star_open = None
 
 	def _err(self, line, msg):
 		self.diags.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
 
 	def _select_or_create(self, parent, name, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
+		self._star_flush()
 		map_key = (name, value.key())
 		found = self.child_map[parent].get(map_key)
 		if found is not None:
@@ -646,9 +706,19 @@ class _Parser:
 		self.arena[parent].children.append(idx)
 		self.child_map.append({})
 		self.child_map[parent][map_key] = idx
+		self.disp_map.append({})
+		self.disp_map[parent].setdefault((name, node.value.display()), idx)
 		return idx
 
-	def _remap_child(self, node, old_key):
+	def _star_flush(self):
+		"""Apply an open stacked list's deferred remap. Runs before any map lookup
+		(and at end of parse), so both maps are always fresh when queried."""
+		if self.star_open is not None:
+			node, key, disp = self.star_open
+			self.star_open = None
+			self._remap_child(node, key, disp)
+
+	def _remap_child(self, node, old_key, old_disp):
 		"""A node's value mutated in place (empty field filled, star element added):
 		move its map entry from the old key to the new one. First-wins on both
 		sides so lookups keep matching the earliest sibling, like the scan did."""
@@ -658,6 +728,10 @@ class _Parser:
 		if cmap.get((name, old_key)) == node:
 			del cmap[(name, old_key)]
 		cmap.setdefault((name, self.arena[node].value.key()), node)
+		dmap = self.disp_map[parent]
+		if dmap.get((name, old_disp)) == node:
+			del dmap[(name, old_disp)]
+		dmap.setdefault((name, self.arena[node].value.display()), node)
 
 	def _attach_trivia(self, node, trailing):
 		"""Hand pending leading comments (and this line's trailing one) to a node.
@@ -692,11 +766,22 @@ class _Parser:
 	def _attach_path(self, parent, segs, value, line):
 		"""Walk path segments under `parent`, select-or-creating; returns the node
 		for the last segment carrying `value`. None aborts the line (diagnosed)."""
+		self._star_flush()
 		# Field child under a stacked list: diagnose the mix once, keep the field.
 		pnode = self.arena[parent]
 		if pnode.star_list and not pnode.star_mixed:
 			pnode.star_mixed = True
 			self._err(line, "field mixed with list elements")
+		# Nesting cap: parent depth plus the segments this line adds. Checked
+		# before any node is created so a rejected line leaves nothing behind.
+		parent_depth = 0
+		up = parent
+		while up != ROOT:
+			parent_depth += 1
+			up = self.arena[up].parent
+		if parent_depth + len(segs) > MAX_DEPTH:
+			self._err(line, "nesting deeper than {} levels; line skipped".format(MAX_DEPTH))
+			return None
 		cur = parent
 		last = len(segs) - 1
 		for i, seg in enumerate(segs):
@@ -705,12 +790,10 @@ class _Parser:
 			if sel is not None and sel[0] == "val":
 				# Same display() predicate resolution uses, so a selector also
 				# selects an array-valued instance instead of creating a
-				# spurious second one. Create only when nothing matches.
-				found = None
-				for c in self.arena[cur].children:
-					if self.arena[c].name == seg.name and self.arena[c].value.display() == sel[1]:
-						found = c
-						break
+				# spurious second one - via the disp_map accelerator (the
+				# inline spelling was quadratic in siblings without it).
+				# Create only when nothing matches.
+				found = self.disp_map[cur].get((seg.name, sel[1]))
 				if found is not None:
 					cur = found
 				else:
@@ -795,8 +878,9 @@ class _Parser:
 			return None
 		if self.arena[parent].value.is_empty():
 			old_key = self.arena[parent].value.key()
+			old_disp = self.arena[parent].value.display()
 			self.arena[parent].value = value
-			self._remap_child(parent, old_key)
+			self._remap_child(parent, old_key, old_disp)
 			return parent
 		name = self.arena[parent].name
 		grandparent = self.arena[parent].parent
@@ -819,19 +903,33 @@ class _Parser:
 		if len(_split_unquoted_commas(trimmed)) > 1:
 			self._err(line, "bare comma in list element (one element per line)")
 			return
+		if _unterminated_quote(trimmed):
+			self._err(line, "unterminated quote in value")
 		el = _parse_element(trimmed)
 		if el is None:
 			self._err(line, "empty list element")
 			return
 		node = self.arena[parent]
-		old_key = node.value.key()
 		if node.value.kind == "empty":
+			old_key = node.value.key()
+			old_disp = node.value.display()
 			node.value = _cell([el])
 			node.star_list = True
-			self._remap_child(parent, old_key)
+			# First element: remap now (Empty -> cell changes both keys), then
+			# open the deferral window with the current keys. Rebuilding the
+			# keys per appended element was O(list^2) time; the maps only need
+			# to be fresh when queried, and every query flushes first.
+			self._remap_child(parent, old_key, old_disp)
+			k = node.value.key()
+			d = node.value.display()
+			self.star_open = (parent, k, d)
 		elif node.value.kind == "cell" and node.star_list:
+			if self.star_open is None or self.star_open[0] != parent:
+				self._star_flush()
+				old_key = node.value.key()
+				old_disp = node.value.display()
+				self.star_open = (parent, old_key, old_disp)
 			node.value.els.append(el)
-			self._remap_child(parent, old_key)
 		else:
 			self._err(line, "field already has a value; list element ignored")
 
@@ -884,13 +982,19 @@ class _Parser:
 			indent = line[:j]
 			rest = line[j:]
 			if not rest:
+				self.saw_blank = True
 				i += 1
 				continue
-			# Whole-line comment: hold it for the next line that binds a node.
+			# Whole-line comment: hold it for the next line that binds a node
+			# (a pending blank stays pending with it).
 			if rest.startswith("#"):
 				self.pending.append(rest)
 				i += 1
 				continue
+			# Any other line consumes the pending blank; only a field line that
+			# binds turns it into grouping.
+			had_blank = self.saw_blank
+			self.saw_blank = False
 			# Child-indent fence: a value line for its parent field.
 			fo = _fence_open(rest)
 			if fo is not None:
@@ -960,12 +1064,17 @@ class _Parser:
 					ch, length, info = fo
 					value, nxt = self._consume_raw(lines, i + 1, lineno, ch, length, info)
 				else:
+					if _unterminated_quote(value_text):
+						self._err(lineno, "unterminated quote in value")
 					value = _parse_cell(value_text)
 			node = self._attach_path(parent, segments, value, lineno)
 			if node is not None:
+				if had_blank:
+					self.arena[node].blank_before = True
 				self._attach_trivia(node, comment)
 				self.stack.append((indent, node))
 			i = nxt
+		self._star_flush()
 		self._emit_repeated_leaf_hints()
 		return Document(self.arena, self.diags, strictness, self.pending)
 
@@ -1016,34 +1125,43 @@ class Document:
 		# Explicit stack, children pushed in reverse: the reference handles depths
 		# far past Python's recursion limit, so emit must not recurse.
 		out = []
-		stack = [(c, 0) for c in reversed(self.arena[ROOT].children)]
+		stack = []
+		self._emit_children(self.arena[ROOT].children, 0, stack)
 		while stack:
-			idx, depth = stack.pop()
-			self._emit_node(idx, depth, out)
-			for c in reversed(self.arena[idx].children):
-				stack.append((c, depth + 1))
+			idx, depth, would_merge = stack.pop()
+			self._emit_node(idx, depth, would_merge, out)
+			self._emit_children(self.arena[idx].children, depth + 1, stack)
 		# Comments that never found a following line re-emit at the end.
 		for c in self.orphans:
 			out.append(c)
 			out.append("\n")
 		return "".join(out)
 
-	def _emit_node(self, idx, depth, out):
+	def _emit_children(self, kids, depth, stack):
+		"""Emit a sibling run. The parent walk already knows whether an earlier
+		same-name sibling is empty (the raw same-line-fence hazard), so one
+		seen-empties set here replaces a per-child rescan of the whole run.
+		Iterative shape: the flags are computed per run and ride the stack."""
+		entries = []
+		empties = set()
+		for c in kids:
+			n = self.arena[c]
+			wm = n.value.kind == "raw" and n.name in empties
+			if n.value.is_empty():
+				empties.add(n.name)
+			entries.append((c, depth, wm))
+		stack.extend(reversed(entries))
+
+	def _emit_node(self, idx, depth, would_merge, out):
 		node = self.arena[idx]
 		pad = "\t" * depth
+		if node.blank_before and out:
+			out.append("\n")
 		v = node.value
 		# Same-line fence spelling can't carry an inline comment (an unbalanced
 		# quote in the info-string could hide the `#` on reparse), so its
-		# trailing comment joins the leading lines instead.
-		would_merge = False
-		if v.kind == "raw":
-			parent = node.parent
-			siblings = self.arena[parent].children
-			me = siblings.index(idx)
-			would_merge = any(
-				self.arena[c].name == node.name and self.arena[c].value.is_empty()
-				for c in siblings[:me]
-			)
+		# trailing comment joins the leading lines instead; the flag comes from
+		# the parent's walk.
 		for c in node.leading:
 			out.append(pad)
 			out.append(c)
@@ -1167,6 +1285,27 @@ class Document:
 			return len(r[1])
 		return 0
 
+	def paths(self):
+		"""Every field path in the document, in file order, deduplicated - a
+		query recipe for tooling. Only bare-name-safe segments are emitted, so
+		each path is a well-formed CLI query; a subtree under a quoted/non-ASCII
+		name is skipped."""
+		out = []
+		seen = set()
+		stack = [(c, "") for c in reversed(self.arena[ROOT].children)]
+		while stack:
+			node, prefix = stack.pop()
+			name = self.arena[node].name
+			if not name or not all(_is_bare_name_char(c) for c in name):
+				continue  # not a bare query segment; skip it and its subtree
+			path = name if not prefix else prefix + "." + name
+			if path not in seen:
+				seen.add(path)
+				out.append(path)
+			for c in reversed(self.arena[node].children):
+				stack.append((c, path))
+		return out
+
 	def instances(self, path):
 		"""Instance values at a path, in file order. Wildcard slots that did not
 		resolve stay in the list as "" so indices keep matching count()."""
@@ -1215,6 +1354,42 @@ class Document:
 			return None
 		if value_text is not None or not segments:
 			return None
+		# Writer side of the load-time nesting cap: never create deeper.
+		if len(segments) > MAX_DEPTH:
+			return None
+		# Validate before creating anything, so a doomed path (wildcard, or a
+		# `[#k]` instance that does not and can never exist) leaves no
+		# half-created intermediates behind. Once this walk falls off the
+		# existing tree, a later `[#k]` can never match: fresh intermediates
+		# are created childless.
+		probe = ROOT
+		for seg in segments:
+			sel = seg.selector
+			if sel is not None and sel[0] == "wild":
+				return None
+			if sel is not None and sel[0] == "idx":
+				if probe is None:
+					return None
+				matches = [c for c in self.arena[probe].children if self.arena[c].name == seg.name]
+				if sel[1] >= len(matches):
+					return None
+				probe = matches[sel[1]]
+			elif sel is not None and sel[0] == "val":
+				if probe is not None:
+					found = None
+					for c in self.arena[probe].children:
+						if self.arena[c].name == seg.name and self.arena[c].value.display() == sel[1]:
+							found = c
+							break
+					probe = found
+			else:
+				if probe is not None:
+					found = None
+					for c in self.arena[probe].children:
+						if self.arena[c].name == seg.name:
+							found = c
+							break
+					probe = found
 		cur = ROOT
 		for seg in segments:
 			sel = seg.selector
@@ -1238,8 +1413,47 @@ class Document:
 
 	def _set_value(self, path, value):
 		idx = self._place(path)
-		if idx is not None:
-			self.arena[idx].value = value
+		if idx is None:
+			return False
+		self.arena[idx].value = value
+		self._collapse_dup(idx)
+		return True
+
+	def _collapse_dup(self, node):
+		# A written value may now collide with a same-named sibling under the
+		# in-file merge rule; fold the pair the way a reparse would (earlier
+		# sibling survives, later one folds children and trivia in) so Writer
+		# output stays a formatter fixpoint.
+		parent = self.arena[node].parent
+		name = self.arena[node].name
+		key = self.arena[node].value.key()
+		other = None
+		for c in self.arena[parent].children:
+			if c != node and self.arena[c].name == name and self.arena[c].value.key() == key:
+				other = c
+				break
+		if other is None:
+			return
+		siblings = self.arena[parent].children
+		if siblings.index(other) < siblings.index(node):
+			survivor, loser = other, node
+		else:
+			survivor, loser = node, other
+		kids = self.arena[loser].children
+		self.arena[loser].children = []
+		for k in kids:
+			self.arena[k].parent = survivor
+		self.arena[survivor].children.extend(kids)
+		self.arena[survivor].leading.extend(self.arena[loser].leading)
+		self.arena[loser].leading = []
+		trail = self.arena[loser].trailing
+		self.arena[loser].trailing = ""
+		if trail:
+			if not self.arena[survivor].trailing:
+				self.arena[survivor].trailing = trail
+			else:
+				self.arena[survivor].leading.append(trail)
+		self.arena[parent].children = [c for c in self.arena[parent].children if c != loser]
 
 	def exists(self, path):
 		"""True when the path resolves to at least one real node."""
@@ -1273,93 +1487,215 @@ class Document:
 		node if absent). A missing '#' is added; only the first line is kept."""
 		idx = self._place(path)
 		if idx is None:
-			return
+			return False
 		line = text.split("\n", 1)[0]
 		if not line.startswith("#"):
 			line = "# " + line
 		self.arena[idx].leading.append(line)
+		return True
 
 	def set_int(self, path, v):
-		self._set_value(path, _cell_of(str(v)))
+		return self._set_value(path, _cell_of(str(v)))
 
 	def set_float(self, path, v):
-		self._set_value(path, _cell_of(format_float(v)))
+		return self._set_value(path, _cell_of(format_float(v)))
 
 	def set_bool(self, path, v):
-		self._set_value(path, _cell_of("true" if v else "false"))
+		return self._set_value(path, _cell_of("true" if v else "false"))
 
 	def set_string(self, path, v):
-		self._set_value(path, _cell_of(_encode_string(v)))
+		return self._set_value(path, _cell_of(_encode_string(v)))
 
 	def set_datetime(self, path, v):
-		self._set_value(path, _cell_of(str(v)))
+		return self._set_value(path, _cell_of(str(v)))
 
 	def set_raw(self, path, content, info):
 		fc, fl = _choose_fence(content)
-		self._set_value(path, _raw(content, info, fc, fl))
+		return self._set_value(path, _raw(content, info, fc, fl))
 
 	def set_empty(self, path):
-		self._set_value(path, _empty())
+		return self._set_value(path, _empty())
 
 	def set_int_array(self, path, v):
-		self._set_value(path, _array_cell([str(x) for x in v]))
+		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	def set_float_array(self, path, v):
-		self._set_value(path, _array_cell([format_float(x) for x in v]))
+		return self._set_value(path, _array_cell([format_float(x) for x in v]))
 
 	def set_bool_array(self, path, v):
-		self._set_value(path, _array_cell(["true" if x else "false" for x in v]))
+		return self._set_value(path, _array_cell(["true" if x else "false" for x in v]))
 
 	def set_string_array(self, path, v):
-		self._set_value(path, _array_cell([_encode_string(x) for x in v]))
+		return self._set_value(path, _array_cell([_encode_string(x) for x in v]))
 
 	def set_datetime_array(self, path, v):
-		self._set_value(path, _array_cell([str(x) for x in v]))
+		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	# Default (only-if-absent) forms - the "emit defaults" half of the Writer.
 	def set_int_default(self, path, v):
 		if not self.exists(path):
-			self.set_int(path, v)
+			return self.set_int(path, v)
+		return True
 
 	def set_float_default(self, path, v):
 		if not self.exists(path):
-			self.set_float(path, v)
+			return self.set_float(path, v)
+		return True
 
 	def set_bool_default(self, path, v):
 		if not self.exists(path):
-			self.set_bool(path, v)
+			return self.set_bool(path, v)
+		return True
 
 	def set_string_default(self, path, v):
 		if not self.exists(path):
-			self.set_string(path, v)
+			return self.set_string(path, v)
+		return True
 
 	def set_datetime_default(self, path, v):
 		if not self.exists(path):
-			self.set_datetime(path, v)
+			return self.set_datetime(path, v)
+		return True
 
 	def set_raw_default(self, path, content, info):
 		if not self.exists(path):
-			self.set_raw(path, content, info)
+			return self.set_raw(path, content, info)
+		return True
 
 	def set_int_array_default(self, path, v):
 		if not self.exists(path):
-			self.set_int_array(path, v)
+			return self.set_int_array(path, v)
+		return True
 
 	def set_float_array_default(self, path, v):
 		if not self.exists(path):
-			self.set_float_array(path, v)
+			return self.set_float_array(path, v)
+		return True
 
 	def set_bool_array_default(self, path, v):
 		if not self.exists(path):
-			self.set_bool_array(path, v)
+			return self.set_bool_array(path, v)
+		return True
 
 	def set_string_array_default(self, path, v):
 		if not self.exists(path):
-			self.set_string_array(path, v)
+			return self.set_string_array(path, v)
+		return True
 
 	def set_datetime_array_default(self, path, v):
 		if not self.exists(path):
-			self.set_datetime_array(path, v)
+			return self.set_datetime_array(path, v)
+		return True
+
+	# ----- layered loading: overlay a higher-priority document -----
+
+	def merge(self, over):
+		"""Overlay `over` (a higher-priority layer) onto self (the lower one).
+		Container instances merge by (name, value) exactly like the in-file rule;
+		a leaf name present in `over` replaces self's same-named children at that
+		scope - provided those base children are leaves too - so scalars, arrays,
+		and raw blocks get real override while a bare section header merges
+		instead of wiping. over-only nodes are appended. Comment trivia rides
+		with each node. Load(defaults, site, user) is a left fold of this: each
+		later file overlaid on the earlier ones."""
+		self._overlay(ROOT, over, ROOT)
+		self.orphans.extend(over.orphans)
+
+	# One grouping pass over each side, then a single children rebuild: the
+	# old shape re-filtered the over side per distinct name and re-scanned
+	# (and re-keyed) the base side per over node - three O(K^2) terms at one
+	# parent, plus a full list rebuild per replaced name.
+	def _overlay(self, base_parent, over, over_parent):
+		over_kids = list(over.arena[over_parent].children)
+		# Over side: name -> node bucket, in first-appearance order.
+		order = []
+		groups = {}
+		for k in over_kids:
+			n = over.arena[k].name
+			g = groups.get(n)
+			if g is None:
+				order.append(n)
+				g = []
+				groups[n] = g
+			g.append(k)
+		# Base side, one pass: does the name have a container instance, and
+		# which child carries each (name, key) - every key computed once.
+		base_kids = list(self.arena[base_parent].children)
+		has_container = {}
+		by_key = {}
+		for b in base_kids:
+			name = self.arena[b].name
+			has_container[name] = has_container.get(name, False) or bool(self.arena[b].children)
+			by_key.setdefault((name, self.arena[b].value.key()), b)
+		# Decide per name. A name whose over-side nodes are all leaves is an
+		# override - but only when the base side of the group is leaf-shaped
+		# too. Against a base container, a childless over-node is a wrapper
+		# mention, not a leaf, so it falls through to the instance merge: a
+		# bare section header in a higher layer never wipes the subtree below.
+		# Replaced groups splice in the rebuild; everything appended (unmatched
+		# instances, and replaced names base never had) keeps processing order.
+		replace = {}
+		appended = []
+		for name in order:
+			group = groups[name]
+			over_leafy = all(not over.arena[k].children for k in group)
+			in_base = name in has_container
+			base_container = has_container.get(name, False)
+			if over_leafy and not base_container:
+				clones = [self._clone_subtree(over, ok, base_parent) for ok in group]
+				if in_base:
+					replace[name] = clones
+				else:
+					appended.extend(clones)
+			else:
+				for ok in group:
+					okey = over.arena[ok].value.key()
+					b = by_key.get((name, okey))
+					if b is not None:
+						self._overlay(b, over, ok)
+					else:
+						appended.append(self._clone_subtree(over, ok, base_parent))
+		if not replace and not appended:
+			return
+		# Rebuild once: each replaced group lands at its name's first original
+		# position (dropped nodes stay in the arena, unreferenced - reads and
+		# emit walk children from the root), appends go at the end.
+		new_kids = []
+		spliced = set()
+		for b in base_kids:
+			name = self.arena[b].name
+			clones = replace.get(name)
+			if clones is None:
+				new_kids.append(b)
+			elif name not in spliced:
+				spliced.add(name)
+				new_kids.extend(clones)
+		new_kids.extend(appended)
+		self.arena[base_parent].children = new_kids
+
+	def _clone_subtree(self, over, oi, parent):
+		"""Deep-copy `over`'s subtree at `oi` into self's arena under `parent`."""
+		src = over.arena[oi]
+		# Copy the value too - sharing the object (and its element list) with
+		# `over` would break the promise that the clone survives its release.
+		cv = _Value(src.value.kind)
+		cv.els = None if src.value.els is None else [_Element(e.text, e.quoted) for e in src.value.els]
+		cv.content = src.value.content
+		cv.info = src.value.info
+		cv.fence_char = src.value.fence_char
+		cv.fence_len = src.value.fence_len
+		node = _Node(src.name, cv, parent, src.line)
+		node.star_list = src.star_list
+		node.star_mixed = src.star_mixed
+		node.leading = list(src.leading)
+		node.trailing = src.trailing
+		node.blank_before = src.blank_before
+		idx = len(self.arena)
+		self.arena.append(node)
+		for ok in list(over.arena[oi].children):
+			c = self._clone_subtree(over, ok, idx)
+			self.arena[idx].children.append(c)
+		return idx
 
 	# ----- accessor: typed reads -----
 
@@ -1538,7 +1874,7 @@ class Document:
 		if r.status == Status.Good:
 			return r.value
 		if default is _NO_DEFAULT:
-			raise _StatusError(r.status)
+			raise StatusError(r.status)
 		return default
 
 	def get_int(self, path, default=_NO_DEFAULT):
@@ -1574,8 +1910,203 @@ class Document:
 	def get_datetime_array(self, path, default=_NO_DEFAULT):
 		return self._get(self.read_datetime_array(path), default)
 
+	# --- Validator: schema-as-SHCL (see spec.md "Schema validation") ---------
+	# The schema is an ordinary parsed document: a flat list of `field: <path>`
+	# instances whose children are the constraints (closed vocabulary).
+	# Validation reuses the accessor's path scan and the typed coercions, so
+	# document strictness composes for free. Any schema fault (V09x) suppresses
+	# data validation - one line-number space per result.
 
-class _StatusError(Exception):
+	def validate(self, schema):
+		"""Validate against a schema document (itself plain SHCL). Empty result
+		= the document conforms. Diagnostic lines are document lines (0 =
+		document scope); schema faults (V09x, schema-file lines) suppress data
+		validation entirely."""
+		cons, faults = _build_schema(schema)
+		if faults:
+			return faults
+		out = []
+		for c in cons:
+			self._v_check(c, out)
+		self._v_unknown(cons, out)
+		return out
+
+	def _v_contexts(self, start, segs, anchor, out):
+		# Resolution contexts: the whole document for a plain path; each
+		# enclosing instance for the part of a path after a wildcard. required/
+		# repeat evaluate per context (anchor line 0 = document scope), so
+		# `server[*].port` + required means a port under EACH server -
+		# vacuously true with no servers.
+		cur = list(start)
+		for i, seg in enumerate(segs):
+			nxt = []
+			for n in cur:
+				nxt.extend(self._children_named(n, seg.name))
+			sel = seg.selector
+			if sel is None:
+				cur = nxt
+			elif sel[0] == "val":
+				cur = [c for c in nxt if self.arena[c].value.display() == sel[1]]
+			elif sel[0] == "idx":
+				cur = [nxt[sel[1]]] if sel[1] < len(nxt) else []
+			else:
+				rest = segs[i + 1:]
+				if not rest:
+					out.append((anchor, nxt))
+				else:
+					for inst in nxt:
+						self._v_contexts([inst], rest, self.arena[inst].line, out)
+				return
+		out.append((anchor, cur))
+
+	def _v_check(self, c, out):
+		ctxs = []
+		self._v_contexts([ROOT], c.segs, 0, ctxs)
+		for anchor, found in ctxs:
+			if c.required and not found:
+				_vdiag(out, anchor, "required path missing: {}".format(c.path))
+			if c.repeat is not None:
+				lo, hi = c.repeat
+				n = len(found)
+				if n < lo or n > hi:
+					_vdiag(out, anchor, "instance count out of bounds at '{}': {} not in {}..{}".format(c.path, n, lo, hi))
+			for n in found:
+				self._v_node(c, n, out)
+
+	def _v_node(self, c, n, out):
+		node = self.arena[n]
+		line = node.line
+		base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
+		is_array = c.ty is not None and c.ty.endswith("-array")
+
+		def wrong():
+			_vdiag(out, line, "wrong type at '{}': value is not a valid {}".format(c.path, c.ty))
+
+		if node.value.kind == "empty":
+			# Empty passes everything; required already counted it as present.
+			return
+		if node.value.kind == "raw":
+			# A raw block satisfies `raw` and scalar `string` (any value reads
+			# as a string); every other kind is a type miss.
+			if c.ty is not None and ((base != "raw" and base != "string") or is_array):
+				wrong()
+				return
+			if c.allowed is not None and c.allowed[0] == "strings":
+				if node.value.content not in c.allowed[1]:
+					_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, node.value.content))
+			return
+		els = node.value.els
+		if base == "raw":
+			wrong()
+			return
+		# A scalar kind on a multi-element value is the array-where-one-scalar-
+		# expected miss - except string, which reads arrays.
+		if c.ty is not None and not is_array and base != "string" and len(els) > 1:
+			wrong()
+			return
+		if base == "int":
+			vals = []
+			for e in els:
+				v = _parse_int_text(e, self._strictness)
+				if v is None:
+					wrong()
+					return
+				vals.append(v)
+			if c.allowed is not None and c.allowed[0] == "ints":
+				for i, v in enumerate(vals):
+					if v not in c.allowed[1]:
+						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						break
+			if c.min_i is not None and any(v < c.min_i for v in vals):
+				_vdiag(out, line, "value below min at '{}'".format(c.path))
+			if c.max_i is not None and any(v > c.max_i for v in vals):
+				_vdiag(out, line, "value above max at '{}'".format(c.path))
+		elif base == "float":
+			vals = []
+			for e in els:
+				v = _parse_float_text(e, self._strictness)
+				if v is None:
+					wrong()
+					return
+				vals.append(v)
+			if c.allowed is not None and c.allowed[0] == "floats":
+				for i, v in enumerate(vals):
+					if v not in c.allowed[1]:
+						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						break
+			if c.min_f is not None and any(v < c.min_f for v in vals):
+				_vdiag(out, line, "value below min at '{}'".format(c.path))
+			if c.max_f is not None and any(v > c.max_f for v in vals):
+				_vdiag(out, line, "value above max at '{}'".format(c.path))
+		elif base == "bool":
+			vals = []
+			for e in els:
+				v = _parse_bool_text(e.text, self._strictness)
+				if v is None:
+					wrong()
+					return
+				vals.append(v)
+			if c.allowed is not None and c.allowed[0] == "bools":
+				for i, v in enumerate(vals):
+					if v not in c.allowed[1]:
+						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						break
+		elif base == "datetime":
+			vals = []
+			for e in els:
+				v = parse_datetime(e.text)
+				if v is None:
+					wrong()
+					return
+				vals.append(v)
+			if c.allowed is not None and c.allowed[0] == "dates":
+				for i, v in enumerate(vals):
+					if not any(_dt_equal(v, a) for a in c.allowed[1]):
+						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						break
+		else:
+			# string kind or untyped: every element coerces; only the allowed
+			# set can fail, in logical-string space.
+			if c.allowed is not None and c.allowed[0] == "strings":
+				for e in els:
+					s = _apply_escapes(e.text)
+					if s not in c.allowed[1]:
+						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, s))
+						break
+
+	def _v_unknown(self, cons, out):
+		# Unknown-field sweep: a schema path legalizes its name chain and every
+		# prefix (selectors ignored). Only the topmost unknown node is
+		# reported; its subtree is implied unknown and skipped.
+		legal = set()
+		# Sibling names per parent chain, built once (schema order): _v_suggest
+		# used to rebuild every chain per unknown field, which bit hardest on
+		# the wholesale-unmatched documents the feature exists for.
+		siblings = {}
+		for c in cons:
+			chain = ""
+			for s in c.segs:
+				siblings.setdefault(chain, []).append(s.name)
+				chain = s.name if not chain else chain + "\0" + s.name
+				legal.add(chain)
+		stack = [(c, "", "") for c in reversed(self.arena[ROOT].children)]
+		while stack:
+			n, pchain, pshown = stack.pop()
+			node = self.arena[n]
+			chain = node.name if not pchain else pchain + "\0" + node.name
+			shown = node.name if not pshown else pshown + "." + node.name
+			if chain not in legal:
+				hint = _v_suggest(siblings, pchain, node.name)
+				_vdiag(out, node.line, "unknown field '{}'{}".format(shown, hint))
+				continue
+			for k in reversed(node.children):
+				stack.append((k, chain, shown))
+
+
+class StatusError(Exception):
+	"""Raised by the must-exist convenience reads (get_* with no default): a
+	public name a caller can actually catch. Carries the Status in .status."""
+
 	def __init__(self, status):
 		self.status = status
 		super().__init__(status.name)
@@ -2046,3 +2577,387 @@ def parse_datetime(text):
 	if date is None:
 		return None
 	return ShclDateTime(date=date, time=None, frac=None, zone=None)
+
+
+# ---------------------------------------------------------------------------
+# Validator: schema build helpers (module level; methods live on Document)
+# ---------------------------------------------------------------------------
+
+_SCHEMA_TYPES = (
+	"int", "float", "bool", "string", "datetime", "raw",
+	"int-array", "float-array", "bool-array", "string-array", "datetime-array",
+)
+
+
+class _Constraint:
+	__slots__ = (
+		"path", "segs", "ty", "required", "allowed",
+		"min_i", "max_i", "min_f", "max_f", "repeat",
+		"desc", "default_text",
+	)
+
+	def __init__(self, path, segs):
+		self.path = path          # as written in the schema; message text only
+		self.segs = segs
+		self.ty = None            # member of _SCHEMA_TYPES
+		self.required = False
+		self.allowed = None       # ("ints"|"floats"|"bools"|"dates"|"strings", list)
+		self.min_i = None
+		self.max_i = None
+		self.min_f = None
+		self.max_f = None
+		self.repeat = None        # (lo, hi)
+		# Generator-only (`shcl init`): validation ignores both.
+		self.desc = None          # `desc`, a one-line description
+		self.default_text = None  # `default`, emitted as an inline value
+
+
+def _vdiag(out, line, msg):
+	out.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
+
+
+def _single_text(v):
+	# One scalar constraint value (escapes applied), or None for anything else.
+	if v.kind == "cell" and len(v.els) == 1:
+		return _apply_escapes(v.els[0].text)
+	return None
+
+
+def _dt_equal(a, b):
+	# Field-wise; tuples/None compare by value already.
+	return a.date == b.date and a.time == b.time and a.frac == b.frac and a.zone == b.zone
+
+
+def _build_schema(schema):
+	"""Interpret a parsed schema document into constraints. A non-empty fault
+	list (V09x, schema-file lines) means the caller reports those and validates
+	nothing."""
+	faults = []
+	cons = []
+	for f in schema.arena[ROOT].children:
+		node = schema.arena[f]
+		if node.name != "field":
+			_vdiag(faults, node.line, "unknown schema key '{}'".format(node.name))
+			continue
+		path = _single_text(node.value)
+		if path is None:
+			_vdiag(faults, node.line, "bad schema path")
+			continue
+		try:
+			segs, value_text = _scan_path(path)
+		except _PathError:
+			segs, value_text = None, None
+		if segs is None or value_text is not None:
+			_vdiag(faults, node.line, "bad schema path: {}".format(path))
+			continue
+		c = _Constraint(path, segs)
+		# Deferred so `min: 1` may precede `type: int` in the file.
+		required = None
+		allowed_at = None
+		min_at = None
+		max_at = None
+		for k in schema.arena[f].children:
+			kid = schema.arena[k]
+			if kid.value.is_empty():
+				continue  # dangling key: treated as absent
+			if kid.name == "type":
+				t = _single_text(kid.value)
+				if t is not None:
+					t = _ascii_lower(t)
+				if t in _SCHEMA_TYPES:
+					if c.ty is not None:
+						_vdiag(faults, kid.line, "bad schema constraint 'type'")
+					else:
+						c.ty = t
+				elif t is not None:
+					_vdiag(faults, kid.line, "unknown schema type '{}'".format(t))
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'type'")
+			elif kid.name == "required":
+				t = _single_text(kid.value)
+				b = _parse_bool_text(t, Strictness.Standard) if t is not None else None
+				if b is not None and required is None:
+					required = b
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'required'")
+			elif kid.name == "allowed":
+				if kid.value.kind == "cell" and allowed_at is None:
+					allowed_at = k
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+			elif kid.name == "min":
+				if kid.value.kind == "cell" and len(kid.value.els) == 1 and min_at is None:
+					min_at = k
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'min'")
+			elif kid.name == "max":
+				if kid.value.kind == "cell" and len(kid.value.els) == 1 and max_at is None:
+					max_at = k
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'max'")
+			elif kid.name == "repeat":
+				if kid.value.kind == "cell" and c.repeat is None and len(kid.value.els) in (1, 2):
+					lo = _parse_uint(kid.value.els[0].text)
+					hi = _parse_uint(kid.value.els[-1].text)
+					if lo is not None and hi is not None and lo <= hi:
+						c.repeat = (lo, hi)
+					else:
+						_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+			elif kid.name == "desc":
+				# Generator-only (`shcl init`); validation ignores it. First wins.
+				if c.desc is None:
+					c.desc = _single_text(kid.value)
+			elif kid.name == "default":
+				if c.default_text is None:
+					c.default_text = _emit_value_inline(kid.value)
+			else:
+				_vdiag(faults, kid.line, "unknown schema key '{}'".format(kid.name))
+		if required is not None:
+			c.required = required
+		base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
+		if base is None:
+			base = "string"
+		if allowed_at is not None:
+			kid = schema.arena[allowed_at]
+			els = kid.value.els
+			# Schema values are read at Standard; only the document's values
+			# coerce at the document's strictness.
+			ok = True
+			if base == "int":
+				vals = [_parse_int_text(e, Strictness.Standard) for e in els]
+				ok = all(v is not None for v in vals)
+				setv = ("ints", vals)
+			elif base == "float":
+				vals = [_parse_float_text(e, Strictness.Standard) for e in els]
+				ok = all(v is not None for v in vals)
+				setv = ("floats", vals)
+			elif base == "bool":
+				vals = [_parse_bool_text(e.text, Strictness.Standard) for e in els]
+				ok = all(v is not None for v in vals)
+				setv = ("bools", vals)
+			elif base == "datetime":
+				vals = [parse_datetime(e.text) for e in els]
+				ok = all(v is not None for v in vals)
+				setv = ("dates", vals)
+			elif base == "raw":
+				ok = False  # a raw body has no element space to enumerate
+				setv = None
+			else:
+				setv = ("strings", [_apply_escapes(e.text) for e in els])
+			if ok:
+				c.allowed = setv
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+		for at, is_min in ((min_at, True), (max_at, False)):
+			if at is None:
+				continue
+			kid = schema.arena[at]
+			el = kid.value.els[0]
+			key = "min" if is_min else "max"
+			if base == "int":
+				v = _parse_int_text(el, Strictness.Standard)
+				if v is None:
+					_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+				elif is_min:
+					c.min_i = v
+				else:
+					c.max_i = v
+			elif base == "float":
+				v = _parse_float_text(el, Strictness.Standard)
+				if v is None:
+					_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+				elif is_min:
+					c.min_f = v
+				else:
+					c.max_f = v
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+		cons.append(c)
+	if faults:
+		# One constraint per line in practice, so line order = file order.
+		faults.sort(key=lambda d: d.line)
+		return None, faults
+	return cons, []
+
+
+def _emit_value_inline(v):
+	# Re-emit a schema `default`/`allowed` value as an inline value (minimal
+	# quoting, array elements joined by ", "). None for empty or raw - neither has
+	# a usable one-line form. Used by the generator, not the validator.
+	if v.kind != "cell":
+		return None
+	return ", ".join(_emit_element(e) for e in v.els)
+
+
+def _allowed_join(a):
+	kind, items = a
+	if kind == "ints":
+		return ", ".join(str(x) for x in items)
+	if kind == "floats":
+		return ", ".join(format_float(x) for x in items)
+	if kind == "bools":
+		return ", ".join("true" if x else "false" for x in items)
+	if kind == "dates":
+		return ", ".join(str(x) for x in items)
+	return ", ".join(items)  # strings
+
+
+def _gen_annotation(c, tyname):
+	# The `# type, ...` line summarizing a constraint, ASCII only.
+	parts = [tyname]
+	if c.allowed is not None:
+		parts.append("one of: " + _allowed_join(c.allowed))
+	elif c.min_i is not None or c.max_i is not None:
+		if c.min_i is not None and c.max_i is not None:
+			parts.append("{}-{}".format(c.min_i, c.max_i))
+		elif c.min_i is not None:
+			parts.append(">= {}".format(c.min_i))
+		else:
+			parts.append("<= {}".format(c.max_i))
+	elif c.min_f is not None or c.max_f is not None:
+		if c.min_f is not None and c.max_f is not None:
+			parts.append(format_float(c.min_f) + "-" + format_float(c.max_f))
+		elif c.min_f is not None:
+			parts.append(">= " + format_float(c.min_f))
+		else:
+			parts.append("<= " + format_float(c.max_f))
+	if c.repeat is not None:
+		lo, hi = c.repeat
+		parts.append("repeat {}".format(lo) if lo == hi else "repeat {}-{}".format(lo, hi))
+	if c.required:
+		parts.append("required")
+	return ", ".join(parts)
+
+
+def _gen_default_text(v):
+	# A default carrying a literal newline cannot sit on a value line; the
+	# quoted escaped spelling reads back to the same string.
+	if "\n" not in v:
+		return v
+	s = ['"']
+	for ch in v:
+		if ch == "\\":
+			s.append("\\\\")
+		elif ch == '"':
+			s.append('\\"')
+		elif ch == "\n":
+			s.append("\\n")
+		elif ch == "\t":
+			s.append("\\t")
+		else:
+			s.append(ch)
+	s.append('"')
+	return "".join(s)
+
+
+def generate(schema):
+	"""Emit a commented, typed starter config from a schema (`shcl init
+	--schema`). Paths that must exist (required, or a repeat lower bound of 1+)
+	are live (their `default`, or an empty value); optional paths are commented
+	out so the file is valid and minimal as-is. A must-exist wildcard path
+	whose parent gets materialized by another live line is generated too, in
+	dotted form - otherwise the file would fail the very schema that produced
+	it - and remaining wildcard or `[#N]` paths (which cannot be materialized)
+	are listed in a trailing comment block. The output always loads clean and
+	validates clean against its schema, except a repeat lower bound of 2+
+	(identical generated lines would merge, so the shortfall is reported).
+	Returns (text, faults): a non-empty fault list (V09x) means the schema is
+	broken and text is empty."""
+	cons, faults = _build_schema(schema)
+	if faults:
+		return "", faults
+
+	def must_exist(c):
+		return c.required or (c.repeat is not None and c.repeat[0] >= 1)
+
+	def has_wild(c):
+		return any(s.selector is not None and s.selector[0] == "wild" for s in c.segs)
+
+	# `[#N]` needs a pre-existing instance and its `#` would start a comment
+	# on a binding line; a path with a literal newline cannot be written at
+	# all. Both go to the trailing note instead of emitting a broken line.
+	def unwritable(c):
+		return any(s.selector is not None and s.selector[0] == "idx" for s in c.segs) or "\n" in c.path
+
+	# Live concrete paths materialize instances; decide which must-exist
+	# wildcards get filled (their first-wildcard parent chain is a prefix of
+	# some live path). Fixpoint: a fill can materialize another's parent.
+	def names_of(segs):
+		return [s.name for s in segs]
+
+	live = [names_of(c.segs) for c in cons if not has_wild(c) and not unwritable(c) and must_exist(c)]
+	fill = [False] * len(cons)
+	while True:
+		changed = False
+		for i, c in enumerate(cons):
+			if fill[i] or not has_wild(c) or unwritable(c) or not must_exist(c):
+				continue
+			k = next(j for j, s in enumerate(c.segs) if s.selector is not None and s.selector[0] == "wild")
+			parent = names_of(c.segs[: k + 1])
+			if any(len(p) >= len(parent) and p[: len(parent)] == parent for p in live):
+				fill[i] = True
+				live.append(names_of(c.segs))
+				changed = True
+		if not changed:
+			break
+	out = []
+	wild = []
+	first = True
+	for i, c in enumerate(cons):
+		tyname = c.ty if c.ty is not None else "any"
+		if unwritable(c) or (has_wild(c) and not fill[i]):
+			wild.append((c.path.replace("\n", "\\n"), tyname))
+			continue
+		if not first:
+			out.append("\n")
+		first = False
+		if c.desc is not None:
+			for line in c.desc.split("\n"):
+				out.append("# " + line + "\n")
+		# The annotation is a comment: a newline smuggled in via an allowed
+		# string value must not break out of it.
+		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
+		# A filled wildcard emits in dotted form, targeting the first (the
+		# materialized) instance.
+		path = c.path.replace("[*]", "") if fill[i] else c.path
+		prefix = "" if must_exist(c) else "#"
+		if c.default_text is not None:
+			out.append("{}{}: {}\n".format(prefix, path, _gen_default_text(c.default_text)))
+		else:
+			out.append("{}{}:\n".format(prefix, path))
+	if wild:
+		if not first:
+			out.append("\n")
+		out.append("# Paths needing an instance name (not generated):\n")
+		for path, tyname in wild:
+			out.append("#   {}   {}\n".format(path, tyname))
+	return "".join(out), []
+
+
+def _edit_distance(a, b):
+	# Two-row Levenshtein; powers the "did you mean" prose (never the code).
+	prev = list(range(len(b) + 1))
+	cur = [0] * (len(b) + 1)
+	for i in range(1, len(a) + 1):
+		cur[0] = i
+		for j in range(1, len(b) + 1):
+			cost = 0 if a[i - 1] == b[j - 1] else 1
+			cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+		prev, cur = cur, prev
+	return prev[len(b)]
+
+
+def _v_suggest(siblings, parent_chain, name):
+	"""Closest legal sibling name (same parent chain, schema order, edit
+	distance <= 2) as "; did you mean 'x'?" - or nothing. Prose only, never
+	contract. The sibling lists are prebuilt once per validate."""
+	best = None
+	for s in siblings.get(parent_chain, ()):
+		dist = _edit_distance(name, s)
+		if dist <= 2 and (best is None or dist < best[0]):
+			best = (dist, s)
+	if best is None:
+		return ""
+	return "; did you mean '{}'?".format(best[1])

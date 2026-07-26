@@ -37,11 +37,15 @@ The guiding tension is acknowledging "simplest possible" versus "expressive enou
 
 - Forgiveness is also a knob, not dogma. There are three strictness levels - Loose/Standard/Strict, per-document, default Standard - instead of a binary strict flag. Standard keeps the defaults clean (no currency stripping, no `%` fractions, no float->int rounding, trimmed boolean set); Loose re-admits those conversions as a closed list for those who want maximum forgiving; Strict fails the load on any error diagnostic, the StrictYAML-style answer. Defaults are what adopters judge; the party tricks survive as opt-in. The normative bundle table is in `spec.md`.
 
+- The knob belongs to the consuming program, not to the end user. Strictness and bad-read handling are part of the contract an application makes about its own config handling, so they are set at the call site (or the CLI flag) and nowhere else. A per-user defaults file was considered and rejected: it would let a user silently weaken guarantees an app relies on, and would make an identical `shcl` invocation mean different things on different machines - the `GREP_OPTIONS` mistake. Nothing else the CLI exposes is presentation-only, so SHCL ships no user config file at all.
+
 - Coercion earns trust by refusing to surprise: silent lossy conversion (rounding a float on an int read, `$1200` as a number) was cut from the default level for exactly that reason. Same logic killed the fehu anti-escape rune (raw blocks are the verbatim escape hatch) and restricted field-name case folding to ASCII (full Unicode folding is a locale trap and a cross-binding parity risk).
 
 - Raw (fenced) blocks give verbatim escape hatches (DDL, code, templates) without contorting the config syntax.
 
 - A fence is just a value line for its parent field. The same-line spelling (`name: ~~~sql`) read badly, so the canonical spelling puts the fence on the next line at child indent - and rather than special-case that, the rule is uniform. A fence fills the parent's empty value, or creates a new instance if the parent already has one (the repeated-leaf rule). Blocks are then ordinary instances: no index-addressing syntax to invent, and the existing `[0]`/`[#N]` selectors just work.
+
+- Parity over idiom in the bindings: each port deliberately mirrors the reference's structure - same function inventory, same call flow, same contract strings - even where the host language would idiomatically do it differently. Byte-for-byte agreement is the product's core guarantee, and structural parallelism is what makes it maintainable: a fix ports by mechanical diff instead of re-derivation. Per-language idiom keeps the surface (formatters, naming case, doc comments); it yields on structure. The full rules and each accepted deviation live in `../style-guide.md`.
 
 - Positioning: the pitch is "forgiving to write, predictable to read, with the friendliest read API in the space" - not "simplest possible", which overpromises and invites the takedown. Versus schema-bearing languages (Pkl, CUE): the file stays dumb, the library is powerful (see Power layer).
 
@@ -91,13 +95,66 @@ The last two are the same compiled code linked two ways - "shared" stays a separ
 
 Compared to schema-bearing config languages (Pkl, CUE), SHCL is deliberately weaker in-language - that is the simplicity trade. To close most of the practical gap - the power lives in the library, never in the grammar: Pkl makes the config file powerful; SHCL keeps the file dumb and makes the library powerful. Everything below is optional - a consumer doing a bare `GetIntOr` never sees any of it - and none of it adds a rule a file author must learn.
 
-- **Schema-as-SHCL validation.** A schema is itself a plain SHCL file describing expected paths (type, required, allowed values, ranges). One library call - `Validate(doc, schemaDoc)` - returns the same structured diagnostics loading already produces. The schema vocabulary (`int`, `required`, ...) is interpreted by the validator, not the parser, so the core language stays free of reserved words (same pattern as the fence info-string). This also closes the forgiving-parser typo hazard: the schema knows the legal field names, so unknown/misspelled fields get caught ("unknown field `enabeld`, did you mean `enabled`?").
+- **Schema-as-SHCL validation.** A schema is itself a plain SHCL file describing expected paths (type, required, allowed values, ranges). One library call - `Validate(doc, schemaDoc)` - returns the same structured diagnostics loading already produces. The schema vocabulary (`int`, `required`, ...) is interpreted by the validator, not the parser, so the core language stays free of reserved words (same pattern as the fence info-string). This also closes the forgiving-parser typo hazard: the schema knows the legal field names, so unknown/misspelled fields get caught ("unknown field `enabeld`, did you mean `enabled`?"). Design below.
 
-- **Layered loading.** `Load(defaults, site, user, ...)` merges later files over earlier ones using the merge rule the language already defines (nodes merge on matching `(field-name, value)`); layering is the existing rule applied across files. CLI/env overrides (`--set a.b=v`, env-var mapping) sit on top as the final layer. Covers the defaults-plus-overrides composition story without in-language imports.
+- **Layered loading.** (Implemented; see spec.md "Layered loading".) `Load(defaults, site, user, ...)` is a left fold of `merge(base, over)` across files. Container instances merge on matching `(field-name, value)` - the existing in-file rule - but a leaf name in a higher layer *overrides* (replaces) the lower layer's same-named leaves, so defaults-plus-override works for scalars, arrays, and raw blocks, not just structure. CLI `--set PATH=VALUE` sits on top as the final layer, written as literal text through the Writer. Env-var mapping was deliberately dropped: the env namespace and its convention belong to the consuming program, which can map env onto `--set` itself (the same reasoning that canceled the per-user config file). `check` takes no layers - its diagnostics are single-file.
 
-- **Schema-driven generation.** The Writer plus a schema yields a fully commented, correctly typed starter config (`shcl init --schema ...`). Composition of two things already specified - the Writer's "emit defaults and comments" and the schema above.
+- **Schema-driven generation.** (Implemented; see spec.md "Schema-driven generation".) `generate(schema)` + `shcl init --schema` emit a commented, typed starter config: `desc` becomes a comment, a generated annotation line summarizes type/constraints, required fields are live (their `default` or an empty value), optional fields are the same line commented out, and wildcard paths go in a trailing comment block. Output is flat dotted form (mirrors the schema shape) and always loads clean. The annotation line is a byte-for-byte cross-binding contract, so its format is fixed and its numbers use the canonical formatters.
 
 Explicitly out of scope, with finality unless something big changes: in-language expressions, functions, inheritance, interpolation, imports, anchors/references. The moment config files can compute, they need debugging - that is the complexity cliff to avoid.
+
+### Schema validation
+
+The schema is a plain SHCL file, read with the ordinary parser and the ordinary Accessor. No grammar change, no reserved words, no new parser feature - the whole design was prototyped against the shipped binary before being written down.
+
+**Shape: a flat list of path descriptions, not a mirror of the document.** Each constraint is one instance of a field named `field`, whose *value* is the path it describes and whose children are the constraints:
+
+```shcl
+field: server.port
+	type: int
+	required: yes
+	min: 1
+	max: 65535
+
+field: "server[*].host"
+	type: string
+```
+
+The alternative - a schema that mirrors the document's tree, with constraints as children of each leaf - was rejected: it cannot tell a constraint named `type` from a real document field named `type`, so the schema vocabulary would collide with the user's namespace. The flat form has no such ambiguity, because the document's paths appear as *values*, never as field names. It also falls straight out of the relational model the language is already built on - `field` is the column, each path is a row - and reads as an ordinary SHCL file to someone who has never seen a schema.
+
+Consequences of the flat form, all verified against the current binary:
+
+- The validator needs no new lookup machinery: `Instances("field")` enumerates the described paths, and `field[<path>].type` reads a constraint.
+
+- A path containing a bracket selector must be quoted (`field: "server[*].host"`), because a bare selector's scan ends at the first `]`. The canonical form writes the path as a value rather than a selector, so the formatter applies that quoting itself.
+
+- A schema file is a formatter fixpoint like any other SHCL document, so `shcl fmt` works on schemas for free.
+
+**Wildcards carry the repeated-instance story.** `server[*].port` constrains every instance of `server`, which is how a schema says "each server needs a port" in a language whose core idea is repeated instances. `repeat` (on the parent path) bounds the instance count itself - the one constraint with no equivalent in tree-shaped schema languages.
+
+**The vocabulary stays small and closed**, in the same spirit as the Loose coercion list: `type`, `required`, `allowed` (an enum, written as an ordinary array), `min`/`max` (numeric ranges, inclusive), `repeat`, plus `default` and `desc` which only the generator reads. Nothing joins that list without a spec change. Datetime ranges were considered and dropped for the same reason as regex below: comparing datetimes across zone suffixes needs calendar arithmetic (an offset can roll the date), no parser has any, and four hand-written implementations of it is a parity minefield.
+
+**Regular-expression constraints are rejected outright**, and this is the one real capability given up. No two of the target languages share a regex engine - character classes, Unicode properties, and anchoring all differ - so a `pattern` key could not hold byte-for-byte agreement across bindings, which is the product's core guarantee. An enum covers the common case; anything past that belongs in the consuming program.
+
+**Validation reuses the reads, so strictness composes automatically.** `type: int` against `3.5` passes at Loose (which rounds) and fails at Standard. That falls out of the validator calling the same typed reads a consumer would, and it is the correct behavior: the schema says what the program needs, and strictness says how forgiving that program is about getting it.
+
+**Diagnostics reuse the existing structure** (line, severity, stable code, prose message), so a consumer inspects validation results exactly as it inspects load results. Two additions:
+
+- A `V###` code range, disjoint from the parser's `E###`/`H###`, so a validation failure is never confused with a parse failure. Unknown field, missing required, wrong type, value outside the allowed set, out of range, and wrong instance count each get one.
+
+- Line 0 means "no line" - the document-scope report a missing-required-field diagnostic needs, since the whole point is that nothing was written.
+
+The "did you mean `enabled`?" suggestion rides in the prose message, not the code. Edit-distance implementations would otherwise have to agree byte-for-byte across four bindings for a string that is explicitly per-binding voice.
+
+**A broken schema is reported against the schema.** Codes `V090+` cover schema faults (unknown constraint key, unusable type name), their line numbers refer to the schema file, and their presence suppresses data validation entirely - there is nothing meaningful to say about a document checked against a schema that does not parse. This keeps one line-number space per result set without adding a source field to the shared `Diagnostic` type across every binding.
+
+**CLI surface: `shcl check --schema SCHEMA FILE`**, rather than a new subcommand. Loading and validating are the same question ("is this file good?"), the output shape and exit codes are already defined by `check`, and folding it in avoids a second nearly identical command.
+
+Both open points are settled:
+
+- `Validate` lives in each binding's single drop-in file. The one-file promise the README leads with outranks keeping the core lean; a schema user copying two files would quietly break the pitch.
+
+- No string/array length bounds. They would reopen the byte-versus-code-point metric already settled for merge keys, for modest benefit; an `allowed` enum or the consuming program covers the need.
 
 ### Formatter
 
@@ -136,7 +193,9 @@ The responsibility is split rather than duplicate the pipeline:
 - Branch flow: `dev` is the integration target (feature branches merge there, `--no-ff`); `main` is release-only. A dev -> main merge is a release cut.
 
 - One canonical version source: `source/rust/Cargo.toml`. The pipeline reads it for artifact names and release tags. (An automatic bump-before-push guard was tried and dropped: dev is the integration branch, and versions there are cut deliberately at release time, not policed per push.)
-	- Release cut checklist: bump the four CLI version sites (Cargo.toml canonical, Go/Python/C mirrors), date the changelog heading, and pass the README status once - lifecycle badge, Status section, and Installing section must match the release being cut (they drifted to "no tagged release" after beta1).
+	- Release cut checklist: bump the four CLI version sites (Cargo.toml canonical, Go/Python/C mirrors), date the changelog heading, and pass the README status once - lifecycle badge, Status section, and Installing section must match the release being cut (they drifted to "no tagged release" after beta1). Attach everything in `cicd/artifacts/release/` to the GitHub release: raw binaries, the .deb/.rpm and NSIS setup packages, and the sha256sums file that covers them all.
+
+- Installer packages ride the release stage, not a separate pipeline: `cicd/utility/package.bash` builds .deb/.rpm (nfpm, one sed-rendered template) per Linux binary and an NSIS setup per Windows binary, into the same versioned artifact family before the checksums are written. Package layout follows distro convention (/usr/bin + /usr/share/shcl) rather than the /opt layout the standalone install.bash uses - packages answer to distro policy, the script answers to the spec. Payload matches install.bash: binary + code/ drop-ins + scripts/ wrappers.
 
 - Toolchain pins: `rust-toolchain.toml` (rustc + clippy + cross targets) and warn-only pins for cargo-installed helpers, so a box update cannot silently change results.
 
@@ -271,7 +330,7 @@ Technical detail behind the backlog's "Code Review 20260716" items. Item numbers
 
 - **Item 36 - check exits 0 on errors** (folded into item 19)
 	- `check` reported `ok` and exited 0 even when diagnostics included errors, so a CI gate on `check` passed configs whose lines were dropped.
-	- Resolved (owner-pinned: nonzero exit): `check` exits 6 whenever any `error` diagnostic is present - a strict load failure prints `strict load failed: N diagnostic(s)`, and a standard/loose load that dropped lines prints `failed: N diagnostic(s), M error(s)`; a clean load still prints `ok (N diagnostic(s))` and exits 0. Same summary strings and exit in all four bindings (compared by the differential check).
+	- Resolved (decided: nonzero exit): `check` exits 6 whenever any `error` diagnostic is present - a strict load failure prints `strict load failed: N diagnostic(s)`, and a standard/loose load that dropped lines prints `failed: N diagnostic(s), M error(s)`; a clean load still prints `ok (N diagnostic(s))` and exits 0. Same summary strings and exit in all four bindings (compared by the differential check).
 
 - **Item 23 - `field[sel]: value`** (`source/rust/src/lib.rs:624`)
 	- Grammar allows it, spec never defines it, implementation drops the value with an Error diagnostic - so strict loads fail on a grammar-legal line. Align the three: forbid in grammar, or spec the drop-with-Error as the defined meaning. Corpus case with a strict-level load row.
@@ -293,3 +352,116 @@ Technical detail behind the backlog's "Code Review 20260716" items. Item numbers
 	- Spec prose: quotes only needed for reserved chars (and shows a non-ASCII field name); grammar/parser: bare names are ALPHA/DIGIT/-/_ only, so the prose's own example is dropped as a malformed line. Pick one truth and align prose, grammar, `is_bare_name_char`, and the emit quoting predicate.
 	- Hex parse negates after an i64 magnitude parse, so `-0x8000000000000000` is BadType while its decimal spelling works: parse magnitude as u64, range-check against sign, mirror in ports.
 	- Resolved: prose was the only outlier (grammar, `is_bare_name_char`, and the emit predicate already agreed), so the prose now states the bare-name charset explicitly and shows the `Straße` examples quoted - a name outside ASCII letters/digits/`-`/`_` must be quoted. Hex fixed in all four parsers by parsing the magnitude as u64 and range-checking against the sign (`i64::MIN` magnitude reads negative, overflows positive), pinned by corpus case 019-hex-int-bounds.
+
+## Code Review 20260725
+
+Technical detail behind the backlog's "Code Review 20260725" items, in the same shape as the 20260716 section above. Item numbers match the backlog; items whose backlog bullet says everything needed are not repeated here. Every finding below was reproduced against the beta2-era `dev` build unless it says otherwise.
+
+- **Item 1 - childless over-node wipes a base subtree** (`source/rust/src/lib.rs:1821,1844`, `source/go/shcl.go:1971,1996`, `source/python/shcl.py:1404,1419`, `source/c/shcl.h:1877,1846`, `spec.md:467`)
+	- `overlay` classifies an over-side name group as a leaf override when every node in it has no children, then `replace_leaf_group` drops all base children of that name. An Empty-valued childless node is a wrapper, not a leaf, so a bare section header in a higher layer replaces the section instead of merging into it.
+	- Blast radius is the whole name at that scope, not the named instance: base `server: web1` + `server: web2`, over `server: web1` with no body, leaves `server: web1` alone. A body consisting only of a comment counts as empty, since trivia are not children.
+	- The code implements spec.md:467's operational wording literally ("its over-side nodes all have no children"); the conflict is with the same line's trailing gloss (a leaf is "a scalar, an inline array, or a raw block") and with the Wrapper definition in the terminology section. So this is a spec decision first and four code changes second.
+	- The obvious narrowing - route any Empty-valued childless node to the container branch - is wrong on its own: the container branch matches by `(name, value.key())`, so `port:` would not key-match base's `port: 8080` and would append a second instance rather than override. Clearing a leaf from a higher layer works correctly today and must survive.
+	- The workable shape is to take the replace path only when the base children of that name are themselves childless, letting a base container fall through to instance-by-instance merge. The cost, which has to be accepted deliberately: there is then no way to blank a whole section from a higher layer, so an explicit deletion spelling becomes required rather than optional.
+	- Industry precedent all runs the other way. RFC 7386 JSON Merge Patch makes `{"a":{}}` a no-op and requires an explicit `null` to delete; kustomize needs `$patch: delete`; HCL has no re-declare-empty deletion at all.
+	- Resolved: we decided for the merge-not-wipe shape. The replace path now requires the base side of the name group to be all-childless too; against a base container a childless over-node merges by `(name, value)` - matching instance untouched, unmatched appended as an empty instance - so leaf clearing survives unchanged. Spec's leaf bullet reworded and a wrapper-mention bullet added; blanking a section from a higher layer is deliberately impossible until an explicit deletion spelling is designed (post-1.0). Corpus case 027 pins the bare mention, the named mention with a sibling instance, a comment-only body, and the leaf clear.
+
+- **Item 2 - recursive emit and merge** (`source/rust/src/lib.rs:1272,1830,1875`, `source/go/shcl.go:1369,1984,2037`, `source/python/shcl.py:1391,1449`, `source/c/shcl.h:2132,1820`)
+	- The parser is iterative but `emit_node`, `overlay` and `clone_subtree` all recurse once per nesting level. A document therefore loads fine and dies only when something formats or merges it, which is why `check` and `count` survive inputs that kill `fmt` and `set`.
+	- Measured cliffs, all executed. Emit: reference aborts at ~33k levels (a 72 KB file, `fatal runtime error: stack overflow`, exit 134); C segfaults at ~100k (exit 139); Go reached 64 GB RSS at 200k before the kernel killed it; Python is iterative here from the prior review's item 13. Merge: Python raises an uncaught RecursionError at ~330-1000 levels - a 4.9 KB file is enough - while the other three exit 0; C segfaults between 20k and 25k; the reference dies around 17k.
+	- Depth is linear in file size via dotted paths (two bytes per level), so no unusual syntax is needed to reach any of these.
+	- Python's merge path is a straight regression against an established guarantee: item 13 recorded "depth 25000 formats fine from both the CLI and library callers" and deleted the `setrecursionlimit` bump, and the 2026-07-24 merge code reintroduced unbounded recursion on a parallel path. Corpus case 025-layered is two levels deep, so nothing in the gate covers it.
+	- Direction that fixes the whole class in one change: enforce a documented maximum nesting depth at load time in all four bindings, emitting an ordinary Error diagnostic with a new stable code rather than crashing. A cap well below every binding's cliff makes the existing recursion safe and removes the need to rewrite three tree walks. Converting emit and clone/overlay to explicit stacks is still worth doing for the reference so its limit is deliberate rather than whatever the thread stack happens to allow.
+	- Note for whoever picks the corpus depth: the successful bindings emit O(depth^2) bytes because indentation is one tab per level, so a 409 KB input produces 1.8 GB of output. The depth cap fixes that amplification too. Generate the case, do not commit it.
+	- Python's merge recursion is driven by the depth of the `over` document, not the base. For `--layer=X FILE`, X is the base and FILE is the over side, so the practical trigger is any deep main file plus any `--layer` - the common case, which makes it worse than it first reads.
+	- Resolved: a fixed 512-level cap enforced in `attach_path` in all four parsers (checked before any node is created, one `E016` per offending line) and in the Writer's `place`. 512 sits under the lowest measured cliff (Python merge ~990) with margin, and far beyond hand-authored nesting. The reference deliberately keeps its recursive emit/overlay/clone - with depth bounded the rewrite would buy nothing and cost structural parity with the three ports. Corpus case 028 pins the error path cross-binding; the boundary and writer refusal are reference unit tests.
+
+- **Item 3 - `shcl set` op-value validation** (`source/c/cmd/shcl/main.c:329,330`, `source/python/cmd/shcl/main.py:401-433`, `source/go/cmd/shcl/main.go:492,493,694`, `source/rust/src/main.rs:449,450`)
+	- The reference parses op values with `s.parse::<i64>()` / `parse::<f64>()` and aborts the whole script with exit 1 and empty stdout. Three ports diverge, each differently.
+	- C uses bare `strtoll`/`strtod`, discarding both the end pointer and errno, so `abc` becomes 0, `12x` becomes 12, `0x10` becomes 0, and an out-of-range magnitude saturates to `INT64_MAX` - all at exit 0. Fixed `char b[32]`/`b[64]` staging buffers additionally truncate long literals. `source/c/tests/conformance.c:111-141` repeats the same lenient parse, so the native runner cannot catch it either.
+	- Python uses bare `int()`/`float()`, so unbounded magnitudes, PEP-515 underscores, surrounding whitespace, and Arabic-Indic and fullwidth digits all pass. `int b 99999999999999999999999999` writes a literal that every binding including Python then reads back as BadType, so the Writer emits out-of-contract output.
+	- Go's `pflt` treats `ErrRange` as fatal, so `1e400` aborts where the other three store `inf`; it also accepts Go-literal underscores. The Go library's own `parseFloatText` already carries the correct ErrRange handling - the CLI op parser just did not get it. `0x10p2` (C99 hex float) is accepted by Go and C, rejected by Rust and Python.
+	- `1_0.5` is a four-way split on its own: Rust rejects, Go and Python give 10.5, C gives 1.
+	- The `set` subcommand also reads its ops script without the UTF-8 gate that the file reader applies (`io.ReadAll` + `string()` in Go, `decode("utf-8","replace")` in Python, raw pass-through in C), so an invalid byte becomes U+FFFD instead of the exit 1 the prior review's item 24 settled on.
+	- Fix shape: reference-equivalent gates in the three ports - an ASCII sign-plus-digits check with an i64 range check for ints, and the `f64::from_str` grammar for floats - plus corpus `write.ops` rows carrying malformed, out-of-range, underscore, hex-float, padded and non-ASCII-digit values so the crosscheck pins all four.
+	- Resolved exactly along that shape. Corpus case 029 carries the accept set in `write.ops` (`1e400` -> `inf`, `.5`, `5.`, `INF`, `nan`, i64 min, `+42`) and the reject set in a new `write-bad.ops` dimension (each line applied alone must be refused and leave the document unchanged) that all four native runners and the differential harness replay. The C CLI's `-default` probe now gates values before the existence check, matching the reference's argument-evaluation order, and the ops stdin gets the file reader's UTF-8 gate in all four.
+
+- **Item 5 - C arena has no scratch discipline** (`source/c/shcl.h:209,227,1472,1519,1846,1855-1865,2451,2473`)
+	- `arena_grow` abandons the old block by design, which is correct for a bump arena and fatal for anything that rebuilds a vector in a loop. Nothing resets or reuses, so every temporary lives until `shcl_free`.
+	- Read path: `resolve` runs `scan_path` against `d->arena`, and `resolve_from` pushes its candidate and slot vectors plus any `value_display()` string into the same arena. Every accessor call therefore retains ~550 bytes permanently. Measured: 1M reads against a 30-byte document reach 1.13 GB. Invisible to the corpus, where one process performs one read.
+	- Merge path: `w_replace_leaf_group` builds a fresh `VecSize` for the parent's children per distinct over-side name, so peak RSS is quadratic. Measured for `fmt --layer=one.shcl flatN.shcl`: 49 MB / 174 MB / 671 MB / 2.53 GB / 9.84 GB at N = 2k / 4k / 8k / 16k / 32k, against 3.6 / 5.3 / 8.4 / 14.5 / 27 MB for the reference.
+	- Validation path: `v_edit_distance` arena-allocates two DP rows and two codepoint arrays per call, and `v_suggest` calls it once per constraint per unknown field - 349 MB at N=1000, 1.38 GB at N=2000. These go in the validation object's own arena and are released by `shcl_validation_free`, so it is peak RSS inside one call rather than a leak.
+	- Two separable fixes. The narrow one: rebuild the children vector in place in `w_replace_leaf_group` (compact the survivors down, splice the clone run in at the first dropped index) instead of allocating a fresh vector per name. That removes the merge blowup by itself. The broad one: add a second `Arena scratch` to `shcl_doc` for path scans, resolver vectors, coercion helpers and DP buffers, reset on entry to each public call.
+	- Constraint on any reset scheme: `shcl.h:105-107` promises returned bytes stay valid until `shcl_free`. Resetting on entry keeps the previous call's returned pointers alive until the next call; resetting on exit would invalidate them immediately. Anything handed back must still be `s_dup`'d into the persistent arena, which is already the documented ownership contract.
+	- This is the C-specific cost of parity over idiom: the port mirrors a reference that relies on scoped ownership the bump arena does not provide. The standard answer is a persistent region plus a per-call scratch region that something resets (Hanson's Arena, Zig's ArenaAllocator with per-call deinit, Chromium's scoped temp allocators).
+	- Resolved with exactly that split: `shcl_doc` carries a scratch arena reset on entry to every `resolve` (the single funnel for reads/count/instances/exists/remove) and on merge entry; resolver vectors, path scans, compare strings, and int/float/bool coercion temps live there, while anything handed back is still allocated in the persistent arena (datetime keeps the persistent arena - its `frac` pointer is returned). The merge blowup fell to the in-place children rebuild, and `v_suggest` gets its own per-field-reset scratch for the Levenshtein rows.
+
+- **Item 6 - stacked `*` list grows linearly** (`source/c/shcl.h:1326,1332-1334,1177,417`)
+	- `add_star_element` allocates a fresh `(nels+1)*sizeof(Element)` array from the arena per `* ` line and memcpys the old one in. Linear growth, no reuse, so the discarded arrays sum to ~24*n^2/2 bytes.
+	- It also rebuilds the node's whole merge key twice per element - once for `old_key` at :1326 and again inside `remap_child` at :1177 - each O(total list text) and each retained, with `sb_put`'s doubling adding roughly another 2x.
+	- Measured on n `* item` lines: 11 KB input costs 38 MB, 95 KB costs 2.4 GB, 249 KB costs 14.8 GB and 40 s. The reference stays at 3-5 MB.
+	- The element-array half is C-local (Rust pushes onto a Vec). The key-rebuild half costs time in every binding - the reference goes 0.01 / 0.07 / 0.27 / 1.14 s across n = 1k..8k on the same input - so keep the key incrementally, or skip the remap entirely while the node is the currently-open star list, where `remap_child`'s first-wins insert is a no-op after the first element.
+	- Resolved in C along the second shape: geometric element-array growth plus a deferred remap (the parser tracks the open stacked list and flushes its one remap before any other map lookup, so the map is fresh whenever queried and behavior is unchanged - verified byte-identical). The reference/go/python key-rebuild time cost folds into item 24's merge-accelerator work.
+
+- **Item 8 - Windows PATH damage** (`cicd/packaging/shcl.nsi:53,56,63,67`, `install.ps1:137,139`)
+	- NSIS strings are fixed-length and this `makensis` reports `NSIS_MAX_STRLEN=1024`, so `ReadRegStr` on a longer machine PATH either truncates to 1022 chars or returns empty - and the installer writes that value straight back. Observed under wine: a 1427-char PATH came back as 22 chars. The uninstall section repeats the pattern.
+	- The empty-return mode defeats the obvious guard: a `StrLen $0` check against a floor sails through when the read returned nothing. Use the EnVar plugin, which edits the registry value directly and is not bounded by `NSIS_MAX_STRLEN`; a length guard is only acceptable if it also treats a short or empty read as a failure.
+	- `${StrStr}` is a substring test, so a sibling directory whose name contains `$INSTDIR` suppresses the append. Split on `;` and compare whole segments.
+	- `install.ps1` uses `[Environment]::GetEnvironmentVariable('Path', $scope)`, which expands `%SystemRoot%`-style references before returning, and `SetEnvironmentVariable` writes the result back as `REG_SZ`. So the value type is downgraded from `REG_EXPAND_SZ` and every reference is frozen to whatever the elevated shell saw - the user-scope case is the damaging one, since user PATH commonly carries `%USERPROFILE%`. Read with `DoNotExpandEnvironmentNames` and write with `RegistryValueKind::ExpandString`, then broadcast `WM_SETTINGCHANGE`. Reasoned from documented .NET semantics, not executed - the User and Machine targets are Windows-registry-only and return null under pwsh on Linux.
+	- The ps1's own segment test is already correct (`($current -split ';') -notcontains $pathDir`); it is the NSIS side that needs to move toward it, plus a case-insensitive comparison.
+	- Resolved: EnVar is not shipped with this box's or CI's makensis, and the 1024-char cap is baked into NSIS strings themselves - so the installer writes a small PowerShell script at run time and edits the registry value entirely outside NSIS (unexpanded read, whole-segment case-insensitive compare, REG_EXPAND_SZ write, WM_SETTINGCHANGE broadcast stays in NSIS). The failure mode flips from destroying PATH to a DetailPrint warning. install.ps1 got the DoNotExpandEnvironmentNames/ExpandString pair plus a best-effort broadcast.
+
+- **Item 17 - diagnostics carry no origin** (`source/rust/src/lib.rs:150`, `source/go/shcl.go:1251`, `source/python/shcl.py:53`, `source/c/shcl.h:76,130`)
+	- `Diagnostic` is `{line, severity, message, code}` in all four. `check --schema` interleaves document-line and schema-line diagnostics in one list with nothing distinguishing them, while `init` prefixes `schema line N` - so the same fault renders two different ways in two commands.
+	- Cheap fix available today with no struct or ABI change: give `check --schema` the prefix `init` already uses.
+	- The durable fix is a `source` field (document vs schema) and, separately, a `column`. The compared stdout contract is `line N: severity: CODE`, so column and origin only need to reach the stderr prose, which the crosscheck already drops - no golden changes. C exposes diagnostics through accessor functions rather than a public struct, so adding `shcl_diag_column` later is additive, which weakens the pre-1.0 urgency argument for the column half.
+	- Worth weighing on its own merits rather than as a defect: for a format whose pitch is hand-authoring, `line 5: malformed line skipped` is below the current baseline. clang, rustc and cargo-via-toml_edit all render column plus source excerpt plus caret.
+	- Resolved with the cheap half: all four CLIs spell `schema line N` in the stderr prose for `V090`-`V093` (the compared stdout keeps `line N` - the code names the space, and the spec's code table documents it). The structural `source` and `column` fields remain future work; column is additive in C (accessor functions, no public struct), so it need not gate 1.0.
+
+- **Item 24 - merge is quadratic** (`source/rust/src/lib.rs:1803,1809,1814,1826`, `source/go/shcl.go:1937`, `source/python/shcl.py:1391`, `source/c/shcl.h:1876`)
+	- Three separate O(K^2) terms at one parent: the over-side distinct-name list uses a linear membership test, the whole child list is re-filtered once per distinct name to build the group, and the container-instance branch scans every base child per over-node while rebuilding `value.key()` for each candidate.
+	- `replace_leaf_group`'s per-name full rebuild of the base children vector is a fourth term, O(K*B); grouping the over side alone does not remove it.
+	- Exactly the pattern the prior review's item 12 removed from `select_or_create`, reintroduced in the newest feature. Parsing 32k keys costs 56 ms; merging them costs 16 s in the reference, 73 s in C, ~70 s in Python.
+	- Fix is the same accelerator: one grouping pass building name -> child-index buckets plus a first-appearance order vector (HashMap, Go map, dict, and the arena-backed chained hash table C already has), and a `(name, value-key) -> base-child-index` map built once per `overlay` call for the instance branch, with each node's key cached rather than rebuilt.
+	- Realistic sizes are fine - N=2000 merges in 0.02 s - so this needs thousands of same-parent siblings, which means machine-generated config rather than hand-authored.
+	- Resolved with exactly that accelerator, plus one structural change.
+		- `overlay` now decides everything first (recursions and clone lists), then rebuilds the parent's children vector once, splicing each replaced group back at its name's first original position.
+		- That splice is order-identical to the old sequential shape, so merged output does not move.
+		- The `[value]`-selector index (item 25) landed alongside it: a display-keyed sibling map maintained at the same mutation sites, with the stacked-list deferred-remap flush extended to cover it.
+
+- **Item 30 - blank lines and name case** (`source/rust/src/lib.rs:595,1171`, `spec.md:77,381`)
+	- Blank lines are the half of the trivia problem that item 4 left behind. spec.md:77 says they are ignored, so `fmt` collapses grouping that an author deliberately created - in a format that markets hand-editability as its edge.
+	- The trivia model already carries a per-node leading comment list, so this is a `blank_before` flag set when the parser saw a blank line before a node's binding line, plus one emit line. Fixpoint-preserving, roughly ten lines per binding. gofmt, rustfmt and prettier all preserve a single blank line between items.
+	- Name folding to lowercase happens at parse (lib.rs:595), so the README's own showcase loses `Max-Upload-MB`. Arguably correct for a canonical formatter - names are case-insensitive by spec, so the folded spelling is the canonical one - but the formatter section never says so, which makes `fmt --write` a surprise. Doc fix unless display names are wanted.
+	- `shcl set` re-emitting the whole document is the documented design, not a defect. Worth naming the comparison anyway: this is the problem that produced toml_edit, whose answer was a lossless syntax tree with `Decor`/`Repr` so unedited regions come back byte-identical. That is a much larger change than the blank-line flag and is not proposed here.
+
+## Code Review 20260726
+
+Technical detail behind the backlog's "Code Review 20260726" items, in the same shape as the sections above. This was the short pre-rc1 pass over what landed during the 20260725 burn-down, not a full sweep.
+
+- **Item 1 - in-place writes do not preserve the target file** (`source/rust/src/main.rs:263`, `source/go/cmd/shcl/main.go:325`, `source/python/cmd/shcl/main.py:253`, `source/c/cmd/shcl/main.c`)
+	- The temp-file-and-rename that fixed the 20260725 review's item 7 traded one hazard for another. A rename publishes a brand new inode, so everything the old file carried is dropped: its mode, its identity as a symlink target, and any other hard link to it.
+	- Mode is the serious one. A file at 600 comes back at whatever the umask allows, typically 664. Nothing warns. For a format whose pitch is config files, that is a quiet permission widening on exactly the files most likely to hold a credential.
+	- The symlink case is the most likely to be noticed and the most confusing: the link is replaced by a regular file holding the new content, and the file it used to point at still holds the old content. Stow, chezmoi and plain hand-linked dotfiles all produce this layout.
+	- Fix in two parts, both small and identical in shape across the four bindings:
+		- Resolve the path through symlinks before choosing the temp directory and the rename target, falling back to the given path when it does not exist yet.
+		- Stat the original and apply its mode to the temp file before the rename. Best-effort: a failure here should not fail the write.
+	- Hard links are not fixable this way. Preserving them means writing through the existing inode, which is the non-atomic behavior the earlier fix removed. Atomicity is worth more, so this becomes a documented limitation rather than a fix.
+	- Windows needs its own branch. The C writer already special-cases `MoveFileExA`; symlink resolution and mode there are not the same problem and should be left alone rather than emulated.
+	- Resolved as described. One wrinkle worth recording: glibc hides `realpath` behind XSI rather than plain POSIX, so the C CLI's feature-test block needed `_XOPEN_SOURCE 700` alongside the `_POSIX_C_SOURCE` it already declared.
+	- Pinned by a new dimension in the differential harness rather than the corpus. The corpus compares stdout, and none of this is visible there; the new check compares the tree a write leaves behind, so all four bindings are held to the same file-level outcome.
+
+- **Item 2 - C datetime reads allocate in the document arena** (`source/c/shcl.h:2237,2305`)
+	- The 20260725 review's item 5 moved every per-call temporary in the C read paths to a scratch arena that resets at each `resolve`. The two datetime read sites kept passing `&d->arena`.
+	- `parse_datetime` uses its arena argument only for the split vectors inside `parse_date_part` and `parse_time_part`. The one value that escapes, the fractional-seconds slice, points into the element text in the document arena, so it survives a scratch reset regardless.
+	- That makes the fix a one-word change per site with no lifetime consequence. 1M reads of a single datetime field went from 377 MB to flat.
+
+- **Item 3 - fuzz seed order is not deterministic** (`source/rust/tests/fuzz_smoke.rs:55`)
+	- The file's own header calls the run deterministic, and the PRNG is. The seed corpus is not: it comes from `read_dir`, whose order is unspecified, and the seed index is the first thing every mutation draws against.
+	- The practical cost showed up in the pipeline rather than the test. The cross-binding comparison count is derived from the dumped fuzz inputs, so it drifted by a few hundred between runs on an identical tree, which hides a real change in coverage.
+	- Sorting the seed list is the whole fix. Two runs on the same tree now dump byte-identical input sets.
+
+- **Item 4 - the differential harness stops at the first divergence** (`cicd/utility/crosscheck.bash`)
+	- The script runs under `set -Eeuo pipefail`. Its divergence report ends in `diff ... | head`, and `diff` exits nonzero exactly when it has something to show, so reporting a divergence terminated the run.
+	- Never a correctness hole - the run still exited nonzero and the gate still failed - but a purely diagnostic one, and the kind that only surfaces when something is already broken. It went unnoticed because the harness had never reported a divergence in a real run.
+	- Letting the diff fail is the whole fix. Worth remembering as a shape: an error path that is itself fatal is untested by definition until the day it is needed.
