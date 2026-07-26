@@ -232,25 +232,29 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Features and enhancements
 
-- 🔘 Code Review 20260725 item 24: `merge()` is O(children^2) per parent in all four bindings.
+- ✅ Code Review 20260725 item 24: `merge()` is O(children^2) per parent in all four bindings.
 	- The over-side name dedup, the per-name group filter and the base-side instance match are all linear scans, and each rebuilds merge keys as it goes.
 	- Parsing 32k keys costs 56 ms; merging them costs 16 s in the reference. The marquee feature is the slowest thing in the product.
 	- The same accelerator the prior review's item 12 added to the parser applies here.
 	- Detail: `design.md` - Code Review 20260725, item 24.
+	- Fixed in all four: one grouping pass per side (over-side name buckets in first-appearance order; base-side has-container flags and a (name, key) -> child map, every key computed once) and a single children rebuild per parent. 32k keys: reference 16 s -> 0.07 s, C 14.4 s -> 0.05 s, byte-identical (proved against the old-algorithm ports with the corpus plus a 300-trial random merge battery). The reference/Go/Python stacked-list key-rebuild time rode along via the same deferred-remap flush C already had.
 
-- 🔘 Code Review 20260725 item 25: a `[value]` selector is looked up by linear scan, so the inline spelling is quadratic.
+- ✅ Code Review 20260725 item 25: a `[value]` selector is looked up by linear scan, so the inline spelling is quadratic.
 	- 20k lines of `srv[hostN].port: N` take 9 s against 0.06 s for the equivalent block form.
 	- Both spellings are spec-equal, so the user hits a 150x cliff for a cosmetic choice.
 	- The read and write paths scan siblings the same way, since the parser's child index is deliberately dropped at load. That part is fine at hand-authored sizes; if it is ever worth touching, name interning is the low-risk option - a cached side index has to be invalidated at five mutation sites in four bindings, and a missed invalidation is a silent wrong value rather than a slow one.
+	- Fixed at parse in all four: a display-keyed sibling map beside the merge-key map (same first-wins discipline, same mutation sites, flushed with the stacked-list deferral before any lookup). 20k inline-selector lines: 9 s -> 0.09 s. The read/write-path scans stay linear on purpose, as the item itself recommended.
 
-- 🔘 Code Review 20260725 item 26: the validator's "did you mean" rebuilds the whole schema index once per unknown field.
+- ✅ Code Review 20260725 item 26: the validator's "did you mean" rebuilds the whole schema index once per unknown field.
 	- Bites when a document is wholesale unmatched - the wrong file, or a schema for another app - which is the case the feature exists for.
 	- C compounds it with a linear scan of the legal-chain set where the other three use a hash set.
 	- Output is stderr prose, so the fix needs no corpus change.
+	- Fixed in all four: legal chains and per-parent-chain sibling-name lists are built once per validate and handed to the suggester; C also swapped its linear legal-chain scan for the hash set the other three use.
 
-- 🔘 Code Review 20260725 item 27: `to_canonical` is O(raw-siblings^2).
+- ✅ Code Review 20260725 item 27: `to_canonical` is O(raw-siblings^2).
 	- Each raw node rescans the parent's children to decide whether it merges with the line above; the parent's own walk already has that information.
 	- 32k raw blocks under one field format in 2.8 s against a 0.05 s parse. Narrow, but free to fix and behavior-preserving.
+	- Fixed in all four: the parent's walk carries a seen-empties set and passes each child its would-merge flag, so no node rescans its siblings. 32k raw siblings: 2.8 s -> 0.05 s.
 
 - ✋ Code Review 20260725 item 28: give the loader opt-out limits.
 	- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.

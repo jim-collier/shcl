@@ -1183,7 +1183,10 @@ static void cmap_del(CMap *m, uint64_t h, S name, S key, size_t val) {
    star_*: a stacked list defers its merge-key remap while it is the open field
    (rebuilding the key per element is O(list^2) time and arena garbage); the
    deferred remap flushes before any other map lookup. */
-typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecS pending; int star_open; size_t star_node; S star_key; int saw_blank; } Parser;
+/* dmaps: per-node (name, display) -> first matching child - the `[value]`
+   selector accelerator (display() is a different, non-injective predicate from
+   cmaps' merge key). Same first-wins discipline, same mutation sites. */
+typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecMap dmaps; VecS pending; int star_open; size_t star_node; S star_key; S star_disp; int saw_blank; } Parser;
 
 // The one place prose couples to a code, so the wording stays free everywhere else.
 static const char *diag_code(shcl_severity sev, S msg) {
@@ -1225,14 +1228,14 @@ static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, S msg) {
 }
 static void p_err(Parser *P, size_t line, S msg) { push_diag(P->d, line, SHCL_SEV_ERROR, msg); }
 
-static void remap_child(Parser *P, size_t node, S old_key);
+static void remap_child(Parser *P, size_t node, S old_key, S old_disp);
 
 /* Apply a stacked list's deferred merge-key remap. Runs before any map lookup
    (and at end of parse), so the map is always fresh when queried. */
 static void star_flush(Parser *P) {
 	if (!P->star_open) return;
 	P->star_open = 0;
-	remap_child(P, P->star_node, P->star_key);
+	remap_child(P, P->star_node, P->star_key, P->star_disp);
 }
 
 static size_t select_or_create(Parser *P, size_t parent, S name, Value value, size_t line) {
@@ -1249,15 +1252,21 @@ static size_t select_or_create(Parser *P, size_t parent, S name, Value value, si
 	VecSize_push(a, &NODE(P->d, parent).children, idx);
 	CMap empty; memset(&empty, 0, sizeof empty);
 	VecMap_push(a, &P->cmaps, empty);
+	CMap dempty; memset(&dempty, 0, sizeof dempty);
+	VecMap_push(a, &P->dmaps, dempty);
 	/* store the arena-owned name; the caller's may point into the input buffer */
 	cmap_put(a, &P->cmaps.data[parent], h, NODE(P->d, idx).name, key, idx);
+	S disp = value_display(a, &NODE(P->d, idx).value);
+	uint64_t hd = cmap_hash(NODE(P->d, idx).name, disp);
+	if (cmap_get(&P->dmaps.data[parent], hd, NODE(P->d, idx).name, disp) == (size_t)-1)
+		cmap_put(a, &P->dmaps.data[parent], hd, NODE(P->d, idx).name, disp, idx);
 	return idx;
 }
 
 /* A node's value mutated in place: move its map entry from the old key to the
    new one. First-wins on both sides so lookups keep matching the earliest
    sibling, like the scan did. */
-static void remap_child(Parser *P, size_t node, S old_key) {
+static void remap_child(Parser *P, size_t node, S old_key, S old_disp) {
 	Arena *a = &P->d->arena;
 	size_t parent = NODE(P->d, node).parent;
 	S name = NODE(P->d, node).name;
@@ -1266,6 +1275,11 @@ static void remap_child(Parser *P, size_t node, S old_key) {
 	S new_key = value_key(a, &NODE(P->d, node).value);
 	uint64_t h = cmap_hash(name, new_key);
 	if (cmap_get(m, h, name, new_key) == (size_t)-1) cmap_put(a, m, h, name, new_key, node);
+	CMap *dm = &P->dmaps.data[parent];
+	cmap_del(dm, cmap_hash(name, old_disp), name, old_disp, node);
+	S new_disp = value_display(a, &NODE(P->d, node).value);
+	uint64_t hd = cmap_hash(name, new_disp);
+	if (cmap_get(dm, hd, name, new_disp) == (size_t)-1) cmap_put(a, dm, hd, name, new_disp, node);
 }
 
 /* Hand pending leading comments (and this line's trailing one) to a node.
@@ -1303,6 +1317,7 @@ static int resolve_parent(Parser *P, S indent, size_t *out) {
 static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Value value, size_t line, size_t *out) {
 	Arena *a = &P->d->arena;
 	/* Field child under a stacked list: diagnose the mix once, keep the field. */
+	star_flush(P);
 	if (NODE(P->d, parent).star_list && !NODE(P->d, parent).star_mixed) {
 		NODE(P->d, parent).star_mixed = 1;
 		p_err(P, line, s_lit("field mixed with list elements"));
@@ -1324,13 +1339,11 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 		case SEL_VALUE: {
 			/* Same display() predicate resolution uses, so a selector also
 			   selects an array-valued instance instead of creating a spurious
-			   second one. Create only when nothing matches. */
-			VecSize ch = NODE(P->d, cur).children;
-			size_t found = (size_t)-1;
-			for (size_t k = 0; k < ch.len; k++) {
-				size_t c = ch.data[k];
-				if (s_eq(NODE(P->d, c).name, seg->name) && s_eq(value_display(a, &NODE(P->d, c).value), seg->sel.value)) { found = c; break; }
-			}
+			   second one - via the dmaps accelerator (the inline spelling was
+			   quadratic in siblings without it). Create only when nothing
+			   matches. */
+			uint64_t hd = cmap_hash(seg->name, seg->sel.value);
+			size_t found = cmap_get(&P->dmaps.data[cur], hd, seg->name, seg->sel.value);
 			if (found != (size_t)-1) {
 				cur = found;
 			} else {
@@ -1402,8 +1415,9 @@ static size_t bind_block(Parser *P, size_t parent, Value value, size_t line) {
 	if (parent == ROOT) { p_err(P, line, s_lit("raw block with no parent field")); return (size_t)-1; }
 	if (v_is_empty(&NODE(P->d, parent).value)) {
 		S old_key = value_key(&P->d->arena, &NODE(P->d, parent).value);
+		S old_disp = value_display(&P->d->arena, &NODE(P->d, parent).value);
 		NODE(P->d, parent).value = value;
-		remap_child(P, parent, old_key);
+		remap_child(P, parent, old_key, old_disp);
 		return parent;
 	}
 	S name = NODE(P->d, parent).name; size_t gp = NODE(P->d, parent).parent;
@@ -1424,20 +1438,21 @@ static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
 	Node *node = &NODE(P->d, parent);
 	if (node->value.kind == V_EMPTY) {
 		S old_key = value_key(a, &node->value);
+		S old_disp = value_display(a, &node->value);
 		/* Seed capacity for geometric growth: a fresh full-size copy per `* `
 		   line kept every discarded copy in the arena - quadratic memory. */
 		Element *arr = (Element *)arena_alloc(a, 4 * sizeof(Element)); arr[0] = el;
 		node->value.kind = V_CELL; node->value.els = arr; node->value.nels = 1; node->value.cap_els = 4;
 		node->star_list = 1;
-		remap_child(P, parent, old_key);
+		remap_child(P, parent, old_key, old_disp);
 		/* Defer further remaps until the list closes; the map entry made above
 		   stays valid because nothing can look this node up until a non-star
 		   line binds (which flushes first). */
-		P->star_open = 1; P->star_node = parent; P->star_key = value_key(a, &node->value);
+		P->star_open = 1; P->star_node = parent; P->star_key = value_key(a, &node->value); P->star_disp = value_display(a, &node->value);
 	} else if (node->value.kind == V_CELL && node->star_list) {
 		if (!P->star_open || P->star_node != parent) {
 			star_flush(P);
-			P->star_open = 1; P->star_node = parent; P->star_key = value_key(a, &node->value);
+			P->star_open = 1; P->star_node = parent; P->star_key = value_key(a, &node->value); P->star_disp = value_display(a, &node->value);
 		}
 		if (node->value.nels == node->value.cap_els) {
 			size_t nc = node->value.cap_els ? node->value.cap_els * 2 : 4;
@@ -1494,10 +1509,11 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	Arena *a = &d->arena;
 	Node root; memset(&root, 0, sizeof root); root.value = v_empty(); root.parent = 0; root.line = 0;
 	VecNode_push(a, &d->nodes, root);
-	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps); memset(&P.pending, 0, sizeof P.pending);
-	P.star_open = 0; P.star_node = 0; P.star_key = s_empty(); P.saw_blank = 0;
+	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps); memset(&P.dmaps, 0, sizeof P.dmaps); memset(&P.pending, 0, sizeof P.pending);
+	P.star_open = 0; P.star_node = 0; P.star_key = s_empty(); P.star_disp = s_empty(); P.saw_blank = 0;
 	StackEnt e0; e0.indent = s_empty(); e0.node = ROOT; VecStack_push(a, &P.stack, e0);
 	CMap m0; memset(&m0, 0, sizeof m0); VecMap_push(a, &P.cmaps, m0);
+	CMap d0; memset(&d0, 0, sizeof d0); VecMap_push(a, &P.dmaps, d0);
 
 	S full; full.p = text ? text : ""; full.n = len;
 	if (full.n >= 3 && (unsigned char)full.p[0] == 0xEF && (unsigned char)full.p[1] == 0xBB && (unsigned char)full.p[2] == 0xBF) full = s_slice(full, 3, full.n);
@@ -2077,82 +2093,103 @@ static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size
 	return idx;
 }
 
-// Drop every base child named `name` and splice over's group (its children of
-// `op` named `name`, in order) in at the first dropped position (append if none).
-// Rebuilds the children vector IN PLACE: a fresh full-size vector per distinct
-// name made the arena's peak quadratic in siblings (nothing frees until
-// shcl_free), which reached 9.8 GB on a 626 KB merge.
-static void w_replace_leaf_group(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op, S name) {
-	Arena *a = &d->arena;
-	VecSize clones = {0};
-	size_t nk = over->nodes.data[op].children.len;
-	for (size_t i = 0; i < nk; i++) {
-		size_t ok = over->nodes.data[op].children.data[i];
-		if (s_eq(over->nodes.data[ok].name, name))
-			VecSize_push(&d->scratch, &clones, w_clone_subtree(d, over, ok, bp));
-	}
-	VecSize *kids = &NODE(d, bp).children;
-	size_t w = 0, at = (size_t)-1;
-	for (size_t i = 0; i < kids->len; i++) {
-		size_t b = kids->data[i];
-		if (s_eq(NODE(d, b).name, name)) { if (at == (size_t)-1) at = w; }
-		else kids->data[w++] = b;
-	}
-	kids->len = w;
-	if (at == (size_t)-1) at = w;
-	for (size_t k = 0; k < clones.len; k++) VecSize_push(a, kids, 0);
-	memmove(kids->data + at + clones.len, kids->data + at, (w - at) * sizeof(size_t));
-	for (size_t k = 0; k < clones.len; k++) kids->data[at + k] = clones.data[k];
-}
-
+// One grouping pass over each side, then a single children rebuild: the old
+// shape re-filtered the over side per distinct name and re-scanned (and
+// re-keyed) the base side per over node - three O(K^2) terms at one parent,
+// plus a fresh children vector per replaced name.
 static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 	Arena *a = &d->arena;
-	size_t nk = over->nodes.data[op].children.len;
-	for (size_t gi = 0; gi < nk; gi++) {
-		size_t first = over->nodes.data[op].children.data[gi];
-		S name = over->nodes.data[first].name;
-		// Process each distinct name once, at its first occurrence.
-		int isfirst = 1;
-		for (size_t j = 0; j < gi; j++)
-			if (s_eq(over->nodes.data[over->nodes.data[op].children.data[j]].name, name)) { isfirst = 0; break; }
-		if (!isfirst) continue;
-		// A name whose over-side nodes are all leaves is an override - but only
-		// when the base side of the group is leaf-shaped too. Against a base
-		// container, a childless over-node is a wrapper mention, not a leaf, so
-		// it falls through to the instance merge: a bare section header in a
-		// higher layer never wipes the subtree below it.
+	Arena *t = &d->scratch;
+	VecSize okids = over->nodes.data[op].children; // const doc: stable
+	// Over side: name -> bucket, in first-appearance order.
+	VecS order = {0}; VecSize *buckets = NULL; size_t nb = 0, cb = 0;
+	CMap group_of; memset(&group_of, 0, sizeof group_of);
+	for (size_t i = 0; i < okids.len; i++) {
+		size_t k = okids.data[i]; S nm = over->nodes.data[k].name;
+		uint64_t h = cmap_hash(nm, s_empty());
+		size_t g = cmap_get(&group_of, h, nm, s_empty());
+		if (g == (size_t)-1) {
+			if (nb == cb) { size_t nc = cb ? cb * 2 : 8; buckets = (VecSize *)arena_grow(t, buckets, cb, nc, sizeof(VecSize)); cb = nc; }
+			memset(&buckets[nb], 0, sizeof buckets[nb]);
+			g = nb++;
+			cmap_put(t, &group_of, h, nm, s_empty(), g);
+			VecS_push(t, &order, nm);
+		}
+		VecSize_push(t, &buckets[g], k);
+	}
+	// Base side, one pass: does the name exist / have a container instance,
+	// and which child carries each (name, key) - every key computed once.
+	VecSize base = {0};
+	{ VecSize bk = NODE(d, bp).children; for (size_t i = 0; i < bk.len; i++) VecSize_push(t, &base, bk.data[i]); }
+	CMap in_base, has_cont, by_key;
+	memset(&in_base, 0, sizeof in_base); memset(&has_cont, 0, sizeof has_cont); memset(&by_key, 0, sizeof by_key);
+	for (size_t i = 0; i < base.len; i++) {
+		size_t b = base.data[i]; S nm = NODE(d, b).name;
+		uint64_t hn = cmap_hash(nm, s_empty());
+		if (cmap_get(&in_base, hn, nm, s_empty()) == (size_t)-1) cmap_put(t, &in_base, hn, nm, s_empty(), 1);
+		if (NODE(d, b).children.len > 0 && cmap_get(&has_cont, hn, nm, s_empty()) == (size_t)-1) cmap_put(t, &has_cont, hn, nm, s_empty(), 1);
+		S key = value_key(t, &NODE(d, b).value);
+		uint64_t hk = cmap_hash(nm, key);
+		if (cmap_get(&by_key, hk, nm, key) == (size_t)-1) cmap_put(t, &by_key, hk, nm, key, b);
+	}
+	// Decide per name. A name whose over-side nodes are all leaves is an
+	// override - but only when the base side of the group is leaf-shaped too.
+	// Against a base container, a childless over-node is a wrapper mention,
+	// not a leaf, so it falls through to the instance merge: a bare section
+	// header in a higher layer never wipes the subtree below it. Replaced
+	// groups splice in the rebuild; everything appended (unmatched instances,
+	// and replaced names base never had) keeps processing order.
+	VecSize *rep = (VecSize *)arena_alloc(t, (nb ? nb : 1) * sizeof(VecSize));
+	int *is_rep = (int *)arena_alloc(t, (nb ? nb : 1) * sizeof(int));
+	VecSize appended = {0};
+	int any_rep = 0;
+	for (size_t gi = 0; gi < nb; gi++) {
+		S name = order.data[gi];
+		VecSize grp = buckets[gi];
+		memset(&rep[gi], 0, sizeof rep[gi]); is_rep[gi] = 0;
 		int over_leafy = 1;
-		for (size_t i = 0; i < nk; i++) {
-			size_t ok = over->nodes.data[op].children.data[i];
-			if (s_eq(over->nodes.data[ok].name, name) && over->nodes.data[ok].children.len > 0) { over_leafy = 0; break; }
-		}
-		int base_container = 0;
-		{
-			VecSize bch = NODE(d, bp).children;
-			for (size_t k = 0; k < bch.len; k++) {
-				size_t b = bch.data[k];
-				if (s_eq(NODE(d, b).name, name) && NODE(d, b).children.len > 0) { base_container = 1; break; }
+		for (size_t i = 0; i < grp.len; i++) if (over->nodes.data[grp.data[i]].children.len > 0) { over_leafy = 0; break; }
+		uint64_t hn = cmap_hash(name, s_empty());
+		int inb = cmap_get(&in_base, hn, name, s_empty()) != (size_t)-1;
+		int bc = cmap_get(&has_cont, hn, name, s_empty()) != (size_t)-1;
+		if (over_leafy && !bc) {
+			for (size_t i = 0; i < grp.len; i++) {
+				size_t c = w_clone_subtree(d, over, grp.data[i], bp);
+				VecSize_push(t, inb ? &rep[gi] : &appended, c);
 			}
-		}
-		if (over_leafy && !base_container) { w_replace_leaf_group(d, bp, over, op, name); continue; }
-		for (size_t i = 0; i < nk; i++) {
-			size_t ok = over->nodes.data[op].children.data[i];
-			if (!s_eq(over->nodes.data[ok].name, name)) continue;
-			S okey = value_key(&d->scratch, &over->nodes.data[ok].value);
-			size_t match = (size_t)-1;
-			VecSize bch = NODE(d, bp).children;
-			for (size_t k = 0; k < bch.len; k++) {
-				size_t b = bch.data[k];
-				if (s_eq(NODE(d, b).name, name) && s_eq(value_key(&d->scratch, &NODE(d, b).value), okey)) { match = b; break; }
-			}
-			if (match != (size_t)-1) {
-				w_overlay(d, match, over, ok);
-			} else {
-				size_t c = w_clone_subtree(d, over, ok, bp);
-				VecSize_push(a, &NODE(d, bp).children, c);
+			if (inb) { is_rep[gi] = 1; any_rep = 1; }
+		} else {
+			for (size_t i = 0; i < grp.len; i++) {
+				size_t ok = grp.data[i];
+				S okey = value_key(t, &over->nodes.data[ok].value);
+				uint64_t hk = cmap_hash(name, okey);
+				size_t b = cmap_get(&by_key, hk, name, okey);
+				if (b != (size_t)-1) w_overlay(d, b, over, ok);
+				else VecSize_push(t, &appended, w_clone_subtree(d, over, ok, bp));
 			}
 		}
 	}
+	if (!any_rep && appended.len == 0) return;
+	// Rebuild once: each replaced group lands at its name's first original
+	// position (dropped nodes stay in the arena, unreferenced - reads and
+	// emit walk children from the root), appends go at the end.
+	CMap spliced; memset(&spliced, 0, sizeof spliced);
+	VecSize nw = {0};
+	for (size_t i = 0; i < base.len; i++) {
+		size_t b = base.data[i]; S nm = NODE(d, b).name;
+		uint64_t hn = cmap_hash(nm, s_empty());
+		size_t g = cmap_get(&group_of, hn, nm, s_empty());
+		if (g != (size_t)-1 && is_rep[g]) {
+			if (cmap_get(&spliced, hn, nm, s_empty()) == (size_t)-1) {
+				cmap_put(t, &spliced, hn, nm, s_empty(), 1);
+				for (size_t k = 0; k < rep[g].len; k++) VecSize_push(a, &nw, rep[g].data[k]);
+			}
+		} else {
+			VecSize_push(a, &nw, b);
+		}
+	}
+	for (size_t k = 0; k < appended.len; k++) VecSize_push(a, &nw, appended.data[k]);
+	NODE(d, bp).children = nw;
 }
 
 void shcl_merge(shcl_doc *d, const shcl_doc *over) {
@@ -2328,22 +2365,33 @@ static S emit_name(Arena *a, S name) {
 static void emit_trailing(Arena *a, SB *out, S trailing) {
 	if (trailing.n) { sb_puts(a, out, "  "); sb_putS(a, out, trailing); }
 }
-static void emit_node(shcl_doc *d, size_t idx, size_t depth, SB *out) {
+// Emit a sibling run. The parent walk already knows whether an earlier
+// same-name sibling is empty (the raw same-line-fence hazard), so one
+// seen-empties set here replaces a per-child rescan of the whole run.
+static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB *out);
+static void emit_children(shcl_doc *d, const VecSize *kids, size_t depth, SB *out) {
+	CMap empties; memset(&empties, 0, sizeof empties);
+	for (size_t i = 0; i < kids->len; i++) {
+		size_t c = kids->data[i];
+		Node *n = &NODE(d, c);
+		uint64_t h = cmap_hash(n->name, s_empty());
+		int wm = n->value.kind == V_RAW && cmap_get(&empties, h, n->name, s_empty()) != (size_t)-1;
+		if (v_is_empty(&n->value) && cmap_get(&empties, h, n->name, s_empty()) == (size_t)-1)
+			cmap_put(&d->scratch, &empties, h, n->name, s_empty(), 1);
+		emit_node(d, c, depth, wm, out);
+	}
+}
+
+static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB *out) {
 	Arena *a = &d->arena;
 	Node *node = &NODE(d, idx);
 	Value *v = &node->value;
 	if (node->blank_before && out->len) sb_putc(a, out, '\n');
 	/* Same-line fence spelling can't carry an inline comment (an unbalanced
 	   quote in the info-string could hide the `#` on reparse), so its trailing
-	   comment joins the leading lines instead. */
-	int would_merge = 0;
-	if (v->kind == V_RAW) {
-		size_t parent = node->parent;
-		VecSize pch = NODE(d, parent).children; size_t mypos = (size_t)-1;
-		for (size_t k = 0; k < pch.len; k++) if (pch.data[k] == idx) { mypos = k; break; }
-		if (mypos != (size_t)-1)
-			for (size_t k = 0; k < mypos; k++) { size_t c = pch.data[k]; if (s_eq(NODE(d, c).name, node->name) && v_is_empty(&NODE(d, c).value)) { would_merge = 1; break; } }
-	}
+	   comment joins the leading lines instead; the flag comes from the
+	   parent's walk. */
+
 	for (size_t k = 0; k < node->leading.len; k++) {
 		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
 		sb_putS(a, out, node->leading.data[k]); sb_putc(a, out, '\n');
@@ -2382,12 +2430,12 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, SB *out) {
 		sb_putc(a, out, '\n');
 	}
 	VecSize ch = NODE(d, idx).children;
-	for (size_t k = 0; k < ch.len; k++) emit_node(d, ch.data[k], depth + 1, out);
+	emit_children(d, &ch, depth + 1, out);
 }
 shcl_str shcl_to_canonical(shcl_doc *d) {
 	SB out = {0};
 	VecSize rc = NODE(d, ROOT).children;
-	for (size_t k = 0; k < rc.len; k++) emit_node(d, rc.data[k], 0, &out);
+	emit_children(d, &rc, 0, &out);
 	/* Comments that never found a following line re-emit at the end. */
 	for (size_t k = 0; k < d->orphans.len; k++) { sb_putS(&d->arena, &out, d->orphans.data[k]); sb_putc(&d->arena, &out, '\n'); }
 	return sb_S(&out);
@@ -2728,24 +2776,17 @@ static size_t v_edit_distance(Arena *a, S sa, S sb) {
 
 // Closest legal sibling name (same parent chain, schema order, edit distance
 // <= 2) appended as "; did you mean 'x'?" - or nothing. Prose only.
-static void v_suggest(Arena *a, Arena *tmp, const VecVCons *cons, S parent_chain, S name, SB *msg) {
-	/* tmp holds the DP rows, codepoint decodes, and rebuilt parent chains -
-	   all dead after this call. Resetting per unknown field keeps a wholesale
-	   unmatched document (the case this feature exists for) at one sweep's
-	   peak instead of unknowns x constraints (measured 1.38 GB at 2k each). */
+static void v_suggest(Arena *a, Arena *tmp, const VecS *names, S name, SB *msg) {
+	/* tmp holds the DP rows and codepoint decodes - dead after this call.
+	   Resetting per unknown field keeps a wholesale unmatched document (the
+	   case this feature exists for) at one sweep's peak. The sibling lists
+	   are prebuilt once per validate by v_unknown. */
 	arena_reset(tmp);
+	if (!names) return;
 	int have = 0; size_t best_dist = 0; S best_name = s_empty();
-	for (size_t i = 0; i < cons->len; i++) {
-		const VCons *c = &cons->data[i];
-		SB pc = {0, 0, 0};
-		for (size_t si = 0; si < c->segs.len; si++) {
-			if (s_eq(sb_S(&pc), parent_chain)) {
-				size_t dist = v_edit_distance(tmp, name, c->segs.data[si].name);
-				if (dist <= 2 && (!have || dist < best_dist)) { have = 1; best_dist = dist; best_name = c->segs.data[si].name; }
-			}
-			if (pc.len) sb_putc(tmp, &pc, '\0');
-			sb_putS(tmp, &pc, c->segs.data[si].name);
-		}
+	for (size_t i = 0; i < names->len; i++) {
+		size_t dist = v_edit_distance(tmp, name, names->data[i]);
+		if (dist <= 2 && (!have || dist < best_dist)) { have = 1; best_dist = dist; best_name = names->data[i]; }
 	}
 	if (have) {
 		sb_puts(a, msg, "; did you mean '");
@@ -2933,13 +2974,31 @@ static void v_check(Arena *a, shcl_doc *d, const VCons *c, VecDiag *out) {
 // is implied unknown and skipped.
 static void v_unknown(Arena *a, shcl_doc *d, const VecVCons *cons, VecDiag *out) {
 	Arena tmp; tmp.head = NULL; // v_suggest scratch, reset per unknown field
-	VecS legal = {0};
+	// Legal chains in a hash set (the linear scan compounded the quadratic),
+	// and sibling names bucketed per parent chain, built once: v_suggest used
+	// to rebuild every chain per unknown field.
+	CMap legal; memset(&legal, 0, sizeof legal);
+	CMap sib_of; memset(&sib_of, 0, sizeof sib_of);
+	VecS *sibs = NULL; size_t nsib = 0, csib = 0;
 	for (size_t i = 0; i < cons->len; i++) {
 		SB chain = {0, 0, 0};
 		for (size_t si = 0; si < cons->data[i].segs.len; si++) {
+			S nm = cons->data[i].segs.data[si].name;
+			S pc = s_dup(a, sb_S(&chain));
+			uint64_t hp = cmap_hash(pc, s_empty());
+			size_t g = cmap_get(&sib_of, hp, pc, s_empty());
+			if (g == (size_t)-1) {
+				if (nsib == csib) { size_t nc = csib ? csib * 2 : 8; sibs = (VecS *)arena_grow(a, sibs, csib, nc, sizeof(VecS)); csib = nc; }
+				memset(&sibs[nsib], 0, sizeof sibs[nsib]);
+				g = nsib++;
+				cmap_put(a, &sib_of, hp, pc, s_empty(), g);
+			}
+			VecS_push(a, &sibs[g], nm);
 			if (chain.len) sb_putc(a, &chain, '\0');
-			sb_putS(a, &chain, cons->data[i].segs.data[si].name);
-			VecS_push(a, &legal, s_dup(a, sb_S(&chain)));
+			sb_putS(a, &chain, nm);
+			S full = s_dup(a, sb_S(&chain));
+			uint64_t hf = cmap_hash(full, s_empty());
+			if (cmap_get(&legal, hf, full, s_empty()) == (size_t)-1) cmap_put(a, &legal, hf, full, s_empty(), 1);
 		}
 	}
 	VecSize snode = {0}; VecS schain = {0}; VecS sshown = {0};
@@ -2963,12 +3022,12 @@ static void v_unknown(Arena *a, shcl_doc *d, const VecVCons *cons, VecDiag *out)
 		if (pshown.n) { sb_putS(a, &sb2, pshown); sb_putc(a, &sb2, '.'); }
 		sb_putS(a, &sb2, node->name);
 		S shown = sb_S(&sb2);
-		int found = 0;
-		for (size_t i = 0; i < legal.len; i++) if (s_eq(legal.data[i], chain)) { found = 1; break; }
+		int found = cmap_get(&legal, cmap_hash(chain, s_empty()), chain, s_empty()) != (size_t)-1;
 		if (!found) {
 			SB msg = {0, 0, 0};
 			sb_puts(a, &msg, "unknown field '"); sb_putS(a, &msg, shown); sb_puts(a, &msg, "'");
-			v_suggest(a, &tmp, cons, pchain, node->name, &msg);
+			size_t sg = cmap_get(&sib_of, cmap_hash(pchain, s_empty()), pchain, s_empty());
+			v_suggest(a, &tmp, sg == (size_t)-1 ? NULL : &sibs[sg], node->name, &msg);
 			v_diag(a, out, node->line, sb_S(&msg));
 			continue;
 		}

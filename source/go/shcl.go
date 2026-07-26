@@ -843,9 +843,20 @@ type parser struct {
 	// Per-node (name, value-key) -> first matching child, parallel to arena.
 	// Pure lookup accelerator for selectOrCreate; children keeps the order.
 	childMap []map[[2]string]int
+	// Per-node (name, display) -> first matching child: the `[value]` selector
+	// accelerator (its predicate is display(), a different and non-injective
+	// key from childMap's). Same first-wins discipline, same mutation sites.
+	dispMap []map[[2]string]int
 	// Whole-line comments waiting for the next line that binds a node.
 	pending  []string
 	sawBlank bool // a blank line waits to become the next bound node's blankBefore
+	// An open stacked list defers its merge-key remap (rebuilding the key per
+	// element is O(list^2) time); (node, key, display) at deferral start,
+	// flushed before any map lookup and at end of parse.
+	starOpen bool
+	starNode int
+	starKey  string
+	starDisp string
 }
 
 func newParser() *parser {
@@ -853,6 +864,7 @@ func newParser() *parser {
 		arena:    []nodeData{{}},
 		stack:    []stackEnt{{}},
 		childMap: []map[[2]string]int{{}},
+		dispMap:  []map[[2]string]int{{}},
 	}
 }
 
@@ -863,6 +875,7 @@ func (p *parser) err(line int, msg string) {
 // selectOrCreate finds (or creates by merge rule) the child of parent with
 // this (name, value).
 func (p *parser) selectOrCreate(parent int, name string, v value, line int) int {
+	p.starFlush()
 	mapKey := [2]string{name, v.key()}
 	if c, ok := p.childMap[parent][mapKey]; ok {
 		return c
@@ -872,13 +885,27 @@ func (p *parser) selectOrCreate(parent int, name string, v value, line int) int 
 	p.arena[parent].children = append(p.arena[parent].children, idx)
 	p.childMap = append(p.childMap, map[[2]string]int{})
 	p.childMap[parent][mapKey] = idx
+	p.dispMap = append(p.dispMap, map[[2]string]int{})
+	disp := [2]string{name, p.arena[idx].value.display()}
+	if _, ok := p.dispMap[parent][disp]; !ok {
+		p.dispMap[parent][disp] = idx
+	}
 	return idx
+}
+
+// starFlush applies an open stacked list's deferred remap. Runs before any map
+// lookup (and at end of parse), so both maps are always fresh when queried.
+func (p *parser) starFlush() {
+	if p.starOpen {
+		p.starOpen = false
+		p.remapChild(p.starNode, p.starKey, p.starDisp)
+	}
 }
 
 // remapChild: a node's value mutated in place (empty field filled, star element
 // added): move its map entry from the old key to the new one. First-wins on
 // both sides so lookups keep matching the earliest sibling, like the scan did.
-func (p *parser) remapChild(node int, oldKey string) {
+func (p *parser) remapChild(node int, oldKey, oldDisp string) {
 	parent := p.arena[node].parent
 	name := p.arena[node].name
 	if c, ok := p.childMap[parent][[2]string{name, oldKey}]; ok && c == node {
@@ -887,6 +914,13 @@ func (p *parser) remapChild(node int, oldKey string) {
 	newKey := [2]string{name, p.arena[node].value.key()}
 	if _, ok := p.childMap[parent][newKey]; !ok {
 		p.childMap[parent][newKey] = node
+	}
+	if c, ok := p.dispMap[parent][[2]string{name, oldDisp}]; ok && c == node {
+		delete(p.dispMap[parent], [2]string{name, oldDisp})
+	}
+	newDisp := [2]string{name, p.arena[node].value.display()}
+	if _, ok := p.dispMap[parent][newDisp]; !ok {
+		p.dispMap[parent][newDisp] = node
 	}
 }
 
@@ -935,6 +969,7 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 // attachPath walks path segments under parent, select-or-creating; returns the
 // node for the last segment carrying v. ok=false aborts the line (diagnosed).
 func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int, bool) {
+	p.starFlush()
 	// Field child under a stacked list: diagnose the mix once, keep the field.
 	if p.arena[parent].starList && !p.arena[parent].starMixed {
 		p.arena[parent].starMixed = true
@@ -958,15 +993,10 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 		case seg.sel != nil && seg.sel.kind == selByValue:
 			// Same display() predicate resolution uses, so a selector also
 			// selects an array-valued instance instead of creating a spurious
-			// second one. Create only when nothing matches.
-			found := -1
-			for _, c := range p.arena[cur].children {
-				if p.arena[c].name == seg.name && p.arena[c].value.display() == seg.sel.value {
-					found = c
-					break
-				}
-			}
-			if found >= 0 {
+			// second one - via the dispMap accelerator (the inline spelling was
+			// quadratic in siblings without it). Create only when nothing
+			// matches.
+			if found, ok := p.dispMap[cur][[2]string{seg.name, seg.sel.value}]; ok {
 				cur = found
 			} else {
 				disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
@@ -1063,8 +1093,9 @@ func (p *parser) bindBlock(parent int, v value, line int) int {
 	}
 	if p.arena[parent].value.isEmpty() {
 		oldKey := p.arena[parent].value.key()
+		oldDisp := p.arena[parent].value.display()
 		p.arena[parent].value = v
-		p.remapChild(parent, oldKey)
+		p.remapChild(parent, oldKey, oldDisp)
 		return parent
 	}
 	name, grand := p.arena[parent].name, p.arena[parent].parent
@@ -1101,16 +1132,30 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 		p.err(line, "empty list element")
 		return
 	}
-	node := &p.arena[parent]
-	oldKey := node.value.key()
 	switch {
-	case node.value.isEmpty():
-		node.value = value{kind: vCell, els: []element{el}}
-		node.starList = true
-		p.remapChild(parent, oldKey)
-	case node.value.kind == vCell && node.starList:
-		node.value.els = append(node.value.els, el)
-		p.remapChild(parent, oldKey)
+	case p.arena[parent].value.isEmpty():
+		oldKey := p.arena[parent].value.key()
+		oldDisp := p.arena[parent].value.display()
+		p.arena[parent].value = value{kind: vCell, els: []element{el}}
+		p.arena[parent].starList = true
+		// First element: remap now (Empty -> cell changes both keys), then
+		// open the deferral window with the current keys. Rebuilding the
+		// keys per appended element was O(list^2) time; the maps only need
+		// to be fresh when queried, and every query flushes first.
+		p.remapChild(parent, oldKey, oldDisp)
+		p.starOpen = true
+		p.starNode = parent
+		p.starKey = p.arena[parent].value.key()
+		p.starDisp = p.arena[parent].value.display()
+	case p.arena[parent].value.kind == vCell && p.arena[parent].starList:
+		if !(p.starOpen && p.starNode == parent) {
+			p.starFlush()
+			p.starOpen = true
+			p.starNode = parent
+			p.starKey = p.arena[parent].value.key()
+			p.starDisp = p.arena[parent].value.display()
+		}
+		p.arena[parent].value.els = append(p.arena[parent].value.els, el)
 	default:
 		p.err(line, "field already has a value; list element ignored")
 	}
@@ -1290,6 +1335,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		}
 		i = next
 	}
+	p.starFlush()
 	p.emitRepeatedLeafHints()
 	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: p.pending}
 }
@@ -1331,9 +1377,7 @@ func (d *Document) Strictness() Strictness {
 // trivia. Scalar text is never rewritten.
 func (d *Document) ToCanonical() string {
 	var out strings.Builder
-	for _, c := range d.arena[root].children {
-		d.emitNode(c, 0, &out)
-	}
+	d.emitChildren(d.arena[root].children, 0, &out)
 	// Comments that never found a following line re-emit at the end.
 	for _, c := range d.orphans {
 		out.WriteString(c)
@@ -1350,7 +1394,22 @@ func writeTrailing(out *strings.Builder, trailing string) {
 	}
 }
 
-func (d *Document) emitNode(idx, depth int, out *strings.Builder) {
+// emitChildren emits a sibling run. The parent walk already knows whether an
+// earlier same-name sibling is empty (the raw same-line-fence hazard), so one
+// seen-empties set here replaces a per-child rescan of the whole run.
+func (d *Document) emitChildren(kids []int, depth int, out *strings.Builder) {
+	empties := map[string]bool{}
+	for _, c := range kids {
+		n := &d.arena[c]
+		wm := n.value.kind == vRaw && empties[n.name]
+		if n.value.isEmpty() {
+			empties[n.name] = true
+		}
+		d.emitNode(c, depth, wm, out)
+	}
+}
+
+func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builder) {
 	node := &d.arena[idx]
 	pad := strings.Repeat("\t", depth)
 	if node.blankBefore && out.Len() > 0 {
@@ -1358,19 +1417,8 @@ func (d *Document) emitNode(idx, depth int, out *strings.Builder) {
 	}
 	// Same-line fence spelling can't carry an inline comment (an unbalanced
 	// quote in the info-string could hide the `#` on reparse), so its trailing
-	// comment joins the leading lines instead.
-	wouldMerge := false
-	if node.value.kind == vRaw {
-		for _, c := range d.arena[node.parent].children {
-			if c == idx {
-				break
-			}
-			if d.arena[c].name == node.name && d.arena[c].value.isEmpty() {
-				wouldMerge = true
-				break
-			}
-		}
-	}
+	// comment joins the leading lines instead; the flag comes from the parent's
+	// walk.
 	for _, c := range node.leading {
 		out.WriteString(pad)
 		out.WriteString(c)
@@ -1438,9 +1486,7 @@ func (d *Document) emitNode(idx, depth int, out *strings.Builder) {
 		out.WriteString(fence)
 		out.WriteByte('\n')
 	}
-	for _, c := range d.arena[idx].children {
-		d.emitNode(c, depth+1, out)
-	}
+	d.emitChildren(d.arena[idx].children, depth+1, out)
 }
 
 func emitName(name string) string {
@@ -2191,35 +2237,46 @@ func (d *Document) Merge(over *Document) {
 	d.orphans = append(d.orphans, over.orphans...)
 }
 
+// One grouping pass over each side, then a single children rebuild: the old
+// shape re-filtered the over side per distinct name and re-scanned (and
+// re-keyed) the base side per over node - three O(K^2) terms at one parent,
+// plus a full vector rebuild per replaced name.
 func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	overKids := append([]int(nil), over.arena[overParent].children...)
-	// Distinct child names of over, in first-appearance order.
-	var names []string
+	// Over side: name -> node bucket, in first-appearance order.
+	var order []string
+	groups := map[string][]int{}
 	for _, k := range overKids {
 		n := over.arena[k].name
-		seen := false
-		for _, x := range names {
-			if x == n {
-				seen = true
-				break
-			}
+		if _, seen := groups[n]; !seen {
+			order = append(order, n)
 		}
-		if !seen {
-			names = append(names, n)
+		groups[n] = append(groups[n], k)
+	}
+	// Base side, one pass: does the name have a container instance, and
+	// which child carries each (name, key) - every key computed once.
+	baseKids := append([]int(nil), d.arena[baseParent].children...)
+	hasContainer := map[string]bool{}
+	byKey := map[[2]string]int{}
+	for _, b := range baseKids {
+		name := d.arena[b].name
+		hasContainer[name] = hasContainer[name] || len(d.arena[b].children) > 0
+		key := [2]string{name, d.arena[b].value.key()}
+		if _, dup := byKey[key]; !dup {
+			byKey[key] = b
 		}
 	}
-	for _, name := range names {
-		var group []int
-		for _, k := range overKids {
-			if over.arena[k].name == name {
-				group = append(group, k)
-			}
-		}
-		// A name whose over-side nodes are all leaves is an override - but only
-		// when the base side of the group is leaf-shaped too. Against a base
-		// container, a childless over-node is a wrapper mention, not a leaf, so
-		// it falls through to the instance merge: a bare section header in a
-		// higher layer never wipes the subtree below it.
+	// Decide per name. A name whose over-side nodes are all leaves is an
+	// override - but only when the base side of the group is leaf-shaped
+	// too. Against a base container, a childless over-node is a wrapper
+	// mention, not a leaf, so it falls through to the instance merge: a
+	// bare section header in a higher layer never wipes the subtree below.
+	// Replaced groups splice in the rebuild; everything appended (unmatched
+	// instances, and replaced names base never had) keeps processing order.
+	replace := map[string][]int{}
+	var appended []int
+	for _, name := range order {
+		group := groups[name]
 		overLeafy := true
 		for _, k := range group {
 			if len(over.arena[k].children) > 0 {
@@ -2227,60 +2284,49 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 				break
 			}
 		}
-		baseContainer := false
-		for _, b := range d.arena[baseParent].children {
-			if d.arena[b].name == name && len(d.arena[b].children) > 0 {
-				baseContainer = true
-				break
-			}
-		}
+		baseContainer, inBase := hasContainer[name]
 		if overLeafy && !baseContainer {
-			d.replaceLeafGroup(baseParent, name, over, group)
-			continue
-		}
-		for _, ok := range group {
-			okey := over.arena[ok].value.key()
-			match := -1
-			for _, b := range d.arena[baseParent].children {
-				if d.arena[b].name == name && d.arena[b].value.key() == okey {
-					match = b
-					break
+			clones := make([]int, len(group))
+			for i, ok := range group {
+				clones[i] = d.cloneSubtree(over, ok, baseParent)
+			}
+			if inBase {
+				replace[name] = clones
+			} else {
+				appended = append(appended, clones...)
+			}
+		} else {
+			for _, ok := range group {
+				okey := over.arena[ok].value.key()
+				if b, found := byKey[[2]string{name, okey}]; found {
+					d.overlay(b, over, ok)
+				} else {
+					c := d.cloneSubtree(over, ok, baseParent)
+					appended = append(appended, c)
 				}
 			}
-			if match >= 0 {
-				d.overlay(match, over, ok)
-			} else {
-				c := d.cloneSubtree(over, ok, baseParent)
-				d.arena[baseParent].children = append(d.arena[baseParent].children, c)
-			}
 		}
 	}
-}
-
-// replaceLeafGroup drops every base child named name and splices over's group
-// in at the first dropped position (append if base had none). Dropped nodes
-// stay in the arena, unreferenced - reads and emit walk children from the root.
-func (d *Document) replaceLeafGroup(baseParent int, name string, over *Document, group []int) {
-	clones := make([]int, len(group))
-	for i, ok := range group {
-		clones[i] = d.cloneSubtree(over, ok, baseParent)
+	if len(replace) == 0 && len(appended) == 0 {
+		return
 	}
-	old := d.arena[baseParent].children
-	newKids := make([]int, 0, len(old)+len(clones))
-	spliced := false
-	for _, b := range old {
-		if d.arena[b].name == name {
-			if !spliced {
+	// Rebuild once: each replaced group lands at its name's first original
+	// position (dropped nodes stay in the arena, unreferenced - reads and
+	// emit walk children from the root), appends go at the end.
+	newKids := make([]int, 0, len(baseKids)+len(appended))
+	spliced := map[string]bool{}
+	for _, b := range baseKids {
+		name := d.arena[b].name
+		if clones, rep := replace[name]; rep {
+			if !spliced[name] {
+				spliced[name] = true
 				newKids = append(newKids, clones...)
-				spliced = true
 			}
 		} else {
 			newKids = append(newKids, b)
 		}
 	}
-	if !spliced {
-		newKids = append(newKids, clones...)
-	}
+	newKids = append(newKids, appended...)
 	d.arena[baseParent].children = newKids
 }
 
@@ -4073,9 +4119,14 @@ func anyFloatAbove(xs []float64, hi float64) bool {
 // reported; its subtree is implied unknown and skipped.
 func (d *Document) vUnknown(cons []constraint, out *[]Diagnostic) {
 	legal := map[string]bool{}
+	// Sibling names per parent chain, built once (schema order): vSuggest
+	// used to rebuild every chain per unknown field, which bit hardest on
+	// the wholesale-unmatched documents the feature exists for.
+	siblings := map[string][]string{}
 	for i := range cons {
 		chain := ""
 		for _, s := range cons[i].segs {
+			siblings[chain] = append(siblings[chain], s.name)
 			if chain != "" {
 				chain += "\x00"
 			}
@@ -4104,7 +4155,7 @@ func (d *Document) vUnknown(cons []constraint, out *[]Diagnostic) {
 			shown = fr.shown + "." + node.name
 		}
 		if !legal[chain] {
-			hint := vSuggest(cons, fr.chain, node.name)
+			hint := vSuggest(siblings, fr.chain, node.name)
 			vdiag(out, node.line, fmt.Sprintf("unknown field '%s'%s", shown, hint))
 			continue
 		}
@@ -4117,24 +4168,14 @@ func (d *Document) vUnknown(cons []constraint, out *[]Diagnostic) {
 // vSuggest finds the closest legal sibling name (same parent chain, schema
 // order, edit distance <= 2) as "; did you mean 'x'?" - or nothing. Prose
 // only, never contract.
-func vSuggest(cons []constraint, parentChain, name string) string {
+func vSuggest(siblings map[string][]string, parentChain, name string) string {
 	bestDist := -1
 	bestName := ""
-	for i := range cons {
-		pc := ""
-		for _, s := range cons[i].segs {
-			if pc == parentChain {
-				dist := editDistance(name, s.name)
-				if dist <= 2 && (bestDist < 0 || dist < bestDist) {
-					bestDist = dist
-					bestName = s.name
-				}
-			}
-			if pc == "" {
-				pc = s.name
-			} else {
-				pc = pc + "\x00" + s.name
-			}
+	for _, s := range siblings[parentChain] {
+		dist := editDistance(name, s)
+		if dist <= 2 && (bestDist < 0 || dist < bestDist) {
+			bestDist = dist
+			bestName = s
 		}
 	}
 	if bestDist < 0 {
