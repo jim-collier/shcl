@@ -107,6 +107,8 @@ func diagCode(msg string) string {
 		return "E015"
 	case strings.HasPrefix(msg, "nesting deeper than"):
 		return "E016"
+	case strings.HasPrefix(msg, "unterminated quote in value"):
+		return "E017"
 	case strings.HasPrefix(msg, "unknown field "):
 		return "V001"
 	case strings.HasPrefix(msg, "required path missing"):
@@ -516,6 +518,36 @@ func normalizeDanglingBackslash(t string) string {
 
 // parseElement trims, then strips one matching outer quote pair if present.
 // Unquoted empty slots return ok=false (dropped, never an error).
+// unterminatedQuote reports whether some piece starts with a quote that never
+// closes (missing or escaped). Such a piece stays literal - and the quote-aware
+// comment strip has already swallowed any trailing # comment into it - so the
+// parser calls it out instead of letting the typo look deliberate. Mid-text
+// apostrophes (it's fine) are legal prose and stay silent.
+func unterminatedQuote(text string) bool {
+	for _, piece := range splitUnquotedCommas(text) {
+		chars := []rune(strings.TrimSpace(piece))
+		if len(chars) == 0 {
+			continue
+		}
+		first := chars[0]
+		if first != '"' && first != '\'' {
+			continue
+		}
+		closed := false
+		if len(chars) >= 2 && chars[len(chars)-1] == first {
+			esc := false
+			for _, c := range chars[1 : len(chars)-1] {
+				esc = c == '\\' && !esc
+			}
+			closed = !esc
+		}
+		if !closed {
+			return true
+		}
+	}
+	return false
+}
+
 func parseElement(piece string) (element, bool) {
 	t := strings.TrimSpace(piece)
 	if t == "" {
@@ -1057,6 +1089,9 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 		p.err(line, "bare comma in list element (one element per line)")
 		return
 	}
+	if unterminatedQuote(trimmed) {
+		p.err(line, "unterminated quote in value")
+	}
 	el, ok := parseElement(trimmed)
 	if !ok {
 		p.err(line, "empty list element")
@@ -1230,6 +1265,9 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				// Same-line fence spelling.
 				v, next = p.consumeRaw(lines, i+1, lineno, ch, length, info)
 			} else {
+				if unterminatedQuote(*scan.valueText) {
+					p.err(lineno, "unterminated quote in value")
+				}
 				v = parseCell(*scan.valueText)
 			}
 		}

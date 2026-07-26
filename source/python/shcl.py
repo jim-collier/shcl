@@ -79,6 +79,7 @@ def _diag_code(msg):
 		("malformed line: ", "E013"),
 		("missing colon", "E015"),
 		("nesting deeper than", "E016"),
+		("unterminated quote in value", "E017"),
 		("unknown field ", "V001"),
 		("required path missing", "V002"),
 		("wrong type at ", "V003"),
@@ -431,6 +432,30 @@ def _normalize_dangling_backslash(t):
 	if run % 2 == 1:
 		t += "\\"
 	return t
+
+
+def _unterminated_quote(text):
+	"""True when some piece starts with a quote that never closes (missing or
+	escaped). Such a piece stays literal - and the quote-aware comment strip has
+	already swallowed any trailing # comment into it - so the parser calls it
+	out instead of letting the typo look deliberate. Mid-text apostrophes
+	(it's fine) are legal prose and stay silent."""
+	for piece in _split_unquoted_commas(text):
+		t = _trim(piece)
+		if not t:
+			continue
+		first = t[0]
+		if first != '"' and first != "'":
+			continue
+		closed = False
+		if len(t) >= 2 and t[-1] == first:
+			esc = False
+			for c in t[1:-1]:
+				esc = (c == "\\") and not esc
+			closed = not esc
+		if not closed:
+			return True
+	return False
 
 
 def _parse_element(piece):
@@ -851,6 +876,8 @@ class _Parser:
 		if len(_split_unquoted_commas(trimmed)) > 1:
 			self._err(line, "bare comma in list element (one element per line)")
 			return
+		if _unterminated_quote(trimmed):
+			self._err(line, "unterminated quote in value")
 		el = _parse_element(trimmed)
 		if el is None:
 			self._err(line, "empty list element")
@@ -992,6 +1019,8 @@ class _Parser:
 					ch, length, info = fo
 					value, nxt = self._consume_raw(lines, i + 1, lineno, ch, length, info)
 				else:
+					if _unterminated_quote(value_text):
+						self._err(lineno, "unterminated quote in value")
 					value = _parse_cell(value_text)
 			node = self._attach_path(parent, segments, value, lineno)
 			if node is not None:

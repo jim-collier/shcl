@@ -158,10 +158,11 @@ In each section, items are listed approximately from newest to oldest.
 	- The spec promises the generated file loads with no error diagnostics.
 	- Fixed: `[#N]` paths (and paths carrying a literal newline) go to the trailing not-generated block instead of emitting a broken line; newlines in the annotation are escaped to `\n`; a default with a newline is written in its quoted escaped spelling. Corpus case 030 pins all three.
 
-- 🔘 Code Review 20260725 item 11: an unterminated quote in a value is accepted silently and swallows the trailing comment.
+- ✅ Code Review 20260725 item 11: an unterminated quote in a value is accepted silently and swallows the trailing comment.
 	- The stray opening quote stays in the value, no diagnostic at any strictness, and `fmt` then re-quotes it so the typo looks deliberate.
 	- Comment stripping is quote-aware, so `listen: "0.0.0.0:443  # note` eats the author's comment into the value.
 	- One of the commonest hand-authoring mistakes, and the exact class of error the product markets itself as catching. Path position already diagnoses it; only value position is silent.
+	- Fixed: a value or array element that OPENS with a quote it never closes now draws `E017` (value kept as written, fails strict) in all four parsers - field values and stacked `*` elements both. Mid-text apostrophes (`it's fine`) stay legal prose. Corpus case 031.
 
 - ✅ Code Review 20260725 item 12: a write to an unusable path silently succeeds and can leave a half-created path behind.
 	- `place()` creates intermediates as it walks, then returns nothing on a wildcard or a missing `[#N]` - the nodes it already made stay.

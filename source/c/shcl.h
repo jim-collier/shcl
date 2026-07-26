@@ -529,6 +529,32 @@ static S norm_dangling(Arena *a, S t) {
 	return s_dup(a, t);
 }
 
+/* True when some piece starts with a quote that never closes (missing or
+   escaped). Such a piece stays literal - and the quote-aware comment strip has
+   already swallowed any trailing # comment into it - so the parser calls it
+   out instead of letting the typo look deliberate. Mid-text apostrophes
+   (it's fine) are legal prose and stay silent. */
+static int unterminated_quote(Arena *a, S text) {
+	VecSize starts = {0}, ends = {0};
+	split_unquoted_commas(a, text, &starts, &ends);
+	for (size_t i = 0; i < starts.len; i++) {
+		S piece; piece.p = text.p + starts.data[i]; piece.n = ends.data[i] - starts.data[i];
+		S t = s_trim(piece);
+		if (t.n == 0) continue;
+		CPs c = decode_cps(a, t);
+		uint32_t first = c.cp[0];
+		if (first != '"' && first != '\'') continue;
+		int closed = 0;
+		if (c.n >= 2 && c.cp[c.n - 1] == first) {
+			int esc = 0;
+			for (size_t k = 1; k < c.n - 1; k++) esc = (c.cp[k] == '\\' && !esc);
+			closed = !esc;
+		}
+		if (!closed) return 1;
+	}
+	return 0;
+}
+
 // Trim, then strip one matching outer quote pair if present. present=0 -> dropped.
 static int parse_element(Arena *a, S piece, Element *out) {
 	S t = s_trim(piece);
@@ -1161,6 +1187,7 @@ static const char *diag_code(shcl_severity sev, S msg) {
 	if (s_starts(msg, "malformed line: ")) return "E013";
 	if (s_starts(msg, "missing colon")) return "E015";
 	if (s_starts(msg, "nesting deeper than")) return "E016";
+	if (s_starts(msg, "unterminated quote in value")) return "E017";
 	if (s_starts(msg, "unknown field ")) return "V001";
 	if (s_starts(msg, "required path missing")) return "V002";
 	if (s_starts(msg, "wrong type at ")) return "V003";
@@ -1374,6 +1401,7 @@ static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
 	S trimmed = s_trim(body);
 	if (trimmed.n == 0) { p_err(P, line, s_lit("empty list element")); return; }
 	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, s_lit("bare comma in list element (one element per line)")); return; }
+	if (unterminated_quote(a, trimmed)) p_err(P, line, s_lit("unterminated quote in value"));
 	Element el;
 	if (!parse_element(a, trimmed, &el)) { p_err(P, line, s_lit("empty list element")); return; }
 	Node *node = &NODE(P->d, parent);
@@ -1517,7 +1545,10 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		else {
 			Fence vf = fence_open(a, scan.value_text);
 			if (vf.ok) value = consume_raw(&P, lines.data, lines.len, i + 1, lineno, vf.ch, vf.len, vf.info, &next);
-			else value = parse_cell(a, scan.value_text);
+			else {
+				if (unterminated_quote(a, scan.value_text)) p_err(&P, lineno, s_lit("unterminated quote in value"));
+				value = parse_cell(a, scan.value_text);
+			}
 		}
 		size_t node;
 		if (attach_path(&P, parent, scan.segs.data, scan.segs.len, value, lineno, &node)) {
