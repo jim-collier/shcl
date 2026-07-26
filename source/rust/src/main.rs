@@ -737,9 +737,16 @@ fn do_check(o: &Opts) -> u8 {
 	};
 	// stdout carries the stable codes - the cross-binding contract. The prose is
 	// per-binding voice and goes to stderr (which the differential check drops).
+	// A V090-V093 line number is a SCHEMA line (the code table says so); the
+	// prose names the file so the two number spaces cannot be confused.
 	for d in &diags {
 		println!("line {}: {:?}: {}", d.line, d.severity, d.code);
-		eprintln!("line {}: {:?}: {}", d.line, d.severity, d.message);
+		let space = if d.code.starts_with("V09") && d.code != "V099" {
+			"schema line"
+		} else {
+			"line"
+		};
+		eprintln!("{} {}: {:?}: {}", space, d.line, d.severity, d.message);
 	}
 	let errors = diags
 		.iter()
@@ -784,7 +791,9 @@ fn do_init(o: &Opts) -> u8 {
 			eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
 		}
 		eprintln!("init: schema failed to load");
-		return 1;
+		// A broken schema is a config-semantics failure, not a usage error:
+		// same exit as `check --schema` reporting it.
+		return 6;
 	}
 	match generate(&sdoc) {
 		Ok(text) => {
@@ -796,7 +805,7 @@ fn do_init(o: &Opts) -> u8 {
 				eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
 			}
 			eprintln!("init: schema has faults");
-			1
+			6
 		}
 	}
 }

@@ -364,8 +364,15 @@ def main():
 			continue
 		if text != case["expected_init"]:
 			fails.append("{}: init output differs from expected-init.shcl".format(case["name"]))
-		if any(d.severity == shcl.Severity.Error for d in shcl.Document.parse(text).diagnostics()):
+		gdoc = shcl.Document.parse(text)
+		if any(d.severity == shcl.Severity.Error for d in gdoc.diagnostics()):
 			fails.append("{}: generated starter does not load cleanly".format(case["name"]))
+		# And it must satisfy the very schema that produced it - case 026's
+		# golden once failed its own schema (repeat lower bound and a
+		# materialized wildcard were ignored).
+		sdoc = shcl.Document.parse(case["init_schema"])
+		if any(d.severity == shcl.Severity.Error for d in gdoc.validate(sdoc)):
+			fails.append("{}: generated starter fails its own schema".format(case["name"]))
 
 	# Diagnostics: count, line, severity, and stable code per case - the same
 	# shape `check` prints to stdout at Standard (its cross-binding contract).

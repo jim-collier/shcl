@@ -584,9 +584,13 @@ static int do_check(Opts *o) {
 	for (size_t i = 0; i < nval; i++) {
 		const char *sev = shcl_validation_severity(val, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
 		if (shcl_validation_severity(val, i) == SHCL_SEV_ERROR) nerr++;
-		printf("line %zu: %s: %s\n", shcl_validation_line(val, i), sev, shcl_validation_code(val, i));
+		const char *code = shcl_validation_code(val, i);
+		printf("line %zu: %s: %s\n", shcl_validation_line(val, i), sev, code);
+		// A V090-V093 line number is a SCHEMA line (the code table says so);
+		// the prose names the file so the number spaces cannot be confused.
+		const char *space = (!strncmp(code, "V09", 3) && strcmp(code, "V099")) ? "schema line" : "line";
 		shcl_str m = shcl_validation_message(val, i);
-		fprintf(stderr, "line %zu: %s: ", shcl_validation_line(val, i), sev);
+		fprintf(stderr, "%s %zu: %s: ", space, shcl_validation_line(val, i), sev);
 		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 	}
 	int rc;
@@ -620,11 +624,28 @@ static int do_init(Opts *o) {
 			fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 		}
 		fprintf(stderr, "init: schema failed to load\n");
-		shcl_free(sd); free(stext); return 1;
+		// A broken schema is a config-semantics failure, not a usage error:
+		// same exit as `check --schema` reporting it.
+		shcl_free(sd); free(stext); return 6;
 	}
 	int ok = 0;
 	shcl_str text = shcl_generate(sd, &ok);
-	if (!ok) { fprintf(stderr, "init: schema has faults\n"); shcl_free(sd); free(stext); return 1; }
+	if (!ok) {
+		// The generator's ok flag carries no fault detail; validating an empty
+		// document against the schema reproduces the same V09x fault list.
+		shcl_doc *ed = shcl_parse("", 0);
+		shcl_validation *val = shcl_validate(ed, sd);
+		size_t nv = shcl_validation_count(val);
+		for (size_t i = 0; i < nv; i++) {
+			const char *sev = shcl_validation_severity(val, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+			shcl_str m = shcl_validation_message(val, i);
+			fprintf(stderr, "schema line %zu: %s: ", shcl_validation_line(val, i), sev);
+			fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
+		}
+		shcl_validation_free(val); shcl_free(ed);
+		fprintf(stderr, "init: schema has faults\n");
+		shcl_free(sd); free(stext); return 6;
+	}
 	fwrite(text.p, 1, text.n, stdout);
 	shcl_free(sd); free(stext); return 0;
 }

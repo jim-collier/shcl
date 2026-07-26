@@ -3459,15 +3459,126 @@ func genAnnotation(c *constraint, tyname string) string {
 	return strings.Join(parts, ", ")
 }
 
+// genDefaultText: a default carrying a literal newline cannot sit on a value
+// line; the quoted escaped spelling reads back to the same string.
+func genDefaultText(v string) string {
+	if !strings.Contains(v, "\n") {
+		return v
+	}
+	var s strings.Builder
+	s.WriteByte('"')
+	for _, ch := range v {
+		switch ch {
+		case '\\':
+			s.WriteString("\\\\")
+		case '"':
+			s.WriteString("\\\"")
+		case '\n':
+			s.WriteString("\\n")
+		case '\t':
+			s.WriteString("\\t")
+		default:
+			s.WriteRune(ch)
+		}
+	}
+	s.WriteByte('"')
+	return s.String()
+}
+
 // Generate emits a commented, typed starter config from a schema (`shcl init
-// --schema`). Required paths are live (their `default`, or an empty value);
-// optional paths are commented out; wildcard paths cannot be materialized and
-// are listed in a trailing comment block. faults != nil = schema faults (V09x),
-// same as Validate / check --schema.
+// --schema`). Paths that must exist (required, or a repeat lower bound of 1+)
+// are live (their `default`, or an empty value); optional paths are commented
+// out so the file is valid and minimal as-is. A must-exist wildcard path whose
+// parent gets materialized by another live line is generated too, in dotted
+// form - otherwise the file would fail the very schema that produced it - and
+// remaining wildcard or `[#N]` paths (which cannot be materialized) are listed
+// in a trailing comment block. The output always loads clean and validates
+// clean against its schema, except a repeat lower bound of 2+ (identical
+// generated lines would merge, so the shortfall is reported). faults != nil =
+// schema faults (V09x), same as Validate / check --schema.
 func Generate(schema *Document) (string, []Diagnostic) {
 	cons, faults := buildSchema(schema)
 	if faults != nil {
 		return "", faults
+	}
+	mustExist := func(c *constraint) bool {
+		return c.required || (c.repeat != nil && c.repeat[0] >= 1)
+	}
+	hasWild := func(c *constraint) bool {
+		for _, s := range c.segs {
+			if s.sel != nil && s.sel.kind == selWildcard {
+				return true
+			}
+		}
+		return false
+	}
+	// `[#N]` needs a pre-existing instance and its `#` would start a comment
+	// on a binding line; a path with a literal newline cannot be written at
+	// all. Both go to the trailing note instead of emitting a broken line.
+	unwritable := func(c *constraint) bool {
+		for _, s := range c.segs {
+			if s.sel != nil && s.sel.kind == selByIndex {
+				return true
+			}
+		}
+		return strings.Contains(c.path, "\n")
+	}
+	// Live concrete paths materialize instances; decide which must-exist
+	// wildcards get filled (their first-wildcard parent chain is a prefix of
+	// some live path). Fixpoint: a fill can materialize another's parent.
+	namesOf := func(segs []segment) []string {
+		names := make([]string, len(segs))
+		for j, s := range segs {
+			names[j] = s.name
+		}
+		return names
+	}
+	isPrefix := func(p, parent []string) bool {
+		if len(p) < len(parent) {
+			return false
+		}
+		for j := range parent {
+			if p[j] != parent[j] {
+				return false
+			}
+		}
+		return true
+	}
+	var live [][]string
+	for i := range cons {
+		c := &cons[i]
+		if !hasWild(c) && !unwritable(c) && mustExist(c) {
+			live = append(live, namesOf(c.segs))
+		}
+	}
+	fill := make([]bool, len(cons))
+	for {
+		changed := false
+		for i := range cons {
+			c := &cons[i]
+			if fill[i] || !hasWild(c) || unwritable(c) || !mustExist(c) {
+				continue
+			}
+			k := 0
+			for j, s := range c.segs {
+				if s.sel != nil && s.sel.kind == selWildcard {
+					k = j
+					break
+				}
+			}
+			parent := namesOf(c.segs[:k+1])
+			for _, p := range live {
+				if isPrefix(p, parent) {
+					fill[i] = true
+					live = append(live, namesOf(c.segs))
+					changed = true
+					break
+				}
+			}
+		}
+		if !changed {
+			break
+		}
 	}
 	var b strings.Builder
 	var wild [][2]string
@@ -3478,15 +3589,8 @@ func Generate(schema *Document) (string, []Diagnostic) {
 		if tyname == "" {
 			tyname = "any"
 		}
-		hasWild := false
-		for _, s := range c.segs {
-			if s.sel != nil && s.sel.kind == selWildcard {
-				hasWild = true
-				break
-			}
-		}
-		if hasWild {
-			wild = append(wild, [2]string{c.path, tyname})
+		if unwritable(c) || (hasWild(c) && !fill[i]) {
+			wild = append(wild, [2]string{strings.ReplaceAll(c.path, "\n", "\\n"), tyname})
 			continue
 		}
 		if !first {
@@ -3501,16 +3605,24 @@ func Generate(schema *Document) (string, []Diagnostic) {
 			}
 		}
 		b.WriteString("# ")
-		b.WriteString(genAnnotation(c, tyname))
+		// The annotation is a comment: a newline smuggled in via an allowed
+		// string value must not break out of it.
+		b.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
 		b.WriteByte('\n')
+		// A filled wildcard emits in dotted form, targeting the first (the
+		// materialized) instance.
+		path := c.path
+		if fill[i] {
+			path = strings.ReplaceAll(path, "[*]", "")
+		}
 		prefix := "#"
-		if c.required {
+		if mustExist(c) {
 			prefix = ""
 		}
 		if c.defaultText != nil {
-			fmt.Fprintf(&b, "%s%s: %s\n", prefix, c.path, *c.defaultText)
+			fmt.Fprintf(&b, "%s%s: %s\n", prefix, path, genDefaultText(*c.defaultText))
 		} else {
-			fmt.Fprintf(&b, "%s%s:\n", prefix, c.path)
+			fmt.Fprintf(&b, "%s%s:\n", prefix, path)
 		}
 	}
 	if len(wild) > 0 {
@@ -3606,7 +3718,9 @@ func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vCo
 				}
 			}
 		case selByIndex:
-			if int(seg.sel.index) < len(next) {
+			// Compare in uint64 like the sibling sites: int() of a huge index
+			// wraps negative and the bounds check would pass straight into a panic.
+			if seg.sel.index < uint64(len(next)) {
 				cur = []int{next[seg.sel.index]}
 			} else {
 				cur = nil

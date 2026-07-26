@@ -946,10 +946,16 @@ func doCheck(o *opts) int {
 	}
 	// stdout carries the stable codes - the cross-binding contract. The prose is
 	// per-binding voice and goes to stderr (which the differential check drops).
+	// A V090-V093 line number is a SCHEMA line (the code table says so); the
+	// prose names the file so the two number spaces cannot be confused.
 	errors := 0
 	for _, d := range diags {
 		fmt.Printf("line %d: %s: %s\n", d.Line, d.Severity, d.Code)
-		fmt.Fprintf(os.Stderr, "line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+		space := "line"
+		if strings.HasPrefix(d.Code, "V09") && d.Code != "V099" {
+			space = "schema line"
+		}
+		fmt.Fprintf(os.Stderr, "%s %d: %s: %s\n", space, d.Line, d.Severity, d.Message)
 		if d.Severity == shcl.SeverityError {
 			errors++
 		}
@@ -991,7 +997,9 @@ func doInit(o *opts) int {
 			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s\n", d.Line, d.Severity, d.Message)
 		}
 		fmt.Fprintln(os.Stderr, "init: schema failed to load")
-		return 1
+		// A broken schema is a config-semantics failure, not a usage error:
+		// same exit as `check --schema` reporting it.
+		return 6
 	}
 	text, faults := shcl.Generate(sdoc)
 	if faults != nil {
@@ -999,7 +1007,7 @@ func doInit(o *opts) int {
 			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s\n", d.Line, d.Severity, d.Message)
 		}
 		fmt.Fprintln(os.Stderr, "init: schema has faults")
-		return 1
+		return 6
 	}
 	fmt.Print(text)
 	return 0

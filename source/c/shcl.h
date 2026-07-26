@@ -2906,6 +2906,53 @@ static S v_gen_annotation(Arena *a, const VCons *c, S tyname) {
 	return sb_S(&s);
 }
 
+// A field must exist when required or its repeat lower bound is 1+; a
+// commented-out line for either would fail the very schema that produced it.
+static int g_must_exist(const VCons *c) { return c->required || (c->has_repeat && c->rep_lo >= 1); }
+static int g_has_wild(const VCons *c) {
+	for (size_t si = 0; si < c->segs.len; si++) if (c->segs.data[si].sel.tag == SEL_WILDCARD) return 1;
+	return 0;
+}
+// `[#N]` needs a pre-existing instance and its `#` would start a comment on a
+// binding line; a path with a literal newline cannot be written at all.
+static int g_unwritable(const VCons *c) {
+	for (size_t si = 0; si < c->segs.len; si++) if (c->segs.data[si].sel.tag == SEL_INDEX) return 1;
+	for (size_t k = 0; k < c->path.n; k++) if (c->path.p[k] == '\n') return 1;
+	return 0;
+}
+// s with every '\n' escaped to backslash-n (comments and annotations must stay
+// one line no matter what an allowed value smuggles in).
+static S g_escape_nl(Arena *a, S s) {
+	int has = 0;
+	for (size_t k = 0; k < s.n; k++) if (s.p[k] == '\n') { has = 1; break; }
+	if (!has) return s;
+	SB b = {0, 0, 0};
+	for (size_t k = 0; k < s.n; k++) {
+		if (s.p[k] == '\n') sb_puts(a, &b, "\\n");
+		else sb_putc(a, &b, s.p[k]);
+	}
+	return sb_S(&b);
+}
+// A default carrying a literal newline cannot sit on a value line; the quoted
+// escaped spelling reads back to the same string.
+static S g_default_text(Arena *a, S v) {
+	int has = 0;
+	for (size_t k = 0; k < v.n; k++) if (v.p[k] == '\n') { has = 1; break; }
+	if (!has) return v;
+	SB b = {0, 0, 0};
+	sb_putc(a, &b, '"');
+	for (size_t k = 0; k < v.n; k++) {
+		char ch = v.p[k];
+		if (ch == '\\') sb_puts(a, &b, "\\\\");
+		else if (ch == '"') sb_puts(a, &b, "\\\"");
+		else if (ch == '\n') sb_puts(a, &b, "\\n");
+		else if (ch == '\t') sb_puts(a, &b, "\\t");
+		else sb_putc(a, &b, ch);
+	}
+	sb_putc(a, &b, '"');
+	return sb_S(&b);
+}
+
 shcl_str shcl_generate(shcl_doc *schema, int *ok) {
 	Arena *a = &schema->arena;
 	VecVCons cons = {0, 0, 0};
@@ -2914,6 +2961,39 @@ shcl_str shcl_generate(shcl_doc *schema, int *ok) {
 	shcl_str r;
 	if (faults.len) { if (ok) *ok = 0; S e = s_empty(); r.p = e.p; r.n = e.n; return r; }
 	if (ok) *ok = 1;
+	// Live concrete paths materialize instances; decide which must-exist
+	// wildcards get filled (their first-wildcard parent chain is a prefix of
+	// some live path's name list). Fixpoint: a fill can materialize another's
+	// parent. Live paths are stored as their segment-name lists.
+	size_t nlive = 0, clive = 0;
+	VecSeg *live = NULL;
+	int *fill = (int *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *fill);
+	for (size_t i = 0; i < cons.len; i++) fill[i] = 0;
+	#define LIVE_PUSH(SEGS) do { if (nlive == clive) { clive = clive ? clive * 2 : 8; VecSeg *nl = (VecSeg *)arena_alloc(a, clive * sizeof *nl); for (size_t t = 0; t < nlive; t++) nl[t] = live[t]; live = nl; } live[nlive++] = (SEGS); } while (0)
+	for (size_t i = 0; i < cons.len; i++) {
+		VCons *c = &cons.data[i];
+		if (!g_has_wild(c) && !g_unwritable(c) && g_must_exist(c)) LIVE_PUSH(c->segs);
+	}
+	for (;;) {
+		int changed = 0;
+		for (size_t i = 0; i < cons.len; i++) {
+			VCons *c = &cons.data[i];
+			if (fill[i] || !g_has_wild(c) || g_unwritable(c) || !g_must_exist(c)) continue;
+			size_t k = 0;
+			while (c->segs.data[k].sel.tag != SEL_WILDCARD) k++;
+			size_t plen = k + 1; // parent chain: names up to and including the wildcard segment
+			int hit = 0;
+			for (size_t li = 0; li < nlive && !hit; li++) {
+				if (live[li].len < plen) continue;
+				int eq = 1;
+				for (size_t s2 = 0; s2 < plen; s2++) if (!s_eq(live[li].data[s2].name, c->segs.data[s2].name)) { eq = 0; break; }
+				hit = eq;
+			}
+			if (hit) { fill[i] = 1; LIVE_PUSH(c->segs); changed = 1; }
+		}
+		if (!changed) break;
+	}
+	#undef LIVE_PUSH
 	SB out = {0, 0, 0};
 	VecS wild_path = {0, 0, 0}, wild_type = {0, 0, 0};
 	int first = 1;
@@ -2921,9 +3001,10 @@ shcl_str shcl_generate(shcl_doc *schema, int *ok) {
 		VCons *c = &cons.data[i];
 		S tyname;
 		if (c->ty) { tyname.p = c->ty; tyname.n = strlen(c->ty); } else tyname = s_lit("any");
-		int has_wild = 0;
-		for (size_t si = 0; si < c->segs.len; si++) if (c->segs.data[si].sel.tag == SEL_WILDCARD) { has_wild = 1; break; }
-		if (has_wild) { VecS_push(a, &wild_path, c->path); VecS_push(a, &wild_type, tyname); continue; }
+		if (g_unwritable(c) || (g_has_wild(c) && !fill[i])) {
+			VecS_push(a, &wild_path, g_escape_nl(a, c->path)); VecS_push(a, &wild_type, tyname);
+			continue;
+		}
 		if (!first) sb_putc(a, &out, '\n');
 		first = 0;
 		if (c->has_desc) {
@@ -2937,10 +3018,20 @@ shcl_str shcl_generate(shcl_doc *schema, int *ok) {
 				}
 			}
 		}
-		sb_puts(a, &out, "# "); sb_putS(a, &out, v_gen_annotation(a, c, tyname)); sb_putc(a, &out, '\n');
-		if (!c->required) sb_putc(a, &out, '#');
-		sb_putS(a, &out, c->path);
-		if (c->has_default) { sb_puts(a, &out, ": "); sb_putS(a, &out, c->default_text); }
+		sb_puts(a, &out, "# "); sb_putS(a, &out, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &out, '\n');
+		if (!g_must_exist(c)) sb_putc(a, &out, '#');
+		if (fill[i]) {
+			// A filled wildcard emits in dotted form, targeting the first (the
+			// materialized) instance: the path with every "[*]" removed.
+			S p = c->path;
+			for (size_t k = 0; k < p.n; k++) {
+				if (k + 2 < p.n && p.p[k] == '[' && p.p[k + 1] == '*' && p.p[k + 2] == ']') { k += 2; continue; }
+				sb_putc(a, &out, p.p[k]);
+			}
+		} else {
+			sb_putS(a, &out, c->path);
+		}
+		if (c->has_default) { sb_puts(a, &out, ": "); sb_putS(a, &out, g_default_text(a, c->default_text)); }
 		else sb_putc(a, &out, ':');
 		sb_putc(a, &out, '\n');
 	}
