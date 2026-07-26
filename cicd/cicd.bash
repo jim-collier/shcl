@@ -301,6 +301,19 @@ if ((PROFILE_ENABLE)); then
 	latest="${profile_dir}/flame_${stamp}_latest.svg"
 	[[ -e "$latest" ]] || latest="${PROFILE_OUT}"
 	fEcho "OK: flamegraph: ${latest}"
+	## Wall-clock per surface (config PROFILE_TIMED): one line each into the log.
+	if declare -p PROFILE_TIMED &>/dev/null; then
+		for wl in "${PROFILE_TIMED[@]}"; do
+			wl_name="${wl%%|*}"; wl_cmd="${wl#*|}"
+			t0="$(date +%s.%N)"
+			if eval "${wl_cmd}"; then
+				t1="$(date +%s.%N)"
+				fEcho_Clean "profile timing: ${wl_name} $(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2fs", b - a}')"
+			else
+				fEcho_Clean "profile timing: ${wl_name} FAILED"
+			fi
+		done
+	fi
 	fEcho_Clean "open: ${latest}  (in a browser)"
 	## Hot-spot summary into the log (non-fatal, no marker - the marker belongs to
 	## the per-session --check gate, not the pipeline).

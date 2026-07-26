@@ -129,6 +129,18 @@ PROFILE_BIN="source/rust/target/profiling/${EXE_NAME}"
 PROFILE_OUT_DIR="cicd/artifacts/profiling"   ## relative to repo root; gitignored
 PROFILE_WORKLOAD_GEN='{ for i in $(seq 40); do cat project/conformance/*/input.shcl cicd/demo/app.shcl; echo; done; } > "${PROFILE_WORKLOAD}"'
 PROFILE_RUN='SHCL_PROFILE_OUT="${PROFILE_OUT}" SHCL_PROFILE_SECS="${PROFILE_SECS}" "${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null'
+## Wall-clock per surface, logged after the flamegraph: the graph shows where
+## time goes inside fmt, these catch merge/validate/generate/set/read going
+## quadratic without moving a sample. "name|command"; nonzero exit = FAILED
+## (append `|| [ $? -eq N ]` where a nonzero exit is the expected outcome).
+PROFILE_TIMED=(
+	'fmt|"${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null'
+	'merge|"${PROFILE_BIN}" fmt --layer="${PROFILE_WORKLOAD}" "${PROFILE_WORKLOAD}" >/dev/null'
+	'reads|"${PROFILE_BIN}" instances "${PROFILE_WORKLOAD}" server >/dev/null && "${PROFILE_BIN}" count "${PROFILE_WORKLOAD}" server >/dev/null'
+	'validate|"${PROFILE_BIN}" check --schema=project/conformance/021-schema-valid/schema.shcl "${PROFILE_WORKLOAD}" >/dev/null 2>&1 || [ $? -eq 6 ]'
+	'generate|"${PROFILE_BIN}" init --schema=project/conformance/026-init-schema/init-schema.shcl >/dev/null'
+	'set|printf "int\tprofile.k\t1\nstring\tprofile.s\tv\nremove\tprofile.k\n" | "${PROFILE_BIN}" set "${PROFILE_WORKLOAD}" >/dev/null'
+)
 
 ## Stage 6: native release + cross targets. One per line:
 ## "label|os-arch|artifact|command...". os-arch feeds the versioned artifact name

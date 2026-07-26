@@ -291,13 +291,15 @@ In each section, items are listed approximately from newest to oldest.
 	- A caller cannot catch it without reaching into a private name, so in practice they will write a bare `except Exception`.
 	- Fixed: the class is public `StatusError` now (docstring included), so callers can catch it by name.
 
-- 🔘 Code Review 20260725 item 35: the profiler stage samples only `fmt`, on a workload where everything is still linear.
+- ✅ Code Review 20260725 item 35: the profiler stage samples only `fmt`, on a workload where everything is still linear.
 	- The read path, `merge`, `validate`, `generate` and the Writer are never sampled, so all three 2026-07-23/24 features could go quadratic without moving a sample.
 	- The cheapest half of the fix is a wall-clock number per workload in the run log: a flamegraph shows where time goes, not that total time grew 4x.
+	- Fixed with the cheap half the review named first: the profiler stage now logs a wall-clock line per surface (fmt, merge, reads, validate, generate, set) from a `PROFILE_TIMED` list in config, so any of them going quadratic shows as a number moving even though the flamegraph still samples fmt.
 
-- 🔘 Code Review 20260725 item 36: CI installs its lint toolchain unpinned every run.
+- ✅ Code Review 20260725 item 36: CI installs its lint toolchain unpinned every run.
 	- `TOOL_PINS` already tracks the versions the local gate uses, so CI and local disagree about what "passing" was tested against.
 	- Actions are also referenced by floating tag rather than commit SHA - generic hardening, small blast radius here.
+	- Fixed: ci.yml installs ruff/mypy/cppcheck/markdownlint at the exact `TOOL_PINS` versions, and every action is referenced by commit SHA with the tag in a comment.
 
 - 🛠️ Code Review 20260725 item 37: harden the installers' transport and integrity story.
 	- `curl`/`wget` follow redirects with no protocol pin or TLS floor.
