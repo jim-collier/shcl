@@ -54,6 +54,7 @@ pause = 2.8
 note  = "One bad line never kills the file - it is diagnosed and skipped"
 show  = "{prog} check app.shcl"
 run   = "{bin} check cicd/demo/app.shcl"
+expect_exit = 6                 # the demo file carries a deliberate bad line
 pause = 3.2
 
 [[step]]
