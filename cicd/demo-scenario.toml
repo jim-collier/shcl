@@ -15,9 +15,7 @@ note  = [
 ]
 show  = "cat app.shcl"
 run   = "cat cicd/demo/app.shcl"
-pause = 5.0
-scrollrate = 70
-linems = 200
+pause = 7.0                     # a screenful lands at once, so this is the read time
 
 [[step]]
 note  = "Read one value, typed - one obvious call"
@@ -67,6 +65,4 @@ note  = [
 ]
 show  = "{prog} fmt app.shcl"
 run   = "{bin} fmt cicd/demo/app.shcl"
-pause = 5.0
-scrollrate = 70
-linems = 200
+pause = 7.0
