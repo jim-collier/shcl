@@ -80,6 +80,9 @@ In each section, items are listed approximately from newest to oldest.
 		- ✅ demo gif: output that fits on one screen now arrives at once like a real terminal, only an overflowing view scrolls, the cursor no longer blinks, and every motion frame is exactly 50 fps.
 			- Nothing had actually been scrolling: the window is 22 rows and both long outputs fit, so the lines were popping in one at a time on a timer. That was the stepping.
 			- Scroll smoothness is pixels per frame, so the step is rounded to an exact divisor of the line height - a line boundary never lands mid-step.
+			- ✅ demo gif: the cursor blinks again while the prompt is idle, glides at sub-pixel resolution, and this demo drops the blank line between output and the next prompt.
+				- The block is drawn with coverage-blended edges instead of snapping to whole pixels, so a 3 px per frame glide reads as continuous.
+				- No padding line after output: the demo is about exact output shape, and a blank line invites misreading it. Scenario knob `blankafter`, on by default.
 	- ✅ Packaging (.deb, .rpm, NSIS). Wire it when release cuts start.
 		- Done: stage 6 builds .deb + .rpm (nfpm) per Linux binary and an NSIS setup per Windows binary into the release artifact dir, covered by the same sha256sums. `--no-package` to skip; off under `--ci` and `--quick`. Packages use distro layout (/usr/bin + /usr/share/shcl); payload matches install.bash.
 

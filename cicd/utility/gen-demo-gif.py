@@ -6,8 +6,9 @@
 ##		terminal window with human timing (slower digits, a beat before flags,
 ##		the occasional corrected typo), then actually executed so the captured
 ##		output can never go stale. Motion runs at exactly 50 fps: the cursor
-##		glides between cells rather than teleporting, and a view that has to
-##		scroll moves a constant number of pixels per frame. Output that fits on
+##		glides between cells at sub-pixel resolution rather than teleporting,
+##		blinks while the prompt sits idle, and a view that has to scroll moves
+##		a constant number of pixels per frame. Output that fits on
 ##		one screen lands at once, the way a real terminal dumps it; only an
 ##		overflowing view scrolls. The screen clears between steps, so each
 ##		command starts at the top of an empty terminal.
@@ -33,7 +34,7 @@
 ##	SPDX-License-Identifier: MIT
 
 
-import argparse, os, random, re, shlex, subprocess, sys, unicodedata
+import argparse, math, os, random, re, shlex, subprocess, sys, unicodedata
 
 try:
 	import tomllib
@@ -82,6 +83,8 @@ WPM_NOTES     = (233, 263)   # "# comment" lines fly by
 FLAG_PAUSE_MS = (200, 380)   # a beat of thought before a -flag token
 TYPO_RATE     = 0.018        # per letter; capped at 2 fixes per command
 BLACK_HOLD_MS = 3000         # dark beat at the loop seam; a cut, not a fade
+BLINK_MS      = 530          # cursor on/off half-period while idle at the prompt;
+                             # one frame per phase, and only the block changes
 FRAME_MS      = 20           # 50 fps while scrolling / cursor-gliding; 2cs is the
                              # shortest delay browsers honor, so this is the ceiling
 SCROLL_RATE   = 150          # px/s smooth scroll; per-step scrollrate overrides.
@@ -178,6 +181,8 @@ def fLoadScenario(path):
 	##	  font = ["pref1", "pref2"]     seed = 11
 	##	  wpm_digits = 42               digit typing speed (numbers-heavy demos: raise it)
 	##	  clear = false                 keep the scrollback between steps (default: clear)
+##	  blankafter = false            no blank line between a command's output and the
+##	                                next prompt (default: one, for breathing room)
 	##	  [[step]]
 	##	  note = "shown as a typed # comment first"     (optional; a list = several lines)
 	##	  show = "{prog} 255 16"        the command line as typed
@@ -277,6 +282,9 @@ def fBuildPalette(userTint, hostTint, emojiTiles):
 	colors = [(0, 0, 0), t["outer"], t["border"], t["titlebar"],
 	          t["titletxt"], t["bg"], t["fg"], t["gray"], t["dim"],
 	          userTint, hostTint] + t["dots"]
+	##	The cursor's partial-coverage edge rides this ramp too; four steps put its
+	##	sub-pixel position within a fifth of a pixel, and a denser ramp only costs
+	##	file size (every antialiased edge in the frame gets more distinct colors).
 	for c in (t["fg"], t["gray"], t["dim"], userTint, hostTint):
 		for k in (0.22, 0.45, 0.68, 0.86):
 			colors.append(blend(t["bg"], c, k))
@@ -405,6 +413,24 @@ class Screen:
 		self._emojiTiles[ch] = tile
 		return tile
 
+	def fDrawCursor(self, layer, cx, cy):
+		##	The block at a fractional position: edge pixels take partial coverage
+		##	instead of snapping to the pixel grid, so a 2-3 px/frame glide reads
+		##	as continuous motion rather than a series of small jumps. The blends
+		##	land on the same bg->fg ramp the antialiased text already uses, so
+		##	they quantize without dithering.
+		x0, y0 = cx + 1, cy + 1
+		x1, y1 = x0 + self.cw, y0 + self.lh - 3
+		ix, iy = math.floor(x0), math.floor(y0)
+		w, h = math.ceil(x1) - ix, math.ceil(y1) - iy
+		if w < 1 or h < 1:
+			return
+		xcov = [max(0.0, min(x1, ix + i + 1) - max(x0, ix + i)) for i in range(w)]
+		ycov = [max(0.0, min(y1, iy + j + 1) - max(y0, iy + j)) for j in range(h)]
+		mask = Image.new("L", (w, h))
+		mask.putdata([round(255 * xc * yc) for yc in ycov for xc in xcov])
+		layer.paste(THEME["fg"], (ix, iy), mask)
+
 	def fDrawText(self, d, img, x, y, text, fill):
 		##	Draw in runs of a single font, so fallback glyphs slot inline. Emoji
 		##	go down as color tiles pasted on two terminal cells.
@@ -514,9 +540,7 @@ class Screen:
 			for text, key in content[i]:
 				x = self.fDrawText(ld, layer, x, y, text, colors[key])
 		if cursor is not None:
-			cx, cy = cursor
-			ld.rectangle([cx + 1, cy + 1, cx + self.cw, cy + self.lh - 3],
-			             fill=THEME["fg"])
+			self.fDrawCursor(layer, *cursor)
 		img.paste(layer, (self.termX, self.termY))
 		return img.quantize(palette=self.pal, dither=Image.Dither.NONE)
 
@@ -611,12 +635,18 @@ def fMain():
 		shown[:] = scr.fCursorTarget()
 
 	def holdPause(totalMs):
-		##	Idle at the prompt. The block cursor does not blink: a blink redraws
-		##	the frame every half second to say nothing, while a still cursor lets
-		##	the whole hold collapse into one frame.
-		snap(totalMs)
+		##	Idle at the prompt, cursor blinking like a real terminal. One frame
+		##	per blink phase and only the block changes, so a long hold still
+		##	costs about two small frames a second.
+		left, on = float(totalMs), True
+		while left > 1e-9:
+			span = min(BLINK_MS, left)
+			snap(span, on)
+			left -= span
+			on = not on
 
 	clearBetween = bool(sc.get("clear", True))
+	blankAfter = bool(sc.get("blankafter", True))
 	snap(700)                                        # opening frame = loop-in target
 	for stepIdx, step in enumerate(sc["step"]):
 		if clearBetween and stepIdx:
@@ -663,7 +693,7 @@ def fMain():
 					settle(rate, cursor=False)
 				elif lineMs > 0:
 					snap(lineMs, cursor=False)
-			if outLines and outLines[-1].strip():
+			if blankAfter and outLines and outLines[-1].strip():
 				scr.fPut([("", "fg")])               # breathe before the next prompt
 				settle(rate, cursor=False)
 			scr.showPrompt = True
@@ -704,6 +734,8 @@ if __name__ == "__main__":
 
 
 ##	History:
+##		- 20260727: v1.7. Cursor blinks while idle again, and glides at sub-pixel
+##			resolution; scenario knob blankafter.
 ##		- 20260727: v1.6. Output that fits arrives at once (linems defaults to 0);
 ##			scrolling holds a constant px/frame; steady cursor; exact 2cs frames.
 ##		- 20260726: v1.5. Loop seam cuts to a black hold instead of crossfading;

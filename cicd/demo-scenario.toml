@@ -7,6 +7,8 @@ title = "shcl"
 prog  = "shcl"
 seed  = 7
 font  = ["Monaspace Argon SemiBold"]
+blankafter = false              # output shape is the point here - no padding line
+                                # between it and the next prompt to misread
 
 [[step]]
 note  = [
