@@ -54,9 +54,10 @@
 
 **S**imple **H**ierarchical **C**onfig **L**anguage
 
-*Forgiving to write. Predictable to read. The friendliest read API around.*
+*Forgiving to write. Predictable to read. The friendliest config API around.*
 
-<img src="assets/demo.gif" alt="SHCL demo"/>
+<!-- width = the gif's own pixel width, so it never renders larger than 1:1; no height attr, so a narrow column can still shrink it without squashing -->
+<img src="assets/demo.gif" alt="SHCL demo" width="960"/>
 
 <!-- [Watch the walkthrough](https://www.youtube.com/watch?v=VIDEO_ID) -->
 
@@ -81,8 +82,11 @@
 	- [When SHCL is the wrong choice](#when-shcl-is-the-wrong-choice)
 - [Features](#features)
 - [Status](#status)
-- [Installing](#installing)
-- [Building from source](#building-from-source)
+- [Installation](#installation)
+	- [Packages and installers](#packages-and-installers)
+	- [Install scripts](#install-scripts)
+	- [DIY](#diy)
+- [Set up a development environment](#set-up-a-development-environment)
 - [Docs](#docs)
 - [Contributing and support](#contributing-and-support)
 - [Copyright and license](#copyright-and-license)
@@ -243,51 +247,82 @@ Release candidate, and spec-first on purpose. Several parsers that "mostly agree
 
 What is not done yet: the remaining Tier 3 bindings (C#, Java, JavaScript). Star or watch the repo to follow along.
 
-## Installing
+## Installation
 
-The latest pre-release, `v1.0.0-rc1`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases). Pick whichever fits:
+The latest pre-release, `v1.0.0-rc1`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
 
-- **Native package** - the simplest route if your system uses one. Download the `.deb`, `.rpm`, or Windows setup for your architecture (`x86_64` or `arm64`) from the releases page:
+### Packages and installers
 
-	```sh
-	sudo dpkg -i shcl-1.0.0-rc1-linux-x86_64.deb     # Debian, Ubuntu
-	sudo rpm -i  shcl-1.0.0-rc1-linux-x86_64.rpm     # Fedora, RHEL, openSUSE
-	```
+The simplest route, if your system has a package manager. Download the `.deb`, `.rpm`, or Windows setup for your architecture (`x86_64` or `arm64`) from the releases page:
 
-	On Windows, run `shcl-1.0.0-rc1-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
+```sh
+sudo dpkg -i shcl-1.0.0-rc1-linux-x86_64.deb     # Debian, Ubuntu
+sudo rpm -i  shcl-1.0.0-rc1-linux-x86_64.rpm     # Fedora, RHEL, openSUSE
+```
 
-	Packages put the binary at `/usr/bin/shcl` and the drop-in sources and shell wrappers under `/usr/share/shcl/`.
+On Windows, run `shcl-1.0.0-rc1-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
 
-- **Install script** - downloads the latest release, verifies the checksum, and installs the binary plus the drop-in files and wrappers. Idempotent; states its plan and asks before touching anything. Linux, macOS, BSD, WSL:
+Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wrappers under `/usr/share/shcl/`.
 
-	```sh
-	curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
-	```
+### Install scripts
 
-	Windows (PowerShell):
+Downloads the latest release, verifies the checksum, and installs the binary plus the drop-in files and wrappers. Idempotent; it states its plan and asks before touching anything.
 
-	```powershell
-	irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1 | iex
-	```
+Linux and WSL:
 
-	Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows). Pass them through the pipe with `bash -s -- --target=user`, or download the script first. The default is a system install (`/opt/shcl` plus a `/usr/local/sbin/shcl` symlink, or `C:\Program Files\Shcl` on `PATH`); `user` installs under your home directory and needs no sudo or elevation.
+```sh
+curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1 | iex
+```
+
+Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows). Pass them through the pipe with `bash -s -- --target=user`, or download the script first.
+
+| Target | Linux | Windows
+| :-- | :-- | :--
+| `system` (default) | `/opt/shcl` plus a `/usr/local/sbin/shcl` symlink | `C:\Program Files\Shcl`, added to `PATH`
+| `user` | `~/.local/share/shcl` plus a `~/.local/bin/shcl` symlink | `%USERPROFILE%\bin\Shcl`, added to your `PATH`
+
+A `user` install needs no sudo or elevation.
+
+macOS and the BSDs have no prebuilt binaries yet. Use a drop-in source file, or build the CLI.
+
+### DIY
 
 - **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page and put it anywhere on your `PATH`.
 
-- **Drop-in** - copy one source file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
+- **Drop-in source** - copy one file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
 
-- **Build the CLI from source** - see below. To set up a full dev environment instead (toolchains, linters, and a clone), there is also `install-dev.bash`, same one-liner shape.
+- **Build the CLI** - the reference lives in `source/rust/` and has zero dependencies:
 
-## Building from source
+	```sh
+	cargo build --release --manifest-path source/rust/Cargo.toml
+	# binary at source/rust/target/release/shcl
+	```
 
-The reference lives in `source/rust/`, zero dependencies:
+	Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
+
+## Set up a development environment
+
+`install-dev.bash` clones the repo, installs the toolchains and linters the pipeline gates on as far as it can without sudo, and prints the package-manager hint for anything left over. It states its plan first:
 
 ```sh
-cargo build --release --manifest-path source/rust/Cargo.toml
-# binary at source/rust/target/release/shcl
+curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install-dev.bash | bash
 ```
 
-Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
+Linux and macOS; on Windows, use WSL, since the pipeline is bash. Then, from the clone:
+
+```sh
+cicd/cicd.bash --ci
+```
+
+`--ci` is the whole gate: format check, build, lint, tests, and the cross-binding differential. It is the same thing GitHub runs, so green locally means green upstream.
+
+[`contributing.md`](contributing.md) has the full list - every toolchain and linter with its install command, the per-binding test commands, the extra tools a full cross-and-package run wants, and how to add a conformance case.
 
 ## Docs
 
