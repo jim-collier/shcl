@@ -5,12 +5,15 @@
 ##		scenario file scripts the session; each command is "typed" into a fake
 ##		terminal window with human timing (slower digits, a beat before flags,
 ##		the occasional corrected typo), then actually executed so the captured
-##		output can never go stale. Scrolling is pixel-smooth (content settles
-##		back onto the line grid at rest) and the cursor glides between cells
-##		rather than teleporting. The loop boundary fades to black and back in
-##		to the first frame. Frames share one exact master palette; fade frames
-##		reuse the same pixel indexes with a darkened local palette, so nothing
-##		is ever re-dithered. Project-agnostic - point it at any scenario.
+##		output can never go stale. Motion runs at 50 fps: scrolling is
+##		pixel-smooth (content settles back onto the line grid at rest) and the
+##		cursor glides between cells rather than teleporting. The screen clears
+##		between steps, so each command starts at the top of an empty terminal.
+##		The loop boundary fades to black and back in to the first frame. Frames
+##		share one exact master palette; fade frames reuse the same pixel indexes
+##		with a darkened local palette, so nothing is ever re-dithered. gifsicle
+##		inter-frame optimizes the result when it is installed. Project-agnostic
+##		- point it at any scenario.
 ##	Syntax:
 ##		gen-demo-gif.py --scenario FILE --out FILE [--bin PATH] [--seed N]
 ##		  --scenario FILE  TOML scenario (see fLoadScenario for the format)
@@ -79,8 +82,10 @@ TYPO_RATE     = 0.018        # per letter; capped at 2 fixes per command
 BLINK_MS      = 530
 FADE_STEPS    = 7
 FADE_STEP_MS  = 70
-SCROLL_MS     = 80           # frame interval while scrolling / cursor-gliding
+FRAME_MS      = 20           # 50 fps while scrolling / cursor-gliding; 2cs is the
+                             # shortest delay browsers honor, so this is the ceiling
 SCROLL_RATE   = 325          # px/s smooth scroll; per-step scrollrate overrides
+CLEAR_HOLD_MS = 800          # extra read time before the screen wipes for the next step
 
 QWERTY_ROWS = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
 
@@ -123,6 +128,25 @@ def fSkip(msg):
 	sys.exit(2)
 
 
+def fGifsicle(path):
+	##	Pillow writes every frame whole; at 50 fps that is mostly redundant, so
+	##	hand the file to gifsicle for inter-frame diffing + transparency. Exact
+	##	(no lossy, no palette change), and silently skipped when not installed.
+	##	Returns the new size, or 0 if nothing was done.
+	tmp = path + ".opt"
+	try:
+		rc = subprocess.run(["gifsicle", "-O3", "-w", "--loopcount=forever",
+		                     "-o", tmp, path], timeout=900).returncode
+	except (OSError, subprocess.TimeoutExpired):
+		rc = 1
+	if rc == 0 and os.path.exists(tmp) and os.path.getsize(tmp):
+		os.replace(tmp, path)
+		return os.path.getsize(path)
+	if os.path.exists(tmp):
+		os.remove(tmp)
+	return 0
+
+
 def fFindFont(prefs, size):
 	##	Resolve the first available preference via fc-match. fc-match always
 	##	answers with its best match, so verify the family before trusting it;
@@ -150,6 +174,7 @@ def fLoadScenario(path):
 	##	  title = "window title"        prog = "name shown in typed commands"
 	##	  font = ["pref1", "pref2"]     seed = 11
 	##	  wpm_digits = 42               digit typing speed (numbers-heavy demos: raise it)
+	##	  clear = false                 keep the scrollback between steps (default: clear)
 	##	  [[step]]
 	##	  note = "shown as a typed # comment first"     (optional)
 	##	  show = "{prog} 255 16"        the command line as typed
@@ -303,6 +328,13 @@ class Screen:
 
 	def fPut(self, spans):
 		self.lines.append(spans)
+
+	def fClear(self):
+		##	What `clear` does: scrollback gone, live line back at the top. Keeps
+		##	each command in an empty window - focus on it, and far fewer frames.
+		self.lines = []
+		self.typed = ""
+		self.scroll = 0.0
 
 	@staticmethod
 	def _mask(font, ch):
@@ -548,9 +580,11 @@ def fMain():
 		mov.add(scr.render(tuple(shown) if cursor else None, identColors), ms)
 
 	def glideCursor(ms):
-		##	Slide the shown cursor toward its cell across the keystroke's time.
+		##	Slide the shown cursor toward its cell across the keystroke's time,
+		##	one frame per FRAME_MS. Where it does not actually move (a thinking
+		##	pause), the frames are identical and Movie.add folds them back up.
 		tx, ty = scr.fCursorTarget()
-		steps = max(1, min(3, int(ms // 45)))
+		steps = max(1, int(round(ms / FRAME_MS)))
 		x0, y0 = shown
 		for s in range(1, steps + 1):
 			shown[0] = x0 + (tx - x0) * s / steps
@@ -561,9 +595,9 @@ def fMain():
 		##	Smooth-scroll the view to rest; the cursor rides along on its line.
 		while abs(scr.fRestScroll() - scr.scroll) >= 0.5:
 			d = scr.fRestScroll() - scr.scroll
-			scr.scroll += (1 if d > 0 else -1) * min(abs(d), rate * SCROLL_MS / 1000.0)
+			scr.scroll += (1 if d > 0 else -1) * min(abs(d), rate * FRAME_MS / 1000.0)
 			shown[:] = scr.fCursorTarget()
-			snap(SCROLL_MS, cursor)
+			snap(FRAME_MS, cursor)
 		scr.scroll = scr.fRestScroll()
 		shown[:] = scr.fCursorTarget()
 
@@ -577,8 +611,13 @@ def fMain():
 			on = not on
 			left -= step
 
+	clearBetween = bool(sc.get("clear", True))
 	snap(700)                                        # opening frame = loop-in target
 	for stepIdx, step in enumerate(sc["step"]):
+		if clearBetween and stepIdx:
+			scr.fClear()
+			shown[:] = scr.fCursorTarget()
+			snap(220)                                # a beat of empty window
 		rate = float(step.get("scrollrate", SCROLL_RATE))
 		lineMs = float(step.get("linems", 26))
 		for noteOrCmd, key, wpm, typos in (
@@ -622,7 +661,10 @@ def fMain():
 			if scr.fRestScroll() > scr.scroll + 0.5:
 				settle(rate)
 			snap(60)
-			blinkPause(1000 * float(step.get("pause", 2.6)))
+			##	Hold past the read time when the window is about to wipe - the
+			##	output should not vanish the instant the eye finishes it.
+			blinkPause(1000 * float(step.get("pause", 2.6))
+			           + (CLEAR_HOLD_MS if clearBetween else 0))
 
 	blinkPause(1000)                                 # linger, then fade the loop seam
 
@@ -645,11 +687,13 @@ def fMain():
 	os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
 	mov.frames[0].save(args.out, save_all=True, append_images=mov.frames[1:],
 	                   duration=mov.durs, loop=0, optimize=False)
+	raw = os.path.getsize(args.out)
+	opt = fGifsicle(args.out)
 	if not args.quiet:
 		secs = sum(mov.durs) / 1000.0
-		kb = os.path.getsize(args.out) // 1024
+		size = f"{opt // 1024} KiB (from {raw // 1024})" if opt else f"{raw // 1024} KiB"
 		print(f"gen-demo-gif: {args.out}: {len(mov.frames)} frames, "
-		      f"{secs:.1f}s loop, {kb} KiB, font: {fontName}, "
+		      f"{secs:.1f}s loop, {size}, font: {fontName}, "
 		      f"{scr.cols}x{scr.rows} cells, ident: {user}@{host}")
 
 
@@ -658,6 +702,8 @@ if __name__ == "__main__":
 
 
 ##	History:
+##		- 20260726: v1.4. 50 fps motion, screen clears between steps (with a
+##			longer hold on the output first), gifsicle optimize pass.
 ##		- 20260713: v1.3. Full-bleed window (thin black border, no shadow),
 ##			square corners.
 ##		- 20260711: v1.2. Antialiased text again (ramped 256 palette), color
