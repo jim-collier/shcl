@@ -5,10 +5,12 @@
 ##		scenario file scripts the session; each command is "typed" into a fake
 ##		terminal window with human timing (slower digits, a beat before flags,
 ##		the occasional corrected typo), then actually executed so the captured
-##		output can never go stale. Motion runs at 50 fps: scrolling is
-##		pixel-smooth (content settles back onto the line grid at rest) and the
-##		cursor glides between cells rather than teleporting. The screen clears
-##		between steps, so each command starts at the top of an empty terminal.
+##		output can never go stale. Motion runs at exactly 50 fps: the cursor
+##		glides between cells rather than teleporting, and a view that has to
+##		scroll moves a constant number of pixels per frame. Output that fits on
+##		one screen lands at once, the way a real terminal dumps it; only an
+##		overflowing view scrolls. The screen clears between steps, so each
+##		command starts at the top of an empty terminal.
 ##		The loop boundary cuts to a black hold, then straight back to the first
 ##		frame - a crossfade would cost dozens of full frames for a second of
 ##		nothing. Frames share one exact master palette, so nothing is ever
@@ -79,11 +81,13 @@ WPM_DIGITS    = 63           # default; scenario wpm_digits overrides
 WPM_NOTES     = (233, 263)   # "# comment" lines fly by
 FLAG_PAUSE_MS = (200, 380)   # a beat of thought before a -flag token
 TYPO_RATE     = 0.018        # per letter; capped at 2 fixes per command
-BLINK_MS      = 530
 BLACK_HOLD_MS = 3000         # dark beat at the loop seam; a cut, not a fade
 FRAME_MS      = 20           # 50 fps while scrolling / cursor-gliding; 2cs is the
                              # shortest delay browsers honor, so this is the ceiling
-SCROLL_RATE   = 325          # px/s smooth scroll; per-step scrollrate overrides
+SCROLL_RATE   = 150          # px/s smooth scroll; per-step scrollrate overrides.
+                             # Smoothness is rate/50 px per frame - a few px reads
+                             # as continuous, and settle() rounds it to an exact
+                             # divisor of the line height so velocity never varies
 CLEAR_HOLD_MS = 800          # extra read time before the screen wipes for the next step
 
 QWERTY_ROWS = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
@@ -181,8 +185,9 @@ def fLoadScenario(path):
 	##	  expect_exit = 0               step's expected exit; a mismatch aborts the render
 	##	  pause = 2.6                   read time after the output, seconds
 	##	  overflow = "truncate"         or "wrap" for real feature output
-	##	  scrollrate = 260              px/s smooth scroll during this step's output
-	##	  linems = 26                   ms per output line before scrolling kicks in
+	##	  scrollrate = 260              px/s smooth scroll, when the output overflows
+	##	  linems = 26                   ms per output line; 0 (default) dumps the
+	##	                                whole screenful at once, like a real terminal
 	try:
 		with open(path, "rb") as f:
 			sc = tomllib.load(f)
@@ -518,15 +523,15 @@ class Screen:
 
 class Movie:
 	##	Ordered (frame, duration) list. Identical consecutive frames merge into
-	##	one longer frame; GIF timing is centisecond-quantized, so bank the
-	##	remainder instead of rounding it away every keystroke.
+	##	one longer frame, so a still hold costs exactly one frame however long it
+	##	runs. GIF stores delays in centiseconds; motion is generated in whole
+	##	FRAME_MS units so it quantizes exactly, and the leftover on a one-off
+	##	pause is worth less than the frame it would take to correct.
 	def __init__(self):
-		self.frames, self.durs, self._rem = [], [], 0.0
+		self.frames, self.durs = [], []
 
 	def add(self, img, ms):
-		ms += self._rem
 		dur = max(20, int(round(ms / 10.0)) * 10)
-		self._rem = ms - dur if ms > 20 else 0.0
 		if self.frames and img.tobytes() == self.frames[-1].tobytes():
 			self.durs[-1] += dur
 		else:
@@ -580,35 +585,36 @@ def fMain():
 
 	def glideCursor(ms):
 		##	Slide the shown cursor toward its cell across the keystroke's time,
-		##	one frame per FRAME_MS. Where it does not actually move (a thinking
-		##	pause), the frames are identical and Movie.add folds them back up.
+		##	in whole FRAME_MS frames - the keystroke rounds to the frame grid so
+		##	every frame is exactly 2cs. Where it does not actually move (a
+		##	thinking pause), the frames are identical and Movie.add folds them up.
 		tx, ty = scr.fCursorTarget()
 		steps = max(1, int(round(ms / FRAME_MS)))
 		x0, y0 = shown
 		for s in range(1, steps + 1):
 			shown[0] = x0 + (tx - x0) * s / steps
 			shown[1] = y0 + (ty - y0) * s / steps
-			snap(ms / steps)
+			snap(FRAME_MS)
 
 	def settle(rate, cursor=True):
 		##	Smooth-scroll the view to rest; the cursor rides along on its line.
-		while abs(scr.fRestScroll() - scr.scroll) >= 0.5:
-			d = scr.fRestScroll() - scr.scroll
-			scr.scroll += (1 if d > 0 else -1) * min(abs(d), rate * FRAME_MS / 1000.0)
+		##	The step is the asked-for rate rounded to an exact divisor of the line
+		##	height, so a line boundary never lands mid-step and every frame
+		##	advances the same distance - constant velocity is what reads as
+		##	smooth, more than raw rate does.
+		step = scr.lh / max(1, round(scr.lh / (rate * FRAME_MS / 1000.0)))
+		while abs(scr.fRestScroll() - scr.scroll) >= step - 1e-9:
+			scr.scroll += step if scr.fRestScroll() > scr.scroll else -step
 			shown[:] = scr.fCursorTarget()
 			snap(FRAME_MS, cursor)
 		scr.scroll = scr.fRestScroll()
 		shown[:] = scr.fCursorTarget()
 
-	def blinkPause(totalMs):
-		##	Idle at the prompt: block cursor blinking at the usual cadence.
-		on = True
-		left = totalMs
-		while left > 0:
-			step = min(BLINK_MS, left)
-			snap(step, cursor=on)
-			on = not on
-			left -= step
+	def holdPause(totalMs):
+		##	Idle at the prompt. The block cursor does not blink: a blink redraws
+		##	the frame every half second to say nothing, while a still cursor lets
+		##	the whole hold collapse into one frame.
+		snap(totalMs)
 
 	clearBetween = bool(sc.get("clear", True))
 	snap(700)                                        # opening frame = loop-in target
@@ -618,7 +624,7 @@ def fMain():
 			shown[:] = scr.fCursorTarget()
 			snap(220)                                # a beat of empty window
 		rate = float(step.get("scrollrate", SCROLL_RATE))
-		lineMs = float(step.get("linems", 26))
+		lineMs = float(step.get("linems", 0))
 		notes = step.get("note", [])
 		if isinstance(notes, str):
 			notes = [notes]
@@ -647,12 +653,15 @@ def fMain():
 			scr.showPrompt = False
 			if scr.fRestScroll() > scr.scroll + 0.5:
 				settle(rate, cursor=False)
+			##	A screenful that fits arrives all at once - no frame per line, so
+			##	it lands the instant the command does, like a real terminal.
+			##	Lines past the bottom are what scroll, and only those.
 			outLines = stepOut[stepIdx]
 			for ln in outLines:
 				scr.fPutText(ln, "fg", step.get("overflow", "truncate"))
 				if scr.fRestScroll() > scr.scroll + 0.5:
 					settle(rate, cursor=False)
-				else:
+				elif lineMs > 0:
 					snap(lineMs, cursor=False)
 			if outLines and outLines[-1].strip():
 				scr.fPut([("", "fg")])               # breathe before the next prompt
@@ -664,10 +673,10 @@ def fMain():
 			snap(60)
 			##	Hold past the read time when the window is about to wipe - the
 			##	output should not vanish the instant the eye finishes it.
-			blinkPause(1000 * float(step.get("pause", 2.6))
+			holdPause(1000 * float(step.get("pause", 2.6))
 			           + (CLEAR_HOLD_MS if clearBetween else 0))
 
-	blinkPause(1000)                                 # linger, then cut the loop seam
+	holdPause(1000)                                 # linger, then cut the loop seam
 
 	##	Hard cut to black and hold. A crossfade reads nicer but every fade frame
 	##	changes every pixel, so it is dozens of full frames the optimizer cannot
@@ -695,6 +704,8 @@ if __name__ == "__main__":
 
 
 ##	History:
+##		- 20260727: v1.6. Output that fits arrives at once (linems defaults to 0);
+##			scrolling holds a constant px/frame; steady cursor; exact 2cs frames.
 ##		- 20260726: v1.5. Loop seam cuts to a black hold instead of crossfading;
 ##			note= takes a list for multi-line commentary.
 ##		- 20260726: v1.4. 50 fps motion, screen clears between steps (with a
