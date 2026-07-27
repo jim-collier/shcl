@@ -9,7 +9,10 @@ seed  = 7
 font  = ["Monaspace Argon SemiBold"]
 
 [[step]]
-note  = "A messy config: repeated fields, a typo, embedded raw text"
+note  = [
+	"Two ways in: this CLI, or the drop-in library called straight from your program",
+	"A messy config: repeated fields, a typo, embedded raw text",
+]
 show  = "cat app.shcl"
 run   = "cat cicd/demo/app.shcl"
 pause = 5.0
@@ -58,7 +61,10 @@ expect_exit = 6                 # the demo file carries a deliberate bad line
 pause = 3.2
 
 [[step]]
-note  = "Canonical formatting: merged, aligned, minimally quoted"
+note  = [
+	"Canonical formatting: merged, aligned, minimally quoted",
+	"Shape only - values are never rewritten, so \"$1,200\" stays as written",
+]
 show  = "{prog} fmt app.shcl"
 run   = "{bin} fmt cicd/demo/app.shcl"
 pause = 5.0

@@ -9,11 +9,11 @@
 ##		pixel-smooth (content settles back onto the line grid at rest) and the
 ##		cursor glides between cells rather than teleporting. The screen clears
 ##		between steps, so each command starts at the top of an empty terminal.
-##		The loop boundary fades to black and back in to the first frame. Frames
-##		share one exact master palette; fade frames reuse the same pixel indexes
-##		with a darkened local palette, so nothing is ever re-dithered. gifsicle
-##		inter-frame optimizes the result when it is installed. Project-agnostic
-##		- point it at any scenario.
+##		The loop boundary cuts to a black hold, then straight back to the first
+##		frame - a crossfade would cost dozens of full frames for a second of
+##		nothing. Frames share one exact master palette, so nothing is ever
+##		re-dithered. gifsicle inter-frame optimizes the result when it is
+##		installed. Project-agnostic - point it at any scenario.
 ##	Syntax:
 ##		gen-demo-gif.py --scenario FILE --out FILE [--bin PATH] [--seed N]
 ##		  --scenario FILE  TOML scenario (see fLoadScenario for the format)
@@ -44,7 +44,7 @@ except ImportError:
 
 
 ##	Canvas and window chrome. 960x540 total; the "window" fills the frame, left
-##	with just a thin black border - which is also where the end-of-loop fade goes.
+##	with just a thin black border.
 CANVAS_W, CANVAS_H = 960, 540
 MARGIN     = 4        # thin black border around the full-bleed window
 TITLE_H    = 34       # title bar height
@@ -80,8 +80,7 @@ WPM_NOTES     = (233, 263)   # "# comment" lines fly by
 FLAG_PAUSE_MS = (200, 380)   # a beat of thought before a -flag token
 TYPO_RATE     = 0.018        # per letter; capped at 2 fixes per command
 BLINK_MS      = 530
-FADE_STEPS    = 7
-FADE_STEP_MS  = 70
+BLACK_HOLD_MS = 3000         # dark beat at the loop seam; a cut, not a fade
 FRAME_MS      = 20           # 50 fps while scrolling / cursor-gliding; 2cs is the
                              # shortest delay browsers honor, so this is the ceiling
 SCROLL_RATE   = 325          # px/s smooth scroll; per-step scrollrate overrides
@@ -176,7 +175,7 @@ def fLoadScenario(path):
 	##	  wpm_digits = 42               digit typing speed (numbers-heavy demos: raise it)
 	##	  clear = false                 keep the scrollback between steps (default: clear)
 	##	  [[step]]
-	##	  note = "shown as a typed # comment first"     (optional)
+	##	  note = "shown as a typed # comment first"     (optional; a list = several lines)
 	##	  show = "{prog} 255 16"        the command line as typed
 	##	  run  = "echo hi | {bin} ..."  what actually executes (default: show)
 	##	  expect_exit = 0               step's expected exit; a mismatch aborts the render
@@ -620,11 +619,13 @@ def fMain():
 			snap(220)                                # a beat of empty window
 		rate = float(step.get("scrollrate", SCROLL_RATE))
 		lineMs = float(step.get("linems", 26))
-		for noteOrCmd, key, wpm, typos in (
-				(("# " + step["note"]) if step.get("note") else None, "dim", WPM_NOTES, False),
-				(step["show"].replace("{prog}", prog).replace("{bin}", prog), "fg", WPM_LETTERS, True)):
-			if noteOrCmd is None:
-				continue
+		notes = step.get("note", [])
+		if isinstance(notes, str):
+			notes = [notes]
+		typeLines = [("# " + n, "dim", WPM_NOTES, False) for n in notes]
+		typeLines.append((step["show"].replace("{prog}", prog).replace("{bin}", prog),
+		                  "fg", WPM_LETTERS, True))
+		for noteOrCmd, key, wpm, typos in typeLines:
 			for (action, ch), delay in fTypeEvents(noteOrCmd, rng, wpm, typos, wpmDigits):
 				if action == "type":
 					scr.typed += ch
@@ -666,23 +667,15 @@ def fMain():
 			blinkPause(1000 * float(step.get("pause", 2.6))
 			           + (CLEAR_HOLD_MS if clearBetween else 0))
 
-	blinkPause(1000)                                 # linger, then fade the loop seam
+	blinkPause(1000)                                 # linger, then cut the loop seam
 
-	##	Fade: darken the last/first frames' palettes; indexes stay put, so the
-	##	fade costs almost nothing and the colors stay exact.
-	def fadeRun(baseImg, ks):
-		basePal = baseImg.getpalette()
-		for k in ks:
-			f = baseImg.copy()
-			f.putpalette([round(v * k) for v in basePal])
-			mov.frames.append(f)
-			mov.durs.append(FADE_STEP_MS)
-	fadeRun(mov.frames[-1], [1 - (i + 1) / (FADE_STEPS + 1) for i in range(FADE_STEPS)])
+	##	Hard cut to black and hold. A crossfade reads nicer but every fade frame
+	##	changes every pixel, so it is dozens of full frames the optimizer cannot
+	##	diff away - most of the file for a second nobody watches.
 	black = mov.frames[0].copy()
 	black.putpalette([0] * len(mov.frames[0].getpalette()))
 	mov.frames.append(black)
-	mov.durs.append(380)
-	fadeRun(mov.frames[0], [(i + 1) / (FADE_STEPS + 1) for i in range(FADE_STEPS)])
+	mov.durs.append(BLACK_HOLD_MS)
 
 	os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
 	mov.frames[0].save(args.out, save_all=True, append_images=mov.frames[1:],
@@ -702,6 +695,8 @@ if __name__ == "__main__":
 
 
 ##	History:
+##		- 20260726: v1.5. Loop seam cuts to a black hold instead of crossfading;
+##			note= takes a list for multi-line commentary.
 ##		- 20260726: v1.4. 50 fps motion, screen clears between steps (with a
 ##			longer hold on the output first), gifsicle optimize pass.
 ##		- 20260713: v1.3. Full-bleed window (thin black border, no shadow),
