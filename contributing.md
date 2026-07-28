@@ -133,6 +133,7 @@ Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/ci
 ### Toolchains
 
 - Rust via rustup - `rust-toolchain.toml` pins the version and cross targets; `rustfmt` and `clippy` come with it.
+	- Only rustup honors that pin. If your distro also packages Rust and its `cargo` wins on `PATH`, the pin is ignored with no warning, and you can end up building at one version while formatting and linting at another. `cicd.bash` prepends `~/.cargo/bin` so the pipeline is safe either way, but a bare `cargo` at the prompt is not. Check with `type -a cargo` and `rustup show active-toolchain`; fix by putting `~/.cargo/bin` ahead of the system directories, not after.
 - Go - version in `source/go/go.mod`; `gofmt` and `go vet` are built in.
 - Python 3.9+ - the binding and its tests are stdlib-only.
 - C - gcc and g++; the build gate is a plain `-std=c11 -Wall -Wextra -Werror` compile.
