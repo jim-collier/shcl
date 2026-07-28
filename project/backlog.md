@@ -30,7 +30,7 @@ This is a product backlog just for pre-v1.0.0 release. After that, bugs, feature
 
 ## Conventions
 
-In each section, items are listed approximately from newest to oldest. (Tip: use a clipboard or macro manager to make using these easier.)
+In each section, items are listed approximately from newest to oldest. (Tip: use a clipboard or macro manager to make using these emojis easier.)
 
 | Icon | Status
 | :--: | :--
@@ -71,12 +71,6 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 	- **Improvements**:
 
-		- ✅ Code Review 20260727 item 1: the Windows user install goes somewhere Windows does not expect.
-			- `install.ps1` puts a `user` target in `%USERPROFILE%\bin\Shcl`. The convention for a per-user program is `%LOCALAPPDATA%\Programs\`, which is where winget and most installers put one.
-			- Low stakes while the only release is a pre-release, and cheap to change now. Later it means a migration step for anyone who already installed.
-			- The system target (`C:\Program Files\Shcl`) is already conventional.
-			- Done before the 1.0.0 cut, which was the last moment it stayed free: `user` now lands in `%LOCALAPPDATA%\Programs\Shcl` and that dir goes on the user PATH directly. The old shape needed a second copy of the exe in a parent `bin` dir for PATH to find it; that whole branch is gone.
-
 		- 🔘 Code Review 20260727 item 2: the reference clones a node name several times per index remap.
 			- `remap_child` runs on every in-place value mutation - an empty field being filled, a stacked-list element being appended - and clones the name up to five times, because it looks a key up and then removes it separately.
 			- Building each key once and reusing it would about halve that, with no change in behavior. The other three bindings have their own shape and would need their own look.
@@ -98,17 +92,11 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 		- ✅ Done: the doc half. `E001`-`E016` plus `H001` are now tabled in the spec's Diagnostics section.
 		- ✋ Deferred: threading the code through every call site. Large, mechanical, and invisible to users, and every corpus case pins the code per line - so the exposure is limited to messages no case exercises.
 
-	- ✅ Code Review 20260725 item 37: harden the installers' transport and integrity story.
-		- `curl` and `wget` follow redirects with no protocol pin or TLS floor.
-		- The sums file arrives over the same channel as the binary, so it catches corruption but not substitution. The source tarball, which supplies the drop-in files consumers compile in, is not verified at all.
-		- ✅ Done: the transport half. curl and wget pin https through redirects with a TLS 1.2 floor (`install.bash`, and `install-dev.bash`'s rustup fetch); `install.ps1` floors TLS 1.2/1.3 for every download.
-		- ✅ Done: the signature half, ahead of 1.0.0. The sums file is signed offline with an RSA-4096 key; both installers carry the public half inlined and verify it before reading any checksum out of the file. `openssl` joined curl/wget as a hard prerequisite - there is no install-anyway fallback. `cicd/utility/sign-release.bash` does the signing and refuses if the key does not match the one the shipped installers trust.
-		- Key custody is offline and signing is manual, deliberately: a key in CI would be reachable by the same compromise the signature defends against. RSA rather than Ed25519 purely so the verifier is one both `openssl` and Windows PowerShell 5.1 already have. Rationale and threat model in `design.md`.
-		- Still not covered: the source tarball that supplies the drop-in files. It is fetched by tag, so it is as trustworthy as the tag, but it carries no signature of its own. Worth a look post-1.0.
-
 ### Done
 
 #### Done - Misc to-do
+
+- ✅ Set up pub/priv key for download signing.
 
 - ✅ Set up account on crate.io and get publish API key.
 
@@ -221,6 +209,24 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 #### Done - Code reviews
 
+- **20260727**:
+
+	- **Ehnhancements**:
+
+		- ✅ Code Review 20260725 item 37: harden the installers' transport and integrity story.
+			- `curl` and `wget` follow redirects with no protocol pin or TLS floor.
+			- The sums file arrives over the same channel as the binary, so it catches corruption but not substitution. The source tarball, which supplies the drop-in files consumers compile in, is not verified at all.
+			- ✅ Done: the transport half. curl and wget pin https through redirects with a TLS 1.2 floor (`install.bash`, and `install-dev.bash`'s rustup fetch); `install.ps1` floors TLS 1.2/1.3 for every download.
+			- ✅ Done: the signature half, ahead of 1.0.0. The sums file is signed offline with an RSA-4096 key; both installers carry the public half inlined and verify it before reading any checksum out of the file. `openssl` joined curl/wget as a hard prerequisite - there is no install-anyway fallback. `cicd/utility/sign-release.bash` does the signing and refuses if the key does not match the one the shipped installers trust.
+			- Key custody is offline and signing is manual, deliberately: a key in CI would be reachable by the same compromise the signature defends against. RSA rather than Ed25519 purely so the verifier is one both `openssl` and Windows PowerShell 5.1 already have. Rationale and threat model in `design.md`.
+			- Still not covered: the source tarball that supplies the drop-in files. It is fetched by tag, so it is as trustworthy as the tag, but it carries no signature of its own. Worth a look post-1.0.
+
+		- ✅ Code Review 20260727 item 1: the Windows user install goes somewhere Windows does not expect.
+			- `install.ps1` puts a `user` target in `%USERPROFILE%\bin\Shcl`. The convention for a per-user program is `%LOCALAPPDATA%\Programs\`, which is where winget and most installers put one.
+			- Low stakes while the only release is a pre-release, and cheap to change now. Later it means a migration step for anyone who already installed.
+			- The system target (`C:\Program Files\Shcl`) is already conventional.
+			- Done before the 1.0.0 cut, which was the last moment it stayed free: `user` now lands in `%LOCALAPPDATA%\Programs\Shcl` and that dir goes on the user PATH directly. The old shape needed a second copy of the exe in a parent `bin` dir for PATH to find it; that whole branch is gone.
+
 - **20260726**:
 
 	- **Bugs**:
@@ -273,8 +279,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- `server:` (or `server: web1` with an empty body) in an over layer wipes every child the lower layers put there, silently, exit 0.
 			- Worse than it reads: the wipe covers every same-named instance, so mentioning `server: web1` also deletes an untouched `server: web2`.
 			- A body that is only a comment counts as empty, because comments are trivia rather than children.
-			- Needs a decision, not just a fix: the code matches the spec's own wording, and the obvious narrowing removes the ability to blank a section from a higher layer.
-			- Decided and fixed: the leaf-override path now applies only when the base side of the name group is also all-childless, so a bare section header merges (matching instance untouched, unmatched appended as an empty instance) and leaf clearing still works. No way to blank a section from a higher layer; a deletion spelling is deferred post-1.0. All four bindings, spec reworded, corpus case 027.
+			- Fixed: the leaf-override path now applies only when the base side of the name group is also all-childless, so a bare section header merges (matching instance untouched, unmatched appended as an empty instance) and leaf clearing still works. No way to blank a section from a higher layer; a deletion spelling is deferred post-1.0. All four bindings, spec reworded, corpus case 027.
 
 		- ✅ Code Review 20260725 item 2: deep documents crash three of the four bindings, each at a different depth.
 			- Fixed with a load-time nesting cap: 512 levels, enforced in all four parsers before any node is created (`E016`, line skipped) and mirrored by the Writer's `place`. Every measured cliff sat far above the cap, so the existing recursion is now safe everywhere; the reference keeps its recursive walks on purpose (structural parity beats a one-binding rewrite). Spec gained the cap and the load-code table; corpus case 028 pins the error, a reference test pins the 512 boundary and the writer refusal.
