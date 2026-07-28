@@ -7,14 +7,17 @@ title = "shcl"
 prog  = "shcl"
 seed  = 7
 font  = ["Monaspace Argon SemiBold"]
+blankafter = false              # output shape is the point here - no padding line
+                                # between it and the next prompt to misread
 
 [[step]]
-note  = "A messy config: repeated fields, a typo, embedded raw text"
+note  = [
+	"Two ways in: this CLI, or the drop-in library called straight from your program",
+	"A messy config: repeated fields, a typo, embedded raw text",
+]
 show  = "cat app.shcl"
 run   = "cat cicd/demo/app.shcl"
-pause = 5.0
-scrollrate = 70
-linems = 200
+pause = 7.0                     # a screenful lands at once, so this is the read time
 
 [[step]]
 note  = "Read one value, typed - one obvious call"
@@ -54,12 +57,14 @@ pause = 2.8
 note  = "One bad line never kills the file - it is diagnosed and skipped"
 show  = "{prog} check app.shcl"
 run   = "{bin} check cicd/demo/app.shcl"
+expect_exit = 6                 # the demo file carries a deliberate bad line
 pause = 3.2
 
 [[step]]
-note  = "Canonical formatting: merged, aligned, minimally quoted"
+note  = [
+	"Canonical formatting: merged, aligned, minimally quoted",
+	"Shape only - values are never rewritten, so \"$1,200\" stays as written",
+]
 show  = "{prog} fmt app.shcl"
 run   = "{bin} fmt cicd/demo/app.shcl"
-pause = 5.0
-scrollrate = 70
-linems = 200
+pause = 7.0

@@ -897,7 +897,7 @@ fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
 	code
 }
 
-/// Rust's runtime sets SIGPIPE to SIG_IGN, so a closed stdout surfaces as an
+/// Rust's runtime sets SIGPIPE to SIG_IGN, so a closed stdout comes back as an
 /// EPIPE write error and the next println! panics (exit 134). Restore SIG_DFL so
 /// a broken pipe kills us by signal - the conventional 141 - like head/cat, and
 /// matching the other bindings. Self-contained extern to stay zero-dep.
