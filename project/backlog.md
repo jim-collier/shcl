@@ -71,10 +71,11 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 	- **Improvements**:
 
-		- 🔘 Code Review 20260727 item 1: the Windows user install goes somewhere Windows does not expect.
+		- ✅ Code Review 20260727 item 1: the Windows user install goes somewhere Windows does not expect.
 			- `install.ps1` puts a `user` target in `%USERPROFILE%\bin\Shcl`. The convention for a per-user program is `%LOCALAPPDATA%\Programs\`, which is where winget and most installers put one.
 			- Low stakes while the only release is a pre-release, and cheap to change now. Later it means a migration step for anyone who already installed.
 			- The system target (`C:\Program Files\Shcl`) is already conventional.
+			- Done before the 1.0.0 cut, which was the last moment it stayed free: `user` now lands in `%LOCALAPPDATA%\Programs\Shcl` and that dir goes on the user PATH directly. The old shape needed a second copy of the exe in a parent `bin` dir for PATH to find it; that whole branch is gone.
 
 		- 🔘 Code Review 20260727 item 2: the reference clones a node name several times per index remap.
 			- `remap_child` runs on every in-place value mutation - an empty field being filled, a stacked-list element being appended - and clones the name up to five times, because it looks a key up and then removes it separately.
@@ -97,11 +98,13 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 		- ✅ Done: the doc half. `E001`-`E016` plus `H001` are now tabled in the spec's Diagnostics section.
 		- ✋ Deferred: threading the code through every call site. Large, mechanical, and invisible to users, and every corpus case pins the code per line - so the exposure is limited to messages no case exercises.
 
-	- 🛠️ Code Review 20260725 item 37: harden the installers' transport and integrity story.
+	- ✅ Code Review 20260725 item 37: harden the installers' transport and integrity story.
 		- `curl` and `wget` follow redirects with no protocol pin or TLS floor.
 		- The sums file arrives over the same channel as the binary, so it catches corruption but not substitution. The source tarball, which supplies the drop-in files consumers compile in, is not verified at all.
 		- ✅ Done: the transport half. curl and wget pin https through redirects with a TLS 1.2 floor (`install.bash`, and `install-dev.bash`'s rustup fetch); `install.ps1` floors TLS 1.2/1.3 for every download.
-		- 🔘 Open: a detached signature over the sums file, with the key inlined in the installer, is what would make it a real trust root. Needs a signing-key decision first.
+		- ✅ Done: the signature half, ahead of 1.0.0. The sums file is signed offline with an RSA-4096 key; both installers carry the public half inlined and verify it before reading any checksum out of the file. `openssl` joined curl/wget as a hard prerequisite - there is no install-anyway fallback. `cicd/utility/sign-release.bash` does the signing and refuses if the key does not match the one the shipped installers trust.
+		- Key custody is offline and signing is manual, deliberately: a key in CI would be reachable by the same compromise the signature defends against. RSA rather than Ed25519 purely so the verifier is one both `openssl` and Windows PowerShell 5.1 already have. Rationale and threat model in `design.md`.
+		- Still not covered: the source tarball that supplies the drop-in files. It is fetched by tag, so it is as trustworthy as the tag, but it carries no signature of its own. Worth a look post-1.0.
 
 ### Done
 
@@ -120,7 +123,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 - ✅ Release-install script, `install.bash` and cross-platform `install.ps1`. In [repo] root, usage instructions in README.md.
 	- Done: both at repo root, README Installing has the one-liners. Latest release via the GitHub API (`--release dev` = newest incl. pre-releases, default; `stable` = newest full release), binary picked by OS/arch, sha256-verified, `code/` (drop-in files) and `scripts/` (wrappers) pulled from the tag's source tarball. Idempotent (atomic binary swap); states the plan and confirms first.
-	- Decisions along the way: `objects/` skipped - nothing statically-linkable is published yet (revisit with packaging). Linux user install lands in `~/.local/share/shcl` with the `~/.local/bin/shcl` symlink (one path can't be both the dir and the symlink). Windows user install copies the exe beside the dir instead of symlinking (symlinks need elevation) and adds to the user PATH. macOS/BSD get a clear "no prebuilt binaries yet" pointer at build-from-source.
+	- Decisions along the way: `objects/` skipped - nothing statically-linkable is published yet (revisit with packaging). Linux user install lands in `~/.local/share/shcl` with the `~/.local/bin/shcl` symlink (one path can't be both the dir and the symlink). Windows user install adds its own dir to the user PATH instead of symlinking (symlinks need elevation); it landed in `%USERPROFILE%\bin\Shcl` at first and moved to `%LOCALAPPDATA%\Programs\Shcl` before 1.0.0. macOS/BSD get a clear "no prebuilt binaries yet" pointer at build-from-source.
 	- Behavior:
 		- Runnable via a single `curl` or `wget`. Downloads, installs, and runs the latest release, with an option to abort.
 		- Idempotent. Updates existing.

@@ -6,9 +6,9 @@
 
 # Trademark Policy
 
-**Short version:** the code is free; the name is not. You may fork and redistribute the software under its license, but you may not use our name or logo to identify your version, without written permission.
+**Short version:** the code is free, the specification is free, and implementing it needs no permission from anyone. What the name protects is a promise - that a file described as SHCL behaves the same way everywhere. Call your implementation SHCL if it passes the conformance corpus. If it does not, or if you have changed the language itself, please use your own name for it.
 
-That said, asking is free - and we'd prefer to say yes. Forks that credibly carry the project forward with compatible goals are what we'd like to see. This trademark exists not to hoard credit, but so that users can tell what came from us - to protect the umbrella and specific branding that has taken a long time to establish. This only works if we're serious and consistent about protecting it.
+We would rather say yes than no. New implementations in new languages are the best thing that can happen to a config format, and nothing here is meant to slow one down. The narrow thing this policy protects is the guarantee that makes SHCL worth adopting at all: that the same file, read by any implementation carrying the name, produces the same result. A format that means slightly different things in different languages is worse than no format, and once that trust is gone it cannot be recovered by fixing code.
 
 ## 1. Marks covered
 
@@ -16,16 +16,29 @@ That said, asking is free - and we'd prefer to say yes. Forks that credibly carr
 
 ## 2. Relationship to the software license
 
-SHCL is distributed under MIT. That license grants rights in **copyright** only. It does not grant, and must not be read as granting, any
-license or right to use the Marks. Trademark rights are expressly reserved.
+SHCL is distributed under MIT. That license grants rights in **copyright** only. It does not grant, and must not be read as granting, any license or right to use the Marks. Trademark rights are expressly reserved.
 
-## 3. Uses that are always permitted
+To be explicit about what this policy does *not* do: it does not restrict who may read, implement, fork, extend, or embed the specification, in any language, for any purpose, commercial or otherwise. Those rights come from the license, and this policy takes none of them away. It governs the name only.
+
+## 3. What conformance means
+
+A **Conformant Implementation** is one that passes the published conformance corpus for the version of SHCL it claims to implement, without modification to the corpus.
+
+The corpus lives at `project/conformance/` in this repository. It is the same corpus every shipped binding is held to, on every build - there is no separate or stricter bar for outside implementations. Conformance is therefore something you can check for yourself, before you ship and without asking us.
+
+Where a claim is honestly narrower than full conformance, say so plainly and it is fine: "a read-only SHCL parser", "a SHCL parser, schema validation not yet implemented", "an in-progress SHCL implementation". What is not fine is a bare claim of SHCL support from something that does not pass, since a user has no way to tell the difference until it breaks.
+
+## 4. Uses that are always permitted
 
 No permission from us is needed to:
 
+- Implement the specification, in any language, for any purpose.
+
 - Use the Marks in plain text to refer accurately to this project - in documentation, articles, reviews, talks, comparisons, or academic work.
 
-- State factually that your product works with, is built on, is compatible with, or is derived from SHCL (e.g. "Foo, a SHCL fork", "powered by SHCL"), provided the statement is true and your own name is the prominent one.
+- Describe a Conformant Implementation as an implementation of SHCL, as SHCL-compatible, or as supporting SHCL.
+
+- State factually that your product reads, writes, works with, is built on, or is derived from SHCL (e.g. "Foo, a SHCL fork", "powered by SHCL"), provided the statement is true and your own name is the prominent one.
 
 - Redistribute unmodified official builds under the project name.
 
@@ -33,7 +46,21 @@ No permission from us is needed to:
 
 - Use the Marks in the name of a user group, meetup, or community forum, so long as it is clearly non-commercial and clearly not operated by us.
 
-## 4. Uses that require written permission
+## 5. Implementations, variants, and extensions
+
+The line this policy draws is between implementing the language and changing it.
+
+- **An implementation that passes the corpus** may carry the name, as described in Section 4. You need not ask, and you need not be affiliated with us.
+
+- **An implementation that does not pass** must not be described as SHCL, SHCL-compatible, or SHCL-supporting without qualifying the claim truthfully (Section 3). This is the case the policy exists for.
+
+- **A variant language** - one that adds syntax, removes syntax, or changes how any construct is read - is a different language, however small the change. Give it your own name. You are welcome, and encouraged, to say plainly that it is derived from or inspired by SHCL.
+
+- **A superset** that reads every valid SHCL file identically and adds constructs of its own is still a variant for naming purposes, because a file written for it will not load elsewhere. Name it yourself; describing it as "a superset of SHCL" is accurate and permitted.
+
+Do not use the Marks in a way that could lead users to attribute your changes to us.
+
+## 6. Uses that require written permission
 
 - Naming your product, service, company, or app the same as, or confusingly similar to, the Marks - including as a prefix, suffix, or misspelling (e.g. "SHCL Pro", "SHCL Cloud", "SHCLify").
 
@@ -45,13 +72,11 @@ No permission from us is needed to:
 
 - Any use that suggests sponsorship, endorsement, affiliation, or official status.
 
-## 5. Modified versions
+- Describing anything as certified, official, or endorsed by us. Passing the corpus earns the name; it does not make an implementation official.
 
-If you distribute a modified version, you must remove or replace the Marks in the name, logo, and user-facing branding. You may - and we encourage you to - state plainly that your version is derived from SHCL. Do not use the Marks in a way that could lead users to attribute your changes to us.
+## 7. Usage requirements
 
-## 6. Usage requirements
-
-When using the Marks under Section 3:
+When using the Marks under Section 4:
 
 - Spell and capitalize them as shown here; do not translate, abbreviate, pluralize, or use them as verbs.
 
@@ -59,9 +84,13 @@ When using the Marks under Section 3:
 
 - Include an attribution such as: "SHCL is a trademark of Jim Collier."
 
-## 7. Enforcement and changes
+- When claiming conformance, name the version of SHCL you conform to. "Conformant" ages; "conformant to SHCL 1.0" does not.
 
-**We may revoke permission for any use that damages the Marks or misleads users**. We may revise this policy at any time; the current version lives at <https://github.com/jim-collier/shcl/>. Requests for permission, and reports of misuse, go to silktermⒶubx9.com.
+## 8. Enforcement and changes
+
+**We may revoke permission for any use that damages the Marks or misleads users**. In practice, a good-faith implementation that turns out to fail a corpus case is a bug report, not a dispute - tell us, or fix it, and nothing further is needed. Enforcement is aimed at claims that stay wrong.
+
+We may revise this policy at any time; the current version lives at <https://github.com/jim-collier/shcl/>. Requests for permission, and reports of misuse, go to silktermⒶubx9.com.
 
 ---
 

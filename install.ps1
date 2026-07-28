@@ -2,8 +2,9 @@
 ## install.ps1
 ##
 ##	Release installer for shcl (Simple Hierarchical Config Language) on Windows.
-##	Downloads the latest release from GitHub, verifies the checksum, and lays
-##	out the binary plus the drop-in source files and wrappers. Idempotent:
+##	Downloads the latest release from GitHub, checks the sha256sums file against
+##	the release signing key before trusting a checksum out of it, and lays out
+##	the binary plus the drop-in source files and wrappers. Idempotent:
 ##	re-running updates an existing install in place.
 ##
 ##	Usage (one-liner, defaults):
@@ -16,9 +17,8 @@
 ##		                        (default); stable = newest full release.
 ##		-Target <user|system>   system (default): C:\Program Files\Shcl, added
 ##		                        to the machine PATH (needs an elevated shell).
-##		                        user: %USERPROFILE%\bin\Shcl, with shcl.exe
-##		                        copied to %USERPROFILE%\bin and that dir added
-##		                        to the user PATH.
+##		                        user: %LOCALAPPDATA%\Programs\Shcl, added to
+##		                        the user PATH. No elevation.
 ##		-Yes                    skip the confirmation prompt.
 ##
 ##	Layout under the install dir:
@@ -48,6 +48,36 @@ $repo = 'jim-collier/shcl'
 function Fail([string]$msg) {
 	[Console]::Error.WriteLine("install.ps1: $msg")
 	exit 1
+}
+
+## Release signing key, carried as raw RSA parameters rather than PEM on purpose:
+## ImportFromPem needs PowerShell 7, and 5.1 is still what most Windows boxes
+## run. Modulus + exponent import the same on both. The sha256sums file is signed
+## offline with the matching private key, so replacing a release asset is not
+## enough - an attacker would have to forge this signature too. Baked in rather
+## than fetched, because a key downloaded over the same channel as the artifact
+## proves nothing. Rotating it means publishing a new installer.
+$signingModulus = 'k5W58wTiFTlHUCsIuHESqexain6AC8WwFmCDsjfliOIDa2vPhkSVOqMsSbYH/OL94pHZ+Bs0agNXrl99ANolzwQ4rvu6gAsc4GCb0Krbbq2B+jKqTM8xeN7tFLWKd5E08IOF2HA4ugQSlK+rC6ezbBqP1MuJFFxqxDhEtGef9v/nuhX2kWq3v0uN6Y0umbghuNAR7gmoSOwbb8uYfVOAH1OAWV2To2wyIe6WWt4BPmFJBpEI53k4rmoDVdjmJFoj2vETHmEh2QfTPA5541jPLeuO8p8V6+Aa8i32EtVeT1+ozwHidku/CZZOAdxYZ7yXAZdG3eOOxcHVfmXVwqRxPR+lA3E/KcRcN9oeeveXS35jwH0h3hSh6sJOr1q0qMtM7bB4Lxt47wXHTJ0VPneG5xbmO5pUS3LMcZwnXXavYjh2kYS52ZLhi1JbPFgPyYUiIv76IUbwtpEXbONi12g7fioZ6cStZAekJs33Wkee6NmSY54AozxTkcNUJTgs81eMa/gRL8l3jud8AWqL5vykqpG1PTN70vSgrHD4wNMp2QX29Iv+A6+FO4B1oxjrnokg212rwqX004Ep0csu/JjOl9XHvwp0Iucfi8zCg7ozDcU3dsDnUJ8A3PtJ47jEt1n37/oiM6pWDXVVBjz4DI9iACmdUphTcGhYvn91ORZVxt0='
+$signingExponent = 'AQAB'
+
+## Detached PKCS#1 v1.5 / SHA-256 signature over a file. Any failure - malformed
+## key, unreadable signature, bad maths - comes back false, never an exception
+## that a caller might mistake for a pass.
+function Test-ReleaseSignature([string]$file, [string]$sigFile) {
+	try {
+		$rsa = [System.Security.Cryptography.RSA]::Create()
+		$p = New-Object System.Security.Cryptography.RSAParameters
+		$p.Modulus  = [Convert]::FromBase64String($signingModulus)
+		$p.Exponent = [Convert]::FromBase64String($signingExponent)
+		$rsa.ImportParameters($p)
+		return $rsa.VerifyData(
+			[System.IO.File]::ReadAllBytes($file),
+			[System.IO.File]::ReadAllBytes($sigFile),
+			[System.Security.Cryptography.HashAlgorithmName]::SHA256,
+			[System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+	} catch {
+		return $false
+	}
 }
 
 ## Windows only; elsewhere install.bash (Linux) or build from source.
@@ -89,9 +119,11 @@ if ($Target -eq 'system') {
 	$pathScope = 'Machine'
 	$pathDir = $dest
 } else {
-	$dest = Join-Path $env:USERPROFILE 'bin\Shcl'
+	## Per-user apps belong under LOCALAPPDATA\Programs - it is where Windows
+	## itself puts them, and it is already excluded from roaming profiles.
+	$dest = Join-Path $env:LOCALAPPDATA 'Programs\Shcl'
 	$pathScope = 'User'
-	$pathDir = Join-Path $env:USERPROFILE 'bin'
+	$pathDir = $dest
 }
 
 ## State the plan, then confirm.
@@ -114,6 +146,14 @@ try {
 	Write-Output "downloading $asset..."
 	Invoke-WebRequest -Uri "$base/$asset" -OutFile (Join-Path $tmp 'shcl.exe')
 	Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt" -OutFile (Join-Path $tmp 'sums.txt')
+	Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt.sig" -OutFile (Join-Path $tmp 'sums.txt.sig')
+
+	## Check the signature before trusting anything the sums file says. Order is
+	## the whole point: a checksum read out of an unverified file proves nothing.
+	if (-not (Test-ReleaseSignature (Join-Path $tmp 'sums.txt') (Join-Path $tmp 'sums.txt.sig'))) {
+		Fail 'signature check failed on sha256sums - refusing to install'
+	}
+
 	$want = (Get-Content (Join-Path $tmp 'sums.txt') | Where-Object { $_ -match [regex]::Escape($asset) } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
 	$got = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp 'shcl.exe')).Hash.ToLower()
 	if (-not $want -or $got -ne $want.ToLower()) { Fail "sha256 mismatch on $asset" }
@@ -133,12 +173,6 @@ try {
 	$s = $srcroot.FullName
 	Copy-Item "$s\source\rust\src\lib.rs", "$s\source\go\shcl.go", "$s\source\python\shcl.py", "$s\source\c\shcl.h", "$s\source\c\shcl.hpp" (Join-Path $dest 'code')
 	Copy-Item "$s\source\powershell\shcl.ps1", "$s\source\bash\shcl.bash" (Join-Path $dest 'scripts')
-	## A user install also drops the exe in %USERPROFILE%\bin so PATH finds it
-	## directly (a real symlink needs elevation or developer mode).
-	if ($Target -eq 'user') {
-		Copy-Item (Join-Path $dest 'shcl.exe') (Join-Path $pathDir '.shcl.exe.new')
-		Move-Item -Force (Join-Path $pathDir '.shcl.exe.new') (Join-Path $pathDir 'shcl.exe')
-	}
 
 	## PATH, idempotently - straight at the registry. [Environment]::Get expands
 	## %VAR% references before returning and Set writes the result back REG_SZ,
