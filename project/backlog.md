@@ -122,6 +122,11 @@ In each section, items are listed approximately from newest to oldest.
 	- Done: the transport half. curl and wget pin https through redirects with a TLS 1.2 floor (`install.bash`, and `install-dev.bash`'s rustup fetch); `install.ps1` floors TLS 1.2/1.3 for every download.
 	- Open: a detached signature over the sums file, with the key inlined in the installer, is what would make it a real trust root. Needs a signing-key decision first.
 
+- 🔘 Hosted CI runs its four pinned actions on a deprecated Node.
+	- All four are pinned by commit SHA and target Node 20, which the runners now force onto Node 24 with a warning on every run.
+	- Working today, and the warning is the only symptom. It stops working whenever the runners drop the shim.
+	- Fix is to re-pin each action to a release built for the current Node, keeping the pin-by-SHA-with-tag-in-a-comment shape.
+
 - 🔘 Code Review 20260727 item 1: the Windows user install goes somewhere Windows does not expect.
 	- `install.ps1` puts a `user` target in `%USERPROFILE%\bin\Shcl`. The convention for a per-user program is `%LOCALAPPDATA%\Programs\`, which is where winget and most installers put one.
 	- Low stakes while the only release is a pre-release, and cheap to change now. Later it means a migration step for anyone who already installed.
