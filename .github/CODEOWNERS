@@ -4,3 +4,4 @@
 # Donation page: owner-only for now (money-adjacent, must not be changed loosely).
 /DONATE.md @jim-collier
 /.github/CODEOWNERS  @jim-collier
+/.github/FUNDING.yml  @jim-collier
