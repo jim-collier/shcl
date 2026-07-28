@@ -14,7 +14,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Support](https://img.shields.io/badge/Support-Maintained-brightgreen)
 [![CI](https://github.com/jim-collier/shcl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jim-collier/shcl/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/jim-collier/shcl?include_prereleases&sort=semver)](https://github.com/jim-collier/shcl/releases)
+[![Latest release](https://img.shields.io/github/v/release/jim-collier/shcl?sort=semver)](https://github.com/jim-collier/shcl/releases)
+[![crates.io](https://img.shields.io/crates/v/shcl?logo=rust&label=crates.io)](https://crates.io/crates/shcl)
+[![PyPI](https://img.shields.io/pypi/v/shcl?logo=python&logoColor=white&label=PyPI)](https://pypi.org/project/shcl/)
+[![Go module](https://pkg.go.dev/badge/github.com/jim-collier/shcl/source/go.svg)](https://pkg.go.dev/github.com/jim-collier/shcl/source/go)
 
 <!-- TOC ignore:true -->
 # SHCL
@@ -333,6 +336,8 @@ cicd/cicd.bash --ci
 - [`project/design.md`](project/design.md): the why behind the decisions.
 - [`contributing.md`](contributing.md): how to help.
 - [`style-guide.md`](style-guide.md): coding and prose style. Notably: the bindings deliberately mirror the reference's structure over per-language idiom, so they stay byte-for-byte in sync.
+
+Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, [pkg.go.dev](https://pkg.go.dev/github.com/jim-collier/shcl/source/go) for Go.
 
 ## Contributing and support
 
