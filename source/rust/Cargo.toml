@@ -1,10 +1,13 @@
 [package]
 name = "shcl"
-version = "1.0.0-rc1"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 description = "SHCL - Simple Hierarchical Config Language. Reference parser, accessor, writer, and CLI."
 repository = "https://github.com/jim-collier/shcl"
+readme = "README.md"
+keywords = ["config", "configuration", "parser", "shcl"]
+categories = ["config", "parser-implementations"]
 
 [lib]
 name = "shcl"

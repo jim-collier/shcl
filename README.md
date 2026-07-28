@@ -10,7 +10,7 @@
 [![made-with-python](https://img.shields.io/badge/Made%20with-Python-1f425f.svg)](https://www.python.org/)
 ![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
 [![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
-![Lifecycle: RC](https://img.shields.io/badge/Lifecycle-RC-blue)
+![Lifecycle: Stable](https://img.shields.io/badge/Lifecycle-Stable-brightgreen)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Support](https://img.shields.io/badge/Support-Maintained-brightgreen)
 [![CI](https://github.com/jim-collier/shcl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jim-collier/shcl/actions/workflows/ci.yml)
@@ -53,6 +53,7 @@
 	- [Packages and installers](#packages-and-installers)
 	- [Install scripts](#install-scripts)
 	- [DIY](#diy)
+- [Using SHCL from your project](#using-shcl-from-your-project)
 - [Set up a development environment](#set-up-a-development-environment)
 - [Docs](#docs)
 - [Contributing and support](#contributing-and-support)
@@ -202,7 +203,7 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 ## Status
 
-Release candidate, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
+Stable, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
 
 - **Language spec and formal grammar** - done. [`project/spec.md`](project/spec.md), [`project/grammar.abnf`](project/grammar.abnf).
 - **Conformance corpus** - the golden cases every binding must pass. Green and growing.
@@ -212,24 +213,24 @@ Release candidate, and spec-first on purpose. Several parsers that "mostly agree
 - **Read and write** - done. Every binding reads and writes, comments survive a format round-trip, and `check` reports stable diagnostic codes.
 - **Schema validation, layered loading, and schema-driven generation** - done in every binding: `check --schema`, `--layer`/`--set` on the loading subcommands, and `shcl init --schema` for a commented starter config.
 - **Installer packages** - done: `.deb`, `.rpm`, and a Windows setup are built alongside the binaries.
-- **Latest pre-release** - `v1.0.0-rc1`, with packages, prebuilt binaries, and checksums on the releases page.
+- **Latest release** - `v1.0.0`, with packages, prebuilt binaries, and checksums on the releases page.
 
 What is not done yet: the remaining Tier 3 bindings (C#, Java, JavaScript). Star or watch the repo to follow along.
 
 ## Installation
 
-The latest pre-release, `v1.0.0-rc1`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
+The latest release, `v1.0.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
 
 ### Packages and installers
 
 The simplest route, if your system has a package manager. Download the `.deb`, `.rpm`, or Windows setup for your architecture (`x86_64` or `arm64`) from the releases page:
 
 ```sh
-sudo dpkg -i shcl-1.0.0-rc1-linux-x86_64.deb     # Debian, Ubuntu
-sudo rpm -i  shcl-1.0.0-rc1-linux-x86_64.rpm     # Fedora, RHEL, openSUSE
+sudo dpkg -i shcl-1.0.0-linux-x86_64.deb     # Debian, Ubuntu
+sudo rpm -i  shcl-1.0.0-linux-x86_64.rpm     # Fedora, RHEL, openSUSE
 ```
 
-On Windows, run `shcl-1.0.0-rc1-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
+On Windows, run `shcl-1.0.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
 
 Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wrappers under `/usr/share/shcl/`.
 
@@ -274,6 +275,30 @@ macOS and the BSDs have no prebuilt binaries yet. Use a drop-in source file, or 
 	```
 
 	Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
+
+## Using SHCL from your project
+
+The above installs the CLI. To depend on SHCL as a *library*, use your language's package manager.
+
+Bindings are versioned in lockstep, so `1.x` means the same behavior and the same conformance corpus in every language. Each ecosystem's usual compatible-version operator is all you need: it picks up minor and patch releases on its own, and never crosses a major version without you editing the line yourself.
+
+| Language | Install | Dependency line
+| :-- | :-- | :--
+| Rust | `cargo add shcl` | `shcl = "1"`
+| Go | `go get github.com/jim-collier/shcl/source/go` | `require github.com/jim-collier/shcl/source/go v1.0.0`
+| Python | `pip install shcl` | `shcl~=1.0`
+| C / C++ | vendor `shcl.h` | pin the release tag
+| Bash / PowerShell | install the CLI, source the wrapper | n/a, they wrap the CLI
+
+A few things worth knowing:
+
+- **Go** keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
+
+- **C and C++** have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
+
+- **The Rust crate** ships the library and the CLI together, so `cargo install shcl` is also a way to get the binary.
+
+- **No package manager at all?** Every binding is one file with no dependencies. Copy it out of `source/` and commit it - see [DIY](#diy) above.
 
 ## Set up a development environment
 
