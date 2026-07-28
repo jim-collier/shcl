@@ -90,6 +90,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/crosscheck.bash
 	cicd/utility/lint-report.bash
 	cicd/utility/package.bash
+	cicd/utility/sign-release.bash
 	cicd/utility/git-auto-msg.bash
 	cicd/utility/include/gfs-rotate.bash
 	source/bash/shcl.bash

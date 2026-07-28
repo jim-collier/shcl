@@ -3,9 +3,12 @@
 ## install.bash
 ##
 ##	Release installer for shcl (Simple Hierarchical Config Language) on Linux.
-##	Downloads the latest release from GitHub, verifies the checksum, and lays
-##	out the binary plus the drop-in source files and shell wrappers. Idempotent:
+##	Downloads the latest release from GitHub, checks the sha256sums file against
+##	the release signing key before trusting a checksum out of it, and lays out
+##	the binary plus the drop-in source files and shell wrappers. Idempotent:
 ##	re-running updates an existing install in place.
+##
+##	Needs curl or wget, plus openssl for the signature check.
 ##
 ##	Usage (one-liner):
 ##		curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
@@ -44,6 +47,26 @@ release="dev"
 target="system"
 assume_yes=0
 
+## Release signing key. The sha256sums file is signed offline with the matching
+## private key, so replacing a release asset is not enough - an attacker would
+## have to forge this signature too. Baked in rather than fetched, because a key
+## downloaded over the same channel as the artifact proves nothing. Rotating it
+## means publishing a new installer; treat that as a breaking change.
+readonly SIGNING_KEY='-----BEGIN PUBLIC KEY-----
+MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAk5W58wTiFTlHUCsIuHES
+qexain6AC8WwFmCDsjfliOIDa2vPhkSVOqMsSbYH/OL94pHZ+Bs0agNXrl99ANol
+zwQ4rvu6gAsc4GCb0Krbbq2B+jKqTM8xeN7tFLWKd5E08IOF2HA4ugQSlK+rC6ez
+bBqP1MuJFFxqxDhEtGef9v/nuhX2kWq3v0uN6Y0umbghuNAR7gmoSOwbb8uYfVOA
+H1OAWV2To2wyIe6WWt4BPmFJBpEI53k4rmoDVdjmJFoj2vETHmEh2QfTPA5541jP
+LeuO8p8V6+Aa8i32EtVeT1+ozwHidku/CZZOAdxYZ7yXAZdG3eOOxcHVfmXVwqRx
+PR+lA3E/KcRcN9oeeveXS35jwH0h3hSh6sJOr1q0qMtM7bB4Lxt47wXHTJ0VPneG
+5xbmO5pUS3LMcZwnXXavYjh2kYS52ZLhi1JbPFgPyYUiIv76IUbwtpEXbONi12g7
+fioZ6cStZAekJs33Wkee6NmSY54AozxTkcNUJTgs81eMa/gRL8l3jud8AWqL5vyk
+qpG1PTN70vSgrHD4wNMp2QX29Iv+A6+FO4B1oxjrnokg212rwqX004Ep0csu/JjO
+l9XHvwp0Iucfi8zCg7ozDcU3dsDnUJ8A3PtJ47jEt1n37/oiM6pWDXVVBjz4DI9i
+ACmdUphTcGhYvn91ORZVxt0CAwEAAQ==
+-----END PUBLIC KEY-----'
+
 die() { printf 'install.bash: %s\n' "$*" >&2; exit 1; }
 
 ## Value options accept --opt=VALUE and --opt VALUE, like the shcl CLI.
@@ -80,6 +103,10 @@ elif command -v wget >/dev/null; then
 else
 	die "need curl or wget"
 fi
+## openssl is a hard requirement, same class as curl/wget: without it the
+## release signature cannot be checked, and installing unverified is not on
+## offer. Verify by hand and use the DIY path if the box genuinely lacks it.
+command -v openssl >/dev/null || die "need openssl to verify the release signature (see README.md for a manual install)"
 
 ## Resolve the tag. GitHub's /releases/latest is exactly "newest non-prerelease";
 ## dev takes the newest of everything.
@@ -126,6 +153,14 @@ base="https://github.com/${REPO}/releases/download/${tag}"
 echo "downloading ${asset}..."
 fetch "${base}/${asset}" "${tmp}/shcl" || die "download failed: ${asset}"
 fetch "${base}/shcl-${version}-sha256sums.txt" "${tmp}/sums" || die "download failed: sha256sums"
+fetch "${base}/shcl-${version}-sha256sums.txt.sig" "${tmp}/sums.sig" || die "download failed: sha256sums signature"
+
+## Check the signature before trusting anything the sums file says. Order is the
+## whole point: a checksum read out of an unverified file proves nothing.
+printf '%s\n' "${SIGNING_KEY}" > "${tmp}/signing.pub"
+openssl dgst -sha256 -verify "${tmp}/signing.pub" -signature "${tmp}/sums.sig" "${tmp}/sums" >/dev/null 2>&1 \
+	|| die "signature check failed on sha256sums - refusing to install"
+
 want="$(grep " ${asset}\$" "${tmp}/sums" | cut -d' ' -f1)"
 got="$(sha256sum "${tmp}/shcl" | cut -d' ' -f1)"
 [[ -n "${want}" && "${got}" == "${want}" ]] || die "sha256 mismatch on ${asset}"
