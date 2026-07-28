@@ -76,7 +76,7 @@ Every mainstream format makes the human do the careful work, and punishes the wh
 
 ## What SHCL does about it
 
-SHCL™ (canonically pronounced "SHiCkLe") flips the burden around. Modern CPU cycles are cheap, even on embedded systems. Brainpower isn't.
+SHCL (canonically pronounced "SHiCkLe") flips the burden around. Modern CPU cycles are cheap, even on embedded systems. Brainpower isn't.
 
 So the parser does the hard work - not the person writing the file, and not the programmer consuming the configuration.
 
@@ -313,4 +313,4 @@ If SHCL helps but you can't contribute code or Issue reports, a star or a mentio
 > Licensed under the [MIT License](https://mit-license.org/)<br />
 	> SPDX-License-Identifier: `MIT`<br />
 > No warranty.<br />
-> SHCL™ is a [trademark](trademark.md) of Jim Collier.
+> SHCL™ is a [trademark](trademark.md) of Jim Collier. The name means it passes the conformance corpus.
