@@ -3,3 +3,8 @@ cicd/artifacts/
 source/go/shcl
 source/c/shcl
 __pycache__/
+
+## Left behind by `python -m build` in source/python at a release cut.
+source/python/build/
+source/python/dist/
+source/python/*.egg-info/

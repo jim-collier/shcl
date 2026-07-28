@@ -67,17 +67,36 @@ openssl pkey -in "${key}" -pubout -out "${pub}" 2>/dev/null || fDie "cannot deri
 openssl dgst -sha256 -verify "${pub}" -signature "${sigfile}" "${sumsfile}" >/dev/null 2>&1 \
 	|| fDie "wrote a signature that does not verify"
 
-## The check that actually catches mistakes: is this the key the installers
-## trust? Signing with the wrong key produces a perfectly valid signature that
-## fails for every user, and nothing else here would notice.
-inst="${root}/install.bash"
-if [[ -r "${inst}" ]]; then
-	instpub="$(mktemp)"; trap 'rm -f "${pub}" "${instpub}"' EXIT
-	sed -n '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p' "${inst}" > "${instpub}"
-	fFp(){ openssl pkey -pubin -in "$1" -outform DER -pubout 2>/dev/null | sha256sum | cut -d' ' -f1; }
-	if [[ "$(fFp "${pub}")" != "$(fFp "${instpub}")" ]]; then
-		fDie "signed with a key the installers do not trust - install.bash carries a different one"
-	fi
+## The checks that actually catch mistakes: is this the key every shipped copy
+## trusts? Signing with the wrong key produces a perfectly valid signature that
+## then fails for every user, and nothing else here would notice. Three copies
+## have to agree - the published .pub, the PEM inlined in install.bash, and the
+## raw modulus inlined in install.ps1 - so any one of them drifting is caught
+## here rather than by somebody's failed install.
+tmppub="$(mktemp)"; trap 'rm -f "${pub}" "${tmppub}"' EXIT
+fFp(){ openssl pkey -pubin -in "$1" -outform DER -pubout 2>/dev/null | sha256sum | cut -d' ' -f1; }
+want="$(fFp "${pub}")"
+[[ -n "${want}" ]] || fDie "cannot fingerprint the signing key"
+
+## Published key file, the one README tells people to verify against.
+if [[ -r "${root}/shcl-signing.pub" ]]; then
+	[[ "$(fFp "${root}/shcl-signing.pub")" == "${want}" ]] || fDie "shcl-signing.pub is not this key"
+fi
+
+## install.bash carries the PEM inside a single-quoted bash string, so the
+## BEGIN line has a 'readonly SIGNING_KEY=' prefix and the END line a trailing
+## quote. Strip both, or what comes out is not a PEM at all.
+if [[ -r "${root}/install.bash" ]]; then
+	sed -n '/BEGIN PUBLIC KEY/,/END PUBLIC KEY/p' "${root}/install.bash" \
+		| sed "s/^[^-]*'//; s/'[[:space:]]*$//" > "${tmppub}"
+	[[ "$(fFp "${tmppub}")" == "${want}" ]] || fDie "install.bash carries a different key"
+fi
+
+## install.ps1 carries the bare modulus, not a PEM - compare that directly.
+if [[ -r "${root}/install.ps1" ]]; then
+	psmod="$(sed -n "s/^\$signingModulus = '\(.*\)'.*/\1/p" "${root}/install.ps1")"
+	keymod="$(openssl rsa -pubin -in "${pub}" -modulus -noout 2>/dev/null | sed 's/^Modulus=//' | xxd -r -p | base64 -w0)"
+	[[ -n "${psmod}" && "${psmod}" == "${keymod}" ]] || fDie "install.ps1 carries a different key"
 fi
 
 printf 'signed  %s\n' "${sumsfile##*/}"

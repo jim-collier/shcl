@@ -236,7 +236,9 @@ Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wr
 
 ### Install scripts
 
-Downloads the latest release, verifies the checksum, and installs the binary plus the drop-in files and wrappers. Idempotent; it states its plan and asks before touching anything.
+Downloads the latest release, checks its signature, and installs the binary plus the drop-in files and wrappers. Idempotent; it states its plan and asks before touching anything.
+
+Each release ships a `sha256sums.txt` and a detached `.sig` over it. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY](#diy) route on a machine that lacks it.
 
 Linux and WSL:
 
@@ -255,7 +257,7 @@ Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to s
 | Target | Linux | Windows
 | :-- | :-- | :--
 | `system` (default) | `/opt/shcl` plus a `/usr/local/sbin/shcl` symlink | `C:\Program Files\Shcl`, added to `PATH`
-| `user` | `~/.local/share/shcl` plus a `~/.local/bin/shcl` symlink | `%USERPROFILE%\bin\Shcl`, added to your `PATH`
+| `user` | `~/.local/share/shcl` plus a `~/.local/bin/shcl` symlink | `%LOCALAPPDATA%\Programs\Shcl`, added to your `PATH`
 
 A `user` install needs no sudo or elevation.
 
@@ -263,7 +265,13 @@ macOS and the BSDs have no prebuilt binaries yet. Use a drop-in source file, or 
 
 ### DIY
 
-- **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page and put it anywhere on your `PATH`.
+- **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page and put it anywhere on your `PATH`. To check it by hand, download the sums file, its `.sig`, and [`shcl-signing.pub`](shcl-signing.pub) from the repo, then verify the signature before the checksum - a checksum out of an unverified sums file proves nothing:
+
+	```sh
+	openssl dgst -sha256 -verify shcl-signing.pub \
+		-signature shcl-1.0.0-sha256sums.txt.sig shcl-1.0.0-sha256sums.txt
+	sha256sum -c --ignore-missing shcl-1.0.0-sha256sums.txt
+	```
 
 - **Drop-in source** - copy one file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
 
@@ -336,6 +344,6 @@ If SHCL helps but you can't contribute code or Issue reports, a star or a mentio
 
 > Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)<br />
 > Licensed under the [MIT License](https://mit-license.org/)<br />
-	> SPDX-License-Identifier: `MIT`<br />
+> SPDX-License-Identifier: `MIT`<br />
 > No warranty.<br />
 > SHCL™ is a [trademark](trademark.md) of Jim Collier. The name means it passes the conformance corpus.
