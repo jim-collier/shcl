@@ -190,7 +190,8 @@ The responsibility is split rather than duplicate the pipeline:
 
 - The formatter rewrites in place locally but is check-only (fail on diff) in CI.
 
-- Branch flow: `dev` is the integration target (feature branches merge there, `--no-ff`); `main` is release-only. A dev -> main merge is a release cut.
+- Branch flow: `dev` is the integration target (feature branches merge there, `--no-ff`); `main` is release-only. A dev -> main merge is normally a release cut.
+	- The exception is a merge that changes no product code - documentation, the demo asset, the pipeline. Those go to `main` on their own so the front page and the install one-liners (which read from `main`) stay current, and the version stays where it is. Cutting a tag for them would publish a second set of binaries that behave identically to the last one, which tells a reader nothing.
 
 - One canonical version source: `source/rust/Cargo.toml`. The pipeline reads it for artifact names and release tags. (An automatic bump-before-push guard was tried and dropped: dev is the integration branch, and versions there are cut deliberately at release time, not policed per push.)
 	- Release cut checklist: bump the four CLI version sites (Cargo.toml canonical, Go/Python/C mirrors), date the changelog heading, and pass the README status once - lifecycle badge, Status section, and Installing section must match the release being cut (they drifted to "no tagged release" after beta1). Attach everything in `cicd/artifacts/release/` to the GitHub release: raw binaries, the .deb/.rpm and NSIS setup packages, and the sha256sums file that covers them all.
