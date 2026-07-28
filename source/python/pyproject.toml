@@ -1,0 +1,45 @@
+## Packaging metadata for the PyPI distribution. The library is one stdlib-only
+## module, so there is no package tree to discover - py-modules names it outright,
+## which also stops setuptools auto-discovering cmd/ and tests/ as packages.
+##
+## Only the library ships here. The CLI is distributed as a prebuilt binary and
+## in the .deb/.rpm/NSIS packages, so there is no console_scripts entry point and
+## cmd/ stays out of the wheel.
+##
+## NOTE: this version is a fifth site to bump at a release cut, alongside the four
+## CLI ones. Cargo.toml stays canonical.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shcl"
+version = "1.0.0"
+description = "SHCL - Simple Hierarchical Config Language. Parser, accessor, writer, and formatter."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "Jim Collier" }]
+keywords = ["config", "configuration", "parser", "shcl"]
+classifiers = [
+	"Development Status :: 5 - Production/Stable",
+	"Intended Audience :: Developers",
+	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.9",
+	"Programming Language :: Python :: 3.10",
+	"Programming Language :: Python :: 3.11",
+	"Programming Language :: Python :: 3.12",
+	"Programming Language :: Python :: 3.13",
+	"Topic :: Software Development :: Libraries :: Python Modules",
+	"Topic :: Text Processing :: General",
+]
+
+[project.urls]
+Homepage = "https://github.com/jim-collier/shcl"
+Source = "https://github.com/jim-collier/shcl"
+Issues = "https://github.com/jim-collier/shcl/issues"
+Changelog = "https://github.com/jim-collier/shcl/blob/main/changelog.md"
+
+[tool.setuptools]
+py-modules = ["shcl"]

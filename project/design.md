@@ -7,9 +7,32 @@
 
 Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`. The full language definition is in `spec.md` (with `grammar.abnf`); this file stays high-level - the *why*, not the letter of the rules.
 
+<!-- TOC ignore:true -->
+## Table of contents
+<!-- TOC -->
+
+- [Assumptions](#assumptions)
+- [Guiding principles and decisions](#guiding-principles-and-decisions)
+- [Architecture](#architecture)
+	- [Software stack](#software-stack)
+	- [Configuration model](#configuration-model)
+	- [Consumer API](#consumer-api)
+	- [Integration modes](#integration-modes)
+	- [Power layer library-level, grammar untouched](#power-layer-library-level-grammar-untouched)
+	- [Schema validation](#schema-validation)
+	- [Formatter](#formatter)
+	- [Testing](#testing)
+	- [CI/CD](#cicd)
+	- [Reference implementation](#reference-implementation)
+	- [Go binding Tier 2](#go-binding-tier-2)
+	- [C binding Tier 2](#c-binding-tier-2)
+	- [Shell wrappers](#shell-wrappers)
+
+<!-- /TOC -->
+
 ## Assumptions
 
-- The language began by example in `../../notes.txt`. A decision pass rationalized it into a coherent model. Where the two disagree, `spec.md` wins.
+- The language began by example in `../../notes.txt`. Where the two disagree (and they do), `spec.md` wins.
 
 - The language ships as tiered bindings, plus single-file drop-in source and compiled binaries per platform.
 
@@ -23,9 +46,15 @@ Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`
 
 	- POSIX sh and PowerShell are thin wrappers around the CLI, not independent parsers. They inherit conformance for free. The companion typed surfaces (C++, Kotlin, TypeScript) are one core plus a veneer, not separate parsers.
 
-## Direction decisions
+## Guiding principles and decisions
 
-The guiding tension is acknowledging "simplest possible" versus "expressive enough for anything". The resolution is identifying the two audiences and moving all difficulty onto the parser:
+The inescapable core tradeoff (for any config language) is to acknowledge and  optimally balance "simplest possible" versus "expressive enough for anything" - including a simple DDL language. Ultimately it comes down to two factors:
+
+1. Ideologically-driven human opinion on where the balance should be - informed by technical experience, related PTSD gained along the way, childhood trauma - all of it.
+
+1. The observation that processing power is now dirt-cheap even on the smallest embedded systems, validation and "correctness" tools are now incredibly powerful - and the subsequent decision to move as much of the heavy-lifting of the language on to this code, and away from end users and programmers.
+
+Other points
 
 - Optimize for the hand-authoring user and the value-consuming programmer; burden neither. Any ambiguity a modern parser can resolve from context, it must - the user is never made to satisfy the machine.
 
@@ -194,9 +223,19 @@ The responsibility is split rather than duplicate the pipeline:
 	- The exception is a merge that changes no product code - documentation, the demo asset, the pipeline. Those go to `main` on their own so the front page and the install one-liners (which read from `main`) stay current, and the version stays where it is. Cutting a tag for them would publish a second set of binaries that behave identically to the last one, which tells a reader nothing.
 
 - One canonical version source: `source/rust/Cargo.toml`. The pipeline reads it for artifact names and release tags. (An automatic bump-before-push guard was tried and dropped: dev is the integration branch, and versions there are cut deliberately at release time, not policed per push.)
-	- Release cut checklist: bump the four CLI version sites (Cargo.toml canonical, Go/Python/C mirrors), date the changelog heading, and pass the README status once - lifecycle badge, Status section, and Installing section must match the release being cut (they drifted to "no tagged release" after beta1). Attach everything in `cicd/artifacts/release/` to the GitHub release: raw binaries, the .deb/.rpm and NSIS setup packages, and the sha256sums file that covers them all.
+	- Release cut checklist: bump the five version sites (Cargo.toml canonical, the Go/Python/C CLI mirrors, and `source/python/pyproject.toml` for PyPI), date the changelog heading, and pass the README status once - lifecycle badge, Status section, and Installing section must match the release being cut (they drifted to "no tagged release" after beta1). Sign the sums file (`cicd/utility/sign-release.bash --key ...`) and attach everything in `cicd/artifacts/release/` to the GitHub release: raw binaries, the .deb/.rpm and NSIS setup packages, the sha256sums file that covers them all, and its `.sig`.
+	- Two tags per cut, not one: `vX.Y.Z` for the release, and `source/go/vX.Y.Z` for the Go module. Go resolves a module in a subdirectory only through a path-prefixed tag, so skipping the second one silently strands every Go consumer on a pseudo-version. Then publish the registry packages: `cargo publish` from `source/rust/`, and a built sdist/wheel from `source/python/`.
+	- Binding versions move in lockstep with the product version, deliberately. The bindings are byte-for-byte equivalent by design, so a single number across all of them means a consumer reading `1.4` in any language knows exactly what behavior they have. It also lets each ecosystem's ordinary compatible-version operator (`shcl = "1"`, `shcl~=1.0`, Go's major-version import rule) do the tracking, with no scheme of our own to explain or maintain.
 
 - Installer packages ride the release stage, not a separate pipeline: `cicd/utility/package.bash` builds .deb/.rpm (nfpm, one sed-rendered template) per Linux binary and an NSIS setup per Windows binary, into the same versioned artifact family before the checksums are written. Package layout follows distro convention (/usr/bin + /usr/share/shcl) rather than the /opt layout the standalone install.bash uses - packages answer to distro policy, the script answers to the spec. Payload matches install.bash: binary + code/ drop-ins + scripts/ wrappers.
+
+- Release trust root: the sha256sums file is signed offline with an RSA-4096 key, and both installers carry the public half inlined and check it before reading a checksum out of the file. Order matters more than the algorithm - a checksum taken from an unverified sums file proves nothing, so the signature is checked first or not at all. The threat this addresses is release-asset replacement (a leaked token with release scope, a compromised CI job), not full repo compromise: an attacker who can rewrite `install.bash` on `main` can also delete the check. Those are different access paths, and separating them is the point. Decisions behind it:
+	- The key is offline and signing is manual. A key in CI secrets would be reachable by exactly the compromise being defended against, which would make the signature decorative.
+	- The key is inlined, not fetched. A key downloaded over the same channel as the artifact authenticates nothing.
+	- RSA, not the more fashionable Ed25519, purely on verifier availability: `openssl` covers Unix, and .NET's RSA covers Windows PowerShell 5.1, where Ed25519 is absent. Any scheme needing a tool the box does not already have (minisign, cosign, gpg) loses to the bootstrap problem - verifying the verifier.
+	- `openssl` became a hard prerequisite of `install.bash` alongside curl/wget. Installing unverified is not offered as a fallback; the DIY path is there for a box that genuinely lacks it.
+	- Rotation is expensive by construction, since old installers carry the old key. Treat a key change as a breaking change: new installer, and a release note.
+	- The Go binding gets tamper-evidence free from `sum.golang.org`, so this covers the binaries and drop-in payload, which have no equivalent backstop.
 
 - Toolchain pins: `rust-toolchain.toml` (rustc + clippy + cross targets) and warn-only pins for cargo-installed helpers, so a box update cannot silently change results.
 
@@ -232,7 +271,7 @@ The responsibility is split rather than duplicate the pipeline:
 
 - C has no committed zero-dependency formatter, so its quality gate is a warning-clean compile rather than a separate format stage.
 
-### Shell wrapper
+### Shell wrappers
 
 - The shell binding wraps the `shcl` CLI, not a parser, so it inherits conformance for free.
 

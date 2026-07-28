@@ -10,46 +10,13 @@
 [![made-with-python](https://img.shields.io/badge/Made%20with-Python-1f425f.svg)](https://www.python.org/)
 ![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
 [![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
-![Lifecycle: RC](https://img.shields.io/badge/Lifecycle-RC-blue)
+![Lifecycle: Stable](https://img.shields.io/badge/Lifecycle-Stable-brightgreen)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Support](https://img.shields.io/badge/Support-Maintained-brightgreen)
-
 [![CI](https://github.com/jim-collier/shcl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jim-collier/shcl/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/jim-collier/shcl?include_prereleases&sort=semver)](https://github.com/jim-collier/shcl/releases)
 
-</div>
-<!--
-[![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
-[![made-with-python](https://img.shields.io/badge/Made%20with-Python-1f425f.svg)](https://www.python.org/)
-[![made-with-rust](https://img.shields.io/badge/Made%20with-Rust-1f425f.svg)](https://www.rust-lang.org/)
-![Go](https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white)
-![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
-![Made with](https://img.shields.io/badge/Made%20with-Unreal%20Engine-critical?style=plastic)
-[![made-with-javascript](https://img.shields.io/badge/Made%20with-JavaScript-1f425f.svg)](https://www.javascript.com)
-![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)
-![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
-![Lifecycle: Alpha](https://img.shields.io/badge/Lifecycle-Alpha-orange)
-![Lifecycle: Beta](https://img.shields.io/badge/Lifecycle-Beta-yellow)
-![Lifecycle: RC](https://img.shields.io/badge/Lifecycle-RC-blue)
-![Lifecycle: Stable](https://img.shields.io/badge/Lifecycle-Stable-brightgreen)
-![Lifecycle: Deprecated](https://img.shields.io/badge/Lifecycle-Deprecated-red)
-![Status: Deprecated](https://img.shields.io/badge/Status-Deprecated-orange)
-![Status: Archived](https://img.shields.io/badge/Status-Archived-lightgrey)
-![Lifecycle: EOL](https://img.shields.io/badge/Lifecycle-EOL-lightgrey)
-![Coverage](https://img.shields.io/badge/Coverage-25%25-red)
-![Coverage](https://img.shields.io/badge/Coverage-50%25-orange)
-![Coverage](https://img.shields.io/badge/Coverage-75%25-yellow)
-![Coverage](https://img.shields.io/badge/Coverage-90%25-brightgreen)
-![Status: Passing](https://img.shields.io/badge/Status-Passing-brightgreen)
-![Status: Failing](https://img.shields.io/badge/Status-Failing-red)
-<img src="assets/demo.gif" alt="SHCL demo" width="640"/>
--->
-
 <!-- TOC ignore:true -->
-<div align="center">
-
 # SHCL
 
 **S**imple **H**ierarchical **C**onfig **L**anguage
@@ -86,10 +53,11 @@
 	- [Packages and installers](#packages-and-installers)
 	- [Install scripts](#install-scripts)
 	- [DIY](#diy)
+- [Using SHCL from your project](#using-shcl-from-your-project)
 - [Set up a development environment](#set-up-a-development-environment)
 - [Docs](#docs)
 - [Contributing and support](#contributing-and-support)
-- [Copyright and license](#copyright-and-license)
+- [Legal stuff](#legal-stuff)
 
 <!-- /TOC -->
 
@@ -109,7 +77,9 @@ Every mainstream format makes the human do the careful work, and punishes the wh
 
 ## What SHCL does about it
 
-SHCL flips the burden around. Modern CPU cycles are cheap. Brainpower isn't. So the parser does the hard work - not the person writing the file, and not the programmer consuming the configuration.
+SHCL (canonically pronounced "SHiCkLe") flips the burden around. Modern CPU cycles are cheap, even on embedded systems. Brainpower isn't.
+
+So the parser does the hard work - not the person writing the file, and not the programmer consuming the configuration.
 
 SHCL makes a contract:
 
@@ -233,7 +203,7 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 ## Status
 
-Release candidate, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
+Stable, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
 
 - **Language spec and formal grammar** - done. [`project/spec.md`](project/spec.md), [`project/grammar.abnf`](project/grammar.abnf).
 - **Conformance corpus** - the golden cases every binding must pass. Green and growing.
@@ -243,30 +213,32 @@ Release candidate, and spec-first on purpose. Several parsers that "mostly agree
 - **Read and write** - done. Every binding reads and writes, comments survive a format round-trip, and `check` reports stable diagnostic codes.
 - **Schema validation, layered loading, and schema-driven generation** - done in every binding: `check --schema`, `--layer`/`--set` on the loading subcommands, and `shcl init --schema` for a commented starter config.
 - **Installer packages** - done: `.deb`, `.rpm`, and a Windows setup are built alongside the binaries.
-- **Latest pre-release** - `v1.0.0-rc1`, with packages, prebuilt binaries, and checksums on the releases page.
+- **Latest release** - `v1.0.0`, with packages, prebuilt binaries, and checksums on the releases page.
 
 What is not done yet: the remaining Tier 3 bindings (C#, Java, JavaScript). Star or watch the repo to follow along.
 
 ## Installation
 
-The latest pre-release, `v1.0.0-rc1`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
+The latest release, `v1.0.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
 
 ### Packages and installers
 
 The simplest route, if your system has a package manager. Download the `.deb`, `.rpm`, or Windows setup for your architecture (`x86_64` or `arm64`) from the releases page:
 
 ```sh
-sudo dpkg -i shcl-1.0.0-rc1-linux-x86_64.deb     # Debian, Ubuntu
-sudo rpm -i  shcl-1.0.0-rc1-linux-x86_64.rpm     # Fedora, RHEL, openSUSE
+sudo dpkg -i shcl-1.0.0-linux-x86_64.deb     # Debian, Ubuntu
+sudo rpm -i  shcl-1.0.0-linux-x86_64.rpm     # Fedora, RHEL, openSUSE
 ```
 
-On Windows, run `shcl-1.0.0-rc1-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
+On Windows, run `shcl-1.0.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
 
 Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wrappers under `/usr/share/shcl/`.
 
 ### Install scripts
 
-Downloads the latest release, verifies the checksum, and installs the binary plus the drop-in files and wrappers. Idempotent; it states its plan and asks before touching anything.
+Downloads the latest release, checks its signature, and installs the binary plus the drop-in files and wrappers. Idempotent; it states its plan and asks before touching anything.
+
+Each release ships a `sha256sums.txt` and a detached `.sig` over it. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY](#diy) route on a machine that lacks it.
 
 Linux and WSL:
 
@@ -285,7 +257,7 @@ Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to s
 | Target | Linux | Windows
 | :-- | :-- | :--
 | `system` (default) | `/opt/shcl` plus a `/usr/local/sbin/shcl` symlink | `C:\Program Files\Shcl`, added to `PATH`
-| `user` | `~/.local/share/shcl` plus a `~/.local/bin/shcl` symlink | `%USERPROFILE%\bin\Shcl`, added to your `PATH`
+| `user` | `~/.local/share/shcl` plus a `~/.local/bin/shcl` symlink | `%LOCALAPPDATA%\Programs\Shcl`, added to your `PATH`
 
 A `user` install needs no sudo or elevation.
 
@@ -293,7 +265,13 @@ macOS and the BSDs have no prebuilt binaries yet. Use a drop-in source file, or 
 
 ### DIY
 
-- **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page and put it anywhere on your `PATH`.
+- **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page and put it anywhere on your `PATH`. To check it by hand, download the sums file, its `.sig`, and [`shcl-signing.pub`](shcl-signing.pub) from the repo, then verify the signature before the checksum - a checksum out of an unverified sums file proves nothing:
+
+	```sh
+	openssl dgst -sha256 -verify shcl-signing.pub \
+		-signature shcl-1.0.0-sha256sums.txt.sig shcl-1.0.0-sha256sums.txt
+	sha256sum -c --ignore-missing shcl-1.0.0-sha256sums.txt
+	```
 
 - **Drop-in source** - copy one file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
 
@@ -305,6 +283,30 @@ macOS and the BSDs have no prebuilt binaries yet. Use a drop-in source file, or 
 	```
 
 	Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
+
+## Using SHCL from your project
+
+The above installs the CLI. To depend on SHCL as a *library*, use your language's package manager.
+
+Bindings are versioned in lockstep, so `1.x` means the same behavior and the same conformance corpus in every language. Each ecosystem's usual compatible-version operator is all you need: it picks up minor and patch releases on its own, and never crosses a major version without you editing the line yourself.
+
+| Language | Install | Dependency line
+| :-- | :-- | :--
+| Rust | `cargo add shcl` | `shcl = "1"`
+| Go | `go get github.com/jim-collier/shcl/source/go` | `require github.com/jim-collier/shcl/source/go v1.0.0`
+| Python | `pip install shcl` | `shcl~=1.0`
+| C / C++ | vendor `shcl.h` | pin the release tag
+| Bash / PowerShell | install the CLI, source the wrapper | n/a, they wrap the CLI
+
+A few things worth knowing:
+
+- **Go** keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
+
+- **C and C++** have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
+
+- **The Rust crate** ships the library and the CLI together, so `cargo install shcl` is also a way to get the binary.
+
+- **No package manager at all?** Every binding is one file with no dependencies. Copy it out of `source/` and commit it - see [DIY](#diy) above.
 
 ## Set up a development environment
 
@@ -334,18 +336,14 @@ cicd/cicd.bash --ci
 
 ## Contributing and support
 
-Early days, and help is welcome. Bug reports, spec edge cases, and new-language bindings all move the needle. See [`contributing.md`](contributing.md) to get started.
+This product has to be 100% bulletproof. Help is welcome. Bug reports, spec edge cases, and new-language bindings are all invaluable. See [`contributing.md`](contributing.md) to get started.
 
-If SHCL saves you a headache and you can't contribute code, a star or a mention still helps other people find it.
+If SHCL helps but you can't contribute code or Issue reports, a star or a mention still helps other people find it.
 
-## Copyright and license
+## Legal stuff
 
-> Copyright © 2026 Jim Collier<br />
-> Licensed under the [MIT License](https://mit-license.org/). No warranty.
-<!--
-> Licensed under the [MIT License](https://mit-license.org/). No warranty.
-> Licensed under the [GNU General Public License v2.0](https://www.gnu.org/licenses/gpl-2.0.html). No warranty.
-> Licensed under the [GNU General Public License v2.0 or later](https://spdx.org/licenses/GPL-2.0-or-later.html). No warranty.
-> Licensed under the [GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html) license. No warranty.
-> Licensed under the [Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/). No warranty.
--->
+> Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)<br />
+> Licensed under the [MIT License](https://mit-license.org/)<br />
+> SPDX-License-Identifier: `MIT`<br />
+> No warranty.<br />
+> SHCL™ is a [trademark](trademark.md) of Jim Collier. The name means it passes the conformance corpus.

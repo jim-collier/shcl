@@ -19,7 +19,7 @@ import (
 )
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
-const version = "1.0.0-rc1"
+const version = "1.0.0"
 
 const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 
