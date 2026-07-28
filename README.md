@@ -13,43 +13,10 @@
 ![Lifecycle: RC](https://img.shields.io/badge/Lifecycle-RC-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Support](https://img.shields.io/badge/Support-Maintained-brightgreen)
-
 [![CI](https://github.com/jim-collier/shcl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jim-collier/shcl/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/jim-collier/shcl?include_prereleases&sort=semver)](https://github.com/jim-collier/shcl/releases)
 
-</div>
-<!--
-[![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
-[![made-with-python](https://img.shields.io/badge/Made%20with-Python-1f425f.svg)](https://www.python.org/)
-[![made-with-rust](https://img.shields.io/badge/Made%20with-Rust-1f425f.svg)](https://www.rust-lang.org/)
-![Go](https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white)
-![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
-![Made with](https://img.shields.io/badge/Made%20with-Unreal%20Engine-critical?style=plastic)
-[![made-with-javascript](https://img.shields.io/badge/Made%20with-JavaScript-1f425f.svg)](https://www.javascript.com)
-![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)
-![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
-![Lifecycle: Alpha](https://img.shields.io/badge/Lifecycle-Alpha-orange)
-![Lifecycle: Beta](https://img.shields.io/badge/Lifecycle-Beta-yellow)
-![Lifecycle: RC](https://img.shields.io/badge/Lifecycle-RC-blue)
-![Lifecycle: Stable](https://img.shields.io/badge/Lifecycle-Stable-brightgreen)
-![Lifecycle: Deprecated](https://img.shields.io/badge/Lifecycle-Deprecated-red)
-![Status: Deprecated](https://img.shields.io/badge/Status-Deprecated-orange)
-![Status: Archived](https://img.shields.io/badge/Status-Archived-lightgrey)
-![Lifecycle: EOL](https://img.shields.io/badge/Lifecycle-EOL-lightgrey)
-![Coverage](https://img.shields.io/badge/Coverage-25%25-red)
-![Coverage](https://img.shields.io/badge/Coverage-50%25-orange)
-![Coverage](https://img.shields.io/badge/Coverage-75%25-yellow)
-![Coverage](https://img.shields.io/badge/Coverage-90%25-brightgreen)
-![Status: Passing](https://img.shields.io/badge/Status-Passing-brightgreen)
-![Status: Failing](https://img.shields.io/badge/Status-Failing-red)
-<img src="assets/demo.gif" alt="SHCL demo" width="640"/>
--->
-
 <!-- TOC ignore:true -->
-<div align="center">
-
 # SHCL
 
 **S**imple **H**ierarchical **C**onfig **L**anguage
@@ -89,7 +56,7 @@
 - [Set up a development environment](#set-up-a-development-environment)
 - [Docs](#docs)
 - [Contributing and support](#contributing-and-support)
-- [Copyright and license](#copyright-and-license)
+- [Legal stuff](#legal-stuff)
 
 <!-- /TOC -->
 
@@ -109,7 +76,9 @@ Every mainstream format makes the human do the careful work, and punishes the wh
 
 ## What SHCL does about it
 
-SHCL flips the burden around. Modern CPU cycles are cheap. Brainpower isn't. So the parser does the hard work - not the person writing the file, and not the programmer consuming the configuration.
+SHCL™ (canonically pronounced "SHiCkLe") flips the burden around. Modern CPU cycles are cheap, even on embedded systems. Brainpower isn't.
+
+So the parser does the hard work - not the person writing the file, and not the programmer consuming the configuration.
 
 SHCL makes a contract:
 
@@ -334,18 +303,14 @@ cicd/cicd.bash --ci
 
 ## Contributing and support
 
-Early days, and help is welcome. Bug reports, spec edge cases, and new-language bindings all move the needle. See [`contributing.md`](contributing.md) to get started.
+This product has to be 100% bulletproof. Help is welcome. Bug reports, spec edge cases, and new-language bindings are all invaluable. See [`contributing.md`](contributing.md) to get started.
 
-If SHCL saves you a headache and you can't contribute code, a star or a mention still helps other people find it.
+If SHCL helps but you can't contribute code or Issue reports, a star or a mention still helps other people find it.
 
-## Copyright and license
+## Legal stuff
 
-> Copyright © 2026 Jim Collier<br />
-> Licensed under the [MIT License](https://mit-license.org/). No warranty.
-<!--
-> Licensed under the [MIT License](https://mit-license.org/). No warranty.
-> Licensed under the [GNU General Public License v2.0](https://www.gnu.org/licenses/gpl-2.0.html). No warranty.
-> Licensed under the [GNU General Public License v2.0 or later](https://spdx.org/licenses/GPL-2.0-or-later.html). No warranty.
-> Licensed under the [GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.en.html) license. No warranty.
-> Licensed under the [Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/). No warranty.
--->
+> Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)<br />
+> Licensed under the [MIT License](https://mit-license.org/)<br />
+	> SPDX-License-Identifier: `MIT`<br />
+> No warranty.<br />
+> SHCL™ is a [trademark](trademark.md) of Jim Collier.

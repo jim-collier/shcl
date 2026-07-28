@@ -7,9 +7,32 @@
 
 Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`. The full language definition is in `spec.md` (with `grammar.abnf`); this file stays high-level - the *why*, not the letter of the rules.
 
+<!-- TOC ignore:true -->
+## Table of contents
+<!-- TOC -->
+
+- [Assumptions](#assumptions)
+- [Guiding principles and decisions](#guiding-principles-and-decisions)
+- [Architecture](#architecture)
+	- [Software stack](#software-stack)
+	- [Configuration model](#configuration-model)
+	- [Consumer API](#consumer-api)
+	- [Integration modes](#integration-modes)
+	- [Power layer library-level, grammar untouched](#power-layer-library-level-grammar-untouched)
+	- [Schema validation](#schema-validation)
+	- [Formatter](#formatter)
+	- [Testing](#testing)
+	- [CI/CD](#cicd)
+	- [Reference implementation](#reference-implementation)
+	- [Go binding Tier 2](#go-binding-tier-2)
+	- [C binding Tier 2](#c-binding-tier-2)
+	- [Shell wrappers](#shell-wrappers)
+
+<!-- /TOC -->
+
 ## Assumptions
 
-- The language began by example in `../../notes.txt`. A decision pass rationalized it into a coherent model. Where the two disagree, `spec.md` wins.
+- The language began by example in `../../notes.txt`. Where the two disagree (and they do), `spec.md` wins.
 
 - The language ships as tiered bindings, plus single-file drop-in source and compiled binaries per platform.
 
@@ -23,9 +46,15 @@ Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`
 
 	- POSIX sh and PowerShell are thin wrappers around the CLI, not independent parsers. They inherit conformance for free. The companion typed surfaces (C++, Kotlin, TypeScript) are one core plus a veneer, not separate parsers.
 
-## Direction decisions
+## Guiding principles and decisions
 
-The guiding tension is acknowledging "simplest possible" versus "expressive enough for anything". The resolution is identifying the two audiences and moving all difficulty onto the parser:
+The inescapable core tradeoff (for any config language) is to acknowledge and  optimally balance "simplest possible" versus "expressive enough for anything" - including a simple DDL language. Ultimately it comes down to two factors:
+
+1. Ideologically-driven human opinion on where the balance should be - informed by technical experience, related PTSD gained along the way, childhood trauma - all of it.
+
+1. The observation that processing power is now dirt-cheap even on the smallest embedded systems, validation and "correctness" tools are now incredibly powerful - and the subsequent decision to move as much of the heavy-lifting of the language on to this code, and away from end users and programmers.
+
+Other points
 
 - Optimize for the hand-authoring user and the value-consuming programmer; burden neither. Any ambiguity a modern parser can resolve from context, it must - the user is never made to satisfy the machine.
 
@@ -232,7 +261,7 @@ The responsibility is split rather than duplicate the pipeline:
 
 - C has no committed zero-dependency formatter, so its quality gate is a warning-clean compile rather than a separate format stage.
 
-### Shell wrapper
+### Shell wrappers
 
 - The shell binding wraps the `shcl` CLI, not a parser, so it inherits conformance for free.
 
