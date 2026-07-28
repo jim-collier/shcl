@@ -553,14 +553,17 @@ class Movie:
 	##	pause is worth less than the frame it would take to correct.
 	def __init__(self):
 		self.frames, self.durs = [], []
+		self._lastBytes = None
 
 	def add(self, img, ms):
 		dur = max(20, int(round(ms / 10.0)) * 10)
-		if self.frames and img.tobytes() == self.frames[-1].tobytes():
+		raw = img.tobytes()                  # kept: the held frame is re-compared every add
+		if raw == self._lastBytes:
 			self.durs[-1] += dur
 		else:
 			self.frames.append(img)
 			self.durs.append(dur)
+			self._lastBytes = raw
 
 
 def fMain():

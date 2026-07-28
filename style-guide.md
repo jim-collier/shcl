@@ -19,7 +19,7 @@ To keep that promise cheap to maintain, every port mirrors the reference's *stru
 - Same parse pipeline, same order of operations, same helper boundaries. A line of the reference has a recognizable sibling line in every port.
 - Same user-visible strings where output is the contract (diagnostic codes, `check` summaries, CLI usage errors).
 
-Why: when a bug is fixed or a feature lands in the reference, the port is a mechanical diff of the same function in each sibling - not a re-derivation. Structural divergence is where behavioral divergence hides; two "equivalent" idiomatic implementations of the same rule will eventually disagree on an edge case, and in this project that is a shipped bug by definition.
+Why: when a bug is fixed or a feature is added to the reference, the port is a mechanical diff of the same function in each sibling - not a re-derivation. Structural divergence is where behavioral divergence hides; two "equivalent" idiomatic implementations of the same rule will eventually disagree on an edge case, and in this project that is a shipped bug by definition.
 
 The cost is accepted openly: some code reads as slightly foreign to a native of its language. A Go reader will notice reads return a status struct instead of an `error`; a Python reader will notice explicit character-class loops where `str.strip()` would be shorter. Those are not oversights - each one exists because the shorter idiom behaves differently from the reference in some corner (the specific cases are listed below).
 
@@ -43,7 +43,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 ### Rust (reference)
 
 - rustfmt is canonical, with the repo's `rustfmt.toml` (`hard_tabs = true`). Clippy gates at its default level; pedantic is advisory.
-- Errors as values via `Result` and `?` where a real error exists. But most "failure" here is not an error: a missing or mistyped value is a normal, expected outcome, so reads return a `Read<T>` carrying a `Status` - by spec, not exception-shaped. No `panic!`/`unwrap`/`expect` outside tests.
+- Errors as values via `Result` and `?` where a real error exists. But most "failure" here is not an error: a missing or mistyped value is a normal, expected outcome, so reads return a `Read<T>` carrying a `Status` - by spec, not exception-shaped. No `panic!`/`unwrap`/`expect` outside tests, and none in anything that ships: the only ones left sit behind the `profiling` feature, which never compiles into a normal build.
 - No `thiserror`/`anyhow`, no error-crate ergonomics: the zero-dependency rule outranks them, and `Status` + structured diagnostics already cover the domain.
 - Derive (`Debug`, `Clone`, `PartialEq`) rather than hand-roll. Public items get `///` docs. Early returns and `let .. else` over nesting.
 
@@ -67,7 +67,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - C11, single header, STB-style (`#define SHCL_IMPLEMENTATION` in one TU). The gate is `-Wall -Wextra -Werror` plus cppcheck.
 - Memory model: one bump arena per document, `shcl_free` frees everything, no per-object ownership. Raw pointers are fine here - this is C working as designed, not a RAII gap.
 - Strings are length-delimited byte spans with explicit UTF-8 iteration helpers, because the reference iterates `char`s and byte-wise shortcuts mis-handle multibyte input.
-- The C++ veneer (`shcl.hpp`) is a thin typed wrapper over the C core - not a second parser, and kept intentionally small. C++17 (the gate's pin, for broad compiler reach), no exceptions: it surfaces the same `Status` values the core returns.
+- The C++ veneer (`shcl.hpp`) is a thin typed wrapper over the C core - not a second parser, and kept intentionally small. C++17 (the gate's pin, for broad compiler reach), no exceptions: it returns the same `Status` values the core does.
 - Deliberate deviation: the convenience read tier covers only the value types (`shcl_get_int`/`_float`/`_bool`; `get_or<T>` for the veneer's four `get<T>` types). String, raw, datetime, and array reads hand back borrowed memory or lengths that a value-or-default signature cannot express, so those stay on the full `shcl_read_*` tier. The spec's ergonomic-tier section says the same.
 
 ### Bash and PowerShell (wrappers)
@@ -75,7 +75,30 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - These are front ends to the compiled `shcl` binary, not parsers - they inherit conformance for free.
 - shellcheck gates the bash wrapper; shfmt does not rewrite (its output fights the house shell style). PSScriptAnalyzer gates the ps1.
 - The ps1 deviates from PowerShell convention on purpose: no `param()` block (it would eat `get`/`--int` before they reach the binary in dual-mode use) and `shcl_*` snake_case helper names instead of Verb-Noun (the sourced call surface is identical across bash and pwsh, which outranks the local convention for a two-line forwarder).
-- Shell scripts keep the house compact style: `#•••` section rules, minified helper functions, the header layout you see in the existing files.
+- Shell scripts keep the house compact style: `#•••` section rules, minified helper functions, the header layout the existing files use.
+
+## Performance
+
+Correctness comes first, and in this repo parity comes with it: an optimization that makes one binding faster and the four of them disagree is a shipped bug, not a win. Beyond that, speed and memory are treated as four separate stages, not as one thing to worry about at the end.
+
+The wins that matter were locked in by the architecture, before any code was hot. Know these before reshaping a parser:
+
+- Parsing is one forward pass, single-threaded, no backtracking. The line is the unit of error recovery, which is also what makes the forgiveness story cheap.
+- C owns memory with a bump arena per document, plus a scratch arena that resets on every read call. No per-object ownership, no free list - `shcl_free` drops the whole thing.
+- The parser builds its `(name, value)` child index as it goes, so lookups and merges never rescan siblings. That index is discarded after parse; the Writer mutates the tree directly instead of maintaining it.
+
+Then there are the habits, which cost nothing to write and are not premature:
+
+- Reserve a collection when the size is knowable, and grow it geometrically rather than by one.
+- Hoist anything invariant out of a loop. Look it up once.
+- Build strings with the language's builder, never by repeated concatenation.
+- In shell, no forks inside a loop. One pass of one tool beats a thousand subshells, and the pipeline's own scripts are held to that.
+
+Optimizing early is fine when there is named evidence for it. The profiler stage runs on every non-quick pipeline run and writes a flamegraph plus a hot-spot summary, so "this path is already slow" can be a fact rather than a hunch. Without something like that, leave it alone.
+
+Everything else waits for the end, and is driven by measurement only. Micro-optimization belongs here and nowhere else: profile an optimized build on a realistic workload, attack the top of the list, measure again, revert anything that did not move the number. The 20260725 performance tranche is the worked example - a 32k-node merge went from 16 seconds to 0.07, all of it accelerators rather than rewrites.
+
+Shipped builds are tuned for size and speed together. The Rust release profile uses fat LTO, one codegen unit, `panic = "abort"` and symbol stripping. The binary is deliberately not packed - packers trip antivirus heuristics.
 
 ## Prose and docs
 

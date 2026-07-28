@@ -100,66 +100,37 @@ In each section, items are listed approximately from newest to oldest.
 
 ### Bugs
 
-- ✅ Code Review 20260726 item 1: an in-place write does not preserve the file it replaces.
-	- `fmt --write` and `set --write` build a temp file and rename it over the target, so the target's own identity is discarded.
-	- Permission bits are lost. A config at mode 600 comes back at the umask default, which on a normal box means world-readable. This is the one that matters, because config files are exactly where secrets sit.
-	- A symlinked config is replaced by a regular file. The link breaks and the real file behind it is left untouched, so the edit appears to vanish. Dotfile managers make this a common layout.
-	- Hard links break the same way: the other name keeps the old content.
-	- All four bindings share the shape, so the fix is one mechanical diff. Resolve the target through symlinks first, then copy the original's mode onto the temp file before the rename.
-	- Hard links cannot survive a rename at all. That one is a documented limitation, not a fix.
-	- Detail: `design.md` - Code Review 20260726, item 1.
-	- Fixed in all four: the write resolves the path through symlinks before picking the temp directory and the rename target, and copies the original's mode onto the temp file. Mode copying is best effort, so a filesystem that cannot carry it still completes the write. The differential harness gained an in-place-write dimension that compares the tree a write leaves behind (mode, symlink, link count, content), which pins all three cases across the bindings.
-
-- ✅ Code Review 20260726 item 2: C datetime reads accumulate in the never-freed document arena.
-	- The read path passes the document arena to the datetime parser for its split temporaries, so a long-running reader grows without bound. Every other C read path was moved to the per-call scratch arena; this one was missed.
-	- 1M datetime reads of a 45-byte document reach 377 MB. The same loop reading an int stays flat at 2 MB.
-	- Fixed: the two datetime read paths allocate their temporaries from scratch. The fractional-seconds value they hand back points into the document text, which outlives the call, so the return contract is unchanged. 1M reads now stay flat.
-
-- ✅ Code Review 20260726 item 3: the fuzz run is documented as deterministic but is not reproducible.
-	- The mutation PRNG is fixed-seed, but its seed inputs are read from the corpus directory in whatever order the filesystem hands back. That order decides every mutation, so two runs on the same tree explore different inputs.
-	- Visible in the pipeline: the cross-binding comparison count moves by a few hundred between runs on an unchanged tree, which makes the number useless as a regression signal.
-	- A failing case also cannot be reproduced by re-running, which is the main thing a fuzz gate is for.
-	- Fixed: the seed list is sorted before use. Two runs on the same tree now produce an identical input set.
-
-- ✅ Code Review 20260726 item 6: shellcheck is a gating linter but the only one left unpinned.
-	- Hosted CI used whatever the runner image shipped, which is older and noisier than the local copy, so a script could pass the local gate and fail CI on a warning newer releases no longer emit. That is exactly what happened to `install.bash`.
-	- The pinning pass that covered the other linters missed it because it is preinstalled rather than installed by a step, so there was no version to write down.
-	- Fixed: CI installs the pinned version ahead of the image's copy, and the pin joins the others in the drift list. The one flagged line in `install.bash` was rewritten to the same shape the rest of that file uses, which reads better anyway.
-	- Also fixed alongside it: the drift probe only read the first line of a tool's version output, so a tool that leads with a banner always looked like it had drifted.
-
-- ✅ Code Review 20260726 item 5: hosted CI cannot install its own pinned lint toolchain.
-	- The tool pins list the Cppcheck binary's version, and the workflow installed that same string as a package version. There is no such package, so every hosted run failed at setup within seconds.
-	- The wheel carries a Cppcheck two major versions ahead of its own package number, which is what made the two look interchangeable.
-	- Only the hosted gate was affected. The local pipeline probes the installed binary, so it was right all along and stayed green, which is why this went unnoticed from the day the pins landed.
-	- Fixed: the workflow installs the package version and says why the two differ. The other three pins were checked and do resolve.
-
-- ✅ Code Review 20260726 item 4: the cross-binding harness reports only the first divergence.
-	- It prints a divergence, then runs `diff` into `head` to show it. Under the script's own strict settings that pipeline's nonzero status aborts the whole run, so every later divergence is lost and the "N of M diverged" summary never prints.
-	- The run still exits nonzero, so nothing ever escaped the gate. The cost is diagnosis: one divergence at a time, with no count and no idea how wide the damage is.
-	- Found only because a new check was deliberately run against a known-bad build.
-	- Fixed: the diff is allowed to fail. All divergences now print, followed by the summary.
+- None open.
 
 ### Features and enhancements
 
 - ✋ Code Review 20260725 item 28: give the loader opt-out limits.
 	- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
 	- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
-	- The depth cap is the shared fix for item 2 and should land with it; the rest is the wider self-defense story.
-	- Depth half landed with item 2 (fixed 512-level cap, `E016`). Size/node/array limits still open.
-	- Deferred post-1.0: the depth cap closed the crash class; size/node/array knobs are additive API that can land without breaking anything. A consuming program can bound input size itself before calling parse.
+	- Done: the depth half, which landed with item 2 - a fixed 512-level cap and `E016`.
+	- Deferred post-1.0: the depth cap closed the crash class. Size, node and array knobs are additive API that can land later without breaking anything, and a consuming program can bound input size itself before calling parse.
 
 - ✋ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
-	- All four bindings recover the code from `msg.starts_with(...)` over ~30 hand-ordered prefixes, so rewording a message can change a code and the ordering is load-bearing.
-	- Separately, `V001`-`V099` are fully tabled but `E001`-`E015` and `H001` are enumerated nowhere, while users are told to gate CI on `check`.
-	- The doc half is cheap and should land before 1.0; threading the code through every call site is the larger, riskier half.
-	- Doc half landed with the item-2 depth work: `E001`-`E016` + `H001` now tabled in the spec's Diagnostics section. Code-threading half still open.
-	- Doc half done (the E-table); the code-threading half is deferred - large, mechanical, no user-visible payoff, and every corpus case pins code-per-line so the practical exposure is messages no case exercises.
+	- All four bindings recover the code from `msg.starts_with(...)` over about 30 hand-ordered prefixes, so rewording a message can change a code, and the ordering is load-bearing.
+	- Separately, `V001`-`V099` were fully tabled but `E001`-`E015` and `H001` were listed nowhere, while users are told to gate CI on `check`.
+	- Done: the doc half. `E001`-`E016` plus `H001` are now tabled in the spec's Diagnostics section.
+	- Deferred: threading the code through every call site. Large, mechanical, and invisible to users, and every corpus case pins the code per line - so the exposure is limited to messages no case exercises.
 
 - 🛠️ Code Review 20260725 item 37: harden the installers' transport and integrity story.
-	- `curl`/`wget` follow redirects with no protocol pin or TLS floor.
-	- The sums file arrives over the same channel as the binary, so it catches corruption but not substitution; the source tarball, which supplies the drop-in files consumers compile in, is not verified at all.
-	- A detached signature over the sums file with the key inlined in the installer is what would make it a real trust root.
-	- Transport half done: curl/wget pin https through redirects with a TLS 1.2 floor (install.bash, install-dev.bash's rustup fetch), and install.ps1 floors TLS 1.2/1.3 for every download. The detached-signature trust root still needs a signing-key decision before it can land.
+	- `curl` and `wget` follow redirects with no protocol pin or TLS floor.
+	- The sums file arrives over the same channel as the binary, so it catches corruption but not substitution. The source tarball, which supplies the drop-in files consumers compile in, is not verified at all.
+	- Done: the transport half. curl and wget pin https through redirects with a TLS 1.2 floor (`install.bash`, and `install-dev.bash`'s rustup fetch); `install.ps1` floors TLS 1.2/1.3 for every download.
+	- Open: a detached signature over the sums file, with the key inlined in the installer, is what would make it a real trust root. Needs a signing-key decision first.
+
+- 🔘 Code Review 20260727 item 1: the Windows user install goes somewhere Windows does not expect.
+	- `install.ps1` puts a `user` target in `%USERPROFILE%\bin\Shcl`. The convention for a per-user program is `%LOCALAPPDATA%\Programs\`, which is where winget and most installers put one.
+	- Low stakes while the only release is a pre-release, and cheap to change now. Later it means a migration step for anyone who already installed.
+	- The system target (`C:\Program Files\Shcl`) is already conventional.
+
+- 🔘 Code Review 20260727 item 2: the reference clones a node name several times per index remap.
+	- `remap_child` runs on every in-place value mutation - an empty field being filled, a stacked-list element being appended - and clones the name up to five times, because it looks a key up and then removes it separately.
+	- Building each key once and reusing it would about halve that, with no change in behavior. The other three bindings have their own shape and would need their own look.
+	- Not evidence-backed: the profiler puts the leaders elsewhere (path scanning, code-point iteration, comma splitting), so this is a code-reading finding, not a measured one. Worth doing only if a profile ever points here.
 
 - 🔘 Glossary of terms
 
@@ -177,13 +148,52 @@ In each section, items are listed approximately from newest to oldest.
 
 #### Done - Bugs
 
+- ✅ Code Review 20260726 item 1: an in-place write does not preserve the file it replaces.
+	- Cause: `fmt --write` and `set --write` build a temp file and rename it over the target, so the target's own identity is discarded.
+	- Reproduced: a config at mode 600 comes back at the umask default, which on a normal box means world-readable. Config files are exactly where secrets sit, so this is the one that matters.
+	- Reproduced: a symlinked config is replaced by a regular file. The link breaks, the real file behind it keeps the old content, and the edit appears to vanish. Dotfile managers make this a common layout.
+	- Reproduced: hard links break the same way - the other name keeps the old content.
+	- Fixed: all four bindings resolve the path through symlinks before choosing the temp directory and the rename target, then copy the original's mode onto the temp file. Mode copying is best effort, so a filesystem that cannot carry it still completes the write.
+	- Note: hard links cannot survive a rename at all. Atomicity is worth more, so that one is a documented limitation rather than a fix.
+	- Verified: the differential harness gained an in-place-write dimension comparing the tree a write leaves behind - mode, symlink, link count, content - which pins all three cases across the bindings.
+
+- ✅ Code Review 20260726 item 2: C datetime reads accumulate in the never-freed document arena.
+	- Cause: the read path hands the document arena to the datetime parser for its split temporaries, so a long-running reader grows without bound. Every other C read path had moved to the per-call scratch arena; these two were missed.
+	- Reproduced: 1M datetime reads of a 45-byte document reach 377 MB. The same loop reading an int stays flat at 2 MB.
+	- Fixed: both datetime read paths allocate their temporaries from scratch. The fractional-seconds value they hand back points into the document text, which outlives the call, so the return contract is unchanged.
+	- Verified: 1M reads now stay flat.
+
+- ✅ Code Review 20260726 item 3: the fuzz run is documented as deterministic but is not reproducible.
+	- Cause: the mutation PRNG is fixed-seed, but its seed inputs come back from the corpus directory in whatever order the filesystem gives. That order decides every mutation.
+	- Reproduced: the cross-binding comparison count moves by a few hundred between runs on an unchanged tree, which makes the number useless as a regression signal. A failing case also cannot be re-run, which is the main thing a fuzz gate is for.
+	- Fixed: the seed list is sorted before use.
+	- Verified: two runs on the same tree now produce an identical input set.
+
+- ✅ Code Review 20260726 item 4: the cross-binding harness reports only the first divergence.
+	- Cause: it prints a divergence, then pipes `diff` into `head` to show it. Under the script's own strict settings that pipeline's nonzero status aborts the run, so every later divergence is lost and the "N of M diverged" summary never prints.
+	- Note: never a correctness hole. The run still exited nonzero and the gate still failed; the cost was diagnosis, one divergence at a time with no count.
+	- Reproduced: only because a new check was deliberately run against a known-bad build. An error path that is itself fatal stays untested until the day it is needed.
+	- Fixed: the diff is allowed to fail. All divergences print, followed by the summary.
+
+- ✅ Code Review 20260726 item 5: hosted CI cannot install its own pinned lint toolchain.
+	- Cause: the tool pins carry the Cppcheck binary's version, and the workflow installed that same string as a package version. No such package exists, so every hosted run failed at setup within seconds.
+	- Note: the wheel bundles a Cppcheck two major versions ahead of its own package number, which is what made the two look interchangeable.
+	- Note: only the hosted gate was affected. The local pipeline probes the installed binary, so it stayed green, which is why this went unnoticed from the day the pins landed.
+	- Fixed: the workflow installs the package version, with a comment saying why the two differ.
+	- Verified: the other three pins do resolve.
+
+- ✅ Code Review 20260726 item 6: shellcheck is a gating linter but the only one left unpinned.
+	- Cause: hosted CI used whatever the runner image shipped, which is older and noisier than the local copy, so a script could pass the local gate and fail CI on a warning newer releases no longer emit. That is what happened to `install.bash`.
+	- Note: the pinning pass that covered the other linters missed it because it is preinstalled rather than installed by a step, so there was no version to write down.
+	- Fixed: CI installs the pinned version ahead of the image's copy, and the pin joins the others in the drift list. The one flagged line in `install.bash` was rewritten to the shape the rest of that file already uses.
+	- Fixed alongside it: the drift probe read only the first line of a version command's output, so a tool that leads with a banner always looked like it had drifted.
+
 - ✅ Code Review 20260725 item 1: a higher layer that names a container with no children deletes the whole subtree below it.
 	- `server:` (or `server: web1` with an empty body) in an over layer wipes every child the lower layers put there, silently, exit 0.
 	- Worse than it reads: the wipe covers every same-named instance, so mentioning `server: web1` also deletes an untouched `server: web2`.
 	- A body that is only a comment counts as empty, because comments are trivia rather than children.
 	- Needs a decision, not just a fix: the code matches the spec's own wording, and the obvious narrowing removes the ability to blank a section from a higher layer.
 	- Decided and fixed: the leaf-override path now applies only when the base side of the name group is also all-childless, so a bare section header merges (matching instance untouched, unmatched appended as an empty instance) and leaf clearing still works. No way to blank a section from a higher layer; a deletion spelling is deferred post-1.0. All four bindings, spec reworded, corpus case 027.
-	- Detail: `design.md` - Code Review 20260725, item 1.
 
 - ✅ Code Review 20260725 item 2: deep documents crash three of the four bindings, each at a different depth.
 	- Fixed with a load-time nesting cap: 512 levels, enforced in all four parsers before any node is created (`E016`, line skipped) and mirrored by the Writer's `place`. Every measured cliff sat far above the cap, so the existing recursion is now safe everywhere; the reference keeps its recursive walks on purpose (structural parity beats a one-binding rewrite). Spec gained the cap and the load-code table; corpus case 028 pins the error, a reference test pins the 512 boundary and the writer refusal.
@@ -191,14 +201,12 @@ In each section, items are listed approximately from newest to oldest.
 	- Python merge is the acute one - a 4.9 KB file is enough. The reference aborts on `fmt` around 33k levels; C segfaults; Go survives by growing to tens of GB.
 	- A dotted path buys one level per two bytes, so depth is cheap for an attacker and needs no odd syntax.
 	- Same input, four different exit codes: the inverse of the product guarantee.
-	- Detail: `design.md` - Code Review 20260725, item 2.
 
 - ✅ Code Review 20260725 item 3: `shcl set` validates its op values four different ways.
 	- Rust and Go reject a malformed int; Python accepts unbounded ints, underscores, padding and non-ASCII digits; C silently writes 0 or a truncated/saturated value and exits 0.
 	- Python can emit an integer no binding can read back, so the Writer produces out-of-contract output.
 	- The ops script on stdin also skips the UTF-8 gate the file reader applies, so bad bytes become U+FFFD instead of exit 1.
 	- stdout and exit codes are contract here and the crosscheck replays `set`, so this only escapes CI because no corpus op line carries a malformed value.
-	- Detail: `design.md` - Code Review 20260725, item 3.
 	- Fixed: go/python/C now gate op values with the reference's exact grammar (sign + ASCII digits + i64 range for ints, the Rust f64 grammar for floats - overflow stores `inf`); C's truncating staging buffers are gone; the ops stdin gets the same UTF-8 gate as file input in all four. Corpus case 029 pins accept and reject sets cross-binding (`write-bad.ops` dimension in all four runners + the differential harness).
 
 - ✅ Code Review 20260725 item 4: Go `Validate` panics on a schema path with a `[#N]` selector at N >= 2^63.
@@ -211,14 +219,12 @@ In each section, items are listed approximately from newest to oldest.
 	- Reads, merges and validation all allocate scratch there, so a read-only document grows without bound in a long-running process.
 	- Measured: 1M reads of a 30-byte document reach 1.13 GB; a 626 KB layer merge peaks at 9.8 GB where the reference uses 27 MB.
 	- Rust, Go and Python free the same temporaries per call, so this is C-only.
-	- Detail: `design.md` - Code Review 20260725, item 5.
 	- Fixed: the doc gained a scratch arena reset on entry to every resolve (path scans, resolver vectors, compare strings, int/float/bool coercion temps) and on merge entry; `w_replace_leaf_group` rebuilds the children vector in place; `v_suggest` gets a per-field-reset scratch for its DP rows and chains. Returned bytes still live in the persistent arena per the documented contract (string reads accumulate only their returned copies). Measured: 1M int reads 1.13 GB -> flat 2 MB; 16k-sibling merge 2.53 GB -> 38 MB; 2k-field validation 1.38 GB -> 17 MB.
 
 - ✅ Code Review 20260725 item 6: C grows a stacked `*` list one element at a time, so parsing it is quadratic in memory.
 	- A fresh array is allocated and copied per `* ` line, and the arena keeps every discarded copy.
 	- An 11 KB file already costs 38 MB; 95 KB costs 2.4 GB; 249 KB costs 14.8 GB.
 	- Reachable from a plain `fmt` or `check` on an ordinary-looking config.
-	- Detail: `design.md` - Code Review 20260725, item 6.
 	- Fixed: the element array grows geometrically, and the per-element merge-key rebuild is deferred while the list is the open field (flushed before any other map lookup, so behavior is unchanged). 20k elements: 14.8 GB and 40 s -> 7.6 MB, instant; output byte-identical to the reference. The other bindings' key-rebuild time cost is item 24's territory.
 
 - ✅ Code Review 20260725 item 7: `fmt --write` truncates the config in place, and C reports success when the write fails.
@@ -230,7 +236,6 @@ In each section, items are listed approximately from newest to oldest.
 	- NSIS reads `PATH` through a 1024-char string and writes the truncated value back. Observed in a wine run: a 1427-char machine PATH came back as 22 chars. The uninstaller does the same.
 	- `install.ps1` reads `PATH` expanded and writes it back as `REG_SZ`, baking `%USERPROFILE%`-style references and downgrading the value type.
 	- The two Windows install paths also disagree with each other about how to test for an existing entry.
-	- Detail: `design.md` - Code Review 20260725, item 8.
 	- Fixed: the NSIS installer/uninstaller no longer pass PATH through NSIS strings at all - a generated PowerShell script edits the registry value directly (unexpanded read, segment-wise case-insensitive test, REG_EXPAND_SZ preserved), and a failed edit warns instead of writing back a truncated value. `install.ps1` likewise reads unexpanded and writes REG_EXPAND_SZ, with a settings-change broadcast.
 
 - ✅ Code Review 20260725 item 9: `shcl init --schema=X` generates a config that `shcl check --schema=X` rejects.
@@ -281,8 +286,7 @@ In each section, items are listed approximately from newest to oldest.
 - ✅ Code Review 20260725 item 17: `check --schema` cannot tell a schema line number from a document line number.
 	- Both files' diagnostics interleave in one list with nothing marking which file a line belongs to.
 	- `init` already prefixes `schema line N`, so the same fault renders two ways in two commands.
-	- Detail: `design.md` - Code Review 20260725, item 17.
-	- Fixed with the cheap half: the stderr prose spells `schema line N` for `V090`-`V093` (whose numbers are schema-file lines per the code table) in all four CLIs; the compared stdout keeps the uniform shape since the code already names the space. The structural `source`/`column` fields stay future work, noted in design.md.
+	- Fixed with the cheap half: the stderr prose spells `schema line N` for `V090`-`V093` (whose numbers are schema-file lines per the code table) in all four CLIs; the compared stdout keeps the uniform shape since the code already names the space. The structural `source`/`column` fields stay future work.
 
 - ✅ Code Review 20260725 item 18: `Load(defaults, site, user)` is documented but exists in no binding.
 	- README presents it as the layered-loading API; only `merge(base, over)` exists, so a reader's first call does not compile.
@@ -319,66 +323,52 @@ In each section, items are listed approximately from newest to oldest.
 - ✅ Code Review 20260716 item 1: C CLI reads freed memory on typed array output.
 	- `get --int|--float|--datetime --array` with more than 8 elements prints from a stale pointer after the line buffer grows; large arrays segfault.
 	- Fixed: owned line entries no longer store a pointer into the growable array; corpus case 008 pins 10-element typed arrays of every kind.
-	- Detail: `design.md` - Code Review 20260716, item 1.
 
 - ✅ Code Review 20260716 item 2: Rust parser panics on a multibyte char in the timezone tail of a datetime value.
 	- A garbled or hostile config aborts the consumer (exit 134) instead of returning BadType.
 	- Fixed: zone tail is now checked byte-wise, so no str slice can land mid-char; corpus 007 `bad5` pins BadType across all bindings.
-	- Detail: `design.md` - Code Review 20260716, item 2.
 
 - ✅ Code Review 20260716 item 3: wildcard array reads swallow per-slot NotFound/BadType.
 	- A missing sub-path yields a silent zero with status Good - the exact trap the fallback design exists to prevent.
 	- `count` and `instances` also disagree on the same wildcard path, breaking index alignment.
 	- Fixed in all four bindings: array reads carry per-slot statuses, aggregate = worst slot, `instances` keeps unresolved slots as "", CLI grows `--slots` and per-slot `--default` substitution. Spec pinned, corpus case 009 + a slots column in reads.tsv, crosscheck replays `--slots`.
-	- Detail: `design.md` - Code Review 20260716, item 3.
 
 - ✅ Code Review 20260716 item 7: `fmt` ignores `--strictness`.
 	- Fixed: `fmt` loads at the requested strictness in all four CLIs; strict failure exits 6 with diagnostics, no output. Crosscheck now replays `fmt` at each `load` row's level.
-	- Same in all four CLIs. Detail: `design.md` - Code Review 20260716, item 7.
 
 - ✅ Code Review 20260716 item 8: mixed `*`/field child lines silently build a block array.
 	- Fixed: uniform-or-nothing enforced in all four parsers - first mixed field diagnoses an Error (field kept), later `*` lines under that parent are Errors and dropped. Corpus case 010.
-	- Detail: `design.md` - Code Review 20260716, item 8.
 
 - ✅ Code Review 20260716 item 9: `field[disc]` matches differently at parse-time vs query-time.
 	- Fixed: parse-side selectors match the display form like queries do; create only when nothing matches. Corpus case 011; spec's selector bullet updated.
-	- Detail: `design.md` - Code Review 20260716, item 9.
 
 - ✅ Code Review 20260716 item 10: raw-block merge identity ignores the info-string.
 	- Decided: info-string is part of a block's identity (fence style is not); equal bodies with different infos stay two instances. All four parsers; corpus case 012; spec updated.
-	- Detail: `design.md` - Code Review 20260716, item 10.
 
 - ✅ Code Review 20260716 item 11: reading an array as a string drops quoting and escapes.
 	- Fixed: array-as-string is the canonical inline form (minimal quoting, escapes intact, re-parses to the same array) in all four bindings. Corpus rows in case 011; spec's Strings section updated.
-	- Detail: `design.md` - Code Review 20260716, item 11.
 
 - ✅ Code Review 20260716 item 12: parse time is quadratic in siblings.
 	- Fixed: per-parent (name, value-key) lookup map in all four parsers; sibling scan and hint grouping are linear now. 100k flat lines: reference went from minutes to 0.2s, Python to 1.5s.
-	- Detail: `design.md` - Code Review 20260716, item 12.
 
 - ✅ Code Review 20260716 item 13: Python formatter recurses and crashes on deep nesting.
 	- Fixed: emit walks an explicit stack; the CLI recursion-limit bump is gone. Depth 25000 formats fine from both the CLI and library callers.
-	- Detail: `design.md` - Code Review 20260716, item 13.
 
 - ✅ Code Review 20260716 item 14: PowerShell wrapper exits 0 when the resolved binary will not launch.
 	- Resolution accepts any plain file (no executable check); a stale non-executable `shcl` yields empty output and exit 0.
 	- Fixed: every ps1 resolution site now goes through `_shcl_executable` (Unix requires an execute bit, Windows keeps a bare leaf); the run-path passthrough is `exit ($LASTEXITCODE ?? 1)`.
-	- Detail: `design.md` - Code Review 20260716, item 14.
 
 - ✅ Code Review 20260716 item 15: crosscheck cannot see trailing-newline differences.
 	- Command substitution strips them before compare, so a binding that drops or doubles the final newline ships green.
 	- Fixed: capture helpers append a trailing sentinel so `$()` has nothing to strip; a dropped or doubled final newline is now a divergence.
-	- Detail: `design.md` - Code Review 20260716, item 15.
 
 - ✅ Code Review 20260716 item 16: crosscheck passes with zero comparisons.
 	- An empty fuzz dump or a corpus layout change silently drops most of the 1764 comparisons and the gate still passes.
 	- Fixed: exits 2 when no comparison ran, when `--extra` matches no `*.shcl`, or below an optional `--min N` floor.
-	- Detail: `design.md` - Code Review 20260716, item 16.
 
 - ✅ Code Review 20260716 item 17: demo gif generator ignores step exit codes.
 	- A renamed flag renders the error text into the gif and the pipeline publishes it onto the committed asset.
 	- Fixed: a step whose exit differs from `expect_exit` (default 0) aborts the render, so cicd skips the publish `cp`.
-	- Detail: `design.md` - Code Review 20260716, item 17.
 
 - ✅ Code Review 20260716 item 21: `fmt --write -` silently drops `--write` and exits 0.
 	- Should be a usage error pointing at piping stdout instead. Same in all four CLIs.
@@ -387,17 +377,14 @@ In each section, items are listed approximately from newest to oldest.
 - ✅ Code Review 20260716 item 23: `field[sel]: value` is grammar-legal but has no spec'd meaning.
 	- The value is dropped with an Error diagnostic, so strict loads fail on a line the grammar allows. Align spec, grammar, and code.
 	- Fixed by spec'ing the code's existing behavior: a value after a last-segment selector is defined as an `error` (instance kept from the discriminator, value dropped; fails Strict). spec.md Selectors + grammar.abnf note updated; corpus case 018.
-	- Detail: `design.md` - Code Review 20260716, item 23.
 
 - ✅ Code Review 20260716 item 24: invalid-UTF-8 command-line args abort the reference.
 	- Rust exits 134 (panic); Go/Python/C all exit 3. The reference is the outlier on its own exit-code contract.
 	- Fixed: all four validate argv as UTF-8 up front and exit 1 (`invalid argument encoding`); the reference uses `args_os` instead of the panicking `args`.
-	- Detail: `design.md` - Code Review 20260716, item 24.
 
 - ✅ Code Review 20260716 item 25: broken stdout pipe gives three different exit codes.
 	- `shcl fmt big | head`: Rust 134, Go 141, Python 0. Pick one behavior and pin it.
 	- Fixed: uniform die-by-SIGPIPE (141). Rust and Python restore the default SIGPIPE disposition; Go and C already died by signal.
-	- Detail: `design.md` - Code Review 20260716, item 25.
 
 - ✅ Code Review 20260716 item 26: C CLI has unchecked `realloc` on input/output paths.
 	- OOM segfaults instead of taking the clean exit-70 path the arena already has.
@@ -410,7 +397,6 @@ In each section, items are listed approximately from newest to oldest.
 - ✅ Code Review 20260716 item 30: NUL-joined merge key conflates distinct values.
 	- `x: a, b` and `x: "a<NUL>b"` merge to one instance; the second value is silently lost. Make the key injective.
 	- Fixed in all four parsers: each cell element (and the raw info-string) is length-prefixed, so the key is injective. Corpus case 017 (count = 2) pins it; the crosscheck skips it (bash can't carry a NUL) and the native runners do the pinning.
-	- Detail: `design.md` - Code Review 20260716, item 30.
 
 - ✅ Code Review 20260716 item 32: wrappers invoked via symlink lose the sibling-binary and repo-build fallbacks.
 	- Both wrappers compute the script dir without resolving links; resolve the real path first.
@@ -430,7 +416,6 @@ In each section, items are listed approximately from newest to oldest.
 	- The over-side name dedup, the per-name group filter and the base-side instance match are all linear scans, and each rebuilds merge keys as it goes.
 	- Parsing 32k keys costs 56 ms; merging them costs 16 s in the reference. The marquee feature is the slowest thing in the product.
 	- The same accelerator the prior review's item 12 added to the parser applies here.
-	- Detail: `design.md` - Code Review 20260725, item 24.
 	- Fixed in all four bindings.
 		- One grouping pass per side, with every merge key computed once, and a single children rebuild per parent.
 		- 32k keys: the reference went from 16 s to 0.07 s, C from 14.4 s to 0.05 s. Output is byte-identical, and instance order is unchanged.
@@ -457,7 +442,6 @@ In each section, items are listed approximately from newest to oldest.
 	- Comments were rescued as trivia by the prior review's item 4; blank lines are the other half of the same thing and were left out, so `fmt` flattens a grouped config into a wall.
 	- Field names are also folded to lowercase and the spec never says so, which makes `fmt --write` a surprise.
 	- The trivia model already exists, so this is a per-node flag and one emit line per binding.
-	- Detail: `design.md` - Code Review 20260725, item 30.
 	- Fixed: a `blank_before` trivia flag in all four parsers preserves one blank line before a binding (runs collapse; a blank before a comment group rides with it; fixpoint holds). Four goldens regenerated, case 032 pins it. The name folding was decided as correct-and-documented: the spec's formatter section now states lowercase is the canonical spelling.
 
 - ✅ Code Review 20260725 item 31: `paths()` exists only in the reference.
@@ -568,12 +552,12 @@ In each section, items are listed approximately from newest to oldest.
 
 - ✅ Code Review 20260716 item 4: `fmt` deletes every comment with no warning, and the spec never discloses it.
 	- Direct hit on the hand-author audience; retrofitting comment storage later touches all five codebases.
-	- Decide before 1.0: preserve comments as trivia, or spec the loss and warn on `fmt --write`. Detail: `design.md` - Code Review 20260716, item 4.
+	- Decide before 1.0: preserve comments as trivia, or spec the loss and warn on `fmt --write`.
 	- Done: comments survive `fmt` in all four parsers - whole-line comments re-emit above the node the next line binds, trailing ones stay on their line, end-of-file comments land at the end. Spec'd under Comments + Canonical formatter; corpus case 013 pins it and the older cases' expected files now keep their comments.
 
 - ✅ Code Review 20260716 item 5: the Writer half of the spec'd API exists in no binding and has no backlog item.
 	- Spec presents Accessor+Writer as the two halves; schema-driven generation depends on it.
-	- Done: Writer implemented in all four bindings (full CRUD - typed `set_<T>`/arrays/`raw`/`empty`, `_default` only-if-absent forms, `exists`, `set_comment`, `remove`), each setter the exact inverse of its read. New `shcl set` CLI applies a tab-delimited write-ops script from stdin. Corpus cases 014-016 pair `write.ops` with golden `expected-write.shcl` (matched by every binding's runner + a fixpoint check), the cross-binding differential replays `set`, and a 50k reference fuzz pins the string round-trip. Spec Writer bullet + `design.md` item 5 updated.
+	- Done: Writer implemented in all four bindings (full CRUD - typed `set_<T>`/arrays/`raw`/`empty`, `_default` only-if-absent forms, `exists`, `set_comment`, `remove`), each setter the exact inverse of its read. New `shcl set` CLI applies a tab-delimited write-ops script from stdin. Corpus cases 014-016 pair `write.ops` with golden `expected-write.shcl` (matched by every binding's runner + a fixpoint check), the cross-binding differential replays `set`, and a 50k reference fuzz pins the string round-trip. Spec Writer bullet updated.
 
 - ✅ Code Review 20260716 item 6: README lead code examples call APIs that do not exist.
 	- `GetIntOr(...)` (Go), `get_int(..., default=)` (Python), `get_or<T>` (C++) are all missing; a new user's first copy-paste fails.
@@ -581,12 +565,12 @@ In each section, items are listed approximately from newest to oldest.
 
 - ✅ Code Review 20260716 item 18: query-side behavior is barely pinned.
 	- No corpus rows for wildcards, on-bad modes, or defaults; the fuzz differential compares `fmt` only.
-	- The accessor side is where five hand-written ports diverge most easily. Detail: `design.md` - Code Review 20260716, item 18.
+	- The accessor side is where five hand-written ports diverge most easily.
 	- Done: added a `--rawinfo` CLI type (+ the `rawinfo` reads.tsv type in all four runners) so the info-string read is pinnable; the reference `Document::paths()` drives a fuzz-dump-derived `<name>.reads.tsv` that the crosscheck `--extra` replays (reads over fuzz soup, not just fmt); every scalar read row is also replayed under `--on-bad=error` and `--default=<x>`; corpus case 020-accessor-surface pins wildcards (with a missing slot), a `[value]` selector, and both raw reads. Crosscheck ~1983 -> ~4203 comparisons.
 
 - ✅ Code Review 20260716 item 19: diagnostic wording became a byte-for-byte 5-way contract by accident.
 	- `check` prints prose to stdout and crosscheck compares it, so every English message is frozen across bindings - contradicting design.md's per-binding-voice rule.
-	- Give diagnostics stable codes; compare codes, free the prose. Detail: `design.md` - Code Review 20260716, item 19.
+	- Give diagnostics stable codes; compare codes, free the prose.
 	- Done: `Diagnostic` carries a stable `code` (`E001..`/`H001..`) in all four bindings; `check` prints `line N: severity: CODE` to stdout and the prose to stderr, so the differential check compares codes (not wording). C exposes `shcl_diag_code`. Includes item 36 (below).
 
 - ✅ Code Review 20260716 item 20: README still says no tagged release exists.
@@ -607,7 +591,7 @@ In each section, items are listed approximately from newest to oldest.
 
 - ✅ Code Review 20260716 item 31: spec prose contradicts grammar and code on bare non-ASCII field names.
 	- Prose says only reserved chars need quotes (and uses `Strasse` with a sharp s as an example); grammar and parser reject them.
-	- Also: hex `-0x8000000000000000` (i64 min) reads BadType while the decimal spelling works. Detail: `design.md` - Code Review 20260716, item 31.
+	- Also: hex `-0x8000000000000000` (i64 min) reads BadType while the decimal spelling works.
 	- Done: aligned prose to the code (grammar, `is_bare_name_char`, and the emit predicate already agreed) - a bare field name is ASCII letters/digits/`-`/`_` only; anything else, including non-ASCII, must be quoted, and the `Straße` examples are now shown quoted. Hex fixed in all four parsers: parse the magnitude as u64, then range-check against the sign, so `-0x8000000000000000` reads i64-min like its decimal spelling and `+0x8000000000000000` stays BadType. Corpus case 019-hex-int-bounds pins it (crosscheck now 585).
 
 - ✅ Code Review 20260716 item 35: value-taking options reject the space-separated form with a misleading error.
