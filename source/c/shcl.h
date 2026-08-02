@@ -728,7 +728,7 @@ static int is_fence_close(S line, unsigned char ch, size_t min_len) {
 
 typedef enum { SEL_NONE, SEL_VALUE, SEL_INDEX, SEL_WILDCARD } seltag;
 typedef struct { seltag tag; S value; uint64_t index; } Selector; // u64: width must not vary with target pointer size
-typedef struct { S name; Selector sel; } Segment;
+typedef struct { S name; Selector sel; int star; } Segment; // star: bare `*` name wildcard; quoted "*" stays a literal name
 DEFINE_VEC(VecSeg, Segment)
 typedef struct { int ok; VecSeg segs; int has_value; S value_text; S err; } PathScan;
 
@@ -764,16 +764,22 @@ static int read_quoted_path(Arena *a, S src, CPs c, size_t *pos, S *out, S *err)
 	}
 }
 
-static PathScan scan_path(Arena *a, S input) {
+static PathScan scan_path_ex(Arena *a, S input, int stars) {
 	PathScan ps; ps.ok = 0; memset(&ps.segs, 0, sizeof ps.segs); ps.has_value = 0; ps.value_text = s_empty(); ps.err = s_empty();
 	CPs c = decode_cps(a, input);
 	size_t pos = 0;
 	for (;;) {
 		skip_ws_cp(c, &pos);
 		if (pos >= c.n) { ps.err = s_lit("empty path"); return ps; }
+		// Field name: quoted, bare, or (lookups only) the `*` name wildcard.
+		int star = 0;
 		S name;
 		if (c.cp[pos] == '"' || c.cp[pos] == '\'') {
 			if (!read_quoted_path(a, input, c, &pos, &name, &ps.err)) return ps;
+		} else if (stars && c.cp[pos] == '*') {
+			pos++;
+			star = 1;
+			name = s_lit("*");
 		} else {
 			size_t start = pos;
 			while (pos < c.n && is_bare_name_char(c.cp[pos])) pos++;
@@ -819,7 +825,8 @@ static PathScan scan_path(Arena *a, S input) {
 			pos++;
 			skip_ws_cp(c, &pos);
 		}
-		Segment seg; seg.name = fold_name(a, name); seg.sel = sel;
+		if (star && sel.tag != SEL_NONE) { ps.err = s_lit("selector on a name wildcard"); return ps; }
+		Segment seg; seg.name = fold_name(a, name); seg.sel = sel; seg.star = star;
 		VecSeg_push(a, &ps.segs, seg);
 		if (pos >= c.n) { ps.ok = 1; ps.has_value = 0; return ps; }
 		if (c.cp[pos] == '.') { pos++; continue; }
@@ -832,6 +839,12 @@ static PathScan scan_path(Arena *a, S input) {
 		{ SB e = {0}; sb_puts(a, &e, "unexpected '"); sb_put_cp(a, &e, c.cp[pos]); sb_puts(a, &e, "' after field"); ps.err = sb_S(&e); return ps; }
 	}
 }
+
+static PathScan scan_path(Arena *a, S input) { return scan_path_ex(a, input, 0); }
+// Query spelling of scan_path: also accepts a bare `*` segment (the name
+// wildcard - any child name). Document lines never take it; only lookups
+// (reads, the writer probe, schema paths) do.
+static PathScan scan_lookup(Arena *a, S input) { return scan_path_ex(a, input, 1); }
 
 // --- small integer/string helpers used below --------------------------------
 
@@ -1764,7 +1777,28 @@ static Resolved resolve_from(shcl_doc *d, size_t *start, size_t nstart, Segment 
 		VecSize next = {0};
 		for (size_t k = 0; k < cur.len; k++) {
 			VecSize ch = NODE(d, cur.data[k]).children;
-			for (size_t j = 0; j < ch.len; j++) { size_t c = ch.data[j]; if (s_eq(NODE(d, c).name, seg->name)) VecSize_push(a, &next, c); }
+			if (seg->star) {
+				for (size_t j = 0; j < ch.len; j++) VecSize_push(a, &next, ch.data[j]);
+			} else {
+				for (size_t j = 0; j < ch.len; j++) { size_t c = ch.data[j]; if (s_eq(NODE(d, c).name, seg->name)) VecSize_push(a, &next, c); }
+			}
+		}
+		if (seg->star) {
+			// Name wildcard: same per-slot split as `[*]`, over every child.
+			Segment *rest = segs + si + 1; size_t nrest = nsegs - si - 1;
+			VecSlot slots = {0};
+			for (size_t k = 0; k < next.len; k++) {
+				Slot sl; sl.present = 0; sl.idx = 0; sl.miss = SHCL_NOT_FOUND;
+				if (nrest == 0) { sl.present = 1; sl.idx = next.data[k]; }
+				else {
+					size_t inst = next.data[k]; Resolved r = resolve_from(d, &inst, 1, rest, nrest);
+					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
+					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
+				}
+				VecSlot_push(a, &slots, sl);
+			}
+			Resolved R; R.kind = R_SLOTS; R.slots = slots; memset(&R.many, 0, sizeof R.many); R.one = 0;
+			return R;
 		}
 		switch (seg->sel.tag) {
 		case SEL_NONE: cur = next; break;
@@ -1808,7 +1842,7 @@ static int resolve(shcl_doc *d, S path, Resolved *out) {
 	// scratch lifetime: the previous resolve's temporaries die now, and the
 	// Resolved this call fills stays usable until the next resolve.
 	arena_reset(&d->scratch);
-	PathScan ps = scan_path(&d->scratch, path);
+	PathScan ps = scan_lookup(&d->scratch, path);
 	if (!ps.ok || ps.has_value) return 0;
 	size_t root = ROOT;
 	*out = resolve_from(d, &root, 1, ps.segs.data, ps.segs.len);
@@ -2034,7 +2068,7 @@ static size_t w_new_child(shcl_doc *d, size_t parent, S name, Value value) {
 // before creating anything. SHCL_W_WRITABLE means w_place's gate would pass;
 // nothing is created. Temporaries (scan, compare strings) go into `a`.
 static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
-	PathScan ps = scan_path(a, path);
+	PathScan ps = scan_lookup(a, path);
 	if (!ps.ok) return SHCL_W_BAD_PATH;
 	if (ps.has_value) return SHCL_W_VALUE_IN_PATH;
 	if (ps.segs.len == 0) return SHCL_W_BAD_PATH;
@@ -2046,6 +2080,7 @@ static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
 	int off = 0; size_t pr = ROOT;
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		Segment *seg = &ps.segs.data[i];
+		if (seg->star) return SHCL_W_WILDCARD;
 		if (seg->sel.tag == SEL_WILDCARD) return SHCL_W_WILDCARD;
 		if (seg->sel.tag == SEL_INDEX) {
 			if (off) return SHCL_W_NO_SUCH_INDEX;
@@ -2076,10 +2111,11 @@ static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
 static int w_place(shcl_doc *d, S path, size_t *out) {
 	Arena *a = &d->arena;
 	if (w_write_reason(d, a, path) != SHCL_W_WRITABLE) return 0;
-	PathScan ps = scan_path(a, path);
+	PathScan ps = scan_lookup(a, path);
 	size_t cur = ROOT;
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		Segment *seg = &ps.segs.data[i];
+		if (seg->star) return 0; // write_reason gates this; belt only
 		if (seg->sel.tag == SEL_NONE) {
 			size_t found = (size_t)-1;
 			VecSize ch = NODE(d, cur).children;
@@ -2818,7 +2854,7 @@ static void v_build_schema(Arena *a, shcl_doc *schema, VecVCons *cons, VecDiag *
 			v_diag(a, faults, node->line, v_msgz(a, "bad schema path"));
 			continue;
 		}
-		PathScan ps = scan_path(a, path);
+		PathScan ps = scan_lookup(a, path);
 		if (!ps.ok || ps.has_value) {
 			v_diag(a, faults, node->line, v_msg3(a, "bad schema path: ", path, ""));
 			continue;
@@ -3022,7 +3058,24 @@ static void v_contexts(Arena *a, shcl_doc *d, const size_t *start, size_t nstart
 		VecSize next = {0};
 		for (size_t k = 0; k < cur.len; k++) {
 			VecSize ch = NODE(d, cur.data[k]).children;
-			for (size_t j = 0; j < ch.len; j++) { size_t c = ch.data[j]; if (s_eq(NODE(d, c).name, seg->name)) VecSize_push(a, &next, c); }
+			if (seg->star) {
+				for (size_t j = 0; j < ch.len; j++) VecSize_push(a, &next, ch.data[j]);
+			} else {
+				for (size_t j = 0; j < ch.len; j++) { size_t c = ch.data[j]; if (s_eq(NODE(d, c).name, seg->name)) VecSize_push(a, &next, c); }
+			}
+		}
+		if (seg->star) {
+			// Name wildcard: same per-instance split as `[*]`, any child name.
+			Segment *rest = segs + si + 1; size_t nrest = nsegs - si - 1;
+			if (nrest == 0) {
+				VCtx ctx; ctx.anchor = anchor; ctx.found = next; VecVCtx_push(a, out, ctx);
+			} else {
+				for (size_t k = 0; k < next.len; k++) {
+					size_t inst = next.data[k];
+					v_contexts(a, d, &inst, 1, rest, nrest, NODE(d, inst).line, out);
+				}
+			}
+			return;
 		}
 		switch (seg->sel.tag) {
 		case SEL_NONE: cur = next; break;
@@ -3182,6 +3235,25 @@ static void v_check(Arena *a, shcl_doc *d, const VCons *c, VecDiag *out) {
 	}
 }
 
+// Element-wise chain match against the star-bearing schema paths: a `*`
+// segment matches any one name, and every prefix of a path is legal.
+static int star_legal(const VecSeg *pats, size_t npats, S chain) {
+	if (npats == 0) return 0;
+	for (size_t pi = 0; pi < npats; pi++) {
+		const VecSeg *p = &pats[pi];
+		size_t part = 0, start = 0; int match = 1;
+		for (size_t k = 0; k <= chain.n && match; k++) {
+			if (k == chain.n || chain.p[k] == '\0') {
+				S nm = s_slice(chain, start, k);
+				if (part >= p->len || (!p->data[part].star && !s_eq(p->data[part].name, nm))) match = 0;
+				part++; start = k + 1;
+			}
+		}
+		if (match) return 1;
+	}
+	return 0;
+}
+
 // Unknown-field sweep: a schema path legalizes its name chain and every prefix
 // (selectors ignored). Only the topmost unknown node is reported; its subtree
 // is implied unknown and skipped.
@@ -3193,9 +3265,19 @@ static void v_unknown(Arena *a, shcl_doc *d, const VecVCons *cons, VecDiag *out)
 	CMap legal; memset(&legal, 0, sizeof legal);
 	CMap sib_of; memset(&sib_of, 0, sizeof sib_of);
 	VecS *sibs = NULL; size_t nsib = 0, csib = 0;
+	// Paths with a `*` segment can't live in the exact-chain hash; they
+	// match element-wise (a star matches any one name, prefixes included).
+	VecSeg *star_pats = NULL; size_t nstar = 0, cstar = 0;
 	for (size_t i = 0; i < cons->len; i++) {
+		int has_star = 0;
+		for (size_t si = 0; si < cons->data[i].segs.len; si++) if (cons->data[i].segs.data[si].star) { has_star = 1; break; }
+		if (has_star) {
+			if (nstar == cstar) { size_t nc = cstar ? cstar * 2 : 8; star_pats = (VecSeg *)arena_grow(a, star_pats, cstar, nc, sizeof(VecSeg)); cstar = nc; }
+			star_pats[nstar++] = cons->data[i].segs;
+		}
 		SB chain = {0, 0, 0};
 		for (size_t si = 0; si < cons->data[i].segs.len; si++) {
+			if (cons->data[i].segs.data[si].star) break; // no sibling entry for '*'; deeper chains are pattern-only
 			S nm = cons->data[i].segs.data[si].name;
 			S pc = s_dup(a, sb_S(&chain));
 			uint64_t hp = cmap_hash(pc, s_empty());
@@ -3236,7 +3318,7 @@ static void v_unknown(Arena *a, shcl_doc *d, const VecVCons *cons, VecDiag *out)
 		sb_putS(a, &sb2, node->name);
 		S shown = sb_S(&sb2);
 		int found = cmap_get(&legal, cmap_hash(chain, s_empty()), chain, s_empty()) != (size_t)-1;
-		if (!found) {
+		if (!found && !star_legal(star_pats, nstar, chain)) {
 			SB msg = {0, 0, 0};
 			sb_puts(a, &msg, "unknown field '"); sb_putS(a, &msg, shown); sb_puts(a, &msg, "'");
 			size_t sg = cmap_get(&sib_of, cmap_hash(pchain, s_empty()), pchain, s_empty());
@@ -3296,6 +3378,7 @@ void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 		S leaf = s_slice(p, start, p.n);
 		for (size_t k = 0; k < leaf.n; k++) if (leaf.p[k] == '[') { leaf.n = k; break; }
 		leaf = s_trim(leaf);
+		if (leaf.n == 1 && leaf.p[0] == '*') continue; // name wildcard: no single leaf name to disavow
 		if (leaf.n >= 2 && (leaf.p[0] == '"' || leaf.p[0] == '\'') && leaf.p[leaf.n - 1] == leaf.p[0])
 			leaf = s_slice(leaf, 1, leaf.n - 1);
 		if (leaf.n) VecS_push(&tmp, &names, ascii_lower(&tmp, leaf));
@@ -3408,7 +3491,7 @@ static int g_has_wild(const VCons *c) {
 // `[#N]` needs a pre-existing instance and its `#` would start a comment on a
 // binding line; a path with a literal newline cannot be written at all.
 static int g_unwritable(const VCons *c) {
-	for (size_t si = 0; si < c->segs.len; si++) if (c->segs.data[si].sel.tag == SEL_INDEX) return 1;
+	for (size_t si = 0; si < c->segs.len; si++) if (c->segs.data[si].sel.tag == SEL_INDEX || c->segs.data[si].star) return 1;
 	for (size_t k = 0; k < c->path.n; k++) if (c->path.p[k] == '\n') return 1;
 	return 0;
 }

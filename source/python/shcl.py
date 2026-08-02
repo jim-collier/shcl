@@ -620,11 +620,14 @@ def _is_fence_close(line, ch, min_len):
 
 
 class _Segment:
-	__slots__ = ("name", "selector")   # name folded; selector None or tuple
+	# name folded; selector None or tuple; star = bare `*` name wildcard
+	# (quoted "*" stays a literal name).
+	__slots__ = ("name", "selector", "star")
 
-	def __init__(self, name, selector):
+	def __init__(self, name, selector, star=False):
 		self.name = name
 		self.selector = selector
+		self.star = star
 
 
 class _PathError(Exception):
@@ -650,6 +653,17 @@ def _scan_path(inp):
 	`[`; otherwise it separates the value. Raises _PathError on genuinely ambiguous
 	input, which the caller skips with a diagnostic. Returns (segments, value_text)
 	where value_text is None (no colon) or the trimmed text after the colon."""
+	return _scan_path_ex(inp, False)
+
+
+def _scan_lookup(inp):
+	"""Query spelling of _scan_path: also accepts a bare `*` segment (the name
+	wildcard - any child name). Document lines never take it; only lookups
+	(reads, the writer probe, schema paths) do."""
+	return _scan_path_ex(inp, True)
+
+
+def _scan_path_ex(inp, stars):
 	chars = inp
 	n = len(chars)
 
@@ -682,9 +696,14 @@ def _scan_path(inp):
 		pos = skip_ws(pos)
 		if pos >= n:
 			raise _PathError("empty path")
-		# Field name: quoted or bare.
+		# Field name: quoted, bare, or (lookups only) the `*` name wildcard.
+		star = False
 		if chars[pos] == '"' or chars[pos] == "'":
 			name, pos = read_quoted(pos)
+		elif stars and chars[pos] == "*":
+			pos += 1
+			star = True
+			name = "*"
 		else:
 			start = pos
 			while pos < n and _is_bare_name_char(chars[pos]):
@@ -727,7 +746,9 @@ def _scan_path(inp):
 			if pos >= n or chars[pos] != "]":
 				raise _PathError("unterminated selector")
 			pos = skip_ws(pos + 1)
-		segments.append(_Segment(_fold_name(name), selector))
+		if star and selector is not None:
+			raise _PathError("selector on a name wildcard")
+		segments.append(_Segment(_fold_name(name), selector, star))
 		if pos >= n:
 			return segments, None
 		c = chars[pos]
@@ -1414,7 +1435,26 @@ class Document:
 		for i, seg in enumerate(segs):
 			nxt = []
 			for node in cur:
-				nxt.extend(self._children_named(node, seg.name))
+				if seg.star:
+					nxt.extend(self.arena[node].children)
+				else:
+					nxt.extend(self._children_named(node, seg.name))
+			if seg.star:
+				# Name wildcard: same per-slot split as `[*]`, over every child.
+				rest = segs[i + 1:]
+				slots = []
+				for inst in nxt:
+					if not rest:
+						slots.append(inst)
+					else:
+						r = self._resolve_from([inst], rest)
+						if r[0] == "one":
+							slots.append(r[1])
+						elif r[0] == "none":
+							slots.append(Status.NotFound)
+						else:
+							slots.append(Status.Multiple)
+				return ("slots", slots)
 			sel = seg.selector
 			if sel is None:
 				cur = nxt
@@ -1449,7 +1489,7 @@ class Document:
 	def _resolve(self, path):
 		# Returns a _resolve_from result, or ("err", Status).
 		try:
-			segments, value_text = _scan_path(path)
+			segments, value_text = _scan_lookup(path)
 		except _PathError:
 			return ("err", Status.NotFound)
 		if value_text is not None:
@@ -1557,7 +1597,7 @@ class Document:
 		bare False, so a consumer's error message need not guess. Writable means
 		the same validation _place() runs would pass; nothing is created."""
 		try:
-			segments, value_text = _scan_path(path)
+			segments, value_text = _scan_lookup(path)
 		except _PathError:
 			return WriteReason.BadPath
 		if value_text is not None:
@@ -1572,6 +1612,8 @@ class Document:
 		# childless), so an index segment past that point is unresolvable.
 		probe = ROOT
 		for seg in segments:
+			if seg.star:
+				return WriteReason.Wildcard
 			sel = seg.selector
 			if sel is not None and sel[0] == "wild":
 				return WriteReason.Wildcard
@@ -1611,11 +1653,13 @@ class Document:
 		if self.write_reason(path) != WriteReason.Writable:
 			return None
 		try:
-			segments, _ = _scan_path(path)
+			segments, _ = _scan_lookup(path)
 		except _PathError:
 			return None
 		cur = ROOT
 		for seg in segments:
+			if seg.star:
+				return None   # write_reason gates this; belt only
 			sel = seg.selector
 			if sel is None:
 				cur = self._child_or_create(cur, seg.name)
@@ -2182,7 +2226,19 @@ class Document:
 		for i, seg in enumerate(segs):
 			nxt = []
 			for n in cur:
-				nxt.extend(self._children_named(n, seg.name))
+				if seg.star:
+					nxt.extend(self.arena[n].children)
+				else:
+					nxt.extend(self._children_named(n, seg.name))
+			if seg.star:
+				# Name wildcard: same per-instance split as `[*]`, any child name.
+				rest = segs[i + 1:]
+				if not rest:
+					out.append((anchor, nxt))
+				else:
+					for inst in nxt:
+						self._v_contexts([inst], rest, self.arena[inst].line, out)
+				return
 			sel = seg.selector
 			if sel is None:
 				cur = nxt
@@ -2325,9 +2381,16 @@ class Document:
 		# used to rebuild every chain per unknown field, which bit hardest on
 		# the wholesale-unmatched documents the feature exists for.
 		siblings = {}
+		# Paths with a `*` segment can't live in the exact-chain hash; they
+		# match element-wise (a star matches any one name, prefixes included).
+		star_pats = []
 		for c in cons:
+			if any(s.star for s in c.segs):
+				star_pats.append(c.segs)
 			chain = ""
 			for s in c.segs:
+				if s.star:
+					break   # no sibling entry for '*'; deeper chains are pattern-only
 				siblings.setdefault(chain, []).append(s.name)
 				chain = s.name if not chain else chain + "\0" + s.name
 				legal.add(chain)
@@ -2337,7 +2400,7 @@ class Document:
 			node = self.arena[n]
 			chain = node.name if not pchain else pchain + "\0" + node.name
 			shown = node.name if not pshown else pshown + "." + node.name
-			if chain not in legal:
+			if chain not in legal and not _star_legal(star_pats, chain):
 				hint = _v_suggest(siblings, pchain, node.name)
 				_vdiag(out, node.line, "unknown field '{}'{}".format(shown, hint))
 				continue
@@ -2387,7 +2450,10 @@ def suppress_declared_repeats(schema, diags):
 			continue
 		if not rep.value or rep.value[-1] <= 1:
 			continue
-		leaf = _trim(p.rsplit(".", 1)[-1].split("[", 1)[0]).strip("\"'")
+		raw = _trim(p.rsplit(".", 1)[-1].split("[", 1)[0])
+		if raw == "*":
+			continue   # name wildcard: no single leaf name to disavow
+		leaf = raw.strip("\"'")
 		if leaf:
 			names.append(_ascii_lower(leaf))
 	if not names:
@@ -2929,7 +2995,7 @@ def _build_schema(schema):
 			_vdiag(faults, node.line, "bad schema path")
 			continue
 		try:
-			segs, value_text = _scan_path(path)
+			segs, value_text = _scan_lookup(path)
 		except _PathError:
 			segs, value_text = None, None
 		if segs is None or value_text is not None:
@@ -3164,7 +3230,7 @@ def generate(schema):
 	# on a binding line; a path with a literal newline cannot be written at
 	# all. Both go to the trailing note instead of emitting a broken line.
 	def unwritable(c):
-		return any(s.selector is not None and s.selector[0] == "idx" for s in c.segs) or "\n" in c.path
+		return any((s.selector is not None and s.selector[0] == "idx") or s.star for s in c.segs) or "\n" in c.path
 
 	# Live concrete paths materialize instances; decide which must-exist
 	# wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -3232,6 +3298,18 @@ def _edit_distance(a, b):
 			cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
 		prev, cur = cur, prev
 	return prev[len(b)]
+
+
+def _star_legal(pats, chain):
+	"""Element-wise chain match against the star-bearing schema paths: a `*`
+	segment matches any one name, and every prefix of a path is legal."""
+	if not pats:
+		return False
+	parts = chain.split("\0")
+	return any(
+		len(p) >= len(parts) and all(p[i].star or p[i].name == seg for i, seg in enumerate(parts))
+		for p in pats
+	)
 
 
 def _v_suggest(siblings, parent_chain, name):

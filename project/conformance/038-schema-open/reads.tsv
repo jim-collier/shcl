@@ -1,0 +1,4 @@
+query	type	expected	status	level	slots
+-	load	ok	-
+indicators.*.period	int[]	20|50|0	NotFound	standard	Good|Good|NotFound
+indicators.*	count	3	-

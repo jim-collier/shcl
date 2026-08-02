@@ -185,6 +185,8 @@ Both open points are settled:
 
 - No string/array length bounds. They would reopen the byte-versus-code-point metric already settled for merge keys, for modest benefit; an `allowed` enum or the consuming program covers the need.
 
+**Open sections use a name-position wildcard, and it lives in the lookup grammar, not just the schema.** A map-shaped section ("any child name under `indicators`, each shaped like this") had no schema spelling at all - wildcards selected instances, never names. Among the candidates (a `*` name segment, an `open:` constraint key, glob patterns), the bare `*` segment won: it reads exactly like the `[*]` story one level up, needs no new vocabulary word, and composes with deeper paths (`indicators.*.period`) without a second construct. We decided it also belongs in reads, not only schemas - `Get("*.port")` slots across children of any name the way `[*]` slots across instances - so the query language stays one language; the Writer refuses it like any wildcard (paths must name their target to be writable), and a field literally named `*` stays addressable quoted (`"*"`), which is never a wildcard. Suggestions ("did you mean") do not reach below a `*` - there is no fixed sibling list to suggest from - and a `repeat` on a `*` leaf disavows no `H001`.
+
 ### Formatter
 
 Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting, redundancy collapsed, value text untouched (it cannot know types).
