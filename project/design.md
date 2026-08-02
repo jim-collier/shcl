@@ -280,6 +280,8 @@ The responsibility is split rather than duplicate the pipeline:
 
 - Bash 3.2 (`source/bash/shcl.bash`) was targeted rather than POSIX sh (mostly defined in 1979). The wrapper earns its keep by being dual-purpose: run it as a script, or source it and call functions. That dual mode and the typed helpers read far cleaner with Bash's arrays and `local` than with portable sh. A thin passthrough would give a sourcing caller nothing over the binary itself.
 
+- PowerShell (`source/powershell/shcl.ps1`) is the second shipped wrapper, built to the same design: dual-mode (run, or dot-source for the identical `shcl`/`shcl_*` helper names), the same binary-resolution order, and exit codes passed through into `$LASTEXITCODE`. It deliberately has no script-level param block - one would try to bind subcommand words - so every argument lands in `$args` verbatim. Like the Bash wrapper it forwards rather than parses, so it is not in the cross-binding differential.
+
 - One `shcl` function is the whole CLI. `shcl_get`, `shcl_int`, `shcl_bool`, and friends are one-line typed sugar. Both modes take the same arguments and return the binary's exit code unchanged, so a not-found or empty read stays a distinct nonzero.
 
 - Two things a sourced tool must not do, and doesn't:

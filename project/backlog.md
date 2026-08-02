@@ -115,21 +115,24 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 - 🔘 Schema fragments. From nano-git-db, their top feature request: the schema language can't express recursion (their arbitrarily-nesting layout blocks are generated to a fixed depth of 8, past which validation silently stops and correct keys start reporting as unknown) or path aliases (wrapped vs flat spellings force ~60 lines of string surgery over their own schema file at init). Both are the same missing idea - "this subtree has the shape of that one" - and a single fragment/reference construct closes both, taking their 99 hand-written field entries plus two generators down to something reviewable.
 	- Big. Design first, post-1.0. Weigh hard against keeping the schema language small, but two independent workarounds in the most rigorous consumer argue it earns its keep.
 
-- 🔘 Lower the go directive to the tested floor. From convert-base-v2: go.mod declares 1.24, and that directive is their recorded reason for vendoring the file instead of using it as a module - it would drag their deliberately-1.21 project up. The identical file compiles and passes their full suite under 1.21, so 1.24 is declaration, not need; find the real floor (generics suggest possibly 1.18) and declare that.
+- ✅ Lower the go directive to the tested floor. From convert-base-v2: go.mod declares 1.24, and that directive is their recorded reason for vendoring the file instead of using it as a module - it would drag their deliberately-1.21 project up. The identical file compiles and passes their full suite under 1.21, so 1.24 is declaration, not need; find the real floor (generics suggest possibly 1.18) and declare that.
 
-- 🔘 Docs batch from the feedback round:
+- ✅ Docs batch from the feedback round:
+	- Landed in the spec (Empty-vs-NotFound as an advertised full-tier feature; a "choosing [#i] vs [value] when mapping entities" bullet in the traversal section) and in the Go package docs (a "writing a mapper" worked example: one-shot load, Count+[#i] iteration, Children for open sections, QuoteSegment, raw blocks). README deliberately untouched - it carries an in-flight edit; its pass can fold these in later. IndexOf not added - Count+[#i] covers the need without growing the surface.
 	- Advertise the Empty vs NotFound distinction. convert-base-v2 mapped it straight onto their tri-state marker convention with no adapter ("empty means explicitly disabled, absent means default") and called it rare among config parsers - it belongs in the README/spec as a feature, not something discovered by reading source.
 	- A spec paragraph on choosing `[#i]` vs `[value]` selectors when mapping entities: by-value misreads an entity whose name is numeric and collapses two same-named entities, and since matching is against the display form, a scalar spelled `"a, b"` and the two-element list meet the same selector. nano-git-db and convert-base-v2 each worked these out the hard way; nano-git-db suggests an IndexOf(path, value) alongside.
 	- A "writing a mapper" worked example in the Go package docs: the exported surface is 60+ methods, and the shape of a real consumer - descend by path prefix, Count then `[#i]`, schema validation for line-numbered errors, fences for verbatim - cost them most of a day to discover.
 
-- 🔘 Hosted CI runs its four pinned actions on a deprecated Node.
+- ✅ Hosted CI runs its four pinned actions on a deprecated Node.
 	- All four are pinned by commit SHA and target Node 20, which the runners now force onto Node 24 with a warning on every run.
 	- Working today, and the warning is the only symptom. It stops working whenever the runners drop the shim.
 	- Fix is to re-pin each action to a release built for the current Node, keeping the pin-by-SHA-with-tag-in-a-comment shape.
 
-- 🔘 Add existence of PowerShell wrapper acknowledgement to design.md
+- ✅ Add existence of PowerShell wrapper acknowledgement to design.md
+	- Added to the Shell wrappers section: dual-mode design, no param block (verbatim $args), exit codes into $LASTEXITCODE, not in the differential (a forwarder).
 
-- 🔘 Glossary of terms
+- ✅ Glossary of terms
+	- Covered by the spec's Terminology section, now extended with the wider-surface nouns (trivia, raw block/fence, canonical form, layer, schema, corpus).
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.

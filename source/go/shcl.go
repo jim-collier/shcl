@@ -8,6 +8,35 @@
 // two byte-for-byte identical, so any divergence here is a bug by definition.
 // Structure deliberately mirrors the reference over Go idiom, so a fix there
 // ports here by mechanical diff (parity over idiom - see style-guide.md).
+//
+// Writing a mapper - the shape of a real consumer that walks a document into
+// its own model (the surface is 60+ methods, but a mapper needs about six):
+//
+//	doc := shcl.LoadAndValidate(text, schemaText, shcl.Standard)
+//	if doc.ErrorCount() > 0 {
+//		for _, d := range doc.Diagnostics() { // one combined list: parse + validation
+//			log.Printf("line %d: %s: %s", d.Line, d.Code, d.Message)
+//		}
+//	}
+//	// Iterate instances positionally: Count + [#i]. By-value selectors are
+//	// for point lookups; they collapse same-named entities and misread
+//	// numeric names, so a mapper walks by index.
+//	for i := 0; i < doc.Count("table"); i++ {
+//		base := fmt.Sprintf("table[#%d]", i)
+//		name := doc.ReadString(base).Value // the discriminator
+//		// Open (map-shaped) sections: ask what keys exist, in file order.
+//		for _, col := range doc.Children(base + ".columns") {
+//			path := base + ".columns." + shcl.QuoteSegment(col) // user-typed names are quoted, never spliced bare
+//			r := doc.ReadString(path)
+//			if r.Status != shcl.Good {
+//				log.Printf("line %d: bad column %q", r.Line, col)
+//			}
+//			_ = r.Value
+//		}
+//		_ = name
+//	}
+//	// Verbatim multi-line content (DDL, templates) lives in fenced raw
+//	// blocks: ReadRaw returns it byte-for-byte, ReadRawInfo the fence tag.
 package shcl
 
 import (
