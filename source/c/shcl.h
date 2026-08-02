@@ -116,6 +116,17 @@ shcl_str shcl_to_canonical(shcl_doc *d);
 size_t shcl_count(shcl_doc *d, const char *path, size_t plen);
 // Instance display values, in file order. Writes an arena-owned array to *out.
 size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out);
+// 1-based source line of the binding at a path, for consumer checks the
+// schema cannot express. 0 when the path does not resolve to exactly one
+// node, or the node was writer-built. Merged instances cite the first
+// binding's line, matching diagnostics.
+size_t shcl_line(shcl_doc *d, const char *path, size_t plen);
+// Child field names under a path, in file order, duplicates included - the
+// "what keys are in this section?" question shcl_paths (deduplicated,
+// path-shaped) cannot answer. An empty or whitespace-only path enumerates the
+// top level. Names come back as stored; shcl_quote_segment makes one
+// splice-safe in a path. Writes an arena-owned array to *out.
+size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out);
 // Every field path in the document, in file order, deduplicated - a query
 // recipe for tooling. A segment that is not bare-name-safe is emitted quoted
 // and escaped - the form the path scanner accepts - so each path is a
@@ -1805,6 +1816,28 @@ size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out
 	shcl_str *arr = (shcl_str *)arena_alloc(a, (nodes.len ? nodes.len : 1) * sizeof(shcl_str));
 	for (size_t k = 0; k < nodes.len; k++) arr[k] = value_display(a, &NODE(d, nodes.data[k]).value);
 	*out = arr; return nodes.len;
+}
+
+size_t shcl_line(shcl_doc *d, const char *path, size_t plen) {
+	S p; p.p = path; p.n = plen;
+	Resolved r; if (!resolve(d, p, &r)) return 0;
+	if (r.kind != R_ONE) return 0;
+	return NODE(d, r.one).line; // writer-built nodes carry 0
+}
+
+size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {
+	// Names come back as stored (already arena-owned); only the array is new.
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
+	size_t node = ROOT;
+	if (s_trim(p).n != 0) {
+		Resolved r;
+		if (!resolve(d, p, &r) || r.kind != R_ONE) { *out = (shcl_str *)arena_alloc(a, sizeof(shcl_str)); return 0; }
+		node = r.one;
+	}
+	VecSize kids = NODE(d, node).children;
+	shcl_str *arr = (shcl_str *)arena_alloc(a, (kids.len ? kids.len : 1) * sizeof(shcl_str));
+	for (size_t k = 0; k < kids.len; k++) { arr[k].p = NODE(d, kids.data[k]).name.p; arr[k].n = NODE(d, kids.data[k]).name.n; }
+	*out = arr; return kids.len;
 }
 
 // --- Writer ------------------------------------------------------------------

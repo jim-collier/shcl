@@ -133,12 +133,20 @@ pub enum Status {
 /// path resolved), so a caller can always recover what was actually in the file.
 /// Array reads also carry one status per slot (element, or wildcard instance) in
 /// `slots`; `status` is then the worst slot. Scalar reads leave `slots` empty.
+/// `line` is the 1-based source line of the resolved binding (0 when the path
+/// did not resolve to one node, or the node was writer-built), so a consumer
+/// check the schema cannot express can still cite the line. `quoted` is true
+/// when the read's single scalar element was quoted in the source - the escape
+/// hatch that lets a downstream language reserve `@null` while `"@null"` stays
+/// a plain string. Arrays, raw blocks, and empties leave it false.
 #[derive(Debug, Clone)]
 pub struct Read<T> {
 	pub value: T,
 	pub status: Status,
 	pub raw: Option<String>,
 	pub slots: Vec<Status>,
+	pub line: usize,
+	pub quoted: bool,
 }
 
 impl<T> Read<T> {
@@ -148,6 +156,8 @@ impl<T> Read<T> {
 			status,
 			raw,
 			slots: Vec::new(),
+			line: 0,
+			quoted: false,
 		}
 	}
 	fn with_slots(value: T, status: Status, raw: Option<String>, slots: Vec<Status>) -> Read<T> {
@@ -156,7 +166,14 @@ impl<T> Read<T> {
 			status,
 			raw,
 			slots,
+			line: 0,
+			quoted: false,
 		}
+	}
+	fn at(mut self, line: usize, quoted: bool) -> Read<T> {
+		self.line = line;
+		self.quoted = quoted;
+		self
 	}
 	pub fn ok(&self) -> bool {
 		matches!(self.status, Status::Good | Status::Empty)
@@ -1639,6 +1656,37 @@ impl Document {
 		out
 	}
 
+	/// 1-based source line of the binding at a path, for consumer checks the
+	/// schema cannot express. 0 when the path does not resolve to exactly one
+	/// node, or the node was writer-built. Merged instances cite the first
+	/// binding's line, matching diagnostics.
+	pub fn line(&self, path: &str) -> usize {
+		match self.resolve(path) {
+			Ok(Resolved::One(n)) => self.arena[n].line,
+			_ => 0,
+		}
+	}
+
+	/// Child field names under a path, in file order, duplicates included -
+	/// the "what keys are in this section?" question paths() (deduplicated,
+	/// path-shaped) cannot answer. "" enumerates the top level. Names come
+	/// back as stored; quote_segment() makes one splice-safe in a path.
+	pub fn children(&self, path: &str) -> Vec<String> {
+		let node = if path.trim().is_empty() {
+			ROOT
+		} else {
+			match self.resolve(path) {
+				Ok(Resolved::One(n)) => n,
+				_ => return Vec::new(),
+			}
+		};
+		self.arena[node]
+			.children
+			.iter()
+			.map(|&c| self.arena[c].name.clone())
+			.collect()
+	}
+
 	/// Instance values at a path, in file order. Wildcard slots that did not
 	/// resolve stay in the list as "" so indices keep matching count().
 	pub fn instances(&self, path: &str) -> Vec<String> {
@@ -2681,12 +2729,13 @@ impl Document {
 		};
 		let value = &self.arena[node].value;
 		let raw = Some(self.raw_of(node));
+		let line = self.arena[node].line;
 		match self.scalar_element(value) {
 			Ok(el) => match coerce(el) {
-				Some(v) => Read::new(v, Status::Good, raw),
-				None => Read::new(T::default(), Status::BadType, raw),
+				Some(v) => Read::new(v, Status::Good, raw).at(line, el.quoted),
+				None => Read::new(T::default(), Status::BadType, raw).at(line, el.quoted),
 			},
-			Err(st) => Read::new(T::default(), st, raw),
+			Err(st) => Read::new(T::default(), st, raw).at(line, false),
 		}
 	}
 
@@ -2718,11 +2767,14 @@ impl Document {
 		};
 		let value = &self.arena[node].value;
 		let raw = Some(self.raw_of(node));
+		let line = self.arena[node].line;
 		match value {
-			Value::Empty => Read::new(String::new(), Status::Empty, raw),
-			Value::Raw { content, .. } => Read::new(content.clone(), Status::Good, raw),
+			Value::Empty => Read::new(String::new(), Status::Empty, raw).at(line, false),
+			Value::Raw { content, .. } => {
+				Read::new(content.clone(), Status::Good, raw).at(line, false)
+			}
 			Value::Cell(els) if els.len() == 1 => {
-				Read::new(apply_escapes(&els[0].text), Status::Good, raw)
+				Read::new(apply_escapes(&els[0].text), Status::Good, raw).at(line, els[0].quoted)
 			}
 			// Canonical inline form (quoting + escapes intact), so the string
 			// re-parses to the same array - not the bare display join.
@@ -2730,7 +2782,8 @@ impl Document {
 				els.iter().map(emit_element).collect::<Vec<_>>().join(", "),
 				Status::Good,
 				raw,
-			),
+			)
+			.at(line, false),
 		}
 	}
 
@@ -2742,10 +2795,13 @@ impl Document {
 		};
 		let value = &self.arena[node].value;
 		let raw = Some(self.raw_of(node));
+		let line = self.arena[node].line;
 		match value {
-			Value::Raw { content, .. } => Read::new(content.clone(), Status::Good, raw),
-			Value::Empty => Read::new(String::new(), Status::Empty, raw),
-			_ => Read::new(String::new(), Status::BadType, raw),
+			Value::Raw { content, .. } => {
+				Read::new(content.clone(), Status::Good, raw).at(line, false)
+			}
+			Value::Empty => Read::new(String::new(), Status::Empty, raw).at(line, false),
+			_ => Read::new(String::new(), Status::BadType, raw).at(line, false),
 		}
 	}
 
@@ -2756,9 +2812,10 @@ impl Document {
 			Err(st) => return Read::new(String::new(), st, None),
 		};
 		let raw = Some(self.raw_of(node));
+		let line = self.arena[node].line;
 		match &self.arena[node].value {
-			Value::Raw { info, .. } => Read::new(info.clone(), Status::Good, raw),
-			_ => Read::new(String::new(), Status::BadType, raw),
+			Value::Raw { info, .. } => Read::new(info.clone(), Status::Good, raw).at(line, false),
+			_ => Read::new(String::new(), Status::BadType, raw).at(line, false),
 		}
 	}
 
@@ -2811,9 +2868,12 @@ impl Document {
 			Ok(Resolved::One(n)) => {
 				let value = &self.arena[n].value;
 				let raw = Some(self.raw_of(n));
+				let line = self.arena[n].line;
 				match value {
-					Value::Empty => Read::new(Vec::new(), Status::Empty, raw),
-					Value::Raw { .. } => Read::new(Vec::new(), Status::BadType, raw),
+					Value::Empty => Read::new(Vec::new(), Status::Empty, raw).at(line, false),
+					Value::Raw { .. } => {
+						Read::new(Vec::new(), Status::BadType, raw).at(line, false)
+					}
 					Value::Cell(els) => {
 						let mut out = Vec::with_capacity(els.len());
 						let mut sts = Vec::with_capacity(els.len());
@@ -2830,7 +2890,7 @@ impl Document {
 							}
 						}
 						let status = sts.iter().copied().max().unwrap_or(Status::Good);
-						Read::with_slots(out, status, raw, sts)
+						Read::with_slots(out, status, raw, sts).at(line, false)
 					}
 				}
 			}
