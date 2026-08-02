@@ -68,7 +68,8 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 ### Features and enhancements
 
-- 🔘 Setters should say why they failed. From TradeClanker: Set* returns a bare pass/fail, and false covers an empty path, a malformed path, a wildcard, a depth overrun, and an unresolvable index indistinguishably - their workbench's error message is literally a guess because the library won't say. A small reason enum (or per-binding equivalent) on the write result fixes it; CLI behavior stays exit 1.
+- ✅ Setters should say why they failed.
+	- Done as an additive probe (setter returns are frozen post-1.0): `WriteReason(path)` in all four bindings + veneer runs the writer's exact validation without creating anything and names the failure - Writable/BadPath/ValueInPath/Wildcard/NoSuchIndex/TooDeep. place() now pre-gates on it, so the two can't drift. CLI stays exit 1. From TradeClanker: Set* returns a bare pass/fail, and false covers an empty path, a malformed path, a wildcard, a depth overrun, and an unresolvable index indistinguishably - their workbench's error message is literally a guess because the library won't say. A small reason enum (or per-binding equivalent) on the write result fixes it; CLI behavior stays exit 1.
 	- All four bindings move together; the write corpus pins outputs, not the reason surface, so exposure should be small - verify.
 
 - ✅ Building a path from a user-typed name is injection.

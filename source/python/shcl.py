@@ -50,6 +50,18 @@ class Status(Enum):
 	Multiple = 5
 
 
+class WriteReason(Enum):
+	"""Why a write would fail (write_reason()): the distinctions behind a
+	setter's bare False. Writable = the path passes the writer's validation;
+	the rest name the five ways it cannot."""
+	Writable = 0
+	BadPath = 1       # empty path, or the scanner rejected it
+	ValueInPath = 2   # the path carries a `: value` part; writes take values separately
+	Wildcard = 3      # wildcard selectors are query-only
+	NoSuchIndex = 4   # a `[#k]` instance that does not (and can never) exist
+	TooDeep = 5       # deeper than the nesting cap; the writer never creates past it
+
+
 class Diagnostic:
 	__slots__ = ("line", "severity", "message", "code")
 
@@ -1415,35 +1427,35 @@ class Document:
 				return c
 		return self._new_child(parent, name, _empty())
 
-	def _place(self, path):
-		"""Walk (creating as needed) to the node a write targets, or None if the
-		path is unusable for a write (bad scan, a value part, a wildcard, or a
-		missing indexed instance)."""
+	def write_reason(self, path):
+		"""Why a write at this path would fail - the reason behind a setter's
+		bare False, so a consumer's error message need not guess. Writable means
+		the same validation _place() runs would pass; nothing is created."""
 		try:
 			segments, value_text = _scan_path(path)
 		except _PathError:
-			return None
-		if value_text is not None or not segments:
-			return None
+			return WriteReason.BadPath
+		if value_text is not None:
+			return WriteReason.ValueInPath
+		if not segments:
+			return WriteReason.BadPath
 		# Writer side of the load-time nesting cap: never create deeper.
 		if len(segments) > MAX_DEPTH:
-			return None
-		# Validate before creating anything, so a doomed path (wildcard, or a
-		# `[#k]` instance that does not and can never exist) leaves no
-		# half-created intermediates behind. Once this walk falls off the
-		# existing tree, a later `[#k]` can never match: fresh intermediates
-		# are created childless.
+			return WriteReason.TooDeep
+		# The probe walk _place() validates with: once it falls off the existing
+		# tree, a later `[#k]` can never match (fresh intermediates are created
+		# childless), so an index segment past that point is unresolvable.
 		probe = ROOT
 		for seg in segments:
 			sel = seg.selector
 			if sel is not None and sel[0] == "wild":
-				return None
+				return WriteReason.Wildcard
 			if sel is not None and sel[0] == "idx":
 				if probe is None:
-					return None
+					return WriteReason.NoSuchIndex
 				matches = [c for c in self.arena[probe].children if self.arena[c].name == seg.name]
 				if sel[1] >= len(matches):
-					return None
+					return WriteReason.NoSuchIndex
 				probe = matches[sel[1]]
 			elif sel is not None and sel[0] == "val":
 				if probe is not None:
@@ -1462,6 +1474,21 @@ class Document:
 							found = c
 							break
 					probe = found
+		return WriteReason.Writable
+
+	def _place(self, path):
+		"""Walk (creating as needed) to the node a write targets. A trailing
+		name with no selector hits the first same-named instance (or a new one);
+		a `[value]` selector selects the matching instance or creates it; `[#k]`
+		must already exist. None = path unusable for a write (write_reason()
+		says why). Validation runs first, so a doomed path leaves no
+		half-created intermediates behind."""
+		if self.write_reason(path) != WriteReason.Writable:
+			return None
+		try:
+			segments, _ = _scan_path(path)
+		except _PathError:
+			return None
 		cur = ROOT
 		for seg in segments:
 			sel = seg.selector

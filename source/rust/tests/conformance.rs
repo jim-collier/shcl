@@ -670,6 +670,26 @@ fn write_bad_ops_are_rejected() {
 }
 
 #[test]
+fn write_reason_names_the_failure() {
+	// The reason behind a setter's bare false. Same fixture in every runner.
+	let doc = Document::parse("a:\n\tb: 1\n");
+	use shcl::WriteReason::*;
+	assert_eq!(doc.write_reason("a.b"), Writable);
+	assert_eq!(doc.write_reason("a.new[Boston].x"), Writable); // creatable
+	assert_eq!(doc.write_reason(""), BadPath);
+	assert_eq!(doc.write_reason("a..b"), BadPath);
+	assert_eq!(doc.write_reason("a.b: 2"), ValueInPath);
+	assert_eq!(doc.write_reason("a[*].b"), Wildcard);
+	assert_eq!(doc.write_reason("a[#5].b"), NoSuchIndex);
+	assert_eq!(doc.write_reason("nope[#0].b"), NoSuchIndex);
+	let deep = vec!["d"; 513].join(".");
+	assert_eq!(doc.write_reason(&deep), TooDeep);
+	// The probe never creates: the doc is unchanged after all of the above.
+	assert_eq!(doc.count("a"), 1);
+	assert_eq!(doc.paths(), vec!["a", "a.b"]);
+}
+
+#[test]
 fn read_surface_line_quoted_children() {
 	// line/quoted on the read result, line(path), children(path). Same
 	// fixture in every runner (C pins the accessors; its read structs stay

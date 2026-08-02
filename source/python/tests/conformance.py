@@ -498,6 +498,28 @@ def main():
 	qr = pdoc.read_int(shcl.quote_segment("q n"))
 	if (qr.value, qr.status) != (3, shcl.Status.Good):
 		raise SystemExit("quoted segment read failed")
+	# write_reason: the reason behind a setter's bare False. Same fixture in
+	# every runner.
+	wdoc = shcl.Document.parse("a:\n\tb: 1\n")
+	for wpath, want in (
+		("a.b", shcl.WriteReason.Writable),
+		("a.new[Boston].x", shcl.WriteReason.Writable),   # creatable
+		("", shcl.WriteReason.BadPath),
+		("a..b", shcl.WriteReason.BadPath),
+		("a.b: 2", shcl.WriteReason.ValueInPath),
+		("a[*].b", shcl.WriteReason.Wildcard),
+		("a[#5].b", shcl.WriteReason.NoSuchIndex),
+		("nope[#0].b", shcl.WriteReason.NoSuchIndex),
+		(".".join(["d"] * 513), shcl.WriteReason.TooDeep),
+	):
+		got = wdoc.write_reason(wpath)
+		if got is not want:
+			raise SystemExit("write_reason({!r}) got {} want {}".format(wpath, got, want))
+	# The probe never creates: the doc is unchanged after all of the above.
+	if wdoc.count("a") != 1:
+		raise SystemExit("write_reason probe created an instance")
+	if wdoc.paths() != ["a", "a.b"]:
+		raise SystemExit("write_reason probe changed paths: {}".format(wdoc.paths()))
 	# line/quoted on the read result, line(path), children(path). Same
 	# fixture in every runner (C pins the accessors; its read structs stay
 	# value+status).

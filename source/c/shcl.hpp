@@ -20,6 +20,7 @@ namespace shcl {
 
 enum class Strictness { Loose = SHCL_LOOSE, Standard = SHCL_STANDARD, Strict = SHCL_STRICT };
 enum class Status { Good = SHCL_GOOD, Empty = SHCL_EMPTY, NotFound = SHCL_NOT_FOUND, BadType = SHCL_BAD_TYPE, Multiple = SHCL_MULTIPLE };
+enum class WriteReason { Writable = SHCL_W_WRITABLE, BadPath = SHCL_W_BAD_PATH, ValueInPath = SHCL_W_VALUE_IN_PATH, Wildcard = SHCL_W_WILDCARD, NoSuchIndex = SHCL_W_NO_SUCH_INDEX, TooDeep = SHCL_W_TOO_DEEP };
 
 template <class T> struct Read {
 	T value{};
@@ -106,6 +107,10 @@ public:
 	// 1-based source line of the binding at a path; 0 when it does not resolve
 	// to exactly one node or the node was writer-built.
 	std::size_t line(std::string_view p) const { return shcl_line(d_, p.data(), p.size()); }
+
+	// Why a write at a path would fail - the reason behind a setter's bare
+	// failure. Probes only; never creates.
+	WriteReason write_reason(std::string_view p) const { return static_cast<WriteReason>(shcl_write_reason_(d_, p.data(), p.size())); }
 
 	// Child field names under a path, file order, duplicates included; "" is
 	// the top level. Names as stored - quote_segment() splices one into a path.

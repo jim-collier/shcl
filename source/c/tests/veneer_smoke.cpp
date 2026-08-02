@@ -54,6 +54,8 @@ int main() {
 	auto kids = doc.children("");
 	CHECK(kids.size() == 7 && kids[0] == "name" && kids[5] == "city" && kids[6] == "city");
 	CHECK(doc.children("nope").empty());
+	CHECK(doc.write_reason("port") == shcl::WriteReason::Writable);
+	CHECK(doc.write_reason("city[*]") == shcl::WriteReason::Wildcard);
 	auto multi = doc.read_string("city");
 	CHECK(multi.status == shcl::Status::Multiple);
 
