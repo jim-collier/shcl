@@ -113,6 +113,10 @@ fn diag_code(msg: &str) -> &'static str {
 		"V092"
 	} else if msg.starts_with("bad schema path") {
 		"V093"
+	} else if msg.starts_with("bad schema fragment") {
+		"V094"
+	} else if msg.starts_with("unknown schema fragment ") {
+		"V095"
 	} else if msg.starts_with("schema failed to load") {
 		"V099"
 	} else {
@@ -1693,33 +1697,43 @@ pub fn quote_segment(name: &str) -> String {
 /// `check --schema` and load_and_validate; call it wherever doc diagnostics
 /// and a schema meet.
 pub fn suppress_declared_repeats(schema: &Document, diags: &mut Vec<Diagnostic>) {
-	let paths = schema.instances("field");
+	// Top-level fields plus every fragment's fields: a repeat declared inside
+	// a mounted shape disavows the hint the same way.
+	let mut groups: Vec<(String, Vec<String>)> =
+		vec![("field".to_string(), schema.instances("field"))];
+	for k in 0..schema.count("fragment") {
+		let base = format!("fragment[#{}].field", k);
+		let paths = schema.instances(&base);
+		groups.push((base, paths));
+	}
 	let mut names: Vec<String> = Vec::new();
-	for (i, p) in paths.iter().enumerate() {
-		// repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound that
-		// matters here is the last one.
-		let rep = schema.read_int_array(&format!("field[#{}].repeat", i));
-		if rep.status != Status::Good {
-			continue;
-		}
-		match rep.value.last() {
-			Some(&u) if u > 1 => {}
-			_ => continue,
-		}
-		let raw = p
-			.rsplit('.')
-			.next()
-			.unwrap_or("")
-			.split('[')
-			.next()
-			.unwrap_or("")
-			.trim();
-		if raw == "*" {
-			continue; // name wildcard: no single leaf name to disavow
-		}
-		let leaf = raw.trim_matches(|c| c == '"' || c == '\'');
-		if !leaf.is_empty() {
-			names.push(leaf.to_ascii_lowercase());
+	for (base, paths) in &groups {
+		for (i, p) in paths.iter().enumerate() {
+			// repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
+			// that matters here is the last one.
+			let rep = schema.read_int_array(&format!("{}[#{}].repeat", base, i));
+			if rep.status != Status::Good {
+				continue;
+			}
+			match rep.value.last() {
+				Some(&u) if u > 1 => {}
+				_ => continue,
+			}
+			let raw = p
+				.rsplit('.')
+				.next()
+				.unwrap_or("")
+				.split('[')
+				.next()
+				.unwrap_or("")
+				.trim();
+			if raw == "*" {
+				continue; // name wildcard: no single leaf name to disavow
+			}
+			let leaf = raw.trim_matches(|c| c == '"' || c == '\'');
+			if !leaf.is_empty() {
+				names.push(leaf.to_ascii_lowercase());
+			}
 		}
 	}
 	if names.is_empty() {
@@ -3354,6 +3368,7 @@ const SCHEMA_TYPES: [&str; 11] = [
 
 // The allowed set, pre-coerced at schema-build time into the constraint's type
 // space so per-node checks are a plain contains().
+#[derive(Clone)]
 enum AllowedSet {
 	Ints(Vec<i64>),
 	Floats(Vec<f64>),
@@ -3362,6 +3377,7 @@ enum AllowedSet {
 	Strings(Vec<String>),
 }
 
+#[derive(Clone)]
 struct Constraint {
 	path: String, // as written in the schema; message text only
 	segs: Vec<Segment>,
@@ -3373,9 +3389,18 @@ struct Constraint {
 	min_f: Option<f64>,
 	max_f: Option<f64>,
 	repeat: Option<(u64, u64)>,
+	inherits: Option<String>, // fragment mounted at this path (subtree shape)
+	inherits_line: usize,     // schema line of the `inherits` key, for V095
 	// Generator-only (`shcl init`): validation ignores both.
 	desc: Option<String>,         // `desc`, a one-line description
 	default_text: Option<String>, // `default`, emitted as an inline value
+}
+
+/// An interpreted schema: the top-level constraints plus the named fragments
+/// their `inherits` keys can mount.
+struct SchemaDef {
+	cons: Vec<Constraint>,
+	frags: HashMap<String, Vec<Constraint>>,
 }
 
 fn vdiag(out: &mut Vec<Diagnostic>, line: usize, msg: String) {
@@ -3396,253 +3421,288 @@ fn single_text(v: &Value) -> Option<String> {
 	}
 }
 
-/// Interpret a parsed schema document into constraints. Err = schema faults
-/// (V09x, schema-file lines); the caller reports those and validates nothing.
-fn build_schema(schema: &Document) -> Result<Vec<Constraint>, Vec<Diagnostic>> {
+/// Interpret a parsed schema document into constraints and fragments. Err =
+/// schema faults (V09x, schema-file lines); the caller reports those and
+/// validates nothing.
+fn build_schema(schema: &Document) -> Result<SchemaDef, Vec<Diagnostic>> {
 	let mut faults: Vec<Diagnostic> = Vec::new();
 	let mut cons: Vec<Constraint> = Vec::new();
+	let mut frags: HashMap<String, Vec<Constraint>> = HashMap::new();
 	for &f in &schema.arena[ROOT].children {
 		let node = &schema.arena[f];
-		if node.name != "field" {
-			vdiag(
-				&mut faults,
-				node.line,
-				format!("unknown schema key '{}'", node.name),
-			);
-			continue;
-		}
-		let path = match single_text(&node.value) {
-			Some(p) => p,
-			None => {
-				vdiag(&mut faults, node.line, "bad schema path".to_string());
-				continue;
+		match node.name.as_str() {
+			"field" => {
+				if let Some(c) = parse_field(schema, f, &mut faults) {
+					cons.push(c);
+				}
 			}
-		};
-		let segs = match scan_lookup(&path) {
-			Ok(s) if s.value_text.is_none() => s.segments,
-			_ => {
-				vdiag(&mut faults, node.line, format!("bad schema path: {}", path));
-				continue;
-			}
-		};
-		let mut c = Constraint {
-			path,
-			segs,
-			ty: None,
-			required: false,
-			allowed: None,
-			min_i: None,
-			max_i: None,
-			min_f: None,
-			max_f: None,
-			repeat: None,
-			desc: None,
-			default_text: None,
-		};
-		// Deferred so `min: 1` may precede `type: int` in the file.
-		let mut required: Option<bool> = None;
-		let mut allowed_at: Option<usize> = None;
-		let mut min_at: Option<usize> = None;
-		let mut max_at: Option<usize> = None;
-		for &k in &schema.arena[f].children {
-			let kid = &schema.arena[k];
-			if kid.value.is_empty() {
-				continue; // dangling key: treated as absent
-			}
-			match kid.name.as_str() {
-				"type" => match single_text(&kid.value).map(|t| t.to_ascii_lowercase()) {
-					Some(t) if SCHEMA_TYPES.contains(&t.as_str()) => {
-						if c.ty.is_some() {
-							vdiag(
-								&mut faults,
-								kid.line,
-								"bad schema constraint 'type'".to_string(),
-							);
-						} else {
-							c.ty = Some(t);
+			"fragment" => {
+				let name = single_text(&node.value).filter(|n| !n.is_empty());
+				let Some(name) = name else {
+					vdiag(&mut faults, node.line, "bad schema fragment".to_string());
+					continue;
+				};
+				if frags.contains_key(&name) {
+					vdiag(
+						&mut faults,
+						node.line,
+						format!("bad schema fragment '{}': duplicate", name),
+					);
+					continue;
+				}
+				let mut fcs: Vec<Constraint> = Vec::new();
+				for &k in &schema.arena[f].children {
+					let kid = &schema.arena[k];
+					if kid.name == "field" {
+						if let Some(c) = parse_field(schema, k, &mut faults) {
+							fcs.push(c);
 						}
-					}
-					Some(t) => {
+					} else {
 						vdiag(
 							&mut faults,
 							kid.line,
-							format!("unknown schema type '{}'", t),
+							format!("bad schema fragment '{}': unknown key '{}'", name, kid.name),
 						);
 					}
-					None => vdiag(
-						&mut faults,
-						kid.line,
-						"bad schema constraint 'type'".to_string(),
-					),
-				},
-				"required" => {
-					let v = single_text(&kid.value)
-						.and_then(|t| parse_bool_text(&t, Strictness::Standard));
-					match v {
-						Some(b) if required.is_none() => required = Some(b),
-						_ => vdiag(
-							&mut faults,
-							kid.line,
-							"bad schema constraint 'required'".to_string(),
-						),
-					}
 				}
-				"allowed" => match &kid.value {
-					Value::Cell(_) if allowed_at.is_none() => allowed_at = Some(k),
-					_ => vdiag(
-						&mut faults,
-						kid.line,
-						"bad schema constraint 'allowed'".to_string(),
-					),
-				},
-				"min" => match &kid.value {
-					Value::Cell(els) if els.len() == 1 && min_at.is_none() => min_at = Some(k),
-					_ => vdiag(
-						&mut faults,
-						kid.line,
-						"bad schema constraint 'min'".to_string(),
-					),
-				},
-				"max" => match &kid.value {
-					Value::Cell(els) if els.len() == 1 && max_at.is_none() => max_at = Some(k),
-					_ => vdiag(
-						&mut faults,
-						kid.line,
-						"bad schema constraint 'max'".to_string(),
-					),
-				},
-				"repeat" => match &kid.value {
-					Value::Cell(els) if c.repeat.is_none() && matches!(els.len(), 1 | 2) => {
-						let lo = els[0].text.parse::<u64>().ok();
-						let hi = els.last().and_then(|e| e.text.parse::<u64>().ok());
-						match (lo, hi) {
-							(Some(a), Some(b)) if a <= b => c.repeat = Some((a, b)),
-							_ => vdiag(
-								&mut faults,
-								kid.line,
-								"bad schema constraint 'repeat'".to_string(),
-							),
-						}
-					}
-					_ => vdiag(
-						&mut faults,
-						kid.line,
-						"bad schema constraint 'repeat'".to_string(),
-					),
-				},
-				// Generator-only (`shcl init`); validation ignores both. First
-				// occurrence wins (a merged schema could carry two).
-				"desc" => {
-					if c.desc.is_none() {
-						c.desc = single_text(&kid.value);
-					}
-				}
-				"default" => {
-					if c.default_text.is_none() {
-						c.default_text = emit_value_inline(&kid.value);
-					}
-				}
-				other => vdiag(
+				frags.insert(name, fcs);
+			}
+			other => {
+				vdiag(
 					&mut faults,
-					kid.line,
+					node.line,
 					format!("unknown schema key '{}'", other),
-				),
+				);
 			}
 		}
-		c.required = required.unwrap_or(false);
-		let base =
-			c.ty.as_deref()
-				.map(|t| t.strip_suffix("-array").unwrap_or(t))
-				.unwrap_or("string");
-		if let Some(a) = allowed_at {
-			let kid = &schema.arena[a];
-			// allowed_at is only ever set for a Cell; if that invariant slips,
-			// skip the constraint rather than abort the consumer.
-			let Value::Cell(els) = &kid.value else {
-				continue;
-			};
-			// Schema values are read at Standard; only the document's values
-			// coerce at the document's strictness.
-			let set = match base {
-				"int" => els
-					.iter()
-					.map(|e| parse_int_text(e, Strictness::Standard))
-					.collect::<Option<Vec<_>>>()
-					.map(AllowedSet::Ints),
-				"float" => els
-					.iter()
-					.map(|e| parse_float_text(e, Strictness::Standard))
-					.collect::<Option<Vec<_>>>()
-					.map(AllowedSet::Floats),
-				"bool" => els
-					.iter()
-					.map(|e| parse_bool_text(&e.text, Strictness::Standard))
-					.collect::<Option<Vec<_>>>()
-					.map(AllowedSet::Bools),
-				"datetime" => els
-					.iter()
-					.map(|e| parse_datetime(&e.text))
-					.collect::<Option<Vec<_>>>()
-					.map(AllowedSet::Dates),
-				"raw" => None, // a raw body has no element space to enumerate
-				_ => Some(AllowedSet::Strings(
-					els.iter().map(|e| apply_escapes(&e.text)).collect(),
-				)),
-			};
-			match set {
-				Some(s) => c.allowed = Some(s),
-				None => vdiag(
-					&mut faults,
-					kid.line,
-					"bad schema constraint 'allowed'".to_string(),
-				),
-			}
+	}
+	// Every mount must name a declared fragment; cycles (self or mutual) are
+	// legal - expansion is demand-driven against a finite document.
+	for c in cons.iter().chain(frags.values().flatten()) {
+		if let Some(fr) = &c.inherits
+			&& !frags.contains_key(fr)
+		{
+			vdiag(
+				&mut faults,
+				c.inherits_line,
+				format!("unknown schema fragment '{}'", fr),
+			);
 		}
-		for (at, is_min) in [(min_at, true), (max_at, false)] {
-			let Some(m) = at else { continue };
-			let kid = &schema.arena[m];
-			// min/max is only ever a one-element Cell; if that invariant slips,
-			// skip the constraint rather than abort the consumer.
-			let el = match &kid.value {
-				Value::Cell(els) if els.len() == 1 => &els[0],
-				_ => continue,
-			};
-			let key = if is_min { "min" } else { "max" };
-			match base {
-				"int" => match parse_int_text(el, Strictness::Standard) {
-					Some(v) if is_min => c.min_i = Some(v),
-					Some(v) => c.max_i = Some(v),
-					None => vdiag(
-						&mut faults,
-						kid.line,
-						format!("bad schema constraint '{}'", key),
-					),
-				},
-				"float" => match parse_float_text(el, Strictness::Standard) {
-					Some(v) if is_min => c.min_f = Some(v),
-					Some(v) => c.max_f = Some(v),
-					None => vdiag(
-						&mut faults,
-						kid.line,
-						format!("bad schema constraint '{}'", key),
-					),
-				},
-				_ => vdiag(
-					&mut faults,
-					kid.line,
-					format!("bad schema constraint '{}'", key),
-				),
-			}
-		}
-		cons.push(c);
 	}
 	if faults.is_empty() {
-		Ok(cons)
+		Ok(SchemaDef { cons, frags })
 	} else {
 		// One constraint per line in practice, so line order = file order.
 		faults.sort_by_key(|d| d.line);
 		Err(faults)
 	}
+}
+
+/// One `field:` instance (top-level or inside a fragment) -> a Constraint.
+/// None = faults were reported and the constraint is dropped.
+fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Option<Constraint> {
+	let node = &schema.arena[f];
+	let path = match single_text(&node.value) {
+		Some(p) => p,
+		None => {
+			vdiag(faults, node.line, "bad schema path".to_string());
+			return None;
+		}
+	};
+	let segs = match scan_lookup(&path) {
+		Ok(s) if s.value_text.is_none() => s.segments,
+		_ => {
+			vdiag(faults, node.line, format!("bad schema path: {}", path));
+			return None;
+		}
+	};
+	let mut c = Constraint {
+		path,
+		segs,
+		ty: None,
+		required: false,
+		allowed: None,
+		min_i: None,
+		max_i: None,
+		min_f: None,
+		max_f: None,
+		repeat: None,
+		inherits: None,
+		inherits_line: 0,
+		desc: None,
+		default_text: None,
+	};
+	// Deferred so `min: 1` may precede `type: int` in the file.
+	let mut required: Option<bool> = None;
+	let mut allowed_at: Option<usize> = None;
+	let mut min_at: Option<usize> = None;
+	let mut max_at: Option<usize> = None;
+	for &k in &schema.arena[f].children {
+		let kid = &schema.arena[k];
+		if kid.value.is_empty() {
+			continue; // dangling key: treated as absent
+		}
+		match kid.name.as_str() {
+			"type" => match single_text(&kid.value).map(|t| t.to_ascii_lowercase()) {
+				Some(t) if SCHEMA_TYPES.contains(&t.as_str()) => {
+					if c.ty.is_some() {
+						vdiag(faults, kid.line, "bad schema constraint 'type'".to_string());
+					} else {
+						c.ty = Some(t);
+					}
+				}
+				Some(t) => {
+					vdiag(faults, kid.line, format!("unknown schema type '{}'", t));
+				}
+				None => vdiag(faults, kid.line, "bad schema constraint 'type'".to_string()),
+			},
+			"required" => {
+				let v =
+					single_text(&kid.value).and_then(|t| parse_bool_text(&t, Strictness::Standard));
+				match v {
+					Some(b) if required.is_none() => required = Some(b),
+					_ => vdiag(
+						faults,
+						kid.line,
+						"bad schema constraint 'required'".to_string(),
+					),
+				}
+			}
+			"allowed" => match &kid.value {
+				Value::Cell(_) if allowed_at.is_none() => allowed_at = Some(k),
+				_ => vdiag(
+					faults,
+					kid.line,
+					"bad schema constraint 'allowed'".to_string(),
+				),
+			},
+			"min" => match &kid.value {
+				Value::Cell(els) if els.len() == 1 && min_at.is_none() => min_at = Some(k),
+				_ => vdiag(faults, kid.line, "bad schema constraint 'min'".to_string()),
+			},
+			"max" => match &kid.value {
+				Value::Cell(els) if els.len() == 1 && max_at.is_none() => max_at = Some(k),
+				_ => vdiag(faults, kid.line, "bad schema constraint 'max'".to_string()),
+			},
+			"repeat" => match &kid.value {
+				Value::Cell(els) if c.repeat.is_none() && matches!(els.len(), 1 | 2) => {
+					let lo = els[0].text.parse::<u64>().ok();
+					let hi = els.last().and_then(|e| e.text.parse::<u64>().ok());
+					match (lo, hi) {
+						(Some(a), Some(b)) if a <= b => c.repeat = Some((a, b)),
+						_ => vdiag(
+							faults,
+							kid.line,
+							"bad schema constraint 'repeat'".to_string(),
+						),
+					}
+				}
+				_ => vdiag(
+					faults,
+					kid.line,
+					"bad schema constraint 'repeat'".to_string(),
+				),
+			},
+			"inherits" => match single_text(&kid.value).filter(|t| !t.is_empty()) {
+				Some(t) if c.inherits.is_none() => {
+					c.inherits = Some(t);
+					c.inherits_line = kid.line;
+				}
+				_ => vdiag(
+					faults,
+					kid.line,
+					"bad schema constraint 'inherits'".to_string(),
+				),
+			},
+			// Generator-only (`shcl init`); validation ignores both. First
+			// occurrence wins (a merged schema could carry two).
+			"desc" => {
+				if c.desc.is_none() {
+					c.desc = single_text(&kid.value);
+				}
+			}
+			"default" => {
+				if c.default_text.is_none() {
+					c.default_text = emit_value_inline(&kid.value);
+				}
+			}
+			other => vdiag(faults, kid.line, format!("unknown schema key '{}'", other)),
+		}
+	}
+	c.required = required.unwrap_or(false);
+	let base =
+		c.ty.as_deref()
+			.map(|t| t.strip_suffix("-array").unwrap_or(t))
+			.unwrap_or("string");
+	if let Some(a) = allowed_at {
+		let kid = &schema.arena[a];
+		// allowed_at is only ever set for a Cell; if that invariant slips,
+		// skip the constraint rather than abort the consumer.
+		let Value::Cell(els) = &kid.value else {
+			return None;
+		};
+		// Schema values are read at Standard; only the document's values
+		// coerce at the document's strictness.
+		let set = match base {
+			"int" => els
+				.iter()
+				.map(|e| parse_int_text(e, Strictness::Standard))
+				.collect::<Option<Vec<_>>>()
+				.map(AllowedSet::Ints),
+			"float" => els
+				.iter()
+				.map(|e| parse_float_text(e, Strictness::Standard))
+				.collect::<Option<Vec<_>>>()
+				.map(AllowedSet::Floats),
+			"bool" => els
+				.iter()
+				.map(|e| parse_bool_text(&e.text, Strictness::Standard))
+				.collect::<Option<Vec<_>>>()
+				.map(AllowedSet::Bools),
+			"datetime" => els
+				.iter()
+				.map(|e| parse_datetime(&e.text))
+				.collect::<Option<Vec<_>>>()
+				.map(AllowedSet::Dates),
+			"raw" => None, // a raw body has no element space to enumerate
+			_ => Some(AllowedSet::Strings(
+				els.iter().map(|e| apply_escapes(&e.text)).collect(),
+			)),
+		};
+		match set {
+			Some(s) => c.allowed = Some(s),
+			None => vdiag(
+				faults,
+				kid.line,
+				"bad schema constraint 'allowed'".to_string(),
+			),
+		}
+	}
+	for (at, is_min) in [(min_at, true), (max_at, false)] {
+		let Some(m) = at else { continue };
+		let kid = &schema.arena[m];
+		// min/max is only ever a one-element Cell; if that invariant slips,
+		// skip the constraint rather than abort the consumer.
+		let el = match &kid.value {
+			Value::Cell(els) if els.len() == 1 => &els[0],
+			_ => continue,
+		};
+		let key = if is_min { "min" } else { "max" };
+		match base {
+			"int" => match parse_int_text(el, Strictness::Standard) {
+				Some(v) if is_min => c.min_i = Some(v),
+				Some(v) => c.max_i = Some(v),
+				None => vdiag(faults, kid.line, format!("bad schema constraint '{}'", key)),
+			},
+			"float" => match parse_float_text(el, Strictness::Standard) {
+				Some(v) if is_min => c.min_f = Some(v),
+				Some(v) => c.max_f = Some(v),
+				None => vdiag(faults, kid.line, format!("bad schema constraint '{}'", key)),
+			},
+			_ => vdiag(faults, kid.line, format!("bad schema constraint '{}'", key)),
+		}
+	}
+	Some(c)
 }
 
 /// A schema `default`/`allowed` value re-emitted as an inline value (minimal
@@ -3750,7 +3810,8 @@ fn gen_default_text(v: &str) -> String {
 /// (identical generated lines would merge, so the shortfall is reported).
 /// Err = schema faults (V09x), same as `validate`/`check --schema`.
 pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
-	let cons = build_schema(schema)?;
+	let def = build_schema(schema)?;
+	let (cons, cuts) = expand_mounts(&def);
 	let must_exist = |c: &Constraint| c.required || matches!(c.repeat, Some((lo, _)) if lo >= 1);
 	let has_wild = |c: &Constraint| {
 		c.segs
@@ -3843,6 +3904,9 @@ pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 			None => out.push_str(&format!("{}{}:\n", prefix, path)),
 		}
 	}
+	// Cycle-cut mounts last: their "type" column names the fragment that
+	// belongs at the path.
+	wild.extend(cuts);
 	if !wild.is_empty() {
 		if !first {
 			out.push('\n');
@@ -3853,6 +3917,48 @@ pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 		}
 	}
 	Ok(out)
+}
+
+/// Inline every fragment mount into a flat constraint list, depth-first in
+/// schema order, each field's path and segments prefixed by its mount's. A
+/// mount whose fragment is already expanding (a cycle) stops there and is
+/// returned as (path, fragment name) for the trailing not-generated block.
+fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
+	fn go(
+		list: &[Constraint],
+		def: &SchemaDef,
+		at: Option<(&str, &[Segment])>,
+		stack: &mut Vec<String>,
+		out: &mut Vec<Constraint>,
+		cuts: &mut Vec<(String, String)>,
+	) {
+		for c in list {
+			let mut cc = c.clone();
+			if let Some((p, s)) = at {
+				cc.path = format!("{}.{}", p, c.path);
+				let mut segs = s.to_vec();
+				segs.extend(c.segs.iter().cloned());
+				cc.segs = segs;
+			}
+			let path = cc.path.clone();
+			let segs = cc.segs.clone();
+			out.push(cc);
+			if let Some(fr) = &c.inherits {
+				if stack.iter().any(|x| x == fr) {
+					cuts.push((path.replace('\n', "\\n"), fr.clone()));
+				} else if let Some(fcs) = def.frags.get(fr) {
+					stack.push(fr.clone());
+					go(fcs, def, Some((&path, &segs)), stack, out, cuts);
+					stack.pop();
+				}
+			}
+		}
+	}
+	let mut out: Vec<Constraint> = Vec::new();
+	let mut cuts: Vec<(String, String)> = Vec::new();
+	let mut stack: Vec<String> = Vec::new();
+	go(&def.cons, def, None, &mut stack, &mut out, &mut cuts);
+	(out, cuts)
 }
 
 /// Two-row Levenshtein; powers the "did you mean" prose (never the code).
@@ -3878,15 +3984,15 @@ impl Document {
 	/// Diagnostic lines are document lines (0 = document scope); schema faults
 	/// (V09x, schema-file lines) suppress data validation entirely.
 	pub fn validate(&self, schema: &Document) -> Vec<Diagnostic> {
-		let cons = match build_schema(schema) {
-			Ok(c) => c,
+		let def = match build_schema(schema) {
+			Ok(d) => d,
 			Err(faults) => return faults,
 		};
 		let mut out: Vec<Diagnostic> = Vec::new();
-		for c in &cons {
-			self.v_check(c, &mut out);
+		for c in &def.cons {
+			self.v_check(c, &def, &mut out);
 		}
-		self.v_unknown(&cons, &mut out);
+		self.v_unknown(&def, &mut out);
 		out
 	}
 
@@ -3953,9 +4059,24 @@ impl Document {
 		out.push((anchor, cur));
 	}
 
-	fn v_check(&self, c: &Constraint, out: &mut Vec<Diagnostic>) {
+	fn v_check(&self, c: &Constraint, def: &SchemaDef, out: &mut Vec<Diagnostic>) {
+		self.v_check_from(c, def, ROOT, 0, out);
+	}
+
+	// A mounted fragment's fields run per resolved node, right after that
+	// node's own checks, in fragment order - depth-first, so diagnostic order
+	// stays derivable. Termination is structural: every mount descends at
+	// least one document level, and the document is finite.
+	fn v_check_from(
+		&self,
+		c: &Constraint,
+		def: &SchemaDef,
+		start: usize,
+		anchor0: usize,
+		out: &mut Vec<Diagnostic>,
+	) {
 		let mut ctxs: Vec<(usize, Vec<usize>)> = Vec::new();
-		self.v_contexts(vec![ROOT], &c.segs, 0, &mut ctxs);
+		self.v_contexts(vec![start], &c.segs, anchor0, &mut ctxs);
 		for (anchor, found) in &ctxs {
 			if c.required && found.is_empty() {
 				vdiag(out, *anchor, format!("required path missing: {}", c.path));
@@ -3975,6 +4096,13 @@ impl Document {
 			}
 			for &n in found {
 				self.v_node(c, n, out);
+				if let Some(fr) = &c.inherits
+					&& let Some(fcs) = def.frags.get(fr)
+				{
+					for fc in fcs {
+						self.v_check_from(fc, def, n, self.arena[n].line, out);
+					}
+				}
 			}
 		}
 	}
@@ -4159,7 +4287,10 @@ impl Document {
 	// Unknown-field sweep: a schema path legalizes its name chain and every
 	// prefix (selectors ignored). Only the topmost unknown node is reported;
 	// its subtree is implied unknown and skipped.
-	fn v_unknown(&self, cons: &[Constraint], out: &mut Vec<Diagnostic>) {
+	fn v_unknown(&self, def: &SchemaDef, out: &mut Vec<Diagnostic>) {
+		let cons = &def.cons;
+		// Chains below a fragment mount only match by descending the mounts.
+		let has_mounts = cons.iter().any(|c| c.inherits.is_some());
 		let mut legal: std::collections::HashSet<String> = std::collections::HashSet::new();
 		// Sibling names per parent chain, built once (schema order): v_suggest
 		// used to rebuild every chain per unknown field, which bit hardest on
@@ -4206,7 +4337,10 @@ impl Document {
 			} else {
 				format!("{}.{}", pshown, node.name)
 			};
-			if !legal.contains(&chain) && !star_legal(&star_pats, &chain) {
+			let known = legal.contains(&chain)
+				|| star_legal(&star_pats, &chain)
+				|| (has_mounts && chain_legal(cons, &def.frags, &chain));
+			if !known {
 				let hint = v_suggest(&siblings, &pchain, &node.name);
 				vdiag(out, node.line, format!("unknown field '{}'{}", shown, hint));
 				continue;
@@ -4232,6 +4366,38 @@ fn star_legal(pats: &[&[Segment]], chain: &str) -> bool {
 				.enumerate()
 				.all(|(i, seg)| p[i].star || p[i].name == *seg)
 	})
+}
+
+/// Chain legality through fragment mounts: the general matcher - element-wise
+/// like star_legal (stars wild, prefixes legal), and when a mount's whole path
+/// matched with chain left over, the remainder is retried against the mounted
+/// fragment's fields. Terminates: every descent consumes >= 1 part.
+fn chain_legal(cons: &[Constraint], frags: &HashMap<String, Vec<Constraint>>, chain: &str) -> bool {
+	let parts: Vec<&str> = chain.split('\0').collect();
+	chain_parts_legal(cons, frags, &parts)
+}
+
+fn chain_parts_legal(
+	cons: &[Constraint],
+	frags: &HashMap<String, Vec<Constraint>>,
+	parts: &[&str],
+) -> bool {
+	for c in cons {
+		let n = c.segs.len();
+		let k = parts.len().min(n);
+		if (0..k).all(|i| c.segs[i].star || c.segs[i].name == parts[i]) {
+			if parts.len() <= n {
+				return true;
+			}
+			if let Some(fr) = &c.inherits
+				&& let Some(fcs) = frags.get(fr)
+				&& chain_parts_legal(fcs, frags, &parts[n..])
+			{
+				return true;
+			}
+		}
+	}
+	false
 }
 
 /// Closest legal sibling name (same parent chain, schema order, edit distance

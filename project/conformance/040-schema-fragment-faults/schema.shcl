@@ -1,0 +1,9 @@
+field: x
+	inherits: nosuch
+fragment:
+	field: y
+fragment: dup
+	field: a
+	bad: key
+fragment: "dup"
+	field: b

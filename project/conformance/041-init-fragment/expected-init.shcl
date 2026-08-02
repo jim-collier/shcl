@@ -1,0 +1,29 @@
+# any, required
+layout:
+
+# split or pane
+# string, one of: split, pane, required
+layout.kind:
+
+# float
+#layout.ratio: 0.5
+
+# any
+#layout.children:
+
+# any
+#doc.layout:
+
+# split or pane
+# string, one of: split, pane, required
+doc.layout.kind:
+
+# float
+#doc.layout.ratio: 0.5
+
+# any
+#doc.layout.children:
+
+# Paths needing an instance name (not generated):
+#   layout.children   node
+#   doc.layout.children   node
