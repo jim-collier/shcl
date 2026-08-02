@@ -69,15 +69,11 @@
 You have probably lived some version of this:
 
 - A whole service refused to start because one line of config had a typo.
-
 - YAML turned `country: NO` into `false`. (Norway. It really does that.)
-
 - JSON needed a comment, and JSON does not do comments.
 	- Or a trailing comma killed the parse.
 - TOML was pleasant right up until the data nested three levels deep.
-
 - You wanted an integer. You got a string, or an exception, or a silent zero you did not notice until production.
-
 - Remember that one project where a complex nested config was stored in XML - that you have PTSD over to this day?
 
 Every mainstream format makes the human do the careful work, and punishes the whole file for one mistake.
@@ -187,9 +183,7 @@ They are all good at what they do. The shared cost is that once a config file ca
 SHCL deliberately stays off that cliff. The file stays dumb, and the power moves into the library instead:
 
 - **Schema validation.** A schema is just another SHCL file. `Validate(doc, schema)` catches unknown fields, wrong types, and out-of-range values, including the "did you mean `enabled`?" typo case.
-
 - **Layered loading.** `merge(base, over)` folds files in order - defaults, then site, then user, last wins - and the CLI stacks the same way with repeatable `--layer=FILE` plus `--set=PATH=VALUE` overrides on top. That covers most of what people actually use imports for. (Environment-variable mapping is deliberately your program's job: the env namespace and its naming convention belong to the app, which can map env vars onto `--set` itself.)
-
 - **Generated starter configs.** The schema plus the writer can emit a fully commented, correctly typed starting file.
 
 Your config never needs a debugger, and a non-programmer can still edit it.
@@ -202,24 +196,27 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 ## Features
 
 - Hierarchy by indentation or dot-notation (`site[blog.example.com].tls.hsts: off`), freely mixed. Both spell the same tree.
-
 - Values are typed on *read*, not on parse. The file stores text; your code asks for an int.
-
 - Never bails on a whole file over one bad line. Bad lines are skipped or repaired with diagnostics, and the rest still loads.
-
 - Every convenience read takes a call-site fallback (`GetIntOr(path, 0)`), so a missing value can't masquerade as a real zero.
-
 - Three strictness levels. Loose, standard, strict: one knob from maximum-forgiving to fail-on-anything.
-
 - Schema validation, layered loading (defaults, site, user), and commented starter-config generation, all as library features.
-
 - Raw fenced blocks embed anything verbatim: SQL, code, templates, Markdown-style.
-
 - One conformance corpus pins every shipped binding to identical behavior. The Rust reference plus independent Go, C, and Python parsers already agree byte-for-byte; a binding does not ship until it does.
 
 ## Status
 
-Stable, and spec-first on purpose. All goals met on Tier 1 and 2.
+Stable, and spec-first on purpose. Several parsers that "mostly agree" would be worse than none, so the spec came first and every binding is held to one shared conformance corpus. Where things stand:
+
+- **Language spec and formal grammar** - done. [`project/spec.md`](project/spec.md), [`project/grammar.abnf`](project/grammar.abnf).
+- **Conformance corpus** - the golden cases every binding must pass. Green and growing.
+- **Rust reference parser + the `shcl` CLI** - done, corpus-green. This is the source of truth every other binding is measured against.
+- **Independent parsers in Go, C (with a C++ veneer), and Python** - done, corpus-green, and checked byte-for-byte against the reference on every build.
+- **Bash and PowerShell wrappers** - done. They call the CLI, so they inherit conformance for free.
+- **Read and write** - done. Every binding reads and writes, comments survive a format round-trip, and `check` reports stable diagnostic codes.
+- **Schema validation, layered loading, and schema-driven generation** - done in every binding: `check --schema`, `--layer`/`--set` on the loading subcommands, and `shcl init --schema` for a commented starter config.
+- **Installer packages** - done: `.deb`, `.rpm`, and a Windows setup are built alongside the binaries.
+- **Latest release** - `v1.0.0`, with packages, prebuilt binaries, and checksums on the releases page.
 
 What is not done yet: the remaining Tier 3 bindings (C#, Java, JavaScript). Star or watch the repo to follow along.
 
