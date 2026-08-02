@@ -1,0 +1,9 @@
+title: Demo
+indicators:
+	sma:
+		period: 20
+	ema:
+		period: 50
+		bogus: x
+	rsi:
+		source: close

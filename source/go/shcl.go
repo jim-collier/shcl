@@ -799,6 +799,7 @@ type selector struct {
 type segment struct {
 	name string // folded
 	sel  *selector
+	star bool // bare `*` name wildcard; quoted "*" stays a literal name
 }
 
 type pathScan struct {
@@ -828,6 +829,17 @@ func parseIndex(s string) (uint64, bool) {
 // non-ws char is `[`; otherwise it separates the value. An error means
 // genuinely ambiguous input, which the caller skips with a diagnostic.
 func scanPath(input string) (pathScan, error) {
+	return scanPathEx(input, false)
+}
+
+// scanLookup is the query spelling of scanPath: also accepts a bare `*`
+// segment (the name wildcard - any child name). Document lines never take it;
+// only lookups (reads, the writer probe, schema paths) do.
+func scanLookup(input string) (pathScan, error) {
+	return scanPathEx(input, true)
+}
+
+func scanPathEx(input string, stars bool) (pathScan, error) {
 	chars := []rune(input)
 	pos := 0
 	skipWS := func() {
@@ -862,14 +874,19 @@ func scanPath(input string) (pathScan, error) {
 		if pos >= len(chars) {
 			return pathScan{}, errors.New("empty path")
 		}
-		// Field name: quoted or bare.
+		// Field name: quoted, bare, or (lookups only) the `*` name wildcard.
 		var name string
+		star := false
 		if chars[pos] == '"' || chars[pos] == '\'' {
 			n, err := readQuoted()
 			if err != nil {
 				return pathScan{}, err
 			}
 			name = n
+		} else if stars && chars[pos] == '*' {
+			pos++
+			star = true
+			name = "*"
 		} else {
 			start := pos
 			for pos < len(chars) && isBareNameChar(chars[pos]) {
@@ -930,7 +947,10 @@ func scanPath(input string) (pathScan, error) {
 			pos++
 			skipWS()
 		}
-		segments = append(segments, segment{name: asciiLower(name), sel: sel})
+		if star && sel != nil {
+			return pathScan{}, errors.New("selector on a name wildcard")
+		}
+		segments = append(segments, segment{name: asciiLower(name), sel: sel, star: star})
 		if pos >= len(chars) {
 			return pathScan{segments: segments}, nil
 		}
@@ -1787,14 +1807,18 @@ func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic 
 		if rep.Status != Good || len(rep.Value) == 0 || rep.Value[len(rep.Value)-1] <= 1 {
 			continue
 		}
-		leaf := p
-		if j := strings.LastIndexByte(leaf, '.'); j >= 0 {
-			leaf = leaf[j+1:]
+		raw := p
+		if j := strings.LastIndexByte(raw, '.'); j >= 0 {
+			raw = raw[j+1:]
 		}
-		if j := strings.IndexByte(leaf, '['); j >= 0 {
-			leaf = leaf[:j]
+		if j := strings.IndexByte(raw, '['); j >= 0 {
+			raw = raw[:j]
 		}
-		leaf = strings.Trim(strings.TrimSpace(leaf), "\"'")
+		raw = strings.TrimSpace(raw)
+		if raw == "*" {
+			continue // name wildcard: no single leaf name to disavow
+		}
+		leaf := strings.Trim(raw, "\"'")
 		if leaf != "" {
 			names = append(names, asciiLower(leaf))
 		}
@@ -1938,7 +1962,32 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 		seg := &segs[i]
 		var next []int
 		for _, n := range cur {
-			next = append(next, d.childrenNamed(n, seg.name)...)
+			if seg.star {
+				next = append(next, d.arena[n].children...)
+			} else {
+				next = append(next, d.childrenNamed(n, seg.name)...)
+			}
+		}
+		if seg.star {
+			// Name wildcard: same per-slot split as `[*]`, over every child.
+			rest := segs[i+1:]
+			slots := make([]int, 0, len(next))
+			for _, inst := range next {
+				if len(rest) == 0 {
+					slots = append(slots, inst)
+					continue
+				}
+				r := d.resolveFrom([]int{inst}, rest)
+				switch r.kind {
+				case resOne:
+					slots = append(slots, r.one)
+				case resNone:
+					slots = append(slots, -1)
+				default:
+					slots = append(slots, -2)
+				}
+			}
+			return resolved{kind: resSlots, slots: slots}
 		}
 		switch {
 		case seg.sel == nil:
@@ -1990,7 +2039,7 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 }
 
 func (d *Document) resolve(path string) (resolved, bool) {
-	scan, err := scanPath(path)
+	scan, err := scanLookup(path)
 	if err != nil || scan.valueText != nil {
 		return resolved{}, false // a query has no value part
 	}
@@ -2210,7 +2259,7 @@ func (d *Document) childOrCreate(parent int, name string) int {
 // Writable means the same validation place() runs would pass; nothing is
 // created.
 func (d *Document) WriteReason(path string) WriteReason {
-	scan, err := scanPath(path)
+	scan, err := scanLookup(path)
 	if err != nil {
 		return BadPath
 	}
@@ -2230,6 +2279,9 @@ func (d *Document) WriteReason(path string) WriteReason {
 	probe, alive := root, true
 	for i := range scan.segments {
 		seg := &scan.segments[i]
+		if seg.star {
+			return Wildcard
+		}
 		switch {
 		case seg.sel == nil:
 			if alive {
@@ -2283,13 +2335,16 @@ func (d *Document) place(path string) (int, bool) {
 	if d.WriteReason(path) != Writable {
 		return 0, false
 	}
-	scan, err := scanPath(path)
+	scan, err := scanLookup(path)
 	if err != nil {
 		return 0, false
 	}
 	cur := root
 	for i := range scan.segments {
 		seg := &scan.segments[i]
+		if seg.star {
+			return 0, false // WriteReason gates this; belt only
+		}
 		switch {
 		case seg.sel == nil:
 			cur = d.childOrCreate(cur, seg.name)
@@ -3699,7 +3754,7 @@ func buildSchema(schema *Document) ([]constraint, []Diagnostic) {
 			vdiag(&faults, node.line, "bad schema path")
 			continue
 		}
-		scan, err := scanPath(path)
+		scan, err := scanLookup(path)
 		if err != nil || scan.valueText != nil {
 			vdiag(&faults, node.line, fmt.Sprintf("bad schema path: %s", path))
 			continue
@@ -4061,7 +4116,7 @@ func Generate(schema *Document) (string, []Diagnostic) {
 	// all. Both go to the trailing note instead of emitting a broken line.
 	unwritable := func(c *constraint) bool {
 		for _, s := range c.segs {
-			if s.sel != nil && s.sel.kind == selByIndex {
+			if (s.sel != nil && s.sel.kind == selByIndex) || s.star {
 				return true
 			}
 		}
@@ -4247,7 +4302,23 @@ func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vCo
 	for i, seg := range segs {
 		var next []int
 		for _, n := range cur {
-			next = append(next, d.childrenNamed(n, seg.name)...)
+			if seg.star {
+				next = append(next, d.arena[n].children...)
+			} else {
+				next = append(next, d.childrenNamed(n, seg.name)...)
+			}
+		}
+		if seg.star {
+			// Name wildcard: same per-instance split as `[*]`, any child name.
+			rest := segs[i+1:]
+			if len(rest) == 0 {
+				*out = append(*out, vContext{anchor: anchor, found: next})
+			} else {
+				for _, inst := range next {
+					d.vContexts([]int{inst}, rest, d.arena[inst].line, out)
+				}
+			}
+			return
 		}
 		if seg.sel == nil {
 			cur = next
@@ -4521,9 +4592,21 @@ func (d *Document) vUnknown(cons []constraint, out *[]Diagnostic) {
 	// used to rebuild every chain per unknown field, which bit hardest on
 	// the wholesale-unmatched documents the feature exists for.
 	siblings := map[string][]string{}
+	// Paths with a `*` segment can't live in the exact-chain hash; they
+	// match element-wise (a star matches any one name, prefixes included).
+	var starPats [][]segment
 	for i := range cons {
+		for _, s := range cons[i].segs {
+			if s.star {
+				starPats = append(starPats, cons[i].segs)
+				break
+			}
+		}
 		chain := ""
 		for _, s := range cons[i].segs {
+			if s.star {
+				break // no sibling entry for '*'; deeper chains are pattern-only
+			}
 			siblings[chain] = append(siblings[chain], s.name)
 			if chain != "" {
 				chain += "\x00"
@@ -4552,7 +4635,7 @@ func (d *Document) vUnknown(cons []constraint, out *[]Diagnostic) {
 			chain = fr.chain + "\x00" + node.name
 			shown = fr.shown + "." + node.name
 		}
-		if !legal[chain] {
+		if !legal[chain] && !starLegal(starPats, chain) {
 			hint := vSuggest(siblings, fr.chain, node.name)
 			vdiag(out, node.line, fmt.Sprintf("unknown field '%s'%s", shown, hint))
 			continue
@@ -4561,6 +4644,32 @@ func (d *Document) vUnknown(cons []constraint, out *[]Diagnostic) {
 			stack = append(stack, frame{node: node.children[i], chain: chain, shown: shown})
 		}
 	}
+}
+
+// starLegal is the element-wise chain match against the star-bearing schema
+// paths: a `*` segment matches any one name, and every prefix of a path is
+// legal.
+func starLegal(pats [][]segment, chain string) bool {
+	if len(pats) == 0 {
+		return false
+	}
+	parts := strings.Split(chain, "\x00")
+	for _, p := range pats {
+		if len(p) < len(parts) {
+			continue
+		}
+		ok := true
+		for i, seg := range parts {
+			if !p[i].star && p[i].name != seg {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
 }
 
 // vSuggest finds the closest legal sibling name (same parent chain, schema

@@ -1,0 +1,11 @@
+field: title
+	type: string
+field: indicators
+	required: yes
+field: indicators.*.period
+	type: int
+	required: yes
+	min: 1
+field: indicators.*.source
+	type: string
+	allowed: open, close

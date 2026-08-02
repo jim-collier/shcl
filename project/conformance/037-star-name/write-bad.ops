@@ -1,0 +1,3 @@
+string	*.x	v
+int	a.*	5
+empty	*

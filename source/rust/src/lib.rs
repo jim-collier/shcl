@@ -612,6 +612,7 @@ enum Selector {
 struct Segment {
 	name: String, // folded
 	selector: Option<Selector>,
+	star: bool, // bare `*` name wildcard; quoted "*" stays a literal name
 }
 
 struct PathScan {
@@ -624,6 +625,17 @@ struct PathScan {
 /// `[`; otherwise it separates the value. Err(reason) means genuinely ambiguous
 /// input, which the caller skips with a diagnostic.
 fn scan_path(input: &str) -> Result<PathScan, String> {
+	scan_path_ex(input, false)
+}
+
+/// Query spelling of scan_path: also accepts a bare `*` segment (the name
+/// wildcard - any child name). Document lines never take it; only lookups
+/// (reads, the writer probe, schema paths) do.
+fn scan_lookup(input: &str) -> Result<PathScan, String> {
+	scan_path_ex(input, true)
+}
+
+fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 	let chars: Vec<char> = input.chars().collect();
 	let mut pos = 0usize;
 	fn skip_ws(chars: &[char], pos: &mut usize) {
@@ -659,9 +671,14 @@ fn scan_path(input: &str) -> Result<PathScan, String> {
 		if pos >= chars.len() {
 			return Err("empty path".into());
 		}
-		// Field name: quoted or bare.
+		// Field name: quoted, bare, or (lookups only) the `*` name wildcard.
+		let mut star = false;
 		let name = if chars[pos] == '"' || chars[pos] == '\'' {
 			read_quoted(&chars, &mut pos)?
+		} else if stars && chars[pos] == '*' {
+			pos += 1;
+			star = true;
+			"*".to_string()
 		} else {
 			let start = pos;
 			while pos < chars.len() && is_bare_name_char(chars[pos]) {
@@ -721,9 +738,13 @@ fn scan_path(input: &str) -> Result<PathScan, String> {
 			pos += 1;
 			skip_ws(&chars, &mut pos);
 		}
+		if star && selector.is_some() {
+			return Err("selector on a name wildcard".into());
+		}
 		segments.push(Segment {
 			name: fold_name(&name),
 			selector,
+			star,
 		});
 		if pos >= chars.len() {
 			return Ok(PathScan {
@@ -1685,15 +1706,18 @@ pub fn suppress_declared_repeats(schema: &Document, diags: &mut Vec<Diagnostic>)
 			Some(&u) if u > 1 => {}
 			_ => continue,
 		}
-		let leaf = p
+		let raw = p
 			.rsplit('.')
 			.next()
 			.unwrap_or("")
 			.split('[')
 			.next()
 			.unwrap_or("")
-			.trim()
-			.trim_matches(|c| c == '"' || c == '\'');
+			.trim();
+		if raw == "*" {
+			continue; // name wildcard: no single leaf name to disavow
+		}
+		let leaf = raw.trim_matches(|c| c == '"' || c == '\'');
 		if !leaf.is_empty() {
 			names.push(leaf.to_ascii_lowercase());
 		}
@@ -1793,7 +1817,28 @@ impl Document {
 		for (i, seg) in segs.iter().enumerate() {
 			let mut next: Vec<usize> = Vec::new();
 			for &n in &cur {
-				next.extend(self.children_named(n, &seg.name));
+				if seg.star {
+					next.extend(self.arena[n].children.iter().copied());
+				} else {
+					next.extend(self.children_named(n, &seg.name));
+				}
+			}
+			if seg.star {
+				// Name wildcard: same per-slot split as `[*]`, over every child.
+				let rest = &segs[i + 1..];
+				let mut slots: Vec<Result<usize, Status>> = Vec::new();
+				for inst in next {
+					if rest.is_empty() {
+						slots.push(Ok(inst));
+					} else {
+						match self.resolve_from(&[inst], rest) {
+							Resolved::One(x) => slots.push(Ok(x)),
+							Resolved::None => slots.push(Err(Status::NotFound)),
+							_ => slots.push(Err(Status::Multiple)),
+						}
+					}
+				}
+				return Resolved::Slots(slots);
 			}
 			match &seg.selector {
 				None => cur = next,
@@ -1834,7 +1879,7 @@ impl Document {
 	}
 
 	fn resolve(&self, path: &str) -> Result<Resolved, Status> {
-		let scan = scan_path(path).map_err(|_| Status::NotFound)?;
+		let scan = scan_lookup(path).map_err(|_| Status::NotFound)?;
 		if scan.value_text.is_some() {
 			return Err(Status::NotFound); // a query has no value part
 		}
@@ -2038,7 +2083,7 @@ impl Document {
 	/// `false`, so a consumer's error message need not guess. `Writable` means
 	/// the same validation `place()` runs would pass; nothing is created.
 	pub fn write_reason(&self, path: &str) -> WriteReason {
-		let scan = match scan_path(path) {
+		let scan = match scan_lookup(path) {
 			Ok(s) => s,
 			Err(_) => return WriteReason::BadPath,
 		};
@@ -2057,6 +2102,9 @@ impl Document {
 		// childless), so an index segment past that point is unresolvable.
 		let mut probe = Some(ROOT);
 		for seg in &scan.segments {
+			if seg.star {
+				return WriteReason::Wildcard;
+			}
 			match &seg.selector {
 				Some(Selector::Wildcard) => return WriteReason::Wildcard,
 				Some(Selector::ByIndex(k)) => {
@@ -2106,9 +2154,12 @@ impl Document {
 		if self.write_reason(path) != WriteReason::Writable {
 			return None;
 		}
-		let scan = scan_path(path).ok()?;
+		let scan = scan_lookup(path).ok()?;
 		let mut cur = ROOT;
 		for seg in &scan.segments {
+			if seg.star {
+				return None; // write_reason gates this; belt only
+			}
 			cur = match &seg.selector {
 				None => self.child_or_create(cur, &seg.name),
 				Some(Selector::ByValue(v)) => {
@@ -3367,7 +3418,7 @@ fn build_schema(schema: &Document) -> Result<Vec<Constraint>, Vec<Diagnostic>> {
 				continue;
 			}
 		};
-		let segs = match scan_path(&path) {
+		let segs = match scan_lookup(&path) {
 			Ok(s) if s.value_text.is_none() => s.segments,
 			_ => {
 				vdiag(&mut faults, node.line, format!("bad schema path: {}", path));
@@ -3712,7 +3763,7 @@ pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 	let unwritable = |c: &Constraint| {
 		c.segs
 			.iter()
-			.any(|s| matches!(s.selector, Some(Selector::ByIndex(_))))
+			.any(|s| matches!(s.selector, Some(Selector::ByIndex(_))) || s.star)
 			|| c.path.contains('\n')
 	};
 	// Live concrete paths materialize instances; decide which must-exist
@@ -3854,7 +3905,24 @@ impl Document {
 		for (i, seg) in segs.iter().enumerate() {
 			let mut next: Vec<usize> = Vec::new();
 			for &n in &cur {
-				next.extend(self.children_named(n, &seg.name));
+				if seg.star {
+					next.extend(self.arena[n].children.iter().copied());
+				} else {
+					next.extend(self.children_named(n, &seg.name));
+				}
+			}
+			if seg.star {
+				// Name wildcard: same per-instance split as `[*]`, any child name.
+				let rest = &segs[i + 1..];
+				if rest.is_empty() {
+					out.push((anchor, next));
+				} else {
+					for inst in next {
+						let line = self.arena[inst].line;
+						self.v_contexts(vec![inst], rest, line, out);
+					}
+				}
+				return;
 			}
 			match &seg.selector {
 				None => cur = next,
@@ -4097,9 +4165,18 @@ impl Document {
 		// used to rebuild every chain per unknown field, which bit hardest on
 		// the wholesale-unmatched documents the feature exists for.
 		let mut siblings: HashMap<String, Vec<String>> = HashMap::new();
+		// Paths with a `*` segment can't live in the exact-chain hash; they
+		// match element-wise (a star matches any one name, prefixes included).
+		let mut star_pats: Vec<&[Segment]> = Vec::new();
 		for c in cons {
+			if c.segs.iter().any(|s| s.star) {
+				star_pats.push(&c.segs);
+			}
 			let mut chain = String::new();
 			for s in &c.segs {
+				if s.star {
+					break; // no sibling entry for '*'; deeper chains are pattern-only
+				}
 				siblings
 					.entry(chain.clone())
 					.or_default()
@@ -4129,7 +4206,7 @@ impl Document {
 			} else {
 				format!("{}.{}", pshown, node.name)
 			};
-			if !legal.contains(&chain) {
+			if !legal.contains(&chain) && !star_legal(&star_pats, &chain) {
 				let hint = v_suggest(&siblings, &pchain, &node.name);
 				vdiag(out, node.line, format!("unknown field '{}'{}", shown, hint));
 				continue;
@@ -4139,6 +4216,22 @@ impl Document {
 			}
 		}
 	}
+}
+
+/// Element-wise chain match against the star-bearing schema paths: a `*`
+/// segment matches any one name, and every prefix of a path is legal.
+fn star_legal(pats: &[&[Segment]], chain: &str) -> bool {
+	if pats.is_empty() {
+		return false;
+	}
+	let parts: Vec<&str> = chain.split('\0').collect();
+	pats.iter().any(|p| {
+		p.len() >= parts.len()
+			&& parts
+				.iter()
+				.enumerate()
+				.all(|(i, seg)| p[i].star || p[i].name == *seg)
+	})
 }
 
 /// Closest legal sibling name (same parent chain, schema order, edit distance
