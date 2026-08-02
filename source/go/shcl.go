@@ -162,6 +162,10 @@ func diagCode(msg string) string {
 		return "V092"
 	case strings.HasPrefix(msg, "bad schema path"):
 		return "V093"
+	case strings.HasPrefix(msg, "bad schema fragment"):
+		return "V094"
+	case strings.HasPrefix(msg, "unknown schema fragment "):
+		return "V095"
 	case strings.HasPrefix(msg, "schema failed to load"):
 		return "V099"
 	default:
@@ -1798,29 +1802,41 @@ func QuoteSegment(name string) string {
 // diagnostics and a schema meet. Returns the filtered slice (the reference
 // filters its list in place; returning is the Go mirror).
 func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic {
-	paths := schema.Instances("field")
+	// Top-level fields plus every fragment's fields: a repeat declared inside
+	// a mounted shape disavows the hint the same way.
+	type group struct {
+		base  string
+		paths []string
+	}
+	groups := []group{{"field", schema.Instances("field")}}
+	for k := 0; k < schema.Count("fragment"); k++ {
+		base := fmt.Sprintf("fragment[#%d].field", k)
+		groups = append(groups, group{base, schema.Instances(base)})
+	}
 	var names []string
-	for i, p := range paths {
-		// repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound that
-		// matters here is the last one.
-		rep := schema.ReadIntArray(fmt.Sprintf("field[#%d].repeat", i))
-		if rep.Status != Good || len(rep.Value) == 0 || rep.Value[len(rep.Value)-1] <= 1 {
-			continue
-		}
-		raw := p
-		if j := strings.LastIndexByte(raw, '.'); j >= 0 {
-			raw = raw[j+1:]
-		}
-		if j := strings.IndexByte(raw, '['); j >= 0 {
-			raw = raw[:j]
-		}
-		raw = strings.TrimSpace(raw)
-		if raw == "*" {
-			continue // name wildcard: no single leaf name to disavow
-		}
-		leaf := strings.Trim(raw, "\"'")
-		if leaf != "" {
-			names = append(names, asciiLower(leaf))
+	for _, g := range groups {
+		for i, p := range g.paths {
+			// repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
+			// that matters here is the last one.
+			rep := schema.ReadIntArray(fmt.Sprintf("%s[#%d].repeat", g.base, i))
+			if rep.Status != Good || len(rep.Value) == 0 || rep.Value[len(rep.Value)-1] <= 1 {
+				continue
+			}
+			raw := p
+			if j := strings.LastIndexByte(raw, '.'); j >= 0 {
+				raw = raw[j+1:]
+			}
+			if j := strings.IndexByte(raw, '['); j >= 0 {
+				raw = raw[:j]
+			}
+			raw = strings.TrimSpace(raw)
+			if raw == "*" {
+				continue // name wildcard: no single leaf name to disavow
+			}
+			leaf := strings.Trim(raw, "\"'")
+			if leaf != "" {
+				names = append(names, asciiLower(leaf))
+			}
 		}
 	}
 	if len(names) == 0 {
@@ -3697,19 +3713,28 @@ type allowedSet struct {
 }
 
 type constraint struct {
-	path     string // as written in the schema; message text only
-	segs     []segment
-	ty       string // member of schemaTypes; "" = untyped
-	required bool
-	allowed  *allowedSet
-	minI     *int64
-	maxI     *int64
-	minF     *float64
-	maxF     *float64
-	repeat   *[2]uint64
+	path         string // as written in the schema; message text only
+	segs         []segment
+	ty           string // member of schemaTypes; "" = untyped
+	required     bool
+	allowed      *allowedSet
+	minI         *int64
+	maxI         *int64
+	minF         *float64
+	maxF         *float64
+	repeat       *[2]uint64
+	inherits     string // fragment mounted at this path (subtree shape); "" = none
+	inheritsLine int    // schema line of the `inherits` key, for V095
 	// Generator-only (`shcl init`): validation ignores both.
 	desc        *string // `desc`, a one-line description
 	defaultText *string // `default`, emitted as an inline value
+}
+
+// An interpreted schema: the top-level constraints plus the named fragments
+// their `inherits` keys can mount.
+type schemaDef struct {
+	cons  []constraint
+	frags map[string][]constraint
 }
 
 func vdiag(out *[]Diagnostic, line int, msg string) {
@@ -3737,231 +3762,290 @@ func dtEqual(a, b DateTime) bool {
 	return a == b
 }
 
-// buildSchema interprets a parsed schema document into constraints. A non-empty
-// fault list (V09x, schema-file lines) means the caller reports those and
-// validates nothing.
-func buildSchema(schema *Document) ([]constraint, []Diagnostic) {
+// buildSchema interprets a parsed schema document into constraints and
+// fragments. A non-empty fault list (V09x, schema-file lines) means the caller
+// reports those and validates nothing.
+func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 	var faults []Diagnostic
 	var cons []constraint
+	frags := map[string][]constraint{}
 	for _, f := range schema.arena[root].children {
 		node := &schema.arena[f]
-		if node.name != "field" {
-			vdiag(&faults, node.line, fmt.Sprintf("unknown schema key '%s'", node.name))
-			continue
-		}
-		path, ok := singleText(&node.value)
-		if !ok {
-			vdiag(&faults, node.line, "bad schema path")
-			continue
-		}
-		scan, err := scanLookup(path)
-		if err != nil || scan.valueText != nil {
-			vdiag(&faults, node.line, fmt.Sprintf("bad schema path: %s", path))
-			continue
-		}
-		c := constraint{path: path, segs: scan.segments}
-		// Deferred so `min: 1` may precede `type: int` in the file.
-		var required *bool
-		allowedAt := -1
-		minAt := -1
-		maxAt := -1
-		for _, k := range schema.arena[f].children {
-			kid := &schema.arena[k]
-			if kid.value.isEmpty() {
-				continue // dangling key: treated as absent
+		switch node.name {
+		case "field":
+			if c, ok := parseField(schema, f, &faults); ok {
+				cons = append(cons, c)
 			}
-			switch kid.name {
-			case "type":
-				t, ok := singleText(&kid.value)
-				if ok {
-					t = asciiLower(t)
-				}
-				switch {
-				case ok && containsString(schemaTypes, t):
-					if c.ty != "" {
-						vdiag(&faults, kid.line, "bad schema constraint 'type'")
-					} else {
-						c.ty = t
-					}
-				case ok:
-					vdiag(&faults, kid.line, fmt.Sprintf("unknown schema type '%s'", t))
-				default:
-					vdiag(&faults, kid.line, "bad schema constraint 'type'")
-				}
-			case "required":
-				t, ok := singleText(&kid.value)
-				var b bool
-				if ok {
-					b, ok = parseBoolText(t, Standard)
-				}
-				if ok && required == nil {
-					required = &b
-				} else {
-					vdiag(&faults, kid.line, "bad schema constraint 'required'")
-				}
-			case "allowed":
-				if kid.value.kind == vCell && allowedAt < 0 {
-					allowedAt = k
-				} else {
-					vdiag(&faults, kid.line, "bad schema constraint 'allowed'")
-				}
-			case "min":
-				if kid.value.kind == vCell && len(kid.value.els) == 1 && minAt < 0 {
-					minAt = k
-				} else {
-					vdiag(&faults, kid.line, "bad schema constraint 'min'")
-				}
-			case "max":
-				if kid.value.kind == vCell && len(kid.value.els) == 1 && maxAt < 0 {
-					maxAt = k
-				} else {
-					vdiag(&faults, kid.line, "bad schema constraint 'max'")
-				}
-			case "repeat":
-				if kid.value.kind == vCell && c.repeat == nil && (len(kid.value.els) == 1 || len(kid.value.els) == 2) {
-					lo, okLo := parseIndex(kid.value.els[0].text)
-					hi, okHi := parseIndex(kid.value.els[len(kid.value.els)-1].text)
-					if okLo && okHi && lo <= hi {
-						c.repeat = &[2]uint64{lo, hi}
-					} else {
-						vdiag(&faults, kid.line, "bad schema constraint 'repeat'")
-					}
-				} else {
-					vdiag(&faults, kid.line, "bad schema constraint 'repeat'")
-				}
-			// Generator-only (`shcl init`); validation ignores both. First
-			// occurrence wins (a merged schema could carry two).
-			case "desc":
-				if c.desc == nil {
-					if t, ok := singleText(&kid.value); ok {
-						c.desc = &t
-					}
-				}
-			case "default":
-				if c.defaultText == nil {
-					if t, ok := emitValueInline(&kid.value); ok {
-						c.defaultText = &t
-					}
-				}
-			default:
-				vdiag(&faults, kid.line, fmt.Sprintf("unknown schema key '%s'", kid.name))
-			}
-		}
-		if required != nil {
-			c.required = *required
-		}
-		base := strings.TrimSuffix(c.ty, "-array")
-		if base == "" {
-			base = "string"
-		}
-		if allowedAt >= 0 {
-			kid := &schema.arena[allowedAt]
-			els := kid.value.els
-			// Schema values are read at Standard; only the document's values
-			// coerce at the document's strictness.
-			set := &allowedSet{}
-			ok := true
-			switch base {
-			case "int":
-				set.kind = allowInts
-				for i := range els {
-					v, o := parseIntText(&els[i], Standard)
-					if !o {
-						ok = false
-						break
-					}
-					set.ints = append(set.ints, v)
-				}
-			case "float":
-				set.kind = allowFloats
-				for i := range els {
-					v, o := parseFloatText(&els[i], Standard)
-					if !o {
-						ok = false
-						break
-					}
-					set.floats = append(set.floats, v)
-				}
-			case "bool":
-				set.kind = allowBools
-				for i := range els {
-					v, o := parseBoolText(els[i].text, Standard)
-					if !o {
-						ok = false
-						break
-					}
-					set.bools = append(set.bools, v)
-				}
-			case "datetime":
-				set.kind = allowDates
-				for i := range els {
-					v, o := ParseDateTime(els[i].text)
-					if !o {
-						ok = false
-						break
-					}
-					set.dates = append(set.dates, v)
-				}
-			case "raw":
-				ok = false // a raw body has no element space to enumerate
-			default:
-				set.kind = allowStrings
-				for i := range els {
-					set.strs = append(set.strs, applyEscapes(els[i].text))
-				}
-			}
-			if ok {
-				c.allowed = set
-			} else {
-				vdiag(&faults, kid.line, "bad schema constraint 'allowed'")
-			}
-		}
-		for _, mm := range []struct {
-			at    int
-			isMin bool
-		}{{minAt, true}, {maxAt, false}} {
-			if mm.at < 0 {
+		case "fragment":
+			name, ok := singleText(&node.value)
+			if !ok || name == "" {
+				vdiag(&faults, node.line, "bad schema fragment")
 				continue
 			}
-			kid := &schema.arena[mm.at]
-			el := &kid.value.els[0]
-			key := "max"
-			if mm.isMin {
-				key = "min"
+			if _, dup := frags[name]; dup {
+				vdiag(&faults, node.line, fmt.Sprintf("bad schema fragment '%s': duplicate", name))
+				continue
 			}
-			switch base {
-			case "int":
-				if v, ok := parseIntText(el, Standard); ok {
-					if mm.isMin {
-						c.minI = &v
-					} else {
-						c.maxI = &v
+			var fcs []constraint
+			for _, k := range schema.arena[f].children {
+				kid := &schema.arena[k]
+				if kid.name == "field" {
+					if c, ok := parseField(schema, k, &faults); ok {
+						fcs = append(fcs, c)
 					}
 				} else {
-					vdiag(&faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
+					vdiag(&faults, kid.line, fmt.Sprintf("bad schema fragment '%s': unknown key '%s'", name, kid.name))
 				}
-			case "float":
-				if v, ok := parseFloatText(el, Standard); ok {
-					if mm.isMin {
-						c.minF = &v
-					} else {
-						c.maxF = &v
-					}
-				} else {
-					vdiag(&faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
-				}
-			default:
-				vdiag(&faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
 			}
+			frags[name] = fcs
+		default:
+			vdiag(&faults, node.line, fmt.Sprintf("unknown schema key '%s'", node.name))
 		}
-		cons = append(cons, c)
+	}
+	// Every mount must name a declared fragment; cycles (self or mutual) are
+	// legal - expansion is demand-driven against a finite document.
+	checkMount := func(c *constraint) {
+		if c.inherits == "" {
+			return
+		}
+		if _, ok := frags[c.inherits]; !ok {
+			vdiag(&faults, c.inheritsLine, fmt.Sprintf("unknown schema fragment '%s'", c.inherits))
+		}
+	}
+	for i := range cons {
+		checkMount(&cons[i])
+	}
+	for _, fcs := range frags {
+		for i := range fcs {
+			checkMount(&fcs[i])
+		}
 	}
 	if len(faults) > 0 {
 		// One constraint per line in practice, so line order = file order.
 		sort.SliceStable(faults, func(i, j int) bool { return faults[i].Line < faults[j].Line })
-		return nil, faults
+		return schemaDef{}, faults
 	}
-	return cons, nil
+	return schemaDef{cons: cons, frags: frags}, nil
+}
+
+// parseField turns one `field:` instance (top-level or inside a fragment) into
+// a constraint. ok=false = faults were reported and the constraint is dropped.
+func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool) {
+	node := &schema.arena[f]
+	path, ok := singleText(&node.value)
+	if !ok {
+		vdiag(faults, node.line, "bad schema path")
+		return constraint{}, false
+	}
+	scan, err := scanLookup(path)
+	if err != nil || scan.valueText != nil {
+		vdiag(faults, node.line, fmt.Sprintf("bad schema path: %s", path))
+		return constraint{}, false
+	}
+	c := constraint{path: path, segs: scan.segments}
+	// Deferred so `min: 1` may precede `type: int` in the file.
+	var required *bool
+	allowedAt := -1
+	minAt := -1
+	maxAt := -1
+	for _, k := range schema.arena[f].children {
+		kid := &schema.arena[k]
+		if kid.value.isEmpty() {
+			continue // dangling key: treated as absent
+		}
+		switch kid.name {
+		case "type":
+			t, ok := singleText(&kid.value)
+			if ok {
+				t = asciiLower(t)
+			}
+			switch {
+			case ok && containsString(schemaTypes, t):
+				if c.ty != "" {
+					vdiag(faults, kid.line, "bad schema constraint 'type'")
+				} else {
+					c.ty = t
+				}
+			case ok:
+				vdiag(faults, kid.line, fmt.Sprintf("unknown schema type '%s'", t))
+			default:
+				vdiag(faults, kid.line, "bad schema constraint 'type'")
+			}
+		case "required":
+			t, ok := singleText(&kid.value)
+			var b bool
+			if ok {
+				b, ok = parseBoolText(t, Standard)
+			}
+			if ok && required == nil {
+				required = &b
+			} else {
+				vdiag(faults, kid.line, "bad schema constraint 'required'")
+			}
+		case "allowed":
+			if kid.value.kind == vCell && allowedAt < 0 {
+				allowedAt = k
+			} else {
+				vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+			}
+		case "min":
+			if kid.value.kind == vCell && len(kid.value.els) == 1 && minAt < 0 {
+				minAt = k
+			} else {
+				vdiag(faults, kid.line, "bad schema constraint 'min'")
+			}
+		case "max":
+			if kid.value.kind == vCell && len(kid.value.els) == 1 && maxAt < 0 {
+				maxAt = k
+			} else {
+				vdiag(faults, kid.line, "bad schema constraint 'max'")
+			}
+		case "repeat":
+			if kid.value.kind == vCell && c.repeat == nil && (len(kid.value.els) == 1 || len(kid.value.els) == 2) {
+				lo, okLo := parseIndex(kid.value.els[0].text)
+				hi, okHi := parseIndex(kid.value.els[len(kid.value.els)-1].text)
+				if okLo && okHi && lo <= hi {
+					c.repeat = &[2]uint64{lo, hi}
+				} else {
+					vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+				}
+			} else {
+				vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+			}
+		case "inherits":
+			t, ok := singleText(&kid.value)
+			if ok && t != "" && c.inherits == "" {
+				c.inherits = t
+				c.inheritsLine = kid.line
+			} else {
+				vdiag(faults, kid.line, "bad schema constraint 'inherits'")
+			}
+		// Generator-only (`shcl init`); validation ignores both. First
+		// occurrence wins (a merged schema could carry two).
+		case "desc":
+			if c.desc == nil {
+				if t, ok := singleText(&kid.value); ok {
+					c.desc = &t
+				}
+			}
+		case "default":
+			if c.defaultText == nil {
+				if t, ok := emitValueInline(&kid.value); ok {
+					c.defaultText = &t
+				}
+			}
+		default:
+			vdiag(faults, kid.line, fmt.Sprintf("unknown schema key '%s'", kid.name))
+		}
+	}
+	if required != nil {
+		c.required = *required
+	}
+	base := strings.TrimSuffix(c.ty, "-array")
+	if base == "" {
+		base = "string"
+	}
+	if allowedAt >= 0 {
+		kid := &schema.arena[allowedAt]
+		els := kid.value.els
+		// Schema values are read at Standard; only the document's values
+		// coerce at the document's strictness.
+		set := &allowedSet{}
+		ok := true
+		switch base {
+		case "int":
+			set.kind = allowInts
+			for i := range els {
+				v, o := parseIntText(&els[i], Standard)
+				if !o {
+					ok = false
+					break
+				}
+				set.ints = append(set.ints, v)
+			}
+		case "float":
+			set.kind = allowFloats
+			for i := range els {
+				v, o := parseFloatText(&els[i], Standard)
+				if !o {
+					ok = false
+					break
+				}
+				set.floats = append(set.floats, v)
+			}
+		case "bool":
+			set.kind = allowBools
+			for i := range els {
+				v, o := parseBoolText(els[i].text, Standard)
+				if !o {
+					ok = false
+					break
+				}
+				set.bools = append(set.bools, v)
+			}
+		case "datetime":
+			set.kind = allowDates
+			for i := range els {
+				v, o := ParseDateTime(els[i].text)
+				if !o {
+					ok = false
+					break
+				}
+				set.dates = append(set.dates, v)
+			}
+		case "raw":
+			ok = false // a raw body has no element space to enumerate
+		default:
+			set.kind = allowStrings
+			for i := range els {
+				set.strs = append(set.strs, applyEscapes(els[i].text))
+			}
+		}
+		if ok {
+			c.allowed = set
+		} else {
+			vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+		}
+	}
+	for _, mm := range []struct {
+		at    int
+		isMin bool
+	}{{minAt, true}, {maxAt, false}} {
+		if mm.at < 0 {
+			continue
+		}
+		kid := &schema.arena[mm.at]
+		el := &kid.value.els[0]
+		key := "max"
+		if mm.isMin {
+			key = "min"
+		}
+		switch base {
+		case "int":
+			if v, ok := parseIntText(el, Standard); ok {
+				if mm.isMin {
+					c.minI = &v
+				} else {
+					c.maxI = &v
+				}
+			} else {
+				vdiag(faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
+			}
+		case "float":
+			if v, ok := parseFloatText(el, Standard); ok {
+				if mm.isMin {
+					c.minF = &v
+				} else {
+					c.maxF = &v
+				}
+			} else {
+				vdiag(faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
+			}
+		default:
+			vdiag(faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
+		}
+	}
+	return c, true
 }
 
 func containsString(xs []string, s string) bool {
@@ -4096,10 +4180,11 @@ func genDefaultText(v string) string {
 // generated lines would merge, so the shortfall is reported). faults != nil =
 // schema faults (V09x), same as Validate / check --schema.
 func Generate(schema *Document) (string, []Diagnostic) {
-	cons, faults := buildSchema(schema)
+	def, faults := buildSchema(schema)
 	if faults != nil {
 		return "", faults
 	}
+	cons, cuts := expandMounts(&def)
 	mustExist := func(c *constraint) bool {
 		return c.required || (c.repeat != nil && c.repeat[0] >= 1)
 	}
@@ -4224,6 +4309,9 @@ func Generate(schema *Document) (string, []Diagnostic) {
 			fmt.Fprintf(&b, "%s%s:\n", prefix, path)
 		}
 	}
+	// Cycle-cut mounts last: their "type" column names the fragment that
+	// belongs at the path.
+	wild = append(wild, cuts...)
 	if len(wild) > 0 {
 		if !first {
 			b.WriteByte('\n')
@@ -4234,6 +4322,53 @@ func Generate(schema *Document) (string, []Diagnostic) {
 		}
 	}
 	return b.String(), nil
+}
+
+// expandMounts inlines every fragment mount into a flat constraint list,
+// depth-first in schema order, each field's path and segments prefixed by its
+// mount's. A mount whose fragment is already expanding (a cycle) stops there
+// and is returned as (path, fragment name) for the trailing not-generated
+// block.
+func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
+	var out []constraint
+	var cuts [][2]string
+	var stack []string
+	var walk func(list []constraint, atPath string, atSegs []segment, mounted bool)
+	walk = func(list []constraint, atPath string, atSegs []segment, mounted bool) {
+		for i := range list {
+			cc := list[i]
+			if mounted {
+				cc.path = atPath + "." + list[i].path
+				// Fresh backing array per clone: appending to a shared one
+				// would let sibling clones stomp each other's segments.
+				segs := make([]segment, 0, len(atSegs)+len(list[i].segs))
+				segs = append(segs, atSegs...)
+				segs = append(segs, list[i].segs...)
+				cc.segs = segs
+			}
+			path := cc.path
+			segs := cc.segs
+			out = append(out, cc)
+			if fr := list[i].inherits; fr != "" {
+				onStack := false
+				for _, x := range stack {
+					if x == fr {
+						onStack = true
+						break
+					}
+				}
+				if onStack {
+					cuts = append(cuts, [2]string{strings.ReplaceAll(path, "\n", "\\n"), fr})
+				} else if fcs, ok := def.frags[fr]; ok {
+					stack = append(stack, fr)
+					walk(fcs, path, segs, true)
+					stack = stack[:len(stack)-1]
+				}
+			}
+		}
+	}
+	walk(def.cons, "", nil, false)
+	return out, cuts
 }
 
 // editDistance is two-row Levenshtein; powers the "did you mean" prose (never
@@ -4275,15 +4410,15 @@ func min3(a, b, c int) int {
 // Diagnostic lines are document lines (0 = document scope); schema faults
 // (V09x, schema-file lines) suppress data validation entirely.
 func (d *Document) Validate(schema *Document) []Diagnostic {
-	cons, faults := buildSchema(schema)
+	def, faults := buildSchema(schema)
 	if len(faults) > 0 {
 		return faults
 	}
 	var out []Diagnostic
-	for i := range cons {
-		d.vCheck(&cons[i], &out)
+	for i := range def.cons {
+		d.vCheck(&def.cons[i], &def, &out)
 	}
-	d.vUnknown(cons, &out)
+	d.vUnknown(&def, &out)
 	return out
 }
 
@@ -4356,9 +4491,17 @@ func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vCo
 	*out = append(*out, vContext{anchor: anchor, found: cur})
 }
 
-func (d *Document) vCheck(c *constraint, out *[]Diagnostic) {
+func (d *Document) vCheck(c *constraint, def *schemaDef, out *[]Diagnostic) {
+	d.vCheckFrom(c, def, root, 0, out)
+}
+
+// A mounted fragment's fields run per resolved node, right after that node's
+// own checks, in fragment order - depth-first, so diagnostic order stays
+// derivable. Termination is structural: every mount descends at least one
+// document level, and the document is finite.
+func (d *Document) vCheckFrom(c *constraint, def *schemaDef, start, anchor0 int, out *[]Diagnostic) {
 	var ctxs []vContext
-	d.vContexts([]int{root}, c.segs, 0, &ctxs)
+	d.vContexts([]int{start}, c.segs, anchor0, &ctxs)
 	for _, ctx := range ctxs {
 		if c.required && len(ctx.found) == 0 {
 			vdiag(out, ctx.anchor, fmt.Sprintf("required path missing: %s", c.path))
@@ -4371,6 +4514,13 @@ func (d *Document) vCheck(c *constraint, out *[]Diagnostic) {
 		}
 		for _, n := range ctx.found {
 			d.vNode(c, n, out)
+			if c.inherits != "" {
+				if fcs, ok := def.frags[c.inherits]; ok {
+					for i := range fcs {
+						d.vCheckFrom(&fcs[i], def, n, d.arena[n].line, out)
+					}
+				}
+			}
 		}
 	}
 }
@@ -4586,7 +4736,16 @@ func anyFloatAbove(xs []float64, hi float64) bool {
 // vUnknown is the unknown-field sweep: a schema path legalizes its name chain
 // and every prefix (selectors ignored). Only the topmost unknown node is
 // reported; its subtree is implied unknown and skipped.
-func (d *Document) vUnknown(cons []constraint, out *[]Diagnostic) {
+func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
+	cons := def.cons
+	// Chains below a fragment mount only match by descending the mounts.
+	hasMounts := false
+	for i := range cons {
+		if cons[i].inherits != "" {
+			hasMounts = true
+			break
+		}
+	}
 	legal := map[string]bool{}
 	// Sibling names per parent chain, built once (schema order): vSuggest
 	// used to rebuild every chain per unknown field, which bit hardest on
@@ -4635,7 +4794,7 @@ func (d *Document) vUnknown(cons []constraint, out *[]Diagnostic) {
 			chain = fr.chain + "\x00" + node.name
 			shown = fr.shown + "." + node.name
 		}
-		if !legal[chain] && !starLegal(starPats, chain) {
+		if !legal[chain] && !starLegal(starPats, chain) && !(hasMounts && chainLegal(cons, def.frags, chain)) {
 			hint := vSuggest(siblings, fr.chain, node.name)
 			vdiag(out, node.line, fmt.Sprintf("unknown field '%s'%s", shown, hint))
 			continue
@@ -4667,6 +4826,45 @@ func starLegal(pats [][]segment, chain string) bool {
 		}
 		if ok {
 			return true
+		}
+	}
+	return false
+}
+
+// chainLegal is chain legality through fragment mounts: the general matcher -
+// element-wise like starLegal (stars wild, prefixes legal), and when a mount's
+// whole path matched with chain left over, the remainder is retried against
+// the mounted fragment's fields. Terminates: every descent consumes >= 1 part.
+func chainLegal(cons []constraint, frags map[string][]constraint, chain string) bool {
+	parts := strings.Split(chain, "\x00")
+	return chainPartsLegal(cons, frags, parts)
+}
+
+func chainPartsLegal(cons []constraint, frags map[string][]constraint, parts []string) bool {
+	for i := range cons {
+		c := &cons[i]
+		n := len(c.segs)
+		k := len(parts)
+		if n < k {
+			k = n
+		}
+		matched := true
+		for j := 0; j < k; j++ {
+			if !c.segs[j].star && c.segs[j].name != parts[j] {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		if len(parts) <= n {
+			return true
+		}
+		if c.inherits != "" {
+			if fcs, ok := frags[c.inherits]; ok && chainPartsLegal(fcs, frags, parts[n:]) {
+				return true
+			}
 		}
 	}
 	return false

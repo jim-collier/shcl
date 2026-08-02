@@ -104,6 +104,8 @@ def _diag_code(msg):
 		("unknown schema type ", "V091"),
 		("bad schema constraint ", "V092"),
 		("bad schema path", "V093"),
+		("bad schema fragment", "V094"),
+		("unknown schema fragment ", "V095"),
 		("schema failed to load", "V099"),
 	):
 		if msg.startswith(prefix):
@@ -2207,13 +2209,13 @@ class Document:
 		= the document conforms. Diagnostic lines are document lines (0 =
 		document scope); schema faults (V09x, schema-file lines) suppress data
 		validation entirely."""
-		cons, faults = _build_schema(schema)
+		sdef, faults = _build_schema(schema)
 		if faults:
 			return faults
 		out = []
-		for c in cons:
-			self._v_check(c, out)
-		self._v_unknown(cons, out)
+		for c in sdef.cons:
+			self._v_check(c, sdef, out)
+		self._v_unknown(sdef, out)
 		return out
 
 	def _v_contexts(self, start, segs, anchor, out):
@@ -2257,9 +2259,16 @@ class Document:
 				return
 		out.append((anchor, cur))
 
-	def _v_check(self, c, out):
+	def _v_check(self, c, sdef, out):
+		self._v_check_from(c, sdef, ROOT, 0, out)
+
+	# A mounted fragment's fields run per resolved node, right after that
+	# node's own checks, in fragment order - depth-first, so diagnostic order
+	# stays derivable. Termination is structural: every mount descends at
+	# least one document level, and the document is finite.
+	def _v_check_from(self, c, sdef, start, anchor0, out):
 		ctxs = []
-		self._v_contexts([ROOT], c.segs, 0, ctxs)
+		self._v_contexts([start], c.segs, anchor0, ctxs)
 		for anchor, found in ctxs:
 			if c.required and not found:
 				_vdiag(out, anchor, "required path missing: {}".format(c.path))
@@ -2270,6 +2279,11 @@ class Document:
 					_vdiag(out, anchor, "instance count out of bounds at '{}': {} not in {}..{}".format(c.path, n, lo, hi))
 			for n in found:
 				self._v_node(c, n, out)
+				if c.inherits is not None:
+					fcs = sdef.frags.get(c.inherits)
+					if fcs is not None:
+						for fc in fcs:
+							self._v_check_from(fc, sdef, n, self.arena[n].line, out)
 
 	def _v_node(self, c, n, out):
 		node = self.arena[n]
@@ -2372,10 +2386,13 @@ class Document:
 						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, s))
 						break
 
-	def _v_unknown(self, cons, out):
+	def _v_unknown(self, sdef, out):
 		# Unknown-field sweep: a schema path legalizes its name chain and every
 		# prefix (selectors ignored). Only the topmost unknown node is
 		# reported; its subtree is implied unknown and skipped.
+		cons = sdef.cons
+		# Chains below a fragment mount only match by descending the mounts.
+		has_mounts = any(c.inherits is not None for c in cons)
 		legal = set()
 		# Sibling names per parent chain, built once (schema order): _v_suggest
 		# used to rebuild every chain per unknown field, which bit hardest on
@@ -2400,7 +2417,11 @@ class Document:
 			node = self.arena[n]
 			chain = node.name if not pchain else pchain + "\0" + node.name
 			shown = node.name if not pshown else pshown + "." + node.name
-			if chain not in legal and not _star_legal(star_pats, chain):
+			if (
+				chain not in legal
+				and not _star_legal(star_pats, chain)
+				and not (has_mounts and _chain_legal(cons, sdef.frags, chain))
+			):
 				hint = _v_suggest(siblings, pchain, node.name)
 				_vdiag(out, node.line, "unknown field '{}'{}".format(shown, hint))
 				continue
@@ -2440,22 +2461,28 @@ def suppress_declared_repeats(schema, diags):
 	consumers were hand-rolling - which errs toward quiet, for a hint. Used by
 	`check --schema` and load_and_validate; call it wherever doc diagnostics
 	and a schema meet. Mutates diags in place."""
-	paths = schema.instances("field")
+	# Top-level fields plus every fragment's fields: a repeat declared inside
+	# a mounted shape disavows the hint the same way.
+	groups = [("field", schema.instances("field"))]
+	for k in range(schema.count("fragment")):
+		base = "fragment[#{}].field".format(k)
+		groups.append((base, schema.instances(base)))
 	names = []
-	for i, p in enumerate(paths):
-		# repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound that
-		# matters here is the last one.
-		rep = schema.read_int_array("field[#{}].repeat".format(i))
-		if rep.status != Status.Good:
-			continue
-		if not rep.value or rep.value[-1] <= 1:
-			continue
-		raw = _trim(p.rsplit(".", 1)[-1].split("[", 1)[0])
-		if raw == "*":
-			continue   # name wildcard: no single leaf name to disavow
-		leaf = raw.strip("\"'")
-		if leaf:
-			names.append(_ascii_lower(leaf))
+	for base, paths in groups:
+		for i, p in enumerate(paths):
+			# repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
+			# that matters here is the last one.
+			rep = schema.read_int_array("{}[#{}].repeat".format(base, i))
+			if rep.status != Status.Good:
+				continue
+			if not rep.value or rep.value[-1] <= 1:
+				continue
+			raw = _trim(p.rsplit(".", 1)[-1].split("[", 1)[0])
+			if raw == "*":
+				continue   # name wildcard: no single leaf name to disavow
+			leaf = raw.strip("\"'")
+			if leaf:
+				names.append(_ascii_lower(leaf))
 	if not names:
 		return
 	kept = []
@@ -2944,6 +2971,7 @@ class _Constraint:
 	__slots__ = (
 		"path", "segs", "ty", "required", "allowed",
 		"min_i", "max_i", "min_f", "max_f", "repeat",
+		"inherits", "inherits_line",
 		"desc", "default_text",
 	)
 
@@ -2958,9 +2986,37 @@ class _Constraint:
 		self.min_f = None
 		self.max_f = None
 		self.repeat = None        # (lo, hi)
+		self.inherits = None      # fragment mounted at this path (subtree shape)
+		self.inherits_line = 0    # schema line of the `inherits` key, for V095
 		# Generator-only (`shcl init`): validation ignores both.
 		self.desc = None          # `desc`, a one-line description
 		self.default_text = None  # `default`, emitted as an inline value
+
+	def clone(self):
+		cc = _Constraint(self.path, list(self.segs))
+		cc.ty = self.ty
+		cc.required = self.required
+		cc.allowed = self.allowed
+		cc.min_i = self.min_i
+		cc.max_i = self.max_i
+		cc.min_f = self.min_f
+		cc.max_f = self.max_f
+		cc.repeat = self.repeat
+		cc.inherits = self.inherits
+		cc.inherits_line = self.inherits_line
+		cc.desc = self.desc
+		cc.default_text = self.default_text
+		return cc
+
+
+class _SchemaDef:
+	# An interpreted schema: the top-level constraints plus the named fragments
+	# their `inherits` keys can mount.
+	__slots__ = ("cons", "frags")
+
+	def __init__(self, cons, frags):
+		self.cons = cons
+		self.frags = frags        # name -> list of _Constraint
 
 
 def _vdiag(out, line, msg):
@@ -2980,157 +3036,197 @@ def _dt_equal(a, b):
 
 
 def _build_schema(schema):
-	"""Interpret a parsed schema document into constraints. A non-empty fault
-	list (V09x, schema-file lines) means the caller reports those and validates
-	nothing."""
+	"""Interpret a parsed schema document into constraints and fragments. A
+	non-empty fault list (V09x, schema-file lines) means the caller reports
+	those and validates nothing."""
 	faults = []
 	cons = []
+	frags = {}
 	for f in schema.arena[ROOT].children:
 		node = schema.arena[f]
-		if node.name != "field":
-			_vdiag(faults, node.line, "unknown schema key '{}'".format(node.name))
-			continue
-		path = _single_text(node.value)
-		if path is None:
-			_vdiag(faults, node.line, "bad schema path")
-			continue
-		try:
-			segs, value_text = _scan_lookup(path)
-		except _PathError:
-			segs, value_text = None, None
-		if segs is None or value_text is not None:
-			_vdiag(faults, node.line, "bad schema path: {}".format(path))
-			continue
-		c = _Constraint(path, segs)
-		# Deferred so `min: 1` may precede `type: int` in the file.
-		required = None
-		allowed_at = None
-		min_at = None
-		max_at = None
-		for k in schema.arena[f].children:
-			kid = schema.arena[k]
-			if kid.value.is_empty():
-				continue  # dangling key: treated as absent
-			if kid.name == "type":
-				t = _single_text(kid.value)
-				if t is not None:
-					t = _ascii_lower(t)
-				if t in _SCHEMA_TYPES:
-					if c.ty is not None:
-						_vdiag(faults, kid.line, "bad schema constraint 'type'")
-					else:
-						c.ty = t
-				elif t is not None:
-					_vdiag(faults, kid.line, "unknown schema type '{}'".format(t))
-				else:
-					_vdiag(faults, kid.line, "bad schema constraint 'type'")
-			elif kid.name == "required":
-				t = _single_text(kid.value)
-				b = _parse_bool_text(t, Strictness.Standard) if t is not None else None
-				if b is not None and required is None:
-					required = b
-				else:
-					_vdiag(faults, kid.line, "bad schema constraint 'required'")
-			elif kid.name == "allowed":
-				if kid.value.kind == "cell" and allowed_at is None:
-					allowed_at = k
-				else:
-					_vdiag(faults, kid.line, "bad schema constraint 'allowed'")
-			elif kid.name == "min":
-				if kid.value.kind == "cell" and len(kid.value.els) == 1 and min_at is None:
-					min_at = k
-				else:
-					_vdiag(faults, kid.line, "bad schema constraint 'min'")
-			elif kid.name == "max":
-				if kid.value.kind == "cell" and len(kid.value.els) == 1 and max_at is None:
-					max_at = k
-				else:
-					_vdiag(faults, kid.line, "bad schema constraint 'max'")
-			elif kid.name == "repeat":
-				if kid.value.kind == "cell" and c.repeat is None and len(kid.value.els) in (1, 2):
-					lo = _parse_uint(kid.value.els[0].text)
-					hi = _parse_uint(kid.value.els[-1].text)
-					if lo is not None and hi is not None and lo <= hi:
-						c.repeat = (lo, hi)
-					else:
-						_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
-				else:
-					_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
-			elif kid.name == "desc":
-				# Generator-only (`shcl init`); validation ignores it. First wins.
-				if c.desc is None:
-					c.desc = _single_text(kid.value)
-			elif kid.name == "default":
-				if c.default_text is None:
-					c.default_text = _emit_value_inline(kid.value)
-			else:
-				_vdiag(faults, kid.line, "unknown schema key '{}'".format(kid.name))
-		if required is not None:
-			c.required = required
-		base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
-		if base is None:
-			base = "string"
-		if allowed_at is not None:
-			kid = schema.arena[allowed_at]
-			els = kid.value.els
-			# Schema values are read at Standard; only the document's values
-			# coerce at the document's strictness.
-			ok = True
-			if base == "int":
-				vals = [_parse_int_text(e, Strictness.Standard) for e in els]
-				ok = all(v is not None for v in vals)
-				setv = ("ints", vals)
-			elif base == "float":
-				vals = [_parse_float_text(e, Strictness.Standard) for e in els]
-				ok = all(v is not None for v in vals)
-				setv = ("floats", vals)
-			elif base == "bool":
-				vals = [_parse_bool_text(e.text, Strictness.Standard) for e in els]
-				ok = all(v is not None for v in vals)
-				setv = ("bools", vals)
-			elif base == "datetime":
-				vals = [parse_datetime(e.text) for e in els]
-				ok = all(v is not None for v in vals)
-				setv = ("dates", vals)
-			elif base == "raw":
-				ok = False  # a raw body has no element space to enumerate
-				setv = None
-			else:
-				setv = ("strings", [_apply_escapes(e.text) for e in els])
-			if ok:
-				c.allowed = setv
-			else:
-				_vdiag(faults, kid.line, "bad schema constraint 'allowed'")
-		for at, is_min in ((min_at, True), (max_at, False)):
-			if at is None:
+		if node.name == "field":
+			c = _parse_field(schema, f, faults)
+			if c is not None:
+				cons.append(c)
+		elif node.name == "fragment":
+			name = _single_text(node.value)
+			if not name:
+				_vdiag(faults, node.line, "bad schema fragment")
 				continue
-			kid = schema.arena[at]
-			el = kid.value.els[0]
-			key = "min" if is_min else "max"
-			if base == "int":
-				v = _parse_int_text(el, Strictness.Standard)
-				if v is None:
-					_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
-				elif is_min:
-					c.min_i = v
+			if name in frags:
+				_vdiag(faults, node.line, "bad schema fragment '{}': duplicate".format(name))
+				continue
+			fcs = []
+			for k in schema.arena[f].children:
+				kid = schema.arena[k]
+				if kid.name == "field":
+					c = _parse_field(schema, k, faults)
+					if c is not None:
+						fcs.append(c)
 				else:
-					c.max_i = v
-			elif base == "float":
-				v = _parse_float_text(el, Strictness.Standard)
-				if v is None:
-					_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
-				elif is_min:
-					c.min_f = v
-				else:
-					c.max_f = v
-			else:
-				_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
-		cons.append(c)
+					_vdiag(faults, kid.line, "bad schema fragment '{}': unknown key '{}'".format(name, kid.name))
+			frags[name] = fcs
+		else:
+			_vdiag(faults, node.line, "unknown schema key '{}'".format(node.name))
+	# Every mount must name a declared fragment; cycles (self or mutual) are
+	# legal - expansion is demand-driven against a finite document.
+	for c in cons + [fc for fcs in frags.values() for fc in fcs]:
+		if c.inherits is not None and c.inherits not in frags:
+			_vdiag(faults, c.inherits_line, "unknown schema fragment '{}'".format(c.inherits))
 	if faults:
 		# One constraint per line in practice, so line order = file order.
 		faults.sort(key=lambda d: d.line)
 		return None, faults
-	return cons, []
+	return _SchemaDef(cons, frags), []
+
+
+def _parse_field(schema, f, faults):
+	"""One `field:` instance (top-level or inside a fragment) -> a _Constraint.
+	None = faults were reported and the constraint is dropped."""
+	node = schema.arena[f]
+	path = _single_text(node.value)
+	if path is None:
+		_vdiag(faults, node.line, "bad schema path")
+		return None
+	try:
+		segs, value_text = _scan_lookup(path)
+	except _PathError:
+		segs, value_text = None, None
+	if segs is None or value_text is not None:
+		_vdiag(faults, node.line, "bad schema path: {}".format(path))
+		return None
+	c = _Constraint(path, segs)
+	# Deferred so `min: 1` may precede `type: int` in the file.
+	required = None
+	allowed_at = None
+	min_at = None
+	max_at = None
+	for k in schema.arena[f].children:
+		kid = schema.arena[k]
+		if kid.value.is_empty():
+			continue  # dangling key: treated as absent
+		if kid.name == "type":
+			t = _single_text(kid.value)
+			if t is not None:
+				t = _ascii_lower(t)
+			if t in _SCHEMA_TYPES:
+				if c.ty is not None:
+					_vdiag(faults, kid.line, "bad schema constraint 'type'")
+				else:
+					c.ty = t
+			elif t is not None:
+				_vdiag(faults, kid.line, "unknown schema type '{}'".format(t))
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'type'")
+		elif kid.name == "required":
+			t = _single_text(kid.value)
+			b = _parse_bool_text(t, Strictness.Standard) if t is not None else None
+			if b is not None and required is None:
+				required = b
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'required'")
+		elif kid.name == "allowed":
+			if kid.value.kind == "cell" and allowed_at is None:
+				allowed_at = k
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+		elif kid.name == "min":
+			if kid.value.kind == "cell" and len(kid.value.els) == 1 and min_at is None:
+				min_at = k
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'min'")
+		elif kid.name == "max":
+			if kid.value.kind == "cell" and len(kid.value.els) == 1 and max_at is None:
+				max_at = k
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'max'")
+		elif kid.name == "repeat":
+			if kid.value.kind == "cell" and c.repeat is None and len(kid.value.els) in (1, 2):
+				lo = _parse_uint(kid.value.els[0].text)
+				hi = _parse_uint(kid.value.els[-1].text)
+				if lo is not None and hi is not None and lo <= hi:
+					c.repeat = (lo, hi)
+				else:
+					_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+		elif kid.name == "inherits":
+			t = _single_text(kid.value)
+			if t and c.inherits is None:
+				c.inherits = t
+				c.inherits_line = kid.line
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'inherits'")
+		elif kid.name == "desc":
+			# Generator-only (`shcl init`); validation ignores it. First wins.
+			if c.desc is None:
+				c.desc = _single_text(kid.value)
+		elif kid.name == "default":
+			if c.default_text is None:
+				c.default_text = _emit_value_inline(kid.value)
+		else:
+			_vdiag(faults, kid.line, "unknown schema key '{}'".format(kid.name))
+	if required is not None:
+		c.required = required
+	base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
+	if base is None:
+		base = "string"
+	if allowed_at is not None:
+		kid = schema.arena[allowed_at]
+		els = kid.value.els
+		# Schema values are read at Standard; only the document's values
+		# coerce at the document's strictness.
+		ok = True
+		if base == "int":
+			vals = [_parse_int_text(e, Strictness.Standard) for e in els]
+			ok = all(v is not None for v in vals)
+			setv = ("ints", vals)
+		elif base == "float":
+			vals = [_parse_float_text(e, Strictness.Standard) for e in els]
+			ok = all(v is not None for v in vals)
+			setv = ("floats", vals)
+		elif base == "bool":
+			vals = [_parse_bool_text(e.text, Strictness.Standard) for e in els]
+			ok = all(v is not None for v in vals)
+			setv = ("bools", vals)
+		elif base == "datetime":
+			vals = [parse_datetime(e.text) for e in els]
+			ok = all(v is not None for v in vals)
+			setv = ("dates", vals)
+		elif base == "raw":
+			ok = False  # a raw body has no element space to enumerate
+			setv = None
+		else:
+			setv = ("strings", [_apply_escapes(e.text) for e in els])
+		if ok:
+			c.allowed = setv
+		else:
+			_vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+	for at, is_min in ((min_at, True), (max_at, False)):
+		if at is None:
+			continue
+		kid = schema.arena[at]
+		el = kid.value.els[0]
+		key = "min" if is_min else "max"
+		if base == "int":
+			v = _parse_int_text(el, Strictness.Standard)
+			if v is None:
+				_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+			elif is_min:
+				c.min_i = v
+			else:
+				c.max_i = v
+		elif base == "float":
+			v = _parse_float_text(el, Strictness.Standard)
+			if v is None:
+				_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+			elif is_min:
+				c.min_f = v
+			else:
+				c.max_f = v
+		else:
+			_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+	return c
 
 
 def _emit_value_inline(v):
@@ -3216,9 +3312,10 @@ def generate(schema):
 	(identical generated lines would merge, so the shortfall is reported).
 	Returns (text, faults): a non-empty fault list (V09x) means the schema is
 	broken and text is empty."""
-	cons, faults = _build_schema(schema)
+	sdef, faults = _build_schema(schema)
 	if faults:
 		return "", faults
+	cons, cuts = _expand_mounts(sdef)
 
 	def must_exist(c):
 		return c.required or (c.repeat is not None and c.repeat[0] >= 1)
@@ -3278,6 +3375,9 @@ def generate(schema):
 			out.append("{}{}: {}\n".format(prefix, path, _gen_default_text(c.default_text)))
 		else:
 			out.append("{}{}:\n".format(prefix, path))
+	# Cycle-cut mounts last: their "type" column names the fragment that
+	# belongs at the path.
+	wild.extend(cuts)
 	if wild:
 		if not first:
 			out.append("\n")
@@ -3285,6 +3385,39 @@ def generate(schema):
 		for path, tyname in wild:
 			out.append("#   {}   {}\n".format(path, tyname))
 	return "".join(out), []
+
+
+def _expand_mounts(sdef):
+	"""Inline every fragment mount into a flat constraint list, depth-first in
+	schema order, each field's path and segments prefixed by its mount's. A
+	mount whose fragment is already expanding (a cycle) stops there and is
+	returned as (path, fragment name) for the trailing not-generated block."""
+	out = []
+	cuts = []
+	stack = []
+
+	def go(lst, at):
+		for c in lst:
+			cc = c.clone()
+			if at is not None:
+				p, s = at
+				cc.path = "{}.{}".format(p, c.path)
+				cc.segs = list(s) + list(c.segs)
+			path = cc.path
+			segs = cc.segs
+			out.append(cc)
+			if c.inherits is not None:
+				if c.inherits in stack:
+					cuts.append((path.replace("\n", "\\n"), c.inherits))
+				else:
+					fcs = sdef.frags.get(c.inherits)
+					if fcs is not None:
+						stack.append(c.inherits)
+						go(fcs, (path, segs))
+						stack.pop()
+
+	go(sdef.cons, None)
+	return out, cuts
 
 
 def _edit_distance(a, b):
@@ -3310,6 +3443,29 @@ def _star_legal(pats, chain):
 		len(p) >= len(parts) and all(p[i].star or p[i].name == seg for i, seg in enumerate(parts))
 		for p in pats
 	)
+
+
+def _chain_legal(cons, frags, chain):
+	"""Chain legality through fragment mounts: the general matcher - element-
+	wise like _star_legal (stars wild, prefixes legal), and when a mount's whole
+	path matched with chain left over, the remainder is retried against the
+	mounted fragment's fields. Terminates: every descent consumes >= 1 part."""
+	parts = chain.split("\0")
+	return _chain_parts_legal(cons, frags, parts)
+
+
+def _chain_parts_legal(cons, frags, parts):
+	for c in cons:
+		n = len(c.segs)
+		k = min(len(parts), n)
+		if all(c.segs[i].star or c.segs[i].name == parts[i] for i in range(k)):
+			if len(parts) <= n:
+				return True
+			if c.inherits is not None:
+				fcs = frags.get(c.inherits)
+				if fcs is not None and _chain_parts_legal(fcs, frags, parts[n:]):
+					return True
+	return False
 
 
 def _v_suggest(siblings, parent_chain, name):

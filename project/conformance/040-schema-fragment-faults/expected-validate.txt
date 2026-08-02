@@ -1,0 +1,4 @@
+line 2: Error: V095
+line 3: Error: V094
+line 7: Error: V094
+failed: 3 diagnostic(s), 3 error(s)

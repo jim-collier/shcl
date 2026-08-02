@@ -1,0 +1,28 @@
+layout:
+	kind: split
+	children:
+		kind: split
+		children:
+			kind: split
+			children:
+				kind: split
+				children:
+					kind: split
+					children:
+						kind: split
+						children:
+							kind: split
+							children:
+								kind: split
+								children:
+									kind: split
+									children:
+										kind: split
+										ratio: 0.5
+doc:
+	layout:
+		kind: pane
+		zoom: fit
+tag: a
+tag: b
+tag: c
