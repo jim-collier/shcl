@@ -86,6 +86,9 @@ public:
 
 	std::size_t count(std::string_view p) const { return shcl_count(d_, p.data(), p.size()); }
 	// Every field path, file order, deduplicated (bare-name-safe segments only).
+	// Quote one path segment for splicing into a lookup path (injection-safe).
+	std::string quote_segment(std::string_view name) const { return to_str(shcl_quote_segment(d_, name.data(), name.size())); }
+
 	std::vector<std::string> paths() const {
 		shcl_str *v; std::size_t n = shcl_paths(d_, &v);
 		std::vector<std::string> r; r.reserve(n);

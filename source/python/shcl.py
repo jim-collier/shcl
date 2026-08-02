@@ -1287,18 +1287,17 @@ class Document:
 
 	def paths(self):
 		"""Every field path in the document, in file order, deduplicated - a
-		query recipe for tooling. Only bare-name-safe segments are emitted, so
-		each path is a well-formed CLI query; a subtree under a quoted/non-ASCII
-		name is skipped."""
+		query recipe for tooling. A segment that is not bare-name-safe is
+		emitted quoted and escaped - the form the path scanner accepts - so
+		each path is a well-formed lookup path and nothing in the document is
+		hidden."""
 		out = []
 		seen = set()
 		stack = [(c, "") for c in reversed(self.arena[ROOT].children)]
 		while stack:
 			node, prefix = stack.pop()
-			name = self.arena[node].name
-			if not name or not all(_is_bare_name_char(c) for c in name):
-				continue  # not a bare query segment; skip it and its subtree
-			path = name if not prefix else prefix + "." + name
+			seg = _emit_name(self.arena[node].name)
+			path = seg if not prefix else prefix + "." + seg
 			if path not in seen:
 				seen.add(path)
 				out.append(path)
@@ -2116,6 +2115,15 @@ def _emit_name(name):
 	if name and all(_is_bare_name_char(c) for c in name):
 		return name
 	return _quote_text(name)
+
+
+def quote_segment(name):
+	"""Quote one path segment so it can be spliced into a lookup path: a bare
+	name passes through, anything else comes back quoted and escaped in the
+	form the path scanner accepts. Splicing user-typed text into a path
+	without this is path injection - a dotted name silently reads as nesting.
+	Same spelling paths() and the canonical emitter produce."""
+	return _emit_name(name)
 
 
 _RESERVED = set(" \t,:#\"'[]")

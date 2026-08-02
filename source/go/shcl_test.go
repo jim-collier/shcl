@@ -825,11 +825,11 @@ func TestReadsMatchExpected(t *testing.T) {
 }
 
 func TestPathsEnumerationShape(t *testing.T) {
-	// Paths(): file order, deduplicated, bare-name-safe segments only (a
-	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	// Paths(): file order, deduplicated, non-bare segments quoted so every
+	// path resolves. Same fixture is pinned in every runner.
 	doc := Parse("a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n")
 	got := doc.Paths()
-	want := []string{"a", "a.b", "x", "x.b"}
+	want := []string{"a", "a.b", "\"q n\"", "x", "x.b"}
 	if len(got) != len(want) {
 		t.Fatalf("paths: got %v want %v", got, want)
 	}
@@ -837,5 +837,17 @@ func TestPathsEnumerationShape(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("paths: got %v want %v", got, want)
 		}
+	}
+	for _, p := range got {
+		if doc.Count(p) < 1 {
+			t.Fatalf("emitted path does not resolve: %s", p)
+		}
+	}
+	// QuoteSegment: same spelling both directions, injection-safe.
+	if QuoteSegment("port") != "port" || QuoteSegment("q n") != "\"q n\"" || QuoteSegment("a.b") != "\"a.b\"" {
+		t.Fatalf("QuoteSegment spelling drift")
+	}
+	if r := doc.ReadInt(QuoteSegment("q n")); r.Value != 3 || r.Status != Good {
+		t.Fatalf("quoted segment read: %v %v", r.Value, r.Status)
 	}
 }

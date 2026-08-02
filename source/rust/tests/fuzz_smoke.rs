@@ -101,7 +101,9 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 				let paths = Document::parse(&text).paths();
 				if !paths.is_empty() {
 					let mut tsv = String::from("query\ttype\texpected\tstatus\tlevel\n");
-					for p in paths.iter().take(3) {
+					// Quoted segments may carry a literal tab; those cannot ride
+					// a tab-separated row, so leave them to the native runners.
+					for p in paths.iter().filter(|p| !p.contains('\t')).take(3) {
 						for (ty, lvl) in [
 							("string", ""),
 							("int", "loose"),

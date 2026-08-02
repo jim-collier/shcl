@@ -1415,6 +1415,15 @@ fn emit_name(name: &str) -> String {
 	}
 }
 
+/// Quote one path segment so it can be spliced into a lookup path: a bare name
+/// passes through, anything else comes back quoted and escaped in the form the
+/// path scanner accepts. Splicing user-typed text into a path without this is
+/// path injection - a dotted name silently reads as nesting. Same spelling
+/// `paths()` and the canonical emitter produce.
+pub fn quote_segment(name: &str) -> String {
+	emit_name(name)
+}
+
 /// Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
 fn emit_element(e: &Element) -> String {
 	let t = &e.text;
@@ -1557,8 +1566,9 @@ impl Document {
 
 	/// Every field path in the document, in file order, deduplicated - a query
 	/// recipe for tooling (the differential harness derives reads over the fuzz
-	/// set from it). Only bare-name-safe segments are emitted, so each path is a
-	/// well-formed CLI query; a subtree under a quoted/non-ASCII name is skipped.
+	/// set from it). A segment that is not bare-name-safe is emitted quoted and
+	/// escaped - the form the path scanner accepts - so each path is a
+	/// well-formed lookup path and nothing in the document is hidden.
 	pub fn paths(&self) -> Vec<String> {
 		let mut out = Vec::new();
 		let mut seen = std::collections::HashSet::new();
@@ -1569,14 +1579,11 @@ impl Document {
 			.map(|&c| (c, String::new()))
 			.collect();
 		while let Some((node, prefix)) = stack.pop() {
-			let name = &self.arena[node].name;
-			if name.is_empty() || !name.chars().all(is_bare_name_char) {
-				continue; // not a bare query segment; skip it and its subtree
-			}
+			let seg = emit_name(&self.arena[node].name);
 			let path = if prefix.is_empty() {
-				name.clone()
+				seg
 			} else {
-				format!("{}.{}", prefix, name)
+				format!("{}.{}", prefix, seg)
 			};
 			if seen.insert(path.clone()) {
 				out.push(path.clone());

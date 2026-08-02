@@ -5,7 +5,7 @@
 //! the Rust reference runs it natively here. Case layout and reads.tsv column
 //! meanings are documented in project/conformance/README.md.
 
-use shcl::{Document, Strictness, generate, parse_datetime};
+use shcl::{Document, Strictness, generate, parse_datetime, quote_segment};
 use std::path::{Path, PathBuf};
 
 fn corpus_dir() -> PathBuf {
@@ -671,8 +671,17 @@ fn write_bad_ops_are_rejected() {
 
 #[test]
 fn paths_enumeration_shape() {
-	// paths(): file order, deduplicated, bare-name-safe segments only (a
-	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	// paths(): file order, deduplicated, non-bare segments quoted so every
+	// path resolves. Same fixture is pinned in every runner.
 	let doc = Document::parse("a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n");
-	assert_eq!(doc.paths(), vec!["a", "a.b", "x", "x.b"]);
+	assert_eq!(doc.paths(), vec!["a", "a.b", "\"q n\"", "x", "x.b"]);
+	for p in doc.paths() {
+		assert!(doc.count(&p) >= 1, "emitted path does not resolve: {}", p);
+	}
+	// quote_segment: same spelling both directions, injection-safe.
+	assert_eq!(quote_segment("port"), "port");
+	assert_eq!(quote_segment("q n"), "\"q n\"");
+	assert_eq!(quote_segment("a.b"), "\"a.b\"");
+	let r = doc.read_int(&quote_segment("q n"));
+	assert_eq!((r.value, r.status), (3, shcl::Status::Good));
 }
