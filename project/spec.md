@@ -369,6 +369,10 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 
 - `Instances(field)` and `Count(field)` enumerate instances by value or index.
 
+- `Paths()` enumerates every field path in the document, in file order, deduplicated. A segment that is not a bare name is emitted quoted and escaped - the same spelling the canonical formatter writes - so every returned path is a valid lookup path and nothing in the document is hidden from the enumeration.
+
+- `QuoteSegment(name)` (each binding's spelling of it) quotes one segment for splicing into a lookup path: a bare name passes through, anything else comes back quoted and escaped. Building a path from user-typed text without it is path injection - a dotted name reads as nesting.
+
 - An ambiguous single-value read (path resolves to many instances) reports `Multiple`; narrow it with a selector until exactly one remains.
 
 ### Diagnostics and writing

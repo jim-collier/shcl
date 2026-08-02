@@ -44,6 +44,9 @@ int main() {
 
 	// Two same-name leaves are instances, not one scalar.
 	CHECK(doc.count("city") == 2);
+
+	CHECK(doc.quote_segment("port") == "port");
+	CHECK(doc.quote_segment("q n") == "\"q n\"");
 	auto cities = doc.instances("city");
 	CHECK(cities.size() == 2 && cities[0] == "Chicago" && cities[1] == "Boston");
 	auto multi = doc.read_string("city");

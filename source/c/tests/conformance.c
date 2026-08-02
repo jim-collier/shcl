@@ -496,15 +496,21 @@ int main(int argc, char **argv) {
 	}
 	for (size_t i = 0; i < nn; i++) free(names[i]);
 	free(names);
-	// paths(): file order, deduplicated, bare-name-safe segments only (a
-	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	// paths(): file order, deduplicated, non-bare segments quoted so every
+	// path resolves. Same fixture is pinned in every runner.
 	{
 		const char *pt = "a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n";
 		shcl_doc *pd = shcl_parse(pt, strlen(pt));
 		shcl_str *pv; size_t pn = shcl_paths(pd, &pv);
-		const char *want[] = { "a", "a.b", "x", "x.b" };
-		if (pn != 4) fail("paths", "count mismatch");
-		else for (size_t i = 0; i < 4; i++) if (pv[i].n != strlen(want[i]) || memcmp(pv[i].p, want[i], pv[i].n) != 0) { fail("paths", "fixture mismatch"); break; }
+		const char *want[] = { "a", "a.b", "\"q n\"", "x", "x.b" };
+		if (pn != 5) fail("paths", "count mismatch");
+		else for (size_t i = 0; i < 5; i++) if (pv[i].n != strlen(want[i]) || memcmp(pv[i].p, want[i], pv[i].n) != 0) { fail("paths", "fixture mismatch"); break; }
+		for (size_t i = 0; i < pn; i++) if (shcl_count(pd, pv[i].p, pv[i].n) < 1) { fail("paths", "emitted path does not resolve"); break; }
+		// quote_segment: same spelling both directions, injection-safe.
+		shcl_str qs = shcl_quote_segment(pd, "q n", 3);
+		if (qs.n != 5 || memcmp(qs.p, "\"q n\"", 5) != 0) fail("paths", "quote_segment spelling drift");
+		shcl_read_i64 qr = shcl_read_int(pd, qs.p, qs.n);
+		if (qr.value != 3 || qr.status != SHCL_GOOD) fail("paths", "quoted segment read failed");
 		shcl_free(pd);
 	}
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }

@@ -117,10 +117,18 @@ size_t shcl_count(shcl_doc *d, const char *path, size_t plen);
 // Instance display values, in file order. Writes an arena-owned array to *out.
 size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out);
 // Every field path in the document, in file order, deduplicated - a query
-// recipe for tooling. Only bare-name-safe segments are emitted, so each path
-// is a well-formed CLI query; a subtree under a quoted/non-ASCII name is
-// skipped. Returns the count; *out stays valid until shcl_free.
+// recipe for tooling. A segment that is not bare-name-safe is emitted quoted
+// and escaped - the form the path scanner accepts - so each path is a
+// well-formed lookup path and nothing in the document is hidden. Returns the
+// count; *out stays valid until shcl_free.
 size_t shcl_paths(shcl_doc *d, shcl_str **out);
+// Quote one path segment so it can be spliced into a lookup path: a bare name
+// passes through, anything else comes back quoted and escaped in the form the
+// path scanner accepts. Splicing user-typed text into a path without this is
+// path injection - a dotted name silently reads as nesting. Same spelling
+// shcl_paths and the canonical emitter produce. Result lives in the
+// document's arena; valid until shcl_free.
+shcl_str shcl_quote_segment(shcl_doc *d, const char *name, size_t len);
 
 shcl_read_i64  shcl_read_int(shcl_doc *d, const char *path, size_t plen);
 shcl_read_f64  shcl_read_float(shcl_doc *d, const char *path, size_t plen);
@@ -1729,6 +1737,8 @@ size_t shcl_count(shcl_doc *d, const char *path, size_t plen) {
 	switch (r.kind) { case R_NONE: return 0; case R_ONE: return 1; case R_MANY: return r.many.len; case R_SLOTS: return r.slots.len; }
 	return 0;
 }
+static S emit_name(Arena *a, S name);
+
 size_t shcl_paths(shcl_doc *d, shcl_str **out) {
 	Arena *a = &d->arena;
 	Arena *t = &d->scratch; // walk stack + dedup set: dead after the call
@@ -1741,13 +1751,10 @@ size_t shcl_paths(shcl_doc *d, shcl_str **out) {
 	for (size_t i = top.len; i > 0; i--) PPUSH(top.data[i - 1], s_empty());
 	while (sn) {
 		PEnt e = stack[--sn];
-		S name = NODE(d, e.node).name;
-		int bare = name.n > 0;
-		for (size_t i = 0; i < name.n && bare; ) { uint32_t c; size_t l = utf8_decode(name.p, name.n, i, &c); i += l; if (!is_bare_name_char(c)) bare = 0; }
-		if (!bare) continue; // not a bare query segment; skip it and its subtree
+		S seg = emit_name(a, NODE(d, e.node).name);
 		S path;
-		if (e.prefix.n == 0) path = name;
-		else { SB b = {0}; sb_putS(a, &b, e.prefix); sb_putc(a, &b, '.'); sb_putS(a, &b, name); path = sb_S(&b); }
+		if (e.prefix.n == 0) path = seg;
+		else { SB b = {0}; sb_putS(a, &b, e.prefix); sb_putc(a, &b, '.'); sb_putS(a, &b, seg); path = sb_S(&b); }
 		uint64_t h = cmap_hash(path, s_empty());
 		if (cmap_get(&seen, h, path, s_empty()) == (size_t)-1) {
 			cmap_put(t, &seen, h, path, s_empty(), n);
@@ -1760,6 +1767,14 @@ size_t shcl_paths(shcl_doc *d, shcl_str **out) {
 	#undef PPUSH
 	if (!arr) arr = (shcl_str *)arena_alloc(a, sizeof(shcl_str));
 	*out = arr; return n;
+}
+
+shcl_str shcl_quote_segment(shcl_doc *d, const char *name, size_t len) {
+	S in; in.p = name; in.n = len;
+	S q = emit_name(&d->arena, in);
+	if (q.p == in.p) q = s_dup(&d->arena, in); // bare passthrough: copy so the result outlives the caller's buffer
+	shcl_str out; out.p = q.p; out.n = q.n;
+	return out;
 }
 
 size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {

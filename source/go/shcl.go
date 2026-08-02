@@ -1505,6 +1505,15 @@ func emitName(name string) string {
 	return quoteText(name)
 }
 
+// QuoteSegment quotes one path segment so it can be spliced into a lookup
+// path: a bare name passes through, anything else comes back quoted and
+// escaped in the form the path scanner accepts. Splicing user-typed text into
+// a path without this is path injection - a dotted name silently reads as
+// nesting. Same spelling Paths and the canonical emitter produce.
+func QuoteSegment(name string) string {
+	return emitName(name)
+}
+
 // emitElement uses minimal quoting: bare unless a reserved character (or
 // lookalike hazard) forces it.
 func emitElement(e *element) string {
@@ -1693,9 +1702,9 @@ func (d *Document) Count(path string) int {
 }
 
 // Paths returns every field path in the document, in file order, deduplicated -
-// a query recipe for tooling. Only bare-name-safe segments are emitted, so each
-// path is a well-formed CLI query; a subtree under a quoted/non-ASCII name is
-// skipped.
+// a query recipe for tooling. A segment that is not bare-name-safe is emitted
+// quoted and escaped - the form the path scanner accepts - so each path is a
+// well-formed lookup path and nothing in the document is hidden.
 func (d *Document) Paths() []string {
 	var out []string
 	seen := map[string]bool{}
@@ -1711,20 +1720,10 @@ func (d *Document) Paths() []string {
 	for len(stack) > 0 {
 		e := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		name := d.arena[e.node].name
-		bare := name != ""
-		for _, c := range name {
-			if !isBareNameChar(c) {
-				bare = false
-				break
-			}
-		}
-		if !bare {
-			continue // not a bare query segment; skip it and its subtree
-		}
-		path := name
+		seg := emitName(d.arena[e.node].name)
+		path := seg
 		if e.prefix != "" {
-			path = e.prefix + "." + name
+			path = e.prefix + "." + seg
 		}
 		if !seen[path] {
 			seen[path] = true
