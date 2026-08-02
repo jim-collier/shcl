@@ -452,6 +452,14 @@ typedef struct {
 DEFINE_VEC(VecSize, size_t)
 DEFINE_VEC(VecS, S)
 
+/* One whole-line comment held as trivia, plus whether a blank line preceded
+   it - so a blank between comment-only regions survives the round-trip
+   (blank runs collapse to one, same as nodes). */
+typedef struct { S text; int blank_before; } Lead;
+DEFINE_VEC(VecLead, Lead)
+static Lead lead_make(S text, int blank_before) { Lead l; l.text = text; l.blank_before = blank_before; return l; }
+static Lead lead_plain(S text) { return lead_make(text, 0); }
+
 typedef struct {
 	S name;
 	Value value;
@@ -463,8 +471,13 @@ typedef struct {
 	/* Comment trivia, verbatim from `#` to end of line. Never part of identity
 	   or reads; merged instances concatenate leading, first trailing wins
 	   (later ones demote to leading - a canonical line has room for one). */
-	VecS leading;
+	VecLead leading;
 	S trailing; /* n == 0 = none */
+	/* Whole-line comments that followed this node's subtree at a deeper indent
+	   than the next binding - they belong to this block, not the next node, so
+	   a run trailing a block's last child stays put instead of re-attaching
+	   dedented. Emitted after the subtree at this node's depth. */
+	VecLead after;
 	/* Blank-line grouping is the other half of hand-authored layout: set when
 	   a blank line preceded this node's binding line (runs collapse to one). */
 	int blank_before;
@@ -484,7 +497,7 @@ struct shcl_doc {
 	VecNode nodes;
 	VecDiag diags;
 	shcl_strictness strictness;
-	VecS orphans; /* comments after the last binding line */
+	VecLead orphans; /* top-level comments after the last binding line */
 };
 #define ROOT ((size_t)0)
 #define NODE(d, i) ((d)->nodes.data[i])
@@ -1221,14 +1234,21 @@ static void cmap_del(CMap *m, uint64_t h, S name, S key, size_t val) {
 	}
 }
 
+/* A pending whole-line comment during parse: text, source indent (used only
+   to decide whether it hangs on a deeper block), and the blank it consumed. */
+typedef struct { S text; S indent; int blank_before; } Pend;
+DEFINE_VEC(VecPend, Pend)
+
 /* pending: whole-line comments waiting for the next line that binds a node.
+   The source indent is kept only to decide after-attachment (a comment deeper
+   than the next binding hangs on the block it sits in).
    star_*: a stacked list defers its merge-key remap while it is the open field
    (rebuilding the key per element is O(list^2) time and arena garbage); the
    deferred remap flushes before any other map lookup. */
 /* dmaps: per-node (name, display) -> first matching child - the `[value]`
    selector accelerator (display() is a different, non-injective predicate from
    cmaps' merge key). Same first-wins discipline, same mutation sites. */
-typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecMap dmaps; VecS pending; int star_open; size_t star_node; S star_key; S star_disp; int saw_blank; } Parser;
+typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecMap dmaps; VecPend pending; int star_open; size_t star_node; S star_key; S star_disp; int saw_blank; } Parser;
 
 // The one place prose couples to a code, so the wording stays free everywhere else.
 static const char *diag_code(shcl_severity sev, S msg) {
@@ -1326,20 +1346,48 @@ static void remap_child(Parser *P, size_t node, S old_key, S old_disp) {
 
 /* Hand pending leading comments (and this line's trailing one) to a node.
    First trailing wins; a later one demotes to leading so nothing is lost.
-   Comments are dup'd into the arena; the caller's text buffer may not outlive
-   the document. */
+   Pending text was already dup'd into the arena at push time (the caller's
+   text buffer may not outlive the document); the trailing is dup'd here. */
 static void attach_trivia(Parser *P, size_t node, S trailing) {
 	Arena *a = &P->d->arena;
 	for (size_t k = 0; k < P->pending.len; k++) {
-		S c = s_dup(a, P->pending.data[k]);
-		VecS_push(a, &NODE(P->d, node).leading, c);
+		Pend *p = &P->pending.data[k];
+		VecLead_push(a, &NODE(P->d, node).leading, lead_make(p->text, p->blank_before));
 	}
 	P->pending.len = 0;
 	if (trailing.n) {
 		S t = s_dup(a, trailing);
 		if (NODE(P->d, node).trailing.n == 0) NODE(P->d, node).trailing = t;
-		else VecS_push(a, &NODE(P->d, node).leading, t);
+		else VecLead_push(a, &NODE(P->d, node).leading, lead_plain(t));
 	}
+}
+
+/* Comments written deeper than the incoming line belong to the block they sit
+   in, not to the next binding: hang each on the deepest open level whose
+   indent prefixes the comment's, so a run trailing a block's last child stays
+   with that block instead of re-attaching dedented at the next node. Runs
+   before the incoming line resolves (and at end of parse with the empty
+   indent, so indented tail comments keep their block). */
+static void hang_deeper_pending(Parser *P, S new_indent) {
+	if (P->pending.len == 0) return;
+	Arena *a = &P->d->arena;
+	size_t w = 0;
+	for (size_t k = 0; k < P->pending.len; k++) {
+		Pend p = P->pending.data[k];
+		if (p.indent.n > new_indent.n) {
+			size_t target = (size_t)-1;
+			for (size_t ii = P->stack.len; ii-- > 0;) {
+				S ind = P->stack.data[ii].indent; size_t n = P->stack.data[ii].node;
+				if (n != ROOT && ind.n > 0 && ind.n > new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; break; }
+			}
+			if (target != (size_t)-1) {
+				VecLead_push(a, &NODE(P->d, target).after, lead_make(p.text, p.blank_before));
+				continue;
+			}
+		}
+		P->pending.data[w++] = p;
+	}
+	P->pending.len = w;
 }
 
 static int resolve_parent(Parser *P, S indent, size_t *out) {
@@ -1580,12 +1628,21 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		S indent = s_slice(line, 0, ind);
 		S rest = s_slice(line, ind, line.n);
 		if (rest.n == 0) { P.saw_blank = 1; i++; continue; }
-		/* Whole-line comment: hold it for the next line that binds a node (a
-		   pending blank stays pending with it). */
-		if (rest.p[0] == '#') { VecS_push(a, &P.pending, rest); i++; continue; }
+		/* Whole-line comment: hold it for the next line that binds a node. It
+		   consumes a pending blank into its own flag, so a blank between
+		   comment-only regions survives the round-trip. Text and indent are
+		   dup'd - the caller's buffer may not outlive the document. */
+		if (rest.p[0] == '#') {
+			Pend pd; pd.text = s_dup(a, rest); pd.indent = s_dup(a, indent); pd.blank_before = P.saw_blank; P.saw_blank = 0;
+			VecPend_push(a, &P.pending, pd);
+			i++; continue;
+		}
 		/* Any other line consumes the pending blank; only a field line that
 		   binds turns it into grouping. */
 		int had_blank = P.saw_blank; P.saw_blank = 0;
+		/* A binding line claims the pending comments - but deeper-written ones
+		   hang on their own block first. */
+		hang_deeper_pending(&P, indent);
 		Fence f = fence_open(a, rest);
 		if (f.ok) {
 			size_t parent;
@@ -1611,7 +1668,10 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		S content = trim_end(before);
 		if (content.n == 0) {
 			/* Only a comment survived (e.g. an escaped lead-in); keep it. */
-			if (comment.n) VecS_push(a, &P.pending, comment);
+			if (comment.n) {
+				Pend pd; pd.text = s_dup(a, comment); pd.indent = s_dup(a, indent); pd.blank_before = had_blank;
+				VecPend_push(a, &P.pending, pd);
+			}
 			i++; continue;
 		}
 		size_t parent;
@@ -1640,9 +1700,10 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	}
 	star_flush(&P);
 	emit_repeated_leaf_hints(&P);
-	/* Comments that never found a following line; dup - they point into the
-	   caller's text buffer. */
-	for (size_t k = 0; k < P.pending.len; k++) VecS_push(a, &d->orphans, s_dup(a, P.pending.data[k]));
+	/* Indented tail comments keep their block; only top-level ones orphan. */
+	hang_deeper_pending(&P, s_empty());
+	for (size_t k = 0; k < P.pending.len; k++)
+		VecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before));
 	return d;
 }
 
@@ -1918,6 +1979,9 @@ static size_t w_new_child(shcl_doc *d, size_t parent, S name, Value value) {
 	size_t idx = d->nodes.len;
 	Node n; memset(&n, 0, sizeof n);
 	n.name = s_dup(a, name); n.value = value; n.parent = parent;
+	/* Hand-written files separate top-level sections with a blank line;
+	   writer-built ones do the same (the emitter never blanks line 1). */
+	n.blank_before = (parent == ROOT);
 	VecNode_push(a, &d->nodes, n);
 	VecSize_push(a, &NODE(d, parent).children, idx);
 	return idx;
@@ -2020,11 +2084,11 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
 		VecSize_push(a, &NODE(d, survivor).children, kids.data[k]);
 	}
 	NODE(d, loser).children.len = 0;
-	for (size_t k = 0; k < NODE(d, loser).leading.len; k++) VecS_push(a, &NODE(d, survivor).leading, NODE(d, loser).leading.data[k]);
+	for (size_t k = 0; k < NODE(d, loser).leading.len; k++) VecLead_push(a, &NODE(d, survivor).leading, NODE(d, loser).leading.data[k]);
 	NODE(d, loser).leading.len = 0;
 	if (NODE(d, loser).trailing.n) {
 		if (NODE(d, survivor).trailing.n == 0) NODE(d, survivor).trailing = NODE(d, loser).trailing;
-		else VecS_push(a, &NODE(d, survivor).leading, NODE(d, loser).trailing);
+		else VecLead_push(a, &NODE(d, survivor).leading, lead_plain(NODE(d, loser).trailing));
 		NODE(d, loser).trailing.n = 0;
 	}
 	VecSize *pk = &NODE(d, parent).children;
@@ -2083,7 +2147,7 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	S out;
 	if (line.n == 0 || line.p[0] != '#') { SB b = {0}; sb_puts(a, &b, "# "); sb_putS(a, &b, line); out = sb_S(&b); }
 	else out = s_dup(a, line);
-	VecS_push(a, &NODE(d, idx).leading, out);
+	VecLead_push(a, &NODE(d, idx).leading, lead_plain(out));
 	return 1;
 }
 
@@ -2170,7 +2234,8 @@ static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size
 	n.star_mixed = src->star_mixed;
 	n.blank_before = src->blank_before;
 	n.trailing = s_dup(a, src->trailing);
-	for (size_t i = 0; i < src->leading.len; i++) VecS_push(a, &n.leading, s_dup(a, src->leading.data[i]));
+	for (size_t i = 0; i < src->leading.len; i++) VecLead_push(a, &n.leading, lead_make(s_dup(a, src->leading.data[i].text), src->leading.data[i].blank_before));
+	for (size_t i = 0; i < src->after.len; i++) VecLead_push(a, &n.after, lead_make(s_dup(a, src->after.data[i].text), src->after.data[i].blank_before));
 	size_t idx = d->nodes.len;
 	VecNode_push(a, &d->nodes, n);
 	// Snapshot the source children (const, stable) before recursing.
@@ -2286,7 +2351,8 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	Arena *a = &d->arena;
 	arena_reset(&d->scratch); // merge temporaries (compare keys, clone lists) die here
 	w_overlay(d, ROOT, over, ROOT);
-	for (size_t i = 0; i < over->orphans.len; i++) VecS_push(a, &d->orphans, s_dup(a, over->orphans.data[i]));
+	for (size_t i = 0; i < over->orphans.len; i++)
+		VecLead_push(a, &d->orphans, lead_make(s_dup(a, over->orphans.data[i].text), over->orphans.data[i].blank_before));
 }
 
 int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def) {
@@ -2478,16 +2544,17 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 	Arena *a = &d->arena;
 	Node *node = &NODE(d, idx);
 	Value *v = &node->value;
-	if (node->blank_before && out->len) sb_putc(a, out, '\n');
 	/* Same-line fence spelling can't carry an inline comment (an unbalanced
 	   quote in the info-string could hide the `#` on reparse), so its trailing
 	   comment joins the leading lines instead; the flag comes from the
-	   parent's walk. */
-
+	   parent's walk. Each blank rides its own comment (or the binding line),
+	   never as the first output line. */
 	for (size_t k = 0; k < node->leading.len; k++) {
+		if (node->leading.data[k].blank_before && out->len) sb_putc(a, out, '\n');
 		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
-		sb_putS(a, out, node->leading.data[k]); sb_putc(a, out, '\n');
+		sb_putS(a, out, node->leading.data[k].text); sb_putc(a, out, '\n');
 	}
+	if (node->blank_before && out->len) sb_putc(a, out, '\n');
 	if (would_merge && node->trailing.n) {
 		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
 		sb_putS(a, out, node->trailing); sb_putc(a, out, '\n');
@@ -2523,13 +2590,23 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 	}
 	VecSize ch = NODE(d, idx).children;
 	emit_children(d, &ch, depth + 1, out);
+	/* Comments that hung on this block after its last child. */
+	for (size_t k = 0; k < NODE(d, idx).after.len; k++) {
+		Lead *c = &NODE(d, idx).after.data[k];
+		if (c->blank_before && out->len) sb_putc(a, out, '\n');
+		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
+		sb_putS(a, out, c->text); sb_putc(a, out, '\n');
+	}
 }
 shcl_str shcl_to_canonical(shcl_doc *d) {
 	SB out = {0};
 	VecSize rc = NODE(d, ROOT).children;
 	emit_children(d, &rc, 0, &out);
 	/* Comments that never found a following line re-emit at the end. */
-	for (size_t k = 0; k < d->orphans.len; k++) { sb_putS(&d->arena, &out, d->orphans.data[k]); sb_putc(&d->arena, &out, '\n'); }
+	for (size_t k = 0; k < d->orphans.len; k++) {
+		if (d->orphans.data[k].blank_before && out.len) sb_putc(&d->arena, &out, '\n');
+		sb_putS(&d->arena, &out, d->orphans.data[k].text); sb_putc(&d->arena, &out, '\n');
+	}
 	return sb_S(&out);
 }
 

@@ -342,6 +342,26 @@ type element struct {
 	quoted bool
 }
 
+// lead is one whole-line comment held as trivia, plus whether a blank line
+// preceded it - so a blank between comment-only regions survives the
+// round-trip (blank runs collapse to one, same as nodes).
+type lead struct {
+	text        string
+	blankBefore bool
+}
+
+func plainLead(text string) lead {
+	return lead{text: text}
+}
+
+// pend is a pending whole-line comment during parse: text, source indent (used
+// only to decide whether it hangs on a deeper block), and the blank it consumed.
+type pend struct {
+	text        string
+	indent      string
+	blankBefore bool
+}
+
 type valueKind int
 
 const (
@@ -417,8 +437,13 @@ type nodeData struct {
 	// Comment trivia, verbatim from `#` to end of line. Never part of identity
 	// or reads; merged instances concatenate leading, first trailing wins
 	// (later ones demote to leading - a canonical line has room for one).
-	leading  []string
+	leading  []lead
 	trailing string // empty = none
+	// Whole-line comments that followed this node's subtree at a deeper indent
+	// than the next binding - they belong to this block, not the next node, so
+	// a run trailing a block's last child stays put instead of re-attaching
+	// dedented. Emitted after the subtree at this node's depth.
+	after []lead
 	// Blank-line grouping is the other half of hand-authored layout: set when
 	// a blank line preceded this node's binding line (runs collapse to one).
 	blankBefore bool
@@ -435,7 +460,7 @@ type Document struct {
 	arena      []nodeData
 	diags      []Diagnostic
 	strictness Strictness
-	orphans    []string // comments after the last binding line
+	orphans    []lead // top-level comments after the last binding line
 }
 
 const root = 0
@@ -919,8 +944,10 @@ type parser struct {
 	// accelerator (its predicate is display(), a different and non-injective
 	// key from childMap's). Same first-wins discipline, same mutation sites.
 	dispMap []map[[2]string]int
-	// Whole-line comments waiting for the next line that binds a node.
-	pending  []string
+	// Whole-line comments waiting for the next line that binds a node. The
+	// source indent is kept only to decide after-attachment (a comment deeper
+	// than the next binding hangs on the block it sits in).
+	pending  []pend
 	sawBlank bool // a blank line waits to become the next bound node's blankBefore
 	// An open stacked list defers its merge-key remap (rebuilding the key per
 	// element is O(list^2) time); (node, key, display) at deferral start,
@@ -1000,14 +1027,47 @@ func (p *parser) remapChild(node int, oldKey, oldDisp string) {
 // to a node. First trailing wins; a later one demotes to leading so nothing
 // is lost.
 func (p *parser) attachTrivia(node int, trailing string) {
-	p.arena[node].leading = append(p.arena[node].leading, p.pending...)
+	for _, pn := range p.pending {
+		p.arena[node].leading = append(p.arena[node].leading, lead{text: pn.text, blankBefore: pn.blankBefore})
+	}
 	p.pending = p.pending[:0]
 	if trailing != "" {
 		if p.arena[node].trailing == "" {
 			p.arena[node].trailing = trailing
 		} else {
-			p.arena[node].leading = append(p.arena[node].leading, trailing)
+			p.arena[node].leading = append(p.arena[node].leading, plainLead(trailing))
 		}
+	}
+}
+
+// hangDeeperPending: comments written deeper than the incoming line belong to
+// the block they sit in, not to the next binding: hang each on the deepest open
+// level whose indent prefixes the comment's, so a run trailing a block's last
+// child stays with that block instead of re-attaching dedented at the next
+// node. Runs before the incoming line resolves (and at end of parse with the
+// empty indent, so indented tail comments keep their block).
+func (p *parser) hangDeeperPending(newIndent string) {
+	if len(p.pending) == 0 {
+		return
+	}
+	taken := p.pending
+	p.pending = nil
+	for _, pn := range taken {
+		if len(pn.indent) > len(newIndent) {
+			target := -1
+			for j := len(p.stack) - 1; j >= 0; j-- {
+				ent := p.stack[j]
+				if ent.node != root && ent.indent != "" && len(ent.indent) > len(newIndent) && strings.HasPrefix(pn.indent, ent.indent) {
+					target = ent.node
+					break
+				}
+			}
+			if target >= 0 {
+				p.arena[target].after = append(p.arena[target].after, lead{text: pn.text, blankBefore: pn.blankBefore})
+				continue
+			}
+		}
+		p.pending = append(p.pending, pn)
 	}
 }
 
@@ -1305,10 +1365,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			i++
 			continue
 		}
-		// Whole-line comment: hold it for the next line that binds a node
-		// (a pending blank stays pending with it).
+		// Whole-line comment: hold it for the next line that binds a node.
+		// It consumes a pending blank into its own flag, so a blank between
+		// comment-only regions survives the round-trip.
 		if strings.HasPrefix(rest, "#") {
-			p.pending = append(p.pending, rest)
+			p.pending = append(p.pending, pend{text: rest, indent: indent, blankBefore: p.sawBlank})
+			p.sawBlank = false
 			i++
 			continue
 		}
@@ -1316,6 +1378,9 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// binds turns it into grouping.
 		hadBlank := p.sawBlank
 		p.sawBlank = false
+		// A binding line claims the pending comments - but deeper-written
+		// ones hang on their own block first.
+		p.hangDeeperPending(indent)
 		// Child-indent fence: a value line for its parent field.
 		if ch, length, info, ok := fenceOpen(rest); ok {
 			parent, okp := p.resolveParent(indent)
@@ -1360,7 +1425,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		if content == "" {
 			// Only a comment survived (e.g. an escaped lead-in); keep it.
 			if comment != "" {
-				p.pending = append(p.pending, comment)
+				p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank})
 			}
 			i++
 			continue
@@ -1424,7 +1489,14 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	}
 	p.starFlush()
 	p.emitRepeatedLeafHints()
-	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: p.pending}
+	// Indented tail comments keep their block; only top-level ones orphan.
+	p.hangDeeperPending("")
+	orphans := make([]lead, 0, len(p.pending))
+	for _, pn := range p.pending {
+		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore})
+	}
+	p.pending = p.pending[:0]
+	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: orphans}
 }
 
 // ---------------------------------------------------------------------------
@@ -1469,7 +1541,10 @@ func (d *Document) ToCanonical() string {
 	d.emitChildren(d.arena[root].children, 0, &out)
 	// Comments that never found a following line re-emit at the end.
 	for _, c := range d.orphans {
-		out.WriteString(c)
+		if c.blankBefore && out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(c.text)
 		out.WriteByte('\n')
 	}
 	return out.String()
@@ -1501,16 +1576,20 @@ func (d *Document) emitChildren(kids []int, depth int, out *strings.Builder) {
 func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builder) {
 	node := &d.arena[idx]
 	pad := strings.Repeat("\t", depth)
-	if node.blankBefore && out.Len() > 0 {
-		out.WriteByte('\n')
-	}
 	// Same-line fence spelling can't carry an inline comment (an unbalanced
 	// quote in the info-string could hide the `#` on reparse), so its trailing
 	// comment joins the leading lines instead; the flag comes from the parent's
-	// walk.
+	// walk. Each blank rides its own comment (or the binding line), never as
+	// the first output line.
 	for _, c := range node.leading {
+		if c.blankBefore && out.Len() > 0 {
+			out.WriteByte('\n')
+		}
 		out.WriteString(pad)
-		out.WriteString(c)
+		out.WriteString(c.text)
+		out.WriteByte('\n')
+	}
+	if node.blankBefore && out.Len() > 0 {
 		out.WriteByte('\n')
 	}
 	if wouldMerge && node.trailing != "" {
@@ -1576,6 +1655,15 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 		out.WriteByte('\n')
 	}
 	d.emitChildren(d.arena[idx].children, depth+1, out)
+	// Comments that hung on this block after its last child.
+	for _, c := range d.arena[idx].after {
+		if c.blankBefore && out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(pad)
+		out.WriteString(c.text)
+		out.WriteByte('\n')
+	}
 }
 
 func emitName(name string) string {
@@ -1966,7 +2054,9 @@ func New() *Document {
 
 func (d *Document) newChild(parent int, name string, v value) int {
 	idx := len(d.arena)
-	d.arena = append(d.arena, nodeData{name: name, value: v, parent: parent})
+	// Hand-written files separate top-level sections with a blank line;
+	// writer-built ones do the same (the emitter never blanks line 1).
+	d.arena = append(d.arena, nodeData{name: name, value: v, parent: parent, blankBefore: parent == root})
 	d.arena[parent].children = append(d.arena[parent].children, idx)
 	return idx
 }
@@ -2156,7 +2246,7 @@ func (d *Document) collapseDup(node int) {
 		if d.arena[survivor].trailing == "" {
 			d.arena[survivor].trailing = trail
 		} else {
-			d.arena[survivor].leading = append(d.arena[survivor].leading, trail)
+			d.arena[survivor].leading = append(d.arena[survivor].leading, plainLead(trail))
 		}
 	}
 	keep := d.arena[parent].children[:0]
@@ -2234,7 +2324,7 @@ func (d *Document) SetComment(path, text string) bool {
 	if !strings.HasPrefix(line, "#") {
 		line = "# " + line
 	}
-	d.arena[idx].leading = append(d.arena[idx].leading, line)
+	d.arena[idx].leading = append(d.arena[idx].leading, plainLead(line))
 	return true
 }
 
@@ -2495,8 +2585,9 @@ func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
 		line:        src.line,
 		starList:    src.starList,
 		starMixed:   src.starMixed,
-		leading:     append([]string(nil), src.leading...),
+		leading:     append([]lead(nil), src.leading...),
 		trailing:    src.trailing,
+		after:       append([]lead(nil), src.after...),
 		blankBefore: src.blankBefore,
 		src:         srcCopy,
 	}

@@ -78,12 +78,15 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 - 🔘 The schema can't declare an open section. From TradeClanker: wildcards select instances (`server[*].port`), but there's no way to say "any child name under `indicators`, each shaped like this" - so a config with one map-shaped section can't use schema validation at all, and they keep a hand-maintained known-paths map instead. Everything else in their config would express cleanly as a schema.
 	- A name-position wildcard is the missing construct. Distinct from the schema-fragments item below (shape reuse), but they'd be designed together - both grow the schema language, so both go through the same design-first gate.
 
-- 🔘 Writer output has no blank lines between top-level sections. From TradeClanker: hand-written examples and writer output disagree on shape, so they post-process the library's output with string surgery - which is what using the writer was meant to end. Blank-before already exists as parsed trivia, so the writer setting it when it creates a new top-level node (or a knob to) keeps the fixpoint property intact.
+- ✅ Writer output has no blank lines between top-level sections.
+	- Done, default on with no knob: writer-created top-level nodes set blank_before (the emitter never blanks line 1). Write goldens 014/016/029 regenerated; spec Writer section documents the shape. From TradeClanker: hand-written examples and writer output disagree on shape, so they post-process the library's output with string surgery - which is what using the writer was meant to end. Blank-before already exists as parsed trivia, so the writer setting it when it creates a new top-level node (or a knob to) keeps the fixpoint property intact.
 	- Write-corpus goldens would churn; decide the default deliberately since written output is contract.
 
-- 🔘 to_canonical() drops blank lines between comment-only regions. It shouldn't do that.
+- ✅ to_canonical() drops blank lines between comment-only regions. It shouldn't do that.
+	- Fixed: each held comment records its own preceding blank (runs still collapse to one; never as first output line). Blanks between comment regions - leading, merged, and end-of-file - now round-trip.
 
-- 🔘 to_canonical() also loses comment indentation two ways, from the SilkTerm devs: a comment run trailing a block's last child re-attaches to the following node and de-indents to column 0, and orphan comments after the last binding always emit unindented. Together with the blank-line item above, fixing these lets them delete most of their save-repair pass.
+- ✅ to_canonical() also loses comment indentation two ways, from the SilkTerm devs: a comment run trailing a block's last child re-attaches to the following node and de-indents to column 0, and orphan comments after the last binding always emit unindented. Together with the blank-line item above, fixing these lets them delete most of their save-repair pass.
+	- Fixed structurally rather than by storing verbatim indent: a comment written deeper than the next binding hangs on the block it sits in (new after-trivia, emitted after the block's last child at the block's indent); the same rule keeps indented tail-of-file comments with their block. Corpus case 034 pins it; fmt stays a fixpoint (20k-iteration fuzz soak).
 	- Means recording indent (and probably original attachment) as trivia; fmt must stay a fixpoint. All four parsers + emit, golden churn expected.
 
 - ✅ Expose whether a value was quoted.
