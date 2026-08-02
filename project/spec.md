@@ -369,6 +369,10 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 
 - `Instances(field)` and `Count(field)` enumerate instances by value or index.
 
+- `Children(path)` lists the child field names under a path, in file order, **duplicates included** - the "what keys are in this section?" question a deduplicated path enumeration cannot answer, and the natural way to read an open (map-shaped) section. The empty path enumerates the top level. Names come back as stored; `QuoteSegment` makes one splice-safe in a path.
+
+- `Line(path)` returns the 1-based source line of the binding at a path (0 when the path does not resolve to exactly one node, or the node was writer-built), so a consumer check the schema cannot express can still cite the line. The read result carries the same `line` directly, alongside a `quoted` flag: true when the read's single scalar element was quoted in the source. Quoting is thereby a real escape for downstream languages - `a: @null` and `a: "@null"` read the same text but are distinguishable. (Deviation: the C read structs stay value+status; C consumers use `shcl_line` and the source spelling.)
+
 - `Paths()` enumerates every field path in the document, in file order, deduplicated. A segment that is not a bare name is emitted quoted and escaped - the same spelling the canonical formatter writes - so every returned path is a valid lookup path and nothing in the document is hidden from the enumeration.
 
 - `QuoteSegment(name)` (each binding's spelling of it) quotes one segment for splicing into a lookup path: a bare name passes through, anything else comes back quoted and escaped. Building a path from user-typed text without it is path injection - a dotted name reads as nesting.

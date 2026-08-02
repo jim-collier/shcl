@@ -670,6 +670,24 @@ fn write_bad_ops_are_rejected() {
 }
 
 #[test]
+fn read_surface_line_quoted_children() {
+	// line/quoted on the read result, line(path), children(path). Same
+	// fixture in every runner (C pins the accessors; its read structs stay
+	// value+status).
+	let text = "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n";
+	let doc = Document::parse(text);
+	assert!(!doc.read_string("a").quoted);
+	assert!(doc.read_string("b").quoted);
+	assert_eq!(doc.read_string("b").line, 2);
+	assert_eq!(doc.line("code.done"), 6);
+	assert_eq!(doc.line("code"), 3);
+	assert_eq!(doc.line("missing"), 0);
+	assert_eq!(doc.children("code"), vec!["hook", "hook", "done"]);
+	assert_eq!(doc.children(""), vec!["a", "b", "code"]);
+	assert!(doc.children("missing").is_empty());
+}
+
+#[test]
 fn strict_failure_carries_document() {
 	// A failed strict load hands back the document and names the first
 	// failures in the message - the diagnostics are the point.

@@ -101,14 +101,27 @@ def _diag_code(msg):
 class Read:
 	"""Value plus status plus the original raw text (when the path resolved).
 	Array reads also carry one status per slot (element, or wildcard instance)
-	in .slots; .status is then the worst slot. Scalar reads leave .slots empty."""
-	__slots__ = ("value", "status", "raw", "slots")
+	in .slots; .status is then the worst slot. Scalar reads leave .slots empty.
+	.line is the 1-based source line of the resolved binding (0 when the path
+	did not resolve to one node, or the node was writer-built), so a consumer
+	check the schema cannot express can still cite the line. .quoted is True
+	when the read's single scalar element was quoted in the source - the escape
+	hatch that lets a downstream language reserve @null while "@null" stays a
+	plain string. Arrays, raw blocks, and empties leave it False."""
+	__slots__ = ("value", "status", "raw", "slots", "line", "quoted")
 
 	def __init__(self, value, status, raw, slots=None):
 		self.value = value
 		self.status = status
 		self.raw = raw
 		self.slots = slots if slots is not None else []
+		self.line = 0
+		self.quoted = False
+
+	def _at(self, line, quoted):
+		self.line = line
+		self.quoted = quoted
+		return self
 
 	def ok(self):
 		return self.status in (Status.Good, Status.Empty)
@@ -1340,6 +1353,30 @@ class Document:
 				stack.append((c, path))
 		return out
 
+	def line(self, path):
+		"""1-based source line of the binding at a path, for consumer checks the
+		schema cannot express. 0 when the path does not resolve to exactly one
+		node, or the node was writer-built. Merged instances cite the first
+		binding's line, matching diagnostics."""
+		r = self._resolve(path)
+		if r[0] == "one":
+			return self.arena[r[1]].line
+		return 0
+
+	def children(self, path):
+		"""Child field names under a path, in file order, duplicates included -
+		the "what keys are in this section?" question paths() (deduplicated,
+		path-shaped) cannot answer. "" enumerates the top level. Names come
+		back as stored; quote_segment() makes one splice-safe in a path."""
+		if not _trim(path):
+			node = ROOT
+		else:
+			r = self._resolve(path)
+			if r[0] != "one":
+				return []
+			node = r[1]
+		return [self.arena[c].name for c in self.arena[node].children]
+
 	def instances(self, path):
 		"""Instance values at a path, in file order. Wildcard slots that did not
 		resolve stay in the list as "" so indices keep matching count()."""
@@ -1772,13 +1809,14 @@ class Document:
 			return Read(default, na[1], None)
 		value = self.arena[na[1]].value
 		raw = self._raw_of(na[1])
+		line = self.arena[na[1]].line
 		se = self._scalar_element(value)
 		if se[0] == "err":
-			return Read(default, se[1], raw)
+			return Read(default, se[1], raw)._at(line, False)
 		v = coerce(se[1])
 		if v is None:
-			return Read(default, Status.BadType, raw)
-		return Read(v, Status.Good, raw)
+			return Read(default, Status.BadType, raw)._at(line, se[1].quoted)
+		return Read(v, Status.Good, raw)._at(line, se[1].quoted)
 
 	def read_int(self, path):
 		lvl = self._strictness
@@ -1803,15 +1841,16 @@ class Document:
 			return Read("", na[1], None)
 		value = self.arena[na[1]].value
 		raw = self._raw_of(na[1])
+		line = self.arena[na[1]].line
 		if value.kind == "empty":
-			return Read("", Status.Empty, raw)
+			return Read("", Status.Empty, raw)._at(line, False)
 		if value.kind == "raw":
-			return Read(value.content, Status.Good, raw)
+			return Read(value.content, Status.Good, raw)._at(line, False)
 		if len(value.els) == 1:
-			return Read(_apply_escapes(value.els[0].text), Status.Good, raw)
+			return Read(_apply_escapes(value.els[0].text), Status.Good, raw)._at(line, value.els[0].quoted)
 		# Canonical inline form (quoting + escapes intact), so the string
 		# re-parses to the same array - not the bare display join.
-		return Read(", ".join(_emit_element(e) for e in value.els), Status.Good, raw)
+		return Read(", ".join(_emit_element(e) for e in value.els), Status.Good, raw)._at(line, False)
 
 	def read_raw(self, path):
 		"""Raw-block content (verbatim). Non-block values are BadType."""
@@ -1820,11 +1859,12 @@ class Document:
 			return Read("", na[1], None)
 		value = self.arena[na[1]].value
 		raw = self._raw_of(na[1])
+		line = self.arena[na[1]].line
 		if value.kind == "raw":
-			return Read(value.content, Status.Good, raw)
+			return Read(value.content, Status.Good, raw)._at(line, False)
 		if value.kind == "empty":
-			return Read("", Status.Empty, raw)
-		return Read("", Status.BadType, raw)
+			return Read("", Status.Empty, raw)._at(line, False)
+		return Read("", Status.BadType, raw)._at(line, False)
 
 	def read_raw_info(self, path):
 		"""The advisory info-string of a raw block ("" when absent)."""
@@ -1832,10 +1872,11 @@ class Document:
 		if na[0] == "err":
 			return Read("", na[1], None)
 		raw = self._raw_of(na[1])
+		line = self.arena[na[1]].line
 		value = self.arena[na[1]].value
 		if value.kind == "raw":
-			return Read(value.info, Status.Good, raw)
-		return Read("", Status.BadType, raw)
+			return Read(value.info, Status.Good, raw)._at(line, False)
+		return Read("", Status.BadType, raw)._at(line, False)
 
 	def _read_array(self, path, coerce, default):
 		r = self._resolve(path)
@@ -1873,10 +1914,11 @@ class Document:
 		# one
 		value = self.arena[r[1]].value
 		raw = self._raw_of(r[1])
+		line = self.arena[r[1]].line
 		if value.kind == "empty":
-			return Read([], Status.Empty, raw)
+			return Read([], Status.Empty, raw)._at(line, False)
 		if value.kind == "raw":
-			return Read([], Status.BadType, raw)
+			return Read([], Status.BadType, raw)._at(line, False)
 		out = []
 		sts = []
 		status = Status.Good
@@ -1889,7 +1931,7 @@ class Document:
 			else:
 				out.append(v)
 				sts.append(Status.Good)
-		return Read(out, status, raw, sts)
+		return Read(out, status, raw, sts)._at(line, False)
 
 	def read_int_array(self, path):
 		lvl = self._strictness

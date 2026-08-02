@@ -49,6 +49,11 @@ int main() {
 	CHECK(doc.quote_segment("q n") == "\"q n\"");
 	auto cities = doc.instances("city");
 	CHECK(cities.size() == 2 && cities[0] == "Chicago" && cities[1] == "Boston");
+
+	CHECK(doc.line("port") == 2 && doc.line("nope") == 0);
+	auto kids = doc.children("");
+	CHECK(kids.size() == 7 && kids[0] == "name" && kids[5] == "city" && kids[6] == "city");
+	CHECK(doc.children("nope").empty());
 	auto multi = doc.read_string("city");
 	CHECK(multi.status == shcl::Status::Multiple);
 

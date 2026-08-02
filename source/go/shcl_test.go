@@ -594,6 +594,41 @@ func TestWriteBadOpsAreRejected(t *testing.T) {
 	}
 }
 
+func TestReadSurfaceLineQuotedChildren(t *testing.T) {
+	// Line/Quoted on the read result, Line(path), Children(path). Same
+	// fixture in every runner (C pins the accessors; its read structs stay
+	// value+status).
+	text := "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n"
+	doc := Parse(text)
+	if doc.ReadString("a").Quoted {
+		t.Error("a reads quoted")
+	}
+	if !doc.ReadString("b").Quoted {
+		t.Error("b reads unquoted")
+	}
+	if got := doc.ReadString("b").Line; got != 2 {
+		t.Errorf("b line: got %d, want 2", got)
+	}
+	if got := doc.Line("code.done"); got != 6 {
+		t.Errorf("code.done line: got %d, want 6", got)
+	}
+	if got := doc.Line("code"); got != 3 {
+		t.Errorf("code line: got %d, want 3", got)
+	}
+	if got := doc.Line("missing"); got != 0 {
+		t.Errorf("missing line: got %d, want 0", got)
+	}
+	if got := doc.Children("code"); strings.Join(got, ",") != "hook,hook,done" {
+		t.Errorf("code children: got %v", got)
+	}
+	if got := doc.Children(""); strings.Join(got, ",") != "a,b,code" {
+		t.Errorf("top children: got %v", got)
+	}
+	if got := doc.Children("missing"); len(got) != 0 {
+		t.Errorf("missing children: got %v", got)
+	}
+}
+
 func TestStrictFailureCarriesDocument(t *testing.T) {
 	// A failed strict load hands back the document (non-nil, and on the
 	// error too) and names the first failures in the message.

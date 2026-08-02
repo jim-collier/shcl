@@ -498,6 +498,28 @@ def main():
 	qr = pdoc.read_int(shcl.quote_segment("q n"))
 	if (qr.value, qr.status) != (3, shcl.Status.Good):
 		raise SystemExit("quoted segment read failed")
+	# line/quoted on the read result, line(path), children(path). Same
+	# fixture in every runner (C pins the accessors; its read structs stay
+	# value+status).
+	ldoc = shcl.Document.parse('a: @null\nb: "@null"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n')
+	if ldoc.read_string("a").quoted:
+		raise SystemExit("unquoted read reports quoted")
+	if not ldoc.read_string("b").quoted:
+		raise SystemExit("quoted read not flagged")
+	if ldoc.read_string("b").line != 2:
+		raise SystemExit("read line got {}".format(ldoc.read_string("b").line))
+	if ldoc.line("code.done") != 6:
+		raise SystemExit("line() got {}".format(ldoc.line("code.done")))
+	if ldoc.line("code") != 3:
+		raise SystemExit("line() on merged instance got {}".format(ldoc.line("code")))
+	if ldoc.line("missing") != 0:
+		raise SystemExit("line() on missing path got {}".format(ldoc.line("missing")))
+	if ldoc.children("code") != ["hook", "hook", "done"]:
+		raise SystemExit("children() got {}".format(ldoc.children("code")))
+	if ldoc.children("") != ["a", "b", "code"]:
+		raise SystemExit("top-level children() got {}".format(ldoc.children("")))
+	if ldoc.children("missing"):
+		raise SystemExit("children() on missing path not empty")
 	# A failed strict load hands back the document and names the first
 	# failures in the message - the diagnostics are the point.
 	try:

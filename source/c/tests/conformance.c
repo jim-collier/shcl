@@ -513,6 +513,25 @@ int main(int argc, char **argv) {
 		if (qr.value != 3 || qr.status != SHCL_GOOD) fail("paths", "quoted segment read failed");
 		shcl_free(pd);
 	}
+	// line()/children(): read-surface accessors. Same fixture in every runner
+	// (the read structs stay value+status here by design).
+	{
+		const char *lt = "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n";
+		shcl_doc *ld = shcl_parse(lt, strlen(lt));
+		if (shcl_line(ld, "code.done", 9) != 6) fail("line", "code.done not line 6");
+		if (shcl_line(ld, "code", 4) != 3) fail("line", "code not line 3");
+		if (shcl_line(ld, "missing", 7) != 0) fail("line", "missing path not 0");
+		shcl_str *cv; size_t cn = shcl_children(ld, "code", 4, &cv);
+		const char *cw[] = { "hook", "hook", "done" };
+		if (cn != 3) fail("children", "code count mismatch");
+		else for (size_t i = 0; i < 3; i++) if (cv[i].n != strlen(cw[i]) || memcmp(cv[i].p, cw[i], cv[i].n) != 0) { fail("children", "code names mismatch"); break; }
+		cn = shcl_children(ld, "", 0, &cv);
+		const char *rw[] = { "a", "b", "code" };
+		if (cn != 3) fail("children", "root count mismatch");
+		else for (size_t i = 0; i < 3; i++) if (cv[i].n != strlen(rw[i]) || memcmp(cv[i].p, rw[i], cv[i].n) != 0) { fail("children", "root names mismatch"); break; }
+		if (shcl_children(ld, "missing", 7, &cv) != 0) fail("children", "missing path not empty");
+		shcl_free(ld);
+	}
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }
 	printf("conformance: %zu case(s) pass\n", nn);
 	return 0;

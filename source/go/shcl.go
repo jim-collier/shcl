@@ -171,11 +171,25 @@ func (s Status) String() string {
 // actually in the file. Array reads also carry one status per slot (element,
 // or wildcard instance) in Slots; Status is then the worst slot. Scalar reads
 // leave Slots nil.
+// Line is the 1-based source line of the resolved binding (0 when the path
+// did not resolve to one node, or the node was writer-built), so a consumer
+// check the schema cannot express can still cite the line. Quoted is true
+// when the read's single scalar element was quoted in the source - the escape
+// hatch that lets a downstream language reserve `@null` while `"@null"` stays
+// a plain string. Arrays, raw blocks, and empties leave it false.
 type Read[T any] struct {
 	Value  T
 	Status Status
 	Raw    *string
 	Slots  []Status
+	Line   int
+	Quoted bool
+}
+
+func (r Read[T]) at(line int, quoted bool) Read[T] {
+	r.Line = line
+	r.Quoted = quoted
+	return r
 }
 
 func (r Read[T]) OK() bool {
@@ -1781,6 +1795,39 @@ func (d *Document) Paths() []string {
 	return out
 }
 
+// Line returns the 1-based source line of the binding at a path, for consumer
+// checks the schema cannot express. 0 when the path does not resolve to
+// exactly one node, or the node was writer-built. Merged instances cite the
+// first binding's line, matching diagnostics.
+func (d *Document) Line(path string) int {
+	r, ok := d.resolve(path)
+	if !ok || r.kind != resOne {
+		return 0
+	}
+	return d.arena[r.one].line
+}
+
+// Children returns the child field names under a path, in file order,
+// duplicates included - the "what keys are in this section?" question Paths()
+// (deduplicated, path-shaped) cannot answer. "" enumerates the top level.
+// Names come back as stored; QuoteSegment() makes one splice-safe in a path.
+func (d *Document) Children(path string) []string {
+	node := root
+	if strings.TrimSpace(path) != "" {
+		r, ok := d.resolve(path)
+		if !ok || r.kind != resOne {
+			return nil
+		}
+		node = r.one
+	}
+	kids := d.arena[node].children
+	out := make([]string, 0, len(kids))
+	for _, c := range kids {
+		out = append(out, d.arena[c].name)
+	}
+	return out
+}
+
 // Instances returns the instance values at a path, in file order. Wildcard
 // slots that did not resolve stay in the list as "" so indices keep matching
 // Count().
@@ -2963,14 +3010,15 @@ func readScalar[T any](d *Document, path string, coerce func(*element) (T, bool)
 	}
 	v := &d.arena[n].value
 	raw := d.rawOf(n)
+	line := d.arena[n].line
 	el, est := scalarElement(v)
 	if el == nil {
-		return Read[T]{Value: zero, Status: est, Raw: &raw}
+		return Read[T]{Value: zero, Status: est, Raw: &raw}.at(line, false)
 	}
 	if val, ok := coerce(el); ok {
-		return Read[T]{Value: val, Status: Good, Raw: &raw}
+		return Read[T]{Value: val, Status: Good, Raw: &raw}.at(line, el.quoted)
 	}
-	return Read[T]{Value: zero, Status: BadType, Raw: &raw}
+	return Read[T]{Value: zero, Status: BadType, Raw: &raw}.at(line, el.quoted)
 }
 
 func (d *Document) ReadInt(path string) Read[int64] {
@@ -3001,13 +3049,14 @@ func (d *Document) ReadString(path string) Read[string] {
 	}
 	v := &d.arena[n].value
 	raw := d.rawOf(n)
+	line := d.arena[n].line
 	switch {
 	case v.kind == vEmpty:
-		return Read[string]{Status: Empty, Raw: &raw}
+		return Read[string]{Status: Empty, Raw: &raw}.at(line, false)
 	case v.kind == vRaw:
-		return Read[string]{Value: v.raw.content, Status: Good, Raw: &raw}
+		return Read[string]{Value: v.raw.content, Status: Good, Raw: &raw}.at(line, false)
 	case len(v.els) == 1:
-		return Read[string]{Value: applyEscapes(v.els[0].text), Status: Good, Raw: &raw}
+		return Read[string]{Value: applyEscapes(v.els[0].text), Status: Good, Raw: &raw}.at(line, v.els[0].quoted)
 	}
 	// Canonical inline form (quoting + escapes intact), so the string
 	// re-parses to the same array - not the bare display join.
@@ -3015,7 +3064,7 @@ func (d *Document) ReadString(path string) Read[string] {
 	for k := range v.els {
 		parts[k] = emitElement(&v.els[k])
 	}
-	return Read[string]{Value: strings.Join(parts, ", "), Status: Good, Raw: &raw}
+	return Read[string]{Value: strings.Join(parts, ", "), Status: Good, Raw: &raw}.at(line, false)
 }
 
 // ReadRaw: raw-block content (verbatim). Non-block values are BadType.
@@ -3026,13 +3075,14 @@ func (d *Document) ReadRaw(path string) Read[string] {
 	}
 	v := &d.arena[n].value
 	raw := d.rawOf(n)
+	line := d.arena[n].line
 	switch v.kind {
 	case vRaw:
-		return Read[string]{Value: v.raw.content, Status: Good, Raw: &raw}
+		return Read[string]{Value: v.raw.content, Status: Good, Raw: &raw}.at(line, false)
 	case vEmpty:
-		return Read[string]{Status: Empty, Raw: &raw}
+		return Read[string]{Status: Empty, Raw: &raw}.at(line, false)
 	}
-	return Read[string]{Status: BadType, Raw: &raw}
+	return Read[string]{Status: BadType, Raw: &raw}.at(line, false)
 }
 
 // ReadRawInfo: the advisory info-string of a raw block ("" when absent).
@@ -3043,10 +3093,11 @@ func (d *Document) ReadRawInfo(path string) Read[string] {
 	}
 	v := &d.arena[n].value
 	raw := d.rawOf(n)
+	line := d.arena[n].line
 	if v.kind == vRaw {
-		return Read[string]{Value: v.raw.info, Status: Good, Raw: &raw}
+		return Read[string]{Value: v.raw.info, Status: Good, Raw: &raw}.at(line, false)
 	}
-	return Read[string]{Status: BadType, Raw: &raw}
+	return Read[string]{Status: BadType, Raw: &raw}.at(line, false)
 }
 
 func readArray[T any](d *Document, path string, coerce func(*element) (T, bool)) Read[[]T] {
@@ -3104,11 +3155,12 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 	}
 	v := &d.arena[r.one].value
 	raw := d.rawOf(r.one)
+	line := d.arena[r.one].line
 	switch v.kind {
 	case vEmpty:
-		return Read[[]T]{Value: []T{}, Status: Empty, Raw: &raw}
+		return Read[[]T]{Value: []T{}, Status: Empty, Raw: &raw}.at(line, false)
 	case vRaw:
-		return Read[[]T]{Value: []T{}, Status: BadType, Raw: &raw}
+		return Read[[]T]{Value: []T{}, Status: BadType, Raw: &raw}.at(line, false)
 	}
 	out := make([]T, 0, len(v.els))
 	sts := make([]Status, 0, len(v.els))
@@ -3123,7 +3175,7 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 			status = BadType
 		}
 	}
-	return Read[[]T]{Value: out, Status: status, Raw: &raw, Slots: sts}
+	return Read[[]T]{Value: out, Status: status, Raw: &raw, Slots: sts}.at(line, false)
 }
 
 func (d *Document) ReadIntArray(path string) Read[[]int64] {

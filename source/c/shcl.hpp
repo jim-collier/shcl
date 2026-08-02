@@ -103,6 +103,19 @@ public:
 		return v;
 	}
 
+	// 1-based source line of the binding at a path; 0 when it does not resolve
+	// to exactly one node or the node was writer-built.
+	std::size_t line(std::string_view p) const { return shcl_line(d_, p.data(), p.size()); }
+
+	// Child field names under a path, file order, duplicates included; "" is
+	// the top level. Names as stored - quote_segment() splices one into a path.
+	std::vector<std::string> children(std::string_view p) const {
+		shcl_str *a; std::size_t n = shcl_children(d_, p.data(), p.size(), &a);
+		std::vector<std::string> v; v.reserve(n);
+		for (std::size_t i = 0; i < n; i++) v.push_back(to_str(a[i]));
+		return v;
+	}
+
 	Read<int64_t> read_int(std::string_view p) const { auto r = shcl_read_int(d_, p.data(), p.size()); return {r.value, st(r.status)}; }
 	Read<double> read_float(std::string_view p) const { auto r = shcl_read_float(d_, p.data(), p.size()); return {r.value, st(r.status)}; }
 	Read<bool> read_bool(std::string_view p) const { auto r = shcl_read_bool_(d_, p.data(), p.size()); return {r.value != 0, st(r.status)}; }
