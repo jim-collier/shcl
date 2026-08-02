@@ -102,6 +102,15 @@ int main() {
 	std::string starter = gschema.generate(gok);
 	CHECK(gok && starter == "# int, required\nport: 8080\n");
 
+	// One-shot: one combined list (parse then validation), error predicate.
+	auto combined = shcl::Document::load_and_validate(": nope\nport: x\n", "field: port\n\ttype: int\n", shcl::Strictness::Standard);
+	auto cdiags = combined.diagnostics();
+	CHECK(cdiags.size() == 2 && cdiags[0].code == "E014" && cdiags[1].code == "V003");
+	CHECK(combined.error_count() == 2);
+	CHECK(combined.get_or<std::string>("port", std::string()) == "x"); // doc still usable
+	auto clean = shcl::Document::load_and_validate("a: 1\n", "", shcl::Strictness::Standard);
+	CHECK(clean.error_count() == 0 && clean.diagnostics().empty());
+
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");
 	return 0;

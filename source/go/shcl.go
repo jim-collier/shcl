@@ -109,6 +109,8 @@ func diagCode(msg string) string {
 		return "E016"
 	case strings.HasPrefix(msg, "unterminated quote in value"):
 		return "E017"
+	case strings.HasPrefix(msg, "merged with "):
+		return "H002"
 	case strings.HasPrefix(msg, "unknown field "):
 		return "V001"
 	case strings.HasPrefix(msg, "required path missing"):
@@ -1158,7 +1160,22 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 		case !isLast:
 			cur = p.selectOrCreate(cur, seg.name, value{kind: vEmpty}, line)
 		default:
+			before := len(p.arena)
 			cur = p.selectOrCreate(cur, seg.name, v, line)
+			// Two separately-written bindings just combined: legal (the
+			// merge rule), but only the parser can see it happened, so
+			// say so. Adjacent re-mentions (still the newest binding at
+			// this scope) and selector/path-intermediate merges stay
+			// silent - those are the deliberate redundant-path idiom.
+			kids := p.arena[p.arena[cur].parent].children
+			if cur < before && p.arena[cur].line != line && (len(kids) == 0 || kids[len(kids)-1] != cur) {
+				p.diags = append(p.diags, Diagnostic{
+					Line:     line,
+					Severity: SeverityHint,
+					Message:  fmt.Sprintf("merged with '%s' at line %d (same name and value combine)", seg.name, p.arena[cur].line),
+					Code:     "H002",
+				})
+			}
 		}
 	}
 	return cur, true
@@ -1529,6 +1546,38 @@ func (d *Document) Diagnostics() []Diagnostic {
 	return d.diags
 }
 
+// ErrorCount is how many error-severity diagnostics the document carries - the
+// "did this file have errors?" predicate, so recover-and-continue can't read
+// as success by accident. Counts whatever Diagnostics() holds (after
+// LoadAndValidate, that includes validation errors).
+func (d *Document) ErrorCount() int {
+	n := 0
+	for _, dg := range d.diags {
+		if dg.Severity == SeverityError {
+			n++
+		}
+	}
+	return n
+}
+
+// LoadAndValidate is the one-shot load-and-validate: parse at a strictness,
+// validate against a schema, and hand back the document carrying ONE combined
+// diagnostics list (parse first, then validation - the order `check --schema`
+// prints), so half the errors can't vanish because a caller forgot one of the
+// two lists. Never fails: a strict-failing document comes back as the document
+// plus its diagnostics (ErrorCount answers "did it fail"). An empty schema
+// text skips validation entirely. H001 hints the schema disavows (a declared
+// repeat upper bound above 1) are dropped.
+func LoadAndValidate(text, schemaText string, strictness Strictness) *Document {
+	doc := newParser().parse(text, strictness)
+	if strings.TrimSpace(schemaText) != "" {
+		schema := Parse(schemaText)
+		doc.diags = append(doc.diags, doc.Validate(schema)...)
+		doc.diags = SuppressDeclaredRepeats(schema, doc.diags)
+	}
+	return doc
+}
+
 func (d *Document) Strictness() Strictness {
 	return d.strictness
 }
@@ -1689,6 +1738,63 @@ func emitName(name string) string {
 // nesting. Same spelling Paths and the canonical emitter produce.
 func QuoteSegment(name string) string {
 	return emitName(name)
+}
+
+// SuppressDeclaredRepeats drops the H001 hints a schema disavows: a field
+// whose declared repeat upper bound is above 1 repeats BY DESIGN (repetition
+// is its instance mechanism), so the repeated-bare-leaf hint is structurally a
+// false positive there and trains users to ignore hints. Matching is by leaf
+// name - the filter consumers were hand-rolling - which errs toward quiet, for
+// a hint. Used by `check --schema` and LoadAndValidate; call it wherever doc
+// diagnostics and a schema meet. Returns the filtered slice (the reference
+// filters its list in place; returning is the Go mirror).
+func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic {
+	paths := schema.Instances("field")
+	var names []string
+	for i, p := range paths {
+		// repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound that
+		// matters here is the last one.
+		rep := schema.ReadIntArray(fmt.Sprintf("field[#%d].repeat", i))
+		if rep.Status != Good || len(rep.Value) == 0 || rep.Value[len(rep.Value)-1] <= 1 {
+			continue
+		}
+		leaf := p
+		if j := strings.LastIndexByte(leaf, '.'); j >= 0 {
+			leaf = leaf[j+1:]
+		}
+		if j := strings.IndexByte(leaf, '['); j >= 0 {
+			leaf = leaf[:j]
+		}
+		leaf = strings.Trim(strings.TrimSpace(leaf), "\"'")
+		if leaf != "" {
+			names = append(names, asciiLower(leaf))
+		}
+	}
+	if len(names) == 0 {
+		return diags
+	}
+	kept := diags[:0]
+	for _, d := range diags {
+		if d.Code == "H001" {
+			// The field name is the text between the first two single quotes.
+			name := ""
+			if parts := strings.SplitN(d.Message, "'", 3); len(parts) >= 2 {
+				name = parts[1]
+			}
+			drop := false
+			for _, n := range names {
+				if n == name {
+					drop = true
+					break
+				}
+			}
+			if drop {
+				continue
+			}
+		}
+		kept = append(kept, d)
+	}
+	return kept
 }
 
 // emitElement uses minimal quoting: bare unless a reserved character (or

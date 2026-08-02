@@ -92,6 +92,7 @@ def _diag_code(msg):
 		("missing colon", "E015"),
 		("nesting deeper than", "E016"),
 		("unterminated quote in value", "E017"),
+		("merged with ", "H002"),
 		("unknown field ", "V001"),
 		("required path missing", "V002"),
 		("wrong type at ", "V003"),
@@ -918,7 +919,21 @@ class _Parser:
 			elif not is_last:
 				cur = self._select_or_create(cur, seg.name, _empty(), line)
 			else:
+				before = len(self.arena)
 				cur = self._select_or_create(cur, seg.name, value, line)
+				# Two separately-written bindings just combined: legal (the
+				# merge rule), but only the parser can see it happened, so
+				# say so. Adjacent re-mentions (still the newest binding at
+				# this scope) and selector/path-intermediate merges stay
+				# silent - those are the deliberate redundant-path idiom.
+				if (cur < before
+						and self.arena[cur].line != line
+						and self.arena[self.arena[cur].parent].children[-1] != cur):
+					at = self.arena[cur].line
+					self.diags.append(Diagnostic(
+						line, Severity.Hint,
+						"merged with '{}' at line {} (same name and value combine)".format(seg.name, at),
+						"H002"))
 		return cur
 
 	def _consume_raw(self, lines, i, open_line, ch, length, info):
@@ -1234,6 +1249,31 @@ class Document:
 
 	def diagnostics(self):
 		return self.diags
+
+	def error_count(self):
+		"""How many error-severity diagnostics the document carries - the "did
+		this file have errors?" predicate, so recover-and-continue can't read
+		as success by accident. Counts whatever diagnostics() holds (after
+		load_and_validate, that includes validation errors)."""
+		return sum(1 for d in self.diags if d.severity == Severity.Error)
+
+	@staticmethod
+	def load_and_validate(text, schema_text, strictness):
+		"""One-shot load-and-validate: parse at a strictness, validate against a
+		schema, and hand back the document carrying ONE combined diagnostics
+		list (parse first, then validation - the order `check --schema`
+		prints), so half the errors can't vanish because a caller forgot one
+		of the two lists. Never fails: a strict-failing document comes back as
+		the document plus its diagnostics (error_count() answers "did it
+		fail"). An empty schema text skips validation entirely. H001 hints the
+		schema disavows (a declared repeat upper bound above 1) are dropped."""
+		doc = _Parser().parse(text, strictness)
+		if _trim(schema_text):
+			schema = Document.parse(schema_text)
+			vdiags = doc.validate(schema)
+			doc.diags.extend(vdiags)
+			suppress_declared_repeats(schema, doc.diags)
+		return doc
 
 	def strictness(self):
 		return self._strictness
@@ -2327,6 +2367,40 @@ def quote_segment(name):
 	without this is path injection - a dotted name silently reads as nesting.
 	Same spelling paths() and the canonical emitter produce."""
 	return _emit_name(name)
+
+
+def suppress_declared_repeats(schema, diags):
+	"""Drop the H001 hints a schema disavows: a field whose declared repeat upper
+	bound is above 1 repeats BY DESIGN (repetition is its instance mechanism),
+	so the repeated-bare-leaf hint is structurally a false positive there and
+	trains users to ignore hints. Matching is by leaf name - the filter
+	consumers were hand-rolling - which errs toward quiet, for a hint. Used by
+	`check --schema` and load_and_validate; call it wherever doc diagnostics
+	and a schema meet. Mutates diags in place."""
+	paths = schema.instances("field")
+	names = []
+	for i, p in enumerate(paths):
+		# repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound that
+		# matters here is the last one.
+		rep = schema.read_int_array("field[#{}].repeat".format(i))
+		if rep.status != Status.Good:
+			continue
+		if not rep.value or rep.value[-1] <= 1:
+			continue
+		leaf = _trim(p.rsplit(".", 1)[-1].split("[", 1)[0]).strip("\"'")
+		if leaf:
+			names.append(_ascii_lower(leaf))
+	if not names:
+		return
+	kept = []
+	for d in diags:
+		if d.code == "H001":
+			parts = d.message.split("'")
+			name = parts[1] if len(parts) > 1 else ""
+			if name in names:
+				continue
+		kept.append(d)
+	diags[:] = kept
 
 
 _RESERVED = set(" \t,:#\"'[]")

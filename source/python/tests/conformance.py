@@ -404,6 +404,7 @@ def main():
 			diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
 		else:
 			diags.extend(doc.validate(sdoc))
+			shcl.suppress_declared_repeats(sdoc, diags)
 		got = ""
 		errors = 0
 		for d in diags:
@@ -498,6 +499,27 @@ def main():
 	qr = pdoc.read_int(shcl.quote_segment("q n"))
 	if (qr.value, qr.status) != (3, shcl.Status.Good):
 		raise SystemExit("quoted segment read failed")
+	# One combined diagnostics list (parse first, then validation) and an
+	# error predicate, so recover-and-continue can't read as success by
+	# accident. Same fixture in every runner.
+	otext = ": nope\nport: x\n"
+	oschema = "field: port\n\ttype: int\n"
+	odoc = shcl.Document.load_and_validate(otext, oschema, shcl.Strictness.Standard)
+	ocodes = [d.code for d in odoc.diagnostics()]
+	if ocodes != ["E014", "V003"]:
+		raise SystemExit("load_and_validate codes got {}".format(ocodes))
+	if odoc.error_count() != 2:
+		raise SystemExit("error_count got {}".format(odoc.error_count()))
+	if odoc.read_string("port").value != "x":  # doc still usable
+		raise SystemExit("load_and_validate doc not readable")
+	# Strict never raises here; the diagnostics are the answer.
+	ostrict = shcl.Document.load_and_validate(otext, oschema, shcl.Strictness.Strict)
+	if ostrict.error_count() < 2:
+		raise SystemExit("strict error_count got {}".format(ostrict.error_count()))
+	# An empty schema declares nothing and validates nothing.
+	oplain = shcl.Document.load_and_validate("a: 1\n", "", shcl.Strictness.Standard)
+	if (oplain.error_count(), len(oplain.diagnostics())) != (0, 0):
+		raise SystemExit("empty-schema load_and_validate not clean")
 	# write_reason: the reason behind a setter's bare False. Same fixture in
 	# every runner.
 	wdoc = shcl.Document.parse("a:\n\tb: 1\n")
