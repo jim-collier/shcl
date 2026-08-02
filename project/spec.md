@@ -56,6 +56,20 @@ The Accessor reads in two modes:
 
 - **Materialize**: the step a traversal runs first - merge duplicate instances and order everything deterministically, so the walk is stable and repeatable.
 
+A few nouns from the wider surface:
+
+- **Trivia**: comments and blank-line grouping - carried through parse and re-emitted by the formatter, never part of identity, merging, reads, or diagnostics.
+
+- **Raw block** (and its **fence**): verbatim multi-line content between fence lines, exempt from all SHCL rules; the optional **info-string** after the opening fence is an advisory label.
+
+- **Canonical form**: the one output shape the formatter produces (block layout, tabs, insertion order, minimal quoting); `fmt` of canonical output is byte-identical (a fixpoint).
+
+- **Layer**: a whole document merged under another in layered loading (defaults, then site, then user).
+
+- **Schema**: an ordinary SHCL file of `field:` path entries whose children constrain the document; validation is a separate pass, never a parse-time concept.
+
+- **Corpus / conformance case**: the shared fixture set every binding must pass byte-for-byte; the cross-binding differential check replays it (and fuzzed inputs) through every CLI.
+
 ## Lexical structure
 
 ### Encoding and lines
@@ -324,7 +338,7 @@ The consumer is assumed to be a junior programmer in **every** binding, so each 
 
 - **Convenience tier (the one the docs lead with).** One value, one baked-in fallback, one return, no status to inspect. Supplying the fallback *is* choosing `Default` on-bad mode, so an empty/missing/bad/ambiguous read yields the fallback and nothing throws. This is the call a beginner writes 90% of the time.
 
-- **Full tier.** The same read exposing the status sentinel (and the raw text) for callers who must tell `Empty` from `NotFound` from `BadType`, or who want `onBad: Error`. The raw text is the value span exactly as authored on its source line (comment stripped, trimmed) - `regex: ^\d{2,3}$` reads back byte-for-byte, commas and spacing included. A value with no one-line source spelling (writer-built, a stacked `*` list, a raw block) falls back to the display form.
+- **Full tier.** The same read exposing the status sentinel (and the raw text) for callers who must tell `Empty` from `NotFound` from `BadType`, or who want `onBad: Error`. The `Empty`-vs-`NotFound` distinction is a deliberate feature, rare among config formats: `feature:` (written, empty) and no line at all are different answers, so a tri-state convention like "empty means explicitly disabled, absent means use the default" maps straight onto the status with no adapter. The raw text is the value span exactly as authored on its source line (comment stripped, trimmed) - `regex: ^\d{2,3}$` reads back byte-for-byte, commas and spacing included. A value with no one-line source spelling (writer-built, a stacked `*` list, a raw block) falls back to the display form.
 
 The convenience tier has the same shape everywhere - a mandatory, call-site-visible fallback - which is precisely what defuses the silent-zero trap: a junior cannot accidentally read a `0`/`""` that was really empty or missing, because there is no convenience call without a stated fallback. Each binding names the tiers by its own convention; in languages that already have a native "value-or-default" idiom, that idiom *is* the convenience tier rather than a new method.
 
@@ -363,6 +377,8 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 - A lookup path uses the same syntax and tolerances as the file: case-insensitive field names, dots to descend, `[sel]` to select an instance, whitespace ignored (`base [ Boston ] . population`).
 
 - Selector forms: `[Boston]` (bare non-numeric = value), `[0]` (bare numeric = index), `["2020"]` (quoted = value even if numeric), `[#2]` (explicit index).
+
+- **Choosing `[#i]` vs `[value]` when mapping entities** (a consumer walking instances into its own model): prefer `Count` + `[#i]`. By-value selection matches the display form, so it misreads an entity whose name happens to be numeric (`[2020]` is an index; quote it to force a value match), collapses two same-named entities into one answer (`Multiple`), and - since the display form of an inline array joins elements with `, ` - a scalar written `"a, b"` and the two-element list `a, b` meet the same selector. Those are all correct under the display-form rule; they are just the wrong tool for iteration. Index selection is positional, total, and collision-free.
 
 - `field[*]` is a wildcard returning every instance's value as an array: `GetIntArray("base[*].metrics.population")`. The result is positionally aligned to the instances - one slot per instance, in file order. If an instance lacks the sub-path, its slot is kept (status `NotFound`, taking the zero/default per `onBad`); slots are never silently dropped, so indices stay aligned with `Instances(field)`/`Count(field)`. A legitimately absent sub-path is not malformed, so it produces no diagnostic.
 	- Every array read carries one status per slot alongside the values (a slot list on the result). Each slot reads like a scalar of the target type: `Good`, `Empty` (empty value), `NotFound` (missing sub-path), `BadType` (uncoercible, raw block, or array where one scalar is expected), or `Multiple` (sub-path ambiguous within that instance). The read's aggregate status is the worst slot, so a partial miss can never report `Good`.

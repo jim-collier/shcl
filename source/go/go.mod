@@ -1,3 +1,3 @@
 module github.com/jim-collier/shcl/source/go
 
-go 1.24
+go 1.20
