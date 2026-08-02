@@ -46,16 +46,54 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 ### Bugs
 
+- 🔘 `Raw` on a read result is not raw. Reported by the nano-git-db devs, who found it corrupting regexes: the doc comment promises the original text from the file, but every read fills it from the canonical display form, which joins elements with `, `. So `regex: ^\d{2,3}$` comes back as `^\d{2, 3}$` with zero diagnostics - and anything already written `a, b` round-trips looking correct, so it passes casual testing and fails on `{2,3}`.
+	- Fix: keep the source line's value span in the parser and make Raw a slice of it; or, if that's costly, rename the field to what it actually is (canonical) and add a real verbatim text read. Their vote is true source text, and that's the better product.
+	- A true-raw read also answers their separate request to read a comma-bearing scalar (a one-line regex) verbatim without resorting to a fenced block. They also floated having the reader consult the schema's declared type before comma-splitting; declined - coupling the reader to the schema buys the same result at much higher complexity.
+	- All four bindings; reads are contract, so check corpus/crosscheck exposure before changing anything.
+
+- 🔘 By-value selectors match the as-written spelling, not the logical string. From convert-base-v2: `["q\"uote"]` and a document's `'q"uote'` are the same string but don't cross-match, because both sides keep escape pairs verbatim and the comparison is spelling against spelling. The failure is a silent NotFound, and anyone with a quote-bearing discriminator hits it eventually. The spec says matching is against the display form but is silent on escapes.
+	- Preferred: apply escapes on both sides before comparing (least surprise). Fallback if that's judged too risky this close after rc1: one spec line pinning raw match.
+	- Touches resolve, writer place(), and the parser's ByValue arm in all four bindings; corpus case either way.
+
 ### Features and enhancements
 
-- 🔘 Glossary of terms
+- 🔘 to_canonical() drops blank lines between comment-only regions. It shouldn't do that.
 
-- 🔘 Add PowerShell wrapper acknowledgement to design.md
+- 🔘 to_canonical() also loses comment indentation two ways, from the SilkTerm devs: a comment run trailing a block's last child re-attaches to the following node and de-indents to column 0, and orphan comments after the last binding always emit unindented. Together with the blank-line item above, fixing these lets them delete most of their save-repair pass.
+	- Means recording indent (and probably original attachment) as trivia; fmt must stay a fixpoint. All four parsers + emit, golden churn expected.
+
+- 🔘 Expose whether a value was quoted. From nano-git-db: `a: @null` and `a: "@null"` read identically, so a language built on shcl can't reserve a sentinel value and still let a user write it literally - they had to make `@null` unconditionally reserved and walk back docs that promised quoting would escape it. The parser already tracks quoted per element and drops it at the read boundary; one field on the read result makes "quoting is the escape" true for every downstream language.
+
+- 🔘 Line numbers on the read path. From nano-git-db: node line is populated and never exported, so any consumer check the schema can't express can only name the entity, never the line - their warnings degraded from `line 81: ...` to `table issue: ...`. A Line(path) accessor is the cheapest high-value ask in their list.
+
+- 🔘 Enumerate a node's children. From nano-git-db: Paths() dedupes, so there is no way to ask "what keys are under this section?" - they hardcode a ten-name hook list purely because they can't ask what's under `code:`, and any open-ended or map-shaped section is unmodellable. Children(path) returning child names in file order, duplicates included, deletes more of their workaround code than anything else they asked for.
+
+- 🔘 Hint when a merge combines non-adjacent bindings. From nano-git-db: merge-by-(name, value) means two separately-written `table: t` sections silently become one combined table, and only the parser can know it happened - their consumer-side "already defined; first wins" check was unreachable and got deleted as dead code. A hint-severity diagnostic carrying both line numbers would make that class of check possible without touching the documented merge semantics.
+	- New H-code; diagnostics are contract, so all four bindings plus the expected-diags goldens move together.
+
+- 🔘 Suppress H001 where the schema declares the repetition. From nano-git-db: the repeated-bare-leaf hint is structurally a false positive for any field whose repetition is the instance mechanism (`unique:`, `index:`, `row:`), so every correct file warns on load and users learn to ignore warnings; they filter it by hand for exactly three names. When a schema is present and a path declares repeat with an upper bound above 1, drop H001 there - the information already exists and goes unused.
+	- H001 is parse-time and the schema arrives at validate, so the suppression belongs where check --schema assembles output, not in the parser.
+
+- 🔘 One-shot load-and-validate, plus an error predicate. From nano-git-db: doc diagnostics and schema validation come back as two separate lists that must be merged by hand (forget one and half the errors vanish), and there's no HasErrors/ErrorCount, so "did this file have errors" is consumer bookkeeping - which matters, since recover-and-continue means a mixed-indentation file otherwise returns no error at all. A combined entry point (text + schema + strictness in, doc + one diagnostic list out) plus an error count removes a whole class of consumer mistake.
+
+- 🔘 Schema fragments. From nano-git-db, their top feature request: the schema language can't express recursion (their arbitrarily-nesting layout blocks are generated to a fixed depth of 8, past which validation silently stops and correct keys start reporting as unknown) or path aliases (wrapped vs flat spellings force ~60 lines of string surgery over their own schema file at init). Both are the same missing idea - "this subtree has the shape of that one" - and a single fragment/reference construct closes both, taking their 99 hand-written field entries plus two generators down to something reviewable.
+	- Big. Design first, post-1.0. Weigh hard against keeping the schema language small, but two independent workarounds in the most rigorous consumer argue it earns its keep.
+
+- 🔘 Lower the go directive to the tested floor. From convert-base-v2: go.mod declares 1.24, and that directive is their recorded reason for vendoring the file instead of using it as a module - it would drag their deliberately-1.21 project up. The identical file compiles and passes their full suite under 1.21, so 1.24 is declaration, not need; find the real floor (generics suggest possibly 1.18) and declare that.
+
+- 🔘 Docs batch from the feedback round:
+	- Advertise the Empty vs NotFound distinction. convert-base-v2 mapped it straight onto their tri-state marker convention with no adapter ("empty means explicitly disabled, absent means default") and called it rare among config parsers - it belongs in the README/spec as a feature, not something discovered by reading source.
+	- A spec paragraph on choosing `[#i]` vs `[value]` selectors when mapping entities: by-value misreads an entity whose name is numeric and collapses two same-named entities, and since matching is against the display form, a scalar spelled `"a, b"` and the two-element list meet the same selector. nano-git-db and convert-base-v2 each worked these out the hard way; nano-git-db suggests an IndexOf(path, value) alongside.
+	- A "writing a mapper" worked example in the Go package docs: the exported surface is 60+ methods, and the shape of a real consumer - descend by path prefix, Count then `[#i]`, schema validation for line-numbered errors, fences for verbatim - cost them most of a day to discover.
 
 - 🔘 Hosted CI runs its four pinned actions on a deprecated Node.
 	- All four are pinned by commit SHA and target Node 20, which the runners now force onto Node 24 with a warning on every run.
 	- Working today, and the warning is the only symptom. It stops working whenever the runners drop the shim.
 	- Fix is to re-pin each action to a release built for the current Node, keeping the pin-by-SHA-with-tag-in-a-comment shape.
+
+- 🔘 Add existence of PowerShell wrapper acknowledgement to design.md
+
+- 🔘 Glossary of terms
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
