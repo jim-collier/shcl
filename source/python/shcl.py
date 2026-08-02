@@ -115,10 +115,21 @@ class Read:
 
 
 class LoadError(Exception):
-	def __init__(self, diagnostics):
+	"""A failed strict load. Carries the full diagnostics list AND the document
+	the parse produced anyway - recover-and-continue means the diagnostics are
+	the point, and the tree is what a Standard load would have kept."""
+	def __init__(self, diagnostics, document=None):
 		self.diagnostics = diagnostics
-		n = sum(1 for d in diagnostics if d.severity == Severity.Error)
-		super().__init__("strict load failed: {} error diagnostic(s)".format(n))
+		self.document = document
+		# Name the first few failures right in the message; the bare count made
+		# callers dig for information the error was already holding.
+		errs = [d for d in diagnostics if d.severity == Severity.Error]
+		msg = "strict load failed: {} error diagnostic(s)".format(len(errs))
+		for d in errs[:3]:
+			msg += "; line {}: {} {}".format(d.line, d.code, d.message)
+		if len(errs) > 3:
+			msg += "; +{} more".format(len(errs) - 3)
+		super().__init__(msg)
 
 
 class ShclDateTime:
@@ -1126,10 +1137,12 @@ class Document:
 
 	@staticmethod
 	def parse_with(text, strictness):
-		"""Parse at a chosen strictness. Only Strict can fail (any error diagnostic)."""
+		"""Parse at a chosen strictness. Only Strict can fail (any error
+		diagnostic); the raised LoadError still carries the parsed document
+		alongside the diagnostics."""
 		doc = _Parser().parse(text, strictness)
 		if strictness == Strictness.Strict and any(d.severity == Severity.Error for d in doc.diags):
-			raise LoadError(doc.diags)
+			raise LoadError(doc.diags, doc)
 		return doc
 
 	def diagnostics(self):

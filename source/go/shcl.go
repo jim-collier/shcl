@@ -184,16 +184,30 @@ func (r Read[T]) OK() bool {
 
 type LoadError struct {
 	Diagnostics []Diagnostic
+	// Document is the tree the parse produced anyway. Recover-and-continue
+	// means the diagnostics are the point of a failed strict load, and the
+	// tree is what a Standard load would have kept.
+	Document *Document
 }
 
 func (e *LoadError) Error() string {
-	n := 0
+	// Name the first few failures right in the message; the bare count made
+	// callers dig for information the error was already holding.
+	var errs []Diagnostic
 	for _, d := range e.Diagnostics {
 		if d.Severity == SeverityError {
-			n++
+			errs = append(errs, d)
 		}
 	}
-	return fmt.Sprintf("strict load failed: %d error diagnostic(s)", n)
+	msg := fmt.Sprintf("strict load failed: %d error diagnostic(s)", len(errs))
+	for i, d := range errs {
+		if i == 3 {
+			msg += fmt.Sprintf("; +%d more", len(errs)-3)
+			break
+		}
+		msg += fmt.Sprintf("; line %d: %s %s", d.Line, d.Code, d.Message)
+	}
+	return msg
 }
 
 type ZoneKind int
@@ -1378,13 +1392,15 @@ func Parse(text string) *Document {
 }
 
 // ParseWith parses at a chosen strictness. Only Strict can fail (any error
-// diagnostic).
+// diagnostic). The Document comes back even then - non-nil alongside the
+// error, with the error carrying it too - so `doc, err :=` callers can
+// inspect doc.Diagnostics() without a nil check blowing up.
 func ParseWith(text string, strictness Strictness) (*Document, error) {
 	doc := newParser().parse(text, strictness)
 	if strictness == Strict {
 		for _, d := range doc.diags {
 			if d.Severity == SeverityError {
-				return nil, &LoadError{Diagnostics: doc.diags}
+				return doc, &LoadError{Diagnostics: doc.diags, Document: doc}
 			}
 		}
 	}

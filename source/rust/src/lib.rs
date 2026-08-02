@@ -166,16 +166,29 @@ impl<T> Read<T> {
 #[derive(Debug)]
 pub struct LoadError {
 	pub diagnostics: Vec<Diagnostic>,
+	/// The document the parse produced anyway. Recover-and-continue means the
+	/// diagnostics are the point of a failed strict load, and the tree is what
+	/// a Standard load would have kept - so a caller can still inspect both.
+	pub document: Document,
 }
 
 impl std::fmt::Display for LoadError {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-		let n = self
+		// Name the first few failures right in the message; the bare count made
+		// callers dig for information the error was already holding.
+		let errs: Vec<&Diagnostic> = self
 			.diagnostics
 			.iter()
 			.filter(|d| d.severity == Severity::Error)
-			.count();
-		write!(f, "strict load failed: {} error diagnostic(s)", n)
+			.collect();
+		write!(f, "strict load failed: {} error diagnostic(s)", errs.len())?;
+		for d in errs.iter().take(3) {
+			write!(f, "; line {}: {} {}", d.line, d.code, d.message)?;
+		}
+		if errs.len() > 3 {
+			write!(f, "; +{} more", errs.len() - 3)?;
+		}
+		Ok(())
 	}
 }
 
@@ -1292,14 +1305,16 @@ impl Document {
 		Parser::new().parse(text, Strictness::Standard)
 	}
 
-	/// Parse at a chosen strictness. Only Strict can fail (any error diagnostic).
+	/// Parse at a chosen strictness. Only Strict can fail (any error diagnostic);
+	/// the error still carries the parsed document alongside the diagnostics.
 	pub fn parse_with(text: &str, strictness: Strictness) -> Result<Document, LoadError> {
 		let doc = Parser::new().parse(text, strictness);
 		if strictness == Strictness::Strict
 			&& doc.diags.iter().any(|d| d.severity == Severity::Error)
 		{
 			return Err(LoadError {
-				diagnostics: doc.diags,
+				diagnostics: doc.diags.clone(),
+				document: doc,
 			});
 		}
 		Ok(doc)

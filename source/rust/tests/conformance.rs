@@ -670,6 +670,17 @@ fn write_bad_ops_are_rejected() {
 }
 
 #[test]
+fn strict_failure_carries_document() {
+	// A failed strict load hands back the document and names the first
+	// failures in the message - the diagnostics are the point.
+	let e = Document::parse_with("ok: 1\n: nope\n", Strictness::Strict).unwrap_err();
+	assert!(!e.diagnostics.is_empty());
+	assert_eq!(e.document.read_int("ok").value, 1);
+	let msg = e.to_string();
+	assert!(msg.contains("; line "), "{}", msg);
+}
+
+#[test]
 fn raw_is_source_text() {
 	// raw: the verbatim value span from the source line - not the display
 	// join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner

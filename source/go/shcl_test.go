@@ -594,6 +594,25 @@ func TestWriteBadOpsAreRejected(t *testing.T) {
 	}
 }
 
+func TestStrictFailureCarriesDocument(t *testing.T) {
+	// A failed strict load hands back the document (non-nil, and on the
+	// error too) and names the first failures in the message.
+	doc, err := ParseWith("ok: 1\n: nope\n", Strict)
+	if err == nil || doc == nil {
+		t.Fatalf("want non-nil doc and error, got %v %v", doc, err)
+	}
+	le := err.(*LoadError)
+	if le.Document != doc || len(le.Diagnostics) == 0 {
+		t.Fatalf("error does not carry the document/diagnostics")
+	}
+	if r := doc.ReadInt("ok"); r.Value != 1 {
+		t.Fatalf("doc unusable: %v", r)
+	}
+	if !strings.Contains(err.Error(), "; line ") {
+		t.Fatalf("message lacks diagnostics: %s", err.Error())
+	}
+}
+
 func TestRawIsSourceText(t *testing.T) {
 	// Raw: the verbatim value span from the source line - not the display
 	// join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner
