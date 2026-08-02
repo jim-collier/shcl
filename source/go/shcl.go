@@ -166,6 +166,38 @@ func (s Status) String() string {
 	return "Good"
 }
 
+// WriteReason is why a write would fail (WriteReason()): the distinctions
+// behind a setter's bare false. Writable = the path passes the writer's
+// validation; the rest name the five ways it cannot.
+type WriteReason int
+
+const (
+	Writable    WriteReason = iota
+	BadPath                 // empty path, or the scanner rejected it
+	ValueInPath             // the path carries a `: value` part; writes take values separately
+	Wildcard                // wildcard selectors are query-only
+	NoSuchIndex             // a `[#k]` instance that does not (and can never) exist
+	TooDeep                 // deeper than the nesting cap; the writer never creates past it
+)
+
+func (r WriteReason) String() string {
+	switch r {
+	case Writable:
+		return "Writable"
+	case BadPath:
+		return "BadPath"
+	case ValueInPath:
+		return "ValueInPath"
+	case Wildcard:
+		return "Wildcard"
+	case NoSuchIndex:
+		return "NoSuchIndex"
+	case TooDeep:
+		return "TooDeep"
+	}
+	return "Writable"
+}
+
 // Read is the full-tier read result: value plus status plus the original raw
 // text (when the path resolved), so a caller can always recover what was
 // actually in the file. Array reads also carry one status per slot (element,
@@ -1948,24 +1980,28 @@ func (d *Document) childOrCreate(parent int, name string) int {
 	return d.newChild(parent, name, value{kind: vEmpty})
 }
 
-// place walks (creating as needed) to the node a write targets. A trailing name
-// with no selector hits the first same-named instance (or a new one); a [value]
-// selector selects the matching instance or creates it; [#k] must already
-// exist. ok=false means the path is unusable for a write.
-func (d *Document) place(path string) (int, bool) {
+// WriteReason reports why a write at this path would fail - the reason behind
+// a setter's bare false, so a consumer's error message need not guess.
+// Writable means the same validation place() runs would pass; nothing is
+// created.
+func (d *Document) WriteReason(path string) WriteReason {
 	scan, err := scanPath(path)
-	if err != nil || scan.valueText != nil || len(scan.segments) == 0 {
-		return 0, false
+	if err != nil {
+		return BadPath
+	}
+	if scan.valueText != nil {
+		return ValueInPath
+	}
+	if len(scan.segments) == 0 {
+		return BadPath
 	}
 	// Writer side of the load-time nesting cap: never create deeper.
 	if len(scan.segments) > MaxDepth {
-		return 0, false
+		return TooDeep
 	}
-	// Validate before creating anything, so a doomed path (wildcard, or a
-	// `[#k]` instance that does not and can never exist) leaves no
-	// half-created intermediates behind. Once this walk falls off the
-	// existing tree, a later `[#k]` can never match: fresh intermediates
-	// are created childless.
+	// The probe walk place() validates with: once it falls off the existing
+	// tree, a later `[#k]` can never match (fresh intermediates are created
+	// childless), so an index segment past that point is unresolvable.
 	probe, alive := root, true
 	for i := range scan.segments {
 		seg := &scan.segments[i]
@@ -1993,7 +2029,7 @@ func (d *Document) place(path string) (int, bool) {
 			}
 		case seg.sel.kind == selByIndex:
 			if !alive {
-				return 0, false
+				return NoSuchIndex
 			}
 			var matches []int
 			for _, c := range d.arena[probe].children {
@@ -2002,12 +2038,29 @@ func (d *Document) place(path string) (int, bool) {
 				}
 			}
 			if seg.sel.index >= uint64(len(matches)) {
-				return 0, false
+				return NoSuchIndex
 			}
 			probe = matches[seg.sel.index]
 		default:
-			return 0, false // wildcard is query-only
+			return Wildcard
 		}
+	}
+	return Writable
+}
+
+// place walks (creating as needed) to the node a write targets. A trailing name
+// with no selector hits the first same-named instance (or a new one); a [value]
+// selector selects the matching instance or creates it; [#k] must already
+// exist. ok=false means the path is unusable for a write (WriteReason says
+// why). Validation runs first, so a doomed path leaves no half-created
+// intermediates behind.
+func (d *Document) place(path string) (int, bool) {
+	if d.WriteReason(path) != Writable {
+		return 0, false
+	}
+	scan, err := scanPath(path)
+	if err != nil {
+		return 0, false
 	}
 	cur := root
 	for i := range scan.segments {

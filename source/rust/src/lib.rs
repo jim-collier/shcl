@@ -129,6 +129,19 @@ pub enum Status {
 	Multiple,
 }
 
+/// Why a write would fail (`write_reason()`): the distinctions behind a
+/// setter's bare `false`. `Writable` = the path passes the writer's
+/// validation; the rest name the five ways it cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteReason {
+	Writable,
+	BadPath,     // empty path, or the scanner rejected it
+	ValueInPath, // the path carries a `: value` part; writes take values separately
+	Wildcard,    // wildcard selectors are query-only
+	NoSuchIndex, // a `[#k]` instance that does not (and can never) exist
+	TooDeep,     // deeper than the nesting cap; the writer never creates past it
+}
+
 /// Full-tier read result: value plus status plus the original raw text (when the
 /// path resolved), so a caller can always recover what was actually in the file.
 /// Array reads also carry one status per slot (element, or wildcard instance) in
@@ -1805,38 +1818,45 @@ impl Document {
 		}
 	}
 
-	/// Walk (creating as needed) to the node a write targets. A trailing name
-	/// with no selector hits the first same-named instance (or a new one); a
-	/// `[value]` selector selects the matching instance or creates it; `[#k]`
-	/// must already exist. None = path unusable for a write (bad scan, a value
-	/// part, a wildcard, or a missing indexed instance).
-	fn place(&mut self, path: &str) -> Option<usize> {
-		let scan = scan_path(path).ok()?;
-		if scan.value_text.is_some() || scan.segments.is_empty() {
-			return None;
+	/// Why a write at this path would fail - the reason behind a setter's bare
+	/// `false`, so a consumer's error message need not guess. `Writable` means
+	/// the same validation `place()` runs would pass; nothing is created.
+	pub fn write_reason(&self, path: &str) -> WriteReason {
+		let scan = match scan_path(path) {
+			Ok(s) => s,
+			Err(_) => return WriteReason::BadPath,
+		};
+		if scan.value_text.is_some() {
+			return WriteReason::ValueInPath;
+		}
+		if scan.segments.is_empty() {
+			return WriteReason::BadPath;
 		}
 		// Writer side of the load-time nesting cap: never create deeper.
 		if scan.segments.len() > MAX_DEPTH {
-			return None;
+			return WriteReason::TooDeep;
 		}
-		// Validate before creating anything, so a doomed path (wildcard, or a
-		// `[#k]` instance that does not and can never exist) leaves no
-		// half-created intermediates behind. Once this walk falls off the
-		// existing tree, a later `[#k]` can never match: fresh intermediates
-		// are created childless.
+		// The probe walk place() validates with: once it falls off the existing
+		// tree, a later `[#k]` can never match (fresh intermediates are created
+		// childless), so an index segment past that point is unresolvable.
 		let mut probe = Some(ROOT);
 		for seg in &scan.segments {
 			match &seg.selector {
-				Some(Selector::Wildcard) => return None,
+				Some(Selector::Wildcard) => return WriteReason::Wildcard,
 				Some(Selector::ByIndex(k)) => {
-					let c = probe?;
+					let Some(c) = probe else {
+						return WriteReason::NoSuchIndex;
+					};
 					let matches: Vec<usize> = self.arena[c]
 						.children
 						.iter()
 						.copied()
 						.filter(|&n| self.arena[n].name == seg.name)
 						.collect();
-					probe = Some(*matches.get(*k as usize)?);
+					match matches.get(*k as usize) {
+						Some(&m) => probe = Some(m),
+						None => return WriteReason::NoSuchIndex,
+					}
 				}
 				Some(Selector::ByValue(v)) => {
 					let want = apply_escapes(v);
@@ -1857,6 +1877,20 @@ impl Document {
 				}
 			}
 		}
+		WriteReason::Writable
+	}
+
+	/// Walk (creating as needed) to the node a write targets. A trailing name
+	/// with no selector hits the first same-named instance (or a new one); a
+	/// `[value]` selector selects the matching instance or creates it; `[#k]`
+	/// must already exist. None = path unusable for a write (write_reason()
+	/// says why). Validation runs first, so a doomed path leaves no
+	/// half-created intermediates behind.
+	fn place(&mut self, path: &str) -> Option<usize> {
+		if self.write_reason(path) != WriteReason::Writable {
+			return None;
+		}
+		let scan = scan_path(path).ok()?;
 		let mut cur = ROOT;
 		for seg in &scan.segments {
 			cur = match &seg.selector {

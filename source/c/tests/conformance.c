@@ -532,6 +532,28 @@ int main(int argc, char **argv) {
 		if (shcl_children(ld, "missing", 7, &cv) != 0) fail("children", "missing path not empty");
 		shcl_free(ld);
 	}
+	// write_reason: the reason behind a setter's bare 0. Same fixture in every
+	// runner.
+	{
+		const char *wt = "a:\n\tb: 1\n";
+		shcl_doc *wd = shcl_parse(wt, strlen(wt));
+		if (shcl_write_reason_(wd, "a.b", 3) != SHCL_W_WRITABLE) fail("write_reason", "a.b not writable");
+		if (shcl_write_reason_(wd, "a.new[Boston].x", 15) != SHCL_W_WRITABLE) fail("write_reason", "creatable path not writable");
+		if (shcl_write_reason_(wd, "", 0) != SHCL_W_BAD_PATH) fail("write_reason", "empty path not bad");
+		if (shcl_write_reason_(wd, "a..b", 4) != SHCL_W_BAD_PATH) fail("write_reason", "a..b not bad");
+		if (shcl_write_reason_(wd, "a.b: 2", 6) != SHCL_W_VALUE_IN_PATH) fail("write_reason", "value part not flagged");
+		if (shcl_write_reason_(wd, "a[*].b", 6) != SHCL_W_WILDCARD) fail("write_reason", "wildcard not flagged");
+		if (shcl_write_reason_(wd, "a[#5].b", 7) != SHCL_W_NO_SUCH_INDEX) fail("write_reason", "a[#5] not flagged");
+		if (shcl_write_reason_(wd, "nope[#0].b", 10) != SHCL_W_NO_SUCH_INDEX) fail("write_reason", "off-tree index not flagged");
+		{
+			char deep[1026]; size_t dn = 0; // 513 segments: "d.d.d..."
+			for (size_t i = 0; i < 513; i++) { if (i) deep[dn++] = '.'; deep[dn++] = 'd'; }
+			if (shcl_write_reason_(wd, deep, dn) != SHCL_W_TOO_DEEP) fail("write_reason", "513 segments not too deep");
+		}
+		// The probe never creates: the doc is unchanged after all of the above.
+		if (shcl_count(wd, "a", 1) != 1) fail("write_reason", "probe created nodes");
+		shcl_free(wd);
+	}
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }
 	printf("conformance: %zu case(s) pass\n", nn);
 	return 0;

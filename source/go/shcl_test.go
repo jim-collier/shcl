@@ -594,6 +594,46 @@ func TestWriteBadOpsAreRejected(t *testing.T) {
 	}
 }
 
+func TestWriteReasonNamesTheFailure(t *testing.T) {
+	// The reason behind a setter's bare false. Same fixture in every runner.
+	doc := Parse("a:\n\tb: 1\n")
+	if got := doc.WriteReason("a.b"); got != Writable {
+		t.Errorf("a.b: got %v, want Writable", got)
+	}
+	if got := doc.WriteReason("a.new[Boston].x"); got != Writable { // creatable
+		t.Errorf("a.new[Boston].x: got %v, want Writable", got)
+	}
+	if got := doc.WriteReason(""); got != BadPath {
+		t.Errorf("empty path: got %v, want BadPath", got)
+	}
+	if got := doc.WriteReason("a..b"); got != BadPath {
+		t.Errorf("a..b: got %v, want BadPath", got)
+	}
+	if got := doc.WriteReason("a.b: 2"); got != ValueInPath {
+		t.Errorf("a.b: 2: got %v, want ValueInPath", got)
+	}
+	if got := doc.WriteReason("a[*].b"); got != Wildcard {
+		t.Errorf("a[*].b: got %v, want Wildcard", got)
+	}
+	if got := doc.WriteReason("a[#5].b"); got != NoSuchIndex {
+		t.Errorf("a[#5].b: got %v, want NoSuchIndex", got)
+	}
+	if got := doc.WriteReason("nope[#0].b"); got != NoSuchIndex {
+		t.Errorf("nope[#0].b: got %v, want NoSuchIndex", got)
+	}
+	deep := strings.TrimSuffix(strings.Repeat("d.", 513), ".")
+	if got := doc.WriteReason(deep); got != TooDeep {
+		t.Errorf("deep path: got %v, want TooDeep", got)
+	}
+	// The probe never creates: the doc is unchanged after all of the above.
+	if n := doc.Count("a"); n != 1 {
+		t.Errorf("count a: got %d, want 1", n)
+	}
+	if got := doc.Paths(); strings.Join(got, ",") != "a,a.b" {
+		t.Errorf("paths: got %v", got)
+	}
+}
+
 func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	// Line/Quoted on the read result, Line(path), Children(path). Same
 	// fixture in every runner (C pins the accessors; its read structs stay

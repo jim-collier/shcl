@@ -35,6 +35,18 @@ typedef enum {
 	SHCL_GOOD, SHCL_EMPTY, SHCL_NOT_FOUND, SHCL_BAD_TYPE, SHCL_MULTIPLE
 } shcl_status;
 
+// Why a write would fail (shcl_write_reason_()): the distinctions behind a
+// setter's bare 0. SHCL_W_WRITABLE = the path passes the writer's validation;
+// the rest name the five ways it cannot.
+typedef enum {
+	SHCL_W_WRITABLE,
+	SHCL_W_BAD_PATH,      // empty path, or the scanner rejected it
+	SHCL_W_VALUE_IN_PATH, // the path carries a `: value` part; writes take values separately
+	SHCL_W_WILDCARD,      // wildcard selectors are query-only
+	SHCL_W_NO_SUCH_INDEX, // a `[#k]` instance that does not (and can never) exist
+	SHCL_W_TOO_DEEP       // deeper than the nesting cap; the writer never creates past it
+} shcl_write_reason;
+
 typedef struct shcl_doc shcl_doc;
 
 // Local (floating) date/time unless a zone suffix was present. has_* fields say
@@ -174,6 +186,10 @@ int shcl_exists(shcl_doc *d, const char *path, size_t plen);       // 0/1
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen);    // count deleted
 int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
 int shcl_set_empty(shcl_doc *d, const char *path, size_t plen);
+// Why a write at this path would fail - the reason behind a setter's bare 0,
+// so a consumer's error message need not guess. SHCL_W_WRITABLE means the same
+// validation the setters run would pass. Probes only; never creates.
+shcl_write_reason shcl_write_reason_(shcl_doc *d, const char *path, size_t plen);
 
 int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v);
 int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v);
@@ -1907,46 +1923,53 @@ static size_t w_new_child(shcl_doc *d, size_t parent, S name, Value value) {
 	return idx;
 }
 
-// Walk (creating as needed) to the node a write targets. Returns 1 + *out, or 0
-// if the path is unusable for a write (bad scan, a value part, a wildcard, or a
-// missing indexed instance).
-static int w_place(shcl_doc *d, S path, size_t *out) {
-	Arena *a = &d->arena;
+// Why a write at this path would fail - the validation walk w_place runs
+// before creating anything. SHCL_W_WRITABLE means w_place's gate would pass;
+// nothing is created. Temporaries (scan, compare strings) go into `a`.
+static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
 	PathScan ps = scan_path(a, path);
-	if (!ps.ok || ps.has_value || ps.segs.len == 0) return 0;
+	if (!ps.ok) return SHCL_W_BAD_PATH;
+	if (ps.has_value) return SHCL_W_VALUE_IN_PATH;
+	if (ps.segs.len == 0) return SHCL_W_BAD_PATH;
 	/* Writer side of the load-time nesting cap: never create deeper. */
-	if (ps.segs.len > SHCL_MAX_DEPTH) return 0;
-	/* Validate before creating anything, so a doomed path (wildcard, or a
-	   `[#k]` instance that does not and can never exist) leaves no
-	   half-created intermediates behind. Once this probe falls off the
-	   existing tree, a later `[#k]` can never match: fresh intermediates are
-	   created childless. */
-	{
-		int off = 0; size_t pr = ROOT;
-		for (size_t i = 0; i < ps.segs.len; i++) {
-			Segment *seg = &ps.segs.data[i];
-			if (seg->sel.tag == SEL_WILDCARD) return 0;
-			if (seg->sel.tag == SEL_INDEX) {
-				if (off) return 0;
-				size_t match = (size_t)-1, cnt = 0;
-				VecSize ch = NODE(d, pr).children;
-				for (size_t k = 0; k < ch.len; k++) if (s_eq(NODE(d, ch.data[k]).name, seg->name)) { if (cnt == seg->sel.index) { match = ch.data[k]; break; } cnt++; }
-				if (match == (size_t)-1) return 0;
-				pr = match;
-			} else if (!off) {
-				size_t found = (size_t)-1;
-				S want = (seg->sel.tag == SEL_VALUE) ? apply_escapes(a, seg->sel.value) : s_empty();
-				VecSize ch = NODE(d, pr).children;
-				for (size_t k = 0; k < ch.len; k++) {
-					size_t c = ch.data[k];
-					if (!s_eq(NODE(d, c).name, seg->name)) continue;
-					if (seg->sel.tag == SEL_VALUE && !s_eq(disp_key(a, &NODE(d, c).value), want)) continue;
-					found = c; break;
-				}
-				if (found == (size_t)-1) off = 1; else pr = found;
+	if (ps.segs.len > SHCL_MAX_DEPTH) return SHCL_W_TOO_DEEP;
+	/* Once this probe falls off the existing tree, a later `[#k]` can never
+	   match (fresh intermediates are created childless), so an index segment
+	   past that point is unresolvable. */
+	int off = 0; size_t pr = ROOT;
+	for (size_t i = 0; i < ps.segs.len; i++) {
+		Segment *seg = &ps.segs.data[i];
+		if (seg->sel.tag == SEL_WILDCARD) return SHCL_W_WILDCARD;
+		if (seg->sel.tag == SEL_INDEX) {
+			if (off) return SHCL_W_NO_SUCH_INDEX;
+			size_t match = (size_t)-1, cnt = 0;
+			VecSize ch = NODE(d, pr).children;
+			for (size_t k = 0; k < ch.len; k++) if (s_eq(NODE(d, ch.data[k]).name, seg->name)) { if (cnt == seg->sel.index) { match = ch.data[k]; break; } cnt++; }
+			if (match == (size_t)-1) return SHCL_W_NO_SUCH_INDEX;
+			pr = match;
+		} else if (!off) {
+			size_t found = (size_t)-1;
+			S want = (seg->sel.tag == SEL_VALUE) ? apply_escapes(a, seg->sel.value) : s_empty();
+			VecSize ch = NODE(d, pr).children;
+			for (size_t k = 0; k < ch.len; k++) {
+				size_t c = ch.data[k];
+				if (!s_eq(NODE(d, c).name, seg->name)) continue;
+				if (seg->sel.tag == SEL_VALUE && !s_eq(disp_key(a, &NODE(d, c).value), want)) continue;
+				found = c; break;
 			}
+			if (found == (size_t)-1) off = 1; else pr = found;
 		}
 	}
+	return SHCL_W_WRITABLE;
+}
+
+// Walk (creating as needed) to the node a write targets. Returns 1 + *out, or 0
+// if the path is unusable for a write (w_write_reason says why). Validation
+// runs first, so a doomed path leaves no half-created intermediates behind.
+static int w_place(shcl_doc *d, S path, size_t *out) {
+	Arena *a = &d->arena;
+	if (w_write_reason(d, a, path) != SHCL_W_WRITABLE) return 0;
+	PathScan ps = scan_path(a, path);
 	size_t cur = ROOT;
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		Segment *seg = &ps.segs.data[i];
@@ -2042,6 +2065,14 @@ size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
 		kids->len = w;
 	}
 	return targets.len;
+}
+
+shcl_write_reason shcl_write_reason_(shcl_doc *d, const char *path, size_t plen) {
+	S p; p.p = path; p.n = plen;
+	// A probe, not a write: temporaries go into scratch (reset like resolve's -
+	// the previous query's die now), never permanently into the doc arena.
+	arena_reset(&d->scratch);
+	return w_write_reason(d, &d->scratch, p);
 }
 
 int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
