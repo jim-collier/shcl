@@ -958,6 +958,7 @@ func doCheck(o *opts) int {
 				diags = append(diags, shcl.Diagnostic{Line: 0, Severity: shcl.SeverityError, Message: "schema failed to load", Code: "V099"})
 			} else {
 				diags = append(diags, doc.Validate(sdoc)...)
+				diags = shcl.SuppressDeclaredRepeats(sdoc, diags)
 			}
 		}
 	}

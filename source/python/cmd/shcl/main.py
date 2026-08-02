@@ -678,6 +678,7 @@ def do_check(o):
 				diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
 			else:
 				diags.extend(doc.validate(sdoc))
+				shcl.suppress_declared_repeats(sdoc, diags)
 	except shcl.LoadError as le:
 		diags = le.diagnostics
 		strict_failed = True

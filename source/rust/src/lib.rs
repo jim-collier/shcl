@@ -89,6 +89,8 @@ fn diag_code(msg: &str) -> &'static str {
 		"E016"
 	} else if msg.starts_with("unterminated quote in value") {
 		"E017"
+	} else if msg.starts_with("merged with ") {
+		"H002"
 	} else if msg.starts_with("unknown field ") {
 		"V001"
 	} else if msg.starts_with("required path missing") {
@@ -1035,7 +1037,29 @@ impl Parser {
 					cur = self.select_or_create(cur, &seg.name, Value::Empty, line);
 				}
 				(None, true) => {
+					let before = self.arena.len();
 					cur = self.select_or_create(cur, &seg.name, value.clone(), line);
+					// Two separately-written bindings just combined: legal (the
+					// merge rule), but only the parser can see it happened, so
+					// say so. Adjacent re-mentions (still the newest binding at
+					// this scope) and selector/path-intermediate merges stay
+					// silent - those are the deliberate redundant-path idiom.
+					if cur < before
+						&& self.arena[cur].line != line
+						&& self.arena[self.arena[cur].parent].children.last() != Some(&cur)
+					{
+						let at = self.arena[cur].line;
+						let name = seg.name.clone();
+						self.diags.push(Diagnostic {
+							line,
+							severity: Severity::Hint,
+							message: format!(
+								"merged with '{}' at line {} (same name and value combine)",
+								name, at
+							),
+							code: "H002",
+						});
+					}
 				}
 			}
 		}
@@ -1238,7 +1262,7 @@ impl Parser {
 				line,
 				severity: Severity::Hint,
 				message,
-				code: "H001", // the only hint kind: repeated bare leaf
+				code: "H001", // repeated bare leaf
 			});
 		}
 	}
@@ -1451,6 +1475,36 @@ impl Document {
 		&self.diags
 	}
 
+	/// How many error-severity diagnostics the document carries - the "did
+	/// this file have errors?" predicate, so recover-and-continue can't read
+	/// as success by accident. Counts whatever diagnostics() holds (after
+	/// load_and_validate, that includes validation errors).
+	pub fn error_count(&self) -> usize {
+		self.diags
+			.iter()
+			.filter(|d| d.severity == Severity::Error)
+			.count()
+	}
+
+	/// One-shot load-and-validate: parse at a strictness, validate against a
+	/// schema, and hand back the document carrying ONE combined diagnostics
+	/// list (parse first, then validation - the order `check --schema`
+	/// prints), so half the errors can't vanish because a caller forgot one
+	/// of the two lists. Never fails: a strict-failing document comes back as
+	/// the document plus its diagnostics (error_count() answers "did it
+	/// fail"). An empty schema text skips validation entirely. H001 hints the
+	/// schema disavows (a declared repeat upper bound above 1) are dropped.
+	pub fn load_and_validate(text: &str, schema_text: &str, strictness: Strictness) -> Document {
+		let mut doc = Parser::new().parse(text, strictness);
+		if !schema_text.trim().is_empty() {
+			let schema = Document::parse(schema_text);
+			let vdiags = doc.validate(&schema);
+			doc.diags.extend(vdiags);
+			suppress_declared_repeats(&schema, &mut doc.diags);
+		}
+		doc
+	}
+
 	pub fn strictness(&self) -> Strictness {
 		self.strictness
 	}
@@ -1608,6 +1662,52 @@ fn emit_name(name: &str) -> String {
 /// `paths()` and the canonical emitter produce.
 pub fn quote_segment(name: &str) -> String {
 	emit_name(name)
+}
+
+/// Drop the H001 hints a schema disavows: a field whose declared repeat upper
+/// bound is above 1 repeats BY DESIGN (repetition is its instance mechanism),
+/// so the repeated-bare-leaf hint is structurally a false positive there and
+/// trains users to ignore hints. Matching is by leaf name - the filter
+/// consumers were hand-rolling - which errs toward quiet, for a hint. Used by
+/// `check --schema` and load_and_validate; call it wherever doc diagnostics
+/// and a schema meet.
+pub fn suppress_declared_repeats(schema: &Document, diags: &mut Vec<Diagnostic>) {
+	let paths = schema.instances("field");
+	let mut names: Vec<String> = Vec::new();
+	for (i, p) in paths.iter().enumerate() {
+		// repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound that
+		// matters here is the last one.
+		let rep = schema.read_int_array(&format!("field[#{}].repeat", i));
+		if rep.status != Status::Good {
+			continue;
+		}
+		match rep.value.last() {
+			Some(&u) if u > 1 => {}
+			_ => continue,
+		}
+		let leaf = p
+			.rsplit('.')
+			.next()
+			.unwrap_or("")
+			.split('[')
+			.next()
+			.unwrap_or("")
+			.trim()
+			.trim_matches(|c| c == '"' || c == '\'');
+		if !leaf.is_empty() {
+			names.push(leaf.to_ascii_lowercase());
+		}
+	}
+	if names.is_empty() {
+		return;
+	}
+	diags.retain(|d| {
+		if d.code != "H001" {
+			return true;
+		}
+		let name = d.message.split('\'').nth(1).unwrap_or("");
+		!names.iter().any(|n| n == name)
+	});
 }
 
 /// Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.

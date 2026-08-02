@@ -47,6 +47,16 @@ public:
 	static Document parse(std::string_view t) { return Document(shcl_parse(t.data(), t.size())); }
 	static Document parse_with(std::string_view t, Strictness s) { return Document(shcl_parse_with(t.data(), t.size(), static_cast<shcl_strictness>(s))); }
 
+	// One-shot load-and-validate: parse at a strictness, validate against a
+	// schema, and hand back a document whose diagnostics() serve ONE combined
+	// list (parse first, then validation). Never fails: error_count() answers
+	// "did it fail". An empty schema text skips validation entirely; H001
+	// hints the schema disavows (declared repeat upper bound above 1) are
+	// dropped.
+	static Document load_and_validate(std::string_view text, std::string_view schema, Strictness s) {
+		return Document(shcl_load_and_validate(text.data(), text.size(), schema.data(), schema.size(), static_cast<shcl_strictness>(s)));
+	}
+
 	bool strict_failed() const { return shcl_strict_failed(d_) != 0; }
 	Strictness strictness() const { return static_cast<Strictness>(shcl_strictness_of(d_)); }
 	std::string to_canonical() const { return to_str(shcl_to_canonical(d_)); }
@@ -57,6 +67,11 @@ public:
 			v.push_back({shcl_diag_line(d_, i), shcl_diag_severity(d_, i) == SHCL_SEV_ERROR, to_str(shcl_diag_message(d_, i)), shcl_diag_code(d_, i)});
 		return v;
 	}
+
+	// How many error-severity diagnostics the document carries - the "did
+	// this file have errors?" predicate. After load_and_validate, that
+	// includes validation errors.
+	std::size_t error_count() const { return shcl_error_count(d_); }
 
 	// Schema validation (spec.md "Schema validation"): empty result = conforms.
 	// Schema faults (V09x, schema-file lines) suppress data validation.

@@ -4,7 +4,10 @@
 //! `shcl` CLI - the Tier 1 command binding. POSIX sh and PowerShell wrap this,
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
-use shcl::{Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime};
+use shcl::{
+	Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime,
+	suppress_declared_repeats,
+};
 use std::process::ExitCode;
 
 const HELP: &str = "\
@@ -744,6 +747,7 @@ fn do_check(o: &Opts) -> u8 {
 					});
 				} else {
 					diags.extend(doc.validate(&sdoc));
+					suppress_declared_repeats(&sdoc, &mut diags);
 				}
 			}
 			(diags, false)

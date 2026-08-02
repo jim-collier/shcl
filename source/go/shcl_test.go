@@ -524,6 +524,7 @@ func TestValidationMatchesExpected(t *testing.T) {
 			diags = append(diags, Diagnostic{Line: 0, Severity: SeverityError, Message: "schema failed to load", Code: "V099"})
 		} else {
 			diags = append(diags, doc.Validate(sdoc)...)
+			diags = SuppressDeclaredRepeats(sdoc, diags)
 		}
 		var got strings.Builder
 		errors := 0
@@ -591,6 +592,38 @@ func TestWriteBadOpsAreRejected(t *testing.T) {
 				t.Errorf("%s: write-bad.ops line %d changed the document: %s", c.name, n+1, line)
 			}
 		}
+	}
+}
+
+func TestOneShotLoadAndValidate(t *testing.T) {
+	// One combined diagnostics list (parse first, then validation) and an
+	// error predicate, so recover-and-continue can't read as success by
+	// accident. Same fixture in every runner.
+	text := ": nope\nport: x\n"
+	schema := "field: port\n\ttype: int\n"
+	doc := LoadAndValidate(text, schema, Standard)
+	var codes []string
+	for _, d := range doc.Diagnostics() {
+		codes = append(codes, d.Code)
+	}
+	if strings.Join(codes, ",") != "E014,V003" {
+		t.Errorf("codes: got %v, want [E014 V003]", codes)
+	}
+	if got := doc.ErrorCount(); got != 2 {
+		t.Errorf("error count: got %d, want 2", got)
+	}
+	if got := doc.ReadString("port").Value; got != "x" { // doc still usable
+		t.Errorf("port: got %q, want \"x\"", got)
+	}
+	// Strict never errors out here; the diagnostics are the answer.
+	strict := LoadAndValidate(text, schema, Strict)
+	if strict.ErrorCount() < 2 {
+		t.Errorf("strict error count: got %d, want >= 2", strict.ErrorCount())
+	}
+	// An empty schema declares nothing and validates nothing.
+	plain := LoadAndValidate("a: 1\n", "", Standard)
+	if plain.ErrorCount() != 0 || len(plain.Diagnostics()) != 0 {
+		t.Errorf("plain: got %d errors, %d diags, want 0, 0", plain.ErrorCount(), len(plain.Diagnostics()))
 	}
 }
 

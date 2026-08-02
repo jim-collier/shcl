@@ -1,0 +1,3 @@
+query	type	expected	status	level
+-	load	ok	-
+unique	count	2	Good

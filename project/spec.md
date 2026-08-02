@@ -407,6 +407,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 | `E016` | nesting deeper than the 512-level cap (line skipped)
 | `E017` | a value (or array element) opens a quote it never closes - the piece is kept literally, including any `#` comment the open quote swallowed
 | `H001` | repeated bare leaf (array spelled as repeated lines) - the mandatory hint
+| `H002` | a binding merged with a non-adjacent earlier one (same name and value combine); legal, but only the parser can see it happened, so it says so - the prose names the earlier line
 
 - **Limits**: nesting depth is capped at 512 levels below the document root. A line that would bind a node deeper than the cap is an `error` (`E016`) and is skipped; the Writer likewise refuses to create a deeper path. The cap is what makes any loadable document safe to format, merge, and copy in every binding - depth-linear recursion can never outrun a thread stack - and 512 is far beyond any hand-authored nesting.
 
@@ -434,7 +435,7 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 
 ## Schema validation
 
-A schema is an ordinary SHCL file: a flat list of instances of one field named `field`, each whose *value* is a document path and whose children are the constraints on it. Document paths appear in value position, never as field names, so the schema vocabulary can never collide with a document's own field names. `Validate(doc, schemaDoc)` returns the same structured diagnostics loading produces; the `shcl check --schema SCHEMA FILE` CLI appends them to `check`'s normal output under the same stdout/exit contract. No grammar change is involved: the schema vocabulary is interpreted by the validator, the parser knows nothing of it.
+A schema is an ordinary SHCL file: a flat list of instances of one field named `field`, each whose *value* is a document path and whose children are the constraints on it. Document paths appear in value position, never as field names, so the schema vocabulary can never collide with a document's own field names. `Validate(doc, schemaDoc)` returns the same structured diagnostics loading produces; a one-shot `LoadAndValidate(text, schemaText, strictness)` parses and validates in one call, handing back the document carrying one combined diagnostics list (parse first, then validation - the order `check --schema` prints) so half the errors cannot vanish because a caller merged only one of the two lists, and it never fails: a strict-failing document comes back as the document plus its diagnostics, with `ErrorCount()` as the "did this file have errors?" predicate; the `shcl check --schema SCHEMA FILE` CLI appends them to `check`'s normal output under the same stdout/exit contract. No grammar change is involved: the schema vocabulary is interpreted by the validator, the parser knows nothing of it.
 
 ```shcl
 field: server.port
@@ -467,6 +468,8 @@ Semantics:
 - An empty value passes `type`, `allowed`, `min`, and `max` (present-but-no-value is what `Empty` means everywhere else) and counts as present for `required`.
 
 - On a path with no wildcard, `required` means at least one instance resolves. Through a wildcard, it is a per-instance rule - `server[*].port` requires a port under *each* server - and is vacuously satisfied when no instances exist (require the parent separately if it must exist).
+
+- A `repeat` upper bound above 1 also **disavows `H001`** for that field: repetition is that field's instance mechanism by declaration, so the repeated-bare-leaf hint would be a structural false positive there. `check --schema` (and the one-shot load-and-validate) drops those hints, matched by leaf name; plain `check` without a schema keeps them.
 
 - `repeat` and `required` evaluate per *resolution context*: the whole document for a plain path, each enclosing instance for the part of a path after a wildcard. So `field: server` + `repeat: 1, 10` bounds the server count, while `field: "server[*].port"` + `repeat: 1` means exactly one port per server.
 

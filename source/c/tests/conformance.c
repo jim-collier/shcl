@@ -382,6 +382,7 @@ int main(int argc, char **argv) {
 				int v99 = 0;
 				for (size_t i = 0; i < shcl_diag_count(sd); i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) v99 = 1;
 				shcl_validation *vv = v99 ? NULL : shcl_validate(vd, sd);
+				if (vv) shcl_suppress_declared_repeats(sd, vd);
 				size_t nd = shcl_diag_count(vd), nv = vv ? shcl_validation_count(vv) : 0, nerr = 0;
 				size_t total = nd + nv + (v99 ? 1 : 0);
 				char *vj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
@@ -553,6 +554,28 @@ int main(int argc, char **argv) {
 		// The probe never creates: the doc is unchanged after all of the above.
 		if (shcl_count(wd, "a", 1) != 1) fail("write_reason", "probe created nodes");
 		shcl_free(wd);
+	}
+	// One combined diagnostics list (parse first, then validation) and an
+	// error predicate, so recover-and-continue can't read as success by
+	// accident. Same fixture in every runner.
+	{
+		const char *ot = ": nope\nport: x\n";
+		const char *os = "field: port\n\ttype: int\n";
+		shcl_doc *od = shcl_load_and_validate(ot, strlen(ot), os, strlen(os), SHCL_STANDARD);
+		if (shcl_diag_count(od) != 2) fail("oneshot", "diag count not 2");
+		else if (strcmp(shcl_diag_code(od, 0), "E014") || strcmp(shcl_diag_code(od, 1), "V003")) fail("oneshot", "codes not E014,V003");
+		if (shcl_error_count(od) != 2) fail("oneshot", "error_count not 2");
+		shcl_read_str pr = shcl_read_string(od, "port", 4); // doc still usable
+		if (pr.status != SHCL_GOOD || pr.value.n != 1 || pr.value.p[0] != 'x') fail("oneshot", "port not readable");
+		shcl_free(od);
+		// Strict never errors out here; the diagnostics are the answer.
+		shcl_doc *sd = shcl_load_and_validate(ot, strlen(ot), os, strlen(os), SHCL_STRICT);
+		if (shcl_error_count(sd) < 2) fail("oneshot", "strict error_count < 2");
+		shcl_free(sd);
+		// An empty schema declares nothing and validates nothing.
+		shcl_doc *pd = shcl_load_and_validate("a: 1\n", 5, "", 0, SHCL_STANDARD);
+		if (shcl_error_count(pd) != 0 || shcl_diag_count(pd) != 0) fail("oneshot", "plain doc not clean");
+		shcl_free(pd);
 	}
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }
 	printf("conformance: %zu case(s) pass\n", nn);

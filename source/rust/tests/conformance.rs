@@ -285,6 +285,7 @@ fn validation_matches_expected() {
 			});
 		} else {
 			diags.extend(doc.validate(&sdoc));
+			shcl::suppress_declared_repeats(&sdoc, &mut diags);
 		}
 		let mut got = String::new();
 		for d in &diags {
@@ -667,6 +668,26 @@ fn write_bad_ops_are_rejected() {
 			);
 		}
 	}
+}
+
+#[test]
+fn one_shot_load_and_validate() {
+	// One combined diagnostics list (parse first, then validation) and an
+	// error predicate, so recover-and-continue can't read as success by
+	// accident. Same fixture in every runner.
+	let text = ": nope\nport: x\n";
+	let schema = "field: port\n\ttype: int\n";
+	let doc = shcl::Document::load_and_validate(text, schema, Strictness::Standard);
+	let codes: Vec<&str> = doc.diagnostics().iter().map(|d| d.code).collect();
+	assert_eq!(codes, vec!["E014", "V003"]);
+	assert_eq!(doc.error_count(), 2);
+	assert_eq!(doc.read_string("port").value, "x"); // doc still usable
+	// Strict never throws here; the diagnostics are the answer.
+	let strict = shcl::Document::load_and_validate(text, schema, Strictness::Strict);
+	assert!(strict.error_count() >= 2);
+	// An empty schema declares nothing and validates nothing.
+	let plain = shcl::Document::load_and_validate("a: 1\n", "", Strictness::Standard);
+	assert_eq!((plain.error_count(), plain.diagnostics().len()), (0, 0));
 }
 
 #[test]

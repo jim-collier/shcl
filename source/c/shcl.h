@@ -91,7 +91,7 @@ void shcl_free(shcl_doc *d);
 int shcl_strict_failed(const shcl_doc *d);
 shcl_strictness shcl_strictness_of(const shcl_doc *d);
 
-// Diagnostics, in emission order (parse errors then repeated-leaf hints).
+// Diagnostics, in emission order (parse-time diagnostics, then repeated-leaf hints).
 size_t shcl_diag_count(const shcl_doc *d);
 size_t shcl_diag_line(const shcl_doc *d, size_t i);
 shcl_severity shcl_diag_severity(const shcl_doc *d, size_t i);
@@ -99,6 +99,11 @@ shcl_str shcl_diag_message(const shcl_doc *d, size_t i);
 // Stable machine code (E001.., H001..) identifying the diagnostic kind - the
 // contract; the message prose is a free, per-binding voice. NUL-terminated.
 const char *shcl_diag_code(const shcl_doc *d, size_t i);
+// How many error-severity diagnostics the document carries - the "did this
+// file have errors?" predicate, so recover-and-continue can't read as success
+// by accident. Counts whatever the shcl_diag_* accessors hold (after
+// shcl_load_and_validate, that includes validation errors).
+size_t shcl_error_count(const shcl_doc *d);
 
 // Schema validation (spec.md "Schema validation"): check d against a schema
 // document (itself plain SHCL). Zero diagnostics = the document conforms.
@@ -113,6 +118,26 @@ shcl_severity shcl_validation_severity(const shcl_validation *v, size_t i);
 shcl_str shcl_validation_message(const shcl_validation *v, size_t i);
 const char *shcl_validation_code(const shcl_validation *v, size_t i);
 void shcl_validation_free(shcl_validation *v);
+
+// Drop the H001 hints a schema disavows: a field whose declared repeat upper
+// bound is above 1 repeats BY DESIGN (repetition is its instance mechanism),
+// so the repeated-bare-leaf hint is structurally a false positive there and
+// trains users to ignore hints. Matching is by leaf name - the filter
+// consumers were hand-rolling - which errs toward quiet, for a hint. Used by
+// `check --schema` and shcl_load_and_validate; call it wherever doc
+// diagnostics and a schema meet. Compacts doc's own diagnostic list in place
+// (the C spelling of filtering a caller-held list).
+void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc);
+
+// One-shot load-and-validate: parse at a strictness, validate against a
+// schema, and hand back a document whose shcl_diag_* accessors serve ONE
+// combined list (parse first, then validation - the order `check --schema`
+// prints), so half the errors can't vanish because a caller forgot one of the
+// two lists. Never fails: a strict-failing document comes back as the
+// document plus its diagnostics (shcl_error_count answers "did it fail"). An
+// empty schema text skips validation entirely. H001 hints the schema disavows
+// (a declared repeat upper bound above 1) are dropped. Free with shcl_free.
+shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schema, size_t slen, shcl_strictness s);
 
 // Schema-driven generation (`shcl init --schema`): a commented, typed starter
 // config from a schema document. Required paths are live (their `default`, or an
@@ -1252,7 +1277,8 @@ typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecMap dmaps; VecPen
 
 // The one place prose couples to a code, so the wording stays free everywhere else.
 static const char *diag_code(shcl_severity sev, S msg) {
-	if (sev == SHCL_SEV_HINT) return "H001"; // the only hint kind
+	if (s_starts(msg, "merged with ")) return "H002";
+	if (sev == SHCL_SEV_HINT) return "H001"; // repeated bare leaf
 	if (s_starts(msg, "field mixed with list elements")) return "E001";
 	if (s_starts(msg, "value after selector on ")) return "E002";
 	if (s_starts(msg, "no instance ")) return "E003";
@@ -1462,9 +1488,26 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 		}
 		case SEL_WILDCARD:
 			p_err(P, line, s_lit("wildcard selector is query-only")); return 0;
-		case SEL_NONE:
+		case SEL_NONE: {
+			size_t before = P->d->nodes.len;
 			cur = select_or_create(P, cur, seg->name, is_last ? value : v_empty(), line);
+			/* Two separately-written bindings just combined: legal (the
+			   merge rule), but only the parser can see it happened, so
+			   say so. Adjacent re-mentions (still the newest binding at
+			   this scope) and selector/path-intermediate merges stay
+			   silent - those are the deliberate redundant-path idiom. */
+			if (is_last && cur < before && NODE(P->d, cur).line != line) {
+				VecSize sib = NODE(P->d, NODE(P->d, cur).parent).children;
+				if (sib.len == 0 || sib.data[sib.len - 1] != cur) {
+					SB m = {0};
+					sb_puts(a, &m, "merged with '"); sb_putS(a, &m, seg->name);
+					sb_puts(a, &m, "' at line "); sb_put_u64(a, &m, NODE(P->d, cur).line);
+					sb_puts(a, &m, " (same name and value combine)");
+					push_diag(P->d, line, SHCL_SEV_HINT, sb_S(&m));
+				}
+			}
 			break;
+		}
 		}
 	}
 	*out = cur; return 1;
@@ -3232,6 +3275,76 @@ shcl_str shcl_validation_message(const shcl_validation *v, size_t i) {
 }
 const char *shcl_validation_code(const shcl_validation *v, size_t i) { return v->diags.data[i].code; }
 void shcl_validation_free(shcl_validation *v) { if (!v) return; arena_free(&v->arena); free(v); }
+
+void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
+	shcl_str *paths;
+	size_t np = shcl_instances(schema, "field", 5, &paths);
+	/* The collected names must survive the per-read scratch resets inside
+	   shcl_read_int_array, so they get their own arena, freed on exit. */
+	Arena tmp; tmp.head = NULL;
+	VecS names = {0};
+	for (size_t i = 0; i < np; i++) {
+		char q[64];
+		int qn = snprintf(q, sizeof q, "field[#%zu].repeat", i);
+		/* repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound that
+		   matters here is the last one. */
+		shcl_read_i64_arr rep = shcl_read_int_array(schema, q, (size_t)qn);
+		if (rep.status != SHCL_GOOD || rep.n == 0 || rep.values[rep.n - 1] <= 1) continue;
+		S p; p.p = paths[i].p; p.n = paths[i].n;
+		size_t start = 0;
+		for (size_t k = p.n; k > 0; k--) if (p.p[k - 1] == '.') { start = k; break; }
+		S leaf = s_slice(p, start, p.n);
+		for (size_t k = 0; k < leaf.n; k++) if (leaf.p[k] == '[') { leaf.n = k; break; }
+		leaf = s_trim(leaf);
+		if (leaf.n >= 2 && (leaf.p[0] == '"' || leaf.p[0] == '\'') && leaf.p[leaf.n - 1] == leaf.p[0])
+			leaf = s_slice(leaf, 1, leaf.n - 1);
+		if (leaf.n) VecS_push(&tmp, &names, ascii_lower(&tmp, leaf));
+	}
+	if (!names.len) { arena_free(&tmp); return; }
+	size_t w = 0;
+	for (size_t i = 0; i < doc->diags.len; i++) {
+		Diag dg = doc->diags.data[i];
+		int drop = 0;
+		if (strcmp(dg.code, "H001") == 0) {
+			/* The field name is the text between the first two single quotes. */
+			S m = dg.message; size_t q1 = m.n, q2 = m.n;
+			for (size_t k = 0; k < m.n; k++) if (m.p[k] == '\'') { q1 = k; break; }
+			for (size_t k = q1 + 1; k < m.n; k++) if (m.p[k] == '\'') { q2 = k; break; }
+			if (q1 < m.n && q2 < m.n) {
+				S nm = s_slice(m, q1 + 1, q2);
+				for (size_t k = 0; k < names.len; k++) if (s_eq(names.data[k], nm)) { drop = 1; break; }
+			}
+		}
+		if (!drop) doc->diags.data[w++] = dg;
+	}
+	doc->diags.len = w;
+	arena_free(&tmp);
+}
+
+size_t shcl_error_count(const shcl_doc *d) {
+	size_t n = 0;
+	for (size_t i = 0; i < d->diags.len; i++) if (d->diags.data[i].sev == SHCL_SEV_ERROR) n++;
+	return n;
+}
+
+shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schema, size_t slen, shcl_strictness s) {
+	shcl_doc *d = shcl_parse_with(text, len, s);
+	S st; st.p = schema ? schema : ""; st.n = schema ? slen : 0;
+	if (s_trim(st).n != 0) {
+		shcl_doc *sd = shcl_parse(schema, slen);
+		shcl_validation *v = shcl_validate(d, sd);
+		for (size_t i = 0; i < v->diags.len; i++) {
+			Diag dg = v->diags.data[i];
+			/* the validation arena dies below; codes are static strings */
+			dg.message = s_dup(&d->arena, dg.message);
+			VecDiag_push(&d->arena, &d->diags, dg);
+		}
+		shcl_suppress_declared_repeats(sd, d);
+		shcl_validation_free(v);
+		shcl_free(sd);
+	}
+	return d;
+}
 
 // --- Schema-driven generation (`shcl init --schema`) ------------------------
 
