@@ -670,6 +670,27 @@ fn write_bad_ops_are_rejected() {
 }
 
 #[test]
+fn raw_is_source_text() {
+	// raw: the verbatim value span from the source line - not the display
+	// join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner
+	// whose read result exposes raw (the C read structs deliberately do not).
+	let doc = Document::parse("regex: ^\\d{2,3}$\nlist: a,  \"b c\"\n");
+	assert_eq!(doc.read_string("regex").raw.as_deref(), Some("^\\d{2,3}$"));
+	assert_eq!(
+		doc.read_string_array("list").raw.as_deref(),
+		Some("a,  \"b c\"")
+	);
+	// A written value has no source spelling; raw falls back to display. The
+	// selector's escaped spelling must land on the existing instance.
+	let mut doc2 = Document::parse("who: 'q\"uote'\n");
+	assert!(doc2.set_int("who[\"q\\\"uote\"].n", 5));
+	assert_eq!(doc2.count("who"), 1);
+	let r = doc2.read_int("who['q\"uote'].n");
+	assert_eq!((r.value, r.status), (5, shcl::Status::Good));
+	assert_eq!(doc2.read_int("who['q\"uote'].n").raw.as_deref(), Some("5"));
+}
+
+#[test]
 fn paths_enumeration_shape() {
 	// paths(): file order, deduplicated, non-bare segments quoted so every
 	// path resolves. Same fixture is pinned in every runner.

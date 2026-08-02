@@ -362,6 +362,11 @@ type nodeData struct {
 	// Blank-line grouping is the other half of hand-authored layout: set when
 	// a blank line preceded this node's binding line (runs collapse to one).
 	blankBefore bool
+	// Verbatim value text from the source line (after the colon, comment
+	// stripped, trimmed) - what a read's Raw hands back. nil when the value
+	// was synthesized (writer, stacked list, fence), where raw falls back to
+	// the display form.
+	src *string
 }
 
 // Document is a parsed SHCL document: the tree, its diagnostics, and its
@@ -615,6 +620,13 @@ func applyEscapes(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// dispKey is the predicate a [value] selector matches with: display form with
+// escapes applied on both sides, so ["q\"uote"] finds 'q"uote' - a
+// logical-string match, not spelling against spelling.
+func dispKey(v *value) string {
+	return applyEscapes(v.display())
 }
 
 // fenceOpen matches an opening fence: a run of >=3 backticks or tildes, then
@@ -886,7 +898,7 @@ func (p *parser) selectOrCreate(parent int, name string, v value, line int) int 
 	p.childMap = append(p.childMap, map[[2]string]int{})
 	p.childMap[parent][mapKey] = idx
 	p.dispMap = append(p.dispMap, map[[2]string]int{})
-	disp := [2]string{name, p.arena[idx].value.display()}
+	disp := [2]string{name, dispKey(&p.arena[idx].value)}
 	if _, ok := p.dispMap[parent][disp]; !ok {
 		p.dispMap[parent][disp] = idx
 	}
@@ -918,7 +930,7 @@ func (p *parser) remapChild(node int, oldKey, oldDisp string) {
 	if c, ok := p.dispMap[parent][[2]string{name, oldDisp}]; ok && c == node {
 		delete(p.dispMap[parent], [2]string{name, oldDisp})
 	}
-	newDisp := [2]string{name, p.arena[node].value.display()}
+	newDisp := [2]string{name, dispKey(&p.arena[node].value)}
 	if _, ok := p.dispMap[parent][newDisp]; !ok {
 		p.dispMap[parent][newDisp] = node
 	}
@@ -991,12 +1003,12 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 		isLast := i+1 == len(segs)
 		switch {
 		case seg.sel != nil && seg.sel.kind == selByValue:
-			// Same display() predicate resolution uses, so a selector also
-			// selects an array-valued instance instead of creating a spurious
-			// second one - via the dispMap accelerator (the inline spelling was
-			// quadratic in siblings without it). Create only when nothing
-			// matches.
-			if found, ok := p.dispMap[cur][[2]string{seg.name, seg.sel.value}]; ok {
+			// Same escape-applied display predicate resolution uses, so a
+			// selector also selects an array-valued instance instead of creating
+			// a spurious second one - via the dispMap accelerator (the inline
+			// spelling was quadratic in siblings without it). Create only when
+			// nothing matches.
+			if found, ok := p.dispMap[cur][[2]string{seg.name, applyEscapes(seg.sel.value)}]; ok {
 				cur = found
 			} else {
 				disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
@@ -1093,7 +1105,7 @@ func (p *parser) bindBlock(parent int, v value, line int) int {
 	}
 	if p.arena[parent].value.isEmpty() {
 		oldKey := p.arena[parent].value.key()
-		oldDisp := p.arena[parent].value.display()
+		oldDisp := dispKey(&p.arena[parent].value)
 		p.arena[parent].value = v
 		p.remapChild(parent, oldKey, oldDisp)
 		return parent
@@ -1135,7 +1147,7 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 	switch {
 	case p.arena[parent].value.isEmpty():
 		oldKey := p.arena[parent].value.key()
-		oldDisp := p.arena[parent].value.display()
+		oldDisp := dispKey(&p.arena[parent].value)
 		p.arena[parent].value = value{kind: vCell, els: []element{el}}
 		p.arena[parent].starList = true
 		// First element: remap now (Empty -> cell changes both keys), then
@@ -1146,14 +1158,14 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 		p.starOpen = true
 		p.starNode = parent
 		p.starKey = p.arena[parent].value.key()
-		p.starDisp = p.arena[parent].value.display()
+		p.starDisp = dispKey(&p.arena[parent].value)
 	case p.arena[parent].value.kind == vCell && p.arena[parent].starList:
 		if !(p.starOpen && p.starNode == parent) {
 			p.starFlush()
 			p.starOpen = true
 			p.starNode = parent
 			p.starKey = p.arena[parent].value.key()
-			p.starDisp = p.arena[parent].value.display()
+			p.starDisp = dispKey(&p.arena[parent].value)
 		}
 		p.arena[parent].value.els = append(p.arena[parent].value.els, el)
 	default:
@@ -1306,6 +1318,9 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			continue
 		}
 		next := i + 1
+		// The verbatim value span, kept for reads' Raw (only the plain
+		// scalar/inline-array case has a one-line source spelling).
+		var srcText *string
 		var v value
 		switch {
 		case scan.valueText == nil:
@@ -1323,10 +1338,22 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				if unterminatedQuote(*scan.valueText) {
 					p.err(lineno, "unterminated quote in value")
 				}
+				s := *scan.valueText
+				srcText = &s
 				v = parseCell(*scan.valueText)
 			}
 		}
+		// Record only when the bound node holds exactly this line's value
+		// (a merge into an equal-valued node keeps the first line's span;
+		// a value dropped after a last-segment selector records nothing).
+		vkey := ""
+		if srcText != nil {
+			vkey = v.key()
+		}
 		if node, ok := p.attachPath(parent, scan.segments, v, lineno); ok {
+			if srcText != nil && p.arena[node].src == nil && p.arena[node].value.key() == vkey {
+				p.arena[node].src = srcText
+			}
 			if hadBlank {
 				p.arena[node].blankBefore = true
 			}
@@ -1632,9 +1659,10 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 		case seg.sel == nil:
 			cur = next
 		case seg.sel.kind == selByValue:
+			want := applyEscapes(seg.sel.value)
 			var filtered []int
 			for _, c := range next {
-				if d.arena[c].value.display() == seg.sel.value {
+				if dispKey(&d.arena[c].value) == want {
 					filtered = append(filtered, c)
 				}
 			}
@@ -1891,9 +1919,10 @@ func (d *Document) place(path string) (int, bool) {
 			}
 		case seg.sel.kind == selByValue:
 			if alive {
+				want := applyEscapes(seg.sel.value)
 				alive = false
 				for _, c := range d.arena[probe].children {
-					if d.arena[c].name == seg.name && d.arena[c].value.display() == seg.sel.value {
+					if d.arena[c].name == seg.name && dispKey(&d.arena[c].value) == want {
 						probe, alive = c, true
 						break
 					}
@@ -1924,9 +1953,10 @@ func (d *Document) place(path string) (int, bool) {
 		case seg.sel == nil:
 			cur = d.childOrCreate(cur, seg.name)
 		case seg.sel.kind == selByValue:
+			want := applyEscapes(seg.sel.value)
 			found := -1
 			for _, c := range d.arena[cur].children {
-				if d.arena[c].name == seg.name && d.arena[c].value.display() == seg.sel.value {
+				if d.arena[c].name == seg.name && dispKey(&d.arena[c].value) == want {
 					found = c
 					break
 				}
@@ -1960,6 +1990,7 @@ func (d *Document) setValue(path string, v value) bool {
 		return false
 	}
 	d.arena[idx].value = v
+	d.arena[idx].src = nil // written value has no source spelling
 	d.collapseDup(idx)
 	return true
 }
@@ -2336,6 +2367,11 @@ func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
 	// array with `over`, and the clone must survive `over` being released.
 	cv := src.value
 	cv.els = append([]element(nil), cv.els...)
+	var srcCopy *string
+	if src.src != nil {
+		s := *src.src
+		srcCopy = &s
+	}
 	nd := nodeData{
 		name:        src.name,
 		value:       cv,
@@ -2346,6 +2382,7 @@ func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
 		leading:     append([]string(nil), src.leading...),
 		trailing:    src.trailing,
 		blankBefore: src.blankBefore,
+		src:         srcCopy,
 	}
 	idx := len(d.arena)
 	d.arena = append(d.arena, nd)
@@ -2865,19 +2902,29 @@ func ParseDateTime(text string) (DateTime, bool) {
 // Accessor: typed reads
 // ---------------------------------------------------------------------------
 
-// valueAt returns the single-node value at a path, or the failing status.
-func (d *Document) valueAt(path string) (*value, Status) {
+// nodeAt returns the single node at a path, or the failing status.
+func (d *Document) nodeAt(path string) (int, Status) {
 	r, ok := d.resolve(path)
 	if !ok {
-		return nil, NotFound
+		return -1, NotFound
 	}
 	switch r.kind {
 	case resNone:
-		return nil, NotFound
+		return -1, NotFound
 	case resMany, resSlots:
-		return nil, Multiple
+		return -1, Multiple
 	}
-	return &d.arena[r.one].value, Good
+	return r.one, Good
+}
+
+// rawOf is a read's Raw: the verbatim source value text when the value came
+// from one source line, else the display form (writer-built, stacked list, raw
+// block - shapes with no one-line source spelling).
+func (d *Document) rawOf(n int) string {
+	if s := d.arena[n].src; s != nil {
+		return *s
+	}
+	return d.arena[n].value.display()
 }
 
 func scalarElement(v *value) (*element, Status) {
@@ -2894,11 +2941,12 @@ func scalarElement(v *value) (*element, Status) {
 
 func readScalar[T any](d *Document, path string, coerce func(*element) (T, bool)) Read[T] {
 	var zero T
-	v, st := d.valueAt(path)
-	if v == nil {
+	n, st := d.nodeAt(path)
+	if n < 0 {
 		return Read[T]{Value: zero, Status: st}
 	}
-	raw := v.display()
+	v := &d.arena[n].value
+	raw := d.rawOf(n)
 	el, est := scalarElement(v)
 	if el == nil {
 		return Read[T]{Value: zero, Status: est, Raw: &raw}
@@ -2931,11 +2979,12 @@ func (d *Document) ReadDateTime(path string) Read[DateTime] {
 // ReadString: any value reads as a string: a raw block yields its content, an
 // array its canonical inline text. Escapes are applied.
 func (d *Document) ReadString(path string) Read[string] {
-	v, st := d.valueAt(path)
-	if v == nil {
+	n, st := d.nodeAt(path)
+	if n < 0 {
 		return Read[string]{Status: st}
 	}
-	raw := v.display()
+	v := &d.arena[n].value
+	raw := d.rawOf(n)
 	switch {
 	case v.kind == vEmpty:
 		return Read[string]{Status: Empty, Raw: &raw}
@@ -2955,11 +3004,12 @@ func (d *Document) ReadString(path string) Read[string] {
 
 // ReadRaw: raw-block content (verbatim). Non-block values are BadType.
 func (d *Document) ReadRaw(path string) Read[string] {
-	v, st := d.valueAt(path)
-	if v == nil {
+	n, st := d.nodeAt(path)
+	if n < 0 {
 		return Read[string]{Status: st}
 	}
-	raw := v.display()
+	v := &d.arena[n].value
+	raw := d.rawOf(n)
 	switch v.kind {
 	case vRaw:
 		return Read[string]{Value: v.raw.content, Status: Good, Raw: &raw}
@@ -2971,11 +3021,12 @@ func (d *Document) ReadRaw(path string) Read[string] {
 
 // ReadRawInfo: the advisory info-string of a raw block ("" when absent).
 func (d *Document) ReadRawInfo(path string) Read[string] {
-	v, st := d.valueAt(path)
-	if v == nil {
+	n, st := d.nodeAt(path)
+	if n < 0 {
 		return Read[string]{Status: st}
 	}
-	raw := v.display()
+	v := &d.arena[n].value
+	raw := d.rawOf(n)
 	if v.kind == vRaw {
 		return Read[string]{Value: v.raw.info, Status: Good, Raw: &raw}
 	}
@@ -3036,7 +3087,7 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 		return Read[[]T]{Value: []T{}, Status: Multiple}
 	}
 	v := &d.arena[r.one].value
-	raw := v.display()
+	raw := d.rawOf(r.one)
 	switch v.kind {
 	case vEmpty:
 		return Read[[]T]{Value: []T{}, Status: Empty, Raw: &raw}
@@ -3857,9 +3908,10 @@ func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vCo
 		}
 		switch seg.sel.kind {
 		case selByValue:
+			want := applyEscapes(seg.sel.value)
 			cur = nil
 			for _, c := range next {
-				if d.arena[c].value.display() == seg.sel.value {
+				if dispKey(&d.arena[c].value) == want {
 					cur = append(cur, c)
 				}
 			}

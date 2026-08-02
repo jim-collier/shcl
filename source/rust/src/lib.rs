@@ -308,6 +308,11 @@ struct NodeData {
 	// Blank-line grouping is the other half of hand-authored layout: set when
 	// a blank line preceded this node's binding line (runs collapse to one).
 	blank_before: bool,
+	// Verbatim value text from the source line (after the colon, comment
+	// stripped, trimmed) - what a read's `raw` hands back. None when the value
+	// was synthesized (writer, stacked list, fence), where raw falls back to
+	// the display form.
+	src: Option<String>,
 }
 
 /// A parsed SHCL document: the tree, its diagnostics, and its strictness level.
@@ -489,6 +494,13 @@ fn apply_escapes(s: &str) -> String {
 		}
 	}
 	out
+}
+
+/// The predicate a `[value]` selector matches with: display form with escapes
+/// applied on both sides, so `["q\"uote"]` finds `'q"uote'` - a logical-string
+/// match, not spelling against spelling.
+fn disp_key(v: &Value) -> String {
+	apply_escapes(&v.display())
 }
 
 /// Opening fence: a run of >=3 backticks or tildes, then an optional info-string.
@@ -699,6 +711,7 @@ impl Parser {
 				leading: Vec::new(),
 				trailing: String::new(),
 				blank_before: false,
+				src: None,
 			}],
 			diags: Vec::new(),
 			stack: vec![(String::new(), ROOT)],
@@ -740,12 +753,13 @@ impl Parser {
 			leading: Vec::new(),
 			trailing: String::new(),
 			blank_before: false,
+			src: None,
 		});
 		self.arena[parent].children.push(idx);
 		self.child_map.push(HashMap::new());
 		self.child_map[parent].insert(map_key, idx);
 		self.disp_map.push(HashMap::new());
-		let disp = (name.to_string(), self.arena[idx].value.display());
+		let disp = (name.to_string(), disp_key(&self.arena[idx].value));
 		self.disp_map[parent].entry(disp).or_insert(idx);
 		idx
 	}
@@ -774,7 +788,7 @@ impl Parser {
 		if self.disp_map[parent].get(&(name.clone(), old_disp.clone())) == Some(&node) {
 			self.disp_map[parent].remove(&(name.clone(), old_disp));
 		}
-		let new_disp = self.arena[node].value.display();
+		let new_disp = disp_key(&self.arena[node].value);
 		self.disp_map[parent]
 			.entry((name, new_disp))
 			.or_insert(node);
@@ -854,13 +868,13 @@ impl Parser {
 			let is_last = i + 1 == segs.len();
 			match (&seg.selector, is_last) {
 				(Some(Selector::ByValue(v)), _) => {
-					// Same display() predicate resolve_from uses, so a selector
-					// also selects an array-valued instance instead of creating
-					// a spurious second one - via the disp_map accelerator (the
-					// inline spelling was quadratic in siblings without it).
+					// Same escape-applied display predicate resolve_from uses, so
+					// a selector also selects an array-valued instance instead of
+					// creating a spurious second one - via the disp_map accelerator
+					// (the inline spelling was quadratic in siblings without it).
 					// Create only when nothing matches.
 					let found = self.disp_map[cur]
-						.get(&(seg.name.clone(), v.clone()))
+						.get(&(seg.name.clone(), apply_escapes(v)))
 						.copied();
 					cur = match found {
 						Some(c) => c,
@@ -986,7 +1000,7 @@ impl Parser {
 		}
 		if self.arena[parent].value.is_empty() {
 			let old_key = self.arena[parent].value.key();
-			let old_disp = self.arena[parent].value.display();
+			let old_disp = disp_key(&self.arena[parent].value);
 			self.arena[parent].value = value;
 			self.remap_child(parent, old_key, old_disp);
 			Some(parent)
@@ -1029,7 +1043,7 @@ impl Parser {
 		};
 		if self.arena[parent].value.is_empty() {
 			let old_key = self.arena[parent].value.key();
-			let old_disp = self.arena[parent].value.display();
+			let old_disp = disp_key(&self.arena[parent].value);
 			self.arena[parent].value = Value::Cell(vec![el]);
 			self.arena[parent].star_list = true;
 			// First element: remap now (Empty -> cell changes both keys), then
@@ -1038,14 +1052,14 @@ impl Parser {
 			// to be fresh when queried, and every query flushes first.
 			self.remap_child(parent, old_key, old_disp);
 			let k = self.arena[parent].value.key();
-			let d = self.arena[parent].value.display();
+			let d = disp_key(&self.arena[parent].value);
 			self.star_open = Some((parent, k, d));
 		} else if matches!(self.arena[parent].value, Value::Cell(_)) && self.arena[parent].star_list
 		{
 			if !matches!(self.star_open, Some((n, _, _)) if n == parent) {
 				self.star_flush();
 				let old_key = self.arena[parent].value.key();
-				let old_disp = self.arena[parent].value.display();
+				let old_disp = disp_key(&self.arena[parent].value);
 				self.star_open = Some((parent, old_key, old_disp));
 			}
 			if let Value::Cell(els) = &mut self.arena[parent].value {
@@ -1211,6 +1225,9 @@ impl Parser {
 				}
 			};
 			let mut next = i + 1;
+			// The verbatim value span, kept for reads' `raw` (only the plain
+			// scalar/inline-array case has a one-line source spelling).
+			let mut src_text: Option<String> = None;
 			let value = match &scan.value_text {
 				None => {
 					// A clean path with no colon is the one defined repair:
@@ -1229,11 +1246,22 @@ impl Parser {
 						if unterminated_quote(v) {
 							self.err(lineno, "unterminated quote in value");
 						}
+						src_text = Some(v.clone());
 						parse_cell(v)
 					}
 				}
 			};
+			// Record only when the bound node holds exactly this line's value
+			// (a merge into an equal-valued node keeps the first line's span;
+			// a value dropped after a last-segment selector records nothing).
+			let vkey = src_text.as_ref().map(|_| value.key());
 			if let Some(node) = self.attach_path(parent, &scan.segments, value, lineno) {
+				if let (Some(s), Some(k)) = (src_text, vkey)
+					&& self.arena[node].src.is_none()
+					&& self.arena[node].value.key() == k
+				{
+					self.arena[node].src = Some(s);
+				}
 				if had_blank {
 					self.arena[node].blank_before = true;
 				}
@@ -1512,9 +1540,10 @@ impl Document {
 			match &seg.selector {
 				None => cur = next,
 				Some(Selector::ByValue(v)) => {
+					let want = apply_escapes(v);
 					cur = next
 						.into_iter()
-						.filter(|&c| self.arena[c].value.display() == *v)
+						.filter(|&c| disp_key(&self.arena[c].value) == want)
 						.collect();
 				}
 				Some(Selector::ByIndex(k)) => {
@@ -1695,6 +1724,7 @@ impl Document {
 			leading: Vec::new(),
 			trailing: String::new(),
 			blank_before: false,
+			src: None,
 		});
 		self.arena[parent].children.push(idx);
 		idx
@@ -1746,9 +1776,10 @@ impl Document {
 					probe = Some(*matches.get(*k as usize)?);
 				}
 				Some(Selector::ByValue(v)) => {
+					let want = apply_escapes(v);
 					probe = probe.and_then(|c| {
 						self.arena[c].children.iter().copied().find(|&n| {
-							self.arena[n].name == seg.name && self.arena[n].value.display() == *v
+							self.arena[n].name == seg.name && disp_key(&self.arena[n].value) == want
 						})
 					});
 				}
@@ -1768,8 +1799,9 @@ impl Document {
 			cur = match &seg.selector {
 				None => self.child_or_create(cur, &seg.name),
 				Some(Selector::ByValue(v)) => {
+					let want = apply_escapes(v);
 					let found = self.arena[cur].children.iter().copied().find(|&c| {
-						self.arena[c].name == seg.name && self.arena[c].value.display() == *v
+						self.arena[c].name == seg.name && disp_key(&self.arena[c].value) == want
 					});
 					match found {
 						Some(c) => c,
@@ -1795,6 +1827,7 @@ impl Document {
 		match self.place(path) {
 			Some(node) => {
 				self.arena[node].value = value;
+				self.arena[node].src = None; // written value has no source spelling
 				self.collapse_dup(node);
 				true
 			}
@@ -2145,6 +2178,7 @@ impl Document {
 			leading: src.leading.clone(),
 			trailing: src.trailing.clone(),
 			blank_before: src.blank_before,
+			src: src.src.clone(),
 		};
 		let idx = self.arena.len();
 		self.arena.push(node);
@@ -2593,12 +2627,22 @@ pub fn parse_datetime(text: &str) -> Option<ShclDateTime> {
 // ---------------------------------------------------------------------------
 
 impl Document {
-	/// Single-node value at a path, or the failing status.
-	fn value_at(&self, path: &str) -> Result<&Value, Status> {
+	/// Single node at a path, or the failing status.
+	fn node_at(&self, path: &str) -> Result<usize, Status> {
 		match self.resolve(path)? {
 			Resolved::None => Err(Status::NotFound),
 			Resolved::Many(_) | Resolved::Slots(_) => Err(Status::Multiple),
-			Resolved::One(n) => Ok(&self.arena[n].value),
+			Resolved::One(n) => Ok(n),
+		}
+	}
+
+	/// A read's `raw`: the verbatim source value text when the value came from
+	/// one source line, else the display form (writer-built, stacked list, raw
+	/// block - shapes with no one-line source spelling).
+	fn raw_of(&self, n: usize) -> String {
+		match &self.arena[n].src {
+			Some(s) => s.clone(),
+			None => self.arena[n].value.display(),
 		}
 	}
 
@@ -2616,11 +2660,12 @@ impl Document {
 		path: &str,
 		coerce: impl Fn(&Element) -> Option<T>,
 	) -> Read<T> {
-		let value = match self.value_at(path) {
-			Ok(v) => v,
+		let node = match self.node_at(path) {
+			Ok(n) => n,
 			Err(st) => return Read::new(T::default(), st, None),
 		};
-		let raw = Some(value.display());
+		let value = &self.arena[node].value;
+		let raw = Some(self.raw_of(node));
 		match self.scalar_element(value) {
 			Ok(el) => match coerce(el) {
 				Some(v) => Read::new(v, Status::Good, raw),
@@ -2652,11 +2697,12 @@ impl Document {
 	/// Any value reads as a string: a raw block yields its content, an array its
 	/// canonical inline text. Escapes are applied.
 	pub fn read_string(&self, path: &str) -> Read<String> {
-		let value = match self.value_at(path) {
-			Ok(v) => v,
+		let node = match self.node_at(path) {
+			Ok(n) => n,
 			Err(st) => return Read::new(String::new(), st, None),
 		};
-		let raw = Some(value.display());
+		let value = &self.arena[node].value;
+		let raw = Some(self.raw_of(node));
 		match value {
 			Value::Empty => Read::new(String::new(), Status::Empty, raw),
 			Value::Raw { content, .. } => Read::new(content.clone(), Status::Good, raw),
@@ -2675,11 +2721,12 @@ impl Document {
 
 	/// Raw-block content (verbatim). Non-block values are BadType.
 	pub fn read_raw(&self, path: &str) -> Read<String> {
-		let value = match self.value_at(path) {
-			Ok(v) => v,
+		let node = match self.node_at(path) {
+			Ok(n) => n,
 			Err(st) => return Read::new(String::new(), st, None),
 		};
-		let raw = Some(value.display());
+		let value = &self.arena[node].value;
+		let raw = Some(self.raw_of(node));
 		match value {
 			Value::Raw { content, .. } => Read::new(content.clone(), Status::Good, raw),
 			Value::Empty => Read::new(String::new(), Status::Empty, raw),
@@ -2689,13 +2736,14 @@ impl Document {
 
 	/// The advisory info-string of a raw block ("" when absent).
 	pub fn read_raw_info(&self, path: &str) -> Read<String> {
-		let value = match self.value_at(path) {
-			Ok(v) => v,
+		let node = match self.node_at(path) {
+			Ok(n) => n,
 			Err(st) => return Read::new(String::new(), st, None),
 		};
-		match value {
-			Value::Raw { info, .. } => Read::new(info.clone(), Status::Good, Some(value.display())),
-			_ => Read::new(String::new(), Status::BadType, Some(value.display())),
+		let raw = Some(self.raw_of(node));
+		match &self.arena[node].value {
+			Value::Raw { info, .. } => Read::new(info.clone(), Status::Good, raw),
+			_ => Read::new(String::new(), Status::BadType, raw),
 		}
 	}
 
@@ -2747,7 +2795,7 @@ impl Document {
 			Ok(Resolved::Many(_)) => Read::new(Vec::new(), Status::Multiple, None),
 			Ok(Resolved::One(n)) => {
 				let value = &self.arena[n].value;
-				let raw = Some(value.display());
+				let raw = Some(self.raw_of(n));
 				match value {
 					Value::Empty => Read::new(Vec::new(), Status::Empty, raw),
 					Value::Raw { .. } => Read::new(Vec::new(), Status::BadType, raw),
@@ -3485,9 +3533,10 @@ impl Document {
 			match &seg.selector {
 				None => cur = next,
 				Some(Selector::ByValue(v)) => {
+					let want = apply_escapes(v);
 					cur = next
 						.into_iter()
-						.filter(|&c| self.arena[c].value.display() == *v)
+						.filter(|&c| disp_key(&self.arena[c].value) == want)
 						.collect();
 				}
 				Some(Selector::ByIndex(k)) => {
