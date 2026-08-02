@@ -498,6 +498,16 @@ def main():
 	qr = pdoc.read_int(shcl.quote_segment("q n"))
 	if (qr.value, qr.status) != (3, shcl.Status.Good):
 		raise SystemExit("quoted segment read failed")
+	# A failed strict load hands back the document and names the first
+	# failures in the message - the diagnostics are the point.
+	try:
+		shcl.Document.parse_with("ok: 1\n: nope\n", shcl.Strictness.Strict)
+		raise SystemExit("strict load unexpectedly passed")
+	except shcl.LoadError as le:
+		if le.document is None or le.document.read_int("ok").value != 1:
+			raise SystemExit("LoadError does not carry a usable document")
+		if "; line " not in str(le):
+			raise SystemExit("LoadError message lacks diagnostics: " + str(le))
 	# raw: the verbatim value span from the source line - not the display
 	# join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner
 	# whose read result exposes raw (the C read structs deliberately do not).
