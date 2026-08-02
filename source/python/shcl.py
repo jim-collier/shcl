@@ -220,6 +220,28 @@ class _Element:
 		self.quoted = quoted
 
 
+class _Lead:
+	"""One whole-line comment held as trivia, plus whether a blank line preceded
+	it - so a blank between comment-only regions survives the round-trip
+	(blank runs collapse to one, same as nodes)."""
+	__slots__ = ("text", "blank_before")
+
+	def __init__(self, text, blank_before):
+		self.text = text
+		self.blank_before = blank_before
+
+
+class _Pend:
+	"""A pending whole-line comment during parse: text, source indent (used only
+	to decide whether it hangs on a deeper block), and the blank it consumed."""
+	__slots__ = ("text", "indent", "blank_before")
+
+	def __init__(self, text, indent, blank_before):
+		self.text = text
+		self.indent = indent
+		self.blank_before = blank_before
+
+
 class _Value:
 	# kind: "empty" | "cell" (els) | "raw" (content/info/fence_char/fence_len)
 	__slots__ = ("kind", "els", "content", "info", "fence_char", "fence_len")
@@ -323,7 +345,7 @@ def _choose_fence(content):
 class _Node:
 	__slots__ = (
 		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
-		"leading", "trailing", "blank_before", "src",
+		"leading", "trailing", "after", "blank_before", "src",
 	)
 
 	def __init__(self, name, value, parent, line):
@@ -339,6 +361,11 @@ class _Node:
 		# (later ones demote to leading - a canonical line has room for one).
 		self.leading = []
 		self.trailing = ""        # empty = none
+		# Whole-line comments that followed this node's subtree at a deeper
+		# indent than the next binding - they belong to this block, not the next
+		# node, so a run trailing a block's last child stays put instead of
+		# re-attaching dedented. Emitted after the subtree at this node's depth.
+		self.after = []
 		# Blank-line grouping is the other half of hand-authored layout: set
 		# when a blank line preceded this node's binding line (runs collapse).
 		self.blank_before = False
@@ -730,7 +757,9 @@ class _Parser:
 		# accelerator (its predicate is display(), a different and non-injective
 		# key from child_map's). Same first-wins discipline, same mutation sites.
 		self.disp_map = [{}]
-		# Whole-line comments waiting for the next line that binds a node.
+		# Whole-line comments waiting for the next line that binds a node. The
+		# source indent is kept only to decide after-attachment (a comment
+		# deeper than the next binding hangs on the block it sits in).
 		self.pending = []
 		self.saw_blank = False  # a blank line waits to become the next bound node's blank_before
 		# An open stacked list defers its merge-key remap (rebuilding the key per
@@ -786,13 +815,37 @@ class _Parser:
 		First trailing wins; a later one demotes to leading so nothing is lost."""
 		n = self.arena[node]
 		if self.pending:
-			n.leading.extend(self.pending)
+			for p in self.pending:
+				n.leading.append(_Lead(p.text, p.blank_before))
 			self.pending = []
 		if trailing:
 			if not n.trailing:
 				n.trailing = trailing
 			else:
-				n.leading.append(trailing)
+				n.leading.append(_Lead(trailing, False))
+
+	def _hang_deeper_pending(self, new_indent):
+		"""Comments written deeper than the incoming line belong to the block
+		they sit in, not to the next binding: hang each on the deepest open
+		level whose indent prefixes the comment's, so a run trailing a block's
+		last child stays with that block instead of re-attaching dedented at
+		the next node. Runs before the incoming line resolves (and at end of
+		parse with the empty indent, so indented tail comments keep their block)."""
+		if not self.pending:
+			return
+		taken = self.pending
+		self.pending = []
+		for p in taken:
+			if len(p.indent) > len(new_indent):
+				target = None
+				for ind, node in reversed(self.stack):
+					if node != ROOT and ind and len(ind) > len(new_indent) and p.indent.startswith(ind):
+						target = node
+						break
+				if target is not None:
+					self.arena[target].after.append(_Lead(p.text, p.blank_before))
+					continue
+			self.pending.append(p)
 
 	def _resolve_parent(self, indent):
 		"""Resolve which open level this indent belongs to. Child only when the
@@ -1033,16 +1086,21 @@ class _Parser:
 				self.saw_blank = True
 				i += 1
 				continue
-			# Whole-line comment: hold it for the next line that binds a node
-			# (a pending blank stays pending with it).
+			# Whole-line comment: hold it for the next line that binds a node.
+			# It consumes a pending blank into its own flag, so a blank between
+			# comment-only regions survives the round-trip.
 			if rest.startswith("#"):
-				self.pending.append(rest)
+				self.pending.append(_Pend(rest, indent, self.saw_blank))
+				self.saw_blank = False
 				i += 1
 				continue
 			# Any other line consumes the pending blank; only a field line that
 			# binds turns it into grouping.
 			had_blank = self.saw_blank
 			self.saw_blank = False
+			# A binding line claims the pending comments - but deeper-written
+			# ones hang on their own block first.
+			self._hang_deeper_pending(indent)
 			# Child-indent fence: a value line for its parent field.
 			fo = _fence_open(rest)
 			if fo is not None:
@@ -1083,7 +1141,7 @@ class _Parser:
 			if not content:
 				# Only a comment survived (e.g. an escaped lead-in); keep it.
 				if comment:
-					self.pending.append(comment)
+					self.pending.append(_Pend(comment, indent, had_blank))
 				i += 1
 				continue
 			parent = self._resolve_parent(indent)
@@ -1134,7 +1192,11 @@ class _Parser:
 			i = nxt
 		self._star_flush()
 		self._emit_repeated_leaf_hints()
-		return Document(self.arena, self.diags, strictness, self.pending)
+		# Indented tail comments keep their block; only top-level ones orphan.
+		self._hang_deeper_pending("")
+		orphans = [_Lead(p.text, p.blank_before) for p in self.pending]
+		self.pending = []
+		return Document(self.arena, self.diags, strictness, orphans)
 
 
 # ---------------------------------------------------------------------------
@@ -1189,11 +1251,27 @@ class Document:
 		self._emit_children(self.arena[ROOT].children, 0, stack)
 		while stack:
 			idx, depth, would_merge = stack.pop()
+			if would_merge is None:
+				# Post-children marker: comments that hung on this block after
+				# its last child re-emit at the block's own depth.
+				pad = "\t" * depth
+				for c in self.arena[idx].after:
+					if c.blank_before and out:
+						out.append("\n")
+					out.append(pad)
+					out.append(c.text)
+					out.append("\n")
+				continue
 			self._emit_node(idx, depth, would_merge, out)
+			if self.arena[idx].after:
+				# The marker sits under the children, so it pops after them.
+				stack.append((idx, depth, None))
 			self._emit_children(self.arena[idx].children, depth + 1, stack)
 		# Comments that never found a following line re-emit at the end.
 		for c in self.orphans:
-			out.append(c)
+			if c.blank_before and out:
+				out.append("\n")
+			out.append(c.text)
 			out.append("\n")
 		return "".join(out)
 
@@ -1215,16 +1293,19 @@ class Document:
 	def _emit_node(self, idx, depth, would_merge, out):
 		node = self.arena[idx]
 		pad = "\t" * depth
-		if node.blank_before and out:
-			out.append("\n")
 		v = node.value
 		# Same-line fence spelling can't carry an inline comment (an unbalanced
 		# quote in the info-string could hide the `#` on reparse), so its
 		# trailing comment joins the leading lines instead; the flag comes from
-		# the parent's walk.
+		# the parent's walk. Each blank rides its own comment (or the binding
+		# line), never as the first output line.
 		for c in node.leading:
+			if c.blank_before and out:
+				out.append("\n")
 			out.append(pad)
-			out.append(c)
+			out.append(c.text)
+			out.append("\n")
+		if node.blank_before and out:
 			out.append("\n")
 		if would_merge and node.trailing:
 			out.append(pad)
@@ -1417,7 +1498,11 @@ class Document:
 
 	def _new_child(self, parent, name, value):
 		idx = len(self.arena)
-		self.arena.append(_Node(name, value, parent, 0))
+		node = _Node(name, value, parent, 0)
+		# Hand-written files separate top-level sections with a blank line;
+		# writer-built ones do the same (the emitter never blanks line 1).
+		node.blank_before = parent == ROOT
+		self.arena.append(node)
 		self.arena[parent].children.append(idx)
 		return idx
 
@@ -1553,7 +1638,7 @@ class Document:
 			if not self.arena[survivor].trailing:
 				self.arena[survivor].trailing = trail
 			else:
-				self.arena[survivor].leading.append(trail)
+				self.arena[survivor].leading.append(_Lead(trail, False))
 		self.arena[parent].children = [c for c in self.arena[parent].children if c != loser]
 
 	def exists(self, path):
@@ -1592,7 +1677,7 @@ class Document:
 		line = text.split("\n", 1)[0]
 		if not line.startswith("#"):
 			line = "# " + line
-		self.arena[idx].leading.append(line)
+		self.arena[idx].leading.append(_Lead(line, False))
 		return True
 
 	def set_int(self, path, v):
@@ -1700,7 +1785,7 @@ class Document:
 		with each node. Load(defaults, site, user) is a left fold of this: each
 		later file overlaid on the earlier ones."""
 		self._overlay(ROOT, over, ROOT)
-		self.orphans.extend(over.orphans)
+		self.orphans.extend(_Lead(c.text, c.blank_before) for c in over.orphans)
 
 	# One grouping pass over each side, then a single children rebuild: the
 	# old shape re-filtered the over side per distinct name and re-scanned
@@ -1788,8 +1873,9 @@ class Document:
 		node = _Node(src.name, cv, parent, src.line)
 		node.star_list = src.star_list
 		node.star_mixed = src.star_mixed
-		node.leading = list(src.leading)
+		node.leading = [_Lead(c.text, c.blank_before) for c in src.leading]
 		node.trailing = src.trailing
+		node.after = [_Lead(c.text, c.blank_before) for c in src.after]
 		node.blank_before = src.blank_before
 		node.src = src.src
 		idx = len(self.arena)

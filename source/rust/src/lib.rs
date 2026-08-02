@@ -282,6 +282,32 @@ struct Element {
 	quoted: bool,
 }
 
+/// One whole-line comment held as trivia, plus whether a blank line preceded
+/// it - so a blank between comment-only regions survives the round-trip
+/// (blank runs collapse to one, same as nodes).
+#[derive(Debug, Clone)]
+struct Lead {
+	text: String,
+	blank_before: bool,
+}
+
+impl Lead {
+	fn plain(text: String) -> Lead {
+		Lead {
+			text,
+			blank_before: false,
+		}
+	}
+}
+
+/// A pending whole-line comment during parse: text, source indent (used only
+/// to decide whether it hangs on a deeper block), and the blank it consumed.
+struct Pend {
+	text: String,
+	indent: String,
+	blank_before: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum Value {
 	Empty,
@@ -346,8 +372,13 @@ struct NodeData {
 	// Comment trivia, verbatim from `#` to end of line. Never part of identity
 	// or reads; merged instances concatenate leading, first trailing wins
 	// (later ones demote to leading - a canonical line has room for one).
-	leading: Vec<String>,
+	leading: Vec<Lead>,
 	trailing: String, // empty = none
+	// Whole-line comments that followed this node's subtree at a deeper indent
+	// than the next binding - they belong to this block, not the next node, so
+	// a run trailing a block's last child stays put instead of re-attaching
+	// dedented. Emitted after the subtree at this node's depth.
+	after: Vec<Lead>,
 	// Blank-line grouping is the other half of hand-authored layout: set when
 	// a blank line preceded this node's binding line (runs collapse to one).
 	blank_before: bool,
@@ -364,7 +395,7 @@ pub struct Document {
 	arena: Vec<NodeData>,
 	diags: Vec<Diagnostic>,
 	strictness: Strictness,
-	orphans: Vec<String>, // comments after the last binding line
+	orphans: Vec<Lead>, // top-level comments after the last binding line
 }
 
 const ROOT: usize = 0;
@@ -731,8 +762,10 @@ struct Parser {
 	// accelerator (its predicate is display(), a different and non-injective
 	// key from child_map's). Same first-wins discipline, same mutation sites.
 	disp_map: Vec<HashMap<(String, String), usize>>,
-	// Whole-line comments waiting for the next line that binds a node.
-	pending: Vec<String>,
+	// Whole-line comments waiting for the next line that binds a node. The
+	// source indent is kept only to decide after-attachment (a comment deeper
+	// than the next binding hangs on the block it sits in).
+	pending: Vec<Pend>,
 	saw_blank: bool, // a blank line waits to become the next bound node's blank_before
 	// An open stacked list defers its merge-key remap (rebuilding the key per
 	// element is O(list^2) time); (node, key, display) at deferral start,
@@ -753,6 +786,7 @@ impl Parser {
 				star_mixed: false,
 				leading: Vec::new(),
 				trailing: String::new(),
+				after: Vec::new(),
 				blank_before: false,
 				src: None,
 			}],
@@ -795,6 +829,7 @@ impl Parser {
 			star_mixed: false,
 			leading: Vec::new(),
 			trailing: String::new(),
+			after: Vec::new(),
 			blank_before: false,
 			src: None,
 		});
@@ -840,13 +875,53 @@ impl Parser {
 	/// Hand pending leading comments (and this line's trailing one) to a node.
 	/// First trailing wins; a later one demotes to leading so nothing is lost.
 	fn attach_trivia(&mut self, node: usize, trailing: Option<&str>) {
-		self.arena[node].leading.append(&mut self.pending);
+		for p in self.pending.drain(..) {
+			self.arena[node].leading.push(Lead {
+				text: p.text,
+				blank_before: p.blank_before,
+			});
+		}
 		if let Some(t) = trailing {
 			if self.arena[node].trailing.is_empty() {
 				self.arena[node].trailing = t.to_string();
 			} else {
-				self.arena[node].leading.push(t.to_string());
+				self.arena[node].leading.push(Lead::plain(t.to_string()));
 			}
+		}
+	}
+
+	/// Comments written deeper than the incoming line belong to the block they
+	/// sit in, not to the next binding: hang each on the deepest open level
+	/// whose indent prefixes the comment's, so a run trailing a block's last
+	/// child stays with that block instead of re-attaching dedented at the
+	/// next node. Runs before the incoming line resolves (and at end of parse
+	/// with the empty indent, so indented tail comments keep their block).
+	fn hang_deeper_pending(&mut self, new_indent: &str) {
+		if self.pending.is_empty() {
+			return;
+		}
+		let taken = std::mem::take(&mut self.pending);
+		for p in taken {
+			if p.indent.len() > new_indent.len() {
+				let target = self
+					.stack
+					.iter()
+					.rev()
+					.find(|(ind, node)| {
+						*node != ROOT
+							&& !ind.is_empty() && ind.len() > new_indent.len()
+							&& p.indent.starts_with(ind.as_str())
+					})
+					.map(|&(_, n)| n);
+				if let Some(n) = target {
+					self.arena[n].after.push(Lead {
+						text: p.text,
+						blank_before: p.blank_before,
+					});
+					continue;
+				}
+			}
+			self.pending.push(p);
 		}
 	}
 
@@ -1189,16 +1264,24 @@ impl Parser {
 				i += 1;
 				continue;
 			}
-			// Whole-line comment: hold it for the next line that binds a node
-			// (a pending blank stays pending with it).
+			// Whole-line comment: hold it for the next line that binds a node.
+			// It consumes a pending blank into its own flag, so a blank between
+			// comment-only regions survives the round-trip.
 			if rest.starts_with('#') {
-				self.pending.push(rest.to_string());
+				self.pending.push(Pend {
+					text: rest.to_string(),
+					indent,
+					blank_before: std::mem::take(&mut self.saw_blank),
+				});
 				i += 1;
 				continue;
 			}
 			// Any other line consumes the pending blank; only a field line that
 			// binds turns it into grouping.
 			let had_blank = std::mem::take(&mut self.saw_blank);
+			// A binding line claims the pending comments - but deeper-written
+			// ones hang on their own block first.
+			self.hang_deeper_pending(&indent);
 			// Child-indent fence: a value line for its parent field.
 			if let Some((ch, len, info)) = fence_open(rest) {
 				let parent = match self.resolve_parent(&indent) {
@@ -1246,7 +1329,11 @@ impl Parser {
 			if content.is_empty() {
 				// Only a comment survived (e.g. an escaped lead-in); keep it.
 				if let Some(c) = comment {
-					self.pending.push(c.to_string());
+					self.pending.push(Pend {
+						text: c.to_string(),
+						indent,
+						blank_before: had_blank,
+					});
 				}
 				i += 1;
 				continue;
@@ -1315,11 +1402,21 @@ impl Parser {
 		}
 		self.star_flush();
 		self.emit_repeated_leaf_hints();
+		// Indented tail comments keep their block; only top-level ones orphan.
+		self.hang_deeper_pending("");
+		let orphans = self
+			.pending
+			.drain(..)
+			.map(|p| Lead {
+				text: p.text,
+				blank_before: p.blank_before,
+			})
+			.collect();
 		Document {
 			arena: self.arena,
 			diags: self.diags,
 			strictness,
-			orphans: self.pending,
+			orphans,
 		}
 	}
 }
@@ -1366,7 +1463,10 @@ impl Document {
 		self.emit_children(&self.arena[ROOT].children, 0, &mut out);
 		// Comments that never found a following line re-emit at the end.
 		for c in &self.orphans {
-			out.push_str(c);
+			if c.blank_before && !out.is_empty() {
+				out.push('\n');
+			}
+			out.push_str(&c.text);
 			out.push('\n');
 		}
 		out
@@ -1390,16 +1490,20 @@ impl Document {
 	fn emit_node(&self, idx: usize, depth: usize, would_merge: bool, out: &mut String) {
 		let node = &self.arena[idx];
 		let pad: String = "\t".repeat(depth);
-		if node.blank_before && !out.is_empty() {
-			out.push('\n');
-		}
 		// Same-line fence spelling can't carry an inline comment (an unbalanced
 		// quote in the info-string could hide the `#` on reparse), so its
 		// trailing comment joins the leading lines instead; the flag comes from
-		// the parent's walk.
+		// the parent's walk. Each blank rides its own comment (or the binding
+		// line), never as the first output line.
 		for c in &node.leading {
+			if c.blank_before && !out.is_empty() {
+				out.push('\n');
+			}
 			out.push_str(&pad);
-			out.push_str(c);
+			out.push_str(&c.text);
+			out.push('\n');
+		}
+		if node.blank_before && !out.is_empty() {
 			out.push('\n');
 		}
 		if would_merge && !node.trailing.is_empty() {
@@ -1469,6 +1573,15 @@ impl Document {
 			}
 		}
 		self.emit_children(&self.arena[idx].children, depth + 1, out);
+		// Comments that hung on this block after its last child.
+		for c in &self.arena[idx].after {
+			if c.blank_before && !out.is_empty() {
+				out.push('\n');
+			}
+			out.push_str(&pad);
+			out.push_str(&c.text);
+			out.push('\n');
+		}
 	}
 }
 
@@ -1799,7 +1912,10 @@ impl Document {
 			star_mixed: false,
 			leading: Vec::new(),
 			trailing: String::new(),
-			blank_before: false,
+			after: Vec::new(),
+			// Hand-written files separate top-level sections with a blank line;
+			// writer-built ones do the same (the emitter never blanks line 1).
+			blank_before: parent == ROOT,
 			src: None,
 		});
 		self.arena[parent].children.push(idx);
@@ -1972,7 +2088,7 @@ impl Document {
 			if self.arena[survivor].trailing.is_empty() {
 				self.arena[survivor].trailing = trail;
 			} else {
-				self.arena[survivor].leading.push(trail);
+				self.arena[survivor].leading.push(Lead::plain(trail));
 			}
 		}
 		self.arena[parent].children.retain(|&c| c != loser);
@@ -2014,7 +2130,7 @@ impl Document {
 				} else {
 					format!("# {}", line)
 				};
-				self.arena[node].leading.push(c);
+				self.arena[node].leading.push(Lead::plain(c));
 				true
 			}
 			None => false,
@@ -2274,6 +2390,7 @@ impl Document {
 			star_mixed: src.star_mixed,
 			leading: src.leading.clone(),
 			trailing: src.trailing.clone(),
+			after: src.after.clone(),
 			blank_before: src.blank_before,
 			src: src.src.clone(),
 		};
