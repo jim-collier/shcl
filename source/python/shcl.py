@@ -287,7 +287,7 @@ def _choose_fence(content):
 class _Node:
 	__slots__ = (
 		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
-		"leading", "trailing", "blank_before",
+		"leading", "trailing", "blank_before", "src",
 	)
 
 	def __init__(self, name, value, parent, line):
@@ -306,6 +306,11 @@ class _Node:
 		# Blank-line grouping is the other half of hand-authored layout: set
 		# when a blank line preceded this node's binding line (runs collapse).
 		self.blank_before = False
+		# Verbatim value text from the source line (after the colon, comment
+		# stripped, trimmed) - what a read's `raw` hands back. None when the
+		# value was synthesized (writer, stacked list, fence), where raw falls
+		# back to the display form.
+		self.src = None
 
 
 ROOT = 0
@@ -514,6 +519,13 @@ def _apply_escapes(s):
 	return "".join(out)
 
 
+def _disp_key(v):
+	"""The predicate a `[value]` selector matches with: display form with escapes
+	applied on both sides, so `["q\\"uote"]` finds `'q"uote'` - a logical-string
+	match, not spelling against spelling."""
+	return _apply_escapes(v.display())
+
+
 def _fence_open(rest):
 	"""Opening fence: a run of >=3 backticks or tildes, then an optional info-string."""
 	if not rest:
@@ -707,7 +719,7 @@ class _Parser:
 		self.child_map.append({})
 		self.child_map[parent][map_key] = idx
 		self.disp_map.append({})
-		self.disp_map[parent].setdefault((name, node.value.display()), idx)
+		self.disp_map[parent].setdefault((name, _disp_key(node.value)), idx)
 		return idx
 
 	def _star_flush(self):
@@ -731,7 +743,7 @@ class _Parser:
 		dmap = self.disp_map[parent]
 		if dmap.get((name, old_disp)) == node:
 			del dmap[(name, old_disp)]
-		dmap.setdefault((name, self.arena[node].value.display()), node)
+		dmap.setdefault((name, _disp_key(self.arena[node].value)), node)
 
 	def _attach_trivia(self, node, trailing):
 		"""Hand pending leading comments (and this line's trailing one) to a node.
@@ -788,12 +800,12 @@ class _Parser:
 			is_last = i == last
 			sel = seg.selector
 			if sel is not None and sel[0] == "val":
-				# Same display() predicate resolution uses, so a selector also
-				# selects an array-valued instance instead of creating a
-				# spurious second one - via the disp_map accelerator (the
-				# inline spelling was quadratic in siblings without it).
+				# Same escape-applied display predicate resolution uses, so a
+				# selector also selects an array-valued instance instead of
+				# creating a spurious second one - via the disp_map accelerator
+				# (the inline spelling was quadratic in siblings without it).
 				# Create only when nothing matches.
-				found = self.disp_map[cur].get((seg.name, sel[1]))
+				found = self.disp_map[cur].get((seg.name, _apply_escapes(sel[1])))
 				if found is not None:
 					cur = found
 				else:
@@ -878,7 +890,7 @@ class _Parser:
 			return None
 		if self.arena[parent].value.is_empty():
 			old_key = self.arena[parent].value.key()
-			old_disp = self.arena[parent].value.display()
+			old_disp = _disp_key(self.arena[parent].value)
 			self.arena[parent].value = value
 			self._remap_child(parent, old_key, old_disp)
 			return parent
@@ -912,7 +924,7 @@ class _Parser:
 		node = self.arena[parent]
 		if node.value.kind == "empty":
 			old_key = node.value.key()
-			old_disp = node.value.display()
+			old_disp = _disp_key(node.value)
 			node.value = _cell([el])
 			node.star_list = True
 			# First element: remap now (Empty -> cell changes both keys), then
@@ -921,13 +933,13 @@ class _Parser:
 			# to be fresh when queried, and every query flushes first.
 			self._remap_child(parent, old_key, old_disp)
 			k = node.value.key()
-			d = node.value.display()
+			d = _disp_key(node.value)
 			self.star_open = (parent, k, d)
 		elif node.value.kind == "cell" and node.star_list:
 			if self.star_open is None or self.star_open[0] != parent:
 				self._star_flush()
 				old_key = node.value.key()
-				old_disp = node.value.display()
+				old_disp = _disp_key(node.value)
 				self.star_open = (parent, old_key, old_disp)
 			node.value.els.append(el)
 		else:
@@ -1050,6 +1062,9 @@ class _Parser:
 				i += 1
 				continue
 			nxt = i + 1
+			# The verbatim value span, kept for reads' `raw` (only the plain
+			# scalar/inline-array case has a one-line source spelling).
+			src_text = None
 			if value_text is None:
 				# A clean path with no colon is the one defined repair:
 				# the obvious intent is that path with an empty value.
@@ -1066,9 +1081,16 @@ class _Parser:
 				else:
 					if _unterminated_quote(value_text):
 						self._err(lineno, "unterminated quote in value")
+					src_text = value_text
 					value = _parse_cell(value_text)
+			# Record only when the bound node holds exactly this line's value
+			# (a merge into an equal-valued node keeps the first line's span;
+			# a value dropped after a last-segment selector records nothing).
+			vkey = value.key() if src_text is not None else None
 			node = self._attach_path(parent, segments, value, lineno)
 			if node is not None:
+				if src_text is not None and self.arena[node].src is None and self.arena[node].value.key() == vkey:
+					self.arena[node].src = src_text
 				if had_blank:
 					self.arena[node].blank_before = True
 				self._attach_trivia(node, comment)
@@ -1238,8 +1260,8 @@ class Document:
 			if sel is None:
 				cur = nxt
 			elif sel[0] == "val":
-				v = sel[1]
-				cur = [c for c in nxt if self.arena[c].value.display() == v]
+				want = _apply_escapes(sel[1])
+				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want]
 			elif sel[0] == "idx":
 				k = sel[1]
 				cur = [nxt[k]] if k < len(nxt) else []
@@ -1375,9 +1397,10 @@ class Document:
 				probe = matches[sel[1]]
 			elif sel is not None and sel[0] == "val":
 				if probe is not None:
+					want = _apply_escapes(sel[1])
 					found = None
 					for c in self.arena[probe].children:
-						if self.arena[c].name == seg.name and self.arena[c].value.display() == sel[1]:
+						if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want:
 							found = c
 							break
 					probe = found
@@ -1395,9 +1418,10 @@ class Document:
 			if sel is None:
 				cur = self._child_or_create(cur, seg.name)
 			elif sel[0] == "val":
+				want = _apply_escapes(sel[1])
 				found = None
 				for c in self.arena[cur].children:
-					if self.arena[c].name == seg.name and self.arena[c].value.display() == sel[1]:
+					if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want:
 						found = c
 						break
 				cur = found if found is not None else self._new_child(cur, seg.name, _cell_of(sel[1]))
@@ -1415,6 +1439,7 @@ class Document:
 		if idx is None:
 			return False
 		self.arena[idx].value = value
+		self.arena[idx].src = None   # written value has no source spelling
 		self._collapse_dup(idx)
 		return True
 
@@ -1689,6 +1714,7 @@ class Document:
 		node.leading = list(src.leading)
 		node.trailing = src.trailing
 		node.blank_before = src.blank_before
+		node.src = src.src
 		idx = len(self.arena)
 		self.arena.append(node)
 		for ok in list(over.arena[oi].children):
@@ -1698,8 +1724,8 @@ class Document:
 
 	# ----- accessor: typed reads -----
 
-	def _value_at(self, path):
-		# Returns ("ok", value) or ("err", Status).
+	def _node_at(self, path):
+		# Returns ("ok", node index) or ("err", Status).
 		r = self._resolve(path)
 		tag = r[0]
 		if tag == "err":
@@ -1708,7 +1734,14 @@ class Document:
 			return ("err", Status.NotFound)
 		if tag == "many" or tag == "slots":
 			return ("err", Status.Multiple)
-		return ("ok", self.arena[r[1]].value)
+		return ("ok", r[1])
+
+	def _raw_of(self, n):
+		"""A read's `raw`: the verbatim source value text when the value came from
+		one source line, else the display form (writer-built, stacked list, raw
+		block - shapes with no one-line source spelling)."""
+		src = self.arena[n].src
+		return src if src is not None else self.arena[n].value.display()
 
 	def _scalar_element(self, v):
 		# Returns ("ok", element) or ("err", Status).
@@ -1721,11 +1754,11 @@ class Document:
 		return ("err", Status.BadType)   # an array is not one scalar
 
 	def _read_scalar(self, path, coerce, default):
-		va = self._value_at(path)
-		if va[0] == "err":
-			return Read(default, va[1], None)
-		value = va[1]
-		raw = value.display()
+		na = self._node_at(path)
+		if na[0] == "err":
+			return Read(default, na[1], None)
+		value = self.arena[na[1]].value
+		raw = self._raw_of(na[1])
 		se = self._scalar_element(value)
 		if se[0] == "err":
 			return Read(default, se[1], raw)
@@ -1752,11 +1785,11 @@ class Document:
 	def read_string(self, path):
 		"""Any value reads as a string: a raw block yields its content, an array its
 		canonical inline text. Escapes are applied."""
-		va = self._value_at(path)
-		if va[0] == "err":
-			return Read("", va[1], None)
-		value = va[1]
-		raw = value.display()
+		na = self._node_at(path)
+		if na[0] == "err":
+			return Read("", na[1], None)
+		value = self.arena[na[1]].value
+		raw = self._raw_of(na[1])
 		if value.kind == "empty":
 			return Read("", Status.Empty, raw)
 		if value.kind == "raw":
@@ -1769,11 +1802,11 @@ class Document:
 
 	def read_raw(self, path):
 		"""Raw-block content (verbatim). Non-block values are BadType."""
-		va = self._value_at(path)
-		if va[0] == "err":
-			return Read("", va[1], None)
-		value = va[1]
-		raw = value.display()
+		na = self._node_at(path)
+		if na[0] == "err":
+			return Read("", na[1], None)
+		value = self.arena[na[1]].value
+		raw = self._raw_of(na[1])
 		if value.kind == "raw":
 			return Read(value.content, Status.Good, raw)
 		if value.kind == "empty":
@@ -1782,13 +1815,14 @@ class Document:
 
 	def read_raw_info(self, path):
 		"""The advisory info-string of a raw block ("" when absent)."""
-		va = self._value_at(path)
-		if va[0] == "err":
-			return Read("", va[1], None)
-		value = va[1]
+		na = self._node_at(path)
+		if na[0] == "err":
+			return Read("", na[1], None)
+		raw = self._raw_of(na[1])
+		value = self.arena[na[1]].value
 		if value.kind == "raw":
-			return Read(value.info, Status.Good, value.display())
-		return Read("", Status.BadType, value.display())
+			return Read(value.info, Status.Good, raw)
+		return Read("", Status.BadType, raw)
 
 	def _read_array(self, path, coerce, default):
 		r = self._resolve(path)
@@ -1825,7 +1859,7 @@ class Document:
 			return Read([], Status.Multiple, None)
 		# one
 		value = self.arena[r[1]].value
-		raw = value.display()
+		raw = self._raw_of(r[1])
 		if value.kind == "empty":
 			return Read([], Status.Empty, raw)
 		if value.kind == "raw":
@@ -1945,7 +1979,8 @@ class Document:
 			if sel is None:
 				cur = nxt
 			elif sel[0] == "val":
-				cur = [c for c in nxt if self.arena[c].value.display() == sel[1]]
+				want = _apply_escapes(sel[1])
+				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want]
 			elif sel[0] == "idx":
 				cur = [nxt[sel[1]]] if sel[1] < len(nxt) else []
 			else:

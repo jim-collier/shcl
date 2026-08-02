@@ -631,6 +631,13 @@ static S apply_escapes(Arena *a, S s) {
 	return sb_S(&out);
 }
 
+/* The predicate a `[value]` selector matches with: display form with escapes
+   applied on both sides, so `["q\"uote"]` finds `'q"uote'` - a logical-string
+   match, not spelling against spelling. */
+static S disp_key(Arena *a, const Value *v) {
+	return apply_escapes(a, value_display(a, v));
+}
+
 // Opening fence: a run of >=3 backticks or tildes, then an optional info string.
 typedef struct { int ok; unsigned char ch; size_t len; S info; } Fence;
 static Fence fence_open(Arena *a, S rest) {
@@ -1264,7 +1271,7 @@ static size_t select_or_create(Parser *P, size_t parent, S name, Value value, si
 	VecMap_push(a, &P->dmaps, dempty);
 	/* store the arena-owned name; the caller's may point into the input buffer */
 	cmap_put(a, &P->cmaps.data[parent], h, NODE(P->d, idx).name, key, idx);
-	S disp = value_display(a, &NODE(P->d, idx).value);
+	S disp = disp_key(a, &NODE(P->d, idx).value);
 	uint64_t hd = cmap_hash(NODE(P->d, idx).name, disp);
 	if (cmap_get(&P->dmaps.data[parent], hd, NODE(P->d, idx).name, disp) == (size_t)-1)
 		cmap_put(a, &P->dmaps.data[parent], hd, NODE(P->d, idx).name, disp, idx);
@@ -1285,7 +1292,7 @@ static void remap_child(Parser *P, size_t node, S old_key, S old_disp) {
 	if (cmap_get(m, h, name, new_key) == (size_t)-1) cmap_put(a, m, h, name, new_key, node);
 	CMap *dm = &P->dmaps.data[parent];
 	cmap_del(dm, cmap_hash(name, old_disp), name, old_disp, node);
-	S new_disp = value_display(a, &NODE(P->d, node).value);
+	S new_disp = disp_key(a, &NODE(P->d, node).value);
 	uint64_t hd = cmap_hash(name, new_disp);
 	if (cmap_get(dm, hd, name, new_disp) == (size_t)-1) cmap_put(a, dm, hd, name, new_disp, node);
 }
@@ -1345,13 +1352,14 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 		int is_last = (i + 1 == nsegs);
 		switch (seg->sel.tag) {
 		case SEL_VALUE: {
-			/* Same display() predicate resolution uses, so a selector also
-			   selects an array-valued instance instead of creating a spurious
-			   second one - via the dmaps accelerator (the inline spelling was
-			   quadratic in siblings without it). Create only when nothing
-			   matches. */
-			uint64_t hd = cmap_hash(seg->name, seg->sel.value);
-			size_t found = cmap_get(&P->dmaps.data[cur], hd, seg->name, seg->sel.value);
+			/* Same escape-applied display predicate resolution uses, so a
+			   selector also selects an array-valued instance instead of
+			   creating a spurious second one - via the dmaps accelerator (the
+			   inline spelling was quadratic in siblings without it). Create
+			   only when nothing matches. */
+			S want = apply_escapes(a, seg->sel.value);
+			uint64_t hd = cmap_hash(seg->name, want);
+			size_t found = cmap_get(&P->dmaps.data[cur], hd, seg->name, want);
 			if (found != (size_t)-1) {
 				cur = found;
 			} else {
@@ -1423,7 +1431,7 @@ static size_t bind_block(Parser *P, size_t parent, Value value, size_t line) {
 	if (parent == ROOT) { p_err(P, line, s_lit("raw block with no parent field")); return (size_t)-1; }
 	if (v_is_empty(&NODE(P->d, parent).value)) {
 		S old_key = value_key(&P->d->arena, &NODE(P->d, parent).value);
-		S old_disp = value_display(&P->d->arena, &NODE(P->d, parent).value);
+		S old_disp = disp_key(&P->d->arena, &NODE(P->d, parent).value);
 		NODE(P->d, parent).value = value;
 		remap_child(P, parent, old_key, old_disp);
 		return parent;
@@ -1446,7 +1454,7 @@ static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
 	Node *node = &NODE(P->d, parent);
 	if (node->value.kind == V_EMPTY) {
 		S old_key = value_key(a, &node->value);
-		S old_disp = value_display(a, &node->value);
+		S old_disp = disp_key(a, &node->value);
 		/* Seed capacity for geometric growth: a fresh full-size copy per `* `
 		   line kept every discarded copy in the arena - quadratic memory. */
 		Element *arr = (Element *)arena_alloc(a, 4 * sizeof(Element)); arr[0] = el;
@@ -1456,11 +1464,11 @@ static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
 		/* Defer further remaps until the list closes; the map entry made above
 		   stays valid because nothing can look this node up until a non-star
 		   line binds (which flushes first). */
-		P->star_open = 1; P->star_node = parent; P->star_key = value_key(a, &node->value); P->star_disp = value_display(a, &node->value);
+		P->star_open = 1; P->star_node = parent; P->star_key = value_key(a, &node->value); P->star_disp = disp_key(a, &node->value);
 	} else if (node->value.kind == V_CELL && node->star_list) {
 		if (!P->star_open || P->star_node != parent) {
 			star_flush(P);
-			P->star_open = 1; P->star_node = parent; P->star_key = value_key(a, &node->value); P->star_disp = value_display(a, &node->value);
+			P->star_open = 1; P->star_node = parent; P->star_key = value_key(a, &node->value); P->star_disp = disp_key(a, &node->value);
 		}
 		if (node->value.nels == node->value.cap_els) {
 			size_t nc = node->value.cap_els ? node->value.cap_els * 2 : 4;
@@ -1631,7 +1639,8 @@ static Resolved resolve_from(shcl_doc *d, size_t *start, size_t nstart, Segment 
 		case SEL_NONE: cur = next; break;
 		case SEL_VALUE: {
 			VecSize f = {0};
-			for (size_t k = 0; k < next.len; k++) if (s_eq(value_display(a, &NODE(d, next.data[k]).value), seg->sel.value)) VecSize_push(a, &f, next.data[k]);
+			S want = apply_escapes(a, seg->sel.value);
+			for (size_t k = 0; k < next.len; k++) if (s_eq(disp_key(a, &NODE(d, next.data[k]).value), want)) VecSize_push(a, &f, next.data[k]);
 			cur = f; break;
 		}
 		case SEL_INDEX: {
@@ -1893,11 +1902,12 @@ static int w_place(shcl_doc *d, S path, size_t *out) {
 				pr = match;
 			} else if (!off) {
 				size_t found = (size_t)-1;
+				S want = (seg->sel.tag == SEL_VALUE) ? apply_escapes(a, seg->sel.value) : s_empty();
 				VecSize ch = NODE(d, pr).children;
 				for (size_t k = 0; k < ch.len; k++) {
 					size_t c = ch.data[k];
 					if (!s_eq(NODE(d, c).name, seg->name)) continue;
-					if (seg->sel.tag == SEL_VALUE && !s_eq(value_display(a, &NODE(d, c).value), seg->sel.value)) continue;
+					if (seg->sel.tag == SEL_VALUE && !s_eq(disp_key(a, &NODE(d, c).value), want)) continue;
 					found = c; break;
 				}
 				if (found == (size_t)-1) off = 1; else pr = found;
@@ -1914,8 +1924,9 @@ static int w_place(shcl_doc *d, S path, size_t *out) {
 			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, v_empty());
 		} else if (seg->sel.tag == SEL_VALUE) {
 			size_t found = (size_t)-1;
+			S want = apply_escapes(a, seg->sel.value);
 			VecSize ch = NODE(d, cur).children;
-			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(d, c).name, seg->name) && s_eq(value_display(a, &NODE(d, c).value), seg->sel.value)) { found = c; break; } }
+			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(d, c).name, seg->name) && s_eq(disp_key(a, &NODE(d, c).value), want)) { found = c; break; } }
 			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, w_cell1(a, s_dup(a, seg->sel.value)));
 		} else if (seg->sel.tag == SEL_INDEX) {
 			size_t match = (size_t)-1, cnt = 0;
@@ -2833,7 +2844,8 @@ static void v_contexts(Arena *a, shcl_doc *d, const size_t *start, size_t nstart
 		case SEL_NONE: cur = next; break;
 		case SEL_VALUE: {
 			VecSize f = {0};
-			for (size_t k = 0; k < next.len; k++) if (s_eq(value_display(a, &NODE(d, next.data[k]).value), seg->sel.value)) VecSize_push(a, &f, next.data[k]);
+			S want = apply_escapes(a, seg->sel.value);
+			for (size_t k = 0; k < next.len; k++) if (s_eq(disp_key(a, &NODE(d, next.data[k]).value), want)) VecSize_push(a, &f, next.data[k]);
 			cur = f; break;
 		}
 		case SEL_INDEX: {

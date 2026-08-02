@@ -498,6 +498,26 @@ def main():
 	qr = pdoc.read_int(shcl.quote_segment("q n"))
 	if (qr.value, qr.status) != (3, shcl.Status.Good):
 		raise SystemExit("quoted segment read failed")
+	# raw: the verbatim value span from the source line - not the display
+	# join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner
+	# whose read result exposes raw (the C read structs deliberately do not).
+	rdoc = shcl.Document.parse('regex: ^\\d{2,3}$\nlist: a,  "b c"\n')
+	if rdoc.read_string("regex").raw != "^\\d{2,3}$":
+		raise SystemExit("raw fixture mismatch: {!r}".format(rdoc.read_string("regex").raw))
+	if rdoc.read_string_array("list").raw != 'a,  "b c"':
+		raise SystemExit("raw fixture mismatch: {!r}".format(rdoc.read_string_array("list").raw))
+	# A written value has no source spelling; raw falls back to display. The
+	# selector's escaped spelling must land on the existing instance.
+	rdoc2 = shcl.Document.parse("who: 'q\"uote'\n")
+	if not rdoc2.set_int('who["q\\"uote"].n', 5):
+		raise SystemExit("escaped selector write failed")
+	if rdoc2.count("who") != 1:
+		raise SystemExit("escaped selector created a second instance")
+	rr = rdoc2.read_int('who[\'q"uote\'].n')
+	if (rr.value, rr.status) != (5, shcl.Status.Good):
+		raise SystemExit("escaped selector read failed")
+	if rr.raw != "5":
+		raise SystemExit("written raw mismatch: {!r}".format(rr.raw))
 
 	print("conformance: {} case(s) pass".format(len(cases)))
 	return 0

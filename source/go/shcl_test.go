@@ -594,6 +594,35 @@ func TestWriteBadOpsAreRejected(t *testing.T) {
 	}
 }
 
+func TestRawIsSourceText(t *testing.T) {
+	// Raw: the verbatim value span from the source line - not the display
+	// join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner
+	// whose read result exposes raw (the C read structs deliberately do not).
+	doc := Parse("regex: ^\\d{2,3}$\nlist: a,  \"b c\"\n")
+	if r := doc.ReadString("regex"); r.Raw == nil || *r.Raw != "^\\d{2,3}$" {
+		t.Errorf("regex raw: got %v", r.Raw)
+	}
+	if r := doc.ReadStringArray("list"); r.Raw == nil || *r.Raw != "a,  \"b c\"" {
+		t.Errorf("list raw: got %v", r.Raw)
+	}
+	// A written value has no source spelling; raw falls back to display. The
+	// selector's escaped spelling must land on the existing instance.
+	doc2 := Parse("who: 'q\"uote'\n")
+	if !doc2.SetInt("who[\"q\\\"uote\"].n", 5) {
+		t.Fatal("SetInt with escaped selector failed")
+	}
+	if n := doc2.Count("who"); n != 1 {
+		t.Errorf("who count: got %d, want 1", n)
+	}
+	r := doc2.ReadInt("who['q\"uote'].n")
+	if r.Value != 5 || r.Status != Good {
+		t.Errorf("read back: got (%d, %v), want (5, Good)", r.Value, r.Status)
+	}
+	if r.Raw == nil || *r.Raw != "5" {
+		t.Errorf("written raw: got %v, want 5", r.Raw)
+	}
+}
+
 func TestLayeredMergeMatchesExpected(t *testing.T) {
 	// Layered-load dimension: fold the layer files (lowest first) and input.shcl
 	// (highest file layer) via the library Merge, apply the path=value overrides
