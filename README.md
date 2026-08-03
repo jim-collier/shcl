@@ -35,7 +35,7 @@
 
 </div>
 
-> *Ships as: a complete specification and grammar; plus one drop-in source file per language; plus Rust (reference), Go, Python, and C/C++ bindings + CLI. Bindings are byte-for-byte identical. Plus thin Bash and PowerShell wrappers over the CLI. MIT License.*
+> *You get: a complete specification and grammar; one drop-in source file per language; Rust (reference), Go, Python, and C/C++ bindings plus a CLI. Bindings are byte-for-byte identical. Thin Bash and PowerShell wrappers sit over the CLI. MIT License.*
 
 <!-- TOC ignore:true -->
 ## Table of contents
@@ -74,6 +74,7 @@ You have probably lived some version of this:
 
 - JSON needed a comment, and JSON does not do comments.
 	- Or a trailing comma killed the parse.
+
 - TOML was pleasant right up until the data nested three levels deep.
 
 - You wanted an integer. You got a string, or an exception, or a silent zero you did not notice until production.
@@ -91,8 +92,11 @@ So the parser does the hard work - not the person writing the file, and not the 
 SHCL makes a contract:
 
 - Types live in your code, not in the file. The file stores text. You ask for a type when you read a value. Nothing is guessed at parse time, so there is no "Norway problem".
+
 - One broken line never takes down the file. It is skipped with a note. Everything else that can still be loaded safely, is.
+
 - Every convenience read states a fallback at the call site. A missing value cannot sneak in as a silent zero.
+
 - If a person can tell what a line means, the parser can too.
 
 When you do want zero-tolerance rigor: schema validation, plus a strict mode that fails loudly.
@@ -186,7 +190,7 @@ They are all good at what they do. The shared cost is that once a config file ca
 
 SHCL deliberately stays off that cliff. The file stays dumb, and the power moves into the library instead:
 
-- **Schema validation.** A schema is just another SHCL file. `Validate(doc, schema)` catches unknown fields, wrong types, and out-of-range values, including the "did you mean `enabled`?" typo case.
+- **Schema validation.** A schema is just another SHCL file. `doc.validate(schema)` catches unknown fields, wrong types, and out-of-range values, including the "did you mean `enabled`?" typo case.
 
 - **Layered loading.** `merge(base, over)` folds files in order - defaults, then site, then user, last wins - and the CLI stacks the same way with repeatable `--layer=FILE` plus `--set=PATH=VALUE` overrides on top. That covers most of what people actually use imports for. (Environment-variable mapping is deliberately your program's job: the env namespace and its naming convention belong to the app, which can map env vars onto `--set` itself.)
 
@@ -197,7 +201,8 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 ### When SHCL is the wrong choice
 
 - You need expressions, functions, or imports inside the file itself. Use Pkl (arguably best), CUE, or Dhall.
-- You are serializing machine-to-machine data at high volume. Use JSON or something binary; SHCL is for files that humans use.
+
+- You are serializing machine-to-machine data at high volume. Use JSON or something binary. SHCL is for files that people edit.
 
 ## Features
 
@@ -215,7 +220,7 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 - Raw fenced blocks embed anything verbatim: SQL, code, templates, Markdown-style.
 
-- One conformance corpus pins every shipped binding to identical behavior. The Rust reference plus independent Go, C, and Python parsers already agree byte-for-byte; a binding does not ship until it does.
+- One conformance corpus pins every binding to identical behavior. The Rust reference plus independent Go, C, and Python parsers agree byte-for-byte. A binding is not released until it does.
 
 ## Status
 
@@ -242,7 +247,7 @@ Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wr
 
 ### Install scripts
 
-Downloads the latest release, checks its signature, and installs the binary plus the drop-in files and wrappers. Idempotent; it states its plan and asks before touching anything.
+Downloads a release, checks its signature, and installs the binary plus the drop-in files and wrappers. Idempotent. It states its plan and asks before touching anything. The default channel is `dev`, which means the newest release including pre-releases. Pass `stable` to take the newest full release only.
 
 Each release ships a `sha256sums.txt` and a detached `.sig` over it. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY](#diy) route on a machine that lacks it.
 
@@ -258,7 +263,19 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1 | iex
 ```
 
-Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows). Pass them through the pipe with `bash -s -- --target=user`, or download the script first.
+Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows).
+
+To pass options on Linux, add them after the pipe:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash -s -- --target=user
+```
+
+On Windows, `irm | iex` cannot take arguments at all, so use the scriptblock form:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1))) -Target user
+```
 
 | Target | Linux | Windows
 | :-- | :-- | :--
@@ -271,7 +288,7 @@ macOS and the BSDs have no prebuilt binaries yet. Use a drop-in source file, or 
 
 ### DIY
 
-- **Prebuilt binary** - grab the `shcl` binary for your platform from the releases page and put it anywhere on your `PATH`. To check it by hand, download the sums file, its `.sig`, and [`shcl-signing.pub`](shcl-signing.pub) from the repo, then verify the signature before the checksum - a checksum out of an unverified sums file proves nothing:
+- **Prebuilt binary**. Grab the `shcl` binary for your platform from the releases page and put it anywhere on your `PATH`. To check it by hand, download the sums file, its `.sig`, and [`shcl-signing.pub`](shcl-signing.pub) from the repo, then verify the signature before the checksum. A checksum out of an unverified sums file proves nothing:
 
 	```sh
 	openssl dgst -sha256 -verify shcl-signing.pub \
@@ -279,9 +296,9 @@ macOS and the BSDs have no prebuilt binaries yet. Use a drop-in source file, or 
 	sha256sum -c --ignore-missing shcl-1.0.0-sha256sums.txt
 	```
 
-- **Drop-in source** - copy one file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
+- **Drop-in source**. Copy one file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
 
-- **Build the CLI** - the reference lives in `source/rust/` and has zero dependencies:
+- **Build the CLI**. The reference lives in `source/rust/` and has zero dependencies:
 
 	```sh
 	cargo build --release --manifest-path source/rust/Cargo.toml
@@ -304,7 +321,7 @@ Bindings are versioned in lockstep, so `1.x` means the same behavior and the sam
 | C / C++ | vendor `shcl.h` | pin the release tag
 | Bash / PowerShell | install the CLI, source the wrapper | n/a, they wrap the CLI
 
-A few things worth knowing:
+Per-language notes:
 
 - **Go** keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
 
@@ -335,10 +352,14 @@ cicd/cicd.bash --ci
 ## Docs
 
 - [`project/spec.md`](project/spec.md): the full language spec. Terminology, types, coercion, the read API, raw blocks, strictness levels.
+
 - [`project/grammar.abnf`](project/grammar.abnf): the formal grammar.
+
 - [`project/design.md`](project/design.md): the why behind the decisions.
+
 - [`contributing.md`](contributing.md): how to help.
-- [`style-guide.md`](style-guide.md): coding and prose style. Notably: the bindings deliberately mirror the reference's structure over per-language idiom, so they stay byte-for-byte in sync.
+
+- [`style-guide.md`](style-guide.md): coding and prose style. The bindings deliberately mirror the reference's structure over per-language idiom, so they stay byte-for-byte in sync.
 
 Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, [pkg.go.dev](https://pkg.go.dev/github.com/jim-collier/shcl/source/go) for Go.
 
