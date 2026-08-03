@@ -1347,6 +1347,7 @@ static const char *diag_code(shcl_severity sev, S msg) {
 	if (s_starts(msg, "bad schema path")) return "V093";
 	if (s_starts(msg, "bad schema fragment")) return "V094";
 	if (s_starts(msg, "unknown schema fragment ")) return "V095";
+	if (s_starts(msg, "schema expands past ")) return "V096";
 	if (s_starts(msg, "schema failed to load")) return "V099";
 	return "E000";
 }
@@ -3257,7 +3258,9 @@ static void v_not_allowed(Arena *a, VecDiag *out, size_t line, const VCons *c, S
 	v_diag(a, out, line, sb_S(&s));
 }
 
-static void v_node(Arena *a, shcl_doc *d, const VCons *c, size_t n, VecDiag *out) {
+// Diagnostic messages go to a (they outlive the walk); coercion temporaries
+// and compare strings go to lv, the walk level's scratch.
+static void v_node(Arena *a, Arena *lv, shcl_doc *d, const VCons *c, size_t n, VecDiag *out) {
 	Node *node = &NODE(d, n);
 	size_t line = node->line;
 	const char *ty = c->ty;
@@ -3287,9 +3290,9 @@ static void v_node(Arena *a, shcl_doc *d, const VCons *c, size_t n, VecDiag *out
 	// expected miss - except string, which reads arrays.
 	if (ty && !is_array && !V_BASE_IS("string") && nels > 1) { v_wrong_type(a, out, line, c); return; }
 	if (V_BASE_IS("int")) {
-		int64_t *vals = (int64_t *)arena_alloc(a, (nels ? nels : 1) * sizeof(int64_t));
+		int64_t *vals = (int64_t *)arena_alloc(lv, (nels ? nels : 1) * sizeof(int64_t));
 		for (size_t x = 0; x < nels; x++)
-			if (!parse_int_text(a, &els[x], d->strictness, &vals[x])) { v_wrong_type(a, out, line, c); return; }
+			if (!parse_int_text(lv, &els[x], d->strictness, &vals[x])) { v_wrong_type(a, out, line, c); return; }
 		if (c->has_allowed && c->akind == ALLOW_INTS) {
 			for (size_t x = 0; x < nels; x++) {
 				int found = 0;
@@ -3300,9 +3303,9 @@ static void v_node(Arena *a, shcl_doc *d, const VCons *c, size_t n, VecDiag *out
 		if (c->has_min_i) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_i) { v_diag(a, out, line, v_msg3(a, "value below min at '", c->path, "'")); break; } }
 		if (c->has_max_i) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_i) { v_diag(a, out, line, v_msg3(a, "value above max at '", c->path, "'")); break; } }
 	} else if (V_BASE_IS("float")) {
-		double *vals = (double *)arena_alloc(a, (nels ? nels : 1) * sizeof(double));
+		double *vals = (double *)arena_alloc(lv, (nels ? nels : 1) * sizeof(double));
 		for (size_t x = 0; x < nels; x++)
-			if (!parse_float_text(a, &els[x], d->strictness, &vals[x])) { v_wrong_type(a, out, line, c); return; }
+			if (!parse_float_text(lv, &els[x], d->strictness, &vals[x])) { v_wrong_type(a, out, line, c); return; }
 		if (c->has_allowed && c->akind == ALLOW_FLOATS) {
 			for (size_t x = 0; x < nels; x++) {
 				int found = 0;
@@ -3313,9 +3316,9 @@ static void v_node(Arena *a, shcl_doc *d, const VCons *c, size_t n, VecDiag *out
 		if (c->has_min_f) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_f) { v_diag(a, out, line, v_msg3(a, "value below min at '", c->path, "'")); break; } }
 		if (c->has_max_f) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_f) { v_diag(a, out, line, v_msg3(a, "value above max at '", c->path, "'")); break; } }
 	} else if (V_BASE_IS("bool")) {
-		int *vals = (int *)arena_alloc(a, (nels ? nels : 1) * sizeof(int));
+		int *vals = (int *)arena_alloc(lv, (nels ? nels : 1) * sizeof(int));
 		for (size_t x = 0; x < nels; x++)
-			if (!parse_bool_text(a, els[x].text, d->strictness, &vals[x])) { v_wrong_type(a, out, line, c); return; }
+			if (!parse_bool_text(lv, els[x].text, d->strictness, &vals[x])) { v_wrong_type(a, out, line, c); return; }
 		if (c->has_allowed && c->akind == ALLOW_BOOLS) {
 			for (size_t x = 0; x < nels; x++) {
 				int found = 0;
@@ -3324,9 +3327,9 @@ static void v_node(Arena *a, shcl_doc *d, const VCons *c, size_t n, VecDiag *out
 			}
 		}
 	} else if (V_BASE_IS("datetime")) {
-		shcl_datetime *vals = (shcl_datetime *)arena_alloc(a, (nels ? nels : 1) * sizeof(shcl_datetime));
+		shcl_datetime *vals = (shcl_datetime *)arena_alloc(lv, (nels ? nels : 1) * sizeof(shcl_datetime));
 		for (size_t x = 0; x < nels; x++)
-			if (!parse_datetime(a, els[x].text, &vals[x])) { v_wrong_type(a, out, line, c); return; }
+			if (!parse_datetime(lv, els[x].text, &vals[x])) { v_wrong_type(a, out, line, c); return; }
 		if (c->has_allowed && c->akind == ALLOW_DATES) {
 			for (size_t x = 0; x < nels; x++) {
 				int found = 0;
@@ -3339,7 +3342,7 @@ static void v_node(Arena *a, shcl_doc *d, const VCons *c, size_t n, VecDiag *out
 		// can fail, in logical-string space.
 		if (c->has_allowed && c->akind == ALLOW_STRINGS) {
 			for (size_t x = 0; x < nels; x++) {
-				S s = apply_escapes(a, els[x].text);
+				S s = apply_escapes(lv, els[x].text);
 				int found = 0;
 				for (size_t y = 0; y < c->a_n; y++) if (s_eq(c->a_strs[y], s)) { found = 1; break; }
 				if (!found) { v_not_allowed(a, out, line, c, s); break; }
@@ -3354,9 +3357,14 @@ static void v_node(Arena *a, shcl_doc *d, const VCons *c, size_t n, VecDiag *out
 // derivable. Termination is structural: every mount descends at least one
 // document level, and the document is finite (depth capped at 512, so this C
 // stack recursion is safe - same rationale as v_contexts' own).
-static void v_check_from(Arena *a, shcl_doc *d, const VCons *c, const VSchemaDef *def, size_t start, size_t anchor0, VecDiag *out) {
+// lv is this level's scratch arena (next slot in the caller's per-level pool);
+// resetting it at entry reuses the previous sibling call's block instead of
+// retaining every level's temporaries in the validation arena until it is
+// freed. Level L's contexts stay live in lv while deeper levels run in lv+1.
+static void v_check_from(Arena *a, Arena *lv, shcl_doc *d, const VCons *c, const VSchemaDef *def, size_t start, size_t anchor0, VecDiag *out, CMap *mounted) {
+	arena_reset(lv);
 	VecVCtx ctxs = {0};
-	v_contexts(a, d, &start, 1, c->segs.data, c->segs.len, anchor0, &ctxs);
+	v_contexts(lv, d, &start, 1, c->segs.data, c->segs.len, anchor0, &ctxs);
 	for (size_t i = 0; i < ctxs.len; i++) {
 		VCtx *ctx = &ctxs.data[i];
 		if (c->required && ctx->found.len == 0)
@@ -3374,19 +3382,34 @@ static void v_check_from(Arena *a, shcl_doc *d, const VCons *c, const VSchemaDef
 		}
 		for (size_t k = 0; k < ctx->found.len; k++) {
 			size_t n = ctx->found.data[k];
-			v_node(a, d, c, n, out);
+			v_node(a, lv, d, c, n, out);
 			if (c->inherits.n) {
 				const VecVCons *fcs = v_frag_get(def, c->inherits);
-				if (fcs)
-					for (size_t fi = 0; fi < fcs->len; fi++)
-						v_check_from(a, d, &fcs->data[fi], def, n, NODE(d, n).line, out);
+				if (fcs) {
+					// Two constraints can resolve to the same node and mount the
+					// same fragment there. The second mount would repeat the
+					// first's work and its diagnostics, and repeating it per
+					// level is what makes a recursive schema cost double per
+					// document level, so each pair is done once.
+					char kb[sizeof n]; memcpy(kb, &n, sizeof n);
+					S nkey; nkey.p = kb; nkey.n = sizeof n;
+					uint64_t h = cmap_hash(c->inherits, nkey);
+					if (cmap_get(mounted, h, c->inherits, nkey) == (size_t)-1) {
+						cmap_put(a, mounted, h, c->inherits, s_dup(a, nkey), 1);
+						for (size_t fi = 0; fi < fcs->len; fi++)
+							v_check_from(a, lv + 1, d, &fcs->data[fi], def, n, NODE(d, n).line, out, mounted);
+					}
+				}
 			}
 		}
 	}
 }
 
-static void v_check(Arena *a, shcl_doc *d, const VCons *c, const VSchemaDef *def, VecDiag *out) {
-	v_check_from(a, d, c, def, ROOT, 0, out);
+static void v_check(Arena *a, Arena *lvls, shcl_doc *d, const VCons *c, const VSchemaDef *def, VecDiag *out) {
+	// (fragment, node) pairs already mounted during this constraint's walk;
+	// entries live in the validation arena, so the set needs no own teardown.
+	CMap mounted; memset(&mounted, 0, sizeof mounted);
+	v_check_from(a, lvls, d, c, def, ROOT, 0, out, &mounted);
 }
 
 // Element-wise chain match against the star-bearing schema paths: a `*`
@@ -3536,7 +3559,15 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	VecDiag faults = {0};
 	v_build_schema(a, schema, &def, &faults);
 	if (faults.len) { v->diags = faults; return v; }
-	for (size_t i = 0; i < def.cons.len; i++) v_check(a, d, &def.cons.data[i], &def, &v->diags);
+	// One scratch arena per mount-recursion level, reset and reused across
+	// sibling calls: peak retention is one block per active document level,
+	// not every level of every walk. The parser caps depth at SHCL_MAX_DEPTH
+	// and every mount starts at least one level deeper, so the pool cannot be
+	// outrun; untouched slots never allocate.
+	Arena lvls[SHCL_MAX_DEPTH + 1];
+	memset(lvls, 0, sizeof lvls);
+	for (size_t i = 0; i < def.cons.len; i++) v_check(a, lvls, d, &def.cons.data[i], &def, &v->diags);
+	for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_free(&lvls[i]);
 	v_unknown(a, d, &def, &v->diags);
 	return v;
 }
@@ -3688,8 +3719,11 @@ static int g_has_wild(const VCons *c) {
 	return 0;
 }
 // `[#N]` needs a pre-existing instance and its `#` would start a comment on a
-// binding line; a path with a literal newline cannot be written at all.
+// binding line; a path with a literal newline cannot be written at all. A path
+// deeper than a document may nest cannot be generated either: the line would
+// draw E016 on the way back in.
 static int g_unwritable(const VCons *c) {
+	if (c->segs.len > SHCL_MAX_DEPTH) return 1;
 	for (size_t si = 0; si < c->segs.len; si++) if (c->segs.data[si].sel.tag == SEL_INDEX || c->segs.data[si].star) return 1;
 	for (size_t k = 0; k < c->path.n; k++) if (c->path.p[k] == '\n') return 1;
 	return 0;
@@ -3727,6 +3761,32 @@ static S g_default_text(Arena *a, S v) {
 	return sb_S(&b);
 }
 
+// Ceiling on how many fields one schema may expand to. Fragments that mount
+// each other at more than one path multiply, so a short schema can otherwise
+// ask for more output than the machine can hold; past this the generator
+// reports a schema fault rather than running until something breaks.
+#define GEN_MAX_FIELDS ((size_t)10000)
+
+// Render parsed segments back as a dotted path, dropping wildcard selectors
+// (a generated line targets the one instance it materializes) and quoting a
+// name that needs it, so the result is a path the scanner reads back the same.
+static S gen_path_text(Arena *a, const VecSeg *segs) {
+	SB out = {0, 0, 0};
+	char nb[32];
+	for (size_t i = 0; i < segs->len; i++) {
+		const Segment *s = &segs->data[i];
+		if (i > 0) sb_putc(a, &out, '.');
+		if (s->star) sb_putc(a, &out, '*');
+		else sb_putS(a, &out, emit_name(a, s->name));
+		switch (s->sel.tag) {
+		case SEL_VALUE: sb_putc(a, &out, '['); sb_putS(a, &out, s->sel.value); sb_putc(a, &out, ']'); break;
+		case SEL_INDEX: { int nn = snprintf(nb, sizeof nb, "[#%" PRIu64 "]", s->sel.index); sb_put(a, &out, nb, (size_t)nn); break; }
+		case SEL_WILDCARD: case SEL_NONE: break;
+		}
+	}
+	return sb_S(&out);
+}
+
 // Inline every fragment mount into a flat constraint list, depth-first in
 // schema order, each field's path and segments prefixed by its mount's. A
 // mount whose fragment is already expanding (a cycle) stops there and is
@@ -3745,11 +3805,14 @@ static void g_expand_go(Arena *a, const VecVCons *list, const VSchemaDef *def, c
 			cc.segs = segs;
 		}
 		S path = cc.path; VecSeg segs = cc.segs;
+		if (out->len >= GEN_MAX_FIELDS) return;
 		VecVCons_push(a, out, cc);
 		if (c->inherits.n) {
 			int cycling = 0;
 			for (size_t k = 0; k < stack->len; k++) if (s_eq(stack->data[k], c->inherits)) { cycling = 1; break; }
-			if (cycling) {
+			// A chain long enough to outrun the stack, or a mount that
+			// re-enters, stops here and is noted instead of expanded.
+			if (cycling || stack->len >= SHCL_MAX_DEPTH) {
 				VecS_push(a, cut_path, g_escape_nl(a, path));
 				VecS_push(a, cut_frag, c->inherits);
 			} else {
@@ -3779,6 +3842,16 @@ shcl_str shcl_generate(shcl_doc *schema, int *ok) {
 	VecVCons cons = {0, 0, 0};
 	VecS cut_path = {0, 0, 0}, cut_frag = {0, 0, 0};
 	g_expand_mounts(a, &def, &cons, &cut_path, &cut_frag);
+	if (cons.len >= GEN_MAX_FIELDS) {
+		// Generation-only fault: recorded on the schema document (this
+		// signature has no fault list of its own to return).
+		SB m = {0, 0, 0};
+		sb_puts(a, &m, "schema expands past "); sb_put_u64(a, &m, GEN_MAX_FIELDS);
+		sb_puts(a, &m, " fields; fragments mounted at more than one path multiply");
+		push_diag(schema, 0, SHCL_SEV_ERROR, sb_S(&m));
+		if (ok) *ok = 0;
+		S e = s_empty(); r.p = e.p; r.n = e.n; return r;
+	}
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
 	// some live path's name list). Fixpoint: a fill can materialize another's
@@ -3840,12 +3913,10 @@ shcl_str shcl_generate(shcl_doc *schema, int *ok) {
 		if (!g_must_exist(c)) sb_putc(a, &out, '#');
 		if (fill[i]) {
 			// A filled wildcard emits in dotted form, targeting the first (the
-			// materialized) instance: the path with every "[*]" removed.
-			S p = c->path;
-			for (size_t k = 0; k < p.n; k++) {
-				if (k + 2 < p.n && p.p[k] == '[' && p.p[k + 1] == '*' && p.p[k + 2] == ']') { k += 2; continue; }
-				sb_putc(a, &out, p.p[k]);
-			}
+			// materialized) instance. Rebuilt from the parsed segments, not by
+			// cutting text out of the path: the same path can be written several
+			// ways, and only the segments say what it means.
+			sb_putS(a, &out, gen_path_text(a, &c->segs));
 		} else {
 			sb_putS(a, &out, c->path);
 		}

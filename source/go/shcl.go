@@ -166,6 +166,8 @@ func diagCode(msg string) string {
 		return "V094"
 	case strings.HasPrefix(msg, "unknown schema fragment "):
 		return "V095"
+	case strings.HasPrefix(msg, "schema expands past "):
+		return "V096"
 	case strings.HasPrefix(msg, "schema failed to load"):
 		return "V099"
 	default:
@@ -4258,6 +4260,10 @@ func Generate(schema *Document) (string, []Diagnostic) {
 		return "", faults
 	}
 	cons, cuts := expandMounts(&def)
+	if len(cons) >= genMaxFields {
+		msg := fmt.Sprintf("schema expands past %d fields; fragments mounted at more than one path multiply", genMaxFields)
+		return "", []Diagnostic{{Line: 0, Severity: SeverityError, Message: msg, Code: diagCode(msg)}}
+	}
 	mustExist := func(c *constraint) bool {
 		return c.required || (c.repeat != nil && c.repeat[0] >= 1)
 	}
@@ -4272,7 +4278,12 @@ func Generate(schema *Document) (string, []Diagnostic) {
 	// `[#N]` needs a pre-existing instance and its `#` would start a comment
 	// on a binding line; a path with a literal newline cannot be written at
 	// all. Both go to the trailing note instead of emitting a broken line.
+	// A path deeper than a document may nest cannot be generated either: the
+	// line would draw E016 on the way back in.
 	unwritable := func(c *constraint) bool {
+		if len(c.segs) > MaxDepth {
+			return true
+		}
 		for _, s := range c.segs {
 			if (s.sel != nil && s.sel.kind == selByIndex) || s.star {
 				return true
@@ -4367,10 +4378,12 @@ func Generate(schema *Document) (string, []Diagnostic) {
 		b.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
 		b.WriteByte('\n')
 		// A filled wildcard emits in dotted form, targeting the first (the
-		// materialized) instance.
+		// materialized) instance. Rebuilt from the parsed segments, not by
+		// cutting text out of the path: the same path can be written several
+		// ways, and only the segments say what it means.
 		path := c.path
 		if fill[i] {
-			path = strings.ReplaceAll(path, "[*]", "")
+			path = genPathText(c.segs)
 		}
 		prefix := "#"
 		if mustExist(c) {
@@ -4397,6 +4410,43 @@ func Generate(schema *Document) (string, []Diagnostic) {
 	return b.String(), nil
 }
 
+// genMaxFields is the ceiling on how many fields one schema may expand to.
+// Fragments that mount each other at more than one path multiply, so a short
+// schema can otherwise ask for more output than the machine can hold; past
+// this the generator reports a schema fault rather than running until
+// something breaks.
+const genMaxFields = 10000
+
+// genPathText renders parsed segments back as a dotted path, dropping
+// wildcard selectors (a generated line targets the one instance it
+// materializes) and quoting a name that needs it, so the result is a path the
+// scanner reads back the same.
+func genPathText(segs []segment) string {
+	var out strings.Builder
+	for i, s := range segs {
+		if i > 0 {
+			out.WriteByte('.')
+		}
+		if s.star {
+			out.WriteByte('*')
+		} else {
+			out.WriteString(emitName(s.name))
+		}
+		if s.sel != nil {
+			switch s.sel.kind {
+			case selByValue:
+				out.WriteByte('[')
+				out.WriteString(s.sel.value)
+				out.WriteByte(']')
+			case selByIndex:
+				fmt.Fprintf(&out, "[#%d]", s.sel.index)
+			case selWildcard:
+			}
+		}
+	}
+	return out.String()
+}
+
 // expandMounts inlines every fragment mount into a flat constraint list,
 // depth-first in schema order, each field's path and segments prefixed by its
 // mount's. A mount whose fragment is already expanding (a cycle) stops there
@@ -4421,6 +4471,9 @@ func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
 			}
 			path := cc.path
 			segs := cc.segs
+			if len(out) >= genMaxFields {
+				return
+			}
 			out = append(out, cc)
 			if fr := list[i].inherits; fr != "" {
 				onStack := false
@@ -4430,7 +4483,9 @@ func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
 						break
 					}
 				}
-				if onStack {
+				// A chain long enough to outrun the stack, or a mount that
+				// re-enters, stops here and is noted instead of expanded.
+				if onStack || len(stack) >= MaxDepth {
 					cuts = append(cuts, [2]string{strings.ReplaceAll(path, "\n", "\\n"), fr})
 				} else if fcs, ok := def.frags[fr]; ok {
 					stack = append(stack, fr)
@@ -4564,15 +4619,23 @@ func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vCo
 	*out = append(*out, vContext{anchor: anchor, found: cur})
 }
 
+// fragMount keys one (fragment, node) pair; a struct key, not a joined
+// string, so a fragment name containing the separator cannot collide.
+type fragMount struct {
+	fr string
+	n  int
+}
+
 func (d *Document) vCheck(c *constraint, def *schemaDef, out *[]Diagnostic) {
-	d.vCheckFrom(c, def, root, 0, out)
+	mounted := make(map[fragMount]bool)
+	d.vCheckFrom(c, def, root, 0, out, mounted)
 }
 
 // A mounted fragment's fields run per resolved node, right after that node's
 // own checks, in fragment order - depth-first, so diagnostic order stays
 // derivable. Termination is structural: every mount descends at least one
 // document level, and the document is finite.
-func (d *Document) vCheckFrom(c *constraint, def *schemaDef, start, anchor0 int, out *[]Diagnostic) {
+func (d *Document) vCheckFrom(c *constraint, def *schemaDef, start, anchor0 int, out *[]Diagnostic, mounted map[fragMount]bool) {
 	var ctxs []vContext
 	d.vContexts([]int{start}, c.segs, anchor0, &ctxs)
 	for _, ctx := range ctxs {
@@ -4589,8 +4652,17 @@ func (d *Document) vCheckFrom(c *constraint, def *schemaDef, start, anchor0 int,
 			d.vNode(c, n, out)
 			if c.inherits != "" {
 				if fcs, ok := def.frags[c.inherits]; ok {
-					for i := range fcs {
-						d.vCheckFrom(&fcs[i], def, n, d.arena[n].line, out)
+					// Two constraints can resolve to the same node and mount the
+					// same fragment there. The second mount would repeat the
+					// first's work and its diagnostics, and repeating it per
+					// level is what makes a recursive schema cost double per
+					// document level, so each pair is done once.
+					key := fragMount{fr: c.inherits, n: n}
+					if !mounted[key] {
+						mounted[key] = true
+						for i := range fcs {
+							d.vCheckFrom(&fcs[i], def, n, d.arena[n].line, out, mounted)
+						}
 					}
 				}
 			}
