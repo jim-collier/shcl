@@ -500,6 +500,34 @@ type Document struct {
 
 const root = 0
 
+// foldNodeInto merges a later instance into an earlier one under the in-file
+// merge rule: children and trivia move over, first trailing wins (a second
+// demotes to a leading line), first spelling stays. The caller drops the loser
+// from the parent's child list; it keeps its arena slot, unreferenced.
+func foldNodeInto(arena []nodeData, survivor, loser int) {
+	kids := arena[loser].children
+	arena[loser].children = nil
+	for _, k := range kids {
+		arena[k].parent = survivor
+	}
+	arena[survivor].children = append(arena[survivor].children, kids...)
+	lead := arena[loser].leading
+	arena[loser].leading = nil
+	arena[survivor].leading = append(arena[survivor].leading, lead...)
+	trail := arena[loser].trailing
+	arena[loser].trailing = ""
+	if trail != "" {
+		if arena[survivor].trailing == "" {
+			arena[survivor].trailing = trail
+		} else {
+			arena[survivor].leading = append(arena[survivor].leading, plainLead(trail))
+		}
+	}
+	after := arena[loser].after
+	arena[loser].after = nil
+	arena[survivor].after = append(arena[survivor].after, after...)
+}
+
 // MaxDepth is the maximum nesting depth (levels below the document root),
 // enforced at load and by the Writer. Deeper lines are skipped with an E016
 // error. The cap is what keeps the recursive tree walks (emit, merge, clone)
@@ -1078,6 +1106,34 @@ func (p *parser) remapChild(node int, oldKey, oldDisp string) {
 	}
 }
 
+// foldLateDups: a value that mutates after its sibling group was keyed - an
+// empty field filled by a fence, a stacked list closed - can land on a key an
+// earlier sibling already holds, which the keyed lookup can no longer catch.
+// Fold those pairs so the tree matches a reparse of its own canonical text.
+// Depth-first, since folding can carry duplicates down a level.
+func (p *parser) foldLateDups() {
+	stack := []int{root}
+	for len(stack) > 0 {
+		parent := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		kids := p.arena[parent].children
+		p.arena[parent].children = nil
+		first := map[[2]string]int{}
+		keep := make([]int, 0, len(kids))
+		for _, c := range kids {
+			key := [2]string{p.arena[c].name, p.arena[c].value.key()}
+			if survivor, ok := first[key]; ok {
+				foldNodeInto(p.arena, survivor, c)
+			} else {
+				first[key] = c
+				keep = append(keep, c)
+			}
+		}
+		stack = append(stack, keep...)
+		p.arena[parent].children = keep
+	}
+}
+
 // attachTrivia hands pending leading comments (and this line's trailing one)
 // to a node. First trailing wins; a later one demotes to leading so nothing
 // is lost.
@@ -1558,6 +1614,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		i = next
 	}
 	p.starFlush()
+	p.foldLateDups()
 	p.emitRepeatedLeafHints()
 	// Indented tail comments keep their block; only top-level ones orphan.
 	p.hangDeeperPending("")
@@ -2437,24 +2494,7 @@ func (d *Document) collapseDup(node int) {
 	if pos(node) < pos(other) {
 		survivor, loser = node, other
 	}
-	kids := d.arena[loser].children
-	d.arena[loser].children = nil
-	for _, k := range kids {
-		d.arena[k].parent = survivor
-	}
-	d.arena[survivor].children = append(d.arena[survivor].children, kids...)
-	lead := d.arena[loser].leading
-	d.arena[loser].leading = nil
-	d.arena[survivor].leading = append(d.arena[survivor].leading, lead...)
-	trail := d.arena[loser].trailing
-	d.arena[loser].trailing = ""
-	if trail != "" {
-		if d.arena[survivor].trailing == "" {
-			d.arena[survivor].trailing = trail
-		} else {
-			d.arena[survivor].leading = append(d.arena[survivor].leading, plainLead(trail))
-		}
-	}
+	foldNodeInto(d.arena, survivor, loser)
 	keep := d.arena[parent].children[:0]
 	for _, c := range d.arena[parent].children {
 		if c != loser {
@@ -2676,13 +2716,45 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 // on the earlier ones.
 func (d *Document) Merge(over *Document) {
 	d.overlay(root, over, root)
-	d.orphans = append(d.orphans, over.orphans...)
+	// Layers commonly share a footer; keeping one copy of each keeps a
+	// stack of files from repeating it once per layer.
+	for _, o := range over.orphans {
+		seen := false
+		for _, e := range d.orphans {
+			if e.text == o.text {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			d.orphans = append(d.orphans, o)
+		}
+	}
 }
 
 // One grouping pass over each side, then a single children rebuild: the old
 // shape re-filtered the over side per distinct name and re-scanned (and
 // re-keyed) the base side per over node - three O(K^2) terms at one parent,
 // plus a full vector rebuild per replaced name.
+
+// adoptTrivia: a matched instance keeps the base node, so the over side's
+// comments have to move onto it or they are lost. Same rule as an in-file
+// merge: leading concatenates in layer order, first trailing wins.
+func (d *Document) adoptTrivia(base int, over *Document, ok int) {
+	src := &over.arena[ok]
+	// append copies the lead values, so the merged doc never shares a
+	// backing array with over, which the caller may still mutate.
+	d.arena[base].leading = append(d.arena[base].leading, src.leading...)
+	if src.trailing != "" {
+		if d.arena[base].trailing == "" {
+			d.arena[base].trailing = src.trailing
+		} else {
+			d.arena[base].leading = append(d.arena[base].leading, plainLead(src.trailing))
+		}
+	}
+	d.arena[base].after = append(d.arena[base].after, src.after...)
+}
+
 func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	overKids := append([]int(nil), over.arena[overParent].children...)
 	// Over side: name -> node bucket, in first-appearance order.
@@ -2741,6 +2813,7 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 			for _, ok := range group {
 				okey := over.arena[ok].value.key()
 				if b, found := byKey[[2]string{name, okey}]; found {
+					d.adoptTrivia(b, over, ok)
 					d.overlay(b, over, ok)
 				} else {
 					c := d.cloneSubtree(over, ok, baseParent)

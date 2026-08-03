@@ -1,0 +1,14 @@
+# a stacked list that closes onto an earlier instance's value
+dup: x
+
+# two filled blocks that match, so their children fold together too
+blk:
+	```
+	body
+	```
+	kid: same
+	other: 2
+
+plain: keep
+
+# shared footer

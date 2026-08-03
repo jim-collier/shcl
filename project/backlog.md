@@ -70,11 +70,11 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 	- **Bugs**:
 
-		- 🔘 Code Review 20260802 item 1: formatting a file can change what it means.
+		- ✅ Code Review 20260802 item 1: formatting a file can change what it means.
 			- Reproduced: a field that repeats, where the second one is an empty field later filled by a stacked list, formats to two identical lines. Reformatting that output collapses them to one, so a read that returned Multiple now returns a value.
 			- Cause: when a node's value is filled in after the fact, it moves to a new merge key. If a later sibling already holds that key the filled node is left beside it instead of merging.
 			- Note: all four bindings behave the same, so the cross-binding check can't see it, and no test case has this shape.
-			- Probable fix: fold the pair on collision, the way the writer already does after a set.
+			- Fixed: duplicate siblings are folded once parsing finishes, so the tree matches a reparse of its own canonical text. Folding is depth-first, since merging two parents can leave duplicate children a level down. Case 042.
 
 		- 🔘 Code Review 20260802 item 2: in-place writes create their temporary file unsafely.
 			- Reproduced: the temporary name is predictable, and nothing stops it being a symlink someone else planted. The config's contents get written through that link, and the rename then turns the config itself into a symlink.
@@ -109,10 +109,11 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Values that came from parsing are always short enough, so the test corpus can't see it.
 			- Probable fix: bound the numeric fields the same way the fraction is bounded, or format into a size-aware buffer.
 
-		- 🔘 Code Review 20260802 item 8: comments get dropped when documents merge.
+		- ✅ Code Review 20260802 item 8: comments get dropped when documents merge.
 			- Reproduced: merging layers loses every comment attached to a section that exists in both. The higher layer's comments are the ones that disappear.
 			- Separately, a write that merges two duplicate fields drops any comment that hung below the losing one.
-			- Both contradict the documented promise that comments travel with the node they belong to.
+			- Both contradicted the documented promise that comments travel with the node they belong to.
+			- Fixed: a matched instance now takes on the higher layer's comments, and the shared fold carries the comments that hang below a block. Spec and case 042 pin both.
 
 		- 🔘 Code Review 20260802 item 9: the one-shot load-and-validate ignores a broken schema.
 			- Reproduced: a schema with a bad indent loads partially and validation runs anyway, so constraints on the dropped lines quietly vanish. A badly broken schema makes every field in the config report as unknown.
@@ -166,8 +167,9 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Cause: the check joins path parts with a null before comparing.
 			- Pre-existing, but the new wildcard matching is built on the same joined text.
 
-		- 🔘 Code Review 20260802 item 20: end-of-file comments multiply when layering.
+		- ✅ Code Review 20260802 item 20: end-of-file comments multiply when layering.
 			- Reproduced: a footer comment shared by three layers appears three times in the merged output. The result still formats stably.
+			- Fixed: each distinct end-of-file comment is carried over once.
 
 		- 🔘 Code Review 20260802 item 21: the default install location isn't on a normal user's path.
 			- Reproduced: a system install links the program into a directory reserved for administrator sessions, so the user who ran the installer can't invoke it by name. The closing check passes because it uses the full path.

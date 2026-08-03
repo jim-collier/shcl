@@ -406,6 +406,30 @@ pub struct Document {
 
 const ROOT: usize = 0;
 
+/// Merge a later instance into an earlier one under the in-file merge rule:
+/// children and trivia move over, first trailing wins (a second demotes to a
+/// leading line), first spelling stays. The caller drops the loser from the
+/// parent's child list; it keeps its arena slot, unreferenced.
+fn fold_node_into(arena: &mut [NodeData], survivor: usize, loser: usize) {
+	let kids = std::mem::take(&mut arena[loser].children);
+	for &k in &kids {
+		arena[k].parent = survivor;
+	}
+	arena[survivor].children.extend(kids);
+	let mut lead = std::mem::take(&mut arena[loser].leading);
+	arena[survivor].leading.append(&mut lead);
+	let trail = std::mem::take(&mut arena[loser].trailing);
+	if !trail.is_empty() {
+		if arena[survivor].trailing.is_empty() {
+			arena[survivor].trailing = trail;
+		} else {
+			arena[survivor].leading.push(Lead::plain(trail));
+		}
+	}
+	let mut after = std::mem::take(&mut arena[loser].after);
+	arena[survivor].after.append(&mut after);
+}
+
 /// Maximum nesting depth (levels below the document root), enforced at load
 /// and by the Writer. Deeper lines are skipped with an `E016` error. The cap
 /// is what keeps the recursive tree walks (emit, merge, clone) safely inside
@@ -897,6 +921,32 @@ impl Parser {
 		self.disp_map[parent]
 			.entry((name, new_disp))
 			.or_insert(node);
+	}
+
+	/// A value that mutates after its sibling group was keyed - an empty field
+	/// filled by a fence, a stacked list closed - can land on a key an earlier
+	/// sibling already holds, which the keyed lookup can no longer catch. Fold
+	/// those pairs so the tree matches a reparse of its own canonical text.
+	/// Depth-first, since folding can carry duplicates down a level.
+	fn fold_late_dups(&mut self) {
+		let mut stack = vec![ROOT];
+		while let Some(parent) = stack.pop() {
+			let kids = std::mem::take(&mut self.arena[parent].children);
+			let mut first: HashMap<(String, String), usize> = HashMap::new();
+			let mut keep: Vec<usize> = Vec::with_capacity(kids.len());
+			for c in kids {
+				let key = (self.arena[c].name.clone(), self.arena[c].value.key());
+				match first.get(&key) {
+					Some(&survivor) => fold_node_into(&mut self.arena, survivor, c),
+					None => {
+						first.insert(key, c);
+						keep.push(c);
+					}
+				}
+			}
+			stack.extend(keep.iter().copied());
+			self.arena[parent].children = keep;
+		}
 	}
 
 	/// Hand pending leading comments (and this line's trailing one) to a node.
@@ -1450,6 +1500,7 @@ impl Parser {
 			i = next;
 		}
 		self.star_flush();
+		self.fold_late_dups();
 		self.emit_repeated_leaf_hints();
 		// Indented tail comments keep their block; only top-level ones orphan.
 		self.hang_deeper_pending("");
@@ -2241,21 +2292,7 @@ impl Document {
 		} else {
 			(node, other)
 		};
-		let kids = std::mem::take(&mut self.arena[loser].children);
-		for &k in &kids {
-			self.arena[k].parent = survivor;
-		}
-		self.arena[survivor].children.extend(kids);
-		let mut lead = std::mem::take(&mut self.arena[loser].leading);
-		self.arena[survivor].leading.append(&mut lead);
-		let trail = std::mem::take(&mut self.arena[loser].trailing);
-		if !trail.is_empty() {
-			if self.arena[survivor].trailing.is_empty() {
-				self.arena[survivor].trailing = trail;
-			} else {
-				self.arena[survivor].leading.push(Lead::plain(trail));
-			}
-		}
+		fold_node_into(&mut self.arena, survivor, loser);
 		self.arena[parent].children.retain(|&c| c != loser);
 	}
 
@@ -2447,8 +2484,12 @@ impl Document {
 	/// overlaid on the accumulation of the earlier ones.
 	pub fn merge(&mut self, over: &Document) {
 		self.overlay(ROOT, over, ROOT);
+		// Layers commonly share a footer; keeping one copy of each keeps a
+		// stack of files from repeating it once per layer.
 		for o in &over.orphans {
-			self.orphans.push(o.clone());
+			if !self.orphans.iter().any(|e| e.text == o.text) {
+				self.orphans.push(o.clone());
+			}
 		}
 	}
 
@@ -2456,6 +2497,26 @@ impl Document {
 	// old shape re-filtered the over side per distinct name and re-scanned
 	// (and re-keyed) the base side per over node - three O(K^2) terms at one
 	// parent, plus a full vector rebuild per replaced name.
+	/// A matched instance keeps the base node, so the over side's comments have
+	/// to move onto it or they are lost. Same rule as an in-file merge: leading
+	/// concatenates in layer order, first trailing wins.
+	fn adopt_trivia(&mut self, base: usize, over: &Document, ok: usize) {
+		let src = &over.arena[ok];
+		let mut lead = src.leading.clone();
+		self.arena[base].leading.append(&mut lead);
+		if !src.trailing.is_empty() {
+			if self.arena[base].trailing.is_empty() {
+				self.arena[base].trailing = src.trailing.clone();
+			} else {
+				self.arena[base]
+					.leading
+					.push(Lead::plain(src.trailing.clone()));
+			}
+		}
+		let mut after = src.after.clone();
+		self.arena[base].after.append(&mut after);
+	}
+
 	fn overlay(&mut self, base_parent: usize, over: &Document, over_parent: usize) {
 		let over_kids = over.arena[over_parent].children.clone();
 		// Over side: name -> node bucket, in first-appearance order.
@@ -2510,7 +2571,10 @@ impl Document {
 				for &ok in group {
 					let okey = over.arena[ok].value.key();
 					match by_key.get(&(name.clone(), okey)) {
-						Some(&b) => self.overlay(b, over, ok),
+						Some(&b) => {
+							self.adopt_trivia(b, over, ok);
+							self.overlay(b, over, ok);
+						}
 						None => {
 							let c = self.clone_subtree(over, ok, base_parent);
 							appended.push(c);

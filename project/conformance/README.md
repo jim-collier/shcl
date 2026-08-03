@@ -98,6 +98,8 @@ Case `030` pins the generator's edge handling: an `[#N]` path and an unmateriali
 
 Case `029` pins the write-op value gates and unusable-path rejection: the good script covers the boundary values every binding must ACCEPT (`1e400` -> `inf`, `.5`, `5.`, `INF`, `nan`, i64 min, a `+` sign) and `write-bad.ops` covers what every binding must REJECT identically (hex, junk, trailing garbage, out-of-range, underscores, padding, non-ASCII digits, empty, malformed floats, a bad datetime, a wildcard path, a missing `[#N]`).
 
+Case `042` pins the late-merge rule: a value that only becomes final after its siblings were keyed - a stacked list closing onto an earlier instance's value, a fence filling an empty field that matches an earlier block - still merges, and merging two parents merges the identical children they now share. Its layer file also pins the trivia side of a merge: the higher layer's section comment and trailing comment survive onto the matched base node, and a footer comment both files carry appears once.
+
 Case `028` pins the 512-level nesting cap: a 513-segment dotted path draws exactly one `E016` and is skipped (the sibling line survives, strict load fails). The at-cap boundary and the Writer's refusal to create deeper are pinned by a reference unit test - an at-cap golden would be a 130 KB file for no extra coverage.
 
 Case `027` pins the layered-merge wrapper rule: a childless over-node whose base-side name group has a container instance merges instead of replacing - bare `server:` appends an empty instance, `server: web1` with no body leaves both base servers untouched - while a childless leaf group still overrides (`mode:` clears `mode: fast`). The over layer's trailing comment-only body rides through as an orphan.
