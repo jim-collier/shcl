@@ -571,9 +571,13 @@ source shcl.bash
 workers=$(shcl_int --default=4 server.shcl workers)
 root=$(shcl_get --default='' server.shcl 'site[example.com].root')
 
-# Writes go in as a tab-separated op script; --write rewrites the file in place
-printf 'int\tworkers\t%s\nbool\tsite[example.com].tls.hsts\ttrue\nstring\tsite[blog.example.com].root\t/srv/www/blog\n' \
-	"$((workers * 2))" | shcl set --write server.shcl
+# Writes go in as an op script, one op per line, fields separated by a literal tab.
+# --write rewrites the file in place.
+shcl set --write server.shcl <<OPS
+int	workers	$((workers * 2))
+bool	site[example.com].tls.hsts	true
+string	site[blog.example.com].root	/srv/www/blog
+OPS
 ```
 
 For a handful of scalars, `--set` is shorter than an op script, though it prints rather than rewriting - `--write` and `--set` cannot be combined, since a layered value is deliberately not something the writer bakes back into the file:
