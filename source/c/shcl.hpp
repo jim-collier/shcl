@@ -30,6 +30,27 @@ template <class T> struct Read {
 
 struct Diagnostic { std::size_t line; bool is_error; std::string message; std::string code; };
 
+// Owning structured datetime. The core's shcl_datetime borrows its frac digits
+// from the document's arena; this copies them so the value keeps the veneer's
+// RAII promise and may outlive the Document. Copies/moves re-point the C view
+// at their own storage.
+class Datetime {
+	shcl_datetime v_{};
+	std::string frac_;
+	void rebind() { v_.frac.p = frac_.data(); v_.frac.n = frac_.size(); }
+public:
+	Datetime() { v_.zone = SHCL_ZONE_NONE; }
+	explicit Datetime(const shcl_datetime &v) : v_(v), frac_(v.frac.p ? std::string(v.frac.p, v.frac.n) : std::string()) { rebind(); }
+	Datetime(const Datetime &o) : v_(o.v_), frac_(o.frac_) { rebind(); }
+	Datetime &operator=(const Datetime &o) { v_ = o.v_; frac_ = o.frac_; rebind(); return *this; }
+	Datetime(Datetime &&o) noexcept : v_(o.v_), frac_(std::move(o.frac_)) { rebind(); }
+	Datetime &operator=(Datetime &&o) noexcept { v_ = o.v_; frac_ = std::move(o.frac_); rebind(); return *this; }
+	// The C view, for shcl_datetime_str and friends: valid as long as *this.
+	const shcl_datetime &c() const noexcept { return v_; }
+	// The reference's textual form.
+	std::string str() const { char b[64]; return std::string(b, shcl_datetime_str(&v_, b)); }
+};
+
 inline std::string to_str(shcl_str s) { return std::string(s.p, s.n); }
 
 class Document {
@@ -149,8 +170,9 @@ public:
 		char buf[64]; std::size_t k = shcl_datetime_str(&r.value, buf);
 		return {std::string(buf, k), st(r.status)};
 	}
-	// Structured datetime, if the caller wants the parsed fields.
-	Read<shcl_datetime> read_datetime_raw(std::string_view p) const { auto r = shcl_read_datetime(d_, p.data(), p.size()); return {r.value, st(r.status)}; }
+	// Structured datetime, if the caller wants the parsed fields. Owning
+	// (unlike the core's shcl_read_datetime), so it may outlive the Document.
+	Read<Datetime> read_datetime_raw(std::string_view p) const { auto r = shcl_read_datetime(d_, p.data(), p.size()); return {Datetime(r.value), st(r.status)}; }
 
 	Read<std::vector<int64_t>> read_int_array(std::string_view p) const { auto r = shcl_read_int_array(d_, p.data(), p.size()); return {std::vector<int64_t>(r.values, r.values + r.n), st(r.status)}; }
 	Read<std::vector<double>> read_float_array(std::string_view p) const { auto r = shcl_read_float_array(d_, p.data(), p.size()); return {std::vector<double>(r.values, r.values + r.n), st(r.status)}; }

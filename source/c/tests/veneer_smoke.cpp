@@ -111,6 +111,20 @@ int main() {
 	auto clean = shcl::Document::load_and_validate("a: 1\n", "", shcl::Strictness::Standard);
 	CHECK(clean.error_count() == 0 && clean.diagnostics().empty());
 
+	// A read must stay usable after the document it came from is gone; the
+	// datetime one used to hand back a pointer into the freed arena.
+	shcl::Read<shcl::Datetime> outlives;
+	{
+		auto tmp = shcl::Document::parse("t: 2026-08-02T10:20:30.123456789Z\n");
+		outlives = tmp.read_datetime_raw("t");
+	}
+	CHECK(outlives.status == shcl::Status::Good);
+	CHECK(outlives.value.str() == "2026-08-02T10:20:30.123456789Z");
+	auto copied = outlives;
+	CHECK(copied.value.str() == outlives.value.str());
+	auto moved = std::move(copied);
+	CHECK(moved.value.str() == outlives.value.str());
+
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");
 	return 0;

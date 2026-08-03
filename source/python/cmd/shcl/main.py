@@ -496,7 +496,12 @@ def _op_int(s):
 	t = s[1:] if s[:1] in ("+", "-") else s
 	if t == "" or any(c < "0" or c > "9" for c in t):
 		raise ValueError("bad int: {}".format(s))
-	v = int(s)
+	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
+	# reference just overflows. Leading zeros are legal and don't count toward range.
+	digits = t.lstrip("0") or "0"
+	if len(digits) > 19:
+		raise ValueError("bad int: {}".format(s))
+	v = -int(digits) if s[:1] == "-" else int(digits)
 	if v < -(2 ** 63) or v > 2 ** 63 - 1:
 		raise ValueError("bad int: {}".format(s))
 	return v
