@@ -670,7 +670,12 @@ def _parse_uint(s):
 	body = s[1:] if s[0] == "+" else s
 	if not body or not all(_is_ascii_digit(c) for c in body):
 		return None
-	n = int(body)
+	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
+	# reference just overflows. Leading zeros are legal and don't count toward range.
+	digits = body.lstrip("0") or "0"
+	if len(digits) > 20:
+		return None
+	n = int(digits)
 	if n > 2 ** 64 - 1:
 		return None
 	return n
@@ -2632,7 +2637,12 @@ def _parse_i64(t):
 	body = t[1:] if t[:1] in ("+", "-") else t
 	if not body or not all(_is_ascii_digit(c) for c in body):
 		return None
-	n = int(t)
+	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
+	# reference just overflows. Leading zeros are legal and don't count toward range.
+	digits = body.lstrip("0") or "0"
+	if len(digits) > 19:
+		return None
+	n = -int(digits) if t[:1] == "-" else int(digits)
 	if n < _I64_MIN or n > _I64_MAX:
 		return None
 	return n
@@ -2816,7 +2826,12 @@ def _parse_u32(s):
 	body = s[1:] if s[0] == "+" else s
 	if not body or not all(_is_ascii_digit(c) for c in body):
 		return None
-	n = int(body)
+	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
+	# reference just overflows. Leading zeros are legal and don't count toward range.
+	digits = body.lstrip("0") or "0"
+	if len(digits) > 10:
+		return None
+	n = int(digits)
 	if n > 2 ** 32 - 1:
 		return None
 	return n

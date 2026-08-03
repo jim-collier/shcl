@@ -105,15 +105,16 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Fixed: a mount chain that reaches the nesting cap is noted like one that re-enters, rather than followed. A schema whose mounts multiply past a field ceiling now reports a schema fault, V096.
 			- Validation is unaffected: it still follows the document, so it needs no limit.
 
-		- 🔘 Code Review 20260802 item 6: Python raises on a very long number where the others return cleanly.
+		- ✅ Code Review 20260802 item 6: Python raises on a very long number where the others return cleanly.
 			- Reproduced: a value of five thousand digits makes the Python build exit with a stack trace, while the reference reports a bad type. Same for oversized selector indexes, schema repeat counts, and a day number inside a quoted date.
 			- Cause: Python refuses to convert decimal strings past a few thousand digits, and that happens before the code's own range check.
-			- Probable fix: drop leading zeros then refuse anything longer than the type can hold, before converting.
+			- Fixed: leading zeros are dropped and the rest is length-checked against what the type can hold before any conversion, so a small value written behind thousands of zeros still reads. Hexadecimal was never affected.
 
-		- 🔘 Code Review 20260802 item 7: the C date formatter can write past the buffer it documents.
+		- ✅ Code Review 20260802 item 7: the C date formatter can write past the buffer it documents.
 			- Reproduced: the header promises 64 bytes is enough, and caps only the fractional seconds. The year and the other fields come straight from a struct the caller fills in, so a hand-built value can need about 109 bytes. The library's own writer hits this too.
 			- Values that came from parsing are always short enough, so the test corpus can't see it.
-			- Probable fix: bound the numeric fields the same way the fraction is bounded, or format into a size-aware buffer.
+			- Fixed: the text is built in full and then clamped to the documented size, which is now stated at the declaration. Output for values that came from parsing is unchanged.
+			- Found alongside it: negating the most negative offset was itself undefined, and is now done at a width that holds it.
 
 		- ✅ Code Review 20260802 item 8: comments get dropped when documents merge.
 			- Reproduced: merging layers loses every comment attached to a section that exists in both. The higher layer's comments are the ones that disappear.
@@ -146,19 +147,21 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- The documented promise is that generated output always loads clean and validates against the schema that produced it.
 			- Fixed: the path is rebuilt from its parsed segments rather than cut out of the text, so every spelling of a wildcard behaves the same. A path deeper than a document may nest now goes to the trailing note instead of being written out.
 
-		- 🔘 Code Review 20260802 item 14: the C++ wrapper can hand back a dangling date.
+		- ✅ Code Review 20260802 item 14: the C++ wrapper can hand back a dangling date.
 			- Reproduced: every other read in the wrapper copies its text out, but the structured date read copies the struct while its fractional-seconds pointer still points into the document. Letting the document go out of scope and then using the date reads freed memory.
-			- Probable fix: own the text, or say plainly in the comment that this one read borrows.
+			- Fixed: the wrapper's date read now owns its fractional digits, so it stays valid after the document goes away, like every other read there.
+			- Note: this changes what that one call returns, so C++ callers using it need a small edit. Documenting the borrow instead was the alternative, but it would have left a wrapper whose whole purpose is lifetime safety handing out something unsafe.
 
 		- 🔘 Code Review 20260802 item 15: the Go repeat-hint filter damages the caller's list.
 			- Reproduced: it filters in place while returning a new list, so calling it the obvious way leaves the document's own diagnostics shuffled and duplicated.
 			- The reference takes the list by reference, so the mutation is expected there. The Go spelling returns a value, which reads as a copy.
 			- Command-line use is unaffected; this only bites programs using the library.
 
-		- 🔘 Code Review 20260802 item 16: three C entry points pile up garbage in documents they don't own.
+		- ✅ Code Review 20260802 item 16: three C entry points pile up garbage in documents they don't own.
 			- Reproduced: each setter keeps about a kilobyte of path-scanning leftovers, the repeat-hint filter leaves a few hundred bytes in the schema, and generation leaves several kilobytes there. None of it is ever reused or released.
 			- Measured: half a million setter calls grew a document by 600 MB; routing the same work through the existing scratch space brought that to 40 MB.
 			- The command-line tool is unaffected, since it exits after one pass. A long-running program that holds a parsed schema is not.
+			- Fixed: all three now do their working allocation somewhere temporary and keep only what they promise to return. Half a million writes went from 604 MB to 39 MB, and the two schema entry points from 100 MB and 2.4 GB to near nothing.
 
 		- 🔘 Code Review 20260802 item 17: the segment-quoting helper mangles a name ending in a backslash.
 			- Reproduced: the closing quote gets treated as escaped, so the result is a path the scanner rejects, and the set silently fails.
