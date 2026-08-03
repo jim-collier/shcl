@@ -3677,6 +3677,17 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 	S st; st.p = schema ? schema : ""; st.n = schema ? slen : 0;
 	if (s_trim(st).n != 0) {
 		shcl_doc *sd = shcl_parse(schema, slen);
+		// A schema that did not load would silently drop the constraints on
+		// its broken lines, or report every field as unknown - either way
+		// blaming the document for the schema. Say so instead, as `check`
+		// does, and validate nothing.
+		int sbad = 0;
+		for (size_t i = 0; i < sd->diags.len; i++) if (sd->diags.data[i].sev == SHCL_SEV_ERROR) { sbad = 1; break; }
+		if (sbad) {
+			push_diag(d, 0, SHCL_SEV_ERROR, s_lit("schema failed to load"));
+			shcl_free(sd);
+			return d;
+		}
 		shcl_validation *v = shcl_validate(d, sd);
 		for (size_t i = 0; i < v->diags.len; i++) {
 			Diag dg = v->diags.data[i];

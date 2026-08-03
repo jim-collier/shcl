@@ -10,3 +10,5 @@ datetime	when	2026-07-12T10:00:00Z
 empty	section
 int-default	port	1
 int-default	timeout	30
+datetime-array-default	windows	2026-01-01	2026-06-30
+datetime-array-default	windows	2027-01-01

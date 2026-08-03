@@ -68,7 +68,10 @@ Options:
   --set=PATH=VALUE                       override one path as the top layer,
                                          after all files; repeatable
 
-Value options accept either spelling: --default=VALUE or --default VALUE.
+Value options accept either spelling: --default=VALUE or --default VALUE. In
+the space form the next argument is taken as the value whatever it looks like,
+so --default --int reads --int as the default. Use -- to end the options when a
+FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
@@ -131,12 +134,42 @@ def _set_value_opt(o, name, v):
 		o.seen.append("--set")
 
 
+def asked_for(argv):
+	# Did the command line ask for help or the version? Only tokens in option
+	# position count: a value that happens to read `-h`, and anything after the
+	# file, are data. Scanning the whole line for them let a read of a missing
+	# path answer with the help text and exit 0.
+	i = 0
+	while i < len(argv):
+		a = argv[i]
+		if a in ("-h", "--help"):
+			return "help"
+		if a in ("-V", "--version"):
+			return "version"
+		if a == "--":
+			return None
+		if a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set"):
+			i += 1
+		elif a.startswith("-") and len(a) > 1:
+			pass
+		elif i > 0:
+			# The subcommand, then the file: past that everything is a path.
+			return None
+		i += 1
+	return None
+
+
 def parse_opts(argv):
 	o = _Opts()
 	# Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	i = 0
 	while i < len(argv):
 		a = argv[i]
+		# Everything after `--` is positional, so a file or path may begin
+		# with a dash.
+		if a == "--":
+			o.args.extend(argv[i + 1:])
+			return o
 		if a in ("--int", "--float", "--bool", "--datetime", "--string", "--raw", "--rawinfo"):
 			o.kind = a[2:]
 			o.seen.append("--<type>")
@@ -248,6 +281,15 @@ def check_opts(cmd, o):
 			else:
 				sys.stderr.write("option {} not valid for {} (see --help)\n".format(s, cmd))
 			return 1
+	# Writing back the merged document would fold the lower layers permanently
+	# into the top file, which is the opposite of what layering is for.
+	if o.write and (o.layers or o.sets):
+		sys.stderr.write("--write cannot be combined with --layer or --set (see --help)\n")
+		return 1
+	# The ops script already has stdin, so a layer cannot read it too.
+	if cmd == "set" and any(lf == "-" for lf in o.layers):
+		sys.stderr.write("--layer=- is not valid for set (stdin carries the ops script)\n")
+		return 1
 	return None
 
 
@@ -728,6 +770,9 @@ def do_check(o):
 
 
 def do_init(o):
+	if o.args:
+		sys.stderr.write("init takes no file argument (see --help)\n")
+		return 1
 	if o.schema is None:
 		sys.stderr.write("init needs --schema=FILE (see --help)\n")
 		return 1
@@ -784,12 +829,11 @@ def run(argv):
 		except UnicodeEncodeError:
 			sys.stderr.write("invalid argument encoding (expected UTF-8)\n")
 			return 1
-	wants_help = any(a in ("-h", "--help") for a in argv)
-	wants_version = any(a in ("-V", "--version") for a in argv)
-	if not argv or wants_help or argv[0] == "help":
+	asked = asked_for(argv)
+	if not argv or asked == "help" or argv[0] == "help":
 		sys.stdout.write(HELP)
 		return 1 if not argv else 0
-	if wants_version or argv[0] == "version":
+	if asked == "version" or argv[0] == "version":
 		print("shcl {}".format(VERSION))
 		return 0
 	try:

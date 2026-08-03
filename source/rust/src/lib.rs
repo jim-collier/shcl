@@ -1574,6 +1574,19 @@ impl Document {
 		let mut doc = Parser::new().parse(text, strictness);
 		if !schema_text.trim().is_empty() {
 			let schema = Document::parse(schema_text);
+			// A schema that did not load would silently drop the constraints on
+			// its broken lines, or report every field as unknown - either way
+			// blaming the document for the schema. Say so instead, as `check`
+			// does, and validate nothing.
+			if schema.diags.iter().any(|d| d.severity == Severity::Error) {
+				doc.diags.push(Diagnostic {
+					line: 0,
+					severity: Severity::Error,
+					code: "V099",
+					message: "schema failed to load".to_string(),
+				});
+				return doc;
+			}
 			let vdiags = doc.validate(&schema);
 			doc.diags.extend(vdiags);
 			suppress_declared_repeats(&schema, &mut doc.diags);
