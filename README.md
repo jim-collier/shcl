@@ -3,6 +3,7 @@
 <!-- markdownlint-disable MD033 -- inline html -->
 <!-- markdownlint-disable MD055 -- Table pipe style [Expected: leading_and_trailing; Actual: leading_only; Missing trailing pipe] -->
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
+<!-- markdownlint-disable MD026 -- Trailing punctuation in heading; the "compares to..." ellipsis is deliberate -->
 <div align="center">
 
 [![made-with-rust](https://img.shields.io/badge/Made%20with-Rust-1f425f.svg)](https://www.rust-lang.org/)
@@ -44,21 +45,35 @@
 
 - [The problem](#the-problem)
 - [What SHCL does about it](#what-shcl-does-about-it)
-- [What it looks like](#what-it-looks-like)
-- [Reading it from code](#reading-it-from-code)
-- [How it compares](#how-it-compares)
-	- [To JSON, YAML, TOML, XML](#to-json-yaml-toml-xml)
-	- [To Pkl, CUE, Dhall](#to-pkl-cue-dhall)
+- [How it compares to...](#how-it-compares-to)
+	- [Config languages - JSON, YAML, TOML, XML](#config-languages---json-yaml-toml-xml)
+	- [DDL languages - Pkl, CUE, Dhall](#ddl-languages---pkl-cue-dhall)
 	- [When SHCL is the wrong choice](#when-shcl-is-the-wrong-choice)
 - [Features](#features)
-- [Status](#status)
+- [What a .shcl file looks like](#what-a-shcl-file-looks-like)
 - [Installation](#installation)
-	- [Packages and installers](#packages-and-installers)
 	- [Language packages](#language-packages)
-	- [Install scripts](#install-scripts)
-	- [DIY](#diy)
-- [Using SHCL from your project](#using-shcl-from-your-project)
-	- [Reading and writing a file](#reading-and-writing-a-file)
+		- [Cargo](#cargo)
+		- [Go](#go)
+		- [PyPi](#pypi)
+		- [C and C++](#c-and-c)
+	- [Other installation options](#other-installation-options)
+		- [OS-level packages and installers](#os-level-packages-and-installers)
+			- [Debian](#debian)
+			- [Fedora, RHEL, openSUSE](#fedora-rhel-opensuse)
+			- [Windows](#windows)
+		- [Scripted installation direct from web - dev or stable](#scripted-installation-direct-from-web---dev-or-stable)
+			- [Linux and WSL](#linux-and-wsl)
+			- [PowerShell](#powershell)
+		- [DIY install](#diy-install)
+- [Full example use-cases in your code](#full-example-use-cases-in-your-code)
+	- [Rust](#rust)
+	- [Go](#go)
+	- [Python](#python)
+	- [Zig](#zig)
+	- [C, C++](#c-c)
+	- [Bash](#bash)
+	- [PowerShell](#powershell)
 - [Set up a development environment](#set-up-a-development-environment)
 - [Docs](#docs)
 - [Contributing and support](#contributing-and-support)
@@ -103,67 +118,9 @@ SHCL makes a contract:
 
 When you do want zero-tolerance rigor: schema validation, plus a strict mode that fails loudly.
 
-## What it looks like
+## How it compares to...
 
-A small web server - the kind of thing nginx makes you learn a bespoke brace language for. All of this is one valid file: indentation and dotted paths are interchangeable, quoting is only needed when a value contains a reserved character, and messy spacing is fine.
-
-```text
-# Flat, TOML-style settings
-listen: "0.0.0.0:443"          # a colon in a value just needs quotes
-workers: 4
-log-level: warn
-
-# Hierarchy when you need it: one instance per site
-site: example.com
-	root: /srv/www/example
-	Max-Upload-MB : 50         # names are case-insensitive, spacing is loose
-	methods: GET, POST, HEAD   # an array is just commas
-	tls:
-		cert: /etc/ssl/example.pem
-		hsts: on
-
-# Repeating the field adds another site - arrays of objects, no syntax to invent
-site: blog.example.com
-	root: /srv/www/blog
-
-# Dotted paths spell the same tree; add to any instance from anywhere
-site[blog.example.com].tls.hsts: off
-
-# Multi-line content goes in a fenced block, kept verbatim
-maintenance-page:
-	~~~html
-	<h1>Down for maintenance - back in five.</h1>
-	~~~
-```
-
-Field names are case-insensitive. Repeated paths merge. `site` here is not one key but a set of instances (example.com, blog.example.com), each with its own children - arrays of objects without inventing syntax for them.
-
-## Reading it from code
-
-One call. A typed value. A visible fallback. This is the call you write 90% of the time:
-
-```go
-// Go
-limit := doc.GetIntOr("site[example.com].max-upload-mb", 10)
-```
-
-```python
-# Python
-limit = doc.get_int("site[example.com].max-upload-mb", default=10)
-```
-
-```sh
-# Bash (sh/ash/zsh/etc.)
-limit=$(shcl get --int --default=10 server.shcl 'site[example.com].max-upload-mb')
-```
-
-When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`.
-
-Wildcards read across instances: an array read of `site[*].root` gives you every site's document root, in file order, with a status per slot.
-
-## How it compares
-
-### To JSON, YAML, TOML, XML
+### Config languages - JSON, YAML, TOML, XML
 
 | | SHCL | JSON | YAML | TOML | XML
 | :-- | :-- | :-- | :-- | :-- | :--
@@ -178,7 +135,7 @@ Wildcards read across instances: an array read of `site[*].root` gives you every
 
 > *A note on types, because it is the big design difference: JSON and TOML store types in the file, so the author has to get them right. YAML infers types from the text, which is where `NO` becomes `false`. SHCL stores plain text and coerces when **you** ask for a type; the only code that decides a value is an int (for example), is the code that needed an int.*
 
-### To Pkl, CUE, Dhall
+### DDL languages - Pkl, CUE, Dhall
 
 These are a different species. They overlap a little with SHCL's power layer, but from the opposite direction: they make the *config file itself* powerful, which is exactly what SHCL avoids.
 
@@ -224,28 +181,69 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 - One conformance corpus pins every binding to identical behavior. The Rust reference plus independent Go, C, and Python parsers agree byte-for-byte. A binding is not released until it does.
 
-## Status
+## What a .shcl file looks like
 
-Stable, and spec-first on purpose. All goals met on Tier 1 and 2.
+A small web server - the kind of thing nginx makes you learn a bespoke brace language for. All of this is one valid file: indentation and dotted paths are interchangeable, quoting is only needed when a value contains a reserved character, and messy spacing is fine.
 
-What is not done yet: the remaining Tier 3 bindings (C#, Java, JavaScript). Star or watch the repo to follow along.
+```text
+# Flat, TOML-style settings
+listen: "0.0.0.0:443"          # a colon in a value just needs quotes
+workers: 4
+log-level: warn
+
+# Hierarchy when you need it: one instance per site
+site: example.com
+	root: /srv/www/example
+	Max-Upload-MB : 50         # names are case-insensitive, spacing is loose
+	methods: GET, POST, HEAD   # an array is just commas
+	tls:
+		cert: /etc/ssl/example.pem
+		hsts: on
+
+# Repeating the field adds another site - arrays of objects, no syntax to invent
+site: blog.example.com
+	root: /srv/www/blog
+
+# Dotted paths spell the same tree; add to any instance from anywhere
+site[blog.example.com].tls.hsts: off
+
+# Multi-line content goes in a fenced block, kept verbatim
+maintenance-page:
+	~~~html
+	<h1>Down for maintenance - back in five.</h1>
+	~~~
+```
+
+Field names are case-insensitive. Repeated paths merge. `site` here is not one key but a set of instances (example.com, blog.example.com), each with its own children - arrays of objects without inventing syntax for them.
+
+<!--
+## Reading it from code
+
+One call. A typed value. A visible fallback. This is the call you write 90% of the time:
+
+```go
+// Go
+limit := doc.GetIntOr("site[example.com].max-upload-mb", 10)
+```
+
+```python
+# Python
+limit = doc.get_int("site[example.com].max-upload-mb", default=10)
+```
+
+```sh
+# Bash (sh/ash/zsh/etc.)
+limit=$(shcl get --int --default=10 server.shcl 'site[example.com].max-upload-mb')
+```
+
+When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`.
+
+Wildcards read across instances: an array read of `site[*].root` gives you every site's document root, in file order, with a status per slot.
+-->
 
 ## Installation
 
 The latest release, `v1.0.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
-
-### Packages and installers
-
-The simplest route, if your system has a package manager. Download the `.deb`, `.rpm`, or Windows setup for your architecture (`x86_64` or `arm64`) from the releases page:
-
-```sh
-sudo dpkg -i shcl-1.0.0-linux-x86_64.deb     # Debian, Ubuntu
-sudo rpm -i  shcl-1.0.0-linux-x86_64.rpm     # Fedora, RHEL, openSUSE
-```
-
-On Windows, run `shcl-1.0.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
-
-Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wrappers under `/usr/share/shcl/`.
 
 ### Language packages
 
@@ -253,10 +251,21 @@ Each binding is published where its own ecosystem looks for it, all under the na
 
 Two of them carry the CLI as well as the library, which is the easiest way to get the binary on a platform with no prebuilt one - macOS and the BSDs included:
 
+#### Cargo
+
+Library as well as CLI
+
 ```sh
-cargo install shcl                                                # Rust: CLI and library
+cargo install shcl
+```
+
+#### Go
+
+```sh
 go install github.com/jim-collier/shcl/source/go/cmd/shcl@latest  # Go: CLI
 ```
+
+#### PyPi
 
 The PyPI distribution is the library module by itself and installs no command, so `pip install shcl` is a dependency, not an installation:
 
@@ -264,34 +273,60 @@ The PyPI distribution is the library module by itself and installs no command, s
 pip install shcl        # Python: library only
 ```
 
+#### C and C++
+
 C and C++ have no registry worth targeting, and need none: `shcl.h` is a single dependency-free header you vendor. Copy it out of a release tag, or take it from an installed package under `/usr/share/shcl/code/`.
 
-For version pinning and the dependency line per ecosystem, see [Using SHCL from your project](#using-shcl-from-your-project).
+For version pinning and the dependency line per ecosystem, see [Full example use-cases in your code](#full-example-use-cases-in-your-code).
 
-### Install scripts
+### Other installation options
+
+#### OS-level packages and installers
+
+The simplest route, if your system has a package manager. Download the `.deb`, `.rpm`, or Windows setup for your architecture (`x86_64` or `arm64`) from the releases page.
+
+Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wrappers under `/usr/share/shcl/`.
+
+##### Debian
+
+```sh
+sudo dpkg -i shcl-1.0.0-linux-x86_64.deb
+```
+
+##### Fedora, RHEL, openSUSE
+
+```sh
+sudo rpm -i  shcl-1.0.0-linux-x86_64.rpm
+```
+
+##### Windows
+
+Run `shcl-1.0.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
+
+#### Scripted installation direct from web - dev or stable
 
 Downloads a release, checks its signature, and installs the binary plus the drop-in files and wrappers. Idempotent. It states its plan and asks before touching anything. The default channel is `dev`, which means the newest release including pre-releases. Pass `stable` to take the newest full release only.
 
-Each release ships a `sha256sums.txt` and a detached `.sig` over it. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY](#diy) route on a machine that lacks it.
+Each release ships a `sha256sums.txt` and a detached `.sig` over it. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY install](#diy-install) route on a machine that lacks it.
 
-Linux and WSL:
+Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows).
+
+##### Linux and WSL
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
 ```
 
-Windows (PowerShell):
-
-```powershell
-irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1 | iex
-```
-
-Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows).
-
 To pass options on Linux, add them after the pipe:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash -s -- --target=user
+```
+
+##### PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1 | iex
 ```
 
 On Windows, `irm | iex` cannot take arguments at all, so use the scriptblock form:
@@ -309,7 +344,7 @@ A `user` install needs no sudo or elevation.
 
 macOS and the BSDs have no prebuilt binaries yet. Use `cargo install shcl`, a drop-in source file, or build the CLI.
 
-### DIY
+#### DIY install
 
 - **Prebuilt binary**. Grab the `shcl` binary for your platform from the releases page and put it anywhere on your `PATH`. To check it by hand, download the sums file, its `.sig`, and [`shcl-signing.pub`](shcl-signing.pub) from the repo, then verify the signature before the checksum. A checksum out of an unverified sums file proves nothing:
 
@@ -330,7 +365,7 @@ macOS and the BSDs have no prebuilt binaries yet. Use `cargo install shcl`, a dr
 
 	Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
 
-## Using SHCL from your project
+## Full example use-cases in your code
 
 The above installs the CLI. To depend on SHCL as a *library*, use your language's package manager.
 
@@ -354,11 +389,9 @@ Per-language notes:
 
 - **The PyPI distribution** is the library module by itself. Installing it does not put a `shcl` command on your `PATH`; take the CLI from a package, an installer, or the crate.
 
-- **No package manager at all?** Every binding is one file with no dependencies. Copy it out of `source/` and commit it - see [DIY](#diy) above.
+- **No package manager at all?** Every binding is one file with no dependencies. Copy it out of `source/` and commit it - see [DIY install](#diy-install) above.
 
-### Reading and writing a file
-
-The [one-liner above](#reading-it-from-code) is the whole read API most of the time. Here is the rest of the loop - load a file, read from it, change it, save it - against the [example config](#what-it-looks-like). The same program follows in Rust, Go, Python, and C; all four produce a byte-identical file, which is the point of the conformance corpus.
+### Rust
 
 ```rust
 use shcl::{Document, Status};
@@ -385,7 +418,7 @@ doc.set_string("site[blog.example.com].root", "/srv/www/blog");
 std::fs::write("server.shcl", doc.to_canonical())?;
 ```
 
-The same program in Go:
+### Go
 
 ```go
 import shcl "github.com/jim-collier/shcl/source/go"
@@ -409,7 +442,7 @@ doc.SetString("site[blog.example.com].root", "/srv/www/blog")
 os.WriteFile("server.shcl", []byte(doc.ToCanonical()), 0o644)
 ```
 
-In Python:
+### Python
 
 ```python
 import shcl
@@ -432,7 +465,51 @@ with open("server.shcl", "w") as f:
 	f.write(doc.to_canonical())
 ```
 
-And in C, where paths are length-delimited and every allocation belongs to the document:
+### Zig
+
+Zig needs no binding of its own - it consumes the C header directly. `@cImport` takes the declarations, one C file carries the implementation, and thin wrappers let Zig slices supply the pointer-and-length pairs the C API wants:
+
+```zig
+const std = @import("std");
+const c = @cImport(@cInclude("shcl.h"));
+
+// The C API takes (pointer, length) paths; a Zig slice already carries both.
+fn getInt(doc: ?*c.shcl_doc, path: []const u8, def: i64) i64 {
+	return c.shcl_get_int(doc, path.ptr, path.len, def);
+}
+fn setInt(doc: ?*c.shcl_doc, path: []const u8, v: i64) bool {
+	return c.shcl_set_int(doc, path.ptr, path.len, v) != 0;
+}
+fn setBool(doc: ?*c.shcl_doc, path: []const u8, v: bool) bool {
+	return c.shcl_set_bool(doc, path.ptr, path.len, @intFromBool(v)) != 0;
+}
+fn setString(doc: ?*c.shcl_doc, path: []const u8, v: []const u8) bool {
+	return c.shcl_set_string(doc, path.ptr, path.len, v.ptr, v.len) != 0;
+}
+fn readString(doc: ?*c.shcl_doc, path: []const u8) c.shcl_read_str {
+	return c.shcl_read_string(doc, path.ptr, path.len);
+}
+
+// text is the config file, already read into memory
+const doc = c.shcl_parse(text.ptr, text.len);
+defer c.shcl_free(doc);
+
+const workers = getInt(doc, "workers", 4);
+
+const root = readString(doc, "site[example.com].root");
+if (root.status == c.SHCL_GOOD)
+	std.debug.print("{s}\n", .{root.value.p[0..root.value.n]});
+
+_ = setInt(doc, "workers", workers * 2);
+_ = setBool(doc, "site[example.com].tls.hsts", true);
+_ = setString(doc, "site[blog.example.com].root", "/srv/www/blog");
+
+const out = c.shcl_to_canonical(doc);
+```
+
+Alongside it, an `impl.c` of two lines - `#define SHCL_IMPLEMENTATION`, then `#include "shcl.h"` - and build with `zig build-exe main.zig impl.c -lc -lm -I.`. The interop above is stable, but Zig's own standard library is not, so the surrounding file IO moves between Zig releases; this was checked on 0.16.
+
+### C, C++
 
 ```c
 #define SHCL_IMPLEMENTATION   // in exactly one translation unit
@@ -483,6 +560,50 @@ site: blog.example.com
 ```
 
 A setter reports failure - `false`, or `0` in C - when a path cannot be written at all, a wildcard being the common case, since those are query-only. `write_reason(path)` names which of the five reasons applies.
+
+### Bash
+
+The shell wrappers are not parsers; they wrap the CLI, which is why they inherit its conformance for free. Source one and you get typed sugar over the same commands:
+
+```bash
+source shcl.bash
+
+workers=$(shcl_int --default=4 server.shcl workers)
+root=$(shcl_get --default='' server.shcl 'site[example.com].root')
+
+# Writes go in as a tab-separated op script; --write rewrites the file in place
+printf 'int\tworkers\t%s\nbool\tsite[example.com].tls.hsts\ttrue\nstring\tsite[blog.example.com].root\t/srv/www/blog\n' \
+	"$((workers * 2))" | shcl set --write server.shcl
+```
+
+For a handful of scalars, `--set` is shorter than an op script, though it prints rather than rewriting - `--write` and `--set` cannot be combined, since a layered value is deliberately not something the writer bakes back into the file:
+
+```bash
+shcl fmt --set 'workers=8' server.shcl > server.new && mv server.new server.shcl
+```
+
+### PowerShell
+
+Dot-source it for the same helper names:
+
+```powershell
+. ./shcl.ps1
+
+$workers = [int](shcl_int --default=4 server.shcl workers)
+$root    = shcl_get --default='' server.shcl 'site[example.com].root'
+
+shcl fmt --set "workers=$($workers * 2)" `
+         --set 'site[example.com].tls.hsts=true' `
+         --set 'site[blog.example.com].root=/srv/www/blog' `
+         server.shcl | Set-Content server.shcl
+```
+
+This one uses `--set` rather than the op script the Bash example pipes in, and the reason is worth knowing: the sourced `shcl` is a PowerShell *function*, so it forwards arguments but not pipeline input. Piping an op script into it leaves `shcl set` waiting on a stdin that never arrives. When you want the op-script form in PowerShell, pipe to the binary itself, resolving it the way the wrapper does internally so the sourced function cannot shadow it:
+
+```powershell
+$bin = (Get-Command shcl -CommandType Application | Select-Object -First 1).Source
+$ops | & $bin set --write server.shcl
+```
 
 ## Set up a development environment
 
