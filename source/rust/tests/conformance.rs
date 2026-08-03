@@ -776,3 +776,43 @@ fn paths_enumeration_shape() {
 	let r = doc.read_int(&quote_segment("q n"));
 	assert_eq!((r.value, r.status), (3, shcl::Status::Good));
 }
+
+#[test]
+fn generation_bounds_a_multiplying_schema() {
+	// A chain longer than the nesting cap would outrun the stack if it were
+	// followed all the way down; it is noted like a re-entering mount instead.
+	// Too big for a golden, so it is pinned here (like the depth-cap case).
+	let mut s = String::new();
+	for i in 0..2000 {
+		s.push_str(&format!(
+			"fragment: f{}\n\tfield: c{}\n\t\tinherits: f{}\n",
+			i,
+			i,
+			i + 1
+		));
+	}
+	s.push_str("fragment: f2000\n\tfield: leaf\nfield: top\n\tinherits: f0\n");
+	let out = generate(&Document::parse(&s)).expect("deep chain should generate");
+	assert!(
+		out.contains("not generated"),
+		"deep chain should be noted, not expanded"
+	);
+	// And what it does emit still loads clean, which is generation's promise.
+	assert_eq!(Document::parse(&out).diagnostics().len(), 0);
+
+	// Fragments mounted at two paths each double per level. Past the field
+	// ceiling that is a schema fault, not an output nothing can hold.
+	let mut b = String::new();
+	for i in 0..26 {
+		b.push_str(&format!(
+			"fragment: g{}\n\tfield: a\n\t\tinherits: g{}\n\tfield: b\n\t\tinherits: g{}\n",
+			i,
+			i + 1,
+			i + 1
+		));
+	}
+	b.push_str("fragment: g26\n\tfield: leaf\nfield: top\n\tinherits: g0\n");
+	let err = generate(&Document::parse(&b)).expect_err("multiplying schema should fault");
+	assert_eq!(err.len(), 1);
+	assert_eq!(err[0].code, "V096");
+}

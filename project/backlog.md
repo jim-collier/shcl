@@ -84,22 +84,26 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Note: an interrupted write can still leave a temporary behind. It now carries the config's own permissions, so it is not an exposure, and clearing it would need signal handling in all four builds.
 			- The differential harness gained a check for it, since none of this shows up in normal output.
 
-		- 🔘 Code Review 20260802 item 3: one schema line can switch off the unknown-field check.
+		- ✅ Code Review 20260802 item 3: one schema line can switch off the unknown-field check.
 			- Reproduced: a field path written as a quoted name that starts with a star, such as a wildcard hostname key, silently becomes a real wildcard. Every unknown top-level name then passes, and the constraints on that line never apply.
 			- Cause: the schema's own value parsing strips the quotes before the path is scanned, so the scanner sees a bare star.
 			- The spec says the opposite in two places: a quoted star stays a literal name.
 			- Fails open, which is the worst direction for the one check meant to catch typos.
+			- Not a defect after all: quoting works at two levels, and the schema is behaving correctly at both. The outer quotes are ordinary string quotes around the value, needed by any path holding a selector, and they come off before the path is read - so a wildcard inside a quoted path stays a wildcard, which composed paths rely on. Quoting the segment itself, inside the value, does give a literal name, and the unknown-field check still catches typos alongside it.
+			- Fixed the real problem, which is that nothing said so: the spec now spells out both levels with worked examples, including that the tempting spelling declares an open section rather than a literal name.
 
-		- 🔘 Code Review 20260802 item 4: validating against a recursive schema can hang.
+		- ✅ Code Review 20260802 item 4: validating against a recursive schema can hang.
 			- Reproduced: when two constraint paths match the same node and both mount the same fragment, the work doubles per level of the document. A file around thirty lines deep takes over a minute; a little deeper and it never finishes.
 			- The C build also runs out of memory, because each level's working data is kept until the whole validation ends rather than being released on the way back out.
-			- Probable fix: remember which constraint has already been checked against which node. The C side additionally needs its per-level scratch released.
+			- Fixed: each shape is checked once per node, so two paths reaching the same node cost one pass. A document 500 levels deep now validates in well under a tenth of a second.
+			- Fixed in C as well: the working data for each level is released on the way back out. The same document went from 11.5 GB to 2.2 MB. Case 043.
 
-		- 🔘 Code Review 20260802 item 5: generating a file from a recursive schema can crash.
+		- ✅ Code Review 20260802 item 5: generating a file from a recursive schema can crash.
 			- Reproduced: a long chain of fragments overflows the stack and aborts the process in the reference build; Python raises instead; a schema of about 130 lines that branches can eat all available memory before it finishes.
 			- Validation of the same schemas is fine. Only generation expands every path up front.
 			- Note: generation reads a file the user supplies, so this is reachable from ordinary use.
-			- Probable fix: cap the expansion and report a schema fault instead of running until something breaks.
+			- Fixed: a mount chain that reaches the nesting cap is noted like one that re-enters, rather than followed. A schema whose mounts multiply past a field ceiling now reports a schema fault, V096.
+			- Validation is unaffected: it still follows the document, so it needs no limit.
 
 		- 🔘 Code Review 20260802 item 6: Python raises on a very long number where the others return cleanly.
 			- Reproduced: a value of five thousand digits makes the Python build exit with a stack trace, while the reference reports a bad type. Same for oversized selector indexes, schema repeat counts, and a day number inside a quoted date.
@@ -136,10 +140,11 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Cause: the whole argument list is scanned for those flags before options are parsed.
 			- Probable fix: only honor them in first position, or stop the scan at the first value.
 
-		- 🔘 Code Review 20260802 item 13: generated files don't always load.
+		- ✅ Code Review 20260802 item 13: generated files don't always load.
 			- Reproduced: a wildcard written with spaces inside the brackets, or with the alternate colon spelling, produces a line the parser rejects or a path that fails its own schema. A deep chain of fragments produces paths past the nesting limit.
 			- Cause: the wildcard is stripped out of the path as text rather than rebuilt from the parsed segments.
 			- The documented promise is that generated output always loads clean and validates against the schema that produced it.
+			- Fixed: the path is rebuilt from its parsed segments rather than cut out of the text, so every spelling of a wildcard behaves the same. A path deeper than a document may nest now goes to the trailing note instead of being written out.
 
 		- 🔘 Code Review 20260802 item 14: the C++ wrapper can hand back a dangling date.
 			- Reproduced: every other read in the wrapper copies its text out, but the structured date read copies the struct while its fractional-seconds pointer still points into the document. Letting the document go out of scope and then using the date reads freed memory.

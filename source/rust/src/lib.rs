@@ -3876,6 +3876,17 @@ fn gen_default_text(v: &str) -> String {
 pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 	let def = build_schema(schema)?;
 	let (cons, cuts) = expand_mounts(&def);
+	if cons.len() >= GEN_MAX_FIELDS {
+		return Err(vec![Diagnostic {
+			line: 0,
+			severity: Severity::Error,
+			code: "V096",
+			message: format!(
+				"schema expands past {} fields; fragments mounted at more than one path multiply",
+				GEN_MAX_FIELDS
+			),
+		}]);
+	}
 	let must_exist = |c: &Constraint| c.required || matches!(c.repeat, Some((lo, _)) if lo >= 1);
 	let has_wild = |c: &Constraint| {
 		c.segs
@@ -3885,10 +3896,13 @@ pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 	// `[#N]` needs a pre-existing instance and its `#` would start a comment
 	// on a binding line; a path with a literal newline cannot be written at
 	// all. Both go to the trailing note instead of emitting a broken line.
+	// A path deeper than a document may nest cannot be generated either: the
+	// line would draw E016 on the way back in.
 	let unwritable = |c: &Constraint| {
-		c.segs
-			.iter()
-			.any(|s| matches!(s.selector, Some(Selector::ByIndex(_))) || s.star)
+		c.segs.len() > MAX_DEPTH
+			|| c.segs
+				.iter()
+				.any(|s| matches!(s.selector, Some(Selector::ByIndex(_))) || s.star)
 			|| c.path.contains('\n')
 	};
 	// Live concrete paths materialize instances; decide which must-exist
@@ -3956,9 +3970,11 @@ pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 		out.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
 		out.push('\n');
 		// A filled wildcard emits in dotted form, targeting the first (the
-		// materialized) instance.
+		// materialized) instance. Rebuilt from the parsed segments, not by
+		// cutting text out of the path: the same path can be written several
+		// ways, and only the segments say what it means.
 		let path = if fill[i] {
-			c.path.replace("[*]", "")
+			gen_path_text(&c.segs)
 		} else {
 			c.path.clone()
 		};
@@ -3987,6 +4003,41 @@ pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 /// schema order, each field's path and segments prefixed by its mount's. A
 /// mount whose fragment is already expanding (a cycle) stops there and is
 /// returned as (path, fragment name) for the trailing not-generated block.
+/// Ceiling on how many fields one schema may expand to. Fragments that mount
+/// each other at more than one path multiply, so a short schema can otherwise
+/// ask for more output than the machine can hold; past this the generator
+/// reports a schema fault rather than running until something breaks.
+const GEN_MAX_FIELDS: usize = 10_000;
+
+/// Render parsed segments back as a dotted path, dropping wildcard selectors
+/// (a generated line targets the one instance it materializes) and quoting a
+/// name that needs it, so the result is a path the scanner reads back the same.
+fn gen_path_text(segs: &[Segment]) -> String {
+	let mut out = String::new();
+	for (i, s) in segs.iter().enumerate() {
+		if i > 0 {
+			out.push('.');
+		}
+		if s.star {
+			out.push('*');
+		} else {
+			out.push_str(&emit_name(&s.name));
+		}
+		match &s.selector {
+			Some(Selector::ByValue(v)) => {
+				out.push('[');
+				out.push_str(v);
+				out.push(']');
+			}
+			Some(Selector::ByIndex(k)) => {
+				out.push_str(&format!("[#{}]", k));
+			}
+			Some(Selector::Wildcard) | None => {}
+		}
+	}
+	out
+}
+
 fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
 	fn go(
 		list: &[Constraint],
@@ -4006,9 +4057,14 @@ fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
 			}
 			let path = cc.path.clone();
 			let segs = cc.segs.clone();
+			if out.len() >= GEN_MAX_FIELDS {
+				return;
+			}
 			out.push(cc);
 			if let Some(fr) = &c.inherits {
-				if stack.iter().any(|x| x == fr) {
+				// A chain long enough to outrun the stack, or a mount that
+				// re-enters, stops here and is noted instead of expanded.
+				if stack.iter().any(|x| x == fr) || stack.len() >= MAX_DEPTH {
 					cuts.push((path.replace('\n', "\\n"), fr.clone()));
 				} else if let Some(fcs) = def.frags.get(fr) {
 					stack.push(fr.clone());
@@ -4124,7 +4180,8 @@ impl Document {
 	}
 
 	fn v_check(&self, c: &Constraint, def: &SchemaDef, out: &mut Vec<Diagnostic>) {
-		self.v_check_from(c, def, ROOT, 0, out);
+		let mut mounted = std::collections::HashSet::new();
+		self.v_check_from(c, def, ROOT, 0, out, &mut mounted);
 	}
 
 	// A mounted fragment's fields run per resolved node, right after that
@@ -4138,6 +4195,7 @@ impl Document {
 		start: usize,
 		anchor0: usize,
 		out: &mut Vec<Diagnostic>,
+		mounted: &mut std::collections::HashSet<(String, usize)>,
 	) {
 		let mut ctxs: Vec<(usize, Vec<usize>)> = Vec::new();
 		self.v_contexts(vec![start], &c.segs, anchor0, &mut ctxs);
@@ -4163,8 +4221,15 @@ impl Document {
 				if let Some(fr) = &c.inherits
 					&& let Some(fcs) = def.frags.get(fr)
 				{
-					for fc in fcs {
-						self.v_check_from(fc, def, n, self.arena[n].line, out);
+					// Two constraints can resolve to the same node and mount the
+					// same fragment there. The second mount would repeat the
+					// first's work and its diagnostics, and repeating it per
+					// level is what makes a recursive schema cost double per
+					// document level, so each pair is done once.
+					if mounted.insert((fr.clone(), n)) {
+						for fc in fcs {
+							self.v_check_from(fc, def, n, self.arena[n].line, out, mounted);
+						}
 					}
 				}
 			}

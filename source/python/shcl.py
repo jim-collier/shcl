@@ -106,6 +106,7 @@ def _diag_code(msg):
 		("bad schema path", "V093"),
 		("bad schema fragment", "V094"),
 		("unknown schema fragment ", "V095"),
+		("schema expands past ", "V096"),
 		("schema failed to load", "V099"),
 	):
 		if msg.startswith(prefix):
@@ -2319,13 +2320,13 @@ class Document:
 		out.append((anchor, cur))
 
 	def _v_check(self, c, sdef, out):
-		self._v_check_from(c, sdef, ROOT, 0, out)
+		self._v_check_from(c, sdef, ROOT, 0, out, set())
 
 	# A mounted fragment's fields run per resolved node, right after that
 	# node's own checks, in fragment order - depth-first, so diagnostic order
 	# stays derivable. Termination is structural: every mount descends at
 	# least one document level, and the document is finite.
-	def _v_check_from(self, c, sdef, start, anchor0, out):
+	def _v_check_from(self, c, sdef, start, anchor0, out, mounted):
 		ctxs = []
 		self._v_contexts([start], c.segs, anchor0, ctxs)
 		for anchor, found in ctxs:
@@ -2341,8 +2342,15 @@ class Document:
 				if c.inherits is not None:
 					fcs = sdef.frags.get(c.inherits)
 					if fcs is not None:
-						for fc in fcs:
-							self._v_check_from(fc, sdef, n, self.arena[n].line, out)
+						# Two constraints can resolve to the same node and mount the
+						# same fragment there. The second mount would repeat the
+						# first's work and its diagnostics, and repeating it per
+						# level is what makes a recursive schema cost double per
+						# document level, so each pair is done once.
+						if (c.inherits, n) not in mounted:
+							mounted.add((c.inherits, n))
+							for fc in fcs:
+								self._v_check_from(fc, sdef, n, self.arena[n].line, out, mounted)
 
 	def _v_node(self, c, n, out):
 		node = self.arena[n]
@@ -3375,6 +3383,10 @@ def generate(schema):
 	if faults:
 		return "", faults
 	cons, cuts = _expand_mounts(sdef)
+	if len(cons) >= _GEN_MAX_FIELDS:
+		faults = []
+		_vdiag(faults, 0, "schema expands past {} fields; fragments mounted at more than one path multiply".format(_GEN_MAX_FIELDS))
+		return "", faults
 
 	def must_exist(c):
 		return c.required or (c.repeat is not None and c.repeat[0] >= 1)
@@ -3385,8 +3397,10 @@ def generate(schema):
 	# `[#N]` needs a pre-existing instance and its `#` would start a comment
 	# on a binding line; a path with a literal newline cannot be written at
 	# all. Both go to the trailing note instead of emitting a broken line.
+	# A path deeper than a document may nest cannot be generated either: the
+	# line would draw E016 on the way back in.
 	def unwritable(c):
-		return any((s.selector is not None and s.selector[0] == "idx") or s.star for s in c.segs) or "\n" in c.path
+		return len(c.segs) > MAX_DEPTH or any((s.selector is not None and s.selector[0] == "idx") or s.star for s in c.segs) or "\n" in c.path
 
 	# Live concrete paths materialize instances; decide which must-exist
 	# wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -3427,8 +3441,10 @@ def generate(schema):
 		# string value must not break out of it.
 		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
 		# A filled wildcard emits in dotted form, targeting the first (the
-		# materialized) instance.
-		path = c.path.replace("[*]", "") if fill[i] else c.path
+		# materialized) instance. Rebuilt from the parsed segments, not by
+		# cutting text out of the path: the same path can be written several
+		# ways, and only the segments say what it means.
+		path = _gen_path_text(c.segs) if fill[i] else c.path
 		prefix = "" if must_exist(c) else "#"
 		if c.default_text is not None:
 			out.append("{}{}: {}\n".format(prefix, path, _gen_default_text(c.default_text)))
@@ -3444,6 +3460,34 @@ def generate(schema):
 		for path, tyname in wild:
 			out.append("#   {}   {}\n".format(path, tyname))
 	return "".join(out), []
+
+
+# Ceiling on how many fields one schema may expand to. Fragments that mount
+# each other at more than one path multiply, so a short schema can otherwise
+# ask for more output than the machine can hold; past this the generator
+# reports a schema fault rather than running until something breaks.
+_GEN_MAX_FIELDS = 10000
+
+
+def _gen_path_text(segs):
+	"""Render parsed segments back as a dotted path, dropping wildcard selectors
+	(a generated line targets the one instance it materializes) and quoting a
+	name that needs it, so the result is a path the scanner reads back the same."""
+	out = []
+	for i, s in enumerate(segs):
+		if i > 0:
+			out.append(".")
+		if s.star:
+			out.append("*")
+		else:
+			out.append(_emit_name(s.name))
+		if s.selector is not None:
+			if s.selector[0] == "val":
+				out.append("[{}]".format(s.selector[1]))
+			elif s.selector[0] == "idx":
+				out.append("[#{}]".format(s.selector[1]))
+			# a wildcard selector is dropped
+	return "".join(out)
 
 
 def _expand_mounts(sdef):
@@ -3464,9 +3508,13 @@ def _expand_mounts(sdef):
 				cc.segs = list(s) + list(c.segs)
 			path = cc.path
 			segs = cc.segs
+			if len(out) >= _GEN_MAX_FIELDS:
+				return
 			out.append(cc)
 			if c.inherits is not None:
-				if c.inherits in stack:
+				# A chain long enough to outrun the stack, or a mount that
+				# re-enters, stops here and is noted instead of expanded.
+				if c.inherits in stack or len(stack) >= MAX_DEPTH:
 					cuts.append((path.replace("\n", "\\n"), c.inherits))
 				else:
 					fcs = sdef.frags.get(c.inherits)
