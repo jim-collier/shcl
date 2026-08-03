@@ -1,0 +1,10 @@
+# lower-layer note on the block
+blk:
+	```
+	body
+	```
+	base-only: 1
+
+plain: replaced
+
+# shared footer

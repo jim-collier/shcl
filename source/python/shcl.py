@@ -381,6 +381,32 @@ class _Node:
 
 ROOT = 0
 
+
+def _fold_node_into(arena, survivor, loser):
+	"""Merge a later instance into an earlier one under the in-file merge rule:
+	children and trivia move over, first trailing wins (a second demotes to a
+	leading line), first spelling stays. The caller drops the loser from the
+	parent's child list; it keeps its arena slot, unreferenced."""
+	# Lists are references: after each move, point the loser at a fresh empty
+	# list so the two nodes never share one.
+	kids = arena[loser].children
+	arena[loser].children = []
+	for k in kids:
+		arena[k].parent = survivor
+	arena[survivor].children.extend(kids)
+	arena[survivor].leading.extend(arena[loser].leading)
+	arena[loser].leading = []
+	trail = arena[loser].trailing
+	arena[loser].trailing = ""
+	if trail:
+		if not arena[survivor].trailing:
+			arena[survivor].trailing = trail
+		else:
+			arena[survivor].leading.append(_Lead(trail, False))
+	arena[survivor].after.extend(arena[loser].after)
+	arena[loser].after = []
+
+
 # Maximum nesting depth (levels below the document root), enforced at load and
 # by the Writer. Deeper lines are skipped with an E016 error. The cap is what
 # keeps the recursive tree walks (emit, merge, clone) safely inside every
@@ -834,6 +860,31 @@ class _Parser:
 			del dmap[(name, old_disp)]
 		dmap.setdefault((name, _disp_key(self.arena[node].value)), node)
 
+	def _fold_late_dups(self):
+		"""A value that mutates after its sibling group was keyed - an empty field
+		filled by a fence, a stacked list closed - can land on a key an earlier
+		sibling already holds, which the keyed lookup can no longer catch. Fold
+		those pairs so the tree matches a reparse of its own canonical text.
+		Depth-first, since folding can carry duplicates down a level."""
+		# Explicit stack: parse-side walks stay iterative so depth can't blow
+		# Python's recursion limit.
+		stack = [ROOT]
+		while stack:
+			parent = stack.pop()
+			kids = self.arena[parent].children
+			first = {}
+			keep = []
+			for c in kids:
+				key = (self.arena[c].name, self.arena[c].value.key())
+				survivor = first.get(key)
+				if survivor is not None:
+					_fold_node_into(self.arena, survivor, c)
+				else:
+					first[key] = c
+					keep.append(c)
+			stack.extend(keep)
+			self.arena[parent].children = keep
+
 	def _attach_trivia(self, node, trailing):
 		"""Hand pending leading comments (and this line's trailing one) to a node.
 		First trailing wins; a later one demotes to leading so nothing is lost."""
@@ -1229,6 +1280,7 @@ class _Parser:
 				self.stack.append((indent, node))
 			i = nxt
 		self._star_flush()
+		self._fold_late_dups()
 		self._emit_repeated_leaf_hints()
 		# Indented tail comments keep their block; only top-level ones orphan.
 		self._hang_deeper_pending("")
@@ -1711,20 +1763,7 @@ class Document:
 			survivor, loser = other, node
 		else:
 			survivor, loser = node, other
-		kids = self.arena[loser].children
-		self.arena[loser].children = []
-		for k in kids:
-			self.arena[k].parent = survivor
-		self.arena[survivor].children.extend(kids)
-		self.arena[survivor].leading.extend(self.arena[loser].leading)
-		self.arena[loser].leading = []
-		trail = self.arena[loser].trailing
-		self.arena[loser].trailing = ""
-		if trail:
-			if not self.arena[survivor].trailing:
-				self.arena[survivor].trailing = trail
-			else:
-				self.arena[survivor].leading.append(_Lead(trail, False))
+		_fold_node_into(self.arena, survivor, loser)
 		self.arena[parent].children = [c for c in self.arena[parent].children if c != loser]
 
 	def exists(self, path):
@@ -1871,12 +1910,31 @@ class Document:
 		with each node. Load(defaults, site, user) is a left fold of this: each
 		later file overlaid on the earlier ones."""
 		self._overlay(ROOT, over, ROOT)
-		self.orphans.extend(_Lead(c.text, c.blank_before) for c in over.orphans)
+		# Layers commonly share a footer; keeping one copy of each keeps a
+		# stack of files from repeating it once per layer.
+		for o in over.orphans:
+			if not any(e.text == o.text for e in self.orphans):
+				self.orphans.append(_Lead(o.text, o.blank_before))
 
 	# One grouping pass over each side, then a single children rebuild: the
 	# old shape re-filtered the over side per distinct name and re-scanned
 	# (and re-keyed) the base side per over node - three O(K^2) terms at one
 	# parent, plus a full list rebuild per replaced name.
+	def _adopt_trivia(self, base, over, ok):
+		"""A matched instance keeps the base node, so the over side's comments have
+		to move onto it or they are lost. Same rule as an in-file merge: leading
+		concatenates in layer order, first trailing wins."""
+		# Per-element copies: the merged document must not share list objects
+		# with `over`, which the caller may still use.
+		src = over.arena[ok]
+		self.arena[base].leading.extend(_Lead(c.text, c.blank_before) for c in src.leading)
+		if src.trailing:
+			if not self.arena[base].trailing:
+				self.arena[base].trailing = src.trailing
+			else:
+				self.arena[base].leading.append(_Lead(src.trailing, False))
+		self.arena[base].after.extend(_Lead(c.text, c.blank_before) for c in src.after)
+
 	def _overlay(self, base_parent, over, over_parent):
 		over_kids = list(over.arena[over_parent].children)
 		# Over side: name -> node bucket, in first-appearance order.
@@ -1924,6 +1982,7 @@ class Document:
 					okey = over.arena[ok].value.key()
 					b = by_key.get((name, okey))
 					if b is not None:
+						self._adopt_trivia(b, over, ok)
 						self._overlay(b, over, ok)
 					else:
 						appended.append(self._clone_subtree(over, ok, base_parent))

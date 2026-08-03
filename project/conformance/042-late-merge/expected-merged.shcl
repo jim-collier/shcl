@@ -1,0 +1,16 @@
+# lower-layer note on the block
+
+# two filled blocks that match, so their children fold together too
+blk:
+	```
+	body
+	```
+	base-only: 1
+	kid: same
+	other: 2
+
+plain: keep
+# a stacked list that closes onto an earlier instance's value
+dup: x
+
+# shared footer

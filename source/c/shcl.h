@@ -527,6 +527,31 @@ struct shcl_doc {
 #define ROOT ((size_t)0)
 #define NODE(d, i) ((d)->nodes.data[i])
 
+/* Merge a later instance into an earlier one under the in-file merge rule:
+   children and trivia move over, first trailing wins (a second demotes to a
+   leading line), first spelling stays. The caller drops the loser from the
+   parent's child list; it keeps its arena slot, unreferenced. */
+static void fold_node_into(shcl_doc *d, size_t survivor, size_t loser) {
+	Arena *a = &d->arena;
+	VecSize kids = NODE(d, loser).children;
+	for (size_t k = 0; k < kids.len; k++) {
+		NODE(d, kids.data[k]).parent = survivor;
+		VecSize_push(a, &NODE(d, survivor).children, kids.data[k]);
+	}
+	NODE(d, loser).children.len = 0;
+	for (size_t k = 0; k < NODE(d, loser).leading.len; k++)
+		VecLead_push(a, &NODE(d, survivor).leading, NODE(d, loser).leading.data[k]);
+	NODE(d, loser).leading.len = 0;
+	if (NODE(d, loser).trailing.n) {
+		if (NODE(d, survivor).trailing.n == 0) NODE(d, survivor).trailing = NODE(d, loser).trailing;
+		else VecLead_push(a, &NODE(d, survivor).leading, lead_plain(NODE(d, loser).trailing));
+		NODE(d, loser).trailing.n = 0;
+	}
+	for (size_t k = 0; k < NODE(d, loser).after.len; k++)
+		VecLead_push(a, &NODE(d, survivor).after, NODE(d, loser).after.data[k]);
+	NODE(d, loser).after.len = 0;
+}
+
 static Value v_empty(void) { Value v; memset(&v, 0, sizeof v); v.kind = V_EMPTY; return v; }
 static int v_is_empty(const Value *v) { return v->kind == V_EMPTY; }
 
@@ -1385,6 +1410,38 @@ static void remap_child(Parser *P, size_t node, S old_key, S old_disp) {
 	if (cmap_get(dm, hd, name, new_disp) == (size_t)-1) cmap_put(a, dm, hd, name, new_disp, node);
 }
 
+/* A value that mutates after its sibling group was keyed - an empty field
+   filled by a fence, a stacked list closed - can land on a key an earlier
+   sibling already holds, which the keyed lookup can no longer catch. Fold
+   those pairs so the tree matches a reparse of its own canonical text.
+   Depth-first, since folding can carry duplicates down a level. Grouping
+   temporaries live in scratch (dead before the first resolve resets it). */
+static void fold_late_dups(Parser *P) {
+	shcl_doc *d = P->d;
+	Arena *t = &d->scratch;
+	VecSize stack = {0};
+	VecSize_push(t, &stack, ROOT);
+	while (stack.len) {
+		size_t parent = stack.data[--stack.len];
+		CMap first; memset(&first, 0, sizeof first);
+		VecSize *ch = &NODE(d, parent).children;
+		size_t w = 0;
+		for (size_t k = 0; k < ch->len; k++) {
+			size_t c = ch->data[k];
+			S key = value_key(t, &NODE(d, c).value);
+			uint64_t h = cmap_hash(NODE(d, c).name, key);
+			size_t survivor = cmap_get(&first, h, NODE(d, c).name, key);
+			if (survivor != (size_t)-1) fold_node_into(d, survivor, c);
+			else {
+				cmap_put(t, &first, h, NODE(d, c).name, key, c);
+				ch->data[w++] = c;
+			}
+		}
+		ch->len = w;
+		for (size_t k = 0; k < ch->len; k++) VecSize_push(t, &stack, ch->data[k]);
+	}
+}
+
 /* Hand pending leading comments (and this line's trailing one) to a node.
    First trailing wins; a later one demotes to leading so nothing is lost.
    Pending text was already dup'd into the arena at push time (the caller's
@@ -1757,6 +1814,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		i = next;
 	}
 	star_flush(&P);
+	fold_late_dups(&P);
 	emit_repeated_leaf_hints(&P);
 	/* Indented tail comments keep their block; only top-level ones orphan. */
 	hang_deeper_pending(&P, s_empty());
@@ -2160,19 +2218,7 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
 	if (other == (size_t)-1) return;
 	size_t survivor = (pos_other < pos_node) ? other : node;
 	size_t loser = (survivor == node) ? other : node;
-	VecSize kids = NODE(d, loser).children;
-	for (size_t k = 0; k < kids.len; k++) {
-		NODE(d, kids.data[k]).parent = survivor;
-		VecSize_push(a, &NODE(d, survivor).children, kids.data[k]);
-	}
-	NODE(d, loser).children.len = 0;
-	for (size_t k = 0; k < NODE(d, loser).leading.len; k++) VecLead_push(a, &NODE(d, survivor).leading, NODE(d, loser).leading.data[k]);
-	NODE(d, loser).leading.len = 0;
-	if (NODE(d, loser).trailing.n) {
-		if (NODE(d, survivor).trailing.n == 0) NODE(d, survivor).trailing = NODE(d, loser).trailing;
-		else VecLead_push(a, &NODE(d, survivor).leading, lead_plain(NODE(d, loser).trailing));
-		NODE(d, loser).trailing.n = 0;
-	}
+	fold_node_into(d, survivor, loser);
 	VecSize *pk = &NODE(d, parent).children;
 	size_t w = 0;
 	for (size_t k = 0; k < pk->len; k++) if (pk->data[k] != loser) pk->data[w++] = pk->data[k];
@@ -2330,6 +2376,23 @@ static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size
 	return idx;
 }
 
+/* A matched instance keeps the base node, so the over side's comments have to
+   move onto it or they are lost. Same rule as an in-file merge: leading
+   concatenates in layer order, first trailing wins. Text is dup'd into d's
+   arena - over may be freed after the merge. */
+static void adopt_trivia(shcl_doc *d, size_t base, const shcl_doc *over, size_t ok) {
+	Arena *a = &d->arena;
+	const Node *src = &over->nodes.data[ok];
+	for (size_t i = 0; i < src->leading.len; i++)
+		VecLead_push(a, &NODE(d, base).leading, lead_make(s_dup(a, src->leading.data[i].text), src->leading.data[i].blank_before));
+	if (src->trailing.n) {
+		if (NODE(d, base).trailing.n == 0) NODE(d, base).trailing = s_dup(a, src->trailing);
+		else VecLead_push(a, &NODE(d, base).leading, lead_plain(s_dup(a, src->trailing)));
+	}
+	for (size_t i = 0; i < src->after.len; i++)
+		VecLead_push(a, &NODE(d, base).after, lead_make(s_dup(a, src->after.data[i].text), src->after.data[i].blank_before));
+}
+
 // One grouping pass over each side, then a single children rebuild: the old
 // shape re-filtered the over side per distinct name and re-scanned (and
 // re-keyed) the base side per over node - three O(K^2) terms at one parent,
@@ -2401,7 +2464,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 				S okey = value_key(t, &over->nodes.data[ok].value);
 				uint64_t hk = cmap_hash(name, okey);
 				size_t b = cmap_get(&by_key, hk, name, okey);
-				if (b != (size_t)-1) w_overlay(d, b, over, ok);
+				if (b != (size_t)-1) { adopt_trivia(d, b, over, ok); w_overlay(d, b, over, ok); }
 				else VecSize_push(t, &appended, w_clone_subtree(d, over, ok, bp));
 			}
 		}
@@ -2433,8 +2496,14 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	Arena *a = &d->arena;
 	arena_reset(&d->scratch); // merge temporaries (compare keys, clone lists) die here
 	w_overlay(d, ROOT, over, ROOT);
-	for (size_t i = 0; i < over->orphans.len; i++)
-		VecLead_push(a, &d->orphans, lead_make(s_dup(a, over->orphans.data[i].text), over->orphans.data[i].blank_before));
+	// Layers commonly share a footer; keeping one copy of each keeps a stack
+	// of files from repeating it once per layer.
+	for (size_t i = 0; i < over->orphans.len; i++) {
+		S ot = over->orphans.data[i].text;
+		int dup = 0;
+		for (size_t k = 0; k < d->orphans.len; k++) if (s_eq(d->orphans.data[k].text, ot)) { dup = 1; break; }
+		if (!dup) VecLead_push(a, &d->orphans, lead_make(s_dup(a, ot), over->orphans.data[i].blank_before));
+	}
 }
 
 int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def) {
