@@ -20,7 +20,7 @@
 ##		--release <dev|stable>   dev = newest release including pre-releases
 ##		                         (default); stable = newest full release.
 ##		--target <user|system>   system (default): /opt/shcl + a symlink at
-##		                         /usr/local/sbin/shcl (sudo if not root).
+##		                         /usr/local/bin/shcl (sudo if not root).
 ##		                         user: ~/.local/share/shcl + a symlink at
 ##		                         ~/.local/bin/shcl. No sudo.
 ##		--yes | -y               skip the confirmation prompt.
@@ -69,15 +69,54 @@ ACmdUphTcGhYvn91ORZVxt0CAwEAAQ==
 
 die() { printf 'install.bash: %s\n' "$*" >&2; exit 1; }
 
+## Usage text lives here, not in a sed slice of "$0": under the documented
+## `curl | bash -s -- --help` pipe, $0 is just "bash" and sed reads the wrong
+## file (or a stray one named "bash" in the cwd).
+usage() {
+	cat <<'EOF'
+## install.bash
+##
+##	Release installer for shcl (Simple Hierarchical Config Language) on Linux.
+##	Downloads the latest release from GitHub, checks the sha256sums file against
+##	the release signing key before trusting a checksum out of it, and lays out
+##	the binary plus the drop-in source files and shell wrappers. Idempotent:
+##	re-running updates an existing install in place.
+##
+##	Needs curl or wget, plus openssl for the signature check.
+##
+##	Usage (one-liner):
+##		curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+##		wget -qO- https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+##	With options:
+##		curl -fsSL .../install.bash | bash -s -- --target=user --yes
+##
+##	Options (both --opt=VALUE and --opt VALUE work):
+##		--release <dev|stable>   dev = newest release including pre-releases
+##		                         (default); stable = newest full release.
+##		--target <user|system>   system (default): /opt/shcl + a symlink at
+##		                         /usr/local/bin/shcl (sudo if not root).
+##		                         user: ~/.local/share/shcl + a symlink at
+##		                         ~/.local/bin/shcl. No sudo.
+##		--yes | -y               skip the confirmation prompt.
+##
+##	Layout under the install dir:
+##		shcl        the CLI binary
+##		code/       drop-in single-file bindings (lib.rs, shcl.go, shcl.py,
+##		            shcl.h, shcl.hpp)
+##		scripts/    shell wrappers (shcl.bash, shcl.ps1)
+##
+EOF
+}
+
 ## Value options accept --opt=VALUE and --opt VALUE, like the shcl CLI.
 while (( $# )); do
 	case "$1" in
 		--release=*) release="${1#*=}" ;;
-		--release)   shift; release="${1:-}" ;;
+		--release)   (( $# >= 2 )) || die "missing value for --release (try --release=VALUE)"; shift; release="$1" ;;
 		--target=*)  target="${1#*=}" ;;
-		--target)    shift; target="${1:-}" ;;
+		--target)    (( $# >= 2 )) || die "missing value for --target (try --target=VALUE)"; shift; target="$1" ;;
 		-y|--yes)    assume_yes=1 ;;
-		-h|--help)   sed -n '3,33p' "$0" 2>/dev/null || true; exit 0 ;;
+		-h|--help)   usage; exit 0 ;;
 		*) die "unknown option: $1" ;;
 	esac
 	shift
@@ -125,7 +164,7 @@ version="${tag#v}"
 ## Destinations.
 if [[ "${target}" == "system" ]]; then
 	dest="/opt/shcl"
-	link="/usr/local/sbin/shcl"
+	link="/usr/local/bin/shcl"
 	asroot=""
 	[[ "$(id -u)" == 0 ]] || asroot="sudo"
 else
@@ -187,7 +226,10 @@ ${asroot} cp "${tmp}"/scripts/* "${dest}/scripts/"
 ${asroot} ln -sfn "${dest}/shcl" "${link}"
 
 printf 'installed shcl %s -> %s\n' "${version}" "${link}"
-if [[ "${target}" == "user" && ":${PATH}:" != *":${HOME}/.local/bin:"* ]]; then
-	printf 'note: %s is not on your PATH\n' "${HOME}/.local/bin"
+## Both targets: an install nobody can invoke by name looks fine to the version
+## check below, so say something when the symlink dir is off the PATH.
+linkdir="$(dirname "${link}")"
+if [[ ":${PATH}:" != *":${linkdir}:"* ]]; then
+	printf 'note: %s is not on your PATH\n' "${linkdir}"
 fi
 "${link}" version 2>/dev/null || "${dest}/shcl" version

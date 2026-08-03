@@ -504,8 +504,6 @@ fn normalize_dangling_backslash(mut t: String) -> String {
 	t
 }
 
-/// Trim, then strip one matching outer quote pair if present. Unquoted empty
-/// slots return None (dropped, never an error).
 /// True when some piece starts with a quote that never closes (the closing
 /// quote missing or escaped). Such a piece stays literal - and a quote-aware
 /// comment strip has already swallowed any trailing `#` comment into it - so
@@ -534,6 +532,8 @@ fn unterminated_quote(text: &str) -> bool {
 	false
 }
 
+/// Trim, then strip one matching outer quote pair if present. Unquoted empty
+/// slots return None (dropped, never an error).
 fn parse_element(piece: &str) -> Option<Element> {
 	let t = piece.trim();
 	if t.is_empty() {
@@ -646,6 +646,13 @@ struct Segment {
 struct PathScan {
 	segments: Vec<Segment>,
 	value_text: Option<String>, // text after the separator colon, trimmed
+}
+
+/// usize view of a selector index: None when it does not fit the target's
+/// pointer width. An index that big can only mean "no such instance"; a bare
+/// `as` cast would wrap into a live element on a 32-bit build.
+fn index_usize(k: u64) -> Option<usize> {
+	usize::try_from(k).ok()
 }
 
 /// Scan `a . b : [sel] . c : value`. Whitespace around dots/colons/brackets is
@@ -1097,7 +1104,7 @@ impl Parser {
 						.copied()
 						.filter(|&c| self.arena[c].name == seg.name)
 						.collect();
-					if let Some(&found) = matches.get(*n as usize) {
+					if let Some(&found) = index_usize(*n).and_then(|i| matches.get(i)) {
 						cur = found;
 					} else {
 						self.err(line, format!("no instance {} of '{}'", n, seg.name));
@@ -1322,13 +1329,7 @@ impl Parser {
 						.map(|&c| self.arena[c].value.display())
 						.collect::<Vec<_>>()
 						.join(", ");
-					hints.push((
-						line,
-						format!(
-							"'{}' repeats as a bare leaf - did you mean '{}: {}'?",
-							name, name, joined
-						),
-					));
+					hints.push((line, format!("{}{}'?", h001_head(name), joined)));
 				}
 			}
 		}
@@ -1753,6 +1754,18 @@ pub fn quote_segment(name: &str) -> String {
 	emit_name(name)
 }
 
+/// The single H001 wording site: the hint builder and the schema suppressor
+/// both come here, so the suppressor matches the exact head the builder
+/// emitted - never a re-parse of free prose. (The leaf name cannot ride on
+/// Diagnostic itself: consumers build Diagnostic literals, so its field set
+/// is frozen.)
+fn h001_head(name: &str) -> String {
+	format!(
+		"'{}' repeats as a bare leaf - did you mean '{}: ",
+		name, name
+	)
+}
+
 /// Drop the H001 hints a schema disavows: a field whose declared repeat upper
 /// bound is above 1 repeats BY DESIGN (repetition is its instance mechanism),
 /// so the repeated-bare-leaf hint is structurally a false positive there and
@@ -1783,33 +1796,26 @@ pub fn suppress_declared_repeats(schema: &Document, diags: &mut Vec<Diagnostic>)
 				Some(&u) if u > 1 => {}
 				_ => continue,
 			}
-			let raw = p
-				.rsplit('.')
-				.next()
-				.unwrap_or("")
-				.split('[')
-				.next()
-				.unwrap_or("")
-				.trim();
-			if raw == "*" {
+			// Leaf name from the parsed path, not a re-split of its text: a
+			// quoted last segment may contain dots (`a."b.c"`). The scanner
+			// folds the name; the doc side stores names folded too.
+			let Ok(scan) = scan_lookup(p) else {
+				continue;
+			};
+			let Some(seg) = scan.segments.last() else {
+				continue;
+			};
+			if seg.star {
 				continue; // name wildcard: no single leaf name to disavow
 			}
-			let leaf = raw.trim_matches(|c| c == '"' || c == '\'');
-			if !leaf.is_empty() {
-				names.push(leaf.to_ascii_lowercase());
-			}
+			names.push(seg.name.clone());
 		}
 	}
 	if names.is_empty() {
 		return;
 	}
-	diags.retain(|d| {
-		if d.code != "H001" {
-			return true;
-		}
-		let name = d.message.split('\'').nth(1).unwrap_or("");
-		!names.iter().any(|n| n == name)
-	});
+	let heads: Vec<String> = names.iter().map(|n| h001_head(n)).collect();
+	diags.retain(|d| d.code != "H001" || !heads.iter().any(|h| d.message.starts_with(h.as_str())));
 }
 
 /// Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
@@ -1841,6 +1847,17 @@ fn bare_quote_counts(t: &str) -> (usize, usize) {
 }
 
 fn quote_text(t: &str) -> String {
+	// A dangling trailing backslash would turn the closing quote into an
+	// escape pair - the scanner reads the path back wrong, or not at all.
+	// Store the doubled spelling (identical on string read), the same rule
+	// the element parser applies to bare text.
+	let normalized;
+	let t = if t.ends_with('\\') {
+		normalized = normalize_dangling_backslash(t.to_string());
+		normalized.as_str()
+	} else {
+		t
+	};
 	let (dq, sq) = bare_quote_counts(t);
 	if dq == 0 {
 		format!("\"{}\"", t)
@@ -1928,7 +1945,10 @@ impl Document {
 						.collect();
 				}
 				Some(Selector::ByIndex(k)) => {
-					cur = next.get(*k as usize).map(|&c| vec![c]).unwrap_or_default();
+					cur = index_usize(*k)
+						.and_then(|i| next.get(i))
+						.map(|&c| vec![c])
+						.unwrap_or_default();
 				}
 				Some(Selector::Wildcard) => {
 					// Remaining path resolves per-instance; slots stay aligned.
@@ -2195,7 +2215,7 @@ impl Document {
 						.copied()
 						.filter(|&n| self.arena[n].name == seg.name)
 						.collect();
-					match matches.get(*k as usize) {
+					match index_usize(*k).and_then(|i| matches.get(i)) {
 						Some(&m) => probe = Some(m),
 						None => return WriteReason::NoSuchIndex,
 					}
@@ -2257,7 +2277,7 @@ impl Document {
 						.copied()
 						.filter(|&c| self.arena[c].name == seg.name)
 						.collect();
-					*matches.get(*k as usize)?
+					*index_usize(*k).and_then(|i| matches.get(i))?
 				}
 				Some(Selector::Wildcard) => return None,
 			};
@@ -4173,7 +4193,10 @@ impl Document {
 						.collect();
 				}
 				Some(Selector::ByIndex(k)) => {
-					cur = next.get(*k as usize).map(|&c| vec![c]).unwrap_or_default();
+					cur = index_usize(*k)
+						.and_then(|i| next.get(i))
+						.map(|&c| vec![c])
+						.unwrap_or_default();
 				}
 				Some(Selector::Wildcard) => {
 					let rest = &segs[i + 1..];

@@ -39,12 +39,44 @@ assume_yes=0
 die() { printf 'install-dev.bash: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+## Usage text lives here, not in a sed slice of "$0": under the documented
+## `curl | bash -s -- --help` pipe, $0 is just "bash" and sed reads the wrong
+## file (or a stray one named "bash" in the cwd).
+usage() {
+	cat <<'EOF'
+## install-dev.bash
+##
+##	Dev-environment setup for shcl on Linux and macOS (on Windows, use WSL -
+##	the dev pipeline is bash). Clones the repo if needed, installs what it can
+##	without sudo (rustup, and the optional linters via pipx/npm/pwsh), and
+##	prints the exact install hint for anything that needs the system package
+##	manager. States the plan first, with an option to abort.
+##
+##	Usage (one-liner):
+##		curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install-dev.bash | bash
+##	With options:
+##		curl -fsSL .../install-dev.bash | bash -s -- --yes
+##
+##	Options:
+##		--dir <path>   where to clone (default ./shcl; skipped when run inside
+##		               an existing shcl clone).
+##		--yes | -y     skip the confirmation prompt.
+##
+##	What a full dev box needs (see contributing.md "How to develop"):
+##		gating:   rustup (rustfmt+clippy ride along), go, python3, gcc+g++,
+##		          shellcheck, ruff, mypy, cppcheck, markdownlint-cli2,
+##		          PSScriptAnalyzer (only if pwsh is present)
+##		the gate: cicd/cicd.bash --ci
+#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+EOF
+}
+
 while (( $# )); do
 	case "$1" in
 		--dir=*) clone_dir="${1#*=}" ;;
-		--dir)   shift; clone_dir="${1:-}" ;;
+		--dir)   (( $# >= 2 )) || die "missing value for --dir (try --dir=VALUE)"; shift; clone_dir="$1" ;;
 		-y|--yes) assume_yes=1 ;;
-		-h|--help) sed -n '3,26p' "$0" 2>/dev/null || true; exit 0 ;;
+		-h|--help) usage; exit 0 ;;
 		*) die "unknown option: $1" ;;
 	esac
 	shift

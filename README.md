@@ -279,7 +279,7 @@ On Windows, `irm | iex` cannot take arguments at all, so use the scriptblock for
 
 | Target | Linux | Windows
 | :-- | :-- | :--
-| `system` (default) | `/opt/shcl` plus a `/usr/local/sbin/shcl` symlink | `C:\Program Files\Shcl`, added to `PATH`
+| `system` (default) | `/opt/shcl` plus a `/usr/local/bin/shcl` symlink | `C:\Program Files\Shcl`, added to `PATH`
 | `user` | `~/.local/share/shcl` plus a `~/.local/bin/shcl` symlink | `%LOCALAPPDATA%\Programs\Shcl`, added to your `PATH`
 
 A `user` install needs no sudo or elevation.

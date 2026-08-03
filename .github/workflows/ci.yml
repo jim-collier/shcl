@@ -55,9 +55,13 @@ jobs:
           pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1
           npm install -g markdownlint-cli2@0.23.1
           pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -Force -Scope CurrentUser'
-          curl -fsSL --proto '=https' --tlsv1.2 \
-            "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz" \
-            | tar -xJ -C /tmp
+          curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/shellcheck.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz"
+          # sha256 of shellcheck-v0.11.0.linux.x86_64.tar.xz: a gating tool
+          # installed over the image's copy gets the same integrity pin as the
+          # SHA-pinned actions above - a swapped tarball must fail here.
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
           sudo install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
           shellcheck --version
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0

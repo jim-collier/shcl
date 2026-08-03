@@ -1674,6 +1674,21 @@ static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
 	}
 }
 
+/* The single H001 wording site: the hint builder and the schema suppressor
+   both come here, so the suppressor matches the exact head the builder
+   emitted - never a re-parse of free prose. (The leaf name cannot ride on
+   the diagnostic itself: consumers build diagnostics literally, so the field
+   set is frozen.) */
+static S h001_head(Arena *a, S name) {
+	SB s = {0};
+	sb_putc(a, &s, '\'');
+	sb_putS(a, &s, name);
+	sb_puts(a, &s, "' repeats as a bare leaf - did you mean '");
+	sb_putS(a, &s, name);
+	sb_puts(a, &s, ": ");
+	return sb_S(&s);
+}
+
 static void emit_repeated_leaf_hints(Parser *P) {
 	Arena *a = &P->d->arena;
 	for (size_t parent = 0; parent < P->d->nodes.len; parent++) {
@@ -1704,7 +1719,7 @@ static void emit_repeated_leaf_hints(Parser *P) {
 			if (!all_scalar) continue;
 			SB joined = {0};
 			for (size_t k = 0; k < grp.len; k++) { if (k) sb_puts(a, &joined, ", "); sb_putS(a, &joined, value_display(a, &NODE(P->d, grp.data[k]).value)); }
-			SB m = {0}; sb_putc(a, &m, '\''); sb_putS(a, &m, names.data[gi]); sb_puts(a, &m, "' repeats as a bare leaf - did you mean '"); sb_putS(a, &m, names.data[gi]); sb_puts(a, &m, ": "); sb_putS(a, &m, sb_S(&joined)); sb_puts(a, &m, "'?");
+			SB m = {0}; sb_putS(a, &m, h001_head(a, names.data[gi])); sb_putS(a, &m, sb_S(&joined)); sb_puts(a, &m, "'?");
 			push_diag(P->d, maxline, SHCL_SEV_HINT, sb_S(&m));
 		}
 	}
@@ -2651,6 +2666,11 @@ static void bare_quote_counts(S t, size_t *dq, size_t *sq) {
 	}
 }
 static S quote_text(Arena *a, S t) {
+	/* A dangling trailing backslash would turn the closing quote into an
+	   escape pair - the scanner reads the path back wrong, or not at all.
+	   Store the doubled spelling (identical on string read), the same rule
+	   the element parser applies to bare text. */
+	if (t.n && t.p[t.n - 1] == '\\') t = norm_dangling(a, t);
 	size_t dq, sq; bare_quote_counts(t, &dq, &sq);
 	SB s = {0};
 	if (dq == 0) { sb_putc(a, &s, '"'); sb_putS(a, &s, t); sb_putc(a, &s, '"'); }
@@ -3634,30 +3654,28 @@ void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 			shcl_read_i64_arr rep = read_int_array_in(schema, &tmp, qp);
 			if (rep.status != SHCL_GOOD || rep.n == 0 || rep.values[rep.n - 1] <= 1) continue;
 			S p; p.p = paths[i].p; p.n = paths[i].n;
-			size_t start = 0;
-			for (size_t k = p.n; k > 0; k--) if (p.p[k - 1] == '.') { start = k; break; }
-			S leaf = s_slice(p, start, p.n);
-			for (size_t k = 0; k < leaf.n; k++) if (leaf.p[k] == '[') { leaf.n = k; break; }
-			leaf = s_trim(leaf);
-			if (leaf.n == 1 && leaf.p[0] == '*') continue; // name wildcard: no single leaf name to disavow
-			if (leaf.n >= 2 && (leaf.p[0] == '"' || leaf.p[0] == '\'') && leaf.p[leaf.n - 1] == leaf.p[0])
-				leaf = s_slice(leaf, 1, leaf.n - 1);
-			if (leaf.n) VecS_push(&tmp, &names, ascii_lower(&tmp, leaf));
+			/* Leaf name from the parsed path, not a re-split of its text: a
+			   quoted last segment may contain dots (`a."b.c"`). The scanner
+			   folds the name; the doc side stores names folded too. */
+			PathScan ps = scan_lookup(&tmp, p);
+			if (!ps.ok || ps.segs.len == 0) continue;
+			Segment *last = &ps.segs.data[ps.segs.len - 1];
+			if (last->star) continue; /* name wildcard: no single leaf name to disavow */
+			if (last->name.n) VecS_push(&tmp, &names, last->name);
 		}
 	}
 	if (!names.len) { arena_free(&tmp); return; }
+	VecS heads = {0};
+	for (size_t k = 0; k < names.len; k++) VecS_push(&tmp, &heads, h001_head(&tmp, names.data[k]));
 	size_t w = 0;
 	for (size_t i = 0; i < doc->diags.len; i++) {
 		Diag dg = doc->diags.data[i];
 		int drop = 0;
 		if (strcmp(dg.code, "H001") == 0) {
-			/* The field name is the text between the first two single quotes. */
-			S m = dg.message; size_t q1 = m.n, q2 = m.n;
-			for (size_t k = 0; k < m.n; k++) if (m.p[k] == '\'') { q1 = k; break; }
-			for (size_t k = q1 + 1; k < m.n; k++) if (m.p[k] == '\'') { q2 = k; break; }
-			if (q1 < m.n && q2 < m.n) {
-				S nm = s_slice(m, q1 + 1, q2);
-				for (size_t k = 0; k < names.len; k++) if (s_eq(names.data[k], nm)) { drop = 1; break; }
+			S m = dg.message;
+			for (size_t k = 0; k < heads.len; k++) {
+				S h = heads.data[k];
+				if (m.n >= h.n && memcmp(m.p, h.p, h.n) == 0) { drop = 1; break; }
 			}
 		}
 		if (!drop) doc->diags.data[w++] = dg;
