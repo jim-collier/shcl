@@ -175,11 +175,11 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Matching on the name alone is deliberate. Splitting the raw text rather than using the parsed segments was not.
 			- Fixed: the name comes from the parsed path. A quoted literal star is no longer mistaken for the wildcard either.
 
-		- ✅ Code Review 20260802 item 19: a null byte inside a field name can pose as a dotted path.
+		- 🛠️ Code Review 20260802 item 19: a null byte inside a field name can pose as a dotted path.
 			- Reproduced: a single field whose name contains a null passes the unknown-field check as if it were two nested names.
 			- Cause: the check joins path parts with a null before comparing.
 			- Pre-existing, but the new wildcard matching is built on the same joined text.
-			- Note: left as it is. Closing it means changing how the check compares paths, which touches the wildcard matching in all four, and a name holding a null byte cannot be written by hand. Kept on the list rather than closed quietly.
+			- In progress: the check joins path parts with a null before comparing, so the fix is to compare the parts themselves. The same problem was already solved for merge keys by writing each part with its length, so that shape applies here.
 
 		- ✅ Code Review 20260802 item 20: end-of-file comments multiply when layering.
 			- Reproduced: a footer comment shared by three layers appears three times in the merged output. The result still formats stably.
