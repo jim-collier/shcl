@@ -348,7 +348,7 @@ Per-language notes:
 
 - **Go** keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
 
-- **C and C++** have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
+- **C and C++** have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit, and link `-lm`. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
 
 - **The Rust crate** ships the library and the CLI together - see [Language packages](#language-packages) if the binary is what you are after.
 
@@ -358,7 +358,7 @@ Per-language notes:
 
 ### Reading and writing a file
 
-The [one-liner above](#reading-it-from-code) is the whole read API most of the time. Here is the rest of the loop - load a file, read from it, change it, save it - against the [example config](#what-it-looks-like):
+The [one-liner above](#reading-it-from-code) is the whole read API most of the time. Here is the rest of the loop - load a file, read from it, change it, save it - against the [example config](#what-it-looks-like). The same program follows in Rust, Go, Python, and C; all four produce a byte-identical file, which is the point of the conformance corpus.
 
 ```rust
 use shcl::{Document, Status};
@@ -385,7 +385,31 @@ doc.set_string("site[blog.example.com].root", "/srv/www/blog");
 std::fs::write("server.shcl", doc.to_canonical())?;
 ```
 
-The same program in Python:
+The same program in Go:
+
+```go
+import shcl "github.com/jim-collier/shcl/source/go"
+
+text, err := os.ReadFile("server.shcl")
+doc := shcl.Parse(string(text))
+
+workers := doc.GetIntOr("workers", 4)
+root := doc.GetStringOr("site[example.com].root", "")
+
+if mb, st := doc.GetInt("site[example.com].max-upload-mb"); st == shcl.Good {
+	fmt.Println(mb, "MB")
+} else {
+	fmt.Println("unusable:", st)
+}
+
+doc.SetInt("workers", workers*2)
+doc.SetBool("site[example.com].tls.hsts", true)
+doc.SetString("site[blog.example.com].root", "/srv/www/blog")
+
+os.WriteFile("server.shcl", []byte(doc.ToCanonical()), 0o644)
+```
+
+In Python:
 
 ```python
 import shcl
@@ -408,6 +432,36 @@ with open("server.shcl", "w") as f:
 	f.write(doc.to_canonical())
 ```
 
+And in C, where paths are length-delimited and every allocation belongs to the document:
+
+```c
+#define SHCL_IMPLEMENTATION   // in exactly one translation unit
+#include "shcl.h"
+
+#define P(s) s, strlen(s)     // paths take a pointer and a length, not a NUL terminator
+
+// text/len is the config file, already read into memory
+shcl_doc *doc = shcl_parse(text, len);
+
+int64_t workers = shcl_get_int(doc, P("workers"), 4);
+
+// Strings keep the status tier, so missing and empty stay distinguishable
+shcl_read_str root = shcl_read_string(doc, P("site[example.com].root"));
+if (root.status == SHCL_GOOD)
+	printf("%.*s\n", (int)root.value.n, root.value.p);
+
+shcl_set_int(doc, P("workers"), workers * 2);
+shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1);
+shcl_set_string(doc, P("site[blog.example.com].root"), P("/srv/www/blog"));
+
+shcl_str out = shcl_to_canonical(doc);   // lives in the document's arena
+fwrite(out.p, 1, out.n, f);
+
+shcl_free(doc);   // frees the document and everything handed out from it
+```
+
+The C binding uses `round()`, so link the math library - `cc -std=c11 -O2 ex.c -o ex -lm`. There are no per-object frees: reads hand back pointers into the document's arena, and the single `shcl_free` releases all of it, so anything you need afterwards must be copied out first.
+
 Two things worth knowing about the write half. Setters build any missing structure along the path, so the `tls.hsts` and `blog.example.com` lines above appear as a nested block and a new site instance without you assembling either. And saving rewrites the file in canonical form, which normalizes spacing and lowercases field names, but **keeps your comments** attached to what they documented:
 
 ```text
@@ -428,7 +482,7 @@ site: blog.example.com
 	root: /srv/www/blog
 ```
 
-A setter returns false (Python: `False`) when a path cannot be written at all - a wildcard, say, which is query-only. `write_reason(path)` names which of the five reasons applies.
+A setter reports failure - `false`, or `0` in C - when a path cannot be written at all, a wildcard being the common case, since those are query-only. `write_reason(path)` names which of the five reasons applies.
 
 ## Set up a development environment
 
