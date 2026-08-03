@@ -834,3 +834,80 @@ fn one_shot_load_reports_a_broken_schema() {
 	let none = Document::load_and_validate("host: example\n", "", Strictness::Standard);
 	assert_eq!(none.error_count(), 0);
 }
+
+#[test]
+fn quote_segment_backslash_round_trips() {
+	// A name ending in a backslash: the quoted spelling must not let the
+	// closing quote be read as an escape pair.
+	let mut doc = Document::new();
+	let p = quote_segment("a\\");
+	assert!(
+		doc.set_int(&p, 7),
+		"path from quote_segment must be writable"
+	);
+	let r = doc.read_int(&p);
+	assert_eq!((r.value, r.status), (7, shcl::Status::Good));
+	// Survives emit + reparse, and every enumerated path still resolves.
+	let re = Document::parse(&doc.to_canonical());
+	assert_eq!(re.read_int(&p).value, 7);
+	for path in re.paths() {
+		assert!(
+			re.count(&path) >= 1,
+			"emitted path does not resolve: {}",
+			path
+		);
+	}
+	// Runs of backslashes: only a dangling odd run doubles.
+	for name in ["\\", "a\\\\", "b\\\\\\", "\\.x"] {
+		let mut d2 = Document::new();
+		let q = quote_segment(name);
+		assert!(d2.set_int(&q, 3), "unwritable path for {:?}", name);
+		assert_eq!(d2.read_int(&q).value, 3, "value lost for {:?}", name);
+	}
+}
+
+#[test]
+fn repeat_suppression_uses_parsed_leaf() {
+	// A quoted last segment with a dot must not disavow an unrelated field
+	// that happens to carry the split-off text.
+	let schema = Document::parse("field: a.\"b.c\"\n\trepeat: 0, 5\nfield: c\n");
+	let doc = Document::parse("c: 1\nc: 2\n");
+	let mut diags = doc.diagnostics().to_vec();
+	assert_eq!(diags.iter().filter(|d| d.code == "H001").count(), 1);
+	shcl::suppress_declared_repeats(&schema, &mut diags);
+	assert_eq!(
+		diags.iter().filter(|d| d.code == "H001").count(),
+		1,
+		"hint on 'c' wrongly suppressed by the a.\"b.c\" repeat"
+	);
+	// The declared leaf itself stays disavowed, quoted dot and all.
+	let doc2 = Document::parse("a:\n\t\"b.c\": 1\n\t\"b.c\": 2\n");
+	let mut d2 = doc2.diagnostics().to_vec();
+	assert_eq!(d2.iter().filter(|d| d.code == "H001").count(), 1);
+	shcl::suppress_declared_repeats(&schema, &mut d2);
+	assert_eq!(d2.iter().filter(|d| d.code == "H001").count(), 0);
+}
+
+#[test]
+fn huge_selector_index_is_not_found() {
+	// An index at or past 2^32 must report not-found on every target width,
+	// never wrap into a live element (pins the contract; 64-bit passes either way).
+	let doc = Document::parse("a: 1\na: 2\n");
+	assert_eq!(
+		doc.read_int("a[#4294967296]").status,
+		shcl::Status::NotFound
+	);
+	assert_eq!(
+		doc.read_int("a[#18446744073709551615]").status,
+		shcl::Status::NotFound
+	);
+	assert_eq!(doc.count("a[#4294967296]"), 0);
+	assert_eq!(
+		doc.write_reason("a[#4294967296]"),
+		shcl::WriteReason::NoSuchIndex
+	);
+	let mut w = Document::parse("a: 1\na: 2\n");
+	assert!(!w.set_int("a[#4294967296]", 9));
+	// In-range still works.
+	assert_eq!(doc.read_int("a[#1]").value, 2);
+}

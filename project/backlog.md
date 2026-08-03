@@ -153,10 +153,11 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Fixed: the wrapper's date read now owns its fractional digits, so it stays valid after the document goes away, like every other read there.
 			- Note: this changes what that one call returns, so C++ callers using it need a small edit. Documenting the borrow instead was the alternative, but it would have left a wrapper whose whole purpose is lifetime safety handing out something unsafe.
 
-		- 🔘 Code Review 20260802 item 15: the Go repeat-hint filter damages the caller's list.
+		- ✅ Code Review 20260802 item 15: the Go repeat-hint filter damages the caller's list.
 			- Reproduced: it filters in place while returning a new list, so calling it the obvious way leaves the document's own diagnostics shuffled and duplicated.
 			- The reference takes the list by reference, so the mutation is expected there. The Go spelling returns a value, which reads as a copy.
-			- Command-line use is unaffected; this only bites programs using the library.
+			- Command-line use is unaffected; this only bit programs using the library.
+			- Fixed: it builds its own list, so the caller's is never disturbed.
 
 		- ✅ Code Review 20260802 item 16: three C entry points pile up garbage in documents they don't own.
 			- Reproduced: each setter keeps about a kilobyte of path-scanning leftovers, the repeat-hint filter leaves a few hundred bytes in the schema, and generation leaves several kilobytes there. None of it is ever reused or released.
@@ -164,40 +165,44 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- The command-line tool is unaffected, since it exits after one pass. A long-running program that holds a parsed schema is not.
 			- Fixed: all three now do their working allocation somewhere temporary and keep only what they promise to return. Half a million writes went from 604 MB to 39 MB, and the two schema entry points from 100 MB and 2.4 GB to near nothing.
 
-		- 🔘 Code Review 20260802 item 17: the segment-quoting helper mangles a name ending in a backslash.
+		- ✅ Code Review 20260802 item 17: the segment-quoting helper mangles a name ending in a backslash.
 			- Reproduced: the closing quote gets treated as escaped, so the result is a path the scanner rejects, and the set silently fails.
 			- The helper exists to make user-typed text safe to splice into a path, so this is the case it was written for.
-			- Probable fix: escape a trailing backslash before closing the quote.
+			- Fixed in the shared quoting helper, so segment quoting, path enumeration and the formatter all get it. Any name now round-trips.
 
-		- 🔘 Code Review 20260802 item 18: repeat-hint suppression can silence the wrong field.
+		- ✅ Code Review 20260802 item 18: repeat-hint suppression can silence the wrong field.
 			- Reproduced: a schema path whose last segment is quoted and contains a dot is split on that dot, so the leftover text matches an unrelated field name.
-			- Matching on the name alone is deliberate. Splitting the raw text rather than using the parsed segments is not.
+			- Matching on the name alone is deliberate. Splitting the raw text rather than using the parsed segments was not.
+			- Fixed: the name comes from the parsed path. A quoted literal star is no longer mistaken for the wildcard either.
 
-		- 🔘 Code Review 20260802 item 19: a null byte inside a field name can pose as a dotted path.
+		- ✅ Code Review 20260802 item 19: a null byte inside a field name can pose as a dotted path.
 			- Reproduced: a single field whose name contains a null passes the unknown-field check as if it were two nested names.
 			- Cause: the check joins path parts with a null before comparing.
 			- Pre-existing, but the new wildcard matching is built on the same joined text.
+			- Note: left as it is. Closing it means changing how the check compares paths, which touches the wildcard matching in all four, and a name holding a null byte cannot be written by hand. Kept on the list rather than closed quietly.
 
 		- ✅ Code Review 20260802 item 20: end-of-file comments multiply when layering.
 			- Reproduced: a footer comment shared by three layers appears three times in the merged output. The result still formats stably.
 			- Fixed: each distinct end-of-file comment is carried over once.
 
-		- 🔘 Code Review 20260802 item 21: the default install location isn't on a normal user's path.
+		- ✅ Code Review 20260802 item 21: the default install location isn't on a normal user's path.
 			- Reproduced: a system install links the program into a directory reserved for administrator sessions, so the user who ran the installer can't invoke it by name. The closing check passes because it uses the full path.
 			- The project's own packages install to the ordinary location instead.
-			- Probable fix: use the ordinary location, and print the path note for both install targets.
+			- Fixed: a system install links into the ordinary location, matching the project's own packages, and the path note prints for both targets.
 
-		- 🔘 Code Review 20260802 item 22: the shell wrapper trusts an inherited private variable.
+		- ✅ Code Review 20260802 item 22: the shell wrapper trusts an inherited private variable.
 			- Reproduced: the wrapper caches the resolved program path in a variable it also reads from the environment, so setting that variable picks the program with no message and beats every documented lookup step.
 			- The PowerShell wrapper gets this right by clearing it when loaded.
+			- Fixed: the shell wrapper clears it at load too.
 
-		- 🔘 Code Review 20260802 item 23: hosted CI installs a checking tool without verifying the download.
+		- ✅ Code Review 20260802 item 23: hosted CI installs a checking tool without verifying the download.
 			- The workflow pins its actions by commit and its packages by version, then fetches one tool as an archive with no checksum and installs it ahead of the system copy.
-			- Probable fix: download, check against a pinned hash, then install.
+			- Fixed: the download is checked against a pinned hash before it is installed.
 
-		- 🔘 Code Review 20260802 item 24: the installers handle their own options poorly.
+		- ✅ Code Review 20260802 item 24: the installers handle their own options poorly.
 			- Reproduced: asking for help through the documented pipe prints nothing and exits successfully, because the script tries to read its own file, which isn't there when piped. With a stray file of the right name in the current directory it prints that file instead.
 			- Also, giving an option without its value exits silently, where the program itself explains what's missing.
+			- Fixed in all three scripts: the help text is carried in the script instead of read back out of its own file, and a missing option value is reported the way the program reports it.
 
 		- ✅ Code Review 20260802 item 25: small gaps in argument handling across all four builds.
 			- There is no way to end the options and pass a path that starts with a dash.
@@ -217,26 +222,29 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- The comment splitter and the comma splitter both loop per character on every line and value.
 			- Measured: skipping the loop when the line holds no marker at all is around forty times faster on the common case. Python is the slowest build, so this is where it pays.
 
-		- 🔘 Code Review 20260802 item 28: most exported Go functions have no doc comment.
-			- The style guide requires one starting with the name; about sixty are missing, including the whole writer surface. Nothing checks this automatically.
+		- ✅ Code Review 20260802 item 28: most exported Go functions have no doc comment.
+			- The style guide requires one starting with the name; about sixty were missing, including the whole writer surface. Nothing checks this automatically.
+			- Fixed: 74 of them, one line each.
 
-		- 🔘 Code Review 20260802 item 29: a doc comment sits on the wrong function.
-			- The description of the element parser ended up attached to the helper inserted above it, in both the reference and Go. The parser itself has none.
+		- ✅ Code Review 20260802 item 29: a doc comment sits on the wrong function.
+			- The description of the element parser ended up attached to the helper inserted above it, in both the reference and Go.
+			- Fixed: moved onto the function it describes, matching the other two.
 
-		- 🔘 Code Review 20260802 item 30: repeat-hint suppression reads the field name out of the hint text.
+		- ✅ Code Review 20260802 item 30: repeat-hint suppression reads the field name out of the hint text.
 			- It splits the hint's wording on quotes to recover the name, so a behavior of the public interface depends on how a message is phrased.
-			- Same weakness as the deferred item on deriving diagnostic codes from prose, and it should be fixed alongside it.
+			- Fixed: the wording is built in one place and both the hint and the filter use it, so a reword moves them together. A carried field was the stricter fix but would have broken every caller that builds a diagnostic.
 
-		- 🔘 Code Review 20260802 item 31: index conversions would truncate on a 32-bit build.
+		- ✅ Code Review 20260802 item 31: index conversions would truncate on a 32-bit build.
 			- A selector index above four billion would wrap and select the wrong element instead of finding nothing.
 			- Not reachable on any current target. Noted so the remaining ports don't inherit it.
+			- Fixed in the reference with a checked conversion. The other three were audited and already compare before indexing, so they were already safe.
 
-		- 🔘 Code Review 20260802 item 32: the grammar file disagrees with the parser in a few places.
+		- ✅ Code Review 20260802 item 32: the grammar file disagrees with the parser in a few places.
 			- The parser accepts a leading plus on an index, and allows dots and other characters inside a selector; the grammar says neither.
 			- The bare-name character ranges include two characters the neighbouring comment says are excluded.
 			- Unknown escape pairs are kept as written rather than rejected, and a backslash shields the next character in more places than the grammar shows.
 			- Needs a call on each: tighten the parser, or widen the grammar to match it.
-			- Note: whether an unquoted value may contain spaces is the one that needs deciding first. The parser accepts it with no complaint, and quoting is applied on output only, but the spec and grammar both read as though it were a rule.
+			- Decided: the parser is the contract, since it is released, so the grammar and spec were widened to describe what it accepts. Quoting is now stated as a rule about what the formatter writes, not about what input is legal.
 
 		- ✅ Code Review 20260802 item 33: several public documents claimed things the code doesn't do.
 			- Fixed: the contributor notes named the wrong toolchain requirements, the design notes listed platforms that aren't built and a wrapper that doesn't exist, the schema vocabulary list was missing its two newest keys, and both files still described the project as heading toward its first release.

@@ -100,7 +100,7 @@ A few nouns from the wider surface:
 
 - Whitespace around dots, colons, brackets, commas, and values is insignificant and trimmed. `a . b : "x"` == `a.b:"x"`.
 
-- Quotes are optional. A **value** only *needs* quotes when it contains a **reserved character**: whitespace, `,` `:` `#` `"` `'` `[` `]`. (A `.` is reserved only in *field/path* position, not inside a value: `host: example.com` is fine bare.)
+- Quotes are optional, and value quoting is a rule about **canonical output**, not about what input is legal. The parser takes everything after the colon (up to an unquoted `#`) as the value, so `q: needs no quotes` loads with zero diagnostics and reads back verbatim - mid-text whitespace, `:`, `'`, `]`, even a `"`, all pass through. Bare, only a few characters keep their meaning: an unquoted `#` starts a comment, an unquoted `,` splits array elements, `\` shields the character after it, a value *beginning* with a quote opens a quoted element, and a value beginning with `[` is read as a selector. Quote a value to cover those cases, or to keep leading/trailing whitespace (values are trimmed). The **formatter** is stricter than the parser: on output it quotes any value containing a **reserved character** - whitespace, `,` `:` `#` `"` `'` `[` `]` - so canonical form stays unambiguous. (A `.` is reserved only in *field/path* position, not inside a value: `host: example.com` stays bare even in canonical output.)
 
 - A **field name** is more restricted than a value: bare, it may contain only ASCII letters, digits, `-`, and `_`. A name that contains anything else - a space, a reserved character, or a **non-ASCII** character - must be quoted (`"Straße"`, `"user name"`). A bare name with such a character is a malformed line and is skipped; quote it to keep it.
 
@@ -153,7 +153,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 ### Strings
 
-Any value can be read as a string. On read: trim surrounding whitespace, strip the outermost quotes (keeping inner whitespace), and apply escapes. A string containing a reserved character must be quoted in the file. A multi-element array read as a single string yields its **canonical inline form** - elements minimally quoted, escapes intact, joined with `, ` - so the string re-parses to the same array; per-element unquoting and escapes belong to the array-of-strings read.
+Any value can be read as a string. On read: trim surrounding whitespace, strip the outermost quotes (keeping inner whitespace), and apply escapes. Quoting in the file is only *required* where a character would otherwise change meaning (see Whitespace, quoting, and reserved characters); the formatter quotes any reserved-character value on output. A multi-element array read as a single string yields its **canonical inline form** - elements minimally quoted, escapes intact, joined with `, ` - so the string re-parses to the same array; per-element unquoting and escapes belong to the array-of-strings read.
 
 ### Integers
 

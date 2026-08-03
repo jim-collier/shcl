@@ -31,17 +31,48 @@ set -Eeuo pipefail
 
 fDie(){ printf 'sign-release.bash: %s\n' "$1" >&2; exit "${2:-1}"; }
 
-root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+## Usage text lives here, not in a sed slice of "$0": run through a pipe or an
+## odd interpreter, $0 is not this file and sed reads the wrong one.
+fUsage(){
+	cat <<'EOF'
+##	Purpose:
+##		Sign a release's sha256sums file with the offline release key, so the
+##		installers have something to verify against. The sums file is the trust
+##		root for every install path: replacing a release asset is only useful to
+##		an attacker who can also replace the sums, and this signature is what
+##		makes that second step infeasible.
+##
+##		The private key never lives in this repo, on the build box, or in CI - it
+##		is offline, and this script is run by hand at release time. A key sitting
+##		in CI would be reachable by exactly the compromise this defends against.
+##
+##		Signs, then verifies what it just wrote, then checks that the key used
+##		is the one the shipped installers actually trust - a signature made with
+##		the wrong key verifies perfectly on its own and fails for every user, so
+##		that last check is the one that matters.
+##	Syntax:
+##		sign-release.bash --key FILE [--dir DIR]
+##		  --key FILE  private signing key (PEM). Prompts if passphrase-protected.
+##		  --dir DIR   release artifact dir (default cicd/artifacts/release)
+##	Exit: 0 signed and verified, 1 failure, 2 usage/missing input.
+##	History: At bottom of script.
+
+EOF
+}
+
+## $0 fallback so `--help` works when piped (bash -s has no BASH_SOURCE, and
+## set -u would trip on it before the options ever parse).
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
 key=""
 dir="${root}/cicd/artifacts/release"
 
 while (( $# )); do
 	case "$1" in
 		--key=*) key="${1#*=}" ;;
-		--key)   shift; key="${1:-}" ;;
+		--key)   (( $# >= 2 )) || fDie "missing value for --key (try --key=VALUE)" 2; shift; key="$1" ;;
 		--dir=*) dir="${1#*=}" ;;
-		--dir)   shift; dir="${1:-}" ;;
-		-h|--help) sed -n '3,24p' "$0"; exit 0 ;;
+		--dir)   (( $# >= 2 )) || fDie "missing value for --dir (try --dir=VALUE)" 2; shift; dir="$1" ;;
+		-h|--help) fUsage; exit 0 ;;
 		*) fDie "unknown option: $1" 2 ;;
 	esac
 	shift

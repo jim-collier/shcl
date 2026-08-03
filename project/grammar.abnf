@@ -33,6 +33,9 @@ field-line      = indent path *wsp ":" *wsp [ value ] *wsp [ comment ]
                 ; value (field[disc]: value) is grammar-legal but not a valid
                 ; binding - the instance is created from the discriminator and the
                 ; value is reported (Error) and dropped. See spec.md "Selectors".
+                ; Semantic likewise: the wildcard selector [*] is query-only. On
+                ; a binding line it is grammar-legal but reported (Error,
+                ; "wildcard selector is query-only") and the whole line skipped.
 
 indent          = *( SP / HTAB )              ; one kind per subtree (see spec)
 
@@ -44,13 +47,17 @@ segment         = field-name *wsp [ [ ":" *wsp ] selector ]
                 ; separator. This keeps file-authoring and query syntax identical.
 selector        = "[" *wsp sel-body *wsp "]"
 sel-body        = index-sel / value-sel
-index-sel       = "#" 1*DIGIT                 ; explicit index
-                / 1*DIGIT                      ; bare integer = index
+index-sel       = "#" [ "+" ] 1*DIGIT         ; explicit index
+                / [ "+" ] 1*DIGIT              ; bare integer = index
+                ; a leading "+" is accepted either way (list[+1] = list[1]);
+                ; "-" is not an index sign - [-1] is a value selector.
 value-sel       = quoted / bare-sel           ; non-numeric bare, or quoted (forces value)
 bare-sel        = 1*sel-char
-sel-char        = %x20-21 / %x23-2D / %x2F-3A / %x3C-5A / %x5E-7E
-                ; any char except '"' %x22, '.' %x2E, ';'? no - excludes: " . / ...
-                ; practical: any non-']' non-reserved char; quote for specials.
+sel-char        = %x00-09 / %x0B-5C / %x5E-10FFFF
+                ; any char but "]" - a bare selector's scan runs to the first
+                ; "]", so ".", quotes mid-text, and non-ASCII all pass through
+                ; verbatim (base[St.Paul].p resolves). To embed a "]" itself,
+                ; quote the discriminator: base["a]b"].
 
 field-name      = quoted / bare-name
 bare-name       = 1*name-char
@@ -75,12 +82,27 @@ dqchar          = escape / ( %x00-21 / %x23-5B / %x5D-10FFFF )  ; not '"' unesca
 sqchar          = escape / ( %x00-26 / %x28-5B / %x5D-10FFFF )  ; not "'" unescaped
 
 bareword        = 1*bare-char
+                ; the minimally-quoted shape the FORMATTER emits. The PARSER is
+                ; wider: everything after the ":" up to an unquoted "#" is the
+                ; value, split on unquoted commas, each piece trimmed; a piece
+                ; is quoted only when it BEGINS with a quote char. So a bare
+                ; piece may carry mid-text spaces, ":", "'", "]", even '"',
+                ; verbatim ("q: needs no quotes" loads clean). Bare, only "#"
+                ; (comment), "," (element split), "\" (shield), a leading
+                ; quote, and a leading "[" (selector) keep their meaning.
 bare-char       = escape / bare-plain
 bare-plain      = %x21 / %x24-2B / %x2D-39 / %x3B-5A / %x5C-10FFFF
-                ; excludes reserved bare chars: SP HTAB , : # " ' [ ]
-                ; (0x20 0x09 0x2C 0x3A 0x23 0x22 0x27 0x5B 0x5D)
+                ; excludes SP HTAB , : # " [
+                ; (0x20 0x09 0x2C 0x3A 0x23 0x22 0x5B).
+                ; "'" 0x27 and "]" 0x5D are IN the ranges on purpose: the
+                ; parser keeps both bare (it's fine / a]b load clean, verbatim
+                ; on read), though the formatter still quotes them on output.
 
-escape          = "\" ( "t" / "n" / "\" / DQUOTE / SQUOTE )
+escape          = "\" non-newline
+                ; a backslash shields the char after it wherever the parser
+                ; scans (comment strip, comma split, quote closing), so \, and
+                ; \# survive bare. On string READ, \t \n \\ \" \' decode; any
+                ; other pair stays as written (\q reads back as \q).
 
 ;-----------------------------------------------------------------------------
 ; Block arrays (stacked list form)

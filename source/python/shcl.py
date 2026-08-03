@@ -1158,7 +1158,7 @@ class _Parser:
 				if all_scalar_leaves:
 					line = max(self.arena[c].line for c in group)
 					joined = ", ".join(self.arena[c].value.display() for c in group)
-					hints.append((line, "'{}' repeats as a bare leaf - did you mean '{}: {}'?".format(name, name, joined)))
+					hints.append((line, "{}{}'?".format(_h001_head(name), joined)))
 		for line, message in hints:
 			self.diags.append(Diagnostic(line, Severity.Hint, message, "H001"))
 
@@ -2532,6 +2532,15 @@ def quote_segment(name):
 	return _emit_name(name)
 
 
+def _h001_head(name):
+	"""The single H001 wording site: the hint builder and the schema suppressor
+	both come here, so the suppressor matches the exact head the builder
+	emitted - never a re-parse of free prose. (The leaf name cannot ride on
+	Diagnostic itself: consumers build Diagnostic literals, so its field set
+	is frozen.)"""
+	return "'{}' repeats as a bare leaf - did you mean '{}: ".format(name, name)
+
+
 def suppress_declared_repeats(schema, diags):
 	"""Drop the H001 hints a schema disavows: a field whose declared repeat upper
 	bound is above 1 repeats BY DESIGN (repetition is its instance mechanism),
@@ -2556,21 +2565,26 @@ def suppress_declared_repeats(schema, diags):
 				continue
 			if not rep.value or rep.value[-1] <= 1:
 				continue
-			raw = _trim(p.rsplit(".", 1)[-1].split("[", 1)[0])
-			if raw == "*":
+			# Leaf name from the parsed path, not a re-split of its text: a
+			# quoted last segment may contain dots (`a."b.c"`). The scanner
+			# folds the name; the doc side stores names folded too.
+			try:
+				segments, _ = _scan_lookup(p)
+			except _PathError:
+				continue
+			if not segments:
+				continue
+			seg = segments[-1]
+			if seg.star:
 				continue   # name wildcard: no single leaf name to disavow
-			leaf = raw.strip("\"'")
-			if leaf:
-				names.append(_ascii_lower(leaf))
+			names.append(seg.name)
 	if not names:
 		return
+	heads = [_h001_head(n) for n in names]
 	kept = []
 	for d in diags:
-		if d.code == "H001":
-			parts = d.message.split("'")
-			name = parts[1] if len(parts) > 1 else ""
-			if name in names:
-				continue
+		if d.code == "H001" and any(d.message.startswith(h) for h in heads):
+			continue
 		kept.append(d)
 	diags[:] = kept
 
@@ -2601,6 +2615,12 @@ def _bare_quote_counts(t):
 
 
 def _quote_text(t):
+	# A dangling trailing backslash would turn the closing quote into an
+	# escape pair - the scanner reads the path back wrong, or not at all.
+	# Store the doubled spelling (identical on string read), the same rule
+	# the element parser applies to bare text.
+	if t.endswith("\\"):
+		t = _normalize_dangling_backslash(t)
 	dq, sq = _bare_quote_counts(t)
 	if dq == 0:
 		return '"' + t + '"'

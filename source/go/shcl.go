@@ -58,9 +58,9 @@ import (
 type Strictness int
 
 const (
-	Loose Strictness = iota
-	Standard
-	Strict
+	Loose    Strictness = iota // widest read coercions (re-admits currency and friends)
+	Standard                   // the default
+	Strict                     // any error diagnostic fails the load
 )
 
 // StrictnessFromArg accepts the CLI spellings: loose|standard|strict or 1|2|3.
@@ -80,10 +80,11 @@ func StrictnessFromArg(s string) (Strictness, bool) {
 type Severity int
 
 const (
-	SeverityError Severity = iota
-	SeverityHint
+	SeverityError Severity = iota // fails a strict load
+	SeverityHint                  // legal-but-lookalike input
 )
 
+// String is the severity as check prints it.
 func (s Severity) String() string {
 	if s == SeverityHint {
 		return "Hint"
@@ -91,6 +92,7 @@ func (s Severity) String() string {
 	return "Error"
 }
 
+// Diagnostic is one parser or validator finding, tied to a source line.
 type Diagnostic struct {
 	Line     int // 1-based
 	Severity Severity
@@ -180,13 +182,14 @@ func diagCode(msg string) string {
 type Status int
 
 const (
-	Good Status = iota
-	Empty
-	NotFound
-	BadType
-	Multiple
+	Good     Status = iota // value present and coercible
+	Empty                  // path resolved but carries no value
+	NotFound               // path resolved to no node
+	BadType                // value would not coerce to the asked type
+	Multiple               // path resolved to more than one node
 )
 
+// String names the status.
 func (s Status) String() string {
 	switch s {
 	case Good:
@@ -209,14 +212,15 @@ func (s Status) String() string {
 type WriteReason int
 
 const (
-	Writable    WriteReason = iota
-	BadPath                 // empty path, or the scanner rejected it
-	ValueInPath             // the path carries a `: value` part; writes take values separately
-	Wildcard                // wildcard selectors are query-only
-	NoSuchIndex             // a `[#k]` instance that does not (and can never) exist
-	TooDeep                 // deeper than the nesting cap; the writer never creates past it
+	Writable    WriteReason = iota // the path passes the writer's validation
+	BadPath                        // empty path, or the scanner rejected it
+	ValueInPath                    // the path carries a `: value` part; writes take values separately
+	Wildcard                       // wildcard selectors are query-only
+	NoSuchIndex                    // a `[#k]` instance that does not (and can never) exist
+	TooDeep                        // deeper than the nesting cap; the writer never creates past it
 )
 
+// String names the reason.
 func (r WriteReason) String() string {
 	switch r {
 	case Writable:
@@ -261,10 +265,13 @@ func (r Read[T]) at(line int, quoted bool) Read[T] {
 	return r
 }
 
+// OK is true when the read is Good or Empty - the value is usable.
 func (r Read[T]) OK() bool {
 	return r.Status == Good || r.Status == Empty
 }
 
+// LoadError is a failed Strict load: the diagnostics that failed it, plus the
+// recovered tree.
 type LoadError struct {
 	Diagnostics []Diagnostic
 	// Document is the tree the parse produced anyway. Recover-and-continue
@@ -273,6 +280,7 @@ type LoadError struct {
 	Document *Document
 }
 
+// Error summarizes the failure, naming the first few error diagnostics.
 func (e *LoadError) Error() string {
 	// Name the first few failures right in the message; the bare count made
 	// callers dig for information the error was already holding.
@@ -293,13 +301,15 @@ func (e *LoadError) Error() string {
 	return msg
 }
 
+// ZoneKind says how a datetime's zone suffix was written.
 type ZoneKind int
 
 const (
-	ZoneUTC ZoneKind = iota
-	ZoneOffset
+	ZoneUTC    ZoneKind = iota // trailing Z
+	ZoneOffset                 // +hh:mm / -hh:mm
 )
 
+// Zone is a datetime's zone suffix as written.
 type Zone struct {
 	Kind          ZoneKind
 	OffsetMinutes int
@@ -318,6 +328,7 @@ type DateTime struct {
 	Zone             *Zone
 }
 
+// String is the canonical spelling, mirroring what was written.
 func (dt DateTime) String() string {
 	var b strings.Builder
 	if dt.HasDate {
@@ -674,8 +685,6 @@ func normalizeDanglingBackslash(t string) string {
 	return t
 }
 
-// parseElement trims, then strips one matching outer quote pair if present.
-// Unquoted empty slots return ok=false (dropped, never an error).
 // unterminatedQuote reports whether some piece starts with a quote that never
 // closes (missing or escaped). Such a piece stays literal - and the quote-aware
 // comment strip has already swallowed any trailing # comment into it - so the
@@ -706,6 +715,8 @@ func unterminatedQuote(text string) bool {
 	return false
 }
 
+// parseElement trims, then strips one matching outer quote pair if present.
+// Unquoted empty slots return ok=false (dropped, never an error).
 func parseElement(piece string) (element, bool) {
 	t := strings.TrimSpace(piece)
 	if t == "" {
@@ -1468,7 +1479,7 @@ func (p *parser) emitRepeatedLeafHints() {
 			p.diags = append(p.diags, Diagnostic{
 				Line:     line,
 				Severity: SeverityHint,
-				Message:  fmt.Sprintf("'%s' repeats as a bare leaf - did you mean '%s: %s'?", g.name, g.name, strings.Join(vals, ", ")),
+				Message:  fmt.Sprintf("%s%s'?", h001Head(g.name), strings.Join(vals, ", ")),
 				Code:     "H001",
 			})
 		}
@@ -1654,6 +1665,8 @@ func ParseWith(text string, strictness Strictness) (*Document, error) {
 	return doc, nil
 }
 
+// Diagnostics is everything the load recorded (after LoadAndValidate,
+// validation findings too).
 func (d *Document) Diagnostics() []Diagnostic {
 	return d.diags
 }
@@ -1700,6 +1713,7 @@ func LoadAndValidate(text, schemaText string, strictness Strictness) *Document {
 	return doc
 }
 
+// Strictness is the level the document was loaded at.
 func (d *Document) Strictness() Strictness {
 	return d.strictness
 }
@@ -1862,14 +1876,24 @@ func QuoteSegment(name string) string {
 	return emitName(name)
 }
 
+// h001Head is the single H001 wording site: the hint builder and the schema
+// suppressor both come here, so the suppressor matches the exact head the
+// builder emitted - never a re-parse of free prose. (The leaf name cannot
+// ride on Diagnostic itself: consumers build Diagnostic literals, so its
+// field set is frozen.)
+func h001Head(name string) string {
+	return fmt.Sprintf("'%s' repeats as a bare leaf - did you mean '%s: ", name, name)
+}
+
 // SuppressDeclaredRepeats drops the H001 hints a schema disavows: a field
 // whose declared repeat upper bound is above 1 repeats BY DESIGN (repetition
 // is its instance mechanism), so the repeated-bare-leaf hint is structurally a
 // false positive there and trains users to ignore hints. Matching is by leaf
 // name - the filter consumers were hand-rolling - which errs toward quiet, for
 // a hint. Used by `check --schema` and LoadAndValidate; call it wherever doc
-// diagnostics and a schema meet. Returns the filtered slice (the reference
-// filters its list in place; returning is the Go mirror).
+// diagnostics and a schema meet. Returns the filtered slice as a fresh
+// allocation and never disturbs the input (the reference filters its list in
+// place behind &mut; a Go return reads as a copy, so it must behave as one).
 func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic {
 	// Top-level fields plus every fragment's fields: a repeat declared inside
 	// a mounted shape disavows the hint the same way.
@@ -1891,37 +1915,35 @@ func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic 
 			if rep.Status != Good || len(rep.Value) == 0 || rep.Value[len(rep.Value)-1] <= 1 {
 				continue
 			}
-			raw := p
-			if j := strings.LastIndexByte(raw, '.'); j >= 0 {
-				raw = raw[j+1:]
+			// Leaf name from the parsed path, not a re-split of its text: a
+			// quoted last segment may contain dots (`a."b.c"`). The scanner
+			// folds the name; the doc side stores names folded too.
+			scan, err := scanLookup(p)
+			if err != nil || len(scan.segments) == 0 {
+				continue
 			}
-			if j := strings.IndexByte(raw, '['); j >= 0 {
-				raw = raw[:j]
-			}
-			raw = strings.TrimSpace(raw)
-			if raw == "*" {
+			seg := scan.segments[len(scan.segments)-1]
+			if seg.star {
 				continue // name wildcard: no single leaf name to disavow
 			}
-			leaf := strings.Trim(raw, "\"'")
-			if leaf != "" {
-				names = append(names, asciiLower(leaf))
-			}
+			names = append(names, seg.name)
 		}
 	}
 	if len(names) == 0 {
 		return diags
 	}
-	kept := diags[:0]
+	heads := make([]string, len(names))
+	for i, n := range names {
+		heads[i] = h001Head(n)
+	}
+	// Filter into a fresh slice: the input commonly IS the document's own
+	// diagnostics list, so filtering in place would corrupt the caller's data.
+	kept := make([]Diagnostic, 0, len(diags))
 	for _, d := range diags {
 		if d.Code == "H001" {
-			// The field name is the text between the first two single quotes.
-			name := ""
-			if parts := strings.SplitN(d.Message, "'", 3); len(parts) >= 2 {
-				name = parts[1]
-			}
 			drop := false
-			for _, n := range names {
-				if n == name {
+			for _, h := range heads {
+				if strings.HasPrefix(d.Message, h) {
 					drop = true
 					break
 				}
@@ -1980,6 +2002,13 @@ func bareQuoteCounts(t string) (dq, sq int) {
 }
 
 func quoteText(t string) string {
+	// A dangling trailing backslash would turn the closing quote into an
+	// escape pair - the scanner reads the path back wrong, or not at all.
+	// Store the doubled spelling (identical on string read), the same rule
+	// the element parser applies to bare text.
+	if strings.HasSuffix(t, "\\") {
+		t = normalizeDanglingBackslash(t)
+	}
 	dq, sq := bareQuoteCounts(t)
 	if dq == 0 {
 		return "\"" + t + "\""
@@ -2586,30 +2615,44 @@ func (d *Document) SetComment(path, text string) bool {
 	return true
 }
 
+// SetInt binds an integer at path, creating the path as needed; false = path
+// not writable (WriteReason says why - same for every setter).
 func (d *Document) SetInt(path string, v int64) bool {
 	return d.setValue(path, cellOf(strconv.FormatInt(v, 10)))
 }
+
+// SetFloat binds a float at path, in the canonical shortest spelling.
 func (d *Document) SetFloat(path string, v float64) bool {
 	return d.setValue(path, cellOf(FormatFloat(v)))
 }
+
+// SetBool binds true/false at path.
 func (d *Document) SetBool(path string, v bool) bool {
 	return d.setValue(path, cellOf(boolText(v)))
 }
+
+// SetString binds a string at path, escaped so it reads back exactly.
 func (d *Document) SetString(path, v string) bool {
 	return d.setValue(path, cellOf(encodeString(v)))
 }
+
+// SetDateTime binds a datetime at path, in its canonical spelling.
 func (d *Document) SetDateTime(path string, v DateTime) bool {
 	return d.setValue(path, cellOf(v.String()))
 }
+
+// SetEmpty binds an empty value at path (distinct from the empty string).
 func (d *Document) SetEmpty(path string) bool {
 	return d.setValue(path, value{kind: vEmpty})
 }
 
+// SetRaw binds a raw block at path, picking a fence longer than any content line.
 func (d *Document) SetRaw(path, content, info string) bool {
 	fc, fl := chooseFence(content)
 	return d.setValue(path, value{kind: vRaw, raw: rawValue{content: content, info: info, fenceChar: fc, fenceLen: fl}})
 }
 
+// SetIntArray binds an inline integer array at path.
 func (d *Document) SetIntArray(path string, v []int64) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
@@ -2617,6 +2660,8 @@ func (d *Document) SetIntArray(path string, v []int64) bool {
 	}
 	return d.setValue(path, arrayCell(texts))
 }
+
+// SetFloatArray binds an inline float array at path.
 func (d *Document) SetFloatArray(path string, v []float64) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
@@ -2624,6 +2669,8 @@ func (d *Document) SetFloatArray(path string, v []float64) bool {
 	}
 	return d.setValue(path, arrayCell(texts))
 }
+
+// SetBoolArray binds an inline bool array at path.
 func (d *Document) SetBoolArray(path string, v []bool) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
@@ -2631,6 +2678,8 @@ func (d *Document) SetBoolArray(path string, v []bool) bool {
 	}
 	return d.setValue(path, arrayCell(texts))
 }
+
+// SetStringArray binds an inline string array at path, per-element escaped.
 func (d *Document) SetStringArray(path string, v []string) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
@@ -2638,6 +2687,8 @@ func (d *Document) SetStringArray(path string, v []string) bool {
 	}
 	return d.setValue(path, arrayCell(texts))
 }
+
+// SetDateTimeArray binds an inline datetime array at path.
 func (d *Document) SetDateTimeArray(path string, v []DateTime) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
@@ -2647,66 +2698,88 @@ func (d *Document) SetDateTimeArray(path string, v []DateTime) bool {
 }
 
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+
+// SetIntDefault is SetInt only when path has no node yet.
 func (d *Document) SetIntDefault(path string, v int64) bool {
 	if !d.Exists(path) {
 		return d.SetInt(path, v)
 	}
 	return true
 }
+
+// SetFloatDefault is SetFloat only when path has no node yet.
 func (d *Document) SetFloatDefault(path string, v float64) bool {
 	if !d.Exists(path) {
 		return d.SetFloat(path, v)
 	}
 	return true
 }
+
+// SetBoolDefault is SetBool only when path has no node yet.
 func (d *Document) SetBoolDefault(path string, v bool) bool {
 	if !d.Exists(path) {
 		return d.SetBool(path, v)
 	}
 	return true
 }
+
+// SetStringDefault is SetString only when path has no node yet.
 func (d *Document) SetStringDefault(path, v string) bool {
 	if !d.Exists(path) {
 		return d.SetString(path, v)
 	}
 	return true
 }
+
+// SetDateTimeDefault is SetDateTime only when path has no node yet.
 func (d *Document) SetDateTimeDefault(path string, v DateTime) bool {
 	if !d.Exists(path) {
 		return d.SetDateTime(path, v)
 	}
 	return true
 }
+
+// SetRawDefault is SetRaw only when path has no node yet.
 func (d *Document) SetRawDefault(path, content, info string) bool {
 	if !d.Exists(path) {
 		return d.SetRaw(path, content, info)
 	}
 	return true
 }
+
+// SetIntArrayDefault is SetIntArray only when path has no node yet.
 func (d *Document) SetIntArrayDefault(path string, v []int64) bool {
 	if !d.Exists(path) {
 		return d.SetIntArray(path, v)
 	}
 	return true
 }
+
+// SetFloatArrayDefault is SetFloatArray only when path has no node yet.
 func (d *Document) SetFloatArrayDefault(path string, v []float64) bool {
 	if !d.Exists(path) {
 		return d.SetFloatArray(path, v)
 	}
 	return true
 }
+
+// SetBoolArrayDefault is SetBoolArray only when path has no node yet.
 func (d *Document) SetBoolArrayDefault(path string, v []bool) bool {
 	if !d.Exists(path) {
 		return d.SetBoolArray(path, v)
 	}
 	return true
 }
+
+// SetStringArrayDefault is SetStringArray only when path has no node yet.
 func (d *Document) SetStringArrayDefault(path string, v []string) bool {
 	if !d.Exists(path) {
 		return d.SetStringArray(path, v)
 	}
 	return true
 }
+
+// SetDateTimeArrayDefault is SetDateTimeArray only when path has no node yet.
 func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 	if !d.Exists(path) {
 		return d.SetDateTimeArray(path, v)
@@ -3456,21 +3529,25 @@ func readScalar[T any](d *Document, path string, coerce func(*element) (T, bool)
 	return Read[T]{Value: zero, Status: BadType, Raw: &raw}.at(line, el.quoted)
 }
 
+// ReadInt is the full-tier integer read at path, coerced per the document's strictness.
 func (d *Document) ReadInt(path string) Read[int64] {
 	lvl := d.strictness
 	return readScalar(d, path, func(e *element) (int64, bool) { return parseIntText(e, lvl) })
 }
 
+// ReadFloat is the full-tier float read at path, coerced per the document's strictness.
 func (d *Document) ReadFloat(path string) Read[float64] {
 	lvl := d.strictness
 	return readScalar(d, path, func(e *element) (float64, bool) { return parseFloatText(e, lvl) })
 }
 
+// ReadBool is the full-tier bool read at path, coerced per the document's strictness.
 func (d *Document) ReadBool(path string) Read[bool] {
 	lvl := d.strictness
 	return readScalar(d, path, func(e *element) (bool, bool) { return parseBoolText(e.text, lvl) })
 }
 
+// ReadDateTime is the full-tier datetime read at path.
 func (d *Document) ReadDateTime(path string) Read[DateTime] {
 	return readScalar(d, path, func(e *element) (DateTime, bool) { return ParseDateTime(e.text) })
 }
@@ -3613,25 +3690,30 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 	return Read[[]T]{Value: out, Status: status, Raw: &raw, Slots: sts}.at(line, false)
 }
 
+// ReadIntArray is the full-tier integer-array read at path (per-slot statuses in Slots).
 func (d *Document) ReadIntArray(path string) Read[[]int64] {
 	lvl := d.strictness
 	return readArray(d, path, func(e *element) (int64, bool) { return parseIntText(e, lvl) })
 }
 
+// ReadFloatArray is the full-tier float-array read at path.
 func (d *Document) ReadFloatArray(path string) Read[[]float64] {
 	lvl := d.strictness
 	return readArray(d, path, func(e *element) (float64, bool) { return parseFloatText(e, lvl) })
 }
 
+// ReadBoolArray is the full-tier bool-array read at path.
 func (d *Document) ReadBoolArray(path string) Read[[]bool] {
 	lvl := d.strictness
 	return readArray(d, path, func(e *element) (bool, bool) { return parseBoolText(e.text, lvl) })
 }
 
+// ReadDateTimeArray is the full-tier datetime-array read at path.
 func (d *Document) ReadDateTimeArray(path string) Read[[]DateTime] {
 	return readArray(d, path, func(e *element) (DateTime, bool) { return ParseDateTime(e.text) })
 }
 
+// ReadStringArray is the full-tier string-array read at path, escapes applied per element.
 func (d *Document) ReadStringArray(path string) Read[[]string] {
 	return readArray(d, path, func(e *element) (string, bool) { return applyEscapes(e.text), true })
 }
@@ -3640,31 +3722,37 @@ func (d *Document) ReadStringArray(path string) Read[[]string] {
 // Good. Empty still surfaces as non-Good here; use Read* to also get the
 // empty value.
 
+// GetInt is ReadInt reduced to (value, status).
 func (d *Document) GetInt(path string) (int64, Status) {
 	r := d.ReadInt(path)
 	return r.Value, r.Status
 }
 
+// GetFloat is ReadFloat reduced to (value, status).
 func (d *Document) GetFloat(path string) (float64, Status) {
 	r := d.ReadFloat(path)
 	return r.Value, r.Status
 }
 
+// GetBool is ReadBool reduced to (value, status).
 func (d *Document) GetBool(path string) (bool, Status) {
 	r := d.ReadBool(path)
 	return r.Value, r.Status
 }
 
+// GetString is ReadString reduced to (value, status).
 func (d *Document) GetString(path string) (string, Status) {
 	r := d.ReadString(path)
 	return r.Value, r.Status
 }
 
+// GetRaw is ReadRaw reduced to (value, status).
 func (d *Document) GetRaw(path string) (string, Status) {
 	r := d.ReadRaw(path)
 	return r.Value, r.Status
 }
 
+// GetDateTime is ReadDateTime reduced to (value, status).
 func (d *Document) GetDateTime(path string) (DateTime, Status) {
 	r := d.ReadDateTime(path)
 	return r.Value, r.Status
@@ -3676,6 +3764,7 @@ func (d *Document) GetDateTime(path string) (DateTime, Status) {
 // never masquerade as a real zero. Array forms fall back to the whole default
 // array; per-slot substitution is the ReadIntArray tier or the CLI --default.
 
+// GetIntOr is the integer at path, or def when the read is not Good.
 func (d *Document) GetIntOr(path string, def int64) int64 {
 	if r := d.ReadInt(path); r.Status == Good {
 		return r.Value
@@ -3683,6 +3772,7 @@ func (d *Document) GetIntOr(path string, def int64) int64 {
 	return def
 }
 
+// GetFloatOr is the float at path, or def when the read is not Good.
 func (d *Document) GetFloatOr(path string, def float64) float64 {
 	if r := d.ReadFloat(path); r.Status == Good {
 		return r.Value
@@ -3690,6 +3780,7 @@ func (d *Document) GetFloatOr(path string, def float64) float64 {
 	return def
 }
 
+// GetBoolOr is the bool at path, or def when the read is not Good.
 func (d *Document) GetBoolOr(path string, def bool) bool {
 	if r := d.ReadBool(path); r.Status == Good {
 		return r.Value
@@ -3697,6 +3788,7 @@ func (d *Document) GetBoolOr(path string, def bool) bool {
 	return def
 }
 
+// GetStringOr is the string at path, or def when the read is not Good.
 func (d *Document) GetStringOr(path string, def string) string {
 	if r := d.ReadString(path); r.Status == Good {
 		return r.Value
@@ -3704,6 +3796,7 @@ func (d *Document) GetStringOr(path string, def string) string {
 	return def
 }
 
+// GetRawOr is the raw-block content at path, or def when the read is not Good.
 func (d *Document) GetRawOr(path string, def string) string {
 	if r := d.ReadRaw(path); r.Status == Good {
 		return r.Value
@@ -3711,6 +3804,7 @@ func (d *Document) GetRawOr(path string, def string) string {
 	return def
 }
 
+// GetDateTimeOr is the datetime at path, or def when the read is not Good.
 func (d *Document) GetDateTimeOr(path string, def DateTime) DateTime {
 	if r := d.ReadDateTime(path); r.Status == Good {
 		return r.Value
@@ -3718,6 +3812,7 @@ func (d *Document) GetDateTimeOr(path string, def DateTime) DateTime {
 	return def
 }
 
+// GetIntArrayOr is the integer array at path, or def when the read is not Good.
 func (d *Document) GetIntArrayOr(path string, def []int64) []int64 {
 	if r := d.ReadIntArray(path); r.Status == Good {
 		return r.Value
@@ -3725,6 +3820,7 @@ func (d *Document) GetIntArrayOr(path string, def []int64) []int64 {
 	return def
 }
 
+// GetFloatArrayOr is the float array at path, or def when the read is not Good.
 func (d *Document) GetFloatArrayOr(path string, def []float64) []float64 {
 	if r := d.ReadFloatArray(path); r.Status == Good {
 		return r.Value
@@ -3732,6 +3828,7 @@ func (d *Document) GetFloatArrayOr(path string, def []float64) []float64 {
 	return def
 }
 
+// GetBoolArrayOr is the bool array at path, or def when the read is not Good.
 func (d *Document) GetBoolArrayOr(path string, def []bool) []bool {
 	if r := d.ReadBoolArray(path); r.Status == Good {
 		return r.Value
@@ -3739,6 +3836,7 @@ func (d *Document) GetBoolArrayOr(path string, def []bool) []bool {
 	return def
 }
 
+// GetStringArrayOr is the string array at path, or def when the read is not Good.
 func (d *Document) GetStringArrayOr(path string, def []string) []string {
 	if r := d.ReadStringArray(path); r.Status == Good {
 		return r.Value
@@ -3746,6 +3844,7 @@ func (d *Document) GetStringArrayOr(path string, def []string) []string {
 	return def
 }
 
+// GetDateTimeArrayOr is the datetime array at path, or def when the read is not Good.
 func (d *Document) GetDateTimeArrayOr(path string, def []DateTime) []DateTime {
 	if r := d.ReadDateTimeArray(path); r.Status == Good {
 		return r.Value
