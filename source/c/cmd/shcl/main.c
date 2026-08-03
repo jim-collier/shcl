@@ -87,7 +87,10 @@ static const char *HELP =
 	"  --set=PATH=VALUE                       override one path as the top layer,\n"
 	"                                         after all files; repeatable\n"
 	"\n"
-	"Value options accept either spelling: --default=VALUE or --default VALUE.\n"
+	"Value options accept either spelling: --default=VALUE or --default VALUE. In\n"
+	"the space form the next argument is taken as the value whatever it looks like,\n"
+	"so --default --int reads --int as the default. Use -- to end the options when a\n"
+	"FILE or PATH begins with a dash.\n"
 	"An option a subcommand does not use is a usage error, not ignored.\n"
 	"FILE may be '-' for stdin. With --layer, FILE is the highest file layer and\n"
 	"each --layer is merged under it in order; --set applies last. 'fmt' with\n"
@@ -681,6 +684,7 @@ static int do_check(Opts *o) {
 }
 
 static int do_init(Opts *o) {
+	if (o->nargs > 0) { fprintf(stderr, "init takes no file argument (see --help)\n"); return 1; }
 	if (!o->schema) { fprintf(stderr, "init needs --schema=FILE (see --help)\n"); return 1; }
 	size_t slen; char *stext = read_input(o->schema, &slen);
 	if (!stext) return 1;
@@ -776,6 +780,12 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
 		const char *a = argv[i];
+		// Everything after `--` is positional, so a file or path may begin
+		// with a dash.
+		if (!strcmp(a, "--")) {
+			for (int k = i + 1; k < argc; k++) opt_push(&o->args, &o->nargs, argv[k]);
+			return 0;
+		}
 		if (!strcmp(a, "--int") || !strcmp(a, "--float") || !strcmp(a, "--bool") || !strcmp(a, "--datetime") || !strcmp(a, "--string") || !strcmp(a, "--raw") || !strcmp(a, "--rawinfo")) { o->kind = a + 2; opt_seen(o, "--<type>"); }
 		else if (!strcmp(a, "--array")) { o->array = 1; opt_seen(o, "--array"); }
 		else if (!strcmp(a, "--slots")) { o->slots = 1; opt_seen(o, "--slots"); }
@@ -823,7 +833,40 @@ static int check_opts(const char *cmd, Opts *o) {
 			return 1;
 		}
 	}
+	// Writing back the merged document would fold the lower layers permanently
+	// into the top file, which is the opposite of what layering is for.
+	if (o->write && (o->nlayers > 0 || o->nsets > 0)) {
+		fprintf(stderr, "--write cannot be combined with --layer or --set (see --help)\n");
+		return 1;
+	}
+	// The ops script already has stdin, so a layer cannot read it too.
+	if (!strcmp(cmd, "set")) {
+		for (int i = 0; i < o->nlayers; i++) {
+			if (!strcmp(o->layers[i], "-")) {
+				fprintf(stderr, "--layer=- is not valid for set (stdin carries the ops script)\n");
+				return 1;
+			}
+		}
+	}
 	return 0;
+}
+
+// Did the command line ask for help or the version? Only tokens in option
+// position count: a value that happens to read `-h`, and anything after the
+// file, are data. Scanning the whole line for them let a read of a missing
+// path answer with the help text and exit 0.
+static const char *asked_for(int argc, char **argv) {
+	for (int i = 1; i < argc; i++) {
+		const char *a = argv[i];
+		if (!strcmp(a, "-h") || !strcmp(a, "--help")) return "help";
+		if (!strcmp(a, "-V") || !strcmp(a, "--version")) return "version";
+		if (!strcmp(a, "--")) return NULL;
+		if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set")) { i++; continue; }
+		if (a[0] == '-' && a[1] != '\0') continue;
+		// The subcommand, then the file: past that everything is a path.
+		if (i > 1) return NULL;
+	}
+	return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -836,13 +879,9 @@ int main(int argc, char **argv) {
 			return 1;
 		}
 	}
-	int has_help = 0, has_version = 0;
-	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) has_help = 1;
-		if (!strcmp(argv[i], "-V") || !strcmp(argv[i], "--version")) has_version = 1;
-	}
-	if (argc <= 1 || has_help || !strcmp(argv[1], "help")) { fputs(HELP, stdout); return argc <= 1 ? 1 : 0; }
-	if (has_version || !strcmp(argv[1], "version")) { printf("shcl %s\n", VERSION); return 0; }
+	const char *asked = asked_for(argc, argv);
+	if (argc <= 1 || (asked && !strcmp(asked, "help")) || !strcmp(argv[1], "help")) { fputs(HELP, stdout); return argc <= 1 ? 1 : 0; }
+	if ((asked && !strcmp(asked, "version")) || !strcmp(argv[1], "version")) { printf("shcl %s\n", VERSION); return 0; }
 	const char *cmd = argv[1];
 	Opts o;
 	if (parse_opts(argc, argv, 2, &o)) { opts_free(&o); return 1; }

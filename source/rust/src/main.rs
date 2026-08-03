@@ -60,7 +60,10 @@ Options:
   --set=PATH=VALUE                       override one path as the top layer,
                                          after all files; repeatable
 
-Value options accept either spelling: --default=VALUE or --default VALUE.
+Value options accept either spelling: --default=VALUE or --default VALUE. In
+the space form the next argument is taken as the value whatever it looks like,
+so --default --int reads --int as the default. Use -- to end the options when a
+FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
@@ -95,6 +98,29 @@ struct Opts {
 	seen: Vec<&'static str>,     // canonical names of options given, for per-command validation
 }
 
+/// Did the command line ask for help or the version? Only tokens in option
+/// position count: a value that happens to read `-h`, and anything after the
+/// file, are data. Scanning the whole line for them let a read of a missing
+/// path answer with the help text and exit 0.
+fn asked_for(argv: &[String]) -> Option<&'static str> {
+	let mut i = 0;
+	while i < argv.len() {
+		let a = argv[i].as_str();
+		match a {
+			"-h" | "--help" => return Some("help"),
+			"-V" | "--version" => return Some("version"),
+			"--" => return None,
+			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set" => i += 1,
+			_ if a.starts_with('-') && a.len() > 1 => {}
+			// The subcommand, then the file: past that everything is a path.
+			_ if i > 0 => return None,
+			_ => {}
+		}
+		i += 1;
+	}
+	None
+}
+
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	let mut o = Opts {
 		kind: "string".into(),
@@ -114,6 +140,12 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	let mut i = 0;
 	while i < argv.len() {
 		let a = argv[i].as_str();
+		// Everything after `--` is positional, so a file or path may begin
+		// with a dash.
+		if a == "--" {
+			o.args.extend(argv[i + 1..].iter().cloned());
+			return Ok(o);
+		}
 		match a {
 			"--int" | "--float" | "--bool" | "--datetime" | "--string" | "--raw" | "--rawinfo" => {
 				o.kind = a[2..].to_string();
@@ -224,6 +256,17 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			}
 			return Err(1);
 		}
+	}
+	// Writing back the merged document would fold the lower layers permanently
+	// into the top file, which is the opposite of what layering is for.
+	if o.write && (!o.layers.is_empty() || !o.sets.is_empty()) {
+		eprintln!("--write cannot be combined with --layer or --set (see --help)");
+		return Err(1);
+	}
+	// The ops script already has stdin, so a layer cannot read it too.
+	if cmd == "set" && o.layers.iter().any(|l| l == "-") {
+		eprintln!("--layer=- is not valid for set (stdin carries the ops script)");
+		return Err(1);
 	}
 	Ok(())
 }
@@ -634,6 +677,13 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 				&owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
 			)
 		}
+		"datetime-array-default" => {
+			let dts: Vec<_> = arr
+				.iter()
+				.map(|s| parse_datetime(s).ok_or_else(|| format!("bad datetime: {}", s)))
+				.collect::<Result<Vec<_>, _>>()?;
+			doc.set_datetime_array_default(path, &dts)
+		}
 		"raw" => doc.set_raw(path, &unescape_ops(f.get(3).copied().unwrap_or("")), val()),
 		"raw-default" => {
 			doc.set_raw_default(path, &unescape_ops(f.get(3).copied().unwrap_or("")), val())
@@ -815,6 +865,10 @@ fn do_check(o: &Opts) -> u8 {
 }
 
 fn do_init(o: &Opts) -> u8 {
+	if !o.args.is_empty() {
+		eprintln!("init takes no file argument (see --help)");
+		return 1;
+	}
 	let schema_file = match &o.schema {
 		Some(s) => s,
 		None => {
@@ -963,11 +1017,12 @@ fn main() -> ExitCode {
 		}
 	};
 	let first = argv.first().map(|s| s.as_str());
-	if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") || first == Some("help") {
+	let asked = asked_for(&argv);
+	if argv.is_empty() || asked == Some("help") || first == Some("help") {
 		print!("{}", HELP);
 		return ExitCode::from(if argv.is_empty() { 1 } else { 0 });
 	}
-	if argv.iter().any(|a| a == "-V" || a == "--version") || first == Some("version") {
+	if asked == Some("version") || first == Some("version") {
 		println!("shcl {}", env!("CARGO_PKG_VERSION"));
 		return ExitCode::from(0);
 	}

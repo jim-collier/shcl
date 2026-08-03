@@ -70,7 +70,10 @@ Options:
   --set=PATH=VALUE                       override one path as the top layer,
                                          after all files; repeatable
 
-Value options accept either spelling: --default=VALUE or --default VALUE.
+Value options accept either spelling: --default=VALUE or --default VALUE. In
+the space form the next argument is taken as the value whatever it looks like,
+so --default --int reads --int as the default. Use -- to end the options when a
+FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
@@ -109,6 +112,31 @@ type opts struct {
 	sets       [][2]string // final override layer: path=value
 	args       []string    // positional: FILE [PATH]
 	seen       []string    // canonical names of options given, for per-command validation
+}
+
+// askedFor: did the command line ask for help or the version? Only tokens in
+// option position count: a value that happens to read `-h`, and anything after
+// the file, are data. Scanning the whole line for them let a read of a missing
+// path answer with the help text and exit 0.
+func askedFor(argv []string) string {
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		switch {
+		case a == "-h" || a == "--help":
+			return "help"
+		case a == "-V" || a == "--version":
+			return "version"
+		case a == "--":
+			return ""
+		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" || a == "--layer" || a == "--set":
+			i++
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+		case i > 0:
+			// The subcommand, then the file: past that everything is a path.
+			return ""
+		}
+	}
+	return ""
 }
 
 func setValueOpt(o *opts, name, v string) error {
@@ -152,6 +180,12 @@ func parseOpts(argv []string) (*opts, error) {
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
+		// Everything after `--` is positional, so a file or path may begin
+		// with a dash.
+		if a == "--" {
+			o.args = append(o.args, argv[i+1:]...)
+			return o, nil
+		}
 		switch {
 		case a == "--int" || a == "--float" || a == "--bool" || a == "--datetime" || a == "--string" || a == "--raw" || a == "--rawinfo":
 			o.kind = a[2:]
@@ -240,6 +274,21 @@ func checkOpts(cmd string, o *opts) int {
 				fmt.Fprintf(os.Stderr, "option %s not valid for %s (see --help)\n", s, cmd)
 			}
 			return 1
+		}
+	}
+	// Writing back the merged document would fold the lower layers permanently
+	// into the top file, which is the opposite of what layering is for.
+	if o.write && (len(o.layers) > 0 || len(o.sets) > 0) {
+		fmt.Fprintln(os.Stderr, "--write cannot be combined with --layer or --set (see --help)")
+		return 1
+	}
+	// The ops script already has stdin, so a layer cannot read it too.
+	if cmd == "set" {
+		for _, l := range o.layers {
+			if l == "-" {
+				fmt.Fprintln(os.Stderr, "--layer=- is not valid for set (stdin carries the ops script)")
+				return 1
+			}
 		}
 	}
 	return 0
@@ -1012,6 +1061,10 @@ func doCheck(o *opts) int {
 }
 
 func doInit(o *opts) int {
+	if len(o.args) != 0 {
+		fmt.Fprintln(os.Stderr, "init takes no file argument (see --help)")
+		return 1
+	}
 	if o.schema == "" {
 		fmt.Fprintln(os.Stderr, "init needs --schema=FILE (see --help)")
 		return 1
@@ -1078,24 +1131,15 @@ func run() int {
 			return 1
 		}
 	}
-	wantsHelp := false
-	wantsVersion := false
-	for _, a := range argv {
-		if a == "-h" || a == "--help" {
-			wantsHelp = true
-		}
-		if a == "-V" || a == "--version" {
-			wantsVersion = true
-		}
-	}
-	if len(argv) == 0 || wantsHelp || argv[0] == "help" {
+	asked := askedFor(argv)
+	if len(argv) == 0 || asked == "help" || argv[0] == "help" {
 		fmt.Print(help)
 		if len(argv) == 0 {
 			return 1
 		}
 		return 0
 	}
-	if wantsVersion || argv[0] == "version" {
+	if asked == "version" || argv[0] == "version" {
 		fmt.Printf("shcl %s\n", version)
 		return 0
 	}

@@ -816,3 +816,21 @@ fn generation_bounds_a_multiplying_schema() {
 	assert_eq!(err.len(), 1);
 	assert_eq!(err[0].code, "V096");
 }
+
+#[test]
+fn one_shot_load_reports_a_broken_schema() {
+	// A schema that does not load would otherwise drop the constraints on its
+	// broken lines, or report every field as unknown - blaming the document.
+	let schema = "field: apikey\n\ttype: string\n  required: true\n";
+	let doc = Document::load_and_validate("host: example\n", schema, Strictness::Standard);
+	let ds = doc.diagnostics();
+	assert_eq!(ds.len(), 1, "expected only the schema fault, got {:?}", ds);
+	assert_eq!(ds[0].code, "V099");
+	assert_eq!(doc.error_count(), 1);
+	// A schema that loads still validates normally.
+	let ok = Document::load_and_validate("host: example\n", "field: host\n", Strictness::Standard);
+	assert_eq!(ok.error_count(), 0);
+	// An empty schema still means "skip validation", not "everything unknown".
+	let none = Document::load_and_validate("host: example\n", "", Strictness::Standard);
+	assert_eq!(none.error_count(), 0);
+}

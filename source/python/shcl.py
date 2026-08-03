@@ -1351,6 +1351,13 @@ class Document:
 		doc = _Parser().parse(text, strictness)
 		if _trim(schema_text):
 			schema = Document.parse(schema_text)
+			# A schema that did not load would silently drop the constraints on
+			# its broken lines, or report every field as unknown - either way
+			# blaming the document for the schema. Say so instead, as `check`
+			# does, and validate nothing.
+			if any(d.severity == Severity.Error for d in schema.diags):
+				doc.diags.append(Diagnostic(0, Severity.Error, "schema failed to load", "V099"))
+				return doc
 			vdiags = doc.validate(schema)
 			doc.diags.extend(vdiags)
 			suppress_declared_repeats(schema, doc.diags)

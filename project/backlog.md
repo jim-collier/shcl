@@ -122,24 +122,25 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Both contradicted the documented promise that comments travel with the node they belong to.
 			- Fixed: a matched instance now takes on the higher layer's comments, and the shared fold carries the comments that hang below a block. Spec and case 042 pin both.
 
-		- 🔘 Code Review 20260802 item 9: the one-shot load-and-validate ignores a broken schema.
+		- ✅ Code Review 20260802 item 9: the one-shot load-and-validate ignores a broken schema.
 			- Reproduced: a schema with a bad indent loads partially and validation runs anyway, so constraints on the dropped lines quietly vanish. A badly broken schema makes every field in the config report as unknown.
-			- The command-line tool gets this right and reports a schema failure. Only the library shortcut skips the check.
+			- The command-line tool gets this right and reports a schema failure. Only the library shortcut skipped the check.
+			- Fixed: the shortcut now reports the same schema failure and validates nothing. An empty schema still means skip validation, as before.
 
-		- 🔘 Code Review 20260802 item 10: one write operation is spelled differently by the reference.
+		- ✅ Code Review 20260802 item 10: one write operation is spelled differently by the reference.
 			- Reproduced: `datetime-array-default` is rejected by the reference and accepted by the other three.
 			- Write output and exit codes are supposed to match everywhere. No test case uses this operation, which is why it went unnoticed.
-			- Probable fix: add the missing case, and add one test line per operation so the whole vocabulary is pinned.
+			- Fixed: the reference accepts it like the others. The vocabulary was then checked verb by verb across all four, and a test line for it was added so the gap cannot reopen.
 
-		- 🔘 Code Review 20260802 item 11: writing in place with layers overwrites the file with the merged result.
+		- ✅ Code Review 20260802 item 11: writing in place with layers overwrites the file with the merged result.
 			- Reproduced: formatting with a lower layer and `--write` folds that layer's contents permanently into the top file, which defeats the point of layering.
 			- Help text says layering prints the merged document; it doesn't mention what `--write` then does.
-			- Probable fix: refuse the combination, which matches how other unusable option pairs are treated.
+			- Fixed: the combination is refused, like other option pairs that cannot both hold.
 
-		- 🔘 Code Review 20260802 item 12: a value that looks like a help flag takes over the command.
+		- ✅ Code Review 20260802 item 12: a value that looks like a help flag takes over the command.
 			- Reproduced: passing `-h` or `--version` as a default value, a path, or a filename prints help or the version to normal output and exits successfully. A caller reading a value gets the help text back.
 			- Cause: the whole argument list is scanned for those flags before options are parsed.
-			- Probable fix: only honor them in first position, or stop the scan at the first value.
+			- Fixed: only a flag in option position counts. A value that reads like one, and anything after the file, is data.
 
 		- ✅ Code Review 20260802 item 13: generated files don't always load.
 			- Reproduced: a wildcard written with spaces inside the brackets, or with the alternate colon spelling, produces a line the parser rejects or a path that fails its own schema. A deep chain of fragments produces paths past the nesting limit.
@@ -198,11 +199,12 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Reproduced: asking for help through the documented pipe prints nothing and exits successfully, because the script tries to read its own file, which isn't there when piped. With a stray file of the right name in the current directory it prints that file instead.
 			- Also, giving an option without its value exits silently, where the program itself explains what's missing.
 
-		- 🔘 Code Review 20260802 item 25: small gaps in argument handling across all four builds.
+		- ✅ Code Review 20260802 item 25: small gaps in argument handling across all four builds.
 			- There is no way to end the options and pass a path that starts with a dash.
 			- `init` ignores extra arguments; every other subcommand rejects them.
 			- An option expecting a value will take the next flag as that value without complaint.
 			- Reading the write operations from standard input while also asking for standard input as a layer silently produces nothing.
+			- Fixed: `--` now ends the options, `init` rejects extra arguments, and asking for standard input twice is refused. The help text says what a value option does with the next argument, which is the one case left as it was, since that is how options normally behave.
 
 	- **Improvements**:
 

@@ -1684,6 +1684,16 @@ func LoadAndValidate(text, schemaText string, strictness Strictness) *Document {
 	doc := newParser().parse(text, strictness)
 	if strings.TrimSpace(schemaText) != "" {
 		schema := Parse(schemaText)
+		// A schema that did not load would silently drop the constraints on
+		// its broken lines, or report every field as unknown - either way
+		// blaming the document for the schema. Say so instead, as `check`
+		// does, and validate nothing.
+		for _, sd := range schema.diags {
+			if sd.Severity == SeverityError {
+				doc.diags = append(doc.diags, Diagnostic{Line: 0, Severity: SeverityError, Message: "schema failed to load", Code: "V099"})
+				return doc
+			}
+		}
 		doc.diags = append(doc.diags, doc.Validate(schema)...)
 		doc.diags = SuppressDeclaredRepeats(schema, doc.diags)
 	}
