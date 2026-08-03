@@ -153,6 +153,41 @@ fCompareWrite(){
 	done
 }
 
+##	Same idea, for the one write property a fixture cannot set up in advance:
+##	the temp file's name carries the writer's pid, so the decoy can only be
+##	planted by the process that is about to become the CLI. `exec` from a
+##	subshell hands the CLI that subshell's pid, so `$$` names the file it is
+##	about to create. Writing through the decoy would leave `stolen` behind and
+##	turn the target into a symlink; both show up in the state compare. The decoy
+##	itself is removed before comparing, since its name holds a per-run pid.
+fPlantRun(){
+	local root="$1" cli="$2"; shift 2
+	bash -c 'r="$1"; c="$2"; shift 2; ln -sfn "${r}/stolen" "${r}/.c.shcl.tmp$$.0"; exec "$c" "$@"' _ "$root" "$cli" "$@" >/dev/null 2>&1 || true
+	find "$root" -maxdepth 1 -type l -name '.c.shcl.tmp*' -delete
+}
+
+fComparePlant(){
+	local what="$1"; shift
+	local want got b name cli root target
+	root="${tmpDir}/plant-${refName}"; rm -rf "$root"; mkdir -p "$root"
+	target="$(fFixMode "$root")"
+	fPlantRun "$root" "$refCli" "$@" "$target"
+	want="$(fWriteState "$root")"
+	for b in "${bindings[@]:1}"; do
+		name="${b%%|*}"; cli="${b#*|}"
+		root="${tmpDir}/plant-${name}"; rm -rf "$root"; mkdir -p "$root"
+		target="$(fFixMode "$root")"
+		fPlantRun "$root" "$cli" "$@" "$target"
+		got="$(fWriteState "$root")"
+		nCompared+=1
+		if [[ "$got" != "$want" ]]; then
+			nBad+=1
+			echo "DIVERGE ${what}: ${name} vs ${refName} (shcl $* <fixture>)"
+			diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | head -12 || true
+		fi
+	done
+}
+
 ##	Fixtures for fCompareWrite. Each builds its tree and echoes the path to hand
 ##	the CLI. The unformatted spacing is deliberate: the write must actually
 ##	rewrite the file, or the checks below prove nothing.
@@ -277,6 +312,7 @@ fCompare "usage unknown" definitely-not-a-subcommand
 fCompareWrite "write keeps mode" fFixMode fmt --write
 fCompareWrite "write follows symlink" fFixSymlink fmt --write
 fCompareWrite "write breaks hard link" fFixHardlink fmt --write
+fComparePlant "write refuses a planted temp" fmt --write
 
 if ((nBad)); then
 	echo "crosscheck: ${nBad}/${nCompared} comparison(s) diverged"

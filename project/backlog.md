@@ -76,11 +76,13 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Note: all four bindings behave the same, so the cross-binding check can't see it, and no test case has this shape.
 			- Fixed: duplicate siblings are folded once parsing finishes, so the tree matches a reparse of its own canonical text. Folding is depth-first, since merging two parents can leave duplicate children a level down. Case 042.
 
-		- 🔘 Code Review 20260802 item 2: in-place writes create their temporary file unsafely.
+		- ✅ Code Review 20260802 item 2: in-place writes create their temporary file unsafely.
 			- Reproduced: the temporary name is predictable, and nothing stops it being a symlink someone else planted. The config's contents get written through that link, and the rename then turns the config itself into a symlink.
 			- Second problem: the file's permissions are copied on only after the data is written, so a 600 config is briefly world-readable. Interrupting the write leaves that copy behind for good.
 			- All four bindings. Only matters where someone else can write to the config's directory, but that includes shared and temp locations.
-			- Probable fix: create the temporary exclusively, refuse to follow links, and set the mode before the first write.
+			- Fixed: the temporary is created exclusively, so an existing file or link under that name makes the attempt fail rather than be written through, and the next name is tried. It is born private and given the target's permissions through the open handle before any data, which also keeps a group-writable config from being narrowed by the umask.
+			- Note: an interrupted write can still leave a temporary behind. It now carries the config's own permissions, so it is not an exposure, and clearing it would need signal handling in all four builds.
+			- The differential harness gained a check for it, since none of this shows up in normal output.
 
 		- 🔘 Code Review 20260802 item 3: one schema line can switch off the unknown-field check.
 			- Reproduced: a field path written as a quoted name that starts with a star, such as a wildcard hostname key, silently becomes a real wildcard. Every unknown top-level name then passes, and the constraints on that line never apply.
