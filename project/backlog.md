@@ -179,7 +179,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Reproduced: a single field whose name contains a null passes the unknown-field check as if it were two nested names.
 			- Cause: the check joins path parts with a null before comparing.
 			- Pre-existing, but the new wildcard matching is built on the same joined text.
-			- Note: left as it is. Closing it means changing how the check compares paths, which touches the wildcard matching in all four, and a name holding a null byte cannot be written by hand. Kept on the list rather than closed quietly.
+			- Fixed: each part is now written with its length, the same way merge keys already solved this, so no name can pose as two.
 
 		- ✅ Code Review 20260802 item 20: end-of-file comments multiply when layering.
 			- Reproduced: a footer comment shared by three layers appears three times in the merged output. The result still formats stably.
@@ -213,14 +213,16 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 	- **Improvements**:
 
-		- 🔘 Code Review 20260802 item 26: the parser copies each line more than it needs to.
+		- ✅ Code Review 20260802 item 26: the parser copies each line more than it needs to.
 			- Every line is copied into a fresh string, the indent is copied again, and the path scanner copies the whole line into a character list per call.
 			- The profile agrees: those three account for roughly a quarter to a third of parsing time, and they are the current top of the profile.
-			- Speed is already fine in absolute terms, so this is optional. It also has to be done in all four builds to keep them in step.
+			- Fixed where the waste existed: the reference no longer copies each line or its indent, and three of the four now scan paths by byte rather than building a character list per call. Formatting a 150,000-line file went from 0.38s to 0.34s in the reference, 0.34s to 0.32s in Go and 0.26s to 0.24s in C. Python had none of the three.
+			- Output is unchanged, checked against a 300,000-round property run, the whole corpus, and 24,000 generated documents per build.
 
-		- 🔘 Code Review 20260802 item 27: Python scans character by character where a built-in would do.
+		- ✅ Code Review 20260802 item 27: Python scans character by character where a built-in would do.
 			- The comment splitter and the comma splitter both loop per character on every line and value.
-			- Measured: skipping the loop when the line holds no marker at all is around forty times faster on the common case. Python is the slowest build, so this is where it pays.
+			- Fixed: three of these now check for the character before scanning for it, which is a whole-string check the runtime does in C. Formatting a 110,000-line file went from 3.16s to 2.76s, about 12 percent.
+			- The remaining leaders there need restructuring rather than a guard, so they were left alone.
 
 		- ✅ Code Review 20260802 item 28: most exported Go functions have no doc comment.
 			- The style guide requires one starting with the name; about sixty were missing, including the whole writer surface. Nothing checks this automatically.

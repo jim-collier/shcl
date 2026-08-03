@@ -671,29 +671,40 @@ fn scan_lookup(input: &str) -> Result<PathScan, String> {
 }
 
 fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
-	let chars: Vec<char> = input.chars().collect();
+	// Byte cursor with inline char decoding (a Vec<char> per call was a parse
+	// hot spot). Every position the scanner stops on is a char boundary: it
+	// only byte-matches ASCII structure chars, which UTF-8 guarantees cannot
+	// appear inside a multibyte sequence, and otherwise advances by whole
+	// chars. Backslash still shields the next CHAR, multibyte included.
+	let bytes = input.as_bytes();
 	let mut pos = 0usize;
-	fn skip_ws(chars: &[char], pos: &mut usize) {
-		while *pos < chars.len() && (chars[*pos] == ' ' || chars[*pos] == '\t') {
+	// First char at a known boundary; the fallback arm is unreachable (callers
+	// check pos < len first) but keeps the decode total.
+	fn char_at(s: &str, pos: usize) -> char {
+		s[pos..].chars().next().unwrap_or('\u{0}')
+	}
+	fn skip_ws(bytes: &[u8], pos: &mut usize) {
+		while *pos < bytes.len() && (bytes[*pos] == b' ' || bytes[*pos] == b'\t') {
 			*pos += 1;
 		}
 	}
-	fn read_quoted(chars: &[char], pos: &mut usize) -> Result<String, String> {
-		let q = chars[*pos];
+	fn read_quoted(s: &str, pos: &mut usize) -> Result<String, String> {
+		let q = char::from(s.as_bytes()[*pos]); // caller checked: ASCII quote
 		*pos += 1;
 		let mut out = String::new();
 		loop {
-			if *pos >= chars.len() {
+			if *pos >= s.len() {
 				return Err("unterminated quote".into());
 			}
-			let c = chars[*pos];
-			if c == '\\' && *pos + 1 < chars.len() {
+			let c = char_at(s, *pos);
+			if c == '\\' && *pos + 1 < s.len() {
+				let next = char_at(s, *pos + 1);
 				out.push(c);
-				out.push(chars[*pos + 1]);
-				*pos += 2;
+				out.push(next);
+				*pos += 1 + next.len_utf8();
 				continue;
 			}
-			*pos += 1;
+			*pos += c.len_utf8();
 			if c == q {
 				return Ok(out);
 			}
@@ -702,58 +713,59 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 	}
 	let mut segments: Vec<Segment> = Vec::new();
 	loop {
-		skip_ws(&chars, &mut pos);
-		if pos >= chars.len() {
+		skip_ws(bytes, &mut pos);
+		if pos >= bytes.len() {
 			return Err("empty path".into());
 		}
 		// Field name: quoted, bare, or (lookups only) the `*` name wildcard.
 		let mut star = false;
-		let name = if chars[pos] == '"' || chars[pos] == '\'' {
-			read_quoted(&chars, &mut pos)?
-		} else if stars && chars[pos] == '*' {
+		let name = if bytes[pos] == b'"' || bytes[pos] == b'\'' {
+			read_quoted(input, &mut pos)?
+		} else if stars && bytes[pos] == b'*' {
 			pos += 1;
 			star = true;
 			"*".to_string()
 		} else {
 			let start = pos;
-			while pos < chars.len() && is_bare_name_char(chars[pos]) {
+			// Bare-name chars are ASCII, so the byte-as-char view is exact
+			// (bytes >= 0x80 map to chars the predicate rejects either way).
+			while pos < bytes.len() && is_bare_name_char(char::from(bytes[pos])) {
 				pos += 1;
 			}
 			if pos == start {
-				return Err(format!("expected field name, found '{}'", chars[pos]));
+				return Err(format!(
+					"expected field name, found '{}'",
+					char_at(input, pos)
+				));
 			}
-			chars[start..pos].iter().collect()
+			input[start..pos].to_string()
 		};
 		let mut selector: Option<Selector> = None;
-		skip_ws(&chars, &mut pos);
+		skip_ws(bytes, &mut pos);
 		// Optional selector, with its optional sugar colon (colon counts as
 		// selector sugar only when the next non-ws char is an open bracket).
 		let mut bracket_at: Option<usize> = None;
-		if pos < chars.len() && chars[pos] == '[' {
+		if pos < bytes.len() && bytes[pos] == b'[' {
 			bracket_at = Some(pos);
-		} else if pos < chars.len() && chars[pos] == ':' {
+		} else if pos < bytes.len() && bytes[pos] == b':' {
 			let mut q = pos + 1;
-			skip_ws(&chars, &mut q);
-			if q < chars.len() && chars[q] == '[' {
+			skip_ws(bytes, &mut q);
+			if q < bytes.len() && bytes[q] == b'[' {
 				bracket_at = Some(q);
 			}
 		}
 		if let Some(b) = bracket_at {
 			pos = b + 1;
-			skip_ws(&chars, &mut pos);
-			if pos < chars.len() && (chars[pos] == '"' || chars[pos] == '\'') {
-				let v = read_quoted(&chars, &mut pos)?;
+			skip_ws(bytes, &mut pos);
+			if pos < bytes.len() && (bytes[pos] == b'"' || bytes[pos] == b'\'') {
+				let v = read_quoted(input, &mut pos)?;
 				selector = Some(Selector::ByValue(v)); // quotes force a value match, even numeric
 			} else {
 				let start = pos;
-				while pos < chars.len() && chars[pos] != ']' {
+				while pos < bytes.len() && bytes[pos] != b']' {
 					pos += 1;
 				}
-				let body: String = chars[start..pos]
-					.iter()
-					.collect::<String>()
-					.trim()
-					.to_string();
+				let body: String = input[start..pos].trim().to_string();
 				selector = Some(if body == "*" {
 					Selector::Wildcard
 				} else if let Some(n) = body.strip_prefix('#').and_then(|d| d.parse::<u64>().ok()) {
@@ -766,12 +778,12 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 					Selector::ByValue(normalize_dangling_backslash(body))
 				});
 			}
-			skip_ws(&chars, &mut pos);
-			if pos >= chars.len() || chars[pos] != ']' {
+			skip_ws(bytes, &mut pos);
+			if pos >= bytes.len() || bytes[pos] != b']' {
 				return Err("unterminated selector".into());
 			}
 			pos += 1;
-			skip_ws(&chars, &mut pos);
+			skip_ws(bytes, &mut pos);
 		}
 		if star && selector.is_some() {
 			return Err("selector on a name wildcard".into());
@@ -781,25 +793,24 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 			selector,
 			star,
 		});
-		if pos >= chars.len() {
+		if pos >= bytes.len() {
 			return Ok(PathScan {
 				segments,
 				value_text: None,
 			});
 		}
-		match chars[pos] {
-			'.' => {
+		match bytes[pos] {
+			b'.' => {
 				pos += 1;
 			}
-			':' => {
+			b':' => {
 				pos += 1;
-				let rest: String = chars[pos..].iter().collect();
 				return Ok(PathScan {
 					segments,
-					value_text: Some(rest.trim().to_string()),
+					value_text: Some(input[pos..].trim().to_string()),
 				});
 			}
-			c => return Err(format!("unexpected '{}' after field", c)),
+			_ => return Err(format!("unexpected '{}' after field", char_at(input, pos))),
 		}
 	}
 }
@@ -1152,22 +1163,22 @@ impl Parser {
 	/// index). Content keeps relative indentation; the common leading run is stripped.
 	fn consume_raw(
 		&mut self,
-		lines: &[String],
+		lines: &[&str],
 		mut i: usize,
 		open_line: usize,
 		ch: u8,
 		len: usize,
 		info: String,
 	) -> (Value, usize) {
-		let mut content: Vec<String> = Vec::new();
+		let mut content: Vec<&str> = Vec::new();
 		let mut closed = false;
 		while i < lines.len() {
-			if is_fence_close(&lines[i], ch, len) {
+			if is_fence_close(lines[i], ch, len) {
 				closed = true;
 				i += 1;
 				break;
 			}
-			content.push(lines[i].clone());
+			content.push(lines[i]);
 			i += 1;
 		}
 		if !closed {
@@ -1193,13 +1204,13 @@ impl Parser {
 			});
 		}
 		let common = common.unwrap_or_default();
-		let stripped: Vec<String> = content
+		let stripped: Vec<&str> = content
 			.iter()
 			.map(|l| {
 				if l.trim().is_empty() {
-					String::new()
+					""
 				} else {
-					l.strip_prefix(&common).unwrap_or(l).to_string()
+					l.strip_prefix(&common).unwrap_or(l)
 				}
 			})
 			.collect();
@@ -1345,20 +1356,23 @@ impl Parser {
 
 	fn parse(mut self, text: &str, strictness: Strictness) -> Document {
 		// UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
+		// Lines borrow `text`: they are only read, so no owned copies needed.
 		let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-		let lines: Vec<String> = text
+		let lines: Vec<&str> = text
 			.split('\n')
-			.map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+			.map(|l| l.strip_suffix('\r').unwrap_or(l))
 			.collect();
 		let mut i = 0usize;
 		while i < lines.len() {
 			let lineno = i + 1;
 			let line = lines[i].trim_end();
-			let indent: String = line
-				.chars()
-				.take_while(|c| *c == ' ' || *c == '\t')
-				.collect();
-			let rest = &line[indent.len()..];
+			// Indent chars are ASCII space/tab, so a byte scan slices the same run.
+			let ilen = line
+				.bytes()
+				.take_while(|&b| b == b' ' || b == b'\t')
+				.count();
+			let indent = &line[..ilen];
+			let rest = &line[ilen..];
 			if rest.is_empty() {
 				self.saw_blank = true;
 				i += 1;
@@ -1370,7 +1384,7 @@ impl Parser {
 			if rest.starts_with('#') {
 				self.pending.push(Pend {
 					text: rest.to_string(),
-					indent,
+					indent: indent.to_string(),
 					blank_before: std::mem::take(&mut self.saw_blank),
 				});
 				i += 1;
@@ -1381,10 +1395,10 @@ impl Parser {
 			let had_blank = std::mem::take(&mut self.saw_blank);
 			// A binding line claims the pending comments - but deeper-written
 			// ones hang on their own block first.
-			self.hang_deeper_pending(&indent);
+			self.hang_deeper_pending(indent);
 			// Child-indent fence: a value line for its parent field.
 			if let Some((ch, len, info)) = fence_open(rest) {
-				let parent = match self.resolve_parent(&indent) {
+				let parent = match self.resolve_parent(indent) {
 					Some(p) => p,
 					None => {
 						self.err(lineno, "indentation matches no open level");
@@ -1402,7 +1416,7 @@ impl Parser {
 			// Stacked-list element: colon-less by construction ('*' can't begin a name).
 			if let Some(after) = rest.strip_prefix('*') {
 				if after.starts_with(' ') || after.starts_with('\t') {
-					let parent = match self.resolve_parent(&indent) {
+					let parent = match self.resolve_parent(indent) {
 						Some(p) => p,
 						None => {
 							self.err(lineno, "indentation matches no open level");
@@ -1431,14 +1445,14 @@ impl Parser {
 				if let Some(c) = comment {
 					self.pending.push(Pend {
 						text: c.to_string(),
-						indent,
+						indent: indent.to_string(),
 						blank_before: had_blank,
 					});
 				}
 				i += 1;
 				continue;
 			}
-			let parent = match self.resolve_parent(&indent) {
+			let parent = match self.resolve_parent(indent) {
 				Some(p) => p,
 				None => {
 					self.err(lineno, "indentation matches no open level");
@@ -1496,7 +1510,7 @@ impl Parser {
 					self.arena[node].blank_before = true;
 				}
 				self.attach_trivia(node, comment);
-				self.stack.push((indent, node));
+				self.stack.push((indent.to_string(), node));
 			}
 			i = next;
 		}
@@ -4477,10 +4491,7 @@ impl Document {
 					.entry(chain.clone())
 					.or_default()
 					.push(s.name.clone());
-				if !chain.is_empty() {
-					chain.push('\0');
-				}
-				chain.push_str(&s.name);
+				chain_push(&mut chain, &s.name);
 				legal.insert(chain.clone());
 			}
 		}
@@ -4492,11 +4503,8 @@ impl Document {
 			.collect();
 		while let Some((n, pchain, pshown)) = stack.pop() {
 			let node = &self.arena[n];
-			let chain = if pchain.is_empty() {
-				node.name.clone()
-			} else {
-				format!("{}\0{}", pchain, node.name)
-			};
+			let mut chain = pchain.clone();
+			chain_push(&mut chain, &node.name);
 			let shown = if pshown.is_empty() {
 				node.name.clone()
 			} else {
@@ -4517,13 +4525,46 @@ impl Document {
 	}
 }
 
+/// Chain keys join segments length-prefixed (`<len>:<name>`), not with a bare
+/// NUL: NUL is legal in a quoted name, so a single field named "x\0y" would
+/// impersonate the two-segment path x.y. Same injectivity reasoning as
+/// Value::key's cell encoding - and like it, the length unit is each
+/// binding's native one (bytes here), because only injectivity matters.
+fn chain_push(chain: &mut String, name: &str) {
+	chain.push_str(&name.len().to_string());
+	chain.push(':');
+	chain.push_str(name);
+}
+
+/// Decode a chain key back into its segments. Total: bails at the first
+/// shape the encoder can't have produced.
+fn chain_parts(chain: &str) -> Vec<&str> {
+	let mut parts = Vec::new();
+	let b = chain.as_bytes();
+	let mut i = 0;
+	while i < b.len() {
+		let mut n = 0usize;
+		while i < b.len() && b[i].is_ascii_digit() {
+			n = n * 10 + (b[i] - b'0') as usize;
+			i += 1;
+		}
+		if i >= b.len() || b[i] != b':' || i + 1 + n > b.len() {
+			break;
+		}
+		i += 1;
+		parts.push(&chain[i..i + n]);
+		i += n;
+	}
+	parts
+}
+
 /// Element-wise chain match against the star-bearing schema paths: a `*`
 /// segment matches any one name, and every prefix of a path is legal.
 fn star_legal(pats: &[&[Segment]], chain: &str) -> bool {
 	if pats.is_empty() {
 		return false;
 	}
-	let parts: Vec<&str> = chain.split('\0').collect();
+	let parts: Vec<&str> = chain_parts(chain);
 	pats.iter().any(|p| {
 		p.len() >= parts.len()
 			&& parts
@@ -4538,7 +4579,7 @@ fn star_legal(pats: &[&[Segment]], chain: &str) -> bool {
 /// matched with chain left over, the remainder is retried against the mounted
 /// fragment's fields. Terminates: every descent consumes >= 1 part.
 fn chain_legal(cons: &[Constraint], frags: &HashMap<String, Vec<Constraint>>, chain: &str) -> bool {
-	let parts: Vec<&str> = chain.split('\0').collect();
+	let parts: Vec<&str> = chain_parts(chain);
 	chain_parts_legal(cons, frags, &parts)
 }
 

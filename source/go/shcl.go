@@ -885,28 +885,46 @@ func scanLookup(input string) (pathScan, error) {
 }
 
 func scanPathEx(input string, stars bool) (pathScan, error) {
-	chars := []rune(input)
+	// Byte cursor with inline rune decoding (a []rune per call was a parse hot
+	// spot). Every position the scanner stops on is a rune boundary: it only
+	// byte-matches ASCII structure chars, which UTF-8 guarantees cannot appear
+	// inside a multibyte sequence, and otherwise advances by whole runes.
+	// Backslash still shields the next RUNE, multibyte included.
 	pos := 0
 	skipWS := func() {
-		for pos < len(chars) && (chars[pos] == ' ' || chars[pos] == '\t') {
+		for pos < len(input) && (input[pos] == ' ' || input[pos] == '\t') {
 			pos++
 		}
 	}
+	// A span rebuilt rune-by-rune matches the old []rune round-trip exactly:
+	// invalid UTF-8 bytes each become U+FFFD, valid text passes through. The
+	// valid (overwhelmingly common) case slices instead of copying.
+	spanString := func(s string) string {
+		if utf8.ValidString(s) {
+			return s
+		}
+		var out []rune
+		for _, c := range s {
+			out = append(out, c)
+		}
+		return string(out)
+	}
 	readQuoted := func() (string, error) {
-		q := chars[pos]
+		q := rune(input[pos]) // caller checked: ASCII quote
 		pos++
 		var out []rune
 		for {
-			if pos >= len(chars) {
+			if pos >= len(input) {
 				return "", errors.New("unterminated quote")
 			}
-			c := chars[pos]
-			if c == '\\' && pos+1 < len(chars) {
-				out = append(out, c, chars[pos+1])
-				pos += 2
+			c, cw := utf8.DecodeRuneInString(input[pos:])
+			if c == '\\' && pos+1 < len(input) {
+				next, nw := utf8.DecodeRuneInString(input[pos+1:])
+				out = append(out, c, next)
+				pos += 1 + nw
 				continue
 			}
-			pos++
+			pos += cw
 			if c == q {
 				return string(out), nil
 			}
@@ -916,52 +934,55 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 	var segments []segment
 	for {
 		skipWS()
-		if pos >= len(chars) {
+		if pos >= len(input) {
 			return pathScan{}, errors.New("empty path")
 		}
 		// Field name: quoted, bare, or (lookups only) the `*` name wildcard.
 		var name string
 		star := false
-		if chars[pos] == '"' || chars[pos] == '\'' {
+		if input[pos] == '"' || input[pos] == '\'' {
 			n, err := readQuoted()
 			if err != nil {
 				return pathScan{}, err
 			}
 			name = n
-		} else if stars && chars[pos] == '*' {
+		} else if stars && input[pos] == '*' {
 			pos++
 			star = true
 			name = "*"
 		} else {
 			start := pos
-			for pos < len(chars) && isBareNameChar(chars[pos]) {
+			// Bare-name chars are ASCII, so the byte-as-rune view is exact
+			// (bytes >= 0x80 map to runes the predicate rejects either way).
+			for pos < len(input) && isBareNameChar(rune(input[pos])) {
 				pos++
 			}
 			if pos == start {
-				return pathScan{}, fmt.Errorf("expected field name, found '%c'", chars[pos])
+				c, _ := utf8.DecodeRuneInString(input[pos:])
+				return pathScan{}, fmt.Errorf("expected field name, found '%c'", c)
 			}
-			name = string(chars[start:pos])
+			name = input[start:pos]
 		}
 		var sel *selector
 		skipWS()
 		// Optional selector, with its optional sugar colon (colon counts as
 		// selector sugar only when the next non-ws char is an open bracket).
 		bracketAt := -1
-		if pos < len(chars) && chars[pos] == '[' {
+		if pos < len(input) && input[pos] == '[' {
 			bracketAt = pos
-		} else if pos < len(chars) && chars[pos] == ':' {
+		} else if pos < len(input) && input[pos] == ':' {
 			q := pos + 1
-			for q < len(chars) && (chars[q] == ' ' || chars[q] == '\t') {
+			for q < len(input) && (input[q] == ' ' || input[q] == '\t') {
 				q++
 			}
-			if q < len(chars) && chars[q] == '[' {
+			if q < len(input) && input[q] == '[' {
 				bracketAt = q
 			}
 		}
 		if bracketAt >= 0 {
 			pos = bracketAt + 1
 			skipWS()
-			if pos < len(chars) && (chars[pos] == '"' || chars[pos] == '\'') {
+			if pos < len(input) && (input[pos] == '"' || input[pos] == '\'') {
 				v, err := readQuoted()
 				if err != nil {
 					return pathScan{}, err
@@ -969,10 +990,10 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 				sel = &selector{kind: selByValue, value: v} // quotes force a value match, even numeric
 			} else {
 				start := pos
-				for pos < len(chars) && chars[pos] != ']' {
+				for pos < len(input) && input[pos] != ']' {
 					pos++
 				}
-				body := strings.TrimSpace(string(chars[start:pos]))
+				body := strings.TrimSpace(spanString(input[start:pos]))
 				if body == "*" {
 					sel = &selector{kind: selWildcard}
 				} else if n, ok := hashIndex(body); ok {
@@ -986,7 +1007,7 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 				}
 			}
 			skipWS()
-			if pos >= len(chars) || chars[pos] != ']' {
+			if pos >= len(input) || input[pos] != ']' {
 				return pathScan{}, errors.New("unterminated selector")
 			}
 			pos++
@@ -996,18 +1017,19 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 			return pathScan{}, errors.New("selector on a name wildcard")
 		}
 		segments = append(segments, segment{name: asciiLower(name), sel: sel, star: star})
-		if pos >= len(chars) {
+		if pos >= len(input) {
 			return pathScan{segments: segments}, nil
 		}
-		switch chars[pos] {
+		switch input[pos] {
 		case '.':
 			pos++
 		case ':':
 			pos++
-			rest := strings.TrimSpace(string(chars[pos:]))
+			rest := strings.TrimSpace(spanString(input[pos:]))
 			return pathScan{segments: segments, valueText: &rest}, nil
 		default:
-			return pathScan{}, fmt.Errorf("unexpected '%c' after field", chars[pos])
+			c, _ := utf8.DecodeRuneInString(input[pos:])
+			return pathScan{}, fmt.Errorf("unexpected '%c' after field", c)
 		}
 	}
 }
@@ -5021,10 +5043,7 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 				break // no sibling entry for '*'; deeper chains are pattern-only
 			}
 			siblings[chain] = append(siblings[chain], s.name)
-			if chain != "" {
-				chain += "\x00"
-			}
-			chain += s.name
+			chain = chainPush(chain, s.name)
 			legal[chain] = true
 		}
 	}
@@ -5042,10 +5061,9 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 		fr := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		node := &d.arena[fr.node]
-		chain := node.name
+		chain := chainPush(fr.chain, node.name)
 		shown := node.name
-		if fr.chain != "" {
-			chain = fr.chain + "\x00" + node.name
+		if fr.shown != "" {
 			shown = fr.shown + "." + node.name
 		}
 		if !legal[chain] && !starLegal(starPats, chain) && !(hasMounts && chainLegal(cons, def.frags, chain)) {
@@ -5059,6 +5077,37 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 	}
 }
 
+// chainPush appends a segment to a chain key. Chain keys join segments
+// length-prefixed (`<len>:<name>`), not with a bare NUL: NUL is legal in a
+// quoted name, so a single field named "x\x00y" would impersonate the
+// two-segment path x.y. Same injectivity reasoning as the merge key's cell
+// encoding - and like it, the length unit is each binding's native one
+// (bytes here), because only injectivity matters.
+func chainPush(chain, name string) string {
+	return chain + strconv.Itoa(len(name)) + ":" + name
+}
+
+// chainParts decodes a chain key back into its segments. Total: bails at the
+// first shape the encoder can't have produced.
+func chainParts(chain string) []string {
+	var parts []string
+	i := 0
+	for i < len(chain) {
+		n := 0
+		for i < len(chain) && chain[i] >= '0' && chain[i] <= '9' {
+			n = n*10 + int(chain[i]-'0')
+			i++
+		}
+		if i >= len(chain) || chain[i] != ':' || i+1+n > len(chain) {
+			break
+		}
+		i++
+		parts = append(parts, chain[i:i+n])
+		i += n
+	}
+	return parts
+}
+
 // starLegal is the element-wise chain match against the star-bearing schema
 // paths: a `*` segment matches any one name, and every prefix of a path is
 // legal.
@@ -5066,7 +5115,7 @@ func starLegal(pats [][]segment, chain string) bool {
 	if len(pats) == 0 {
 		return false
 	}
-	parts := strings.Split(chain, "\x00")
+	parts := chainParts(chain)
 	for _, p := range pats {
 		if len(p) < len(parts) {
 			continue
@@ -5090,7 +5139,7 @@ func starLegal(pats [][]segment, chain string) bool {
 // whole path matched with chain left over, the remainder is retried against
 // the mounted fragment's fields. Terminates: every descent consumes >= 1 part.
 func chainLegal(cons []constraint, frags map[string][]constraint, chain string) bool {
-	parts := strings.Split(chain, "\x00")
+	parts := chainParts(chain)
 	return chainPartsLegal(cons, frags, parts)
 }
 

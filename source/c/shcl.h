@@ -773,66 +773,95 @@ static int parse_u64(S s, uint64_t *out) {
 	*out = v; return 1;
 }
 
-static void skip_ws_cp(CPs c, size_t *pos) {
-	while (*pos < c.n && (c.cp[*pos] == ' ' || c.cp[*pos] == '\t')) (*pos)++;
+// Byte-offset cursor over the path text (a decode_cps codepoint array per call
+// was a parse hot spot). Positions advance by whole codepoints via the same
+// utf8_decode, so the codepoint sequence - and every slice boundary - is
+// identical to the old array walk, permissive decoding included.
+static void skip_ws_path(S s, size_t *pos) {
+	while (*pos < s.n) {
+		uint32_t c; size_t l = utf8_decode(s.p, s.n, *pos, &c);
+		if (c != ' ' && c != '\t') break;
+		*pos += l;
+	}
 }
 // Read a quoted name/value in a path (escape pairs preserved literally).
-static int read_quoted_path(Arena *a, S src, CPs c, size_t *pos, S *out, S *err) {
-	uint32_t q = c.cp[*pos]; (*pos)++;
+static int read_quoted_path(Arena *a, S src, size_t *pos, S *out, S *err) {
+	uint32_t q; *pos += utf8_decode(src.p, src.n, *pos, &q);
 	SB sb = {0};
 	for (;;) {
-		if (*pos >= c.n) { *err = s_lit("unterminated quote"); return 0; }
-		uint32_t ch = c.cp[*pos];
-		if (ch == '\\' && *pos + 1 < c.n) { sb_put_cp(a, &sb, ch); sb_put_cp(a, &sb, c.cp[*pos + 1]); *pos += 2; continue; }
-		(*pos)++;
-		if (ch == q) { *out = sb_S(&sb); (void)src; return 1; }
+		if (*pos >= src.n) { *err = s_lit("unterminated quote"); return 0; }
+		uint32_t ch; size_t l = utf8_decode(src.p, src.n, *pos, &ch);
+		if (ch == '\\' && *pos + l < src.n) {
+			uint32_t d; size_t l2 = utf8_decode(src.p, src.n, *pos + l, &d);
+			sb_put_cp(a, &sb, ch); sb_put_cp(a, &sb, d);
+			*pos += l + l2; continue;
+		}
+		*pos += l;
+		if (ch == q) { *out = sb_S(&sb); return 1; }
 		sb_put_cp(a, &sb, ch);
 	}
 }
 
 static PathScan scan_path_ex(Arena *a, S input, int stars) {
 	PathScan ps; ps.ok = 0; memset(&ps.segs, 0, sizeof ps.segs); ps.has_value = 0; ps.value_text = s_empty(); ps.err = s_empty();
-	CPs c = decode_cps(a, input);
 	size_t pos = 0;
 	for (;;) {
-		skip_ws_cp(c, &pos);
-		if (pos >= c.n) { ps.err = s_lit("empty path"); return ps; }
+		skip_ws_path(input, &pos);
+		if (pos >= input.n) { ps.err = s_lit("empty path"); return ps; }
 		// Field name: quoted, bare, or (lookups only) the `*` name wildcard.
 		int star = 0;
 		S name;
-		if (c.cp[pos] == '"' || c.cp[pos] == '\'') {
-			if (!read_quoted_path(a, input, c, &pos, &name, &ps.err)) return ps;
-		} else if (stars && c.cp[pos] == '*') {
-			pos++;
+		uint32_t cur; size_t curl = utf8_decode(input.p, input.n, pos, &cur);
+		if (cur == '"' || cur == '\'') {
+			if (!read_quoted_path(a, input, &pos, &name, &ps.err)) return ps;
+		} else if (stars && cur == '*') {
+			pos += curl;
 			star = 1;
 			name = s_lit("*");
 		} else {
 			size_t start = pos;
-			while (pos < c.n && is_bare_name_char(c.cp[pos])) pos++;
+			while (pos < input.n) {
+				uint32_t bc; size_t bl = utf8_decode(input.p, input.n, pos, &bc);
+				if (!is_bare_name_char(bc)) break;
+				pos += bl;
+			}
 			if (pos == start) {
-				SB e = {0}; sb_puts(a, &e, "expected field name, found '"); sb_put_cp(a, &e, c.cp[pos]); sb_putc(a, &e, '\'');
+				SB e = {0}; sb_puts(a, &e, "expected field name, found '"); sb_put_cp(a, &e, cur); sb_putc(a, &e, '\'');
 				ps.err = sb_S(&e); return ps;
 			}
-			name = cps_slice(input, c, start, pos);
+			name = s_slice(input, start, pos);
 		}
 		Selector sel; sel.tag = SEL_NONE; sel.value = s_empty(); sel.index = 0;
-		skip_ws_cp(c, &pos);
-		int have_bracket = 0; size_t bracket_at = 0;
-		if (pos < c.n && c.cp[pos] == '[') { have_bracket = 1; bracket_at = pos; }
-		else if (pos < c.n && c.cp[pos] == ':') {
-			size_t q = pos + 1; skip_ws_cp(c, &q);
-			if (q < c.n && c.cp[q] == '[') { have_bracket = 1; bracket_at = q; }
+		skip_ws_path(input, &pos);
+		int have_bracket = 0; size_t bracket_end = 0; // byte offset just past the '['
+		if (pos < input.n) {
+			uint32_t sc; size_t sl = utf8_decode(input.p, input.n, pos, &sc);
+			if (sc == '[') { have_bracket = 1; bracket_end = pos + sl; }
+			else if (sc == ':') {
+				size_t q = pos + sl; skip_ws_path(input, &q);
+				if (q < input.n) {
+					uint32_t qc; size_t ql = utf8_decode(input.p, input.n, q, &qc);
+					if (qc == '[') { have_bracket = 1; bracket_end = q + ql; }
+				}
+			}
 		}
 		if (have_bracket) {
-			pos = bracket_at + 1;
-			skip_ws_cp(c, &pos);
-			if (pos < c.n && (c.cp[pos] == '"' || c.cp[pos] == '\'')) {
-				S v; if (!read_quoted_path(a, input, c, &pos, &v, &ps.err)) return ps;
+			pos = bracket_end;
+			skip_ws_path(input, &pos);
+			uint32_t oc = 0; size_t ocl = 0;
+			if (pos < input.n) ocl = utf8_decode(input.p, input.n, pos, &oc);
+			(void)ocl;
+			if (pos < input.n && (oc == '"' || oc == '\'')) {
+				S v; if (!read_quoted_path(a, input, &pos, &v, &ps.err)) return ps;
 				sel.tag = SEL_VALUE; sel.value = v; // quotes force a value match, even numeric
 			} else {
 				size_t start = pos;
-				while (pos < c.n && c.cp[pos] != ']') pos++;
-				S body = s_trim(cps_slice(input, c, start, pos));
+				while (pos < input.n) {
+					uint32_t bc; size_t bl = utf8_decode(input.p, input.n, pos, &bc);
+					if (bc == ']') break;
+					pos += bl;
+				}
+				S body = s_trim(s_slice(input, start, pos));
 				uint64_t idx;
 				if (body.n == 1 && body.p[0] == '*') {
 					sel.tag = SEL_WILDCARD;
@@ -846,23 +875,26 @@ static PathScan scan_path_ex(Arena *a, S input, int stars) {
 					sel.tag = SEL_VALUE; sel.value = norm_dangling(a, body);
 				}
 			}
-			skip_ws_cp(c, &pos);
-			if (pos >= c.n || c.cp[pos] != ']') { ps.err = s_lit("unterminated selector"); return ps; }
-			pos++;
-			skip_ws_cp(c, &pos);
+			skip_ws_path(input, &pos);
+			uint32_t cc = 0; size_t ccl = 0;
+			if (pos < input.n) ccl = utf8_decode(input.p, input.n, pos, &cc);
+			if (pos >= input.n || cc != ']') { ps.err = s_lit("unterminated selector"); return ps; }
+			pos += ccl;
+			skip_ws_path(input, &pos);
 		}
 		if (star && sel.tag != SEL_NONE) { ps.err = s_lit("selector on a name wildcard"); return ps; }
 		Segment seg; seg.name = fold_name(a, name); seg.sel = sel; seg.star = star;
 		VecSeg_push(a, &ps.segs, seg);
-		if (pos >= c.n) { ps.ok = 1; ps.has_value = 0; return ps; }
-		if (c.cp[pos] == '.') { pos++; continue; }
-		if (c.cp[pos] == ':') {
-			pos++;
+		if (pos >= input.n) { ps.ok = 1; ps.has_value = 0; return ps; }
+		uint32_t dc; size_t dl = utf8_decode(input.p, input.n, pos, &dc);
+		if (dc == '.') { pos += dl; continue; }
+		if (dc == ':') {
+			pos += dl;
 			ps.ok = 1; ps.has_value = 1;
-			ps.value_text = s_dup(a, s_trim(cps_slice(input, c, pos, c.n)));
+			ps.value_text = s_dup(a, s_trim(s_slice(input, pos, input.n)));
 			return ps;
 		}
-		{ SB e = {0}; sb_puts(a, &e, "unexpected '"); sb_put_cp(a, &e, c.cp[pos]); sb_puts(a, &e, "' after field"); ps.err = sb_S(&e); return ps; }
+		{ SB e = {0}; sb_puts(a, &e, "unexpected '"); sb_put_cp(a, &e, dc); sb_puts(a, &e, "' after field"); ps.err = sb_S(&e); return ps; }
 	}
 }
 
@@ -3460,19 +3492,43 @@ static void v_check(Arena *a, Arena *lvls, shcl_doc *d, const VCons *c, const VS
 	v_check_from(a, lvls, d, c, def, ROOT, 0, out, &mounted);
 }
 
+// Append a segment to a chain key. Chain keys join segments length-prefixed
+// (`<len>:<name>`), not with a bare NUL: NUL is legal in a quoted name, so a
+// single field named "x\0y" would impersonate the two-segment path x.y. Same
+// injectivity reasoning as the merge key's cell encoding - and like it, the
+// length unit is each binding's native one (bytes here), because only
+// injectivity matters.
+static void chain_push(Arena *a, SB *chain, S name) {
+	char buf[32];
+	snprintf(buf, sizeof buf, "%zu:", name.n);
+	sb_puts(a, chain, buf);
+	sb_putS(a, chain, name);
+}
+
+// Decode the next length-prefixed segment of a chain key at *i. Total: bails
+// at the first shape the encoder can't have produced.
+static int chain_next(S chain, size_t *i, S *nm) {
+	size_t k = *i, n = 0;
+	if (k >= chain.n) return 0;
+	while (k < chain.n && chain.p[k] >= '0' && chain.p[k] <= '9') { n = n * 10 + (size_t)(chain.p[k] - '0'); k++; }
+	if (k >= chain.n || chain.p[k] != ':' || k + 1 + n > chain.n) return 0;
+	k++;
+	*nm = s_slice(chain, k, k + n);
+	*i = k + n;
+	return 1;
+}
+
 // Element-wise chain match against the star-bearing schema paths: a `*`
 // segment matches any one name, and every prefix of a path is legal.
 static int star_legal(const VecSeg *pats, size_t npats, S chain) {
 	if (npats == 0) return 0;
 	for (size_t pi = 0; pi < npats; pi++) {
 		const VecSeg *p = &pats[pi];
-		size_t part = 0, start = 0; int match = 1;
-		for (size_t k = 0; k <= chain.n && match; k++) {
-			if (k == chain.n || chain.p[k] == '\0') {
-				S nm = s_slice(chain, start, k);
-				if (part >= p->len || (!p->data[part].star && !s_eq(p->data[part].name, nm))) match = 0;
-				part++; start = k + 1;
-			}
+		size_t part = 0, i = 0; int match = 1;
+		S nm;
+		while (match && chain_next(chain, &i, &nm)) {
+			if (part >= p->len || (!p->data[part].star && !s_eq(p->data[part].name, nm))) match = 0;
+			part++;
 		}
 		if (match) return 1;
 	}
@@ -3487,17 +3543,15 @@ static int chain_parts_legal(const VecVCons *cons, const VSchemaDef *def, S chai
 	for (size_t ci = 0; ci < cons->len; ci++) {
 		const VCons *c = &cons->data[ci];
 		size_t n = c->segs.len;
-		size_t part = 0, start = from, rem = from;
+		size_t part = 0, i = from, rem = from;
 		int match = 1;
-		for (size_t k = from; k <= chain.n && match; k++) {
-			if (k == chain.n || chain.p[k] == '\0') {
-				if (part < n) {
-					S nm = s_slice(chain, start, k);
-					if (!c->segs.data[part].star && !s_eq(c->segs.data[part].name, nm)) match = 0;
-					if (part + 1 == n) rem = k + 1; // remainder starts past the matched prefix
-				}
-				part++; start = k + 1;
+		S nm;
+		while (match && chain_next(chain, &i, &nm)) {
+			if (part < n) {
+				if (!c->segs.data[part].star && !s_eq(c->segs.data[part].name, nm)) match = 0;
+				if (part + 1 == n) rem = i; // remainder starts past the matched prefix
 			}
+			part++;
 		}
 		if (!match) continue;
 		if (part <= n) return 1; // a prefix of a legal path
@@ -3551,8 +3605,7 @@ static void v_unknown(Arena *a, shcl_doc *d, const VSchemaDef *def, VecDiag *out
 				cmap_put(a, &sib_of, hp, pc, s_empty(), g);
 			}
 			VecS_push(a, &sibs[g], nm);
-			if (chain.len) sb_putc(a, &chain, '\0');
-			sb_putS(a, &chain, nm);
+			chain_push(a, &chain, nm);
 			S full = s_dup(a, sb_S(&chain));
 			uint64_t hf = cmap_hash(full, s_empty());
 			if (cmap_get(&legal, hf, full, s_empty()) == (size_t)-1) cmap_put(a, &legal, hf, full, s_empty(), 1);
@@ -3572,8 +3625,8 @@ static void v_unknown(Arena *a, shcl_doc *d, const VSchemaDef *def, VecDiag *out
 		snode.len--; schain.len--; sshown.len--;
 		Node *node = &NODE(d, n);
 		SB cb = {0, 0, 0};
-		if (pchain.n) { sb_putS(a, &cb, pchain); sb_putc(a, &cb, '\0'); }
-		sb_putS(a, &cb, node->name);
+		sb_putS(a, &cb, pchain);
+		chain_push(a, &cb, node->name);
 		S chain = sb_S(&cb);
 		SB sb2 = {0, 0, 0};
 		if (pshown.n) { sb_putS(a, &sb2, pshown); sb_putc(a, &sb2, '.'); }

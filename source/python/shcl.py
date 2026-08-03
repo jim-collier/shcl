@@ -477,6 +477,12 @@ def _split_comment(s):
 	"""Split off an unquoted trailing comment: (content, comment from `#` on,
 	"" = none). A `\\` shields the next char throughout. Comments are kept as
 	trivia."""
+	# Fast path: the loop's quote/backslash state only decides whether a `#`
+	# counts, and its lone early return fires on `#` - so with no `#` at all the
+	# answer is (s, "") whatever the state. `in` scans at C speed; the char loop
+	# below is the cost, and comment-free lines dominate real documents.
+	if "#" not in s:
+		return s, ""
 	in_quote = None
 	i = 0
 	n = len(s)
@@ -498,6 +504,14 @@ def _split_comment(s):
 
 def _split_unquoted_commas(s):
 	"""Split on unquoted commas; `\\` shields the next char."""
+	# Fast paths: parts are cut only at commas, so with no comma the result is
+	# [s] no matter what the quote/backslash state did (a shield can only make
+	# a comma NOT split, never conjure one). And with no quote or backslash
+	# every comma splits, which is exactly str.split.
+	if "," not in s:
+		return [s]
+	if '"' not in s and "'" not in s and "\\" not in s:
+		return s.split(",")
 	parts = []
 	in_quote = None
 	start = 0
@@ -587,6 +601,11 @@ def _parse_cell(text):
 
 def _apply_escapes(s):
 	"""Escape processing (string reads): \\t \\n \\\\ \\" \\'; unknown escapes stay literal."""
+	# Fast path: every non-backslash char passes through verbatim, so with no
+	# backslash the output is s itself. Hot at parse time too (_disp_key runs
+	# per node insert), and backslash-free text dominates.
+	if "\\" not in s:
+		return s
 	out = []
 	it = iter(s)
 	for c in it:
@@ -2488,13 +2507,13 @@ class Document:
 				if s.star:
 					break   # no sibling entry for '*'; deeper chains are pattern-only
 				siblings.setdefault(chain, []).append(s.name)
-				chain = s.name if not chain else chain + "\0" + s.name
+				chain = _chain_push(chain, s.name)
 				legal.add(chain)
 		stack = [(c, "", "") for c in reversed(self.arena[ROOT].children)]
 		while stack:
 			n, pchain, pshown = stack.pop()
 			node = self.arena[n]
-			chain = node.name if not pchain else pchain + "\0" + node.name
+			chain = _chain_push(pchain, node.name)
 			shown = node.name if not pshown else pshown + "." + node.name
 			if (
 				chain not in legal
@@ -3582,12 +3601,40 @@ def _edit_distance(a, b):
 	return prev[len(b)]
 
 
+def _chain_push(chain, name):
+	"""Append a segment to a chain key. Chain keys join segments
+	length-prefixed (`<len>:<name>`), not with a bare NUL: NUL is legal in a
+	quoted name, so a single field named "x\\0y" would impersonate the
+	two-segment path x.y. Same injectivity reasoning as the merge key's cell
+	encoding - and like it, the length unit is each binding's native one
+	(code points here), because only injectivity matters."""
+	return chain + str(len(name)) + ":" + name
+
+
+def _chain_parts(chain):
+	"""Decode a chain key back into its segments. Total: bails at the first
+	shape the encoder can't have produced."""
+	parts = []
+	i = 0
+	while i < len(chain):
+		n = 0
+		while i < len(chain) and "0" <= chain[i] <= "9":
+			n = n * 10 + (ord(chain[i]) - 48)
+			i += 1
+		if i >= len(chain) or chain[i] != ":" or i + 1 + n > len(chain):
+			break
+		i += 1
+		parts.append(chain[i:i + n])
+		i += n
+	return parts
+
+
 def _star_legal(pats, chain):
 	"""Element-wise chain match against the star-bearing schema paths: a `*`
 	segment matches any one name, and every prefix of a path is legal."""
 	if not pats:
 		return False
-	parts = chain.split("\0")
+	parts = _chain_parts(chain)
 	return any(
 		len(p) >= len(parts) and all(p[i].star or p[i].name == seg for i, seg in enumerate(parts))
 		for p in pats
@@ -3599,7 +3646,7 @@ def _chain_legal(cons, frags, chain):
 	wise like _star_legal (stars wild, prefixes legal), and when a mount's whole
 	path matched with chain left over, the remainder is retried against the
 	mounted fragment's fields. Terminates: every descent consumes >= 1 part."""
-	parts = chain.split("\0")
+	parts = _chain_parts(chain)
 	return _chain_parts_legal(cons, frags, parts)
 
 
