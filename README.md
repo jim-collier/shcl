@@ -54,6 +54,7 @@
 - [Status](#status)
 - [Installation](#installation)
 	- [Packages and installers](#packages-and-installers)
+	- [Language package managers](#language-package-managers)
 	- [Install scripts](#install-scripts)
 	- [DIY](#diy)
 - [Using SHCL from your project](#using-shcl-from-your-project)
@@ -245,6 +246,19 @@ On Windows, run `shcl-1.0.0-windows-x86_64-setup.exe`. It installs to `C:\Progra
 
 Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wrappers under `/usr/share/shcl/`.
 
+### Language package managers
+
+SHCL is published as `shcl` on [crates.io](https://crates.io/crates/shcl) and on [PyPI](https://pypi.org/project/shcl/):
+
+```sh
+cargo install shcl     # the CLI, plus the Rust library
+pip install shcl       # the Python library only
+```
+
+The crate carries the library and the CLI in one package, so `cargo install` gets you the binary anywhere a Rust toolchain runs - including macOS and the BSDs, which have no prebuilt binary yet. The PyPI distribution is the single-module library on its own; it installs no command.
+
+To depend on either as a *library* rather than install a tool, see [Using SHCL from your project](#using-shcl-from-your-project) for the dependency lines.
+
 ### Install scripts
 
 Downloads a release, checks its signature, and installs the binary plus the drop-in files and wrappers. Idempotent. It states its plan and asks before touching anything. The default channel is `dev`, which means the newest release including pre-releases. Pass `stable` to take the newest full release only.
@@ -284,7 +298,7 @@ On Windows, `irm | iex` cannot take arguments at all, so use the scriptblock for
 
 A `user` install needs no sudo or elevation.
 
-macOS and the BSDs have no prebuilt binaries yet. Use a drop-in source file, or build the CLI.
+macOS and the BSDs have no prebuilt binaries yet. Use `cargo install shcl`, a drop-in source file, or build the CLI.
 
 ### DIY
 
@@ -327,7 +341,9 @@ Per-language notes:
 
 - **C and C++** have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
 
-- **The Rust crate** ships the library and the CLI together, so `cargo install shcl` is also a way to get the binary.
+- **The Rust crate** ships the library and the CLI together - see [Language package managers](#language-package-managers) if the binary is what you are after.
+
+- **The PyPI distribution** is the library module by itself. Installing it does not put a `shcl` command on your `PATH`; take the CLI from a package, an installer, or the crate.
 
 - **No package manager at all?** Every binding is one file with no dependencies. Copy it out of `source/` and commit it - see [DIY](#diy) above.
 
