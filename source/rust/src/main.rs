@@ -282,20 +282,50 @@ fn write_atomic(file: &str, data: &str) -> Result<(), String> {
 		.file_name()
 		.map(|b| b.to_string_lossy().into_owned())
 		.unwrap_or_else(|| file.to_string());
-	let tmp = dir.join(format!(".{}.tmp{}", base, std::process::id()));
-	let res = std::fs::File::create(&tmp).and_then(|mut f| {
-		f.write_all(data.as_bytes())?;
-		// Best effort: a filesystem that cannot carry the mode is not a reason
-		// to fail a write that otherwise succeeded.
+	// Exclusive create: the name is predictable, so anything already sitting
+	// there - including a symlink someone else planted - must make this fail
+	// rather than be written through. Retry past a stale collision, then give
+	// up; refusing to write beats writing somewhere unintended.
+	let mut file_handle = None;
+	let mut tmp = std::path::PathBuf::new();
+	let mut last = String::new();
+	for attempt in 0..8 {
+		tmp = dir.join(format!(".{}.tmp{}.{}", base, std::process::id(), attempt));
+		let mut opts = std::fs::OpenOptions::new();
+		opts.write(true).create_new(true);
+		// Born private, so the copy is never briefly readable to anyone the
+		// original was not. The real mode goes on below, before any data.
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::OpenOptionsExt;
+			opts.mode(0o600);
+		}
+		match opts.open(&tmp) {
+			Ok(f) => {
+				file_handle = Some(f);
+				break;
+			}
+			Err(e) => last = e.to_string(),
+		}
+	}
+	let Some(mut f) = file_handle else {
+		return Err(format!("{}: cannot create temporary file: {}", file, last));
+	};
+	let res = (|| -> std::io::Result<()> {
+		// On the handle, so umask cannot narrow it the way it narrows a create
+		// mode. Best effort: a filesystem that cannot carry the mode is not a
+		// reason to fail a write that otherwise succeeded.
 		if let Ok(m) = std::fs::metadata(&target) {
 			let _ = f.set_permissions(m.permissions());
 		}
+		f.write_all(data.as_bytes())?;
 		f.sync_all()
-	});
+	})();
 	if let Err(e) = res {
 		let _ = std::fs::remove_file(&tmp);
 		return Err(format!("{}: {}", file, e));
 	}
+	drop(f);
 	std::fs::rename(&tmp, &target).map_err(|e| {
 		let _ = std::fs::remove_file(&tmp);
 		format!("{}: {}", file, e)

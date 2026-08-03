@@ -269,18 +269,36 @@ def write_atomic(file, data):
 	base = os.path.basename(target)
 	if base == "":
 		base = target
-	tmp = os.path.join(d, ".{}.tmp{}".format(base, os.getpid()))
-	try:
-		f = open(tmp, "w", encoding="utf-8", newline="")
+	# Exclusive create: the name is predictable, so anything already sitting
+	# there - including a symlink someone else planted - must make this fail
+	# rather than be written through. Retry past a stale collision, then give
+	# up; refusing to write beats writing somewhere unintended.
+	f = None
+	tmp = ""
+	last = ""
+	for attempt in range(8):
+		tmp = os.path.join(d, ".{}.tmp{}.{}".format(base, os.getpid(), attempt))
 		try:
-			f.write(data)
-			f.flush()
-			# Best effort: a filesystem that cannot carry the mode is not a
-			# reason to fail a write that otherwise succeeded.
+			# Born private, so the copy is never briefly readable to anyone the
+			# original was not. The real mode goes on below, before any data.
+			fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+			f = os.fdopen(fd, "w", encoding="utf-8", newline="")
+			break
+		except OSError as e:
+			last = str(e)
+	if f is None:
+		return "{}: cannot create temporary file: {}".format(file, last)
+	try:
+		try:
+			# On the handle, so umask cannot narrow it the way it narrows a
+			# create mode. Best effort: a filesystem that cannot carry the mode
+			# is not a reason to fail a write that otherwise succeeded.
 			try:
-				os.chmod(tmp, stat.S_IMODE(os.stat(target).st_mode))
+				os.fchmod(f.fileno(), stat.S_IMODE(os.stat(target).st_mode))
 			except OSError:
 				pass
+			f.write(data)
+			f.flush()
 			os.fsync(f.fileno())
 		finally:
 			f.close()

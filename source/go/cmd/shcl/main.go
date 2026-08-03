@@ -337,21 +337,40 @@ func writeAtomic(file, data string) error {
 	}
 	dir := filepath.Dir(target)
 	base := filepath.Base(target)
-	tmp := filepath.Join(dir, "."+base+".tmp"+strconv.Itoa(os.Getpid()))
-	f, err := os.Create(tmp)
-	if err == nil {
-		if _, werr := f.WriteString(data); werr != nil {
-			err = werr
-		} else {
-			// Best effort: a filesystem that cannot carry the mode is not a
-			// reason to fail a write that otherwise succeeded.
-			if st, serr := os.Stat(target); serr == nil {
-				_ = f.Chmod(st.Mode().Perm())
-			}
-			err = f.Sync()
+	// Exclusive create: the name is predictable, so anything already sitting
+	// there - including a symlink someone else planted - must make this fail
+	// rather than be written through. Retry past a stale collision, then give
+	// up; refusing to write beats writing somewhere unintended.
+	var f *os.File
+	var tmp string
+	var last error
+	for attempt := 0; attempt < 8; attempt++ {
+		tmp = filepath.Join(dir, "."+base+".tmp"+strconv.Itoa(os.Getpid())+"."+strconv.Itoa(attempt))
+		// Born private, so the copy is never briefly readable to anyone the
+		// original was not. The real mode goes on below, before any data.
+		h, oerr := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if oerr == nil {
+			f = h
+			break
 		}
-		f.Close()
+		last = oerr
 	}
+	if f == nil {
+		return fmt.Errorf("%s: cannot create temporary file: %s", file, last)
+	}
+	// On the handle, so umask cannot narrow it the way it narrows a create
+	// mode. Best effort: a filesystem that cannot carry the mode is not a
+	// reason to fail a write that otherwise succeeded.
+	if st, serr := os.Stat(target); serr == nil {
+		_ = f.Chmod(st.Mode().Perm())
+	}
+	var err error
+	if _, werr := f.WriteString(data); werr != nil {
+		err = werr
+	} else {
+		err = f.Sync()
+	}
+	f.Close()
 	if err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %s", file, err)
