@@ -54,10 +54,11 @@
 - [Status](#status)
 - [Installation](#installation)
 	- [Packages and installers](#packages-and-installers)
-	- [Language package managers](#language-package-managers)
+	- [Language packages](#language-packages)
 	- [Install scripts](#install-scripts)
 	- [DIY](#diy)
 - [Using SHCL from your project](#using-shcl-from-your-project)
+	- [Reading and writing a file](#reading-and-writing-a-file)
 - [Set up a development environment](#set-up-a-development-environment)
 - [Docs](#docs)
 - [Contributing and support](#contributing-and-support)
@@ -246,18 +247,26 @@ On Windows, run `shcl-1.0.0-windows-x86_64-setup.exe`. It installs to `C:\Progra
 
 Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wrappers under `/usr/share/shcl/`.
 
-### Language package managers
+### Language packages
 
-SHCL is published as `shcl` on [crates.io](https://crates.io/crates/shcl) and on [PyPI](https://pypi.org/project/shcl/):
+Each binding is published where its own ecosystem looks for it, all under the name `shcl`: [crates.io](https://crates.io/crates/shcl) for Rust, [PyPI](https://pypi.org/project/shcl/) for Python, and the [Go module](https://pkg.go.dev/github.com/jim-collier/shcl/source/go) for Go.
+
+Two of them carry the CLI as well as the library, which is the easiest way to get the binary on a platform with no prebuilt one - macOS and the BSDs included:
 
 ```sh
-cargo install shcl     # the CLI, plus the Rust library
-pip install shcl       # the Python library only
+cargo install shcl                                                # Rust: CLI and library
+go install github.com/jim-collier/shcl/source/go/cmd/shcl@latest  # Go: CLI
 ```
 
-The crate carries the library and the CLI in one package, so `cargo install` gets you the binary anywhere a Rust toolchain runs - including macOS and the BSDs, which have no prebuilt binary yet. The PyPI distribution is the single-module library on its own; it installs no command.
+The PyPI distribution is the library module by itself and installs no command, so `pip install shcl` is a dependency, not an installation:
 
-To depend on either as a *library* rather than install a tool, see [Using SHCL from your project](#using-shcl-from-your-project) for the dependency lines.
+```sh
+pip install shcl        # Python: library only
+```
+
+C and C++ have no registry worth targeting, and need none: `shcl.h` is a single dependency-free header you vendor. Copy it out of a release tag, or take it from an installed package under `/usr/share/shcl/code/`.
+
+For version pinning and the dependency line per ecosystem, see [Using SHCL from your project](#using-shcl-from-your-project).
 
 ### Install scripts
 
@@ -341,11 +350,85 @@ Per-language notes:
 
 - **C and C++** have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
 
-- **The Rust crate** ships the library and the CLI together - see [Language package managers](#language-package-managers) if the binary is what you are after.
+- **The Rust crate** ships the library and the CLI together - see [Language packages](#language-packages) if the binary is what you are after.
 
 - **The PyPI distribution** is the library module by itself. Installing it does not put a `shcl` command on your `PATH`; take the CLI from a package, an installer, or the crate.
 
 - **No package manager at all?** Every binding is one file with no dependencies. Copy it out of `source/` and commit it - see [DIY](#diy) above.
+
+### Reading and writing a file
+
+The [one-liner above](#reading-it-from-code) is the whole read API most of the time. Here is the rest of the loop - load a file, read from it, change it, save it - against the [example config](#what-it-looks-like):
+
+```rust
+use shcl::{Document, Status};
+
+let text = std::fs::read_to_string("server.shcl")?;
+let mut doc = Document::parse(&text);
+
+// Typed read, with a fallback if the path is missing
+let workers = doc.get_int("workers").unwrap_or(4);
+let root = doc.get_string("site[example.com].root").unwrap_or_default();
+
+// Or ask why a read failed, when the difference matters
+match doc.get_int("site[example.com].max-upload-mb") {
+	Ok(mb) => println!("{mb} MB"),
+	Err(Status::NotFound) => println!("not configured"),
+	Err(other) => println!("unusable: {other:?}"),
+}
+
+// Writes create what they need to: this adds a site and a nested block
+doc.set_int("workers", workers * 2);
+doc.set_bool("site[example.com].tls.hsts", true);
+doc.set_string("site[blog.example.com].root", "/srv/www/blog");
+
+std::fs::write("server.shcl", doc.to_canonical())?;
+```
+
+The same program in Python:
+
+```python
+import shcl
+
+with open("server.shcl") as f:
+	doc = shcl.Document.parse(f.read())
+
+workers = doc.get_int("workers", default=4)
+root = doc.get_string("site[example.com].root", default="")
+
+read = doc.read_int("site[example.com].max-upload-mb")
+if read.status is not shcl.Status.Good:
+	print("unusable:", read.status)
+
+doc.set_int("workers", workers * 2)
+doc.set_bool("site[example.com].tls.hsts", True)
+doc.set_string("site[blog.example.com].root", "/srv/www/blog")
+
+with open("server.shcl", "w") as f:
+	f.write(doc.to_canonical())
+```
+
+Two things worth knowing about the write half. Setters build any missing structure along the path, so the `tls.hsts` and `blog.example.com` lines above appear as a nested block and a new site instance without you assembling either. And saving rewrites the file in canonical form, which normalizes spacing and lowercases field names, but **keeps your comments** attached to what they documented:
+
+```text
+# Flat, TOML-style settings
+listen: "0.0.0.0:443"  # a colon in a value just needs quotes
+workers: 8
+log-level: warn
+
+# Hierarchy when you need it: one instance per site
+site: example.com
+	root: /srv/www/example
+	max-upload-mb: 50  # names are case-insensitive, spacing is loose
+	methods: GET, POST, HEAD  # an array is just commas
+	tls:
+		hsts: true
+
+site: blog.example.com
+	root: /srv/www/blog
+```
+
+A setter returns false (Python: `False`) when a path cannot be written at all - a wildcard, say, which is query-only. `write_reason(path)` names which of the five reasons applies.
 
 ## Set up a development environment
 
