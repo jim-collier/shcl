@@ -911,3 +911,19 @@ fn huge_selector_index_is_not_found() {
 	// In-range still works.
 	assert_eq!(doc.read_int("a[#1]").value, 2);
 }
+
+#[test]
+fn nul_name_does_not_satisfy_a_dotted_schema_path() {
+	// The unknown-field chain key is length-prefixed, not NUL-joined: a single
+	// field whose name literally contains a NUL must not impersonate the
+	// two-segment path x.y. Same fixture in every runner.
+	let schema = Document::parse("field: x.y\n");
+	let doc = Document::parse("\"x\u{0}y\": 1\n");
+	let vs = doc.validate(&schema);
+	assert_eq!(vs.len(), 1, "NUL-bearing name slipped past the sweep");
+	assert_eq!(vs[0].code, "V001");
+	assert!(vs[0].message.starts_with("unknown field "));
+	// The genuinely two-segment spelling still validates clean.
+	let ok = Document::parse("x:\n\ty: 1\n");
+	assert!(ok.validate(&schema).is_empty());
+}

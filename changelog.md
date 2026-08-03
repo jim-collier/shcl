@@ -26,11 +26,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `WriteReason(path)`: the reason a write at a path would fail - `BadPath`, `ValueInPath`, `Wildcard`, `NoSuchIndex`, or `TooDeep` - behind the setters' bare pass/fail. A probe only; it never creates.
 
+- `V096`: generating a starter config from a schema whose fragments mount each other along several paths now reports a schema fault instead of expanding until it runs out of memory.
+
 ### Changed
 
 - The Go module's `go` directive dropped from 1.24 to 1.20, the tested floor (`strings.CutSuffix` is the newest stdlib dependency) - so pinned-toolchain projects can use the module instead of vendoring the file.
 
 - Writer-created top-level nodes now carry the blank-line grouping a hand-written file would have: one blank line between top-level sections. Written and generated output changes shape accordingly.
+
+- Parsing is faster: the reference no longer copies every line and its indent, and three bindings scan paths without building a character list per line. Formatting a large file is roughly 10 percent quicker in the reference, Go and C, and about 12 percent in Python.
 
 ### Fixed
 
@@ -43,6 +47,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A read's raw text is now the value span exactly as authored on its source line, as documented - not the canonical display form, which silently rewrote `^\d{2,3}$` to `^\d{2, 3}$`. Values with no one-line source spelling (writer-built, stacked lists, raw blocks) keep the display-form fallback.
 
 - By-value selectors now apply escape sequences to both sides before comparing, so `["q\"uote"]` finds an instance written `'q"uote'`. Previously the comparison was spelling against spelling and the mismatch was a silent `NotFound`; the writer's placement walk had the same blind spot and could create a spurious second instance.
+
+- Formatting a file could change what it meant. A value that only became final after its siblings were keyed - a stacked list closing onto an earlier instance's value, or a fenced block filling an empty field that matched an earlier one - was left beside its match instead of merging, so the file formatted to two entries, reformatted to one, and a read that correctly reported several instances started returning a value.
+
+- Rewriting a file in place created its temporary under a predictable name without demanding exclusive creation, so anything already sitting there - including a symlink someone else had planted - was written through, and the rename then turned the config itself into a link. The temporary is now created exclusively and given the target's permissions before any data goes into it, so a private config is never briefly readable to anyone else either.
+
+- Validating against a recursive schema could stop finishing, because a shape reached from two paths was re-checked per path per level. Each shape is now checked once per node. The C binding also held every level's working data until the end; that is released as it goes now.
+
+- Python raised on numerals beyond a few thousand digits where the other bindings report a bad type. Length is checked before conversion now.
+
+- The C date formatter could write past the buffer size it documents when handed a value the caller built rather than one that came from parsing.
+
+- The C++ wrapper's structured date read handed back a pointer into the document's storage, so the value dangled once the document was gone. It owns its fractional digits now, which changes what `read_datetime_raw` returns.
+
+- Comments were dropped when documents merged: a section present in both layers lost the higher layer's comments, and a write that merged duplicate fields lost any comment hanging below the losing one. A footer several layers share is now carried over once rather than repeated per layer.
+
+- The one-shot load-and-validate ignored a schema that failed to load, so constraints on its broken lines silently vanished. It reports the schema failure now, like `check --schema` does.
+
+- A value or a path that read like `-h` or `--version` printed help or the version and exited successfully. Only a flag in option position counts now, and `--` ends the options so a path may begin with a dash.
+
+- Rewriting a file in place while merging layers folded those layers permanently into it. The combination is refused.
+
+- Generated starter configs did not always load: a wildcard written with spaces or with the alternate colon spelling produced a line the parser rejects, and a deep chain of fragments produced paths past the nesting limit.
+
+- Three C entry points left working data in documents they do not own, growing a long-running program that holds one parsed schema.
+
+- The Go repeat-hint filter rewrote the caller's list while returning a new one.
+
+- Quoting a name that ends in a backslash produced a path that could not be read back.
+
+- Repeat-hint suppression could silence an unrelated field when a schema path ended in a quoted name containing a dot.
+
+- A field name containing a null byte could satisfy a two-segment schema path, slipping past the unknown-field check.
+
+- A system install linked the program into a directory that is not on a normal user's path.
 
 ## v1.0.0 - 2026-07-28
 
