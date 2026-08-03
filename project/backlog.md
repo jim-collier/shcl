@@ -5,7 +5,7 @@
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
 # Shcl backlog
 
-This is a product backlog just for pre-v1.0.0 release. After that, bugs, features, and enhancements will be managed in Github Issues, and/or nano-git-db (based on shcl).
+The product backlog: bugs, features, enhancements, and code-review findings. Day-to-day tracking is moving to Github Issues, and/or nano-git-db (which is built on shcl), so this file will thin out over time.
 
 <!-- TOC ignore:true -->
 ## Table of contents
@@ -66,6 +66,170 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 ### Code Reviews
 
+- **20260802**:
+
+	- **Bugs**:
+
+		- 🔘 Code Review 20260802 item 1: formatting a file can change what it means.
+			- Reproduced: a field that repeats, where the second one is an empty field later filled by a stacked list, formats to two identical lines. Reformatting that output collapses them to one, so a read that returned Multiple now returns a value.
+			- Cause: when a node's value is filled in after the fact, it moves to a new merge key. If a later sibling already holds that key the filled node is left beside it instead of merging.
+			- Note: all four bindings behave the same, so the cross-binding check can't see it, and no test case has this shape.
+			- Probable fix: fold the pair on collision, the way the writer already does after a set.
+
+		- 🔘 Code Review 20260802 item 2: in-place writes create their temporary file unsafely.
+			- Reproduced: the temporary name is predictable, and nothing stops it being a symlink someone else planted. The config's contents get written through that link, and the rename then turns the config itself into a symlink.
+			- Second problem: the file's permissions are copied on only after the data is written, so a 600 config is briefly world-readable. Interrupting the write leaves that copy behind for good.
+			- All four bindings. Only matters where someone else can write to the config's directory, but that includes shared and temp locations.
+			- Probable fix: create the temporary exclusively, refuse to follow links, and set the mode before the first write.
+
+		- 🔘 Code Review 20260802 item 3: one schema line can switch off the unknown-field check.
+			- Reproduced: a field path written as a quoted name that starts with a star, such as a wildcard hostname key, silently becomes a real wildcard. Every unknown top-level name then passes, and the constraints on that line never apply.
+			- Cause: the schema's own value parsing strips the quotes before the path is scanned, so the scanner sees a bare star.
+			- The spec says the opposite in two places: a quoted star stays a literal name.
+			- Fails open, which is the worst direction for the one check meant to catch typos.
+
+		- 🔘 Code Review 20260802 item 4: validating against a recursive schema can hang.
+			- Reproduced: when two constraint paths match the same node and both mount the same fragment, the work doubles per level of the document. A file around thirty lines deep takes over a minute; a little deeper and it never finishes.
+			- The C build also runs out of memory, because each level's working data is kept until the whole validation ends rather than being released on the way back out.
+			- Probable fix: remember which constraint has already been checked against which node. The C side additionally needs its per-level scratch released.
+
+		- 🔘 Code Review 20260802 item 5: generating a file from a recursive schema can crash.
+			- Reproduced: a long chain of fragments overflows the stack and aborts the process in the reference build; Python raises instead; a schema of about 130 lines that branches can eat all available memory before it finishes.
+			- Validation of the same schemas is fine. Only generation expands every path up front.
+			- Note: generation reads a file the user supplies, so this is reachable from ordinary use.
+			- Probable fix: cap the expansion and report a schema fault instead of running until something breaks.
+
+		- 🔘 Code Review 20260802 item 6: Python raises on a very long number where the others return cleanly.
+			- Reproduced: a value of five thousand digits makes the Python build exit with a stack trace, while the reference reports a bad type. Same for oversized selector indexes, schema repeat counts, and a day number inside a quoted date.
+			- Cause: Python refuses to convert decimal strings past a few thousand digits, and that happens before the code's own range check.
+			- Probable fix: drop leading zeros then refuse anything longer than the type can hold, before converting.
+
+		- 🔘 Code Review 20260802 item 7: the C date formatter can write past the buffer it documents.
+			- Reproduced: the header promises 64 bytes is enough, and caps only the fractional seconds. The year and the other fields come straight from a struct the caller fills in, so a hand-built value can need about 109 bytes. The library's own writer hits this too.
+			- Values that came from parsing are always short enough, so the test corpus can't see it.
+			- Probable fix: bound the numeric fields the same way the fraction is bounded, or format into a size-aware buffer.
+
+		- 🔘 Code Review 20260802 item 8: comments get dropped when documents merge.
+			- Reproduced: merging layers loses every comment attached to a section that exists in both. The higher layer's comments are the ones that disappear.
+			- Separately, a write that merges two duplicate fields drops any comment that hung below the losing one.
+			- Both contradict the documented promise that comments travel with the node they belong to.
+
+		- 🔘 Code Review 20260802 item 9: the one-shot load-and-validate ignores a broken schema.
+			- Reproduced: a schema with a bad indent loads partially and validation runs anyway, so constraints on the dropped lines quietly vanish. A badly broken schema makes every field in the config report as unknown.
+			- The command-line tool gets this right and reports a schema failure. Only the library shortcut skips the check.
+
+		- 🔘 Code Review 20260802 item 10: one write operation is spelled differently by the reference.
+			- Reproduced: `datetime-array-default` is rejected by the reference and accepted by the other three.
+			- Write output and exit codes are supposed to match everywhere. No test case uses this operation, which is why it went unnoticed.
+			- Probable fix: add the missing case, and add one test line per operation so the whole vocabulary is pinned.
+
+		- 🔘 Code Review 20260802 item 11: writing in place with layers overwrites the file with the merged result.
+			- Reproduced: formatting with a lower layer and `--write` folds that layer's contents permanently into the top file, which defeats the point of layering.
+			- Help text says layering prints the merged document; it doesn't mention what `--write` then does.
+			- Probable fix: refuse the combination, which matches how other unusable option pairs are treated.
+
+		- 🔘 Code Review 20260802 item 12: a value that looks like a help flag takes over the command.
+			- Reproduced: passing `-h` or `--version` as a default value, a path, or a filename prints help or the version to normal output and exits successfully. A caller reading a value gets the help text back.
+			- Cause: the whole argument list is scanned for those flags before options are parsed.
+			- Probable fix: only honor them in first position, or stop the scan at the first value.
+
+		- 🔘 Code Review 20260802 item 13: generated files don't always load.
+			- Reproduced: a wildcard written with spaces inside the brackets, or with the alternate colon spelling, produces a line the parser rejects or a path that fails its own schema. A deep chain of fragments produces paths past the nesting limit.
+			- Cause: the wildcard is stripped out of the path as text rather than rebuilt from the parsed segments.
+			- The documented promise is that generated output always loads clean and validates against the schema that produced it.
+
+		- 🔘 Code Review 20260802 item 14: the C++ wrapper can hand back a dangling date.
+			- Reproduced: every other read in the wrapper copies its text out, but the structured date read copies the struct while its fractional-seconds pointer still points into the document. Letting the document go out of scope and then using the date reads freed memory.
+			- Probable fix: own the text, or say plainly in the comment that this one read borrows.
+
+		- 🔘 Code Review 20260802 item 15: the Go repeat-hint filter damages the caller's list.
+			- Reproduced: it filters in place while returning a new list, so calling it the obvious way leaves the document's own diagnostics shuffled and duplicated.
+			- The reference takes the list by reference, so the mutation is expected there. The Go spelling returns a value, which reads as a copy.
+			- Command-line use is unaffected; this only bites programs using the library.
+
+		- 🔘 Code Review 20260802 item 16: three C entry points pile up garbage in documents they don't own.
+			- Reproduced: each setter keeps about a kilobyte of path-scanning leftovers, the repeat-hint filter leaves a few hundred bytes in the schema, and generation leaves several kilobytes there. None of it is ever reused or released.
+			- Measured: half a million setter calls grew a document by 600 MB; routing the same work through the existing scratch space brought that to 40 MB.
+			- The command-line tool is unaffected, since it exits after one pass. A long-running program that holds a parsed schema is not.
+
+		- 🔘 Code Review 20260802 item 17: the segment-quoting helper mangles a name ending in a backslash.
+			- Reproduced: the closing quote gets treated as escaped, so the result is a path the scanner rejects, and the set silently fails.
+			- The helper exists to make user-typed text safe to splice into a path, so this is the case it was written for.
+			- Probable fix: escape a trailing backslash before closing the quote.
+
+		- 🔘 Code Review 20260802 item 18: repeat-hint suppression can silence the wrong field.
+			- Reproduced: a schema path whose last segment is quoted and contains a dot is split on that dot, so the leftover text matches an unrelated field name.
+			- Matching on the name alone is deliberate. Splitting the raw text rather than using the parsed segments is not.
+
+		- 🔘 Code Review 20260802 item 19: a null byte inside a field name can pose as a dotted path.
+			- Reproduced: a single field whose name contains a null passes the unknown-field check as if it were two nested names.
+			- Cause: the check joins path parts with a null before comparing.
+			- Pre-existing, but the new wildcard matching is built on the same joined text.
+
+		- 🔘 Code Review 20260802 item 20: end-of-file comments multiply when layering.
+			- Reproduced: a footer comment shared by three layers appears three times in the merged output. The result still formats stably.
+
+		- 🔘 Code Review 20260802 item 21: the default install location isn't on a normal user's path.
+			- Reproduced: a system install links the program into a directory reserved for administrator sessions, so the user who ran the installer can't invoke it by name. The closing check passes because it uses the full path.
+			- The project's own packages install to the ordinary location instead.
+			- Probable fix: use the ordinary location, and print the path note for both install targets.
+
+		- 🔘 Code Review 20260802 item 22: the shell wrapper trusts an inherited private variable.
+			- Reproduced: the wrapper caches the resolved program path in a variable it also reads from the environment, so setting that variable picks the program with no message and beats every documented lookup step.
+			- The PowerShell wrapper gets this right by clearing it when loaded.
+
+		- 🔘 Code Review 20260802 item 23: hosted CI installs a checking tool without verifying the download.
+			- The workflow pins its actions by commit and its packages by version, then fetches one tool as an archive with no checksum and installs it ahead of the system copy.
+			- Probable fix: download, check against a pinned hash, then install.
+
+		- 🔘 Code Review 20260802 item 24: the installers handle their own options poorly.
+			- Reproduced: asking for help through the documented pipe prints nothing and exits successfully, because the script tries to read its own file, which isn't there when piped. With a stray file of the right name in the current directory it prints that file instead.
+			- Also, giving an option without its value exits silently, where the program itself explains what's missing.
+
+		- 🔘 Code Review 20260802 item 25: small gaps in argument handling across all four builds.
+			- There is no way to end the options and pass a path that starts with a dash.
+			- `init` ignores extra arguments; every other subcommand rejects them.
+			- An option expecting a value will take the next flag as that value without complaint.
+			- Reading the write operations from standard input while also asking for standard input as a layer silently produces nothing.
+
+	- **Improvements**:
+
+		- 🔘 Code Review 20260802 item 26: the parser copies each line more than it needs to.
+			- Every line is copied into a fresh string, the indent is copied again, and the path scanner copies the whole line into a character list per call.
+			- The profile agrees: those three account for roughly a quarter to a third of parsing time, and they are the current top of the profile.
+			- Speed is already fine in absolute terms, so this is optional. It also has to be done in all four builds to keep them in step.
+
+		- 🔘 Code Review 20260802 item 27: Python scans character by character where a built-in would do.
+			- The comment splitter and the comma splitter both loop per character on every line and value.
+			- Measured: skipping the loop when the line holds no marker at all is around forty times faster on the common case. Python is the slowest build, so this is where it pays.
+
+		- 🔘 Code Review 20260802 item 28: most exported Go functions have no doc comment.
+			- The style guide requires one starting with the name; about sixty are missing, including the whole writer surface. Nothing checks this automatically.
+
+		- 🔘 Code Review 20260802 item 29: a doc comment sits on the wrong function.
+			- The description of the element parser ended up attached to the helper inserted above it, in both the reference and Go. The parser itself has none.
+
+		- 🔘 Code Review 20260802 item 30: repeat-hint suppression reads the field name out of the hint text.
+			- It splits the hint's wording on quotes to recover the name, so a behavior of the public interface depends on how a message is phrased.
+			- Same weakness as the deferred item on deriving diagnostic codes from prose, and it should be fixed alongside it.
+
+		- 🔘 Code Review 20260802 item 31: index conversions would truncate on a 32-bit build.
+			- A selector index above four billion would wrap and select the wrong element instead of finding nothing.
+			- Not reachable on any current target. Noted so the remaining ports don't inherit it.
+
+		- 🔘 Code Review 20260802 item 32: the grammar file disagrees with the parser in a few places.
+			- The parser accepts a leading plus on an index, and allows dots and other characters inside a selector; the grammar says neither.
+			- The bare-name character ranges include two characters the neighbouring comment says are excluded.
+			- Unknown escape pairs are kept as written rather than rejected, and a backslash shields the next character in more places than the grammar shows.
+			- Needs a call on each: tighten the parser, or widen the grammar to match it.
+			- Note: whether an unquoted value may contain spaces is the one that needs deciding first. The parser accepts it with no complaint, and quoting is applied on output only, but the spec and grammar both read as though it were a rule.
+
+		- ✅ Code Review 20260802 item 33: several public documents claimed things the code doesn't do.
+			- Fixed: the contributor notes named the wrong toolchain requirements, the design notes listed platforms that aren't built and a wrapper that doesn't exist, the schema vocabulary list was missing its two newest keys, and both files still described the project as heading toward its first release.
+			- Fixed: the readme's install note, one interface name in an example, and the missing PowerShell option syntax.
+			- Fixed: the changelog was missing one new public function, and overstated that the writer refuses name wildcards, since removal across them works.
+			- Fixed: the style guide described a comment divider spelling Python doesn't use.
+
 - **20260727**:
 
 	- **Improvements**:
@@ -82,7 +246,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 	- 🛠️ Code Review 20260725 item 28: give the loader opt-out limits.
 		- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
 		- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
-		- ✅ Done: the depth half, which landed with item 2 - a fixed 512-level cap and `E016`.
+		- ✅ Done: the depth half, done with item 2 - a fixed 512-level cap and `E016`.
 		- ✋ Deferred post-1.0: the depth cap closed the crash class. Size, node and array knobs are additive API that can land later without breaking anything, and a consuming program can bound input size itself before calling parse.
 
 	- 🛠️ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
@@ -334,7 +498,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 		- ✅ Code Review 20260726 item 5: hosted CI cannot install its own pinned lint toolchain.
 			- Cause: the tool pins carry the Cppcheck binary's version, and the workflow installed that same string as a package version. No such package exists, so every hosted run failed at setup within seconds.
 			- Note: the wheel bundles a Cppcheck two major versions ahead of its own package number, which is what made the two look interchangeable.
-			- Note: only the hosted gate was affected. The local pipeline probes the installed binary, so it stayed green, which is why this went unnoticed from the day the pins landed.
+			- Note: only the hosted gate was affected. The local pipeline probes the installed binary, so it stayed green, which is why this went unnoticed from the day the pins were added.
 			- Fixed: the workflow installs the package version, with a comment saying why the two differ.
 			- Verified: the other three pins do resolve.
 
@@ -559,7 +723,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Fixed: the exit-code sentence now says `6 check failed or strict load failure` in all four, and the crosscheck pins the whole usage surface - `help`, `version`, a bare invocation, and an unknown subcommand are compared byte-for-byte across bindings on every run.
 
 		- ✅ Code Review 20260725 item 41: changelog has no Unreleased section, and contributing.md never explains the corpus workflow.
-			- Five landed feature sets since the beta2 tag are recorded only in git; populating it now is also the raw material for the 1.0 notes.
+			- Five finished feature sets since the beta2 tag are recorded only in git; populating it now is also the raw material for the 1.0 notes.
 			- contributing.md does state the parity rule, but nothing points a first-time contributor at how to add a conformance case, so their PR will be structurally wrong.
 			- Fixed: changelog.md gained an Unreleased section covering everything since beta2 (the 1.0 notes' raw material), and contributing.md gained an "Adding a conformance case" walkthrough.
 
