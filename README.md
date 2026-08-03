@@ -54,7 +54,7 @@
 - [Installation](#installation)
 	- [Language packages](#language-packages)
 		- [Cargo](#cargo)
-		- [Go](#go)
+		- [Go module](#go-module)
 		- [PyPi](#pypi)
 		- [C and C++](#c-and-c)
 	- [Other installation options](#other-installation-options)
@@ -64,7 +64,7 @@
 			- [Windows](#windows)
 		- [Scripted installation direct from web - dev or stable](#scripted-installation-direct-from-web---dev-or-stable)
 			- [Linux and WSL](#linux-and-wsl)
-			- [PowerShell](#powershell)
+			- [Windows (PowerShell)](#windows-powershell)
 		- [DIY install](#diy-install)
 - [Full example use-cases in your code](#full-example-use-cases-in-your-code)
 	- [Rust](#rust)
@@ -259,7 +259,7 @@ Library as well as CLI
 cargo install shcl
 ```
 
-#### Go
+#### Go module
 
 ```sh
 go install github.com/jim-collier/shcl/source/go/cmd/shcl@latest  # Go: CLI
@@ -323,7 +323,7 @@ To pass options on Linux, add them after the pipe:
 curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash -s -- --target=user
 ```
 
-##### PowerShell
+##### Windows (PowerShell)
 
 ```powershell
 irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1 | iex
