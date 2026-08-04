@@ -163,6 +163,12 @@ size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out
 // node, or the node was writer-built. Merged instances cite the first
 // binding's line, matching diagnostics.
 size_t shcl_line(shcl_doc *d, const char *path, size_t plen);
+// The plural shcl_line: 1-based source lines at a path, in file order, so a
+// repeated field - the case that most wants a citable line - yields every
+// binding's. Wildcard slots that did not resolve stay in the list as 0, and a
+// writer-built node is 0, so indices keep matching shcl_count. Writes an
+// arena-owned array to *out.
+size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out);
 // Child field names under a path, in file order, duplicates included - the
 // "what keys are in this section?" question shcl_paths (deduplicated,
 // path-shaped) cannot answer. An empty or whitespace-only path enumerates the
@@ -2122,6 +2128,27 @@ size_t shcl_line(shcl_doc *d, const char *path, size_t plen) {
 	Resolved r; if (!resolve(d, p, &r)) return 0;
 	if (r.kind != R_ONE) return 0;
 	return NODE(d, r.one).line; // writer-built nodes carry 0
+}
+
+size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out) {
+	// Wildcard slots that did not resolve stay in the list as 0 so indices
+	// keep matching shcl_count.
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
+	Resolved r;
+	if (!resolve(d, p, &r)) { *out = (size_t *)arena_alloc(a, sizeof(size_t)); return 0; }
+	if (r.kind == R_SLOTS) {
+		size_t m = r.slots.len;
+		size_t *arr = (size_t *)arena_alloc(a, (m ? m : 1) * sizeof(size_t));
+		for (size_t k = 0; k < m; k++)
+			arr[k] = r.slots.data[k].present ? NODE(d, r.slots.data[k].idx).line : 0;
+		*out = arr; return m;
+	}
+	VecSize nodes = {0};
+	if (r.kind == R_ONE) VecSize_push(a, &nodes, r.one);
+	else if (r.kind == R_MANY) for (size_t k = 0; k < r.many.len; k++) VecSize_push(a, &nodes, r.many.data[k]);
+	size_t *arr = (size_t *)arena_alloc(a, (nodes.len ? nodes.len : 1) * sizeof(size_t));
+	for (size_t k = 0; k < nodes.len; k++) arr[k] = NODE(d, nodes.data[k]).line; // writer-built nodes carry 0
+	*out = arr; return nodes.len;
 }
 
 size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {

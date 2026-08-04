@@ -1662,6 +1662,22 @@ class Document:
 			return self.arena[r[1]].line
 		return 0
 
+	def lines(self, path):
+		"""The plural line(): 1-based source lines at a path, in file order, so
+		a repeated field - the case that most wants a citable line - yields
+		every binding's. Wildcard slots that did not resolve stay in the list
+		as 0, and a writer-built node is 0, so indices keep matching count()."""
+		r = self._resolve(path)
+		tag = r[0]
+		if tag == "one":
+			return [self.arena[r[1]].line]
+		if tag == "many":
+			return [self.arena[n].line for n in r[1]]
+		if tag == "slots":
+			return [self.arena[n].line if isinstance(n, int) else 0
+				for n in r[1]]
+		return []
+
 	def children(self, path):
 		"""Child field names under a path, in file order, duplicates included -
 		the "what keys are in this section?" question paths() (deduplicated,

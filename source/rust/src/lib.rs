@@ -2078,6 +2078,25 @@ impl Document {
 		}
 	}
 
+	/// The plural line(): 1-based source lines at a path, in file order, so a
+	/// repeated field - the case that most wants a citable line - yields every
+	/// binding's. Wildcard slots that did not resolve stay in the list as 0,
+	/// and a writer-built node is 0, so indices keep matching count().
+	pub fn lines(&self, path: &str) -> Vec<usize> {
+		match self.resolve(path) {
+			Ok(Resolved::One(n)) => vec![self.arena[n].line],
+			Ok(Resolved::Many(v)) => v.iter().map(|&n| self.arena[n].line).collect(),
+			Ok(Resolved::Slots(s)) => s
+				.into_iter()
+				.map(|r| match r {
+					Ok(n) => self.arena[n].line,
+					Err(_) => 0,
+				})
+				.collect(),
+			_ => Vec::new(),
+		}
+	}
+
 	/// Child field names under a path, in file order, duplicates included -
 	/// the "what keys are in this section?" question paths() (deduplicated,
 	/// path-shaped) cannot answer. "" enumerates the top level. Names come

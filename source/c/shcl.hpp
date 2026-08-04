@@ -147,6 +147,16 @@ public:
 	// to exactly one node or the node was writer-built.
 	std::size_t line(std::string_view p) const { return shcl_line(d_, p.data(), p.size()); }
 
+	// The plural line(): 1-based source lines at a path, in file order, so a
+	// repeated field - the case that most wants a citable line - yields every
+	// binding's.
+	std::vector<std::size_t> lines(std::string_view p) const {
+		std::size_t *a; std::size_t n = shcl_lines(d_, p.data(), p.size(), &a);
+		std::vector<std::size_t> v; v.reserve(n);
+		for (std::size_t i = 0; i < n; i++) v.push_back(a[i]);
+		return v;
+	}
+
 	// Why a write at a path would fail - the reason behind a setter's bare
 	// failure. Probes only; never creates.
 	WriteReason write_reason(std::string_view p) const { return static_cast<WriteReason>(shcl_write_reason_(d_, p.data(), p.size())); }

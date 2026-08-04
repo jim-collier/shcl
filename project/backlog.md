@@ -56,10 +56,10 @@ None open.
 
 ### Features and enhancements
 
-- 🔘 A plural line accessor: a repeated field is where a consumer most wants to cite a line, and the one case `line()` returns nothing for.
+- ✅ A plural line accessor: a repeated field is where a consumer most wants to cite a line, and the one case `line()` returns nothing for.
 	- Reported from convert-base-v2, which skipped line-pinning its config errors over this: `line()` returns 0 unless the path resolves to exactly one node, so a repeated field - resolved as many - gets 0, even though the parser's own repeat hint for that field carries a line.
-	- `children()` has no line-bearing counterpart either, so walking a section cannot recover lines that way.
-	- Shape: a plural `lines(path)` mirroring `instances()` - file order, unresolved wildcard slots as 0 so indices keep matching `count()` - and possibly a children variant that carries lines. Additive, all four bindings plus veneer.
+	- Done: `lines(path)` in all four bindings plus the veneer, mirroring `instances()` - file order, unresolved wildcard slots as 0 so indices keep matching `count()`, a miss is the empty list. Same fixture extended in every runner.
+	- A line-bearing `children()` variant was skipped: `children()` gives the names, `lines(parent.name)` gives that name's lines, so the composition already answers the walk-a-section case without a second parallel-array surface.
 
 - ✅ A schema fault suppresses all data validation; consider validating with the surviving constraints instead.
 	- Reported from nano-git-db as "a schema fault silently disables all data validation, so a broken schema looks like a clean file"; they added a schema self-check test as a workaround.

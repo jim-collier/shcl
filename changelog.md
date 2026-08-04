@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## Unreleased
 
+### Added
+
+- `Lines(path)` (each binding's spelling, plus the C++ veneer): the plural of `Line(path)`. A repeated field - the case that most wants a citable line, and the one the singular returns 0 for - yields every binding's line in file order; unresolved wildcard slots stay as 0 so indices keep matching `Count`.
+
 ### Changed
 
 - A schema fault no longer suppresses data validation wholesale. Faults (`V090`+) are still reported first and still fail `check --schema`, but the constraints that parsed cleanly now check the document too - a typo in one constraint cannot hide a real violation of another. The unknown-field sweep still requires a fault-free schema, since a dropped constraint would turn the fields it declared into false unknowns. `shcl init` is unchanged: generation still fails on any fault.
