@@ -15,7 +15,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shcl"
-version = "1.0.0"
+version = "1.1.0"
 description = "SHCL - Simple Hierarchical Config Language. Parser, accessor, writer, and formatter."
 readme = "README.md"
 requires-python = ">=3.9"
