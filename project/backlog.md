@@ -48,9 +48,24 @@ None open.
 
 ### Bugs
 
-None open.
+- 🔘 A block header whose children are all commented hands those comments back one indent level shallow through `fmt`.
+	- Reported from SilkTerm, whose template config is mostly commented-out defaults: `rotate:`, `contrast_mask:`, `text.scrim:`, `cursor.size:`, `selection:` all lose a level - the entire remaining diff against their template, 162 lines of leading tabs.
+	- Reproduced: `rotate:` followed by two depth-1 comments re-emits them at column 0. With even one live child under the same header, the comment keeps its depth - so only childless headers lose fidelity, and the loss is always exactly one level.
+	- Cause: after-trivia hangs on the deepest open level whose indent prefixes the comment's indent, and a childless header never opens its level - no binding line ever resolves under it - so the comments hang one level up and re-emit at the header's depth.
+	- All four bindings behave identically (the trivia model is parity), so crosscheck cannot see it, and no corpus case has an all-commented block.
 
 ### Features and enhancements
+
+- 🔘 A plural line accessor: a repeated field is where a consumer most wants to cite a line, and the one case `line()` returns nothing for.
+	- Reported from convert-base-v2, which skipped line-pinning its config errors over this: `line()` returns 0 unless the path resolves to exactly one node, so a repeated field - resolved as many - gets 0, even though the parser's own repeat hint for that field carries a line.
+	- `children()` has no line-bearing counterpart either, so walking a section cannot recover lines that way.
+	- Shape: a plural `lines(path)` mirroring `instances()` - file order, unresolved wildcard slots as 0 so indices keep matching `count()` - and possibly a children variant that carries lines. Additive, all four bindings plus veneer.
+
+- 🔘 A schema fault suppresses all data validation; consider validating with the surviving constraints instead.
+	- Reported from nano-git-db as "a schema fault silently disables all data validation, so a broken schema looks like a clean file"; they added a schema self-check test as a workaround.
+	- Not literally silent - verified: every schema fault is an Error diagnostic, `validate()` returns them, and `check --schema` exits 6. The file only looks clean if the caller drops the schema-line diagnostics. The substantive gap is real though: one broken constraint turns off validation for the whole file, even though the schema builder already drops broken constraints one by one before deciding to bail.
+	- Needs a decision first: corpus case 040 pins fault-suppresses-validation as contract, so the change moves goldens in all four bindings and a spec sentence.
+	- Shape if taken: keep the fault diagnostics in the output and run data validation with the constraints that survived.
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
