@@ -2097,10 +2097,6 @@ impl Document {
 // vecs, so mutating the arena directly is enough - the parser's child_map is
 // already gone and is not maintained here.
 
-/// Read TEXT as the value half of a line, for the setters that take value
-/// syntax rather than data. Rejects what could not have come off one line: a
-/// line break, or a quote that never closes. An unquoted `#` ends the value
-/// here exactly as it would in a file.
 /// Read text as the value half of a line, for the setters that take value
 /// syntax rather than data. Rejects what could not have come off one line: a
 /// line break, or a quote that never closes. An unquoted `#` ends the value

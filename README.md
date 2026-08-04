@@ -225,8 +225,10 @@ Every binding is one file with no dependencies. You can optionally just copy it 
 ### Rust
 
 - Install: `cargo add shcl`
+
 - Dependency line: `shcl = "1"`
-- Note: The Rust crate ships the library and the CLI together - see [Language packages](#language-packages) if the binary is what you are after.
+
+- Note: The Rust crate carries the library and the CLI together. See [Language packages](#language-packages) if the binary is what you are after.
 
 ```rust
 use shcl::{Document, Status};
@@ -256,7 +258,9 @@ std::fs::write("server.shcl", doc.to_canonical())?;
 ### Go
 
 - Install the module: `go get github.com/jim-collier/shcl/source/go`
+
 - Dependency line: `require github.com/jim-collier/shcl/source/go v1.0.0`
+
 - Notes: Go keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
 
 ```go
@@ -284,7 +288,9 @@ os.WriteFile("server.shcl", []byte(doc.ToCanonical()), 0o644)
 ### Python
 
 - Install: `pip install shcl`
+
 - Dependency line: `shcl~=1.0`
+
 - Note: The PyPI distribution is the library module by itself. Installing it does not put a `shcl` command on your `PATH`.
 	- If you want the CLI too, get it from a package or an installer.
 
@@ -358,6 +364,7 @@ Alongside it, an `impl.c` of two lines - `#define SHCL_IMPLEMENTATION`, then `#i
 C and C++ have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit, and link `-lm`. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
 
 - Install: vendor `shcl.h`
+
 - Dependency line: pin the release tag
 
 ```c
@@ -388,7 +395,7 @@ shcl_free(doc);   // frees the document and everything handed out from it
 
 The C binding uses `round()`, so link the math library - `cc -std=c11 -O2 ex.c -o ex -lm`. There are no per-object frees: reads hand back pointers into the document's arena, and the single `shcl_free` releases all of it, so anything you need afterwards must be copied out first.
 
-Two things worth knowing about the write half. Setters build any missing structure along the path, so the `tls.hsts` and `blog.example.com` lines above appear as a nested block and a new site instance without you assembling either. And saving rewrites the file in canonical form, which normalizes spacing and lowercases field names, but **keeps your comments** attached to what they documented:
+Two behaviors of the write half are easy to miss. Setters build any missing structure along the path, so the `tls.hsts` and `blog.example.com` lines above appear as a nested block and a new site instance without you assembling either. And saving rewrites the file in canonical form, which normalizes spacing and lowercases field names, but **keeps your comments** attached to what they documented:
 
 ```text
 # Flat, TOML-style settings
@@ -415,6 +422,7 @@ A setter reports failure - `false`, or `0` in C - when a path cannot be written 
 The shell wrappers are not parsers; they wrap the CLI, which is why they inherit its conformance for free. Source one and you get typed sugar over the same commands:
 
 - Install: install the CLI, source the wrapper
+
 - Dependency line: n/a - it wraps the CLI
 
 ```bash
@@ -533,7 +541,7 @@ Run `shcl-1.0.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl
 
 Downloads a release, checks its signature, and installs the binary plus the drop-in files and wrappers. Idempotent. It states its plan and asks before touching anything. The default channel is `dev`, which means the newest release including pre-releases. Pass `stable` to take the newest full release only.
 
-Each release ships a `sha256sums.txt` and a detached `.sig` over it. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY install](#diy-install) route on a machine that lacks it.
+Each release includes a `sha256sums.txt` and a detached `.sig` over it. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY install](#diy-install) route on a machine that lacks it.
 
 Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows).
 

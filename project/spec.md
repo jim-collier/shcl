@@ -303,7 +303,7 @@ The library is uniform across languages; each binding realizes the same concepts
 
 - **Tier 1**: the Rust reference implementation, and the `shcl` CLI built from it. These define conformance.
 
-- **Tier 2**: Go, C (+ C++ veneer), Python - independent parsers, shipped when corpus-green.
+- **Tier 2**: Go, C (+ C++ veneer), Python - independent parsers, released when corpus-green.
 
 - **Tier 3**: everything else (C#, Java (+ Kotlin), JavaScript (+ TypeScript), ...) - after v1.0, corpus-gated, designed-for from the start.
 
@@ -614,7 +614,7 @@ Notes:
 
 ## Cross-language parity and conformance
 
-The guarantee is the corpus, not the binding count: **every shipped binding is corpus-green**. A binding that has not passed the full conformance corpus is not shipped, full stop. A companion surface (C++/Kotlin/TypeScript) inherits its core's conformance for free, and the CLI-wrapper bindings (Bash, PowerShell) inherit the Tier 1 CLI's. The safeguards:
+The guarantee is the corpus, not the binding count: **every released binding is corpus-green**. A binding that has not passed the full conformance corpus is not released, full stop. A companion surface (C++/Kotlin/TypeScript) inherits its core's conformance for free, and the CLI-wrapper bindings (Bash, PowerShell) inherit the Tier 1 CLI's. The safeguards:
 
 - This spec plus `grammar.abnf` are the single source of truth; behavior is specified, not left to each implementation.
 

@@ -2319,10 +2319,6 @@ func boolText(v bool) string {
 // take value syntax rather than data. Rejects what could not have come off one
 // line: a line break, or a quote that never closes. An unquoted # ends the
 // value here exactly as it would in a file.
-// literalValue reads text as the value half of a line, for the setters that
-// take value syntax rather than data. Rejects what could not have come off one
-// line: a line break, or a quote that never closes. An unquoted # ends the
-// value here exactly as it would in a file.
 func literalValue(text string) (value, bool) {
 	if strings.ContainsAny(text, "\n\r") {
 		return value{}, false
