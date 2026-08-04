@@ -54,10 +54,17 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 ### Features and enhancements
 
+- ✅ A value that is not a plain scalar could not be written as an option: `--set` reads its value as data, so `ports=80, 443` stored one quoted string rather than an array.
+	- Done: `--set-literal PATH=TEXT` reads the text as value syntax instead - the way the parser reads the half of a line after the colon - so the same text writes a two-element array. Backed by `SetLiteral`/`SetLiteralDefault` in all four bindings, a matching `literal` op in the write-ops script, and corpus case 044.
+	- It parses the text rather than splicing it, so there is no way to inject syntax: the result is a value or a rejection, output stays canonical, and a written document is still a formatter fixpoint. Rejects only what could not be one line's value (a line break, or a quote that never closes - the same text the parser reports E017 for); an unquoted `#` ends the value as it would in a file.
+	- Both spellings share one ordered list, so the last option to touch a path wins.
+	- Investigated and deliberately not built: a "force this value to be a string" option. Quoting is a rule about canonical output, not a type marker - `fmt` normalises `ver: "8"` to `ver: 8`, and values are typed by the reader - so there is nothing to force. The earlier note claiming that gap was wrong.
+	- No C++ veneer change: the veneer exposes reads only, so adding one setter there would have been the odd one out.
+
 - ✅ Persisting an edit from a shell needed a tab-separated op script on stdin, which is the root cause behind both shell wrappers' rough edges: tabs are invisible in source and survive neither retyping nor an editor that expands them, and the PowerShell wrapper could not carry stdin at all.
 	- Done: `set --write --set PATH=VALUE`, repeatable, applied in order, no pipe and no tabs. `--set` was already applied through the Writer on `set` rather than layered, so the edits were persistent in all but name - only the `--write` refusal stood in the way, and it existed for `--layer`'s sake.
 	- Deliberately no new typed options: `--set` writes the value as literal config text, so `workers=8` already lands as an integer. A `--int`/`--string` family was measured against the op script and produced byte-identical output, so it would have been redundant surface next to a `--set` that already means something adjacent.
-	- Known gap, documented rather than papered over: an array value (a comma makes it a quoted string) and a value forced to a string still need the op script, as do raw blocks, set-only-if-absent and removal.
+	- Known gap at the time, now closed by the item below: an array value could not be written as an option, because a comma made it a quoted string.
 	- Given any `--set`, `set` no longer reads stdin - otherwise passing edits as options blocks on the console, which is the hang this was meant to remove.
 
 - 🔘 Ports: Tier 3 after v1.0.

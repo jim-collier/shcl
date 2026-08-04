@@ -1,0 +1,3 @@
+literal	bad	"unterminated
+literal	bad	'unterminated
+literal	bad[*]	1

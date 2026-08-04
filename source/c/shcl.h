@@ -229,12 +229,21 @@ int shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v
 int shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n);
 int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n);
 
+// Binds text as value syntax rather than as data: "80, 443" becomes a
+// two-element array where shcl_set_string would store one string that has to be
+// quoted. For a caller holding value text - a config line, a user's --set
+// argument - that has to be written without knowing its shape first. Returns 0
+// for text that could not be one line's value (a line break, or a quote that
+// never closes); an unquoted # ends the value as it would in a file.
+int shcl_set_literal(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
+
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
 int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v);
 int shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v);
 int shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v);
 int shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen);
 int shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt);
+int shcl_set_literal_default(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
 int shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen);
 int shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n);
 int shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n);
@@ -688,6 +697,9 @@ static int parse_element(Arena *a, S piece, Element *out) {
 	out->text = norm_dangling(a, t);
 	out->quoted = 0; return 1;
 }
+// Reads text as the value half of a line - see shcl_set_literal.
+static int literal_value(Arena *a, S text, Value *out);
+
 static Value parse_cell(Arena *a, S text) {
 	VecSize starts = {0}, ends = {0};
 	split_unquoted_commas(a, text, &starts, &ends);
@@ -2343,6 +2355,21 @@ int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { Arena 
 int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_float_text(a, v))); }
 int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_bool_text(v))); }
 int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; S in; in.p = s; in.n = slen; return w_set(d, p, w_cell1(a, w_encode_string(a, in))); }
+
+static int literal_value(Arena *a, S text, Value *out) {
+	for (size_t i = 0; i < text.n; i++) { if (text.p[i] == '\n' || text.p[i] == '\r') return 0; }
+	S comment; S v = s_trim(split_comment(text, &comment));
+	if (unterminated_quote(a, v)) return 0;
+	*out = parse_cell(a, v);
+	return 1;
+}
+
+int shcl_set_literal(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S in; in.p = text; in.n = tlen;
+	Value v;
+	if (!literal_value(a, in, &v)) return 0;
+	return w_set(d, p, v);
+}
 int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
 int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) {
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
@@ -2382,6 +2409,7 @@ int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) 
 int shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v) { if (!shcl_exists(d, path, plen)) return shcl_set_float(d, path, plen, v); return 1; }
 int shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v) { if (!shcl_exists(d, path, plen)) return shcl_set_bool(d, path, plen, v); return 1; }
 int shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { if (!shcl_exists(d, path, plen)) return shcl_set_string(d, path, plen, s, slen); return 1; }
+int shcl_set_literal_default(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) { if (!shcl_exists(d, path, plen)) return shcl_set_literal(d, path, plen, text, tlen); return 1; }
 int shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime(d, path, plen, dt); return 1; }
 int shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) { if (!shcl_exists(d, path, plen)) return shcl_set_raw(d, path, plen, content, clen, info, ilen); return 1; }
 int shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_int_array(d, path, plen, v, n); return 1; }

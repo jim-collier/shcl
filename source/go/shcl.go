@@ -2315,6 +2315,22 @@ func boolText(v bool) string {
 	return "false"
 }
 
+// literalValue reads text as the value half of a line, for the setters that
+// take value syntax rather than data. Rejects what could not have come off one
+// line: a line break, or a quote that never closes. An unquoted # ends the
+// value here exactly as it would in a file.
+func literalValue(text string) (value, bool) {
+	if strings.ContainsAny(text, "\n\r") {
+		return value{}, false
+	}
+	v, _ := splitComment(text)
+	v = strings.TrimFunc(v, unicode.IsSpace)
+	if unterminatedQuote(v) {
+		return value{}, false
+	}
+	return parseCell(v), true
+}
+
 func cellOf(text string) value {
 	return value{kind: vCell, els: []element{{text: text}}}
 }
@@ -2741,6 +2757,27 @@ func (d *Document) SetFloatDefault(path string, v float64) bool {
 func (d *Document) SetBoolDefault(path string, v bool) bool {
 	if !d.Exists(path) {
 		return d.SetBool(path, v)
+	}
+	return true
+}
+
+// SetLiteral binds text at path as value syntax rather than as data: "80, 443"
+// becomes a two-element array where SetString would store one string that has
+// to be quoted. This is how a caller holding value text - a config line, a
+// user's --set argument - writes it without knowing its shape first. Fails on
+// text that could not be one line's value (see literalValue).
+func (d *Document) SetLiteral(path, text string) bool {
+	v, ok := literalValue(text)
+	if !ok {
+		return false
+	}
+	return d.setValue(path, v)
+}
+
+// SetLiteralDefault is SetLiteral only when path has no node yet.
+func (d *Document) SetLiteralDefault(path, text string) bool {
+	if !d.Exists(path) {
+		return d.SetLiteral(path, text)
 	}
 	return true
 }

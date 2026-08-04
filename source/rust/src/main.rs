@@ -29,14 +29,15 @@ Usage:
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
 
-set edits FILE, the base document ('-' = empty base). Scalars go in as
-repeatable --set PATH=VALUE options, which persist with --write; given any
---set, no ops are read from stdin. Everything else - arrays, raw blocks,
-set-only-if-absent, removal - goes in as a write-ops script on stdin, one op
-per line, tab-separated. Ops:
+set edits FILE, the base document ('-' = empty base). Values go in as
+repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
+arrays work) options, which persist with --write; given either, no ops are read
+from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
+script on stdin, one op per line, tab-separated. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
+  literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax
   raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
@@ -64,10 +65,16 @@ Options:
   --set=PATH=VALUE                       override one path as the top layer,
                                          after all files; repeatable. On 'set'
                                          it is an edit to the document itself,
-                                         so it persists with --write. VALUE is
-                                         written as literal config text, so its
-                                         type follows the text (8 is an int,
-                                         hello is a string)
+                                         so it persists with --write. VALUE
+                                         goes in as data: its type still
+                                         follows the text (8 is an int), but a
+                                         comma or quote in it is content, not
+                                         syntax
+  --set-literal=PATH=TEXT                as --set, except TEXT goes in as value
+                                         syntax the way a file spells it, so
+                                         'ports=80, 443' writes a two-element
+                                         array. An unquoted # ends the value;
+                                         text spanning lines is rejected
 
 Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
@@ -92,6 +99,32 @@ fn status_code(st: Status) -> u8 {
 	}
 }
 
+/// One `--set`/`--set-literal` override. Both spellings share a list so they
+/// apply in the order given, which is what decides the winner when two target
+/// the same path.
+struct Set {
+	path: String,
+	value: String,
+	literal: bool,
+}
+
+impl Set {
+	fn apply(&self, doc: &mut Document) -> bool {
+		if self.literal {
+			doc.set_literal(&self.path, &self.value)
+		} else {
+			doc.set_string(&self.path, &self.value)
+		}
+	}
+	fn opt(&self) -> &'static str {
+		if self.literal {
+			"--set-literal"
+		} else {
+			"--set"
+		}
+	}
+}
+
 struct Opts {
 	kind: String, // int|float|bool|datetime|string|raw
 	array: bool,
@@ -101,10 +134,10 @@ struct Opts {
 	strictness: Strictness,
 	write: bool,
 	schema: Option<String>,
-	layers: Vec<String>,         // lower-priority layers, in listed order
-	sets: Vec<(String, String)>, // final override layer: path=value
-	args: Vec<String>,           // positional: FILE [PATH]
-	seen: Vec<&'static str>,     // canonical names of options given, for per-command validation
+	layers: Vec<String>,     // lower-priority layers, in listed order
+	sets: Vec<Set>,          // final override layer, in the order given
+	args: Vec<String>,       // positional: FILE [PATH]
+	seen: Vec<&'static str>, // canonical names of options given, for per-command validation
 }
 
 /// Did the command line ask for help or the version? Only tokens in option
@@ -119,7 +152,8 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 			"-h" | "--help" => return Some("help"),
 			"-V" | "--version" => return Some("version"),
 			"--" => return None,
-			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set" => i += 1,
+			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
+			| "--set-literal" => i += 1,
 			_ if a.starts_with('-') && a.len() > 1 => {}
 			// The subcommand, then the file: past that everything is a path.
 			_ if i > 0 => return None,
@@ -172,7 +206,8 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 				o.write = true;
 				o.seen.push("--write");
 			}
-			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set" => {
+			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
+			| "--set-literal" => {
 				i += 1;
 				let v = argv
 					.get(i)
@@ -185,6 +220,9 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			_ if a.starts_with("--schema=") => set_value_opt(&mut o, "--schema", &a[9..])?,
 			_ if a.starts_with("--layer=") => set_value_opt(&mut o, "--layer", &a[8..])?,
 			_ if a.starts_with("--set=") => set_value_opt(&mut o, "--set", &a[6..])?,
+			_ if a.starts_with("--set-literal=") => {
+				set_value_opt(&mut o, "--set-literal", &a[14..])?
+			}
 			_ if a.starts_with('-') && a.len() > 1 => {
 				return Err(format!("unknown option: {}", a));
 			}
@@ -222,12 +260,20 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			o.layers.push(v.to_string());
 			o.seen.push("--layer");
 		}
-		"--set" => {
+		"--set" | "--set-literal" => {
 			let (p, val) = v
 				.split_once('=')
-				.ok_or_else(|| format!("bad --set value (want PATH=VALUE): {}", v))?;
-			o.sets.push((p.to_string(), val.to_string()));
-			o.seen.push("--set");
+				.ok_or_else(|| format!("bad {} value (want PATH=VALUE): {}", name, v))?;
+			o.sets.push(Set {
+				path: p.to_string(),
+				value: val.to_string(),
+				literal: name == "--set-literal",
+			});
+			o.seen.push(if name == "--set-literal" {
+				"--set-literal"
+			} else {
+				"--set"
+			});
 		}
 		_ => return Err(format!("unknown option: {}", name)),
 	}
@@ -248,12 +294,25 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			"--strictness",
 			"--layer",
 			"--set",
+			"--set-literal",
 		],
-		"set" => &["--strictness", "--layer", "--set", "--write"],
-		"fmt" => &["--write", "--strictness", "--layer", "--set"],
+		"set" => &[
+			"--strictness",
+			"--layer",
+			"--set",
+			"--set-literal",
+			"--write",
+		],
+		"fmt" => &[
+			"--write",
+			"--strictness",
+			"--layer",
+			"--set",
+			"--set-literal",
+		],
 		"check" => &["--strictness", "--schema"],
 		"init" => &["--schema"],
-		"count" | "instances" => &["--strictness", "--layer", "--set"],
+		"count" | "instances" => &["--strictness", "--layer", "--set", "--set-literal"],
 		_ => &[],
 	};
 	for s in &o.seen {
@@ -309,9 +368,9 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 		let over = load(t, o.strictness)?;
 		doc.merge(&over);
 	}
-	for (p, v) in &o.sets {
-		if !doc.set_string(p, v) {
-			eprintln!("shcl: cannot write {} (from --set)", p);
+	for s in &o.sets {
+		if !s.apply(&mut doc) {
+			eprintln!("shcl: cannot write {} (from {})", s.path, s.opt());
 			return Err(1);
 		}
 	}
@@ -644,6 +703,8 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			let dt = parse_datetime(val()).ok_or_else(|| format!("bad datetime: {}", val()))?;
 			doc.set_datetime(path, &dt)
 		}
+		"literal" => doc.set_literal(path, val()),
+		"literal-default" => doc.set_literal_default(path, val()),
 		"int-default" => doc.set_int_default(path, pint(val())?),
 		"float-default" => doc.set_float_default(path, pflt(val())?),
 		"bool-default" => doc.set_bool_default(path, val() == "true"),
@@ -763,9 +824,9 @@ fn do_set(o: &Opts) -> u8 {
 			Err(code) => return code,
 		}
 	}
-	for (p, v) in &o.sets {
-		if !doc.set_string(p, v) {
-			eprintln!("shcl: cannot write {} (from --set)", p);
+	for s in &o.sets {
+		if !s.apply(&mut doc) {
+			eprintln!("shcl: cannot write {} (from {})", s.path, s.opt());
 			return 1;
 		}
 	}

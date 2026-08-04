@@ -2097,6 +2097,22 @@ impl Document {
 // vecs, so mutating the arena directly is enough - the parser's child_map is
 // already gone and is not maintained here.
 
+/// Read TEXT as the value half of a line, for the setters that take value
+/// syntax rather than data. Rejects what could not have come off one line: a
+/// line break, or a quote that never closes. An unquoted `#` ends the value
+/// here exactly as it would in a file.
+fn literal_value(text: &str) -> Option<Value> {
+	if text.contains('\n') || text.contains('\r') {
+		return None;
+	}
+	let (v, _) = split_comment(text);
+	let v = v.trim();
+	if unterminated_quote(v) {
+		return None;
+	}
+	Some(parse_cell(v))
+}
+
 fn cell_of(text: String) -> Value {
 	Value::Cell(vec![Element {
 		text,
@@ -2468,6 +2484,23 @@ impl Document {
 	pub fn set_string_default(&mut self, path: &str, v: &str) -> bool {
 		if !self.exists(path) {
 			return self.set_string(path, v);
+		}
+		true
+	}
+	/// Write TEXT as value syntax rather than as data: `80, 443` becomes a
+	/// two-element array where `set_string` would store one string that has to
+	/// be quoted. This is how a caller holding value text - a config line, a
+	/// user's `--set` argument - writes it without knowing its shape first.
+	/// Fails on text that could not be one line's value (see `literal_value`).
+	pub fn set_literal(&mut self, path: &str, text: &str) -> bool {
+		match literal_value(text) {
+			Some(v) => self.set_value(path, v),
+			None => false,
+		}
+	}
+	pub fn set_literal_default(&mut self, path: &str, text: &str) -> bool {
+		if !self.exists(path) {
+			return self.set_literal(path, text);
 		}
 		true
 	}
