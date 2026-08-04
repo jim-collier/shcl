@@ -51,6 +51,14 @@
 	- [When SHCL is the wrong choice](#when-shcl-is-the-wrong-choice)
 - [Features](#features)
 - [What a .shcl file looks like](#what-a-shcl-file-looks-like)
+- [Example use-cases in your code](#example-use-cases-in-your-code)
+	- [Rust](#rust)
+	- [Go](#go)
+	- [Python](#python)
+	- [Zig](#zig)
+	- [C, C++](#c-c)
+	- [Bash](#bash)
+	- [PowerShell](#powershell)
 - [Installation](#installation)
 	- [Language packages](#language-packages)
 		- [Cargo](#cargo)
@@ -64,16 +72,8 @@
 			- [Windows](#windows)
 		- [Scripted installation direct from web - dev or stable](#scripted-installation-direct-from-web---dev-or-stable)
 			- [Linux and WSL](#linux-and-wsl)
-			- [Windows (PowerShell)](#windows-powershell)
+			- [Windows PowerShell](#windows-powershell)
 		- [DIY install](#diy-install)
-- [Full example use-cases in your code](#full-example-use-cases-in-your-code)
-	- [Rust](#rust)
-	- [Go](#go)
-	- [Python](#python)
-	- [Zig](#zig)
-	- [C, C++](#c-c)
-	- [Bash](#bash)
-	- [PowerShell](#powershell)
 - [Set up a development environment](#set-up-a-development-environment)
 - [Docs](#docs)
 - [Contributing and support](#contributing-and-support)
@@ -241,6 +241,251 @@ When you need to know *why* a read failed, the full form returns a status instea
 Wildcards read across instances: an array read of `site[*].root` gives you every site's document root, in file order, with a status per slot.
 -->
 
+## Example use-cases in your code
+
+Bindings are versioned in lockstep, so `1.x` means the same behavior and the same conformance corpus in every language. Each ecosystem's usual compatible-version operator is all you need: it picks up minor and patch releases on its own, and never crosses a major version without you editing the line yourself.
+
+Every binding is one file with no dependencies. You can optionally just copy it out of `source/` and commit it - see [DIY install](#diy-install) above.
+
+### Rust
+
+- Install: `cargo add shcl`
+- Dependency line: `shcl = "1"`
+- Note: The Rust crate ships the library and the CLI together - see [Language packages](#language-packages) if the binary is what you are after.
+
+```rust
+use shcl::{Document, Status};
+
+let text = std::fs::read_to_string("server.shcl")?;
+let mut doc = Document::parse(&text);
+
+// Typed read, with a fallback if the path is missing
+let workers = doc.get_int("workers").unwrap_or(4);
+let root = doc.get_string("site[example.com].root").unwrap_or_default();
+
+// Or ask why a read failed, when the difference matters
+match doc.get_int("site[example.com].max-upload-mb") {
+	Ok(mb) => println!("{mb} MB"),
+	Err(Status::NotFound) => println!("not configured"),
+	Err(other) => println!("unusable: {other:?}"),
+}
+
+// Writes create what they need to: this adds a site and a nested block
+doc.set_int("workers", workers * 2);
+doc.set_bool("site[example.com].tls.hsts", true);
+doc.set_string("site[blog.example.com].root", "/srv/www/blog");
+
+std::fs::write("server.shcl", doc.to_canonical())?;
+```
+
+### Go
+
+- Install the module: `go get github.com/jim-collier/shcl/source/go`
+- Dependency line: `require github.com/jim-collier/shcl/source/go v1.0.0`
+- Notes: Go keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
+
+```go
+import shcl "github.com/jim-collier/shcl/source/go"
+
+text, err := os.ReadFile("server.shcl")
+doc := shcl.Parse(string(text))
+
+workers := doc.GetIntOr("workers", 4)
+root := doc.GetStringOr("site[example.com].root", "")
+
+if mb, st := doc.GetInt("site[example.com].max-upload-mb"); st == shcl.Good {
+	fmt.Println(mb, "MB")
+} else {
+	fmt.Println("unusable:", st)
+}
+
+doc.SetInt("workers", workers*2)
+doc.SetBool("site[example.com].tls.hsts", true)
+doc.SetString("site[blog.example.com].root", "/srv/www/blog")
+
+os.WriteFile("server.shcl", []byte(doc.ToCanonical()), 0o644)
+```
+
+### Python
+
+- Install: `pip install shcl`
+- Dependency line: `shcl~=1.0`
+- Note: The PyPI distribution is the library module by itself. Installing it does not put a `shcl` command on your `PATH`.
+	- If you want the CLI too, get if from a package, or an installer.
+
+```python
+import shcl
+
+with open("server.shcl") as f:
+	doc = shcl.Document.parse(f.read())
+
+workers = doc.get_int("workers", default=4)
+root = doc.get_string("site[example.com].root", default="")
+
+read = doc.read_int("site[example.com].max-upload-mb")
+if read.status is not shcl.Status.Good:
+	print("unusable:", read.status)
+
+doc.set_int("workers", workers * 2)
+doc.set_bool("site[example.com].tls.hsts", True)
+doc.set_string("site[blog.example.com].root", "/srv/www/blog")
+
+with open("server.shcl", "w") as f:
+	f.write(doc.to_canonical())
+```
+
+### Zig
+
+Zig needs no binding of its own - it consumes the C header directly. `@cImport` takes the declarations, one C file carries the implementation, and thin wrappers let Zig slices supply the pointer-and-length pairs the C API wants:
+
+```zig
+const std = @import("std");
+const c = @cImport(@cInclude("shcl.h"));
+
+// The C API takes (pointer, length) paths; a Zig slice already carries both.
+fn getInt(doc: ?*c.shcl_doc, path: []const u8, def: i64) i64 {
+	return c.shcl_get_int(doc, path.ptr, path.len, def);
+}
+fn setInt(doc: ?*c.shcl_doc, path: []const u8, v: i64) bool {
+	return c.shcl_set_int(doc, path.ptr, path.len, v) != 0;
+}
+fn setBool(doc: ?*c.shcl_doc, path: []const u8, v: bool) bool {
+	return c.shcl_set_bool(doc, path.ptr, path.len, @intFromBool(v)) != 0;
+}
+fn setString(doc: ?*c.shcl_doc, path: []const u8, v: []const u8) bool {
+	return c.shcl_set_string(doc, path.ptr, path.len, v.ptr, v.len) != 0;
+}
+fn readString(doc: ?*c.shcl_doc, path: []const u8) c.shcl_read_str {
+	return c.shcl_read_string(doc, path.ptr, path.len);
+}
+
+// text is the config file, already read into memory
+const doc = c.shcl_parse(text.ptr, text.len);
+defer c.shcl_free(doc);
+
+const workers = getInt(doc, "workers", 4);
+
+const root = readString(doc, "site[example.com].root");
+if (root.status == c.SHCL_GOOD)
+	std.debug.print("{s}\n", .{root.value.p[0..root.value.n]});
+
+_ = setInt(doc, "workers", workers * 2);
+_ = setBool(doc, "site[example.com].tls.hsts", true);
+_ = setString(doc, "site[blog.example.com].root", "/srv/www/blog");
+
+const out = c.shcl_to_canonical(doc);
+```
+
+Alongside it, an `impl.c` of two lines - `#define SHCL_IMPLEMENTATION`, then `#include "shcl.h"` - and build with `zig build-exe main.zig impl.c -lc -lm -I.`. The interop above is stable, but Zig's own standard library is not, so the surrounding file IO moves between Zig releases; this was checked on 0.16.
+
+### C, C++
+
+C and C++ have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit, and link `-lm`. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
+
+- Install: vendor `shcl.h`
+- Dependency line: pin the release tag
+
+```c
+#define SHCL_IMPLEMENTATION   // in exactly one translation unit
+#include "shcl.h"
+
+#define P(s) s, strlen(s)     // paths take a pointer and a length, not a NUL terminator
+
+// text/len is the config file, already read into memory
+shcl_doc *doc = shcl_parse(text, len);
+
+int64_t workers = shcl_get_int(doc, P("workers"), 4);
+
+// Strings keep the status tier, so missing and empty stay distinguishable
+shcl_read_str root = shcl_read_string(doc, P("site[example.com].root"));
+if (root.status == SHCL_GOOD)
+	printf("%.*s\n", (int)root.value.n, root.value.p);
+
+shcl_set_int(doc, P("workers"), workers * 2);
+shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1);
+shcl_set_string(doc, P("site[blog.example.com].root"), P("/srv/www/blog"));
+
+shcl_str out = shcl_to_canonical(doc);   // lives in the document's arena
+fwrite(out.p, 1, out.n, f);
+
+shcl_free(doc);   // frees the document and everything handed out from it
+```
+
+The C binding uses `round()`, so link the math library - `cc -std=c11 -O2 ex.c -o ex -lm`. There are no per-object frees: reads hand back pointers into the document's arena, and the single `shcl_free` releases all of it, so anything you need afterwards must be copied out first.
+
+Two things worth knowing about the write half. Setters build any missing structure along the path, so the `tls.hsts` and `blog.example.com` lines above appear as a nested block and a new site instance without you assembling either. And saving rewrites the file in canonical form, which normalizes spacing and lowercases field names, but **keeps your comments** attached to what they documented:
+
+```text
+# Flat, TOML-style settings
+listen: "0.0.0.0:443"  # a colon in a value just needs quotes
+workers: 8
+log-level: warn
+
+# Hierarchy when you need it: one instance per site
+site: example.com
+	root: /srv/www/example
+	max-upload-mb: 50  # names are case-insensitive, spacing is loose
+	methods: GET, POST, HEAD  # an array is just commas
+	tls:
+		hsts: true
+
+site: blog.example.com
+	root: /srv/www/blog
+```
+
+A setter reports failure - `false`, or `0` in C - when a path cannot be written at all, a wildcard being the common case, since those are query-only. `write_reason(path)` names which of the five reasons applies.
+
+### Bash
+
+The shell wrappers are not parsers; they wrap the CLI, which is why they inherit its conformance for free. Source one and you get typed sugar over the same commands:
+
+- Install: install the CLI, source the wrapper
+- Dependency line: n/a - it wraps the CLI
+
+```bash
+source shcl.bash
+
+workers=$(shcl_int --default=4 server.shcl workers)
+root=$(shcl_get --default='' server.shcl 'site[example.com].root')
+
+# Writes go in as an op script, one op per line, fields separated by a literal tab.
+# --write rewrites the file in place.
+shcl set --write server.shcl <<OPS
+int	workers	$((workers * 2))
+bool	site[example.com].tls.hsts	true
+string	site[blog.example.com].root	/srv/www/blog
+OPS
+```
+
+For a handful of scalars, `--set` is shorter than an op script, though it prints rather than rewriting - `--write` and `--set` cannot be combined, since a layered value is deliberately not something the writer bakes back into the file:
+
+```bash
+shcl fmt --set 'workers=8' server.shcl > server.new && mv server.new server.shcl
+```
+
+### PowerShell
+
+Dot-source it for the same helper names:
+
+```powershell
+. ./shcl.ps1
+
+$workers = [int](shcl_int --default=4 server.shcl workers)
+$root    = shcl_get --default='' server.shcl 'site[example.com].root'
+
+shcl fmt --set "workers=$($workers * 2)" `
+         --set 'site[example.com].tls.hsts=true' `
+         --set 'site[blog.example.com].root=/srv/www/blog' `
+         server.shcl | Set-Content server.shcl
+```
+
+This one uses `--set` rather than the op script the Bash example pipes in, and the reason is worth knowing: the sourced `shcl` is a PowerShell *function*, so it forwards arguments but not pipeline input. Piping an op script into it leaves `shcl set` waiting on a stdin that never arrives. When you want the op-script form in PowerShell, pipe to the binary itself, resolving it the way the wrapper does internally so the sourced function cannot shadow it:
+
+```powershell
+$bin = (Get-Command shcl -CommandType Application | Select-Object -First 1).Source
+$ops | & $bin set --write server.shcl
+```
+
 ## Installation
 
 The latest release, `v1.0.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
@@ -277,7 +522,7 @@ pip install shcl        # Python: library only
 
 C and C++ have no registry worth targeting, and need none: `shcl.h` is a single dependency-free header you vendor. Copy it out of a release tag, or take it from an installed package under `/usr/share/shcl/code/`.
 
-For version pinning and the dependency line per ecosystem, see [Full example use-cases in your code](#full-example-use-cases-in-your-code).
+For version pinning and the dependency line per ecosystem, see [Example use-cases in your code](#example-use-cases-in-your-code).
 
 ### Other installation options
 
@@ -364,250 +609,6 @@ macOS and the BSDs have no prebuilt binaries yet. Use `cargo install shcl`, a dr
 	```
 
 	Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
-
-## Full example use-cases in your code
-
-The above installs the CLI. To depend on SHCL as a *library*, use your language's package manager.
-
-Bindings are versioned in lockstep, so `1.x` means the same behavior and the same conformance corpus in every language. Each ecosystem's usual compatible-version operator is all you need: it picks up minor and patch releases on its own, and never crosses a major version without you editing the line yourself.
-
-| Language | Install | Dependency line
-| :-- | :-- | :--
-| Rust | `cargo add shcl` | `shcl = "1"`
-| Go | `go get github.com/jim-collier/shcl/source/go` | `require github.com/jim-collier/shcl/source/go v1.0.0`
-| Python | `pip install shcl` | `shcl~=1.0`
-| C / C++ | vendor `shcl.h` | pin the release tag
-| Bash / PowerShell | install the CLI, source the wrapper | n/a, they wrap the CLI
-
-Per-language notes:
-
-- **Go** keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
-
-- **C and C++** have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit, and link `-lm`. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
-
-- **The Rust crate** ships the library and the CLI together - see [Language packages](#language-packages) if the binary is what you are after.
-
-- **The PyPI distribution** is the library module by itself. Installing it does not put a `shcl` command on your `PATH`; take the CLI from a package, an installer, or the crate.
-
-- **No package manager at all?** Every binding is one file with no dependencies. Copy it out of `source/` and commit it - see [DIY install](#diy-install) above.
-
-### Rust
-
-```rust
-use shcl::{Document, Status};
-
-let text = std::fs::read_to_string("server.shcl")?;
-let mut doc = Document::parse(&text);
-
-// Typed read, with a fallback if the path is missing
-let workers = doc.get_int("workers").unwrap_or(4);
-let root = doc.get_string("site[example.com].root").unwrap_or_default();
-
-// Or ask why a read failed, when the difference matters
-match doc.get_int("site[example.com].max-upload-mb") {
-	Ok(mb) => println!("{mb} MB"),
-	Err(Status::NotFound) => println!("not configured"),
-	Err(other) => println!("unusable: {other:?}"),
-}
-
-// Writes create what they need to: this adds a site and a nested block
-doc.set_int("workers", workers * 2);
-doc.set_bool("site[example.com].tls.hsts", true);
-doc.set_string("site[blog.example.com].root", "/srv/www/blog");
-
-std::fs::write("server.shcl", doc.to_canonical())?;
-```
-
-### Go
-
-```go
-import shcl "github.com/jim-collier/shcl/source/go"
-
-text, err := os.ReadFile("server.shcl")
-doc := shcl.Parse(string(text))
-
-workers := doc.GetIntOr("workers", 4)
-root := doc.GetStringOr("site[example.com].root", "")
-
-if mb, st := doc.GetInt("site[example.com].max-upload-mb"); st == shcl.Good {
-	fmt.Println(mb, "MB")
-} else {
-	fmt.Println("unusable:", st)
-}
-
-doc.SetInt("workers", workers*2)
-doc.SetBool("site[example.com].tls.hsts", true)
-doc.SetString("site[blog.example.com].root", "/srv/www/blog")
-
-os.WriteFile("server.shcl", []byte(doc.ToCanonical()), 0o644)
-```
-
-### Python
-
-```python
-import shcl
-
-with open("server.shcl") as f:
-	doc = shcl.Document.parse(f.read())
-
-workers = doc.get_int("workers", default=4)
-root = doc.get_string("site[example.com].root", default="")
-
-read = doc.read_int("site[example.com].max-upload-mb")
-if read.status is not shcl.Status.Good:
-	print("unusable:", read.status)
-
-doc.set_int("workers", workers * 2)
-doc.set_bool("site[example.com].tls.hsts", True)
-doc.set_string("site[blog.example.com].root", "/srv/www/blog")
-
-with open("server.shcl", "w") as f:
-	f.write(doc.to_canonical())
-```
-
-### Zig
-
-Zig needs no binding of its own - it consumes the C header directly. `@cImport` takes the declarations, one C file carries the implementation, and thin wrappers let Zig slices supply the pointer-and-length pairs the C API wants:
-
-```zig
-const std = @import("std");
-const c = @cImport(@cInclude("shcl.h"));
-
-// The C API takes (pointer, length) paths; a Zig slice already carries both.
-fn getInt(doc: ?*c.shcl_doc, path: []const u8, def: i64) i64 {
-	return c.shcl_get_int(doc, path.ptr, path.len, def);
-}
-fn setInt(doc: ?*c.shcl_doc, path: []const u8, v: i64) bool {
-	return c.shcl_set_int(doc, path.ptr, path.len, v) != 0;
-}
-fn setBool(doc: ?*c.shcl_doc, path: []const u8, v: bool) bool {
-	return c.shcl_set_bool(doc, path.ptr, path.len, @intFromBool(v)) != 0;
-}
-fn setString(doc: ?*c.shcl_doc, path: []const u8, v: []const u8) bool {
-	return c.shcl_set_string(doc, path.ptr, path.len, v.ptr, v.len) != 0;
-}
-fn readString(doc: ?*c.shcl_doc, path: []const u8) c.shcl_read_str {
-	return c.shcl_read_string(doc, path.ptr, path.len);
-}
-
-// text is the config file, already read into memory
-const doc = c.shcl_parse(text.ptr, text.len);
-defer c.shcl_free(doc);
-
-const workers = getInt(doc, "workers", 4);
-
-const root = readString(doc, "site[example.com].root");
-if (root.status == c.SHCL_GOOD)
-	std.debug.print("{s}\n", .{root.value.p[0..root.value.n]});
-
-_ = setInt(doc, "workers", workers * 2);
-_ = setBool(doc, "site[example.com].tls.hsts", true);
-_ = setString(doc, "site[blog.example.com].root", "/srv/www/blog");
-
-const out = c.shcl_to_canonical(doc);
-```
-
-Alongside it, an `impl.c` of two lines - `#define SHCL_IMPLEMENTATION`, then `#include "shcl.h"` - and build with `zig build-exe main.zig impl.c -lc -lm -I.`. The interop above is stable, but Zig's own standard library is not, so the surrounding file IO moves between Zig releases; this was checked on 0.16.
-
-### C, C++
-
-```c
-#define SHCL_IMPLEMENTATION   // in exactly one translation unit
-#include "shcl.h"
-
-#define P(s) s, strlen(s)     // paths take a pointer and a length, not a NUL terminator
-
-// text/len is the config file, already read into memory
-shcl_doc *doc = shcl_parse(text, len);
-
-int64_t workers = shcl_get_int(doc, P("workers"), 4);
-
-// Strings keep the status tier, so missing and empty stay distinguishable
-shcl_read_str root = shcl_read_string(doc, P("site[example.com].root"));
-if (root.status == SHCL_GOOD)
-	printf("%.*s\n", (int)root.value.n, root.value.p);
-
-shcl_set_int(doc, P("workers"), workers * 2);
-shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1);
-shcl_set_string(doc, P("site[blog.example.com].root"), P("/srv/www/blog"));
-
-shcl_str out = shcl_to_canonical(doc);   // lives in the document's arena
-fwrite(out.p, 1, out.n, f);
-
-shcl_free(doc);   // frees the document and everything handed out from it
-```
-
-The C binding uses `round()`, so link the math library - `cc -std=c11 -O2 ex.c -o ex -lm`. There are no per-object frees: reads hand back pointers into the document's arena, and the single `shcl_free` releases all of it, so anything you need afterwards must be copied out first.
-
-Two things worth knowing about the write half. Setters build any missing structure along the path, so the `tls.hsts` and `blog.example.com` lines above appear as a nested block and a new site instance without you assembling either. And saving rewrites the file in canonical form, which normalizes spacing and lowercases field names, but **keeps your comments** attached to what they documented:
-
-```text
-# Flat, TOML-style settings
-listen: "0.0.0.0:443"  # a colon in a value just needs quotes
-workers: 8
-log-level: warn
-
-# Hierarchy when you need it: one instance per site
-site: example.com
-	root: /srv/www/example
-	max-upload-mb: 50  # names are case-insensitive, spacing is loose
-	methods: GET, POST, HEAD  # an array is just commas
-	tls:
-		hsts: true
-
-site: blog.example.com
-	root: /srv/www/blog
-```
-
-A setter reports failure - `false`, or `0` in C - when a path cannot be written at all, a wildcard being the common case, since those are query-only. `write_reason(path)` names which of the five reasons applies.
-
-### Bash
-
-The shell wrappers are not parsers; they wrap the CLI, which is why they inherit its conformance for free. Source one and you get typed sugar over the same commands:
-
-```bash
-source shcl.bash
-
-workers=$(shcl_int --default=4 server.shcl workers)
-root=$(shcl_get --default='' server.shcl 'site[example.com].root')
-
-# Writes go in as an op script, one op per line, fields separated by a literal tab.
-# --write rewrites the file in place.
-shcl set --write server.shcl <<OPS
-int	workers	$((workers * 2))
-bool	site[example.com].tls.hsts	true
-string	site[blog.example.com].root	/srv/www/blog
-OPS
-```
-
-For a handful of scalars, `--set` is shorter than an op script, though it prints rather than rewriting - `--write` and `--set` cannot be combined, since a layered value is deliberately not something the writer bakes back into the file:
-
-```bash
-shcl fmt --set 'workers=8' server.shcl > server.new && mv server.new server.shcl
-```
-
-### PowerShell
-
-Dot-source it for the same helper names:
-
-```powershell
-. ./shcl.ps1
-
-$workers = [int](shcl_int --default=4 server.shcl workers)
-$root    = shcl_get --default='' server.shcl 'site[example.com].root'
-
-shcl fmt --set "workers=$($workers * 2)" `
-         --set 'site[example.com].tls.hsts=true' `
-         --set 'site[blog.example.com].root=/srv/www/blog' `
-         server.shcl | Set-Content server.shcl
-```
-
-This one uses `--set` rather than the op script the Bash example pipes in, and the reason is worth knowing: the sourced `shcl` is a PowerShell *function*, so it forwards arguments but not pipeline input. Piping an op script into it leaves `shcl set` waiting on a stdin that never arrives. When you want the op-script form in PowerShell, pipe to the binary itself, resolving it the way the wrapper does internally so the sourced function cannot shadow it:
-
-```powershell
-$bin = (Get-Command shcl -CommandType Application | Select-Object -First 1).Source
-$ops | & $bin set --write server.shcl
-```
 
 ## Set up a development environment
 

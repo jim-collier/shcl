@@ -46,20 +46,13 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 ### Bugs
 
-- 🔘 The PowerShell wrapper's sourced `shcl` cannot be fed an op script on stdin. It is a function, so it forwards arguments but not pipeline input: `$ops | shcl set --write f.shcl` drops the ops and the CLI then blocks on console stdin until it is killed. The Bash wrapper pipes fine, so the two wrappers are not at parity, and `set` is the only subcommand that reads stdin.
+- ✅ The PowerShell wrapper's sourced `shcl` cannot be fed an op script on stdin. It is a function, so it forwards arguments but not pipeline input: `$ops | shcl set --write f.shcl` drops the ops and the CLI then blocks on console stdin until it is killed. The Bash wrapper pipes fine, so the two wrappers are not at parity, and `set` is the only subcommand that reads stdin.
 	- Workaround, now in the README, is to pipe to the binary instead, resolved as `Get-Command shcl -CommandType Application` - plain `Get-Command shcl` returns the sourced function, whose `.Source` is empty. Callers should not need to know that.
-	- Likely fix is a `process{}`/`$input` path in the `shcl` function that forwards piped input to the binary. It has to stay transparent when nothing is piped, which is every other subcommand.
 	- Not crosscheck-visible: the wrappers are forwarders and deliberately sit outside `BINDING_CLIS`, so nothing in the pipeline exercises this.
+	- Fixed: `shcl` forwards `$input` to the binary, but only when `$MyInvocation.ExpectingInput` says something was piped. The guard matters - forwarding an empty `$input` would hand the binary a closed stdin, so a bare `shcl set f.shcl` would read zero ops instead of the console.
+	- Verified both modes against the real binary: dot-sourced with ops piped, and run as a script with a shell-level pipe (that one reaches the process stdin directly, not the PowerShell pipeline, so it takes the other branch). Same ops through the Bash and PowerShell wrappers now leave byte-identical files.
 
 ### Features and enhancements
-
-- ✅ The schema can't declare an open section. From TradeClanker: wildcards select instances (`server[*].port`), but there's no way to say "any child name under `indicators`, each shaped like this" - so a config with one map-shaped section can't use schema validation at all, and they keep a hand-maintained known-paths map instead. Everything else in their config would express cleanly as a schema.
-	- A name-position wildcard is the missing construct. Distinct from the schema-fragments item below (shape reuse), but they'd be designed together - both grow the schema language, so both go through the same design-first gate.
-	- Done: bare `*` name segment in lookup paths, all four bindings. Works in schemas (per-child contexts, unknown-sweep pattern match) and in reads (slots like `[*]`); writer refuses it; quoted `"*"` stays a literal name; document lines unchanged. Cases 037/038; spec + design.md updated.
-
-- ✅ Schema fragments. From nano-git-db, their top feature request: the schema language can't express recursion (their arbitrarily-nesting layout blocks are generated to a fixed depth of 8, past which validation silently stops and correct keys start reporting as unknown) or path aliases (wrapped vs flat spellings force ~60 lines of string surgery over their own schema file at init). Both are the same missing idea - "this subtree has the shape of that one" - and a single fragment/reference construct closes both, taking their 99 hand-written field entries plus two generators down to something reviewable.
-	- Big. Design first, post-1.0. Weigh hard against keeping the schema language small, but two independent workarounds in the most rigorous consumer argue it earns its keep.
-	- Done: `fragment: <name>` declares (children are ordinary `field:` instances with relative paths), `inherits: <name>` mounts, all four bindings. Recursion/mutual refs legal with no depth limit (demand-driven expansion); `init` expands mounts and cuts where a fragment re-enters; H001 disavowal covers fragment-declared repeats; new V094/V095 faults. Cases 039-041; spec + design.md updated.
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
@@ -70,6 +63,230 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 		- 🔘 JavaScript
 
 ### Code Reviews
+
+- **20260727**:
+
+	- **Improvements**:
+
+		- 🔘 Code Review 20260727 item 2: the reference clones a node name several times per index remap.
+			- `remap_child` runs on every in-place value mutation - an empty field being filled, a stacked-list element being appended - and clones the name up to five times, because it looks a key up and then removes it separately.
+			- Building each key once and reusing it would about halve that, with no change in behavior. The other three bindings have their own shape and would need their own look.
+			- Not evidence-backed: the profiler puts the leaders elsewhere (path scanning, code-point iteration, comma splitting), so this is a code-reading finding, not a measured one. Worth doing only if a profile ever points here.
+
+- **20260725**:
+
+	- **Improvements**:
+
+	- 🛠️ Code Review 20260725 item 28: give the loader opt-out limits.
+		- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
+		- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
+		- ✅ Done: the depth half, done with item 2 - a fixed 512-level cap and `E016`.
+		- ✋ Deferred post-1.0: the depth cap closed the crash class. Size, node and array knobs are additive API that can land later without breaking anything, and a consuming program can bound input size itself before calling parse.
+
+	- 🛠️ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
+		- All four bindings recover the code from `msg.starts_with(...)` over about 30 hand-ordered prefixes, so rewording a message can change a code, and the ordering is load-bearing.
+		- Separately, `V001`-`V099` were fully tabled but `E001`-`E015` and `H001` were listed nowhere, while users are told to gate CI on `check`.
+		- ✅ Done: the doc half. `E001`-`E016` plus `H001` are now tabled in the spec's Diagnostics section.
+		- ✋ Deferred: threading the code through every call site. Large, mechanical, and invisible to users, and every corpus case pins the code per line - so the exposure is limited to messages no case exercises.
+
+### Done
+
+#### Done - Bugs
+
+- ✅ Paths() silently drops any node whose name isn't a bare identifier - and its whole subtree.
+	- Fixed: non-bare segments now emit quoted and escaped via the same spelling the canonical formatter uses, so every returned path resolves. Shared fixture updated in all four runners; spec traversal section documents the enumeration. From TradeClanker, where it's a live bug: a quoted field name parses with zero diagnostics and reads back fine, but Paths() skips it, so the enumeration disagrees with what the document contains. Their unknown-field check is a Paths() walk, so a typo whose name needs quoting sails through the one check built to catch typos, and an author who writes two indicators gets one with no error. It also breaks round-tripping: a set with a quoted segment succeeds and canonical output writes it correctly, but re-parsing that output can't enumerate it - the writer produces documents the reader can't see.
+	- Fix: emit the segment quoted and escaped, the form the path scanner already accepts. Silently dropping is the worst of the options; even a diagnostic would beat it.
+	- The skip is currently deliberate and pinned - doc comment, spec wording, and the shared paths fixture in all four runners assert it - so the fixture and docs move together with the code.
+
+- ✅ A strict parse hands back nothing usable.
+	- Fixed both ways: the failure now carries the parsed document (Go returns it non-nil beside the error too, so the natural `doc, err :=` path can't panic), and the message names the first three diagnostics with line and code. C already returned the doc; rust/python failure objects gained the document. From TradeClanker: the Go ParseWith at Strict returns a nil Document alongside the error, so the natural `doc, err :=` then `doc.Diagnostics()` panics - and that's the shape callers get pushed into, because the error's message is only "strict load failed: N error diagnostic(s)". The error value does carry the full diagnostics list, but the obvious path hides it: every line, message, and code it's already holding is absent from the message.
+	- Fix candidates, not exclusive: return the parsed document alongside the error (the diagnostics are the point of a failed strict load), and/or put the first few diagnostic lines in the message. Check what the other three bindings do on strict fail first - whatever changes has to keep the four surfaces parallel.
+
+- ✅ `Raw` on a read result is not raw.
+	- Fixed: the parser keeps the source line's value span and reads hand it back verbatim; writer-built/stacked-list/raw-block values fall back to display. Rust/go/python (the bindings whose read result exposes raw); shared fixture in those runners; spec's full-tier bullet now says exactly what raw is. Reported by the nano-git-db devs, who found it corrupting regexes: the doc comment promises the original text from the file, but every read fills it from the canonical display form, which joins elements with `, `. So `regex: ^\d{2,3}$` comes back as `^\d{2, 3}$` with zero diagnostics - and anything already written `a, b` round-trips looking correct, so it passes casual testing and fails on `{2,3}`.
+	- Fix: keep the source line's value span in the parser and make Raw a slice of it; or, if that's costly, rename the field to what it actually is (canonical) and add a real verbatim text read. Their vote is true source text, and that's the better product.
+	- A true-raw read also answers their separate request to read a comma-bearing scalar (a one-line regex) verbatim without resorting to a fenced block. They also floated having the reader consult the schema's declared type before comma-splitting; declined - coupling the reader to the schema buys the same result at much higher complexity.
+	- All four bindings; reads are contract, so check corpus/crosscheck exposure before changing anything.
+
+- ✅ By-value selectors match the as-written spelling, not the logical string.
+	- Fixed the preferred way: escapes applied on both sides at every compare/index site (resolver, parser attach + disp_map, writer place, validator contexts) in all four bindings; spec pins the logical-string match; corpus case 033 pins reads and the write path. From convert-base-v2: `["q\"uote"]` and a document's `'q"uote'` are the same string but don't cross-match, because both sides keep escape pairs verbatim and the comparison is spelling against spelling. The failure is a silent NotFound, and anyone with a quote-bearing discriminator hits it eventually. The spec says matching is against the display form but is silent on escapes.
+	- Preferred: apply escapes on both sides before comparing (least surprise). Fallback if that's judged too risky this close after rc1: one spec line pinning raw match.
+	- Touches resolve, writer place(), and the parser's ByValue arm in all four bindings; corpus case either way.
+
+#### Done - Features and enhancements
+
+- ✅ The schema can't declare an open section. From TradeClanker: wildcards select instances (`server[*].port`), but there's no way to say "any child name under `indicators`, each shaped like this" - so a config with one map-shaped section can't use schema validation at all, and they keep a hand-maintained known-paths map instead. Everything else in their config would express cleanly as a schema.
+	- A name-position wildcard is the missing construct. Distinct from the schema-fragments item below (shape reuse), but they'd be designed together - both grow the schema language, so both go through the same design-first gate.
+	- Done: bare `*` name segment in lookup paths, all four bindings. Works in schemas (per-child contexts, unknown-sweep pattern match) and in reads (slots like `[*]`); writer refuses it; quoted `"*"` stays a literal name; document lines unchanged. Cases 037/038; spec + design.md updated.
+
+- ✅ Schema fragments. From nano-git-db, the top feature request: the schema language can't express recursion (arbitrarily-nesting layout blocks are generated to a fixed depth of 8, past which validation silently stops and correct keys start reporting as unknown) or path aliases (wrapped vs flat spellings force ~60 lines of string surgery over their own schema file at init). Both are the same missing idea - "this subtree has the shape of that one" - and a single fragment/reference construct closes both, taking 99 hand-written field entries plus two generators down to something reviewable.
+	- Big. Design first, post-1.0. Weigh hard against keeping the schema language small, but two independent workarounds in the most rigorous consumer argue it earns its keep.
+	- Done: `fragment: <name>` declares (children are ordinary `field:` instances with relative paths), `inherits: <name>` mounts, all four bindings. Recursion/mutual refs legal with no depth limit (demand-driven expansion); `init` expands mounts and cuts where a fragment re-enters; H001 disavowal covers fragment-declared repeats; new V094/V095 faults. Cases 039-041; spec + design.md updated.
+
+- ✅ Lower the go directive to the tested floor.
+	- Declared 1.20 (strings.CutSuffix is the newest stdlib dependency; everything else predates generics). Hosted CI now installs a stable toolchain instead of reading go.mod - the pipeline's own `go -C` needs a current release - while the directive gates the consumer floor. From convert-base-v2: go.mod declares 1.24, and that directive is their recorded reason for vendoring the file instead of using it as a module - it would drag their deliberately-1.21 project up. The identical file compiles and passes their full suite under 1.21, so 1.24 is declaration, not need; find the real floor (generics suggest possibly 1.18) and declare that.
+
+- ✅ Docs batch from the feedback round:
+	- Landed in the spec (Empty-vs-NotFound as an advertised full-tier feature; a "choosing [#i] vs [value] when mapping entities" bullet in the traversal section) and in the Go package docs (a "writing a mapper" worked example: one-shot load, Count+[#i] iteration, Children for open sections, QuoteSegment, raw blocks). README deliberately untouched - it carries an in-flight edit; its pass can fold these in later. IndexOf not added - Count+[#i] covers the need without growing the surface.
+	- Advertise the Empty vs NotFound distinction. convert-base-v2 mapped it straight onto their tri-state marker convention with no adapter ("empty means explicitly disabled, absent means default") and called it rare among config parsers - it belongs in the README/spec as a feature, not something discovered by reading source.
+	- A spec paragraph on choosing `[#i]` vs `[value]` selectors when mapping entities: by-value misreads an entity whose name is numeric and collapses two same-named entities, and since matching is against the display form, a scalar spelled `"a, b"` and the two-element list meet the same selector. nano-git-db and convert-base-v2 each worked these out the hard way; nano-git-db suggests an IndexOf(path, value) alongside.
+	- A "writing a mapper" worked example in the Go package docs: the exported surface is 60+ methods, and the shape of a real consumer - descend by path prefix, Count then `[#i]`, schema validation for line-numbered errors, fences for verbatim - cost them most of a day to discover.
+
+- ✅ Hosted CI runs its four pinned actions on a deprecated Node.
+	- Re-pinned to current-Node releases, SHA-with-tag-comment shape kept: checkout v6.1.0, setup-go v6.5.0, setup-python v6.3.0, cache v5.1.0. Green on dev.
+	- All four are pinned by commit SHA and target Node 20, which the runners now force onto Node 24 with a warning on every run.
+	- Working today, and the warning is the only symptom. It stops working whenever the runners drop the shim.
+	- Fix is to re-pin each action to a release built for the current Node, keeping the pin-by-SHA-with-tag-in-a-comment shape.
+
+- ✅ Add existence of PowerShell wrapper acknowledgement to design.md
+	- Added to the Shell wrappers section: dual-mode design, no param block (verbatim $args), exit codes into $LASTEXITCODE, not in the differential (a forwarder).
+
+- ✅ Glossary of terms
+	- Covered by the spec's Terminology section, now extended with the wider-surface nouns (trivia, raw block/fence, canonical form, layer, schema, corpus).
+
+- ✅ Writer output has no blank lines between top-level sections.
+	- Done, default on with no knob: writer-created top-level nodes set blank_before (the emitter never blanks line 1). Write goldens 014/016/029 regenerated; spec Writer section documents the shape. From TradeClanker: hand-written examples and writer output disagree on shape, so they post-process the library's output with string surgery - which is what using the writer was meant to end. Blank-before already exists as parsed trivia, so the writer setting it when it creates a new top-level node (or a knob to) keeps the fixpoint property intact.
+	- Write-corpus goldens would churn; decide the default deliberately since written output is contract.
+
+- ✅ to_canonical() drops blank lines between comment-only regions. It shouldn't do that.
+	- Fixed: each held comment records its own preceding blank (runs still collapse to one; never as first output line). Blanks between comment regions - leading, merged, and end-of-file - now round-trip.
+
+- ✅ to_canonical() also loses comment indentation two ways, from the SilkTerm devs: a comment run trailing a block's last child re-attaches to the following node and de-indents to column 0, and orphan comments after the last binding always emit unindented. Together with the blank-line item above, fixing these lets them delete most of their save-repair pass.
+	- Fixed structurally rather than by storing verbatim indent: a comment written deeper than the next binding hangs on the block it sits in (new after-trivia, emitted after the block's last child at the block's indent); the same rule keeps indented tail-of-file comments with their block. Corpus case 034 pins it; fmt stays a fixpoint (20k-iteration fuzz soak).
+	- Means recording indent (and probably original attachment) as trivia; fmt must stay a fixpoint. All four parsers + emit, golden churn expected.
+
+- ✅ Expose whether a value was quoted.
+	- Done: `quoted` on the read result (rust/go/python; C read structs stay value+status by design) - true for a quoted single scalar element, false for arrays/raw/empty. From nano-git-db: `a: @null` and `a: "@null"` read identically, so a language built on shcl can't reserve a sentinel value and still let a user write it literally - they had to make `@null` unconditionally reserved and walk back docs that promised quoting would escape it. The parser already tracks quoted per element and drops it at the read boundary; one field on the read result makes "quoting is the escape" true for every downstream language.
+
+- ✅ Line numbers on the read path.
+	- Done both ways as filed: `Line(path)` accessor in all four bindings + veneer, and `line` on the read result itself (rust/go/python). 0 = unresolved or writer-built; merged instances cite the first binding, matching diagnostics. From nano-git-db: node line is populated and never exported, so any consumer check the schema can't express can only name the entity, never the line - their warnings degraded from `line 81: ...` to `table issue: ...`. A Line(path) accessor is the cheapest high-value ask in their list.
+	- Second consumer, same gap (TradeClanker): parser diagnostics carry a line and reads don't, so half the errors a user sees cite a line and half don't - a bad value reports nothing while a malformed line one field above reports `line 12`. They want the line on the read result itself, not just a separate accessor; do both, it's the same plumbing.
+
+- ✅ Enumerate a node's children.
+	- Done: `Children(path)` in all four bindings + veneer - file order, duplicates included, empty path = top level; names as stored, QuoteSegment for splicing. From nano-git-db: Paths() dedupes, so there is no way to ask "what keys are under this section?" - they hardcode a ten-name hook list purely because they can't ask what's under `code:`, and any open-ended or map-shaped section is unmodellable. Children(path) returning child names in file order, duplicates included, deletes more of their workaround code than anything else they asked for.
+	- TradeClanker asks for the same thing for the same reason (reading an open section means scanning all of Paths() and prefix-matching), and notes it also sidesteps the Paths() quoted-name bug for that use.
+
+- ✅ Hint when a merge combines non-adjacent bindings.
+	- Done: H002, hint severity, at the later line with the earlier line named in the prose. Fires only on a last-segment no-selector merge into a non-last child - adjacent re-mentions and the dotted redundant-path idiom stay silent. Corpus case 035; 001/013 diags goldens gained one each. From nano-git-db: merge-by-(name, value) means two separately-written `table: t` sections silently become one combined table, and only the parser can know it happened - their consumer-side "already defined; first wins" check was unreachable and got deleted as dead code. A hint-severity diagnostic carrying both line numbers would make that class of check possible without touching the documented merge semantics.
+	- New H-code; diagnostics are contract, so all four bindings plus the expected-diags goldens move together.
+
+- ✅ Suppress H001 where the schema declares the repetition.
+	- Done at check --schema assembly (and inside the one-shot), via a shared library helper so CLIs and runners can't drift; matched by leaf name, the filter consumers hand-rolled. Corpus case 036. From nano-git-db: the repeated-bare-leaf hint is structurally a false positive for any field whose repetition is the instance mechanism (`unique:`, `index:`, `row:`), so every correct file warns on load and users learn to ignore warnings; they filter it by hand for exactly three names. When a schema is present and a path declares repeat with an upper bound above 1, drop H001 there - the information already exists and goes unused.
+	- H001 is parse-time and the schema arrives at validate, so the suppression belongs where check --schema assembles output, not in the parser.
+
+- ✅ One-shot load-and-validate, plus an error predicate.
+	- Done: LoadAndValidate(text, schema, strictness) -> document carrying one combined diagnostics list (never throws; empty schema skips validation; declared-repeat H001s dropped), plus ErrorCount() on the document. All four bindings + veneer. From nano-git-db: doc diagnostics and schema validation come back as two separate lists that must be merged by hand (forget one and half the errors vanish), and there's no HasErrors/ErrorCount, so "did this file have errors" is consumer bookkeeping - which matters, since recover-and-continue means a mixed-indentation file otherwise returns no error at all. A combined entry point (text + schema + strictness in, doc + one diagnostic list out) plus an error count removes a whole class of consumer mistake.
+	- TradeClanker independently hand-rolled the same thing: no strictness level means "forgiving about spelling, loud about a dropped line", so at Standard an error diagnostic comes back beside a nil error and the line is silently skipped, and every consumer writes the same fifteen lines. An Errors() helper on the document is the smallest shape of this ask, from a second consumer.
+
+- ✅ Setters should say why they failed.
+	- Done as an additive probe (setter returns are frozen post-1.0): `WriteReason(path)` in all four bindings + veneer runs the writer's exact validation without creating anything and names the failure - Writable/BadPath/ValueInPath/Wildcard/NoSuchIndex/TooDeep. place() now pre-gates on it, so the two can't drift. CLI stays exit 1. From TradeClanker: Set* returns a bare pass/fail, and false covers an empty path, a malformed path, a wildcard, a depth overrun, and an unresolvable index indistinguishably - their workbench's error message is literally a guess because the library won't say. A small reason enum (or per-binding equivalent) on the write result fixes it; CLI behavior stays exit 1.
+	- All four bindings move together; the write corpus pins outputs, not the reason surface, so exposure should be small - verify.
+
+- ✅ Building a path from a user-typed name is injection.
+	- Done: QuoteSegment/quote_segment/shcl_quote_segment + veneer, sharing the emitter's name-quoting - same spelling both directions as the Paths() fix. From TradeClanker: Set* accepts segments that aren't valid bare names, and a dotted name is silently reinterpreted as nesting - a consumer concatenating a user-typed indicator name into a path is doing path injection without knowing it. Export a quote-segment helper (the escaping the path scanner already understands), or segment-wise setters taking a list that can't be injected into. Pairs naturally with the Paths() quoted-name bug above - same escaping code both directions.
+
+- ✅ Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.
+	- Done: `install-dev.bash` at repo root. Linux + macOS directly; Windows via WSL (the dev pipeline is bash). Clones (or detects an existing clone), installs the no-sudo pieces itself (rustup, ruff/mypy/cppcheck via pipx, markdownlint via npm, PSScriptAnalyzer via pwsh), and prints the exact package-manager hint for what needs root (go, python3, gcc, shellcheck). Shellcheck-gated.
+
+- ✅ Release-install script, `install.bash` and cross-platform `install.ps1`. In [repo] root, usage instructions in README.md.
+	- Done: both at repo root, README Installing has the one-liners. Latest release via the GitHub API (`--release dev` = newest incl. pre-releases, default; `stable` = newest full release), binary picked by OS/arch, sha256-verified, `code/` (drop-in files) and `scripts/` (wrappers) pulled from the tag's source tarball. Idempotent (atomic binary swap); states the plan and confirms first.
+	- Decisions along the way: `objects/` skipped - nothing statically-linkable is published yet (revisit with packaging). Linux user install lands in `~/.local/share/shcl` with the `~/.local/bin/shcl` symlink (one path can't be both the dir and the symlink). Windows user install adds its own dir to the user PATH instead of symlinking (symlinks need elevation); it landed in `%USERPROFILE%\bin\Shcl` at first and moved to `%LOCALAPPDATA%\Programs\Shcl` before 1.0.0. macOS/BSD get a clear "no prebuilt binaries yet" pointer at build-from-source.
+	- Behavior:
+		- Runnable via a single `curl` or `wget`. Downloads, installs, and runs the latest release, with an option to abort.
+		- Idempotent. Updates existing.
+	- Args:
+		- `--release[=]<dev[elopment]|stable>` Install latest dev rather than
+		- `--target[=]<user|system>`
+			- System (default):
+				- Linux:
+					- /opt/shcl/
+						- shcl  ## Rust binary
+						- code/  ## Drop-in code files.
+						- objects/  ## Or a better name for per-language statically-linkable objects)
+						- scripts/  ## .bash and cross-platform .ps1 wrappers
+					- /usr/local/sbin/shcl  ## Symlink
+				- Windows:
+					- C:\Program Files\Shcl\
+						- shcl.exe  ## Rust binary
+						- code/  ## Drop-in code files.
+						- objects/  ## Or a better name for per-language statically-linkable objects)
+						- scripts/  ## .ps1 wrapper
+					- Add C:\Program Files\Shcl to %PATH%.
+				- macOS: ?
+				- BSD: ?
+			- User:
+				- Linux:
+					- ~/.local/bin/shcl/
+						- (Same subdirs under here as system install)
+					~/.local/bin/shcl  ## Symlink
+				- Windows:
+					- %USERPROFILE%\bin\Shcl
+						- (Same subdirs under here as system install)
+					- %USERPROFILE%\bin\shcl.exe  ## Symlink
+					- Add %USERPROFILE%\bin\ to %PATH%.
+				- macOS: ?
+				- BSD: ?
+
+- ✅ Schema-as-SHCL validation. The schema is a plain SHCL file (type, required, allowed values). `Validate(doc, schemaDoc)` returns structured diagnostics and catches unknown or misspelled fields. See `design.md` "Schema validation".
+	- Done: flat `field: <path>` schema shape, no grammar change; `Validate` in all four drop-ins plus the C++ veneer; `shcl check --schema` in all four CLIs; `V###` diagnostic codes; corpus cases 021-024 with a validate golden per case; crosscheck replays `check --schema`. Regex constraints and datetime ranges rejected for cross-binding parity; normative section in `spec.md`.
+	- Note: needs the reference parser first, then spec the schema vocabulary alongside it.
+
+- ✅ Expand the conformance corpus (`conformance/`) to cover the hard edges: dates and ambiguity, coercion, quoting and escapes, indentation errors, raw blocks, selectors and wildcards, strictness levels.
+	- Done: cases for stacked arrays, coercion bundles, strict-load behavior, forgiving commas, raw blocks, and the full date whitelist.
+	- ✅ Model diagnostic expectations (count, severity, the mandatory repeated-leaf hint). Every case now carries an `expected-diags.txt` golden (exact `check` stdout at standard: line/severity/code per diagnostic + the summary line), verified natively by all four runners. Pins the `H001` repeated-leaf hint and the zero-diagnostic cases too.
+
+- ✅ Layered loading. `Load(defaults, site, user, ...)` merges later over earlier via the existing merge rule, with CLI and env overrides on top.
+	- Done: `merge(base, over)` in all four drop-ins plus the C++ veneer; leaf names override, containers merge by `(name, value)`. CLI `--layer=FILE` (repeatable) on get/fmt/count/instances/set, `--set=PATH=VALUE` as the top layer; `fmt` doubles as merge. Env mapping dropped (belongs to the consuming program). Corpus case `025-layered` + `expected-merged.shcl` golden, all four native runners, crosscheck replays `fmt --layer/--set`; normative spec section.
+
+- ✅ Schema-driven generation. Writer plus schema emits a commented, typed starter config (`shcl init --schema ...`). Depends on schema validation.
+	- Done: `generate(schema)` in all four drop-ins plus the C++ veneer; `shcl init --schema=FILE` in all four CLIs. Required fields live, optional commented, wildcards in a trailing block; `desc` -> comment, a fixed-format annotation line summarizes type/constraints (byte-for-byte parity contract). Uses the schema's `default`/`desc` vocabulary. Corpus case `026-init-schema` + `expected-init.shcl` golden, all four native runners assert output + clean reload, crosscheck replays `init --schema`; normative spec section.
+
+- ✅ Language spec rationalized from `notes.txt`: terminology, model, types, accessor and writer API, formatter, raw blocks. See `spec.md` and `grammar.abnf`.
+	- ✅ stacked (`*`) block-array form alongside inline commas. Both spellings read the same and canonicalize to inline.
+	- ✅ date and time formats pinned to a closed whitelist (year-first or named-month only, then calendar-validated).
+	- ✅ adoption sweep. Cut the currency, percent, float-to-int rounding, and extra boolean tokens from default behavior. Case folding restricted to ASCII. Repeated-leaf hint made mandatory.
+	- ✅ three strictness levels (loose, standard, strict) as a per-document knob, default standard. Loose re-admits the cut coercions; strict fails the load on any error.
+	- ✅ bindings re-tiered. Tier 1 reference plus CLI; Tier 2 Go, C, Python; Tier 3 the rest, post-v1.0.
+	- ✅ raw-block binding reworked. A fence is a value line for its parent field. Child-indent spelling is canonical.
+	- ✅ inline-array commas made fully forgiving. Stray commas drop their empty slots and never error.
+	- ✅ Model diagnostic expectations (count, severity, the mandatory repeated-leaf hint) in the corpus. See conformance item below.
+
+- ✅ Tier 2 ports:
+	- Languages:
+		- ✅ Go
+		- ✅ C (with a C++ veneer)
+		- ✅ Python
+	- Each an independent parser with the same flags, output, and exit codes as the reference. All corpus-green and held byte-for-byte to the reference on every build.
+	- ✅ Shell wrappers around the CLI, not parsers.
+		- ✅ Bash wrapper (`source/bash/shcl.bash`).
+			- Runs as a script or sourced for typed helpers. Forwards the binary's exit code unchanged.
+		- ✅ PowerShell wrapper (`source/powershell/shcl.ps1`).
+			- Runs as a script or dot-sourced for the same typed helpers; forwards the binary's exit code in `$LASTEXITCODE`. Cross-platform binary resolution (also matches `.exe`).
+
+- ✅ A CI/CD pipeline driven by `cicd/cicd.bash`: builds, tests, and can commit and push. Packaging and publishing are opt-in. See `design.md` for the split-by-responsibility rationale.
+	- ✅ all stages live. Format check, build, lint, tests plus fuzz smoke, profiler, native and cross builds, versioned artifacts, README demo gif, publish.
+	- ✅ `--ci` mode is the correctness gate the GitHub workflow runs, so local and CI share one definition of passing.
+	- ✅ cross-binding differential check. Every binding CLI must agree with the reference byte-for-byte on the corpus and a fuzz-dumped input set.
+	- ✅ dogfood stage installs the fresh release binary to a fixed local dir. Off under `--ci`, no sudo path.
+	- ✅ lint stage widened to every binding. ruff and mypy for Python, cppcheck for C, markdownlint for docs, PSScriptAnalyzer for the ps1 wrapper. All gating, locally and in CI; setup steps in `contributing.md`.
+	- ✅ demo gif: 50 fps motion, the screen clears between commands, gifsicle pass. 2.8 MB -> 0.3 MB.
+		- The `check` step needed `expect_exit = 6`; since `check` started exiting on errors it had been aborting the stage, so the committed gif was stale.
+		- ✅ demo gif: opens by naming both usage modes (CLI and drop-in library), the formatter step says values are never rewritten, and the loop seam cuts to black instead of crossfading. 0.3 MB -> 0.2 MB.
+		- ✅ demo gif: output that fits on one screen now arrives at once like a real terminal, only an overflowing view scrolls, the cursor no longer blinks, and every motion frame is exactly 50 fps.
+			- Nothing had actually been scrolling: the window is 22 rows and both long outputs fit, so the lines were popping in one at a time on a timer. That was the stepping.
+			- Scroll smoothness is pixels per frame, so the step is rounded to an exact divisor of the line height - a line boundary never lands mid-step.
+			- ✅ demo gif: the cursor blinks again while the prompt is idle, glides at sub-pixel resolution, and this demo drops the blank line between output and the next prompt.
+				- The block is drawn with coverage-blended edges instead of snapping to whole pixels, so a 3 px per frame glide reads as continuous.
+				- No padding line after output: the demo is about exact output shape, and a blank line invites misreading it. Scenario knob `blankafter`, on by default.
+	- ✅ Packaging (.deb, .rpm, NSIS). Wire it when release cuts start.
+		- Done: stage 6 builds .deb + .rpm (nfpm) per Linux binary and an NSIS setup per Windows binary into the release artifact dir, covered by the same sha256sums. `--no-package` to skip; off under `--ci` and `--quick`. Packages use distro layout (/usr/bin + /usr/share/shcl); payload matches install.bash.
+
+- ✅ Accessor: two-tier junior-friendly surface (convenience default plus full status), consistent across all bindings. A supplied default implies default mode.
+	- Done alongside review item 6: the full status tier (`Read`/`read_*`) already shipped; the convenience default tier now ships in every library binding (`GetIntOr`/`get_*(default=)`/`shcl_get_*`/`get_or<T>`/native `unwrap_or`), plus the CLI `--default` for the wrapper bindings. Supplying the fallback is Default mode - value on `Good`, fallback otherwise.
+
+- ✅ README rewrite: problem-first pitch, file and read-call examples, a format comparison table, a "wrong choice" section, and honest alpha status.
+
+#### Done - Code reviews
 
 - **20260802**:
 
@@ -258,222 +475,6 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Fixed: the readme's install note, one interface name in an example, and the missing PowerShell option syntax.
 			- Fixed: the changelog was missing one new public function, and overstated that the writer refuses name wildcards, since removal across them works.
 			- Fixed: the style guide described a comment divider spelling Python doesn't use.
-
-- **20260727**:
-
-	- **Improvements**:
-
-		- 🔘 Code Review 20260727 item 2: the reference clones a node name several times per index remap.
-			- `remap_child` runs on every in-place value mutation - an empty field being filled, a stacked-list element being appended - and clones the name up to five times, because it looks a key up and then removes it separately.
-			- Building each key once and reusing it would about halve that, with no change in behavior. The other three bindings have their own shape and would need their own look.
-			- Not evidence-backed: the profiler puts the leaders elsewhere (path scanning, code-point iteration, comma splitting), so this is a code-reading finding, not a measured one. Worth doing only if a profile ever points here.
-
-- **20260725**:
-
-	- **Improvements**:
-
-	- 🛠️ Code Review 20260725 item 28: give the loader opt-out limits.
-		- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
-		- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
-		- ✅ Done: the depth half, done with item 2 - a fixed 512-level cap and `E016`.
-		- ✋ Deferred post-1.0: the depth cap closed the crash class. Size, node and array knobs are additive API that can land later without breaking anything, and a consuming program can bound input size itself before calling parse.
-
-	- 🛠️ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
-		- All four bindings recover the code from `msg.starts_with(...)` over about 30 hand-ordered prefixes, so rewording a message can change a code, and the ordering is load-bearing.
-		- Separately, `V001`-`V099` were fully tabled but `E001`-`E015` and `H001` were listed nowhere, while users are told to gate CI on `check`.
-		- ✅ Done: the doc half. `E001`-`E016` plus `H001` are now tabled in the spec's Diagnostics section.
-		- ✋ Deferred: threading the code through every call site. Large, mechanical, and invisible to users, and every corpus case pins the code per line - so the exposure is limited to messages no case exercises.
-
-### Done
-
-#### Done - Bugs
-
-- ✅ Paths() silently drops any node whose name isn't a bare identifier - and its whole subtree.
-	- Fixed: non-bare segments now emit quoted and escaped via the same spelling the canonical formatter uses, so every returned path resolves. Shared fixture updated in all four runners; spec traversal section documents the enumeration. From TradeClanker, where it's a live bug: a quoted field name parses with zero diagnostics and reads back fine, but Paths() skips it, so the enumeration disagrees with what the document contains. Their unknown-field check is a Paths() walk, so a typo whose name needs quoting sails through the one check built to catch typos, and an author who writes two indicators gets one with no error. It also breaks round-tripping: a set with a quoted segment succeeds and canonical output writes it correctly, but re-parsing that output can't enumerate it - the writer produces documents the reader can't see.
-	- Fix: emit the segment quoted and escaped, the form the path scanner already accepts. Silently dropping is the worst of the options; even a diagnostic would beat it.
-	- The skip is currently deliberate and pinned - doc comment, spec wording, and the shared paths fixture in all four runners assert it - so the fixture and docs move together with the code.
-
-- ✅ A strict parse hands back nothing usable.
-	- Fixed both ways: the failure now carries the parsed document (Go returns it non-nil beside the error too, so the natural `doc, err :=` path can't panic), and the message names the first three diagnostics with line and code. C already returned the doc; rust/python failure objects gained the document. From TradeClanker: the Go ParseWith at Strict returns a nil Document alongside the error, so the natural `doc, err :=` then `doc.Diagnostics()` panics - and that's the shape callers get pushed into, because the error's message is only "strict load failed: N error diagnostic(s)". The error value does carry the full diagnostics list, but the obvious path hides it: every line, message, and code it's already holding is absent from the message.
-	- Fix candidates, not exclusive: return the parsed document alongside the error (the diagnostics are the point of a failed strict load), and/or put the first few diagnostic lines in the message. Check what the other three bindings do on strict fail first - whatever changes has to keep the four surfaces parallel.
-
-- ✅ `Raw` on a read result is not raw.
-	- Fixed: the parser keeps the source line's value span and reads hand it back verbatim; writer-built/stacked-list/raw-block values fall back to display. Rust/go/python (the bindings whose read result exposes raw); shared fixture in those runners; spec's full-tier bullet now says exactly what raw is. Reported by the nano-git-db devs, who found it corrupting regexes: the doc comment promises the original text from the file, but every read fills it from the canonical display form, which joins elements with `, `. So `regex: ^\d{2,3}$` comes back as `^\d{2, 3}$` with zero diagnostics - and anything already written `a, b` round-trips looking correct, so it passes casual testing and fails on `{2,3}`.
-	- Fix: keep the source line's value span in the parser and make Raw a slice of it; or, if that's costly, rename the field to what it actually is (canonical) and add a real verbatim text read. Their vote is true source text, and that's the better product.
-	- A true-raw read also answers their separate request to read a comma-bearing scalar (a one-line regex) verbatim without resorting to a fenced block. They also floated having the reader consult the schema's declared type before comma-splitting; declined - coupling the reader to the schema buys the same result at much higher complexity.
-	- All four bindings; reads are contract, so check corpus/crosscheck exposure before changing anything.
-
-- ✅ By-value selectors match the as-written spelling, not the logical string.
-	- Fixed the preferred way: escapes applied on both sides at every compare/index site (resolver, parser attach + disp_map, writer place, validator contexts) in all four bindings; spec pins the logical-string match; corpus case 033 pins reads and the write path. From convert-base-v2: `["q\"uote"]` and a document's `'q"uote'` are the same string but don't cross-match, because both sides keep escape pairs verbatim and the comparison is spelling against spelling. The failure is a silent NotFound, and anyone with a quote-bearing discriminator hits it eventually. The spec says matching is against the display form but is silent on escapes.
-	- Preferred: apply escapes on both sides before comparing (least surprise). Fallback if that's judged too risky this close after rc1: one spec line pinning raw match.
-	- Touches resolve, writer place(), and the parser's ByValue arm in all four bindings; corpus case either way.
-
-#### Done - Features and enhancements
-
-- ✅ Lower the go directive to the tested floor.
-	- Declared 1.20 (strings.CutSuffix is the newest stdlib dependency; everything else predates generics). Hosted CI now installs a stable toolchain instead of reading go.mod - the pipeline's own `go -C` needs a current release - while the directive gates the consumer floor. From convert-base-v2: go.mod declares 1.24, and that directive is their recorded reason for vendoring the file instead of using it as a module - it would drag their deliberately-1.21 project up. The identical file compiles and passes their full suite under 1.21, so 1.24 is declaration, not need; find the real floor (generics suggest possibly 1.18) and declare that.
-
-- ✅ Docs batch from the feedback round:
-	- Landed in the spec (Empty-vs-NotFound as an advertised full-tier feature; a "choosing [#i] vs [value] when mapping entities" bullet in the traversal section) and in the Go package docs (a "writing a mapper" worked example: one-shot load, Count+[#i] iteration, Children for open sections, QuoteSegment, raw blocks). README deliberately untouched - it carries an in-flight edit; its pass can fold these in later. IndexOf not added - Count+[#i] covers the need without growing the surface.
-	- Advertise the Empty vs NotFound distinction. convert-base-v2 mapped it straight onto their tri-state marker convention with no adapter ("empty means explicitly disabled, absent means default") and called it rare among config parsers - it belongs in the README/spec as a feature, not something discovered by reading source.
-	- A spec paragraph on choosing `[#i]` vs `[value]` selectors when mapping entities: by-value misreads an entity whose name is numeric and collapses two same-named entities, and since matching is against the display form, a scalar spelled `"a, b"` and the two-element list meet the same selector. nano-git-db and convert-base-v2 each worked these out the hard way; nano-git-db suggests an IndexOf(path, value) alongside.
-	- A "writing a mapper" worked example in the Go package docs: the exported surface is 60+ methods, and the shape of a real consumer - descend by path prefix, Count then `[#i]`, schema validation for line-numbered errors, fences for verbatim - cost them most of a day to discover.
-
-- ✅ Hosted CI runs its four pinned actions on a deprecated Node.
-	- Re-pinned to current-Node releases, SHA-with-tag-comment shape kept: checkout v6.1.0, setup-go v6.5.0, setup-python v6.3.0, cache v5.1.0. Green on dev.
-	- All four are pinned by commit SHA and target Node 20, which the runners now force onto Node 24 with a warning on every run.
-	- Working today, and the warning is the only symptom. It stops working whenever the runners drop the shim.
-	- Fix is to re-pin each action to a release built for the current Node, keeping the pin-by-SHA-with-tag-in-a-comment shape.
-
-- ✅ Add existence of PowerShell wrapper acknowledgement to design.md
-	- Added to the Shell wrappers section: dual-mode design, no param block (verbatim $args), exit codes into $LASTEXITCODE, not in the differential (a forwarder).
-
-- ✅ Glossary of terms
-	- Covered by the spec's Terminology section, now extended with the wider-surface nouns (trivia, raw block/fence, canonical form, layer, schema, corpus).
-
-- ✅ Writer output has no blank lines between top-level sections.
-	- Done, default on with no knob: writer-created top-level nodes set blank_before (the emitter never blanks line 1). Write goldens 014/016/029 regenerated; spec Writer section documents the shape. From TradeClanker: hand-written examples and writer output disagree on shape, so they post-process the library's output with string surgery - which is what using the writer was meant to end. Blank-before already exists as parsed trivia, so the writer setting it when it creates a new top-level node (or a knob to) keeps the fixpoint property intact.
-	- Write-corpus goldens would churn; decide the default deliberately since written output is contract.
-
-- ✅ to_canonical() drops blank lines between comment-only regions. It shouldn't do that.
-	- Fixed: each held comment records its own preceding blank (runs still collapse to one; never as first output line). Blanks between comment regions - leading, merged, and end-of-file - now round-trip.
-
-- ✅ to_canonical() also loses comment indentation two ways, from the SilkTerm devs: a comment run trailing a block's last child re-attaches to the following node and de-indents to column 0, and orphan comments after the last binding always emit unindented. Together with the blank-line item above, fixing these lets them delete most of their save-repair pass.
-	- Fixed structurally rather than by storing verbatim indent: a comment written deeper than the next binding hangs on the block it sits in (new after-trivia, emitted after the block's last child at the block's indent); the same rule keeps indented tail-of-file comments with their block. Corpus case 034 pins it; fmt stays a fixpoint (20k-iteration fuzz soak).
-	- Means recording indent (and probably original attachment) as trivia; fmt must stay a fixpoint. All four parsers + emit, golden churn expected.
-
-- ✅ Expose whether a value was quoted.
-	- Done: `quoted` on the read result (rust/go/python; C read structs stay value+status by design) - true for a quoted single scalar element, false for arrays/raw/empty. From nano-git-db: `a: @null` and `a: "@null"` read identically, so a language built on shcl can't reserve a sentinel value and still let a user write it literally - they had to make `@null` unconditionally reserved and walk back docs that promised quoting would escape it. The parser already tracks quoted per element and drops it at the read boundary; one field on the read result makes "quoting is the escape" true for every downstream language.
-
-- ✅ Line numbers on the read path.
-	- Done both ways as filed: `Line(path)` accessor in all four bindings + veneer, and `line` on the read result itself (rust/go/python). 0 = unresolved or writer-built; merged instances cite the first binding, matching diagnostics. From nano-git-db: node line is populated and never exported, so any consumer check the schema can't express can only name the entity, never the line - their warnings degraded from `line 81: ...` to `table issue: ...`. A Line(path) accessor is the cheapest high-value ask in their list.
-	- Second consumer, same gap (TradeClanker): parser diagnostics carry a line and reads don't, so half the errors a user sees cite a line and half don't - a bad value reports nothing while a malformed line one field above reports `line 12`. They want the line on the read result itself, not just a separate accessor; do both, it's the same plumbing.
-
-- ✅ Enumerate a node's children.
-	- Done: `Children(path)` in all four bindings + veneer - file order, duplicates included, empty path = top level; names as stored, QuoteSegment for splicing. From nano-git-db: Paths() dedupes, so there is no way to ask "what keys are under this section?" - they hardcode a ten-name hook list purely because they can't ask what's under `code:`, and any open-ended or map-shaped section is unmodellable. Children(path) returning child names in file order, duplicates included, deletes more of their workaround code than anything else they asked for.
-	- TradeClanker asks for the same thing for the same reason (reading an open section means scanning all of Paths() and prefix-matching), and notes it also sidesteps the Paths() quoted-name bug for that use.
-
-- ✅ Hint when a merge combines non-adjacent bindings.
-	- Done: H002, hint severity, at the later line with the earlier line named in the prose. Fires only on a last-segment no-selector merge into a non-last child - adjacent re-mentions and the dotted redundant-path idiom stay silent. Corpus case 035; 001/013 diags goldens gained one each. From nano-git-db: merge-by-(name, value) means two separately-written `table: t` sections silently become one combined table, and only the parser can know it happened - their consumer-side "already defined; first wins" check was unreachable and got deleted as dead code. A hint-severity diagnostic carrying both line numbers would make that class of check possible without touching the documented merge semantics.
-	- New H-code; diagnostics are contract, so all four bindings plus the expected-diags goldens move together.
-
-- ✅ Suppress H001 where the schema declares the repetition.
-	- Done at check --schema assembly (and inside the one-shot), via a shared library helper so CLIs and runners can't drift; matched by leaf name, the filter consumers hand-rolled. Corpus case 036. From nano-git-db: the repeated-bare-leaf hint is structurally a false positive for any field whose repetition is the instance mechanism (`unique:`, `index:`, `row:`), so every correct file warns on load and users learn to ignore warnings; they filter it by hand for exactly three names. When a schema is present and a path declares repeat with an upper bound above 1, drop H001 there - the information already exists and goes unused.
-	- H001 is parse-time and the schema arrives at validate, so the suppression belongs where check --schema assembles output, not in the parser.
-
-- ✅ One-shot load-and-validate, plus an error predicate.
-	- Done: LoadAndValidate(text, schema, strictness) -> document carrying one combined diagnostics list (never throws; empty schema skips validation; declared-repeat H001s dropped), plus ErrorCount() on the document. All four bindings + veneer. From nano-git-db: doc diagnostics and schema validation come back as two separate lists that must be merged by hand (forget one and half the errors vanish), and there's no HasErrors/ErrorCount, so "did this file have errors" is consumer bookkeeping - which matters, since recover-and-continue means a mixed-indentation file otherwise returns no error at all. A combined entry point (text + schema + strictness in, doc + one diagnostic list out) plus an error count removes a whole class of consumer mistake.
-	- TradeClanker independently hand-rolled the same thing: no strictness level means "forgiving about spelling, loud about a dropped line", so at Standard an error diagnostic comes back beside a nil error and the line is silently skipped, and every consumer writes the same fifteen lines. An Errors() helper on the document is the smallest shape of this ask, from a second consumer.
-
-- ✅ Setters should say why they failed.
-	- Done as an additive probe (setter returns are frozen post-1.0): `WriteReason(path)` in all four bindings + veneer runs the writer's exact validation without creating anything and names the failure - Writable/BadPath/ValueInPath/Wildcard/NoSuchIndex/TooDeep. place() now pre-gates on it, so the two can't drift. CLI stays exit 1. From TradeClanker: Set* returns a bare pass/fail, and false covers an empty path, a malformed path, a wildcard, a depth overrun, and an unresolvable index indistinguishably - their workbench's error message is literally a guess because the library won't say. A small reason enum (or per-binding equivalent) on the write result fixes it; CLI behavior stays exit 1.
-	- All four bindings move together; the write corpus pins outputs, not the reason surface, so exposure should be small - verify.
-
-- ✅ Building a path from a user-typed name is injection.
-	- Done: QuoteSegment/quote_segment/shcl_quote_segment + veneer, sharing the emitter's name-quoting - same spelling both directions as the Paths() fix. From TradeClanker: Set* accepts segments that aren't valid bare names, and a dotted name is silently reinterpreted as nesting - a consumer concatenating a user-typed indicator name into a path is doing path injection without knowing it. Export a quote-segment helper (the escaping the path scanner already understands), or segment-wise setters taking a list that can't be injected into. Pairs naturally with the Paths() quoted-name bug above - same escaping code both directions.
-
-- ✅ Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.
-	- Done: `install-dev.bash` at repo root. Linux + macOS directly; Windows via WSL (the dev pipeline is bash). Clones (or detects an existing clone), installs the no-sudo pieces itself (rustup, ruff/mypy/cppcheck via pipx, markdownlint via npm, PSScriptAnalyzer via pwsh), and prints the exact package-manager hint for what needs root (go, python3, gcc, shellcheck). Shellcheck-gated.
-
-- ✅ Release-install script, `install.bash` and cross-platform `install.ps1`. In [repo] root, usage instructions in README.md.
-	- Done: both at repo root, README Installing has the one-liners. Latest release via the GitHub API (`--release dev` = newest incl. pre-releases, default; `stable` = newest full release), binary picked by OS/arch, sha256-verified, `code/` (drop-in files) and `scripts/` (wrappers) pulled from the tag's source tarball. Idempotent (atomic binary swap); states the plan and confirms first.
-	- Decisions along the way: `objects/` skipped - nothing statically-linkable is published yet (revisit with packaging). Linux user install lands in `~/.local/share/shcl` with the `~/.local/bin/shcl` symlink (one path can't be both the dir and the symlink). Windows user install adds its own dir to the user PATH instead of symlinking (symlinks need elevation); it landed in `%USERPROFILE%\bin\Shcl` at first and moved to `%LOCALAPPDATA%\Programs\Shcl` before 1.0.0. macOS/BSD get a clear "no prebuilt binaries yet" pointer at build-from-source.
-	- Behavior:
-		- Runnable via a single `curl` or `wget`. Downloads, installs, and runs the latest release, with an option to abort.
-		- Idempotent. Updates existing.
-	- Args:
-		- `--release[=]<dev[elopment]|stable>` Install latest dev rather than
-		- `--target[=]<user|system>`
-			- System (default):
-				- Linux:
-					- /opt/shcl/
-						- shcl  ## Rust binary
-						- code/  ## Drop-in code files.
-						- objects/  ## Or a better name for per-language statically-linkable objects)
-						- scripts/  ## .bash and cross-platform .ps1 wrappers
-					- /usr/local/sbin/shcl  ## Symlink
-				- Windows:
-					- C:\Program Files\Shcl\
-						- shcl.exe  ## Rust binary
-						- code/  ## Drop-in code files.
-						- objects/  ## Or a better name for per-language statically-linkable objects)
-						- scripts/  ## .ps1 wrapper
-					- Add C:\Program Files\Shcl to %PATH%.
-				- macOS: ?
-				- BSD: ?
-			- User:
-				- Linux:
-					- ~/.local/bin/shcl/
-						- (Same subdirs under here as system install)
-					~/.local/bin/shcl  ## Symlink
-				- Windows:
-					- %USERPROFILE%\bin\Shcl
-						- (Same subdirs under here as system install)
-					- %USERPROFILE%\bin\shcl.exe  ## Symlink
-					- Add %USERPROFILE%\bin\ to %PATH%.
-				- macOS: ?
-				- BSD: ?
-
-- ✅ Schema-as-SHCL validation. The schema is a plain SHCL file (type, required, allowed values). `Validate(doc, schemaDoc)` returns structured diagnostics and catches unknown or misspelled fields. See `design.md` "Schema validation".
-	- Done: flat `field: <path>` schema shape, no grammar change; `Validate` in all four drop-ins plus the C++ veneer; `shcl check --schema` in all four CLIs; `V###` diagnostic codes; corpus cases 021-024 with a validate golden per case; crosscheck replays `check --schema`. Regex constraints and datetime ranges rejected for cross-binding parity; normative section in `spec.md`.
-	- Note: needs the reference parser first, then spec the schema vocabulary alongside it.
-
-- ✅ Expand the conformance corpus (`conformance/`) to cover the hard edges: dates and ambiguity, coercion, quoting and escapes, indentation errors, raw blocks, selectors and wildcards, strictness levels.
-	- Done: cases for stacked arrays, coercion bundles, strict-load behavior, forgiving commas, raw blocks, and the full date whitelist.
-	- ✅ Model diagnostic expectations (count, severity, the mandatory repeated-leaf hint). Every case now carries an `expected-diags.txt` golden (exact `check` stdout at standard: line/severity/code per diagnostic + the summary line), verified natively by all four runners. Pins the `H001` repeated-leaf hint and the zero-diagnostic cases too.
-
-- ✅ Layered loading. `Load(defaults, site, user, ...)` merges later over earlier via the existing merge rule, with CLI and env overrides on top.
-	- Done: `merge(base, over)` in all four drop-ins plus the C++ veneer; leaf names override, containers merge by `(name, value)`. CLI `--layer=FILE` (repeatable) on get/fmt/count/instances/set, `--set=PATH=VALUE` as the top layer; `fmt` doubles as merge. Env mapping dropped (belongs to the consuming program). Corpus case `025-layered` + `expected-merged.shcl` golden, all four native runners, crosscheck replays `fmt --layer/--set`; normative spec section.
-
-- ✅ Schema-driven generation. Writer plus schema emits a commented, typed starter config (`shcl init --schema ...`). Depends on schema validation.
-	- Done: `generate(schema)` in all four drop-ins plus the C++ veneer; `shcl init --schema=FILE` in all four CLIs. Required fields live, optional commented, wildcards in a trailing block; `desc` -> comment, a fixed-format annotation line summarizes type/constraints (byte-for-byte parity contract). Uses the schema's `default`/`desc` vocabulary. Corpus case `026-init-schema` + `expected-init.shcl` golden, all four native runners assert output + clean reload, crosscheck replays `init --schema`; normative spec section.
-
-- ✅ Language spec rationalized from `notes.txt`: terminology, model, types, accessor and writer API, formatter, raw blocks. See `spec.md` and `grammar.abnf`.
-	- ✅ stacked (`*`) block-array form alongside inline commas. Both spellings read the same and canonicalize to inline.
-	- ✅ date and time formats pinned to a closed whitelist (year-first or named-month only, then calendar-validated).
-	- ✅ adoption sweep. Cut the currency, percent, float-to-int rounding, and extra boolean tokens from default behavior. Case folding restricted to ASCII. Repeated-leaf hint made mandatory.
-	- ✅ three strictness levels (loose, standard, strict) as a per-document knob, default standard. Loose re-admits the cut coercions; strict fails the load on any error.
-	- ✅ bindings re-tiered. Tier 1 reference plus CLI; Tier 2 Go, C, Python; Tier 3 the rest, post-v1.0.
-	- ✅ raw-block binding reworked. A fence is a value line for its parent field. Child-indent spelling is canonical.
-	- ✅ inline-array commas made fully forgiving. Stray commas drop their empty slots and never error.
-	- ✅ Model diagnostic expectations (count, severity, the mandatory repeated-leaf hint) in the corpus. See conformance item below.
-
-- ✅ Tier 2 ports:
-	- Languages:
-		- ✅ Go
-		- ✅ C (with a C++ veneer)
-		- ✅ Python
-	- Each an independent parser with the same flags, output, and exit codes as the reference. All corpus-green and held byte-for-byte to the reference on every build.
-	- ✅ Shell wrappers around the CLI, not parsers.
-		- ✅ Bash wrapper (`source/bash/shcl.bash`).
-			- Runs as a script or sourced for typed helpers. Forwards the binary's exit code unchanged.
-		- ✅ PowerShell wrapper (`source/powershell/shcl.ps1`).
-			- Runs as a script or dot-sourced for the same typed helpers; forwards the binary's exit code in `$LASTEXITCODE`. Cross-platform binary resolution (also matches `.exe`).
-
-- ✅ A CI/CD pipeline driven by `cicd/cicd.bash`: builds, tests, and can commit and push. Packaging and publishing are opt-in. See `design.md` for the split-by-responsibility rationale.
-	- ✅ all stages live. Format check, build, lint, tests plus fuzz smoke, profiler, native and cross builds, versioned artifacts, README demo gif, publish.
-	- ✅ `--ci` mode is the correctness gate the GitHub workflow runs, so local and CI share one definition of passing.
-	- ✅ cross-binding differential check. Every binding CLI must agree with the reference byte-for-byte on the corpus and a fuzz-dumped input set.
-	- ✅ dogfood stage installs the fresh release binary to a fixed local dir. Off under `--ci`, no sudo path.
-	- ✅ lint stage widened to every binding. ruff and mypy for Python, cppcheck for C, markdownlint for docs, PSScriptAnalyzer for the ps1 wrapper. All gating, locally and in CI; setup steps in `contributing.md`.
-	- ✅ demo gif: 50 fps motion, the screen clears between commands, gifsicle pass. 2.8 MB -> 0.3 MB.
-		- The `check` step needed `expect_exit = 6`; since `check` started exiting on errors it had been aborting the stage, so the committed gif was stale.
-		- ✅ demo gif: opens by naming both usage modes (CLI and drop-in library), the formatter step says values are never rewritten, and the loop seam cuts to black instead of crossfading. 0.3 MB -> 0.2 MB.
-		- ✅ demo gif: output that fits on one screen now arrives at once like a real terminal, only an overflowing view scrolls, the cursor no longer blinks, and every motion frame is exactly 50 fps.
-			- Nothing had actually been scrolling: the window is 22 rows and both long outputs fit, so the lines were popping in one at a time on a timer. That was the stepping.
-			- Scroll smoothness is pixels per frame, so the step is rounded to an exact divisor of the line height - a line boundary never lands mid-step.
-			- ✅ demo gif: the cursor blinks again while the prompt is idle, glides at sub-pixel resolution, and this demo drops the blank line between output and the next prompt.
-				- The block is drawn with coverage-blended edges instead of snapping to whole pixels, so a 3 px per frame glide reads as continuous.
-				- No padding line after output: the demo is about exact output shape, and a blank line invites misreading it. Scenario knob `blankafter`, on by default.
-	- ✅ Packaging (.deb, .rpm, NSIS). Wire it when release cuts start.
-		- Done: stage 6 builds .deb + .rpm (nfpm) per Linux binary and an NSIS setup per Windows binary into the release artifact dir, covered by the same sha256sums. `--no-package` to skip; off under `--ci` and `--quick`. Packages use distro layout (/usr/bin + /usr/share/shcl); payload matches install.bash.
-
-- ✅ Accessor: two-tier junior-friendly surface (convenience default plus full status), consistent across all bindings. A supplied default implies default mode.
-	- Done alongside review item 6: the full status tier (`Read`/`read_*`) already shipped; the convenience default tier now ships in every library binding (`GetIntOr`/`get_*(default=)`/`shcl_get_*`/`get_or<T>`/native `unwrap_or`), plus the CLI `--default` for the wrapper bindings. Supplying the fallback is Default mode - value on `Good`, fallback otherwise.
-
-- ✅ README rewrite: problem-first pitch, file and read-call examples, a format comparison table, a "wrong choice" section, and honest alpha status.
-
-#### Done - Code reviews
 
 - **20260727**:
 
