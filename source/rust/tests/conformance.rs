@@ -5,7 +5,7 @@
 //! the Rust reference runs it natively here. Case layout and reads.tsv column
 //! meanings are documented in project/conformance/README.md.
 
-use shcl::{Document, Strictness, generate, parse_datetime};
+use shcl::{Document, Strictness, generate, parse_datetime, quote_segment};
 use std::path::{Path, PathBuf};
 
 fn corpus_dir() -> PathBuf {
@@ -93,6 +93,8 @@ fn try_apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		"bool" => doc.set_bool(path, v == "true"),
 		"string" => doc.set_string(path, &unescape_ops(v)),
 		"datetime" => doc.set_datetime(path, &dt(v)?),
+		"literal" => doc.set_literal(path, v),
+		"literal-default" => doc.set_literal_default(path, v),
 		"int-default" => doc.set_int_default(path, pint(v)?),
 		"float-default" => doc.set_float_default(path, pflt(v)?),
 		"bool-default" => doc.set_bool_default(path, v == "true"),
@@ -285,6 +287,7 @@ fn validation_matches_expected() {
 			});
 		} else {
 			diags.extend(doc.validate(&sdoc));
+			shcl::suppress_declared_repeats(&sdoc, &mut diags);
 		}
 		let mut got = String::new();
 		for d in &diags {
@@ -578,11 +581,25 @@ fn init_generation_matches_expected() {
 				case.name
 			),
 		};
-		let got = generate(&Document::parse(schema))
+		let got = generate(&Document::parse(schema), false)
 			.unwrap_or_else(|_| panic!("{}: init schema has faults", case.name));
 		assert_eq!(
 			&got, want,
 			"{}: init output differs from expected-init.shcl",
+			case.name
+		);
+		// The footer is the only difference the flag makes: everything before
+		// it is byte-for-byte what the default run produced.
+		let bare = generate(&Document::parse(schema), true)
+			.unwrap_or_else(|_| panic!("{}: init schema has faults", case.name));
+		assert!(
+			!bare.is_empty() && got.starts_with(&bare),
+			"{}: --no-banner output is not a prefix of the default",
+			case.name
+		);
+		assert!(
+			got[bare.len()..].contains("This config file format is SHCL."),
+			"{}: default init output is missing the format footer",
 			case.name
 		);
 		// The generated starter must be valid SHCL (loads with no error diagnostics).
@@ -670,9 +687,259 @@ fn write_bad_ops_are_rejected() {
 }
 
 #[test]
+fn one_shot_load_and_validate() {
+	// One combined diagnostics list (parse first, then validation) and an
+	// error predicate, so recover-and-continue can't read as success by
+	// accident. Same fixture in every runner.
+	let text = ": nope\nport: x\n";
+	let schema = "field: port\n\ttype: int\n";
+	let doc = shcl::Document::load_and_validate(text, schema, Strictness::Standard);
+	let codes: Vec<&str> = doc.diagnostics().iter().map(|d| d.code).collect();
+	assert_eq!(codes, vec!["E014", "V003"]);
+	assert_eq!(doc.error_count(), 2);
+	assert_eq!(doc.read_string("port").value, "x"); // doc still usable
+	// Strict never throws here; the diagnostics are the answer.
+	let strict = shcl::Document::load_and_validate(text, schema, Strictness::Strict);
+	assert!(strict.error_count() >= 2);
+	// An empty schema declares nothing and validates nothing.
+	let plain = shcl::Document::load_and_validate("a: 1\n", "", Strictness::Standard);
+	assert_eq!((plain.error_count(), plain.diagnostics().len()), (0, 0));
+}
+
+#[test]
+fn write_reason_names_the_failure() {
+	// The reason behind a setter's bare false. Same fixture in every runner.
+	let doc = Document::parse("a:\n\tb: 1\n");
+	use shcl::WriteReason::*;
+	assert_eq!(doc.write_reason("a.b"), Writable);
+	assert_eq!(doc.write_reason("a.new[Boston].x"), Writable); // creatable
+	assert_eq!(doc.write_reason(""), BadPath);
+	assert_eq!(doc.write_reason("a..b"), BadPath);
+	assert_eq!(doc.write_reason("a.b: 2"), ValueInPath);
+	assert_eq!(doc.write_reason("a[*].b"), Wildcard);
+	assert_eq!(doc.write_reason("a[#5].b"), NoSuchIndex);
+	assert_eq!(doc.write_reason("nope[#0].b"), NoSuchIndex);
+	let deep = vec!["d"; 513].join(".");
+	assert_eq!(doc.write_reason(&deep), TooDeep);
+	// The probe never creates: the doc is unchanged after all of the above.
+	assert_eq!(doc.count("a"), 1);
+	assert_eq!(doc.paths(), vec!["a", "a.b"]);
+}
+
+#[test]
+fn read_surface_line_quoted_children() {
+	// line/quoted on the read result, line(path), children(path). Same
+	// fixture in every runner (C pins the accessors; its read structs stay
+	// value+status).
+	let text = "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n";
+	let doc = Document::parse(text);
+	assert!(!doc.read_string("a").quoted);
+	assert!(doc.read_string("b").quoted);
+	assert_eq!(doc.read_string("b").line, 2);
+	assert_eq!(doc.line("code.done"), 6);
+	assert_eq!(doc.line("code"), 3);
+	assert_eq!(doc.line("missing"), 0);
+	assert_eq!(doc.children("code"), vec!["hook", "hook", "done"]);
+	assert_eq!(doc.children(""), vec!["a", "b", "code"]);
+	assert!(doc.children("missing").is_empty());
+}
+
+#[test]
+fn strict_failure_carries_document() {
+	// A failed strict load hands back the document and names the first
+	// failures in the message - the diagnostics are the point.
+	let e = Document::parse_with("ok: 1\n: nope\n", Strictness::Strict).unwrap_err();
+	assert!(!e.diagnostics.is_empty());
+	assert_eq!(e.document.read_int("ok").value, 1);
+	let msg = e.to_string();
+	assert!(msg.contains("; line "), "{}", msg);
+}
+
+#[test]
+fn raw_is_source_text() {
+	// raw: the verbatim value span from the source line - not the display
+	// join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner
+	// whose read result exposes raw (the C read structs deliberately do not).
+	let doc = Document::parse("regex: ^\\d{2,3}$\nlist: a,  \"b c\"\n");
+	assert_eq!(doc.read_string("regex").raw.as_deref(), Some("^\\d{2,3}$"));
+	assert_eq!(
+		doc.read_string_array("list").raw.as_deref(),
+		Some("a,  \"b c\"")
+	);
+	// A written value has no source spelling; raw falls back to display. The
+	// selector's escaped spelling must land on the existing instance.
+	let mut doc2 = Document::parse("who: 'q\"uote'\n");
+	assert!(doc2.set_int("who[\"q\\\"uote\"].n", 5));
+	assert_eq!(doc2.count("who"), 1);
+	let r = doc2.read_int("who['q\"uote'].n");
+	assert_eq!((r.value, r.status), (5, shcl::Status::Good));
+	assert_eq!(doc2.read_int("who['q\"uote'].n").raw.as_deref(), Some("5"));
+}
+
+#[test]
 fn paths_enumeration_shape() {
-	// paths(): file order, deduplicated, bare-name-safe segments only (a
-	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	// paths(): file order, deduplicated, non-bare segments quoted so every
+	// path resolves. Same fixture is pinned in every runner.
 	let doc = Document::parse("a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n");
-	assert_eq!(doc.paths(), vec!["a", "a.b", "x", "x.b"]);
+	assert_eq!(doc.paths(), vec!["a", "a.b", "\"q n\"", "x", "x.b"]);
+	for p in doc.paths() {
+		assert!(doc.count(&p) >= 1, "emitted path does not resolve: {}", p);
+	}
+	// quote_segment: same spelling both directions, injection-safe.
+	assert_eq!(quote_segment("port"), "port");
+	assert_eq!(quote_segment("q n"), "\"q n\"");
+	assert_eq!(quote_segment("a.b"), "\"a.b\"");
+	let r = doc.read_int(&quote_segment("q n"));
+	assert_eq!((r.value, r.status), (3, shcl::Status::Good));
+}
+
+#[test]
+fn generation_bounds_a_multiplying_schema() {
+	// A chain longer than the nesting cap would outrun the stack if it were
+	// followed all the way down; it is noted like a re-entering mount instead.
+	// Too big for a golden, so it is pinned here (like the depth-cap case).
+	let mut s = String::new();
+	for i in 0..2000 {
+		s.push_str(&format!(
+			"fragment: f{}\n\tfield: c{}\n\t\tinherits: f{}\n",
+			i,
+			i,
+			i + 1
+		));
+	}
+	s.push_str("fragment: f2000\n\tfield: leaf\nfield: top\n\tinherits: f0\n");
+	let out = generate(&Document::parse(&s), false).expect("deep chain should generate");
+	assert!(
+		out.contains("not generated"),
+		"deep chain should be noted, not expanded"
+	);
+	// And what it does emit still loads clean, which is generation's promise.
+	assert_eq!(Document::parse(&out).diagnostics().len(), 0);
+
+	// Fragments mounted at two paths each double per level. Past the field
+	// ceiling that is a schema fault, not an output nothing can hold.
+	let mut b = String::new();
+	for i in 0..26 {
+		b.push_str(&format!(
+			"fragment: g{}\n\tfield: a\n\t\tinherits: g{}\n\tfield: b\n\t\tinherits: g{}\n",
+			i,
+			i + 1,
+			i + 1
+		));
+	}
+	b.push_str("fragment: g26\n\tfield: leaf\nfield: top\n\tinherits: g0\n");
+	let err = generate(&Document::parse(&b), false).expect_err("multiplying schema should fault");
+	assert_eq!(err.len(), 1);
+	assert_eq!(err[0].code, "V096");
+}
+
+#[test]
+fn one_shot_load_reports_a_broken_schema() {
+	// A schema that does not load would otherwise drop the constraints on its
+	// broken lines, or report every field as unknown - blaming the document.
+	let schema = "field: apikey\n\ttype: string\n  required: true\n";
+	let doc = Document::load_and_validate("host: example\n", schema, Strictness::Standard);
+	let ds = doc.diagnostics();
+	assert_eq!(ds.len(), 1, "expected only the schema fault, got {:?}", ds);
+	assert_eq!(ds[0].code, "V099");
+	assert_eq!(doc.error_count(), 1);
+	// A schema that loads still validates normally.
+	let ok = Document::load_and_validate("host: example\n", "field: host\n", Strictness::Standard);
+	assert_eq!(ok.error_count(), 0);
+	// An empty schema still means "skip validation", not "everything unknown".
+	let none = Document::load_and_validate("host: example\n", "", Strictness::Standard);
+	assert_eq!(none.error_count(), 0);
+}
+
+#[test]
+fn quote_segment_backslash_round_trips() {
+	// A name ending in a backslash: the quoted spelling must not let the
+	// closing quote be read as an escape pair.
+	let mut doc = Document::new();
+	let p = quote_segment("a\\");
+	assert!(
+		doc.set_int(&p, 7),
+		"path from quote_segment must be writable"
+	);
+	let r = doc.read_int(&p);
+	assert_eq!((r.value, r.status), (7, shcl::Status::Good));
+	// Survives emit + reparse, and every enumerated path still resolves.
+	let re = Document::parse(&doc.to_canonical());
+	assert_eq!(re.read_int(&p).value, 7);
+	for path in re.paths() {
+		assert!(
+			re.count(&path) >= 1,
+			"emitted path does not resolve: {}",
+			path
+		);
+	}
+	// Runs of backslashes: only a dangling odd run doubles.
+	for name in ["\\", "a\\\\", "b\\\\\\", "\\.x"] {
+		let mut d2 = Document::new();
+		let q = quote_segment(name);
+		assert!(d2.set_int(&q, 3), "unwritable path for {:?}", name);
+		assert_eq!(d2.read_int(&q).value, 3, "value lost for {:?}", name);
+	}
+}
+
+#[test]
+fn repeat_suppression_uses_parsed_leaf() {
+	// A quoted last segment with a dot must not disavow an unrelated field
+	// that happens to carry the split-off text.
+	let schema = Document::parse("field: a.\"b.c\"\n\trepeat: 0, 5\nfield: c\n");
+	let doc = Document::parse("c: 1\nc: 2\n");
+	let mut diags = doc.diagnostics().to_vec();
+	assert_eq!(diags.iter().filter(|d| d.code == "H001").count(), 1);
+	shcl::suppress_declared_repeats(&schema, &mut diags);
+	assert_eq!(
+		diags.iter().filter(|d| d.code == "H001").count(),
+		1,
+		"hint on 'c' wrongly suppressed by the a.\"b.c\" repeat"
+	);
+	// The declared leaf itself stays disavowed, quoted dot and all.
+	let doc2 = Document::parse("a:\n\t\"b.c\": 1\n\t\"b.c\": 2\n");
+	let mut d2 = doc2.diagnostics().to_vec();
+	assert_eq!(d2.iter().filter(|d| d.code == "H001").count(), 1);
+	shcl::suppress_declared_repeats(&schema, &mut d2);
+	assert_eq!(d2.iter().filter(|d| d.code == "H001").count(), 0);
+}
+
+#[test]
+fn huge_selector_index_is_not_found() {
+	// An index at or past 2^32 must report not-found on every target width,
+	// never wrap into a live element (pins the contract; 64-bit passes either way).
+	let doc = Document::parse("a: 1\na: 2\n");
+	assert_eq!(
+		doc.read_int("a[#4294967296]").status,
+		shcl::Status::NotFound
+	);
+	assert_eq!(
+		doc.read_int("a[#18446744073709551615]").status,
+		shcl::Status::NotFound
+	);
+	assert_eq!(doc.count("a[#4294967296]"), 0);
+	assert_eq!(
+		doc.write_reason("a[#4294967296]"),
+		shcl::WriteReason::NoSuchIndex
+	);
+	let mut w = Document::parse("a: 1\na: 2\n");
+	assert!(!w.set_int("a[#4294967296]", 9));
+	// In-range still works.
+	assert_eq!(doc.read_int("a[#1]").value, 2);
+}
+
+#[test]
+fn nul_name_does_not_satisfy_a_dotted_schema_path() {
+	// The unknown-field chain key is length-prefixed, not NUL-joined: a single
+	// field whose name literally contains a NUL must not impersonate the
+	// two-segment path x.y. Same fixture in every runner.
+	let schema = Document::parse("field: x.y\n");
+	let doc = Document::parse("\"x\u{0}y\": 1\n");
+	let vs = doc.validate(&schema);
+	assert_eq!(vs.len(), 1, "NUL-bearing name slipped past the sweep");
+	assert_eq!(vs[0].code, "V001");
+	assert!(vs[0].message.starts_with("unknown field "));
+	// The genuinely two-segment spelling still validates clean.
+	let ok = Document::parse("x:\n\ty: 1\n");
+	assert!(ok.validate(&schema).is_empty());
 }

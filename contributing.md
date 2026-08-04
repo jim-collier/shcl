@@ -1,18 +1,17 @@
 <!-- omit in toc -->
 # Contributing
 
-*This file was generated via [https://contributing.md/generator/](https://contributing.md/generator/)*
-
 First off, thanks for taking the time to contribute!
 
-All types of contributions are encouraged and valued. See the [Table of Contents](#table-of-contents) for different ways to help and details about how this project handles them. Please make sure to read the relevant section before making your contribution. It will make it a lot easier for us maintainers and smooth out the experience for all involved. The community looks forward to your contributions.
+All types of contributions are encouraged and valued. See the [Table of Contents](#table-of-contents) for different ways to help and details about how this project handles them. Please read the relevant section before making your contribution - it makes things easier on both ends.
 
-> And if you like the project, but just don't have time to contribute, that's fine. There are other easy ways to support the project and show your appreciation, which we would also be very happy about:
+> And if you like the project but don't have time to contribute, that's fine. There are easier ways to support it:
 >
 > - Star the project
 > - Tweet/skeet/post about it
 > - Refer this project in your project's readme
 > - Mention the project to your friends/colleagues
+> - [Sponsor it](https://github.com/sponsors/jim-collier)
 
 <!-- omit in toc -->
 ## Table of Contents
@@ -26,9 +25,7 @@ All types of contributions are encouraged and valued. See the [Table of Contents
 
 ## Code of Conduct
 
-This project and everyone participating in it is governed by the
-[SHCL Code of Conduct](https://github.com/jim-collier/shcl/blob/main/code_of_conduct.md).
-By participating, you are expected to uphold this code. Please report unacceptable behavior to <shcl@ubx9.com>.
+This project and everyone participating in it is governed by the [SHCL Code of Conduct](https://github.com/jim-collier/shcl/blob/main/code_of_conduct.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to <shcl@ubx9.com>.
 
 ## I Have a Question
 
@@ -37,25 +34,12 @@ Before you ask a question, it is best to search for existing [Issues](https://gi
 If you then still feel the need to ask a question and need clarification, we recommend the following:
 
 - Open an [Issue](https://github.com/jim-collier/shcl/issues/new).
+
 - Provide as much context as you can about what you're running into.
+
 - Provide project and platform versions, depending on what seems relevant.
 
 We will then take care of the issue as soon as possible.
-
-<!--
-You might want to create a separate issue tag for questions and include it in this description. People should then tag their issues accordingly.
-
-Depending on how large the project is, you may want to outsource the questioning, e.g. to Stack Overflow or Gitter. You may add additional contact and information possibilities:
-- IRC
-- Slack
-- Gitter
-- Stack Overflow tag
-- Blog
-- FAQ
-- Roadmap
-- E-Mail List
-- Forum
--->
 
 ## I Want To Contribute
 
@@ -71,36 +55,42 @@ Depending on how large the project is, you may want to outsource the questioning
 A good bug report shouldn't leave others needing to chase you up for more information. Therefore, we ask you to investigate carefully, collect information and describe the issue in detail in your report. Please complete the following steps in advance to help us fix any potential bug as fast as possible.
 
 - Make sure that you are using the latest version.
+
 - Determine if your bug is really a bug and not an error on your side e.g. using incompatible environment components/versions (Make sure that you have read the [documentation](https://github.com/jim-collier/shcl/blob/main/README.md). If you are looking for support, you might want to check [this section](#i-have-a-question)).
+
 - To see if other users have experienced (and potentially already solved) the same issue you are having, check if there is not already a bug report existing for your bug or error in the [bug tracker](https://github.com/jim-collier/shcl/issues?q=label%3Abug).
+
 - Also search the wider internet (Stack Overflow and the like) in case someone outside GitHub has already discussed it.
+
 - Collect information about the bug:
-  - OS, Platform and Version (Windows, Linux, macOS, x86, ARM)
-  - Environment versions
-  - Possibly your input and the output
-  - Can you reliably reproduce the issue? And can you also reproduce it with older versions?
-  - Steps to cleanly reproduce from scratch.
+	- OS, Platform and Version (Windows, Linux, macOS, x86, ARM)
+	- Environment versions
+	- Possibly your input and the output
+	- Can you reliably reproduce the issue? And can you also reproduce it with older versions?
+	- Steps to cleanly reproduce from scratch.
 
 <!-- omit in toc -->
 #### How Do I Submit a Good Bug Report?
 
 > You must never report security related issues, vulnerabilities or bugs including sensitive information to the issue tracker, or elsewhere in public. Instead sensitive bugs must be sent by email to <shcl@ubx9.com>.
-<!-- You may add a PGP key to allow the messages to be sent encrypted as well. -->
 
 We use GitHub issues to track bugs and errors. If you run into an issue with the project:
 
 - Open an [Issue](https://github.com/jim-collier/shcl/issues/new). (Since we can't be sure at this point whether it is a bug or not, we ask you not to talk about a bug yet and not to label the issue.)
+
 - Explain the behavior you would expect and the actual behavior.
+
 - Please provide as much context as possible and describe the *reproduction steps* that someone else can follow to recreate the issue on their own. This usually includes your code. For good bug reports you should isolate the problem and create a reduced test case.
+
 - Provide the information you collected in the previous section.
 
 Once it's filed:
 
 - The project team will label the issue accordingly.
-- A team member will try to reproduce the issue with your provided steps. If there are no reproduction steps or no obvious way to reproduce the issue, the team will ask you for those steps and mark the issue as `needs-repro`. Bugs with the `needs-repro` tag will not be addressed until they are reproduced.
-- If the team is able to reproduce the issue, it will be marked `needs-fix`, as well as possibly other tags (such as `critical`), and the issue will be left to be [implemented by someone](#how-to-develop).
 
-<!-- You might want to create an issue template for bugs and errors that can be used as a guide and that defines the structure of the information to be included. If you do so, reference it here in the description. -->
+- A team member will try to reproduce the issue with your provided steps. If there are no reproduction steps or no obvious way to reproduce the issue, the team will ask you for those steps and mark the issue as `needs-repro`. Bugs with the `needs-repro` tag will not be addressed until they are reproduced.
+
+- If the team is able to reproduce the issue, it will be marked `needs-fix`, as well as possibly other tags (such as `critical`), and the issue will be left to be [implemented by someone](#how-to-develop).
 
 ### Suggesting Enhancements
 
@@ -110,8 +100,11 @@ This section guides you through submitting an enhancement suggestion for SHCL, *
 #### Before Submitting an Enhancement
 
 - Make sure that you are using the latest version.
+
 - Read the [documentation](https://github.com/jim-collier/shcl/blob/main/README.md) carefully and find out if the functionality is already covered, maybe by an individual configuration.
+
 - Perform a [search](https://github.com/jim-collier/shcl/issues) to see if the enhancement has already been suggested. If it has, add a comment to the existing issue instead of opening a new one.
+
 - Find out whether your idea fits with the scope and aims of the project. It's up to you to make a strong case to convince the project's developers of the merits of this feature. Keep in mind that we want features that will be useful to the majority of our users and not just a small subset. If you're just targeting a minority of users, consider writing an add-on/plugin library.
 
 <!-- omit in toc -->
@@ -120,11 +113,12 @@ This section guides you through submitting an enhancement suggestion for SHCL, *
 Enhancement suggestions are tracked as [GitHub issues](https://github.com/jim-collier/shcl/issues).
 
 - Use a **clear and descriptive title** for the issue to identify the suggestion.
-- Provide a **step-by-step description of the suggested enhancement** in as many details as possible.
-- **Describe the current behavior** and **explain which behavior you expected to see instead** and why. At this point you can also tell which alternatives do not work for you.
-- **Explain why this enhancement would be useful** to most SHCL users. You may also want to point out the other projects that solved it better and which could serve as inspiration.
 
-<!-- You might want to create an issue template for enhancement suggestions that can be used as a guide and that defines the structure of the information to be included. If you do so, reference it here in the description. -->
+- Provide a **step-by-step description of the suggested enhancement** in as many details as possible.
+
+- **Describe the current behavior** and **explain which behavior you expected to see instead** and why. At this point you can also tell which alternatives do not work for you.
+
+- **Explain why this enhancement would be useful** to most SHCL users. You may also want to point out the other projects that solved it better and which could serve as inspiration.
 
 ## How to develop
 
@@ -133,16 +127,22 @@ Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/ci
 ### Toolchains
 
 - Rust via rustup - `rust-toolchain.toml` pins the version and cross targets; `rustfmt` and `clippy` come with it.
-- Go - version in `source/go/go.mod`; `gofmt` and `go vet` are built in.
+	- Only rustup honors that pin. If your distro also packages Rust and its `cargo` wins on `PATH`, the pin is ignored with no warning, and you can end up building at one version while formatting and linting at another. `cicd.bash` prepends `~/.cargo/bin` so the pipeline is safe either way, but a bare `cargo` at the prompt is not. Check with `type -a cargo` and `rustup show active-toolchain`; fix by putting `~/.cargo/bin` ahead of the system directories, not after.
+
+- Go - install a current release; hosted CI uses `stable`. The `go` directive in `source/go/go.mod` is the minimum for a consumer of the library, not enough for the pipeline. `gofmt` and `go vet` are built in.
+
 - Python 3.9+ - the binding and its tests are stdlib-only.
+
 - C - gcc and g++; the build gate is a plain `-std=c11 -Wall -Wextra -Werror` compile.
-- PowerShell 7+ - only needed if you touch the ps1 wrapper.
+
+- PowerShell 7+ - required: the lint stage runs PSScriptAnalyzer through `pwsh` on every run, including `--ci`.
 
 `install-dev.bash` at the repo root sets up as much of this as it can without sudo, and prints package-manager hints for the rest.
 
 A full (non-`--quick`) pipeline run also wants the cross and packaging tools:
 
 - `cargo-zigbuild` and a mingw toolchain, for the Windows and ARM64 builds. Missing tools fail that stage, so pass `--no-cross` if you do not have them.
+
 - `nfpm` for `.deb`/`.rpm`, and `makensis` for the Windows setup. Either one missing just warns and skips its own packages.
 
 None of this is needed for `--ci`, which is the gate that matters for a pull request.
@@ -150,31 +150,38 @@ None of this is needed for `--ci`, which is the gate that matters for a pull req
 ### Build and test
 
 - Fast loop: `cargo test --manifest-path source/rust/Cargo.toml` - runs the conformance corpus plus the fuzz smoke against the reference.
+
 - Each binding also tests natively:
 	- Go: `go -C source/go test ./...`
 	- Python: `python3 source/python/tests/conformance.py`
 	- C: compile and run `source/c/tests/conformance.c` with `-Isource/c`, passing `project/conformance` as the corpus dir.
+
 - Everything at once: `cicd/cicd.bash --ci` - format check, build, lint, tests, and the cross-binding crosscheck. Every binding must match the reference byte for byte on stdout and exit codes; stderr text is not part of the contract.
 
 ### Adding a conformance case
 
-Behavior changes land with a corpus case, or they are not pinned.
+Behavior changes come with a corpus case, or they are not pinned.
 
 - A case is a directory under `project/conformance/NNN-short-name/`, using the next free number.
+
 - Every case needs four files:
 	- `input.shcl` - the document under test.
 	- `expected.shcl` - the exact `fmt` stdout.
 	- `expected-diags.txt` - the exact `check` stdout at standard strictness.
 	- `reads.tsv` - one row per read to replay.
+
 - Optional paired files add a dimension:
 	- `write.ops` + `expected-write.shcl` - the Writer.
 	- `write-bad.ops` - ops that must be rejected.
 	- `schema.shcl` + `expected-validate.txt` - schema validation.
 	- `layer*.shcl` + `merge.sets` + `expected-merged.shcl` - layered loading.
 	- `init-schema.shcl` + `expected-init.shcl` - starter-config generation.
+
 - Column meanings and file grammars are in `project/conformance/README.md`. It also carries a short note per case, so add one for yours.
+
 - Generate the golden files from the Rust reference and eyeball them. Never hand-edit a golden to make a test pass.
-- All four runners pick up a new case automatically. Run `cicd/cicd.bash --ci`; every binding must agree on it before it ships.
+
+- All four runners pick up a new case automatically. Run `cicd/cicd.bash --ci`; every binding must agree on it before it is released.
 
 Behavior the corpus cannot see, because it is not stdout, belongs in `cicd/utility/crosscheck.bash` instead. In-place writes are the current example: the check there compares the file tree a write leaves behind, so all four bindings are held to the same mode, symlink and content outcome.
 
@@ -182,12 +189,13 @@ Behavior the corpus cannot see, because it is not stdout, belongs in `cicd/utili
 
 - Gating (the lint stage fails the run on any finding):
 	- `rustfmt` + `clippy` - rustup components.
-	- `gofmt` + `go vet` - ship with Go.
+	- `gofmt` + `go vet` - come with Go.
 	- `shellcheck` - the pipeline's own scripts and the bash wrapper.
 	- `ruff` + `mypy` - Python: `pipx install ruff` and `pipx install mypy`.
 	- `cppcheck` - C: `pipx install cppcheck` (PyPI wheel bundles the real binary).
 	- `markdownlint-cli2` - docs: `npm install -g markdownlint-cli2`; repo config in `.markdownlint-cli2.jsonc`.
 	- `PSScriptAnalyzer` - ps1 wrapper: `pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser'`.
+
 - Installed-but-optional: `shfmt` and `clang-tidy`/`clang-format` are useful interactively but do not gate (shfmt's output differs from the house shell style, so it never rewrites files here).
 
 ### Style
@@ -195,22 +203,14 @@ Behavior the corpus cannot see, because it is not stdout, belongs in `cicd/utili
 The full rules live in [`style-guide.md`](style-guide.md) - read it before touching a binding. The single most important rule there: every binding deliberately mirrors the Rust reference's structure, function-for-function, even where the host language would idiomatically do it differently. That is what keeps the bindings byte-for-byte identical and a fix portable by mechanical diff. Quick basics:
 
 - Tabs for indentation, spaces for alignment.
+
 - Markdown never hard-wraps - one paragraph or bullet is one physical line.
+
 - Comments are terse and explain why, not what.
 
 ### Branches
 
 - Work on a short-named feature branch and PR against `dev`; `main` is release-only.
-
-<!-- TODO
-### Improving The Documentation
-Updating, improving and correcting the documentation
-
--->
-
-<!-- TODO
-## Join The Project Team
--->
 
 <!-- omit in toc -->
 ## Attribution

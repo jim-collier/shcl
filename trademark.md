@@ -54,7 +54,7 @@ The line this policy draws is between implementing the language and changing it.
 
 - **An implementation that does not pass** must not be described as SHCL, SHCL-compatible, or SHCL-supporting without qualifying the claim truthfully (Section 3). This is the case the policy exists for.
 
-- **A variant language** - one that adds syntax, removes syntax, or changes how any construct is read - is a different language, however small the change. Give it your own name. You are welcome, and encouraged, to say plainly that it is derived from or inspired by SHCL.
+- **A variant language**. One that adds syntax, removes syntax, or changes how any construct is read is a different language, however small the change. Give it your own name. You are welcome, and encouraged, to say plainly that it is derived from or inspired by SHCL.
 
 - **A superset** that reads every valid SHCL file identically and adds constructs of its own is still a variant for naming purposes, because a file written for it will not load elsewhere. Name it yourself; describing it as "a superset of SHCL" is accurate and permitted.
 

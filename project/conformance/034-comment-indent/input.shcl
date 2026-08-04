@@ -1,0 +1,12 @@
+code:
+	hook: 1
+	# note about hooks
+	# still about hooks
+other: 2
+	x: 1
+		# deep tail note
+last: 3
+
+# one
+
+# two

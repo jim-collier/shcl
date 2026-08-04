@@ -20,6 +20,14 @@
 static int nfail = 0;
 static void fail(const char *at, const char *msg) { fprintf(stderr, "FAIL %s: %s\n", at, msg); nfail++; }
 
+// Substring search over a length-delimited buffer (memmem is GNU-only).
+static int contains(const char *p, size_t n, const char *needle) {
+	size_t m = strlen(needle);
+	if (m > n) return 0;
+	for (size_t i = 0; i + m <= n; i++) if (memcmp(p + i, needle, m) == 0) return 1;
+	return 0;
+}
+
 // realloc that never returns NULL: on OOM, free the old block and exit 2.
 static void *xrealloc(void *p, size_t n) {
 	void *q = realloc(p, n);
@@ -159,6 +167,7 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 	if (!strcmp(op, "int")) { int64_t x; if (!cf_i64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
 	else if (!strcmp(op, "float")) { double x; if (!cf_f64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
 	else if (!strcmp(op, "bool")) { if (!PRESENT) wrote = shcl_set_bool(d, path, plen, !strcmp(v, "true")); }
+	else if (!strcmp(op, "literal")) { if (!PRESENT) wrote = shcl_set_literal(d, path, plen, v, vn); }
 	else if (!strcmp(op, "string")) { if (!PRESENT) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = shcl_set_string(d, path, plen, b, m); free(b); } }
 	else if (!strcmp(op, "datetime")) { shcl_datetime dt; S sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) rc = 1; else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
 	else if (!strcmp(op, "int-array")) {
@@ -382,6 +391,7 @@ int main(int argc, char **argv) {
 				int v99 = 0;
 				for (size_t i = 0; i < shcl_diag_count(sd); i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) v99 = 1;
 				shcl_validation *vv = v99 ? NULL : shcl_validate(vd, sd);
+				if (vv) shcl_suppress_declared_repeats(sd, vd);
 				size_t nd = shcl_diag_count(vd), nv = vv ? shcl_validation_count(vv) : 0, nerr = 0;
 				size_t total = nd + nv + (v99 ? 1 : 0);
 				char *vj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
@@ -474,10 +484,18 @@ int main(int argc, char **argv) {
 			else {
 				shcl_doc *isd = shcl_parse(isch, islen);
 				int ok = 0;
-				shcl_str it = shcl_generate(isd, &ok);
+				shcl_str it = shcl_generate(isd, 0, &ok);
 				if (!ok) fail(names[ci], "init schema has faults");
 				else {
 					if (it.n != eilen || (eilen && memcmp(it.p, ei, eilen) != 0)) fail(names[ci], "init output differs from expected-init.shcl");
+					// The footer is the only difference the flag makes:
+					// everything before it is byte-for-byte what the default
+					// run produced.
+					shcl_str bare = shcl_generate(isd, 1, &ok);
+					if (!bare.n || bare.n >= it.n || memcmp(it.p, bare.p, bare.n) != 0)
+						fail(names[ci], "--no-banner output is not a prefix of the default");
+					else if (!contains(it.p + bare.n, it.n - bare.n, "This config file format is SHCL."))
+						fail(names[ci], "default init output is missing the format footer");
 					shcl_doc *gd = shcl_parse(it.p, it.n);
 					int cln = 1;
 					for (size_t i = 0; i < shcl_diag_count(gd); i++) if (shcl_diag_severity(gd, i) == SHCL_SEV_ERROR) cln = 0;
@@ -496,15 +514,84 @@ int main(int argc, char **argv) {
 	}
 	for (size_t i = 0; i < nn; i++) free(names[i]);
 	free(names);
-	// paths(): file order, deduplicated, bare-name-safe segments only (a
-	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	// paths(): file order, deduplicated, non-bare segments quoted so every
+	// path resolves. Same fixture is pinned in every runner.
 	{
 		const char *pt = "a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n";
 		shcl_doc *pd = shcl_parse(pt, strlen(pt));
 		shcl_str *pv; size_t pn = shcl_paths(pd, &pv);
-		const char *want[] = { "a", "a.b", "x", "x.b" };
-		if (pn != 4) fail("paths", "count mismatch");
-		else for (size_t i = 0; i < 4; i++) if (pv[i].n != strlen(want[i]) || memcmp(pv[i].p, want[i], pv[i].n) != 0) { fail("paths", "fixture mismatch"); break; }
+		const char *want[] = { "a", "a.b", "\"q n\"", "x", "x.b" };
+		if (pn != 5) fail("paths", "count mismatch");
+		else for (size_t i = 0; i < 5; i++) if (pv[i].n != strlen(want[i]) || memcmp(pv[i].p, want[i], pv[i].n) != 0) { fail("paths", "fixture mismatch"); break; }
+		for (size_t i = 0; i < pn; i++) if (shcl_count(pd, pv[i].p, pv[i].n) < 1) { fail("paths", "emitted path does not resolve"); break; }
+		// quote_segment: same spelling both directions, injection-safe.
+		shcl_str qs = shcl_quote_segment(pd, "q n", 3);
+		if (qs.n != 5 || memcmp(qs.p, "\"q n\"", 5) != 0) fail("paths", "quote_segment spelling drift");
+		shcl_read_i64 qr = shcl_read_int(pd, qs.p, qs.n);
+		if (qr.value != 3 || qr.status != SHCL_GOOD) fail("paths", "quoted segment read failed");
+		shcl_free(pd);
+	}
+	// line()/children(): read-surface accessors. Same fixture in every runner
+	// (the read structs stay value+status here by design).
+	{
+		const char *lt = "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n";
+		shcl_doc *ld = shcl_parse(lt, strlen(lt));
+		if (shcl_line(ld, "code.done", 9) != 6) fail("line", "code.done not line 6");
+		if (shcl_line(ld, "code", 4) != 3) fail("line", "code not line 3");
+		if (shcl_line(ld, "missing", 7) != 0) fail("line", "missing path not 0");
+		shcl_str *cv; size_t cn = shcl_children(ld, "code", 4, &cv);
+		const char *cw[] = { "hook", "hook", "done" };
+		if (cn != 3) fail("children", "code count mismatch");
+		else for (size_t i = 0; i < 3; i++) if (cv[i].n != strlen(cw[i]) || memcmp(cv[i].p, cw[i], cv[i].n) != 0) { fail("children", "code names mismatch"); break; }
+		cn = shcl_children(ld, "", 0, &cv);
+		const char *rw[] = { "a", "b", "code" };
+		if (cn != 3) fail("children", "root count mismatch");
+		else for (size_t i = 0; i < 3; i++) if (cv[i].n != strlen(rw[i]) || memcmp(cv[i].p, rw[i], cv[i].n) != 0) { fail("children", "root names mismatch"); break; }
+		if (shcl_children(ld, "missing", 7, &cv) != 0) fail("children", "missing path not empty");
+		shcl_free(ld);
+	}
+	// write_reason: the reason behind a setter's bare 0. Same fixture in every
+	// runner.
+	{
+		const char *wt = "a:\n\tb: 1\n";
+		shcl_doc *wd = shcl_parse(wt, strlen(wt));
+		if (shcl_write_reason_(wd, "a.b", 3) != SHCL_W_WRITABLE) fail("write_reason", "a.b not writable");
+		if (shcl_write_reason_(wd, "a.new[Boston].x", 15) != SHCL_W_WRITABLE) fail("write_reason", "creatable path not writable");
+		if (shcl_write_reason_(wd, "", 0) != SHCL_W_BAD_PATH) fail("write_reason", "empty path not bad");
+		if (shcl_write_reason_(wd, "a..b", 4) != SHCL_W_BAD_PATH) fail("write_reason", "a..b not bad");
+		if (shcl_write_reason_(wd, "a.b: 2", 6) != SHCL_W_VALUE_IN_PATH) fail("write_reason", "value part not flagged");
+		if (shcl_write_reason_(wd, "a[*].b", 6) != SHCL_W_WILDCARD) fail("write_reason", "wildcard not flagged");
+		if (shcl_write_reason_(wd, "a[#5].b", 7) != SHCL_W_NO_SUCH_INDEX) fail("write_reason", "a[#5] not flagged");
+		if (shcl_write_reason_(wd, "nope[#0].b", 10) != SHCL_W_NO_SUCH_INDEX) fail("write_reason", "off-tree index not flagged");
+		{
+			char deep[1026]; size_t dn = 0; // 513 segments: "d.d.d..."
+			for (size_t i = 0; i < 513; i++) { if (i) deep[dn++] = '.'; deep[dn++] = 'd'; }
+			if (shcl_write_reason_(wd, deep, dn) != SHCL_W_TOO_DEEP) fail("write_reason", "513 segments not too deep");
+		}
+		// The probe never creates: the doc is unchanged after all of the above.
+		if (shcl_count(wd, "a", 1) != 1) fail("write_reason", "probe created nodes");
+		shcl_free(wd);
+	}
+	// One combined diagnostics list (parse first, then validation) and an
+	// error predicate, so recover-and-continue can't read as success by
+	// accident. Same fixture in every runner.
+	{
+		const char *ot = ": nope\nport: x\n";
+		const char *os = "field: port\n\ttype: int\n";
+		shcl_doc *od = shcl_load_and_validate(ot, strlen(ot), os, strlen(os), SHCL_STANDARD);
+		if (shcl_diag_count(od) != 2) fail("oneshot", "diag count not 2");
+		else if (strcmp(shcl_diag_code(od, 0), "E014") || strcmp(shcl_diag_code(od, 1), "V003")) fail("oneshot", "codes not E014,V003");
+		if (shcl_error_count(od) != 2) fail("oneshot", "error_count not 2");
+		shcl_read_str pr = shcl_read_string(od, "port", 4); // doc still usable
+		if (pr.status != SHCL_GOOD || pr.value.n != 1 || pr.value.p[0] != 'x') fail("oneshot", "port not readable");
+		shcl_free(od);
+		// Strict never errors out here; the diagnostics are the answer.
+		shcl_doc *sd = shcl_load_and_validate(ot, strlen(ot), os, strlen(os), SHCL_STRICT);
+		if (shcl_error_count(sd) < 2) fail("oneshot", "strict error_count < 2");
+		shcl_free(sd);
+		// An empty schema declares nothing and validates nothing.
+		shcl_doc *pd = shcl_load_and_validate("a: 1\n", 5, "", 0, SHCL_STANDARD);
+		if (shcl_error_count(pd) != 0 || shcl_diag_count(pd) != 0) fail("oneshot", "plain doc not clean");
 		shcl_free(pd);
 	}
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }

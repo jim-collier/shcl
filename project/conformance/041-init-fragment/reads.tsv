@@ -1,0 +1,3 @@
+query	type	expected	status
+-	load	ok	-
+layout.kind	string	split	Good

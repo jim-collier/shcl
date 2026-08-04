@@ -1,0 +1,3 @@
+query	type	expected	status	level
+-	load	ok	-
+other.x	int	1	Good

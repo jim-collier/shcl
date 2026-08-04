@@ -19,30 +19,35 @@ import (
 )
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
-const version = "1.0.0"
+const version = "1.1.0"
 
 const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
-  shcl set [--write|-w] [options] FILE   apply write-ops (stdin); print canonical
-                                         (or rewrite FILE in place with --write)
+  shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
+                                         print canonical (or rewrite FILE in
+                                         place with --write)
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
-  shcl init --schema=SCHEMA              print a commented starter config from
+  shcl init [--no-banner] --schema=S     print a commented starter config from
                                          a schema (required fields live, optional
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
 
-set reads a write-ops script from stdin (one op per line, tab-separated) and
-prints the canonical document. FILE is the base ('-' = empty base). Ops:
+set edits FILE, the base document ('-' = empty base). Values go in as
+repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
+arrays work) options, which persist with --write; given either, no ops are read
+from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
+script on stdin, one op per line, tab-separated. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
+  literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax
   raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \n \t \\; a line starting with # is a script comment.
@@ -61,6 +66,8 @@ Options:
                                          report via exit code (the default mode)
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
+  --no-banner                            (init) leave out the footer naming the
+                                         format and pointing at its spec
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
@@ -68,9 +75,23 @@ Options:
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
   --set=PATH=VALUE                       override one path as the top layer,
-                                         after all files; repeatable
+                                         after all files; repeatable. On 'set'
+                                         it is an edit to the document itself,
+                                         so it persists with --write. VALUE
+                                         goes in as data: its type still
+                                         follows the text (8 is an int), but a
+                                         comma or quote in it is content, not
+                                         syntax
+  --set-literal=PATH=TEXT                as --set, except TEXT goes in as value
+                                         syntax the way a file spells it, so
+                                         'ports=80, 443' writes a two-element
+                                         array. An unquoted # ends the value;
+                                         text spanning lines is rejected
 
-Value options accept either spelling: --default=VALUE or --default VALUE.
+Value options accept either spelling: --default=VALUE or --default VALUE. In
+the space form the next argument is taken as the value whatever it looks like,
+so --default --int reads --int as the default. Use -- to end the options when a
+FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
@@ -96,6 +117,29 @@ func statusCode(st shcl.Status) int {
 	return 0
 }
 
+// setOpt is one --set/--set-literal override. Both spellings share a list so
+// they apply in the order given, which is what decides the winner when two
+// target the same path.
+type setOpt struct {
+	path    string
+	value   string
+	literal bool
+}
+
+func (s setOpt) apply(doc *shcl.Document) bool {
+	if s.literal {
+		return doc.SetLiteral(s.path, s.value)
+	}
+	return doc.SetString(s.path, s.value)
+}
+
+func (s setOpt) opt() string {
+	if s.literal {
+		return "--set-literal"
+	}
+	return "--set"
+}
+
 type opts struct {
 	kind       string // int|float|bool|datetime|string|raw
 	array      bool
@@ -104,11 +148,37 @@ type opts struct {
 	onBad      string // error|default|flag
 	strictness shcl.Strictness
 	write      bool
+	noBanner   bool
 	schema     string
-	layers     []string    // lower-priority layers, in listed order
-	sets       [][2]string // final override layer: path=value
-	args       []string    // positional: FILE [PATH]
-	seen       []string    // canonical names of options given, for per-command validation
+	layers     []string // lower-priority layers, in listed order
+	sets       []setOpt // final override layer, in the order given
+	args       []string // positional: FILE [PATH]
+	seen       []string // canonical names of options given, for per-command validation
+}
+
+// askedFor: did the command line ask for help or the version? Only tokens in
+// option position count: a value that happens to read `-h`, and anything after
+// the file, are data. Scanning the whole line for them let a read of a missing
+// path answer with the help text and exit 0.
+func askedFor(argv []string) string {
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		switch {
+		case a == "-h" || a == "--help":
+			return "help"
+		case a == "-V" || a == "--version":
+			return "version"
+		case a == "--":
+			return ""
+		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" || a == "--layer" || a == "--set" || a == "--set-literal":
+			i++
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+		case i > 0:
+			// The subcommand, then the file: past that everything is a path.
+			return ""
+		}
+	}
+	return ""
 }
 
 func setValueOpt(o *opts, name, v string) error {
@@ -136,13 +206,13 @@ func setValueOpt(o *opts, name, v string) error {
 	case "--layer":
 		o.layers = append(o.layers, v)
 		o.seen = append(o.seen, "--layer")
-	case "--set":
+	case "--set", "--set-literal":
 		eq := strings.IndexByte(v, '=')
 		if eq < 0 {
-			return fmt.Errorf("bad --set value (want PATH=VALUE): %s", v)
+			return fmt.Errorf("bad %s value (want PATH=VALUE): %s", name, v)
 		}
-		o.sets = append(o.sets, [2]string{v[:eq], v[eq+1:]})
-		o.seen = append(o.seen, "--set")
+		o.sets = append(o.sets, setOpt{path: v[:eq], value: v[eq+1:], literal: name == "--set-literal"})
+		o.seen = append(o.seen, name)
 	}
 	return nil
 }
@@ -152,6 +222,12 @@ func parseOpts(argv []string) (*opts, error) {
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
+		// Everything after `--` is positional, so a file or path may begin
+		// with a dash.
+		if a == "--" {
+			o.args = append(o.args, argv[i+1:]...)
+			return o, nil
+		}
 		switch {
 		case a == "--int" || a == "--float" || a == "--bool" || a == "--datetime" || a == "--string" || a == "--raw" || a == "--rawinfo":
 			o.kind = a[2:]
@@ -165,7 +241,10 @@ func parseOpts(argv []string) (*opts, error) {
 		case a == "--write" || a == "-w":
 			o.write = true
 			o.seen = append(o.seen, "--write")
-		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" || a == "--layer" || a == "--set":
+		case a == "--no-banner":
+			o.noBanner = true
+			o.seen = append(o.seen, "--no-banner")
+		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" || a == "--layer" || a == "--set" || a == "--set-literal":
 			i++
 			if i >= len(argv) {
 				return nil, fmt.Errorf("missing value for %s (try %s=VALUE)", a, a)
@@ -175,6 +254,10 @@ func parseOpts(argv []string) (*opts, error) {
 			}
 		case strings.HasPrefix(a, "--layer="):
 			if err := setValueOpt(o, "--layer", a[len("--layer="):]); err != nil {
+				return nil, err
+			}
+		case strings.HasPrefix(a, "--set-literal="):
+			if err := setValueOpt(o, "--set-literal", a[len("--set-literal="):]); err != nil {
 				return nil, err
 			}
 		case strings.HasPrefix(a, "--set="):
@@ -213,17 +296,17 @@ func checkOpts(cmd string, o *opts) int {
 	var allowed []string
 	switch cmd {
 	case "get":
-		allowed = []string{"--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set"}
+		allowed = []string{"--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal"}
 	case "set":
-		allowed = []string{"--strictness", "--layer", "--set", "--write"}
+		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--write"}
 	case "fmt":
-		allowed = []string{"--write", "--strictness", "--layer", "--set"}
+		allowed = []string{"--write", "--strictness", "--layer", "--set", "--set-literal"}
 	case "check":
 		allowed = []string{"--strictness", "--schema"}
 	case "init":
-		allowed = []string{"--schema"}
+		allowed = []string{"--schema", "--no-banner"}
 	case "count", "instances":
-		allowed = []string{"--strictness", "--layer", "--set"}
+		allowed = []string{"--strictness", "--layer", "--set", "--set-literal"}
 	}
 	for _, s := range o.seen {
 		ok := false
@@ -240,6 +323,27 @@ func checkOpts(cmd string, o *opts) int {
 				fmt.Fprintf(os.Stderr, "option %s not valid for %s (see --help)\n", s, cmd)
 			}
 			return 1
+		}
+	}
+	// Writing back the merged document would fold the lower layers permanently
+	// into the top file, which is the opposite of what layering is for. On 'set'
+	// the --set values are edits to the document rather than a layer over it, so
+	// persisting them is the whole point; everywhere else they stay ephemeral.
+	if o.write && len(o.layers) > 0 {
+		fmt.Fprintln(os.Stderr, "--write cannot be combined with --layer (see --help)")
+		return 1
+	}
+	if o.write && len(o.sets) > 0 && cmd != "set" {
+		fmt.Fprintln(os.Stderr, "--write cannot be combined with --set (see --help)")
+		return 1
+	}
+	// The ops script already has stdin, so a layer cannot read it too.
+	if cmd == "set" {
+		for _, l := range o.layers {
+			if l == "-" {
+				fmt.Fprintln(os.Stderr, "--layer=- is not valid for set (stdin carries the ops script)")
+				return 1
+			}
 		}
 	}
 	return 0
@@ -311,8 +415,8 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 		doc.Merge(over)
 	}
 	for _, s := range o.sets {
-		if !doc.SetString(s[0], s[1]) {
-			fmt.Fprintf(os.Stderr, "shcl: cannot write %s (from --set)\n", s[0])
+		if !s.apply(doc) {
+			fmt.Fprintf(os.Stderr, "shcl: cannot write %s (from %s)\n", s.path, s.opt())
 			return nil, 1
 		}
 	}
@@ -337,21 +441,40 @@ func writeAtomic(file, data string) error {
 	}
 	dir := filepath.Dir(target)
 	base := filepath.Base(target)
-	tmp := filepath.Join(dir, "."+base+".tmp"+strconv.Itoa(os.Getpid()))
-	f, err := os.Create(tmp)
-	if err == nil {
-		if _, werr := f.WriteString(data); werr != nil {
-			err = werr
-		} else {
-			// Best effort: a filesystem that cannot carry the mode is not a
-			// reason to fail a write that otherwise succeeded.
-			if st, serr := os.Stat(target); serr == nil {
-				_ = f.Chmod(st.Mode().Perm())
-			}
-			err = f.Sync()
+	// Exclusive create: the name is predictable, so anything already sitting
+	// there - including a symlink someone else planted - must make this fail
+	// rather than be written through. Retry past a stale collision, then give
+	// up; refusing to write beats writing somewhere unintended.
+	var f *os.File
+	var tmp string
+	var last error
+	for attempt := 0; attempt < 8; attempt++ {
+		tmp = filepath.Join(dir, "."+base+".tmp"+strconv.Itoa(os.Getpid())+"."+strconv.Itoa(attempt))
+		// Born private, so the copy is never briefly readable to anyone the
+		// original was not. The real mode goes on below, before any data.
+		h, oerr := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if oerr == nil {
+			f = h
+			break
 		}
-		f.Close()
+		last = oerr
 	}
+	if f == nil {
+		return fmt.Errorf("%s: cannot create temporary file: %s", file, last)
+	}
+	// On the handle, so umask cannot narrow it the way it narrows a create
+	// mode. Best effort: a filesystem that cannot carry the mode is not a
+	// reason to fail a write that otherwise succeeded.
+	if st, serr := os.Stat(target); serr == nil {
+		_ = f.Chmod(st.Mode().Perm())
+	}
+	var err error
+	if _, werr := f.WriteString(data); werr != nil {
+		err = werr
+	} else {
+		err = f.Sync()
+	}
+	f.Close()
 	if err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %s", file, err)
@@ -752,6 +875,10 @@ func applyOp(doc *shcl.Document, line string) error {
 			return err
 		}
 		wrote = doc.SetDateTime(path, x)
+	case "literal":
+		wrote = doc.SetLiteral(path, v)
+	case "literal-default":
+		wrote = doc.SetLiteralDefault(path, v)
 	case "int-default":
 		n, err := pint(v)
 		if err != nil {
@@ -881,20 +1008,26 @@ func doSet(o *opts) int {
 		doc.Merge(over)
 	}
 	for _, s := range o.sets {
-		if !doc.SetString(s[0], s[1]) {
-			fmt.Fprintf(os.Stderr, "shcl: cannot write %s (from --set)\n", s[0])
+		if !s.apply(doc) {
+			fmt.Fprintf(os.Stderr, "shcl: cannot write %s (from %s)\n", s.path, s.opt())
 			return 1
 		}
 	}
-	ops, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
-		return 1
-	}
-	// The reference reads ops via read_to_string; mirror its UTF-8 failure.
-	if !utf8.Valid(ops) {
-		fmt.Fprintln(os.Stderr, "stdin: invalid UTF-8")
-		return 1
+	// --set carries the edits, so stdin is left alone: reading it here would
+	// block on the console for anyone who passed edits as options.
+	var ops []byte
+	if len(o.sets) == 0 {
+		var err error
+		ops, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
+			return 1
+		}
+		// The reference reads ops via read_to_string; mirror its UTF-8 failure.
+		if !utf8.Valid(ops) {
+			fmt.Fprintln(os.Stderr, "stdin: invalid UTF-8")
+			return 1
+		}
 	}
 	for n, line := range strings.Split(string(ops), "\n") {
 		line = strings.TrimSuffix(line, "\r") // match Rust lines() CRLF handling
@@ -958,6 +1091,7 @@ func doCheck(o *opts) int {
 				diags = append(diags, shcl.Diagnostic{Line: 0, Severity: shcl.SeverityError, Message: "schema failed to load", Code: "V099"})
 			} else {
 				diags = append(diags, doc.Validate(sdoc)...)
+				diags = shcl.SuppressDeclaredRepeats(sdoc, diags)
 			}
 		}
 	}
@@ -992,6 +1126,10 @@ func doCheck(o *opts) int {
 }
 
 func doInit(o *opts) int {
+	if len(o.args) != 0 {
+		fmt.Fprintln(os.Stderr, "init takes no file argument (see --help)")
+		return 1
+	}
 	if o.schema == "" {
 		fmt.Fprintln(os.Stderr, "init needs --schema=FILE (see --help)")
 		return 1
@@ -1018,7 +1156,7 @@ func doInit(o *opts) int {
 		// same exit as `check --schema` reporting it.
 		return 6
 	}
-	text, faults := shcl.Generate(sdoc)
+	text, faults := shcl.Generate(sdoc, o.noBanner)
 	if faults != nil {
 		for _, d := range faults {
 			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s\n", d.Line, d.Severity, d.Message)
@@ -1058,24 +1196,15 @@ func run() int {
 			return 1
 		}
 	}
-	wantsHelp := false
-	wantsVersion := false
-	for _, a := range argv {
-		if a == "-h" || a == "--help" {
-			wantsHelp = true
-		}
-		if a == "-V" || a == "--version" {
-			wantsVersion = true
-		}
-	}
-	if len(argv) == 0 || wantsHelp || argv[0] == "help" {
+	asked := askedFor(argv)
+	if len(argv) == 0 || asked == "help" || argv[0] == "help" {
 		fmt.Print(help)
 		if len(argv) == 0 {
 			return 1
 		}
 		return 0
 	}
-	if wantsVersion || argv[0] == "version" {
+	if asked == "version" || argv[0] == "version" {
 		fmt.Printf("shcl %s\n", version)
 		return 0
 	}

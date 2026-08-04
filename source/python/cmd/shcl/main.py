@@ -17,30 +17,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realp
 import shcl  # noqa: E402
 
 # Keep in step with source/rust/Cargo.toml, the canonical version source.
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 HELP = """shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
-  shcl set [--write|-w] [options] FILE   apply write-ops (stdin); print canonical
-                                         (or rewrite FILE in place with --write)
+  shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
+                                         print canonical (or rewrite FILE in
+                                         place with --write)
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
-  shcl init --schema=SCHEMA              print a commented starter config from
+  shcl init [--no-banner] --schema=S     print a commented starter config from
                                          a schema (required fields live, optional
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
 
-set reads a write-ops script from stdin (one op per line, tab-separated) and
-prints the canonical document. FILE is the base ('-' = empty base). Ops:
+set edits FILE, the base document ('-' = empty base). Values go in as
+repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
+arrays work) options, which persist with --write; given either, no ops are read
+from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
+script on stdin, one op per line, tab-separated. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
+  literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax
   raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
@@ -59,6 +64,8 @@ Options:
                                          report via exit code (the default mode)
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
+  --no-banner                            (init) leave out the footer naming the
+                                         format and pointing at its spec
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
@@ -66,9 +73,23 @@ Options:
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
   --set=PATH=VALUE                       override one path as the top layer,
-                                         after all files; repeatable
+                                         after all files; repeatable. On 'set'
+                                         it is an edit to the document itself,
+                                         so it persists with --write. VALUE
+                                         goes in as data: its type still
+                                         follows the text (8 is an int), but a
+                                         comma or quote in it is content, not
+                                         syntax
+  --set-literal=PATH=TEXT                as --set, except TEXT goes in as value
+                                         syntax the way a file spells it, so
+                                         'ports=80, 443' writes a two-element
+                                         array. An unquoted # ends the value;
+                                         text spanning lines is rejected
 
-Value options accept either spelling: --default=VALUE or --default VALUE.
+Value options accept either spelling: --default=VALUE or --default VALUE. In
+the space form the next argument is taken as the value whatever it looks like,
+so --default --int reads --int as the default. Use -- to end the options when a
+FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
@@ -83,8 +104,28 @@ def status_code(st):
 	return st.value
 
 
+class _SetOpt:
+	# One --set/--set-literal override. Both spellings share a list so they apply
+	# in the order given, which is what decides the winner when two target the
+	# same path.
+	__slots__ = ("path", "value", "literal")
+
+	def __init__(self, path, value, literal):
+		self.path = path
+		self.value = value
+		self.literal = literal
+
+	def apply(self, doc):
+		if self.literal:
+			return doc.set_literal(self.path, self.value)
+		return doc.set_string(self.path, self.value)
+
+	def opt(self):
+		return "--set-literal" if self.literal else "--set"
+
+
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "schema", "layers", "sets", "args", "seen")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "no_banner", "schema", "layers", "sets", "args", "seen")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -95,8 +136,9 @@ class _Opts:
 		self.strictness = shcl.Strictness.Standard
 		self.schema = None
 		self.write = False
+		self.no_banner = False
 		self.layers = []         # lower-priority layers, in listed order
-		self.sets = []           # final override layer: (path, value)
+		self.sets = []           # final override layer: _SetOpt, in the order given
 		self.args = []           # positional: FILE [PATH]
 		self.seen = []           # canonical names of options given, for per-command validation
 
@@ -123,12 +165,37 @@ def _set_value_opt(o, name, v):
 	elif name == "--layer":
 		o.layers.append(v)
 		o.seen.append("--layer")
-	elif name == "--set":
+	elif name in ("--set", "--set-literal"):
 		eq = v.find("=")
 		if eq < 0:
-			raise ValueError("bad --set value (want PATH=VALUE): {}".format(v))
-		o.sets.append((v[:eq], v[eq + 1:]))
-		o.seen.append("--set")
+			raise ValueError("bad {} value (want PATH=VALUE): {}".format(name, v))
+		o.sets.append(_SetOpt(v[:eq], v[eq + 1:], name == "--set-literal"))
+		o.seen.append(name)
+
+
+def asked_for(argv):
+	# Did the command line ask for help or the version? Only tokens in option
+	# position count: a value that happens to read `-h`, and anything after the
+	# file, are data. Scanning the whole line for them let a read of a missing
+	# path answer with the help text and exit 0.
+	i = 0
+	while i < len(argv):
+		a = argv[i]
+		if a in ("-h", "--help"):
+			return "help"
+		if a in ("-V", "--version"):
+			return "version"
+		if a == "--":
+			return None
+		if a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal"):
+			i += 1
+		elif a.startswith("-") and len(a) > 1:
+			pass
+		elif i > 0:
+			# The subcommand, then the file: past that everything is a path.
+			return None
+		i += 1
+	return None
 
 
 def parse_opts(argv):
@@ -137,6 +204,11 @@ def parse_opts(argv):
 	i = 0
 	while i < len(argv):
 		a = argv[i]
+		# Everything after `--` is positional, so a file or path may begin
+		# with a dash.
+		if a == "--":
+			o.args.extend(argv[i + 1:])
+			return o
 		if a in ("--int", "--float", "--bool", "--datetime", "--string", "--raw", "--rawinfo"):
 			o.kind = a[2:]
 			o.seen.append("--<type>")
@@ -146,10 +218,13 @@ def parse_opts(argv):
 		elif a == "--slots":
 			o.slots = True
 			o.seen.append("--slots")
+		elif a == "--no-banner":
+			o.no_banner = True
+			o.seen.append("--no-banner")
 		elif a in ("--write", "-w"):
 			o.write = True
 			o.seen.append("--write")
-		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set"):
+		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal"):
 			i += 1
 			if i >= len(argv):
 				raise ValueError("missing value for {0} (try {0}=VALUE)".format(a))
@@ -164,6 +239,8 @@ def parse_opts(argv):
 			_set_value_opt(o, "--schema", a[len("--schema="):])
 		elif a.startswith("--layer="):
 			_set_value_opt(o, "--layer", a[len("--layer="):])
+		elif a.startswith("--set-literal="):
+			_set_value_opt(o, "--set-literal", a[len("--set-literal="):])
 		elif a.startswith("--set="):
 			_set_value_opt(o, "--set", a[len("--set="):])
 		elif a.startswith("-") and len(a) > 1:
@@ -216,9 +293,9 @@ def load_layered(o, file):
 		if over is None:
 			return None, c
 		doc.merge(over)
-	for path, val in o.sets:
-		if not doc.set_string(path, val):
-			sys.stderr.write("shcl: cannot write {} (from --set)\n".format(path))
+	for st in o.sets:
+		if not st.apply(doc):
+			sys.stderr.write("shcl: cannot write {} (from {})\n".format(st.path, st.opt()))
 			return None, 1
 	return doc, None
 
@@ -228,17 +305,17 @@ def check_opts(cmd, o):
 	# silently ignored (`set --write` before it existed, `--schema` on `get`) is a
 	# usage error instead. Returns an exit code, or None to proceed.
 	if cmd == "get":
-		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set")
+		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal")
 	elif cmd == "set":
-		allowed = ("--strictness", "--layer", "--set", "--write")
+		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--write")
 	elif cmd == "fmt":
-		allowed = ("--write", "--strictness", "--layer", "--set")
+		allowed = ("--write", "--strictness", "--layer", "--set", "--set-literal")
 	elif cmd == "check":
 		allowed = ("--strictness", "--schema")
 	elif cmd == "init":
-		allowed = ("--schema",)
+		allowed = ("--schema", "--no-banner")
 	elif cmd in ("count", "instances"):
-		allowed = ("--strictness", "--layer", "--set")
+		allowed = ("--strictness", "--layer", "--set", "--set-literal")
 	else:
 		allowed = ()
 	for s in o.seen:
@@ -248,6 +325,20 @@ def check_opts(cmd, o):
 			else:
 				sys.stderr.write("option {} not valid for {} (see --help)\n".format(s, cmd))
 			return 1
+	# Writing back the merged document would fold the lower layers permanently
+	# into the top file, which is the opposite of what layering is for. On 'set'
+	# the --set values are edits to the document rather than a layer over it, so
+	# persisting them is the whole point; everywhere else they stay ephemeral.
+	if o.write and o.layers:
+		sys.stderr.write("--write cannot be combined with --layer (see --help)\n")
+		return 1
+	if o.write and o.sets and cmd != "set":
+		sys.stderr.write("--write cannot be combined with --set (see --help)\n")
+		return 1
+	# The ops script already has stdin, so a layer cannot read it too.
+	if cmd == "set" and any(lf == "-" for lf in o.layers):
+		sys.stderr.write("--layer=- is not valid for set (stdin carries the ops script)\n")
+		return 1
 	return None
 
 
@@ -269,18 +360,36 @@ def write_atomic(file, data):
 	base = os.path.basename(target)
 	if base == "":
 		base = target
-	tmp = os.path.join(d, ".{}.tmp{}".format(base, os.getpid()))
-	try:
-		f = open(tmp, "w", encoding="utf-8", newline="")
+	# Exclusive create: the name is predictable, so anything already sitting
+	# there - including a symlink someone else planted - must make this fail
+	# rather than be written through. Retry past a stale collision, then give
+	# up; refusing to write beats writing somewhere unintended.
+	f = None
+	tmp = ""
+	last = ""
+	for attempt in range(8):
+		tmp = os.path.join(d, ".{}.tmp{}.{}".format(base, os.getpid(), attempt))
 		try:
-			f.write(data)
-			f.flush()
-			# Best effort: a filesystem that cannot carry the mode is not a
-			# reason to fail a write that otherwise succeeded.
+			# Born private, so the copy is never briefly readable to anyone the
+			# original was not. The real mode goes on below, before any data.
+			fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+			f = os.fdopen(fd, "w", encoding="utf-8", newline="")
+			break
+		except OSError as e:
+			last = str(e)
+	if f is None:
+		return "{}: cannot create temporary file: {}".format(file, last)
+	try:
+		try:
+			# On the handle, so umask cannot narrow it the way it narrows a
+			# create mode. Best effort: a filesystem that cannot carry the mode
+			# is not a reason to fail a write that otherwise succeeded.
 			try:
-				os.chmod(tmp, stat.S_IMODE(os.stat(target).st_mode))
+				os.fchmod(f.fileno(), stat.S_IMODE(os.stat(target).st_mode))
 			except OSError:
 				pass
+			f.write(data)
+			f.flush()
 			os.fsync(f.fileno())
 		finally:
 			f.close()
@@ -478,7 +587,12 @@ def _op_int(s):
 	t = s[1:] if s[:1] in ("+", "-") else s
 	if t == "" or any(c < "0" or c > "9" for c in t):
 		raise ValueError("bad int: {}".format(s))
-	v = int(s)
+	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
+	# reference just overflows. Leading zeros are legal and don't count toward range.
+	digits = t.lstrip("0") or "0"
+	if len(digits) > 19:
+		raise ValueError("bad int: {}".format(s))
+	v = -int(digits) if s[:1] == "-" else int(digits)
 	if v < -(2 ** 63) or v > 2 ** 63 - 1:
 		raise ValueError("bad int: {}".format(s))
 	return v
@@ -546,6 +660,10 @@ def apply_op(doc, line):
 		wrote = doc.set_string(path, _unescape_ops(v))
 	elif op == "datetime":
 		wrote = doc.set_datetime(path, _op_dt(v))
+	elif op == "literal":
+		wrote = doc.set_literal(path, v)
+	elif op == "literal-default":
+		wrote = doc.set_literal_default(path, v)
 	elif op == "int-default":
 		wrote = doc.set_int_default(path, _op_int(v))
 	elif op == "float-default":
@@ -618,17 +736,21 @@ def do_set(o):
 		if over is None:
 			return c
 		doc.merge(over)
-	for path, val in o.sets:
-		if not doc.set_string(path, val):
-			sys.stderr.write("shcl: cannot write {} (from --set)\n".format(path))
+	for st in o.sets:
+		if not st.apply(doc):
+			sys.stderr.write("shcl: cannot write {} (from {})\n".format(st.path, st.opt()))
 			return 1
+	# --set carries the edits, so stdin is left alone: reading it here would
+	# block on the console for anyone who passed edits as options.
 	# The ops script is contract input like the reference's read_to_string:
 	# bad bytes are a hard error, never silently replaced.
-	try:
-		ops = sys.stdin.buffer.read().decode("utf-8")
-	except UnicodeDecodeError:
-		sys.stderr.write("stdin: invalid UTF-8\n")
-		return 1
+	ops = ""
+	if not o.sets:
+		try:
+			ops = sys.stdin.buffer.read().decode("utf-8")
+		except UnicodeDecodeError:
+			sys.stderr.write("stdin: invalid UTF-8\n")
+			return 1
 	for n, line in enumerate(ops.split("\n")):
 		line = line[:-1] if line.endswith("\r") else line
 		if line == "" or line.startswith("#"):
@@ -678,6 +800,7 @@ def do_check(o):
 				diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
 			else:
 				diags.extend(doc.validate(sdoc))
+				shcl.suppress_declared_repeats(sdoc, diags)
 	except shcl.LoadError as le:
 		diags = le.diagnostics
 		strict_failed = True
@@ -704,6 +827,9 @@ def do_check(o):
 
 
 def do_init(o):
+	if o.args:
+		sys.stderr.write("init takes no file argument (see --help)\n")
+		return 1
 	if o.schema is None:
 		sys.stderr.write("init needs --schema=FILE (see --help)\n")
 		return 1
@@ -721,7 +847,7 @@ def do_init(o):
 		# A broken schema is a config-semantics failure, not a usage error:
 		# same exit as `check --schema` reporting it.
 		return 6
-	text, faults = shcl.generate(sdoc)
+	text, faults = shcl.generate(sdoc, o.no_banner)
 	if faults:
 		for d in faults:
 			sys.stderr.write("schema line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
@@ -760,12 +886,11 @@ def run(argv):
 		except UnicodeEncodeError:
 			sys.stderr.write("invalid argument encoding (expected UTF-8)\n")
 			return 1
-	wants_help = any(a in ("-h", "--help") for a in argv)
-	wants_version = any(a in ("-V", "--version") for a in argv)
-	if not argv or wants_help or argv[0] == "help":
+	asked = asked_for(argv)
+	if not argv or asked == "help" or argv[0] == "help":
 		sys.stdout.write(HELP)
 		return 1 if not argv else 0
-	if wants_version or argv[0] == "version":
+	if asked == "version" or argv[0] == "version":
 		print("shcl {}".format(VERSION))
 		return 0
 	try:

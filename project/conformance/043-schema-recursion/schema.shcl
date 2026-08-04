@@ -1,0 +1,9 @@
+fragment: node
+	field: kid
+		inherits: node
+	field: *
+		inherits: node
+	field: label
+		type: string
+field: tree
+	inherits: node

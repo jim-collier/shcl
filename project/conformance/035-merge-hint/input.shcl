@@ -1,0 +1,5 @@
+table: t
+	col: a
+other: 1
+table: t
+	kind: b

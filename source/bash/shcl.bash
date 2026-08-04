@@ -61,6 +61,11 @@ done
 _SHCL_DIR="$(cd -- "$(dirname -- "${_shcl_self}")" && pwd)"
 unset _shcl_self _shcl_link
 
+## _SHCL_BIN is a private cache, not an interface: an inherited value would pick
+## the binary silently, beating every documented lookup step. Clear it at load;
+## SHCL_BIN is the supported override.
+_SHCL_BIN=""
+
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 # Core
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

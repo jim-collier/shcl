@@ -1,0 +1,20 @@
+fragment: node
+	field: kind
+		type: string
+		required: yes
+		allowed: split, pane
+	field: ratio
+		type: float
+	field: children
+		inherits: node
+fragment: extras
+	field: tag
+		repeat: 0, 9
+field: layout
+	required: yes
+	inherits: node
+field: doc.layout
+	inherits: node
+field: doc
+	inherits: extras
+field: tag

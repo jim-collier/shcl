@@ -44,8 +44,18 @@ int main() {
 
 	// Two same-name leaves are instances, not one scalar.
 	CHECK(doc.count("city") == 2);
+
+	CHECK(doc.quote_segment("port") == "port");
+	CHECK(doc.quote_segment("q n") == "\"q n\"");
 	auto cities = doc.instances("city");
 	CHECK(cities.size() == 2 && cities[0] == "Chicago" && cities[1] == "Boston");
+
+	CHECK(doc.line("port") == 2 && doc.line("nope") == 0);
+	auto kids = doc.children("");
+	CHECK(kids.size() == 7 && kids[0] == "name" && kids[5] == "city" && kids[6] == "city");
+	CHECK(doc.children("nope").empty());
+	CHECK(doc.write_reason("port") == shcl::WriteReason::Writable);
+	CHECK(doc.write_reason("city[*]") == shcl::WriteReason::Wildcard);
 	auto multi = doc.read_string("city");
 	CHECK(multi.status == shcl::Status::Multiple);
 
@@ -87,10 +97,38 @@ int main() {
 	CHECK(base.get_or<std::string>("server[web1].host", std::string()) == "h1");
 
 	// Schema-driven generation: a starter config with a required live field.
+	// The default run appends the format footer; --no-banner is the same bytes
+	// without it.
 	auto gschema = shcl::Document::parse("field: port\n\ttype: int\n\trequired: yes\n\tdefault: 8080\n");
 	bool gok = false;
+	std::string bare = gschema.generate(gok, true);
+	CHECK(gok && bare == "# int, required\nport: 8080\n");
 	std::string starter = gschema.generate(gok);
-	CHECK(gok && starter == "# int, required\nport: 8080\n");
+	CHECK(gok && starter.rfind(bare, 0) == 0);
+	CHECK(starter.find("This config file format is SHCL.", bare.size()) != std::string::npos);
+
+	// One-shot: one combined list (parse then validation), error predicate.
+	auto combined = shcl::Document::load_and_validate(": nope\nport: x\n", "field: port\n\ttype: int\n", shcl::Strictness::Standard);
+	auto cdiags = combined.diagnostics();
+	CHECK(cdiags.size() == 2 && cdiags[0].code == "E014" && cdiags[1].code == "V003");
+	CHECK(combined.error_count() == 2);
+	CHECK(combined.get_or<std::string>("port", std::string()) == "x"); // doc still usable
+	auto clean = shcl::Document::load_and_validate("a: 1\n", "", shcl::Strictness::Standard);
+	CHECK(clean.error_count() == 0 && clean.diagnostics().empty());
+
+	// A read must stay usable after the document it came from is gone; the
+	// datetime one used to hand back a pointer into the freed arena.
+	shcl::Read<shcl::Datetime> outlives;
+	{
+		auto tmp = shcl::Document::parse("t: 2026-08-02T10:20:30.123456789Z\n");
+		outlives = tmp.read_datetime_raw("t");
+	}
+	CHECK(outlives.status == shcl::Status::Good);
+	CHECK(outlives.value.str() == "2026-08-02T10:20:30.123456789Z");
+	auto copied = outlives;
+	CHECK(copied.value.str() == outlives.value.str());
+	auto moved = std::move(copied);
+	CHECK(moved.value.str() == outlives.value.str());
 
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");

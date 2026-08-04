@@ -386,6 +386,10 @@ func tryApplyOpTest(doc *Document, line string) error {
 			return err
 		}
 		wrote = doc.SetDateTime(path, x)
+	case "literal":
+		wrote = doc.SetLiteral(path, v)
+	case "literal-default":
+		wrote = doc.SetLiteralDefault(path, v)
 	case "int-default":
 		n, err := pint(v)
 		if err != nil {
@@ -524,6 +528,7 @@ func TestValidationMatchesExpected(t *testing.T) {
 			diags = append(diags, Diagnostic{Line: 0, Severity: SeverityError, Message: "schema failed to load", Code: "V099"})
 		} else {
 			diags = append(diags, doc.Validate(sdoc)...)
+			diags = SuppressDeclaredRepeats(sdoc, diags)
 		}
 		var got strings.Builder
 		errors := 0
@@ -594,6 +599,161 @@ func TestWriteBadOpsAreRejected(t *testing.T) {
 	}
 }
 
+func TestOneShotLoadAndValidate(t *testing.T) {
+	// One combined diagnostics list (parse first, then validation) and an
+	// error predicate, so recover-and-continue can't read as success by
+	// accident. Same fixture in every runner.
+	text := ": nope\nport: x\n"
+	schema := "field: port\n\ttype: int\n"
+	doc := LoadAndValidate(text, schema, Standard)
+	var codes []string
+	for _, d := range doc.Diagnostics() {
+		codes = append(codes, d.Code)
+	}
+	if strings.Join(codes, ",") != "E014,V003" {
+		t.Errorf("codes: got %v, want [E014 V003]", codes)
+	}
+	if got := doc.ErrorCount(); got != 2 {
+		t.Errorf("error count: got %d, want 2", got)
+	}
+	if got := doc.ReadString("port").Value; got != "x" { // doc still usable
+		t.Errorf("port: got %q, want \"x\"", got)
+	}
+	// Strict never errors out here; the diagnostics are the answer.
+	strict := LoadAndValidate(text, schema, Strict)
+	if strict.ErrorCount() < 2 {
+		t.Errorf("strict error count: got %d, want >= 2", strict.ErrorCount())
+	}
+	// An empty schema declares nothing and validates nothing.
+	plain := LoadAndValidate("a: 1\n", "", Standard)
+	if plain.ErrorCount() != 0 || len(plain.Diagnostics()) != 0 {
+		t.Errorf("plain: got %d errors, %d diags, want 0, 0", plain.ErrorCount(), len(plain.Diagnostics()))
+	}
+}
+
+func TestWriteReasonNamesTheFailure(t *testing.T) {
+	// The reason behind a setter's bare false. Same fixture in every runner.
+	doc := Parse("a:\n\tb: 1\n")
+	if got := doc.WriteReason("a.b"); got != Writable {
+		t.Errorf("a.b: got %v, want Writable", got)
+	}
+	if got := doc.WriteReason("a.new[Boston].x"); got != Writable { // creatable
+		t.Errorf("a.new[Boston].x: got %v, want Writable", got)
+	}
+	if got := doc.WriteReason(""); got != BadPath {
+		t.Errorf("empty path: got %v, want BadPath", got)
+	}
+	if got := doc.WriteReason("a..b"); got != BadPath {
+		t.Errorf("a..b: got %v, want BadPath", got)
+	}
+	if got := doc.WriteReason("a.b: 2"); got != ValueInPath {
+		t.Errorf("a.b: 2: got %v, want ValueInPath", got)
+	}
+	if got := doc.WriteReason("a[*].b"); got != Wildcard {
+		t.Errorf("a[*].b: got %v, want Wildcard", got)
+	}
+	if got := doc.WriteReason("a[#5].b"); got != NoSuchIndex {
+		t.Errorf("a[#5].b: got %v, want NoSuchIndex", got)
+	}
+	if got := doc.WriteReason("nope[#0].b"); got != NoSuchIndex {
+		t.Errorf("nope[#0].b: got %v, want NoSuchIndex", got)
+	}
+	deep := strings.TrimSuffix(strings.Repeat("d.", 513), ".")
+	if got := doc.WriteReason(deep); got != TooDeep {
+		t.Errorf("deep path: got %v, want TooDeep", got)
+	}
+	// The probe never creates: the doc is unchanged after all of the above.
+	if n := doc.Count("a"); n != 1 {
+		t.Errorf("count a: got %d, want 1", n)
+	}
+	if got := doc.Paths(); strings.Join(got, ",") != "a,a.b" {
+		t.Errorf("paths: got %v", got)
+	}
+}
+
+func TestReadSurfaceLineQuotedChildren(t *testing.T) {
+	// Line/Quoted on the read result, Line(path), Children(path). Same
+	// fixture in every runner (C pins the accessors; its read structs stay
+	// value+status).
+	text := "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n"
+	doc := Parse(text)
+	if doc.ReadString("a").Quoted {
+		t.Error("a reads quoted")
+	}
+	if !doc.ReadString("b").Quoted {
+		t.Error("b reads unquoted")
+	}
+	if got := doc.ReadString("b").Line; got != 2 {
+		t.Errorf("b line: got %d, want 2", got)
+	}
+	if got := doc.Line("code.done"); got != 6 {
+		t.Errorf("code.done line: got %d, want 6", got)
+	}
+	if got := doc.Line("code"); got != 3 {
+		t.Errorf("code line: got %d, want 3", got)
+	}
+	if got := doc.Line("missing"); got != 0 {
+		t.Errorf("missing line: got %d, want 0", got)
+	}
+	if got := doc.Children("code"); strings.Join(got, ",") != "hook,hook,done" {
+		t.Errorf("code children: got %v", got)
+	}
+	if got := doc.Children(""); strings.Join(got, ",") != "a,b,code" {
+		t.Errorf("top children: got %v", got)
+	}
+	if got := doc.Children("missing"); len(got) != 0 {
+		t.Errorf("missing children: got %v", got)
+	}
+}
+
+func TestStrictFailureCarriesDocument(t *testing.T) {
+	// A failed strict load hands back the document (non-nil, and on the
+	// error too) and names the first failures in the message.
+	doc, err := ParseWith("ok: 1\n: nope\n", Strict)
+	if err == nil || doc == nil {
+		t.Fatalf("want non-nil doc and error, got %v %v", doc, err)
+	}
+	le := err.(*LoadError)
+	if le.Document != doc || len(le.Diagnostics) == 0 {
+		t.Fatalf("error does not carry the document/diagnostics")
+	}
+	if r := doc.ReadInt("ok"); r.Value != 1 {
+		t.Fatalf("doc unusable: %v", r)
+	}
+	if !strings.Contains(err.Error(), "; line ") {
+		t.Fatalf("message lacks diagnostics: %s", err.Error())
+	}
+}
+
+func TestRawIsSourceText(t *testing.T) {
+	// Raw: the verbatim value span from the source line - not the display
+	// join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner
+	// whose read result exposes raw (the C read structs deliberately do not).
+	doc := Parse("regex: ^\\d{2,3}$\nlist: a,  \"b c\"\n")
+	if r := doc.ReadString("regex"); r.Raw == nil || *r.Raw != "^\\d{2,3}$" {
+		t.Errorf("regex raw: got %v", r.Raw)
+	}
+	if r := doc.ReadStringArray("list"); r.Raw == nil || *r.Raw != "a,  \"b c\"" {
+		t.Errorf("list raw: got %v", r.Raw)
+	}
+	// A written value has no source spelling; raw falls back to display. The
+	// selector's escaped spelling must land on the existing instance.
+	doc2 := Parse("who: 'q\"uote'\n")
+	if !doc2.SetInt("who[\"q\\\"uote\"].n", 5) {
+		t.Fatal("SetInt with escaped selector failed")
+	}
+	if n := doc2.Count("who"); n != 1 {
+		t.Errorf("who count: got %d, want 1", n)
+	}
+	r := doc2.ReadInt("who['q\"uote'].n")
+	if r.Value != 5 || r.Status != Good {
+		t.Errorf("read back: got (%d, %v), want (5, Good)", r.Value, r.Status)
+	}
+	if r.Raw == nil || *r.Raw != "5" {
+		t.Errorf("written raw: got %v, want 5", r.Raw)
+	}
+}
+
 func TestLayeredMergeMatchesExpected(t *testing.T) {
 	// Layered-load dimension: fold the layer files (lowest first) and input.shcl
 	// (highest file layer) via the library Merge, apply the path=value overrides
@@ -635,13 +795,23 @@ func TestInitGenerationMatchesExpected(t *testing.T) {
 		if !c.hasInit {
 			continue
 		}
-		got, faults := Generate(Parse(c.initSchema))
+		got, faults := Generate(Parse(c.initSchema), false)
 		if faults != nil {
 			t.Fatalf("%s: init schema has faults", c.name)
 		}
 		if got != c.expectedInit {
 			t.Errorf("%s: init output differs from expected-init.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedInit)
 			continue
+		}
+		// The footer is the only difference the flag makes: everything before
+		// it is byte-for-byte what the default run produced.
+		bare, _ := Generate(Parse(c.initSchema), true)
+		if bare == "" || !strings.HasPrefix(got, bare) {
+			t.Errorf("%s: --no-banner output is not a prefix of the default", c.name)
+			continue
+		}
+		if !strings.Contains(got[len(bare):], "This config file format is SHCL.") {
+			t.Errorf("%s: default init output is missing the format footer", c.name)
 		}
 		doc := Parse(got)
 		for _, d := range doc.Diagnostics() {
@@ -825,11 +995,11 @@ func TestReadsMatchExpected(t *testing.T) {
 }
 
 func TestPathsEnumerationShape(t *testing.T) {
-	// Paths(): file order, deduplicated, bare-name-safe segments only (a
-	// quoted name hides its subtree). Same fixture is pinned in every runner.
+	// Paths(): file order, deduplicated, non-bare segments quoted so every
+	// path resolves. Same fixture is pinned in every runner.
 	doc := Parse("a: 1\na.b: 2\n\"q n\": 3\nx:\n\tb: 4\nx.b: 5\n")
 	got := doc.Paths()
-	want := []string{"a", "a.b", "x", "x.b"}
+	want := []string{"a", "a.b", "\"q n\"", "x", "x.b"}
 	if len(got) != len(want) {
 		t.Fatalf("paths: got %v want %v", got, want)
 	}
@@ -837,5 +1007,17 @@ func TestPathsEnumerationShape(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("paths: got %v want %v", got, want)
 		}
+	}
+	for _, p := range got {
+		if doc.Count(p) < 1 {
+			t.Fatalf("emitted path does not resolve: %s", p)
+		}
+	}
+	// QuoteSegment: same spelling both directions, injection-safe.
+	if QuoteSegment("port") != "port" || QuoteSegment("q n") != "\"q n\"" || QuoteSegment("a.b") != "\"a.b\"" {
+		t.Fatalf("QuoteSegment spelling drift")
+	}
+	if r := doc.ReadInt(QuoteSegment("q n")); r.Value != 3 || r.Status != Good {
+		t.Fatalf("quoted segment read: %v %v", r.Value, r.Status)
 	}
 }

@@ -4,7 +4,10 @@
 //! `shcl` CLI - the Tier 1 command binding. POSIX sh and PowerShell wrap this,
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
-use shcl::{Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime};
+use shcl::{
+	Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime,
+	suppress_declared_repeats,
+};
 use std::process::ExitCode;
 
 const HELP: &str = "\
@@ -12,24 +15,29 @@ shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
-  shcl set [--write|-w] [options] FILE   apply write-ops (stdin); print canonical
-                                         (or rewrite FILE in place with --write)
+  shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
+                                         print canonical (or rewrite FILE in
+                                         place with --write)
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
-  shcl init --schema=SCHEMA              print a commented starter config from
+  shcl init [--no-banner] --schema=S     print a commented starter config from
                                          a schema (required fields live, optional
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
 
-set reads a write-ops script from stdin (one op per line, tab-separated) and
-prints the canonical document. FILE is the base ('-' = empty base). Ops:
+set edits FILE, the base document ('-' = empty base). Values go in as
+repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
+arrays work) options, which persist with --write; given either, no ops are read
+from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
+script on stdin, one op per line, tab-separated. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
+  literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax
   raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
@@ -48,6 +56,8 @@ Options:
                                          report via exit code (the default mode)
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
+  --no-banner                            (init) leave out the footer naming the
+                                         format and pointing at its spec
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
@@ -55,9 +65,23 @@ Options:
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
   --set=PATH=VALUE                       override one path as the top layer,
-                                         after all files; repeatable
+                                         after all files; repeatable. On 'set'
+                                         it is an edit to the document itself,
+                                         so it persists with --write. VALUE
+                                         goes in as data: its type still
+                                         follows the text (8 is an int), but a
+                                         comma or quote in it is content, not
+                                         syntax
+  --set-literal=PATH=TEXT                as --set, except TEXT goes in as value
+                                         syntax the way a file spells it, so
+                                         'ports=80, 443' writes a two-element
+                                         array. An unquoted # ends the value;
+                                         text spanning lines is rejected
 
-Value options accept either spelling: --default=VALUE or --default VALUE.
+Value options accept either spelling: --default=VALUE or --default VALUE. In
+the space form the next argument is taken as the value whatever it looks like,
+so --default --int reads --int as the default. Use -- to end the options when a
+FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
@@ -77,6 +101,32 @@ fn status_code(st: Status) -> u8 {
 	}
 }
 
+/// One `--set`/`--set-literal` override. Both spellings share a list so they
+/// apply in the order given, which is what decides the winner when two target
+/// the same path.
+struct Set {
+	path: String,
+	value: String,
+	literal: bool,
+}
+
+impl Set {
+	fn apply(&self, doc: &mut Document) -> bool {
+		if self.literal {
+			doc.set_literal(&self.path, &self.value)
+		} else {
+			doc.set_string(&self.path, &self.value)
+		}
+	}
+	fn opt(&self) -> &'static str {
+		if self.literal {
+			"--set-literal"
+		} else {
+			"--set"
+		}
+	}
+}
+
 struct Opts {
 	kind: String, // int|float|bool|datetime|string|raw
 	array: bool,
@@ -85,11 +135,36 @@ struct Opts {
 	on_bad: String, // error|default|flag
 	strictness: Strictness,
 	write: bool,
+	no_banner: bool,
 	schema: Option<String>,
-	layers: Vec<String>,         // lower-priority layers, in listed order
-	sets: Vec<(String, String)>, // final override layer: path=value
-	args: Vec<String>,           // positional: FILE [PATH]
-	seen: Vec<&'static str>,     // canonical names of options given, for per-command validation
+	layers: Vec<String>,     // lower-priority layers, in listed order
+	sets: Vec<Set>,          // final override layer, in the order given
+	args: Vec<String>,       // positional: FILE [PATH]
+	seen: Vec<&'static str>, // canonical names of options given, for per-command validation
+}
+
+/// Did the command line ask for help or the version? Only tokens in option
+/// position count: a value that happens to read `-h`, and anything after the
+/// file, are data. Scanning the whole line for them let a read of a missing
+/// path answer with the help text and exit 0.
+fn asked_for(argv: &[String]) -> Option<&'static str> {
+	let mut i = 0;
+	while i < argv.len() {
+		let a = argv[i].as_str();
+		match a {
+			"-h" | "--help" => return Some("help"),
+			"-V" | "--version" => return Some("version"),
+			"--" => return None,
+			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
+			| "--set-literal" => i += 1,
+			_ if a.starts_with('-') && a.len() > 1 => {}
+			// The subcommand, then the file: past that everything is a path.
+			_ if i > 0 => return None,
+			_ => {}
+		}
+		i += 1;
+	}
+	None
 }
 
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
@@ -101,6 +176,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		on_bad: "flag".into(),
 		strictness: Strictness::Standard,
 		write: false,
+		no_banner: false,
 		schema: None,
 		layers: Vec::new(),
 		sets: Vec::new(),
@@ -111,6 +187,12 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	let mut i = 0;
 	while i < argv.len() {
 		let a = argv[i].as_str();
+		// Everything after `--` is positional, so a file or path may begin
+		// with a dash.
+		if a == "--" {
+			o.args.extend(argv[i + 1..].iter().cloned());
+			return Ok(o);
+		}
 		match a {
 			"--int" | "--float" | "--bool" | "--datetime" | "--string" | "--raw" | "--rawinfo" => {
 				o.kind = a[2..].to_string();
@@ -128,7 +210,12 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 				o.write = true;
 				o.seen.push("--write");
 			}
-			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set" => {
+			"--no-banner" => {
+				o.no_banner = true;
+				o.seen.push("--no-banner");
+			}
+			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
+			| "--set-literal" => {
 				i += 1;
 				let v = argv
 					.get(i)
@@ -141,6 +228,9 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			_ if a.starts_with("--schema=") => set_value_opt(&mut o, "--schema", &a[9..])?,
 			_ if a.starts_with("--layer=") => set_value_opt(&mut o, "--layer", &a[8..])?,
 			_ if a.starts_with("--set=") => set_value_opt(&mut o, "--set", &a[6..])?,
+			_ if a.starts_with("--set-literal=") => {
+				set_value_opt(&mut o, "--set-literal", &a[14..])?
+			}
 			_ if a.starts_with('-') && a.len() > 1 => {
 				return Err(format!("unknown option: {}", a));
 			}
@@ -178,12 +268,20 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			o.layers.push(v.to_string());
 			o.seen.push("--layer");
 		}
-		"--set" => {
+		"--set" | "--set-literal" => {
 			let (p, val) = v
 				.split_once('=')
-				.ok_or_else(|| format!("bad --set value (want PATH=VALUE): {}", v))?;
-			o.sets.push((p.to_string(), val.to_string()));
-			o.seen.push("--set");
+				.ok_or_else(|| format!("bad {} value (want PATH=VALUE): {}", name, v))?;
+			o.sets.push(Set {
+				path: p.to_string(),
+				value: val.to_string(),
+				literal: name == "--set-literal",
+			});
+			o.seen.push(if name == "--set-literal" {
+				"--set-literal"
+			} else {
+				"--set"
+			});
 		}
 		_ => return Err(format!("unknown option: {}", name)),
 	}
@@ -204,12 +302,25 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			"--strictness",
 			"--layer",
 			"--set",
+			"--set-literal",
 		],
-		"set" => &["--strictness", "--layer", "--set", "--write"],
-		"fmt" => &["--write", "--strictness", "--layer", "--set"],
+		"set" => &[
+			"--strictness",
+			"--layer",
+			"--set",
+			"--set-literal",
+			"--write",
+		],
+		"fmt" => &[
+			"--write",
+			"--strictness",
+			"--layer",
+			"--set",
+			"--set-literal",
+		],
 		"check" => &["--strictness", "--schema"],
-		"init" => &["--schema"],
-		"count" | "instances" => &["--strictness", "--layer", "--set"],
+		"init" => &["--schema", "--no-banner"],
+		"count" | "instances" => &["--strictness", "--layer", "--set", "--set-literal"],
 		_ => &[],
 	};
 	for s in &o.seen {
@@ -221,6 +332,23 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			}
 			return Err(1);
 		}
+	}
+	// Writing back the merged document would fold the lower layers permanently
+	// into the top file, which is the opposite of what layering is for. On 'set'
+	// the --set values are edits to the document rather than a layer over it, so
+	// persisting them is the whole point; everywhere else they stay ephemeral.
+	if o.write && !o.layers.is_empty() {
+		eprintln!("--write cannot be combined with --layer (see --help)");
+		return Err(1);
+	}
+	if o.write && !o.sets.is_empty() && cmd != "set" {
+		eprintln!("--write cannot be combined with --set (see --help)");
+		return Err(1);
+	}
+	// The ops script already has stdin, so a layer cannot read it too.
+	if cmd == "set" && o.layers.iter().any(|l| l == "-") {
+		eprintln!("--layer=- is not valid for set (stdin carries the ops script)");
+		return Err(1);
 	}
 	Ok(())
 }
@@ -248,9 +376,9 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 		let over = load(t, o.strictness)?;
 		doc.merge(&over);
 	}
-	for (p, v) in &o.sets {
-		if !doc.set_string(p, v) {
-			eprintln!("shcl: cannot write {} (from --set)", p);
+	for s in &o.sets {
+		if !s.apply(&mut doc) {
+			eprintln!("shcl: cannot write {} (from {})", s.path, s.opt());
 			return Err(1);
 		}
 	}
@@ -279,20 +407,50 @@ fn write_atomic(file: &str, data: &str) -> Result<(), String> {
 		.file_name()
 		.map(|b| b.to_string_lossy().into_owned())
 		.unwrap_or_else(|| file.to_string());
-	let tmp = dir.join(format!(".{}.tmp{}", base, std::process::id()));
-	let res = std::fs::File::create(&tmp).and_then(|mut f| {
-		f.write_all(data.as_bytes())?;
-		// Best effort: a filesystem that cannot carry the mode is not a reason
-		// to fail a write that otherwise succeeded.
+	// Exclusive create: the name is predictable, so anything already sitting
+	// there - including a symlink someone else planted - must make this fail
+	// rather than be written through. Retry past a stale collision, then give
+	// up; refusing to write beats writing somewhere unintended.
+	let mut file_handle = None;
+	let mut tmp = std::path::PathBuf::new();
+	let mut last = String::new();
+	for attempt in 0..8 {
+		tmp = dir.join(format!(".{}.tmp{}.{}", base, std::process::id(), attempt));
+		let mut opts = std::fs::OpenOptions::new();
+		opts.write(true).create_new(true);
+		// Born private, so the copy is never briefly readable to anyone the
+		// original was not. The real mode goes on below, before any data.
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::OpenOptionsExt;
+			opts.mode(0o600);
+		}
+		match opts.open(&tmp) {
+			Ok(f) => {
+				file_handle = Some(f);
+				break;
+			}
+			Err(e) => last = e.to_string(),
+		}
+	}
+	let Some(mut f) = file_handle else {
+		return Err(format!("{}: cannot create temporary file: {}", file, last));
+	};
+	let res = (|| -> std::io::Result<()> {
+		// On the handle, so umask cannot narrow it the way it narrows a create
+		// mode. Best effort: a filesystem that cannot carry the mode is not a
+		// reason to fail a write that otherwise succeeded.
 		if let Ok(m) = std::fs::metadata(&target) {
 			let _ = f.set_permissions(m.permissions());
 		}
+		f.write_all(data.as_bytes())?;
 		f.sync_all()
-	});
+	})();
 	if let Err(e) = res {
 		let _ = std::fs::remove_file(&tmp);
 		return Err(format!("{}: {}", file, e));
 	}
+	drop(f);
 	std::fs::rename(&tmp, &target).map_err(|e| {
 		let _ = std::fs::remove_file(&tmp);
 		format!("{}: {}", file, e)
@@ -553,6 +711,8 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			let dt = parse_datetime(val()).ok_or_else(|| format!("bad datetime: {}", val()))?;
 			doc.set_datetime(path, &dt)
 		}
+		"literal" => doc.set_literal(path, val()),
+		"literal-default" => doc.set_literal_default(path, val()),
 		"int-default" => doc.set_int_default(path, pint(val())?),
 		"float-default" => doc.set_float_default(path, pflt(val())?),
 		"bool-default" => doc.set_bool_default(path, val() == "true"),
@@ -600,6 +760,13 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 				path,
 				&owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
 			)
+		}
+		"datetime-array-default" => {
+			let dts: Vec<_> = arr
+				.iter()
+				.map(|s| parse_datetime(s).ok_or_else(|| format!("bad datetime: {}", s)))
+				.collect::<Result<Vec<_>, _>>()?;
+			doc.set_datetime_array_default(path, &dts)
 		}
 		"raw" => doc.set_raw(path, &unescape_ops(f.get(3).copied().unwrap_or("")), val()),
 		"raw-default" => {
@@ -665,17 +832,21 @@ fn do_set(o: &Opts) -> u8 {
 			Err(code) => return code,
 		}
 	}
-	for (p, v) in &o.sets {
-		if !doc.set_string(p, v) {
-			eprintln!("shcl: cannot write {} (from --set)", p);
+	for s in &o.sets {
+		if !s.apply(&mut doc) {
+			eprintln!("shcl: cannot write {} (from {})", s.path, s.opt());
 			return 1;
 		}
 	}
+	// --set carries the edits, so stdin is left alone: reading it here would
+	// block on the console for anyone who passed edits as options.
 	let mut ops = String::new();
-	use std::io::Read;
-	if let Err(e) = std::io::stdin().read_to_string(&mut ops) {
-		eprintln!("stdin: {}", e);
-		return 1;
+	if o.sets.is_empty() {
+		use std::io::Read;
+		if let Err(e) = std::io::stdin().read_to_string(&mut ops) {
+			eprintln!("stdin: {}", e);
+			return 1;
+		}
 	}
 	for (n, line) in ops.lines().enumerate() {
 		if line.is_empty() || line.starts_with('#') {
@@ -744,6 +915,7 @@ fn do_check(o: &Opts) -> u8 {
 					});
 				} else {
 					diags.extend(doc.validate(&sdoc));
+					suppress_declared_repeats(&sdoc, &mut diags);
 				}
 			}
 			(diags, false)
@@ -781,6 +953,10 @@ fn do_check(o: &Opts) -> u8 {
 }
 
 fn do_init(o: &Opts) -> u8 {
+	if !o.args.is_empty() {
+		eprintln!("init takes no file argument (see --help)");
+		return 1;
+	}
 	let schema_file = match &o.schema {
 		Some(s) => s,
 		None => {
@@ -810,7 +986,7 @@ fn do_init(o: &Opts) -> u8 {
 		// same exit as `check --schema` reporting it.
 		return 6;
 	}
-	match generate(&sdoc) {
+	match generate(&sdoc, o.no_banner) {
 		Ok(text) => {
 			print!("{}", text);
 			0
@@ -929,11 +1105,12 @@ fn main() -> ExitCode {
 		}
 	};
 	let first = argv.first().map(|s| s.as_str());
-	if argv.is_empty() || argv.iter().any(|a| a == "-h" || a == "--help") || first == Some("help") {
+	let asked = asked_for(&argv);
+	if argv.is_empty() || asked == Some("help") || first == Some("help") {
 		print!("{}", HELP);
 		return ExitCode::from(if argv.is_empty() { 1 } else { 0 });
 	}
-	if argv.iter().any(|a| a == "-V" || a == "--version") || first == Some("version") {
+	if asked == Some("version") || first == Some("version") {
 		println!("shcl {}", env!("CARGO_PKG_VERSION"));
 		return ExitCode::from(0);
 	}

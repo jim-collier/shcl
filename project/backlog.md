@@ -5,7 +5,7 @@
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
 # Shcl backlog
 
-This is a product backlog just for pre-v1.0.0 release. After that, bugs, features, and enhancements will be managed in Github Issues, and/or nano-git-db (based on shcl).
+The product backlog: bugs, features, enhancements, and code-review findings. Day-to-day tracking is moving to Github Issues, and/or nano-git-db (which is built on shcl), so this file will thin out over time.
 
 <!-- TOC ignore:true -->
 ## Table of contents
@@ -18,11 +18,11 @@ This is a product backlog just for pre-v1.0.0 release. After that, bugs, feature
 	- [Features and enhancements](#features-and-enhancements)
 	- [Code Reviews](#code-reviews)
 	- [Done](#done)
-		- [Done - Misc to-do](#done---misc-to-do)
 		- [Done - Bugs](#done---bugs)
 		- [Done - Features and enhancements](#done---features-and-enhancements)
 		- [Done - Code reviews](#done---code-reviews)
 		- [Done - Initial requirements](#done---initial-requirements)
+		- [Done - Misc to-do](#done---misc-to-do)
 	- [Future and/or deferred](#future-andor-deferred)
 	- [Canceled](#canceled)
 
@@ -44,18 +44,13 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 ### Misc to-do
 
+None open.
+
 ### Bugs
 
+None open.
+
 ### Features and enhancements
-
-- 🔘 Glossary of terms
-
-- 🔘 Add PowerShell wrapper acknowledgement to design.md
-
-- 🔘 Hosted CI runs its four pinned actions on a deprecated Node.
-	- All four are pinned by commit SHA and target Node 20, which the runners now force onto Node 24 with a warning on every run.
-	- Working today, and the warning is the only symptom. It stops working whenever the runners drop the shim.
-	- Fix is to re-pin each action to a release built for the current Node, keeping the pin-by-SHA-with-tag-in-a-comment shape.
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
@@ -66,6 +61,17 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 		- 🔘 JavaScript
 
 ### Code Reviews
+
+- **20260804**:
+
+	- **Improvements**:
+
+		- 🔘 Code Review 20260804 item 1: the C CLI keeps its `--set` overrides in two parallel arrays, where the other three bindings keep one structured list.
+			- The other bindings split `PATH=VALUE` when the option is parsed and store the path, the value and which spelling produced it together. C stores the raw string and re-splits it at apply time, with a second array carrying the spellings.
+			- Keeping two arrays aligned needs a trick at the push site: one of the two counts is incremented into a local and thrown away, so the arrays grow in step. That is easy to break and easy to misread.
+			- It also leaves the applier doing pointer arithmetic on a separator it assumes is there. Correct today, because the parser rejects a value without one, but the guarantee sits about 580 lines away from the code that relies on it.
+			- Fix: give C a small struct (path, path length, value, which spelling) and one vector of it. The re-split, the parallel array, and the lockstep trick all go away together, and the four bindings end up the same shape.
+			- Post-release. No behavior change, so nothing in the corpus or the crosscheck moves; it is a readability and parity fix, not a bug.
 
 - **20260727**:
 
@@ -80,38 +86,154 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 	- **Improvements**:
 
-	- 🛠️ Code Review 20260725 item 28: give the loader opt-out limits.
-		- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
-		- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
-		- ✅ Done: the depth half, which landed with item 2 - a fixed 512-level cap and `E016`.
-		- ✋ Deferred post-1.0: the depth cap closed the crash class. Size, node and array knobs are additive API that can land later without breaking anything, and a consuming program can bound input size itself before calling parse.
+		- 🛠️ Code Review 20260725 item 28: give the loader opt-out limits.
+			- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
+			- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
+			- ✅ Done: the depth half, done with item 2 - a fixed 512-level cap and `E016`.
+			- ✋ Deferred post-1.0: the depth cap closed the crash class. Size, node and array knobs are additive API that can be added later without breaking anything, and a consuming program can bound input size itself before calling parse.
 
-	- 🛠️ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
-		- All four bindings recover the code from `msg.starts_with(...)` over about 30 hand-ordered prefixes, so rewording a message can change a code, and the ordering is load-bearing.
-		- Separately, `V001`-`V099` were fully tabled but `E001`-`E015` and `H001` were listed nowhere, while users are told to gate CI on `check`.
-		- ✅ Done: the doc half. `E001`-`E016` plus `H001` are now tabled in the spec's Diagnostics section.
-		- ✋ Deferred: threading the code through every call site. Large, mechanical, and invisible to users, and every corpus case pins the code per line - so the exposure is limited to messages no case exercises.
+		- 🛠️ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
+			- All four bindings recover the code from `msg.starts_with(...)` over about 30 hand-ordered prefixes, so rewording a message can change a code, and the ordering is load-bearing.
+			- Separately, `V001`-`V099` were fully tabled but `E001`-`E015` and `H001` were listed nowhere, while users are told to gate CI on `check`.
+			- ✅ Done: the doc half. `E001`-`E016` plus `H001` are now tabled in the spec's Diagnostics section.
+			- ✋ Deferred: threading the code through every call site. Large, mechanical, and invisible to users, and every corpus case pins the code per line - so the exposure is limited to messages no case exercises.
 
 ### Done
 
-#### Done - Misc to-do
-
-- ✅ Set up pub/priv key for download signing.
-
-- ✅ Set up account on crate.io and get publish API key.
-
-- ✅ Set up account on pypi.org and get publish API key.
-
 #### Done - Bugs
 
+- ✅ The PowerShell wrapper's sourced `shcl` cannot be fed an op script on stdin. It is a function, so it forwards arguments but not pipeline input: `$ops | shcl set --write f.shcl` drops the ops and the CLI then blocks on console stdin until it is killed. The Bash wrapper pipes fine, so the two wrappers are not at parity, and `set` is the only subcommand that reads stdin.
+	- Workaround, now in the README, is to pipe to the binary instead, resolved as `Get-Command shcl -CommandType Application` - plain `Get-Command shcl` returns the sourced function, whose `.Source` is empty. Callers should not need to know that.
+	- Not crosscheck-visible: the wrappers are forwarders and deliberately sit outside `BINDING_CLIS`, so nothing in the pipeline exercises this.
+	- Fixed: `shcl` forwards `$input` to the binary, but only when `$MyInvocation.ExpectingInput` says something was piped. The guard matters - forwarding an empty `$input` would hand the binary a closed stdin, so a bare `shcl set f.shcl` would read zero ops instead of the console.
+	- Verified both modes against the real binary: dot-sourced with ops piped, and run as a script with a shell-level pipe (that one reaches the process stdin directly, not the PowerShell pipeline, so it takes the other branch). Same ops through the Bash and PowerShell wrappers now leave byte-identical files.
+
+- ✅ Paths() silently drops any node whose name isn't a bare identifier, along with its whole subtree.
+	- Reported from TradeClanker, where it was a live bug. A quoted field name parses with no diagnostics and reads back fine, but the enumeration skips it.
+	- Impact: their unknown-field check walks Paths(), so a typo whose name needs quoting slipped past the one check built to catch typos. It also broke round-tripping, since the writer could create a node the enumeration would not report.
+	- Cause: the skip was deliberate, and pinned by a doc comment, the spec wording, and the shared paths fixture in all four runners.
+	- Fixed: non-bare segments now emit quoted and escaped, in the same spelling the canonical formatter uses, so every returned path resolves. The fixture, the doc comment, and the spec's traversal section moved with the code.
+
+- ✅ A strict parse hands back nothing usable.
+	- Reported from TradeClanker. The Go parse returned a nil document beside the error, so the natural `doc, err :=` followed by `doc.Diagnostics()` panicked.
+	- Cause: the error value did carry the full diagnostics list, but the message was only a count, so the obvious path hid every line and code it was already holding.
+	- Fixed both ways, in all four bindings. The failure now carries the parsed document, and the message names the first three diagnostics with line and code. Go returns the document non-nil beside the error, so the natural path cannot panic.
+
+- ✅ `Raw` on a read result was not raw.
+	- Reported from nano-git-db, which found it corrupting regexes. The doc comment promised the original text from the file, but every read filled the field from the canonical display form, which joins elements with a comma and a space.
+	- Reproduced: `regex: ^\d{2,3}$` came back as `^\d{2, 3}$` with no diagnostics. Anything already written `a, b` round-tripped looking correct, so casual testing passed and only a value like `{2,3}` failed.
+	- Fixed: the parser keeps the source line's value span, and reads hand it back verbatim. Writer-built values, stacked-list elements, and raw blocks fall back to the display form. Rust, Go and Python carry it - those are the bindings whose read result exposes the field.
+	- Note: this also covers their separate request to read a comma-bearing scalar verbatim without a fenced block. Having the reader consult the schema's declared type before comma-splitting was declined, since it buys the same result at much higher complexity.
+
+- ✅ By-value selectors matched the as-written spelling, not the logical string.
+	- Reported from convert-base-v2. A `["q\"uote"]` selector and a document's `'q"uote'` are the same string but did not cross-match, because both sides kept their escape pairs verbatim and the comparison was spelling against spelling.
+	- Impact: a silent NotFound. Anyone using a quote-bearing discriminator would hit it eventually. The spec pinned matching against the display form but said nothing about escapes.
+	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
+
 #### Done - Features and enhancements
+
+- ✅ The README installed the CLI six different ways and never once showed it running.
+	- Every code example was library code. A reader who took the packages, the installers or the prebuilt binaries had nothing telling them what the command actually does, and the demo gif was the only place the CLI appeared at all.
+	- Done: a `Using the CLI` section between the file example and the per-language examples - typed reads with a fallback, `count`/`instances`/`[*]` over repeated fields, a broken line reported while the rest of the file still loads, schema validation naming the field you meant, and `init` writing a commented starter file. The transcripts are verbatim output.
+	- The write-half notes moved out of the C subsection, where they had ended up by accident, into their own section at the end of the examples. Its after-save file is now the real output rather than an abridged one, which also fixed inline comments that had gone stale against the input above it.
+	- Features gained the three capabilities the list had been silent on: querying repeated fields, stable diagnostic codes, and the writer keeping comments attached across a save.
+	- The GitHub About blurb was a paragraph; it now matches the tagline and fits the width the card actually shows. Sponsorship is mentioned once in the support section and once in `contributing.md`, both times as an aside.
+
+- ✅ A generated config file said nothing about what format it was in, so whoever opened it next had no way to find the syntax.
+	- Done: `shcl init` ends the file with a short comment footer naming the format and linking its home page and spec, after a blank line. `--no-banner` leaves it out, and `generate` takes the same flag in every binding plus the C++ veneer.
+	- The flag is negative so the footer is what a caller gets by saying nothing - the opt-out is the thing that has to be asked for.
+	- The `Legal` line names SHCL as its subject ("SHCL is Copyright ...") rather than opening with the copyright, so it cannot be misread as a claim over the config it sits in.
+	- The footer is output, so it is a byte-for-byte cross-binding contract like the annotation line. The three init goldens carry it; each runner also generates with the flag set and checks the result is the golden minus the footer, so the flag costs no extra goldens.
+
+- ✅ A value that is not a plain scalar could not be written as an option: `--set` reads its value as data, so `ports=80, 443` stored one quoted string rather than an array.
+	- Done: `--set-literal PATH=TEXT` reads the text as value syntax instead - the way the parser reads the half of a line after the colon - so the same text writes a two-element array. Backed by `SetLiteral`/`SetLiteralDefault` in all four bindings, a matching `literal` op in the write-ops script, and corpus case 044.
+	- It parses the text rather than splicing it, so there is no way to inject syntax: the result is a value or a rejection, output stays canonical, and a written document is still a formatter fixpoint. Rejects only what could not be one line's value (a line break, or a quote that never closes - the same text the parser reports E017 for); an unquoted `#` ends the value as it would in a file.
+	- Both spellings share one ordered list, so the last option to touch a path wins.
+	- Investigated and deliberately not built: a "force this value to be a string" option. Quoting is a rule about canonical output, not a type marker - `fmt` normalises `ver: "8"` to `ver: 8`, and values are typed by the reader - so there is nothing to force.
+	- No C++ veneer change: the veneer exposes reads only, so adding one setter there would have been the odd one out.
+
+- ✅ Persisting an edit from a shell needed a tab-separated op script on stdin, which is the root cause behind both shell wrappers' rough edges: tabs are invisible in source and survive neither retyping nor an editor that expands them, and the PowerShell wrapper could not carry stdin at all.
+	- Done: `set --write --set PATH=VALUE`, repeatable, applied in order, no pipe and no tabs. `--set` was already applied through the Writer on `set` rather than layered, so the edits were persistent in all but name - only the `--write` refusal stood in the way, and it existed for `--layer`'s sake.
+	- Deliberately no new typed options: `--set` writes the value as literal config text, so `workers=8` already reads as an integer. A `--int`/`--string` family was measured against the op script and produced byte-identical output, so it would have been a redundant second way to do what `--set` already does.
+	- Known gap at the time, now closed by the item below: an array value could not be written as an option, because a comma made it a quoted string.
+	- Given any `--set`, `set` no longer reads stdin - otherwise passing edits as options blocks on the console, which is the hang this was meant to remove.
+
+- ✅ The schema can't declare an open section. From TradeClanker: wildcards select instances (`server[*].port`), but there's no way to say "any child name under `indicators`, each shaped like this" - so a config with one map-shaped section can't use schema validation at all, and they keep a hand-maintained known-paths map instead. Everything else in their config would express cleanly as a schema.
+	- A name-position wildcard is the missing construct. Distinct from the schema-fragments item below (shape reuse), but they'd be designed together - both grow the schema language, so both go through the same design-first gate.
+	- Done: bare `*` name segment in lookup paths, all four bindings. Works in schemas (per-child contexts, unknown-sweep pattern match) and in reads (slots like `[*]`); writer refuses it; quoted `"*"` stays a literal name; document lines unchanged. Cases 037/038; spec + design.md updated.
+
+- ✅ Schema fragments. From nano-git-db, the top feature request: the schema language can't express recursion (arbitrarily-nesting layout blocks are generated to a fixed depth of 8, past which validation silently stops and correct keys start reporting as unknown) or path aliases (wrapped vs flat spellings force ~60 lines of string surgery over their own schema file at init). Both are the same missing idea - "this subtree has the shape of that one" - and a single fragment/reference construct closes both, taking 99 hand-written field entries plus two generators down to something reviewable.
+	- Big. Design first, post-1.0. Weigh hard against keeping the schema language small, but two independent workarounds in the most rigorous consumer argue it earns its keep.
+	- Done: `fragment: <name>` declares (children are ordinary `field:` instances with relative paths), `inherits: <name>` mounts, all four bindings. Recursion/mutual refs legal with no depth limit (demand-driven expansion); `init` expands mounts and cuts where a fragment re-enters; H001 disavowal covers fragment-declared repeats; new V094/V095 faults. Cases 039-041; spec + design.md updated.
+
+- ✅ Lower the go directive to the tested floor.
+	- Declared 1.20 (strings.CutSuffix is the newest stdlib dependency; everything else predates generics). Hosted CI now installs a stable toolchain instead of reading go.mod - the pipeline's own `go -C` needs a current release - while the directive gates the consumer floor. From convert-base-v2: go.mod declares 1.24, and that directive is their recorded reason for vendoring the file instead of using it as a module - it would drag their deliberately-1.21 project up. The identical file compiles and passes their full suite under 1.21, so 1.24 is declaration, not need; find the real floor (generics suggest possibly 1.18) and declare that.
+
+- ✅ Docs batch from the feedback round:
+	- Done in the spec (Empty-vs-NotFound as an advertised full-tier feature; a "choosing [#i] vs [value] when mapping entities" bullet in the traversal section) and in the Go package docs (a "writing a mapper" worked example: one-shot load, Count+[#i] iteration, Children for open sections, QuoteSegment, raw blocks). IndexOf not added - Count+[#i] covers the need without growing the surface.
+	- Advertise the Empty vs NotFound distinction. convert-base-v2 mapped it straight onto their tri-state marker convention with no adapter ("empty means explicitly disabled, absent means default") and called it rare among config parsers - it belongs in the README/spec as a feature, not something discovered by reading source.
+	- A spec paragraph on choosing `[#i]` vs `[value]` selectors when mapping entities: by-value misreads an entity whose name is numeric and collapses two same-named entities, and since matching is against the display form, a scalar spelled `"a, b"` and the two-element list meet the same selector. nano-git-db and convert-base-v2 each worked these out the hard way; nano-git-db suggests an IndexOf(path, value) alongside.
+	- A "writing a mapper" worked example in the Go package docs: the exported surface is 60+ methods, and the shape of a real consumer - descend by path prefix, Count then `[#i]`, schema validation for line-numbered errors, fences for verbatim - cost them most of a day to discover.
+
+- ✅ Hosted CI runs its four pinned actions on a deprecated Node.
+	- Re-pinned to current-Node releases, SHA-with-tag-comment shape kept: checkout v6.1.0, setup-go v6.5.0, setup-python v6.3.0, cache v5.1.0. Green on dev.
+	- All four are pinned by commit SHA and target Node 20, which the runners now force onto Node 24 with a warning on every run.
+	- Working today, and the warning is the only symptom. It stops working whenever the runners drop the shim.
+	- Fix is to re-pin each action to a release built for the current Node, keeping the pin-by-SHA-with-tag-in-a-comment shape.
+
+- ✅ Add existence of PowerShell wrapper acknowledgement to design.md
+	- Added to the Shell wrappers section: dual-mode design, no param block (verbatim $args), exit codes into $LASTEXITCODE, not in the differential (a forwarder).
+
+- ✅ Glossary of terms
+	- Covered by the spec's Terminology section, now extended with the wider-surface nouns (trivia, raw block/fence, canonical form, layer, schema, corpus).
+
+- ✅ Writer output has no blank lines between top-level sections.
+	- Done, default on with no knob: writer-created top-level nodes set blank_before (the emitter never blanks line 1). Write goldens 014/016/029 regenerated; spec Writer section documents the shape. From TradeClanker: hand-written examples and writer output disagree on shape, so they post-process the library's output with string surgery - which is what using the writer was meant to end. Blank-before already exists as parsed trivia, so the writer setting it when it creates a new top-level node (or a knob to) keeps the fixpoint property intact.
+	- Write-corpus goldens would churn; decide the default deliberately since written output is contract.
+
+- ✅ to_canonical() drops blank lines between comment-only regions. It shouldn't do that.
+	- Fixed: each held comment records its own preceding blank (runs still collapse to one; never as first output line). Blanks between comment regions - leading, merged, and end-of-file - now round-trip.
+
+- ✅ to_canonical() also loses comment indentation two ways, from the SilkTerm devs: a comment run trailing a block's last child re-attaches to the following node and de-indents to column 0, and orphan comments after the last binding always emit unindented. Together with the blank-line item above, fixing these lets them delete most of their save-repair pass.
+	- Fixed structurally rather than by storing verbatim indent: a comment written deeper than the next binding hangs on the block it sits in (new after-trivia, emitted after the block's last child at the block's indent); the same rule keeps indented tail-of-file comments with their block. Corpus case 034 pins it; fmt stays a fixpoint (20k-iteration fuzz soak).
+	- Means recording indent (and probably original attachment) as trivia; fmt must stay a fixpoint. All four parsers + emit, golden churn expected.
+
+- ✅ Expose whether a value was quoted.
+	- Done: `quoted` on the read result (rust/go/python; C read structs stay value+status by design) - true for a quoted single scalar element, false for arrays/raw/empty. From nano-git-db: `a: @null` and `a: "@null"` read identically, so a language built on shcl can't reserve a sentinel value and still let a user write it literally - they had to make `@null` unconditionally reserved and walk back docs that promised quoting would escape it. The parser already tracks quoted per element and drops it at the read boundary; one field on the read result makes "quoting is the escape" true for every downstream language.
+
+- ✅ Line numbers on the read path.
+	- Done both ways as filed: `Line(path)` accessor in all four bindings + veneer, and `line` on the read result itself (rust/go/python). 0 = unresolved or writer-built; merged instances cite the first binding, matching diagnostics. From nano-git-db: node line is populated and never exported, so any consumer check the schema can't express can only name the entity, never the line - their warnings degraded from `line 81: ...` to `table issue: ...`. A Line(path) accessor is the cheapest high-value ask in their list.
+	- Second consumer, same gap (TradeClanker): parser diagnostics carry a line and reads don't, so half the errors a user sees cite a line and half don't - a bad value reports nothing while a malformed line one field above reports `line 12`. They want the line on the read result itself, not just a separate accessor; do both, it's the same plumbing.
+
+- ✅ Enumerate a node's children.
+	- Done: `Children(path)` in all four bindings + veneer - file order, duplicates included, empty path = top level; names as stored, QuoteSegment for splicing. From nano-git-db: Paths() dedupes, so there is no way to ask "what keys are under this section?" - they hardcode a ten-name hook list purely because they can't ask what's under `code:`, and any open-ended or map-shaped section is unmodellable. Children(path) returning child names in file order, duplicates included, deletes more of their workaround code than anything else they asked for.
+	- TradeClanker asks for the same thing for the same reason (reading an open section means scanning all of Paths() and prefix-matching), and notes it also sidesteps the Paths() quoted-name bug for that use.
+
+- ✅ Hint when a merge combines non-adjacent bindings.
+	- Done: H002, hint severity, at the later line with the earlier line named in the prose. Fires only on a last-segment no-selector merge into a non-last child - adjacent re-mentions and the dotted redundant-path idiom stay silent. Corpus case 035; 001/013 diags goldens gained one each. From nano-git-db: merge-by-(name, value) means two separately-written `table: t` sections silently become one combined table, and only the parser can know it happened - their consumer-side "already defined; first wins" check was unreachable and got deleted as dead code. A hint-severity diagnostic carrying both line numbers would make that class of check possible without touching the documented merge semantics.
+	- New H-code; diagnostics are contract, so all four bindings plus the expected-diags goldens move together.
+
+- ✅ Suppress H001 where the schema declares the repetition.
+	- Done at check --schema assembly (and inside the one-shot), via a shared library helper so CLIs and runners can't drift; matched by leaf name, the filter consumers hand-rolled. Corpus case 036. From nano-git-db: the repeated-bare-leaf hint is structurally a false positive for any field whose repetition is the instance mechanism (`unique:`, `index:`, `row:`), so every correct file warns on load and users learn to ignore warnings; they filter it by hand for exactly three names. When a schema is present and a path declares repeat with an upper bound above 1, drop H001 there - the information already exists and goes unused.
+	- H001 is parse-time and the schema arrives at validate, so the suppression belongs where check --schema assembles output, not in the parser.
+
+- ✅ One-shot load-and-validate, plus an error predicate.
+	- Done: LoadAndValidate(text, schema, strictness) -> document carrying one combined diagnostics list (never throws; empty schema skips validation; declared-repeat H001s dropped), plus ErrorCount() on the document. All four bindings + veneer. From nano-git-db: doc diagnostics and schema validation come back as two separate lists that must be merged by hand (forget one and half the errors vanish), and there's no HasErrors/ErrorCount, so "did this file have errors" is consumer bookkeeping - which matters, since recover-and-continue means a mixed-indentation file otherwise returns no error at all. A combined entry point (text + schema + strictness in, doc + one diagnostic list out) plus an error count removes a whole class of consumer mistake.
+	- TradeClanker independently hand-rolled the same thing: no strictness level means "forgiving about spelling, loud about a dropped line", so at Standard an error diagnostic comes back beside a nil error and the line is silently skipped, and every consumer writes the same fifteen lines. An Errors() helper on the document is the smallest shape of this ask, from a second consumer.
+
+- ✅ Setters should say why they failed.
+	- Done as an additive probe (setter returns are frozen post-1.0): `WriteReason(path)` in all four bindings + veneer runs the writer's exact validation without creating anything and names the failure - Writable/BadPath/ValueInPath/Wildcard/NoSuchIndex/TooDeep. place() now pre-gates on it, so the two can't drift. CLI stays exit 1. From TradeClanker: Set* returns a bare pass/fail, and false covers an empty path, a malformed path, a wildcard, a depth overrun, and an unresolvable index indistinguishably - their workbench's error message is literally a guess because the library won't say. A small reason enum (or per-binding equivalent) on the write result fixes it; CLI behavior stays exit 1.
+	- All four bindings move together; the write corpus pins outputs, not the reason surface, so exposure should be small - verify.
+
+- ✅ Building a path from a user-typed name is injection.
+	- Done: QuoteSegment/quote_segment/shcl_quote_segment + veneer, sharing the emitter's name-quoting - same spelling both directions as the Paths() fix. From TradeClanker: Set* accepts segments that aren't valid bare names, and a dotted name is silently reinterpreted as nesting - a consumer concatenating a user-typed indicator name into a path is doing path injection without knowing it. Export a quote-segment helper (the escaping the path scanner already understands), or segment-wise setters taking a list that can't be injected into. Pairs naturally with the Paths() quoted-name bug above - same escaping code both directions.
 
 - ✅ Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.
 	- Done: `install-dev.bash` at repo root. Linux + macOS directly; Windows via WSL (the dev pipeline is bash). Clones (or detects an existing clone), installs the no-sudo pieces itself (rustup, ruff/mypy/cppcheck via pipx, markdownlint via npm, PSScriptAnalyzer via pwsh), and prints the exact package-manager hint for what needs root (go, python3, gcc, shellcheck). Shellcheck-gated.
 
 - ✅ Release-install script, `install.bash` and cross-platform `install.ps1`. In [repo] root, usage instructions in README.md.
 	- Done: both at repo root, README Installing has the one-liners. Latest release via the GitHub API (`--release dev` = newest incl. pre-releases, default; `stable` = newest full release), binary picked by OS/arch, sha256-verified, `code/` (drop-in files) and `scripts/` (wrappers) pulled from the tag's source tarball. Idempotent (atomic binary swap); states the plan and confirms first.
-	- Decisions along the way: `objects/` skipped - nothing statically-linkable is published yet (revisit with packaging). Linux user install lands in `~/.local/share/shcl` with the `~/.local/bin/shcl` symlink (one path can't be both the dir and the symlink). Windows user install adds its own dir to the user PATH instead of symlinking (symlinks need elevation); it landed in `%USERPROFILE%\bin\Shcl` at first and moved to `%LOCALAPPDATA%\Programs\Shcl` before 1.0.0. macOS/BSD get a clear "no prebuilt binaries yet" pointer at build-from-source.
+	- Decisions along the way: `objects/` skipped - nothing statically-linkable is published yet (revisit with packaging). Linux user install goes to `~/.local/share/shcl` with the `~/.local/bin/shcl` symlink (one path can't be both the dir and the symlink). Windows user install adds its own dir to the user PATH instead of symlinking (symlinks need elevation); it went to `%USERPROFILE%\bin\Shcl` at first and moved to `%LOCALAPPDATA%\Programs\Shcl` before 1.0.0. macOS/BSD get a clear "no prebuilt binaries yet" pointer at build-from-source.
 	- Behavior:
 		- Runnable via a single `curl` or `wget`. Downloads, installs, and runs the latest release, with an option to abort.
 		- Idempotent. Updates existing.
@@ -195,7 +317,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 		- ✅ demo gif: opens by naming both usage modes (CLI and drop-in library), the formatter step says values are never rewritten, and the loop seam cuts to black instead of crossfading. 0.3 MB -> 0.2 MB.
 		- ✅ demo gif: output that fits on one screen now arrives at once like a real terminal, only an overflowing view scrolls, the cursor no longer blinks, and every motion frame is exactly 50 fps.
 			- Nothing had actually been scrolling: the window is 22 rows and both long outputs fit, so the lines were popping in one at a time on a timer. That was the stepping.
-			- Scroll smoothness is pixels per frame, so the step is rounded to an exact divisor of the line height - a line boundary never lands mid-step.
+			- Scroll smoothness is pixels per frame, so the step is rounded to an exact divisor of the line height - a line boundary never falls mid-step.
 			- ✅ demo gif: the cursor blinks again while the prompt is idle, glides at sub-pixel resolution, and this demo drops the blank line between output and the next prompt.
 				- The block is drawn with coverage-blended edges instead of snapping to whole pixels, so a 3 px per frame glide reads as continuous.
 				- No padding line after output: the demo is about exact output shape, and a blank line invites misreading it. Scenario knob `blankafter`, on by default.
@@ -203,11 +325,199 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 		- Done: stage 6 builds .deb + .rpm (nfpm) per Linux binary and an NSIS setup per Windows binary into the release artifact dir, covered by the same sha256sums. `--no-package` to skip; off under `--ci` and `--quick`. Packages use distro layout (/usr/bin + /usr/share/shcl); payload matches install.bash.
 
 - ✅ Accessor: two-tier junior-friendly surface (convenience default plus full status), consistent across all bindings. A supplied default implies default mode.
-	- Done alongside review item 6: the full status tier (`Read`/`read_*`) already shipped; the convenience default tier now ships in every library binding (`GetIntOr`/`get_*(default=)`/`shcl_get_*`/`get_or<T>`/native `unwrap_or`), plus the CLI `--default` for the wrapper bindings. Supplying the fallback is Default mode - value on `Good`, fallback otherwise.
+	- Done alongside review item 6: the full status tier (`Read`/`read_*`) was already there; the convenience default tier is now in every library binding (`GetIntOr`/`get_*(default=)`/`shcl_get_*`/`get_or<T>`/native `unwrap_or`), plus the CLI `--default` for the wrapper bindings. Supplying the fallback is Default mode - value on `Good`, fallback otherwise.
 
 - ✅ README rewrite: problem-first pitch, file and read-call examples, a format comparison table, a "wrong choice" section, and honest alpha status.
 
 #### Done - Code reviews
+
+- **20260802**:
+
+	- **Bugs**:
+
+		- ✅ Code Review 20260802 item 1: formatting a file can change what it means.
+			- Reproduced: a field that repeats, where the second one is an empty field later filled by a stacked list, formats to two identical lines. Reformatting that output collapses them to one, so a read that returned Multiple now returns a value.
+			- Cause: when a node's value is filled in after the fact, it moves to a new merge key. If a later sibling already holds that key the filled node is left beside it instead of merging.
+			- Note: all four bindings behave the same, so the cross-binding check can't see it, and no test case has this shape.
+			- Fixed: duplicate siblings are folded once parsing finishes, so the tree matches a reparse of its own canonical text. Folding is depth-first, since merging two parents can leave duplicate children a level down. Case 042.
+
+		- ✅ Code Review 20260802 item 2: in-place writes create their temporary file unsafely.
+			- Reproduced: the temporary name is predictable, and nothing stops it being a symlink someone else planted. The config's contents get written through that link, and the rename then turns the config itself into a symlink.
+			- Second problem: the file's permissions are copied on only after the data is written, so a 600 config is briefly world-readable. Interrupting the write leaves that copy behind for good.
+			- All four bindings. Only matters where someone else can write to the config's directory, but that includes shared and temp locations.
+			- Fixed: the temporary is created exclusively, so an existing file or link under that name makes the attempt fail rather than be written through, and the next name is tried. It is born private and given the target's permissions through the open handle before any data, which also keeps a group-writable config from being narrowed by the umask.
+			- Note: an interrupted write can still leave a temporary behind. It now carries the config's own permissions, so it is not an exposure, and clearing it would need signal handling in all four builds.
+			- The differential harness gained a check for it, since none of this shows up in normal output.
+
+		- ✅ Code Review 20260802 item 3: one schema line can switch off the unknown-field check.
+			- Reproduced: a field path written as a quoted name that starts with a star, such as a wildcard hostname key, silently becomes a real wildcard. Every unknown top-level name then passes, and the constraints on that line never apply.
+			- Cause: the schema's own value parsing strips the quotes before the path is scanned, so the scanner sees a bare star.
+			- The spec says the opposite in two places: a quoted star stays a literal name.
+			- Fails open, which is the worst direction for the one check meant to catch typos.
+			- Not a defect after all: quoting works at two levels, and the schema is behaving correctly at both. The outer quotes are ordinary string quotes around the value, needed by any path holding a selector, and they come off before the path is read - so a wildcard inside a quoted path stays a wildcard, which composed paths rely on. Quoting the segment itself, inside the value, does give a literal name, and the unknown-field check still catches typos alongside it.
+			- Fixed the real problem, which is that nothing said so: the spec now spells out both levels with worked examples, including that the tempting spelling declares an open section rather than a literal name.
+
+		- ✅ Code Review 20260802 item 4: validating against a recursive schema can hang.
+			- Reproduced: when two constraint paths match the same node and both mount the same fragment, the work doubles per level of the document. A file around thirty lines deep takes over a minute; a little deeper and it never finishes.
+			- The C build also runs out of memory, because each level's working data is kept until the whole validation ends rather than being released on the way back out.
+			- Fixed: each shape is checked once per node, so two paths reaching the same node cost one pass. A document 500 levels deep now validates in well under a tenth of a second.
+			- Fixed in C as well: the working data for each level is released on the way back out. The same document went from 11.5 GB to 2.2 MB. Case 043.
+
+		- ✅ Code Review 20260802 item 5: generating a file from a recursive schema can crash.
+			- Reproduced: a long chain of fragments overflows the stack and aborts the process in the reference build; Python raises instead; a schema of about 130 lines that branches can eat all available memory before it finishes.
+			- Validation of the same schemas is fine. Only generation expands every path up front.
+			- Note: generation reads a file the user supplies, so this is reachable from ordinary use.
+			- Fixed: a mount chain that reaches the nesting cap is noted like one that re-enters, rather than followed. A schema whose mounts multiply past a field ceiling now reports a schema fault, V096.
+			- Validation is unaffected: it still follows the document, so it needs no limit.
+
+		- ✅ Code Review 20260802 item 6: Python raises on a very long number where the others return cleanly.
+			- Reproduced: a value of five thousand digits makes the Python build exit with a stack trace, while the reference reports a bad type. Same for oversized selector indexes, schema repeat counts, and a day number inside a quoted date.
+			- Cause: Python refuses to convert decimal strings past a few thousand digits, and that happens before the code's own range check.
+			- Fixed: leading zeros are dropped and the rest is length-checked against what the type can hold before any conversion, so a small value written behind thousands of zeros still reads. Hexadecimal was never affected.
+
+		- ✅ Code Review 20260802 item 7: the C date formatter can write past the buffer it documents.
+			- Reproduced: the header promises 64 bytes is enough, and caps only the fractional seconds. The year and the other fields come straight from a struct the caller fills in, so a hand-built value can need about 109 bytes. The library's own writer hits this too.
+			- Values that came from parsing are always short enough, so the test corpus can't see it.
+			- Fixed: the text is built in full and then clamped to the documented size, which is now stated at the declaration. Output for values that came from parsing is unchanged.
+			- Found alongside it: negating the most negative offset was itself undefined, and is now done at a width that holds it.
+
+		- ✅ Code Review 20260802 item 8: comments get dropped when documents merge.
+			- Reproduced: merging layers loses every comment attached to a section that exists in both. The higher layer's comments are the ones that disappear.
+			- Separately, a write that merges two duplicate fields drops any comment that hung below the losing one.
+			- Both contradicted the documented promise that comments travel with the node they belong to.
+			- Fixed: a matched instance now takes on the higher layer's comments, and the shared fold carries the comments that hang below a block. Spec and case 042 pin both.
+
+		- ✅ Code Review 20260802 item 9: the one-shot load-and-validate ignores a broken schema.
+			- Reproduced: a schema with a bad indent loads partially and validation runs anyway, so constraints on the dropped lines quietly vanish. A badly broken schema makes every field in the config report as unknown.
+			- The command-line tool gets this right and reports a schema failure. Only the library shortcut skipped the check.
+			- Fixed: the shortcut now reports the same schema failure and validates nothing. An empty schema still means skip validation, as before.
+
+		- ✅ Code Review 20260802 item 10: one write operation is spelled differently by the reference.
+			- Reproduced: `datetime-array-default` is rejected by the reference and accepted by the other three.
+			- Write output and exit codes are supposed to match everywhere. No test case uses this operation, which is why it went unnoticed.
+			- Fixed: the reference accepts it like the others. The vocabulary was then checked verb by verb across all four, and a test line for it was added so the gap cannot reopen.
+
+		- ✅ Code Review 20260802 item 11: writing in place with layers overwrites the file with the merged result.
+			- Reproduced: formatting with a lower layer and `--write` folds that layer's contents permanently into the top file, which defeats the point of layering.
+			- Help text says layering prints the merged document; it doesn't mention what `--write` then does.
+			- Fixed: the combination is refused, like other option pairs that cannot both hold.
+
+		- ✅ Code Review 20260802 item 12: a value that looks like a help flag takes over the command.
+			- Reproduced: passing `-h` or `--version` as a default value, a path, or a filename prints help or the version to normal output and exits successfully. A caller reading a value gets the help text back.
+			- Cause: the whole argument list is scanned for those flags before options are parsed.
+			- Fixed: only a flag in option position counts. A value that reads like one, and anything after the file, is data.
+
+		- ✅ Code Review 20260802 item 13: generated files don't always load.
+			- Reproduced: a wildcard written with spaces inside the brackets, or with the alternate colon spelling, produces a line the parser rejects or a path that fails its own schema. A deep chain of fragments produces paths past the nesting limit.
+			- Cause: the wildcard is stripped out of the path as text rather than rebuilt from the parsed segments.
+			- The documented promise is that generated output always loads clean and validates against the schema that produced it.
+			- Fixed: the path is rebuilt from its parsed segments rather than cut out of the text, so every spelling of a wildcard behaves the same. A path deeper than a document may nest now goes to the trailing note instead of being written out.
+
+		- ✅ Code Review 20260802 item 14: the C++ wrapper can hand back a dangling date.
+			- Reproduced: every other read in the wrapper copies its text out, but the structured date read copies the struct while its fractional-seconds pointer still points into the document. Letting the document go out of scope and then using the date reads freed memory.
+			- Fixed: the wrapper's date read now owns its fractional digits, so it stays valid after the document goes away, like every other read there.
+			- Note: this changes what that one call returns, so C++ callers using it need a small edit. Documenting the borrow instead was the alternative, but it would have left a wrapper whose whole purpose is lifetime safety handing out something unsafe.
+
+		- ✅ Code Review 20260802 item 15: the Go repeat-hint filter damages the caller's list.
+			- Reproduced: it filters in place while returning a new list, so calling it the obvious way leaves the document's own diagnostics shuffled and duplicated.
+			- The reference takes the list by reference, so the mutation is expected there. The Go spelling returns a value, which reads as a copy.
+			- Command-line use is unaffected; this only bit programs using the library.
+			- Fixed: it builds its own list, so the caller's is never disturbed.
+
+		- ✅ Code Review 20260802 item 16: three C entry points pile up garbage in documents they don't own.
+			- Reproduced: each setter keeps about a kilobyte of path-scanning leftovers, the repeat-hint filter leaves a few hundred bytes in the schema, and generation leaves several kilobytes there. None of it is ever reused or released.
+			- Measured: half a million setter calls grew a document by 600 MB; routing the same work through the existing scratch space brought that to 40 MB.
+			- The command-line tool is unaffected, since it exits after one pass. A long-running program that holds a parsed schema is not.
+			- Fixed: all three now do their working allocation somewhere temporary and keep only what they promise to return. Half a million writes went from 604 MB to 39 MB, and the two schema entry points from 100 MB and 2.4 GB to near nothing.
+
+		- ✅ Code Review 20260802 item 17: the segment-quoting helper mangles a name ending in a backslash.
+			- Reproduced: the closing quote gets treated as escaped, so the result is a path the scanner rejects, and the set silently fails.
+			- The helper exists to make user-typed text safe to splice into a path, so this is the case it was written for.
+			- Fixed in the shared quoting helper, so segment quoting, path enumeration and the formatter all get it. Any name now round-trips.
+
+		- ✅ Code Review 20260802 item 18: repeat-hint suppression can silence the wrong field.
+			- Reproduced: a schema path whose last segment is quoted and contains a dot is split on that dot, so the leftover text matches an unrelated field name.
+			- Matching on the name alone is deliberate. Splitting the raw text rather than using the parsed segments was not.
+			- Fixed: the name comes from the parsed path. A quoted literal star is no longer mistaken for the wildcard either.
+
+		- ✅ Code Review 20260802 item 19: a null byte inside a field name can pose as a dotted path.
+			- Reproduced: a single field whose name contains a null passes the unknown-field check as if it were two nested names.
+			- Cause: the check joins path parts with a null before comparing.
+			- Pre-existing, but the new wildcard matching is built on the same joined text.
+			- Fixed: each part is now written with its length, the same way merge keys already solved this, so no name can pose as two.
+
+		- ✅ Code Review 20260802 item 20: end-of-file comments multiply when layering.
+			- Reproduced: a footer comment shared by three layers appears three times in the merged output. The result still formats stably.
+			- Fixed: each distinct end-of-file comment is carried over once.
+
+		- ✅ Code Review 20260802 item 21: the default install location isn't on a normal user's path.
+			- Reproduced: a system install links the program into a directory reserved for administrator sessions, so the user who ran the installer can't invoke it by name. The closing check passes because it uses the full path.
+			- The project's own packages install to the ordinary location instead.
+			- Fixed: a system install links into the ordinary location, matching the project's own packages, and the path note prints for both targets.
+
+		- ✅ Code Review 20260802 item 22: the shell wrapper trusts an inherited private variable.
+			- Reproduced: the wrapper caches the resolved program path in a variable it also reads from the environment, so setting that variable picks the program with no message and beats every documented lookup step.
+			- The PowerShell wrapper gets this right by clearing it when loaded.
+			- Fixed: the shell wrapper clears it at load too.
+
+		- ✅ Code Review 20260802 item 23: hosted CI installs a checking tool without verifying the download.
+			- The workflow pins its actions by commit and its packages by version, then fetches one tool as an archive with no checksum and installs it ahead of the system copy.
+			- Fixed: the download is checked against a pinned hash before it is installed.
+
+		- ✅ Code Review 20260802 item 24: the installers handle their own options poorly.
+			- Reproduced: asking for help through the documented pipe prints nothing and exits successfully, because the script tries to read its own file, which isn't there when piped. With a stray file of the right name in the current directory it prints that file instead.
+			- Also, giving an option without its value exits silently, where the program itself explains what's missing.
+			- Fixed in all three scripts: the help text is carried in the script instead of read back out of its own file, and a missing option value is reported the way the program reports it.
+
+		- ✅ Code Review 20260802 item 25: small gaps in argument handling across all four builds.
+			- There is no way to end the options and pass a path that starts with a dash.
+			- `init` ignores extra arguments; every other subcommand rejects them.
+			- An option expecting a value will take the next flag as that value without complaint.
+			- Reading the write operations from standard input while also asking for standard input as a layer silently produces nothing.
+			- Fixed: `--` now ends the options, `init` rejects extra arguments, and asking for standard input twice is refused. The help text says what a value option does with the next argument, which is the one case left as it was, since that is how options normally behave.
+
+	- **Improvements**:
+
+		- ✅ Code Review 20260802 item 26: the parser copies each line more than it needs to.
+			- Every line is copied into a fresh string, the indent is copied again, and the path scanner copies the whole line into a character list per call.
+			- The profile agrees: those three account for roughly a quarter to a third of parsing time, and they are the current top of the profile.
+			- Fixed where the waste existed: the reference no longer copies each line or its indent, and three of the four now scan paths by byte rather than building a character list per call. Formatting a 150,000-line file went from 0.38s to 0.34s in the reference, 0.34s to 0.32s in Go and 0.26s to 0.24s in C. Python had none of the three.
+			- Output is unchanged, checked against a 300,000-round property run, the whole corpus, and 24,000 generated documents per build.
+
+		- ✅ Code Review 20260802 item 27: Python scans character by character where a built-in would do.
+			- The comment splitter and the comma splitter both loop per character on every line and value.
+			- Fixed: three of these now check for the character before scanning for it, which is a whole-string check the runtime does in C. Formatting a 110,000-line file went from 3.16s to 2.76s, about 12 percent.
+			- The remaining leaders there need restructuring rather than a guard, so they were left alone.
+
+		- ✅ Code Review 20260802 item 28: most exported Go functions have no doc comment.
+			- The style guide requires one starting with the name; about sixty were missing, including the whole writer surface. Nothing checks this automatically.
+			- Fixed: 74 of them, one line each.
+
+		- ✅ Code Review 20260802 item 29: a doc comment sits on the wrong function.
+			- The description of the element parser ended up attached to the helper inserted above it, in both the reference and Go.
+			- Fixed: moved onto the function it describes, matching the other two.
+
+		- ✅ Code Review 20260802 item 30: repeat-hint suppression reads the field name out of the hint text.
+			- It splits the hint's wording on quotes to recover the name, so a behavior of the public interface depends on how a message is phrased.
+			- Fixed: the wording is built in one place and both the hint and the filter use it, so a reword moves them together. A carried field was the stricter fix but would have broken every caller that builds a diagnostic.
+
+		- ✅ Code Review 20260802 item 31: index conversions would truncate on a 32-bit build.
+			- A selector index above four billion would wrap and select the wrong element instead of finding nothing.
+			- Not reachable on any current target. Noted so the remaining ports don't inherit it.
+			- Fixed in the reference with a checked conversion. The other three were audited and already compare before indexing, so they were already safe.
+
+		- ✅ Code Review 20260802 item 32: the grammar file disagrees with the parser in a few places.
+			- The parser accepts a leading plus on an index, and allows dots and other characters inside a selector; the grammar says neither.
+			- The bare-name character ranges include two characters the neighbouring comment says are excluded.
+			- Unknown escape pairs are kept as written rather than rejected, and a backslash shields the next character in more places than the grammar shows.
+			- Needs a call on each: tighten the parser, or widen the grammar to match it.
+			- Decided: the parser is the contract, since it is released, so the grammar and spec were widened to describe what it accepts. Quoting is now stated as a rule about what the formatter writes, not about what input is legal.
+
+		- ✅ Code Review 20260802 item 33: several public documents claimed things the code doesn't do.
+			- Fixed: the contributor notes named the wrong toolchain requirements, the design notes listed platforms that aren't built and a wrapper that doesn't exist, the schema vocabulary list was missing its two newest keys, and both files still described the project as heading toward its first release.
+			- Fixed: the readme's install note, one interface name in an example, and the missing PowerShell option syntax.
+			- Fixed: the changelog was missing one new public function, and overstated that the writer refuses name wildcards, since removal across them works.
+			- Fixed: the style guide described a comment divider spelling Python doesn't use.
 
 - **20260727**:
 
@@ -217,7 +527,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- `curl` and `wget` follow redirects with no protocol pin or TLS floor.
 			- The sums file arrives over the same channel as the binary, so it catches corruption but not substitution. The source tarball, which supplies the drop-in files consumers compile in, is not verified at all.
 			- ✅ Done: the transport half. curl and wget pin https through redirects with a TLS 1.2 floor (`install.bash`, and `install-dev.bash`'s rustup fetch); `install.ps1` floors TLS 1.2/1.3 for every download.
-			- ✅ Done: the signature half, ahead of 1.0.0. The sums file is signed offline with an RSA-4096 key; both installers carry the public half inlined and verify it before reading any checksum out of the file. `openssl` joined curl/wget as a hard prerequisite - there is no install-anyway fallback. `cicd/utility/sign-release.bash` does the signing and refuses if the key does not match the one the shipped installers trust.
+			- ✅ Done: the signature half, ahead of 1.0.0. The sums file is signed offline with an RSA-4096 key; both installers carry the public half inlined and verify it before reading any checksum out of the file. `openssl` joined curl/wget as a hard prerequisite - there is no install-anyway fallback. `cicd/utility/sign-release.bash` does the signing and refuses if the key does not match the one the released installers trust.
 			- Key custody is offline and signing is manual, deliberately: a key in CI would be reachable by the same compromise the signature defends against. RSA rather than Ed25519 purely so the verifier is one both `openssl` and Windows PowerShell 5.1 already have. Rationale and threat model in `design.md`.
 			- Still not covered: the source tarball that supplies the drop-in files. It is fetched by tag, so it is as trustworthy as the tag, but it carries no signature of its own. Worth a look post-1.0.
 
@@ -225,7 +535,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- `install.ps1` puts a `user` target in `%USERPROFILE%\bin\Shcl`. The convention for a per-user program is `%LOCALAPPDATA%\Programs\`, which is where winget and most installers put one.
 			- Low stakes while the only release is a pre-release, and cheap to change now. Later it means a migration step for anyone who already installed.
 			- The system target (`C:\Program Files\Shcl`) is already conventional.
-			- Done before the 1.0.0 cut, which was the last moment it stayed free: `user` now lands in `%LOCALAPPDATA%\Programs\Shcl` and that dir goes on the user PATH directly. The old shape needed a second copy of the exe in a parent `bin` dir for PATH to find it; that whole branch is gone.
+			- Done before the 1.0.0 cut, which was the last moment it stayed free: `user` now goes to `%LOCALAPPDATA%\Programs\Shcl` and that dir goes on the user PATH directly. The old shape needed a second copy of the exe in a parent `bin` dir for PATH to find it; that whole branch is gone.
 
 - **20260726**:
 
@@ -261,12 +571,12 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 		- ✅ Code Review 20260726 item 5: hosted CI cannot install its own pinned lint toolchain.
 			- Cause: the tool pins carry the Cppcheck binary's version, and the workflow installed that same string as a package version. No such package exists, so every hosted run failed at setup within seconds.
 			- Note: the wheel bundles a Cppcheck two major versions ahead of its own package number, which is what made the two look interchangeable.
-			- Note: only the hosted gate was affected. The local pipeline probes the installed binary, so it stayed green, which is why this went unnoticed from the day the pins landed.
+			- Note: only the hosted gate was affected. The local pipeline probes the installed binary, so it stayed green, which is why this went unnoticed from the day the pins were added.
 			- Fixed: the workflow installs the package version, with a comment saying why the two differ.
 			- Verified: the other three pins do resolve.
 
 		- ✅ Code Review 20260726 item 6: shellcheck is a gating linter but the only one left unpinned.
-			- Cause: hosted CI used whatever the runner image shipped, which is older and noisier than the local copy, so a script could pass the local gate and fail CI on a warning newer releases no longer emit. That is what happened to `install.bash`.
+			- Cause: hosted CI used whatever the runner image carried, which is older and noisier than the local copy, so a script could pass the local gate and fail CI on a warning newer releases no longer emit. That is what happened to `install.bash`.
 			- Note: the pinning pass that covered the other linters missed it because it is preinstalled rather than installed by a step, so there was no version to write down.
 			- Fixed: CI installs the pinned version ahead of the image's copy, and the pin joins the others in the drift list. The one flagged line in `install.bash` was rewritten to the shape the rest of that file already uses.
 			- Fixed alongside it: the drift probe read only the first line of a version command's output, so a tool that leads with a banner always looked like it had drifted.
@@ -376,9 +686,9 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 		- ✅ Code Review 20260725 item 18: `Load(defaults, site, user)` is documented but exists in no binding.
 			- README presents it as the layered-loading API; only `merge(base, over)` exists, so a reader's first call does not compile.
-			- README also advertises environment overrides, which were deliberately dropped, and its Status block still lists three shipped features under "not done yet".
+			- README also advertises environment overrides, which were deliberately dropped, and its Status block still lists three finished features under "not done yet".
 			- Same class as the prior review's item 6, regenerated by the newest features.
-			- Fixed: the README's layered-loading bullet now shows the real `merge(base, over)` fold and the CLI `--layer`/`--set` stack, notes the deliberate no-env-mapping stance, and the Status block lists the three shipped features instead of calling them not-done.
+			- Fixed: the README's layered-loading bullet now shows the real `merge(base, over)` fold and the CLI `--layer`/`--set` stack, notes the deliberate no-env-mapping stance, and the Status block lists the three finished features instead of calling them not-done.
 
 		- ✅ Code Review 20260725 item 19: the spec's ergonomic-tier table does not compile for C++ and misstates the C signatures.
 			- `doc.get_or<int>(...)` and `doc.get<int>(...)` fail as a link error - the least actionable diagnostic a junior can get - because `get<T>` is specialized for only four types.
@@ -478,7 +788,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 		- ✅ Code Review 20260725 item 39: panic macros are used outside tests in the reference.
 			- Eight sites - six `unreachable!` (four of them in the newest validator and generator code) and two `unwrap()`.
 			- Each is provably unreachable today, but they are invariants asserted by a panic in a library whose contract is that it never bails on a whole file, and three ports copy the structure.
-			- Fixed: every non-test `unreachable!`/`unwrap()` now degrades instead of aborting - a slipped invariant skips the constraint, returns no-parent, or keeps the match total with an empty string. Zero panic macros left outside tests (the feature-gated profiling `expect`s never ship).
+			- Fixed: every non-test `unreachable!`/`unwrap()` now degrades instead of aborting - a slipped invariant skips the constraint, returns no-parent, or keeps the match total with an empty string. Zero panic macros left outside tests (the feature-gated profiling `expect`s are never released).
 
 		- ✅ Code Review 20260725 item 40: the CLI usage block is hand-duplicated across four CLIs with no drift check, and its exit-code line is wrong.
 			- It still says exit 6 means a strict load failure; the prior review's item 36 made `check` exit 6 on any error diagnostic, at any strictness.
@@ -486,7 +796,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Fixed: the exit-code sentence now says `6 check failed or strict load failure` in all four, and the crosscheck pins the whole usage surface - `help`, `version`, a bare invocation, and an unknown subcommand are compared byte-for-byte across bindings on every run.
 
 		- ✅ Code Review 20260725 item 41: changelog has no Unreleased section, and contributing.md never explains the corpus workflow.
-			- Five landed feature sets since the beta2 tag are recorded only in git; populating it now is also the raw material for the 1.0 notes.
+			- Five finished feature sets since the beta2 tag are recorded only in git; populating it now is also the raw material for the 1.0 notes.
 			- contributing.md does state the parity rule, but nothing points a first-time contributor at how to add a conformance case, so their PR will be structurally wrong.
 			- Fixed: changelog.md gained an Unreleased section covering everything since beta2 (the 1.0 notes' raw material), and contributing.md gained an "Adding a conformance case" walkthrough.
 
@@ -500,7 +810,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 		- ✅ Code Review 20260716 item 2: Rust parser panics on a multibyte char in the timezone tail of a datetime value.
 			- A garbled or hostile config aborts the consumer (exit 134) instead of returning BadType.
-			- Fixed: zone tail is now checked byte-wise, so no str slice can land mid-char; corpus 007 `bad5` pins BadType across all bindings.
+			- Fixed: zone tail is now checked byte-wise, so no str slice can fall mid-char; corpus 007 `bad5` pins BadType across all bindings.
 
 		- ✅ Code Review 20260716 item 3: wildcard array reads swallow per-slot NotFound/BadType.
 			- A missing sub-path yields a silent zero with status Good - the exact trap the fallback design exists to prevent.
@@ -533,7 +843,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 			- Fixed: every ps1 resolution site now goes through `_shcl_executable` (Unix requires an execute bit, Windows keeps a bare leaf); the run-path passthrough is `exit ($LASTEXITCODE ?? 1)`.
 
 		- ✅ Code Review 20260716 item 15: crosscheck cannot see trailing-newline differences.
-			- Command substitution strips them before compare, so a binding that drops or doubles the final newline ships green.
+			- Command substitution strips them before compare, so a binding that drops or doubles the final newline passes green.
 			- Fixed: capture helpers append a trailing sentinel so `$()` has nothing to strip; a dropped or doubled final newline is now a divergence.
 
 		- ✅ Code Review 20260716 item 16: crosscheck passes with zero comparisons.
@@ -589,7 +899,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 		- ✅ Code Review 20260716 item 4: `fmt` deletes every comment with no warning, and the spec never discloses it.
 			- Direct hit on the hand-author audience; retrofitting comment storage later touches all five codebases.
 			- Decide before 1.0: preserve comments as trivia, or spec the loss and warn on `fmt --write`.
-			- Done: comments survive `fmt` in all four parsers - whole-line comments re-emit above the node the next line binds, trailing ones stay on their line, end-of-file comments land at the end. Spec'd under Comments + Canonical formatter; corpus case 013 pins it and the older cases' expected files now keep their comments.
+			- Done: comments survive `fmt` in all four parsers - whole-line comments re-emit above the node the next line binds, trailing ones stay on their line, end-of-file comments stay at the end. Spec'd under Comments + Canonical formatter; corpus case 013 pins it and the older cases' expected files now keep their comments.
 
 		- ✅ Code Review 20260716 item 5: the Writer half of the spec'd API exists in no binding and has no backlog item.
 			- Spec presents Accessor+Writer as the two halves; schema-driven generation depends on it.
@@ -644,7 +954,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 		- ✅ Code Review 20260716 item 38: wrapper documentation drift.
 			- README omits the PowerShell wrapper; spec says "POSIX sh" but the shell wrapper is deliberately Bash. Align the words with the artifacts.
-			- Done: README blurb + Status now name both the Bash and PowerShell wrappers; spec's two concrete "shipped wrapper" claims say Bash instead of POSIX sh (the illustrative two-tier table row stays, like the other not-yet-shipped language rows).
+			- Done: README blurb + Status now name both the Bash and PowerShell wrappers; spec's two concrete "released wrapper" claims say Bash instead of POSIX sh (the illustrative two-tier table row stays, like the other not-yet-released language rows).
 
 #### Done - Initial requirements
 
@@ -654,7 +964,15 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 - ✅ Rust reference parser (Tier 1) implementing the full spec, driven by the corpus. The `shcl` CLI builds from it.
 	- Done: single-file zero-dependency library plus the CLI (`get`, `fmt`, `check`, `count`, `instances`). Corpus-green, with fuzz smoke in the test run.
-	- Note: fuzzing surfaced two formatter rules, now in `spec.md`.
+	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
+
+#### Done - Misc to-do
+
+- ✅ Set up pub/priv key for download signing.
+
+- ✅ Set up account on crate.io and get publish API key.
+
+- ✅ Set up account on pypi.org and get publish API key.
 
 ### Future and/or deferred
 

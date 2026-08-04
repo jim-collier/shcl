@@ -1,0 +1,37 @@
+# any, required
+layout:
+
+# split or pane
+# string, one of: split, pane, required
+layout.kind:
+
+# float
+#layout.ratio: 0.5
+
+# any
+#layout.children:
+
+# any
+#doc.layout:
+
+# split or pane
+# string, one of: split, pane, required
+doc.layout.kind:
+
+# float
+#doc.layout.ratio: 0.5
+
+# any
+#doc.layout.children:
+
+# Paths needing an instance name (not generated):
+#   layout.children   node
+#   doc.layout.children   node
+
+#
+# This config file format is SHCL.
+# "Simple Hierarchical Config Language"
+#    Home     https://github.com/jim-collier/shcl
+#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+#

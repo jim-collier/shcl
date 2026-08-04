@@ -5,7 +5,7 @@
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
 # Design
 
-Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`. The full language definition is in `spec.md` (with `grammar.abnf`); this file stays high-level - the *why*, not the letter of the rules.
+Design, requirements, and direction. The task list is in `backlog.md`. The full language definition is in `spec.md` (with `grammar.abnf`); this file stays high-level - the *why*, not the letter of the rules.
 
 <!-- TOC ignore:true -->
 ## Table of contents
@@ -34,9 +34,9 @@ Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`
 
 - The language began by example in `../../notes.txt`. Where the two disagree (and they do), `spec.md` wins.
 
-- The language ships as tiered bindings, plus single-file drop-in source and compiled binaries per platform.
+- The language is delivered as tiered bindings, plus single-file drop-in source and compiled binaries per platform.
 
-	- The guarantee is the corpus, not the binding count. Every shipped binding is corpus-green, and nothing ships before it is.
+	- The guarantee is the corpus, not the binding count. Every released binding is corpus-green, and nothing is released before it is.
 
 	- Tier 1: the Rust reference and the `shcl` CLI built from it. Rust wins on the stated priorities: small binary, instant CLI startup, a clean shared-library build, and compile-time strictness that forces spec precision.
 
@@ -44,7 +44,7 @@ Design, requirements, and direction. The pre-v1.0.0 task list is in `backlog.md`
 
 	- Tier 3: the rest (C#, Java with Kotlin, JavaScript with TypeScript), after v1.0, corpus-gated, designed for from the start.
 
-	- POSIX sh and PowerShell are thin wrappers around the CLI, not independent parsers. They inherit conformance for free. The companion typed surfaces (C++, Kotlin, TypeScript) are one core plus a veneer, not separate parsers.
+	- Bash and PowerShell are thin wrappers around the CLI, not independent parsers. They inherit conformance for free. The companion typed surfaces (C++, Kotlin, TypeScript) are one core plus a veneer, not separate parsers.
 
 ## Guiding principles and decisions
 
@@ -66,7 +66,7 @@ Other points
 
 - Forgiveness is also a knob, not dogma. There are three strictness levels - Loose/Standard/Strict, per-document, default Standard - instead of a binary strict flag. Standard keeps the defaults clean (no currency stripping, no `%` fractions, no float->int rounding, trimmed boolean set); Loose re-admits those conversions as a closed list for those who want maximum forgiving; Strict fails the load on any error diagnostic, the StrictYAML-style answer. Defaults are what adopters judge; the party tricks survive as opt-in. The normative bundle table is in `spec.md`.
 
-- The knob belongs to the consuming program, not to the end user. Strictness and bad-read handling are part of the contract an application makes about its own config handling, so they are set at the call site (or the CLI flag) and nowhere else. A per-user defaults file was considered and rejected: it would let a user silently weaken guarantees an app relies on, and would make an identical `shcl` invocation mean different things on different machines - the `GREP_OPTIONS` mistake. Nothing else the CLI exposes is presentation-only, so SHCL ships no user config file at all.
+- The knob belongs to the consuming program, not to the end user. Strictness and bad-read handling are part of the contract an application makes about its own config handling, so they are set at the call site (or the CLI flag) and nowhere else. A per-user defaults file was considered and rejected: it would let a user silently weaken guarantees an app relies on, and would make an identical `shcl` invocation mean different things on different machines - the `GREP_OPTIONS` mistake. Nothing else the CLI exposes is presentation-only, so SHCL has no user config file at all.
 
 - Coercion earns trust by refusing to surprise: silent lossy conversion (rounding a float on an int read, `$1200` as a number) was cut from the default level for exactly that reason. Same logic killed the fehu anti-escape rune (raw blocks are the verbatim escape hatch) and restricted field-name case folding to ASCII (full Unicode folding is a locale trap and a cross-binding parity risk).
 
@@ -84,7 +84,7 @@ Full, itemized decisions live in project memory (`shcl-spec-decisions`); `spec.m
 
 ### Software stack
 
-Many bindings with a shared conformance corpus (`conformance/`) as the contract between them. A key portability constraint shapes the Accessor: the requested value type is expressed by a typed entry point or a compile-time generic, never a runtime `type` field, because static languages (Go, Rust, C, C++, C#) cannot let a runtime value drive a return type. Compiled targets: Linux, BSD, macOS, Windows on x86_64 and ARM64.
+Many bindings with a shared conformance corpus (`conformance/`) as the contract between them. A key portability constraint shapes the Accessor: the requested value type is expressed by a typed entry point or a compile-time generic, never a runtime `type` field, because static languages (Go, Rust, C, C++, C#) cannot let a runtime value drive a return type. Prebuilt binaries cover Linux and Windows, on x86_64 and ARM64. macOS and the BSDs are buildable from source but have no published binary yet, since the pipeline runs on Linux.
 
 ### Configuration model
 
@@ -92,7 +92,7 @@ See `spec.md` - fields/instances, accessor-driven types, arrays vs instances, ra
 
 ### Consumer API
 
-The consumer-facing surface is the **Accessor** (read) and the **Writer** (emit). The Accessor's one conceptual operation is a **lookup** (query) - get a value at a path, coerced to a type, with a default and an on-bad policy - realized idiomatically per language. The type is chosen by a typed entry point or compile-time generic (not a runtime field), so results land in a strongly-typed variable with no consumer cast everywhere. For consuming a file as a whole there is **traversal** (scan): materialize the document - merge duplicates, order deterministically - then walk it (wildcards, instance enumeration). The Writer is the reverse: write out defaults, values, and comments. Structured diagnostics ride alongside.
+The consumer-facing surface is the **Accessor** (read) and the **Writer** (emit). The Accessor's one conceptual operation is a **lookup** (query) - get a value at a path, coerced to a type, with a default and an on-bad policy - realized idiomatically per language. The type is chosen by a typed entry point or compile-time generic (not a runtime field), so results go into a strongly-typed variable with no consumer cast everywhere. For consuming a file as a whole there is **traversal** (scan): materialize the document - merge duplicates, order deterministically - then walk it (wildcards, instance enumeration). The Writer is the reverse: write out defaults, values, and comments. Structured diagnostics ride alongside.
 
 The consuming programmer is assumed to be a junior in *every* binding, not just the dynamic ones, so ergonomics are a design constraint, not an afterthought. Decided:
 
@@ -108,15 +108,15 @@ The consuming programmer is assumed to be a junior in *every* binding, not just 
 
 One question - "how do you pull SHCL into your project?" - with two kinds of answer: *run it* or *embed it*. Named plainly and ordered easiest-first, so a beginner starts at the top:
 
-- **Command** - run the `shcl` CLI from a shell or script. Nothing to compile, nothing to link.
+- **Command**. Run the `shcl` CLI from a shell or script. Nothing to compile, nothing to link.
 
-- **Drop-in** - copy one source file into your project. No dependency and no build step; you own the copy.
+- **Drop-in**. Copy one source file into your project. No dependency and no build step. You own the copy.
 
-- **Package** - add it as an ordinary dependency and let the package manager fetch it (`go get`, `pip install`, `npm i`, ...).
+- **Package**. Add it as an ordinary dependency and let the package manager fetch it (`go get`, `pip install`, `npm i`, and so on).
 
-- **Shared library** - link the prebuilt `.so`/`.dll`/`.dylib` at runtime; the library stays a separate file.
+- **Shared library**. Link the prebuilt `.so`, `.dll`, or `.dylib` at runtime. The library stays a separate file.
 
-- **Bundled** - static-link it straight into your binary, so you ship one self-contained file.
+- **Bundled**. Static-link it into your binary, so you distribute one self-contained file.
 
 The last two are the same compiled code linked two ways - "shared" stays a separate file loaded at runtime, "bundled" is baked into your binary. Every mode reaches the same Accessor/Writer surface; the choice is packaging, not capability.
 
@@ -128,13 +128,19 @@ Compared to schema-bearing config languages (Pkl, CUE), SHCL is deliberately wea
 
 - **Layered loading.** (Implemented; see spec.md "Layered loading".) `Load(defaults, site, user, ...)` is a left fold of `merge(base, over)` across files. Container instances merge on matching `(field-name, value)` - the existing in-file rule - but a leaf name in a higher layer *overrides* (replaces) the lower layer's same-named leaves, so defaults-plus-override works for scalars, arrays, and raw blocks, not just structure. CLI `--set PATH=VALUE` sits on top as the final layer, written as literal text through the Writer. Env-var mapping was deliberately dropped: the env namespace and its convention belong to the consuming program, which can map env onto `--set` itself (the same reasoning that canceled the per-user config file). `check` takes no layers - its diagnostics are single-file.
 
-- **Schema-driven generation.** (Implemented; see spec.md "Schema-driven generation".) `generate(schema)` + `shcl init --schema` emit a commented, typed starter config: `desc` becomes a comment, a generated annotation line summarizes type/constraints, required fields are live (their `default` or an empty value), optional fields are the same line commented out, and wildcard paths go in a trailing comment block. Output is flat dotted form (mirrors the schema shape) and always loads clean. The annotation line is a byte-for-byte cross-binding contract, so its format is fixed and its numbers use the canonical formatters.
+	- On `set`, a `--set` is an edit rather than a layer, so `set --write` persists it. That closed the only route to a shell-driven write being a tab-separated script on stdin, which no shell writes comfortably and no editor preserves. A family of typed options (`--int`, `--string`, ...) was measured first and rejected: `--set` writes the value as literal config text, so the type already follows the text and the typed forms produced identical output. One gate moved, rather than twenty options added.
+
+	- `--set-literal PATH=TEXT` is the same option reading its argument as value syntax instead of data, which is what lets an array be written as an option at all. It parses the text rather than splicing it in, so the outcome is a value or a rejection - output stays canonical, a written document is still a formatter fixpoint, and there is no way to inject syntax through it.
+
+- **Schema-driven generation.** (Implemented; see spec.md "Schema-driven generation".) `generate(schema, no_banner)` + `shcl init --schema` emit a commented, typed starter config: `desc` becomes a comment, a generated annotation line summarizes type/constraints, required fields are live (their `default` or an empty value), optional fields are the same line commented out, and wildcard paths go in a trailing comment block. Output is flat dotted form (mirrors the schema shape) and always loads clean, and ends with a footer naming the format and linking its spec. The annotation line and the footer are both byte-for-byte cross-binding contracts, so their format is fixed and the annotation's numbers use the canonical formatters.
+	- Among the options for the footer it was decided to write it by default and spell the knob negatively (`no_banner`, `--no-banner`): a generated file is usually the first SHCL a person ever sees, so the pointer to the spec earns its place, and a negative flag means the useful behavior is what a caller gets by saying nothing. It goes at the bottom so the settings, not the boilerplate, are what the file opens with.
+	- Its `Legal` line leads with SHCL as the subject rather than with the copyright, so a reader cannot take it as a claim over the config it sits in.
 
 Explicitly out of scope, with finality unless something big changes: in-language expressions, functions, inheritance, interpolation, imports, anchors/references. The moment config files can compute, they need debugging - that is the complexity cliff to avoid.
 
 ### Schema validation
 
-The schema is a plain SHCL file, read with the ordinary parser and the ordinary Accessor. No grammar change, no reserved words, no new parser feature - the whole design was prototyped against the shipped binary before being written down.
+The schema is a plain SHCL file, read with the ordinary parser and the ordinary Accessor. No grammar change, no reserved words, no new parser feature - the whole design was prototyped against the released binary before being written down.
 
 **Shape: a flat list of path descriptions, not a mirror of the document.** Each constraint is one instance of a field named `field`, whose *value* is the path it describes and whose children are the constraints:
 
@@ -161,7 +167,7 @@ Consequences of the flat form, all verified against the current binary:
 
 **Wildcards carry the repeated-instance story.** `server[*].port` constrains every instance of `server`, which is how a schema says "each server needs a port" in a language whose core idea is repeated instances. `repeat` (on the parent path) bounds the instance count itself - the one constraint with no equivalent in tree-shaped schema languages.
 
-**The vocabulary stays small and closed**, in the same spirit as the Loose coercion list: `type`, `required`, `allowed` (an enum, written as an ordinary array), `min`/`max` (numeric ranges, inclusive), `repeat`, plus `default` and `desc` which only the generator reads. Nothing joins that list without a spec change. Datetime ranges were considered and dropped for the same reason as regex below: comparing datetimes across zone suffixes needs calendar arithmetic (an offset can roll the date), no parser has any, and four hand-written implementations of it is a parity minefield.
+**The vocabulary stays small and closed**, in the same spirit as the Loose coercion list: `type`, `required`, `allowed` (an enum, written as an ordinary array), `min`/`max` (numeric ranges, inclusive), `repeat`, plus `default` and `desc` which only the generator reads. Fragments later added `inherits` as a constraint key, alongside the top-level `fragment:` declaration. Nothing joins that list without a spec change. Datetime ranges were considered and dropped for the same reason as regex below: comparing datetimes across zone suffixes needs calendar arithmetic (an offset can roll the date), no parser has any, and four hand-written implementations of it is a parity minefield.
 
 **Regular-expression constraints are rejected outright**, and this is the one real capability given up. No two of the target languages share a regex engine - character classes, Unicode properties, and anchoring all differ - so a `pattern` key could not hold byte-for-byte agreement across bindings, which is the product's core guarantee. An enum covers the common case; anything past that belongs in the consuming program.
 
@@ -184,6 +190,10 @@ Both open points are settled:
 - `Validate` lives in each binding's single drop-in file. The one-file promise the README leads with outranks keeping the core lean; a schema user copying two files would quietly break the pitch.
 
 - No string/array length bounds. They would reopen the byte-versus-code-point metric already settled for merge keys, for modest benefit; an `allowed` enum or the consuming program covers the need.
+
+**Fragments close the recursion gap with one construct: `fragment:` declares, `inherits:` mounts.** The data language nests freely, but a flat path list cannot describe a tree whose nodes contain their own kind - consumers were generating schema entries to a fixed depth, past which correct keys reported as unknown (validation returning false errors on valid files, in the tool CI gates on). Every mature schema language grew a named-shape reference for this reason; declining it would mean telling tree-shaped configs to flatten into instances with parent pointers, which makes the file serve the schema tool instead of the reader. Naming: `use` was rejected as overloaded English (verb-directive or "purpose"); `parent` collides with the parent/child vocabulary of a nesting language; `inherits` reads as a single plain word beside `type`/`required`/`allowed` and is accurate - the mount inherits the fragment's fields and can add its own. Design properties worth keeping true: expansion is demand-driven (a mount is followed only where the document has nodes), so recursion has no depth limit, needs no cycle detection, and costs document-proportional time and memory; the generator is the one place expansion could run away, and it cuts exactly where a fragment would re-enter itself. Suggestions do not descend mounts, same rationale as below stars.
+
+**Open sections use a name-position wildcard, and it lives in the lookup grammar, not just the schema.** A map-shaped section ("any child name under `indicators`, each shaped like this") had no schema spelling at all - wildcards selected instances, never names. Among the candidates (a `*` name segment, an `open:` constraint key, glob patterns), the bare `*` segment won: it reads exactly like the `[*]` story one level up, needs no new vocabulary word, and composes with deeper paths (`indicators.*.period`) without a second construct. We decided it also belongs in reads, not only schemas - `Get("*.port")` slots across children of any name the way `[*]` slots across instances - so the query language stays one language; the Writer refuses it like any wildcard (paths must name their target to be writable), and a field literally named `*` stays addressable quoted (`"*"`), which is never a wildcard. Suggestions ("did you mean") do not reach below a `*` - there is no fixed sibling list to suggest from - and a `repeat` on a `*` leaf disavows no `H001`.
 
 ### Formatter
 
@@ -223,8 +233,10 @@ The responsibility is split rather than duplicate the pipeline:
 	- The exception is a merge that changes no product code - documentation, the demo asset, the pipeline. Those go to `main` on their own so the front page and the install one-liners (which read from `main`) stay current, and the version stays where it is. Cutting a tag for them would publish a second set of binaries that behave identically to the last one, which tells a reader nothing.
 
 - One canonical version source: `source/rust/Cargo.toml`. The pipeline reads it for artifact names and release tags. (An automatic bump-before-push guard was tried and dropped: dev is the integration branch, and versions there are cut deliberately at release time, not policed per push.)
-	- Release cut checklist: bump the five version sites (Cargo.toml canonical, the Go/Python/C CLI mirrors, and `source/python/pyproject.toml` for PyPI), date the changelog heading, and pass the README status once - lifecycle badge, Status section, and Installing section must match the release being cut (they drifted to "no tagged release" after beta1). Sign the sums file (`cicd/utility/sign-release.bash --key ...`) and attach everything in `cicd/artifacts/release/` to the GitHub release: raw binaries, the .deb/.rpm and NSIS setup packages, the sha256sums file that covers them all, and its `.sig`.
+	- Release cut checklist: bump the five version sites (Cargo.toml canonical, the Go/Python/C CLI mirrors, and `source/python/pyproject.toml` for PyPI), date the changelog heading, and pass the README once for anything carrying the old number - the lifecycle badge, the version named in the Installation lead, the example package filenames, and the Go dependency line. Sign the sums file (`cicd/utility/sign-release.bash --key ...`) and attach everything in `cicd/artifacts/release/` to the GitHub release: raw binaries, the .deb/.rpm and NSIS setup packages, the sha256sums file that covers them all, and its `.sig`.
 	- Two tags per cut, not one: `vX.Y.Z` for the release, and `source/go/vX.Y.Z` for the Go module. Go resolves a module in a subdirectory only through a path-prefixed tag, so skipping the second one silently strands every Go consumer on a pseudo-version. Then publish the registry packages: `cargo publish` from `source/rust/`, and a built sdist/wheel from `source/python/`.
+		- Publish through the rustup `cargo`, not whatever `cargo` the shell finds first. A distro-packaged Rust ahead of `~/.cargo/bin` ignores `rust-toolchain.toml` silently, so the crate gets built by an unpinned compiler. `cicd.bash` prepends the right directory; a hand-run `cargo publish` does not.
+		- Let both tools prompt for the token rather than passing it on a command line or exporting it. An argv token is readable by other users via the process list while it runs, and both forms persist in shell history - including the searchable database that history-sync tools keep. Registry tokens should also be project-scoped, which each registry only offers once the package exists.
 	- A registry publish cannot be taken back. Neither crates.io nor PyPI allows reuploading a version, and each bakes in the README it was given at that moment - so the per-binding READMEs (`source/rust/README.md`, `source/python/README.md`) get their example code compiled and run against the packaged artifact before the upload, not after. Those files exist separately from the front-page README because relative links and images break on a package page, and Cargo cannot reach above the crate root anyway.
 	- Binding versions move in lockstep with the product version, deliberately. The bindings are byte-for-byte equivalent by design, so a single number across all of them means a consumer reading `1.4` in any language knows exactly what behavior they have. It also lets each ecosystem's ordinary compatible-version operator (`shcl = "1"`, `shcl~=1.0`, Go's major-version import rule) do the tracking, with no scheme of our own to explain or maintain.
 
@@ -242,7 +254,7 @@ The responsibility is split rather than duplicate the pipeline:
 
 - Fuzzing lives in the regression suite, not a separate rig. A deterministic mutator over the corpus asserts two invariants for any input: never panic at any strictness, and the formatter is a fixpoint. The same mutator generates the inputs for the differential check above.
 
-- Profiling is a standing stage. Every full run samples an optimized build over a heavy parse-and-format workload and emits a flamegraph plus a hot-spot summary, so a performance regression shows up in the artifacts the run it happens in. Sampling is in-process, feature-gated, and never reaches a shipped binary.
+- Profiling is a standing stage. Every full run samples an optimized build over a heavy parse-and-format workload and emits a flamegraph plus a hot-spot summary, so a performance regression shows up in the artifacts the run it happens in. Sampling is in-process, feature-gated, and never reaches a release binary.
 
 ### Reference implementation
 
@@ -277,6 +289,8 @@ The responsibility is split rather than duplicate the pipeline:
 - The shell binding wraps the `shcl` CLI, not a parser, so it inherits conformance for free.
 
 - Bash 3.2 (`source/bash/shcl.bash`) was targeted rather than POSIX sh (mostly defined in 1979). The wrapper earns its keep by being dual-purpose: run it as a script, or source it and call functions. That dual mode and the typed helpers read far cleaner with Bash's arrays and `local` than with portable sh. A thin passthrough would give a sourcing caller nothing over the binary itself.
+
+- PowerShell (`source/powershell/shcl.ps1`) is the second wrapper, built to the same design: dual-mode (run, or dot-source for the identical `shcl`/`shcl_*` helper names), the same binary-resolution order, and exit codes passed through into `$LASTEXITCODE`. It deliberately has no script-level param block - one would try to bind subcommand words - so every argument arrives in `$args` verbatim. Like the Bash wrapper it forwards rather than parses, so it is not in the cross-binding differential.
 
 - One `shcl` function is the whole CLI. `shcl_get`, `shcl_int`, `shcl_bool`, and friends are one-line typed sugar. Both modes take the same arguments and return the binary's exit code unchanged, so a not-found or empty read stays a distinct nonzero.
 

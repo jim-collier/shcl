@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD010 MD033 MD041 -->
 # Conformance corpus
 
-Golden cases that pin every shipped SHCL binding to identical behavior. Each independent parser runs this corpus in CI; drift on any case means the binding is non-conformant and does not ship. (CLI-wrapper bindings and companion typed surfaces inherit conformance from their core.)
+Golden cases that pin every released SHCL binding to identical behavior. Each independent parser runs this corpus in CI; drift on any case means the binding is non-conformant and is not released. (CLI-wrapper bindings and companion typed surfaces inherit conformance from their core.)
 
 ## Case layout
 
@@ -19,6 +19,7 @@ Each case is a directory `NNN-short-name/` containing:
 	- `<T><TAB>PATH<TAB>VALUE` - set a scalar. `datetime` VALUE is any accepted spelling and is stored canonically.
 	- `<T>-array<TAB>PATH<TAB>V1<TAB>V2...` - set an inline array (no elements = an empty value).
 	- `<T>[-array]-default<TAB>...` - set only if the path does not already resolve.
+	- `literal<TAB>PATH<TAB>TEXT` (and `literal-default`) - set from value syntax rather than data, so `80, 443` stores a two-element array where the `string` op would store one quoted string. `TEXT` is read as the value half of a line: it is trimmed, an unquoted `#` ends it, and text carrying a line break or an unclosed quote is rejected.
 	- `raw<TAB>PATH<TAB>INFO<TAB>CONTENT` (and `raw-default`) - set a raw block; `INFO` may be empty.
 	- `empty<TAB>PATH`, `comment<TAB>PATH<TAB>TEXT`, `remove<TAB>PATH`.
 	- `string` and `raw` `CONTENT` values decode `\n` `\t` `\\` (so a multi-line value fits on one op line); no other escapes are interpreted. The setters re-encode for storage, so a value read back equals the logical value it was set from.
@@ -28,7 +29,7 @@ Each case is a directory `NNN-short-name/` containing:
 
 - `schema.shcl` + `expected-validate.txt` (optional, as a pair) - the **schema validation** dimension (spec.md "Schema validation"). `schema.shcl` is a schema (itself plain SHCL); `expected-validate.txt` is the exact `check --schema schema.shcl input.shcl` stdout at Standard strictness - the document's parse diagnostics, then the validation diagnostics (`V###` codes), then the summary line, under the same format as `expected-diags.txt`. Each binding replays it via its library `Validate`; a schema that does not itself load cleanly must yield the single `line 0: Error: V099` diagnostic, mirroring the CLI.
 
-- `init-schema.shcl` + `expected-init.shcl` (optional, as a pair) - the **generation** dimension (spec.md "Schema-driven generation"). `init-schema.shcl` is a schema (with the generator-only `desc`/`default` vocabulary); `expected-init.shcl` is the exact `init --schema=init-schema.shcl` stdout. Each binding runs its library `generate` and matches the golden byte-for-byte; the golden must itself load with no error diagnostics AND validate clean against the schema that produced it; the differential harness replays `init --schema=...` across every CLI.
+- `init-schema.shcl` + `expected-init.shcl` (optional, as a pair) - the **generation** dimension (spec.md "Schema-driven generation"). `init-schema.shcl` is a schema (with the generator-only `desc`/`default` vocabulary); `expected-init.shcl` is the exact `init --schema=init-schema.shcl` stdout. Each binding runs its library `generate` and matches the golden byte-for-byte; the golden must itself load with no error diagnostics AND validate clean against the schema that produced it; the differential harness replays `init --schema=...` across every CLI, with and without `--no-banner`. The golden carries the format footer, since that is what a default run writes; each runner also generates with `no_banner` set and checks that what comes back is exactly the golden minus the footer, so the flag needs no goldens of its own.
 
 - `expected-merged.shcl` (optional; triggers the **layered-load** dimension) - the canonical form of merging any `layer*.shcl` files (read in filename order, which is priority order, lowest first) under `input.shcl` (the highest file layer) via the library `merge`, then applying the `merge.sets` overrides (optional; one `path=value` per line, `#` comments skipped) as the top layer. Each binding folds the layers with `merge` and matches the golden byte-for-byte, which must also be a formatter fixpoint; the differential harness replays `fmt --layer=... --set=... input.shcl` across every CLI. A later layer's leaf name replaces earlier same-named leaves (real override for scalars, arrays, raw blocks); container instances merge by `(name, value)` like the in-file rule.
 
@@ -72,13 +73,35 @@ Case `020` pins the accessor surface that ports diverge on: wildcard reads acros
 
 Cases `021`-`024` pin the schema validation dimension. `021` is the all-pass sweep (every constraint kind satisfied, including a quoted wildcard path, constraints for one path split across two merged `field` instances, and an empty value passing `type: bool`). `022` produces every data-validation code `V001`-`V007` at least once - unknown fields with and without a "did you mean" suggestion, `required` missing at document scope (line 0) and per wildcard instance (that instance's line), `repeat` violated at both scopes, plus the `H001` hint riding along in the combined output. `023` produces the schema-fault codes (`V090`-`V093`) and pins that a broken schema suppresses data validation (the document's own violation must NOT be reported). `024` pins `V099`: a schema that does not parse cleanly yields exactly one line-0 diagnostic.
 
+Case `041` pins generation over fragments: `desc`/`default` flow through the mount expansion, both mounts of the shared `node` fragment generate one full level, and the recursive `children` mounts go in the trailing block with the fragment's name in the type column; the golden validates clean against its own schema.
+
+Case `040` pins fragment faults: `inherits` naming no declared fragment is `V095`, a nameless declaration and a non-`field` key inside one are `V094`, all at schema lines, and their presence suppresses data validation (the document's unknown field draws no `V001`).
+
+Case `039` pins fragments end to end: a self-recursive `node` fragment validates a 10-level layout tree clean, the same fragment mounted at `doc.layout` (an alias) still flags an unknown field beneath it, and a `repeat` declared on a fragment field disavows the document's `H001` under `--schema` (the plain-`check` golden keeps the hint).
+
+Case `038` pins open-section schema validation: a `*` name segment in a schema path resolves every child of `indicators` regardless of name, so `required: yes` on `indicators.*.period` fires per child (the `V002` anchors at the offending child's own line), a field outside the declared shape is still `V001`, and children of any name are legal without enumeration.
+
+Case `037` pins the name wildcard in lookups: `*` slots across children of any name with per-slot statuses (a childless slot keeps `NotFound`), composes with `[value]` selectors, keeps `count`/`instances` slot-aligned, scalar reads on it stay `Multiple`, and a field literally named `*` is addressed quoted (`"*"`), never by the wildcard. The write ops pin `remove` across wildcard slots, and `write-bad.ops` pins that setters refuse `*` paths (path validated whole, document unchanged).
+
+Case `036` pins schema-declared repeat suppression: with `--schema`, an `H001` whose field declares a repeat upper bound above 1 is dropped (repetition is that field's instance mechanism by declaration) while an undeclared repeat keeps its hint; the plain `check` goldens keep both.
+
+Case `035` pins the `H002` merge hint: a binding that merges with a non-adjacent earlier one is hinted at the later line. Adjacent re-mentions and dotted redundant-path re-opens stay silent.
+
+Case `034` pins comment placement fidelity: a comment run written deeper than the next binding hangs on the block it sits in (re-emitted after that block's last child, at the block's indent), an over-deep comment normalizes to its block's level, and end-of-file comment regions keep the blank lines between them.
+
+Case `033` pins escape-applied selector matching: a `["q\"uote"]` selector finds an instance written `'q"uote'` (and a bare `[it's]` finds `"it\'s"`) - the match is logical string against logical string, whichever spelling either side used. The write op does the same through the writer's place walk: the set applies to the existing instance instead of creating a spurious second one.
+
 Case `032` pins blank-line grouping: a run of blanks collapses to one, a blank before a comment group stays with the group, and the blank survives the format round-trip (the file never starts with one).
 
 Case `031` pins the unterminated-quote diagnostic (`E017`): a value that opens a quote it never closes - swallowing the trailing comment - and an array-looking one whose comma hides inside the open quote each draw one error, the values are kept as written (fmt re-quotes them), the load still succeeds at Standard and fails at Strict.
 
-Case `030` pins the generator's edge handling: an `[#N]` path and an unmaterialized optional wildcard land in the trailing not-generated block (an emitted `#` would start a comment), and a newline smuggled through an `allowed` value or a `default` stays escaped (`\n` in the annotation; the quoted spelling on the value line) instead of injecting a line. The golden validates clean against its own schema like every generation golden.
+Case `030` pins the generator's edge handling: an `[#N]` path and an unmaterialized optional wildcard go in the trailing not-generated block (an emitted `#` would start a comment), and a newline smuggled through an `allowed` value or a `default` stays escaped (`\n` in the annotation; the quoted spelling on the value line) instead of injecting a line. The golden validates clean against its own schema like every generation golden.
 
 Case `029` pins the write-op value gates and unusable-path rejection: the good script covers the boundary values every binding must ACCEPT (`1e400` -> `inf`, `.5`, `5.`, `INF`, `nan`, i64 min, a `+` sign) and `write-bad.ops` covers what every binding must REJECT identically (hex, junk, trailing garbage, out-of-range, underscores, padding, non-ASCII digits, empty, malformed floats, a bad datetime, a wildcard path, a missing `[#N]`).
+
+Case `043` pins the cost of a recursive schema: a shape mounted from two paths that both reach the same node is checked once, not once per path. Without that, a document a couple of dozen levels deep doubles the work per level and validation stops finishing, so a regression here shows up as a case that hangs rather than one that fails. The generator's own limits are pinned by a reference unit test instead - a schema long enough to reach them would be a corpus file nobody could read.
+
+Case `042` pins the late-merge rule: a value that only becomes final after its siblings were keyed - a stacked list closing onto an earlier instance's value, a fence filling an empty field that matches an earlier block - still merges, and merging two parents merges the identical children they now share. Its layer file also pins the trivia side of a merge: the higher layer's section comment and trailing comment survive onto the matched base node, and a footer comment both files carry appears once.
 
 Case `028` pins the 512-level nesting cap: a 513-segment dotted path draws exactly one `E016` and is skipped (the sibling line survives, strict load fails). The at-cap boundary and the Writer's refusal to create deeper are pinned by a reference unit test - an at-cap golden would be a 130 KB file for no extra coverage.
 
@@ -87,6 +110,10 @@ Case `027` pins the layered-merge wrapper rule: a childless over-node whose base
 Case `026` pins schema-driven generation: `init-schema.shcl` carries `desc`/`default` on required and optional fields, an `allowed` set (rendered `one of: ...`), int and float ranges, a `repeat` bound, and a required `server[*].host` wildcard. The golden `expected-init.shcl` shows must-exist fields live (required, and `replicas` via its repeat lower bound), optional fields commented out, and the wildcard filled in dotted form (`server.host:`) because `server.port` materializes its parent - so the golden validates clean against its own schema.
 
 Case `025` pins layered loading: a defaults layer, a site layer, and `input.shcl` as the user layer are merged bottom-up, then a `merge.sets` override. It exercises scalar override (`port`), repeated-leaf override (the whole `tags` list is replaced, not appended), container merge by `(name, value)` (both layers' children of `server: web1` combine), a new container instance from a higher layer (`server: web3`), and a `--set` override applied last.
+
+Note when reading comparison counts: the fuzz seed set includes the corpus inputs, so adding a case shifts every mutated input after it and moves the derived total either way. The count is a per-tree constant, not a coverage score; the corpus-only count is the one that tracks coverage.
+
+Case `044` pins the value-syntax setter: an array, a single element, a quoted element keeping its internal comma, trimming, an unquoted `#` ending the value, an empty value, and the only-if-absent form both skipping an existing path and creating a new one. Its `write-bad.ops` pins the two rejections - a value opening a quote it never closes (the same text the parser reports `E017` for) and a wildcard path.
 
 Beyond the fixed corpus, the differential harness (`cicd/utility/crosscheck.bash`) also derives accessor coverage over the fuzz set: the reference's fuzz dump writes a `<name>.reads.tsv` beside each dumped input (paths it knows exist, cycling type and strictness), which the `--extra` replay runs through the same row machinery. Every scalar read row - corpus and fuzz-derived - is additionally replayed under `--on-bad=error` (an exit-code differential) and `--default=<x>` (a stdout differential), so the on-bad/default policy surface is pinned cross-binding too.
 

@@ -1,0 +1,16 @@
+fragment: node
+	field: kind
+		desc: split or pane
+		type: string
+		required: yes
+		allowed: split, pane
+	field: ratio
+		type: float
+		default: 0.5
+	field: children
+		inherits: node
+field: layout
+	required: yes
+	inherits: node
+field: doc.layout
+	inherits: node

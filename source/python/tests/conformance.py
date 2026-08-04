@@ -235,6 +235,10 @@ def try_apply_op(doc, line):
 			wrote = doc.set_string(path, _unescape_ops(v))
 		elif op == "datetime":
 			wrote = doc.set_datetime(path, _op_dt(v))
+		elif op == "literal":
+			wrote = doc.set_literal(path, v)
+		elif op == "literal-default":
+			wrote = doc.set_literal_default(path, v)
 		elif op == "int-default":
 			wrote = doc.set_int_default(path, _op_int(v))
 		elif op == "float-default":
@@ -364,6 +368,13 @@ def main():
 			continue
 		if text != case["expected_init"]:
 			fails.append("{}: init output differs from expected-init.shcl".format(case["name"]))
+		# The footer is the only difference the flag makes: everything before
+		# it is byte-for-byte what the default run produced.
+		bare, _ = shcl.generate(shcl.Document.parse(case["init_schema"]), True)
+		if not bare or not text.startswith(bare):
+			fails.append("{}: --no-banner output is not a prefix of the default".format(case["name"]))
+		elif "This config file format is SHCL." not in text[len(bare):]:
+			fails.append("{}: default init output is missing the format footer".format(case["name"]))
 		gdoc = shcl.Document.parse(text)
 		if any(d.severity == shcl.Severity.Error for d in gdoc.diagnostics()):
 			fails.append("{}: generated starter does not load cleanly".format(case["name"]))
@@ -404,6 +415,7 @@ def main():
 			diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
 		else:
 			diags.extend(doc.validate(sdoc))
+			shcl.suppress_declared_repeats(sdoc, diags)
 		got = ""
 		errors = 0
 		for d in diags:
@@ -484,11 +496,115 @@ def main():
 			sys.stderr.write("FAIL " + f + "\n")
 		sys.stderr.write("conformance: {} failure(s)\n".format(len(fails)))
 		return 1
-	# paths(): file order, deduplicated, bare-name-safe segments only (a
-	# quoted name hides its subtree). Same fixture is pinned in every runner.
+	# paths(): file order, deduplicated, non-bare segments quoted so every
+	# path resolves. Same fixture is pinned in every runner.
 	pdoc = shcl.Document.parse('a: 1\na.b: 2\n"q n": 3\nx:\n\tb: 4\nx.b: 5\n')
-	if pdoc.paths() != ["a", "a.b", "x", "x.b"]:
+	if pdoc.paths() != ["a", "a.b", '"q n"', "x", "x.b"]:
 		raise SystemExit("paths() fixture mismatch: {}".format(pdoc.paths()))
+	for p in pdoc.paths():
+		if pdoc.count(p) < 1:
+			raise SystemExit("emitted path does not resolve: " + p)
+	# quote_segment: same spelling both directions, injection-safe.
+	if (shcl.quote_segment("port"), shcl.quote_segment("q n"), shcl.quote_segment("a.b")) != ("port", '"q n"', '"a.b"'):
+		raise SystemExit("quote_segment spelling drift")
+	qr = pdoc.read_int(shcl.quote_segment("q n"))
+	if (qr.value, qr.status) != (3, shcl.Status.Good):
+		raise SystemExit("quoted segment read failed")
+	# One combined diagnostics list (parse first, then validation) and an
+	# error predicate, so recover-and-continue can't read as success by
+	# accident. Same fixture in every runner.
+	otext = ": nope\nport: x\n"
+	oschema = "field: port\n\ttype: int\n"
+	odoc = shcl.Document.load_and_validate(otext, oschema, shcl.Strictness.Standard)
+	ocodes = [d.code for d in odoc.diagnostics()]
+	if ocodes != ["E014", "V003"]:
+		raise SystemExit("load_and_validate codes got {}".format(ocodes))
+	if odoc.error_count() != 2:
+		raise SystemExit("error_count got {}".format(odoc.error_count()))
+	if odoc.read_string("port").value != "x":  # doc still usable
+		raise SystemExit("load_and_validate doc not readable")
+	# Strict never raises here; the diagnostics are the answer.
+	ostrict = shcl.Document.load_and_validate(otext, oschema, shcl.Strictness.Strict)
+	if ostrict.error_count() < 2:
+		raise SystemExit("strict error_count got {}".format(ostrict.error_count()))
+	# An empty schema declares nothing and validates nothing.
+	oplain = shcl.Document.load_and_validate("a: 1\n", "", shcl.Strictness.Standard)
+	if (oplain.error_count(), len(oplain.diagnostics())) != (0, 0):
+		raise SystemExit("empty-schema load_and_validate not clean")
+	# write_reason: the reason behind a setter's bare False. Same fixture in
+	# every runner.
+	wdoc = shcl.Document.parse("a:\n\tb: 1\n")
+	for wpath, want in (
+		("a.b", shcl.WriteReason.Writable),
+		("a.new[Boston].x", shcl.WriteReason.Writable),   # creatable
+		("", shcl.WriteReason.BadPath),
+		("a..b", shcl.WriteReason.BadPath),
+		("a.b: 2", shcl.WriteReason.ValueInPath),
+		("a[*].b", shcl.WriteReason.Wildcard),
+		("a[#5].b", shcl.WriteReason.NoSuchIndex),
+		("nope[#0].b", shcl.WriteReason.NoSuchIndex),
+		(".".join(["d"] * 513), shcl.WriteReason.TooDeep),
+	):
+		got = wdoc.write_reason(wpath)
+		if got is not want:
+			raise SystemExit("write_reason({!r}) got {} want {}".format(wpath, got, want))
+	# The probe never creates: the doc is unchanged after all of the above.
+	if wdoc.count("a") != 1:
+		raise SystemExit("write_reason probe created an instance")
+	if wdoc.paths() != ["a", "a.b"]:
+		raise SystemExit("write_reason probe changed paths: {}".format(wdoc.paths()))
+	# line/quoted on the read result, line(path), children(path). Same
+	# fixture in every runner (C pins the accessors; its read structs stay
+	# value+status).
+	ldoc = shcl.Document.parse('a: @null\nb: "@null"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n')
+	if ldoc.read_string("a").quoted:
+		raise SystemExit("unquoted read reports quoted")
+	if not ldoc.read_string("b").quoted:
+		raise SystemExit("quoted read not flagged")
+	if ldoc.read_string("b").line != 2:
+		raise SystemExit("read line got {}".format(ldoc.read_string("b").line))
+	if ldoc.line("code.done") != 6:
+		raise SystemExit("line() got {}".format(ldoc.line("code.done")))
+	if ldoc.line("code") != 3:
+		raise SystemExit("line() on merged instance got {}".format(ldoc.line("code")))
+	if ldoc.line("missing") != 0:
+		raise SystemExit("line() on missing path got {}".format(ldoc.line("missing")))
+	if ldoc.children("code") != ["hook", "hook", "done"]:
+		raise SystemExit("children() got {}".format(ldoc.children("code")))
+	if ldoc.children("") != ["a", "b", "code"]:
+		raise SystemExit("top-level children() got {}".format(ldoc.children("")))
+	if ldoc.children("missing"):
+		raise SystemExit("children() on missing path not empty")
+	# A failed strict load hands back the document and names the first
+	# failures in the message - the diagnostics are the point.
+	try:
+		shcl.Document.parse_with("ok: 1\n: nope\n", shcl.Strictness.Strict)
+		raise SystemExit("strict load unexpectedly passed")
+	except shcl.LoadError as le:
+		if le.document is None or le.document.read_int("ok").value != 1:
+			raise SystemExit("LoadError does not carry a usable document")
+		if "; line " not in str(le):
+			raise SystemExit("LoadError message lacks diagnostics: " + str(le))
+	# raw: the verbatim value span from the source line - not the display
+	# join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner
+	# whose read result exposes raw (the C read structs deliberately do not).
+	rdoc = shcl.Document.parse('regex: ^\\d{2,3}$\nlist: a,  "b c"\n')
+	if rdoc.read_string("regex").raw != "^\\d{2,3}$":
+		raise SystemExit("raw fixture mismatch: {!r}".format(rdoc.read_string("regex").raw))
+	if rdoc.read_string_array("list").raw != 'a,  "b c"':
+		raise SystemExit("raw fixture mismatch: {!r}".format(rdoc.read_string_array("list").raw))
+	# A written value has no source spelling; raw falls back to display. The
+	# selector's escaped spelling must land on the existing instance.
+	rdoc2 = shcl.Document.parse("who: 'q\"uote'\n")
+	if not rdoc2.set_int('who["q\\"uote"].n', 5):
+		raise SystemExit("escaped selector write failed")
+	if rdoc2.count("who") != 1:
+		raise SystemExit("escaped selector created a second instance")
+	rr = rdoc2.read_int('who[\'q"uote\'].n')
+	if (rr.value, rr.status) != (5, shcl.Status.Good):
+		raise SystemExit("escaped selector read failed")
+	if rr.raw != "5":
+		raise SystemExit("written raw mismatch: {!r}".format(rr.raw))
 
 	print("conformance: {} case(s) pass".format(len(cases)))
 	return 0

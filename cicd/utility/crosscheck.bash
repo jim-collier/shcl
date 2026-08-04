@@ -153,6 +153,41 @@ fCompareWrite(){
 	done
 }
 
+##	Same idea, for the one write property a fixture cannot set up in advance:
+##	the temp file's name carries the writer's pid, so the decoy can only be
+##	planted by the process that is about to become the CLI. `exec` from a
+##	subshell hands the CLI that subshell's pid, so `$$` names the file it is
+##	about to create. Writing through the decoy would leave `stolen` behind and
+##	turn the target into a symlink; both show up in the state compare. The decoy
+##	itself is removed before comparing, since its name holds a per-run pid.
+fPlantRun(){
+	local root="$1" cli="$2"; shift 2
+	bash -c 'r="$1"; c="$2"; shift 2; ln -sfn "${r}/stolen" "${r}/.c.shcl.tmp$$.0"; exec "$c" "$@"' _ "$root" "$cli" "$@" >/dev/null 2>&1 || true
+	find "$root" -maxdepth 1 -type l -name '.c.shcl.tmp*' -delete
+}
+
+fComparePlant(){
+	local what="$1"; shift
+	local want got b name cli root target
+	root="${tmpDir}/plant-${refName}"; rm -rf "$root"; mkdir -p "$root"
+	target="$(fFixMode "$root")"
+	fPlantRun "$root" "$refCli" "$@" "$target"
+	want="$(fWriteState "$root")"
+	for b in "${bindings[@]:1}"; do
+		name="${b%%|*}"; cli="${b#*|}"
+		root="${tmpDir}/plant-${name}"; rm -rf "$root"; mkdir -p "$root"
+		target="$(fFixMode "$root")"
+		fPlantRun "$root" "$cli" "$@" "$target"
+		got="$(fWriteState "$root")"
+		nCompared+=1
+		if [[ "$got" != "$want" ]]; then
+			nBad+=1
+			echo "DIVERGE ${what}: ${name} vs ${refName} (shcl $* <fixture>)"
+			diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | head -12 || true
+		fi
+	done
+}
+
 ##	Fixtures for fCompareWrite. Each builds its tree and echoes the path to hand
 ##	the CLI. The unformatted spacing is deliberate: the write must actually
 ##	rewrite the file, or the checks below prove nothing.
@@ -227,9 +262,13 @@ for caseDir in "$corpus"/*/; do
 	# Schema dimension: replay check --schema (codes + summary + exit are the contract).
 	schema="${caseDir}schema.shcl"
 	[[ -f "$schema" ]] && fCompare "check --schema $(basename "$caseDir")" check "--schema=${schema}" "$input"
-	# Generation dimension: replay init --schema (the generated starter is the contract).
+	# Generation dimension: replay init --schema (the generated starter is the
+	# contract), both with the format footer and with --no-banner.
 	initschema="${caseDir}init-schema.shcl"
-	[[ -f "$initschema" ]] && fCompare "init $(basename "$caseDir")" init "--schema=${initschema}"
+	if [[ -f "$initschema" ]]; then
+		fCompare "init $(basename "$caseDir")" init "--schema=${initschema}"
+		fCompare "init --no-banner $(basename "$caseDir")" init --no-banner "--schema=${initschema}"
+	fi
 	tsv="${caseDir}reads.tsv"
 	if [[ -f "$tsv" ]]; then
 		while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do
@@ -277,6 +316,25 @@ fCompare "usage unknown" definitely-not-a-subcommand
 fCompareWrite "write keeps mode" fFixMode fmt --write
 fCompareWrite "write follows symlink" fFixSymlink fmt --write
 fCompareWrite "write breaks hard link" fFixHardlink fmt --write
+fComparePlant "write refuses a planted temp" fmt --write
+
+# `set --write --set` persists edits given as options and reads no ops from
+# stdin, so nothing here feeds one. The gates around it are pinned too: --layer
+# still cannot be written back anywhere, and --set stays ephemeral off 'set'.
+fCompareWrite "set --write applies --set" fFixMode set --write --set a=2
+fCompareWrite "set --write --set adds a path" fFixMode set --write --set b.c=hello
+fCompare "set --write rejects --layer" set --write --layer=missing.shcl missing.shcl
+fCompare "fmt --write rejects --set" fmt --write --set a=1 missing.shcl
+
+# --set-literal takes value syntax, so the same text lands as an array where
+# --set stores one quoted string; the pair is compared to pin that difference.
+# The rejections are the parser's own, so they have to agree with it.
+fCompareWrite "set --write applies --set-literal" fFixMode set --write --set-literal 'a=80, 443'
+fCompare "set --set-literal array" set --set-literal 'a=80, 443' project/conformance/044-write-literal/input.shcl
+fCompare "set --set quotes the same text" set --set 'a=80, 443' project/conformance/044-write-literal/input.shcl
+fCompare "set --set-literal keeps a quoted element" set --set-literal 'a="x, y", z' project/conformance/044-write-literal/input.shcl
+fCompare "set --set-literal rejects an open quote" set --set-literal 'a="oops' project/conformance/044-write-literal/input.shcl
+fCompare "set --set-literal wants PATH=VALUE" set --set-literal noequals project/conformance/044-write-literal/input.shcl
 
 if ((nBad)); then
 	echo "crosscheck: ${nBad}/${nCompared} comparison(s) diverged"
@@ -303,3 +361,7 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 ##		               just stdout. Also made the DIVERGE diff non-fatal - under
 ##		               pipefail its nonzero status was aborting the run, so only
 ##		               the first divergence ever printed and the summary never did.
+##		- 20260804: Pin `set --write --set` (edits as options, no ops on stdin)
+##		               and the two gates that bound it; then `--set-literal`
+##		               beside `--set` on the same text, so the data-vs-syntax
+##		               split cannot drift.

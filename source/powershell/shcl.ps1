@@ -21,7 +21,8 @@
 ##		$hosts = shcl_array --string app.shcl cluster.hosts
 ##
 ##	Functions defined when dot-sourced (each mirrors the CLI, sets $LASTEXITCODE):
-##		shcl                 the whole CLI: get|fmt|check|count|instances ...
+##		shcl                 the whole CLI: get|set|fmt|check|count|instances ...
+##		                     (pipeline input is forwarded, so `set` can be piped)
 ##		shcl_get             read a string (the default type)
 ##		shcl_int shcl_float shcl_bool shcl_datetime shcl_raw
 ##		                     read one typed value
@@ -121,9 +122,13 @@ function _shcl_resolve {
 
 ## The whole CLI. Everything else is sugar over this. On a resolve failure we
 ## mimic the binary's own usage/IO code so callers still see a nonzero.
+## Pipeline input only reaches a function through $input, and only forward it
+## when there is some: an empty $input would hand the binary a closed stdin, so
+## `set` would read zero ops instead of falling through to the console.
 function shcl {
 	if (-not (_shcl_resolve)) { $global:LASTEXITCODE = 1; return }
-	& $script:_SHCL_BIN @args
+	if ($MyInvocation.ExpectingInput) { $input | & $script:_SHCL_BIN @args }
+	else { & $script:_SHCL_BIN @args }
 }
 
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

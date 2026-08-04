@@ -1,0 +1,4 @@
+query	type	expected	status
+-	load	ok	-
+layout.children.children.children.kind	string	split	Good
+tag	count	3	-
