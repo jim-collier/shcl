@@ -32,7 +32,7 @@ Usage:
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
-  shcl init --schema=SCHEMA              print a commented starter config from
+  shcl init [--no-banner] --schema=S     print a commented starter config from
                                          a schema (required fields live, optional
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
@@ -66,6 +66,8 @@ Options:
                                          report via exit code (the default mode)
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
+  --no-banner                            (init) leave out the footer naming the
+                                         format and pointing at its spec
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
@@ -146,6 +148,7 @@ type opts struct {
 	onBad      string // error|default|flag
 	strictness shcl.Strictness
 	write      bool
+	noBanner   bool
 	schema     string
 	layers     []string // lower-priority layers, in listed order
 	sets       []setOpt // final override layer, in the order given
@@ -238,6 +241,9 @@ func parseOpts(argv []string) (*opts, error) {
 		case a == "--write" || a == "-w":
 			o.write = true
 			o.seen = append(o.seen, "--write")
+		case a == "--no-banner":
+			o.noBanner = true
+			o.seen = append(o.seen, "--no-banner")
 		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" || a == "--layer" || a == "--set" || a == "--set-literal":
 			i++
 			if i >= len(argv) {
@@ -298,7 +304,7 @@ func checkOpts(cmd string, o *opts) int {
 	case "check":
 		allowed = []string{"--strictness", "--schema"}
 	case "init":
-		allowed = []string{"--schema"}
+		allowed = []string{"--schema", "--no-banner"}
 	case "count", "instances":
 		allowed = []string{"--strictness", "--layer", "--set", "--set-literal"}
 	}
@@ -1150,7 +1156,7 @@ func doInit(o *opts) int {
 		// same exit as `check --schema` reporting it.
 		return 6
 	}
-	text, faults := shcl.Generate(sdoc)
+	text, faults := shcl.Generate(sdoc, o.noBanner)
 	if faults != nil {
 		for _, d := range faults {
 			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s\n", d.Line, d.Severity, d.Message)

@@ -3458,7 +3458,7 @@ def _gen_default_text(v):
 	return "".join(s)
 
 
-def generate(schema):
+def generate(schema, no_banner=False):
 	"""Emit a commented, typed starter config from a schema (`shcl init
 	--schema`). Paths that must exist (required, or a repeat lower bound of 1+)
 	are live (their `default`, or an empty value); optional paths are commented
@@ -3468,7 +3468,9 @@ def generate(schema):
 	it - and remaining wildcard or `[#N]` paths (which cannot be materialized)
 	are listed in a trailing comment block. The output always loads clean and
 	validates clean against its schema, except a repeat lower bound of 2+
-	(identical generated lines would merge, so the shortfall is reported).
+	(identical generated lines would merge, so the shortfall is reported). A
+	footer naming the format and pointing at the spec is written last unless
+	no_banner; the flag is negative so leaving it alone writes the footer.
 	Returns (text, faults): a non-empty fault list (V09x) means the schema is
 	broken and text is empty."""
 	sdef, faults = _build_schema(schema)
@@ -3551,7 +3553,12 @@ def generate(schema):
 		out.append("# Paths needing an instance name (not generated):\n")
 		for path, tyname in wild:
 			out.append("#   {}   {}\n".format(path, tyname))
-	return "".join(out), []
+	text = "".join(out)
+	if not no_banner:
+		if text:
+			text += "\n"
+		text += _GEN_BANNER
+	return text, []
 
 
 # Ceiling on how many fields one schema may expand to. Fragments that mount
@@ -3559,6 +3566,20 @@ def generate(schema):
 # ask for more output than the machine can hold; past this the generator
 # reports a schema fault rather than running until something breaks.
 _GEN_MAX_FIELDS = 10000
+
+# Footer telling whoever opens the generated file what the format is and where
+# its spec lives. It is output, so every binding emits these bytes exactly; the
+# Legal line names SHCL as its subject so it cannot be read as a claim over the
+# config it sits in.
+_GEN_BANNER = (
+	"#\n"
+	'# This config file format is SHCL.\n'
+	'# "Simple Hierarchical Config Language"\n'
+	"#    Home     https://github.com/jim-collier/shcl\n"
+	"#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n"
+	"#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n"
+	"#\n"
+)
 
 
 def _gen_path_text(segs):

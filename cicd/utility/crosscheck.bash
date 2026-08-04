@@ -262,9 +262,13 @@ for caseDir in "$corpus"/*/; do
 	# Schema dimension: replay check --schema (codes + summary + exit are the contract).
 	schema="${caseDir}schema.shcl"
 	[[ -f "$schema" ]] && fCompare "check --schema $(basename "$caseDir")" check "--schema=${schema}" "$input"
-	# Generation dimension: replay init --schema (the generated starter is the contract).
+	# Generation dimension: replay init --schema (the generated starter is the
+	# contract), both with the format footer and with --no-banner.
 	initschema="${caseDir}init-schema.shcl"
-	[[ -f "$initschema" ]] && fCompare "init $(basename "$caseDir")" init "--schema=${initschema}"
+	if [[ -f "$initschema" ]]; then
+		fCompare "init $(basename "$caseDir")" init "--schema=${initschema}"
+		fCompare "init --no-banner $(basename "$caseDir")" init --no-banner "--schema=${initschema}"
+	fi
 	tsv="${caseDir}reads.tsv"
 	if [[ -f "$tsv" ]]; then
 		while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do

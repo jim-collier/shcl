@@ -142,9 +142,11 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 // Schema-driven generation (`shcl init --schema`): a commented, typed starter
 // config from a schema document. Required paths are live (their `default`, or an
 // empty value); optional paths are commented out; wildcard paths are listed in a
-// trailing comment block. *ok is set to 1 on success, 0 if the schema has faults
+// trailing comment block. A footer naming the format and pointing at the spec is
+// written last unless no_banner; the flag is negative so passing 0 writes the
+// footer. *ok is set to 1 on success, 0 if the schema has faults
 // (V09x) - then the returned string is empty. Bytes live in the schema's arena.
-shcl_str shcl_generate(shcl_doc *schema, int *ok);
+shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The
 // returned bytes live in the document's arena; valid until shcl_free.
@@ -3909,6 +3911,19 @@ static S g_default_text(Arena *a, S v) {
 // reports a schema fault rather than running until something breaks.
 #define GEN_MAX_FIELDS ((size_t)10000)
 
+// Footer telling whoever opens the generated file what the format is and where
+// its spec lives. It is output, so every binding emits these bytes exactly; the
+// Legal line names SHCL as its subject so it cannot be read as a claim over the
+// config it sits in.
+#define GEN_BANNER \
+	"#\n" \
+	"# This config file format is SHCL.\n" \
+	"# \"Simple Hierarchical Config Language\"\n" \
+	"#    Home     https://github.com/jim-collier/shcl\n" \
+	"#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n" \
+	"#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n" \
+	"#\n"
+
 // Render parsed segments back as a dotted path, dropping wildcard selectors
 // (a generated line targets the one instance it materializes) and quoting a
 // name that needs it, so the result is a path the scanner reads back the same.
@@ -3973,7 +3988,7 @@ static void g_expand_mounts(Arena *a, const VSchemaDef *def, VecVCons *out, VecS
 	g_expand_go(a, &def->cons, def, NULL, NULL, &stack, out, cut_path, cut_frag);
 }
 
-shcl_str shcl_generate(shcl_doc *schema, int *ok) {
+shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	// Only the returned bytes are contracted to live in the schema's arena;
 	// the constraint/fault lists, expansion copies, and the output builder are
 	// ~60x that, so they build in a private arena (shcl_validate's discipline)
@@ -4085,6 +4100,10 @@ shcl_str shcl_generate(shcl_doc *schema, int *ok) {
 			sb_puts(a, &out, "#   "); sb_putS(a, &out, wild_path.data[i]);
 			sb_puts(a, &out, "   "); sb_putS(a, &out, wild_type.data[i]); sb_putc(a, &out, '\n');
 		}
+	}
+	if (!no_banner) {
+		if (out.len) sb_putc(a, &out, '\n');
+		sb_puts(a, &out, GEN_BANNER);
 	}
 	S s = s_dup(&schema->arena, sb_S(&out)); r.p = s.p; r.n = s.n;
 	arena_free(&tmp);

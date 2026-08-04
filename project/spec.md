@@ -542,7 +542,7 @@ On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `set`)
 
 ## Schema-driven generation
 
-`generate(schema)` turns a schema into a commented, typed starter config - the schema's `desc`/`default` vocabulary (reserved by the validator, ignored there) put to work. `shcl init --schema=FILE` prints it to stdout.
+`generate(schema, no_banner)` turns a schema into a commented, typed starter config - the schema's `desc`/`default` vocabulary (reserved by the validator, ignored there) put to work. `shcl init --schema=FILE` prints it to stdout.
 
 The output, per schema field in schema order:
 
@@ -550,6 +550,19 @@ The output, per schema field in schema order:
 - A generated annotation line summarizes the type and constraints, ASCII only: `# <type>[, one of: v1, v2, ...][, <lo>-<hi> | >= <lo> | <= <hi>][, repeat <lo>[-<hi>]][, required]`. An untyped field shows `any`. Allowed values and numeric bounds are rendered in the type's canonical text (the same float formatter reads use); a newline inside a rendered value is escaped to `\n` so it cannot break out of the comment. This annotation is part of the generated file, so it is a byte-for-byte cross-binding contract, not free prose.
 - The field line itself: fields that **must exist** (`required`, or a `repeat` lower bound of 1 or more) are live (`path: <default>`, or `path:` with an empty value when there is no `default`; a `default` containing a newline is written in its quoted escaped spelling); **optional** fields are the same line commented out (`#path: ...`), so the starter is valid and minimal as-is.
 - A must-exist field whose path contains a wildcard is generated in dotted form (the wildcard dropped, targeting the first instance) when some other live line materializes the wildcard's parent - otherwise the very instance that line creates would fail the schema. Remaining wildcard paths, and paths that cannot be written at all (a name-wildcard `*` segment has no name to drop to; `[#N]` needs a pre-existing instance and its `#` would start a comment; a path carrying a literal newline has no one-line spelling), are collected into a trailing `# Paths needing an instance name (not generated):` comment block, one `#   <path>   <type>` per line.
+- After the last field, and after the trailing block if there is one, a footer names the format and points at its spec, separated from what precedes it by one blank line:
+
+	```text
+	#
+	# This config file format is SHCL.
+	# "Simple Hierarchical Config Language"
+	#    Home     https://github.com/jim-collier/shcl
+	#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+	#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+	#
+	```
+
+	These bytes are part of the generated file, so they are a cross-binding contract like the annotation line. The `Legal` line names SHCL as its subject: it says nothing about the config it sits in. The footer is written unless the caller asks for it to be left out - `no_banner` on the library call, `--no-banner` on `init` - and the flag is negative so a caller that says nothing gets the footer. It is the only difference the flag makes: everything above it is byte-for-byte identical either way.
 
 A fragment mount is expanded inline - the fragment's fields generate under the mount's path, depth-first, `desc`/`default` and all - until a fragment would re-enter itself; that cycle-cut mount joins the trailing comment block with the fragment's name in the type column, so a recursive schema generates one full level and says what belongs deeper. Paths are emitted in the schema's flat dotted/bracket form (mirroring the schema's own shape), not expanded to block form; the result is valid SHCL that loads with no error diagnostics and **validates clean against the schema that produced it** - with one documented exception: a `repeat` lower bound of 2+ cannot be auto-satisfied (identical generated lines would merge into one instance), so such a field is emitted live once and validation reports the shortfall. A schema fault (V09x) makes generation fail the same way validation does; `init` then exits 6 like `check --schema` reporting the same fault (exit 1 stays a usage or I/O error). `generate` is a library call in every binding (plus the C++ veneer); `init` reads no document, so it takes no `--layer`/`--set`.
 

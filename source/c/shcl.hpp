@@ -113,10 +113,11 @@ public:
 	// Schema-driven generation (`shcl init`): a commented, typed starter config
 	// from this document read as a schema. ok is set false on schema faults;
 	// for the fault list, validate() an empty document against this schema -
-	// it reproduces the same V09x diagnostics.
-	std::string generate(bool &ok) const {
+	// it reproduces the same V09x diagnostics. A footer naming the format and
+	// pointing at the spec is written last unless no_banner.
+	std::string generate(bool &ok, bool no_banner = false) const {
 		int iok = 0;
-		std::string s = to_str(shcl_generate(d_, &iok));
+		std::string s = to_str(shcl_generate(d_, no_banner ? 1 : 0, &iok));
 		ok = iok != 0;
 		return s;
 	}

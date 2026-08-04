@@ -20,6 +20,14 @@
 static int nfail = 0;
 static void fail(const char *at, const char *msg) { fprintf(stderr, "FAIL %s: %s\n", at, msg); nfail++; }
 
+// Substring search over a length-delimited buffer (memmem is GNU-only).
+static int contains(const char *p, size_t n, const char *needle) {
+	size_t m = strlen(needle);
+	if (m > n) return 0;
+	for (size_t i = 0; i + m <= n; i++) if (memcmp(p + i, needle, m) == 0) return 1;
+	return 0;
+}
+
 // realloc that never returns NULL: on OOM, free the old block and exit 2.
 static void *xrealloc(void *p, size_t n) {
 	void *q = realloc(p, n);
@@ -476,10 +484,18 @@ int main(int argc, char **argv) {
 			else {
 				shcl_doc *isd = shcl_parse(isch, islen);
 				int ok = 0;
-				shcl_str it = shcl_generate(isd, &ok);
+				shcl_str it = shcl_generate(isd, 0, &ok);
 				if (!ok) fail(names[ci], "init schema has faults");
 				else {
 					if (it.n != eilen || (eilen && memcmp(it.p, ei, eilen) != 0)) fail(names[ci], "init output differs from expected-init.shcl");
+					// The footer is the only difference the flag makes:
+					// everything before it is byte-for-byte what the default
+					// run produced.
+					shcl_str bare = shcl_generate(isd, 1, &ok);
+					if (!bare.n || bare.n >= it.n || memcmp(it.p, bare.p, bare.n) != 0)
+						fail(names[ci], "--no-banner output is not a prefix of the default");
+					else if (!contains(it.p + bare.n, it.n - bare.n, "This config file format is SHCL."))
+						fail(names[ci], "default init output is missing the format footer");
 					shcl_doc *gd = shcl_parse(it.p, it.n);
 					int cln = 1;
 					for (size_t i = 0; i < shcl_diag_count(gd); i++) if (shcl_diag_severity(gd, i) == SHCL_SEV_ERROR) cln = 0;

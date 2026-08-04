@@ -368,6 +368,13 @@ def main():
 			continue
 		if text != case["expected_init"]:
 			fails.append("{}: init output differs from expected-init.shcl".format(case["name"]))
+		# The footer is the only difference the flag makes: everything before
+		# it is byte-for-byte what the default run produced.
+		bare, _ = shcl.generate(shcl.Document.parse(case["init_schema"]), True)
+		if not bare or not text.startswith(bare):
+			fails.append("{}: --no-banner output is not a prefix of the default".format(case["name"]))
+		elif "This config file format is SHCL." not in text[len(bare):]:
+			fails.append("{}: default init output is missing the format footer".format(case["name"]))
 		gdoc = shcl.Document.parse(text)
 		if any(d.severity == shcl.Severity.Error for d in gdoc.diagnostics()):
 			fails.append("{}: generated starter does not load cleanly".format(case["name"]))

@@ -49,7 +49,7 @@ static const char *HELP =
 	"  shcl check [options] FILE              load and print diagnostics\n"
 	"                                         (--schema=SCHEMA also validates FILE\n"
 	"                                         against a schema, itself a .shcl file)\n"
-	"  shcl init --schema=SCHEMA              print a commented starter config from\n"
+	"  shcl init [--no-banner] --schema=S     print a commented starter config from\n"
 	"                                         a schema (required fields live, optional\n"
 	"                                         commented, wildcards noted)\n"
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
@@ -83,6 +83,8 @@ static const char *HELP =
 	"                                         report via exit code (the default mode)\n"
 	"  --slots                                prefix each line with its slot status and\n"
 	"                                         a tab (per element, or per wildcard slot)\n"
+	"  --no-banner                            (init) leave out the footer naming the\n"
+	"                                         format and pointing at its spec\n"
 	"  --strictness=loose|standard|strict     or 1|2|3 (default standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
 	"                                         schema; adds V### diagnostics\n"
@@ -123,6 +125,7 @@ typedef struct {
 	const char *on_bad;       // error|default|flag
 	shcl_strictness strictness;
 	int write;
+	int no_banner;
 	const char *schema;       // NULL if unset
 	const char **layers; int nlayers; // lower-priority layers, in listed order (unbounded)
 	const char **sets; int nsets;     // final override layer: "path=value" (unbounded)
@@ -730,7 +733,7 @@ static int do_init(Opts *o) {
 		shcl_free(sd); free(stext); return 6;
 	}
 	int ok = 0;
-	shcl_str text = shcl_generate(sd, &ok);
+	shcl_str text = shcl_generate(sd, o->no_banner, &ok);
 	if (!ok) {
 		// The generator's ok flag carries no fault detail; validating an empty
 		// document against the schema reproduces the same V09x fault list.
@@ -804,7 +807,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
-	o->strictness = SHCL_STANDARD; o->write = 0; o->schema = NULL;
+	o->strictness = SHCL_STANDARD; o->write = 0; o->no_banner = 0; o->schema = NULL;
 	o->layers = o->sets = o->set_opts = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
@@ -819,6 +822,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strcmp(a, "--array")) { o->array = 1; opt_seen(o, "--array"); }
 		else if (!strcmp(a, "--slots")) { o->slots = 1; opt_seen(o, "--slots"); }
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) { o->write = 1; opt_seen(o, "--write"); }
+		else if (!strcmp(a, "--no-banner")) { o->no_banner = 1; opt_seen(o, "--no-banner"); }
 		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) {
 			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
 			if (set_value_opt(o, a, argv[++i])) return 1;
@@ -844,7 +848,7 @@ static int check_opts(const char *cmd, Opts *o) {
 	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--write", NULL };
 	static const char *fmt_ok[] = { "--write", "--strictness", "--layer", "--set", "--set-literal", NULL };
 	static const char *check_ok[] = { "--strictness", "--schema", NULL };
-	static const char *init_ok[] = { "--schema", NULL };
+	static const char *init_ok[] = { "--schema", "--no-banner", NULL };
 	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", NULL };
 	static const char *none_ok[] = { NULL };
 	const char **allowed = none_ok;
