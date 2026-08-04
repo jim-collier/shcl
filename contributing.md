@@ -1,18 +1,17 @@
 <!-- omit in toc -->
 # Contributing
 
-*This file was generated via [https://contributing.md/generator/](https://contributing.md/generator/)*
-
 First off, thanks for taking the time to contribute!
 
-All types of contributions are encouraged and valued. See the [Table of Contents](#table-of-contents) for different ways to help and details about how this project handles them. Please make sure to read the relevant section before making your contribution. It will make it a lot easier for us maintainers and smooth out the experience for all involved. The community looks forward to your contributions.
+All types of contributions are encouraged and valued. See the [Table of Contents](#table-of-contents) for different ways to help and details about how this project handles them. Please read the relevant section before making your contribution - it makes things easier on both ends.
 
-> And if you like the project, but just don't have time to contribute, that's fine. There are other easy ways to support the project and show your appreciation, which we would also be very happy about:
+> And if you like the project but don't have time to contribute, that's fine. There are easier ways to support it:
 >
 > - Star the project
 > - Tweet/skeet/post about it
 > - Refer this project in your project's readme
 > - Mention the project to your friends/colleagues
+> - [Sponsor it](https://github.com/sponsors/jim-collier)
 
 <!-- omit in toc -->
 ## Table of Contents
@@ -41,21 +40,6 @@ If you then still feel the need to ask a question and need clarification, we rec
 - Provide project and platform versions, depending on what seems relevant.
 
 We will then take care of the issue as soon as possible.
-
-<!--
-You might want to create a separate issue tag for questions and include it in this description. People should then tag their issues accordingly.
-
-Depending on how large the project is, you may want to outsource the questioning, e.g. to Stack Overflow or Gitter. You may add additional contact and information possibilities:
-- IRC
-- Slack
-- Gitter
-- Stack Overflow tag
-- Blog
-- FAQ
-- Roadmap
-- E-Mail List
-- Forum
--->
 
 ## I Want To Contribute
 
@@ -89,7 +73,6 @@ A good bug report shouldn't leave others needing to chase you up for more inform
 #### How Do I Submit a Good Bug Report?
 
 > You must never report security related issues, vulnerabilities or bugs including sensitive information to the issue tracker, or elsewhere in public. Instead sensitive bugs must be sent by email to <shcl@ubx9.com>.
-<!-- You may add a PGP key to allow the messages to be sent encrypted as well. -->
 
 We use GitHub issues to track bugs and errors. If you run into an issue with the project:
 
@@ -108,8 +91,6 @@ Once it's filed:
 - A team member will try to reproduce the issue with your provided steps. If there are no reproduction steps or no obvious way to reproduce the issue, the team will ask you for those steps and mark the issue as `needs-repro`. Bugs with the `needs-repro` tag will not be addressed until they are reproduced.
 
 - If the team is able to reproduce the issue, it will be marked `needs-fix`, as well as possibly other tags (such as `critical`), and the issue will be left to be [implemented by someone](#how-to-develop).
-
-<!-- You might want to create an issue template for bugs and errors that can be used as a guide and that defines the structure of the information to be included. If you do so, reference it here in the description. -->
 
 ### Suggesting Enhancements
 
@@ -138,8 +119,6 @@ Enhancement suggestions are tracked as [GitHub issues](https://github.com/jim-co
 - **Describe the current behavior** and **explain which behavior you expected to see instead** and why. At this point you can also tell which alternatives do not work for you.
 
 - **Explain why this enhancement would be useful** to most SHCL users. You may also want to point out the other projects that solved it better and which could serve as inspiration.
-
-<!-- You might want to create an issue template for enhancement suggestions that can be used as a guide and that defines the structure of the information to be included. If you do so, reference it here in the description. -->
 
 ## How to develop
 
@@ -181,7 +160,7 @@ None of this is needed for `--ci`, which is the gate that matters for a pull req
 
 ### Adding a conformance case
 
-Behavior changes land with a corpus case, or they are not pinned.
+Behavior changes come with a corpus case, or they are not pinned.
 
 - A case is a directory under `project/conformance/NNN-short-name/`, using the next free number.
 
@@ -202,7 +181,7 @@ Behavior changes land with a corpus case, or they are not pinned.
 
 - Generate the golden files from the Rust reference and eyeball them. Never hand-edit a golden to make a test pass.
 
-- All four runners pick up a new case automatically. Run `cicd/cicd.bash --ci`; every binding must agree on it before it ships.
+- All four runners pick up a new case automatically. Run `cicd/cicd.bash --ci`; every binding must agree on it before it is released.
 
 Behavior the corpus cannot see, because it is not stdout, belongs in `cicd/utility/crosscheck.bash` instead. In-place writes are the current example: the check there compares the file tree a write leaves behind, so all four bindings are held to the same mode, symlink and content outcome.
 
@@ -210,7 +189,7 @@ Behavior the corpus cannot see, because it is not stdout, belongs in `cicd/utili
 
 - Gating (the lint stage fails the run on any finding):
 	- `rustfmt` + `clippy` - rustup components.
-	- `gofmt` + `go vet` - ship with Go.
+	- `gofmt` + `go vet` - come with Go.
 	- `shellcheck` - the pipeline's own scripts and the bash wrapper.
 	- `ruff` + `mypy` - Python: `pipx install ruff` and `pipx install mypy`.
 	- `cppcheck` - C: `pipx install cppcheck` (PyPI wheel bundles the real binary).
@@ -232,16 +211,6 @@ The full rules live in [`style-guide.md`](style-guide.md) - read it before touch
 ### Branches
 
 - Work on a short-named feature branch and PR against `dev`; `main` is release-only.
-
-<!-- TODO
-### Improving The Documentation
-Updating, improving and correcting the documentation
-
--->
-
-<!-- TODO
-## Join The Project Team
--->
 
 <!-- omit in toc -->
 ## Attribution

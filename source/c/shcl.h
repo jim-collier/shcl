@@ -144,8 +144,8 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 // empty value); optional paths are commented out; wildcard paths are listed in a
 // trailing comment block. A footer naming the format and pointing at the spec is
 // written last unless no_banner; the flag is negative so passing 0 writes the
-// footer. *ok is set to 1 on success, 0 if the schema has faults
-// (V09x) - then the returned string is empty. Bytes live in the schema's arena.
+// footer. *ok is set to 1 on success, 0 if the schema has faults (V09x) - then
+// the returned string is empty. Bytes live in the schema's arena.
 shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The

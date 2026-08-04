@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD010 MD033 MD041 -->
 # Conformance corpus
 
-Golden cases that pin every shipped SHCL binding to identical behavior. Each independent parser runs this corpus in CI; drift on any case means the binding is non-conformant and does not ship. (CLI-wrapper bindings and companion typed surfaces inherit conformance from their core.)
+Golden cases that pin every released SHCL binding to identical behavior. Each independent parser runs this corpus in CI; drift on any case means the binding is non-conformant and is not released. (CLI-wrapper bindings and companion typed surfaces inherit conformance from their core.)
 
 ## Case layout
 
@@ -73,7 +73,7 @@ Case `020` pins the accessor surface that ports diverge on: wildcard reads acros
 
 Cases `021`-`024` pin the schema validation dimension. `021` is the all-pass sweep (every constraint kind satisfied, including a quoted wildcard path, constraints for one path split across two merged `field` instances, and an empty value passing `type: bool`). `022` produces every data-validation code `V001`-`V007` at least once - unknown fields with and without a "did you mean" suggestion, `required` missing at document scope (line 0) and per wildcard instance (that instance's line), `repeat` violated at both scopes, plus the `H001` hint riding along in the combined output. `023` produces the schema-fault codes (`V090`-`V093`) and pins that a broken schema suppresses data validation (the document's own violation must NOT be reported). `024` pins `V099`: a schema that does not parse cleanly yields exactly one line-0 diagnostic.
 
-Case `041` pins generation over fragments: `desc`/`default` flow through the mount expansion, both mounts of the shared `node` fragment generate one full level, and the recursive `children` mounts land in the trailing block with the fragment's name in the type column; the golden validates clean against its own schema.
+Case `041` pins generation over fragments: `desc`/`default` flow through the mount expansion, both mounts of the shared `node` fragment generate one full level, and the recursive `children` mounts go in the trailing block with the fragment's name in the type column; the golden validates clean against its own schema.
 
 Case `040` pins fragment faults: `inherits` naming no declared fragment is `V095`, a nameless declaration and a non-`field` key inside one are `V094`, all at schema lines, and their presence suppresses data validation (the document's unknown field draws no `V001`).
 
@@ -89,13 +89,13 @@ Case `035` pins the `H002` merge hint: a binding that merges with a non-adjacent
 
 Case `034` pins comment placement fidelity: a comment run written deeper than the next binding hangs on the block it sits in (re-emitted after that block's last child, at the block's indent), an over-deep comment normalizes to its block's level, and end-of-file comment regions keep the blank lines between them.
 
-Case `033` pins escape-applied selector matching: a `["q\"uote"]` selector finds an instance written `'q"uote'` (and a bare `[it's]` finds `"it\'s"`) - the match is logical string against logical string, whichever spelling either side used. The write op does the same through the writer's place walk: the set lands on the existing instance instead of creating a spurious second one.
+Case `033` pins escape-applied selector matching: a `["q\"uote"]` selector finds an instance written `'q"uote'` (and a bare `[it's]` finds `"it\'s"`) - the match is logical string against logical string, whichever spelling either side used. The write op does the same through the writer's place walk: the set applies to the existing instance instead of creating a spurious second one.
 
 Case `032` pins blank-line grouping: a run of blanks collapses to one, a blank before a comment group stays with the group, and the blank survives the format round-trip (the file never starts with one).
 
 Case `031` pins the unterminated-quote diagnostic (`E017`): a value that opens a quote it never closes - swallowing the trailing comment - and an array-looking one whose comma hides inside the open quote each draw one error, the values are kept as written (fmt re-quotes them), the load still succeeds at Standard and fails at Strict.
 
-Case `030` pins the generator's edge handling: an `[#N]` path and an unmaterialized optional wildcard land in the trailing not-generated block (an emitted `#` would start a comment), and a newline smuggled through an `allowed` value or a `default` stays escaped (`\n` in the annotation; the quoted spelling on the value line) instead of injecting a line. The golden validates clean against its own schema like every generation golden.
+Case `030` pins the generator's edge handling: an `[#N]` path and an unmaterialized optional wildcard go in the trailing not-generated block (an emitted `#` would start a comment), and a newline smuggled through an `allowed` value or a `default` stays escaped (`\n` in the annotation; the quoted spelling on the value line) instead of injecting a line. The golden validates clean against its own schema like every generation golden.
 
 Case `029` pins the write-op value gates and unusable-path rejection: the good script covers the boundary values every binding must ACCEPT (`1e400` -> `inf`, `.5`, `5.`, `INF`, `nan`, i64 min, a `+` sign) and `write-bad.ops` covers what every binding must REJECT identically (hex, junk, trailing garbage, out-of-range, underscores, padding, non-ASCII digits, empty, malformed floats, a bad datetime, a wildcard path, a missing `[#N]`).
 

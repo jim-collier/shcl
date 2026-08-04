@@ -2097,7 +2097,7 @@ impl Document {
 // vecs, so mutating the arena directly is enough - the parser's child_map is
 // already gone and is not maintained here.
 
-/// Read TEXT as the value half of a line, for the setters that take value
+/// Read text as the value half of a line, for the setters that take value
 /// syntax rather than data. Rejects what could not have come off one line: a
 /// line break, or a quote that never closes. An unquoted `#` ends the value
 /// here exactly as it would in a file.
@@ -4087,10 +4087,6 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	Ok(out)
 }
 
-/// Inline every fragment mount into a flat constraint list, depth-first in
-/// schema order, each field's path and segments prefixed by its mount's. A
-/// mount whose fragment is already expanding (a cycle) stops there and is
-/// returned as (path, fragment name) for the trailing not-generated block.
 /// Ceiling on how many fields one schema may expand to. Fragments that mount
 /// each other at more than one path multiply, so a short schema can otherwise
 /// ask for more output than the machine can hold; past this the generator
@@ -4140,6 +4136,10 @@ fn gen_path_text(segs: &[Segment]) -> String {
 	out
 }
 
+/// Inline every fragment mount into a flat constraint list, depth-first in
+/// schema order, each field's path and segments prefixed by its mount's. A
+/// mount whose fragment is already expanding (a cycle) stops there and is
+/// returned as (path, fragment name) for the trailing not-generated block.
 fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
 	fn go(
 		list: &[Constraint],

@@ -21,13 +21,13 @@ To keep that promise cheap to maintain, every port mirrors the reference's *stru
 
 - Same user-visible strings where output is the contract (diagnostic codes, `check` summaries, CLI usage errors).
 
-Why: when a bug is fixed or a feature is added to the reference, the port is a mechanical diff of the same function in each sibling - not a re-derivation. Structural divergence is where behavioral divergence hides; two "equivalent" idiomatic implementations of the same rule will eventually disagree on an edge case, and in this project that is a shipped bug by definition.
+Why: when a bug is fixed or a feature is added to the reference, the port is a mechanical diff of the same function in each sibling - not a re-derivation. Structural divergence is where behavioral divergence hides; two "equivalent" idiomatic implementations of the same rule will eventually disagree on an edge case, and in this project that is a defect by definition.
 
 The cost is accepted openly: some code reads as slightly foreign to a native of its language. A Go reader will notice reads return a status struct instead of an `error`; a Python reader will notice explicit character-class loops where `str.strip()` would be shorter. Those are not oversights - each one exists because the shorter idiom behaves differently from the reference in some corner (the specific cases are listed below).
 
 Scope of the rule: parity governs structure and behavior. Idiom still governs the surface - each language keeps its own formatter, naming case, error-propagation syntax, and doc-comment conventions. The goal is "obviously the same program, written by someone fluent in each language", not transliterated Rust.
 
-New bindings (Tier 3) follow the same recipe: port the reference function-for-function, run the corpus, and don't ship until the crosscheck is green.
+New bindings (Tier 3) follow the same recipe: port the reference function-for-function, run the corpus, and don't release until the crosscheck is green.
 
 ## Rules for every language
 
@@ -53,7 +53,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - rustfmt is canonical, with the repo's `rustfmt.toml` (`hard_tabs = true`). Clippy gates at its default level; pedantic is advisory.
 
-- Errors as values via `Result` and `?` where a real error exists. But most "failure" here is not an error: a missing or mistyped value is a normal, expected outcome, so reads return a `Read<T>` carrying a `Status` - by spec, not exception-shaped. No `panic!`/`unwrap`/`expect` outside tests, and none in anything that ships: the only ones left sit behind the `profiling` feature, which never compiles into a normal build.
+- Errors as values via `Result` and `?` where a real error exists. But most "failure" here is not an error: a missing or mistyped value is a normal, expected outcome, so reads return a `Read<T>` carrying a `Status` - by spec, not exception-shaped. No `panic!`/`unwrap`/`expect` outside tests, and none in released code: the only ones left sit behind the `profiling` feature, which never compiles into a normal build.
 
 - No `thiserror`/`anyhow`, no error-crate ergonomics: the zero-dependency rule outranks them, and `Status` + structured diagnostics already cover the domain.
 
@@ -105,7 +105,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 ## Performance
 
-Correctness comes first, and in this repo parity comes with it: an optimization that makes one binding faster and the four of them disagree is a shipped bug, not a win. Beyond that, speed and memory are treated as four separate stages, not as one thing to worry about at the end.
+Correctness comes first, and in this repo parity comes with it: an optimization that makes one binding faster and the four of them disagree is a bug, not a win. Beyond that, speed and memory are treated as four separate stages, not as one thing to worry about at the end.
 
 The wins that matter were locked in by the architecture, before any code was hot. Know these before reshaping a parser:
 
@@ -129,7 +129,7 @@ Optimizing early is fine when there is named evidence for it. The profiler stage
 
 Everything else waits for the end, and is driven by measurement only. Micro-optimization belongs here and nowhere else: profile an optimized build on a realistic workload, attack the top of the list, measure again, revert anything that did not move the number. The 20260725 performance tranche is the worked example - a 32k-node merge went from 16 seconds to 0.07, all of it accelerators rather than rewrites.
 
-Shipped builds are tuned for size and speed together. The Rust release profile uses fat LTO, one codegen unit, `panic = "abort"` and symbol stripping. The binary is deliberately not packed - packers trip antivirus heuristics.
+Release builds are tuned for size and speed together. The Rust release profile uses fat LTO, one codegen unit, `panic = "abort"` and symbol stripping. The binary is deliberately not packed - packers trip antivirus heuristics.
 
 ## Prose and docs
 
