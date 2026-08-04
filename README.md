@@ -448,19 +448,20 @@ source shcl.bash
 workers=$(shcl_int --default=4 server.shcl workers)
 root=$(shcl_get --default='' server.shcl 'site[example.com].root')
 
-# Writes go in as an op script, one op per line, fields separated by a literal tab.
-# --write rewrites the file in place.
-shcl set --write server.shcl <<OPS
-int	workers	$((workers * 2))
-bool	site[example.com].tls.hsts	true
-string	site[blog.example.com].root	/srv/www/blog
-OPS
+# --set is repeatable and applies in order; --write rewrites the file in place.
+shcl set --write server.shcl \
+    --set "workers=$((workers * 2))" \
+    --set 'site[example.com].tls.hsts=true' \
+    --set 'site[blog.example.com].root=/srv/www/blog'
 ```
 
-For a handful of scalars, `--set` is shorter than an op script, though it prints rather than rewriting - `--write` and `--set` cannot be combined, since a layered value is deliberately not something the writer bakes back into the file:
+A `--set` value goes in as literal config text, so its type follows the text: `workers=8` writes an integer, `name=hello` a string. That covers scalars, but not an array (the comma would make it a quoted string) or a value you need forced to a string. Those, along with raw blocks, set-only-if-absent and removal, go in as a write-ops script on stdin - one op per line, fields separated by a literal tab:
 
 ```bash
-shcl fmt --set 'workers=8' server.shcl > server.new && mv server.new server.shcl
+shcl set --write server.shcl <<OPS
+string-array	cluster.hosts	a.example.com	b.example.com
+remove	site[old.example.com]
+OPS
 ```
 
 ### PowerShell
@@ -473,17 +474,18 @@ Dot-source it for the same helper names:
 $workers = [int](shcl_int --default=4 server.shcl workers)
 $root    = shcl_get --default='' server.shcl 'site[example.com].root'
 
-shcl fmt --set "workers=$($workers * 2)" `
+shcl set --write server.shcl `
+         --set "workers=$($workers * 2)" `
          --set 'site[example.com].tls.hsts=true' `
-         --set 'site[blog.example.com].root=/srv/www/blog' `
-         server.shcl | Set-Content server.shcl
+         --set 'site[blog.example.com].root=/srv/www/blog'
 ```
 
-This one uses `--set` rather than the op script the Bash example pipes in, and the reason is worth knowing: the sourced `shcl` is a PowerShell *function*, so it forwards arguments but not pipeline input. Piping an op script into it leaves `shcl set` waiting on a stdin that never arrives. When you want the op-script form in PowerShell, pipe to the binary itself, resolving it the way the wrapper does internally so the sourced function cannot shadow it:
+The op-script form works here too - the sourced `shcl` forwards pipeline input to the binary:
 
 ```powershell
-$bin = (Get-Command shcl -CommandType Application | Select-Object -First 1).Source
-$ops | & $bin set --write server.shcl
+$ops = "string-array`tcluster.hosts`ta.example.com`tb.example.com",
+       "remove`tsite[old.example.com]"
+$ops | shcl set --write server.shcl
 ```
 
 ## Installation

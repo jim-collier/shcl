@@ -23,8 +23,9 @@ HELP = """shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
-  shcl set [--write|-w] [options] FILE   apply write-ops (stdin); print canonical
-                                         (or rewrite FILE in place with --write)
+  shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
+                                         print canonical (or rewrite FILE in
+                                         place with --write)
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
@@ -36,8 +37,11 @@ Usage:
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
 
-set reads a write-ops script from stdin (one op per line, tab-separated) and
-prints the canonical document. FILE is the base ('-' = empty base). Ops:
+set edits FILE, the base document ('-' = empty base). Scalars go in as
+repeatable --set PATH=VALUE options, which persist with --write; given any
+--set, no ops are read from stdin. Everything else - arrays, raw blocks,
+set-only-if-absent, removal - goes in as a write-ops script on stdin, one op
+per line, tab-separated. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -66,7 +70,12 @@ Options:
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
   --set=PATH=VALUE                       override one path as the top layer,
-                                         after all files; repeatable
+                                         after all files; repeatable. On 'set'
+                                         it is an edit to the document itself,
+                                         so it persists with --write. VALUE is
+                                         written as literal config text, so its
+                                         type follows the text (8 is an int,
+                                         hello is a string)
 
 Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
@@ -282,9 +291,14 @@ def check_opts(cmd, o):
 				sys.stderr.write("option {} not valid for {} (see --help)\n".format(s, cmd))
 			return 1
 	# Writing back the merged document would fold the lower layers permanently
-	# into the top file, which is the opposite of what layering is for.
-	if o.write and (o.layers or o.sets):
-		sys.stderr.write("--write cannot be combined with --layer or --set (see --help)\n")
+	# into the top file, which is the opposite of what layering is for. On 'set'
+	# the --set values are edits to the document rather than a layer over it, so
+	# persisting them is the whole point; everywhere else they stay ephemeral.
+	if o.write and o.layers:
+		sys.stderr.write("--write cannot be combined with --layer (see --help)\n")
+		return 1
+	if o.write and o.sets and cmd != "set":
+		sys.stderr.write("--write cannot be combined with --set (see --help)\n")
 		return 1
 	# The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" and any(lf == "-" for lf in o.layers):
@@ -687,13 +701,17 @@ def do_set(o):
 		if not doc.set_string(path, val):
 			sys.stderr.write("shcl: cannot write {} (from --set)\n".format(path))
 			return 1
+	# --set carries the edits, so stdin is left alone: reading it here would
+	# block on the console for anyone who passed edits as options.
 	# The ops script is contract input like the reference's read_to_string:
 	# bad bytes are a hard error, never silently replaced.
-	try:
-		ops = sys.stdin.buffer.read().decode("utf-8")
-	except UnicodeDecodeError:
-		sys.stderr.write("stdin: invalid UTF-8\n")
-		return 1
+	ops = ""
+	if not o.sets:
+		try:
+			ops = sys.stdin.buffer.read().decode("utf-8")
+		except UnicodeDecodeError:
+			sys.stderr.write("stdin: invalid UTF-8\n")
+			return 1
 	for n, line in enumerate(ops.split("\n")):
 		line = line[:-1] if line.endswith("\r") else line
 		if line == "" or line.startswith("#"):

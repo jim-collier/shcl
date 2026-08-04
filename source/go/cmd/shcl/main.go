@@ -25,8 +25,9 @@ const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
-  shcl set [--write|-w] [options] FILE   apply write-ops (stdin); print canonical
-                                         (or rewrite FILE in place with --write)
+  shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
+                                         print canonical (or rewrite FILE in
+                                         place with --write)
   shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
@@ -38,8 +39,11 @@ Usage:
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
 
-set reads a write-ops script from stdin (one op per line, tab-separated) and
-prints the canonical document. FILE is the base ('-' = empty base). Ops:
+set edits FILE, the base document ('-' = empty base). Scalars go in as
+repeatable --set PATH=VALUE options, which persist with --write; given any
+--set, no ops are read from stdin. Everything else - arrays, raw blocks,
+set-only-if-absent, removal - goes in as a write-ops script on stdin, one op
+per line, tab-separated. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -68,7 +72,12 @@ Options:
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
   --set=PATH=VALUE                       override one path as the top layer,
-                                         after all files; repeatable
+                                         after all files; repeatable. On 'set'
+                                         it is an edit to the document itself,
+                                         so it persists with --write. VALUE is
+                                         written as literal config text, so its
+                                         type follows the text (8 is an int,
+                                         hello is a string)
 
 Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
@@ -277,9 +286,15 @@ func checkOpts(cmd string, o *opts) int {
 		}
 	}
 	// Writing back the merged document would fold the lower layers permanently
-	// into the top file, which is the opposite of what layering is for.
-	if o.write && (len(o.layers) > 0 || len(o.sets) > 0) {
-		fmt.Fprintln(os.Stderr, "--write cannot be combined with --layer or --set (see --help)")
+	// into the top file, which is the opposite of what layering is for. On 'set'
+	// the --set values are edits to the document rather than a layer over it, so
+	// persisting them is the whole point; everywhere else they stay ephemeral.
+	if o.write && len(o.layers) > 0 {
+		fmt.Fprintln(os.Stderr, "--write cannot be combined with --layer (see --help)")
+		return 1
+	}
+	if o.write && len(o.sets) > 0 && cmd != "set" {
+		fmt.Fprintln(os.Stderr, "--write cannot be combined with --set (see --help)")
 		return 1
 	}
 	// The ops script already has stdin, so a layer cannot read it too.
@@ -954,15 +969,21 @@ func doSet(o *opts) int {
 			return 1
 		}
 	}
-	ops, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
-		return 1
-	}
-	// The reference reads ops via read_to_string; mirror its UTF-8 failure.
-	if !utf8.Valid(ops) {
-		fmt.Fprintln(os.Stderr, "stdin: invalid UTF-8")
-		return 1
+	// --set carries the edits, so stdin is left alone: reading it here would
+	// block on the console for anyone who passed edits as options.
+	var ops []byte
+	if len(o.sets) == 0 {
+		var err error
+		ops, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
+			return 1
+		}
+		// The reference reads ops via read_to_string; mirror its UTF-8 failure.
+		if !utf8.Valid(ops) {
+			fmt.Fprintln(os.Stderr, "stdin: invalid UTF-8")
+			return 1
+		}
 	}
 	for n, line := range strings.Split(string(ops), "\n") {
 		line = strings.TrimSuffix(line, "\r") // match Rust lines() CRLF handling
