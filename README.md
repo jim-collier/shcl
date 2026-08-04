@@ -63,7 +63,7 @@
 	- [Language packages](#language-packages)
 		- [Cargo](#cargo)
 		- [Go module](#go-module)
-		- [PyPi](#pypi)
+		- [PyPI](#pypi)
 		- [C and C++](#c-and-c)
 	- [Other installation options](#other-installation-options)
 		- [OS-level packages and installers](#os-level-packages-and-installers)
@@ -245,7 +245,7 @@ Wildcards read across instances: an array read of `site[*].root` gives you every
 
 Bindings are versioned in lockstep, so `1.x` means the same behavior and the same conformance corpus in every language. Each ecosystem's usual compatible-version operator is all you need: it picks up minor and patch releases on its own, and never crosses a major version without you editing the line yourself.
 
-Every binding is one file with no dependencies. You can optionally just copy it out of `source/` and commit it - see [DIY install](#diy-install) above.
+Every binding is one file with no dependencies. You can optionally just copy it out of `source/` and commit it - see [DIY install](#diy-install) below.
 
 ### Rust
 
@@ -311,7 +311,7 @@ os.WriteFile("server.shcl", []byte(doc.ToCanonical()), 0o644)
 - Install: `pip install shcl`
 - Dependency line: `shcl~=1.0`
 - Note: The PyPI distribution is the library module by itself. Installing it does not put a `shcl` command on your `PATH`.
-	- If you want the CLI too, get if from a package, or an installer.
+	- If you want the CLI too, get it from a package or an installer.
 
 ```python
 import shcl
@@ -502,7 +502,7 @@ Two of them carry the CLI as well as the library, which is the easiest way to ge
 
 #### Cargo
 
-Library as well as CLI
+The crate carries the library and the CLI:
 
 ```sh
 cargo install shcl
@@ -510,16 +510,18 @@ cargo install shcl
 
 #### Go module
 
+The module carries the library, and this installs the CLI from it:
+
 ```sh
-go install github.com/jim-collier/shcl/source/go/cmd/shcl@latest  # Go: CLI
+go install github.com/jim-collier/shcl/source/go/cmd/shcl@latest
 ```
 
-#### PyPi
+#### PyPI
 
 The PyPI distribution is the library module by itself and installs no command, so `pip install shcl` is a dependency, not an installation:
 
 ```sh
-pip install shcl        # Python: library only
+pip install shcl
 ```
 
 #### C and C++
@@ -545,7 +547,7 @@ sudo dpkg -i shcl-1.0.0-linux-x86_64.deb
 ##### Fedora, RHEL, openSUSE
 
 ```sh
-sudo rpm -i  shcl-1.0.0-linux-x86_64.rpm
+sudo rpm -i shcl-1.0.0-linux-x86_64.rpm
 ```
 
 ##### Windows
@@ -648,9 +650,9 @@ Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, 
 
 ## Contributing and support
 
-This product has to be 100% bulletproof. Help is welcome. Bug reports, spec edge cases, and new-language bindings are all invaluable. See [`contributing.md`](contributing.md) to get started.
+This product has to be bulletproof, so help is welcome. Bug reports, spec edge cases, and new-language bindings all count. See [`contributing.md`](contributing.md) to get started.
 
-If SHCL helps but you can't contribute code or Issue reports, a star or a mention still helps other people find it.
+If SHCL helps but you can't contribute code or issue reports, a star or a mention still helps other people find it.
 
 ## Legal stuff
 

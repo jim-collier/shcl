@@ -538,7 +538,19 @@ The overlay rule, per parent scope:
 
 Comment trivia rides with the nodes that carry it, and the merged document is a formatter fixpoint like any other. Where an `over` instance matches a `base` one, the `base` node survives and takes on the `over` node's comments under the in-file rule: leading comments concatenate in layer order, and the first trailing comment wins. End-of-file comments are carried over once each, so a footer several layers share is not repeated per layer. `over`'s content is copied into `base`, so `base` stays valid after `over` is released.
 
-On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `set`) accepts repeated `--layer=FILE` (each merged under the positional `FILE`, in listed order = lowest first) and repeated `--set=PATH=VALUE` (each written as literal text via the Writer, as the final top layer, after all files). `fmt` with layers prints the merged canonical document, so it doubles as the merge command. `check` does not take layers - its diagnostics are inherently single-file. The precedence, low to high, is: `--layer` files in order, then `FILE`, then `--set`. A `--set` is a Writer edit, not a merged layer: it targets the first matching instance (or creates the path), so on a repeated leaf it edits one instance where a real top-layer file would replace the whole same-named group wholesale. When whole-group override is the intent, put it in a `--layer` file. On `set` that distinction decides persistence: because a `--set` edits the document rather than layering over it, `set --write` writes those edits back, and giving any `--set` means no write-ops script is read from stdin. Everywhere else a `--set` stays ephemeral and `--write` refuses it, as `--write` refuses `--layer` everywhere - folding a lower layer permanently into the top file is the opposite of what layering is for. A `--set` value goes in as **data**: its type still follows the text (`workers=8` is an integer), but a comma or quote inside it is content, so `ports=80, 443` stores one quoted string. `--set-literal=PATH=TEXT` is the same option with the other reading - `TEXT` goes in as **value syntax**, the way a file spells it, so that same text stores a two-element array. Both spellings share one ordered list, so the last one to touch a path wins. Environment-variable mapping is deliberately not provided: the env namespace and its naming convention belong to the consuming program, which can map env vars onto `--set` itself.
+On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `set`) takes repeated `--layer=FILE` and repeated `--set=PATH=VALUE`. `check` does not: its diagnostics are inherently single-file.
+
+- Precedence runs low to high: the `--layer` files in listed order, then the positional `FILE`, then the `--set` values. `fmt` with layers prints the merged canonical document, so it doubles as the merge command.
+
+- A `--set` is a Writer edit, not a merged layer. It targets the first matching instance, or creates the path. On a repeated leaf that means it edits one instance, where a real top-layer file would replace the whole same-named group wholesale. Put it in a `--layer` file when whole-group override is the intent.
+
+- That distinction decides persistence. On `set`, a `--set` edits the document rather than layering over it, so `set --write` writes those edits back; giving any `--set` also means no write-ops script is read from stdin. Everywhere else a `--set` stays ephemeral and `--write` refuses it, as `--write` refuses `--layer` everywhere - folding a lower layer permanently into the top file is the opposite of what layering is for.
+
+- A `--set` value goes in as **data**. Its type still follows the text (`workers=8` is an integer), but a comma or quote inside it is content, so `ports=80, 443` stores one quoted string.
+
+- `--set-literal=PATH=TEXT` is the same option with the other reading. `TEXT` goes in as **value syntax**, the way a file spells it, so that same text stores a two-element array. Both spellings share one ordered list, so the last one to touch a path wins.
+
+Environment-variable mapping is deliberately not provided. The env namespace and its naming convention belong to the consuming program, which can map env vars onto `--set` itself.
 
 ## Schema-driven generation
 
@@ -547,9 +559,13 @@ On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `set`)
 The output, per schema field in schema order:
 
 - A `desc` line becomes a leading `# ` comment.
+
 - A generated annotation line summarizes the type and constraints, ASCII only: `# <type>[, one of: v1, v2, ...][, <lo>-<hi> | >= <lo> | <= <hi>][, repeat <lo>[-<hi>]][, required]`. An untyped field shows `any`. Allowed values and numeric bounds are rendered in the type's canonical text (the same float formatter reads use); a newline inside a rendered value is escaped to `\n` so it cannot break out of the comment. This annotation is part of the generated file, so it is a byte-for-byte cross-binding contract, not free prose.
+
 - The field line itself: fields that **must exist** (`required`, or a `repeat` lower bound of 1 or more) are live (`path: <default>`, or `path:` with an empty value when there is no `default`; a `default` containing a newline is written in its quoted escaped spelling); **optional** fields are the same line commented out (`#path: ...`), so the starter is valid and minimal as-is.
+
 - A must-exist field whose path contains a wildcard is generated in dotted form (the wildcard dropped, targeting the first instance) when some other live line materializes the wildcard's parent - otherwise the very instance that line creates would fail the schema. Remaining wildcard paths, and paths that cannot be written at all (a name-wildcard `*` segment has no name to drop to; `[#N]` needs a pre-existing instance and its `#` would start a comment; a path carrying a literal newline has no one-line spelling), are collected into a trailing `# Paths needing an instance name (not generated):` comment block, one `#   <path>   <type>` per line.
+
 - After the last field, and after the trailing block if there is one, a footer names the format and points at its spec, separated from what precedes it by one blank line:
 
 	```text
@@ -568,7 +584,7 @@ A fragment mount is expanded inline - the fragment's fields generate under the m
 
 ## Error handling philosophy
 
-SHCL never bails on a whole file for one bad line (at Loose and Standard strictness; Strict turns any `error` diagnostic into a load failure by request - see Strictness levels). The parser skips or best-effort-repairs the offending line, emits a diagnostic, and continues. The Accessor never errors when it can unambiguously reach a value; malformed content before or after a clean section does not poison that section. Errors are reserved for genuine ambiguity (or surfaced on request via `onBad: Error`).
+SHCL never bails on a whole file for one bad line (at Loose and Standard strictness; Strict turns any `error` diagnostic into a load failure by request - see Strictness levels). The parser skips or best-effort-repairs the offending line, emits a diagnostic, and continues. The Accessor never errors when it can unambiguously reach a value; malformed content before or after a clean section does not poison that section. Errors are reserved for genuine ambiguity (or reported on request via `onBad: Error`).
 
 One repair is defined concretely, because it is the common "figure it out" case: a line that is a **well-formed field path with no colon and nothing after it** (`base[Boston].metrics.population`, no value) is repaired to that path carrying an **empty value** - the obvious intent - with a diagnostic emitted. This is deliberately narrow. A line whose colon is missing but which is *not* a clean path - a bareword then whitespace then another token (`square-miles 300`) - is genuinely ambiguous (is `300` a value, or part of a name that cannot legally contain a space?), so it is skipped with a diagnostic rather than guessed.
 

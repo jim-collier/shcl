@@ -181,7 +181,7 @@ None of this is needed for `--ci`, which is the gate that matters for a pull req
 
 ### Adding a conformance case
 
-Behavior changes land with a corpus case, or they are not pinned.
+Behavior changes come with a corpus case, or they are not pinned.
 
 - A case is a directory under `project/conformance/NNN-short-name/`, using the next free number.
 

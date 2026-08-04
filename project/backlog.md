@@ -44,34 +44,13 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 ### Misc to-do
 
+None open.
+
 ### Bugs
 
-- ✅ The PowerShell wrapper's sourced `shcl` cannot be fed an op script on stdin. It is a function, so it forwards arguments but not pipeline input: `$ops | shcl set --write f.shcl` drops the ops and the CLI then blocks on console stdin until it is killed. The Bash wrapper pipes fine, so the two wrappers are not at parity, and `set` is the only subcommand that reads stdin.
-	- Workaround, now in the README, is to pipe to the binary instead, resolved as `Get-Command shcl -CommandType Application` - plain `Get-Command shcl` returns the sourced function, whose `.Source` is empty. Callers should not need to know that.
-	- Not crosscheck-visible: the wrappers are forwarders and deliberately sit outside `BINDING_CLIS`, so nothing in the pipeline exercises this.
-	- Fixed: `shcl` forwards `$input` to the binary, but only when `$MyInvocation.ExpectingInput` says something was piped. The guard matters - forwarding an empty `$input` would hand the binary a closed stdin, so a bare `shcl set f.shcl` would read zero ops instead of the console.
-	- Verified both modes against the real binary: dot-sourced with ops piped, and run as a script with a shell-level pipe (that one reaches the process stdin directly, not the PowerShell pipeline, so it takes the other branch). Same ops through the Bash and PowerShell wrappers now leave byte-identical files.
+None open.
 
 ### Features and enhancements
-
-- ✅ A generated config file said nothing about what format it was in, so whoever opened it next had no way to find the syntax.
-	- Done: `shcl init` ends the file with a short comment footer naming the format and linking its home page and spec, after a blank line. `--no-banner` leaves it out, and `generate` takes the same flag in every binding plus the C++ veneer.
-	- The flag is negative so the footer is what a caller gets by saying nothing - the opt-out is the thing that has to be asked for.
-	- The `Legal` line names SHCL as its subject ("SHCL is Copyright ...") rather than opening with the copyright, so it cannot be misread as a claim over the config it sits in.
-	- The footer is output, so it is a byte-for-byte cross-binding contract like the annotation line. The three init goldens carry it; each runner also generates with the flag set and checks the result is the golden minus the footer, so the flag costs no extra goldens.
-
-- ✅ A value that is not a plain scalar could not be written as an option: `--set` reads its value as data, so `ports=80, 443` stored one quoted string rather than an array.
-	- Done: `--set-literal PATH=TEXT` reads the text as value syntax instead - the way the parser reads the half of a line after the colon - so the same text writes a two-element array. Backed by `SetLiteral`/`SetLiteralDefault` in all four bindings, a matching `literal` op in the write-ops script, and corpus case 044.
-	- It parses the text rather than splicing it, so there is no way to inject syntax: the result is a value or a rejection, output stays canonical, and a written document is still a formatter fixpoint. Rejects only what could not be one line's value (a line break, or a quote that never closes - the same text the parser reports E017 for); an unquoted `#` ends the value as it would in a file.
-	- Both spellings share one ordered list, so the last option to touch a path wins.
-	- Investigated and deliberately not built: a "force this value to be a string" option. Quoting is a rule about canonical output, not a type marker - `fmt` normalises `ver: "8"` to `ver: 8`, and values are typed by the reader - so there is nothing to force. The earlier note claiming that gap was wrong.
-	- No C++ veneer change: the veneer exposes reads only, so adding one setter there would have been the odd one out.
-
-- ✅ Persisting an edit from a shell needed a tab-separated op script on stdin, which is the root cause behind both shell wrappers' rough edges: tabs are invisible in source and survive neither retyping nor an editor that expands them, and the PowerShell wrapper could not carry stdin at all.
-	- Done: `set --write --set PATH=VALUE`, repeatable, applied in order, no pipe and no tabs. `--set` was already applied through the Writer on `set` rather than layered, so the edits were persistent in all but name - only the `--write` refusal stood in the way, and it existed for `--layer`'s sake.
-	- Deliberately no new typed options: `--set` writes the value as literal config text, so `workers=8` already lands as an integer. A `--int`/`--string` family was measured against the op script and produced byte-identical output, so it would have been redundant surface next to a `--set` that already means something adjacent.
-	- Known gap at the time, now closed by the item below: an array value could not be written as an option, because a comma made it a quoted string.
-	- Given any `--set`, `set` no longer reads stdin - otherwise passing edits as options blocks on the console, which is the hang this was meant to remove.
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
@@ -96,21 +75,27 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 	- **Improvements**:
 
-	- 🛠️ Code Review 20260725 item 28: give the loader opt-out limits.
-		- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
-		- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
-		- ✅ Done: the depth half, done with item 2 - a fixed 512-level cap and `E016`.
-		- ✋ Deferred post-1.0: the depth cap closed the crash class. Size, node and array knobs are additive API that can land later without breaking anything, and a consuming program can bound input size itself before calling parse.
+		- 🛠️ Code Review 20260725 item 28: give the loader opt-out limits.
+			- Nothing bounds input size, nesting depth, node count or array length in any binding, and parse costs 35-100x the input in memory.
+			- A consuming program handed a config path from a user, a shared directory or a container volume has no way to refuse something unreasonable.
+			- ✅ Done: the depth half, done with item 2 - a fixed 512-level cap and `E016`.
+			- ✋ Deferred post-1.0: the depth cap closed the crash class. Size, node and array knobs are additive API that can be added later without breaking anything, and a consuming program can bound input size itself before calling parse.
 
-	- 🛠️ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
-		- All four bindings recover the code from `msg.starts_with(...)` over about 30 hand-ordered prefixes, so rewording a message can change a code, and the ordering is load-bearing.
-		- Separately, `V001`-`V099` were fully tabled but `E001`-`E015` and `H001` were listed nowhere, while users are told to gate CI on `check`.
-		- ✅ Done: the doc half. `E001`-`E016` plus `H001` are now tabled in the spec's Diagnostics section.
-		- ✋ Deferred: threading the code through every call site. Large, mechanical, and invisible to users, and every corpus case pins the code per line - so the exposure is limited to messages no case exercises.
+		- 🛠️ Code Review 20260725 item 29: the stable diagnostic code is derived by prefix-matching the prose it is supposed to free.
+			- All four bindings recover the code from `msg.starts_with(...)` over about 30 hand-ordered prefixes, so rewording a message can change a code, and the ordering is load-bearing.
+			- Separately, `V001`-`V099` were fully tabled but `E001`-`E015` and `H001` were listed nowhere, while users are told to gate CI on `check`.
+			- ✅ Done: the doc half. `E001`-`E016` plus `H001` are now tabled in the spec's Diagnostics section.
+			- ✋ Deferred: threading the code through every call site. Large, mechanical, and invisible to users, and every corpus case pins the code per line - so the exposure is limited to messages no case exercises.
 
 ### Done
 
 #### Done - Bugs
+
+- ✅ The PowerShell wrapper's sourced `shcl` cannot be fed an op script on stdin. It is a function, so it forwards arguments but not pipeline input: `$ops | shcl set --write f.shcl` drops the ops and the CLI then blocks on console stdin until it is killed. The Bash wrapper pipes fine, so the two wrappers are not at parity, and `set` is the only subcommand that reads stdin.
+	- Workaround, now in the README, is to pipe to the binary instead, resolved as `Get-Command shcl -CommandType Application` - plain `Get-Command shcl` returns the sourced function, whose `.Source` is empty. Callers should not need to know that.
+	- Not crosscheck-visible: the wrappers are forwarders and deliberately sit outside `BINDING_CLIS`, so nothing in the pipeline exercises this.
+	- Fixed: `shcl` forwards `$input` to the binary, but only when `$MyInvocation.ExpectingInput` says something was piped. The guard matters - forwarding an empty `$input` would hand the binary a closed stdin, so a bare `shcl set f.shcl` would read zero ops instead of the console.
+	- Verified both modes against the real binary: dot-sourced with ops piped, and run as a script with a shell-level pipe (that one reaches the process stdin directly, not the PowerShell pipeline, so it takes the other branch). Same ops through the Bash and PowerShell wrappers now leave byte-identical files.
 
 - ✅ Paths() silently drops any node whose name isn't a bare identifier - and its whole subtree.
 	- Fixed: non-bare segments now emit quoted and escaped via the same spelling the canonical formatter uses, so every returned path resolves. Shared fixture updated in all four runners; spec traversal section documents the enumeration. From TradeClanker, where it's a live bug: a quoted field name parses with zero diagnostics and reads back fine, but Paths() skips it, so the enumeration disagrees with what the document contains. Their unknown-field check is a Paths() walk, so a typo whose name needs quoting sails through the one check built to catch typos, and an author who writes two indicators gets one with no error. It also breaks round-tripping: a set with a quoted segment succeeds and canonical output writes it correctly, but re-parsing that output can't enumerate it - the writer produces documents the reader can't see.
@@ -133,6 +118,25 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 	- Touches resolve, writer place(), and the parser's ByValue arm in all four bindings; corpus case either way.
 
 #### Done - Features and enhancements
+
+- ✅ A generated config file said nothing about what format it was in, so whoever opened it next had no way to find the syntax.
+	- Done: `shcl init` ends the file with a short comment footer naming the format and linking its home page and spec, after a blank line. `--no-banner` leaves it out, and `generate` takes the same flag in every binding plus the C++ veneer.
+	- The flag is negative so the footer is what a caller gets by saying nothing - the opt-out is the thing that has to be asked for.
+	- The `Legal` line names SHCL as its subject ("SHCL is Copyright ...") rather than opening with the copyright, so it cannot be misread as a claim over the config it sits in.
+	- The footer is output, so it is a byte-for-byte cross-binding contract like the annotation line. The three init goldens carry it; each runner also generates with the flag set and checks the result is the golden minus the footer, so the flag costs no extra goldens.
+
+- ✅ A value that is not a plain scalar could not be written as an option: `--set` reads its value as data, so `ports=80, 443` stored one quoted string rather than an array.
+	- Done: `--set-literal PATH=TEXT` reads the text as value syntax instead - the way the parser reads the half of a line after the colon - so the same text writes a two-element array. Backed by `SetLiteral`/`SetLiteralDefault` in all four bindings, a matching `literal` op in the write-ops script, and corpus case 044.
+	- It parses the text rather than splicing it, so there is no way to inject syntax: the result is a value or a rejection, output stays canonical, and a written document is still a formatter fixpoint. Rejects only what could not be one line's value (a line break, or a quote that never closes - the same text the parser reports E017 for); an unquoted `#` ends the value as it would in a file.
+	- Both spellings share one ordered list, so the last option to touch a path wins.
+	- Investigated and deliberately not built: a "force this value to be a string" option. Quoting is a rule about canonical output, not a type marker - `fmt` normalises `ver: "8"` to `ver: 8`, and values are typed by the reader - so there is nothing to force. The earlier note claiming that gap was wrong.
+	- No C++ veneer change: the veneer exposes reads only, so adding one setter there would have been the odd one out.
+
+- ✅ Persisting an edit from a shell needed a tab-separated op script on stdin, which is the root cause behind both shell wrappers' rough edges: tabs are invisible in source and survive neither retyping nor an editor that expands them, and the PowerShell wrapper could not carry stdin at all.
+	- Done: `set --write --set PATH=VALUE`, repeatable, applied in order, no pipe and no tabs. `--set` was already applied through the Writer on `set` rather than layered, so the edits were persistent in all but name - only the `--write` refusal stood in the way, and it existed for `--layer`'s sake.
+	- Deliberately no new typed options: `--set` writes the value as literal config text, so `workers=8` already lands as an integer. A `--int`/`--string` family was measured against the op script and produced byte-identical output, so it would have been redundant surface next to a `--set` that already means something adjacent.
+	- Known gap at the time, now closed by the item below: an array value could not be written as an option, because a comma made it a quoted string.
+	- Given any `--set`, `set` no longer reads stdin - otherwise passing edits as options blocks on the console, which is the hang this was meant to remove.
 
 - ✅ The schema can't declare an open section. From TradeClanker: wildcards select instances (`server[*].port`), but there's no way to say "any child name under `indicators`, each shaped like this" - so a config with one map-shaped section can't use schema validation at all, and they keep a hand-maintained known-paths map instead. Everything else in their config would express cleanly as a schema.
 	- A name-position wildcard is the missing construct. Distinct from the schema-fragments item below (shape reuse), but they'd be designed together - both grow the schema language, so both go through the same design-first gate.
@@ -940,7 +944,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 - ✅ Rust reference parser (Tier 1) implementing the full spec, driven by the corpus. The `shcl` CLI builds from it.
 	- Done: single-file zero-dependency library plus the CLI (`get`, `fmt`, `check`, `count`, `instances`). Corpus-green, with fuzz smoke in the test run.
-	- Note: fuzzing surfaced two formatter rules, now in `spec.md`.
+	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 
 #### Done - Misc to-do
 
