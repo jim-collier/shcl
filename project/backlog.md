@@ -61,11 +61,10 @@ None open.
 	- `children()` has no line-bearing counterpart either, so walking a section cannot recover lines that way.
 	- Shape: a plural `lines(path)` mirroring `instances()` - file order, unresolved wildcard slots as 0 so indices keep matching `count()` - and possibly a children variant that carries lines. Additive, all four bindings plus veneer.
 
-- 🔘 A schema fault suppresses all data validation; consider validating with the surviving constraints instead.
+- ✅ A schema fault suppresses all data validation; consider validating with the surviving constraints instead.
 	- Reported from nano-git-db as "a schema fault silently disables all data validation, so a broken schema looks like a clean file"; they added a schema self-check test as a workaround.
 	- Not literally silent - verified: every schema fault is an Error diagnostic, `validate()` returns them, and `check --schema` exits 6. The file only looks clean if the caller drops the schema-line diagnostics. The substantive gap is real though: one broken constraint turns off validation for the whole file, even though the schema builder already drops broken constraints one by one before deciding to bail.
-	- Needs a decision first: corpus case 040 pins fault-suppresses-validation as contract, so the change moves goldens in all four bindings and a spec sentence.
-	- Shape if taken: keep the fault diagnostics in the output and run data validation with the constraints that survived.
+	- Done, as a three-way split: faults report first, the surviving constraints still check the document, and only the unknown-field sweep needs a fault-free schema (a dropped constraint would turn its own fields into false unknowns). Generation still fails on any fault. All four bindings; case 046 pins it; 023/040 goldens turned out to be unchanged (their survivors trigger nothing).
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
