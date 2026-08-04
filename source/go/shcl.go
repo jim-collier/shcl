@@ -492,6 +492,10 @@ type nodeData struct {
 	// a run trailing a block's last child stays put instead of re-attaching
 	// dedented. Emitted after the subtree at this node's depth.
 	after []lead
+	// Whole-line comments written inside this node's block when no bound child
+	// could take them - a header whose children are all commented still owns
+	// those lines. Emitted after the subtree one level deeper than this node.
+	inside []lead
 	// Blank-line grouping is the other half of hand-authored layout: set when
 	// a blank line preceded this node's binding line (runs collapse to one).
 	blankBefore bool
@@ -539,6 +543,9 @@ func foldNodeInto(arena []nodeData, survivor, loser int) {
 	after := arena[loser].after
 	arena[loser].after = nil
 	arena[survivor].after = append(arena[survivor].after, after...)
+	inside := arena[loser].inside
+	arena[loser].inside = nil
+	arena[survivor].inside = append(arena[survivor].inside, inside...)
 }
 
 // MaxDepth is the maximum nesting depth (levels below the document root),
@@ -1187,11 +1194,13 @@ func (p *parser) attachTrivia(node int, trailing string) {
 }
 
 // hangDeeperPending: comments written deeper than the incoming line belong to
-// the block they sit in, not to the next binding: hang each on the deepest open
-// level whose indent prefixes the comment's, so a run trailing a block's last
-// child stays with that block instead of re-attaching dedented at the next
-// node. Runs before the incoming line resolves (and at end of parse with the
-// empty indent, so indented tail comments keep their block).
+// the block they sit in, not to the next binding: hang each on the deepest node
+// whose bound indent prefixes the comment's, among the levels the incoming
+// line is closing. Written at that node's own level the comment trails it
+// (after); written deeper it sits inside the node's block (inside) - so a
+// header whose children are all commented still owns them at their depth. Runs
+// before the incoming line resolves (and at end of parse with the empty
+// indent, so tail comments keep their block).
 func (p *parser) hangDeeperPending(newIndent string) {
 	if len(p.pending) == 0 {
 		return
@@ -1200,16 +1209,26 @@ func (p *parser) hangDeeperPending(newIndent string) {
 	p.pending = nil
 	for _, pn := range taken {
 		if len(pn.indent) > len(newIndent) {
+			// A level shallower than the incoming line stays open and may
+			// still gain children, so a comment must not hang there - it
+			// would emit below the child; keep it pending instead.
 			target := -1
+			atOwnLevel := false
 			for j := len(p.stack) - 1; j >= 0; j-- {
 				ent := p.stack[j]
-				if ent.node != root && ent.indent != "" && len(ent.indent) > len(newIndent) && strings.HasPrefix(pn.indent, ent.indent) {
+				if ent.node != root && len(ent.indent) >= len(newIndent) && strings.HasPrefix(pn.indent, ent.indent) {
 					target = ent.node
+					atOwnLevel = len(ent.indent) == len(pn.indent)
 					break
 				}
 			}
 			if target >= 0 {
-				p.arena[target].after = append(p.arena[target].after, lead{text: pn.text, blankBefore: pn.blankBefore})
+				l := lead{text: pn.text, blankBefore: pn.blankBefore}
+				if atOwnLevel {
+					p.arena[target].after = append(p.arena[target].after, l)
+				} else {
+					p.arena[target].inside = append(p.arena[target].inside, l)
+				}
 				continue
 			}
 		}
@@ -1862,6 +1881,16 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 		out.WriteByte('\n')
 	}
 	d.emitChildren(d.arena[idx].children, depth+1, out)
+	// Comments this block owns with no child to carry them, one deeper.
+	ipad := strings.Repeat("\t", depth+1)
+	for _, c := range d.arena[idx].inside {
+		if c.blankBefore && out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(ipad)
+		out.WriteString(c.text)
+		out.WriteByte('\n')
+	}
 	// Comments that hung on this block after its last child.
 	for _, c := range d.arena[idx].after {
 		if c.blankBefore && out.Len() > 0 {
@@ -2897,6 +2926,7 @@ func (d *Document) adoptTrivia(base int, over *Document, ok int) {
 		}
 	}
 	d.arena[base].after = append(d.arena[base].after, src.after...)
+	d.arena[base].inside = append(d.arena[base].inside, src.inside...)
 }
 
 func (d *Document) overlay(baseParent int, over *Document, overParent int) {
@@ -3011,6 +3041,7 @@ func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
 		leading:     append([]lead(nil), src.leading...),
 		trailing:    src.trailing,
 		after:       append([]lead(nil), src.after...),
+		inside:      append([]lead(nil), src.inside...),
 		blankBefore: src.blankBefore,
 		src:         srcCopy,
 	}

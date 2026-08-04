@@ -3,4 +3,4 @@ server:
 server: web1
 mode:
 server: web2
-# just a note
+	# just a note
