@@ -2352,21 +2352,25 @@ class Document:
 	# The schema is an ordinary parsed document: a flat list of `field: <path>`
 	# instances whose children are the constraints (closed vocabulary).
 	# Validation reuses the accessor's path scan and the typed coercions, so
-	# document strictness composes for free. Any schema fault (V09x) suppresses
-	# data validation - one line-number space per result.
+	# document strictness composes for free. Schema faults (V09x) lead the
+	# result and the surviving constraints still run - one line-number space
+	# per result.
 
 	def validate(self, schema):
 		"""Validate against a schema document (itself plain SHCL). Empty result
 		= the document conforms. Diagnostic lines are document lines (0 =
-		document scope); schema faults (V09x, schema-file lines) suppress data
-		validation entirely."""
+		document scope); schema faults (V09x, schema-file lines) come first,
+		and the surviving constraints still check the document. Only the
+		unknown-field sweep needs a fault-free schema: a dropped constraint
+		would turn the fields it declared into false unknowns, so that check
+		skips rather than misfire."""
 		sdef, faults = _build_schema(schema)
-		if faults:
-			return faults
-		out = []
+		schema_ok = not faults
+		out = faults
 		for c in sdef.cons:
 			self._v_check(c, sdef, out)
-		self._v_unknown(sdef, out)
+		if schema_ok:
+			self._v_unknown(sdef, out)
 		return out
 
 	def _v_contexts(self, start, segs, anchor, out):
@@ -3224,9 +3228,11 @@ def _dt_equal(a, b):
 
 
 def _build_schema(schema):
-	"""Interpret a parsed schema document into constraints and fragments. A
-	non-empty fault list (V09x, schema-file lines) means the caller reports
-	those and validates nothing."""
+	"""Interpret a parsed schema document into constraints and fragments, plus
+	any schema faults (V09x, schema-file lines). Whatever parsed cleanly is
+	kept even when faults are present - a broken key drops that key, a broken
+	field drops that field - so a caller can still check the document against
+	the surviving constraints."""
 	faults = []
 	cons = []
 	frags = {}
@@ -3261,11 +3267,9 @@ def _build_schema(schema):
 	for c in cons + [fc for fcs in frags.values() for fc in fcs]:
 		if c.inherits is not None and c.inherits not in frags:
 			_vdiag(faults, c.inherits_line, "unknown schema fragment '{}'".format(c.inherits))
-	if faults:
-		# One constraint per line in practice, so line order = file order.
-		faults.sort(key=lambda d: d.line)
-		return None, faults
-	return _SchemaDef(cons, frags), []
+	# One constraint per line in practice, so line order = file order.
+	faults.sort(key=lambda d: d.line)
+	return _SchemaDef(cons, frags), faults
 
 
 def _parse_field(schema, f, faults):
@@ -3502,6 +3506,8 @@ def generate(schema, no_banner=False):
 	no_banner; the flag is negative so leaving it alone writes the footer.
 	Returns (text, faults): a non-empty fault list (V09x) means the schema is
 	broken and text is empty."""
+	# Generation lays the whole schema out, so unlike validation it has no
+	# safe partial mode: any fault fails it.
 	sdef, faults = _build_schema(schema)
 	if faults:
 		return "", faults

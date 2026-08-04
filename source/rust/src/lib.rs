@@ -3525,8 +3525,9 @@ impl Document {
 // The schema is an ordinary parsed document: a flat list of `field: <path>`
 // instances whose children are the constraints (closed vocabulary - see
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
-// the typed coercions, so document strictness composes for free. Any schema
-// fault (V09x) suppresses data validation - one line-number space per result.
+// the typed coercions, so document strictness composes for free. Schema
+// faults (V09x) come first and the surviving constraints still check the
+// document; only the unknown-field sweep needs a fault-free schema.
 
 const SCHEMA_TYPES: [&str; 11] = [
 	"int",
@@ -3597,10 +3598,12 @@ fn single_text(v: &Value) -> Option<String> {
 	}
 }
 
-/// Interpret a parsed schema document into constraints and fragments. Err =
-/// schema faults (V09x, schema-file lines); the caller reports those and
-/// validates nothing.
-fn build_schema(schema: &Document) -> Result<SchemaDef, Vec<Diagnostic>> {
+/// Interpret a parsed schema document into constraints and fragments, plus
+/// any schema faults (V09x, schema-file lines). Whatever parsed cleanly is
+/// kept even when faults are present - a broken key drops that key, a broken
+/// field drops that field - so a caller can still check the document against
+/// the surviving constraints.
+fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 	let mut faults: Vec<Diagnostic> = Vec::new();
 	let mut cons: Vec<Constraint> = Vec::new();
 	let mut frags: HashMap<String, Vec<Constraint>> = HashMap::new();
@@ -3665,13 +3668,9 @@ fn build_schema(schema: &Document) -> Result<SchemaDef, Vec<Diagnostic>> {
 			);
 		}
 	}
-	if faults.is_empty() {
-		Ok(SchemaDef { cons, frags })
-	} else {
-		// One constraint per line in practice, so line order = file order.
-		faults.sort_by_key(|d| d.line);
-		Err(faults)
-	}
+	// One constraint per line in practice, so line order = file order.
+	faults.sort_by_key(|d| d.line);
+	(SchemaDef { cons, frags }, faults)
 }
 
 /// One `field:` instance (top-level or inside a fragment) -> a Constraint.
@@ -3988,7 +3987,12 @@ fn gen_default_text(v: &str) -> String {
 /// `no_banner`; the flag is negative so leaving it alone writes the footer.
 /// Err = schema faults (V09x), same as `validate`/`check --schema`.
 pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagnostic>> {
-	let def = build_schema(schema)?;
+	// Generation lays the whole schema out, so unlike validation it has no
+	// safe partial mode: any fault fails it.
+	let (def, faults) = build_schema(schema);
+	if !faults.is_empty() {
+		return Err(faults);
+	}
 	let (cons, cuts) = expand_mounts(&def);
 	if cons.len() >= GEN_MAX_FIELDS {
 		return Err(vec![Diagnostic {
@@ -4236,17 +4240,20 @@ impl Document {
 	/// Validate this document against a schema document (itself plain SHCL -
 	/// spec.md "Schema validation"). Empty result = the document conforms.
 	/// Diagnostic lines are document lines (0 = document scope); schema faults
-	/// (V09x, schema-file lines) suppress data validation entirely.
+	/// (V09x, schema-file lines) come first, and the surviving constraints
+	/// still check the document. Only the unknown-field sweep needs a
+	/// fault-free schema: a dropped constraint would turn the fields it
+	/// declared into false unknowns, so that check skips rather than misfire.
 	pub fn validate(&self, schema: &Document) -> Vec<Diagnostic> {
-		let def = match build_schema(schema) {
-			Ok(d) => d,
-			Err(faults) => return faults,
-		};
-		let mut out: Vec<Diagnostic> = Vec::new();
+		let (def, faults) = build_schema(schema);
+		let schema_ok = faults.is_empty();
+		let mut out = faults;
 		for c in &def.cons {
 			self.v_check(c, &def, &mut out);
 		}
-		self.v_unknown(&def, &mut out);
+		if schema_ok {
+			self.v_unknown(&def, &mut out);
+		}
 		out
 	}
 

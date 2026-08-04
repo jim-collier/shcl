@@ -3948,8 +3948,9 @@ func (d *Document) GetDateTimeArrayOr(path string, def []DateTime) []DateTime {
 // The schema is an ordinary parsed document: a flat list of `field: <path>`
 // instances whose children are the constraints (closed vocabulary - see
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
-// the typed coercions, so document strictness composes for free. Any schema
-// fault (V09x) suppresses data validation - one line-number space per result.
+// the typed coercions, so document strictness composes for free. Schema faults
+// (V09x) come first and the surviving constraints still check the document -
+// one line-number space per result.
 
 var schemaTypes = []string{
 	"int",
@@ -4037,8 +4038,10 @@ func dtEqual(a, b DateTime) bool {
 }
 
 // buildSchema interprets a parsed schema document into constraints and
-// fragments. A non-empty fault list (V09x, schema-file lines) means the caller
-// reports those and validates nothing.
+// fragments, plus any schema faults (V09x, schema-file lines). Whatever parsed
+// cleanly is kept even when faults are present - a broken key drops that key,
+// a broken field drops that field - so a caller can still check the document
+// against the surviving constraints.
 func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 	var faults []Diagnostic
 	var cons []constraint
@@ -4094,12 +4097,9 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 			checkMount(&fcs[i])
 		}
 	}
-	if len(faults) > 0 {
-		// One constraint per line in practice, so line order = file order.
-		sort.SliceStable(faults, func(i, j int) bool { return faults[i].Line < faults[j].Line })
-		return schemaDef{}, faults
-	}
-	return schemaDef{cons: cons, frags: frags}, nil
+	// One constraint per line in practice, so line order = file order.
+	sort.SliceStable(faults, func(i, j int) bool { return faults[i].Line < faults[j].Line })
+	return schemaDef{cons: cons, frags: frags}, faults
 }
 
 // parseField turns one `field:` instance (top-level or inside a fragment) into
@@ -4456,8 +4456,10 @@ func genDefaultText(v string) string {
 // flag is negative so leaving it alone writes the footer. faults != nil =
 // schema faults (V09x), same as Validate / check --schema.
 func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
+	// Generation lays the whole schema out, so unlike validation it has no
+	// safe partial mode: any fault fails it.
 	def, faults := buildSchema(schema)
-	if faults != nil {
+	if len(faults) > 0 {
 		return "", faults
 	}
 	cons, cuts := expandMounts(&def)
@@ -4755,17 +4757,20 @@ func min3(a, b, c int) int {
 // Validate checks this document against a schema document (itself plain SHCL -
 // spec.md "Schema validation"). An empty result means the document conforms.
 // Diagnostic lines are document lines (0 = document scope); schema faults
-// (V09x, schema-file lines) suppress data validation entirely.
+// (V09x, schema-file lines) come first, and the surviving constraints still
+// check the document. Only the unknown-field sweep needs a fault-free schema:
+// a dropped constraint would turn the fields it declared into false unknowns,
+// so that check skips rather than misfire.
 func (d *Document) Validate(schema *Document) []Diagnostic {
 	def, faults := buildSchema(schema)
-	if len(faults) > 0 {
-		return faults
-	}
-	var out []Diagnostic
+	schemaOK := len(faults) == 0
+	out := faults
 	for i := range def.cons {
 		d.vCheck(&def.cons[i], &def, &out)
 	}
-	d.vUnknown(&def, &out)
+	if schemaOK {
+		d.vUnknown(&def, &out)
+	}
 	return out
 }
 

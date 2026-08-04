@@ -296,6 +296,8 @@ line 2: Error: unknown field 'log-levle'; did you mean 'log-level'?
 failed: 1 diagnostic(s), 1 error(s)
 ```
 
+A broken schema cannot mask a broken config: a fault in the schema itself is reported as its own error (`V090`+), and the constraints that did parse still check the file. The one thing a schema fault turns off is the unknown-field sweep, which only makes sense against the complete declared vocabulary.
+
 The same schema, pointed the other way, writes a starting file for your own users - commented, correctly typed, required fields live and optional ones left commented out:
 
 ```console

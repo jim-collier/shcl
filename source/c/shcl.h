@@ -108,8 +108,11 @@ size_t shcl_error_count(const shcl_doc *d);
 // Schema validation (spec.md "Schema validation"): check d against a schema
 // document (itself plain SHCL). Zero diagnostics = the document conforms.
 // Diagnostic lines are document lines (0 = document scope); schema faults
-// (V09x, schema-file lines) suppress data validation entirely. The result owns
-// copies of all its strings - free with shcl_validation_free.
+// (V09x, schema-file lines) come first, and the surviving constraints still
+// check the document. Only the unknown-field sweep needs a fault-free schema:
+// a dropped constraint would turn the fields it declared into false unknowns,
+// so that check skips rather than misfire. The result owns copies of all its
+// strings - free with shcl_validation_free.
 typedef struct shcl_validation shcl_validation;
 shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema);
 size_t shcl_validation_count(const shcl_validation *v);
@@ -2974,8 +2977,9 @@ const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i
 // The schema is an ordinary parsed document: a flat list of `field: <path>`
 // instances whose children are the constraints (closed vocabulary - see
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
-// the typed coercions, so document strictness composes for free. Any schema
-// fault (V09x) suppresses data validation - one line-number space per result.
+// the typed coercions, so document strictness composes for free. Schema faults
+// (V09x, schema-file lines) lead the result and the surviving constraints
+// still run; only the unknown-field sweep needs a fault-free schema.
 // Everything (scratch and results) lives in the validation's own arena.
 
 struct shcl_validation { Arena arena; VecDiag diags; };
@@ -3213,9 +3217,11 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 	return 1;
 }
 
-// Interpret a parsed schema document into constraints and fragments. Nonzero
-// fault count (V09x, schema-file lines) means the caller reports those and
-// validates nothing.
+// Interpret a parsed schema document into constraints and fragments, plus any
+// schema faults (V09x, schema-file lines). Whatever parsed cleanly is kept
+// even when faults are present - a broken key drops that key, a broken field
+// drops that field - so a caller can still check the document against the
+// surviving constraints.
 static void v_build_schema(Arena *a, shcl_doc *schema, VSchemaDef *def, VecDiag *faults) {
 	VecSize top = NODE(schema, ROOT).children;
 	for (size_t fi = 0; fi < top.len; fi++) {
@@ -3713,7 +3719,8 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	VSchemaDef def; memset(&def, 0, sizeof def);
 	VecDiag faults = {0};
 	v_build_schema(a, schema, &def, &faults);
-	if (faults.len) { v->diags = faults; return v; }
+	int schema_ok = faults.len == 0;
+	v->diags = faults;
 	// One scratch arena per mount-recursion level, reset and reused across
 	// sibling calls: peak retention is one block per active document level,
 	// not every level of every walk. The parser caps depth at SHCL_MAX_DEPTH
@@ -3723,7 +3730,7 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	memset(lvls, 0, sizeof lvls);
 	for (size_t i = 0; i < def.cons.len; i++) v_check(a, lvls, d, &def.cons.data[i], &def, &v->diags);
 	for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_free(&lvls[i]);
-	v_unknown(a, d, &def, &v->diags);
+	if (schema_ok) v_unknown(a, d, &def, &v->diags);
 	return v;
 }
 size_t shcl_validation_count(const shcl_validation *v) { return v->diags.len; }
@@ -4021,6 +4028,8 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	Arena *a = &tmp;
 	VSchemaDef def; memset(&def, 0, sizeof def);
 	VecDiag faults = {0, 0, 0};
+	// Generation lays the whole schema out, so unlike validation it has no
+	// safe partial mode: any fault fails it.
 	v_build_schema(a, schema, &def, &faults);
 	shcl_str r;
 	if (faults.len) { if (ok) *ok = 0; S e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r; }

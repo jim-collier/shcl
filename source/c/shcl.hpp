@@ -95,7 +95,9 @@ public:
 	std::size_t error_count() const { return shcl_error_count(d_); }
 
 	// Schema validation (spec.md "Schema validation"): empty result = conforms.
-	// Schema faults (V09x, schema-file lines) suppress data validation.
+	// Schema faults (V09x, schema-file lines) come first; the surviving
+	// constraints still check the document, and only the unknown-field sweep
+	// needs a fault-free schema.
 	std::vector<Diagnostic> validate(const Document &schema) const {
 		std::vector<Diagnostic> v;
 		shcl_validation *r = shcl_validate(d_, schema.d_);

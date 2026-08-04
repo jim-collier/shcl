@@ -75,7 +75,7 @@ Cases `021`-`024` pin the schema validation dimension. `021` is the all-pass swe
 
 Case `041` pins generation over fragments: `desc`/`default` flow through the mount expansion, both mounts of the shared `node` fragment generate one full level, and the recursive `children` mounts go in the trailing block with the fragment's name in the type column; the golden validates clean against its own schema.
 
-Case `040` pins fragment faults: `inherits` naming no declared fragment is `V095`, a nameless declaration and a non-`field` key inside one are `V094`, all at schema lines, and their presence suppresses data validation (the document's unknown field draws no `V001`).
+Case `040` pins fragment faults: `inherits` naming no declared fragment is `V095`, a nameless declaration and a non-`field` key inside one are `V094`, all at schema lines. The surviving constraint checks nothing here (its mount names the missing fragment), and the unknown-field sweep is off under faults, so the document's unknown fields draw no `V001`.
 
 Case `039` pins fragments end to end: a self-recursive `node` fragment validates a 10-level layout tree clean, the same fragment mounted at `doc.layout` (an alias) still flags an unknown field beneath it, and a `repeat` declared on a fragment field disavows the document's `H001` under `--schema` (the plain-`check` golden keeps the hint).
 
@@ -112,6 +112,8 @@ Case `026` pins schema-driven generation: `init-schema.shcl` carries `desc`/`def
 Case `025` pins layered loading: a defaults layer, a site layer, and `input.shcl` as the user layer are merged bottom-up, then a `merge.sets` override. It exercises scalar override (`port`), repeated-leaf override (the whole `tags` list is replaced, not appended), container merge by `(name, value)` (both layers' children of `server: web1` combine), a new container instance from a higher layer (`server: web3`), and a `--set` override applied last.
 
 Note when reading comparison counts: the fuzz seed set includes the corpus inputs, so adding a case shifts every mutated input after it and moves the derived total either way. The count is a per-tree constant, not a coverage score; the corpus-only count is the one that tracks coverage.
+
+Case `046` pins partial validation under a schema fault: a bad `min` is a `V092` at its schema line, the surviving constraints still flag a wrong type and a missing required field, and the unknown field draws no `V001` (the sweep needs a fault-free schema).
 
 Case `045` pins comment depth under childless headers: a header whose children are all commented keeps them indented under it (top-level, nested, and at end of file), while a commented line trailing a live child keeps the existing trails-the-binding placement.
 
