@@ -4420,9 +4420,11 @@ func genDefaultText(v string) string {
 // remaining wildcard or `[#N]` paths (which cannot be materialized) are listed
 // in a trailing comment block. The output always loads clean and validates
 // clean against its schema, except a repeat lower bound of 2+ (identical
-// generated lines would merge, so the shortfall is reported). faults != nil =
+// generated lines would merge, so the shortfall is reported). A footer naming
+// the format and pointing at the spec is written last unless noBanner; the
+// flag is negative so leaving it alone writes the footer. faults != nil =
 // schema faults (V09x), same as Validate / check --schema.
-func Generate(schema *Document) (string, []Diagnostic) {
+func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	def, faults := buildSchema(schema)
 	if faults != nil {
 		return "", faults
@@ -4575,6 +4577,12 @@ func Generate(schema *Document) (string, []Diagnostic) {
 			fmt.Fprintf(&b, "#   %s   %s\n", w[0], w[1])
 		}
 	}
+	if !noBanner {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(genBanner)
+	}
 	return b.String(), nil
 }
 
@@ -4584,6 +4592,18 @@ func Generate(schema *Document) (string, []Diagnostic) {
 // this the generator reports a schema fault rather than running until
 // something breaks.
 const genMaxFields = 10000
+
+// genBanner is the footer telling whoever opens the generated file what the
+// format is and where its spec lives. It is output, so every binding emits
+// these bytes exactly; the Legal line names SHCL as its subject so it cannot
+// be read as a claim over the config it sits in.
+const genBanner = "#\n" +
+	"# This config file format is SHCL.\n" +
+	"# \"Simple Hierarchical Config Language\"\n" +
+	"#    Home     https://github.com/jim-collier/shcl\n" +
+	"#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n" +
+	"#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n" +
+	"#\n"
 
 // genPathText renders parsed segments back as a dotted path, dropping
 // wildcard selectors (a generated line targets the one instance it

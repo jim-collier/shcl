@@ -30,7 +30,7 @@ Usage:
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
-  shcl init --schema=SCHEMA              print a commented starter config from
+  shcl init [--no-banner] --schema=S     print a commented starter config from
                                          a schema (required fields live, optional
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
@@ -64,6 +64,8 @@ Options:
                                          report via exit code (the default mode)
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
+  --no-banner                            (init) leave out the footer naming the
+                                         format and pointing at its spec
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
@@ -123,7 +125,7 @@ class _SetOpt:
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "schema", "layers", "sets", "args", "seen")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "no_banner", "schema", "layers", "sets", "args", "seen")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -134,6 +136,7 @@ class _Opts:
 		self.strictness = shcl.Strictness.Standard
 		self.schema = None
 		self.write = False
+		self.no_banner = False
 		self.layers = []         # lower-priority layers, in listed order
 		self.sets = []           # final override layer: _SetOpt, in the order given
 		self.args = []           # positional: FILE [PATH]
@@ -215,6 +218,9 @@ def parse_opts(argv):
 		elif a == "--slots":
 			o.slots = True
 			o.seen.append("--slots")
+		elif a == "--no-banner":
+			o.no_banner = True
+			o.seen.append("--no-banner")
 		elif a in ("--write", "-w"):
 			o.write = True
 			o.seen.append("--write")
@@ -307,7 +313,7 @@ def check_opts(cmd, o):
 	elif cmd == "check":
 		allowed = ("--strictness", "--schema")
 	elif cmd == "init":
-		allowed = ("--schema",)
+		allowed = ("--schema", "--no-banner")
 	elif cmd in ("count", "instances"):
 		allowed = ("--strictness", "--layer", "--set", "--set-literal")
 	else:
@@ -841,7 +847,7 @@ def do_init(o):
 		# A broken schema is a config-semantics failure, not a usage error:
 		# same exit as `check --schema` reporting it.
 		return 6
-	text, faults = shcl.generate(sdoc)
+	text, faults = shcl.generate(sdoc, o.no_banner)
 	if faults:
 		for d in faults:
 			sys.stderr.write("schema line {}: {}: {}\n".format(d.line, d.severity.name, d.message))

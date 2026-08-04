@@ -97,10 +97,15 @@ int main() {
 	CHECK(base.get_or<std::string>("server[web1].host", std::string()) == "h1");
 
 	// Schema-driven generation: a starter config with a required live field.
+	// The default run appends the format footer; --no-banner is the same bytes
+	// without it.
 	auto gschema = shcl::Document::parse("field: port\n\ttype: int\n\trequired: yes\n\tdefault: 8080\n");
 	bool gok = false;
+	std::string bare = gschema.generate(gok, true);
+	CHECK(gok && bare == "# int, required\nport: 8080\n");
 	std::string starter = gschema.generate(gok);
-	CHECK(gok && starter == "# int, required\nport: 8080\n");
+	CHECK(gok && starter.rfind(bare, 0) == 0);
+	CHECK(starter.find("This config file format is SHCL.", bare.size()) != std::string::npos);
 
 	// One-shot: one combined list (parse then validation), error predicate.
 	auto combined = shcl::Document::load_and_validate(": nope\nport: x\n", "field: port\n\ttype: int\n", shcl::Strictness::Standard);

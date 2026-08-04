@@ -54,6 +54,12 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 ### Features and enhancements
 
+- ✅ A generated config file said nothing about what format it was in, so whoever opened it next had no way to find the syntax.
+	- Done: `shcl init` ends the file with a short comment footer naming the format and linking its home page and spec, after a blank line. `--no-banner` leaves it out, and `generate` takes the same flag in every binding plus the C++ veneer.
+	- The flag is negative so the footer is what a caller gets by saying nothing - the opt-out is the thing that has to be asked for.
+	- The `Legal` line names SHCL as its subject ("SHCL is Copyright ...") rather than opening with the copyright, so it cannot be misread as a claim over the config it sits in.
+	- The footer is output, so it is a byte-for-byte cross-binding contract like the annotation line. The three init goldens carry it; each runner also generates with the flag set and checks the result is the golden minus the footer, so the flag costs no extra goldens.
+
 - ✅ A value that is not a plain scalar could not be written as an option: `--set` reads its value as data, so `ports=80, 443` stored one quoted string rather than an array.
 	- Done: `--set-literal PATH=TEXT` reads the text as value syntax instead - the way the parser reads the half of a line after the colon - so the same text writes a two-element array. Backed by `SetLiteral`/`SetLiteralDefault` in all four bindings, a matching `literal` op in the write-ops script, and corpus case 044.
 	- It parses the text rather than splicing it, so there is no way to inject syntax: the result is a value or a rejection, output stays canonical, and a written document is still a formatter fixpoint. Rejects only what could not be one line's value (a line break, or a quote that never closes - the same text the parser reports E017 for); an unquoted `#` ends the value as it would in a file.

@@ -581,11 +581,25 @@ fn init_generation_matches_expected() {
 				case.name
 			),
 		};
-		let got = generate(&Document::parse(schema))
+		let got = generate(&Document::parse(schema), false)
 			.unwrap_or_else(|_| panic!("{}: init schema has faults", case.name));
 		assert_eq!(
 			&got, want,
 			"{}: init output differs from expected-init.shcl",
+			case.name
+		);
+		// The footer is the only difference the flag makes: everything before
+		// it is byte-for-byte what the default run produced.
+		let bare = generate(&Document::parse(schema), true)
+			.unwrap_or_else(|_| panic!("{}: init schema has faults", case.name));
+		assert!(
+			!bare.is_empty() && got.starts_with(&bare),
+			"{}: --no-banner output is not a prefix of the default",
+			case.name
+		);
+		assert!(
+			got[bare.len()..].contains("This config file format is SHCL."),
+			"{}: default init output is missing the format footer",
 			case.name
 		);
 		// The generated starter must be valid SHCL (loads with no error diagnostics).
@@ -794,7 +808,7 @@ fn generation_bounds_a_multiplying_schema() {
 		));
 	}
 	s.push_str("fragment: f2000\n\tfield: leaf\nfield: top\n\tinherits: f0\n");
-	let out = generate(&Document::parse(&s)).expect("deep chain should generate");
+	let out = generate(&Document::parse(&s), false).expect("deep chain should generate");
 	assert!(
 		out.contains("not generated"),
 		"deep chain should be noted, not expanded"
@@ -814,7 +828,7 @@ fn generation_bounds_a_multiplying_schema() {
 		));
 	}
 	b.push_str("fragment: g26\n\tfield: leaf\nfield: top\n\tinherits: g0\n");
-	let err = generate(&Document::parse(&b)).expect_err("multiplying schema should fault");
+	let err = generate(&Document::parse(&b), false).expect_err("multiplying schema should fault");
 	assert_eq!(err.len(), 1);
 	assert_eq!(err[0].code, "V096");
 }

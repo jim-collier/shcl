@@ -3952,8 +3952,10 @@ fn gen_default_text(v: &str) -> String {
 /// listed in a trailing comment block. The output always loads clean and
 /// validates clean against its schema, except a repeat lower bound of 2+
 /// (identical generated lines would merge, so the shortfall is reported).
+/// A footer naming the format and pointing at the spec is written last unless
+/// `no_banner`; the flag is negative so leaving it alone writes the footer.
 /// Err = schema faults (V09x), same as `validate`/`check --schema`.
-pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
+pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagnostic>> {
 	let def = build_schema(schema)?;
 	let (cons, cuts) = expand_mounts(&def);
 	if cons.len() >= GEN_MAX_FIELDS {
@@ -4076,6 +4078,12 @@ pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 			out.push_str(&format!("#   {}   {}\n", p, t));
 		}
 	}
+	if !no_banner {
+		if !out.is_empty() {
+			out.push('\n');
+		}
+		out.push_str(GEN_BANNER);
+	}
 	Ok(out)
 }
 
@@ -4088,6 +4096,20 @@ pub fn generate(schema: &Document) -> Result<String, Vec<Diagnostic>> {
 /// ask for more output than the machine can hold; past this the generator
 /// reports a schema fault rather than running until something breaks.
 const GEN_MAX_FIELDS: usize = 10_000;
+
+/// Footer telling whoever opens the generated file what the format is and
+/// where its spec lives. It is output, so every binding emits these bytes
+/// exactly; the Legal line names SHCL as its subject so it cannot be read as
+/// a claim over the config it sits in.
+const GEN_BANNER: &str = "\
+#
+# This config file format is SHCL.
+# \"Simple Hierarchical Config Language\"
+#    Home     https://github.com/jim-collier/shcl
+#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+#
+";
 
 /// Render parsed segments back as a dotted path, dropping wildcard selectors
 /// (a generated line targets the one instance it materializes) and quoting a

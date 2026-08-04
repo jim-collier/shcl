@@ -795,13 +795,23 @@ func TestInitGenerationMatchesExpected(t *testing.T) {
 		if !c.hasInit {
 			continue
 		}
-		got, faults := Generate(Parse(c.initSchema))
+		got, faults := Generate(Parse(c.initSchema), false)
 		if faults != nil {
 			t.Fatalf("%s: init schema has faults", c.name)
 		}
 		if got != c.expectedInit {
 			t.Errorf("%s: init output differs from expected-init.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedInit)
 			continue
+		}
+		// The footer is the only difference the flag makes: everything before
+		// it is byte-for-byte what the default run produced.
+		bare, _ := Generate(Parse(c.initSchema), true)
+		if bare == "" || !strings.HasPrefix(got, bare) {
+			t.Errorf("%s: --no-banner output is not a prefix of the default", c.name)
+			continue
+		}
+		if !strings.Contains(got[len(bare):], "This config file format is SHCL.") {
+			t.Errorf("%s: default init output is missing the format footer", c.name)
 		}
 		doc := Parse(got)
 		for _, d := range doc.Diagnostics() {

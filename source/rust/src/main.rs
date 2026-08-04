@@ -22,7 +22,7 @@ Usage:
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
-  shcl init --schema=SCHEMA              print a commented starter config from
+  shcl init [--no-banner] --schema=S     print a commented starter config from
                                          a schema (required fields live, optional
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
@@ -56,6 +56,8 @@ Options:
                                          report via exit code (the default mode)
   --slots                                prefix each line with its slot status and
                                          a tab (per element, or per wildcard slot)
+  --no-banner                            (init) leave out the footer naming the
+                                         format and pointing at its spec
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
@@ -133,6 +135,7 @@ struct Opts {
 	on_bad: String, // error|default|flag
 	strictness: Strictness,
 	write: bool,
+	no_banner: bool,
 	schema: Option<String>,
 	layers: Vec<String>,     // lower-priority layers, in listed order
 	sets: Vec<Set>,          // final override layer, in the order given
@@ -173,6 +176,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		on_bad: "flag".into(),
 		strictness: Strictness::Standard,
 		write: false,
+		no_banner: false,
 		schema: None,
 		layers: Vec::new(),
 		sets: Vec::new(),
@@ -205,6 +209,10 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			"--write" | "-w" => {
 				o.write = true;
 				o.seen.push("--write");
+			}
+			"--no-banner" => {
+				o.no_banner = true;
+				o.seen.push("--no-banner");
 			}
 			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
 			| "--set-literal" => {
@@ -311,7 +319,7 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			"--set-literal",
 		],
 		"check" => &["--strictness", "--schema"],
-		"init" => &["--schema"],
+		"init" => &["--schema", "--no-banner"],
 		"count" | "instances" => &["--strictness", "--layer", "--set", "--set-literal"],
 		_ => &[],
 	};
@@ -978,7 +986,7 @@ fn do_init(o: &Opts) -> u8 {
 		// same exit as `check --schema` reporting it.
 		return 6;
 	}
-	match generate(&sdoc) {
+	match generate(&sdoc, o.no_banner) {
 		Ok(text) => {
 			print!("{}", text);
 			0
