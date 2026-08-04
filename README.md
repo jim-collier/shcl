@@ -7,9 +7,9 @@
 <div align="center">
 
 [![made-with-rust](https://img.shields.io/badge/Made%20with-Rust-1f425f.svg)](https://www.rust-lang.org/)
-![Go](https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white)
+[![made-with-go](https://img.shields.io/badge/Made%20with-Go-1f425f.svg?logo=go&logoColor=white)](https://go.dev/)
 [![made-with-python](https://img.shields.io/badge/Made%20with-Python-1f425f.svg)](https://www.python.org/)
-![Made with](https://img.shields.io/badge/Made%20with-C%2B%2B-brightgreen?style=plastic)
+[![made-with-c](https://img.shields.io/badge/Made%20with-C%2FC%2B%2B-1f425f.svg)](https://en.cppreference.com/w/c)
 [![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
 ![Lifecycle: Stable](https://img.shields.io/badge/Lifecycle-Stable-brightgreen)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -51,6 +51,7 @@
 	- [When SHCL is the wrong choice](#when-shcl-is-the-wrong-choice)
 - [Features](#features)
 - [What a .shcl file looks like](#what-a-shcl-file-looks-like)
+- [Using the CLI](#using-the-cli)
 - [Example use-cases in your code](#example-use-cases-in-your-code)
 	- [Rust](#rust)
 	- [Go](#go)
@@ -59,6 +60,7 @@
 	- [C, C++](#c-c)
 	- [Bash](#bash)
 	- [PowerShell](#powershell)
+	- [What saving does](#what-saving-does)
 - [Installation](#installation)
 	- [Language packages](#language-packages)
 		- [Cargo](#cargo)
@@ -151,7 +153,7 @@ SHCL deliberately stays off that cliff. The file stays dumb, and the power moves
 
 - **Schema validation.** A schema is just another SHCL file. `doc.validate(schema)` catches unknown fields, wrong types, and out-of-range values, including the "did you mean `enabled`?" typo case.
 
-- **Layered loading.** `merge(base, over)` folds files in order - defaults, then site, then user, last wins - and the CLI stacks the same way with repeatable `--layer=FILE` plus `--set=PATH=VALUE` overrides on top. That covers most of what people actually use imports for. (Environment-variable mapping is deliberately your program's job: the env namespace and its naming convention belong to the app, which can map env vars onto `--set` itself.)
+- **Layered loading.** `merge(base, over)` folds files in order - defaults, then site, then user, last wins - and the CLI stacks the same way, with repeatable `--layer=FILE` and `--set=PATH=VALUE` overrides on top. That covers most of what imports actually get used for. Environment variables are deliberately left to your program: the env namespace and its naming convention belong to the app, which can map them onto `--set` itself.
 
 - **Generated starter configs.** The schema plus the writer can emit a fully commented, correctly typed starting file.
 
@@ -169,11 +171,15 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 - Values are typed on *read*, not on parse. The file stores text; your code asks for an int.
 
-- Never bails on a whole file over one bad line. Bad lines are skipped or repaired with diagnostics, and the rest still loads.
+- Never bails on a whole file over one bad line. Bad lines are skipped or repaired, and the rest still loads. Every diagnostic carries a stable code (`E014`, `V001`), so tooling can match on the code while the prose stays free to improve.
 
 - Every convenience read takes a call-site fallback (`GetIntOr(path, 0)`), so a missing value can't masquerade as a real zero.
 
 - Three strictness levels. Loose, standard, strict: one knob from maximum-forgiving to fail-on-anything.
+
+- Repeated fields are queryable as a set - count them, list them, or fan one read across all of them with `site[*].root` and get a status per slot.
+
+- Full read *and* write. Setters build any missing structure along the path, and saving canonicalizes the file while keeping your comments attached to what they documented.
 
 - Schema validation, layered loading (defaults, site, user), and commented starter-config generation, all as library features.
 
@@ -216,6 +222,109 @@ maintenance-page:
 ```
 
 Field names are case-insensitive. Repeated paths merge. `site` here is not one key but a set of instances (example.com, blog.example.com), each with its own children - arrays of objects without inventing syntax for them.
+
+## Using the CLI
+
+Everything the library does, the `shcl` binary does from a shell: typed reads, edits, validation, formatting, and starter-config generation. One dependency-free executable, so it is also a config probe for shell scripts, Makefiles, and CI.
+
+Reads are typed at the call site exactly as they are in code, and a fallback is one option away:
+
+```console
+$ shcl get --int server.shcl workers
+4
+
+$ shcl get --int --default=8 server.shcl thread-pool     # absent from the file
+8
+
+$ shcl get server.shcl 'site[example.com].tls.cert'
+/etc/ssl/example.pem
+```
+
+Repeated fields are queryable as a set, and `[*]` fans one read across every instance:
+
+```console
+$ shcl count server.shcl site
+2
+
+$ shcl instances server.shcl site
+example.com
+blog.example.com
+
+$ shcl get --array --slots server.shcl 'site[*].tls.hsts'
+Good	on
+Good	off
+```
+
+`check` is where the forgiving parser shows its hand. Knock the colon off line 3 of that file, and line 3 is all you lose:
+
+```console
+$ shcl check server.shcl
+line 3: Error: E014
+line 3: Error: malformed line skipped: unexpected '4' after field
+failed: 1 diagnostic(s), 1 error(s)
+
+$ shcl get server.shcl log-level     # the rest of the file loaded fine
+warn
+```
+
+The stable code goes to stdout and the prose to stderr, so a script can match on `E014` without parsing English, and `check` exits 6 when it found errors - enough to gate a build.
+
+Hand it a schema and it validates against that too. A schema is an ordinary `.shcl` file: one `field:` instance per path, constraints written as its children ([the spec](project/spec.md#schema-validation) has the full vocabulary).
+
+```text
+field: workers
+	type: int
+	desc: Worker threads.
+	min: 1
+	max: 256
+	default: 4
+	required: yes
+
+field: log-level
+	type: string
+	desc: How chatty the log is.
+	allowed: debug, info, warn, error
+	default: warn
+```
+
+That catches wrong types, out-of-range numbers, and unknown fields - and for the last one it names the field you probably meant:
+
+```console
+$ shcl check --schema=app-schema.shcl app.shcl
+line 2: Error: V001
+line 2: Error: unknown field 'log-levle'; did you mean 'log-level'?
+failed: 1 diagnostic(s), 1 error(s)
+```
+
+The same schema, pointed the other way, writes a starting file for your own users - commented, correctly typed, required fields live and optional ones left commented out:
+
+```console
+$ shcl init --schema=app-schema.shcl
+# Worker threads.
+# int, 1-256, required
+workers: 4
+
+# How chatty the log is.
+# string, one of: debug, info, warn, error
+#log-level: warn
+
+#
+# This config file format is SHCL.
+# "Simple Hierarchical Config Language"
+#    Home     https://github.com/jim-collier/shcl
+#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+#
+```
+
+The footer tells whoever opens that file later what it is and where the syntax is written down; `--no-banner` leaves it out. Rounding out the verbs, `fmt` normalizes a file and `set` edits one, both in place with `--write`:
+
+```sh
+shcl fmt --write server.shcl
+shcl set --write server.shcl --set 'workers=8'
+```
+
+`shcl help` covers the rest. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
 
 ## Example use-cases in your code
 
@@ -396,28 +505,6 @@ shcl_free(doc);   // frees the document and everything handed out from it
 
 The C binding uses `round()`, so link the math library - `cc -std=c11 -O2 ex.c -o ex -lm`. There are no per-object frees: reads hand back pointers into the document's arena, and the single `shcl_free` releases all of it, so anything you need afterwards must be copied out first.
 
-Two behaviors of the write half are easy to miss. Setters build any missing structure along the path, so the `tls.hsts` and `blog.example.com` lines above appear as a nested block and a new site instance without you assembling either. And saving rewrites the file in canonical form, which normalizes spacing and lowercases field names, but **keeps your comments** attached to what they documented:
-
-```text
-# Flat, TOML-style settings
-listen: "0.0.0.0:443"  # a colon in a value just needs quotes
-workers: 8
-log-level: warn
-
-# Hierarchy when you need it: one instance per site
-site: example.com
-	root: /srv/www/example
-	max-upload-mb: 50  # names are case-insensitive, spacing is loose
-	methods: GET, POST, HEAD  # an array is just commas
-	tls:
-		hsts: true
-
-site: blog.example.com
-	root: /srv/www/blog
-```
-
-A setter reports failure - `false`, or `0` in C - when a path cannot be written at all, a wildcard being the common case, since those are query-only. `write_reason(path)` names which of the five reasons applies.
-
 ### Bash
 
 The shell wrappers are not parsers; they wrap the CLI, which is why they inherit its conformance for free. Source one and you get typed sugar over the same commands:
@@ -474,6 +561,49 @@ $ops = "remove`tsite[old.example.com]",
 $ops | shcl set --write server.shcl
 ```
 
+### What saving does
+
+Two behaviors of the write half are easy to miss, and they are the same in every binding.
+
+Setters build whatever is missing along the path, so the `tls.hsts` and `blog.example.com` lines in the examples above arrive as a nested block and a new site instance without you assembling either.
+
+And saving rewrites the file in canonical form - spacing normalized, field names lowercased, the dotted `site[blog.example.com].tls.hsts` line folded into the block form it was always spelling - while **keeping your comments** attached to whatever they documented, including the one that travels with that folded line:
+
+```text
+# Flat, TOML-style settings
+listen: "0.0.0.0:443"
+workers: 8
+log-level: warn
+
+# Hierarchy when you need it: one instance per site
+site: example.com
+	root: /srv/www/example
+	max-upload-mb: 50
+	methods: GET, POST, HEAD
+	tls:
+		cert: /etc/ssl/example.pem
+		hsts: true
+
+# Repeating the field adds another site - arrays of objects
+# no syntax to invent
+site: blog.example.com
+	root: /srv/www/blog
+	tls:
+
+		# Dotted paths spell the same tree; add to any instance from anywhere
+		hsts: off
+
+# Multi-line content goes in a fenced block, kept verbatim
+maintenance-page:
+	~~~html
+	<h1>Down for maintenance - back in five.</h1>
+	~~~
+```
+
+That is the whole file after the edits, not an excerpt - a formatter that can survive a round trip through an editing tool is the point.
+
+A setter returns failure - `false`, or `0` in C - when a path cannot be written at all. Wildcards are the usual case, since those are query-only. `write_reason(path)` says which of the five reasons applied.
+
 ## Installation
 
 The latest release, `v1.0.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
@@ -510,7 +640,7 @@ pip install shcl
 
 #### C and C++
 
-C and C++ have no registry worth targeting, and need none: `shcl.h` is a single dependency-free header you vendor. Copy it out of a release tag, or take it from an installed package under `/usr/share/shcl/code/`.
+No registry to target, and none needed: `shcl.h` is a single dependency-free header you vendor. See [C, C++](#c-c) for where to get it and how to build against it.
 
 For version pinning and the dependency line per ecosystem, see [Example use-cases in your code](#example-use-cases-in-your-code).
 
@@ -636,7 +766,7 @@ Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, 
 
 This product has to be bulletproof, so help is welcome. Bug reports, spec edge cases, and new-language bindings all count. See [`contributing.md`](contributing.md) to get started.
 
-If SHCL helps but you can't contribute code or issue reports, a star or a mention still helps other people find it.
+If SHCL helps but code and issue reports aren't your thing, a star or a mention still helps other people find it - and if it is saving you real time, [sponsorship](https://github.com/sponsors/jim-collier) is welcome.
 
 ## Legal stuff
 

@@ -132,6 +132,13 @@ None open.
 
 #### Done - Features and enhancements
 
+- ✅ The README installed the CLI six different ways and never once showed it running.
+	- Every code example was library code. A reader who took the packages, the installers or the prebuilt binaries had nothing telling them what the command actually does, and the demo gif was the only place the CLI appeared at all.
+	- Done: a `Using the CLI` section between the file example and the per-language examples - typed reads with a fallback, `count`/`instances`/`[*]` over repeated fields, a broken line reported while the rest of the file still loads, schema validation naming the field you meant, and `init` writing a commented starter file. The transcripts are verbatim output.
+	- The write-half notes moved out of the C subsection, where they had ended up by accident, into their own section at the end of the examples. Its after-save file is now the real output rather than an abridged one, which also fixed inline comments that had gone stale against the input above it.
+	- Features gained the three capabilities the list had been silent on: querying repeated fields, stable diagnostic codes, and the writer keeping comments attached across a save.
+	- The GitHub About blurb was a paragraph; it now matches the tagline and fits the width the card actually shows. Sponsorship is mentioned once in the support section and once in `contributing.md`, both times as an aside.
+
 - ✅ A generated config file said nothing about what format it was in, so whoever opened it next had no way to find the syntax.
 	- Done: `shcl init` ends the file with a short comment footer naming the format and linking its home page and spec, after a blank line. `--no-banner` leaves it out, and `generate` takes the same flag in every binding plus the C++ veneer.
 	- The flag is negative so the footer is what a caller gets by saying nothing - the opt-out is the thing that has to be asked for.
