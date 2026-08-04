@@ -233,16 +233,6 @@ The full rules live in [`style-guide.md`](style-guide.md) - read it before touch
 
 - Work on a short-named feature branch and PR against `dev`; `main` is release-only.
 
-<!-- TODO
-### Improving The Documentation
-Updating, improving and correcting the documentation
-
--->
-
-<!-- TODO
-## Join The Project Team
--->
-
 <!-- omit in toc -->
 ## Attribution
 

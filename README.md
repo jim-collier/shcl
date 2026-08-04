@@ -216,31 +216,6 @@ maintenance-page:
 
 Field names are case-insensitive. Repeated paths merge. `site` here is not one key but a set of instances (example.com, blog.example.com), each with its own children - arrays of objects without inventing syntax for them.
 
-<!--
-## Reading it from code
-
-One call. A typed value. A visible fallback. This is the call you write 90% of the time:
-
-```go
-// Go
-limit := doc.GetIntOr("site[example.com].max-upload-mb", 10)
-```
-
-```python
-# Python
-limit = doc.get_int("site[example.com].max-upload-mb", default=10)
-```
-
-```sh
-# Bash (sh/ash/zsh/etc.)
-limit=$(shcl get --int --default=10 server.shcl 'site[example.com].max-upload-mb')
-```
-
-When you need to know *why* a read failed, the full form returns a status instead: `Good`, `Empty`, `NotFound`, `BadType`, or `Multiple`.
-
-Wildcards read across instances: an array read of `site[*].root` gives you every site's document root, in file order, with a status per slot.
--->
-
 ## Example use-cases in your code
 
 Bindings are versioned in lockstep, so `1.x` means the same behavior and the same conformance corpus in every language. Each ecosystem's usual compatible-version operator is all you need: it picks up minor and patch releases on its own, and never crosses a major version without you editing the line yourself.
