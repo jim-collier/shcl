@@ -62,6 +62,17 @@ None open.
 
 ### Code Reviews
 
+- **20260804**:
+
+	- **Improvements**:
+
+		- 🔘 Code Review 20260804 item 1: the C CLI keeps its `--set` overrides in two parallel arrays, where the other three bindings keep one structured list.
+			- The other bindings split `PATH=VALUE` when the option is parsed and store the path, the value and which spelling produced it together. C stores the raw string and re-splits it at apply time, with a second array carrying the spellings.
+			- Keeping two arrays aligned needs a trick at the push site: one of the two counts is incremented into a local and thrown away, so the arrays grow in step. That is easy to break and easy to misread.
+			- It also leaves the applier doing pointer arithmetic on a separator it assumes is there. Correct today, because the parser rejects a value without one, but the guarantee sits about 580 lines away from the code that relies on it.
+			- Fix: give C a small struct (path, path length, value, which spelling) and one vector of it. The re-split, the parallel array, and the lockstep trick all go away together, and the four bindings end up the same shape.
+			- Post-release. No behavior change, so nothing in the corpus or the crosscheck moves; it is a readability and parity fix, not a bug.
+
 - **20260727**:
 
 	- **Improvements**:
