@@ -695,6 +695,29 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	if got := doc.Line("missing"); got != 0 {
 		t.Errorf("missing line: got %d, want 0", got)
 	}
+	// Lines(): the plural - a repeated field cites every binding, wildcard
+	// slots keep their index (0 = unresolved), a miss is the empty list.
+	if got := doc.Line("code.hook"); got != 0 { // Multiple - the singular's gap
+		t.Errorf("code.hook line: got %d, want 0", got)
+	}
+	if got := doc.Lines("code.hook"); fmt.Sprint(got) != "[4 5]" {
+		t.Errorf("code.hook lines: got %v", got)
+	}
+	if got := doc.Lines("code.done"); fmt.Sprint(got) != "[6]" {
+		t.Errorf("code.done lines: got %v", got)
+	}
+	if got := doc.Lines("a"); fmt.Sprint(got) != "[1]" {
+		t.Errorf("a lines: got %v", got)
+	}
+	if got := doc.Lines("code[*].done"); fmt.Sprint(got) != "[6]" {
+		t.Errorf("code[*].done lines: got %v", got)
+	}
+	if got := doc.Lines("code[*].nope"); fmt.Sprint(got) != "[0]" {
+		t.Errorf("code[*].nope lines: got %v", got)
+	}
+	if got := doc.Lines("missing"); len(got) != 0 {
+		t.Errorf("missing lines: got %v", got)
+	}
 	if got := doc.Children("code"); strings.Join(got, ",") != "hook,hook,done" {
 		t.Errorf("code children: got %v", got)
 	}

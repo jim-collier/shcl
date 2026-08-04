@@ -2276,6 +2276,38 @@ func (d *Document) Line(path string) int {
 	return d.arena[r.one].line
 }
 
+// Lines is the plural Line(): 1-based source lines at a path, in file order,
+// so a repeated field - the case that most wants a citable line - yields
+// every binding's. Wildcard slots that did not resolve stay in the list as 0,
+// and a writer-built node is 0, so indices keep matching Count().
+func (d *Document) Lines(path string) []int {
+	r, ok := d.resolve(path)
+	if !ok {
+		return nil
+	}
+	switch r.kind {
+	case resOne:
+		return []int{d.arena[r.one].line}
+	case resMany:
+		out := make([]int, 0, len(r.many))
+		for _, n := range r.many {
+			out = append(out, d.arena[n].line)
+		}
+		return out
+	case resSlots:
+		out := make([]int, 0, len(r.slots))
+		for _, s := range r.slots {
+			if s >= 0 {
+				out = append(out, d.arena[s].line)
+			} else {
+				out = append(out, 0)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 // Children returns the child field names under a path, in file order,
 // duplicates included - the "what keys are in this section?" question Paths()
 // (deduplicated, path-shaped) cannot answer. "" enumerates the top level.

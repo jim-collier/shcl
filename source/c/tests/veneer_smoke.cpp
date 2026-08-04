@@ -51,6 +51,9 @@ int main() {
 	CHECK(cities.size() == 2 && cities[0] == "Chicago" && cities[1] == "Boston");
 
 	CHECK(doc.line("port") == 2 && doc.line("nope") == 0);
+	auto cityLines = doc.lines("city");
+	CHECK(cityLines.size() == 2 && cityLines[0] == 6 && cityLines[1] == 7);
+	CHECK(doc.lines("nope").empty());
 	auto kids = doc.children("");
 	CHECK(kids.size() == 7 && kids[0] == "name" && kids[5] == "city" && kids[6] == "city");
 	CHECK(doc.children("nope").empty());
