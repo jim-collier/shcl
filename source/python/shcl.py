@@ -308,6 +308,19 @@ def _raw(content, info, fence_char, fence_len):
 	return v
 
 
+def _literal_value(text):
+	# Read text as the value half of a line, for the setters that take value
+	# syntax rather than data. Rejects what could not have come off one line: a
+	# line break, or a quote that never closes. An unquoted # ends the value
+	# here exactly as it would in a file.
+	if "\n" in text or "\r" in text:
+		return None
+	v = _trim(_split_comment(text)[0])
+	if _unterminated_quote(v):
+		return None
+	return _parse_cell(v)
+
+
 def _cell_of(text):
 	return _cell([_Element(text, False)])
 
@@ -1888,6 +1901,24 @@ class Document:
 	def set_bool_default(self, path, v):
 		if not self.exists(path):
 			return self.set_bool(path, v)
+		return True
+
+	def set_literal(self, path, text):
+		"""Bind text at path as value syntax rather than as data.
+
+		"80, 443" becomes a two-element array where set_string would store one
+		string that has to be quoted. This is how a caller holding value text -
+		a config line, a user's --set argument - writes it without knowing its
+		shape first. Returns False on text that could not be one line's value.
+		"""
+		v = _literal_value(text)
+		if v is None:
+			return False
+		return self._set_value(path, v)
+
+	def set_literal_default(self, path, text):
+		if not self.exists(path):
+			return self.set_literal(path, text)
 		return True
 
 	def set_string_default(self, path, v):

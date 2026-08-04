@@ -386,6 +386,10 @@ func tryApplyOpTest(doc *Document, line string) error {
 			return err
 		}
 		wrote = doc.SetDateTime(path, x)
+	case "literal":
+		wrote = doc.SetLiteral(path, v)
+	case "literal-default":
+		wrote = doc.SetLiteralDefault(path, v)
 	case "int-default":
 		n, err := pint(v)
 		if err != nil {

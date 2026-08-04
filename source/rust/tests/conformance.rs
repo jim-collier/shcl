@@ -93,6 +93,8 @@ fn try_apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		"bool" => doc.set_bool(path, v == "true"),
 		"string" => doc.set_string(path, &unescape_ops(v)),
 		"datetime" => doc.set_datetime(path, &dt(v)?),
+		"literal" => doc.set_literal(path, v),
+		"literal-default" => doc.set_literal_default(path, v),
 		"int-default" => doc.set_int_default(path, pint(v)?),
 		"float-default" => doc.set_float_default(path, pflt(v)?),
 		"bool-default" => doc.set_bool_default(path, v == "true"),

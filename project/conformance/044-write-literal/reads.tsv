@@ -1,0 +1,4 @@
+query	type	expected	status
+scalar	int	1	Good
+kept	string	hello	Good
+-	load	ok	-

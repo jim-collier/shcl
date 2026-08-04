@@ -322,6 +322,16 @@ fCompareWrite "set --write --set adds a path" fFixMode set --write --set b.c=hel
 fCompare "set --write rejects --layer" set --write --layer=missing.shcl missing.shcl
 fCompare "fmt --write rejects --set" fmt --write --set a=1 missing.shcl
 
+# --set-literal takes value syntax, so the same text lands as an array where
+# --set stores one quoted string; the pair is compared to pin that difference.
+# The rejections are the parser's own, so they have to agree with it.
+fCompareWrite "set --write applies --set-literal" fFixMode set --write --set-literal 'a=80, 443'
+fCompare "set --set-literal array" set --set-literal 'a=80, 443' project/conformance/044-write-literal/input.shcl
+fCompare "set --set quotes the same text" set --set 'a=80, 443' project/conformance/044-write-literal/input.shcl
+fCompare "set --set-literal keeps a quoted element" set --set-literal 'a="x, y", z' project/conformance/044-write-literal/input.shcl
+fCompare "set --set-literal rejects an open quote" set --set-literal 'a="oops' project/conformance/044-write-literal/input.shcl
+fCompare "set --set-literal wants PATH=VALUE" set --set-literal noequals project/conformance/044-write-literal/input.shcl
+
 if ((nBad)); then
 	echo "crosscheck: ${nBad}/${nCompared} comparison(s) diverged"
 	exit 1
@@ -348,4 +358,6 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 ##		               pipefail its nonzero status was aborting the run, so only
 ##		               the first divergence ever printed and the summary never did.
 ##		- 20260804: Pin `set --write --set` (edits as options, no ops on stdin)
-##		               and the two gates that bound it.
+##		               and the two gates that bound it; then `--set-literal`
+##		               beside `--set` on the same text, so the data-vs-syntax
+##		               split cannot drift.

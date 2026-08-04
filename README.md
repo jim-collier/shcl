@@ -448,19 +448,21 @@ source shcl.bash
 workers=$(shcl_int --default=4 server.shcl workers)
 root=$(shcl_get --default='' server.shcl 'site[example.com].root')
 
-# --set is repeatable and applies in order; --write rewrites the file in place.
+# Repeatable, applied in order; --write rewrites the file in place.
 shcl set --write server.shcl \
     --set "workers=$((workers * 2))" \
     --set 'site[example.com].tls.hsts=true' \
-    --set 'site[blog.example.com].root=/srv/www/blog'
+    --set-literal 'cluster.hosts=a.example.com, b.example.com'
 ```
 
-A `--set` value goes in as literal config text, so its type follows the text: `workers=8` writes an integer, `name=hello` a string. That covers scalars, but not an array (the comma would make it a quoted string) or a value you need forced to a string. Those, along with raw blocks, set-only-if-absent and removal, go in as a write-ops script on stdin - one op per line, fields separated by a literal tab:
+The two spellings differ in how the value is read. `--set` takes **data**: its type follows the text, so `workers=8` writes an integer, but a comma in it is content - `hosts=a, b` would store one quoted string. `--set-literal` takes **value syntax**, the way a file spells it, so that same text writes a two-element array. Reach for it whenever the value is not a plain scalar.
+
+Raw blocks, set-only-if-absent and removal have no option form; those go in as a write-ops script on stdin, one op per line, fields separated by a literal tab:
 
 ```bash
 shcl set --write server.shcl <<OPS
-string-array	cluster.hosts	a.example.com	b.example.com
 remove	site[old.example.com]
+raw	motd		Welcome.
 OPS
 ```
 
@@ -477,14 +479,14 @@ $root    = shcl_get --default='' server.shcl 'site[example.com].root'
 shcl set --write server.shcl `
          --set "workers=$($workers * 2)" `
          --set 'site[example.com].tls.hsts=true' `
-         --set 'site[blog.example.com].root=/srv/www/blog'
+         --set-literal 'cluster.hosts=a.example.com, b.example.com'
 ```
 
 The op-script form works here too - the sourced `shcl` forwards pipeline input to the binary:
 
 ```powershell
-$ops = "string-array`tcluster.hosts`ta.example.com`tb.example.com",
-       "remove`tsite[old.example.com]"
+$ops = "remove`tsite[old.example.com]",
+       "raw`tmotd`t`tWelcome."
 $ops | shcl set --write server.shcl
 ```
 

@@ -235,6 +235,10 @@ def try_apply_op(doc, line):
 			wrote = doc.set_string(path, _unescape_ops(v))
 		elif op == "datetime":
 			wrote = doc.set_datetime(path, _op_dt(v))
+		elif op == "literal":
+			wrote = doc.set_literal(path, v)
+		elif op == "literal-default":
+			wrote = doc.set_literal_default(path, v)
 		elif op == "int-default":
 			wrote = doc.set_int_default(path, _op_int(v))
 		elif op == "float-default":

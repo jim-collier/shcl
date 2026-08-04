@@ -56,14 +56,15 @@ static const char *HELP =
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
 	"  shcl help | version                    this help, or the version (also -h/--help, -V/--version)\n"
 	"\n"
-	"set edits FILE, the base document ('-' = empty base). Scalars go in as\n"
-	"repeatable --set PATH=VALUE options, which persist with --write; given any\n"
-	"--set, no ops are read from stdin. Everything else - arrays, raw blocks,\n"
-	"set-only-if-absent, removal - goes in as a write-ops script on stdin, one op\n"
-	"per line, tab-separated. Ops:\n"
+	"set edits FILE, the base document ('-' = empty base). Values go in as\n"
+	"repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so\n"
+	"arrays work) options, which persist with --write; given either, no ops are read\n"
+	"from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops\n"
+	"script on stdin, one op per line, tab-separated. Ops:\n"
 	"  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar\n"
 	"  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array\n"
 	"  <type>[-array]-default<TAB>...                          set only if absent\n"
+	"  literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax\n"
 	"  raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block\n"
 	"  empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH\n"
 	"string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.\n"
@@ -91,10 +92,16 @@ static const char *HELP =
 	"  --set=PATH=VALUE                       override one path as the top layer,\n"
 	"                                         after all files; repeatable. On 'set'\n"
 	"                                         it is an edit to the document itself,\n"
-	"                                         so it persists with --write. VALUE is\n"
-	"                                         written as literal config text, so its\n"
-	"                                         type follows the text (8 is an int,\n"
-	"                                         hello is a string)\n"
+	"                                         so it persists with --write. VALUE\n"
+	"                                         goes in as data: its type still\n"
+	"                                         follows the text (8 is an int), but a\n"
+	"                                         comma or quote in it is content, not\n"
+	"                                         syntax\n"
+	"  --set-literal=PATH=TEXT                as --set, except TEXT goes in as value\n"
+	"                                         syntax the way a file spells it, so\n"
+	"                                         'ports=80, 443' writes a two-element\n"
+	"                                         array. An unquoted # ends the value;\n"
+	"                                         text spanning lines is rejected\n"
 	"\n"
 	"Value options accept either spelling: --default=VALUE or --default VALUE. In\n"
 	"the space form the next argument is taken as the value whatever it looks like,\n"
@@ -119,6 +126,7 @@ typedef struct {
 	const char *schema;       // NULL if unset
 	const char **layers; int nlayers; // lower-priority layers, in listed order (unbounded)
 	const char **sets; int nsets;     // final override layer: "path=value" (unbounded)
+	const char **set_opts;            // parallel to sets: which spelling produced each
 	const char **args; int nargs;     // positional: FILE [PATH]
 	const char *seen[16]; int nseen;  // distinct canonical option names, for per-command validation
 } Opts;
@@ -206,6 +214,18 @@ static void layered_free(LayeredDoc *L) {
 // overrides on top - the layered-load fold. Every layer parses at the requested
 // strictness; a strict-load failure on any aborts (exit 6). Returns 0 and fills
 // *out on success, else an exit code (nothing to free on failure).
+// Apply one --set/--set-literal override. Both spellings share a list so they
+// apply in the order given, which decides the winner when two target one path.
+static int set_apply(shcl_doc *d, const char *spec, const char *opt) {
+	const char *eq = strchr(spec, '=');
+	size_t plen = (size_t)(eq - spec);
+	const char *val = eq + 1; size_t vlen = strlen(val);
+	int ok = !strcmp(opt, "--set-literal") ? shcl_set_literal(d, spec, plen, val, vlen)
+	                                       : shcl_set_string(d, spec, plen, val, vlen);
+	if (!ok) fprintf(stderr, "shcl: cannot write %.*s (from %s)\n", (int)plen, spec, opt);
+	return ok;
+}
+
 static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 	out->doc = NULL; out->texts = NULL; out->ntexts = 0;
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
@@ -221,13 +241,7 @@ static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 		else { shcl_merge(out->doc, dd); shcl_free(dd); }
 	}
 	for (int i = 0; i < o->nsets; i++) {
-		const char *eq = strchr(o->sets[i], '=');
-		const char *path = o->sets[i]; size_t plen = (size_t)(eq - path);
-		const char *val = eq + 1; size_t vlen = strlen(val);
-		if (!shcl_set_string(out->doc, path, plen, val, vlen)) {
-			fprintf(stderr, "shcl: cannot write %.*s (from --set)\n", (int)plen, path);
-			layered_free(out); return 1;
-		}
+		if (!set_apply(out->doc, o->sets[i], o->set_opts[i])) { layered_free(out); return 1; }
 	}
 	return 0;
 }
@@ -524,6 +538,7 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
 	else if (OP("bool")) { if (!PRESENT) wrote = shcl_set_bool(d, path, plen, p_bool(v, vn)); }
 	else if (OP("string")) { if (!PRESENT) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = unescape_ops(v, vn, b); wrote = shcl_set_string(d, path, plen, b, m); free(b); } }
 	else if (OP("datetime")) { shcl_datetime dt; S sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) { fprintf(stderr, "bad datetime: %.*s\n", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
+	else if (OP("literal")) { if (!PRESENT) wrote = shcl_set_literal(d, path, plen, v, vn); }
 	else if (OP("int-array")) { int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_i64(fp[2 + i], fn[2 + i], &a[i])) { fprintf(stderr, "bad int: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_int_array(d, path, plen, a, an); free(a); }
 	else if (OP("float-array")) { double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_f64(fp[2 + i], fn[2 + i], &a[i])) { fprintf(stderr, "bad float: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_float_array(d, path, plen, a, an); free(a); }
 	else if (OP("bool-array")) { int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an; i++) a[i] = p_bool(fp[2 + i], fn[2 + i]); if (!PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an); free(a); }
@@ -586,11 +601,7 @@ static int do_set(Opts *o) {
 	}
 	shcl_doc *d = L.doc;
 	for (int i = 0; i < o->nsets; i++) {
-		const char *eq = strchr(o->sets[i], '=');
-		if (!shcl_set_string(d, o->sets[i], (size_t)(eq - o->sets[i]), eq + 1, strlen(eq + 1))) {
-			fprintf(stderr, "shcl: cannot write %.*s (from --set)\n", (int)(eq - o->sets[i]), o->sets[i]);
-			layered_free(&L); return 1;
-		}
+		if (!set_apply(d, o->sets[i], o->set_opts[i])) { layered_free(&L); return 1; }
 	}
 	// --set carries the edits, so stdin is left alone: reading it here would
 	// block on the console for anyone who passed edits as options.
@@ -763,9 +774,10 @@ static void opt_push(const char ***arr, int *n, const char *v) {
 }
 
 static void opts_free(Opts *o) {
-	free((void *)o->layers); free((void *)o->sets); free((void *)o->args);
-	o->layers = o->sets = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0;
+	free((void *)o->layers); free((void *)o->sets); free((void *)o->set_opts); free((void *)o->args);
+	o->layers = o->sets = o->set_opts = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0;
 }
+
 
 // Apply a value-taking option's value. Returns 0 ok, 1 on a bad value.
 static int set_value_opt(Opts *o, const char *name, const char *v) {
@@ -780,9 +792,12 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 		o->schema = v; opt_seen(o, "--schema");
 	} else if (!strcmp(name, "--layer")) {
 		opt_push(&o->layers, &o->nlayers, v); opt_seen(o, "--layer");
-	} else if (!strcmp(name, "--set")) {
-		if (!strchr(v, '=')) { fprintf(stderr, "bad --set value (want PATH=VALUE): %s\n", v); return 1; }
-		opt_push(&o->sets, &o->nsets, v); opt_seen(o, "--set");
+	} else if (!strcmp(name, "--set") || !strcmp(name, "--set-literal")) {
+		if (!strchr(v, '=')) { fprintf(stderr, "bad %s value (want PATH=VALUE): %s\n", name, v); return 1; }
+		// set_opts grows in lockstep with sets, so the local count is discarded.
+		int nopt = o->nsets;
+		opt_push(&o->set_opts, &nopt, name);
+		opt_push(&o->sets, &o->nsets, v); opt_seen(o, name);
 	}
 	return 0;
 }
@@ -790,7 +805,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
 	o->strictness = SHCL_STANDARD; o->write = 0; o->schema = NULL;
-	o->layers = o->sets = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
+	o->layers = o->sets = o->set_opts = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
 		const char *a = argv[i];
@@ -804,7 +819,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strcmp(a, "--array")) { o->array = 1; opt_seen(o, "--array"); }
 		else if (!strcmp(a, "--slots")) { o->slots = 1; opt_seen(o, "--slots"); }
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) { o->write = 1; opt_seen(o, "--write"); }
-		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set")) {
+		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) {
 			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
 			if (set_value_opt(o, a, argv[++i])) return 1;
 		}
@@ -813,6 +828,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strncmp(a, "--strictness=", 13)) { if (set_value_opt(o, "--strictness", a + 13)) return 1; }
 		else if (!strncmp(a, "--schema=", 9)) { if (set_value_opt(o, "--schema", a + 9)) return 1; }
 		else if (!strncmp(a, "--layer=", 8)) { if (set_value_opt(o, "--layer", a + 8)) return 1; }
+		else if (!strncmp(a, "--set-literal=", 14)) { if (set_value_opt(o, "--set-literal", a + 14)) return 1; }
 		else if (!strncmp(a, "--set=", 6)) { if (set_value_opt(o, "--set", a + 6)) return 1; }
 		else if (a[0] == '-' && a[1] != '\0') { fprintf(stderr, "unknown option: %s\n", a); return 1; }
 		else opt_push(&o->args, &o->nargs, a);
@@ -824,12 +840,12 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 // silently ignored (`set --write` before it existed, `--schema` on `get`) is a
 // usage error instead.
 static int check_opts(const char *cmd, Opts *o) {
-	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", NULL };
-	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--write", NULL };
-	static const char *fmt_ok[] = { "--write", "--strictness", "--layer", "--set", NULL };
+	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", NULL };
+	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--write", NULL };
+	static const char *fmt_ok[] = { "--write", "--strictness", "--layer", "--set", "--set-literal", NULL };
 	static const char *check_ok[] = { "--strictness", "--schema", NULL };
 	static const char *init_ok[] = { "--schema", NULL };
-	static const char *enum_ok[] = { "--strictness", "--layer", "--set", NULL };
+	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", NULL };
 	static const char *none_ok[] = { NULL };
 	const char **allowed = none_ok;
 	if (!strcmp(cmd, "get")) allowed = get_ok;

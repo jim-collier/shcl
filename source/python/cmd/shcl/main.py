@@ -37,14 +37,15 @@ Usage:
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
 
-set edits FILE, the base document ('-' = empty base). Scalars go in as
-repeatable --set PATH=VALUE options, which persist with --write; given any
---set, no ops are read from stdin. Everything else - arrays, raw blocks,
-set-only-if-absent, removal - goes in as a write-ops script on stdin, one op
-per line, tab-separated. Ops:
+set edits FILE, the base document ('-' = empty base). Values go in as
+repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
+arrays work) options, which persist with --write; given either, no ops are read
+from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
+script on stdin, one op per line, tab-separated. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
+  literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax
   raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
@@ -72,10 +73,16 @@ Options:
   --set=PATH=VALUE                       override one path as the top layer,
                                          after all files; repeatable. On 'set'
                                          it is an edit to the document itself,
-                                         so it persists with --write. VALUE is
-                                         written as literal config text, so its
-                                         type follows the text (8 is an int,
-                                         hello is a string)
+                                         so it persists with --write. VALUE
+                                         goes in as data: its type still
+                                         follows the text (8 is an int), but a
+                                         comma or quote in it is content, not
+                                         syntax
+  --set-literal=PATH=TEXT                as --set, except TEXT goes in as value
+                                         syntax the way a file spells it, so
+                                         'ports=80, 443' writes a two-element
+                                         array. An unquoted # ends the value;
+                                         text spanning lines is rejected
 
 Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
@@ -95,6 +102,26 @@ def status_code(st):
 	return st.value
 
 
+class _SetOpt:
+	# One --set/--set-literal override. Both spellings share a list so they apply
+	# in the order given, which is what decides the winner when two target the
+	# same path.
+	__slots__ = ("path", "value", "literal")
+
+	def __init__(self, path, value, literal):
+		self.path = path
+		self.value = value
+		self.literal = literal
+
+	def apply(self, doc):
+		if self.literal:
+			return doc.set_literal(self.path, self.value)
+		return doc.set_string(self.path, self.value)
+
+	def opt(self):
+		return "--set-literal" if self.literal else "--set"
+
+
 class _Opts:
 	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "schema", "layers", "sets", "args", "seen")
 
@@ -108,7 +135,7 @@ class _Opts:
 		self.schema = None
 		self.write = False
 		self.layers = []         # lower-priority layers, in listed order
-		self.sets = []           # final override layer: (path, value)
+		self.sets = []           # final override layer: _SetOpt, in the order given
 		self.args = []           # positional: FILE [PATH]
 		self.seen = []           # canonical names of options given, for per-command validation
 
@@ -135,12 +162,12 @@ def _set_value_opt(o, name, v):
 	elif name == "--layer":
 		o.layers.append(v)
 		o.seen.append("--layer")
-	elif name == "--set":
+	elif name in ("--set", "--set-literal"):
 		eq = v.find("=")
 		if eq < 0:
-			raise ValueError("bad --set value (want PATH=VALUE): {}".format(v))
-		o.sets.append((v[:eq], v[eq + 1:]))
-		o.seen.append("--set")
+			raise ValueError("bad {} value (want PATH=VALUE): {}".format(name, v))
+		o.sets.append(_SetOpt(v[:eq], v[eq + 1:], name == "--set-literal"))
+		o.seen.append(name)
 
 
 def asked_for(argv):
@@ -157,7 +184,7 @@ def asked_for(argv):
 			return "version"
 		if a == "--":
 			return None
-		if a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set"):
+		if a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal"):
 			i += 1
 		elif a.startswith("-") and len(a) > 1:
 			pass
@@ -191,7 +218,7 @@ def parse_opts(argv):
 		elif a in ("--write", "-w"):
 			o.write = True
 			o.seen.append("--write")
-		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set"):
+		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal"):
 			i += 1
 			if i >= len(argv):
 				raise ValueError("missing value for {0} (try {0}=VALUE)".format(a))
@@ -206,6 +233,8 @@ def parse_opts(argv):
 			_set_value_opt(o, "--schema", a[len("--schema="):])
 		elif a.startswith("--layer="):
 			_set_value_opt(o, "--layer", a[len("--layer="):])
+		elif a.startswith("--set-literal="):
+			_set_value_opt(o, "--set-literal", a[len("--set-literal="):])
 		elif a.startswith("--set="):
 			_set_value_opt(o, "--set", a[len("--set="):])
 		elif a.startswith("-") and len(a) > 1:
@@ -258,9 +287,9 @@ def load_layered(o, file):
 		if over is None:
 			return None, c
 		doc.merge(over)
-	for path, val in o.sets:
-		if not doc.set_string(path, val):
-			sys.stderr.write("shcl: cannot write {} (from --set)\n".format(path))
+	for st in o.sets:
+		if not st.apply(doc):
+			sys.stderr.write("shcl: cannot write {} (from {})\n".format(st.path, st.opt()))
 			return None, 1
 	return doc, None
 
@@ -270,17 +299,17 @@ def check_opts(cmd, o):
 	# silently ignored (`set --write` before it existed, `--schema` on `get`) is a
 	# usage error instead. Returns an exit code, or None to proceed.
 	if cmd == "get":
-		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set")
+		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal")
 	elif cmd == "set":
-		allowed = ("--strictness", "--layer", "--set", "--write")
+		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--write")
 	elif cmd == "fmt":
-		allowed = ("--write", "--strictness", "--layer", "--set")
+		allowed = ("--write", "--strictness", "--layer", "--set", "--set-literal")
 	elif cmd == "check":
 		allowed = ("--strictness", "--schema")
 	elif cmd == "init":
 		allowed = ("--schema",)
 	elif cmd in ("count", "instances"):
-		allowed = ("--strictness", "--layer", "--set")
+		allowed = ("--strictness", "--layer", "--set", "--set-literal")
 	else:
 		allowed = ()
 	for s in o.seen:
@@ -625,6 +654,10 @@ def apply_op(doc, line):
 		wrote = doc.set_string(path, _unescape_ops(v))
 	elif op == "datetime":
 		wrote = doc.set_datetime(path, _op_dt(v))
+	elif op == "literal":
+		wrote = doc.set_literal(path, v)
+	elif op == "literal-default":
+		wrote = doc.set_literal_default(path, v)
 	elif op == "int-default":
 		wrote = doc.set_int_default(path, _op_int(v))
 	elif op == "float-default":
@@ -697,9 +730,9 @@ def do_set(o):
 		if over is None:
 			return c
 		doc.merge(over)
-	for path, val in o.sets:
-		if not doc.set_string(path, val):
-			sys.stderr.write("shcl: cannot write {} (from --set)\n".format(path))
+	for st in o.sets:
+		if not st.apply(doc):
+			sys.stderr.write("shcl: cannot write {} (from {})\n".format(st.path, st.opt()))
 			return 1
 	# --set carries the edits, so stdin is left alone: reading it here would
 	# block on the console for anyone who passed edits as options.

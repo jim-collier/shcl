@@ -1,0 +1,16 @@
+scalar: 1
+kept: hello
+
+ports: 80, 443
+
+one: 7
+
+quoted: "a, b", c
+
+trimmed: x, y
+
+commented: v
+
+empty:
+
+fresh: 1, 2
