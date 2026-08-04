@@ -187,20 +187,21 @@ A small web server - the kind of thing nginx makes you learn a bespoke brace lan
 
 ```text
 # Flat, TOML-style settings
-listen: "0.0.0.0:443"          # a colon in a value just needs quotes
+listen: "0.0.0.0:443"
 workers: 4
 log-level: warn
 
 # Hierarchy when you need it: one instance per site
 site: example.com
 	root: /srv/www/example
-	Max-Upload-MB : 50         # names are case-insensitive, spacing is loose
-	methods: GET, POST, HEAD   # an array is just commas
+	Max-Upload-MB : 50
+	methods: GET, POST, HEAD
 	tls:
 		cert: /etc/ssl/example.pem
 		hsts: on
 
-# Repeating the field adds another site - arrays of objects, no syntax to invent
+# Repeating the field adds another site - arrays of objects
+# no syntax to invent
 site: blog.example.com
 	root: /srv/www/blog
 
