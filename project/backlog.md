@@ -54,6 +54,12 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 
 ### Features and enhancements
 
+- ✅ Persisting an edit from a shell needed a tab-separated op script on stdin, which is the root cause behind both shell wrappers' rough edges: tabs are invisible in source and survive neither retyping nor an editor that expands them, and the PowerShell wrapper could not carry stdin at all.
+	- Done: `set --write --set PATH=VALUE`, repeatable, applied in order, no pipe and no tabs. `--set` was already applied through the Writer on `set` rather than layered, so the edits were persistent in all but name - only the `--write` refusal stood in the way, and it existed for `--layer`'s sake.
+	- Deliberately no new typed options: `--set` writes the value as literal config text, so `workers=8` already lands as an integer. A `--int`/`--string` family was measured against the op script and produced byte-identical output, so it would have been redundant surface next to a `--set` that already means something adjacent.
+	- Known gap, documented rather than papered over: an array value (a comma makes it a quoted string) and a value forced to a string still need the op script, as do raw blocks, set-only-if-absent and removal.
+	- Given any `--set`, `set` no longer reads stdin - otherwise passing edits as options blocks on the console, which is the hang this was meant to remove.
+
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
 	- Type via a typed entry point or compile-time generic, never a runtime type field:

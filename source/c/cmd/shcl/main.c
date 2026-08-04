@@ -42,8 +42,9 @@ static const char *HELP =
 	"\n"
 	"Usage:\n"
 	"  shcl get [type] [options] FILE PATH    read one value (or array) at a path\n"
-	"  shcl set [--write|-w] [options] FILE   apply write-ops (stdin); print canonical\n"
-	"                                         (or rewrite FILE in place with --write)\n"
+	"  shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);\n"
+	"                                         print canonical (or rewrite FILE in\n"
+	"                                         place with --write)\n"
 	"  shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form\n"
 	"  shcl check [options] FILE              load and print diagnostics\n"
 	"                                         (--schema=SCHEMA also validates FILE\n"
@@ -55,8 +56,11 @@ static const char *HELP =
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
 	"  shcl help | version                    this help, or the version (also -h/--help, -V/--version)\n"
 	"\n"
-	"set reads a write-ops script from stdin (one op per line, tab-separated) and\n"
-	"prints the canonical document. FILE is the base ('-' = empty base). Ops:\n"
+	"set edits FILE, the base document ('-' = empty base). Scalars go in as\n"
+	"repeatable --set PATH=VALUE options, which persist with --write; given any\n"
+	"--set, no ops are read from stdin. Everything else - arrays, raw blocks,\n"
+	"set-only-if-absent, removal - goes in as a write-ops script on stdin, one op\n"
+	"per line, tab-separated. Ops:\n"
 	"  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar\n"
 	"  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array\n"
 	"  <type>[-array]-default<TAB>...                          set only if absent\n"
@@ -85,7 +89,12 @@ static const char *HELP =
 	"                                         lower-priority layer under FILE;\n"
 	"                                         repeatable, earlier = lower priority\n"
 	"  --set=PATH=VALUE                       override one path as the top layer,\n"
-	"                                         after all files; repeatable\n"
+	"                                         after all files; repeatable. On 'set'\n"
+	"                                         it is an edit to the document itself,\n"
+	"                                         so it persists with --write. VALUE is\n"
+	"                                         written as literal config text, so its\n"
+	"                                         type follows the text (8 is an int,\n"
+	"                                         hello is a string)\n"
 	"\n"
 	"Value options accept either spelling: --default=VALUE or --default VALUE. In\n"
 	"the space form the next argument is taken as the value whatever it looks like,\n"
@@ -583,11 +592,16 @@ static int do_set(Opts *o) {
 			layered_free(&L); return 1;
 		}
 	}
-	size_t opslen; char *ops = read_all_fp(stdin, &opslen);
-	// The ops script gets the same UTF-8 gate as any file input (exit 1).
-	if (!utf8_valid(ops, opslen)) {
-		fprintf(stderr, "stdin: stream did not contain valid UTF-8\n");
-		free(ops); layered_free(&L); return 1;
+	// --set carries the edits, so stdin is left alone: reading it here would
+	// block on the console for anyone who passed edits as options.
+	size_t opslen = 0; char *ops = NULL;
+	if (o->nsets == 0) {
+		ops = read_all_fp(stdin, &opslen);
+		// The ops script gets the same UTF-8 gate as any file input (exit 1).
+		if (!utf8_valid(ops, opslen)) {
+			fprintf(stderr, "stdin: stream did not contain valid UTF-8\n");
+			free(ops); layered_free(&L); return 1;
+		}
 	}
 	int rc = 0; size_t start = 0;
 	for (size_t i = 0; i <= opslen; i++) {
@@ -834,9 +848,15 @@ static int check_opts(const char *cmd, Opts *o) {
 		}
 	}
 	// Writing back the merged document would fold the lower layers permanently
-	// into the top file, which is the opposite of what layering is for.
-	if (o->write && (o->nlayers > 0 || o->nsets > 0)) {
-		fprintf(stderr, "--write cannot be combined with --layer or --set (see --help)\n");
+	// into the top file, which is the opposite of what layering is for. On 'set'
+	// the --set values are edits to the document rather than a layer over it, so
+	// persisting them is the whole point; everywhere else they stay ephemeral.
+	if (o->write && o->nlayers > 0) {
+		fprintf(stderr, "--write cannot be combined with --layer (see --help)\n");
+		return 1;
+	}
+	if (o->write && o->nsets > 0 && strcmp(cmd, "set")) {
+		fprintf(stderr, "--write cannot be combined with --set (see --help)\n");
 		return 1;
 	}
 	// The ops script already has stdin, so a layer cannot read it too.

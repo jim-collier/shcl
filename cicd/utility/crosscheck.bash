@@ -314,6 +314,14 @@ fCompareWrite "write follows symlink" fFixSymlink fmt --write
 fCompareWrite "write breaks hard link" fFixHardlink fmt --write
 fComparePlant "write refuses a planted temp" fmt --write
 
+# `set --write --set` persists edits given as options and reads no ops from
+# stdin, so nothing here feeds one. The gates around it are pinned too: --layer
+# still cannot be written back anywhere, and --set stays ephemeral off 'set'.
+fCompareWrite "set --write applies --set" fFixMode set --write --set a=2
+fCompareWrite "set --write --set adds a path" fFixMode set --write --set b.c=hello
+fCompare "set --write rejects --layer" set --write --layer=missing.shcl missing.shcl
+fCompare "fmt --write rejects --set" fmt --write --set a=1 missing.shcl
+
 if ((nBad)); then
 	echo "crosscheck: ${nBad}/${nCompared} comparison(s) diverged"
 	exit 1
@@ -339,3 +347,5 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 ##		               just stdout. Also made the DIVERGE diff non-fatal - under
 ##		               pipefail its nonzero status was aborting the run, so only
 ##		               the first divergence ever printed and the summary never did.
+##		- 20260804: Pin `set --write --set` (edits as options, no ops on stdin)
+##		               and the two gates that bound it.
