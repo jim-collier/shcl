@@ -515,6 +515,10 @@ typedef struct {
 	   a run trailing a block's last child stays put instead of re-attaching
 	   dedented. Emitted after the subtree at this node's depth. */
 	VecLead after;
+	/* Whole-line comments written inside this node's block when no bound child
+	   could take them - a header whose children are all commented still owns
+	   those lines. Emitted after the subtree one level deeper than this node. */
+	VecLead inside;
 	/* Blank-line grouping is the other half of hand-authored layout: set when
 	   a blank line preceded this node's binding line (runs collapse to one). */
 	int blank_before;
@@ -562,6 +566,9 @@ static void fold_node_into(shcl_doc *d, size_t survivor, size_t loser) {
 	for (size_t k = 0; k < NODE(d, loser).after.len; k++)
 		VecLead_push(a, &NODE(d, survivor).after, NODE(d, loser).after.data[k]);
 	NODE(d, loser).after.len = 0;
+	for (size_t k = 0; k < NODE(d, loser).inside.len; k++)
+		VecLead_push(a, &NODE(d, survivor).inside, NODE(d, loser).inside.data[k]);
+	NODE(d, loser).inside.len = 0;
 }
 
 static Value v_empty(void) { Value v; memset(&v, 0, sizeof v); v.kind = V_EMPTY; return v; }
@@ -1509,11 +1516,13 @@ static void attach_trivia(Parser *P, size_t node, S trailing) {
 }
 
 /* Comments written deeper than the incoming line belong to the block they sit
-   in, not to the next binding: hang each on the deepest open level whose
-   indent prefixes the comment's, so a run trailing a block's last child stays
-   with that block instead of re-attaching dedented at the next node. Runs
+   in, not to the next binding: hang each on the deepest node whose bound
+   indent prefixes the comment's, among the levels the incoming line is
+   closing. Written at that node's own level the comment trails it (`after`);
+   written deeper it sits inside the node's block (`inside`) - so a header
+   whose children are all commented still owns them at their depth. Runs
    before the incoming line resolves (and at end of parse with the empty
-   indent, so indented tail comments keep their block). */
+   indent, so tail comments keep their block). */
 static void hang_deeper_pending(Parser *P, S new_indent) {
 	if (P->pending.len == 0) return;
 	Arena *a = &P->d->arena;
@@ -1521,13 +1530,18 @@ static void hang_deeper_pending(Parser *P, S new_indent) {
 	for (size_t k = 0; k < P->pending.len; k++) {
 		Pend p = P->pending.data[k];
 		if (p.indent.n > new_indent.n) {
-			size_t target = (size_t)-1;
+			/* A level shallower than the incoming line stays open and may
+			   still gain children, so a comment must not hang there - it
+			   would emit below the child; keep it pending instead. */
+			size_t target = (size_t)-1; int at_own_level = 0;
 			for (size_t ii = P->stack.len; ii-- > 0;) {
 				S ind = P->stack.data[ii].indent; size_t n = P->stack.data[ii].node;
-				if (n != ROOT && ind.n > 0 && ind.n > new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; break; }
+				if (n != ROOT && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; at_own_level = ind.n == p.indent.n; break; }
 			}
 			if (target != (size_t)-1) {
-				VecLead_push(a, &NODE(P->d, target).after, lead_make(p.text, p.blank_before));
+				Lead lead = lead_make(p.text, p.blank_before);
+				if (at_own_level) VecLead_push(a, &NODE(P->d, target).after, lead);
+				else VecLead_push(a, &NODE(P->d, target).inside, lead);
 				continue;
 			}
 		}
@@ -2453,6 +2467,7 @@ static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size
 	n.trailing = s_dup(a, src->trailing);
 	for (size_t i = 0; i < src->leading.len; i++) VecLead_push(a, &n.leading, lead_make(s_dup(a, src->leading.data[i].text), src->leading.data[i].blank_before));
 	for (size_t i = 0; i < src->after.len; i++) VecLead_push(a, &n.after, lead_make(s_dup(a, src->after.data[i].text), src->after.data[i].blank_before));
+	for (size_t i = 0; i < src->inside.len; i++) VecLead_push(a, &n.inside, lead_make(s_dup(a, src->inside.data[i].text), src->inside.data[i].blank_before));
 	size_t idx = d->nodes.len;
 	VecNode_push(a, &d->nodes, n);
 	// Snapshot the source children (const, stable) before recursing.
@@ -2480,6 +2495,8 @@ static void adopt_trivia(shcl_doc *d, size_t base, const shcl_doc *over, size_t 
 	}
 	for (size_t i = 0; i < src->after.len; i++)
 		VecLead_push(a, &NODE(d, base).after, lead_make(s_dup(a, src->after.data[i].text), src->after.data[i].blank_before));
+	for (size_t i = 0; i < src->inside.len; i++)
+		VecLead_push(a, &NODE(d, base).inside, lead_make(s_dup(a, src->inside.data[i].text), src->inside.data[i].blank_before));
 }
 
 // One grouping pass over each side, then a single children rebuild: the old
@@ -2839,6 +2856,13 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 	}
 	VecSize ch = NODE(d, idx).children;
 	emit_children(d, &ch, depth + 1, out);
+	/* Comments this block owns with no child to carry them, one deeper. */
+	for (size_t k = 0; k < NODE(d, idx).inside.len; k++) {
+		Lead *c = &NODE(d, idx).inside.data[k];
+		if (c->blank_before && out->len) sb_putc(a, out, '\n');
+		for (size_t z = 0; z < depth + 1; z++) sb_putc(a, out, '\t');
+		sb_putS(a, out, c->text); sb_putc(a, out, '\n');
+	}
 	/* Comments that hung on this block after its last child. */
 	for (size_t k = 0; k < NODE(d, idx).after.len; k++) {
 		Lead *c = &NODE(d, idx).after.data[k];

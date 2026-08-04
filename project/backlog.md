@@ -48,11 +48,11 @@ None open.
 
 ### Bugs
 
-- 🔘 A block header whose children are all commented hands those comments back one indent level shallow through `fmt`.
+- ✅ A block header whose children are all commented hands those comments back one indent level shallow through `fmt`.
 	- Reported from SilkTerm, whose template config is mostly commented-out defaults: `rotate:`, `contrast_mask:`, `text.scrim:`, `cursor.size:`, `selection:` all lose a level - the entire remaining diff against their template, 162 lines of leading tabs.
 	- Reproduced: `rotate:` followed by two depth-1 comments re-emits them at column 0. With even one live child under the same header, the comment keeps its depth - so only childless headers lose fidelity, and the loss is always exactly one level.
 	- Cause: after-trivia hangs on the deepest open level whose indent prefixes the comment's indent, and a childless header never opens its level - no binding line ever resolves under it - so the comments hang one level up and re-emit at the header's depth.
-	- All four bindings behave identically (the trivia model is parity), so crosscheck cannot see it, and no corpus case has an all-commented block.
+	- Fixed: a hung comment now splits by written depth - at the last binding's own level it trails that binding as before; deeper, it sits inside that binding's block at its own depth, so a childless header keeps its commented children indented. All four bindings; new case 045 pins it; goldens 027/034 moved (a tail note and a deep tail note keep their written depth now).
 
 ### Features and enhancements
 

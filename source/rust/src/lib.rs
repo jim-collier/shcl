@@ -385,6 +385,10 @@ struct NodeData {
 	// a run trailing a block's last child stays put instead of re-attaching
 	// dedented. Emitted after the subtree at this node's depth.
 	after: Vec<Lead>,
+	// Whole-line comments written inside this node's block when no bound child
+	// could take them - a header whose children are all commented still owns
+	// those lines. Emitted after the subtree one level deeper than this node.
+	inside: Vec<Lead>,
 	// Blank-line grouping is the other half of hand-authored layout: set when
 	// a blank line preceded this node's binding line (runs collapse to one).
 	blank_before: bool,
@@ -428,6 +432,8 @@ fn fold_node_into(arena: &mut [NodeData], survivor: usize, loser: usize) {
 	}
 	let mut after = std::mem::take(&mut arena[loser].after);
 	arena[survivor].after.append(&mut after);
+	let mut inside = std::mem::take(&mut arena[loser].inside);
+	arena[survivor].inside.append(&mut inside);
 }
 
 /// Maximum nesting depth (levels below the document root), enforced at load
@@ -856,6 +862,7 @@ impl Parser {
 				leading: Vec::new(),
 				trailing: String::new(),
 				after: Vec::new(),
+				inside: Vec::new(),
 				blank_before: false,
 				src: None,
 			}],
@@ -899,6 +906,7 @@ impl Parser {
 			leading: Vec::new(),
 			trailing: String::new(),
 			after: Vec::new(),
+			inside: Vec::new(),
 			blank_before: false,
 			src: None,
 		});
@@ -986,11 +994,13 @@ impl Parser {
 	}
 
 	/// Comments written deeper than the incoming line belong to the block they
-	/// sit in, not to the next binding: hang each on the deepest open level
-	/// whose indent prefixes the comment's, so a run trailing a block's last
-	/// child stays with that block instead of re-attaching dedented at the
-	/// next node. Runs before the incoming line resolves (and at end of parse
-	/// with the empty indent, so indented tail comments keep their block).
+	/// sit in, not to the next binding: hang each on the deepest node whose
+	/// bound indent prefixes the comment's, among the levels the incoming
+	/// line is closing. Written at that node's own level the comment trails
+	/// it (`after`); written deeper it sits inside the node's block
+	/// (`inside`) - so a header whose children are all commented still owns
+	/// them at their depth. Runs before the incoming line resolves (and at
+	/// end of parse with the empty indent, so tail comments keep their block).
 	fn hang_deeper_pending(&mut self, new_indent: &str) {
 		if self.pending.is_empty() {
 			return;
@@ -998,21 +1008,29 @@ impl Parser {
 		let taken = std::mem::take(&mut self.pending);
 		for p in taken {
 			if p.indent.len() > new_indent.len() {
+				// A level shallower than the incoming line stays open and may
+				// still gain children, so a comment must not hang there - it
+				// would emit below the child; keep it pending instead.
 				let target = self
 					.stack
 					.iter()
 					.rev()
 					.find(|(ind, node)| {
 						*node != ROOT
-							&& !ind.is_empty() && ind.len() > new_indent.len()
+							&& ind.len() >= new_indent.len()
 							&& p.indent.starts_with(ind.as_str())
 					})
-					.map(|&(_, n)| n);
-				if let Some(n) = target {
-					self.arena[n].after.push(Lead {
+					.map(|(ind, n)| (*n, ind.len() == p.indent.len()));
+				if let Some((n, at_own_level)) = target {
+					let lead = Lead {
 						text: p.text,
 						blank_before: p.blank_before,
-					});
+					};
+					if at_own_level {
+						self.arena[n].after.push(lead);
+					} else {
+						self.arena[n].inside.push(lead);
+					}
 					continue;
 				}
 			}
@@ -1731,6 +1749,16 @@ impl Document {
 			}
 		}
 		self.emit_children(&self.arena[idx].children, depth + 1, out);
+		// Comments this block owns with no child to carry them, one deeper.
+		let ipad: String = "\t".repeat(depth + 1);
+		for c in &self.arena[idx].inside {
+			if c.blank_before && !out.is_empty() {
+				out.push('\n');
+			}
+			out.push_str(&ipad);
+			out.push_str(&c.text);
+			out.push('\n');
+		}
 		// Comments that hung on this block after its last child.
 		for c in &self.arena[idx].after {
 			if c.blank_before && !out.is_empty() {
@@ -2186,6 +2214,7 @@ impl Document {
 			leading: Vec::new(),
 			trailing: String::new(),
 			after: Vec::new(),
+			inside: Vec::new(),
 			// Hand-written files separate top-level sections with a blank line;
 			// writer-built ones do the same (the emitter never blanks line 1).
 			blank_before: parent == ROOT,
@@ -2595,6 +2624,8 @@ impl Document {
 		}
 		let mut after = src.after.clone();
 		self.arena[base].after.append(&mut after);
+		let mut inside = src.inside.clone();
+		self.arena[base].inside.append(&mut inside);
 	}
 
 	fn overlay(&mut self, base_parent: usize, over: &Document, over_parent: usize) {
@@ -2700,6 +2731,7 @@ impl Document {
 			leading: src.leading.clone(),
 			trailing: src.trailing.clone(),
 			after: src.after.clone(),
+			inside: src.inside.clone(),
 			blank_before: src.blank_before,
 			src: src.src.clone(),
 		};

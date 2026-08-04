@@ -362,7 +362,7 @@ def _choose_fence(content):
 class _Node:
 	__slots__ = (
 		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
-		"leading", "trailing", "after", "blank_before", "src",
+		"leading", "trailing", "after", "inside", "blank_before", "src",
 	)
 
 	def __init__(self, name, value, parent, line):
@@ -383,6 +383,11 @@ class _Node:
 		# node, so a run trailing a block's last child stays put instead of
 		# re-attaching dedented. Emitted after the subtree at this node's depth.
 		self.after = []
+		# Whole-line comments written inside this node's block when no bound
+		# child could take them - a header whose children are all commented
+		# still owns those lines. Emitted after the subtree one level deeper
+		# than this node.
+		self.inside = []
 		# Blank-line grouping is the other half of hand-authored layout: set
 		# when a blank line preceded this node's binding line (runs collapse).
 		self.blank_before = False
@@ -419,6 +424,8 @@ def _fold_node_into(arena, survivor, loser):
 			arena[survivor].leading.append(_Lead(trail, False))
 	arena[survivor].after.extend(arena[loser].after)
 	arena[loser].after = []
+	arena[survivor].inside.extend(arena[loser].inside)
+	arena[loser].inside = []
 
 
 # Maximum nesting depth (levels below the document root), enforced at load and
@@ -939,24 +946,35 @@ class _Parser:
 
 	def _hang_deeper_pending(self, new_indent):
 		"""Comments written deeper than the incoming line belong to the block
-		they sit in, not to the next binding: hang each on the deepest open
-		level whose indent prefixes the comment's, so a run trailing a block's
-		last child stays with that block instead of re-attaching dedented at
-		the next node. Runs before the incoming line resolves (and at end of
-		parse with the empty indent, so indented tail comments keep their block)."""
+		they sit in, not to the next binding: hang each on the deepest node
+		whose bound indent prefixes the comment's, among the levels the
+		incoming line is closing. Written at that node's own level the comment
+		trails it (`after`); written deeper it sits inside the node's block
+		(`inside`) - so a header whose children are all commented still owns
+		them at their depth. Runs before the incoming line resolves (and at
+		end of parse with the empty indent, so tail comments keep their block)."""
 		if not self.pending:
 			return
 		taken = self.pending
 		self.pending = []
 		for p in taken:
 			if len(p.indent) > len(new_indent):
+				# A level shallower than the incoming line stays open and may
+				# still gain children, so a comment must not hang there - it
+				# would emit below the child; keep it pending instead.
 				target = None
+				at_own_level = False
 				for ind, node in reversed(self.stack):
-					if node != ROOT and ind and len(ind) > len(new_indent) and p.indent.startswith(ind):
+					if node != ROOT and len(ind) >= len(new_indent) and p.indent.startswith(ind):
 						target = node
+						at_own_level = len(ind) == len(p.indent)
 						break
 				if target is not None:
-					self.arena[target].after.append(_Lead(p.text, p.blank_before))
+					lead = _Lead(p.text, p.blank_before)
+					if at_own_level:
+						self.arena[target].after.append(lead)
+					else:
+						self.arena[target].inside.append(lead)
 					continue
 			self.pending.append(p)
 
@@ -1412,8 +1430,17 @@ class Document:
 		while stack:
 			idx, depth, would_merge = stack.pop()
 			if would_merge is None:
-				# Post-children marker: comments that hung on this block after
-				# its last child re-emit at the block's own depth.
+				# Post-children marker. Comments this block owns with no child
+				# to carry them re-emit one deeper.
+				ipad = "\t" * (depth + 1)
+				for c in self.arena[idx].inside:
+					if c.blank_before and out:
+						out.append("\n")
+					out.append(ipad)
+					out.append(c.text)
+					out.append("\n")
+				# Comments that hung on this block after its last child re-emit
+				# at the block's own depth.
 				pad = "\t" * depth
 				for c in self.arena[idx].after:
 					if c.blank_before and out:
@@ -1423,7 +1450,7 @@ class Document:
 					out.append("\n")
 				continue
 			self._emit_node(idx, depth, would_merge, out)
-			if self.arena[idx].after:
+			if self.arena[idx].after or self.arena[idx].inside:
 				# The marker sits under the children, so it pops after them.
 				stack.append((idx, depth, None))
 			self._emit_children(self.arena[idx].children, depth + 1, stack)
@@ -1997,6 +2024,7 @@ class Document:
 			else:
 				self.arena[base].leading.append(_Lead(src.trailing, False))
 		self.arena[base].after.extend(_Lead(c.text, c.blank_before) for c in src.after)
+		self.arena[base].inside.extend(_Lead(c.text, c.blank_before) for c in src.inside)
 
 	def _overlay(self, base_parent, over, over_parent):
 		over_kids = list(over.arena[over_parent].children)
@@ -2084,6 +2112,7 @@ class Document:
 		node.leading = [_Lead(c.text, c.blank_before) for c in src.leading]
 		node.trailing = src.trailing
 		node.after = [_Lead(c.text, c.blank_before) for c in src.after]
+		node.inside = [_Lead(c.text, c.blank_before) for c in src.inside]
 		node.blank_before = src.blank_before
 		node.src = src.src
 		idx = len(self.arena)

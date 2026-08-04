@@ -90,7 +90,7 @@ A few nouns from the wider surface:
 
 - Blank lines carry no data, but a blank line between bindings is grouping the author created: the parser notes it as trivia (on the node below, or on the comment line below, so a blank between comment-only regions survives too) and the canonical formatter re-emits it (a run of blanks collapses to one; output never starts with one). Like comments, blanks play no part in merging, reads, or diagnostics.
 
-- A whole-line comment attaches to the next line that binds a node - except when it is written **deeper** than that next line: then it belongs to the block it sits in, and it stays there (re-emitted after that block's last child, at the block's indent). So a comment run trailing a section keeps its place instead of re-attaching, dedented, to whatever field happens to follow; the same rule keeps indented tail-of-file comments with their block, and only top-level tail comments remain end-of-file orphans.
+- A whole-line comment attaches to the next line that binds a node - except when it is written **deeper** than that next line: then it belongs to the block it sits in, and it stays there at its own depth. Written at the level of the block's last binding it trails that binding; written deeper still, it sits inside that binding's block - so a header whose children are all commented out keeps those comments indented under it rather than handing them back a level shallow. The same rule keeps indented tail-of-file comments with their block, and only top-level tail comments remain end-of-file orphans.
 
 - A `#` inside quotes is literal (`url: "http://h/#frag"`), and a `#` inside a raw block is literal.
 
@@ -444,7 +444,7 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 
 - Preserve comments as attached trivia. A whole-line comment attaches to the node bound by the next non-comment line and re-emits just above that node's line, at its indent; a trailing comment stays on its line, two spaces before the `#`. Comment text is never rewritten.
 
-- When instances merge, their comments concatenate in encounter order; a second trailing comment moves to the lines above (a canonical line has room for one). Comments among stacked-list elements ride the list's field line. Comments after the last binding line re-emit at the end of the output, unindented.
+- When instances merge, their comments concatenate in encounter order; a second trailing comment moves to the lines above (a canonical line has room for one). Comments among stacked-list elements ride the list's field line. Top-level comments after the last binding line re-emit at the end of the output, unindented; indented ones stay with their block (see Comments).
 
 - Quote a value only when a reserved character requires it (minimal quoting).
 
