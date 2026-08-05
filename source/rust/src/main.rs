@@ -174,10 +174,10 @@ struct Opts {
 	seen: Vec<&'static str>, // canonical names of options given, for per-command validation
 }
 
-/// Did the command line ask for one of the informational outputs? Only tokens in option
-/// position count: a value that happens to read `-h`, and anything after the
-/// file, are data. Scanning the whole line for them let a read of a missing
-/// path answer with the help text and exit 0.
+/// Did the command line ask for one of the informational outputs? Only tokens
+/// in option position count: a value that happens to read `-h`, and anything
+/// after the file, are data. Scanning the whole line for them let a read of a
+/// missing path answer with the help text and exit 0.
 fn asked_for(argv: &[String]) -> Option<&'static str> {
 	let mut i = 0;
 	while i < argv.len() {

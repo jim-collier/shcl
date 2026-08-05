@@ -105,7 +105,7 @@ Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
 // bindings the same way the help text and the init banner are. The version
-// concatenates from the version const so it cannot drift from Cargo.toml.
+// concatenates from the const above so it cannot drift from `shcl version`.
 const about = "shcl v" + version + `
 Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞).
 Project: https://github.com/jim-collier/shcl

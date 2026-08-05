@@ -149,7 +149,8 @@ public:
 
 	// The plural line(): 1-based source lines at a path, in file order, so a
 	// repeated field - the case that most wants a citable line - yields every
-	// binding's.
+	// binding's. Unresolved wildcard slots stay in the list as 0; a miss is
+	// the empty vector.
 	std::vector<std::size_t> lines(std::string_view p) const {
 		std::size_t *a; std::size_t n = shcl_lines(d_, p.data(), p.size(), &a);
 		std::vector<std::size_t> v; v.reserve(n);

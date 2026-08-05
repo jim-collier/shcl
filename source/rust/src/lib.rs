@@ -3432,7 +3432,7 @@ impl Document {
 	}
 
 	// Full tier, Result form: Ok(value) on Good; the sentinel otherwise. Empty
-	// still surfaces as Err(Empty) here; use read_* to also get the empty value.
+	// still comes back as Err(Empty) here; use read_* to also get the empty value.
 
 	pub fn get_int(&self, path: &str) -> Result<i64, Status> {
 		let r = self.read_int(path);
@@ -3544,9 +3544,10 @@ impl Document {
 // The schema is an ordinary parsed document: a flat list of `field: <path>`
 // instances whose children are the constraints (closed vocabulary - see
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
-// the typed coercions, so document strictness composes for free. Schema
-// faults (V09x) come first and the surviving constraints still check the
-// document; only the unknown-field sweep needs a fault-free schema.
+// the typed coercions, so document strictness composes for free. Schema faults
+// (V09x) come first and the surviving constraints still check the document;
+// only the unknown-field sweep needs a fault-free schema. One line-number
+// space per result.
 
 const SCHEMA_TYPES: [&str; 11] = [
 	"int",

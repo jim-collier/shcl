@@ -3005,8 +3005,9 @@ const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i
 // instances whose children are the constraints (closed vocabulary - see
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
 // the typed coercions, so document strictness composes for free. Schema faults
-// (V09x, schema-file lines) lead the result and the surviving constraints
-// still run; only the unknown-field sweep needs a fault-free schema.
+// (V09x) come first and the surviving constraints still check the document;
+// only the unknown-field sweep needs a fault-free schema. One line-number
+// space per result.
 // Everything (scratch and results) lives in the validation's own arena.
 
 struct shcl_validation { Arena arena; VecDiag diags; };

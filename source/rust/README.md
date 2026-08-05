@@ -12,7 +12,7 @@ This crate is the reference implementation. Independent Go, Python, and C bindin
 cargo add shcl
 ```
 
-Zero dependencies. The crate also ships the CLI:
+Zero dependencies. The crate also includes the CLI:
 
 ```sh
 cargo install shcl

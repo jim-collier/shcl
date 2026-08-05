@@ -326,7 +326,7 @@ shcl fmt --write server.shcl
 shcl set --write server.shcl --set 'workers=8'
 ```
 
-`shcl help` covers the rest, `shcl about` names the version, licence and project home, and `shcl donate` points at the sponsors page. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
+`shcl help` covers the rest, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
 
 ## Example use-cases in your code
 
