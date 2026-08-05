@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 // C++ typed veneer over the C core (shcl.h). This is NOT a second parser: it
 // wraps the same shcl_* functions and adds a compile-time-typed surface

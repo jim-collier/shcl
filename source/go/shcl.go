@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 // Package shcl is the Go binding of SHCL: parser, accessor, writer/formatter.
 // Single file on purpose - the drop-in story is "copy this file into your tree".

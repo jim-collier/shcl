@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 // shcl CLI - the Go binding's command surface. Flags, output, and exit codes
 // mirror the Rust reference exactly; the cicd cross-binding check compares the

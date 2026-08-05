@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-# Copyright © 2026 Jim Collier
+# Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 # Conformance-corpus runner for the Python binding. Same corpus every shipped
 # binding must pass; column meanings live in project/conformance/README.md. Plain

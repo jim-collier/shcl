@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 // Conformance-corpus runner. Every shipped binding must pass this corpus; the
 // Go binding runs it natively here. Case layout and reads.tsv column meanings
