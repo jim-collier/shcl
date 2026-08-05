@@ -6,13 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `shcl about` and `shcl donate` on the CLI, each also spelled `--about` and `--donate` the way `help` and `version` already are. `about` gives the version, copyright, project home, licence and a short description of what SHCL is; `donate` points at the GitHub Sponsors page.
+
 - `Lines(path)` (each binding's spelling, plus the C++ veneer): the plural of `Line(path)`. A repeated field - the case that most wants a citable line, and the one the singular returns 0 for - yields every binding's line in file order; unresolved wildcard slots stay as 0 so indices keep matching `Count`.
 
 ### Changed
 
+- `help`, `about` and `donate` print with a blank line above and below, so the block stands clear of the shell prompts either side of it. Bare `shcl` still prints the same help text unpadded - it is a usage error rather than something asked for - and `version` stays a single bare line so it is still easy to capture.
+
 - A schema fault no longer suppresses data validation wholesale. Faults (`V090`+) are still reported first and still fail `check --schema`, but the constraints that parsed cleanly now check the document too - a typo in one constraint cannot hide a real violation of another. The unknown-field sweep still requires a fault-free schema, since a dropped constraint would turn the fields it declared into false unknowns. `shcl init` is unchanged: generation still fails on any fault.
 
 ### Fixed
+
+- The C CLI treated an informational flag in a `--set-literal` value as a request for that output, where the other three read it as the value. Its option-skip list was missing `--set-literal`, so `shcl get --set-literal -h FILE PATH` printed the help text instead of reading.
 
 - A block header whose children were all commented out got those comments back one indent level shallow from the formatter (and a childless header's tail-of-file comments lost their indent entirely). A comment written deeper than a block's last binding now stays inside that binding's block at its own depth, in every binding; comment runs at the binding's own level trail it as before.
 

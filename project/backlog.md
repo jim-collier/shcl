@@ -66,6 +66,12 @@ None open.
 	- Not literally silent - verified: every schema fault is an Error diagnostic, `validate()` returns them, and `check --schema` exits 6. The file only looks clean if the caller drops the schema-line diagnostics. The substantive gap is real though: one broken constraint turns off validation for the whole file, even though the schema builder already drops broken constraints one by one before deciding to bail.
 	- Done, as a three-way split: faults report first, the surviving constraints still check the document, and only the unknown-field sweep needs a fault-free schema (a dropped constraint would turn its own fields into false unknowns). Generation still fails on any fault. All four bindings; case 046 pins it; 023/040 goldens turned out to be unchanged (their survivors trigger nothing).
 
+- ✅ `about` and `donate` on the CLI, and blank-line padding around the outputs a person asks for.
+	- Asked for: an `--about` in the shape of the other projects' one (`convert-base-v1b --about` was the model), and a `--donate` naming the sponsors page.
+	- Done: both take either spelling, `shcl about` or `shcl --about`, matching how `help` and `version` already work. `about` prints version, copyright, project home, licence with its SPDX link and a no-warranty line, then a short description of what SHCL is; `donate` points at the sponsors page and says a star, a good bug report or a mention count too. Both are stdout, so both are byte-for-byte contracts across the four CLIs and are pinned in the differential check.
+	- `help`, `about` and `donate` now print a blank line above and below, so the block stands clear of the prompts either side. Bare `shcl` keeps printing the same help text unpadded, since it is a usage error rather than something asked for, and `version` stays a bare line for capture.
+	- Found en route: C's option-skip list was missing `--set-literal`, so `shcl get --set-literal -h FILE PATH` answered with the help text where the other three read the value. Predated this change; fixed with it.
+
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
 	- Type via a typed entry point or compile-time generic, never a runtime type field:

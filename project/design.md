@@ -78,6 +78,10 @@ Other points
 
 - Positioning: the pitch is "forgiving to write, predictable to read, with the friendliest read API in the space" - not "simplest possible", which overpromises and invites the takedown. Versus schema-bearing languages (Pkl, CUE): the file stays dumb, the library is powerful (see Power layer).
 
+- The CLI's informational commands (`help`, `version`, `about`, `donate`) each take both spellings - the bare word and the dashed flag. Among the options it was decided that one rule for the whole class beats deciding per command whether it reads better as a command or as a modifier.
+
+- Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Two neighbours stay unpadded on purpose: bare `shcl`, which prints the same help text but as a usage error, and `version`, which stays a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
+
 Full, itemized decisions live in project memory (`shcl-spec-decisions`); `spec.md` is their normative form.
 
 ## Architecture

@@ -305,9 +305,16 @@ fi
 # Usage surface: help/version/bare/unknown are the largest user-visible output
 # in the project and are hand-duplicated per CLI, so pin them here too.
 fCompare "usage help" help
+fCompare "usage help flag" --help
 fCompare "usage version" version
 fCompare "usage bare"
 fCompare "usage unknown" definitely-not-a-subcommand
+# about/donate carry both spellings and the blank-line padding; bare help above
+# is the control, since it prints the same text with no padding.
+fCompare "usage about" about
+fCompare "usage about flag" --about
+fCompare "usage donate" donate
+fCompare "usage donate flag" --donate
 
 # In-place writes: the rename that makes them atomic also replaces the inode, so
 # these pin what the target keeps. Mode must survive (config files hold secrets)
