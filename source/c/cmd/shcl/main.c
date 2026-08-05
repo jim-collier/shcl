@@ -121,7 +121,7 @@ static const char *HELP =
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
 // bindings the same way the help text and the init banner are. The version
-// comes from the VERSION macro so it cannot drift from the string above.
+// concatenates from the VERSION macro so it cannot drift from `shcl version`.
 static const char *ABOUT =
 	"shcl v" VERSION "\n"
 	"Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞).\n"
@@ -917,10 +917,10 @@ static int check_opts(const char *cmd, Opts *o) {
 	return 0;
 }
 
-// Did the command line ask for one of the informational outputs? Only tokens in option
-// position count: a value that happens to read `-h`, and anything after the
-// file, are data. Scanning the whole line for them let a read of a missing
-// path answer with the help text and exit 0.
+// Did the command line ask for one of the informational outputs? Only tokens
+// in option position count: a value that happens to read `-h`, and anything
+// after the file, are data. Scanning the whole line for them let a read of a
+// missing path answer with the help text and exit 0.
 static const char *asked_for(int argc, char **argv) {
 	for (int i = 1; i < argc; i++) {
 		const char *a = argv[i];

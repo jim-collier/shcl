@@ -204,7 +204,7 @@ GIF_OUT="assets/demo.gif"
 GIF_ROTATE_DIR="../private/demos/gif"
 
 ## Full-run output is tee'd here (gitignored) and gfs-rotated; lint-report.bash
-## surfaces warnings from the newest log at session start.
+## reports warnings from the newest log at session start.
 LINT_LOG_DIR="cicd/artifacts/lint"
 
 ## Stage 9: backup + publish via the standalone publisher (versioned RAR backup of

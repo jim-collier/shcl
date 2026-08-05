@@ -4,8 +4,8 @@
 """SHCL binding for Python: parser, accessor, writer/formatter.
 
 Single file on purpose - the drop-in story is "copy this file into your tree".
-Behaviour tracks the Rust reference (source/rust/src/lib.rs) byte for byte; the
-conformance corpus in project/conformance/ pins every behaviour here, and the
+Behavior tracks the Rust reference (source/rust/src/lib.rs) byte for byte; the
+conformance corpus in project/conformance/ pins every behavior here, and the
 cicd cross-binding check compares this against the reference on every run.
 Structure deliberately mirrors the reference over Python idiom, so a fix there
 ports here by mechanical diff (parity over idiom - see style-guide.md).
@@ -2368,8 +2368,9 @@ class Document:
 	# The schema is an ordinary parsed document: a flat list of `field: <path>`
 	# instances whose children are the constraints (closed vocabulary).
 	# Validation reuses the accessor's path scan and the typed coercions, so
-	# document strictness composes for free. Schema faults (V09x) lead the
-	# result and the surviving constraints still run - one line-number space
+	# document strictness composes for free. Schema faults (V09x) come first
+	# and the surviving constraints still check the document; only the
+	# unknown-field sweep needs a fault-free schema. One line-number space
 	# per result.
 
 	def validate(self, schema):

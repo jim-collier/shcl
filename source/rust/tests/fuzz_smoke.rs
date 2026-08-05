@@ -148,10 +148,10 @@ fn merge_never_panics_and_stays_fixpoint() {
 	let seeds = seed_texts();
 	let mut rng = Rng(0x5EED_CAFE_F00D_0007);
 	for i in 0..iters {
-		let ai = rng.below(seeds.len());
-		let a = mutate(&mut rng, &seeds[ai]);
-		let bi = rng.below(seeds.len());
-		let b = mutate(&mut rng, &seeds[bi]);
+		let a_i = rng.below(seeds.len());
+		let a = mutate(&mut rng, &seeds[a_i]);
+		let b_i = rng.below(seeds.len());
+		let b = mutate(&mut rng, &seeds[b_i]);
 		let mut doc = Document::parse(&a);
 		doc.merge(&Document::parse(&b));
 		let once = doc.to_canonical();

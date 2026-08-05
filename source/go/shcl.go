@@ -3841,7 +3841,7 @@ func (d *Document) ReadStringArray(path string) Read[[]string] {
 }
 
 // Full tier, status form: the value is only meaningful when the status is
-// Good. Empty still surfaces as non-Good here; use Read* to also get the
+// Good. Empty still comes back as non-Good here; use Read* to also get the
 // empty value.
 
 // GetInt is ReadInt reduced to (value, status).
@@ -3981,8 +3981,9 @@ func (d *Document) GetDateTimeArrayOr(path string, def []DateTime) []DateTime {
 // instances whose children are the constraints (closed vocabulary - see
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
 // the typed coercions, so document strictness composes for free. Schema faults
-// (V09x) come first and the surviving constraints still check the document -
-// one line-number space per result.
+// (V09x) come first and the surviving constraints still check the document;
+// only the unknown-field sweep needs a fault-free schema. One line-number
+// space per result.
 
 var schemaTypes = []string{
 	"int",

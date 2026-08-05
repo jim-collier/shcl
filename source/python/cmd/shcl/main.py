@@ -103,7 +103,7 @@ Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
 
 # About and donate are stdout, so they are byte-for-byte contracts across the
 # bindings the same way the help text and the init banner are. The version
-# interpolates from the version constant so it cannot drift from Cargo.toml.
+# concatenates from the constant above so it cannot drift from `shcl version`.
 ABOUT = "shcl v" + VERSION + """
 Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞).
 Project: https://github.com/jim-collier/shcl
@@ -200,10 +200,10 @@ def _set_value_opt(o, name, v):
 
 
 def asked_for(argv):
-	# Did the command line ask for one of the informational outputs? Only tokens in option
-	# position count: a value that happens to read `-h`, and anything after the
-	# file, are data. Scanning the whole line for them let a read of a missing
-	# path answer with the help text and exit 0.
+	# Did the command line ask for one of the informational outputs? Only tokens
+	# in option position count: a value that happens to read `-h`, and anything
+	# after the file, are data. Scanning the whole line for them let a read of a
+	# missing path answer with the help text and exit 0.
 	i = 0
 	while i < len(argv):
 		a = argv[i]
