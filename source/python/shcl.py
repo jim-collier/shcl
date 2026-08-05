@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright © 2026 Jim Collier
+# Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 """SHCL binding for Python: parser, accessor, writer/formatter.
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 //! Deterministic fuzz smoke: mutate the corpus inputs (and some synthetic soup)
 //! with a fixed-seed PRNG and assert the invariants that must hold for ANY input:
