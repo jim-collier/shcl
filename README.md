@@ -50,6 +50,7 @@
 	- [DDL languages - Pkl, CUE, Dhall](#ddl-languages---pkl-cue-dhall)
 	- [When SHCL is the wrong choice](#when-shcl-is-the-wrong-choice)
 - [Features](#features)
+- [Shcl is used by multiple projects](#shcl-is-used-by-multiple-projects)
 - [What a .shcl file looks like](#what-a-shcl-file-looks-like)
 - [Using the CLI](#using-the-cli)
 - [Example use-cases in your code](#example-use-cases-in-your-code)
@@ -186,6 +187,25 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 - Raw fenced blocks embed anything verbatim: SQL, code, templates, Markdown-style.
 
 - One conformance corpus pins every binding to identical behavior. The Rust reference plus independent Go, C, and Python parsers agree byte-for-byte. A binding is not released until it does.
+
+## Shcl is used by multiple projects
+
+Shcl is in use today - in helped made bullet-proof - by these projects:
+
+| Project                                                                                    | OSS? | Release status | Used for
+| :--                                                                                        | :--: | :--            | :--
+| [SilkTerm](https://github.com/jim-collier/silkterm)                                        |  Y   | beta           | Config & UI language
+| [Nano-Git DB OSS Edition](https://github.com/jim-collier/nano-git-db)                      |  Y   | beta           | Config & DDL
+| [Nano-Git DB Enterprise Edition](https://www.yottacore.com/product/nano-git-db-enterprise) |  Y   | beta           | Config
+| [convert-base-v2](https://github.com/jim-collier/convert-base-v2)                          |  Y   | **stable**     | Config
+| [Rapid Photo Downloader Pro](https://github.com/jim-collier/rapid-photo-downloader-pro)    |  Y   | alpha          | Config
+| [Nemo Anywhere](https://www.yottacore.com/product/nemo-anywhere)                           |  Y   | beta           | Config
+| [Captain Nemo](https://github.com/t00mietum/captain-nemo)                                  |  Y   |                | Config
+| [TradeClanker](https://www.yottacore.com/product/tradeclanker) (commercial)                |  n   | beta           | Config & User's rules
+| SlodWorld (commercial)                                                                     |  n   | beta           | Config
+| [SlodWorld2](https://www.yottacore.com/product/slodworld2) (commercial)                    |  n   | beta           | Config
+
+(Most of these are by the same author.)
 
 ## What a .shcl file looks like
 
