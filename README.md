@@ -201,11 +201,11 @@ Shcl is in use today - in helped made bullet-proof - by these projects:
 | [Rapid Photo Downloader Pro](https://github.com/jim-collier/rapid-photo-downloader-pro)    |  Y   | alpha          | Config
 | [Nemo Anywhere](https://www.yottacore.com/product/nemo-anywhere)                           |  Y   | beta           | Config
 | [Captain Nemo](https://github.com/t00mietum/captain-nemo)                                  |  Y   |                | Config
-| [TradeClanker](https://www.yottacore.com/product/tradeclanker) (commercial)                |  n   | beta           | Config & User's rules
-| SlodWorld (commercial)                                                                     |  n   | beta           | Config
-| [SlodWorld2](https://www.yottacore.com/product/slodworld2) (commercial)                    |  n   | beta           | Config
+| [TradeClanker](https://www.yottacore.com/product/tradeclanker)                             |  n   | beta           | Config & User's rules
+| SlodWorld                                                                                  |  n   | beta           | Config
+| [SlodWorld2](https://www.yottacore.com/product/slodworld2)                                 |  n   | beta           | Config
 
-(Most of these are by the same author.)
+(5/10 of these are by the same author.)
 
 ## What a .shcl file looks like
 
