@@ -28,6 +28,8 @@ Usage:
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
+  shcl about | donate                    what shcl is, or how to support it
+                                         (also --about, --donate)
 
 set edits FILE, the base document ('-' = empty base). Values go in as
 repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
@@ -91,6 +93,35 @@ Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed or strict load failure.
 ";
 
+// About and donate are stdout, so they are byte-for-byte contracts across the
+// bindings the same way the help text and the init banner are. The version
+// interpolates from the crate so it cannot drift from Cargo.toml.
+const ABOUT: &str = concat!(
+	"shcl v",
+	env!("CARGO_PKG_VERSION"),
+	"
+Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞).
+Project: https://github.com/jim-collier/shcl
+Licensed under the MIT License. Full text at:
+  https://spdx.org/licenses/MIT.html
+No warranty.
+
+Simple Hierarchical Config Language. Forgiving to write, predictable to read.
+Types live in your code, not in the file, so nothing is guessed at parse time.
+One broken line is skipped with a note instead of taking down the whole file.
+"
+);
+
+const DONATE: &str = "\
+shcl is free software under the MIT License, and stays that way.
+
+If it saves you time and you want to give something back:
+  https://github.com/sponsors/jim-collier
+
+A star on the project, a clear bug report, or a mention to someone who needs it
+are worth just as much.
+";
+
 fn status_code(st: Status) -> u8 {
 	match st {
 		Status::Good => 0,
@@ -143,7 +174,7 @@ struct Opts {
 	seen: Vec<&'static str>, // canonical names of options given, for per-command validation
 }
 
-/// Did the command line ask for help or the version? Only tokens in option
+/// Did the command line ask for one of the informational outputs? Only tokens in option
 /// position count: a value that happens to read `-h`, and anything after the
 /// file, are data. Scanning the whole line for them let a read of a missing
 /// path answer with the help text and exit 0.
@@ -154,6 +185,8 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 		match a {
 			"-h" | "--help" => return Some("help"),
 			"-V" | "--version" => return Some("version"),
+			"--about" => return Some("about"),
+			"--donate" => return Some("donate"),
 			"--" => return None,
 			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
 			| "--set-literal" => i += 1,
@@ -1106,12 +1139,27 @@ fn main() -> ExitCode {
 	};
 	let first = argv.first().map(|s| s.as_str());
 	let asked = asked_for(&argv);
-	if argv.is_empty() || asked == Some("help") || first == Some("help") {
+	// Bare invocation is a usage error, so it prints the help unpadded. The
+	// blank lines below are for a person who asked, to separate the block from
+	// the surrounding prompts.
+	if argv.is_empty() {
 		print!("{}", HELP);
-		return ExitCode::from(if argv.is_empty() { 1 } else { 0 });
+		return ExitCode::from(1);
+	}
+	if asked == Some("help") || first == Some("help") {
+		print!("\n{}\n", HELP);
+		return ExitCode::from(0);
 	}
 	if asked == Some("version") || first == Some("version") {
 		println!("shcl {}", env!("CARGO_PKG_VERSION"));
+		return ExitCode::from(0);
+	}
+	if asked == Some("about") || first == Some("about") {
+		print!("\n{}\n", ABOUT);
+		return ExitCode::from(0);
+	}
+	if asked == Some("donate") || first == Some("donate") {
+		print!("\n{}\n", DONATE);
 		return ExitCode::from(0);
 	}
 	let cmd = argv[0].clone();
