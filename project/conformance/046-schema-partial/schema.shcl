@@ -1,0 +1,6 @@
+field: workers
+	type: int
+	min: banana
+field: title
+	type: string
+	required: yes

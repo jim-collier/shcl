@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 // shcl CLI - the Go binding's command surface. Flags, output, and exit codes
 // mirror the Rust reference exactly; the cicd cross-binding check compares the
@@ -19,7 +19,7 @@ import (
 )
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
-const version = "1.1.0"
+const version = "1.2.0"
 
 const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 
@@ -38,6 +38,8 @@ Usage:
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
   shcl help | version                    this help, or the version (also -h/--help, -V/--version)
+  shcl about | donate                    what shcl is, or how to support it
+                                         (also --about, --donate)
 
 set edits FILE, the base document ('-' = empty base). Values go in as
 repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
@@ -101,6 +103,30 @@ Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed or strict load failure.
 `
 
+// About and donate are stdout, so they are byte-for-byte contracts across the
+// bindings the same way the help text and the init banner are. The version
+// concatenates from the const above so it cannot drift from `shcl version`.
+const about = "shcl v" + version + `
+Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞).
+Project: https://github.com/jim-collier/shcl
+Licensed under the MIT License. Full text at:
+  https://spdx.org/licenses/MIT.html
+No warranty.
+
+Simple Hierarchical Config Language. Forgiving to write, predictable to read.
+Types live in your code, not in the file, so nothing is guessed at parse time.
+One broken line is skipped with a note instead of taking down the whole file.
+`
+
+const donate = `shcl is free software under the MIT License, and stays that way.
+
+If it saves you time and you want to give something back:
+  https://github.com/sponsors/jim-collier
+
+A star on the project, a clear bug report, or a mention to someone who needs it
+are worth just as much.
+`
+
 func statusCode(st shcl.Status) int {
 	switch st {
 	case shcl.Good:
@@ -156,10 +182,10 @@ type opts struct {
 	seen       []string // canonical names of options given, for per-command validation
 }
 
-// askedFor: did the command line ask for help or the version? Only tokens in
-// option position count: a value that happens to read `-h`, and anything after
-// the file, are data. Scanning the whole line for them let a read of a missing
-// path answer with the help text and exit 0.
+// askedFor: did the command line ask for one of the informational outputs? Only
+// tokens in option position count: a value that happens to read `-h`, and
+// anything after the file, are data. Scanning the whole line for them let a read
+// of a missing path answer with the help text and exit 0.
 func askedFor(argv []string) string {
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
@@ -168,6 +194,10 @@ func askedFor(argv []string) string {
 			return "help"
 		case a == "-V" || a == "--version":
 			return "version"
+		case a == "--about":
+			return "about"
+		case a == "--donate":
+			return "donate"
 		case a == "--":
 			return ""
 		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" || a == "--layer" || a == "--set" || a == "--set-literal":
@@ -1197,15 +1227,27 @@ func run() int {
 		}
 	}
 	asked := askedFor(argv)
-	if len(argv) == 0 || asked == "help" || argv[0] == "help" {
+	// Bare invocation is a usage error, so it prints the help unpadded. The
+	// blank lines below are for a person who asked, to separate the block from
+	// the surrounding prompts.
+	if len(argv) == 0 {
 		fmt.Print(help)
-		if len(argv) == 0 {
-			return 1
-		}
+		return 1
+	}
+	if asked == "help" || argv[0] == "help" {
+		fmt.Printf("\n%s\n", help)
 		return 0
 	}
 	if asked == "version" || argv[0] == "version" {
 		fmt.Printf("shcl %s\n", version)
+		return 0
+	}
+	if asked == "about" || argv[0] == "about" {
+		fmt.Printf("\n%s\n", about)
+		return 0
+	}
+	if asked == "donate" || argv[0] == "donate" {
+		fmt.Printf("\n%s\n", donate)
 		return 0
 	}
 	o, err := parseOpts(argv[1:])

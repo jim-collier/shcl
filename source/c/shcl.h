@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 // SHCL reference implementation for C: parser, accessor, writer/formatter.
 // Single-header, drop-in: copy this file into your tree and, in exactly ONE .c,
@@ -108,8 +108,11 @@ size_t shcl_error_count(const shcl_doc *d);
 // Schema validation (spec.md "Schema validation"): check d against a schema
 // document (itself plain SHCL). Zero diagnostics = the document conforms.
 // Diagnostic lines are document lines (0 = document scope); schema faults
-// (V09x, schema-file lines) suppress data validation entirely. The result owns
-// copies of all its strings - free with shcl_validation_free.
+// (V09x, schema-file lines) come first, and the surviving constraints still
+// check the document. Only the unknown-field sweep needs a fault-free schema:
+// a dropped constraint would turn the fields it declared into false unknowns,
+// so that check skips rather than misfire. The result owns copies of all its
+// strings - free with shcl_validation_free.
 typedef struct shcl_validation shcl_validation;
 shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema);
 size_t shcl_validation_count(const shcl_validation *v);
@@ -160,6 +163,12 @@ size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out
 // node, or the node was writer-built. Merged instances cite the first
 // binding's line, matching diagnostics.
 size_t shcl_line(shcl_doc *d, const char *path, size_t plen);
+// The plural shcl_line: 1-based source lines at a path, in file order, so a
+// repeated field - the case that most wants a citable line - yields every
+// binding's. Wildcard slots that did not resolve stay in the list as 0, and a
+// writer-built node is 0, so indices keep matching shcl_count. Writes an
+// arena-owned array to *out.
+size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out);
 // Child field names under a path, in file order, duplicates included - the
 // "what keys are in this section?" question shcl_paths (deduplicated,
 // path-shaped) cannot answer. An empty or whitespace-only path enumerates the
@@ -515,6 +524,10 @@ typedef struct {
 	   a run trailing a block's last child stays put instead of re-attaching
 	   dedented. Emitted after the subtree at this node's depth. */
 	VecLead after;
+	/* Whole-line comments written inside this node's block when no bound child
+	   could take them - a header whose children are all commented still owns
+	   those lines. Emitted after the subtree one level deeper than this node. */
+	VecLead inside;
 	/* Blank-line grouping is the other half of hand-authored layout: set when
 	   a blank line preceded this node's binding line (runs collapse to one). */
 	int blank_before;
@@ -562,6 +575,9 @@ static void fold_node_into(shcl_doc *d, size_t survivor, size_t loser) {
 	for (size_t k = 0; k < NODE(d, loser).after.len; k++)
 		VecLead_push(a, &NODE(d, survivor).after, NODE(d, loser).after.data[k]);
 	NODE(d, loser).after.len = 0;
+	for (size_t k = 0; k < NODE(d, loser).inside.len; k++)
+		VecLead_push(a, &NODE(d, survivor).inside, NODE(d, loser).inside.data[k]);
+	NODE(d, loser).inside.len = 0;
 }
 
 static Value v_empty(void) { Value v; memset(&v, 0, sizeof v); v.kind = V_EMPTY; return v; }
@@ -1509,11 +1525,13 @@ static void attach_trivia(Parser *P, size_t node, S trailing) {
 }
 
 /* Comments written deeper than the incoming line belong to the block they sit
-   in, not to the next binding: hang each on the deepest open level whose
-   indent prefixes the comment's, so a run trailing a block's last child stays
-   with that block instead of re-attaching dedented at the next node. Runs
+   in, not to the next binding: hang each on the deepest node whose bound
+   indent prefixes the comment's, among the levels the incoming line is
+   closing. Written at that node's own level the comment trails it (`after`);
+   written deeper it sits inside the node's block (`inside`) - so a header
+   whose children are all commented still owns them at their depth. Runs
    before the incoming line resolves (and at end of parse with the empty
-   indent, so indented tail comments keep their block). */
+   indent, so tail comments keep their block). */
 static void hang_deeper_pending(Parser *P, S new_indent) {
 	if (P->pending.len == 0) return;
 	Arena *a = &P->d->arena;
@@ -1521,13 +1539,18 @@ static void hang_deeper_pending(Parser *P, S new_indent) {
 	for (size_t k = 0; k < P->pending.len; k++) {
 		Pend p = P->pending.data[k];
 		if (p.indent.n > new_indent.n) {
-			size_t target = (size_t)-1;
+			/* A level shallower than the incoming line stays open and may
+			   still gain children, so a comment must not hang there - it
+			   would emit below the child; keep it pending instead. */
+			size_t target = (size_t)-1; int at_own_level = 0;
 			for (size_t ii = P->stack.len; ii-- > 0;) {
 				S ind = P->stack.data[ii].indent; size_t n = P->stack.data[ii].node;
-				if (n != ROOT && ind.n > 0 && ind.n > new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; break; }
+				if (n != ROOT && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; at_own_level = ind.n == p.indent.n; break; }
 			}
 			if (target != (size_t)-1) {
-				VecLead_push(a, &NODE(P->d, target).after, lead_make(p.text, p.blank_before));
+				Lead lead = lead_make(p.text, p.blank_before);
+				if (at_own_level) VecLead_push(a, &NODE(P->d, target).after, lead);
+				else VecLead_push(a, &NODE(P->d, target).inside, lead);
 				continue;
 			}
 		}
@@ -2107,6 +2130,27 @@ size_t shcl_line(shcl_doc *d, const char *path, size_t plen) {
 	return NODE(d, r.one).line; // writer-built nodes carry 0
 }
 
+size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out) {
+	// Wildcard slots that did not resolve stay in the list as 0 so indices
+	// keep matching shcl_count.
+	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
+	Resolved r;
+	if (!resolve(d, p, &r)) { *out = (size_t *)arena_alloc(a, sizeof(size_t)); return 0; }
+	if (r.kind == R_SLOTS) {
+		size_t m = r.slots.len;
+		size_t *arr = (size_t *)arena_alloc(a, (m ? m : 1) * sizeof(size_t));
+		for (size_t k = 0; k < m; k++)
+			arr[k] = r.slots.data[k].present ? NODE(d, r.slots.data[k].idx).line : 0;
+		*out = arr; return m;
+	}
+	VecSize nodes = {0};
+	if (r.kind == R_ONE) VecSize_push(a, &nodes, r.one);
+	else if (r.kind == R_MANY) for (size_t k = 0; k < r.many.len; k++) VecSize_push(a, &nodes, r.many.data[k]);
+	size_t *arr = (size_t *)arena_alloc(a, (nodes.len ? nodes.len : 1) * sizeof(size_t));
+	for (size_t k = 0; k < nodes.len; k++) arr[k] = NODE(d, nodes.data[k]).line; // writer-built nodes carry 0
+	*out = arr; return nodes.len;
+}
+
 size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {
 	// Names come back as stored (already arena-owned); only the array is new.
 	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
@@ -2453,6 +2497,7 @@ static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size
 	n.trailing = s_dup(a, src->trailing);
 	for (size_t i = 0; i < src->leading.len; i++) VecLead_push(a, &n.leading, lead_make(s_dup(a, src->leading.data[i].text), src->leading.data[i].blank_before));
 	for (size_t i = 0; i < src->after.len; i++) VecLead_push(a, &n.after, lead_make(s_dup(a, src->after.data[i].text), src->after.data[i].blank_before));
+	for (size_t i = 0; i < src->inside.len; i++) VecLead_push(a, &n.inside, lead_make(s_dup(a, src->inside.data[i].text), src->inside.data[i].blank_before));
 	size_t idx = d->nodes.len;
 	VecNode_push(a, &d->nodes, n);
 	// Snapshot the source children (const, stable) before recursing.
@@ -2480,6 +2525,8 @@ static void adopt_trivia(shcl_doc *d, size_t base, const shcl_doc *over, size_t 
 	}
 	for (size_t i = 0; i < src->after.len; i++)
 		VecLead_push(a, &NODE(d, base).after, lead_make(s_dup(a, src->after.data[i].text), src->after.data[i].blank_before));
+	for (size_t i = 0; i < src->inside.len; i++)
+		VecLead_push(a, &NODE(d, base).inside, lead_make(s_dup(a, src->inside.data[i].text), src->inside.data[i].blank_before));
 }
 
 // One grouping pass over each side, then a single children rebuild: the old
@@ -2839,6 +2886,13 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 	}
 	VecSize ch = NODE(d, idx).children;
 	emit_children(d, &ch, depth + 1, out);
+	/* Comments this block owns with no child to carry them, one deeper. */
+	for (size_t k = 0; k < NODE(d, idx).inside.len; k++) {
+		Lead *c = &NODE(d, idx).inside.data[k];
+		if (c->blank_before && out->len) sb_putc(a, out, '\n');
+		for (size_t z = 0; z < depth + 1; z++) sb_putc(a, out, '\t');
+		sb_putS(a, out, c->text); sb_putc(a, out, '\n');
+	}
 	/* Comments that hung on this block after its last child. */
 	for (size_t k = 0; k < NODE(d, idx).after.len; k++) {
 		Lead *c = &NODE(d, idx).after.data[k];
@@ -2950,8 +3004,10 @@ const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i
 // The schema is an ordinary parsed document: a flat list of `field: <path>`
 // instances whose children are the constraints (closed vocabulary - see
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
-// the typed coercions, so document strictness composes for free. Any schema
-// fault (V09x) suppresses data validation - one line-number space per result.
+// the typed coercions, so document strictness composes for free. Schema faults
+// (V09x) come first and the surviving constraints still check the document;
+// only the unknown-field sweep needs a fault-free schema. One line-number
+// space per result.
 // Everything (scratch and results) lives in the validation's own arena.
 
 struct shcl_validation { Arena arena; VecDiag diags; };
@@ -3189,9 +3245,11 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 	return 1;
 }
 
-// Interpret a parsed schema document into constraints and fragments. Nonzero
-// fault count (V09x, schema-file lines) means the caller reports those and
-// validates nothing.
+// Interpret a parsed schema document into constraints and fragments, plus any
+// schema faults (V09x, schema-file lines). Whatever parsed cleanly is kept
+// even when faults are present - a broken key drops that key, a broken field
+// drops that field - so a caller can still check the document against the
+// surviving constraints.
 static void v_build_schema(Arena *a, shcl_doc *schema, VSchemaDef *def, VecDiag *faults) {
 	VecSize top = NODE(schema, ROOT).children;
 	for (size_t fi = 0; fi < top.len; fi++) {
@@ -3689,7 +3747,8 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	VSchemaDef def; memset(&def, 0, sizeof def);
 	VecDiag faults = {0};
 	v_build_schema(a, schema, &def, &faults);
-	if (faults.len) { v->diags = faults; return v; }
+	int schema_ok = faults.len == 0;
+	v->diags = faults;
 	// One scratch arena per mount-recursion level, reset and reused across
 	// sibling calls: peak retention is one block per active document level,
 	// not every level of every walk. The parser caps depth at SHCL_MAX_DEPTH
@@ -3699,7 +3758,7 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	memset(lvls, 0, sizeof lvls);
 	for (size_t i = 0; i < def.cons.len; i++) v_check(a, lvls, d, &def.cons.data[i], &def, &v->diags);
 	for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_free(&lvls[i]);
-	v_unknown(a, d, &def, &v->diags);
+	if (schema_ok) v_unknown(a, d, &def, &v->diags);
 	return v;
 }
 size_t shcl_validation_count(const shcl_validation *v) { return v->diags.len; }
@@ -3997,6 +4056,8 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	Arena *a = &tmp;
 	VSchemaDef def; memset(&def, 0, sizeof def);
 	VecDiag faults = {0, 0, 0};
+	// Generation lays the whole schema out, so unlike validation it has no
+	// safe partial mode: any fault fails it.
 	v_build_schema(a, schema, &def, &faults);
 	shcl_str r;
 	if (faults.len) { if (ok) *ok = 0; S e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r; }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 //! SHCL reference implementation: parser, accessor, writer/formatter.
 //! Single file on purpose - the drop-in story is "copy this file into your tree".
@@ -385,6 +385,10 @@ struct NodeData {
 	// a run trailing a block's last child stays put instead of re-attaching
 	// dedented. Emitted after the subtree at this node's depth.
 	after: Vec<Lead>,
+	// Whole-line comments written inside this node's block when no bound child
+	// could take them - a header whose children are all commented still owns
+	// those lines. Emitted after the subtree one level deeper than this node.
+	inside: Vec<Lead>,
 	// Blank-line grouping is the other half of hand-authored layout: set when
 	// a blank line preceded this node's binding line (runs collapse to one).
 	blank_before: bool,
@@ -428,6 +432,8 @@ fn fold_node_into(arena: &mut [NodeData], survivor: usize, loser: usize) {
 	}
 	let mut after = std::mem::take(&mut arena[loser].after);
 	arena[survivor].after.append(&mut after);
+	let mut inside = std::mem::take(&mut arena[loser].inside);
+	arena[survivor].inside.append(&mut inside);
 }
 
 /// Maximum nesting depth (levels below the document root), enforced at load
@@ -856,6 +862,7 @@ impl Parser {
 				leading: Vec::new(),
 				trailing: String::new(),
 				after: Vec::new(),
+				inside: Vec::new(),
 				blank_before: false,
 				src: None,
 			}],
@@ -899,6 +906,7 @@ impl Parser {
 			leading: Vec::new(),
 			trailing: String::new(),
 			after: Vec::new(),
+			inside: Vec::new(),
 			blank_before: false,
 			src: None,
 		});
@@ -986,11 +994,13 @@ impl Parser {
 	}
 
 	/// Comments written deeper than the incoming line belong to the block they
-	/// sit in, not to the next binding: hang each on the deepest open level
-	/// whose indent prefixes the comment's, so a run trailing a block's last
-	/// child stays with that block instead of re-attaching dedented at the
-	/// next node. Runs before the incoming line resolves (and at end of parse
-	/// with the empty indent, so indented tail comments keep their block).
+	/// sit in, not to the next binding: hang each on the deepest node whose
+	/// bound indent prefixes the comment's, among the levels the incoming
+	/// line is closing. Written at that node's own level the comment trails
+	/// it (`after`); written deeper it sits inside the node's block
+	/// (`inside`) - so a header whose children are all commented still owns
+	/// them at their depth. Runs before the incoming line resolves (and at
+	/// end of parse with the empty indent, so tail comments keep their block).
 	fn hang_deeper_pending(&mut self, new_indent: &str) {
 		if self.pending.is_empty() {
 			return;
@@ -998,21 +1008,29 @@ impl Parser {
 		let taken = std::mem::take(&mut self.pending);
 		for p in taken {
 			if p.indent.len() > new_indent.len() {
+				// A level shallower than the incoming line stays open and may
+				// still gain children, so a comment must not hang there - it
+				// would emit below the child; keep it pending instead.
 				let target = self
 					.stack
 					.iter()
 					.rev()
 					.find(|(ind, node)| {
 						*node != ROOT
-							&& !ind.is_empty() && ind.len() > new_indent.len()
+							&& ind.len() >= new_indent.len()
 							&& p.indent.starts_with(ind.as_str())
 					})
-					.map(|&(_, n)| n);
-				if let Some(n) = target {
-					self.arena[n].after.push(Lead {
+					.map(|(ind, n)| (*n, ind.len() == p.indent.len()));
+				if let Some((n, at_own_level)) = target {
+					let lead = Lead {
 						text: p.text,
 						blank_before: p.blank_before,
-					});
+					};
+					if at_own_level {
+						self.arena[n].after.push(lead);
+					} else {
+						self.arena[n].inside.push(lead);
+					}
 					continue;
 				}
 			}
@@ -1731,6 +1749,16 @@ impl Document {
 			}
 		}
 		self.emit_children(&self.arena[idx].children, depth + 1, out);
+		// Comments this block owns with no child to carry them, one deeper.
+		let ipad: String = "\t".repeat(depth + 1);
+		for c in &self.arena[idx].inside {
+			if c.blank_before && !out.is_empty() {
+				out.push('\n');
+			}
+			out.push_str(&ipad);
+			out.push_str(&c.text);
+			out.push('\n');
+		}
 		// Comments that hung on this block after its last child.
 		for c in &self.arena[idx].after {
 			if c.blank_before && !out.is_empty() {
@@ -2050,6 +2078,25 @@ impl Document {
 		}
 	}
 
+	/// The plural line(): 1-based source lines at a path, in file order, so a
+	/// repeated field - the case that most wants a citable line - yields every
+	/// binding's. Wildcard slots that did not resolve stay in the list as 0,
+	/// and a writer-built node is 0, so indices keep matching count().
+	pub fn lines(&self, path: &str) -> Vec<usize> {
+		match self.resolve(path) {
+			Ok(Resolved::One(n)) => vec![self.arena[n].line],
+			Ok(Resolved::Many(v)) => v.iter().map(|&n| self.arena[n].line).collect(),
+			Ok(Resolved::Slots(s)) => s
+				.into_iter()
+				.map(|r| match r {
+					Ok(n) => self.arena[n].line,
+					Err(_) => 0,
+				})
+				.collect(),
+			_ => Vec::new(),
+		}
+	}
+
 	/// Child field names under a path, in file order, duplicates included -
 	/// the "what keys are in this section?" question paths() (deduplicated,
 	/// path-shaped) cannot answer. "" enumerates the top level. Names come
@@ -2186,6 +2233,7 @@ impl Document {
 			leading: Vec::new(),
 			trailing: String::new(),
 			after: Vec::new(),
+			inside: Vec::new(),
 			// Hand-written files separate top-level sections with a blank line;
 			// writer-built ones do the same (the emitter never blanks line 1).
 			blank_before: parent == ROOT,
@@ -2595,6 +2643,8 @@ impl Document {
 		}
 		let mut after = src.after.clone();
 		self.arena[base].after.append(&mut after);
+		let mut inside = src.inside.clone();
+		self.arena[base].inside.append(&mut inside);
 	}
 
 	fn overlay(&mut self, base_parent: usize, over: &Document, over_parent: usize) {
@@ -2700,6 +2750,7 @@ impl Document {
 			leading: src.leading.clone(),
 			trailing: src.trailing.clone(),
 			after: src.after.clone(),
+			inside: src.inside.clone(),
 			blank_before: src.blank_before,
 			src: src.src.clone(),
 		};
@@ -3381,7 +3432,7 @@ impl Document {
 	}
 
 	// Full tier, Result form: Ok(value) on Good; the sentinel otherwise. Empty
-	// still surfaces as Err(Empty) here; use read_* to also get the empty value.
+	// still comes back as Err(Empty) here; use read_* to also get the empty value.
 
 	pub fn get_int(&self, path: &str) -> Result<i64, Status> {
 		let r = self.read_int(path);
@@ -3493,8 +3544,10 @@ impl Document {
 // The schema is an ordinary parsed document: a flat list of `field: <path>`
 // instances whose children are the constraints (closed vocabulary - see
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
-// the typed coercions, so document strictness composes for free. Any schema
-// fault (V09x) suppresses data validation - one line-number space per result.
+// the typed coercions, so document strictness composes for free. Schema faults
+// (V09x) come first and the surviving constraints still check the document;
+// only the unknown-field sweep needs a fault-free schema. One line-number
+// space per result.
 
 const SCHEMA_TYPES: [&str; 11] = [
 	"int",
@@ -3565,10 +3618,12 @@ fn single_text(v: &Value) -> Option<String> {
 	}
 }
 
-/// Interpret a parsed schema document into constraints and fragments. Err =
-/// schema faults (V09x, schema-file lines); the caller reports those and
-/// validates nothing.
-fn build_schema(schema: &Document) -> Result<SchemaDef, Vec<Diagnostic>> {
+/// Interpret a parsed schema document into constraints and fragments, plus
+/// any schema faults (V09x, schema-file lines). Whatever parsed cleanly is
+/// kept even when faults are present - a broken key drops that key, a broken
+/// field drops that field - so a caller can still check the document against
+/// the surviving constraints.
+fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 	let mut faults: Vec<Diagnostic> = Vec::new();
 	let mut cons: Vec<Constraint> = Vec::new();
 	let mut frags: HashMap<String, Vec<Constraint>> = HashMap::new();
@@ -3633,13 +3688,9 @@ fn build_schema(schema: &Document) -> Result<SchemaDef, Vec<Diagnostic>> {
 			);
 		}
 	}
-	if faults.is_empty() {
-		Ok(SchemaDef { cons, frags })
-	} else {
-		// One constraint per line in practice, so line order = file order.
-		faults.sort_by_key(|d| d.line);
-		Err(faults)
-	}
+	// One constraint per line in practice, so line order = file order.
+	faults.sort_by_key(|d| d.line);
+	(SchemaDef { cons, frags }, faults)
 }
 
 /// One `field:` instance (top-level or inside a fragment) -> a Constraint.
@@ -3956,7 +4007,12 @@ fn gen_default_text(v: &str) -> String {
 /// `no_banner`; the flag is negative so leaving it alone writes the footer.
 /// Err = schema faults (V09x), same as `validate`/`check --schema`.
 pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagnostic>> {
-	let def = build_schema(schema)?;
+	// Generation lays the whole schema out, so unlike validation it has no
+	// safe partial mode: any fault fails it.
+	let (def, faults) = build_schema(schema);
+	if !faults.is_empty() {
+		return Err(faults);
+	}
 	let (cons, cuts) = expand_mounts(&def);
 	if cons.len() >= GEN_MAX_FIELDS {
 		return Err(vec![Diagnostic {
@@ -4204,17 +4260,20 @@ impl Document {
 	/// Validate this document against a schema document (itself plain SHCL -
 	/// spec.md "Schema validation"). Empty result = the document conforms.
 	/// Diagnostic lines are document lines (0 = document scope); schema faults
-	/// (V09x, schema-file lines) suppress data validation entirely.
+	/// (V09x, schema-file lines) come first, and the surviving constraints
+	/// still check the document. Only the unknown-field sweep needs a
+	/// fault-free schema: a dropped constraint would turn the fields it
+	/// declared into false unknowns, so that check skips rather than misfire.
 	pub fn validate(&self, schema: &Document) -> Vec<Diagnostic> {
-		let def = match build_schema(schema) {
-			Ok(d) => d,
-			Err(faults) => return faults,
-		};
-		let mut out: Vec<Diagnostic> = Vec::new();
+		let (def, faults) = build_schema(schema);
+		let schema_ok = faults.is_empty();
+		let mut out = faults;
 		for c in &def.cons {
 			self.v_check(c, &def, &mut out);
 		}
-		self.v_unknown(&def, &mut out);
+		if schema_ok {
+			self.v_unknown(&def, &mut out);
+		}
 		out
 	}
 

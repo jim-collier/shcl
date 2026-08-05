@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 // C++ typed veneer over the C core (shcl.h). This is NOT a second parser: it
 // wraps the same shcl_* functions and adds a compile-time-typed surface
@@ -95,7 +95,9 @@ public:
 	std::size_t error_count() const { return shcl_error_count(d_); }
 
 	// Schema validation (spec.md "Schema validation"): empty result = conforms.
-	// Schema faults (V09x, schema-file lines) suppress data validation.
+	// Schema faults (V09x, schema-file lines) come first; the surviving
+	// constraints still check the document, and only the unknown-field sweep
+	// needs a fault-free schema.
 	std::vector<Diagnostic> validate(const Document &schema) const {
 		std::vector<Diagnostic> v;
 		shcl_validation *r = shcl_validate(d_, schema.d_);
@@ -144,6 +146,17 @@ public:
 	// 1-based source line of the binding at a path; 0 when it does not resolve
 	// to exactly one node or the node was writer-built.
 	std::size_t line(std::string_view p) const { return shcl_line(d_, p.data(), p.size()); }
+
+	// The plural line(): 1-based source lines at a path, in file order, so a
+	// repeated field - the case that most wants a citable line - yields every
+	// binding's. Unresolved wildcard slots stay in the list as 0; a miss is
+	// the empty vector.
+	std::vector<std::size_t> lines(std::string_view p) const {
+		std::size_t *a; std::size_t n = shcl_lines(d_, p.data(), p.size(), &a);
+		std::vector<std::size_t> v; v.reserve(n);
+		for (std::size_t i = 0; i < n; i++) v.push_back(a[i]);
+		return v;
+	}
 
 	// Why a write at a path would fail - the reason behind a setter's bare
 	// failure. Probes only; never creates.

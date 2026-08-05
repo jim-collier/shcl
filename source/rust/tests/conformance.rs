@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 //! Conformance-corpus runner. Every shipped binding must pass this corpus;
 //! the Rust reference runs it natively here. Case layout and reads.tsv column
@@ -739,6 +739,15 @@ fn read_surface_line_quoted_children() {
 	assert_eq!(doc.line("code.done"), 6);
 	assert_eq!(doc.line("code"), 3);
 	assert_eq!(doc.line("missing"), 0);
+	// lines(): the plural - a repeated field cites every binding, wildcard
+	// slots keep their index (0 = unresolved), a miss is the empty list.
+	assert_eq!(doc.line("code.hook"), 0); // Multiple - the singular's gap
+	assert_eq!(doc.lines("code.hook"), vec![4, 5]);
+	assert_eq!(doc.lines("code.done"), vec![6]);
+	assert_eq!(doc.lines("a"), vec![1]);
+	assert_eq!(doc.lines("code[*].done"), vec![6]);
+	assert_eq!(doc.lines("code[*].nope"), vec![0]);
+	assert!(doc.lines("missing").is_empty());
 	assert_eq!(doc.children("code"), vec!["hook", "hook", "done"]);
 	assert_eq!(doc.children(""), vec!["a", "b", "code"]);
 	assert!(doc.children("missing").is_empty());

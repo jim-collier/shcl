@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 // Conformance-corpus runner for the C binding. Same corpus every shipped binding
 // must pass; column meanings live in project/conformance/README.md. Exit nonzero
@@ -539,6 +539,20 @@ int main(int argc, char **argv) {
 		if (shcl_line(ld, "code.done", 9) != 6) fail("line", "code.done not line 6");
 		if (shcl_line(ld, "code", 4) != 3) fail("line", "code not line 3");
 		if (shcl_line(ld, "missing", 7) != 0) fail("line", "missing path not 0");
+		// lines(): the plural - a repeated field cites every binding, wildcard
+		// slots keep their index (0 = unresolved), a miss is the empty list.
+		if (shcl_line(ld, "code.hook", 9) != 0) fail("line", "code.hook not 0"); // Multiple - the singular's gap
+		size_t *lv; size_t lnc = shcl_lines(ld, "code.hook", 9, &lv);
+		if (lnc != 2 || lv[0] != 4 || lv[1] != 5) fail("lines", "code.hook not [4, 5]");
+		lnc = shcl_lines(ld, "code.done", 9, &lv);
+		if (lnc != 1 || lv[0] != 6) fail("lines", "code.done not [6]");
+		lnc = shcl_lines(ld, "a", 1, &lv);
+		if (lnc != 1 || lv[0] != 1) fail("lines", "a not [1]");
+		lnc = shcl_lines(ld, "code[*].done", 12, &lv);
+		if (lnc != 1 || lv[0] != 6) fail("lines", "code[*].done not [6]");
+		lnc = shcl_lines(ld, "code[*].nope", 12, &lv);
+		if (lnc != 1 || lv[0] != 0) fail("lines", "code[*].nope not [0]");
+		if (shcl_lines(ld, "missing", 7, &lv) != 0) fail("lines", "missing path not empty");
 		shcl_str *cv; size_t cn = shcl_children(ld, "code", 4, &cv);
 		const char *cw[] = { "hook", "hook", "done" };
 		if (cn != 3) fail("children", "code count mismatch");

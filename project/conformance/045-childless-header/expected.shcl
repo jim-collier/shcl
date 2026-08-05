@@ -1,0 +1,15 @@
+rotate:
+	#speed: 5
+	#axis: x
+contrast:
+	mask: on
+	#extra: 2
+text:
+	scrim:
+		#alpha: 0.5
+	size: 10
+
+# a childless header at end of file keeps its comments too:
+deferred:
+	# first note
+	# second note

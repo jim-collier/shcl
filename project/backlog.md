@@ -102,6 +102,13 @@ None open.
 
 #### Done - Bugs
 
+- ✅ A block header whose children are all commented handed those comments back one indent level shallow through `fmt`.
+	- Reported from SilkTerm, whose template config is mostly commented-out defaults: `rotate:`, `contrast_mask:`, `text.scrim:`, `cursor.size:`, `selection:` all lost a level - the entire remaining diff against their template, 162 lines of leading tabs.
+	- Reproduced: `rotate:` followed by two depth-1 comments re-emitted them at column 0. With even one live child under the same header the comment kept its depth, so only childless headers lost fidelity, and the loss was always exactly one level.
+	- Cause: after-trivia hung on the deepest open level whose indent prefixes the comment's indent, and a childless header never opens its level - no binding line ever resolves under it - so the comments hung one level up and re-emitted at the header's depth.
+	- Fixed: a hung comment now splits by written depth. At the last binding's own level it trails that binding as before; deeper, it sits inside that binding's block at its own depth, so a childless header keeps its commented children indented.
+	- Verified: all four bindings, new case 045 pins it, and goldens 027/034 moved - a tail note and a deep tail note keep their written depth now.
+
 - ✅ The PowerShell wrapper's sourced `shcl` cannot be fed an op script on stdin. It is a function, so it forwards arguments but not pipeline input: `$ops | shcl set --write f.shcl` drops the ops and the CLI then blocks on console stdin until it is killed. The Bash wrapper pipes fine, so the two wrappers are not at parity, and `set` is the only subcommand that reads stdin.
 	- Workaround, now in the README, is to pipe to the binary instead, resolved as `Get-Command shcl -CommandType Application` - plain `Get-Command shcl` returns the sourced function, whose `.Source` is empty. Callers should not need to know that.
 	- Not crosscheck-visible: the wrappers are forwarders and deliberately sit outside `BINDING_CLIS`, so nothing in the pipeline exercises this.
@@ -132,6 +139,25 @@ None open.
 
 #### Done - Features and enhancements
 
+- ✅ `about` and `donate` on the CLI, and blank-line padding around the outputs a person asks for.
+	- Asked for: an `--about` in the shape of the other projects' one, and a `--donate` naming the sponsors page.
+	- Done: both take either spelling, `shcl about` or `shcl --about`, matching how `help` and `version` already work. `about` prints the version, copyright, project home, license with its SPDX link and a no-warranty line, then a short description of what SHCL is. `donate` points at the sponsors page and says a star, a good bug report or a mention count too.
+	- Both are stdout, so both are byte-for-byte contracts across the four CLIs, and both spellings are pinned in the differential check.
+	- `help`, `about` and `donate` now print a blank line above and below, so the block stands clear of the prompts either side. Bare `shcl` keeps printing the same help text unpadded, since it is a usage error rather than something asked for, and `version` stays a bare line for capture.
+	- Found en route: C's option-skip list was missing `--set-literal`, so `shcl get --set-literal -h FILE PATH` answered with the help text where the other three read the value. Predated this change; fixed with it.
+
+- ✅ A plural line accessor: a repeated field is where a consumer most wants to cite a line, and the one case `line()` returned nothing for.
+	- Reported from convert-base-v2, which skipped line-pinning its config errors over this. `line()` returns 0 unless the path resolves to exactly one node, so a repeated field - resolved as many - got 0, even though the parser's own repeat hint for that field carries a line.
+	- Done: `lines(path)` in all four bindings plus the veneer, mirroring `instances()`. File order, unresolved wildcard slots as 0 so indices keep matching `count()`, a miss is the empty list. The same fixture was extended in every runner.
+	- A line-bearing `children()` variant was skipped: `children()` gives the names and `lines(parent.name)` gives that name's lines, so the composition already answers the walk-a-section case without a second parallel-array surface.
+
+- ✅ A schema fault suppressed all data validation; it now validates with the surviving constraints instead.
+	- Reported from nano-git-db as "a schema fault silently disables all data validation, so a broken schema looks like a clean file". They added a schema self-check test as a workaround.
+	- Not literally silent - verified: every schema fault is an Error diagnostic, `validate()` returns them, and `check --schema` exits 6. The file only looks clean if the caller drops the schema-line diagnostics.
+	- The substantive gap was real though: one broken constraint turned off validation for the whole file, even though the schema builder already drops broken constraints one by one before deciding to bail.
+	- Done, as a three-way split. Faults report first, the surviving constraints still check the document, and only the unknown-field sweep needs a fault-free schema - a dropped constraint would turn its own fields into false unknowns. Generation still fails on any fault.
+	- Verified: all four bindings, case 046 pins it, and goldens 023/040 turned out to be unchanged (their survivors trigger nothing).
+
 - ✅ The README installed the CLI six different ways and never once showed it running.
 	- Every code example was library code. A reader who took the packages, the installers or the prebuilt binaries had nothing telling them what the command actually does, and the demo gif was the only place the CLI appeared at all.
 	- Done: a `Using the CLI` section between the file example and the per-language examples - typed reads with a fallback, `count`/`instances`/`[*]` over repeated fields, a broken line reported while the rest of the file still loads, schema validation naming the field you meant, and `init` writing a commented starter file. The transcripts are verbatim output.
@@ -149,7 +175,7 @@ None open.
 	- Done: `--set-literal PATH=TEXT` reads the text as value syntax instead - the way the parser reads the half of a line after the colon - so the same text writes a two-element array. Backed by `SetLiteral`/`SetLiteralDefault` in all four bindings, a matching `literal` op in the write-ops script, and corpus case 044.
 	- It parses the text rather than splicing it, so there is no way to inject syntax: the result is a value or a rejection, output stays canonical, and a written document is still a formatter fixpoint. Rejects only what could not be one line's value (a line break, or a quote that never closes - the same text the parser reports E017 for); an unquoted `#` ends the value as it would in a file.
 	- Both spellings share one ordered list, so the last option to touch a path wins.
-	- Investigated and deliberately not built: a "force this value to be a string" option. Quoting is a rule about canonical output, not a type marker - `fmt` normalises `ver: "8"` to `ver: 8`, and values are typed by the reader - so there is nothing to force.
+	- Investigated and deliberately not built: a "force this value to be a string" option. Quoting is a rule about canonical output, not a type marker - `fmt` normalizes `ver: "8"` to `ver: 8`, and values are typed by the reader - so there is nothing to force.
 	- No C++ veneer change: the veneer exposes reads only, so adding one setter there would have been the odd one out.
 
 - ✅ Persisting an edit from a shell needed a tab-separated op script on stdin, which is the root cause behind both shell wrappers' rough edges: tabs are invisible in source and survive neither retyping nor an editor that expands them, and the PowerShell wrapper could not carry stdin at all.

@@ -4,7 +4,7 @@ code:
 	# still about hooks
 other: 2
 	x: 1
-	# deep tail note
+		# deep tail note
 last: 3
 
 # one

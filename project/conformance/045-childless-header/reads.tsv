@@ -1,0 +1,5 @@
+query	type	expected	status	level
+-	load	ok	-
+contrast.mask	string	on	Good
+text.size	int	10	Good
+rotate	string	-	Empty

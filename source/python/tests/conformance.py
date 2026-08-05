@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-# Copyright © 2026 Jim Collier
+# Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 # Conformance-corpus runner for the Python binding. Same corpus every shipped
 # binding must pass; column meanings live in project/conformance/README.md. Plain
@@ -569,6 +569,22 @@ def main():
 		raise SystemExit("line() on merged instance got {}".format(ldoc.line("code")))
 	if ldoc.line("missing") != 0:
 		raise SystemExit("line() on missing path got {}".format(ldoc.line("missing")))
+	# lines(): the plural - a repeated field cites every binding, wildcard
+	# slots keep their index (0 = unresolved), a miss is the empty list.
+	if ldoc.line("code.hook") != 0:  # Multiple - the singular's gap
+		raise SystemExit("line() on repeated field got {}".format(ldoc.line("code.hook")))
+	if ldoc.lines("code.hook") != [4, 5]:
+		raise SystemExit("lines() got {}".format(ldoc.lines("code.hook")))
+	if ldoc.lines("code.done") != [6]:
+		raise SystemExit("lines() single got {}".format(ldoc.lines("code.done")))
+	if ldoc.lines("a") != [1]:
+		raise SystemExit("lines() top-level got {}".format(ldoc.lines("a")))
+	if ldoc.lines("code[*].done") != [6]:
+		raise SystemExit("lines() wildcard got {}".format(ldoc.lines("code[*].done")))
+	if ldoc.lines("code[*].nope") != [0]:
+		raise SystemExit("lines() unresolved slot got {}".format(ldoc.lines("code[*].nope")))
+	if ldoc.lines("missing"):
+		raise SystemExit("lines() on missing path not empty")
 	if ldoc.children("code") != ["hook", "hook", "done"]:
 		raise SystemExit("children() got {}".format(ldoc.children("code")))
 	if ldoc.children("") != ["a", "b", "code"]:

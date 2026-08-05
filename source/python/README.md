@@ -44,7 +44,7 @@ Bindings are versioned in lockstep, so `1.x` is the same behavior in every langu
 
 ## The CLI
 
-This package is the library only. The `shcl` command ships as a prebuilt binary and as `.deb`/`.rpm`/Windows packages - see <https://github.com/jim-collier/shcl>.
+This package is the library only. The `shcl` command comes as a prebuilt binary and as `.deb`/`.rpm`/Windows packages - see <https://github.com/jim-collier/shcl>.
 
 ## Docs
 

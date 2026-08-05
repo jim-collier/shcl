@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 
 // shcl CLI - the C binding's command surface. Flags, output, and exit codes
 // mirror the Rust reference exactly; the cicd cross-binding check compares them
@@ -35,7 +35,7 @@
 #endif
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
-#define VERSION "1.1.0"
+#define VERSION "1.2.0"
 
 static const char *HELP =
 	"shcl - Simple Hierarchical Config Language (reference CLI)\n"
@@ -55,6 +55,8 @@ static const char *HELP =
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
 	"  shcl help | version                    this help, or the version (also -h/--help, -V/--version)\n"
+	"  shcl about | donate                    what shcl is, or how to support it\n"
+	"                                         (also --about, --donate)\n"
 	"\n"
 	"set edits FILE, the base document ('-' = empty base). Values go in as\n"
 	"repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so\n"
@@ -116,6 +118,30 @@ static const char *HELP =
 	"\n"
 	"Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,\n"
 	"5 multiple instances, 6 check failed or strict load failure.\n";
+
+// About and donate are stdout, so they are byte-for-byte contracts across the
+// bindings the same way the help text and the init banner are. The version
+// concatenates from the VERSION macro so it cannot drift from `shcl version`.
+static const char *ABOUT =
+	"shcl v" VERSION "\n"
+	"Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞).\n"
+	"Project: https://github.com/jim-collier/shcl\n"
+	"Licensed under the MIT License. Full text at:\n"
+	"  https://spdx.org/licenses/MIT.html\n"
+	"No warranty.\n"
+	"\n"
+	"Simple Hierarchical Config Language. Forgiving to write, predictable to read.\n"
+	"Types live in your code, not in the file, so nothing is guessed at parse time.\n"
+	"One broken line is skipped with a note instead of taking down the whole file.\n";
+
+static const char *DONATE =
+	"shcl is free software under the MIT License, and stays that way.\n"
+	"\n"
+	"If it saves you time and you want to give something back:\n"
+	"  https://github.com/sponsors/jim-collier\n"
+	"\n"
+	"A star on the project, a clear bug report, or a mention to someone who needs it\n"
+	"are worth just as much.\n";
 
 typedef struct {
 	const char *kind;         // int|float|bool|datetime|string|raw
@@ -891,17 +917,19 @@ static int check_opts(const char *cmd, Opts *o) {
 	return 0;
 }
 
-// Did the command line ask for help or the version? Only tokens in option
-// position count: a value that happens to read `-h`, and anything after the
-// file, are data. Scanning the whole line for them let a read of a missing
-// path answer with the help text and exit 0.
+// Did the command line ask for one of the informational outputs? Only tokens
+// in option position count: a value that happens to read `-h`, and anything
+// after the file, are data. Scanning the whole line for them let a read of a
+// missing path answer with the help text and exit 0.
 static const char *asked_for(int argc, char **argv) {
 	for (int i = 1; i < argc; i++) {
 		const char *a = argv[i];
 		if (!strcmp(a, "-h") || !strcmp(a, "--help")) return "help";
 		if (!strcmp(a, "-V") || !strcmp(a, "--version")) return "version";
+		if (!strcmp(a, "--about")) return "about";
+		if (!strcmp(a, "--donate")) return "donate";
 		if (!strcmp(a, "--")) return NULL;
-		if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set")) { i++; continue; }
+		if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) { i++; continue; }
 		if (a[0] == '-' && a[1] != '\0') continue;
 		// The subcommand, then the file: past that everything is a path.
 		if (i > 1) return NULL;
@@ -920,8 +948,14 @@ int main(int argc, char **argv) {
 		}
 	}
 	const char *asked = asked_for(argc, argv);
-	if (argc <= 1 || (asked && !strcmp(asked, "help")) || !strcmp(argv[1], "help")) { fputs(HELP, stdout); return argc <= 1 ? 1 : 0; }
+	// Bare invocation is a usage error, so it prints the help unpadded. The
+	// blank lines below are for a person who asked, to separate the block from
+	// the surrounding prompts.
+	if (argc <= 1) { fputs(HELP, stdout); return 1; }
+	if ((asked && !strcmp(asked, "help")) || !strcmp(argv[1], "help")) { printf("\n%s\n", HELP); return 0; }
 	if ((asked && !strcmp(asked, "version")) || !strcmp(argv[1], "version")) { printf("shcl %s\n", VERSION); return 0; }
+	if ((asked && !strcmp(asked, "about")) || !strcmp(argv[1], "about")) { printf("\n%s\n", ABOUT); return 0; }
+	if ((asked && !strcmp(asked, "donate")) || !strcmp(argv[1], "donate")) { printf("\n%s\n", DONATE); return 0; }
 	const char *cmd = argv[1];
 	Opts o;
 	if (parse_opts(argc, argv, 2, &o)) { opts_free(&o); return 1; }
