@@ -190,7 +190,7 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 ## Shcl is used by multiple projects
 
-Shcl is in use today - in helped made bullet-proof - by these projects:
+Shcl is in use today - and made further bullet-proof - by these projects:
 
 | Project                                                                                    | OSS? | Release status | Used for
 | :--                                                                                        | :--: | :--            | :--
