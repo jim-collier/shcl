@@ -371,7 +371,7 @@ std::fs::write("server.shcl", doc.to_canonical())?;
 
 - Install the module: `go get github.com/jim-collier/shcl/source/go`
 
-- Dependency line: `require github.com/jim-collier/shcl/source/go v1.1.0`
+- Dependency line: `require github.com/jim-collier/shcl/source/go v1.2.0`
 
 - Notes: Go keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
 
@@ -608,7 +608,7 @@ A setter returns failure - `false`, or `0` in C - when a path cannot be written 
 
 ## Installation
 
-The latest release, `v1.1.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
+The latest release, `v1.2.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
 
 ### Language packages
 
@@ -657,18 +657,18 @@ Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wr
 ##### Debian
 
 ```sh
-sudo dpkg -i shcl-1.1.0-linux-x86_64.deb
+sudo dpkg -i shcl-1.2.0-linux-x86_64.deb
 ```
 
 ##### Fedora, RHEL, openSUSE
 
 ```sh
-sudo rpm -i shcl-1.1.0-linux-x86_64.rpm
+sudo rpm -i shcl-1.2.0-linux-x86_64.rpm
 ```
 
 ##### Windows
 
-Run `shcl-1.1.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
+Run `shcl-1.2.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
 
 #### Scripted installation direct from web - dev or stable
 
@@ -717,8 +717,8 @@ macOS and the BSDs have no prebuilt binaries yet. Use `cargo install shcl`, a dr
 
 	```sh
 	openssl dgst -sha256 -verify shcl-signing.pub \
-		-signature shcl-1.1.0-sha256sums.txt.sig shcl-1.1.0-sha256sums.txt
-	sha256sum -c --ignore-missing shcl-1.1.0-sha256sums.txt
+		-signature shcl-1.2.0-sha256sums.txt.sig shcl-1.2.0-sha256sums.txt
+	sha256sum -c --ignore-missing shcl-1.2.0-sha256sums.txt
 	```
 
 - **Drop-in source**. Copy one file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
