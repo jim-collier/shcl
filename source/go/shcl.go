@@ -2010,6 +2010,10 @@ func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic 
 
 // emitElement uses minimal quoting: bare unless a reserved character (or
 // lookalike hazard) forces it.
+// One addition: an author-quoted element keeps its quotes unless the text reads as
+// one of SHCL's own data formats - quoting those is just spelling (readers type the
+// value either way), but quoting a plain string is the escape and must survive
+// canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
 func emitElement(e *element) string {
 	t := e.text
 	needs := t == ""
@@ -2029,10 +2033,32 @@ func emitElement(e *element) string {
 			needs = true
 		}
 	}
+	if !needs && e.quoted && !isDataFormat(e) {
+		needs = true
+	}
 	if needs {
 		return quoteText(t)
 	}
 	return t
+}
+
+// isDataFormat reports whether the text reads as an int, float, bool, or
+// datetime at standard strictness - fixed there deliberately, so canonical
+// form cannot vary with the load strictness.
+func isDataFormat(e *element) bool {
+	if _, ok := parseIntText(e, Standard); ok {
+		return true
+	}
+	if _, ok := parseFloatText(e, Standard); ok {
+		return true
+	}
+	if _, ok := parseBoolText(e.text, Standard); ok {
+		return true
+	}
+	if _, ok := ParseDateTime(e.text); ok {
+		return true
+	}
+	return false
 }
 
 // bareQuoteCounts counts quote chars that are NOT already escaped in the raw

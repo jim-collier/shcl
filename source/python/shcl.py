@@ -2693,10 +2693,31 @@ _RESERVED = set(" \t,:#\"'[]")
 
 
 def _emit_element(e):
-	"""Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it."""
+	"""Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
+
+	One addition: an author-quoted element keeps its quotes unless the text reads as
+	one of SHCL's own data formats - quoting those is just spelling (readers type the
+	value either way), but quoting a plain string is the escape and must survive
+	canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
+	"""
 	t = e.text
 	needs = (not t) or any(c in _RESERVED for c in t) or (_fence_open(t) is not None)
+	if not needs and e.quoted and not _is_data_format(e):
+		needs = True
 	return _quote_text(t) if needs else t
+
+
+def _is_data_format(e):
+	"""True when the text reads as an int, float, bool, or datetime at standard
+	strictness - fixed there deliberately, so canonical form cannot vary with
+	the load strictness."""
+	if _parse_int_text(e, Strictness.Standard) is not None:
+		return True
+	if _parse_float_text(e, Strictness.Standard) is not None:
+		return True
+	if _parse_bool_text(e.text, Strictness.Standard) is not None:
+		return True
+	return parse_datetime(e.text) is not None
 
 
 def _bare_quote_counts(t):

@@ -203,6 +203,8 @@ Both open points are settled:
 
 Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting, redundancy collapsed, value text untouched (it cannot know types).
 
+**Author quoting on plain strings survives canonical output; quoted data-format values still normalize to bare.** Quoting had been pure spelling, normalized away entirely - which silently un-escaped values a downstream language treats as special (`"@null"`, a quoted function ref), the very case the `quoted` read flag was added for. We decided the rule splits by what the text reads as: int, float, bool, and datetime spellings normalize (`ver: "8"` -> `ver: 8` - readers type the value either way, so the quotes say nothing), while a quoted plain string keeps its quotes through `fmt` and `init`. The gate uses standard strictness, fixed, so canonical form cannot vary with load strictness, and the rule only ever adds quoting over the reserved-character minimum, so no bare emit can become unsafe.
+
 ### Testing
 
 The conformance corpus is the primary cross-language guarantee. Each case is an input, its canonical formatting, and the expected typed reads with status sentinels. Every parser runs it in CI.

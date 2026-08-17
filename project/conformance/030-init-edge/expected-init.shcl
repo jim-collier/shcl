@@ -1,5 +1,5 @@
 # string, one of: x\ny, z, required
-mode: x\ny
+mode: "x\ny"
 
 # Paths needing an instance name (not generated):
 #   a[#2]   int

@@ -1861,13 +1861,28 @@ pub fn suppress_declared_repeats(schema: &Document, diags: &mut Vec<Diagnostic>)
 }
 
 /// Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
+/// One addition: an author-quoted element keeps its quotes unless the text reads as
+/// one of SHCL's own data formats - quoting those is just spelling (readers type the
+/// value either way), but quoting a plain string is the escape and must survive
+/// canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
 fn emit_element(e: &Element) -> String {
 	let t = &e.text;
 	let needs = t.is_empty()
 		|| t.chars()
 			.any(|c| matches!(c, ' ' | '\t' | ',' | ':' | '#' | '"' | '\'' | '[' | ']'))
-		|| fence_open(t).is_some();
+		|| fence_open(t).is_some()
+		|| (e.quoted && !is_data_format(e));
 	if needs { quote_text(t) } else { t.clone() }
+}
+
+/// True when the text reads as an int, float, bool, or datetime at standard
+/// strictness - fixed there deliberately, so canonical form cannot vary with
+/// the load strictness.
+fn is_data_format(e: &Element) -> bool {
+	parse_int_text(e, Strictness::Standard).is_some()
+		|| parse_float_text(e, Strictness::Standard).is_some()
+		|| parse_bool_text(&e.text, Strictness::Standard).is_some()
+		|| parse_datetime(&e.text).is_some()
 }
 
 /// Quote chars that are NOT already escaped in the raw text; escaped ones must
