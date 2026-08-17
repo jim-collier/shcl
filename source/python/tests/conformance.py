@@ -416,6 +416,7 @@ def main():
 		else:
 			diags.extend(doc.validate(sdoc))
 			shcl.suppress_declared_repeats(sdoc, diags)
+			shcl.suppress_declared_reopens(sdoc, diags)
 		got = ""
 		errors = 0
 		for d in diags:

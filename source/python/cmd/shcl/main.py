@@ -831,6 +831,7 @@ def do_check(o):
 			else:
 				diags.extend(doc.validate(sdoc))
 				shcl.suppress_declared_repeats(sdoc, diags)
+				shcl.suppress_declared_reopens(sdoc, diags)
 	except shcl.LoadError as le:
 		diags = le.diagnostics
 		strict_failed = True

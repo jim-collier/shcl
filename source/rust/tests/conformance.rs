@@ -288,6 +288,7 @@ fn validation_matches_expected() {
 		} else {
 			diags.extend(doc.validate(&sdoc));
 			shcl::suppress_declared_repeats(&sdoc, &mut diags);
+			shcl::suppress_declared_reopens(&sdoc, &mut diags);
 		}
 		let mut got = String::new();
 		for d in &diags {

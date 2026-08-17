@@ -1,3 +1,4 @@
 line 9: Error: E015
 line 13: Hint: H002
-failed: 2 diagnostic(s), 1 error(s)
+line 14: Hint: H002
+failed: 3 diagnostic(s), 1 error(s)

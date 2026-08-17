@@ -391,7 +391,7 @@ int main(int argc, char **argv) {
 				int v99 = 0;
 				for (size_t i = 0; i < shcl_diag_count(sd); i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) v99 = 1;
 				shcl_validation *vv = v99 ? NULL : shcl_validate(vd, sd);
-				if (vv) shcl_suppress_declared_repeats(sd, vd);
+				if (vv) { shcl_suppress_declared_repeats(sd, vd); shcl_suppress_declared_reopens(sd, vd); }
 				size_t nd = shcl_diag_count(vd), nv = vv ? shcl_validation_count(vv) : 0, nerr = 0;
 				size_t total = nd + nv + (v99 ? 1 : 0);
 				char *vj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;

@@ -133,6 +133,11 @@ void shcl_validation_free(shcl_validation *v);
 // (the C spelling of filtering a caller-held list).
 void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc);
 
+// Sibling for H002: drop the merge hints a schema disavows via `reopen: true`
+// on a section's entry - a section meant to be written in parts. Same leaf-name
+// matching and in-place compaction as shcl_suppress_declared_repeats.
+void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc);
+
 // One-shot load-and-validate: parse at a strictness, validate against a
 // schema, and hand back a document whose shcl_diag_* accessors serve ONE
 // combined list (parse first, then validation - the order `check --schema`
@@ -1376,7 +1381,13 @@ DEFINE_VEC(VecPend, Pend)
 /* dmaps: per-node (name, display) -> first matching child - the `[value]`
    selector accelerator (display() is a different, non-injective predicate from
    cmaps' merge key). Same first-wins discipline, same mutation sites. */
-typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecMap dmaps; VecPend pending; int star_open; size_t star_node; S star_key; S star_disp; int saw_blank; } Parser;
+// reent_node/reent_line pair up node -> line of the re-open that H002-hinted
+// it (linear scan; re-opens are rare). A merge under a hinted container
+// combines the same two textual regions, so it hints too even when it lands on
+// the newest child at its own scope - that is how every merged level reports,
+// not just the outermost. The stored line splits old children (hint) from ones
+// the re-opened region itself created (silent).
+typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecMap dmaps; VecPend pending; int star_open; size_t star_node; S star_key; S star_disp; int saw_blank; VecSize reent_node; VecSize reent_line; } Parser;
 
 // The one place prose couples to a code, so the wording stays free everywhere else.
 static const char *diag_code(shcl_severity sev, S msg) {
@@ -1575,6 +1586,24 @@ static int resolve_parent(Parser *P, S indent, size_t *out) {
 	return 0;
 }
 
+/* The single H002 wording site: the merge hint and the schema suppressor
+   both come here, same discipline as h001_head. */
+static S h002_head(Arena *a, S name) {
+	SB s = {0};
+	sb_puts(a, &s, "merged with '"); sb_putS(a, &s, name); sb_puts(a, &s, "' at ");
+	return sb_S(&s);
+}
+static size_t reent_get(const Parser *P, size_t node) {
+	for (size_t i = 0; i < P->reent_node.len; i++)
+		if (P->reent_node.data[i] == node) return P->reent_line.data[i];
+	return 0;
+}
+static void reent_set(Parser *P, size_t node, size_t line) {
+	Arena *a = &P->d->arena;
+	for (size_t i = 0; i < P->reent_node.len; i++)
+		if (P->reent_node.data[i] == node) { P->reent_line.data[i] = line; return; }
+	VecSize_push(a, &P->reent_node, node); VecSize_push(a, &P->reent_line, line);
+}
 static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Value value, size_t line, size_t *out) {
 	Arena *a = &P->d->arena;
 	/* Field child under a stacked list: diagnose the mix once, keep the field. */
@@ -1634,21 +1663,29 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 		case SEL_WILDCARD:
 			p_err(P, line, s_lit("wildcard selector is query-only")); return 0;
 		case SEL_NONE: {
+			size_t seg_parent = cur;
 			size_t before = P->d->nodes.len;
 			cur = select_or_create(P, cur, seg->name, is_last ? value : v_empty(), line);
 			/* Two separately-written bindings just combined: legal (the
 			   merge rule), but only the parser can see it happened, so
 			   say so. Adjacent re-mentions (still the newest binding at
 			   this scope) and selector/path-intermediate merges stay
-			   silent - those are the deliberate redundant-path idiom. */
+			   silent - those are the deliberate redundant-path idiom.
+			   Under a hinted container the newest-child pass does not
+			   apply to children the earlier region wrote: those merges
+			   combine the same two regions, so every level reports. */
 			if (is_last && cur < before && NODE(P->d, cur).line != line) {
-				VecSize sib = NODE(P->d, NODE(P->d, cur).parent).children;
-				if (sib.len == 0 || sib.data[sib.len - 1] != cur) {
+				VecSize sib = NODE(P->d, seg_parent).children;
+				int non_last = (sib.len == 0 || sib.data[sib.len - 1] != cur);
+				size_t rl = reent_get(P, seg_parent);
+				int cross_region = (rl != 0 && NODE(P->d, cur).line < rl);
+				if (non_last || cross_region) {
 					SB m = {0};
-					sb_puts(a, &m, "merged with '"); sb_putS(a, &m, seg->name);
-					sb_puts(a, &m, "' at line "); sb_put_u64(a, &m, NODE(P->d, cur).line);
+					sb_putS(a, &m, h002_head(a, seg->name));
+					sb_puts(a, &m, "line "); sb_put_u64(a, &m, NODE(P->d, cur).line);
 					sb_puts(a, &m, " (same name and value combine)");
 					push_diag(P->d, line, SHCL_SEV_HINT, sb_S(&m));
+					reent_set(P, cur, line);
 				}
 			}
 			break;
@@ -1805,6 +1842,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	VecNode_push(a, &d->nodes, root);
 	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps); memset(&P.dmaps, 0, sizeof P.dmaps); memset(&P.pending, 0, sizeof P.pending);
 	P.star_open = 0; P.star_node = 0; P.star_key = s_empty(); P.star_disp = s_empty(); P.saw_blank = 0;
+	memset(&P.reent_node, 0, sizeof P.reent_node); memset(&P.reent_line, 0, sizeof P.reent_line);
 	StackEnt e0; e0.indent = s_empty(); e0.node = ROOT; VecStack_push(a, &P.stack, e0);
 	CMap m0; memset(&m0, 0, sizeof m0); VecMap_push(a, &P.cmaps, m0);
 	CMap d0; memset(&d0, 0, sizeof d0); VecMap_push(a, &P.dmaps, d0);
@@ -3132,6 +3170,7 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 	c.path = path; c.segs = ps.segs;
 	// Deferred so `min: 1` may precede `type: int` in the file.
 	int required = -1;
+	int reopen_seen = 0;
 	size_t allowed_at = (size_t)-1, min_at = (size_t)-1, max_at = (size_t)-1;
 	VecSize kids = NODE(schema, f).children;
 	for (size_t ki = 0; ki < kids.len; ki++) {
@@ -3159,6 +3198,14 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 			int ok = v_single_text(a, &kid->value, &t) && parse_bool_text(a, t, SHCL_STANDARD, &b);
 			if (ok && required < 0) required = b;
 			else v_diag(a, faults, kid->line, v_msg_key(a, "required"));
+		} else if (s_eq(kid->name, s_lit("reopen"))) {
+			/* Consumed by the H002 suppressor (which reads the schema document
+			   directly); validation itself ignores it, but a bad value still
+			   faults so a typo cannot silently disavow nothing. */
+			S t; int b = 0;
+			int ok = v_single_text(a, &kid->value, &t) && parse_bool_text(a, t, SHCL_STANDARD, &b);
+			if (ok && !reopen_seen) reopen_seen = 1;
+			else v_diag(a, faults, kid->line, v_msg_key(a, "reopen"));
 		} else if (s_eq(kid->name, s_lit("allowed"))) {
 			if (kid->value.kind == V_CELL && allowed_at == (size_t)-1) allowed_at = kids.data[ki];
 			else v_diag(a, faults, kid->line, v_msg_key(a, "allowed"));
@@ -3853,6 +3900,51 @@ void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 	arena_free(&tmp);
 }
 
+void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc) {
+	/* Same arena discipline as the H001 suppressor above. */
+	Arena tmp; tmp.head = NULL;
+	VecS names = {0};
+	size_t nfrag = shcl_count(schema, "fragment", 8);
+	for (size_t g = 0; g <= nfrag; g++) {
+		char base[48];
+		int bn = g == 0 ? snprintf(base, sizeof base, "field")
+		                : snprintf(base, sizeof base, "fragment[#%zu].field", g - 1);
+		shcl_str *paths;
+		S bp; bp.p = base; bp.n = (size_t)bn;
+		size_t np = instances_in(schema, &tmp, bp, &paths);
+		for (size_t i = 0; i < np; i++) {
+			char q[80];
+			int qn = snprintf(q, sizeof q, "%s[#%zu].reopen", base, i);
+			shcl_read_bool re = shcl_read_bool_(schema, q, (size_t)qn);
+			if (re.status != SHCL_GOOD || !re.value) continue;
+			S p; p.p = paths[i].p; p.n = paths[i].n;
+			PathScan ps = scan_lookup(&tmp, p);
+			if (!ps.ok || ps.segs.len == 0) continue;
+			Segment *last = &ps.segs.data[ps.segs.len - 1];
+			if (last->star) continue; /* name wildcard: no single leaf name to disavow */
+			if (last->name.n) VecS_push(&tmp, &names, last->name);
+		}
+	}
+	if (!names.len) { arena_free(&tmp); return; }
+	VecS heads = {0};
+	for (size_t k = 0; k < names.len; k++) VecS_push(&tmp, &heads, h002_head(&tmp, names.data[k]));
+	size_t w = 0;
+	for (size_t i = 0; i < doc->diags.len; i++) {
+		Diag dg = doc->diags.data[i];
+		int drop = 0;
+		if (strcmp(dg.code, "H002") == 0) {
+			S m = dg.message;
+			for (size_t k = 0; k < heads.len; k++) {
+				S h = heads.data[k];
+				if (m.n >= h.n && memcmp(m.p, h.p, h.n) == 0) { drop = 1; break; }
+			}
+		}
+		if (!drop) doc->diags.data[w++] = dg;
+	}
+	doc->diags.len = w;
+	arena_free(&tmp);
+}
+
 size_t shcl_error_count(const shcl_doc *d) {
 	size_t n = 0;
 	for (size_t i = 0; i < d->diags.len; i++) if (d->diags.data[i].sev == SHCL_SEV_ERROR) n++;
@@ -3883,6 +3975,7 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 			VecDiag_push(&d->arena, &d->diags, dg);
 		}
 		shcl_suppress_declared_repeats(sd, d);
+		shcl_suppress_declared_reopens(sd, d);
 		shcl_validation_free(v);
 		shcl_free(sd);
 	}

@@ -1122,6 +1122,7 @@ func doCheck(o *opts) int {
 			} else {
 				diags = append(diags, doc.Validate(sdoc)...)
 				diags = shcl.SuppressDeclaredRepeats(sdoc, diags)
+				diags = shcl.SuppressDeclaredReopens(sdoc, diags)
 			}
 		}
 	}

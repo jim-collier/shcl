@@ -52,10 +52,6 @@ None open.
 
 ### Features and enhancements
 
-- 🔘 Schema-declarable disavowal for H002, the way `repeat:` disavows H001.
-	- From nano-git-db: no way to declare "this section is meant to be re-opened", so every legitimate re-open hints forever. Same shape as the H001 suppression (drop at `check --schema` assembly via the shared helper).
-	- Needs a vocabulary decision first: a new schema key vs overloading `repeat` on section paths.
-	- Also from them: only the outermost merge is reported, so consumer-side filtering can't be made safe. Decide whether nested merges should each report, before or instead of the disavowal.
 - 🔘 By-value selectors: distinguish scalar `"a, b"` from list `a, b`.
 	- From convert-base-v2, still open at v1.2.0 - the earlier round closed it as a spec paragraph only. Both spellings meet the same selector because matching is against the display form, and the read comes back Multiple.
 	- Needs a matching-rule decision; behavior change, corpus impact.
@@ -159,6 +155,12 @@ None open.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 
 #### Done - Features and enhancements
+
+- ✅ H002 reports every merged level, and `reopen:` in a schema disavows it.
+	- From nano-git-db: no way to declare "this section is meant to be re-opened", so every legitimate re-open hinted forever - and only the outermost merge reported, so filtering by hand waved nested merges through.
+	- Done, all four bindings: the parser carries the re-open line down, so merges under a hinted container hint too, each naming its own earlier line; content the re-opened region itself wrote stays silent, and adjacent re-mentions stay silent as before.
+	- New schema key `reopen: true` (a dedicated key, not a `repeat` overload) disavows the hint by leaf name, dropped at `check --schema` and the one-shot exactly like the H001 suppression; a bad value is a V092 fault.
+	- Golden 001 gained the previously-invisible nested hint; new case 048 pins three-level reporting plus the disavowal. Spec vocabulary table and `design.md` updated.
 
 - ✅ The unknown-field sweep survives schema faults.
 	- From nano-git-db, round two of the same trap: v1.2.0 let surviving constraints check through faults, but the sweep still skipped on any fault, so their schema self-check probe was still required.

@@ -6,7 +6,7 @@
 
 use shcl::{
 	Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime,
-	suppress_declared_repeats,
+	suppress_declared_reopens, suppress_declared_repeats,
 };
 use std::process::ExitCode;
 
@@ -949,6 +949,7 @@ fn do_check(o: &Opts) -> u8 {
 				} else {
 					diags.extend(doc.validate(&sdoc));
 					suppress_declared_repeats(&sdoc, &mut diags);
+					suppress_declared_reopens(&sdoc, &mut diags);
 				}
 			}
 			(diags, false)

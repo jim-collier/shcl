@@ -846,6 +846,12 @@ struct Parser {
 	// element is O(list^2) time); (node, key, display) at deferral start,
 	// flushed before any map lookup and at end of parse.
 	star_open: Option<(usize, String, String)>,
+	// Node -> line of the re-open that H002-hinted it. A merge under a hinted
+	// container combines the same two textual regions, so it hints too even
+	// when it lands on the newest child at its own scope - that is how every
+	// merged level reports, not just the outermost. The stored line splits old
+	// children (hint) from ones the re-opened region itself created (silent).
+	reentered: HashMap<usize, usize>,
 }
 
 impl Parser {
@@ -873,6 +879,7 @@ impl Parser {
 			pending: Vec::new(),
 			saw_blank: false,
 			star_open: None,
+			reentered: HashMap::new(),
 		}
 	}
 
@@ -1148,6 +1155,7 @@ impl Parser {
 					cur = self.select_or_create(cur, &seg.name, Value::Empty, line);
 				}
 				(None, true) => {
+					let parent = cur;
 					let before = self.arena.len();
 					cur = self.select_or_create(cur, &seg.name, value.clone(), line);
 					// Two separately-written bindings just combined: legal (the
@@ -1155,21 +1163,30 @@ impl Parser {
 					// say so. Adjacent re-mentions (still the newest binding at
 					// this scope) and selector/path-intermediate merges stay
 					// silent - those are the deliberate redundant-path idiom.
-					if cur < before
-						&& self.arena[cur].line != line
-						&& self.arena[self.arena[cur].parent].children.last() != Some(&cur)
-					{
-						let at = self.arena[cur].line;
-						let name = seg.name.clone();
-						self.diags.push(Diagnostic {
-							line,
-							severity: Severity::Hint,
-							message: format!(
-								"merged with '{}' at line {} (same name and value combine)",
-								name, at
-							),
-							code: "H002",
-						});
+					// Under a hinted container the newest-child pass does not
+					// apply to children the earlier region wrote: those merges
+					// combine the same two regions, so every level reports.
+					if cur < before && self.arena[cur].line != line {
+						let non_last = self.arena[parent].children.last() != Some(&cur);
+						let cross_region = self
+							.reentered
+							.get(&parent)
+							.is_some_and(|&rl| self.arena[cur].line < rl);
+						if non_last || cross_region {
+							let at = self.arena[cur].line;
+							let name = seg.name.clone();
+							self.diags.push(Diagnostic {
+								line,
+								severity: Severity::Hint,
+								message: format!(
+									"{}line {} (same name and value combine)",
+									h002_head(&name),
+									at
+								),
+								code: "H002",
+							});
+							self.reentered.insert(cur, line);
+						}
 					}
 				}
 			}
@@ -1623,6 +1640,7 @@ impl Document {
 			let vdiags = doc.validate(&schema);
 			doc.diags.extend(vdiags);
 			suppress_declared_repeats(&schema, &mut doc.diags);
+			suppress_declared_reopens(&schema, &mut doc.diags);
 		}
 		doc
 	}
@@ -1858,6 +1876,52 @@ pub fn suppress_declared_repeats(schema: &Document, diags: &mut Vec<Diagnostic>)
 	}
 	let heads: Vec<String> = names.iter().map(|n| h001_head(n)).collect();
 	diags.retain(|d| d.code != "H001" || !heads.iter().any(|h| d.message.starts_with(h.as_str())));
+}
+
+/// The single H002 wording site: the merge hint and the schema suppressor
+/// both come here, same discipline as h001_head.
+fn h002_head(name: &str) -> String {
+	format!("merged with '{}' at ", name)
+}
+
+/// Drop the H002 hints a schema disavows: a section whose entry declares
+/// `reopen: true` is MEANT to be written in parts, so the merge hint is
+/// structurally a false positive there. Matching is by leaf name, same as the
+/// H001 suppressor, and it errs toward quiet, for a hint. Used by
+/// `check --schema` and load_and_validate; call it wherever doc diagnostics
+/// and a schema meet.
+pub fn suppress_declared_reopens(schema: &Document, diags: &mut Vec<Diagnostic>) {
+	let mut groups: Vec<(String, Vec<String>)> =
+		vec![("field".to_string(), schema.instances("field"))];
+	for k in 0..schema.count("fragment") {
+		let base = format!("fragment[#{}].field", k);
+		let paths = schema.instances(&base);
+		groups.push((base, paths));
+	}
+	let mut names: Vec<String> = Vec::new();
+	for (base, paths) in &groups {
+		for (i, p) in paths.iter().enumerate() {
+			let re = schema.read_bool(&format!("{}[#{}].reopen", base, i));
+			if re.status != Status::Good || !re.value {
+				continue;
+			}
+			let Ok(scan) = scan_lookup(p) else {
+				continue;
+			};
+			let Some(seg) = scan.segments.last() else {
+				continue;
+			};
+			if seg.star {
+				continue; // name wildcard: no single leaf name to disavow
+			}
+			names.push(seg.name.clone());
+		}
+	}
+	if names.is_empty() {
+		return;
+	}
+	let heads: Vec<String> = names.iter().map(|n| h002_head(n)).collect();
+	diags.retain(|d| d.code != "H002" || !heads.iter().any(|h| d.message.starts_with(h.as_str())));
 }
 
 /// Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
@@ -3762,6 +3826,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 	};
 	// Deferred so `min: 1` may precede `type: int` in the file.
 	let mut required: Option<bool> = None;
+	let mut reopen_seen = false;
 	let mut allowed_at: Option<usize> = None;
 	let mut min_at: Option<usize> = None;
 	let mut max_at: Option<usize> = None;
@@ -3793,6 +3858,21 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 						faults,
 						kid.line,
 						"bad schema constraint 'required'".to_string(),
+					),
+				}
+			}
+			// Consumed by the H002 suppressor (which reads the schema document
+			// directly); validation itself ignores it, but a bad value still
+			// faults so a typo cannot silently disavow nothing.
+			"reopen" => {
+				let v =
+					single_text(&kid.value).and_then(|t| parse_bool_text(&t, Strictness::Standard));
+				match v {
+					Some(_) if !reopen_seen => reopen_seen = true,
+					_ => vdiag(
+						faults,
+						kid.line,
+						"bad schema constraint 'reopen'".to_string(),
 					),
 				}
 			}
