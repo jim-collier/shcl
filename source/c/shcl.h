@@ -152,7 +152,8 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The
-// returned bytes live in the document's arena; valid until shcl_free.
+// returned bytes live in the document's arena; valid until shcl_free. The
+// bytes may contain NUL - never hand them to a strlen-based API.
 shcl_str shcl_to_canonical(shcl_doc *d);
 
 size_t shcl_count(shcl_doc *d, const char *path, size_t plen);

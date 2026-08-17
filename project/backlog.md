@@ -48,9 +48,31 @@ None open.
 
 ### Bugs
 
-None open.
+- 🔘 `generate` drops the schema author's quoting on `default:` values.
+	- From nano-git-db: a quoted `"fFoo()"` default comes out bare in the starter file, so their function-ref convention reads it back as a call - "the one place quoting isn't an escape". Confirmed: `emit_value_inline`/`emit_element` re-derive quoting from content alone (minimal quoting), so the schema's spelling is lost.
+	- Narrow fix: emit a default that was quoted in the schema in its quoted spelling. `init` output is already not a fmt fixpoint by design, so preserved quotes cost nothing there.
+	- The wider half is a direction question, not part of this item: one `fmt` pass strips the same quotes from a document (`b: "@null"` -> `b: @null`, verified live), which un-escapes the sentinel the `quoted` read flag was added to protect. That collides with the "quoting is spelling" decision in `design.md` - needs a call before anything in `fmt` moves.
 
 ### Features and enhancements
+
+- 🔘 Let the unknown-field sweep survive schema faults.
+	- From nano-git-db: v1.2.0 narrowed the trap (surviving constraints still check) but the sweep still skips unless the schema is fault-free, so their schema self-check probe is still required.
+	- Candidate mechanism: legality is by name chain, and most fault classes still spell their chain - let faulted entries keep legalizing their names, and the false-unknown hazard the skip guards against goes away. Verify which fault classes lose the path spelling entirely (those still poison the sweep).
+- 🔘 Schema-declarable disavowal for H002, the way `repeat:` disavows H001.
+	- From nano-git-db: no way to declare "this section is meant to be re-opened", so every legitimate re-open hints forever. Same shape as the H001 suppression (drop at `check --schema` assembly via the shared helper).
+	- Needs a vocabulary decision first: a new schema key vs overloading `repeat` on section paths.
+	- Also from them: only the outermost merge is reported, so consumer-side filtering can't be made safe. Decide whether nested merges should each report, before or instead of the disavowal.
+- 🔘 By-value selectors: distinguish scalar `"a, b"` from list `a, b`.
+	- From convert-base-v2, still open at v1.2.0 - the earlier round closed it as a spec paragraph only. Both spellings meet the same selector because matching is against the display form, and the read comes back Multiple.
+	- Needs a matching-rule decision; behavior change, corpus impact.
+- 🔘 As-authored field-name spelling accessor.
+	- From convert-base-v2, mild now that `line` is on the read: names store folded, so a message can only echo `symbols` when the file said `SYMBOLS`. A raw-name accessor parallel to the value raw text closes it.
+- 🔘 File lifecycle tier: load/save with status, atomic, optional.
+	- From nemo-anywhere: every consumer that persists a config re-implements the same load/save dance and repeats the same mistakes.
+	- `LoadFile`/`SaveFile` returning a status that separates not-found / unreadable / parsed-with-errors / clean; save through the temp-file-and-rename the CLI already uses for `--write`. Companion/optional so the core stays freestanding (matters most for C).
+- 🔘 Make hand-edited configs structurally safe across a round trip.
+	- From nemo-anywhere, their strongest ask: a malformed line is diagnosed and dropped at parse, so a stray typo plus one settings change equals a silently vanished hand-written line once the consumer writes back.
+	- Two candidate shapes, either or both: retain the raw text as inert trivia and re-emit it, or have canonicalize refuse a doc with errors unless the caller opts in. Design question - decide the shape before touching any binding.
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
@@ -138,6 +160,9 @@ None open.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 
 #### Done - Features and enhancements
+
+- ✅ NUL-transparency documented at the point of use, not just at the type.
+	- From nemo-anywhere: the `shcl_str` typedef says the bytes may hold NUL; `shcl_to_canonical` did not, and the canonical getter is where the strlen mistake actually gets made. One doc line on the getter.
 
 - ✅ `about` and `donate` on the CLI, and blank-line padding around the outputs a person asks for.
 	- Asked for: an `--about` in the shape of the other projects' one, and a `--donate` naming the sponsors page.
