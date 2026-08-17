@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -453,69 +452,6 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 	return doc, 0
 }
 
-// writeAtomic writes via a temp file in the same dir, then renames over the
-// target, so an interrupted write can never truncate the config it rewrites.
-// The data is synced before the rename so a crash cannot publish an empty file.
-//
-// A rename publishes a new inode, so the target is resolved through symlinks
-// first (otherwise a linked-in config gets replaced by a regular file and the
-// real one is left stale) and the original's mode is copied onto the temp file
-// (otherwise a 600 config comes back at whatever the umask allows). Other hard
-// links to the old inode cannot survive a rename and keep the old content.
-func writeAtomic(file, data string) error {
-	// EvalSymlinks fails when the target does not exist yet; that is a plain
-	// create, so the path as given is already the right one.
-	target := file
-	if resolved, rerr := filepath.EvalSymlinks(file); rerr == nil {
-		target = resolved
-	}
-	dir := filepath.Dir(target)
-	base := filepath.Base(target)
-	// Exclusive create: the name is predictable, so anything already sitting
-	// there - including a symlink someone else planted - must make this fail
-	// rather than be written through. Retry past a stale collision, then give
-	// up; refusing to write beats writing somewhere unintended.
-	var f *os.File
-	var tmp string
-	var last error
-	for attempt := 0; attempt < 8; attempt++ {
-		tmp = filepath.Join(dir, "."+base+".tmp"+strconv.Itoa(os.Getpid())+"."+strconv.Itoa(attempt))
-		// Born private, so the copy is never briefly readable to anyone the
-		// original was not. The real mode goes on below, before any data.
-		h, oerr := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if oerr == nil {
-			f = h
-			break
-		}
-		last = oerr
-	}
-	if f == nil {
-		return fmt.Errorf("%s: cannot create temporary file: %s", file, last)
-	}
-	// On the handle, so umask cannot narrow it the way it narrows a create
-	// mode. Best effort: a filesystem that cannot carry the mode is not a
-	// reason to fail a write that otherwise succeeded.
-	if st, serr := os.Stat(target); serr == nil {
-		_ = f.Chmod(st.Mode().Perm())
-	}
-	var err error
-	if _, werr := f.WriteString(data); werr != nil {
-		err = werr
-	} else {
-		err = f.Sync()
-	}
-	f.Close()
-	if err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("%s: %s", file, err)
-	}
-	if rerr := os.Rename(tmp, target); rerr != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("%s: %s", file, rerr)
-	}
-	return nil
-}
-
 // doGet: one value read, formatted for the shell: scalars print as one line,
 // arrays one element per line.
 func doGet(o *opts) int {
@@ -685,7 +621,7 @@ func doFmt(o *opts) int {
 	}
 	canonical := doc.ToCanonical()
 	if o.write {
-		if werr := writeAtomic(file, canonical); werr != nil {
+		if werr := shcl.WriteFileAtomic(file, canonical); werr != nil {
 			fmt.Fprintln(os.Stderr, werr)
 			return 1
 		}
@@ -1071,7 +1007,7 @@ func doSet(o *opts) int {
 	}
 	canonical := doc.ToCanonical()
 	if o.write {
-		if werr := writeAtomic(file, canonical); werr != nil {
+		if werr := shcl.WriteFileAtomic(file, canonical); werr != nil {
 			fmt.Fprintln(os.Stderr, werr)
 			return 1
 		}

@@ -148,6 +148,26 @@ void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc);
 // (a declared repeat upper bound above 1) are dropped. Free with shcl_free.
 shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schema, size_t slen, shcl_strictness s);
 
+// File tier (optional companion; compile out with -DSHCL_NO_FILE_IO to keep
+// the core free of file I/O). Load never fails: the document always comes
+// back usable (empty when the file could not be read), and the status
+// out-param (may be NULL) separates the four cases a consumer's own load path
+// otherwise confuses. Save writes the canonical text through a temp file in
+// the same directory plus a rename - the same mechanics the CLI's --write
+// uses - so an interrupted save can never truncate the config it rewrites.
+#ifndef SHCL_NO_FILE_IO
+typedef enum {
+	SHCL_FILE_CLEAN,      /* read and parsed, no error diagnostics (hints allowed) */
+	SHCL_FILE_HAD_ERRORS, /* read and parsed, but error diagnostics are present */
+	SHCL_FILE_NOT_FOUND,  /* no file at the path */
+	SHCL_FILE_UNREADABLE  /* exists but could not be read (permissions, a directory) */
+} shcl_file_status;
+shcl_doc *shcl_load_file(const char *path, shcl_file_status *status);
+shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status);
+int shcl_save_file(shcl_doc *d, const char *path);
+int shcl_write_file_atomic(const char *path, const char *data, size_t n);
+#endif
+
 // Schema-driven generation (`shcl init --schema`): a commented, typed starter
 // config from a schema document. Required paths are live (their `default`, or an
 // empty value); optional paths are commented out; wildcard paths are listed in a
@@ -4001,6 +4021,143 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 	}
 	return d;
 }
+
+// --- File tier (optional; compile out with -DSHCL_NO_FILE_IO) ----------------
+
+#ifndef SHCL_NO_FILE_IO
+#include <errno.h>
+#include <fcntl.h>
+#ifdef _WIN32
+	#include <windows.h>
+	#include <io.h>
+	#include <process.h>
+	#include <sys/stat.h>
+#else
+	#include <unistd.h>
+	#include <sys/stat.h>
+	// realpath is XSI; declared here so the single-header build works under a
+	// plain -std=c11 -D_POSIX_C_SOURCE consumer too (the symbol is always in
+	// libc even when the prototype is feature-gated away).
+	extern char *realpath(const char *, char *);
+#endif
+
+// The file tier's write mechanism (also what the CLI's --write uses): a temp
+// file in the same dir, then a rename over the target, so an interrupted write
+// can never truncate the config it rewrites. The data is synced before the
+// rename so a crash cannot publish an empty file. The target is resolved
+// through symlinks first and the original's mode is copied onto the temp file;
+// other hard links to the old inode keep the old content (inherent to rename).
+// Returns 1 on success, 0 on failure with errno left describing it.
+int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
+	const char *target = path;
+#ifndef _WIN32
+	// realpath returns NULL when the target does not exist yet; that is a
+	// plain create, so the path as given is already the right one.
+	char *real = realpath(path, NULL);
+	if (real) target = real;
+	#define SHCL_FILE_CLEANUP() do { free(real); } while (0)
+#else
+	#define SHCL_FILE_CLEANUP() do { } while (0)
+#endif
+	const char *slash = strrchr(target, '/');
+	char *tmp = (char *)malloc(strlen(target) + 48);
+	if (!tmp) { SHCL_FILE_CLEANUP(); return 0; }
+	// Exclusive create: anything already sitting at the predictable name -
+	// including a planted symlink - must fail rather than be written through.
+	// Born 0600; the real mode goes on below, before any data.
+	int fd = -1;
+	for (int attempt = 0; attempt < 8; attempt++) {
+		if (slash) sprintf(tmp, "%.*s.%s.tmp%ld.%d", (int)(slash - target + 1), target, slash + 1, (long)getpid(), attempt);
+		else sprintf(tmp, ".%s.tmp%ld.%d", target, (long)getpid(), attempt);
+#ifdef _WIN32
+		fd = _open(tmp, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+#else
+		fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+#endif
+		if (fd >= 0) break;
+	}
+	if (fd < 0) { free(tmp); SHCL_FILE_CLEANUP(); return 0; }
+	FILE *f = fdopen(fd, "wb");
+	if (!f) { close(fd); remove(tmp); free(tmp); SHCL_FILE_CLEANUP(); return 0; }
+#ifndef _WIN32
+	// On the descriptor before any data, so umask cannot narrow it. Best
+	// effort: a filesystem that cannot carry the mode is not a failure.
+	struct stat st;
+	if (stat(target, &st) == 0) (void)fchmod(fileno(f), st.st_mode & 07777);
+#endif
+	int ok = fwrite(data, 1, n, f) == n && fflush(f) == 0;
+#ifdef _WIN32
+	ok = ok && _commit(_fileno(f)) == 0;
+#else
+	ok = ok && fsync(fileno(f)) == 0;
+#endif
+	ok = (fclose(f) == 0) && ok;
+#ifdef _WIN32
+	// C rename() will not replace an existing file on Windows.
+	ok = ok && MoveFileExA(tmp, target, MOVEFILE_REPLACE_EXISTING);
+#else
+	ok = ok && rename(tmp, target) == 0;
+#endif
+	if (!ok) remove(tmp);
+	free(tmp);
+	SHCL_FILE_CLEANUP();
+#undef SHCL_FILE_CLEANUP
+	return ok ? 1 : 0;
+}
+
+// File tier, load half: read and parse PATH. Never fails - the document
+// always comes back usable (empty when the file could not be read), and the
+// status out-param separates the four cases consumers otherwise confuse:
+// absent, present-but-unreadable, parsed with errors, clean.
+shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status) {
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		if (status) *status = (errno == ENOENT) ? SHCL_FILE_NOT_FOUND : SHCL_FILE_UNREADABLE;
+		return shcl_parse_with("", 0, s);
+	}
+	size_t cap = 1 << 16, len = 0;
+	char *buf = (char *)malloc(cap);
+	int rerr = buf == NULL;
+	while (!rerr) {
+		if (len == cap) {
+			char *nb = (char *)realloc(buf, cap *= 2);
+			if (!nb) { rerr = 1; break; }
+			buf = nb;
+		}
+		size_t got = fread(buf + len, 1, cap - len, f);
+		len += got;
+		if (got < cap - len + got) {
+			if (ferror(f)) rerr = 1; // a directory reads this way on POSIX
+			break;
+		}
+	}
+	fclose(f);
+	if (rerr) {
+		free(buf);
+		if (status) *status = SHCL_FILE_UNREADABLE;
+		return shcl_parse_with("", 0, s);
+	}
+	shcl_doc *d = shcl_parse_with(buf, len, s);
+	free(buf);
+	if (status) {
+		*status = SHCL_FILE_CLEAN;
+		for (size_t i = 0; i < d->diags.len; i++)
+			if (d->diags.data[i].sev == SHCL_SEV_ERROR) { *status = SHCL_FILE_HAD_ERRORS; break; }
+	}
+	return d;
+}
+
+shcl_doc *shcl_load_file(const char *path, shcl_file_status *status) {
+	return shcl_load_file_with(path, SHCL_STANDARD, status);
+}
+
+// File tier, save half: write the document's canonical text to PATH through
+// shcl_write_file_atomic. Returns 1 on success, 0 on failure.
+int shcl_save_file(shcl_doc *d, const char *path) {
+	shcl_str c = shcl_to_canonical(d);
+	return shcl_write_file_atomic(path, c.p, c.n);
+}
+#endif /* SHCL_NO_FILE_IO */
 
 // --- Schema-driven generation (`shcl init --schema`) ------------------------
 

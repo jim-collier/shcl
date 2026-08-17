@@ -55,9 +55,6 @@ None open.
 - 🔘 By-value selectors: distinguish scalar `"a, b"` from list `a, b`.
 	- From convert-base-v2, still open at v1.2.0 - the earlier round closed it as a spec paragraph only. Both spellings meet the same selector because matching is against the display form, and the read comes back Multiple.
 	- Needs a matching-rule decision; behavior change, corpus impact.
-- 🔘 File lifecycle tier: load/save with status, atomic, optional.
-	- From nemo-anywhere: every consumer that persists a config re-implements the same load/save dance and repeats the same mistakes.
-	- `LoadFile`/`SaveFile` returning a status that separates not-found / unreadable / parsed-with-errors / clean; save through the temp-file-and-rename the CLI already uses for `--write`. Companion/optional so the core stays freestanding (matters most for C).
 - 🔘 Make hand-edited configs structurally safe across a round trip.
 	- From nemo-anywhere, their strongest ask: a malformed line is diagnosed and dropped at parse, so a stray typo plus one settings change equals a silently vanished hand-written line once the consumer writes back.
 	- Two candidate shapes, either or both: retain the raw text as inert trivia and re-emit it, or have canonicalize refuse a doc with errors unless the caller opts in. Design question - decide the shape before touching any binding.
@@ -153,6 +150,11 @@ None open.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 
 #### Done - Features and enhancements
+
+- ✅ File tier: `LoadFile`/`SaveFile` with a four-way status, atomic save.
+	- From nemo-anywhere: every consumer that persists a config re-implemented the same load/save dance and repeated the same mistakes - absent confused with unreadable, torn writes.
+	- Done, all four bindings + veneer: load never fails (usable document plus Clean / HadErrors / NotFound / Unreadable status), save writes canonical text through the atomic temp-and-rename that moved from the CLIs into the libraries, so the CLIs now call the same code and cannot drift. C guards the tier behind `SHCL_NO_FILE_IO` so the core stays free of file I/O.
+	- Fixture in every runner (missing file, directory, broken file, save round-trip); spec gained a File tier section; decision recorded in `design.md`.
 
 - ✅ `SourceName(path)`: the field name as the author spelled it.
 	- From convert-base-v2: names store folded, so a message could only echo `symbols` when the file said `SYMBOLS`.

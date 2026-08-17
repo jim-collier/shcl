@@ -12,6 +12,8 @@ ports here by mechanical diff (parity over idiom - see style-guide.md).
 """
 
 import math
+import os
+import stat
 from decimal import Decimal
 from enum import Enum
 
@@ -1399,6 +1401,39 @@ class Document:
 			raise LoadError(doc.diags, doc)
 		return doc
 
+	@staticmethod
+	def load_file(path):
+		"""File tier, load half: read and parse path at Standard. Never fails -
+		the document always comes back usable (empty when the file could not be
+		read), and the returned (document, FileStatus) pair separates the four
+		cases consumers otherwise confuse: absent, present-but-unreadable,
+		parsed with errors, clean."""
+		return Document.load_file_with(path, Strictness.Standard)
+
+	@staticmethod
+	def load_file_with(path, strictness):
+		"""load_file at a chosen strictness. A strict-failing file reports
+		HadErrors; the recover-and-continue document still comes back."""
+		try:
+			with open(path, encoding="utf-8", newline="") as f:
+				text = f.read()
+		except FileNotFoundError:
+			return _Parser().parse("", strictness), FileStatus.NotFound
+		except (OSError, UnicodeDecodeError):
+			return _Parser().parse("", strictness), FileStatus.Unreadable
+		doc = _Parser().parse(text, strictness)
+		if any(d.severity == Severity.Error for d in doc.diags):
+			return doc, FileStatus.HadErrors
+		return doc, FileStatus.Clean
+
+	def save_file(self, path):
+		"""File tier, save half: write this document's canonical text to path
+		through a temp file in the same directory plus a rename, so an
+		interrupted save can never truncate the config it rewrites - the same
+		mechanics the CLI's --write uses. Returns None on success, or the
+		error message."""
+		return write_file_atomic(path, self.to_canonical())
+
 	def diagnostics(self):
 		return self.diags
 
@@ -2721,6 +2756,85 @@ def suppress_declared_repeats(schema, diags):
 			continue
 		kept.append(d)
 	diags[:] = kept
+
+
+class FileStatus(Enum):
+	"""What load_file found: the four cases a consumer's own load path
+	otherwise confuses. Clean and HadErrors both carry a usable document;
+	NotFound and Unreadable come back with an empty one."""
+	Clean = 0        # read and parsed, no error diagnostics (hints allowed)
+	HadErrors = 1    # read and parsed, but error diagnostics are present
+	NotFound = 2     # no file at the path
+	Unreadable = 3   # exists but could not be read (permissions, a directory, bad encoding)
+
+
+def write_file_atomic(file, data):
+	# The file tier's write mechanism (also what the CLI's --write uses): a
+	# temp file in the same dir, then a rename over the target,
+	# so an interrupted write can never truncate the config it rewrites. The data
+	# is synced before the rename so a crash cannot publish an empty file.
+	# Returns None on success, or the error message to report.
+	#
+	# A rename publishes a new inode, so the target is resolved through symlinks
+	# first (otherwise a linked-in config gets replaced by a regular file and the
+	# real one is left stale) and the original's mode is copied onto the temp file
+	# (otherwise a 600 config comes back at whatever the umask allows). Other hard
+	# links to the old inode cannot survive a rename and keep the old content.
+	target = os.path.realpath(file)
+	d = os.path.dirname(target)
+	if d == "":
+		d = "."
+	base = os.path.basename(target)
+	if base == "":
+		base = target
+	# Exclusive create: the name is predictable, so anything already sitting
+	# there - including a symlink someone else planted - must make this fail
+	# rather than be written through. Retry past a stale collision, then give
+	# up; refusing to write beats writing somewhere unintended.
+	f = None
+	tmp = ""
+	last = ""
+	for attempt in range(8):
+		tmp = os.path.join(d, ".{}.tmp{}.{}".format(base, os.getpid(), attempt))
+		try:
+			# Born private, so the copy is never briefly readable to anyone the
+			# original was not. The real mode goes on below, before any data.
+			fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+			f = os.fdopen(fd, "w", encoding="utf-8", newline="")
+			break
+		except OSError as e:
+			last = str(e)
+	if f is None:
+		return "{}: cannot create temporary file: {}".format(file, last)
+	try:
+		try:
+			# On the handle, so umask cannot narrow it the way it narrows a
+			# create mode. Best effort: a filesystem that cannot carry the mode
+			# is not a reason to fail a write that otherwise succeeded.
+			try:
+				os.fchmod(f.fileno(), stat.S_IMODE(os.stat(target).st_mode))
+			except OSError:
+				pass
+			f.write(data)
+			f.flush()
+			os.fsync(f.fileno())
+		finally:
+			f.close()
+	except OSError as e:
+		try:
+			os.remove(tmp)
+		except OSError:
+			pass
+		return "{}: {}".format(file, e)
+	try:
+		os.replace(tmp, target)
+	except OSError as e:
+		try:
+			os.remove(tmp)
+		except OSError:
+			pass
+		return "{}: {}".format(file, e)
+	return None
 
 
 def _h002_head(name):

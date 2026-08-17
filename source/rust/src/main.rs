@@ -6,7 +6,7 @@
 
 use shcl::{
 	Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime,
-	suppress_declared_reopens, suppress_declared_repeats,
+	suppress_declared_reopens, suppress_declared_repeats, write_file_atomic,
 };
 use std::process::ExitCode;
 
@@ -418,78 +418,6 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 	Ok(doc)
 }
 
-/// Write atomically: temp file in the same dir, then rename over the target,
-/// so an interrupted write can never truncate the config it rewrites. The data
-/// is synced before the rename so a crash cannot publish an empty file.
-///
-/// A rename publishes a new inode, so the target is resolved through symlinks
-/// first (otherwise a linked-in config gets replaced by a regular file and the
-/// real one is left stale) and the original's mode is copied onto the temp file
-/// (otherwise a 600 config comes back at whatever the umask allows). Other hard
-/// links to the old inode cannot survive a rename and keep the old content.
-fn write_atomic(file: &str, data: &str) -> Result<(), String> {
-	use std::io::Write;
-	// canonicalize fails when the target does not exist yet; that is a plain
-	// create, so the path as given is already the right one.
-	let target = std::fs::canonicalize(file).unwrap_or_else(|_| std::path::PathBuf::from(file));
-	let dir = match target.parent() {
-		Some(d) if !d.as_os_str().is_empty() => d,
-		_ => std::path::Path::new("."),
-	};
-	let base = target
-		.file_name()
-		.map(|b| b.to_string_lossy().into_owned())
-		.unwrap_or_else(|| file.to_string());
-	// Exclusive create: the name is predictable, so anything already sitting
-	// there - including a symlink someone else planted - must make this fail
-	// rather than be written through. Retry past a stale collision, then give
-	// up; refusing to write beats writing somewhere unintended.
-	let mut file_handle = None;
-	let mut tmp = std::path::PathBuf::new();
-	let mut last = String::new();
-	for attempt in 0..8 {
-		tmp = dir.join(format!(".{}.tmp{}.{}", base, std::process::id(), attempt));
-		let mut opts = std::fs::OpenOptions::new();
-		opts.write(true).create_new(true);
-		// Born private, so the copy is never briefly readable to anyone the
-		// original was not. The real mode goes on below, before any data.
-		#[cfg(unix)]
-		{
-			use std::os::unix::fs::OpenOptionsExt;
-			opts.mode(0o600);
-		}
-		match opts.open(&tmp) {
-			Ok(f) => {
-				file_handle = Some(f);
-				break;
-			}
-			Err(e) => last = e.to_string(),
-		}
-	}
-	let Some(mut f) = file_handle else {
-		return Err(format!("{}: cannot create temporary file: {}", file, last));
-	};
-	let res = (|| -> std::io::Result<()> {
-		// On the handle, so umask cannot narrow it the way it narrows a create
-		// mode. Best effort: a filesystem that cannot carry the mode is not a
-		// reason to fail a write that otherwise succeeded.
-		if let Ok(m) = std::fs::metadata(&target) {
-			let _ = f.set_permissions(m.permissions());
-		}
-		f.write_all(data.as_bytes())?;
-		f.sync_all()
-	})();
-	if let Err(e) = res {
-		let _ = std::fs::remove_file(&tmp);
-		return Err(format!("{}: {}", file, e));
-	}
-	drop(f);
-	std::fs::rename(&tmp, &target).map_err(|e| {
-		let _ = std::fs::remove_file(&tmp);
-		format!("{}: {}", file, e)
-	})
-}
-
 fn read_input(file: &str) -> Result<String, String> {
 	if file == "-" {
 		let mut s = String::new();
@@ -694,7 +622,7 @@ fn do_fmt(o: &Opts) -> u8 {
 		Err(code) => return code,
 	};
 	if o.write {
-		if let Err(e) = write_atomic(file, &canonical) {
+		if let Err(e) = write_file_atomic(file, &canonical) {
 			eprintln!("{}", e);
 			return 1;
 		}
@@ -892,7 +820,7 @@ fn do_set(o: &Opts) -> u8 {
 	}
 	let canonical = doc.to_canonical();
 	if o.write {
-		if let Err(e) = write_atomic(file, &canonical) {
+		if let Err(e) = write_file_atomic(file, &canonical) {
 			eprintln!("{}", e);
 			return 1;
 		}

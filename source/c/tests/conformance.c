@@ -580,6 +580,39 @@ int main(int argc, char **argv) {
 		if (sn.n != 6 || memcmp(sn.p, "NewTop", 6) != 0) fail("source_name", "newtop spelling mismatch");
 		shcl_free(nd);
 	}
+	// load_file/save_file: the status separates absent / unreadable / parsed
+	// with errors / clean, and a save round-trips through the atomic write.
+	// Same fixture in every runner.
+	{
+		char tdir[128], tfile[160];
+		snprintf(tdir, sizeof tdir, "%s/shcl-filetier-%ld", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", (long)getpid());
+		if (mkdir(tdir, 0700) != 0) fail("file_tier", "mkdir failed");
+		snprintf(tfile, sizeof tfile, "%s/t.shcl", tdir);
+		shcl_file_status fst;
+		shcl_doc *fd = shcl_load_file(tfile, &fst);
+		if (fst != SHCL_FILE_NOT_FOUND) fail("file_tier", "missing file status");
+		shcl_free(fd);
+		fd = shcl_load_file(tdir, &fst); // a directory is not readable
+		if (fst != SHCL_FILE_UNREADABLE) fail("file_tier", "directory status");
+		shcl_free(fd);
+		FILE *tf = fopen(tfile, "wb");
+		if (!tf || fputs("a: 1\n: broken\n", tf) == EOF || fclose(tf) != 0) fail("file_tier", "seed write failed");
+		fd = shcl_load_file(tfile, &fst);
+		if (fst != SHCL_FILE_HAD_ERRORS) fail("file_tier", "broken file status");
+		if (shcl_get_int(fd, "a", 1, 0) != 1) fail("file_tier", "broken file read");
+		shcl_free(fd);
+		tf = fopen(tfile, "wb");
+		if (!tf || fputs("a: 1\nb: x\n", tf) == EOF || fclose(tf) != 0) fail("file_tier", "seed rewrite failed");
+		fd = shcl_load_file(tfile, &fst);
+		if (fst != SHCL_FILE_CLEAN) fail("file_tier", "clean file status");
+		if (!shcl_set_int(fd, "c", 1, 3)) fail("file_tier", "set_int failed");
+		if (!shcl_save_file(fd, tfile)) fail("file_tier", "save failed");
+		shcl_doc *fb = shcl_load_file(tfile, &fst);
+		shcl_str c1 = shcl_to_canonical(fd), c2 = shcl_to_canonical(fb);
+		if (fst != SHCL_FILE_CLEAN || c1.n != c2.n || memcmp(c1.p, c2.p, c1.n) != 0) fail("file_tier", "save round-trip mismatch");
+		shcl_free(fb); shcl_free(fd);
+		remove(tfile); rmdir(tdir);
+	}
 	// write_reason: the reason behind a setter's bare 0. Same fixture in every
 	// runner.
 	{

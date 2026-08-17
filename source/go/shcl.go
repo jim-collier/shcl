@@ -43,6 +43,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -2029,6 +2031,117 @@ func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic 
 		kept = append(kept, d)
 	}
 	return kept
+}
+
+// WriteFileAtomic is the file tier's write mechanism (also what the CLI's
+// `--write` uses): a temp file in the same dir, then a rename over the target, so an interrupted write can never truncate the config it rewrites.
+// The data is synced before the rename so a crash cannot publish an empty file.
+//
+// A rename publishes a new inode, so the target is resolved through symlinks
+// first (otherwise a linked-in config gets replaced by a regular file and the
+// real one is left stale) and the original's mode is copied onto the temp file
+// (otherwise a 600 config comes back at whatever the umask allows). Other hard
+// links to the old inode cannot survive a rename and keep the old content.
+func WriteFileAtomic(file, data string) error {
+	// EvalSymlinks fails when the target does not exist yet; that is a plain
+	// create, so the path as given is already the right one.
+	target := file
+	if resolved, rerr := filepath.EvalSymlinks(file); rerr == nil {
+		target = resolved
+	}
+	dir := filepath.Dir(target)
+	base := filepath.Base(target)
+	// Exclusive create: the name is predictable, so anything already sitting
+	// there - including a symlink someone else planted - must make this fail
+	// rather than be written through. Retry past a stale collision, then give
+	// up; refusing to write beats writing somewhere unintended.
+	var f *os.File
+	var tmp string
+	var last error
+	for attempt := 0; attempt < 8; attempt++ {
+		tmp = filepath.Join(dir, "."+base+".tmp"+strconv.Itoa(os.Getpid())+"."+strconv.Itoa(attempt))
+		// Born private, so the copy is never briefly readable to anyone the
+		// original was not. The real mode goes on below, before any data.
+		h, oerr := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if oerr == nil {
+			f = h
+			break
+		}
+		last = oerr
+	}
+	if f == nil {
+		return fmt.Errorf("%s: cannot create temporary file: %s", file, last)
+	}
+	// On the handle, so umask cannot narrow it the way it narrows a create
+	// mode. Best effort: a filesystem that cannot carry the mode is not a
+	// reason to fail a write that otherwise succeeded.
+	if st, serr := os.Stat(target); serr == nil {
+		_ = f.Chmod(st.Mode().Perm())
+	}
+	var err error
+	if _, werr := f.WriteString(data); werr != nil {
+		err = werr
+	} else {
+		err = f.Sync()
+	}
+	f.Close()
+	if err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("%s: %s", file, err)
+	}
+	if rerr := os.Rename(tmp, target); rerr != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("%s: %s", file, rerr)
+	}
+	return nil
+}
+
+// FileStatus is what LoadFile found: the four cases a consumer's own load
+// path otherwise confuses. FileClean and FileHadErrors both carry a usable
+// document; FileNotFound and FileUnreadable come back with an empty one.
+type FileStatus int
+
+const (
+	FileClean      FileStatus = iota // read and parsed, no error diagnostics (hints allowed)
+	FileHadErrors                    // read and parsed, but error diagnostics are present
+	FileNotFound                     // no file at the path
+	FileUnreadable                   // exists but could not be read (permissions, a directory)
+)
+
+// LoadFile is the file tier's load half: read and parse path at Standard.
+// Never fails - the document always comes back usable (empty when the file
+// could not be read), and the status separates the four cases consumers
+// otherwise confuse: absent, present-but-unreadable, parsed with errors,
+// clean.
+func LoadFile(path string) (*Document, FileStatus) {
+	return LoadFileWith(path, Standard)
+}
+
+// LoadFileWith is LoadFile at a chosen strictness. A strict-failing file
+// reports FileHadErrors; the recover-and-continue document still comes back.
+func LoadFileWith(path string, level Strictness) (*Document, FileStatus) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		st := FileUnreadable
+		if os.IsNotExist(err) {
+			st = FileNotFound
+		}
+		return newParser().parse("", level), st
+	}
+	doc := newParser().parse(string(data), level)
+	for _, d := range doc.diags {
+		if d.Severity == SeverityError {
+			return doc, FileHadErrors
+		}
+	}
+	return doc, FileClean
+}
+
+// SaveFile is the file tier's save half: write this document's canonical text
+// to path through WriteFileAtomic, so an interrupted save can never truncate
+// the config it rewrites - the same mechanics the CLI's `--write` uses.
+func (d *Document) SaveFile(path string) error {
+	return WriteFileAtomic(path, d.ToCanonical())
 }
 
 // h002Head is the single H002 wording site: the merge hint and the schema

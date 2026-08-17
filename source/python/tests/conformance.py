@@ -606,6 +606,37 @@ def main():
 		raise SystemExit("set_int NewTop.n failed")
 	if sdoc2.source_name("newtop") != "NewTop":
 		raise SystemExit("source_name(newtop) got {}".format(sdoc2.source_name("newtop")))
+	# load_file/save_file: the status separates absent / unreadable / parsed
+	# with errors / clean, and a save round-trips through the atomic write.
+	# Same fixture in every runner.
+	import tempfile
+	with tempfile.TemporaryDirectory() as td:
+		fpath = os.path.join(td, "t.shcl")
+		_, fst = shcl.Document.load_file(fpath)
+		if fst != shcl.FileStatus.NotFound:
+			raise SystemExit("load_file missing got {}".format(fst))
+		_, fst = shcl.Document.load_file(td)  # a directory is not readable
+		if fst != shcl.FileStatus.Unreadable:
+			raise SystemExit("load_file directory got {}".format(fst))
+		with open(fpath, "w", encoding="utf-8") as fh:
+			fh.write("a: 1\n: broken\n")
+		fdoc, fst = shcl.Document.load_file(fpath)
+		if fst != shcl.FileStatus.HadErrors:
+			raise SystemExit("load_file broken got {}".format(fst))
+		if fdoc.get_int("a", default=0) != 1:
+			raise SystemExit("load_file broken read failed")
+		with open(fpath, "w", encoding="utf-8") as fh:
+			fh.write("a: 1\nb: x\n")
+		fdoc, fst = shcl.Document.load_file(fpath)
+		if fst != shcl.FileStatus.Clean:
+			raise SystemExit("load_file clean got {}".format(fst))
+		if not fdoc.set_int("c", 3):
+			raise SystemExit("set_int c failed")
+		if fdoc.save_file(fpath) is not None:
+			raise SystemExit("save_file failed")
+		fback, fst = shcl.Document.load_file(fpath)
+		if fst != shcl.FileStatus.Clean or fback.to_canonical() != fdoc.to_canonical():
+			raise SystemExit("save round-trip mismatch")
 	# A failed strict load hands back the document and names the first
 	# failures in the message - the diagnostics are the point.
 	try:

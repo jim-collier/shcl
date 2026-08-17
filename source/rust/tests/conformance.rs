@@ -766,6 +766,40 @@ fn read_surface_line_quoted_children() {
 }
 
 #[test]
+fn file_tier_load_save() {
+	// load_file/save_file: the status separates absent / unreadable / parsed
+	// with errors / clean, and a save round-trips through the atomic write.
+	// Same fixture in every runner.
+	use shcl::FileStatus;
+	let dir = std::env::temp_dir().join(format!("shcl-filetier-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let f = dir.join("t.shcl");
+	let fs = f.to_str().unwrap();
+
+	let (_, st) = Document::load_file(fs);
+	assert_eq!(st, FileStatus::NotFound);
+	let (_, st) = Document::load_file(dir.to_str().unwrap()); // a directory is not readable
+	assert_eq!(st, FileStatus::Unreadable);
+
+	std::fs::write(&f, "a: 1\n: broken\n").unwrap();
+	let (doc, st) = Document::load_file(fs);
+	assert_eq!(st, FileStatus::HadErrors);
+	assert_eq!(doc.get_int("a"), Ok(1));
+
+	std::fs::write(&f, "a: 1\nb: x\n").unwrap();
+	let (mut doc, st) = Document::load_file(fs);
+	assert_eq!(st, FileStatus::Clean);
+	assert!(doc.set_int("c", 3));
+	doc.save_file(fs).unwrap();
+	let (back, st) = Document::load_file(fs);
+	assert_eq!(st, FileStatus::Clean);
+	assert_eq!(back.to_canonical(), doc.to_canonical());
+
+	let _ = std::fs::remove_file(&f);
+	let _ = std::fs::remove_dir(&dir);
+}
+
+#[test]
 fn strict_failure_carries_document() {
 	// A failed strict load hands back the document and names the first
 	// failures in the message - the diagnostics are the point.
