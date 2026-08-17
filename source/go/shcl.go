@@ -475,7 +475,11 @@ func (v *value) isEmpty() bool {
 }
 
 type nodeData struct {
-	name      string // ASCII-folded to lower; non-ASCII never folds
+	name string // ASCII-folded to lower; non-ASCII never folds
+	// The name as the author spelled it (case unfolded, quotes and escapes
+	// resolved) - what SourceName() hands back. Merged instances keep the
+	// first binding's spelling, like Line() and comments.
+	nameSrc   string
 	value     value
 	children  []int
 	parent    int
@@ -849,9 +853,10 @@ type selector struct {
 }
 
 type segment struct {
-	name string // folded
-	sel  *selector
-	star bool // bare `*` name wildcard; quoted "*" stays a literal name
+	name    string // folded
+	nameSrc string // as authored: unfolded, quotes stripped, escapes applied
+	sel     *selector
+	star    bool // bare `*` name wildcard; quoted "*" stays a literal name
 }
 
 type pathScan struct {
@@ -1023,7 +1028,7 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 		if star && sel != nil {
 			return pathScan{}, errors.New("selector on a name wildcard")
 		}
-		segments = append(segments, segment{name: asciiLower(name), sel: sel, star: star})
+		segments = append(segments, segment{name: asciiLower(name), nameSrc: name, sel: sel, star: star})
 		if pos >= len(input) {
 			return pathScan{segments: segments}, nil
 		}
@@ -1105,14 +1110,14 @@ func (p *parser) err(line int, msg string) {
 
 // selectOrCreate finds (or creates by merge rule) the child of parent with
 // this (name, value).
-func (p *parser) selectOrCreate(parent int, name string, v value, line int) int {
+func (p *parser) selectOrCreate(parent int, name, nameSrc string, v value, line int) int {
 	p.starFlush()
 	mapKey := [2]string{name, v.key()}
 	if c, ok := p.childMap[parent][mapKey]; ok {
 		return c
 	}
 	idx := len(p.arena)
-	p.arena = append(p.arena, nodeData{name: name, value: v, parent: parent, line: line})
+	p.arena = append(p.arena, nodeData{name: name, nameSrc: nameSrc, value: v, parent: parent, line: line})
 	p.arena[parent].children = append(p.arena[parent].children, idx)
 	p.childMap = append(p.childMap, map[[2]string]int{})
 	p.childMap[parent][mapKey] = idx
@@ -1304,7 +1309,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 				cur = found
 			} else {
 				disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
-				cur = p.selectOrCreate(cur, seg.name, disc, line)
+				cur = p.selectOrCreate(cur, seg.name, seg.nameSrc, disc, line)
 			}
 			if isLast && !v.isEmpty() {
 				// `a.b[X]: v` - the discriminator is the value; a second
@@ -1328,11 +1333,11 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			p.err(line, "wildcard selector is query-only")
 			return 0, false
 		case !isLast:
-			cur = p.selectOrCreate(cur, seg.name, value{kind: vEmpty}, line)
+			cur = p.selectOrCreate(cur, seg.name, seg.nameSrc, value{kind: vEmpty}, line)
 		default:
 			parent := cur
 			before := len(p.arena)
-			cur = p.selectOrCreate(cur, seg.name, v, line)
+			cur = p.selectOrCreate(cur, seg.name, seg.nameSrc, v, line)
 			// Two separately-written bindings just combined: legal (the
 			// merge rule), but only the parser can see it happened, so
 			// say so. Adjacent re-mentions (still the newest binding at
@@ -1427,8 +1432,8 @@ func (p *parser) bindBlock(parent int, v value, line int) int {
 		p.remapChild(parent, oldKey, oldDisp)
 		return parent
 	}
-	name, grand := p.arena[parent].name, p.arena[parent].parent
-	return p.selectOrCreate(grand, name, v, line)
+	name, nameSrc, grand := p.arena[parent].name, p.arena[parent].nameSrc, p.arena[parent].parent
+	return p.selectOrCreate(grand, name, nameSrc, v, line)
 }
 
 // addStarElement: one stacked-list element (`* scalar`) appends to the
@@ -2386,6 +2391,20 @@ func (d *Document) Line(path string) int {
 	return d.arena[r.one].line
 }
 
+// SourceName is the field name at a path exactly as the author spelled it
+// (case unfolded, quotes and escapes resolved), so a message can echo
+// `SYMBOLS` when the file said SYMBOLS. Resolution mirrors Line(): empty when
+// the path does not resolve to exactly one node. Merged instances keep the
+// first binding's spelling; a writer-built node keeps the spelling the
+// setter's path used.
+func (d *Document) SourceName(path string) string {
+	r, ok := d.resolve(path)
+	if !ok || r.kind != resOne {
+		return ""
+	}
+	return d.arena[r.one].nameSrc
+}
+
 // Lines is the plural Line(): 1-based source lines at a path, in file order,
 // so a repeated field - the case that most wants a citable line - yields
 // every binding's. Wildcard slots that did not resolve stay in the list as 0,
@@ -2559,22 +2578,22 @@ func New() *Document {
 	return Parse("")
 }
 
-func (d *Document) newChild(parent int, name string, v value) int {
+func (d *Document) newChild(parent int, name, nameSrc string, v value) int {
 	idx := len(d.arena)
 	// Hand-written files separate top-level sections with a blank line;
 	// writer-built ones do the same (the emitter never blanks line 1).
-	d.arena = append(d.arena, nodeData{name: name, value: v, parent: parent, blankBefore: parent == root})
+	d.arena = append(d.arena, nodeData{name: name, nameSrc: nameSrc, value: v, parent: parent, blankBefore: parent == root})
 	d.arena[parent].children = append(d.arena[parent].children, idx)
 	return idx
 }
 
-func (d *Document) childOrCreate(parent int, name string) int {
+func (d *Document) childOrCreate(parent int, name, nameSrc string) int {
 	for _, c := range d.arena[parent].children {
 		if d.arena[c].name == name {
 			return c
 		}
 	}
-	return d.newChild(parent, name, value{kind: vEmpty})
+	return d.newChild(parent, name, nameSrc, value{kind: vEmpty})
 }
 
 // WriteReason reports why a write at this path would fail - the reason behind
@@ -2670,7 +2689,7 @@ func (d *Document) place(path string) (int, bool) {
 		}
 		switch {
 		case seg.sel == nil:
-			cur = d.childOrCreate(cur, seg.name)
+			cur = d.childOrCreate(cur, seg.name, seg.nameSrc)
 		case seg.sel.kind == selByValue:
 			want := applyEscapes(seg.sel.value)
 			found := -1
@@ -2683,7 +2702,7 @@ func (d *Document) place(path string) (int, bool) {
 			if found >= 0 {
 				cur = found
 			} else {
-				cur = d.newChild(cur, seg.name, cellOf(seg.sel.value))
+				cur = d.newChild(cur, seg.name, seg.nameSrc, cellOf(seg.sel.value))
 			}
 		case seg.sel.kind == selByIndex:
 			var matches []int
@@ -3175,6 +3194,7 @@ func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
 	}
 	nd := nodeData{
 		name:        src.name,
+		nameSrc:     src.nameSrc,
 		value:       cv,
 		parent:      parent,
 		line:        src.line,

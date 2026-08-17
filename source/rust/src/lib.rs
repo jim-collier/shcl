@@ -397,6 +397,10 @@ struct NodeData {
 	// was synthesized (writer, stacked list, fence), where raw falls back to
 	// the display form.
 	src: Option<String>,
+	// The name as the author spelled it (case unfolded, quotes and escapes
+	// resolved) - what source_name() hands back. Merged instances keep the
+	// first binding's spelling, like line() and comments.
+	name_src: String,
 }
 
 /// A parsed SHCL document: the tree, its diagnostics, and its strictness level.
@@ -644,7 +648,8 @@ enum Selector {
 
 #[derive(Debug, Clone)]
 struct Segment {
-	name: String, // folded
+	name: String,     // folded
+	name_src: String, // as authored: unfolded, quotes stripped, escapes applied
 	selector: Option<Selector>,
 	star: bool, // bare `*` name wildcard; quoted "*" stays a literal name
 }
@@ -796,6 +801,7 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 		}
 		segments.push(Segment {
 			name: fold_name(&name),
+			name_src: name,
 			selector,
 			star,
 		});
@@ -871,6 +877,7 @@ impl Parser {
 				inside: Vec::new(),
 				blank_before: false,
 				src: None,
+				name_src: String::new(),
 			}],
 			diags: Vec::new(),
 			stack: vec![(String::new(), ROOT)],
@@ -895,7 +902,14 @@ impl Parser {
 	}
 
 	/// Find (or create by merge rule) the child of `parent` with this (name, value).
-	fn select_or_create(&mut self, parent: usize, name: &str, value: Value, line: usize) -> usize {
+	fn select_or_create(
+		&mut self,
+		parent: usize,
+		name: &str,
+		name_src: &str,
+		value: Value,
+		line: usize,
+	) -> usize {
 		self.star_flush();
 		let map_key = (name.to_string(), value.key());
 		if let Some(&c) = self.child_map[parent].get(&map_key) {
@@ -904,6 +918,7 @@ impl Parser {
 		let idx = self.arena.len();
 		self.arena.push(NodeData {
 			name: name.to_string(),
+			name_src: name_src.to_string(),
 			value,
 			children: Vec::new(),
 			parent,
@@ -1121,7 +1136,7 @@ impl Parser {
 								text: v.clone(),
 								quoted: false,
 							}]);
-							self.select_or_create(cur, &seg.name, disc, line)
+							self.select_or_create(cur, &seg.name, &seg.name_src, disc, line)
 						}
 					};
 					if is_last && !value.is_empty() {
@@ -1152,12 +1167,12 @@ impl Parser {
 					return None;
 				}
 				(None, false) => {
-					cur = self.select_or_create(cur, &seg.name, Value::Empty, line);
+					cur = self.select_or_create(cur, &seg.name, &seg.name_src, Value::Empty, line);
 				}
 				(None, true) => {
 					let parent = cur;
 					let before = self.arena.len();
-					cur = self.select_or_create(cur, &seg.name, value.clone(), line);
+					cur = self.select_or_create(cur, &seg.name, &seg.name_src, value.clone(), line);
 					// Two separately-written bindings just combined: legal (the
 					// merge rule), but only the parser can see it happened, so
 					// say so. Adjacent re-mentions (still the newest binding at
@@ -1275,8 +1290,12 @@ impl Parser {
 			self.remap_child(parent, old_key, old_disp);
 			Some(parent)
 		} else {
-			let (name, grandparent) = (self.arena[parent].name.clone(), self.arena[parent].parent);
-			Some(self.select_or_create(grandparent, &name, value, line))
+			let (name, name_src, grandparent) = (
+				self.arena[parent].name.clone(),
+				self.arena[parent].name_src.clone(),
+				self.arena[parent].parent,
+			);
+			Some(self.select_or_create(grandparent, &name, &name_src, value, line))
 		}
 	}
 
@@ -2157,6 +2176,19 @@ impl Document {
 		}
 	}
 
+	/// The field name at a path exactly as the author spelled it (case
+	/// unfolded, quotes and escapes resolved), so a message can echo `SYMBOLS`
+	/// when the file said SYMBOLS. Resolution mirrors line(): empty when the
+	/// path does not resolve to exactly one node. Merged instances keep the
+	/// first binding's spelling; a writer-built node keeps the spelling the
+	/// setter's path used.
+	pub fn source_name(&self, path: &str) -> String {
+		match self.resolve(path) {
+			Ok(Resolved::One(n)) => self.arena[n].name_src.clone(),
+			_ => String::new(),
+		}
+	}
+
 	/// The plural line(): 1-based source lines at a path, in file order, so a
 	/// repeated field - the case that most wants a citable line - yields every
 	/// binding's. Wildcard slots that did not resolve stay in the list as 0,
@@ -2299,10 +2331,11 @@ impl Document {
 		Document::parse("")
 	}
 
-	fn new_child(&mut self, parent: usize, name: &str, value: Value) -> usize {
+	fn new_child(&mut self, parent: usize, name: &str, name_src: &str, value: Value) -> usize {
 		let idx = self.arena.len();
 		self.arena.push(NodeData {
 			name: name.to_string(),
+			name_src: name_src.to_string(),
 			value,
 			children: Vec::new(),
 			parent,
@@ -2322,7 +2355,7 @@ impl Document {
 		idx
 	}
 
-	fn child_or_create(&mut self, parent: usize, name: &str) -> usize {
+	fn child_or_create(&mut self, parent: usize, name: &str, name_src: &str) -> usize {
 		match self.arena[parent]
 			.children
 			.iter()
@@ -2330,7 +2363,7 @@ impl Document {
 			.find(|&c| self.arena[c].name == name)
 		{
 			Some(c) => c,
-			None => self.new_child(parent, name, Value::Empty),
+			None => self.new_child(parent, name, name_src, Value::Empty),
 		}
 	}
 
@@ -2416,7 +2449,7 @@ impl Document {
 				return None; // write_reason gates this; belt only
 			}
 			cur = match &seg.selector {
-				None => self.child_or_create(cur, &seg.name),
+				None => self.child_or_create(cur, &seg.name, &seg.name_src),
 				Some(Selector::ByValue(v)) => {
 					let want = apply_escapes(v);
 					let found = self.arena[cur].children.iter().copied().find(|&c| {
@@ -2424,7 +2457,7 @@ impl Document {
 					});
 					match found {
 						Some(c) => c,
-						None => self.new_child(cur, &seg.name, cell_of(v.clone())),
+						None => self.new_child(cur, &seg.name, &seg.name_src, cell_of(v.clone())),
 					}
 				}
 				Some(Selector::ByIndex(k)) => {
@@ -2832,6 +2865,7 @@ impl Document {
 			inside: src.inside.clone(),
 			blank_before: src.blank_before,
 			src: src.src.clone(),
+			name_src: src.name_src.clone(),
 		};
 		let idx = self.arena.len();
 		self.arena.push(node);
