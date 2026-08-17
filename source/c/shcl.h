@@ -103,6 +103,7 @@ const char *shcl_diag_code(const shcl_doc *d, size_t i);
 // file have errors?" predicate, so recover-and-continue can't read as success
 // by accident. Counts whatever the shcl_diag_* accessors hold (after
 // shcl_load_and_validate, that includes validation errors).
+size_t shcl_lost_count(const shcl_doc *d);
 size_t shcl_error_count(const shcl_doc *d);
 
 // Schema validation (spec.md "Schema validation"): check d against a schema
@@ -165,6 +166,7 @@ typedef enum {
 shcl_doc *shcl_load_file(const char *path, shcl_file_status *status);
 shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status);
 int shcl_save_file(shcl_doc *d, const char *path);
+int shcl_save_file_lossy(shcl_doc *d, const char *path);
 int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 #endif
 
@@ -587,6 +589,12 @@ struct shcl_doc {
 	VecDiag diags;
 	shcl_strictness strictness;
 	VecLead orphans; /* top-level comments after the last binding line */
+	/* Lines or values parsing dropped that canonical output cannot re-emit
+	   (bad indentation, an unusable selector, past the depth cap, ...).
+	   Content-malformed lines are NOT counted - they are retained as trivia
+	   and survive a save. shcl_lost_count serves it; shcl_save_file gates on
+	   it. */
+	size_t lost;
 };
 #define ROOT ((size_t)0)
 #define NODE(d, i) ((d)->nodes.data[i])
@@ -1651,6 +1659,7 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 	if (parent_depth + nsegs > SHCL_MAX_DEPTH) {
 		SB m = {0}; sb_puts(a, &m, "nesting deeper than "); sb_put_u64(a, &m, SHCL_MAX_DEPTH); sb_puts(a, &m, " levels; line skipped");
 		p_err(P, line, sb_S(&m));
+		P->d->lost++;
 		return 0;
 	}
 	size_t cur = parent;
@@ -1679,6 +1688,7 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 			if (is_last && !v_is_empty(&value)) {
 				SB m = {0}; sb_puts(a, &m, "value after selector on '"); sb_putS(a, &m, seg->name); sb_puts(a, &m, "' ignored");
 				p_err(P, line, sb_S(&m));
+				P->d->lost++;
 			}
 			break;
 		}
@@ -1688,12 +1698,12 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 			if (seg->sel.index < matches.len) cur = matches.data[seg->sel.index];
 			else {
 				SB m = {0}; sb_puts(a, &m, "no instance "); sb_put_u64(a, &m, seg->sel.index); sb_puts(a, &m, " of '"); sb_putS(a, &m, seg->name); sb_putc(a, &m, '\'');
-				p_err(P, line, sb_S(&m)); return 0;
+				p_err(P, line, sb_S(&m)); P->d->lost++; return 0;
 			}
 			break;
 		}
 		case SEL_WILDCARD:
-			p_err(P, line, s_lit("wildcard selector is query-only")); return 0;
+			p_err(P, line, s_lit("wildcard selector is query-only")); P->d->lost++; return 0;
 		case SEL_NONE: {
 			size_t seg_parent = cur;
 			size_t before = P->d->nodes.len;
@@ -1760,7 +1770,7 @@ static Value consume_raw(Parser *P, S *lines, size_t nlines, size_t i, size_t op
 
 /* Returns the node the block landed on ((size_t)-1 = no parent, diagnosed). */
 static size_t bind_block(Parser *P, size_t parent, Value value, size_t line) {
-	if (parent == ROOT) { p_err(P, line, s_lit("raw block with no parent field")); return (size_t)-1; }
+	if (parent == ROOT) { p_err(P, line, s_lit("raw block with no parent field")); P->d->lost++; return (size_t)-1; }
 	if (v_is_empty(&NODE(P->d, parent).value)) {
 		S old_key = value_key(&P->d->arena, &NODE(P->d, parent).value);
 		S old_disp = disp_key(&P->d->arena, &NODE(P->d, parent).value);
@@ -1774,15 +1784,15 @@ static size_t bind_block(Parser *P, size_t parent, Value value, size_t line) {
 
 static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
 	Arena *a = &P->d->arena;
-	if (parent == ROOT) { p_err(P, line, s_lit("list element with no parent field")); return; }
+	if (parent == ROOT) { p_err(P, line, s_lit("list element with no parent field")); P->d->lost++; return; }
 	/* Uniform-or-nothing (spec): a mix with field children is not a block array. */
-	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, s_lit("list element mixed with field children; ignored")); return; }
+	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, s_lit("list element mixed with field children; ignored")); P->d->lost++; return; }
 	S trimmed = s_trim(body);
-	if (trimmed.n == 0) { p_err(P, line, s_lit("empty list element")); return; }
-	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, s_lit("bare comma in list element (one element per line)")); return; }
+	if (trimmed.n == 0) { p_err(P, line, s_lit("empty list element")); P->d->lost++; return; }
+	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, s_lit("bare comma in list element (one element per line)")); P->d->lost++; return; }
 	if (unterminated_quote(a, trimmed)) p_err(P, line, s_lit("unterminated quote in value"));
 	Element el;
-	if (!parse_element(a, trimmed, &el)) { p_err(P, line, s_lit("empty list element")); return; }
+	if (!parse_element(a, trimmed, &el)) { p_err(P, line, s_lit("empty list element")); P->d->lost++; return; }
 	Node *node = &NODE(P->d, parent);
 	if (node->value.kind == V_EMPTY) {
 		S old_key = value_key(a, &node->value);
@@ -1811,6 +1821,7 @@ static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
 		node->value.els[node->value.nels++] = el;
 	} else {
 		p_err(P, line, s_lit("field already has a value; list element ignored"));
+		P->d->lost++;
 	}
 }
 
@@ -1919,7 +1930,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		Fence f = fence_open(a, rest);
 		if (f.ok) {
 			size_t parent;
-			if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); i++; continue; }
+			if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
 			size_t next; Value val = consume_raw(&P, lines.data, lines.len, i + 1, lineno, f.ch, f.len, f.info, &next);
 			size_t bnode = bind_block(&P, parent, val, lineno);
 			if (bnode != (size_t)-1) attach_trivia(&P, bnode, s_empty());
@@ -1929,13 +1940,25 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			S after = s_slice(rest, 1, rest.n);
 			if (after.n >= 1 && (after.p[0] == ' ' || after.p[0] == '\t')) {
 				size_t parent;
-				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); i++; continue; }
+				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
 				S ecomment; S body = split_comment(after, &ecomment);
 				/* Elements have no node of their own; trivia rides the field. */
 				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
 				add_star_element(&P, parent, body, lineno); i++; continue;
 			}
-			p_err(&P, lineno, s_lit("malformed line: '*' must be followed by a space")); i++; continue;
+			p_err(&P, lineno, s_lit("malformed line: '*' must be followed by a space"));
+			/* Content-malformed at any position, so it is safe to retain
+			   verbatim as trivia: re-emitted, it re-diagnoses identically and
+			   can never read as a live binding. A hand-typo no longer
+			   vanishes on the consumer's next save. The one exception is a
+			   leading BOM - the file-start strip would rewrite it, so that
+			   line counts as lost instead. */
+			if (rest.n >= 3 && (unsigned char)rest.p[0] == 0xEF && (unsigned char)rest.p[1] == 0xBB && (unsigned char)rest.p[2] == 0xBF) d->lost++;
+			else {
+				Pend pd; pd.text = s_dup(a, trim_end(rest)); pd.indent = s_dup(a, indent); pd.blank_before = had_blank;
+				VecPend_push(a, &P.pending, pd);
+			}
+			i++; continue;
 		}
 		S comment; S before = split_comment(rest, &comment);
 		S content = trim_end(before);
@@ -1948,9 +1971,19 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			i++; continue;
 		}
 		size_t parent;
-		if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); i++; continue; }
+		if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
 		PathScan scan = scan_path(a, content);
-		if (!scan.ok) { SB m = {0}; sb_puts(a, &m, "malformed line skipped: "); sb_putS(a, &m, scan.err); p_err(&P, lineno, sb_S(&m)); i++; continue; }
+		if (!scan.ok) {
+			SB m = {0}; sb_puts(a, &m, "malformed line skipped: "); sb_putS(a, &m, scan.err); p_err(&P, lineno, sb_S(&m));
+			/* Content-malformed at any position - retained as trivia, same
+			   rationale (and same BOM exception) as the bad '*' line above. */
+			if (rest.n >= 3 && (unsigned char)rest.p[0] == 0xEF && (unsigned char)rest.p[1] == 0xBB && (unsigned char)rest.p[2] == 0xBF) d->lost++;
+			else {
+				Pend pd; pd.text = s_dup(a, trim_end(rest)); pd.indent = s_dup(a, indent); pd.blank_before = had_blank;
+				VecPend_push(a, &P.pending, pd);
+			}
+			i++; continue;
+		}
 		size_t next = i + 1;
 		Value value;
 		if (!scan.has_value) { p_err(&P, lineno, s_lit("missing colon; repaired as an empty value")); value = v_empty(); }
@@ -2709,6 +2742,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 }
 
 void shcl_merge(shcl_doc *d, const shcl_doc *over) {
+	d->lost += over->lost;
 	Arena *a = &d->arena;
 	arena_reset(&d->scratch); // merge temporaries (compare keys, clone lists) die here
 	w_overlay(d, ROOT, over, ROOT);
@@ -3985,6 +4019,13 @@ void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc) {
 	arena_free(&tmp);
 }
 
+// How many lines or values parsing dropped that canonical output cannot
+// re-emit - bad indentation, an unusable selector, a line past the depth cap.
+// Content-malformed lines do NOT count: those are retained as trivia and
+// survive a save. Nonzero means a save would delete hand-written content, so
+// shcl_save_file refuses then (shcl_save_file_lossy overrides).
+size_t shcl_lost_count(const shcl_doc *d) { return d->lost; }
+
 size_t shcl_error_count(const shcl_doc *d) {
 	size_t n = 0;
 	for (size_t i = 0; i < d->diags.len; i++) if (d->diags.data[i].sev == SHCL_SEV_ERROR) n++;
@@ -4152,8 +4193,18 @@ shcl_doc *shcl_load_file(const char *path, shcl_file_status *status) {
 }
 
 // File tier, save half: write the document's canonical text to PATH through
-// shcl_write_file_atomic. Returns 1 on success, 0 on failure.
+// shcl_write_file_atomic. Returns 1 on success, 0 on failure. Refuses when
+// parsing lost content that a save would silently delete (shcl_lost_count);
+// shcl_save_file_lossy writes anyway.
 int shcl_save_file(shcl_doc *d, const char *path) {
+	if (d->lost > 0) return 0;
+	shcl_str c = shcl_to_canonical(d);
+	return shcl_write_file_atomic(path, c.p, c.n);
+}
+
+// shcl_save_file without the lost-content gate: writes even when parsing
+// dropped lines this save deletes. The caller owns that choice.
+int shcl_save_file_lossy(shcl_doc *d, const char *path) {
 	shcl_str c = shcl_to_canonical(d);
 	return shcl_write_file_atomic(path, c.p, c.n);
 }

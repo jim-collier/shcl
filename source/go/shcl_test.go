@@ -796,6 +796,38 @@ func TestFileTierLoadSave(t *testing.T) {
 	}
 }
 
+func TestLostAndSaveGate(t *testing.T) {
+	// Content-malformed lines are retained as trivia (LostCount 0, the line
+	// survives a save); position-dependent drops count as lost and make
+	// SaveFile refuse until the caller opts into SaveFileLossy. Same fixture
+	// in every runner.
+	kept := Parse("a: 1\nsquare-miles 300\nb: 2\n")
+	if kept.LostCount() != 0 {
+		t.Errorf("kept LostCount: got %d", kept.LostCount())
+	}
+	if !strings.Contains(kept.ToCanonical(), "square-miles 300\n") {
+		t.Errorf("retained line missing from canonical output")
+	}
+	lost := Parse("a:\n\tb: 1\n  c: 2\n") // indent matches no level
+	if lost.LostCount() != 1 {
+		t.Errorf("lost LostCount: got %d", lost.LostCount())
+	}
+	f := t.TempDir() + "/t.shcl"
+	if err := kept.SaveFile(f); err != nil {
+		t.Fatal(err)
+	}
+	back, _ := LoadFile(f)
+	if !strings.Contains(back.ToCanonical(), "square-miles 300\n") {
+		t.Errorf("retained line lost through save round-trip")
+	}
+	if err := lost.SaveFile(f); err == nil {
+		t.Errorf("SaveFile did not refuse a lossy save")
+	}
+	if err := lost.SaveFileLossy(f); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStrictFailureCarriesDocument(t *testing.T) {
 	// A failed strict load hands back the document (non-nil, and on the
 	// error too) and names the first failures in the message.

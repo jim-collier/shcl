@@ -637,6 +637,27 @@ def main():
 		fback, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.Clean or fback.to_canonical() != fdoc.to_canonical():
 			raise SystemExit("save round-trip mismatch")
+		# Content-malformed lines are retained as trivia (lost_count 0, the
+		# line survives a save); position-dependent drops count as lost and
+		# make save_file refuse until the caller opts into save_file_lossy.
+		# Same fixture in every runner.
+		kept = shcl.Document.parse("a: 1\nsquare-miles 300\nb: 2\n")
+		if kept.lost_count() != 0:
+			raise SystemExit("kept lost_count got {}".format(kept.lost_count()))
+		if "square-miles 300\n" not in kept.to_canonical():
+			raise SystemExit("retained line missing from canonical output")
+		lostdoc = shcl.Document.parse("a:\n\tb: 1\n  c: 2\n")  # indent matches no level
+		if lostdoc.lost_count() != 1:
+			raise SystemExit("lost lost_count got {}".format(lostdoc.lost_count()))
+		if kept.save_file(fpath) is not None:
+			raise SystemExit("kept save_file failed")
+		kback, _ = shcl.Document.load_file(fpath)
+		if "square-miles 300\n" not in kback.to_canonical():
+			raise SystemExit("retained line lost through save round-trip")
+		if lostdoc.save_file(fpath) is None:
+			raise SystemExit("save_file did not refuse a lossy save")
+		if lostdoc.save_file_lossy(fpath) is not None:
+			raise SystemExit("save_file_lossy failed")
 	# A failed strict load hands back the document and names the first
 	# failures in the message - the diagnostics are the point.
 	try:
