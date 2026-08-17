@@ -135,6 +135,17 @@ pub enum Status {
 	Multiple,
 }
 
+/// What load_file found: the four cases a consumer's own load path otherwise
+/// confuses. Clean and HadErrors both carry a usable document; NotFound and
+/// Unreadable come back with an empty one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileStatus {
+	Clean,      // read and parsed, no error diagnostics (hints allowed)
+	HadErrors,  // read and parsed, but error diagnostics are present
+	NotFound,   // no file at the path
+	Unreadable, // exists but could not be read (permissions, a directory, bad encoding)
+}
+
 /// Why a write would fail (`write_reason()`): the distinctions behind a
 /// setter's bare `false`. `Writable` = the path passes the writer's
 /// validation; the rest name the five ways it cannot.
@@ -1668,6 +1679,45 @@ impl Document {
 		self.strictness
 	}
 
+	/// File tier, load half: read and parse PATH at Standard. Never fails -
+	/// the document always comes back usable (empty when the file could not
+	/// be read), and the status separates the four cases consumers otherwise
+	/// confuse: absent, present-but-unreadable, parsed with errors, clean.
+	pub fn load_file(path: &str) -> (Document, FileStatus) {
+		Document::load_file_with(path, Strictness::Standard)
+	}
+
+	/// load_file at a chosen strictness. A strict-failing file reports
+	/// HadErrors; the recover-and-continue document still comes back.
+	pub fn load_file_with(path: &str, level: Strictness) -> (Document, FileStatus) {
+		let text = match std::fs::read_to_string(path) {
+			Ok(t) => t,
+			Err(e) => {
+				let st = if e.kind() == std::io::ErrorKind::NotFound {
+					FileStatus::NotFound
+				} else {
+					FileStatus::Unreadable
+				};
+				return (Parser::new().parse("", level), st);
+			}
+		};
+		let doc = Parser::new().parse(&text, level);
+		let st = if doc.diags.iter().any(|d| d.severity == Severity::Error) {
+			FileStatus::HadErrors
+		} else {
+			FileStatus::Clean
+		};
+		(doc, st)
+	}
+
+	/// File tier, save half: write this document's canonical text to PATH
+	/// through a temp file in the same directory plus a rename, so an
+	/// interrupted save can never truncate the config it rewrites - the same
+	/// mechanics the CLI's `--write` uses. Err carries the message.
+	pub fn save_file(&self, path: &str) -> Result<(), String> {
+		write_file_atomic(path, &self.to_canonical())
+	}
+
 	/// Canonical form: block layout, tabs, insertion order, minimal quoting,
 	/// redundancy collapsed, comments re-emitted as attached trivia. Scalar
 	/// text is never rewritten.
@@ -1831,6 +1881,79 @@ fn emit_name(name: &str) -> String {
 /// `paths()` and the canonical emitter produce.
 pub fn quote_segment(name: &str) -> String {
 	emit_name(name)
+}
+
+/// The file tier's write mechanism (also what the CLI's `--write` uses): a
+/// temp file in the same dir, then a rename over the target,
+/// so an interrupted write can never truncate the config it rewrites. The data
+/// is synced before the rename so a crash cannot publish an empty file.
+///
+/// A rename publishes a new inode, so the target is resolved through symlinks
+/// first (otherwise a linked-in config gets replaced by a regular file and the
+/// real one is left stale) and the original's mode is copied onto the temp file
+/// (otherwise a 600 config comes back at whatever the umask allows). Other hard
+/// links to the old inode cannot survive a rename and keep the old content.
+pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
+	use std::io::Write;
+	// canonicalize fails when the target does not exist yet; that is a plain
+	// create, so the path as given is already the right one.
+	let target = std::fs::canonicalize(file).unwrap_or_else(|_| std::path::PathBuf::from(file));
+	let dir = match target.parent() {
+		Some(d) if !d.as_os_str().is_empty() => d,
+		_ => std::path::Path::new("."),
+	};
+	let base = target
+		.file_name()
+		.map(|b| b.to_string_lossy().into_owned())
+		.unwrap_or_else(|| file.to_string());
+	// Exclusive create: the name is predictable, so anything already sitting
+	// there - including a symlink someone else planted - must make this fail
+	// rather than be written through. Retry past a stale collision, then give
+	// up; refusing to write beats writing somewhere unintended.
+	let mut file_handle = None;
+	let mut tmp = std::path::PathBuf::new();
+	let mut last = String::new();
+	for attempt in 0..8 {
+		tmp = dir.join(format!(".{}.tmp{}.{}", base, std::process::id(), attempt));
+		let mut opts = std::fs::OpenOptions::new();
+		opts.write(true).create_new(true);
+		// Born private, so the copy is never briefly readable to anyone the
+		// original was not. The real mode goes on below, before any data.
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::OpenOptionsExt;
+			opts.mode(0o600);
+		}
+		match opts.open(&tmp) {
+			Ok(f) => {
+				file_handle = Some(f);
+				break;
+			}
+			Err(e) => last = e.to_string(),
+		}
+	}
+	let Some(mut f) = file_handle else {
+		return Err(format!("{}: cannot create temporary file: {}", file, last));
+	};
+	let res = (|| -> std::io::Result<()> {
+		// On the handle, so umask cannot narrow it the way it narrows a create
+		// mode. Best effort: a filesystem that cannot carry the mode is not a
+		// reason to fail a write that otherwise succeeded.
+		if let Ok(m) = std::fs::metadata(&target) {
+			let _ = f.set_permissions(m.permissions());
+		}
+		f.write_all(data.as_bytes())?;
+		f.sync_all()
+	})();
+	if let Err(e) = res {
+		let _ = std::fs::remove_file(&tmp);
+		return Err(format!("{}: {}", file, e));
+	}
+	drop(f);
+	std::fs::rename(&tmp, &target).map_err(|e| {
+		let _ = std::fs::remove_file(&tmp);
+		format!("{}: {}", file, e)
+	})
 }
 
 /// The single H001 wording site: the hint builder and the schema suppressor

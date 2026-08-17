@@ -749,6 +749,53 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	}
 }
 
+func TestFileTierLoadSave(t *testing.T) {
+	// LoadFile/SaveFile: the status separates absent / unreadable / parsed
+	// with errors / clean, and a save round-trips through the atomic write.
+	// Same fixture in every runner.
+	dir := t.TempDir()
+	f := dir + "/t.shcl"
+
+	if _, st := LoadFile(f); st != FileNotFound {
+		t.Errorf("missing file: got status %v", st)
+	}
+	if _, st := LoadFile(dir); st != FileUnreadable { // a directory is not readable
+		t.Errorf("directory: got status %v", st)
+	}
+
+	if err := os.WriteFile(f, []byte("a: 1\n: broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, st := LoadFile(f)
+	if st != FileHadErrors {
+		t.Errorf("broken file: got status %v", st)
+	}
+	if v, vst := doc.GetInt("a"); vst != Good || v != 1 {
+		t.Errorf("broken file read: got %v %v", v, vst)
+	}
+
+	if err := os.WriteFile(f, []byte("a: 1\nb: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, st = LoadFile(f)
+	if st != FileClean {
+		t.Errorf("clean file: got status %v", st)
+	}
+	if !doc.SetInt("c", 3) {
+		t.Fatal("SetInt failed")
+	}
+	if err := doc.SaveFile(f); err != nil {
+		t.Fatal(err)
+	}
+	back, st := LoadFile(f)
+	if st != FileClean {
+		t.Errorf("saved file: got status %v", st)
+	}
+	if back.ToCanonical() != doc.ToCanonical() {
+		t.Errorf("save round-trip mismatch")
+	}
+}
+
 func TestStrictFailureCarriesDocument(t *testing.T) {
 	// A failed strict load hands back the document (non-nil, and on the
 	// error too) and names the first failures in the message.

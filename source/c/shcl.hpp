@@ -68,6 +68,21 @@ public:
 	static Document parse(std::string_view t) { return Document(shcl_parse(t.data(), t.size())); }
 	static Document parse_with(std::string_view t, Strictness s) { return Document(shcl_parse_with(t.data(), t.size(), static_cast<shcl_strictness>(s))); }
 
+#ifndef SHCL_NO_FILE_IO
+	// File tier: load never fails (the document always comes back usable,
+	// empty when the file could not be read; the status separates absent /
+	// unreadable / parsed-with-errors / clean), and save writes canonical
+	// text atomically - the CLI --write mechanics.
+	enum class FileStatus { Clean = SHCL_FILE_CLEAN, HadErrors = SHCL_FILE_HAD_ERRORS, NotFound = SHCL_FILE_NOT_FOUND, Unreadable = SHCL_FILE_UNREADABLE };
+	static Document load_file(const std::string &path, FileStatus *status = nullptr) {
+		shcl_file_status cs;
+		Document d(shcl_load_file(path.c_str(), &cs));
+		if (status) *status = static_cast<FileStatus>(cs);
+		return d;
+	}
+	bool save_file(const std::string &path) const { return shcl_save_file(d_, path.c_str()) != 0; }
+#endif
+
 	// One-shot load-and-validate: parse at a strictness, validate against a
 	// schema, and hand back a document whose diagnostics() serve ONE combined
 	// list (parse first, then validation). Never fails: error_count() answers

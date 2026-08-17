@@ -358,95 +358,13 @@ static int do_get(Opts *o) {
 	free(lines); layered_free(&L); return rc;
 }
 
-// Write atomically: temp file in the same dir, then rename over the target, so
-// an interrupted write can never truncate the config it rewrites. Every stdio
-// call is checked (a failed write must not report success) and the data is
-// synced before the rename so a crash cannot publish an empty file.
-// A rename publishes a new inode, so the target is resolved through symlinks
-// first (otherwise a linked-in config gets replaced by a regular file and the
-// real one is left stale) and the original's mode is copied onto the temp file
-// (otherwise a 600 config comes back at whatever the umask allows). Other hard
-// links to the old inode cannot survive a rename and keep the old content.
+// The atomic write itself lives in the library (shcl_write_file_atomic); the
+// CLI adds the error report and its 0-ok/1-fail exit convention.
 static int write_atomic(const char *file, const char *data, size_t n) {
-	const char *target = file;
-#ifndef _WIN32
-	// realpath returns NULL when the target does not exist yet; that is a plain
-	// create, so the path as given is already the right one.
-	char *real = realpath(file, NULL);
-	if (real) target = real;
-#endif
-	const char *slash = strrchr(target, '/');
-	char *tmp = (char *)xrealloc(NULL, strlen(target) + 48);
-	// Exclusive create: the name is predictable, so anything already sitting
-	// there - including a symlink someone else planted - must make this fail
-	// rather than be written through. Retry past a stale collision, then give
-	// up; refusing to write beats writing somewhere unintended. Born 0600 so
-	// the copy is never briefly readable to anyone the original was not; the
-	// real mode goes on below, before any data.
-	int fd = -1, lasterr = 0;
-	for (int attempt = 0; attempt < 8; attempt++) {
-		if (slash) sprintf(tmp, "%.*s.%s.tmp%ld.%d", (int)(slash - target + 1), target, slash + 1, (long)getpid(), attempt);
-		else sprintf(tmp, ".%s.tmp%ld.%d", target, (long)getpid(), attempt);
-#ifdef _WIN32
-		fd = _open(tmp, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
-#else
-		fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
-#endif
-		if (fd >= 0) break;
-		lasterr = errno;
-	}
-	if (fd < 0) {
-		fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(lasterr));
-		free(tmp);
-#ifndef _WIN32
-		free(real);
-#endif
-		return 1;
-	}
-	FILE *f = fdopen(fd, "wb");
-	if (!f) {
+	if (!shcl_write_file_atomic(file, data, n)) {
 		fprintf(stderr, "%s: %s\n", file, strerror(errno));
-		close(fd);
-		remove(tmp);
-		free(tmp);
-#ifndef _WIN32
-		free(real);
-#endif
 		return 1;
 	}
-#ifndef _WIN32
-	// On the descriptor before any data, so umask cannot narrow it the way it
-	// narrows a create mode. Best effort: a filesystem that cannot carry the
-	// mode is not a reason to fail a write that otherwise succeeded.
-	struct stat st;
-	if (stat(target, &st) == 0) (void)fchmod(fileno(f), st.st_mode & 07777);
-#endif
-	int ok = fwrite(data, 1, n, f) == n && fflush(f) == 0;
-#ifdef _WIN32
-	ok = ok && _commit(_fileno(f)) == 0;
-#else
-	ok = ok && fsync(fileno(f)) == 0;
-#endif
-	ok = (fclose(f) == 0) && ok;
-#ifdef _WIN32
-	// C rename() will not replace an existing file on Windows.
-	ok = ok && MoveFileExA(tmp, target, MOVEFILE_REPLACE_EXISTING);
-#else
-	ok = ok && rename(tmp, target) == 0;
-#endif
-	if (!ok) {
-		fprintf(stderr, "%s: %s\n", file, strerror(errno));
-		remove(tmp);
-		free(tmp);
-#ifndef _WIN32
-		free(real);
-#endif
-		return 1;
-	}
-	free(tmp);
-#ifndef _WIN32
-	free(real);
-#endif
 	return 0;
 }
 
