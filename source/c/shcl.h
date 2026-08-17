@@ -2797,6 +2797,22 @@ static S quote_text(Arena *a, S t) {
 	}
 	return sb_S(&s);
 }
+// is_data_format: true when the text reads as an int, float, bool, or datetime
+// at standard strictness - fixed there deliberately, so canonical form cannot
+// vary with the load strictness.
+static int is_data_format(Arena *a, const Element *e) {
+	int64_t iv; double fv; int bv; shcl_datetime dv;
+	if (parse_int_text(a, e, SHCL_STANDARD, &iv)) return 1;
+	if (parse_float_text(a, e, SHCL_STANDARD, &fv)) return 1;
+	if (parse_bool_text(a, e->text, SHCL_STANDARD, &bv)) return 1;
+	if (parse_datetime(a, e->text, &dv)) return 1;
+	return 0;
+}
+// Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
+// One addition: an author-quoted element keeps its quotes unless the text reads as
+// one of SHCL's own data formats - quoting those is just spelling (readers type the
+// value either way), but quoting a plain string is the escape and must survive
+// canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
 static S emit_element(Arena *a, const Element *e) {
 	S t = e->text;
 	int needs = (t.n == 0);
@@ -2806,6 +2822,7 @@ static S emit_element(Arena *a, const Element *e) {
 			if (c == ' ' || c == '\t' || c == ',' || c == ':' || c == '#' || c == '"' || c == '\'' || c == '[' || c == ']') { needs = 1; break; } }
 	}
 	if (!needs) { Fence f = fence_open(a, t); if (f.ok) needs = 1; }
+	if (!needs && e->quoted && !is_data_format(a, e)) needs = 1;
 	return needs ? quote_text(a, t) : t;
 }
 static S emit_name(Arena *a, S name) {

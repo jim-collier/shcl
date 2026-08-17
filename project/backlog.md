@@ -48,10 +48,7 @@ None open.
 
 ### Bugs
 
-- 🔘 `generate` drops the schema author's quoting on `default:` values.
-	- From nano-git-db: a quoted `"fFoo()"` default comes out bare in the starter file, so their function-ref convention reads it back as a call - "the one place quoting isn't an escape". Confirmed: `emit_value_inline`/`emit_element` re-derive quoting from content alone (minimal quoting), so the schema's spelling is lost.
-	- Narrow fix: emit a default that was quoted in the schema in its quoted spelling. `init` output is already not a fmt fixpoint by design, so preserved quotes cost nothing there.
-	- The wider half is a direction question, not part of this item: one `fmt` pass strips the same quotes from a document (`b: "@null"` -> `b: @null`, verified live), which un-escapes the sentinel the `quoted` read flag was added to protect. That collides with the "quoting is spelling" decision in `design.md` - needs a call before anything in `fmt` moves.
+None open.
 
 ### Features and enhancements
 
@@ -123,6 +120,11 @@ None open.
 ### Done
 
 #### Done - Bugs
+
+- ✅ Canonical output dropped the author's quoting on plain strings, in `fmt` and in `generate` defaults.
+	- From nano-git-db: a quoted `"fFoo()"` default came out bare in the starter file, so their function-ref convention read it back as a call - and one `fmt` pass did the same to a document (`"@null"` -> `@null`), un-escaping the sentinel the `quoted` read flag exists to protect. `emit_element` re-derived quoting from content alone.
+	- Done, all four bindings: a quoted element keeps its quotes unless the text reads as an int, float, bool, or datetime at standard strictness - those still normalize to bare (`ver: "8"` -> `ver: 8`). The clause only ever adds quoting over the reserved-character minimum, so no bare emit becomes unsafe (quoted thousands stay covered by the comma rule).
+	- Goldens 017 (NUL string keeps quotes) and 030 (newline default now in its quoted spelling, which the spec prose had promised all along) moved; spec and `design.md` updated.
 
 - ✅ A block header whose children are all commented handed those comments back one indent level shallow through `fmt`.
 	- Reported from SilkTerm, whose template config is mostly commented-out defaults: `rotate:`, `contrast_mask:`, `text.scrim:`, `cursor.size:`, `selection:` all lost a level - the entire remaining diff against their template, 162 lines of leading tabs.
