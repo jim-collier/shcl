@@ -1,0 +1,7 @@
+table: users
+	col: id
+	meta:
+		note: a
+	col: email
+table: sessions
+	col: sid

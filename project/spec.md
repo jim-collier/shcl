@@ -426,7 +426,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 | `E016` | nesting deeper than the 512-level cap (line skipped)
 | `E017` | a value (or array element) opens a quote it never closes - the piece is kept literally, including any `#` comment the open quote swallowed
 | `H001` | repeated bare leaf (array spelled as repeated lines) - the mandatory hint
-| `H002` | a binding merged with a non-adjacent earlier one (same name and value combine); legal, but only the parser can see it happened, so it says so - the prose names the earlier line
+| `H002` | a binding merged with a non-adjacent earlier one (same name and value combine); legal, but only the parser can see it happened, so it says so - the prose names the earlier line. Every merged level under a hinted re-open reports, each naming its own earlier line, so a consumer filtering the hints sees the whole combination, not just its outermost frame; a schema can disavow it per section with `reopen:` (see Schema validation)
 
 - **Limits**: nesting depth is capped at 512 levels below the document root. A line that would bind a node deeper than the cap is an `error` (`E016`) and is skipped; the Writer likewise refuses to create a deeper path. The cap is what makes any loadable document safe to format, merge, and copy in every binding - depth-linear recursion can never outrun a thread stack - and 512 is far beyond any hand-authored nesting.
 
@@ -479,6 +479,7 @@ The constraint vocabulary is closed - nothing joins it without a spec change:
 | `min` / `max` | number | inclusive bounds, `int`/`float` kinds only, checked per element on arrays
 | `repeat` | one integer (exact) or two (min, max) | bounds the instance count at the path, per resolution context
 | `inherits` | fragment name | the subtree at this path has the named fragment's shape (see Fragments below)
+| `reopen` | boolean | the section at this path is meant to be written in parts; `true` disavows `H002` for its leaf name (validation itself ignores it)
 | `default` / `desc` | any | reserved for the schema-driven generator; validation ignores them
 
 Semantics:
@@ -490,6 +491,8 @@ Semantics:
 - On a path with no wildcard, `required` means at least one instance resolves. Through a wildcard, it is a per-instance rule - `server[*].port` requires a port under *each* server - and is vacuously satisfied when no instances exist (require the parent separately if it must exist).
 
 - A `repeat` upper bound above 1 also **disavows `H001`** for that field: repetition is that field's instance mechanism by declaration, so the repeated-bare-leaf hint would be a structural false positive there. `check --schema` (and the one-shot load-and-validate) drops those hints, matched by leaf name; plain `check` without a schema keeps them.
+
+- `reopen: true` **disavows `H002`** the same way: a section declared as meant-to-be-re-opened merges by design, so the merge hint would train its users to ignore hints. Same mechanics as the `H001` disavowal - dropped at `check --schema` and the one-shot, matched by leaf name, kept by plain `check`. A bad `reopen` value is a `V092` schema fault, so a typo cannot silently disavow nothing.
 
 - `repeat` and `required` evaluate per *resolution context*: the whole document for a plain path, each enclosing instance for the part of a path after a wildcard. So `field: server` + `repeat: 1, 10` bounds the server count, while `field: "server[*].port"` + `repeat: 1` means exactly one port per server.
 

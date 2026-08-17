@@ -861,6 +861,12 @@ class _Parser:
 		# element is O(list^2) time); (node, key, display) at deferral start,
 		# flushed before any map lookup and at end of parse.
 		self.star_open = None
+		# Node -> line of the re-open that H002-hinted it. A merge under a hinted
+		# container combines the same two textual regions, so it hints too even
+		# when it lands on the newest child at its own scope - that is how every
+		# merged level reports, not just the outermost. The stored line splits old
+		# children (hint) from ones the re-opened region itself created (silent).
+		self.reentered = {}
 
 	def _err(self, line, msg):
 		self.diags.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
@@ -1049,6 +1055,7 @@ class _Parser:
 			elif not is_last:
 				cur = self._select_or_create(cur, seg.name, _empty(), line)
 			else:
+				parent = cur
 				before = len(self.arena)
 				cur = self._select_or_create(cur, seg.name, value, line)
 				# Two separately-written bindings just combined: legal (the
@@ -1056,14 +1063,20 @@ class _Parser:
 				# say so. Adjacent re-mentions (still the newest binding at
 				# this scope) and selector/path-intermediate merges stay
 				# silent - those are the deliberate redundant-path idiom.
-				if (cur < before
-						and self.arena[cur].line != line
-						and self.arena[self.arena[cur].parent].children[-1] != cur):
-					at = self.arena[cur].line
-					self.diags.append(Diagnostic(
-						line, Severity.Hint,
-						"merged with '{}' at line {} (same name and value combine)".format(seg.name, at),
-						"H002"))
+				# Under a hinted container the newest-child pass does not
+				# apply to children the earlier region wrote: those merges
+				# combine the same two regions, so every level reports.
+				if cur < before and self.arena[cur].line != line:
+					non_last = self.arena[parent].children[-1] != cur
+					reopen_line = self.reentered.get(parent)
+					cross_region = reopen_line is not None and self.arena[cur].line < reopen_line
+					if non_last or cross_region:
+						at = self.arena[cur].line
+						self.diags.append(Diagnostic(
+							line, Severity.Hint,
+							"{}line {} (same name and value combine)".format(_h002_head(seg.name), at),
+							"H002"))
+						self.reentered[cur] = line
 		return cur
 
 	def _consume_raw(self, lines, i, open_line, ch, length, info):
@@ -1411,6 +1424,7 @@ class Document:
 			vdiags = doc.validate(schema)
 			doc.diags.extend(vdiags)
 			suppress_declared_repeats(schema, doc.diags)
+			suppress_declared_reopens(schema, doc.diags)
 		return doc
 
 	def strictness(self):
@@ -2689,6 +2703,50 @@ def suppress_declared_repeats(schema, diags):
 	diags[:] = kept
 
 
+def _h002_head(name):
+	"""The single H002 wording site: the merge hint and the schema suppressor
+	both come here, same discipline as _h001_head."""
+	return "merged with '{}' at ".format(name)
+
+
+def suppress_declared_reopens(schema, diags):
+	"""Drop the H002 hints a schema disavows: a section whose entry declares
+	`reopen: true` is MEANT to be written in parts, so the merge hint is
+	structurally a false positive there. Matching is by leaf name, same as the
+	H001 suppressor, and it errs toward quiet, for a hint. Used by
+	`check --schema` and load_and_validate; call it wherever doc diagnostics
+	and a schema meet. Mutates diags in place."""
+	groups = [("field", schema.instances("field"))]
+	for k in range(schema.count("fragment")):
+		base = "fragment[#{}].field".format(k)
+		groups.append((base, schema.instances(base)))
+	names = []
+	for base, paths in groups:
+		for i, p in enumerate(paths):
+			re = schema.read_bool("{}[#{}].reopen".format(base, i))
+			if re.status != Status.Good or not re.value:
+				continue
+			try:
+				segments, _ = _scan_lookup(p)
+			except _PathError:
+				continue
+			if not segments:
+				continue
+			seg = segments[-1]
+			if seg.star:
+				continue   # name wildcard: no single leaf name to disavow
+			names.append(seg.name)
+	if not names:
+		return
+	heads = [_h002_head(n) for n in names]
+	kept = []
+	for d in diags:
+		if d.code == "H002" and any(d.message.startswith(h) for h in heads):
+			continue
+		kept.append(d)
+	diags[:] = kept
+
+
 _RESERVED = set(" \t,:#\"'[]")
 
 
@@ -3339,6 +3397,7 @@ def _parse_field(schema, f, faults):
 	c = _Constraint(path, segs)
 	# Deferred so `min: 1` may precede `type: int` in the file.
 	required = None
+	reopen_seen = False
 	allowed_at = None
 	min_at = None
 	max_at = None
@@ -3366,6 +3425,16 @@ def _parse_field(schema, f, faults):
 				required = b
 			else:
 				_vdiag(faults, kid.line, "bad schema constraint 'required'")
+		elif kid.name == "reopen":
+			# Consumed by the H002 suppressor (which reads the schema document
+			# directly); validation itself ignores it, but a bad value still
+			# faults so a typo cannot silently disavow nothing.
+			t = _single_text(kid.value)
+			b = _parse_bool_text(t, Strictness.Standard) if t is not None else None
+			if b is not None and not reopen_seen:
+				reopen_seen = True
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'reopen'")
 		elif kid.name == "allowed":
 			if kid.value.kind == "cell" and allowed_at is None:
 				allowed_at = k

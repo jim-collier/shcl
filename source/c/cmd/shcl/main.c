@@ -690,6 +690,7 @@ static int do_check(Opts *o) {
 		} else {
 			val = shcl_validate(d, sd);
 			shcl_suppress_declared_repeats(sd, d);
+			shcl_suppress_declared_reopens(sd, d);
 		}
 	}
 	size_t n = shcl_diag_count(d), nerr = 0;

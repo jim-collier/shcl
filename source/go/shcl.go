@@ -1081,14 +1081,21 @@ type parser struct {
 	starNode int
 	starKey  string
 	starDisp string
+	// Node -> line of the re-open that H002-hinted it. A merge under a hinted
+	// container combines the same two textual regions, so it hints too even
+	// when it lands on the newest child at its own scope - that is how every
+	// merged level reports, not just the outermost. The stored line splits old
+	// children (hint) from ones the re-opened region itself created (silent).
+	reentered map[int]int
 }
 
 func newParser() *parser {
 	return &parser{
-		arena:    []nodeData{{}},
-		stack:    []stackEnt{{}},
-		childMap: []map[[2]string]int{{}},
-		dispMap:  []map[[2]string]int{{}},
+		arena:     []nodeData{{}},
+		stack:     []stackEnt{{}},
+		childMap:  []map[[2]string]int{{}},
+		dispMap:   []map[[2]string]int{{}},
+		reentered: map[int]int{},
 	}
 }
 
@@ -1323,6 +1330,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 		case !isLast:
 			cur = p.selectOrCreate(cur, seg.name, value{kind: vEmpty}, line)
 		default:
+			parent := cur
 			before := len(p.arena)
 			cur = p.selectOrCreate(cur, seg.name, v, line)
 			// Two separately-written bindings just combined: legal (the
@@ -1330,14 +1338,23 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			// say so. Adjacent re-mentions (still the newest binding at
 			// this scope) and selector/path-intermediate merges stay
 			// silent - those are the deliberate redundant-path idiom.
-			kids := p.arena[p.arena[cur].parent].children
-			if cur < before && p.arena[cur].line != line && (len(kids) == 0 || kids[len(kids)-1] != cur) {
-				p.diags = append(p.diags, Diagnostic{
-					Line:     line,
-					Severity: SeverityHint,
-					Message:  fmt.Sprintf("merged with '%s' at line %d (same name and value combine)", seg.name, p.arena[cur].line),
-					Code:     "H002",
-				})
+			// Under a hinted container the newest-child pass does not
+			// apply to children the earlier region wrote: those merges
+			// combine the same two regions, so every level reports.
+			if cur < before && p.arena[cur].line != line {
+				kids := p.arena[parent].children
+				nonLast := len(kids) == 0 || kids[len(kids)-1] != cur
+				rl, ok := p.reentered[parent]
+				crossRegion := ok && p.arena[cur].line < rl
+				if nonLast || crossRegion {
+					p.diags = append(p.diags, Diagnostic{
+						Line:     line,
+						Severity: SeverityHint,
+						Message:  fmt.Sprintf("%sline %d (same name and value combine)", h002Head(seg.name), p.arena[cur].line),
+						Code:     "H002",
+					})
+					p.reentered[cur] = line
+				}
 			}
 		}
 	}
@@ -1750,6 +1767,7 @@ func LoadAndValidate(text, schemaText string, strictness Strictness) *Document {
 		}
 		doc.diags = append(doc.diags, doc.Validate(schema)...)
 		doc.diags = SuppressDeclaredRepeats(schema, doc.diags)
+		doc.diags = SuppressDeclaredReopens(schema, doc.diags)
 	}
 	return doc
 }
@@ -1992,6 +2010,72 @@ func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic 
 	kept := make([]Diagnostic, 0, len(diags))
 	for _, d := range diags {
 		if d.Code == "H001" {
+			drop := false
+			for _, h := range heads {
+				if strings.HasPrefix(d.Message, h) {
+					drop = true
+					break
+				}
+			}
+			if drop {
+				continue
+			}
+		}
+		kept = append(kept, d)
+	}
+	return kept
+}
+
+// h002Head is the single H002 wording site: the merge hint and the schema
+// suppressor both come here, same discipline as h001Head.
+func h002Head(name string) string {
+	return fmt.Sprintf("merged with '%s' at ", name)
+}
+
+// SuppressDeclaredReopens drops the H002 hints a schema disavows: a section
+// whose entry declares `reopen: true` is MEANT to be written in parts, so the
+// merge hint is structurally a false positive there. Matching is by leaf
+// name, same as the H001 suppressor, and it errs toward quiet, for a hint.
+// Used by `check --schema` and LoadAndValidate; call it wherever doc
+// diagnostics and a schema meet. Returns a fresh slice like the H001 one.
+func SuppressDeclaredReopens(schema *Document, diags []Diagnostic) []Diagnostic {
+	type group struct {
+		base  string
+		paths []string
+	}
+	groups := []group{{"field", schema.Instances("field")}}
+	for k := 0; k < schema.Count("fragment"); k++ {
+		base := fmt.Sprintf("fragment[#%d].field", k)
+		groups = append(groups, group{base, schema.Instances(base)})
+	}
+	var names []string
+	for _, g := range groups {
+		for i, p := range g.paths {
+			re := schema.ReadBool(fmt.Sprintf("%s[#%d].reopen", g.base, i))
+			if re.Status != Good || !re.Value {
+				continue
+			}
+			scan, err := scanLookup(p)
+			if err != nil || len(scan.segments) == 0 {
+				continue
+			}
+			seg := scan.segments[len(scan.segments)-1]
+			if seg.star {
+				continue // name wildcard: no single leaf name to disavow
+			}
+			names = append(names, seg.name)
+		}
+	}
+	if len(names) == 0 {
+		return diags
+	}
+	heads := make([]string, len(names))
+	for i, n := range names {
+		heads[i] = h002Head(n)
+	}
+	kept := make([]Diagnostic, 0, len(diags))
+	for _, d := range diags {
+		if d.Code == "H002" {
 			drop := false
 			for _, h := range heads {
 				if strings.HasPrefix(d.Message, h) {
@@ -4189,6 +4273,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 	c := constraint{path: path, segs: scan.segments}
 	// Deferred so `min: 1` may precede `type: int` in the file.
 	var required *bool
+	reopenSeen := false
 	allowedAt := -1
 	minAt := -1
 	maxAt := -1
@@ -4225,6 +4310,19 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 				required = &b
 			} else {
 				vdiag(faults, kid.line, "bad schema constraint 'required'")
+			}
+		// Consumed by the H002 suppressor (which reads the schema document
+		// directly); validation itself ignores it, but a bad value still
+		// faults so a typo cannot silently disavow nothing.
+		case "reopen":
+			t, ok := singleText(&kid.value)
+			if ok {
+				_, ok = parseBoolText(t, Standard)
+			}
+			if ok && !reopenSeen {
+				reopenSeen = true
+			} else {
+				vdiag(faults, kid.line, "bad schema constraint 'reopen'")
 			}
 		case "allowed":
 			if kid.value.kind == vCell && allowedAt < 0 {

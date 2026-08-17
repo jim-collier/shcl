@@ -529,6 +529,7 @@ func TestValidationMatchesExpected(t *testing.T) {
 		} else {
 			diags = append(diags, doc.Validate(sdoc)...)
 			diags = SuppressDeclaredRepeats(sdoc, diags)
+			diags = SuppressDeclaredReopens(sdoc, diags)
 		}
 		var got strings.Builder
 		errors := 0
