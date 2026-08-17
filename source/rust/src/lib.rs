@@ -421,6 +421,11 @@ pub struct Document {
 	diags: Vec<Diagnostic>,
 	strictness: Strictness,
 	orphans: Vec<Lead>, // top-level comments after the last binding line
+	// Lines or values parsing dropped that canonical output cannot re-emit
+	// (bad indentation, an unusable selector, past the depth cap, ...).
+	// Content-malformed lines are NOT counted - they are retained as trivia
+	// and survive a save. lost_count() serves it; save_file() gates on it.
+	lost: usize,
 }
 
 const ROOT: usize = 0;
@@ -869,6 +874,7 @@ struct Parser {
 	// merged level reports, not just the outermost. The stored line splits old
 	// children (hint) from ones the re-opened region itself created (silent).
 	reentered: HashMap<usize, usize>,
+	lost: usize, // dropped lines/values canonical output cannot re-emit
 }
 
 impl Parser {
@@ -898,6 +904,7 @@ impl Parser {
 			saw_blank: false,
 			star_open: None,
 			reentered: HashMap::new(),
+			lost: 0,
 		}
 	}
 
@@ -1125,6 +1132,7 @@ impl Parser {
 				line,
 				format!("nesting deeper than {} levels; line skipped", MAX_DEPTH),
 			);
+			self.lost += 1;
 			return None;
 		}
 		let mut cur = parent;
@@ -1157,6 +1165,7 @@ impl Parser {
 							line,
 							format!("value after selector on '{}' ignored", seg.name),
 						);
+						self.lost += 1;
 					}
 				}
 				(Some(Selector::ByIndex(n)), _) => {
@@ -1170,11 +1179,13 @@ impl Parser {
 						cur = found;
 					} else {
 						self.err(line, format!("no instance {} of '{}'", n, seg.name));
+						self.lost += 1;
 						return None;
 					}
 				}
 				(Some(Selector::Wildcard), _) => {
 					self.err(line, "wildcard selector is query-only");
+					self.lost += 1;
 					return None;
 				}
 				(None, false) => {
@@ -1292,6 +1303,7 @@ impl Parser {
 	fn bind_block(&mut self, parent: usize, value: Value, line: usize) -> Option<usize> {
 		if parent == ROOT {
 			self.err(line, "raw block with no parent field");
+			self.lost += 1;
 			return None;
 		}
 		if self.arena[parent].value.is_empty() {
@@ -1314,21 +1326,25 @@ impl Parser {
 	fn add_star_element(&mut self, parent: usize, body: &str, line: usize) {
 		if parent == ROOT {
 			self.err(line, "list element with no parent field");
+			self.lost += 1;
 			return;
 		}
 		// Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if !self.arena[parent].children.is_empty() {
 			self.err(line, "list element mixed with field children; ignored");
+			self.lost += 1;
 			return;
 		}
 		let trimmed = body.trim();
 		if trimmed.is_empty() {
 			self.err(line, "empty list element");
+			self.lost += 1;
 			return;
 		}
 		// One scalar per line; a bare comma is an error, not a second element.
 		if split_unquoted_commas(trimmed).len() > 1 {
 			self.err(line, "bare comma in list element (one element per line)");
+			self.lost += 1;
 			return;
 		}
 		if unterminated_quote(trimmed) {
@@ -1338,6 +1354,7 @@ impl Parser {
 			Some(e) => e,
 			None => {
 				self.err(line, "empty list element");
+				self.lost += 1;
 				return;
 			}
 		};
@@ -1367,6 +1384,7 @@ impl Parser {
 			}
 		} else {
 			self.err(line, "field already has a value; list element ignored");
+			self.lost += 1;
 		}
 	}
 
@@ -1467,6 +1485,7 @@ impl Parser {
 					Some(p) => p,
 					None => {
 						self.err(lineno, "indentation matches no open level");
+						self.lost += 1;
 						i += 1;
 						continue;
 					}
@@ -1485,6 +1504,7 @@ impl Parser {
 						Some(p) => p,
 						None => {
 							self.err(lineno, "indentation matches no open level");
+							self.lost += 1;
 							i += 1;
 							continue;
 						}
@@ -1499,6 +1519,21 @@ impl Parser {
 					continue;
 				}
 				self.err(lineno, "malformed line: '*' must be followed by a space");
+				// Content-malformed at any position, so it is safe to retain
+				// verbatim as trivia: re-emitted, it re-diagnoses identically
+				// and can never read as a live binding. A hand-typo no longer
+				// vanishes on the consumer's next save. The one exception is a
+				// leading BOM - the file-start strip would rewrite it, so that
+				// line counts as lost instead.
+				if rest.starts_with('\u{feff}') {
+					self.lost += 1;
+				} else {
+					self.pending.push(Pend {
+						text: rest.trim_end().to_string(),
+						indent: indent.to_string(),
+						blank_before: had_blank,
+					});
+				}
 				i += 1;
 				continue;
 			}
@@ -1521,6 +1556,7 @@ impl Parser {
 				Some(p) => p,
 				None => {
 					self.err(lineno, "indentation matches no open level");
+					self.lost += 1;
 					i += 1;
 					continue;
 				}
@@ -1529,6 +1565,18 @@ impl Parser {
 				Ok(s) => s,
 				Err(reason) => {
 					self.err(lineno, format!("malformed line skipped: {}", reason));
+					// Content-malformed at any position - retained as trivia,
+					// same rationale (and same BOM exception) as the bad '*'
+					// line above.
+					if rest.starts_with('\u{feff}') {
+						self.lost += 1;
+					} else {
+						self.pending.push(Pend {
+							text: rest.trim_end().to_string(),
+							indent: indent.to_string(),
+							blank_before: had_blank,
+						});
+					}
 					i += 1;
 					continue;
 				}
@@ -1597,6 +1645,7 @@ impl Parser {
 			diags: self.diags,
 			strictness,
 			orphans,
+			lost: self.lost,
 		}
 	}
 }
@@ -1629,6 +1678,15 @@ impl Document {
 
 	pub fn diagnostics(&self) -> &[Diagnostic] {
 		&self.diags
+	}
+
+	/// How many lines or values parsing dropped that canonical output cannot
+	/// re-emit - bad indentation, an unusable selector, a line past the depth
+	/// cap. Content-malformed lines do NOT count: those are retained as trivia
+	/// and survive a save. Nonzero means a save_file would delete hand-written
+	/// content, so save_file refuses then (save_file_lossy overrides).
+	pub fn lost_count(&self) -> usize {
+		self.lost
 	}
 
 	/// How many error-severity diagnostics the document carries - the "did
@@ -1713,8 +1771,22 @@ impl Document {
 	/// File tier, save half: write this document's canonical text to PATH
 	/// through a temp file in the same directory plus a rename, so an
 	/// interrupted save can never truncate the config it rewrites - the same
-	/// mechanics the CLI's `--write` uses. Err carries the message.
+	/// mechanics the CLI's `--write` uses. Err carries the message. Refuses
+	/// when parsing lost content that a save would silently delete (see
+	/// lost_count); save_file_lossy writes anyway.
 	pub fn save_file(&self, path: &str) -> Result<(), String> {
+		if self.lost > 0 {
+			return Err(format!(
+				"{}: refusing to save: load dropped {} line(s)/value(s) this write would delete (see diagnostics; save_file_lossy overrides)",
+				path, self.lost
+			));
+		}
+		write_file_atomic(path, &self.to_canonical())
+	}
+
+	/// save_file without the lost-content gate: writes even when parsing
+	/// dropped lines this save deletes. The caller owns that choice.
+	pub fn save_file_lossy(&self, path: &str) -> Result<(), String> {
 		write_file_atomic(path, &self.to_canonical())
 	}
 
@@ -2846,6 +2918,7 @@ impl Document {
 	/// `Load(defaults, site, user)` is a left fold of this: each later file
 	/// overlaid on the accumulation of the earlier ones.
 	pub fn merge(&mut self, over: &Document) {
+		self.lost += over.lost;
 		self.overlay(ROOT, over, ROOT);
 		// Layers commonly share a footer; keeping one copy of each keeps a
 		// stack of files from repeating it once per layer.

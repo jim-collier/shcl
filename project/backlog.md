@@ -55,9 +55,6 @@ None open.
 - 🔘 By-value selectors: distinguish scalar `"a, b"` from list `a, b`.
 	- From convert-base-v2, still open at v1.2.0 - the earlier round closed it as a spec paragraph only. Both spellings meet the same selector because matching is against the display form, and the read comes back Multiple.
 	- Needs a matching-rule decision; behavior change, corpus impact.
-- 🔘 Make hand-edited configs structurally safe across a round trip.
-	- From nemo-anywhere, their strongest ask: a malformed line is diagnosed and dropped at parse, so a stray typo plus one settings change equals a silently vanished hand-written line once the consumer writes back.
-	- Two candidate shapes, either or both: retain the raw text as inert trivia and re-emit it, or have canonicalize refuse a doc with errors unless the caller opts in. Design question - decide the shape before touching any binding.
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
@@ -150,6 +147,12 @@ None open.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 
 #### Done - Features and enhancements
+
+- ✅ Hand-edited configs are structurally safe across a round trip.
+	- From nemo-anywhere, their strongest ask: a malformed line was diagnosed and dropped, so a stray typo plus one settings change equaled a silently vanished hand-written line on write-back.
+	- Done, all four bindings, split by what is provably safe: content-malformed lines (unreadable at any position) are retained as inert trivia and re-emitted in place, still diagnosed; lines the parser could read but not apply (bad indent, unusable selector, depth cap, dropped list elements) cannot be made inert - re-emitted they could parse as live content - so they count into a new `LostCount()`, and `SaveFile` refuses while it is nonzero, with `SaveFileLossy` as the explicit override.
+	- The fuzzer caught the one retention hole (a BOM-led line, rewritten by the file-start strip) - those count as lost. 100k-iteration soak green.
+	- Goldens 004 and 013 now keep their malformed lines; new case 049 pins retention in and out of blocks; fixtures in every runner. Spec (Diagnostics + File tier) and `design.md` updated. CLI `--write` behavior deliberately unchanged - a human sees the stderr diagnostics.
 
 - ✅ File tier: `LoadFile`/`SaveFile` with a four-way status, atomic save.
 	- From nemo-anywhere: every consumer that persists a config re-implemented the same load/save dance and repeated the same mistakes - absent confused with unreadable, torn writes.

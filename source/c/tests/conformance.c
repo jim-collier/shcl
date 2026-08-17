@@ -611,6 +611,26 @@ int main(int argc, char **argv) {
 		shcl_str c1 = shcl_to_canonical(fd), c2 = shcl_to_canonical(fb);
 		if (fst != SHCL_FILE_CLEAN || c1.n != c2.n || memcmp(c1.p, c2.p, c1.n) != 0) fail("file_tier", "save round-trip mismatch");
 		shcl_free(fb); shcl_free(fd);
+		// Content-malformed lines are retained as trivia (lost 0, the line
+		// survives a save); position-dependent drops count as lost and make
+		// shcl_save_file refuse until the caller opts into the lossy save.
+		// Same fixture in every runner.
+		const char *kt = "a: 1\nsquare-miles 300\nb: 2\n";
+		shcl_doc *kd = shcl_parse(kt, strlen(kt));
+		if (shcl_lost_count(kd) != 0) fail("lost", "kept lost_count not 0");
+		shcl_str kc = shcl_to_canonical(kd);
+		if (!contains(kc.p, kc.n, "square-miles 300\n")) fail("lost", "retained line missing");
+		const char *lt2 = "a:\n\tb: 1\n  c: 2\n"; // indent matches no level
+		shcl_doc *lo = shcl_parse(lt2, strlen(lt2));
+		if (shcl_lost_count(lo) != 1) fail("lost", "lost_count not 1");
+		if (!shcl_save_file(kd, tfile)) fail("lost", "kept save failed");
+		shcl_doc *kb = shcl_load_file(tfile, &fst);
+		shcl_str kbc = shcl_to_canonical(kb);
+		if (!contains(kbc.p, kbc.n, "square-miles 300\n")) fail("lost", "retained line lost through save");
+		shcl_free(kb);
+		if (shcl_save_file(lo, tfile)) fail("lost", "save did not refuse a lossy save");
+		if (!shcl_save_file_lossy(lo, tfile)) fail("lost", "lossy save failed");
+		shcl_free(lo); shcl_free(kd);
 		remove(tfile); rmdir(tdir);
 	}
 	// write_reason: the reason behind a setter's bare 0. Same fixture in every

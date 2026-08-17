@@ -519,6 +519,11 @@ type Document struct {
 	diags      []Diagnostic
 	strictness Strictness
 	orphans    []lead // top-level comments after the last binding line
+	// Lines or values parsing dropped that canonical output cannot re-emit
+	// (bad indentation, an unusable selector, past the depth cap, ...).
+	// Content-malformed lines are NOT counted - they are retained as trivia
+	// and survive a save. LostCount() serves it; SaveFile() gates on it.
+	lost int
 }
 
 const root = 0
@@ -1094,6 +1099,7 @@ type parser struct {
 	// merged level reports, not just the outermost. The stored line splits old
 	// children (hint) from ones the re-opened region itself created (silent).
 	reentered map[int]int
+	lost      int // dropped lines/values canonical output cannot re-emit
 }
 
 func newParser() *parser {
@@ -1294,6 +1300,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 	}
 	if parentDepth+len(segs) > MaxDepth {
 		p.err(line, fmt.Sprintf("nesting deeper than %d levels; line skipped", MaxDepth))
+		p.lost++
 		return 0, false
 	}
 	cur := parent
@@ -1317,6 +1324,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 				// `a.b[X]: v` - the discriminator is the value; a second
 				// value has nowhere unambiguous to go.
 				p.err(line, fmt.Sprintf("value after selector on '%s' ignored", seg.name))
+				p.lost++
 			}
 		case seg.sel != nil && seg.sel.kind == selByIndex:
 			var matches []int
@@ -1329,10 +1337,12 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 				cur = matches[seg.sel.index]
 			} else {
 				p.err(line, fmt.Sprintf("no instance %d of '%s'", seg.sel.index, seg.name))
+				p.lost++
 				return 0, false
 			}
 		case seg.sel != nil:
 			p.err(line, "wildcard selector is query-only")
+			p.lost++
 			return 0, false
 		case !isLast:
 			cur = p.selectOrCreate(cur, seg.name, seg.nameSrc, value{kind: vEmpty}, line)
@@ -1425,6 +1435,7 @@ func (p *parser) consumeRaw(lines []string, i, openLine int, ch byte, length int
 func (p *parser) bindBlock(parent int, v value, line int) int {
 	if parent == root {
 		p.err(line, "raw block with no parent field")
+		p.lost++
 		return -1
 	}
 	if p.arena[parent].value.isEmpty() {
@@ -1443,21 +1454,25 @@ func (p *parser) bindBlock(parent int, v value, line int) int {
 func (p *parser) addStarElement(parent int, body string, line int) {
 	if parent == root {
 		p.err(line, "list element with no parent field")
+		p.lost++
 		return
 	}
 	// Uniform-or-nothing (spec): a mix with field children is not a block array.
 	if len(p.arena[parent].children) != 0 {
 		p.err(line, "list element mixed with field children; ignored")
+		p.lost++
 		return
 	}
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" {
 		p.err(line, "empty list element")
+		p.lost++
 		return
 	}
 	// One scalar per line; a bare comma is an error, not a second element.
 	if len(splitUnquotedCommas(trimmed)) > 1 {
 		p.err(line, "bare comma in list element (one element per line)")
+		p.lost++
 		return
 	}
 	if unterminatedQuote(trimmed) {
@@ -1466,6 +1481,7 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 	el, ok := parseElement(trimmed)
 	if !ok {
 		p.err(line, "empty list element")
+		p.lost++
 		return
 	}
 	switch {
@@ -1494,6 +1510,7 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 		p.arena[parent].value.els = append(p.arena[parent].value.els, el)
 	default:
 		p.err(line, "field already has a value; list element ignored")
+		p.lost++
 	}
 }
 
@@ -1590,6 +1607,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			parent, okp := p.resolveParent(indent)
 			if !okp {
 				p.err(lineno, "indentation matches no open level")
+				p.lost++
 				i++
 				continue
 			}
@@ -1607,6 +1625,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				parent, okp := p.resolveParent(indent)
 				if !okp {
 					p.err(lineno, "indentation matches no open level")
+					p.lost++
 					i++
 					continue
 				}
@@ -1620,6 +1639,17 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				continue
 			}
 			p.err(lineno, "malformed line: '*' must be followed by a space")
+			// Content-malformed at any position, so it is safe to retain
+			// verbatim as trivia: re-emitted, it re-diagnoses identically
+			// and can never read as a live binding. A hand-typo no longer
+			// vanishes on the consumer's next save. The one exception is a
+			// leading BOM - the file-start strip would rewrite it, so that
+			// line counts as lost instead.
+			if strings.HasPrefix(rest, "\ufeff") {
+				p.lost++
+			} else {
+				p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank})
+			}
 			i++
 			continue
 		}
@@ -1637,12 +1667,20 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		parent, okp := p.resolveParent(indent)
 		if !okp {
 			p.err(lineno, "indentation matches no open level")
+			p.lost++
 			i++
 			continue
 		}
 		scan, serr := scanPath(content)
 		if serr != nil {
 			p.err(lineno, "malformed line skipped: "+serr.Error())
+			// Content-malformed at any position - retained as trivia, same
+			// rationale (and same BOM exception) as the bad '*' line above.
+			if strings.HasPrefix(rest, "\ufeff") {
+				p.lost++
+			} else {
+				p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank})
+			}
 			i++
 			continue
 		}
@@ -1701,7 +1739,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore})
 	}
 	p.pending = p.pending[:0]
-	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: orphans}
+	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: orphans, lost: p.lost}
 }
 
 // ---------------------------------------------------------------------------
@@ -1740,6 +1778,15 @@ func (d *Document) Diagnostics() []Diagnostic {
 // "did this file have errors?" predicate, so recover-and-continue can't read
 // as success by accident. Counts whatever Diagnostics() holds (after
 // LoadAndValidate, that includes validation errors).
+// LostCount is how many lines or values parsing dropped that canonical
+// output cannot re-emit - bad indentation, an unusable selector, a line past
+// the depth cap. Content-malformed lines do NOT count: those are retained as
+// trivia and survive a save. Nonzero means a SaveFile would delete
+// hand-written content, so SaveFile refuses then (SaveFileLossy overrides).
+func (d *Document) LostCount() int {
+	return d.lost
+}
+
 func (d *Document) ErrorCount() int {
 	n := 0
 	for _, dg := range d.diags {
@@ -2140,7 +2187,18 @@ func LoadFileWith(path string, level Strictness) (*Document, FileStatus) {
 // SaveFile is the file tier's save half: write this document's canonical text
 // to path through WriteFileAtomic, so an interrupted save can never truncate
 // the config it rewrites - the same mechanics the CLI's `--write` uses.
+// Refuses when parsing lost content that a save would silently delete (see
+// LostCount); SaveFileLossy writes anyway.
 func (d *Document) SaveFile(path string) error {
+	if d.lost > 0 {
+		return fmt.Errorf("%s: refusing to save: load dropped %d line(s)/value(s) this write would delete (see diagnostics; SaveFileLossy overrides)", path, d.lost)
+	}
+	return WriteFileAtomic(path, d.ToCanonical())
+}
+
+// SaveFileLossy is SaveFile without the lost-content gate: writes even when
+// parsing dropped lines this save deletes. The caller owns that choice.
+func (d *Document) SaveFileLossy(path string) error {
 	return WriteFileAtomic(path, d.ToCanonical())
 }
 
@@ -3162,6 +3220,7 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 // Load(defaults, site, user) is a left fold of this: each later file overlaid
 // on the earlier ones.
 func (d *Document) Merge(over *Document) {
+	d.lost += over.lost
 	d.overlay(root, over, root)
 	// Layers commonly share a footer; keeping one copy of each keeps a
 	// stack of files from repeating it once per layer.

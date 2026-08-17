@@ -800,6 +800,30 @@ fn file_tier_load_save() {
 }
 
 #[test]
+fn lost_and_save_gate() {
+	// Content-malformed lines are retained as trivia (lost_count 0, the line
+	// survives a save); position-dependent drops count as lost and make
+	// save_file refuse until the caller opts into save_file_lossy. Same
+	// fixture in every runner.
+	let kept = Document::parse("a: 1\nsquare-miles 300\nb: 2\n");
+	assert_eq!(kept.lost_count(), 0);
+	assert!(kept.to_canonical().contains("square-miles 300\n"));
+	let lost = Document::parse("a:\n\tb: 1\n  c: 2\n"); // indent matches no level
+	assert_eq!(lost.lost_count(), 1);
+	let dir = std::env::temp_dir().join(format!("shcl-lostgate-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let f = dir.join("t.shcl");
+	let fs = f.to_str().unwrap();
+	assert!(kept.save_file(fs).is_ok());
+	let (back, _) = Document::load_file(fs);
+	assert!(back.to_canonical().contains("square-miles 300\n"));
+	assert!(lost.save_file(fs).is_err());
+	assert!(lost.save_file_lossy(fs).is_ok());
+	let _ = std::fs::remove_file(&f);
+	let _ = std::fs::remove_dir(&dir);
+}
+
+#[test]
 fn strict_failure_carries_document() {
 	// A failed strict load hands back the document and names the first
 	// failures in the message - the diagnostics are the point.

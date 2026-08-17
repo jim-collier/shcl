@@ -876,6 +876,8 @@ class _Parser:
 		# merged level reports, not just the outermost. The stored line splits old
 		# children (hint) from ones the re-opened region itself created (silent).
 		self.reentered = {}
+		# Dropped lines/values canonical output cannot re-emit.
+		self.lost = 0
 
 	def _err(self, line, msg):
 		self.diags.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
@@ -1028,6 +1030,7 @@ class _Parser:
 			up = self.arena[up].parent
 		if parent_depth + len(segs) > MAX_DEPTH:
 			self._err(line, "nesting deeper than {} levels; line skipped".format(MAX_DEPTH))
+			self.lost += 1
 			return None
 		cur = parent
 		last = len(segs) - 1
@@ -1050,6 +1053,7 @@ class _Parser:
 					# `a.b[X]: v` - the discriminator is the value; a second
 					# value has nowhere unambiguous to go.
 					self._err(line, "value after selector on '{}' ignored".format(seg.name))
+					self.lost += 1
 			elif sel is not None and sel[0] == "idx":
 				matches = [c for c in self.arena[cur].children if self.arena[c].name == seg.name]
 				k = sel[1]
@@ -1057,9 +1061,11 @@ class _Parser:
 					cur = matches[k]
 				else:
 					self._err(line, "no instance {} of '{}'".format(k, seg.name))
+					self.lost += 1
 					return None
 			elif sel is not None and sel[0] == "wild":
 				self._err(line, "wildcard selector is query-only")
+				self.lost += 1
 				return None
 			elif not is_last:
 				cur = self._select_or_create(cur, seg.name, seg.name_src, _empty(), line)
@@ -1143,6 +1149,7 @@ class _Parser:
 		Returns the node the block landed on (None = no parent, diagnosed)."""
 		if parent == ROOT:
 			self._err(line, "raw block with no parent field")
+			self.lost += 1
 			return None
 		if self.arena[parent].value.is_empty():
 			old_key = self.arena[parent].value.key()
@@ -1159,24 +1166,29 @@ class _Parser:
 		"""One stacked-list element (`* scalar`) appends to the parent's array."""
 		if parent == ROOT:
 			self._err(line, "list element with no parent field")
+			self.lost += 1
 			return
 		# Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if self.arena[parent].children:
 			self._err(line, "list element mixed with field children; ignored")
+			self.lost += 1
 			return
 		trimmed = _trim(body)
 		if not trimmed:
 			self._err(line, "empty list element")
+			self.lost += 1
 			return
 		# One scalar per line; a bare comma is an error, not a second element.
 		if len(_split_unquoted_commas(trimmed)) > 1:
 			self._err(line, "bare comma in list element (one element per line)")
+			self.lost += 1
 			return
 		if _unterminated_quote(trimmed):
 			self._err(line, "unterminated quote in value")
 		el = _parse_element(trimmed)
 		if el is None:
 			self._err(line, "empty list element")
+			self.lost += 1
 			return
 		node = self.arena[parent]
 		if node.value.kind == "empty":
@@ -1201,6 +1213,7 @@ class _Parser:
 			node.value.els.append(el)
 		else:
 			self._err(line, "field already has a value; list element ignored")
+			self.lost += 1
 
 	def _emit_repeated_leaf_hints(self):
 		"""Legal input that looks like a common mistake: a field repeating as a bare
@@ -1276,6 +1289,7 @@ class _Parser:
 				parent = self._resolve_parent(indent)
 				if parent is None:
 					self._err(lineno, "indentation matches no open level")
+					self.lost += 1
 					i += 1
 					continue
 				value, nxt = self._consume_raw(lines, i + 1, lineno, ch, length, info)
@@ -1291,6 +1305,7 @@ class _Parser:
 					parent = self._resolve_parent(indent)
 					if parent is None:
 						self._err(lineno, "indentation matches no open level")
+						self.lost += 1
 						i += 1
 						continue
 					body, comment = _split_comment(after)
@@ -1301,6 +1316,16 @@ class _Parser:
 					i += 1
 					continue
 				self._err(lineno, "malformed line: '*' must be followed by a space")
+				# Content-malformed at any position, so it is safe to retain
+				# verbatim as trivia: re-emitted, it re-diagnoses identically
+				# and can never read as a live binding. A hand-typo no longer
+				# vanishes on the consumer's next save. The one exception is a
+				# leading BOM - the file-start strip would rewrite it, so that
+				# line counts as lost instead.
+				if rest.startswith("\ufeff"):
+					self.lost += 1
+				else:
+					self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
 				i += 1
 				continue
 			# Field line.
@@ -1315,12 +1340,19 @@ class _Parser:
 			parent = self._resolve_parent(indent)
 			if parent is None:
 				self._err(lineno, "indentation matches no open level")
+				self.lost += 1
 				i += 1
 				continue
 			try:
 				segments, value_text = _scan_path(content)
 			except _PathError as e:
 				self._err(lineno, "malformed line skipped: {}".format(e.args[0]))
+				# Content-malformed at any position - retained as trivia, same
+				# rationale (and same BOM exception) as the bad '*' line above.
+				if rest.startswith("\ufeff"):
+					self.lost += 1
+				else:
+					self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
 				i += 1
 				continue
 			nxt = i + 1
@@ -1365,7 +1397,7 @@ class _Parser:
 		self._hang_deeper_pending("")
 		orphans = [_Lead(p.text, p.blank_before) for p in self.pending]
 		self.pending = []
-		return Document(self.arena, self.diags, strictness, orphans)
+		return Document(self.arena, self.diags, strictness, orphans, self.lost)
 
 
 # ---------------------------------------------------------------------------
@@ -1377,13 +1409,18 @@ _NO_DEFAULT = object()  # get_* sentinel: no call-site default -> must-exist (ra
 
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
-	__slots__ = ("arena", "diags", "_strictness", "orphans")
+	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost")
 
-	def __init__(self, arena, diags, strictness, orphans=None):
+	def __init__(self, arena, diags, strictness, orphans=None, lost=0):
 		self.arena = arena
 		self.diags = diags
 		self._strictness = strictness
 		self.orphans = orphans if orphans is not None else []
+		# Lines or values parsing dropped that canonical output cannot re-emit
+		# (bad indentation, an unusable selector, past the depth cap, ...).
+		# Content-malformed lines are NOT counted - they are retained as trivia
+		# and survive a save. lost_count() serves it; save_file() gates on it.
+		self._lost = lost
 
 	@staticmethod
 	def parse(text):
@@ -1431,11 +1468,27 @@ class Document:
 		through a temp file in the same directory plus a rename, so an
 		interrupted save can never truncate the config it rewrites - the same
 		mechanics the CLI's --write uses. Returns None on success, or the
-		error message."""
+		error message. Refuses when parsing lost content that a save would
+		silently delete (see lost_count); save_file_lossy writes anyway."""
+		if self._lost > 0:
+			return "{}: refusing to save: load dropped {} line(s)/value(s) this write would delete (see diagnostics; save_file_lossy overrides)".format(path, self._lost)
+		return write_file_atomic(path, self.to_canonical())
+
+	def save_file_lossy(self, path):
+		"""save_file without the lost-content gate: writes even when parsing
+		dropped lines this save deletes. The caller owns that choice."""
 		return write_file_atomic(path, self.to_canonical())
 
 	def diagnostics(self):
 		return self.diags
+
+	def lost_count(self):
+		"""How many lines or values parsing dropped that canonical output cannot
+		re-emit - bad indentation, an unusable selector, a line past the depth
+		cap. Content-malformed lines do NOT count: those are retained as trivia
+		and survive a save. Nonzero means a save_file would delete hand-written
+		content, so save_file refuses then (save_file_lossy overrides)."""
+		return self._lost
 
 	def error_count(self):
 		"""How many error-severity diagnostics the document carries - the "did
@@ -2076,6 +2129,7 @@ class Document:
 	# ----- layered loading: overlay a higher-priority document -----
 
 	def merge(self, over):
+		self._lost += over._lost
 		"""Overlay `over` (a higher-priority layer) onto self (the lower one).
 		Container instances merge by (name, value) exactly like the in-file rule;
 		a leaf name present in `over` replaces self's same-named children at that
