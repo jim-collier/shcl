@@ -3561,8 +3561,8 @@ impl Document {
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
 // the typed coercions, so document strictness composes for free. Schema faults
 // (V09x) come first and the surviving constraints still check the document;
-// only the unknown-field sweep needs a fault-free schema. One line-number
-// space per result.
+// the unknown-field sweep skips only when a fault cost a path spelling. One
+// line-number space per result.
 
 const SCHEMA_TYPES: [&str; 11] = [
 	"int",
@@ -3613,6 +3613,11 @@ struct Constraint {
 struct SchemaDef {
 	cons: Vec<Constraint>,
 	frags: HashMap<String, Vec<Constraint>>,
+	// False when a fault cost the schema a path spelling (unreadable `field:`
+	// path, or a mount naming no declared fragment). Key-level faults keep
+	// their entry's chain, so only these two classes can turn declared fields
+	// into false unknowns - the sweep runs unless one of them happened.
+	paths_complete: bool,
 }
 
 fn vdiag(out: &mut Vec<Diagnostic>, line: usize, msg: String) {
@@ -3642,12 +3647,15 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 	let mut faults: Vec<Diagnostic> = Vec::new();
 	let mut cons: Vec<Constraint> = Vec::new();
 	let mut frags: HashMap<String, Vec<Constraint>> = HashMap::new();
+	let mut paths_complete = true;
 	for &f in &schema.arena[ROOT].children {
 		let node = &schema.arena[f];
 		match node.name.as_str() {
 			"field" => {
 				if let Some(c) = parse_field(schema, f, &mut faults) {
 					cons.push(c);
+				} else {
+					paths_complete = false;
 				}
 			}
 			"fragment" => {
@@ -3670,6 +3678,8 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 					if kid.name == "field" {
 						if let Some(c) = parse_field(schema, k, &mut faults) {
 							fcs.push(c);
+						} else {
+							paths_complete = false;
 						}
 					} else {
 						vdiag(
@@ -3701,11 +3711,19 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 				c.inherits_line,
 				format!("unknown schema fragment '{}'", fr),
 			);
+			paths_complete = false;
 		}
 	}
 	// One constraint per line in practice, so line order = file order.
 	faults.sort_by_key(|d| d.line);
-	(SchemaDef { cons, frags }, faults)
+	(
+		SchemaDef {
+			cons,
+			frags,
+			paths_complete,
+		},
+		faults,
+	)
 }
 
 /// One `field:` instance (top-level or inside a fragment) -> a Constraint.
@@ -4276,17 +4294,17 @@ impl Document {
 	/// spec.md "Schema validation"). Empty result = the document conforms.
 	/// Diagnostic lines are document lines (0 = document scope); schema faults
 	/// (V09x, schema-file lines) come first, and the surviving constraints
-	/// still check the document. Only the unknown-field sweep needs a
-	/// fault-free schema: a dropped constraint would turn the fields it
-	/// declared into false unknowns, so that check skips rather than misfire.
+	/// still check the document. The unknown-field sweep runs too, unless a
+	/// fault cost the schema a path spelling (an unreadable `field:` path, or
+	/// a mount naming no declared fragment) - only those can turn declared
+	/// fields into false unknowns; a key-level fault keeps its entry's chain.
 	pub fn validate(&self, schema: &Document) -> Vec<Diagnostic> {
 		let (def, faults) = build_schema(schema);
-		let schema_ok = faults.is_empty();
 		let mut out = faults;
 		for c in &def.cons {
 			self.v_check(c, &def, &mut out);
 		}
-		if schema_ok {
+		if def.paths_complete {
 			self.v_unknown(&def, &mut out);
 		}
 		out

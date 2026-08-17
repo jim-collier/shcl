@@ -2369,24 +2369,24 @@ class Document:
 	# instances whose children are the constraints (closed vocabulary).
 	# Validation reuses the accessor's path scan and the typed coercions, so
 	# document strictness composes for free. Schema faults (V09x) come first
-	# and the surviving constraints still check the document; only the
-	# unknown-field sweep needs a fault-free schema. One line-number space
+	# and the surviving constraints still check the document; the unknown-field
+	# sweep skips only when a fault cost a path spelling. One line-number space
 	# per result.
 
 	def validate(self, schema):
 		"""Validate against a schema document (itself plain SHCL). Empty result
 		= the document conforms. Diagnostic lines are document lines (0 =
 		document scope); schema faults (V09x, schema-file lines) come first,
-		and the surviving constraints still check the document. Only the
-		unknown-field sweep needs a fault-free schema: a dropped constraint
-		would turn the fields it declared into false unknowns, so that check
-		skips rather than misfire."""
+		and the surviving constraints still check the document. The
+		unknown-field sweep runs too, unless a fault cost the schema a path
+		spelling (an unreadable `field:` path, or a mount naming no declared
+		fragment) - only those can turn declared fields into false unknowns;
+		a key-level fault keeps its entry's chain."""
 		sdef, faults = _build_schema(schema)
-		schema_ok = not faults
 		out = faults
 		for c in sdef.cons:
 			self._v_check(c, sdef, out)
-		if schema_ok:
+		if sdef.paths_complete:
 			self._v_unknown(sdef, out)
 		return out
 
@@ -3241,12 +3241,17 @@ class _Constraint:
 
 class _SchemaDef:
 	# An interpreted schema: the top-level constraints plus the named fragments
-	# their `inherits` keys can mount.
-	__slots__ = ("cons", "frags")
+	# their `inherits` keys can mount. paths_complete is False when a fault
+	# cost the schema a path spelling (unreadable `field:` path, or a mount
+	# naming no declared fragment); key-level faults keep their entry's chain,
+	# so only those two classes can turn declared fields into false unknowns -
+	# the sweep runs unless one of them happened.
+	__slots__ = ("cons", "frags", "paths_complete")
 
-	def __init__(self, cons, frags):
+	def __init__(self, cons, frags, paths_complete):
 		self.cons = cons
 		self.frags = frags        # name -> list of _Constraint
+		self.paths_complete = paths_complete
 
 
 def _vdiag(out, line, msg):
@@ -3274,12 +3279,15 @@ def _build_schema(schema):
 	faults = []
 	cons = []
 	frags = {}
+	paths_complete = True
 	for f in schema.arena[ROOT].children:
 		node = schema.arena[f]
 		if node.name == "field":
 			c = _parse_field(schema, f, faults)
 			if c is not None:
 				cons.append(c)
+			else:
+				paths_complete = False
 		elif node.name == "fragment":
 			name = _single_text(node.value)
 			if not name:
@@ -3295,6 +3303,8 @@ def _build_schema(schema):
 					c = _parse_field(schema, k, faults)
 					if c is not None:
 						fcs.append(c)
+					else:
+						paths_complete = False
 				else:
 					_vdiag(faults, kid.line, "bad schema fragment '{}': unknown key '{}'".format(name, kid.name))
 			frags[name] = fcs
@@ -3305,9 +3315,10 @@ def _build_schema(schema):
 	for c in cons + [fc for fcs in frags.values() for fc in fcs]:
 		if c.inherits is not None and c.inherits not in frags:
 			_vdiag(faults, c.inherits_line, "unknown schema fragment '{}'".format(c.inherits))
+			paths_complete = False
 	# One constraint per line in practice, so line order = file order.
 	faults.sort(key=lambda d: d.line)
-	return _SchemaDef(cons, frags), faults
+	return _SchemaDef(cons, frags, paths_complete), faults
 
 
 def _parse_field(schema, f, faults):

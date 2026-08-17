@@ -4008,8 +4008,8 @@ func (d *Document) GetDateTimeArrayOr(path string, def []DateTime) []DateTime {
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
 // the typed coercions, so document strictness composes for free. Schema faults
 // (V09x) come first and the surviving constraints still check the document;
-// only the unknown-field sweep needs a fault-free schema. One line-number
-// space per result.
+// the unknown-field sweep skips only when a fault cost a path spelling. One
+// line-number space per result.
 
 var schemaTypes = []string{
 	"int",
@@ -4069,6 +4069,11 @@ type constraint struct {
 type schemaDef struct {
 	cons  []constraint
 	frags map[string][]constraint
+	// False when a fault cost the schema a path spelling (unreadable `field:`
+	// path, or a mount naming no declared fragment). Key-level faults keep
+	// their entry's chain, so only these two classes can turn declared fields
+	// into false unknowns - the sweep runs unless one of them happened.
+	pathsComplete bool
 }
 
 func vdiag(out *[]Diagnostic, line int, msg string) {
@@ -4105,12 +4110,15 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 	var faults []Diagnostic
 	var cons []constraint
 	frags := map[string][]constraint{}
+	pathsComplete := true
 	for _, f := range schema.arena[root].children {
 		node := &schema.arena[f]
 		switch node.name {
 		case "field":
 			if c, ok := parseField(schema, f, &faults); ok {
 				cons = append(cons, c)
+			} else {
+				pathsComplete = false
 			}
 		case "fragment":
 			name, ok := singleText(&node.value)
@@ -4128,6 +4136,8 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 				if kid.name == "field" {
 					if c, ok := parseField(schema, k, &faults); ok {
 						fcs = append(fcs, c)
+					} else {
+						pathsComplete = false
 					}
 				} else {
 					vdiag(&faults, kid.line, fmt.Sprintf("bad schema fragment '%s': unknown key '%s'", name, kid.name))
@@ -4146,6 +4156,7 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 		}
 		if _, ok := frags[c.inherits]; !ok {
 			vdiag(&faults, c.inheritsLine, fmt.Sprintf("unknown schema fragment '%s'", c.inherits))
+			pathsComplete = false
 		}
 	}
 	for i := range cons {
@@ -4158,7 +4169,7 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 	}
 	// One constraint per line in practice, so line order = file order.
 	sort.SliceStable(faults, func(i, j int) bool { return faults[i].Line < faults[j].Line })
-	return schemaDef{cons: cons, frags: frags}, faults
+	return schemaDef{cons: cons, frags: frags, pathsComplete: pathsComplete}, faults
 }
 
 // parseField turns one `field:` instance (top-level or inside a fragment) into
@@ -4817,17 +4828,17 @@ func min3(a, b, c int) int {
 // spec.md "Schema validation"). An empty result means the document conforms.
 // Diagnostic lines are document lines (0 = document scope); schema faults
 // (V09x, schema-file lines) come first, and the surviving constraints still
-// check the document. Only the unknown-field sweep needs a fault-free schema:
-// a dropped constraint would turn the fields it declared into false unknowns,
-// so that check skips rather than misfire.
+// check the document. The unknown-field sweep runs too, unless a fault cost
+// the schema a path spelling (an unreadable `field:` path, or a mount naming
+// no declared fragment) - only those can turn declared fields into false
+// unknowns; a key-level fault keeps its entry's chain.
 func (d *Document) Validate(schema *Document) []Diagnostic {
 	def, faults := buildSchema(schema)
-	schemaOK := len(faults) == 0
 	out := faults
 	for i := range def.cons {
 		d.vCheck(&def.cons[i], &def, &out)
 	}
-	if schemaOK {
+	if def.pathsComplete {
 		d.vUnknown(&def, &out)
 	}
 	return out
