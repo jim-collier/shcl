@@ -1,0 +1,4 @@
+query	type	expected	status	level
+-	load	ok	-
+workers	int	4	Good
+mystery	int	1	Good

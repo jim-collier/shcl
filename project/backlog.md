@@ -52,9 +52,6 @@ None open.
 
 ### Features and enhancements
 
-- 🔘 Let the unknown-field sweep survive schema faults.
-	- From nano-git-db: v1.2.0 narrowed the trap (surviving constraints still check) but the sweep still skips unless the schema is fault-free, so their schema self-check probe is still required.
-	- Candidate mechanism: legality is by name chain, and most fault classes still spell their chain - let faulted entries keep legalizing their names, and the false-unknown hazard the skip guards against goes away. Verify which fault classes lose the path spelling entirely (those still poison the sweep).
 - 🔘 Schema-declarable disavowal for H002, the way `repeat:` disavows H001.
 	- From nano-git-db: no way to declare "this section is meant to be re-opened", so every legitimate re-open hints forever. Same shape as the H001 suppression (drop at `check --schema` assembly via the shared helper).
 	- Needs a vocabulary decision first: a new schema key vs overloading `repeat` on section paths.
@@ -162,6 +159,11 @@ None open.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 
 #### Done - Features and enhancements
+
+- ✅ The unknown-field sweep survives schema faults.
+	- From nano-git-db, round two of the same trap: v1.2.0 let surviving constraints check through faults, but the sweep still skipped on any fault, so their schema self-check probe was still required.
+	- Done, all four bindings: only two fault classes actually lose a name chain - an unreadable `field:` path (V093) and a mount naming no declared fragment (V095) - so the sweep now skips only on those; every key-level fault keeps its entry, whose path still legalizes its chain.
+	- Case 046 gained the previously-invisible V001; new case 047 pins that a path-losing fault still holds the sweep back. Spec, `design.md`, and the veneer smoke test updated.
 
 - ✅ NUL-transparency documented at the point of use, not just at the type.
 	- From nemo-anywhere: the `shcl_str` typedef says the bytes may hold NUL; `shcl_to_canonical` did not, and the canonical getter is where the strlen mistake actually gets made. One doc line on the getter.

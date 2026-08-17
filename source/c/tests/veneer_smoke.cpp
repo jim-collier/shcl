@@ -81,7 +81,8 @@ int main() {
 	CHECK(doc.get_or<std::string>("nope", std::string("fb")) == "fb");
 
 	// Schema validation rides through the veneer: a conforming doc is clean, a
-	// violation carries its stable V-code, a schema fault suppresses the rest.
+	// violation carries its stable V-code, and a key-level schema fault still
+	// lets the unknown-field sweep run (the faulted entry keeps its path).
 	auto schema = shcl::Document::parse("field: port\n\ttype: int\n\tmin: 1\nfield: city\nfield: ratio\nfield: name\nfield: on\nfield: tags\n");
 	CHECK(doc.validate(schema).empty());
 	auto badschema = shcl::Document::parse("field: port\n\ttype: int\n\tmin: 90000\n");
@@ -89,7 +90,7 @@ int main() {
 	CHECK(vd.size() >= 1 && vd[0].code == "V005");
 	auto broken = shcl::Document::parse("field: port\n\tfrobnicate: 1\n");
 	auto fd = doc.validate(broken);
-	CHECK(fd.size() == 1 && fd[0].code == "V090");
+	CHECK(fd.size() >= 2 && fd[0].code == "V090" && fd.back().code == "V001");
 
 	// Layered loading: overlay a higher-priority doc; leaf override, container merge.
 	auto base = shcl::Document::parse("port: 8080\nserver: web1\n\tport: 80\n");

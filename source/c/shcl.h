@@ -109,10 +109,11 @@ size_t shcl_error_count(const shcl_doc *d);
 // document (itself plain SHCL). Zero diagnostics = the document conforms.
 // Diagnostic lines are document lines (0 = document scope); schema faults
 // (V09x, schema-file lines) come first, and the surviving constraints still
-// check the document. Only the unknown-field sweep needs a fault-free schema:
-// a dropped constraint would turn the fields it declared into false unknowns,
-// so that check skips rather than misfire. The result owns copies of all its
-// strings - free with shcl_validation_free.
+// check the document. The unknown-field sweep runs too, unless a fault cost
+// the schema a path spelling (an unreadable `field:` path, or a mount naming
+// no declared fragment) - only those can turn declared fields into false
+// unknowns; a key-level fault keeps its entry's chain. The result owns copies
+// of all its strings - free with shcl_validation_free.
 typedef struct shcl_validation shcl_validation;
 shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema);
 size_t shcl_validation_count(const shcl_validation *v);
@@ -3024,8 +3025,8 @@ const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
 // the typed coercions, so document strictness composes for free. Schema faults
 // (V09x) come first and the surviving constraints still check the document;
-// only the unknown-field sweep needs a fault-free schema. One line-number
-// space per result.
+// the unknown-field sweep skips only when a fault cost a path spelling. One
+// line-number space per result.
 // Everything (scratch and results) lives in the validation's own arena.
 
 struct shcl_validation { Arena arena; VecDiag diags; };
@@ -3059,7 +3060,11 @@ DEFINE_VEC(VecVCons, VCons)
 // their `inherits` keys can mount.
 typedef struct { S name; VecVCons fields; } VFrag;
 DEFINE_VEC(VecVFrag, VFrag)
-typedef struct { VecVCons cons; VecVFrag frags; } VSchemaDef;
+// paths_complete: 0 when a fault cost the schema a path spelling (unreadable
+// `field:` path, or a mount naming no declared fragment). Key-level faults
+// keep their entry's chain, so only these two classes can turn declared
+// fields into false unknowns - the sweep runs unless one of them happened.
+typedef struct { VecVCons cons; VecVFrag frags; int paths_complete; } VSchemaDef;
 
 static const VecVCons *v_frag_get(const VSchemaDef *def, S name) {
 	for (size_t i = 0; i < def->frags.len; i++)
@@ -3269,12 +3274,14 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 // drops that field - so a caller can still check the document against the
 // surviving constraints.
 static void v_build_schema(Arena *a, shcl_doc *schema, VSchemaDef *def, VecDiag *faults) {
+	def->paths_complete = 1;
 	VecSize top = NODE(schema, ROOT).children;
 	for (size_t fi = 0; fi < top.len; fi++) {
 		Node *node = &NODE(schema, top.data[fi]);
 		if (s_eq(node->name, s_lit("field"))) {
 			VCons c;
 			if (v_parse_field(a, schema, top.data[fi], faults, &c)) VecVCons_push(a, &def->cons, c);
+			else def->paths_complete = 0;
 		} else if (s_eq(node->name, s_lit("fragment"))) {
 			S name;
 			if (!v_single_text(a, &node->value, &name) || name.n == 0) {
@@ -3292,6 +3299,7 @@ static void v_build_schema(Arena *a, shcl_doc *schema, VSchemaDef *def, VecDiag 
 				if (s_eq(kid->name, s_lit("field"))) {
 					VCons c;
 					if (v_parse_field(a, schema, kids.data[ki], faults, &c)) VecVCons_push(a, &fr.fields, c);
+					else def->paths_complete = 0;
 				} else {
 					SB s = {0, 0, 0};
 					sb_puts(a, &s, "bad schema fragment '"); sb_putS(a, &s, name);
@@ -3310,8 +3318,10 @@ static void v_build_schema(Arena *a, shcl_doc *schema, VSchemaDef *def, VecDiag 
 		const VecVCons *list = g == 0 ? &def->cons : &def->frags.data[g - 1].fields;
 		for (size_t i = 0; i < list->len; i++) {
 			const VCons *c = &list->data[i];
-			if (c->inherits.n && !v_frag_get(def, c->inherits))
+			if (c->inherits.n && !v_frag_get(def, c->inherits)) {
 				v_diag(a, faults, c->inherits_line, v_msg3(a, "unknown schema fragment '", c->inherits, "'"));
+				def->paths_complete = 0;
+			}
 		}
 	}
 	// One constraint per line in practice, so line order = file order. Insertion
@@ -3765,7 +3775,6 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	VSchemaDef def; memset(&def, 0, sizeof def);
 	VecDiag faults = {0};
 	v_build_schema(a, schema, &def, &faults);
-	int schema_ok = faults.len == 0;
 	v->diags = faults;
 	// One scratch arena per mount-recursion level, reset and reused across
 	// sibling calls: peak retention is one block per active document level,
@@ -3776,7 +3785,7 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	memset(lvls, 0, sizeof lvls);
 	for (size_t i = 0; i < def.cons.len; i++) v_check(a, lvls, d, &def.cons.data[i], &def, &v->diags);
 	for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_free(&lvls[i]);
-	if (schema_ok) v_unknown(a, d, &def, &v->diags);
+	if (def.paths_complete) v_unknown(a, d, &def, &v->diags);
 	return v;
 }
 size_t shcl_validation_count(const shcl_validation *v) { return v->diags.len; }
