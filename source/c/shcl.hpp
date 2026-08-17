@@ -147,6 +147,11 @@ public:
 	// to exactly one node or the node was writer-built.
 	std::size_t line(std::string_view p) const { return shcl_line(d_, p.data(), p.size()); }
 
+	// The field name at a path exactly as the author spelled it (case
+	// unfolded, quotes and escapes resolved); empty when the path does not
+	// resolve to exactly one node.
+	std::string source_name(std::string_view p) const { return to_str(shcl_source_name(d_, p.data(), p.size())); }
+
 	// The plural line(): 1-based source lines at a path, in file order, so a
 	// repeated field - the case that most wants a citable line - yields every
 	// binding's. Unresolved wildcard slots stay in the list as 0; a miss is

@@ -592,6 +592,20 @@ def main():
 		raise SystemExit("top-level children() got {}".format(ldoc.children("")))
 	if ldoc.children("missing"):
 		raise SystemExit("children() on missing path not empty")
+	# source_name(): the author's spelling, unfolded; merged instances keep
+	# the first binding's; unresolved or Multiple is empty; writer-built
+	# keeps the setter path's spelling.
+	sdoc2 = shcl.Document.parse("SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n")
+	if sdoc2.source_name("symbols") != "SYMBOLS":
+		raise SystemExit("source_name(symbols) got {}".format(sdoc2.source_name("symbols")))
+	if sdoc2.source_name("code") != "Code":
+		raise SystemExit("source_name(code) got {}".format(sdoc2.source_name("code")))
+	if sdoc2.source_name("missing") != "":
+		raise SystemExit("source_name(missing) not empty")
+	if not sdoc2.set_int("NewTop.n", 1):
+		raise SystemExit("set_int NewTop.n failed")
+	if sdoc2.source_name("newtop") != "NewTop":
+		raise SystemExit("source_name(newtop) got {}".format(sdoc2.source_name("newtop")))
 	# A failed strict load hands back the document and names the first
 	# failures in the message - the diagnostics are the point.
 	try:

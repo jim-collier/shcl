@@ -55,8 +55,6 @@ None open.
 - 🔘 By-value selectors: distinguish scalar `"a, b"` from list `a, b`.
 	- From convert-base-v2, still open at v1.2.0 - the earlier round closed it as a spec paragraph only. Both spellings meet the same selector because matching is against the display form, and the read comes back Multiple.
 	- Needs a matching-rule decision; behavior change, corpus impact.
-- 🔘 As-authored field-name spelling accessor.
-	- From convert-base-v2, mild now that `line` is on the read: names store folded, so a message can only echo `symbols` when the file said `SYMBOLS`. A raw-name accessor parallel to the value raw text closes it.
 - 🔘 File lifecycle tier: load/save with status, atomic, optional.
 	- From nemo-anywhere: every consumer that persists a config re-implements the same load/save dance and repeats the same mistakes.
 	- `LoadFile`/`SaveFile` returning a status that separates not-found / unreadable / parsed-with-errors / clean; save through the temp-file-and-rename the CLI already uses for `--write`. Companion/optional so the core stays freestanding (matters most for C).
@@ -155,6 +153,10 @@ None open.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 
 #### Done - Features and enhancements
+
+- ✅ `SourceName(path)`: the field name as the author spelled it.
+	- From convert-base-v2: names store folded, so a message could only echo `symbols` when the file said `SYMBOLS`.
+	- Done, all four bindings + veneer: the parser and writer keep the as-authored spelling (unfolded, quotes and escapes resolved) beside the folded name; resolution mirrors `Line(path)`, merged instances keep the first binding's spelling, a writer-built node keeps the setter path's. Fixture extended in every runner; spec Accessor section updated.
 
 - ✅ H002 reports every merged level, and `reopen:` in a schema disavows it.
 	- From nano-git-db: no way to declare "this section is meant to be re-opened", so every legitimate re-open hinted forever - and only the outermost merge reported, so filtering by hand waved nested merges through.

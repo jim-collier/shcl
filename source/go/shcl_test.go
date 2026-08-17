@@ -728,6 +728,25 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	if got := doc.Children("missing"); len(got) != 0 {
 		t.Errorf("missing children: got %v", got)
 	}
+	// SourceName(): the author's spelling, unfolded; merged instances keep
+	// the first binding's; unresolved or Multiple is empty; writer-built
+	// keeps the setter path's spelling.
+	d2 := Parse("SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n")
+	if got := d2.SourceName("symbols"); got != "SYMBOLS" {
+		t.Errorf("SourceName(symbols): got %q", got)
+	}
+	if got := d2.SourceName("code"); got != "Code" {
+		t.Errorf("SourceName(code): got %q", got)
+	}
+	if got := d2.SourceName("missing"); got != "" {
+		t.Errorf("SourceName(missing): got %q", got)
+	}
+	if !d2.SetInt("NewTop.n", 1) {
+		t.Errorf("SetInt NewTop.n failed")
+	}
+	if got := d2.SourceName("newtop"); got != "NewTop" {
+		t.Errorf("SourceName(newtop): got %q", got)
+	}
 }
 
 func TestStrictFailureCarriesDocument(t *testing.T) {

@@ -363,10 +363,15 @@ class _Node:
 	__slots__ = (
 		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
 		"leading", "trailing", "after", "inside", "blank_before", "src",
+		"name_src",
 	)
 
-	def __init__(self, name, value, parent, line):
+	def __init__(self, name, value, parent, line, name_src=""):
 		self.name = name          # ASCII-folded to lower; non-ASCII never folds
+		# The name as the author spelled it (case unfolded, quotes and escapes
+		# resolved) - what source_name() hands back. Merged instances keep the
+		# first binding's spelling, like line() and comments.
+		self.name_src = name_src
 		self.value = value
 		self.children = []
 		self.parent = parent
@@ -688,12 +693,14 @@ def _is_fence_close(line, ch, min_len):
 
 
 class _Segment:
-	# name folded; selector None or tuple; star = bare `*` name wildcard
+	# name folded, name_src as authored (unfolded, quotes stripped, escapes
+	# applied); selector None or tuple; star = bare `*` name wildcard
 	# (quoted "*" stays a literal name).
-	__slots__ = ("name", "selector", "star")
+	__slots__ = ("name", "name_src", "selector", "star")
 
-	def __init__(self, name, selector, star=False):
+	def __init__(self, name, name_src, selector, star=False):
 		self.name = name
+		self.name_src = name_src
 		self.selector = selector
 		self.star = star
 
@@ -821,7 +828,7 @@ def _scan_path_ex(inp, stars):
 			pos = skip_ws(pos + 1)
 		if star and selector is not None:
 			raise _PathError("selector on a name wildcard")
-		segments.append(_Segment(_fold_name(name), selector, star))
+		segments.append(_Segment(_fold_name(name), name, selector, star))
 		if pos >= n:
 			return segments, None
 		c = chars[pos]
@@ -871,7 +878,7 @@ class _Parser:
 	def _err(self, line, msg):
 		self.diags.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
 
-	def _select_or_create(self, parent, name, value, line):
+	def _select_or_create(self, parent, name, name_src, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
 		self._star_flush()
 		map_key = (name, value.key())
@@ -879,7 +886,7 @@ class _Parser:
 		if found is not None:
 			return found
 		idx = len(self.arena)
-		node = _Node(name, value, parent, line)
+		node = _Node(name, value, parent, line, name_src)
 		self.arena.append(node)
 		self.arena[parent].children.append(idx)
 		self.child_map.append({})
@@ -1036,7 +1043,7 @@ class _Parser:
 					cur = found
 				else:
 					disc = _cell([_Element(sel[1], False)])
-					cur = self._select_or_create(cur, seg.name, disc, line)
+					cur = self._select_or_create(cur, seg.name, seg.name_src, disc, line)
 				if is_last and not value.is_empty():
 					# `a.b[X]: v` - the discriminator is the value; a second
 					# value has nowhere unambiguous to go.
@@ -1053,11 +1060,11 @@ class _Parser:
 				self._err(line, "wildcard selector is query-only")
 				return None
 			elif not is_last:
-				cur = self._select_or_create(cur, seg.name, _empty(), line)
+				cur = self._select_or_create(cur, seg.name, seg.name_src, _empty(), line)
 			else:
 				parent = cur
 				before = len(self.arena)
-				cur = self._select_or_create(cur, seg.name, value, line)
+				cur = self._select_or_create(cur, seg.name, seg.name_src, value, line)
 				# Two separately-written bindings just combined: legal (the
 				# merge rule), but only the parser can see it happened, so
 				# say so. Adjacent re-mentions (still the newest binding at
@@ -1142,8 +1149,9 @@ class _Parser:
 			self._remap_child(parent, old_key, old_disp)
 			return parent
 		name = self.arena[parent].name
+		name_src = self.arena[parent].name_src
 		grandparent = self.arena[parent].parent
-		return self._select_or_create(grandparent, name, value, line)
+		return self._select_or_create(grandparent, name, name_src, value, line)
 
 	def _add_star_element(self, parent, body, line):
 		"""One stacked-list element (`* scalar`) appends to the parent's array."""
@@ -1676,6 +1684,18 @@ class Document:
 			return self.arena[r[1]].line
 		return 0
 
+	def source_name(self, path):
+		"""The field name at a path exactly as the author spelled it (case
+		unfolded, quotes and escapes resolved), so a message can echo `SYMBOLS`
+		when the file said SYMBOLS. Resolution mirrors line(): empty when the
+		path does not resolve to exactly one node. Merged instances keep the
+		first binding's spelling; a writer-built node keeps the spelling the
+		setter's path used."""
+		r = self._resolve(path)
+		if r[0] == "one":
+			return self.arena[r[1]].name_src
+		return ""
+
 	def lines(self, path):
 		"""The plural line(): 1-based source lines at a path, in file order, so
 		a repeated field - the case that most wants a citable line - yields
@@ -1732,9 +1752,9 @@ class Document:
 		generation. Set values, then to_canonical()."""
 		return Document.parse("")
 
-	def _new_child(self, parent, name, value):
+	def _new_child(self, parent, name, name_src, value):
 		idx = len(self.arena)
-		node = _Node(name, value, parent, 0)
+		node = _Node(name, value, parent, 0, name_src)
 		# Hand-written files separate top-level sections with a blank line;
 		# writer-built ones do the same (the emitter never blanks line 1).
 		node.blank_before = parent == ROOT
@@ -1742,11 +1762,11 @@ class Document:
 		self.arena[parent].children.append(idx)
 		return idx
 
-	def _child_or_create(self, parent, name):
+	def _child_or_create(self, parent, name, name_src):
 		for c in self.arena[parent].children:
 			if self.arena[c].name == name:
 				return c
-		return self._new_child(parent, name, _empty())
+		return self._new_child(parent, name, name_src, _empty())
 
 	def write_reason(self, path):
 		"""Why a write at this path would fail - the reason behind a setter's
@@ -1818,7 +1838,7 @@ class Document:
 				return None   # write_reason gates this; belt only
 			sel = seg.selector
 			if sel is None:
-				cur = self._child_or_create(cur, seg.name)
+				cur = self._child_or_create(cur, seg.name, seg.name_src)
 			elif sel[0] == "val":
 				want = _apply_escapes(sel[1])
 				found = None
@@ -1826,7 +1846,7 @@ class Document:
 					if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want:
 						found = c
 						break
-				cur = found if found is not None else self._new_child(cur, seg.name, _cell_of(sel[1]))
+				cur = found if found is not None else self._new_child(cur, seg.name, seg.name_src, _cell_of(sel[1]))
 			elif sel[0] == "idx":
 				matches = [c for c in self.arena[cur].children if self.arena[c].name == seg.name]
 				if sel[1] >= len(matches):
@@ -2136,7 +2156,7 @@ class Document:
 		cv.info = src.value.info
 		cv.fence_char = src.value.fence_char
 		cv.fence_len = src.value.fence_len
-		node = _Node(src.name, cv, parent, src.line)
+		node = _Node(src.name, cv, parent, src.line, src.name_src)
 		node.star_list = src.star_list
 		node.star_mixed = src.star_mixed
 		node.leading = [_Lead(c.text, c.blank_before) for c in src.leading]

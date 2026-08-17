@@ -170,6 +170,14 @@ size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out
 // node, or the node was writer-built. Merged instances cite the first
 // binding's line, matching diagnostics.
 size_t shcl_line(shcl_doc *d, const char *path, size_t plen);
+
+// The field name at a path exactly as the author spelled it (case unfolded,
+// quotes and escapes resolved), so a message can echo SYMBOLS when the file
+// said SYMBOLS. Resolution mirrors shcl_line: empty when the path does not
+// resolve to exactly one node. Merged instances keep the first binding's
+// spelling; a writer-built node keeps the spelling the setter's path used.
+// Borrowed from the document's arena; valid until shcl_free.
+shcl_str shcl_source_name(shcl_doc *d, const char *path, size_t plen);
 // The plural shcl_line: 1-based source lines at a path, in file order, so a
 // repeated field - the case that most wants a citable line - yields every
 // binding's. Wildcard slots that did not resolve stay in the list as 0, and a
@@ -515,6 +523,10 @@ static Lead lead_plain(S text) { return lead_make(text, 0); }
 
 typedef struct {
 	S name;
+	/* The name as the author spelled it (case unfolded, quotes and escapes
+	   resolved) - what shcl_source_name hands back. Merged instances keep the
+	   first binding's spelling, like shcl_line and comments. */
+	S name_src;
 	Value value;
 	VecSize children;
 	size_t parent;
@@ -791,7 +803,7 @@ static int is_fence_close(S line, unsigned char ch, size_t min_len) {
 
 typedef enum { SEL_NONE, SEL_VALUE, SEL_INDEX, SEL_WILDCARD } seltag;
 typedef struct { seltag tag; S value; uint64_t index; } Selector; // u64: width must not vary with target pointer size
-typedef struct { S name; Selector sel; int star; } Segment; // star: bare `*` name wildcard; quoted "*" stays a literal name
+typedef struct { S name; S name_src; Selector sel; int star; } Segment; // name_src: as authored (unfolded); star: bare `*` name wildcard; quoted "*" stays a literal name
 DEFINE_VEC(VecSeg, Segment)
 typedef struct { int ok; VecSeg segs; int has_value; S value_text; S err; } PathScan;
 
@@ -920,7 +932,7 @@ static PathScan scan_path_ex(Arena *a, S input, int stars) {
 			skip_ws_path(input, &pos);
 		}
 		if (star && sel.tag != SEL_NONE) { ps.err = s_lit("selector on a name wildcard"); return ps; }
-		Segment seg; seg.name = fold_name(a, name); seg.sel = sel; seg.star = star;
+		Segment seg; seg.name = fold_name(a, name); seg.name_src = name; seg.sel = sel; seg.star = star;
 		VecSeg_push(a, &ps.segs, seg);
 		if (pos >= input.n) { ps.ok = 1; ps.has_value = 0; return ps; }
 		uint32_t dc; size_t dl = utf8_decode(input.p, input.n, pos, &dc);
@@ -1443,7 +1455,7 @@ static void star_flush(Parser *P) {
 	remap_child(P, P->star_node, P->star_key, P->star_disp);
 }
 
-static size_t select_or_create(Parser *P, size_t parent, S name, Value value, size_t line) {
+static size_t select_or_create(Parser *P, size_t parent, S name, S name_src, Value value, size_t line) {
 	Arena *a = &P->d->arena;
 	star_flush(P);
 	S key = value_key(a, &value);
@@ -1452,7 +1464,7 @@ static size_t select_or_create(Parser *P, size_t parent, S name, Value value, si
 	if (found != (size_t)-1) return found;
 	size_t idx = P->d->nodes.len;
 	Node n; memset(&n, 0, sizeof n);
-	n.name = s_dup(a, name); n.value = value; n.parent = parent; n.line = line; n.star_list = 0; n.star_mixed = 0;
+	n.name = s_dup(a, name); n.name_src = s_dup(a, name_src); n.value = value; n.parent = parent; n.line = line; n.star_list = 0; n.star_mixed = 0;
 	VecNode_push(a, &P->d->nodes, n);
 	VecSize_push(a, &NODE(P->d, parent).children, idx);
 	CMap empty; memset(&empty, 0, sizeof empty);
@@ -1642,7 +1654,7 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 				Element *e = (Element *)arena_alloc(a, sizeof(Element));
 				e->text = s_dup(a, seg->sel.value); e->quoted = 0;
 				disc.els = e; disc.nels = 1;
-				cur = select_or_create(P, cur, seg->name, disc, line);
+				cur = select_or_create(P, cur, seg->name, seg->name_src, disc, line);
 			}
 			if (is_last && !v_is_empty(&value)) {
 				SB m = {0}; sb_puts(a, &m, "value after selector on '"); sb_putS(a, &m, seg->name); sb_puts(a, &m, "' ignored");
@@ -1665,7 +1677,7 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 		case SEL_NONE: {
 			size_t seg_parent = cur;
 			size_t before = P->d->nodes.len;
-			cur = select_or_create(P, cur, seg->name, is_last ? value : v_empty(), line);
+			cur = select_or_create(P, cur, seg->name, seg->name_src, is_last ? value : v_empty(), line);
 			/* Two separately-written bindings just combined: legal (the
 			   merge rule), but only the parser can see it happened, so
 			   say so. Adjacent re-mentions (still the newest binding at
@@ -1736,8 +1748,8 @@ static size_t bind_block(Parser *P, size_t parent, Value value, size_t line) {
 		remap_child(P, parent, old_key, old_disp);
 		return parent;
 	}
-	S name = NODE(P->d, parent).name; size_t gp = NODE(P->d, parent).parent;
-	return select_or_create(P, gp, name, value, line);
+	S name = NODE(P->d, parent).name; S name_src = NODE(P->d, parent).name_src; size_t gp = NODE(P->d, parent).parent;
+	return select_or_create(P, gp, name, name_src, value, line);
 }
 
 static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
@@ -2170,6 +2182,13 @@ size_t shcl_line(shcl_doc *d, const char *path, size_t plen) {
 	return NODE(d, r.one).line; // writer-built nodes carry 0
 }
 
+shcl_str shcl_source_name(shcl_doc *d, const char *path, size_t plen) {
+	S p; p.p = path; p.n = plen;
+	Resolved r; if (!resolve(d, p, &r)) return s_empty();
+	if (r.kind != R_ONE) return s_empty();
+	return NODE(d, r.one).name_src;
+}
+
 size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out) {
 	// Wildcard slots that did not resolve stay in the list as 0 so indices
 	// keep matching shcl_count.
@@ -2263,11 +2282,11 @@ static Value w_array(Arena *a, S *texts, size_t n) {
 	v.els = els; v.nels = n; return v;
 }
 
-static size_t w_new_child(shcl_doc *d, size_t parent, S name, Value value) {
+static size_t w_new_child(shcl_doc *d, size_t parent, S name, S name_src, Value value) {
 	Arena *a = &d->arena;
 	size_t idx = d->nodes.len;
 	Node n; memset(&n, 0, sizeof n);
-	n.name = s_dup(a, name); n.value = value; n.parent = parent;
+	n.name = s_dup(a, name); n.name_src = s_dup(a, name_src); n.value = value; n.parent = parent;
 	/* Hand-written files separate top-level sections with a blank line;
 	   writer-built ones do the same (the emitter never blanks line 1). */
 	n.blank_before = (parent == ROOT);
@@ -2338,13 +2357,13 @@ static int w_place(shcl_doc *d, S path, size_t *out) {
 			size_t found = (size_t)-1;
 			VecSize ch = NODE(d, cur).children;
 			for (size_t k = 0; k < ch.len; k++) if (s_eq(NODE(d, ch.data[k]).name, seg->name)) { found = ch.data[k]; break; }
-			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, v_empty());
+			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, seg->name_src, v_empty());
 		} else if (seg->sel.tag == SEL_VALUE) {
 			size_t found = (size_t)-1;
 			S want = apply_escapes(t, seg->sel.value);
 			VecSize ch = NODE(d, cur).children;
 			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(d, c).name, seg->name) && s_eq(disp_key(t, &NODE(d, c).value), want)) { found = c; break; } }
-			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, w_cell1(a, s_dup(a, seg->sel.value)));
+			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, seg->name_src, w_cell1(a, s_dup(a, seg->sel.value)));
 		} else if (seg->sel.tag == SEL_INDEX) {
 			size_t match = (size_t)-1, cnt = 0;
 			VecSize ch = NODE(d, cur).children;
@@ -2528,6 +2547,7 @@ static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size
 	const Node *src = &over->nodes.data[oi];
 	Node n; memset(&n, 0, sizeof n);
 	n.name = s_dup(a, src->name);
+	n.name_src = s_dup(a, src->name_src);
 	n.value = w_dup_value(a, &src->value);
 	n.parent = parent;
 	n.line = src->line;

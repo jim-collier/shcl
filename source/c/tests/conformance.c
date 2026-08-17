@@ -564,6 +564,22 @@ int main(int argc, char **argv) {
 		if (shcl_children(ld, "missing", 7, &cv) != 0) fail("children", "missing path not empty");
 		shcl_free(ld);
 	}
+	// source_name: the author's spelling, unfolded; merged instances keep the
+	// first binding's; unresolved or Multiple is empty; writer-built keeps the
+	// setter path's spelling. Same fixture in every runner.
+	{
+		const char *nt = "SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n";
+		shcl_doc *nd = shcl_parse(nt, strlen(nt));
+		shcl_str sn = shcl_source_name(nd, "symbols", 7);
+		if (sn.n != 7 || memcmp(sn.p, "SYMBOLS", 7) != 0) fail("source_name", "symbols spelling mismatch");
+		sn = shcl_source_name(nd, "code", 4);
+		if (sn.n != 4 || memcmp(sn.p, "Code", 4) != 0) fail("source_name", "code spelling mismatch");
+		if (shcl_source_name(nd, "missing", 7).n != 0) fail("source_name", "missing path not empty");
+		if (!shcl_set_int(nd, "NewTop.n", 8, 1)) fail("source_name", "set_int NewTop.n failed");
+		sn = shcl_source_name(nd, "newtop", 6);
+		if (sn.n != 6 || memcmp(sn.p, "NewTop", 6) != 0) fail("source_name", "newtop spelling mismatch");
+		shcl_free(nd);
+	}
 	// write_reason: the reason behind a setter's bare 0. Same fixture in every
 	// runner.
 	{
