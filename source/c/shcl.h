@@ -1685,11 +1685,14 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 			S want = apply_escapes(a, seg->sel.value);
 			uint64_t hd = cmap_hash(seg->name, want);
 			size_t found = cmap_get(&P->dmaps.data[cur], hd, seg->name, want);
-			/* A quoted selector is scalar-only; the accelerator keeps the
-			   first same-display child, so when that one is not a scalar the
-			   (rare) fallback scan looks for one that is. */
+			/* A quoted selector is scalar-only, and the accelerator keeps just
+			   the first same-display child - a later remap can drop an entry a
+			   different sibling still satisfies - so a non-scalar hit and an
+			   outright miss both fall to the (rare) fallback scan. */
 			if (found != (size_t)-1 && seg->sel.quoted && !single_scalar(&NODE(P->d, found).value)) {
 				found = (size_t)-1;
+			}
+			if (found == (size_t)-1 && seg->sel.quoted) {
 				VecSize ch = NODE(P->d, cur).children;
 				for (size_t k = 0; k < ch.len; k++) {
 					size_t c = ch.data[k];

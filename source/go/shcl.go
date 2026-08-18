@@ -1326,13 +1326,16 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			// a spurious second one - via the dispMap accelerator (the inline
 			// spelling was quadratic in siblings without it). Create only when
 			// nothing matches.
-			// A quoted selector is scalar-only; the accelerator keeps the
-			// first same-display child, so when that one is not a scalar the
-			// (rare) fallback scan looks for one that is.
+			// A quoted selector is scalar-only, and the accelerator keeps just
+			// the first same-display child - a later remap can drop an entry a
+			// different sibling still satisfies - so a non-scalar hit and an
+			// outright miss both fall to the (rare) fallback scan.
 			want := applyEscapes(seg.sel.value)
 			found, ok := p.dispMap[cur][[2]string{seg.name, want}]
 			if ok && seg.sel.quoted && !singleScalar(&p.arena[found].value) {
 				ok = false
+			}
+			if !ok && seg.sel.quoted {
 				for _, c := range p.arena[cur].children {
 					if p.arena[c].name == seg.name && singleScalar(&p.arena[c].value) && dispKey(&p.arena[c].value) == want {
 						found, ok = c, true

@@ -1162,9 +1162,10 @@ impl Parser {
 					// creating a spurious second one - via the disp_map accelerator
 					// (the inline spelling was quadratic in siblings without it).
 					// Create only when nothing matches. A quoted selector is
-					// scalar-only; the accelerator keeps the first same-display
-					// child, so when that one is not a scalar the (rare) fallback
-					// scan looks for one that is.
+					// scalar-only, and the accelerator keeps just the first
+					// same-display child - a later remap can drop an entry a
+					// different sibling still satisfies - so a non-scalar hit and
+					// an outright miss both fall to the (rare) fallback scan.
 					let want = apply_escapes(text);
 					let found = self.disp_map[cur]
 						.get(&(seg.name.clone(), want.clone()))

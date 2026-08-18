@@ -66,12 +66,13 @@ None open.
 
 	- **Bugs**:
 
-		- 🔘 Code Review 20260817 item 1: the three ports disagree with the reference on a quoted selector.
+		- ✅ Code Review 20260817 item 1: the three ports disagree with the reference on a quoted selector.
 			- Reproduced: a document whose quoted selector needs the rare fallback scan formats to two lines under the reference and three under go, python and c.
 			- Cause: the reference rescans whenever the lookup accelerator fails to hand back a single scalar. The ports only rescan when the accelerator found something and it was the wrong shape, so an outright miss falls through and creates a node instead of selecting one.
 			- The accelerator is meant to be a pure speed-up, so a miss must never change the answer. The reference is right and the three ports need to follow it.
 			- Not visible to the corpus or the cross-binding check, because no case has this shape. Needs a case as part of the fix.
 			- Moves output bytes in three bindings. Do it before the next cut - the ports currently ship a different language than the reference defines.
+			- Fixed: the three ports now take the fallback scan on an outright accelerator miss as well as on a wrong-shape hit, matching the reference. Case 051 pins the miss, the selection landing on the right instance, and the two paths that still create.
 
 		- 🔘 Code Review 20260817 item 2: the c library no longer builds for windows.
 			- Reproduced: the file tier added a `windows.h` include, and one of the library's own tables shares a name with a type that header defines. The mingw build of the library alone now fails outright.

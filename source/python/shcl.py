@@ -1054,13 +1054,15 @@ class _Parser:
 				# creating a spurious second one - via the disp_map accelerator
 				# (the inline spelling was quadratic in siblings without it).
 				# Create only when nothing matches.
-				# A quoted selector is scalar-only; the accelerator keeps the
-				# first same-display child, so when that one is not a scalar
-				# the (rare) fallback scan looks for one that is.
+				# A quoted selector is scalar-only, and the accelerator keeps
+				# just the first same-display child - a later remap can drop an
+				# entry a different sibling still satisfies - so a non-scalar hit
+				# and an outright miss both fall to the (rare) fallback scan.
 				want = _apply_escapes(sel[1])
 				found = self.disp_map[cur].get((seg.name, want))
 				if found is not None and sel[2] and not _single_scalar(self.arena[found].value):
 					found = None
+				if found is None and sel[2]:
 					for c in self.arena[cur].children:
 						nd = self.arena[c]
 						if nd.name == seg.name and _single_scalar(nd.value) and _disp_key(nd.value) == want:
