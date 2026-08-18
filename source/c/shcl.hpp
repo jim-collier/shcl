@@ -222,7 +222,7 @@ public:
 	// unfolded, outer quotes stripped - escape sequences stay as written, the
 	// way every other name operation treats them); empty when the path does
 	// not resolve to exactly one node.
-	std::string source_name(std::string_view p) const { return to_str(shcl_source_name(d_, p.data(), p.size())); }
+	std::string authored_name(std::string_view p) const { return to_str(shcl_authored_name(d_, p.data(), p.size())); }
 
 	// The plural line(): 1-based source lines at a path, in file order, so a
 	// repeated field - the case that most wants a citable line - yields every
@@ -256,11 +256,17 @@ public:
 	Read<std::string> read_raw_info(std::string_view p) const { auto r = shcl_read_raw_info(d_, p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
 
 	// Datetime as the reference's textual form (the common need).
-	Read<std::string> read_datetime(std::string_view p) const {
+	Read<std::string> read_datetime_str(std::string_view p) const {
 		auto r = shcl_read_datetime(d_, p.data(), p.size());
 		char buf[64]; std::size_t k = shcl_datetime_str(&r.value, buf);
 		return {std::string(buf, k), st(r.status)};
 	}
+	// This pair is spelled backwards against the rest of the api - "raw" means
+	// the text exactly as written everywhere else, and read_datetime returns
+	// the parsed value in every other binding. Both are retired at the next
+	// major, when read_datetime becomes the structured read and
+	// read_datetime_str stays the textual one. Prefer those two now.
+	Read<std::string> read_datetime(std::string_view p) const { return read_datetime_str(p); }
 	// Structured datetime, if the caller wants the parsed fields. Owning
 	// (unlike the core's shcl_read_datetime), so it may outlive the Document.
 	Read<Datetime> read_datetime_raw(std::string_view p) const { auto r = shcl_read_datetime(d_, p.data(), p.size()); return {Datetime(r.value), st(r.status)}; }

@@ -813,7 +813,7 @@ And the save protects the file it is overwriting. It goes through a temp file in
 
 A setter returns failure - `false`, or `0` in C - when a path cannot be written at all. Wildcards are the usual case, since those are query-only. Nothing is half-written, and `write_reason(path)` says which of the five reasons applied. Worth checking rather than assuming: an ignored failure means the save that follows writes a config missing the edit, and reports success doing it. In Rust the setters are `#[must_use]`, so dropping the answer is a compile warning.
 
-One read-side companion belongs with this: canonical output lowercases field names, and `source_name(path)` hands back the spelling the author actually used. It is what you want in a message about their file - reporting `Max-Upload-MB` as `max-upload-mb` reads like a different setting to the person who wrote it.
+One read-side companion belongs with this: canonical output lowercases field names, and `authored_name(path)` hands back the spelling the author actually used. It is what you want in a message about their file - reporting `Max-Upload-MB` as `max-upload-mb` reads like a different setting to the person who wrote it.
 
 ## Set up a development environment
 

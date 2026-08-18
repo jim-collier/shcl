@@ -569,28 +569,28 @@ int main(int argc, char **argv) {
 		if (shcl_children(ld, "missing", 7, &cv) != 0) fail("children", "missing path not empty");
 		shcl_free(ld);
 	}
-	// source_name: the author's spelling, unfolded; merged instances keep the
+	// authored_name: the author's spelling, unfolded; merged instances keep the
 	// first binding's; unresolved or Multiple is empty; writer-built keeps the
 	// setter path's spelling. Same fixture in every runner.
 	{
 		const char *nt = "SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n";
 		shcl_doc *nd = shcl_parse(nt, strlen(nt));
-		shcl_str sn = shcl_source_name(nd, "symbols", 7);
-		if (sn.n != 7 || memcmp(sn.p, "SYMBOLS", 7) != 0) fail("source_name", "symbols spelling mismatch");
-		sn = shcl_source_name(nd, "code", 4);
-		if (sn.n != 4 || memcmp(sn.p, "Code", 4) != 0) fail("source_name", "code spelling mismatch");
-		if (shcl_source_name(nd, "missing", 7).n != 0) fail("source_name", "missing path not empty");
-		if (!shcl_set_int(nd, "NewTop.n", 8, 1)) fail("source_name", "set_int NewTop.n failed");
-		sn = shcl_source_name(nd, "newtop", 6);
-		if (sn.n != 6 || memcmp(sn.p, "NewTop", 6) != 0) fail("source_name", "newtop spelling mismatch");
+		shcl_str sn = shcl_authored_name(nd, "symbols", 7);
+		if (sn.n != 7 || memcmp(sn.p, "SYMBOLS", 7) != 0) fail("authored_name", "symbols spelling mismatch");
+		sn = shcl_authored_name(nd, "code", 4);
+		if (sn.n != 4 || memcmp(sn.p, "Code", 4) != 0) fail("authored_name", "code spelling mismatch");
+		if (shcl_authored_name(nd, "missing", 7).n != 0) fail("authored_name", "missing path not empty");
+		if (!shcl_set_int(nd, "NewTop.n", 8, 1)) fail("authored_name", "set_int NewTop.n failed");
+		sn = shcl_authored_name(nd, "newtop", 6);
+		if (sn.n != 6 || memcmp(sn.p, "NewTop", 6) != 0) fail("authored_name", "newtop spelling mismatch");
 		shcl_free(nd);
 		// Escapes are NOT resolved: a name is stored, compared and emitted in
 		// its escaped spelling, so resolving here would name a node that does
 		// not exist.
 		const char *et = "\"Ab\\tCd\": 2\n";
 		shcl_doc *ed = shcl_parse(et, strlen(et));
-		sn = shcl_source_name(ed, "\"ab\\tcd\"", 8);
-		if (sn.n != 6 || memcmp(sn.p, "Ab\\tCd", 6) != 0) fail("source_name", "escaped spelling mismatch");
+		sn = shcl_authored_name(ed, "\"ab\\tcd\"", 8);
+		if (sn.n != 6 || memcmp(sn.p, "Ab\\tCd", 6) != 0) fail("authored_name", "escaped spelling mismatch");
 		shcl_free(ed);
 	}
 	// The get-tier value survives only on Good; Empty/BadType/NotFound all fall

@@ -241,7 +241,7 @@ int shcl_quoted(shcl_doc *d, const char *path, size_t plen);
 // exactly one node. Merged instances keep the first binding's spelling; a
 // writer-built node keeps the spelling the setter's path used.
 // Borrowed from the document's arena; valid until shcl_free.
-shcl_str shcl_source_name(shcl_doc *d, const char *path, size_t plen);
+shcl_str shcl_authored_name(shcl_doc *d, const char *path, size_t plen);
 // The plural shcl_line: 1-based source lines at a path, in file order, so a
 // repeated field - the case that most wants a citable line - yields every
 // binding's. Wildcard slots that did not resolve stay in the list as 0, and a
@@ -614,7 +614,7 @@ static Lead lead_plain(S text) { return lead_make(text, 0); }
 typedef struct {
 	S name;
 	/* The name as the author spelled it (case unfolded, quotes and escapes
-	   resolved) - what shcl_source_name hands back. Merged instances keep the
+	   resolved) - what shcl_authored_name hands back. Merged instances keep the
 	   first binding's spelling, like shcl_line and comments. */
 	S name_src;
 	Value value;
@@ -2345,7 +2345,7 @@ int shcl_quoted(shcl_doc *d, const char *path, size_t plen) {
 	return el->quoted;
 }
 
-shcl_str shcl_source_name(shcl_doc *d, const char *path, size_t plen) {
+shcl_str shcl_authored_name(shcl_doc *d, const char *path, size_t plen) {
 	S p; p.p = path; p.n = plen;
 	Resolved r; if (!resolve(d, p, &r)) return s_empty();
 	if (r.kind != R_ONE) return s_empty();

@@ -143,6 +143,7 @@ int main() {
 	{
 		auto tmp = shcl::Document::parse("t: 2026-08-02T10:20:30.123456789Z\n");
 		outlives = tmp.read_datetime_raw("t");
+		CHECK(tmp.read_datetime_str("t").value == tmp.read_datetime("t").value); // the retiring spelling still forwards
 	}
 	CHECK(outlives.status == shcl::Status::Good);
 	CHECK(outlives.value.str() == "2026-08-02T10:20:30.123456789Z");

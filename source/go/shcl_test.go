@@ -747,30 +747,30 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	if got := doc.Children("missing"); len(got) != 0 {
 		t.Errorf("missing children: got %v", got)
 	}
-	// SourceName(): the author's spelling, unfolded; merged instances keep
+	// AuthoredName(): the author's spelling, unfolded; merged instances keep
 	// the first binding's; unresolved or Multiple is empty; writer-built
 	// keeps the setter path's spelling.
 	d2 := Parse("SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n")
-	if got := d2.SourceName("symbols"); got != "SYMBOLS" {
-		t.Errorf("SourceName(symbols): got %q", got)
+	if got := d2.AuthoredName("symbols"); got != "SYMBOLS" {
+		t.Errorf("AuthoredName(symbols): got %q", got)
 	}
-	if got := d2.SourceName("code"); got != "Code" {
-		t.Errorf("SourceName(code): got %q", got)
+	if got := d2.AuthoredName("code"); got != "Code" {
+		t.Errorf("AuthoredName(code): got %q", got)
 	}
-	if got := d2.SourceName("missing"); got != "" {
-		t.Errorf("SourceName(missing): got %q", got)
+	if got := d2.AuthoredName("missing"); got != "" {
+		t.Errorf("AuthoredName(missing): got %q", got)
 	}
 	if !d2.SetInt("NewTop.n", 1) {
 		t.Errorf("SetInt NewTop.n failed")
 	}
-	if got := d2.SourceName("newtop"); got != "NewTop" {
-		t.Errorf("SourceName(newtop): got %q", got)
+	if got := d2.AuthoredName("newtop"); got != "NewTop" {
+		t.Errorf("AuthoredName(newtop): got %q", got)
 	}
 	// Escapes are NOT resolved: a name is stored, compared and emitted in its
 	// escaped spelling, so resolving here would name a node that does not exist.
 	d3 := Parse("\"Ab\\tCd\": 2\n")
-	if got := d3.SourceName("\"ab\\tcd\""); got != "Ab\\tCd" {
-		t.Errorf("SourceName escaped: got %q", got)
+	if got := d3.AuthoredName("\"ab\\tcd\""); got != "Ab\\tCd" {
+		t.Errorf("AuthoredName escaped: got %q", got)
 	}
 }
 

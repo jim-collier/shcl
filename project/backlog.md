@@ -215,7 +215,7 @@ None open.
 			- Decided to resolve, because names already normalize once - ASCII case folds - so this finishes a rule rather than adding one. Rationale in `design.md` -> Guiding principles.
 			- Deferred to the next major, not scheduled: it moves canonical output for a published spelling, and two fields distinct today would merge. `QuoteSegment` stays the mitigation until then.
 			- Version cost is a number, not a migration. crates.io and PyPI carry 2.x beside 1.x with nothing to do; only Go pays, since v2 goes in the module path (`source/go/v2`) and every Go consumer edits an import.
-			- Shape when it comes: two sites per binding - unescape on name parse, and point name emit at the value escaper instead of the minimal name one. `SourceName` then becomes the real as-authored escape hatch rather than differing only by case, and item 15's doc decision still holds, since it returns source text. The fiddly part is the schema's two-level path quoting, which gains an unescape level and needs its own corpus case.
+			- Shape when it comes: two sites per binding - unescape on name parse, and point name emit at the value escaper instead of the minimal name one. `AuthoredName` then becomes the real as-authored escape hatch rather than differing only by case, and item 15's doc decision still holds, since it returns source text. The fiddly part is the schema's two-level path quoting, which gains an unescape level and needs its own corpus case.
 			- Do not cut a major for this alone - batch it with item 24's c++ date read pair.
 
 		- ✅ Code Review 20260817 item 17: the save gate's failure channel is wrong in three bindings.
@@ -285,10 +285,12 @@ None open.
 			- The suppressor sentence says the hints live on the parse's diagnostics, which validation does not touch, and names both the manual calls and the one-shot that runs them.
 			- The divergence is pinned in all four runners, not just described.
 
-		- 🔘 Code Review 20260817 item 24: two names worth settling while they are still free.
+		- 🛠️ Code Review 20260817 item 24: two names worth settling while they are still free.
 			- The as-authored name call reads as though it might return the file it came from, now that loading from a file exists. "Source" already means the source text and the source line elsewhere in the api.
 			- The c++ date reads are inverted against the rest of the api: the plain name returns text and the "raw" name returns the parsed value, while "raw" everywhere else means the text exactly as written.
 			- The first is unreleased, so renaming costs nothing today. The second can be fixed additively by adding clear names and retiring the old pair at a major.
+			- ✅ First half done: `SourceName` is `AuthoredName` in all four bindings plus the veneer, with no alias, since nothing has shipped it. "Authored" says what it returns without borrowing a word the api already spends on the source text and the source line.
+			- 🛠️ Second half: `read_datetime_str` is added as the correctly named textual read, and the two old spellings are documented as retiring. The retirement itself lands with the names major - at which point `read_datetime` becomes the structured read it is in every other binding, which is the actual parity defect underneath the naming one.
 
 		- 🔘 Code Review 20260817 item 25: no way to read a whole config into a structure.
 			- Every binding is path-at-a-time. A forty-key config is forty call sites and forty literal defaults.
@@ -425,9 +427,9 @@ None open.
 	- Done, all four bindings + veneer: load never fails (usable document plus Clean / HadErrors / NotFound / Unreadable status), save writes canonical text through the atomic temp-and-rename that moved from the CLIs into the libraries, so the CLIs now call the same code and cannot drift. C guards the tier behind `SHCL_NO_FILE_IO` so the core stays free of file I/O.
 	- Fixture in every runner (missing file, directory, broken file, save round-trip); spec gained a File tier section; decision recorded in `design.md`.
 
-- ✅ `SourceName(path)`: the field name as the author spelled it.
+- ✅ `AuthoredName(path)`: the field name as the author spelled it.
 	- From convert-base-v2: names store folded, so a message could only echo `symbols` when the file said `SYMBOLS`.
-	- Done, all four bindings + veneer: the parser and writer keep the as-authored spelling (unfolded, quotes and escapes resolved) beside the folded name; resolution mirrors `Line(path)`, merged instances keep the first binding's spelling, a writer-built node keeps the setter path's. Fixture extended in every runner; spec Accessor section updated.
+	- Done, all four bindings + veneer: the parser and writer keep the as-authored spelling (unfolded, outer quotes stripped, escapes left as written - see Code Review 20260817 item 15) beside the folded name; resolution mirrors `Line(path)`, merged instances keep the first binding's spelling, a writer-built node keeps the setter path's. Fixture extended in every runner; spec Accessor section updated.
 
 - ✅ H002 reports every merged level, and `reopen:` in a schema disavows it.
 	- From nano-git-db: no way to declare "this section is meant to be re-opened", so every legitimate re-open hinted forever - and only the outermost merge reported, so filtering by hand waved nested merges through.

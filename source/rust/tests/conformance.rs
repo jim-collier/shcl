@@ -795,21 +795,21 @@ fn read_surface_line_quoted_children() {
 	assert_eq!(doc.children("code"), vec!["hook", "hook", "done"]);
 	assert_eq!(doc.children(""), vec!["a", "b", "code"]);
 	assert!(doc.children("missing").is_empty());
-	// source_name(): the author's spelling, unfolded; merged instances keep
+	// authored_name(): the author's spelling, unfolded; merged instances keep
 	// the first binding's; unresolved or Multiple is empty; writer-built
 	// keeps the setter path's spelling.
 	let text2 = "SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n";
 	let mut d2 = Document::parse(text2);
-	assert_eq!(d2.source_name("symbols"), "SYMBOLS");
-	assert_eq!(d2.source_name("SYMBOLS"), "SYMBOLS");
-	assert_eq!(d2.source_name("code"), "Code");
-	assert_eq!(d2.source_name("missing"), "");
+	assert_eq!(d2.authored_name("symbols"), "SYMBOLS");
+	assert_eq!(d2.authored_name("SYMBOLS"), "SYMBOLS");
+	assert_eq!(d2.authored_name("code"), "Code");
+	assert_eq!(d2.authored_name("missing"), "");
 	assert!(d2.set_int("NewTop.n", 1));
-	assert_eq!(d2.source_name("newtop"), "NewTop");
+	assert_eq!(d2.authored_name("newtop"), "NewTop");
 	// Escapes are NOT resolved: a name is stored, compared and emitted in its
 	// escaped spelling, so resolving here would name a node that does not exist.
 	let d3 = Document::parse("\"Ab\\tCd\": 2\n");
-	assert_eq!(d3.source_name("\"ab\\tcd\""), "Ab\\tCd");
+	assert_eq!(d3.authored_name("\"ab\\tcd\""), "Ab\\tCd");
 }
 
 #[test]
