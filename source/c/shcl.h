@@ -852,6 +852,16 @@ static int is_fence_close(S line, unsigned char ch, size_t min_len) {
 	return 1;
 }
 
+/* Remove a raw block's common indent from one content line. A whitespace-only
+   line took no part in computing that indent, so it can be shorter than it -
+   strip only what it actually shares, rather than blanking it. Blanking drops
+   author spacing on a line the spec calls verbatim. */
+static S strip_common(S line, S common) {
+	size_t k = 0;
+	while (k < common.n && k < line.n && common.p[k] == line.p[k]) k++;
+	return s_slice(line, k, line.n);
+}
+
 // --- path scanner ------------------------------------------------------------
 
 typedef enum { SEL_NONE, SEL_VALUE, SEL_INDEX, SEL_WILDCARD } seltag;
@@ -1807,9 +1817,7 @@ static Value consume_raw(Parser *P, S *lines, size_t nlines, size_t i, size_t op
 	for (size_t k = 0; k < content.len; k++) {
 		if (k) sb_putc(a, &out, '\n');
 		S l = content.data[k];
-		if (s_trim(l).n == 0) { /* blank -> "" */ }
-		else if (common.n > 0 && l.n >= common.n && memcmp(l.p, common.p, common.n) == 0) sb_putS(a, &out, s_slice(l, common.n, l.n));
-		else sb_putS(a, &out, l);
+		sb_putS(a, &out, strip_common(l, common));
 	}
 	Value v; memset(&v, 0, sizeof v);
 	v.kind = V_RAW; v.content = sb_S(&out); v.info = info; v.fence_char = ch; v.fence_len = len;
@@ -2988,6 +2996,14 @@ static S emit_element(Arena *a, const Element *e) {
 		size_t i = 0;
 		while (i < t.n) { uint32_t c; size_t l = utf8_decode(t.p, t.n, i, &c); i += l;
 			if (c == ' ' || c == '\t' || c == ',' || c == ':' || c == '#' || c == '"' || c == '\'' || c == '[' || c == ']') { needs = 1; break; } }
+	}
+	/* Edge whitespace beyond the space/tab above still has to force quotes: the
+	   parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
+	   ideographic space) at either end would not survive the reload. Edges only
+	   - interior whitespace is never trimmed and quoting it would move bytes. */
+	if (!needs && t.n) {
+		uint32_t f, l; utf8_decode(t.p, t.n, 0, &f); utf8_last(t, &l);
+		if (is_ws(f) || is_ws(l)) needs = 1;
 	}
 	if (!needs) { Fence f = fence_open(a, t); if (f.ok) needs = 1; }
 	if (!needs && e->quoted && !is_data_format(a, e)) needs = 1;

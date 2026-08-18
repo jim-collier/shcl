@@ -1,0 +1,9 @@
+string	nbsp_end	x 
+string	nbsp_start	 x
+string	vtab	y
+string	formfeed	y
+string	ideographic	z　
+string	nel	w
+string	enquad	v 
+string	interior	a b
+string	plain	keep me

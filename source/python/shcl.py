@@ -695,6 +695,19 @@ def _is_fence_close(line, ch, min_len):
 	return len(t) >= min_len and len(t) > 0 and all(c == ch for c in t)
 
 
+def _strip_common(line, common):
+	"""Remove a raw block's common indent from one content line.
+
+	A whitespace-only line took no part in computing that indent, so it can be
+	shorter than it - strip only what it actually shares, rather than blanking
+	it. Blanking drops author spacing on a line the spec calls verbatim.
+	"""
+	k = 0
+	while k < len(common) and k < len(line) and common[k] == line[k]:
+		k += 1
+	return line[k:]
+
+
 # ---------------------------------------------------------------------------
 # Path scanner (shared by file lines and accessor queries)
 # ---------------------------------------------------------------------------
@@ -1157,14 +1170,7 @@ class _Parser:
 				common = "".join(p)
 		if common is None:
 			common = ""
-		stripped = []
-		for ln in content:
-			if not _trim(ln):
-				stripped.append("")
-			elif ln.startswith(common):
-				stripped.append(ln[len(common):])
-			else:
-				stripped.append(ln)
+		stripped = [_strip_common(ln, common) for ln in content]
 		return _raw("\n".join(stripped), info, ch, length), i
 
 	def _bind_block(self, parent, value, line):
@@ -2979,6 +2985,12 @@ def _emit_element(e):
 	"""
 	t = e.text
 	needs = (not t) or any(c in _RESERVED for c in t) or (_fence_open(t) is not None)
+	# Edge whitespace beyond the space/tab in _RESERVED still has to force quotes:
+	# the parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
+	# ideographic space) at either end would not survive the reload. Edges only -
+	# interior whitespace is never trimmed and quoting it would move bytes.
+	if not needs and t and (t[0] in _WS_SET or t[-1] in _WS_SET):
+		needs = True
 	if not needs and e.quoted and not _is_data_format(e):
 		needs = True
 	return _quote_text(t) if needs else t

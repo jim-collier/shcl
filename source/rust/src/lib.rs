@@ -658,6 +658,21 @@ fn is_fence_close(line: &str, ch: u8, min_len: usize) -> bool {
 	t.len() >= min_len && !t.is_empty() && t.bytes().all(|b| b == ch)
 }
 
+/// Remove a raw block's common indent from one content line. A whitespace-only
+/// line took no part in computing that indent, so it can be shorter than it -
+/// strip only what it actually shares, rather than blanking it. Blanking drops
+/// author spacing on a line the spec calls verbatim.
+fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
+	let mut k = 0;
+	for (a, b) in common.chars().zip(line.chars()) {
+		if a != b {
+			break;
+		}
+		k += a.len_utf8();
+	}
+	&line[k..]
+}
+
 // ---------------------------------------------------------------------------
 // Path scanner (shared by file lines and accessor queries)
 // ---------------------------------------------------------------------------
@@ -1309,16 +1324,7 @@ impl Parser {
 			});
 		}
 		let common = common.unwrap_or_default();
-		let stripped: Vec<&str> = content
-			.iter()
-			.map(|l| {
-				if l.trim().is_empty() {
-					""
-				} else {
-					l.strip_prefix(&common).unwrap_or(l)
-				}
-			})
-			.collect();
+		let stripped: Vec<&str> = content.iter().map(|l| strip_common(l, &common)).collect();
 		(
 			Value::Raw {
 				content: stripped.join("\n"),
@@ -2178,9 +2184,15 @@ pub fn suppress_declared_reopens(schema: &Document, diags: &mut Vec<Diagnostic>)
 /// canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
 fn emit_element(e: &Element) -> String {
 	let t = &e.text;
+	// Edge whitespace beyond the space/tab above still has to force quotes: the
+	// parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
+	// ideographic space) at either end would not survive the reload. Edges only
+	// - interior whitespace is never trimmed and quoting it would move bytes.
 	let needs = t.is_empty()
 		|| t.chars()
 			.any(|c| matches!(c, ' ' | '\t' | ',' | ':' | '#' | '"' | '\'' | '[' | ']'))
+		|| t.starts_with(char::is_whitespace)
+		|| t.ends_with(char::is_whitespace)
 		|| fence_open(t).is_some()
 		|| (e.quoted && !is_data_format(e));
 	if needs { quote_text(t) } else { t.clone() }

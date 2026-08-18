@@ -104,17 +104,22 @@ None open.
 			- A carriage return turned out NOT to be the same class: it round-trips intact, so rejecting it would be a behavior change with no defect behind it. Only the line break is refused.
 			- Pinned by the write-reason fixture in all four runners rather than the corpus: an ops line is line-based and cannot carry a raw newline. Same reason the reason-code list is spelled out in the spec instead.
 
-		- 🔘 Code Review 20260817 item 6: values with unusual whitespace at the edges are silently truncated on reload.
+		- ✅ Code Review 20260817 item 6: values with unusual whitespace at the edges are silently truncated on reload.
 			- The emitter decides whether to quote from a fixed short list of characters, but the parser trims values against the full unicode whitespace set. Anything in the gap has no spelling that survives a round trip.
 			- Measured across the gap: a value ending in a carriage return, a non-breaking space, a vertical tab, or any of the unicode spaces comes back shortened. Same loss through arrays and through comments. Plain spaces and tabs are fine - they are on the list.
 			- All four bindings. The writer fuzzer cannot see it: its character set contains none of these.
 			- Fix: also quote when the first or last character is whitespace by the same definition the parser trims by. Edge-only on purpose - quoting on interior whitespace would move bytes for documents that round-trip fine today.
+			- Fixed in all four exactly that way; every existing case still matches byte for byte, so nothing moved. Checked first that all four already agree on which characters count as whitespace - they do, or the fix itself would have split them.
+			- Case 052 pins it through the writer, where the loss was reachable: an author-quoted value already survived, so only a written one showed it.
 
-		- 🔘 Code Review 20260817 item 7: formatting deletes the contents of a blank-looking line inside a raw block.
+		- ✅ Code Review 20260817 item 7: formatting deletes the contents of a blank-looking line inside a raw block.
 			- Reproduced: a raw block whose body has a line of only spaces formats with that line emptied. Reading the block back confirms the spaces are gone.
 			- A raw block is contracted as verbatim, with only the common nesting indent stripped, so this is content loss rather than a documented normalization.
 			- All four bindings. No corpus case has a whitespace-only line, so nothing pins the current behavior.
 			- Fix: strip the common indent from such a line like any other, and fall back to empty only when the prefix is absent.
+			- Fixed in all four with one shared helper: strip however much of the common indent the line actually shares. A blank-looking line takes no part in computing that indent, so it can be shorter than it - which is why the old code special-cased it at all, and blanking was the wrong way out.
+			- Case 053 pins the whole gradient: a line longer than the indent, one shorter, and a truly empty one.
+			- The case carries meaningful trailing whitespace. An editor that trims on save would quietly break it; that is the first thing to check if it ever starts failing on its own.
 
 		- 🔘 Code Review 20260817 item 8: an in-place write silently deletes lines it could not read.
 			- Reproduced: a config with one unreadable line, plus one setting change, comes back a line shorter. Exit code zero, nothing on stdout, nothing on stderr, no record the line existed.

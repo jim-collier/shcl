@@ -848,6 +848,18 @@ func isFenceClose(line string, ch byte, minLen int) bool {
 	return true
 }
 
+// stripCommon removes a raw block's common indent from one content line. A
+// whitespace-only line took no part in computing that indent, so it can be
+// shorter than it - strip only what it actually shares, rather than blanking it.
+// Blanking drops author spacing on a line the spec calls verbatim.
+func stripCommon(line, common string) string {
+	k := 0
+	for k < len(common) && k < len(line) && common[k] == line[k] {
+		k++
+	}
+	return line[k:]
+}
+
 // ---------------------------------------------------------------------------
 // Path scanner (shared by file lines and accessor queries)
 // ---------------------------------------------------------------------------
@@ -1446,11 +1458,7 @@ func (p *parser) consumeRaw(lines []string, i, openLine int, ch byte, length int
 	}
 	stripped := make([]string, len(content))
 	for j, l := range content {
-		if strings.TrimSpace(l) == "" {
-			stripped[j] = ""
-		} else {
-			stripped[j] = strings.TrimPrefix(l, common)
-		}
+		stripped[j] = stripCommon(l, common)
 	}
 	return value{
 		kind: vRaw,
@@ -2315,6 +2323,17 @@ func emitElement(e *element) string {
 			if needs {
 				break
 			}
+		}
+	}
+	// Edge whitespace beyond the space/tab above still has to force quotes: the
+	// parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
+	// ideographic space) at either end would not survive the reload. Edges only
+	// - interior whitespace is never trimmed and quoting it would move bytes.
+	if !needs && t != "" {
+		r, _ := utf8.DecodeRuneInString(t)
+		l, _ := utf8.DecodeLastRuneInString(t)
+		if unicode.IsSpace(r) || unicode.IsSpace(l) {
+			needs = true
 		}
 	}
 	if !needs {
