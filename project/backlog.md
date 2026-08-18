@@ -292,16 +292,23 @@ None open.
 			- ✅ First half done: `SourceName` is `AuthoredName` in all four bindings plus the veneer, with no alias, since nothing has shipped it. "Authored" says what it returns without borrowing a word the api already spends on the source text and the source line.
 			- 🛠️ Second half: `read_datetime_str` is added as the correctly named textual read, and the two old spellings are documented as retiring. The retirement itself lands with the names major - at which point `read_datetime` becomes the structured read it is in every other binding, which is the actual parity defect underneath the naming one.
 
-		- 🔘 Code Review 20260817 item 25: no way to read a whole config into a structure.
+		- 🚫 Code Review 20260817 item 25: no way to read a whole config into a structure. DECLINED, recorded as a decision.
+			- Declined because the reference cannot implement it: a derive-based decoder needs a proc-macro, which is a second crate, and one file per binding with no dependencies is what the product is. Hand-written reflection instead gives each binding its own machinery with nothing to mirror - the parity rule inverted.
+			- Doing it in only the two languages where it is cheap would be worse than not doing it: the same config would load two different ways depending on the language, which is the one thing the crosscheck exists to prevent.
+			- Recorded in `design.md` -> Consumer API, so it reads as a choice rather than an omission. Reversible - the reasoning is what would have to change, not the code.
 			- Every binding is path-at-a-time. A forty-key config is forty call sites and forty literal defaults.
 			- Users arrive from libraries that decode a whole document into a typed structure in one call, and that is the comparison a reviewer makes.
 			- It does not conflict with "values are typed by the reader" - a field's declared type is the reader's requested type, applied in bulk.
 			- The honest cost is parity: it is per-binding machinery with no reference structure to mirror. Decide it either way, but record the decision in design.md so it reads as a choice rather than an omission.
 
-		- 🔘 Code Review 20260817 item 26: the reference is missing cheap standard surface.
+		- ✅ Code Review 20260817 item 26: the reference is missing cheap standard surface.
 			- No clone on the document, no parse-from-string trait, no display wrapping the canonical form, no display on the status type, and no public float formatter - which the other three all export.
 			- Parsing via the standard trait and printing a document are the first two things a rust user tries. Printing a status today lands in user-facing messages as debug output.
 			- All additive, none of it structural, so the parity rule is untouched.
+			- All five done. `Clone` is a derive and correct for free: the arena is index-based, so cloning the vector copies the whole tree with no reference to fix up - pinned by editing a clone and checking the original.
+			- `FromStr` carries `Infallible` as its error, not a load error, because parsing at Standard genuinely cannot fail - a malformed line is a diagnostic. The fallible load is still `parse_with` at Strict.
+			- `format_f64` is a wrapper over rust's own Display, which already spells floats the way the contract requires. The two setter sites call it now, so the rule has one home rather than a `format!` at each.
+			- Rust-only fixture, deliberately: nothing here is new behavior, and the other three already export the same capabilities under their own names.
 
 		- 🔘 Code Review 20260817 item 27: performance, six measured items.
 			- The new author-quoting clause runs four full coercions per quoted element on every emit. Measured, emitting a quoted document costs about three times the same document bare, and it lands on formatting - the command most likely to run on a large file. A cheap first-character test or a cached classification removes it.

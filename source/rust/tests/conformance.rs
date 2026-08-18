@@ -854,6 +854,29 @@ fn file_tier_load_save() {
 }
 
 #[test]
+fn standard_trait_surface() {
+	// Rust-only: the traits a rust user reaches for before reading any docs.
+	// Nothing here is new behavior, so there is no cross-binding fixture - the
+	// other three already export the same capabilities under their own names.
+	use std::str::FromStr;
+	let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+	assert_eq!(doc.to_string(), doc.to_canonical());
+	assert_eq!(
+		"a: 1\n".parse::<Document>().unwrap().to_canonical(),
+		"a: 1\n"
+	);
+	// Clone is a deep copy: editing the copy must not reach the original.
+	let mut copy = doc.clone();
+	assert!(copy.set_int("a", 9));
+	assert_eq!(doc.get_int("a"), Ok(1));
+	assert_eq!(copy.get_int("a"), Ok(9));
+	assert_eq!(shcl::Status::BadType.to_string(), "BadType");
+	assert_eq!(shcl::format_f64(1.5), "1.5");
+	assert_eq!(shcl::format_f64(f64::INFINITY), "inf");
+	assert_eq!(shcl::format_f64(f64::NAN), "NaN");
+}
+
+#[test]
 fn lost_and_save_gate() {
 	// Content-malformed lines are retained as trivia (lost_count 0, the line
 	// survives a save); position-dependent drops count as lost and make
