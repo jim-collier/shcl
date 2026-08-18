@@ -528,8 +528,16 @@ def _fold_name(s):
 	return _ascii_lower(s)
 
 
+# A closed 64-character set, so membership is one C-level lookup rather than
+# two method calls and two comparisons per character. The scanner and the name
+# emitter both run this over every character they touch.
+_BARE_NAME_CHARS = frozenset(
+	"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+)
+
+
 def _is_bare_name_char(c):
-	return (c.isascii() and c.isalnum()) or c == "-" or c == "_"
+	return c in _BARE_NAME_CHARS
 
 
 def _split_comment(s):
@@ -844,7 +852,7 @@ def _scan_path_ex(inp, stars):
 			name = "*"
 		else:
 			start = pos
-			while pos < n and _is_bare_name_char(chars[pos]):
+			while pos < n and chars[pos] in _BARE_NAME_CHARS:
 				pos += 1
 			if pos == start:
 				raise _PathError("expected field name, found '{}'".format(chars[pos]))
@@ -1921,12 +1929,6 @@ class Document:
 		self.arena[parent].children.append(idx)
 		return idx
 
-	def _child_or_create(self, parent, name, name_src):
-		for c in self.arena[parent].children:
-			if self.arena[c].name == name:
-				return c
-		return self._new_child(parent, name, name_src, _empty())
-
 	def write_reason(self, path):
 		"""Why a write at this path would fail - the reason behind a setter's
 		bare False, so a consumer's error message need not guess. Writable means
@@ -1935,20 +1937,27 @@ class Document:
 			segments, value_text = _scan_lookup(path)
 		except _PathError:
 			return WriteReason.BadPath
+		return self._probe_write(segments, value_text)[0]
+
+	def _probe_write(self, segments, value_text, trail=None):
+		"""The validation walk write_reason and _place share. `trail`, when a
+		list is passed, collects where each segment landed - None from the point
+		the path falls off the existing tree - so _place can create from exactly
+		there instead of scanning the path and walking the tree a second time."""
 		if value_text is not None:
-			return WriteReason.ValueInPath
+			return (WriteReason.ValueInPath, None)
 		if not segments:
-			return WriteReason.BadPath
+			return (WriteReason.BadPath, None)
 		# Writer side of the load-time nesting cap: never create deeper.
 		if len(segments) > MAX_DEPTH:
-			return WriteReason.TooDeep
+			return (WriteReason.TooDeep, None)
 		# The probe walk _place() validates with: once it falls off the existing
 		# tree, a later `[#k]` can never match (fresh intermediates are created
 		# childless), so an index segment past that point is unresolvable.
 		probe = ROOT
 		for seg in segments:
 			if seg.star:
-				return WriteReason.Wildcard
+				return (WriteReason.Wildcard, None)
 			sel = seg.selector
 			# A newline has no one-line spelling, so the emitted binding would
 			# split across two lines and reparse as neither. generate already
@@ -1956,15 +1965,15 @@ class Document:
 			# is created - the reload loses nothing it can count, so the save gate
 			# would not catch it either.
 			if "\n" in seg.name or (sel is not None and sel[0] == "val" and "\n" in sel[1]):
-				return WriteReason.BadPath
+				return (WriteReason.BadPath, None)
 			if sel is not None and sel[0] == "wild":
-				return WriteReason.Wildcard
+				return (WriteReason.Wildcard, None)
 			if sel is not None and sel[0] == "idx":
 				if probe is None:
-					return WriteReason.NoSuchIndex
+					return (WriteReason.NoSuchIndex, None)
 				matches = [c for c in self.arena[probe].children if self.arena[c].name == seg.name]
 				if sel[1] >= len(matches):
-					return WriteReason.NoSuchIndex
+					return (WriteReason.NoSuchIndex, None)
 				probe = matches[sel[1]]
 			elif sel is not None and sel[0] == "val":
 				if probe is not None:
@@ -1983,7 +1992,9 @@ class Document:
 							found = c
 							break
 					probe = found
-		return WriteReason.Writable
+			if trail is not None:
+				trail.append(probe)
+		return (WriteReason.Writable, trail)
 
 	def _place(self, path):
 		"""Walk (creating as needed) to the node a write targets. A trailing
@@ -1992,34 +2003,29 @@ class Document:
 		must already exist. None = path unusable for a write (write_reason()
 		says why). Validation runs first, so a doomed path leaves no
 		half-created intermediates behind."""
-		if self.write_reason(path) != WriteReason.Writable:
-			return None
 		try:
-			segments, _ = _scan_lookup(path)
+			segments, value_text = _scan_lookup(path)
 		except _PathError:
 			return None
+		trail = []
+		if self._probe_write(segments, value_text, trail)[0] != WriteReason.Writable:
+			return None
 		cur = ROOT
-		for seg in segments:
-			if seg.star:
-				return None   # write_reason gates this; belt only
+		for i, seg in enumerate(segments):
+			# The probe already resolved every segment that exists; only the
+			# tail it fell off has anything to create.
+			if trail[i] is not None:
+				cur = trail[i]
+				continue
 			sel = seg.selector
 			if sel is None:
-				cur = self._child_or_create(cur, seg.name, seg.name_src)
+				cur = self._new_child(cur, seg.name, seg.name_src, _empty())
 			elif sel[0] == "val":
-				want = _apply_escapes(sel[1])
-				found = None
-				for c in self.arena[cur].children:
-					if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value)):
-						found = c
-						break
-				cur = found if found is not None else self._new_child(cur, seg.name, seg.name_src, _cell_of(sel[1]))
-			elif sel[0] == "idx":
-				matches = [c for c in self.arena[cur].children if self.arena[c].name == seg.name]
-				if sel[1] >= len(matches):
-					return None
-				cur = matches[sel[1]]
+				cur = self._new_child(cur, seg.name, seg.name_src, _cell_of(sel[1]))
 			else:
-				return None   # wildcard is query-only
+				# Unreachable: _probe_write refuses a wildcard outright and an
+				# unresolvable index, so neither reaches an empty trail slot.
+				return None
 		return cur
 
 	def _set_value(self, path, value):
@@ -2902,7 +2908,9 @@ class StatusError(Exception):
 
 
 def _emit_name(name):
-	if name and all(_is_bare_name_char(c) for c in name):
+	# set(name) and the difference are both C-level; the generator this replaced
+	# made one Python call per character of every name emitted.
+	if name and not set(name) - _BARE_NAME_CHARS:
 		return name
 	return _quote_text(name)
 
@@ -3102,7 +3110,7 @@ def suppress_declared_reopens(schema, diags):
 	diags[:] = kept
 
 
-_RESERVED = set(" \t,:#\"'[]")
+_RESERVED = frozenset(" \t,:#\"'[]")
 
 
 def _emit_element(e):
@@ -3114,7 +3122,9 @@ def _emit_element(e):
 	canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
 	"""
 	t = e.text
-	needs = (not t) or any(c in _RESERVED for c in t) or (_fence_open(t) is not None)
+	# isdisjoint iterates the text in C and stops at the first hit; the generator
+	# it replaced made one Python call per character of every element emitted.
+	needs = (not t) or not _RESERVED.isdisjoint(t) or (_fence_open(t) is not None)
 	# Edge whitespace beyond the space/tab in _RESERVED still has to force quotes:
 	# the parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
 	# ideographic space) at either end would not survive the reload. Edges only -
@@ -3129,7 +3139,16 @@ def _emit_element(e):
 def _is_data_format(e):
 	"""True when the text reads as an int, float, bool, or datetime at standard
 	strictness - fixed there deliberately, so canonical form cannot vary with
-	the load strictness."""
+	the load strictness.
+
+	One pass over the text before any coercion: at Standard the int, float and
+	datetime forms all require at least one ASCII digit, and the only formats
+	that do not are the boolean words, the longest of which is "false". An
+	ordinary quoted string fails both tests, so emit stops running four full
+	coercions on every quoted element it writes."""
+	if not any("0" <= c <= "9" for c in e.text):
+		t = _trim(e.text)
+		return len(t) <= 5 and _parse_bool_text(t, Strictness.Standard) is not None
 	if _parse_int_text(e, Strictness.Standard) is not None:
 		return True
 	if _parse_float_text(e, Strictness.Standard) is not None:

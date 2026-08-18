@@ -717,19 +717,24 @@ func normalizeDanglingBackslash(t string) string {
 // apostrophes (it's fine) are legal prose and stay silent.
 func unterminatedQuote(text string) bool {
 	for _, piece := range splitUnquotedCommas(text) {
-		chars := []rune(strings.TrimSpace(piece))
-		if len(chars) == 0 {
+		// Bytes, not runes: both quotes and the backslash are ASCII, and UTF-8
+		// never puts an ASCII byte inside a multibyte sequence, so the first
+		// byte, the last byte and the escape parity are the same answers the
+		// decoded form gives. Decoding here allocated a rune slice per element
+		// of every line parsed.
+		t := strings.TrimSpace(piece)
+		if t == "" {
 			continue
 		}
-		first := chars[0]
+		first := t[0]
 		if first != '"' && first != '\'' {
 			continue
 		}
 		closed := false
-		if len(chars) >= 2 && chars[len(chars)-1] == first {
+		if len(t) >= 2 && t[len(t)-1] == first {
 			esc := false
-			for _, c := range chars[1 : len(chars)-1] {
-				esc = c == '\\' && !esc
+			for i := 1; i+1 < len(t); i++ {
+				esc = t[i] == '\\' && !esc
 			}
 			closed = !esc
 		}
@@ -747,16 +752,17 @@ func parseElement(piece string) (element, bool) {
 	if t == "" {
 		return element{}, false
 	}
-	chars := []rune(t)
-	first := chars[0]
-	if (first == '"' || first == '\'') && len(chars) >= 2 && chars[len(chars)-1] == first {
+	// Bytes, not runes - see unterminatedQuote for why the answers are
+	// identical, and why this used to allocate per element of every line.
+	first := t[0]
+	if (first == '"' || first == '\'') && len(t) >= 2 && t[len(t)-1] == first {
 		// The closing quote must not itself be escaped (`"a\"` is not closed).
 		esc := false
-		for _, c := range chars[1 : len(chars)-1] {
-			esc = c == '\\' && !esc
+		for i := 1; i+1 < len(t); i++ {
+			esc = t[i] == '\\' && !esc
 		}
 		if !esc {
-			return element{text: string(chars[1 : len(chars)-1]), quoted: true}, true
+			return element{text: t[1 : len(t)-1], quoted: true}, true
 		}
 	}
 	return element{text: normalizeDanglingBackslash(t)}, true
@@ -777,20 +783,26 @@ func parseCell(text string) value {
 
 // applyEscapes handles string reads: \t \n \\ \" \'; unknown escapes stay literal.
 func applyEscapes(s string) string {
-	rs := []rune(s)
-	out := make([]rune, 0, len(rs))
-	for i := 0; i < len(rs); i++ {
-		c := rs[i]
+	// Bytes: every escape this recognizes is ASCII, and any other byte - a
+	// continuation byte included - is copied through untouched, so the result
+	// is the same string the rune walk built without decoding and re-encoding
+	// it. This runs on every string read and on every selector compare.
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
 		if c != '\\' {
 			out = append(out, c)
 			continue
 		}
-		if i+1 >= len(rs) {
+		if i+1 >= len(s) {
 			out = append(out, '\\')
 			break
 		}
 		i++
-		switch rs[i] {
+		switch s[i] {
 		case 't':
 			out = append(out, '\t')
 		case 'n':
@@ -802,7 +814,7 @@ func applyEscapes(s string) string {
 		case '\'':
 			out = append(out, '\'')
 		default:
-			out = append(out, '\\', rs[i])
+			out = append(out, '\\', s[i])
 		}
 	}
 	return string(out)
@@ -2399,6 +2411,26 @@ func emitElement(e *element) string {
 // datetime at standard strictness - fixed there deliberately, so canonical
 // form cannot vary with the load strictness.
 func isDataFormat(e *element) bool {
+	// One pass over the bytes before any coercion. At Standard the int, float
+	// and datetime forms all require at least one ASCII digit; the only formats
+	// that do not are the boolean words, and the longest of those is "false".
+	// An ordinary quoted string fails both tests, so emit stops running four
+	// full coercions on every quoted element it writes.
+	hasDigit := false
+	for i := 0; i < len(e.text); i++ {
+		if e.text[i] >= '0' && e.text[i] <= '9' {
+			hasDigit = true
+			break
+		}
+	}
+	if !hasDigit {
+		t := strings.TrimSpace(e.text)
+		if len(t) > 5 {
+			return false
+		}
+		_, ok := parseBoolText(t, Standard)
+		return ok
+	}
 	if _, ok := parseIntText(e, Standard); ok {
 		return true
 	}
@@ -2417,9 +2449,11 @@ func isDataFormat(e *element) bool {
 // bareQuoteCounts counts quote chars that are NOT already escaped in the raw
 // text; escaped ones must stay untouched or every round-trip would re-escape them.
 func bareQuoteCounts(t string) (dq, sq int) {
-	rs := []rune(t)
-	for i := 0; i < len(rs); i++ {
-		switch rs[i] {
+	// Bytes: the three characters matched are ASCII, and a continuation byte
+	// matches none of them, so skipping one byte after a backslash counts the
+	// same as skipping one rune.
+	for i := 0; i < len(t); i++ {
+		switch t[i] {
 		case '\\':
 			i++
 		case '"':
@@ -2449,19 +2483,18 @@ func quoteText(t string) string {
 	// Both quote kinds appear bare: escape the doubles, wrap in doubles.
 	var out strings.Builder
 	out.WriteByte('"')
-	rs := []rune(t)
-	for i := 0; i < len(rs); i++ {
-		switch rs[i] {
+	for i := 0; i < len(t); i++ {
+		switch t[i] {
 		case '\\':
-			out.WriteRune(rs[i])
-			if i+1 < len(rs) {
+			out.WriteByte(t[i])
+			if i+1 < len(t) {
 				i++
-				out.WriteRune(rs[i])
+				out.WriteByte(t[i])
 			}
 		case '"':
 			out.WriteString("\\\"")
 		default:
-			out.WriteRune(rs[i])
+			out.WriteByte(t[i])
 		}
 	}
 	out.WriteByte('"')
@@ -2853,15 +2886,6 @@ func (d *Document) newChild(parent int, name, nameSrc string, v value) int {
 	return idx
 }
 
-func (d *Document) childOrCreate(parent int, name, nameSrc string) int {
-	for _, c := range d.arena[parent].children {
-		if d.arena[c].name == name {
-			return c
-		}
-	}
-	return d.newChild(parent, name, nameSrc, value{kind: vEmpty})
-}
-
 // WriteReason reports why a write at this path would fail - the reason behind
 // a setter's bare false, so a consumer's error message need not guess.
 // Writable means the same validation place() runs would pass; nothing is
@@ -2871,24 +2895,34 @@ func (d *Document) WriteReason(path string) WriteReason {
 	if err != nil {
 		return BadPath
 	}
+	r, _ := d.probeWrite(scan)
+	return r
+}
+
+// probeWrite is the validation walk WriteReason and place share. The returned
+// trail records where each segment landed - -1 from the point the path falls
+// off the existing tree - so place can create from exactly there instead of
+// scanning the path and walking the tree a second time.
+func (d *Document) probeWrite(scan pathScan) (WriteReason, []int) {
 	if scan.valueText != nil {
-		return ValueInPath
+		return ValueInPath, nil
 	}
 	if len(scan.segments) == 0 {
-		return BadPath
+		return BadPath, nil
 	}
 	// Writer side of the load-time nesting cap: never create deeper.
 	if len(scan.segments) > MaxDepth {
-		return TooDeep
+		return TooDeep, nil
 	}
 	// The probe walk place() validates with: once it falls off the existing
 	// tree, a later `[#k]` can never match (fresh intermediates are created
 	// childless), so an index segment past that point is unresolvable.
+	trail := make([]int, 0, len(scan.segments))
 	probe, alive := root, true
 	for i := range scan.segments {
 		seg := &scan.segments[i]
 		if seg.star {
-			return Wildcard
+			return Wildcard, nil
 		}
 		// A newline has no one-line spelling, so the emitted binding would split
 		// across two lines and reparse as neither. Generate already refuses these
@@ -2896,7 +2930,7 @@ func (d *Document) WriteReason(path string) WriteReason {
 		// reload loses nothing it can count, so the save gate would not catch it.
 		if strings.Contains(seg.name, "\n") ||
 			(seg.sel != nil && seg.sel.kind == selByValue && strings.Contains(seg.sel.value, "\n")) {
-			return BadPath
+			return BadPath, nil
 		}
 		switch {
 		case seg.sel == nil:
@@ -2922,7 +2956,7 @@ func (d *Document) WriteReason(path string) WriteReason {
 			}
 		case seg.sel.kind == selByIndex:
 			if !alive {
-				return NoSuchIndex
+				return NoSuchIndex, nil
 			}
 			var matches []int
 			for _, c := range d.arena[probe].children {
@@ -2931,14 +2965,19 @@ func (d *Document) WriteReason(path string) WriteReason {
 				}
 			}
 			if seg.sel.index >= uint64(len(matches)) {
-				return NoSuchIndex
+				return NoSuchIndex, nil
 			}
 			probe = matches[seg.sel.index]
 		default:
-			return Wildcard
+			return Wildcard, nil
+		}
+		if alive {
+			trail = append(trail, probe)
+		} else {
+			trail = append(trail, -1)
 		}
 	}
-	return Writable
+	return Writable, trail
 }
 
 // place walks (creating as needed) to the node a write targets. A trailing name
@@ -2948,49 +2987,32 @@ func (d *Document) WriteReason(path string) WriteReason {
 // why). Validation runs first, so a doomed path leaves no half-created
 // intermediates behind.
 func (d *Document) place(path string) (int, bool) {
-	if d.WriteReason(path) != Writable {
-		return 0, false
-	}
 	scan, err := scanLookup(path)
 	if err != nil {
+		return 0, false
+	}
+	reason, trail := d.probeWrite(scan)
+	if reason != Writable {
 		return 0, false
 	}
 	cur := root
 	for i := range scan.segments {
 		seg := &scan.segments[i]
-		if seg.star {
-			return 0, false // WriteReason gates this; belt only
+		// The probe already resolved every segment that exists; only the tail
+		// it fell off has anything to create.
+		if trail[i] >= 0 {
+			cur = trail[i]
+			continue
 		}
 		switch {
 		case seg.sel == nil:
-			cur = d.childOrCreate(cur, seg.name, seg.nameSrc)
+			cur = d.newChild(cur, seg.name, seg.nameSrc, value{kind: vEmpty})
 		case seg.sel.kind == selByValue:
-			want := applyEscapes(seg.sel.value)
-			found := -1
-			for _, c := range d.arena[cur].children {
-				if d.arena[c].name == seg.name && dispKey(&d.arena[c].value) == want && (!seg.sel.quoted || singleScalar(&d.arena[c].value)) {
-					found = c
-					break
-				}
-			}
-			if found >= 0 {
-				cur = found
-			} else {
-				cur = d.newChild(cur, seg.name, seg.nameSrc, cellOf(seg.sel.value))
-			}
-		case seg.sel.kind == selByIndex:
-			var matches []int
-			for _, c := range d.arena[cur].children {
-				if d.arena[c].name == seg.name {
-					matches = append(matches, c)
-				}
-			}
-			if seg.sel.index >= uint64(len(matches)) {
-				return 0, false
-			}
-			cur = matches[seg.sel.index]
+			cur = d.newChild(cur, seg.name, seg.nameSrc, cellOf(seg.sel.value))
 		default:
-			return 0, false // wildcard is query-only
+			// Unreachable: probeWrite refuses a wildcard outright and an
+			// unresolvable index, so neither reaches an empty trail slot.
+			return 0, false
 		}
 	}
 	return cur, true

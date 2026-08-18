@@ -2258,10 +2258,19 @@ fn emit_element(e: &Element) -> String {
 /// strictness - fixed there deliberately, so canonical form cannot vary with
 /// the load strictness.
 fn is_data_format(e: &Element) -> bool {
-	parse_int_text(e, Strictness::Standard).is_some()
-		|| parse_float_text(e, Strictness::Standard).is_some()
-		|| parse_bool_text(&e.text, Strictness::Standard).is_some()
-		|| parse_datetime(&e.text).is_some()
+	// One pass over the bytes before any coercion. At Standard the int, float
+	// and datetime forms all require at least one ASCII digit; the only formats
+	// that do not are the boolean words, and the longest of those is "false".
+	// An ordinary quoted string fails both tests, so emit stops running four
+	// full coercions on every quoted element it writes.
+	let t = e.text.trim();
+	if t.bytes().any(|b| b.is_ascii_digit()) {
+		return parse_int_text(e, Strictness::Standard).is_some()
+			|| parse_float_text(e, Strictness::Standard).is_some()
+			|| parse_datetime(&e.text).is_some()
+			|| parse_bool_text(t, Strictness::Standard).is_some();
+	}
+	t.len() <= 5 && parse_bool_text(t, Strictness::Standard).is_some()
 }
 
 /// Quote chars that are NOT already escaped in the raw text; escaped ones must
@@ -2657,18 +2666,6 @@ impl Document {
 		idx
 	}
 
-	fn child_or_create(&mut self, parent: usize, name: &str, name_src: &str) -> usize {
-		match self.arena[parent]
-			.children
-			.iter()
-			.copied()
-			.find(|&c| self.arena[c].name == name)
-		{
-			Some(c) => c,
-			None => self.new_child(parent, name, name_src, Value::Empty),
-		}
-	}
-
 	/// Why a write at this path would fail - the reason behind a setter's bare
 	/// `false`, so a consumer's error message need not guess. `Writable` means
 	/// the same validation `place()` runs would pass; nothing is created.
@@ -2677,6 +2674,15 @@ impl Document {
 			Ok(s) => s,
 			Err(_) => return WriteReason::BadPath,
 		};
+		self.probe_write(&scan, &mut Vec::new())
+	}
+
+	/// The validation walk `write_reason` and `place` share. `trail` collects
+	/// where each segment landed - `None` from the point the path falls off the
+	/// existing tree - so `place` can create from exactly there instead of
+	/// scanning the path and walking the tree a second time.
+	fn probe_write(&self, scan: &PathScan, trail: &mut Vec<Option<usize>>) -> WriteReason {
+		trail.clear();
 		if scan.value_text.is_some() {
 			return WriteReason::ValueInPath;
 		}
@@ -2742,6 +2748,7 @@ impl Document {
 					});
 				}
 			}
+			trail.push(probe);
 		}
 		WriteReason::Writable
 	}
@@ -2753,41 +2760,28 @@ impl Document {
 	/// says why). Validation runs first, so a doomed path leaves no
 	/// half-created intermediates behind.
 	fn place(&mut self, path: &str) -> Option<usize> {
-		if self.write_reason(path) != WriteReason::Writable {
+		let scan = scan_lookup(path).ok()?;
+		let mut trail: Vec<Option<usize>> = Vec::new();
+		if self.probe_write(&scan, &mut trail) != WriteReason::Writable {
 			return None;
 		}
-		let scan = scan_lookup(path).ok()?;
 		let mut cur = ROOT;
-		for seg in &scan.segments {
-			if seg.star {
-				return None; // write_reason gates this; belt only
+		for (i, seg) in scan.segments.iter().enumerate() {
+			// The probe already resolved every segment that exists; only the
+			// tail it fell off has anything to create.
+			if let Some(found) = trail[i] {
+				cur = found;
+				continue;
 			}
 			cur = match &seg.selector {
-				None => self.child_or_create(cur, &seg.name, &seg.name_src),
-				Some(Selector::ByValue { text, quoted }) => {
-					let want = apply_escapes(text);
-					let found = self.arena[cur].children.iter().copied().find(|&c| {
-						self.arena[c].name == seg.name
-							&& disp_key(&self.arena[c].value) == want
-							&& (!quoted || single_scalar(&self.arena[c].value))
-					});
-					match found {
-						Some(c) => c,
-						None => {
-							self.new_child(cur, &seg.name, &seg.name_src, cell_of(text.clone()))
-						}
-					}
+				None => self.new_child(cur, &seg.name, &seg.name_src, Value::Empty),
+				Some(Selector::ByValue { text, .. }) => {
+					self.new_child(cur, &seg.name, &seg.name_src, cell_of(text.clone()))
 				}
-				Some(Selector::ByIndex(k)) => {
-					let matches: Vec<usize> = self.arena[cur]
-						.children
-						.iter()
-						.copied()
-						.filter(|&c| self.arena[c].name == seg.name)
-						.collect();
-					*index_usize(*k).and_then(|i| matches.get(i))?
-				}
-				Some(Selector::Wildcard) => return None,
+				// Both are unreachable: probe_write refuses a wildcard outright
+				// and an unresolvable index, so neither reaches an empty trail
+				// slot. Belt only.
+				Some(Selector::ByIndex(_)) | Some(Selector::Wildcard) => return None,
 			};
 		}
 		Some(cur)
