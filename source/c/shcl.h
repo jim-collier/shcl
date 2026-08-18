@@ -802,6 +802,11 @@ static S apply_escapes(Arena *a, S s) {
 /* The predicate a `[value]` selector matches with: display form with escapes
    applied on both sides, so `["q\"uote"]` finds `'q"uote'` - a logical-string
    match, not spelling against spelling. */
+/* The restriction a QUOTED [value] selector adds on top of the display
+   match: quoting selects the scalar spelling only, so the scalar "a, b" and
+   the list a, b stop meeting the same selector. */
+static int single_scalar(const Value *v) { return v->kind == V_CELL && v->nels == 1; }
+
 static S disp_key(Arena *a, const Value *v) {
 	return apply_escapes(a, value_display(a, v));
 }
@@ -830,7 +835,11 @@ static int is_fence_close(S line, unsigned char ch, size_t min_len) {
 // --- path scanner ------------------------------------------------------------
 
 typedef enum { SEL_NONE, SEL_VALUE, SEL_INDEX, SEL_WILDCARD } seltag;
-typedef struct { seltag tag; S value; uint64_t index; } Selector; // u64: width must not vary with target pointer size
+/* quoted: the selector text was quoted in the path. A quoted selector is
+   scalar-only - it matches a single-element value whose logical string equals
+   the text - so quoting distinguishes the scalar "a, b" from the two-element
+   list a, b, the same way quoting escapes elsewhere. */
+typedef struct { seltag tag; S value; uint64_t index; int quoted; } Selector; // u64: width must not vary with target pointer size
 typedef struct { S name; S name_src; Selector sel; int star; } Segment; // name_src: as authored (unfolded); star: bare `*` name wildcard; quoted "*" stays a literal name
 DEFINE_VEC(VecSeg, Segment)
 typedef struct { int ok; VecSeg segs; int has_value; S value_text; S err; } PathScan;
@@ -908,7 +917,7 @@ static PathScan scan_path_ex(Arena *a, S input, int stars) {
 			}
 			name = s_slice(input, start, pos);
 		}
-		Selector sel; sel.tag = SEL_NONE; sel.value = s_empty(); sel.index = 0;
+		Selector sel; sel.tag = SEL_NONE; sel.value = s_empty(); sel.index = 0; sel.quoted = 0;
 		skip_ws_path(input, &pos);
 		int have_bracket = 0; size_t bracket_end = 0; // byte offset just past the '['
 		if (pos < input.n) {
@@ -930,7 +939,7 @@ static PathScan scan_path_ex(Arena *a, S input, int stars) {
 			(void)ocl;
 			if (pos < input.n && (oc == '"' || oc == '\'')) {
 				S v; if (!read_quoted_path(a, input, &pos, &v, &ps.err)) return ps;
-				sel.tag = SEL_VALUE; sel.value = v; // quotes force a value match, even numeric
+				sel.tag = SEL_VALUE; sel.value = v; sel.quoted = 1; // quotes force a value match, even numeric - and scalar-only
 			} else {
 				size_t start = pos;
 				while (pos < input.n) {
@@ -1676,6 +1685,17 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 			S want = apply_escapes(a, seg->sel.value);
 			uint64_t hd = cmap_hash(seg->name, want);
 			size_t found = cmap_get(&P->dmaps.data[cur], hd, seg->name, want);
+			/* A quoted selector is scalar-only; the accelerator keeps the
+			   first same-display child, so when that one is not a scalar the
+			   (rare) fallback scan looks for one that is. */
+			if (found != (size_t)-1 && seg->sel.quoted && !single_scalar(&NODE(P->d, found).value)) {
+				found = (size_t)-1;
+				VecSize ch = NODE(P->d, cur).children;
+				for (size_t k = 0; k < ch.len; k++) {
+					size_t c = ch.data[k];
+					if (s_eq(NODE(P->d, c).name, seg->name) && single_scalar(&NODE(P->d, c).value) && s_eq(disp_key(a, &NODE(P->d, c).value), want)) { found = c; break; }
+				}
+			}
 			if (found != (size_t)-1) {
 				cur = found;
 			} else {
@@ -2057,7 +2077,7 @@ static Resolved resolve_from(shcl_doc *d, size_t *start, size_t nstart, Segment 
 		case SEL_VALUE: {
 			VecSize f = {0};
 			S want = apply_escapes(a, seg->sel.value);
-			for (size_t k = 0; k < next.len; k++) if (s_eq(disp_key(a, &NODE(d, next.data[k]).value), want)) VecSize_push(a, &f, next.data[k]);
+			for (size_t k = 0; k < next.len; k++) if (s_eq(disp_key(a, &NODE(d, next.data[k]).value), want) && (!seg->sel.quoted || single_scalar(&NODE(d, next.data[k]).value))) VecSize_push(a, &f, next.data[k]);
 			cur = f; break;
 		}
 		case SEL_INDEX: {
@@ -2380,7 +2400,7 @@ static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
 			for (size_t k = 0; k < ch.len; k++) {
 				size_t c = ch.data[k];
 				if (!s_eq(NODE(d, c).name, seg->name)) continue;
-				if (seg->sel.tag == SEL_VALUE && !s_eq(disp_key(a, &NODE(d, c).value), want)) continue;
+				if (seg->sel.tag == SEL_VALUE && !(s_eq(disp_key(a, &NODE(d, c).value), want) && (!seg->sel.quoted || single_scalar(&NODE(d, c).value)))) continue;
 				found = c; break;
 			}
 			if (found == (size_t)-1) off = 1; else pr = found;
@@ -2415,7 +2435,7 @@ static int w_place(shcl_doc *d, S path, size_t *out) {
 			size_t found = (size_t)-1;
 			S want = apply_escapes(t, seg->sel.value);
 			VecSize ch = NODE(d, cur).children;
-			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(d, c).name, seg->name) && s_eq(disp_key(t, &NODE(d, c).value), want)) { found = c; break; } }
+			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(d, c).name, seg->name) && s_eq(disp_key(t, &NODE(d, c).value), want) && (!seg->sel.quoted || single_scalar(&NODE(d, c).value))) { found = c; break; } }
 			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, seg->name_src, w_cell1(a, s_dup(a, seg->sel.value)));
 		} else if (seg->sel.tag == SEL_INDEX) {
 			size_t match = (size_t)-1, cnt = 0;
@@ -3537,7 +3557,7 @@ static void v_contexts(Arena *a, shcl_doc *d, const size_t *start, size_t nstart
 		case SEL_VALUE: {
 			VecSize f = {0};
 			S want = apply_escapes(a, seg->sel.value);
-			for (size_t k = 0; k < next.len; k++) if (s_eq(disp_key(a, &NODE(d, next.data[k]).value), want)) VecSize_push(a, &f, next.data[k]);
+			for (size_t k = 0; k < next.len; k++) if (s_eq(disp_key(a, &NODE(d, next.data[k]).value), want) && (!seg->sel.quoted || single_scalar(&NODE(d, next.data[k]).value))) VecSize_push(a, &f, next.data[k]);
 			cur = f; break;
 		}
 		case SEL_INDEX: {
@@ -4343,7 +4363,11 @@ static S gen_path_text(Arena *a, const VecSeg *segs) {
 		if (s->star) sb_putc(a, &out, '*');
 		else sb_putS(a, &out, emit_name(a, s->name));
 		switch (s->sel.tag) {
-		case SEL_VALUE: sb_putc(a, &out, '['); sb_putS(a, &out, s->sel.value); sb_putc(a, &out, ']'); break;
+		case SEL_VALUE:
+			sb_putc(a, &out, '[');
+			if (s->sel.quoted) sb_putS(a, &out, quote_text(a, s->sel.value));
+			else sb_putS(a, &out, s->sel.value);
+			sb_putc(a, &out, ']'); break;
 		case SEL_INDEX: { int nn = snprintf(nb, sizeof nb, "[#%" PRIu64 "]", s->sel.index); sb_put(a, &out, nb, (size_t)nn); break; }
 		case SEL_WILDCARD: case SEL_NONE: break;
 		}

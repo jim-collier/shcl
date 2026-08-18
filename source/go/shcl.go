@@ -804,6 +804,13 @@ func applyEscapes(s string) string {
 // dispKey is the predicate a [value] selector matches with: display form with
 // escapes applied on both sides, so ["q\"uote"] finds 'q"uote' - a
 // logical-string match, not spelling against spelling.
+// singleScalar is the restriction a QUOTED [value] selector adds on top of
+// the display match: quoting selects the scalar spelling only, so the scalar
+// "a, b" and the list a, b stop meeting the same selector.
+func singleScalar(v *value) bool {
+	return v.kind == vCell && len(v.els) == 1
+}
+
 func dispKey(v *value) string {
 	return applyEscapes(v.display())
 }
@@ -857,6 +864,11 @@ type selector struct {
 	kind  selKind
 	value string
 	index uint64
+	// quoted: the selector text was quoted in the path. A quoted selector is
+	// scalar-only - it matches a single-element value whose logical string
+	// equals the text - so quoting distinguishes the scalar "a, b" from the
+	// two-element list a, b, the same way quoting escapes elsewhere.
+	quoted bool
 }
 
 type segment struct {
@@ -1006,7 +1018,7 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 				if err != nil {
 					return pathScan{}, err
 				}
-				sel = &selector{kind: selByValue, value: v} // quotes force a value match, even numeric
+				sel = &selector{kind: selByValue, value: v, quoted: true} // quotes force a value match, even numeric - and scalar-only
 			} else {
 				start := pos
 				for pos < len(input) && input[pos] != ']' {
@@ -1314,7 +1326,21 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			// a spurious second one - via the dispMap accelerator (the inline
 			// spelling was quadratic in siblings without it). Create only when
 			// nothing matches.
-			if found, ok := p.dispMap[cur][[2]string{seg.name, applyEscapes(seg.sel.value)}]; ok {
+			// A quoted selector is scalar-only; the accelerator keeps the
+			// first same-display child, so when that one is not a scalar the
+			// (rare) fallback scan looks for one that is.
+			want := applyEscapes(seg.sel.value)
+			found, ok := p.dispMap[cur][[2]string{seg.name, want}]
+			if ok && seg.sel.quoted && !singleScalar(&p.arena[found].value) {
+				ok = false
+				for _, c := range p.arena[cur].children {
+					if p.arena[c].name == seg.name && singleScalar(&p.arena[c].value) && dispKey(&p.arena[c].value) == want {
+						found, ok = c, true
+						break
+					}
+				}
+			}
+			if ok {
 				cur = found
 			} else {
 				disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
@@ -2447,7 +2473,7 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 			want := applyEscapes(seg.sel.value)
 			var filtered []int
 			for _, c := range next {
-				if dispKey(&d.arena[c].value) == want {
+				if dispKey(&d.arena[c].value) == want && (!seg.sel.quoted || singleScalar(&d.arena[c].value)) {
 					filtered = append(filtered, c)
 				}
 			}
@@ -2811,7 +2837,7 @@ func (d *Document) WriteReason(path string) WriteReason {
 				want := applyEscapes(seg.sel.value)
 				alive = false
 				for _, c := range d.arena[probe].children {
-					if d.arena[c].name == seg.name && dispKey(&d.arena[c].value) == want {
+					if d.arena[c].name == seg.name && dispKey(&d.arena[c].value) == want && (!seg.sel.quoted || singleScalar(&d.arena[c].value)) {
 						probe, alive = c, true
 						break
 					}
@@ -2865,7 +2891,7 @@ func (d *Document) place(path string) (int, bool) {
 			want := applyEscapes(seg.sel.value)
 			found := -1
 			for _, c := range d.arena[cur].children {
-				if d.arena[c].name == seg.name && dispKey(&d.arena[c].value) == want {
+				if d.arena[c].name == seg.name && dispKey(&d.arena[c].value) == want && (!seg.sel.quoted || singleScalar(&d.arena[c].value)) {
 					found = c
 					break
 				}
@@ -5017,7 +5043,11 @@ func genPathText(segs []segment) string {
 			switch s.sel.kind {
 			case selByValue:
 				out.WriteByte('[')
-				out.WriteString(s.sel.value)
+				if s.sel.quoted {
+					out.WriteString(quoteText(s.sel.value))
+				} else {
+					out.WriteString(s.sel.value)
+				}
 				out.WriteByte(']')
 			case selByIndex:
 				fmt.Fprintf(&out, "[#%d]", s.sel.index)
@@ -5176,7 +5206,7 @@ func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vCo
 			want := applyEscapes(seg.sel.value)
 			cur = nil
 			for _, c := range next {
-				if dispKey(&d.arena[c].value) == want {
+				if dispKey(&d.arena[c].value) == want && (!seg.sel.quoted || singleScalar(&d.arena[c].value)) {
 					cur = append(cur, c)
 				}
 			}

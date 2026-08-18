@@ -633,6 +633,13 @@ fn disp_key(v: &Value) -> String {
 	apply_escapes(&v.display())
 }
 
+/// The single-element restriction a QUOTED `[value]` selector adds on top of
+/// the display match: quoting selects the scalar spelling only, so the scalar
+/// "a, b" and the list a, b stop meeting the same selector.
+fn single_scalar(v: &Value) -> bool {
+	matches!(v, Value::Cell(els) if els.len() == 1)
+}
+
 /// Opening fence: a run of >=3 backticks or tildes, then an optional info-string.
 fn fence_open(rest: &str) -> Option<(u8, usize, String)> {
 	let first = rest.as_bytes().first().copied()?;
@@ -657,7 +664,11 @@ fn is_fence_close(line: &str, ch: u8, min_len: usize) -> bool {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Selector {
-	ByValue(String),
+	// quoted: the selector text was quoted in the path. A quoted selector is
+	// scalar-only - it matches a single-element value whose logical string
+	// equals the text - so quoting distinguishes the scalar "a, b" from the
+	// two-element list a, b, the same way quoting escapes elsewhere.
+	ByValue { text: String, quoted: bool },
 	ByIndex(u64), // u64, not usize: index width must not vary with the target's pointer size
 	Wildcard,
 }
@@ -786,7 +797,10 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 			skip_ws(bytes, &mut pos);
 			if pos < bytes.len() && (bytes[pos] == b'"' || bytes[pos] == b'\'') {
 				let v = read_quoted(input, &mut pos)?;
-				selector = Some(Selector::ByValue(v)); // quotes force a value match, even numeric
+				selector = Some(Selector::ByValue {
+					text: v,
+					quoted: true,
+				}); // quotes force a value match, even numeric - and scalar-only
 			} else {
 				let start = pos;
 				while pos < bytes.len() && bytes[pos] != b']' {
@@ -802,7 +816,10 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 				} else if body.is_empty() {
 					return Err("empty selector".into());
 				} else {
-					Selector::ByValue(normalize_dangling_backslash(body))
+					Selector::ByValue {
+						text: normalize_dangling_backslash(body),
+						quoted: false,
+					}
 				});
 			}
 			skip_ws(bytes, &mut pos);
@@ -1139,20 +1156,35 @@ impl Parser {
 		for (i, seg) in segs.iter().enumerate() {
 			let is_last = i + 1 == segs.len();
 			match (&seg.selector, is_last) {
-				(Some(Selector::ByValue(v)), _) => {
+				(Some(Selector::ByValue { text, quoted }), _) => {
 					// Same escape-applied display predicate resolve_from uses, so
 					// a selector also selects an array-valued instance instead of
 					// creating a spurious second one - via the disp_map accelerator
 					// (the inline spelling was quadratic in siblings without it).
-					// Create only when nothing matches.
+					// Create only when nothing matches. A quoted selector is
+					// scalar-only; the accelerator keeps the first same-display
+					// child, so when that one is not a scalar the (rare) fallback
+					// scan looks for one that is.
+					let want = apply_escapes(text);
 					let found = self.disp_map[cur]
-						.get(&(seg.name.clone(), apply_escapes(v)))
-						.copied();
+						.get(&(seg.name.clone(), want.clone()))
+						.copied()
+						.filter(|&c| !*quoted || single_scalar(&self.arena[c].value))
+						.or_else(|| {
+							if !*quoted {
+								return None;
+							}
+							self.arena[cur].children.iter().copied().find(|&c| {
+								self.arena[c].name == seg.name
+									&& single_scalar(&self.arena[c].value)
+									&& disp_key(&self.arena[c].value) == want
+							})
+						});
 					cur = match found {
 						Some(c) => c,
 						None => {
 							let disc = Value::Cell(vec![Element {
-								text: v.clone(),
+								text: text.clone(),
 								quoted: false,
 							}]);
 							self.select_or_create(cur, &seg.name, &seg.name_src, disc, line)
@@ -2272,11 +2304,14 @@ impl Document {
 			}
 			match &seg.selector {
 				None => cur = next,
-				Some(Selector::ByValue(v)) => {
-					let want = apply_escapes(v);
+				Some(Selector::ByValue { text, quoted }) => {
+					let want = apply_escapes(text);
 					cur = next
 						.into_iter()
-						.filter(|&c| disp_key(&self.arena[c].value) == want)
+						.filter(|&c| {
+							disp_key(&self.arena[c].value) == want
+								&& (!quoted || single_scalar(&self.arena[c].value))
+						})
 						.collect();
 				}
 				Some(Selector::ByIndex(k)) => {
@@ -2605,11 +2640,13 @@ impl Document {
 						None => return WriteReason::NoSuchIndex,
 					}
 				}
-				Some(Selector::ByValue(v)) => {
-					let want = apply_escapes(v);
+				Some(Selector::ByValue { text, quoted }) => {
+					let want = apply_escapes(text);
 					probe = probe.and_then(|c| {
 						self.arena[c].children.iter().copied().find(|&n| {
-							self.arena[n].name == seg.name && disp_key(&self.arena[n].value) == want
+							self.arena[n].name == seg.name
+								&& disp_key(&self.arena[n].value) == want
+								&& (!quoted || single_scalar(&self.arena[n].value))
 						})
 					});
 				}
@@ -2645,14 +2682,18 @@ impl Document {
 			}
 			cur = match &seg.selector {
 				None => self.child_or_create(cur, &seg.name, &seg.name_src),
-				Some(Selector::ByValue(v)) => {
-					let want = apply_escapes(v);
+				Some(Selector::ByValue { text, quoted }) => {
+					let want = apply_escapes(text);
 					let found = self.arena[cur].children.iter().copied().find(|&c| {
-						self.arena[c].name == seg.name && disp_key(&self.arena[c].value) == want
+						self.arena[c].name == seg.name
+							&& disp_key(&self.arena[c].value) == want
+							&& (!quoted || single_scalar(&self.arena[c].value))
 					});
 					match found {
 						Some(c) => c,
-						None => self.new_child(cur, &seg.name, &seg.name_src, cell_of(v.clone())),
+						None => {
+							self.new_child(cur, &seg.name, &seg.name_src, cell_of(text.clone()))
+						}
 					}
 				}
 				Some(Selector::ByIndex(k)) => {
@@ -4521,9 +4562,13 @@ fn gen_path_text(segs: &[Segment]) -> String {
 			out.push_str(&emit_name(&s.name));
 		}
 		match &s.selector {
-			Some(Selector::ByValue(v)) => {
+			Some(Selector::ByValue { text, quoted }) => {
 				out.push('[');
-				out.push_str(v);
+				if *quoted {
+					out.push_str(&quote_text(text));
+				} else {
+					out.push_str(text);
+				}
 				out.push(']');
 			}
 			Some(Selector::ByIndex(k)) => {
@@ -4656,11 +4701,14 @@ impl Document {
 			}
 			match &seg.selector {
 				None => cur = next,
-				Some(Selector::ByValue(v)) => {
-					let want = apply_escapes(v);
+				Some(Selector::ByValue { text, quoted }) => {
+					let want = apply_escapes(text);
 					cur = next
 						.into_iter()
-						.filter(|&c| disp_key(&self.arena[c].value) == want)
+						.filter(|&c| {
+							disp_key(&self.arena[c].value) == want
+								&& (!quoted || single_scalar(&self.arena[c].value))
+						})
 						.collect();
 				}
 				Some(Selector::ByIndex(k)) => {
