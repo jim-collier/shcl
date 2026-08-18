@@ -62,6 +62,192 @@ None open.
 
 ### Code Reviews
 
+- **20260817**:
+
+	- **Bugs**:
+
+		- 🔘 Code Review 20260817 item 1: the three ports disagree with the reference on a quoted selector.
+			- Reproduced: a document whose quoted selector needs the rare fallback scan formats to two lines under the reference and three under go, python and c.
+			- Cause: the reference rescans whenever the lookup accelerator fails to hand back a single scalar. The ports only rescan when the accelerator found something and it was the wrong shape, so an outright miss falls through and creates a node instead of selecting one.
+			- The accelerator is meant to be a pure speed-up, so a miss must never change the answer. The reference is right and the three ports need to follow it.
+			- Not visible to the corpus or the cross-binding check, because no case has this shape. Needs a case as part of the fix.
+			- Moves output bytes in three bindings. Do it before the next cut - the ports currently ship a different language than the reference defines.
+
+		- 🔘 Code Review 20260817 item 2: the c library no longer builds for windows.
+			- Reproduced: the file tier added a `windows.h` include, and one of the library's own tables shares a name with a type that header defines. The mingw build of the library alone now fails outright.
+			- New on dev, so it is an unreleased regression, not a shipped one. Defining the no-file-io switch still builds.
+			- Renaming the table with the library's own prefix clears it - a static in a public single header should carry the prefix anyway.
+			- Missed because the cross-compile stage only builds the rust binary, so the windows branches of the c code have never been compiled by cicd. See item 28.
+
+		- 🔘 Code Review 20260817 item 3: the drop-in build the readme documents no longer compiles.
+			- Reproduced: the readme's own compile line fails on dev with implicit declarations from the new file tier. Same for c99 and c17; only the gnu dialect or a posix define still works.
+			- The header already anticipated this for one symbol and guarded it, but the other seven from the same block went unguarded.
+			- The project never sees it because both of its own builds define the posix macro themselves. A consumer following the header's stated recipe does not.
+			- Fix: define the posix and xopen macros at the top of the file-io block, guarded so a consumer that already set them wins.
+
+		- 🔘 Code Review 20260817 item 4: c float handling breaks under the host program's locale.
+			- Reproduced under a comma-decimal locale: canonical output diverges from the other three bindings, every float read comes back bad-type, and the float formatter truncates 1.5 to "1" - so every float the writer emits loses its fraction.
+			- Cause: the number parser and the number formatter both go through library calls that follow the locale's decimal point. The other three bindings' equivalents are locale-independent by definition.
+			- The cli is safe: it pins the locale at startup, with a comment saying exactly why. The library - which is the actual product for c - does not, and a host application setting its own locale is ordinary.
+			- Fix: pin the numeric locale around those two sites.
+
+		- 🔘 Code Review 20260817 item 5: a setter accepts a path it cannot write back.
+			- Reproduced: setting a value under a quoted segment containing a newline succeeds, and produces a document that no longer parses. Reading the value back gives not-found and the file reports two errors.
+			- All four bindings. The generator already rejects this exact case; the writer's own path check does not.
+			- Worse, the reload counts nothing as lost, so the new save gate does not refuse - which is precisely the class of loss the gate was added for.
+			- Fix: reject a newline or carriage return in a segment at the write check, so nothing is created. A carriage return alone is the same class.
+
+		- 🔘 Code Review 20260817 item 6: values with unusual whitespace at the edges are silently truncated on reload.
+			- The emitter decides whether to quote from a fixed short list of characters, but the parser trims values against the full unicode whitespace set. Anything in the gap has no spelling that survives a round trip.
+			- Measured across the gap: a value ending in a carriage return, a non-breaking space, a vertical tab, or any of the unicode spaces comes back shortened. Same loss through arrays and through comments. Plain spaces and tabs are fine - they are on the list.
+			- All four bindings. The writer fuzzer cannot see it: its character set contains none of these.
+			- Fix: also quote when the first or last character is whitespace by the same definition the parser trims by. Edge-only on purpose - quoting on interior whitespace would move bytes for documents that round-trip fine today.
+
+		- 🔘 Code Review 20260817 item 7: formatting deletes the contents of a blank-looking line inside a raw block.
+			- Reproduced: a raw block whose body has a line of only spaces formats with that line emptied. Reading the block back confirms the spaces are gone.
+			- A raw block is contracted as verbatim, with only the common nesting indent stripped, so this is content loss rather than a documented normalization.
+			- All four bindings. No corpus case has a whitespace-only line, so nothing pins the current behavior.
+			- Fix: strip the common indent from such a line like any other, and fall back to empty only when the prefix is absent.
+
+		- 🔘 Code Review 20260817 item 8: an in-place write silently deletes lines it could not read.
+			- Reproduced: a config with one unreadable line, plus one setting change, comes back a line shorter. Exit code zero, nothing on stdout, nothing on stderr, no record the line existed.
+			- All four clis. Same for formatting in place.
+			- The library grew a save gate for exactly this in the round just finished. The clis neither call it nor consult the count behind it.
+			- design.md justifies the current behavior on the grounds that a human sees the diagnostics on stderr. At the default strictness they see nothing at all, so either the code or that sentence has to change.
+			- Fix: print the load's errors to stderr on an in-place write, and refuse when anything was dropped unless an override flag is passed - mirroring the library so the two cannot disagree about what is safe.
+
+		- 🔘 Code Review 20260817 item 9: piping a document into `set` throws it away.
+			- Reproduced: `cat app.shcl | shcl set - --set workers=99` prints only the new setting. The piped document is gone, exit code zero, nothing on stderr. Chaining two `set` calls loses the first.
+			- Cause: `-` means "read the document from stdin" on every other subcommand, and "empty base" on `set`, where stdin is reserved for the ops script. With `--set` given, stdin is never read.
+			- All four clis. Without `--set` the same command is loud and correct, so it is the combination that goes quiet.
+			- Fix: either make `set -` read the document like everything else and move the ops script to its own option, or make the quiet combination an error.
+
+		- 🔘 Code Review 20260817 item 10: go accepts a non-text file as cleanly loaded.
+			- The new file tier reports clean for a file that is not valid text, where the reference and python both report unreadable and hand back an empty document.
+			- Go's own status comment dropped the bad-encoding clause the other two keep, which reads as an omission rather than a decision.
+			- Values then come back mangled while the canonical form re-emits the original bytes, and a later save writes the mangled version.
+			- The cli is unaffected - it checks separately. Library only.
+
+		- 🔘 Code Review 20260817 item 11: the python file tier raises where it promises a status.
+			- A path containing a null byte raises out of both load and save, which their own docstrings say cannot happen. The catch lists two exception types and the one that actually fires is a third.
+			- The reference returns unreadable and an error respectively, so a consumer porting the four-case handling gets an exception on python and a status everywhere else.
+			- Fix: add the missing type to both catch clauses.
+
+		- 🔘 Code Review 20260817 item 12: python accepts an integer the other bindings cannot express.
+			- Python has no fixed integer width, and the setter adds no range check, so a value beyond the 64-bit range writes happily and then reads back as bad-type - by every binding, including python itself.
+			- The cli already range-checks in the same situation. The library does not.
+			- Fix: range-check in the integer setters and return false, which is the failure channel they already have.
+
+		- 🔘 Code Review 20260817 item 13: the c++ date wrapper leaves the moved-from object pointing at freed memory.
+			- Both move operations rebind only the destination, so the source still points into the buffer the destination took, and reads from it after the destination dies.
+			- Short values hide it; a date with a long fractional part does not.
+			- Fix: rebind the source too. One line in each of the two operations.
+
+		- 🔘 Code Review 20260817 item 14: python can raise on a document at the documented depth limit.
+			- The parse-side walks were deliberately made iterative because python's frame budget is small. The merge, clone, validate and resolve walks kept the reference's recursion.
+			- A document at the 512-level cap costs about 516 frames, so it succeeds from a shallow caller and raises from a deep one. The depth cap is documented as what makes a hostile document fail without crashing the consumer; on this binding it can crash the consumer.
+			- The partially merged base document is left mutated when it raises.
+			- Fix: convert the merge and clone walks to explicit stacks like the parse side, or document the requirement and raise something typed.
+
+		- 🔘 Code Review 20260817 item 15: the as-authored name does not resolve escapes, against the spec and its own three comments.
+			- The spec and the doc comments in all four bindings say the name comes back with quotes and escapes resolved. Escapes are not resolved - a name written with an escaped tab comes back as a backslash and a "t".
+			- The value side does resolve escapes, so the two halves of the api disagree about what "as authored" means.
+			- New and unreleased, so settling it is free now and expensive after the cut. Pick one: resolve the escapes, or correct the spec and the three comments to say quotes only.
+
+		- 🔘 Code Review 20260817 item 16: small defects, batched.
+			- Python's merge docstring sits below the first statement, so it is an inert expression and the method has no documentation at all - the one method whose override rule most needs explaining.
+			- Go's error-count doc comment was split by an insertion, so the count function is undocumented and the lost-line count renders under the wrong name on the package page.
+			- Go flattens the underlying i/o error to text in three places, so a caller cannot tell a permission failure from a full disk without matching on the message. The directive is to wrap.
+			- Go's cli asserts the parse error's type without the checked form. Unreachable today, but it is the top-level error path.
+			- The reference carries a dead byte-order-mark branch, with a comment describing behavior that only exists at the sibling site. Harmless, but it reads as a live invariant and will be copied.
+			- The c++ header uses two standard types without including their headers, and declares one status out-parameter uninitialized.
+			- One go doc line left at 146 columns where the rest of the block wraps at about 78.
+
+	- **Improvements**:
+
+		- 🔘 Code Review 20260817 item 17: the save gate's failure channel is wrong in three bindings.
+			- Python returns an error string, so `doc.save_file(path)` on its own line - the obvious spelling - silently does nothing when the gate fires and the program reports success. That is worse than the loss it prevents, because at least a lossy save leaves a file. It should raise.
+			- The reference returns a plain-string error, which does not compose into a caller's error type and makes the refusal distinguishable from a disk failure only by matching on prose.
+			- C returns the same value for "refused for safety" and "the write failed", and the header never mentions the gate or that the lossy call is its override.
+			- All three are free to fix now and expensive after the cut, because the whole file tier is unreleased.
+
+		- 🔘 Code Review 20260817 item 18: the documentation teaches the bug the file tier was built to remove.
+			- Every headline example in the front-page readme and the per-binding readmes hand-rolls file i/o: a plain read, and a plain non-atomic write back. The file tier, the load status, the lost-line count and the as-authored name appear in no readme at all.
+			- A newcomer copying the example ships a config writer that can truncate a file on interrupt and silently drops lines the parser could not read.
+			- The package pages bake their readme in permanently at publish, so a bad example on the next cut is unfixable for that version.
+			- Also: the front-page readme states a schema-fault rule the code does not implement - a key-level fault no longer switches off the unknown-field sweep. The spec has it right; the readme is stale from that chunk.
+			- Also: installation sits about four fifths of the way down the front page, after seven language examples. The first screenful is good; the ordering is not.
+
+		- 🔘 Code Review 20260817 item 19: a setter returning false is a real failure mode that nothing makes discoverable.
+			- Setters report failure only through their return value, and every documented example discards it. The write-reason call exists, is well designed, and is referenced from nowhere a reader will look.
+			- A wildcard path or an out-of-range instance applies nothing, returns false, and the program then saves a config missing the change and reports success. In the reference it compiles without a warning.
+			- Fix: mark the setters must-use in the reference, and have at least one example per binding check a setter and print the reason. Both additive.
+
+		- 🔘 Code Review 20260817 item 20: the same call name lands on a different tier in each binding.
+			- The reference and go put `get` on the status tier. Python puts it on the convenience tier with a raising mode. C puts it on the convenience tier with a mandatory default argument.
+			- Each is defensible alone; the set is not, while the product's pitch is that a version means the same behavior in every language.
+			- Porting a routine between two of them keeps the call name, changes the arity, and converts "I inspect the status" into "I never find out".
+			- Fix additively: add the `_or` spelling the spec's own table already uses where it is missing, and keep the existing names. Removing anything is breaking.
+
+		- 🔘 Code Review 20260817 item 21: inventory gaps between the bindings.
+			- Go is missing all five array forms of the status tier, so it offers three tiers for scalars and two for arrays.
+			- C and c++ cannot read the quoted flag at all. This round changed the formatter specifically so a consumer can tell a reserved word from a quoted plain string, and half the bindings cannot make that distinction.
+			- The c++ veneer has only half the new file tier: no lost count, no lossy save, no strictness form, and its array reads drop the per-slot statuses. A user whose save returns false has no route to the reason without dropping to the raw pointer the veneer exists to hide.
+			- Go's load status is the only enum in the package with no text form, so logging one prints a number.
+			- All additive. Worth landing with the same cut that ships the tier.
+
+		- 🔘 Code Review 20260817 item 22: the spec normatively describes a parameter no binding implements.
+			- The spec calls the three on-bad modes the canonical surface everywhere and even names python's spelling for it. It exists only as a cli flag; no library has it.
+			- The two shipped tiers already cover two of the three modes honestly. Only the spec is wrong.
+			- Fix: describe the tiers as shipped, and mark the per-slot substitution behavior cli-only. Do it before the cut so the published spec matches the published api.
+
+		- 🔘 Code Review 20260817 item 23: two documented behaviors that quietly disagree.
+			- The `ok` helper counts empty as fine; the convenience tier falls back on empty. So there are two blessed ways to ask "did I get a value" that answer differently for an explicitly emptied field - which is exactly the case the empty-versus-missing distinction is sold on.
+			- The declared-repeat and declared-reopen suppressors are applied automatically only by the combined load-and-validate call. A caller who parses and then validates - the composition the api most obviously invites - gets the hints a schema explicitly disavowed, with nothing at the call site saying so.
+			- Both are doc-only fixes: one sentence each, in all four.
+
+		- 🔘 Code Review 20260817 item 24: two names worth settling while they are still free.
+			- The as-authored name call reads as though it might return the file it came from, now that loading from a file exists. "Source" already means the source text and the source line elsewhere in the api.
+			- The c++ date reads are inverted against the rest of the api: the plain name returns text and the "raw" name returns the parsed value, while "raw" everywhere else means the text exactly as written.
+			- The first is unreleased, so renaming costs nothing today. The second can be fixed additively by adding clear names and retiring the old pair at a major.
+
+		- 🔘 Code Review 20260817 item 25: no way to read a whole config into a structure.
+			- Every binding is path-at-a-time. A forty-key config is forty call sites and forty literal defaults.
+			- Users arrive from libraries that decode a whole document into a typed structure in one call, and that is the comparison a reviewer makes.
+			- It does not conflict with "values are typed by the reader" - a field's declared type is the reader's requested type, applied in bulk.
+			- The honest cost is parity: it is per-binding machinery with no reference structure to mirror. Decide it either way, but record the decision in design.md so it reads as a choice rather than an omission.
+
+		- 🔘 Code Review 20260817 item 26: the reference is missing cheap standard surface.
+			- No clone on the document, no parse-from-string trait, no display wrapping the canonical form, no display on the status type, and no public float formatter - which the other three all export.
+			- Parsing via the standard trait and printing a document are the first two things a rust user tries. Printing a status today lands in user-facing messages as debug output.
+			- All additive, none of it structural, so the parity rule is untouched.
+
+		- 🔘 Code Review 20260817 item 27: performance, six measured items.
+			- The new author-quoting clause runs four full coercions per quoted element on every emit. Measured, emitting a quoted document costs about three times the same document bare, and it lands on formatting - the command most likely to run on a large file. A cheap first-character test or a cached classification removes it.
+			- Every setter scans the path and walks the tree twice: the write check does both, throws them away, and the caller redoes them. One of each would do.
+			- C routes every per-line temporary into the permanent document arena, so parse memory is about a hundred times the input and cannot be reclaimed - 277 MB against the reference's 95 MB on the same file. There is already a scratch arena for exactly this; parsing does not use it.
+			- C's emit-path format probe allocates into the document arena too, so each save retains about four times the output size. A long-running program that saves periodically grows without bound.
+			- Go decodes to a rune slice and back in three string helpers on hot paths, where every character it matches is ascii. Measured at about 2.7x the byte-loop equivalent, and the binding uses 120 MB against the reference's 75 MB.
+			- Python calls a per-character predicate from the path scanner and the emitter. It is the top entry by self time in a parse-and-emit profile at about a fifth of the total; a character-set membership test cuts about a tenth off the whole run.
+
+		- 🔘 Code Review 20260817 item 28: cli and installer polish, batched.
+			- Every read failure is silent at the default mode - a wrong type, a typo'd path and a missing value all give an empty result, a meaningful exit code, and nothing on stderr. The error-mode message is excellent and is not what anyone gets by default. Printing it to stderr regardless would leave stdout byte-identical.
+			- `set` with a file and no ops flag blocks on stdin at a terminal with no prompt and no output, which reads as a hang.
+			- `check` is the only subcommand that rejects the layer and set options, so the merged document a program will actually load cannot be validated directly. The pipe workaround is clean but not obvious.
+			- No man page and no shell completions, while shipping deb, rpm and an installer. The help documents which options exist but not which subcommand each belongs to.
+			- The installer fetches and installs a source archive with no checksum and no signature, right after correctly verifying the binary, and marks a script from it executable. The signed sums file has no entry for it.
+			- There is no uninstall path at all, and the success message does not say how to undo the install.
+			- The installer's no-terminal guard does not fire, so an unattended install dies on a raw shell error instead of the intended message.
+			- Smaller: bare `shcl` prints the full help to stdout and exits 1 - pick one convention; `-v` is rejected while `-V` works; the prompt accepts only a bare "y" and rejects "yes"; the elevation path is chosen without checking the tool exists, so it fails after both downloads; the path note says what is wrong but not how to fix it; the two shell wrappers list different subcommands and neither lists `init`; `--strictness` is rejected on `init` though it parses a shcl file.
+
+		- 🔘 Code Review 20260817 item 29: the gaps that let this round through.
+			- The cross-binding check cannot see any defect the four bindings share, and most of the bugs above are exactly that shape. The corpus is the only thing that can catch them, and only if a case has the shape.
+			- The cross-compile stage builds the rust binary only, so the c binding's windows branches have never been compiled here. That is how item 2 landed.
+			- The python lint and type gates run at defaults with no configuration, and the module has no type hints - so the type gate analyzes almost nothing and cannot fail. Turning on checking of unannotated bodies surfaces a real misuse trap immediately.
+			- Nothing is built for a 32-bit target, so the size arithmetic there is unverified.
+			- The writer fuzzer's character set contains no carriage return and no unusual whitespace, which is why item 6 survived.
+			- Python exports its own imports and one internal constant, because the module declares no public list.
+
 - **20260804**:
 
 	- **Improvements**:
