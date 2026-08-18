@@ -327,6 +327,16 @@ fn convenience_tier_falls_back_only_on_good() {
 	assert_eq!(doc.get_int("missing").unwrap_or(9), 9); // NotFound
 	assert_eq!(doc.get_int_array("arr").unwrap_or(vec![7]), vec![1, 2, 3]);
 	assert_eq!(doc.get_int_array("missing").unwrap_or(vec![7]), vec![7]);
+	// Same reads under the cross-binding spelling: `_or` means "with a
+	// fallback" everywhere, so a routine ported between two bindings cannot
+	// keep the call name while changing which tier it lands on.
+	assert_eq!(doc.get_int_or("a", 9), 42);
+	assert_eq!(doc.get_int_or("b", 9), 9);
+	assert_eq!(doc.get_int_or("e", 9), 9);
+	assert_eq!(doc.get_int_or("missing", 9), 9);
+	assert_eq!(doc.get_int_array_or("arr", vec![7]), vec![1, 2, 3]);
+	assert_eq!(doc.get_int_array_or("missing", vec![7]), vec![7]);
+	assert_eq!(doc.get_string_or("missing", "fb".to_string()), "fb");
 }
 
 #[test]
@@ -756,12 +766,14 @@ fn setter_refuses_a_path_it_could_not_write_back() {
 #[test]
 fn read_surface_line_quoted_children() {
 	// line/quoted on the read result, line(path), children(path). Same
-	// fixture in every runner (C pins the accessors; its read structs stay
-	// value+status).
+	// fixture in every runner (C pins the same answers on shcl_quoted and
+	// shcl_line; its read structs stay value+status).
 	let text = "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n";
 	let doc = Document::parse(text);
 	assert!(!doc.read_string("a").quoted);
 	assert!(doc.read_string("b").quoted);
+	assert!(!doc.read_string("code").quoted);
+	assert!(!doc.read_string("missing").quoted);
 	assert_eq!(doc.read_string("b").line, 2);
 	assert_eq!(doc.line("code.done"), 6);
 	assert_eq!(doc.line("code"), 3);

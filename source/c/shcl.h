@@ -108,11 +108,16 @@ shcl_str shcl_diag_message(const shcl_doc *d, size_t i);
 // Stable machine code (E001.., H001..) identifying the diagnostic kind - the
 // contract; the message prose is a free, per-binding voice. NUL-terminated.
 const char *shcl_diag_code(const shcl_doc *d, size_t i);
+// How many lines or values parsing dropped that canonical output cannot
+// re-emit - bad indentation, an unusable selector, a line past the depth cap.
+// Content-malformed lines do NOT count: those are retained as trivia and
+// survive a save. Nonzero means a save would delete hand-written content, so
+// shcl_save_file refuses then (shcl_save_file_lossy overrides).
+size_t shcl_lost_count(const shcl_doc *d);
 // How many error-severity diagnostics the document carries - the "did this
 // file have errors?" predicate, so recover-and-continue can't read as success
 // by accident. Counts whatever the shcl_diag_* accessors hold (after
 // shcl_load_and_validate, that includes validation errors).
-size_t shcl_lost_count(const shcl_doc *d);
 size_t shcl_error_count(const shcl_doc *d);
 
 // Schema validation (spec.md "Schema validation"): check d against a schema
@@ -182,6 +187,9 @@ typedef enum {
 	SHCL_SAVE_REFUSED, /* the lost-content gate fired; lossy overrides */
 	SHCL_SAVE_FAILED   /* the write itself failed; errno describes it */
 } shcl_save_result;
+// Textual name of a file status, the shcl_status_name of this enum, so
+// logging one reads as a case rather than a number. NUL-terminated, static.
+const char *shcl_file_status_name(shcl_file_status s);
 shcl_doc *shcl_load_file(const char *path, shcl_file_status *status);
 shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status);
 shcl_save_result shcl_save_file(shcl_doc *d, const char *path);
@@ -211,6 +219,13 @@ size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out
 // node, or the node was writer-built. Merged instances cite the first
 // binding's line, matching diagnostics.
 size_t shcl_line(shcl_doc *d, const char *path, size_t plen);
+// 1 when the single scalar value at a path was quoted in the source, so a
+// consumer can tell a quoted plain string from a bare word that happens to
+// spell a reserved one - `mode: "on"` against `mode: on`. 0 for anything that
+// is not one scalar element (empty, a raw block, an array, an unresolved or
+// ambiguous path). Sits beside shcl_line rather than in the read structs for
+// the same reason the raw text does: C keeps those two fields wide.
+int shcl_quoted(shcl_doc *d, const char *path, size_t plen);
 
 // The field name at a path exactly as the author spelled it (case unfolded,
 // outer quotes stripped), so a message can echo SYMBOLS when the file said
@@ -268,6 +283,12 @@ shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t 
 int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def);
 double  shcl_get_float(shcl_doc *d, const char *path, size_t plen, double def);
 int     shcl_get_bool(shcl_doc *d, const char *path, size_t plen, int def);
+// The same three under the cross-binding spelling: `_or` means "with a
+// fallback" in every binding, so a routine ported between two of them cannot
+// keep the call name while changing which tier it lands on.
+int64_t shcl_get_int_or(shcl_doc *d, const char *path, size_t plen, int64_t def);
+double  shcl_get_float_or(shcl_doc *d, const char *path, size_t plen, double def);
+int     shcl_get_bool_or(shcl_doc *d, const char *path, size_t plen, int def);
 
 // --- Writer: typed emit, defaults, comments, structural edits ---------------
 // The reverse of the reads. Each setter builds the canonical stored text for a
@@ -2306,6 +2327,12 @@ size_t shcl_line(shcl_doc *d, const char *path, size_t plen) {
 	return NODE(d, r.one).line; // writer-built nodes carry 0
 }
 
+int shcl_quoted(shcl_doc *d, const char *path, size_t plen) {
+	S p; p.p = path; p.n = plen; Element *el;
+	if (scalar_at(d, p, &el) != SHCL_GOOD) return 0;
+	return el->quoted;
+}
+
 shcl_str shcl_source_name(shcl_doc *d, const char *path, size_t plen) {
 	S p; p.p = path; p.n = plen;
 	Resolved r; if (!resolve(d, p, &r)) return s_empty();
@@ -2841,6 +2868,15 @@ double shcl_get_float(shcl_doc *d, const char *path, size_t plen, double def) {
 }
 int shcl_get_bool(shcl_doc *d, const char *path, size_t plen, int def) {
 	shcl_read_bool r = shcl_read_bool_(d, path, plen); return r.status == SHCL_GOOD ? r.value : def;
+}
+int64_t shcl_get_int_or(shcl_doc *d, const char *path, size_t plen, int64_t def) {
+	return shcl_get_int(d, path, plen, def);
+}
+double shcl_get_float_or(shcl_doc *d, const char *path, size_t plen, double def) {
+	return shcl_get_float(d, path, plen, def);
+}
+int shcl_get_bool_or(shcl_doc *d, const char *path, size_t plen, int def) {
+	return shcl_get_bool(d, path, plen, def);
 }
 
 shcl_read_i64 shcl_read_int(shcl_doc *d, const char *path, size_t plen) {
@@ -4310,6 +4346,11 @@ shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_sta
 			if (d->diags.data[i].sev == SHCL_SEV_ERROR) { *status = SHCL_FILE_HAD_ERRORS; break; }
 	}
 	return d;
+}
+
+const char *shcl_file_status_name(shcl_file_status s) {
+	switch (s) { case SHCL_FILE_CLEAN: return "Clean"; case SHCL_FILE_HAD_ERRORS: return "HadErrors"; case SHCL_FILE_NOT_FOUND: return "NotFound"; case SHCL_FILE_UNREADABLE: return "Unreadable"; }
+	return "Clean";
 }
 
 shcl_doc *shcl_load_file(const char *path, shcl_file_status *status) {

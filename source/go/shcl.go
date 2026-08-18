@@ -2191,6 +2191,22 @@ const (
 	FileUnreadable                   // exists but could not be read (permissions, a directory, bad encoding)
 )
 
+// String names the file status, so logging one reads as a case rather than a
+// number.
+func (s FileStatus) String() string {
+	switch s {
+	case FileClean:
+		return "Clean"
+	case FileHadErrors:
+		return "HadErrors"
+	case FileNotFound:
+		return "NotFound"
+	case FileUnreadable:
+		return "Unreadable"
+	}
+	return "Clean"
+}
+
 // LoadFile is the file tier's load half: read and parse path at Standard.
 // Never fails - the document always comes back usable (empty when the file
 // could not be read), and the status separates the four cases consumers
@@ -4261,6 +4277,40 @@ func (d *Document) GetRaw(path string) (string, Status) {
 // GetDateTime is ReadDateTime reduced to (value, status).
 func (d *Document) GetDateTime(path string) (DateTime, Status) {
 	r := d.ReadDateTime(path)
+	return r.Value, r.Status
+}
+
+// The array forms of the same reduction. The status is the whole read's, so a
+// partially-resolved array reports non-Good with the resolved slots still in
+// the value; the per-slot statuses are the Read*Array tier's Slots.
+
+// GetIntArray is ReadIntArray reduced to (value, status).
+func (d *Document) GetIntArray(path string) ([]int64, Status) {
+	r := d.ReadIntArray(path)
+	return r.Value, r.Status
+}
+
+// GetFloatArray is ReadFloatArray reduced to (value, status).
+func (d *Document) GetFloatArray(path string) ([]float64, Status) {
+	r := d.ReadFloatArray(path)
+	return r.Value, r.Status
+}
+
+// GetBoolArray is ReadBoolArray reduced to (value, status).
+func (d *Document) GetBoolArray(path string) ([]bool, Status) {
+	r := d.ReadBoolArray(path)
+	return r.Value, r.Status
+}
+
+// GetStringArray is ReadStringArray reduced to (value, status).
+func (d *Document) GetStringArray(path string) ([]string, Status) {
+	r := d.ReadStringArray(path)
+	return r.Value, r.Status
+}
+
+// GetDateTimeArray is ReadDateTimeArray reduced to (value, status).
+func (d *Document) GetDateTimeArray(path string) ([]DateTime, Status) {
+	r := d.ReadDateTimeArray(path)
 	return r.Value, r.Status
 }
 

@@ -93,7 +93,9 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - The C++ veneer (`shcl.hpp`) is a thin typed wrapper over the C core - not a second parser, and kept intentionally small. C++17 (the gate's pin, for broad compiler reach), no exceptions: it returns the same `Status` values the core does.
 
-- Deliberate deviation: the convenience read tier covers only the value types (`shcl_get_int`/`_float`/`_bool`; `get_or<T>` for the veneer's four `get<T>` types). String, raw, datetime, and array reads hand back borrowed memory or lengths that a value-or-default signature cannot express, so those stay on the full `shcl_read_*` tier. The spec's ergonomic-tier section says the same.
+- Deliberate deviation: the convenience read tier covers only the value types (`shcl_get_int`/`_float`/`_bool` and the `_or` spelling of each; `get_or<T>` for the veneer's four `get<T>` types). String, raw, datetime, and array reads hand back borrowed memory or lengths that a value-or-default signature cannot express, so those stay on the full `shcl_read_*` tier. The spec's ergonomic-tier section says the same.
+
+- The read structs stay value+status, where the other three carry `raw`, `line` and `quoted` on the read result. Those two of the three that a C consumer can still ask for are separate accessors - `shcl_line`, `shcl_quoted` - because widening a by-value struct to carry a borrowed span costs every read that never looks at it.
 
 ### Bash and PowerShell (wrappers)
 

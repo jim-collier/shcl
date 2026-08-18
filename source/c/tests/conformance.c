@@ -531,11 +531,16 @@ int main(int argc, char **argv) {
 		if (qr.value != 3 || qr.status != SHCL_GOOD) fail("paths", "quoted segment read failed");
 		shcl_free(pd);
 	}
-	// line()/children(): read-surface accessors. Same fixture in every runner
-	// (the read structs stay value+status here by design).
+	// line()/quoted()/children(): read-surface accessors. Same fixture in every
+	// runner - the other three carry line and quoted on the read result, C
+	// keeps its read structs value+status and answers with these instead.
 	{
 		const char *lt = "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n";
 		shcl_doc *ld = shcl_parse(lt, strlen(lt));
+		if (shcl_quoted(ld, "a", 1)) fail("quoted", "unquoted read reports quoted");
+		if (!shcl_quoted(ld, "b", 1)) fail("quoted", "quoted read not flagged");
+		if (shcl_quoted(ld, "code", 4)) fail("quoted", "a block reports quoted");
+		if (shcl_quoted(ld, "missing", 7)) fail("quoted", "missing path reports quoted");
 		if (shcl_line(ld, "code.done", 9) != 6) fail("line", "code.done not line 6");
 		if (shcl_line(ld, "code", 4) != 3) fail("line", "code not line 3");
 		if (shcl_line(ld, "missing", 7) != 0) fail("line", "missing path not 0");
@@ -587,6 +592,22 @@ int main(int argc, char **argv) {
 		sn = shcl_source_name(ed, "\"ab\\tcd\"", 8);
 		if (sn.n != 6 || memcmp(sn.p, "Ab\\tCd", 6) != 0) fail("source_name", "escaped spelling mismatch");
 		shcl_free(ed);
+	}
+	// The get-tier value survives only on Good; Empty/BadType/NotFound all fall
+	// back to the call-site default, so a real zero can't be faked. `_or` is the
+	// cross-binding spelling for it, so a routine ported between two bindings
+	// cannot keep the call name while changing which tier it lands on. Same
+	// fixture in every runner (C's convenience tier is the value types only).
+	{
+		const char *ct = "a: 42\nb: not-a-number\ne:\n";
+		shcl_doc *cd = shcl_parse(ct, strlen(ct));
+		if (shcl_get_int_or(cd, "a", 1, 9) != 42) fail("get_or", "Good did not read through");
+		if (shcl_get_int_or(cd, "b", 1, 9) != 9) fail("get_or", "BadType did not fall back");
+		if (shcl_get_int_or(cd, "e", 1, 9) != 9) fail("get_or", "Empty did not fall back");
+		if (shcl_get_int_or(cd, "missing", 7, 9) != 9) fail("get_or", "NotFound did not fall back");
+		if (shcl_get_float_or(cd, "missing", 7, 1.5) != 1.5) fail("get_or", "float did not fall back");
+		if (shcl_get_bool_or(cd, "missing", 7, 1) != 1) fail("get_or", "bool did not fall back");
+		shcl_free(cd);
 	}
 	// load_file/save_file: the status separates absent / unreadable / parsed
 	// with errors / clean, and a save round-trips through the atomic write.
