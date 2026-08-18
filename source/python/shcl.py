@@ -57,7 +57,7 @@ class WriteReason(Enum):
 	setter's bare False. Writable = the path passes the writer's validation;
 	the rest name the five ways it cannot."""
 	Writable = 0
-	BadPath = 1       # empty path, or the scanner rejected it
+	BadPath = 1       # empty path, the scanner rejected it, or a segment carries a line break
 	ValueInPath = 2   # the path carries a `: value` part; writes take values separately
 	Wildcard = 3      # wildcard selectors are query-only
 	NoSuchIndex = 4   # a `[#k]` instance that does not (and can never) exist
@@ -1903,6 +1903,13 @@ class Document:
 			if seg.star:
 				return WriteReason.Wildcard
 			sel = seg.selector
+			# A newline has no one-line spelling, so the emitted binding would
+			# split across two lines and reparse as neither. generate already
+			# refuses these paths; the writer has to as well, and before any node
+			# is created - the reload loses nothing it can count, so the save gate
+			# would not catch it either.
+			if "\n" in seg.name or (sel is not None and sel[0] == "val" and "\n" in sel[1]):
+				return WriteReason.BadPath
 			if sel is not None and sel[0] == "wild":
 				return WriteReason.Wildcard
 			if sel is not None and sel[0] == "idx":

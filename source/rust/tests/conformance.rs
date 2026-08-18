@@ -722,9 +722,30 @@ fn write_reason_names_the_failure() {
 	assert_eq!(doc.write_reason("nope[#0].b"), NoSuchIndex);
 	let deep = vec!["d"; 513].join(".");
 	assert_eq!(doc.write_reason(&deep), TooDeep);
+	// A literal line break in a segment: the binding would emit across two lines
+	// and reparse as neither. The escaped spelling is a different path and writes
+	// fine. Not corpus-pinnable - an ops line cannot carry a raw newline.
+	assert_eq!(doc.write_reason("\"x\ny\".b"), BadPath);
+	assert_eq!(doc.write_reason("a[\"p\nq\"].b"), BadPath);
+	assert_eq!(doc.write_reason("\"x\\ny\".b"), Writable);
 	// The probe never creates: the doc is unchanged after all of the above.
 	assert_eq!(doc.count("a"), 1);
 	assert_eq!(doc.paths(), vec!["a", "a.b"]);
+}
+
+#[test]
+fn setter_refuses_a_path_it_could_not_write_back() {
+	// The refusal has to bite the setters too, not just the probe: a created
+	// node here would leave a document that no longer parses, and the reload
+	// counts nothing lost, so the save gate would not catch it.
+	let mut doc = Document::parse("z: 0\n");
+	assert!(!doc.set_int("\"a\nb\".c", 1));
+	assert!(!doc.set_int("x[\"p\nq\"].c", 1));
+	assert_eq!(doc.to_canonical(), "z: 0\n");
+	assert!(doc.set_int("\"a\\nb\".c", 1));
+	let back = Document::parse(&doc.to_canonical());
+	assert_eq!(back.error_count(), 0);
+	assert_eq!(back.read_int("\"a\\nb\".c").value, 1);
 }
 
 #[test]

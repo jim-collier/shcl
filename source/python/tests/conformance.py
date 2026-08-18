@@ -545,6 +545,13 @@ def main():
 		("a[#5].b", shcl.WriteReason.NoSuchIndex),
 		("nope[#0].b", shcl.WriteReason.NoSuchIndex),
 		(".".join(["d"] * 513), shcl.WriteReason.TooDeep),
+		# A literal line break in a segment: the binding would emit across two
+		# lines and reparse as neither. The escaped spelling is a different path
+		# and writes fine. Not corpus-pinnable - an ops line cannot carry a raw
+		# newline.
+		('"x\ny".b', shcl.WriteReason.BadPath),
+		('a["p\nq"].b', shcl.WriteReason.BadPath),
+		('"x\\ny".b', shcl.WriteReason.Writable),
 	):
 		got = wdoc.write_reason(wpath)
 		if got is not want:

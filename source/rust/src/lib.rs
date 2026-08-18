@@ -152,7 +152,7 @@ pub enum FileStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteReason {
 	Writable,
-	BadPath,     // empty path, or the scanner rejected it
+	BadPath,     // empty path, the scanner rejected it, or a segment carries a line break
 	ValueInPath, // the path carries a `: value` part; writes take values separately
 	Wildcard,    // wildcard selectors are query-only
 	NoSuchIndex, // a `[#k]` instance that does not (and can never) exist
@@ -2623,6 +2623,16 @@ impl Document {
 		for seg in &scan.segments {
 			if seg.star {
 				return WriteReason::Wildcard;
+			}
+			// A newline has no one-line spelling, so the emitted binding would
+			// split across two lines and reparse as neither. `generate` already
+			// refuses these paths; the writer has to as well, and before any
+			// node is created - the reload loses nothing it can count, so the
+			// save gate would not catch it either.
+			if seg.name.contains('\n')
+				|| matches!(&seg.selector, Some(Selector::ByValue { text, .. }) if text.contains('\n'))
+			{
+				return WriteReason::BadPath;
 			}
 			match &seg.selector {
 				Some(Selector::Wildcard) => return WriteReason::Wildcard,

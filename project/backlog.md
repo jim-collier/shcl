@@ -95,11 +95,14 @@ None open.
 			- Fix: pin the numeric locale around those two sites.
 			- Fixed by translating the decimal point at both sites instead of pinning: pinning is a process-wide side effect a library has no business causing, and it is not thread-safe. Whole corpus now formats byte-identically under a comma-decimal locale. Not corpus-pinnable (no case can set a locale), so it lives in the code and in the private notes.
 
-		- 🔘 Code Review 20260817 item 5: a setter accepts a path it cannot write back.
+		- ✅ Code Review 20260817 item 5: a setter accepts a path it cannot write back.
 			- Reproduced: setting a value under a quoted segment containing a newline succeeds, and produces a document that no longer parses. Reading the value back gives not-found and the file reports two errors.
 			- All four bindings. The generator already rejects this exact case; the writer's own path check does not.
 			- Worse, the reload counts nothing as lost, so the new save gate does not refuse - which is precisely the class of loss the gate was added for.
 			- Fix: reject a newline or carriage return in a segment at the write check, so nothing is created. A carriage return alone is the same class.
+			- Fixed in all four, for a segment name and for a by-value selector - the selector stores the path text raw, so it bypassed the escaping the ordinary setters already do. The escaped spelling is a different path and still writes fine.
+			- A carriage return turned out NOT to be the same class: it round-trips intact, so rejecting it would be a behavior change with no defect behind it. Only the line break is refused.
+			- Pinned by the write-reason fixture in all four runners rather than the corpus: an ops line is line-based and cannot carry a raw newline. Same reason the reason-code list is spelled out in the spec instead.
 
 		- 🔘 Code Review 20260817 item 6: values with unusual whitespace at the edges are silently truncated on reload.
 			- The emitter decides whether to quote from a fixed short list of characters, but the parser trims values against the full unicode whitespace set. Anything in the gap has no spelling that survives a round trip.

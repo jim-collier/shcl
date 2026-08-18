@@ -49,7 +49,7 @@ typedef enum {
 // the rest name the five ways it cannot.
 typedef enum {
 	SHCL_W_WRITABLE,
-	SHCL_W_BAD_PATH,      // empty path, or the scanner rejected it
+	SHCL_W_BAD_PATH,      // empty path, the scanner rejected it, or a segment carries a line break
 	SHCL_W_VALUE_IN_PATH, // the path carries a `: value` part; writes take values separately
 	SHCL_W_WILDCARD,      // wildcard selectors are query-only
 	SHCL_W_NO_SUCH_INDEX, // a `[#k]` instance that does not (and can never) exist
@@ -418,6 +418,7 @@ typedef shcl_str S;
 static S s_lit(const char *z) { S s; s.p = z; s.n = strlen(z); return s; }
 static S s_empty(void) { S s; s.p = ""; s.n = 0; return s; }
 static int s_eq(S a, S b) { return a.n == b.n && (a.n == 0 || memcmp(a.p, b.p, a.n) == 0); }
+static int s_has_nl(S s) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == '\n') return 1; return 0; }
 static S s_dup(Arena *a, S x) {
 	if (x.n == 0) return s_empty();
 	char *m = (char *)arena_alloc(a, x.n); memcpy(m, x.p, x.n);
@@ -2413,6 +2414,12 @@ static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		Segment *seg = &ps.segs.data[i];
 		if (seg->star) return SHCL_W_WILDCARD;
+		/* A newline has no one-line spelling, so the emitted binding would split
+		   across two lines and reparse as neither. Generation already refuses
+		   these paths; the writer has to as well, and before any node is created
+		   - the reload loses nothing it can count, so the save gate would not
+		   catch it either. */
+		if (s_has_nl(seg->name) || (seg->sel.tag == SEL_VALUE && s_has_nl(seg->sel.value))) return SHCL_W_BAD_PATH;
 		if (seg->sel.tag == SEL_WILDCARD) return SHCL_W_WILDCARD;
 		if (seg->sel.tag == SEL_INDEX) {
 			if (off) return SHCL_W_NO_SUCH_INDEX;

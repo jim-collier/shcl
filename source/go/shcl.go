@@ -215,7 +215,7 @@ type WriteReason int
 
 const (
 	Writable    WriteReason = iota // the path passes the writer's validation
-	BadPath                        // empty path, or the scanner rejected it
+	BadPath                        // empty path, the scanner rejected it, or a segment carries a line break
 	ValueInPath                    // the path carries a `: value` part; writes take values separately
 	Wildcard                       // wildcard selectors are query-only
 	NoSuchIndex                    // a `[#k]` instance that does not (and can never) exist
@@ -2823,6 +2823,14 @@ func (d *Document) WriteReason(path string) WriteReason {
 		seg := &scan.segments[i]
 		if seg.star {
 			return Wildcard
+		}
+		// A newline has no one-line spelling, so the emitted binding would split
+		// across two lines and reparse as neither. Generate already refuses these
+		// paths; the writer has to as well, and before any node is created - the
+		// reload loses nothing it can count, so the save gate would not catch it.
+		if strings.Contains(seg.name, "\n") ||
+			(seg.sel != nil && seg.sel.kind == selByValue && strings.Contains(seg.sel.value, "\n")) {
+			return BadPath
 		}
 		switch {
 		case seg.sel == nil:
