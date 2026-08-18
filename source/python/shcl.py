@@ -2089,6 +2089,10 @@ class Document:
 		return True
 
 	def set_int(self, path, v):
+		"""Bind an integer at path, creating the path as needed; False = path not
+		writable (write_reason says why - same for every setter). Worth checking
+		rather than assuming: an ignored False means the save that follows writes
+		a document missing the edit, and reports success doing it."""
 		if not _fits_i64(v):
 			return False
 		return self._set_value(path, _cell_of(str(v)))

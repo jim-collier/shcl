@@ -3095,7 +3095,9 @@ func (d *Document) SetComment(path, text string) bool {
 }
 
 // SetInt binds an integer at path, creating the path as needed; false = path
-// not writable (WriteReason says why - same for every setter).
+// not writable (WriteReason says why - same for every setter). Worth checking
+// rather than assuming: an ignored false means the save that follows writes a
+// document missing the edit, and reports success doing it.
 func (d *Document) SetInt(path string, v int64) bool {
 	return d.setValue(path, cellOf(strconv.FormatInt(v, 10)))
 }

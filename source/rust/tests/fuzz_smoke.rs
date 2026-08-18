@@ -183,7 +183,7 @@ fn writer_roundtrips_and_stays_fixpoint() {
 	for i in 0..iters {
 		let s = rand_str(&mut rng);
 		let mut d = Document::new();
-		d.set_string("k", &s);
+		assert!(d.set_string("k", &s));
 		// In-memory: encode is the exact inverse of the scalar string read.
 		let mem = d.read_string("k");
 		assert_eq!(mem.value, s, "in-memory set/read #{} for {:?}", i, s);
@@ -201,7 +201,7 @@ fn writer_roundtrips_and_stays_fixpoint() {
 		// Array form: each element unquotes/unescapes back to itself.
 		let b = rand_str(&mut rng);
 		let mut da = Document::new();
-		da.set_string_array("k", &[s.as_str(), b.as_str()]);
+		assert!(da.set_string_array("k", &[s.as_str(), b.as_str()]));
 		let ra = Document::parse(&da.to_canonical()).read_string_array("k");
 		assert_eq!(
 			ra.value,

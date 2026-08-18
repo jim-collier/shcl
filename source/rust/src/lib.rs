@@ -2833,6 +2833,7 @@ impl Document {
 	/// Attach a leading comment line to the node at a path (creating an empty
 	/// node if it does not exist yet, so a section can be annotated). A missing
 	/// `#` is added; only the first line is kept (a comment is one line).
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_comment(&mut self, path: &str, text: &str) -> bool {
 		match self.place(path) {
 			Some(node) => {
@@ -2849,21 +2850,31 @@ impl Document {
 		}
 	}
 
+	/// Bind an integer at a path, creating the path as needed; false = path not
+	/// writable (write_reason says why - same for every setter). The setters are
+	/// must_use because an ignored false means the save that follows writes a
+	/// document missing the edit, and reports success doing it.
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int(&mut self, path: &str, v: i64) -> bool {
 		self.set_value(path, cell_of(v.to_string()))
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float(&mut self, path: &str, v: f64) -> bool {
 		self.set_value(path, cell_of(format!("{}", v)))
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool(&mut self, path: &str, v: bool) -> bool {
 		self.set_value(path, cell_of(if v { "true" } else { "false" }.to_string()))
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string(&mut self, path: &str, v: &str) -> bool {
 		self.set_value(path, cell_of(encode_string(v)))
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime(&mut self, path: &str, v: &ShclDateTime) -> bool {
 		self.set_value(path, cell_of(v.to_string()))
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
 		let (fence_char, fence_len) = choose_fence(content);
 		self.set_value(
@@ -2876,19 +2887,23 @@ impl Document {
 			},
 		)
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_empty(&mut self, path: &str) -> bool {
 		self.set_value(path, Value::Empty)
 	}
 
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int_array(&mut self, path: &str, v: &[i64]) -> bool {
 		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_array(&mut self, path: &str, v: &[f64]) -> bool {
 		self.set_value(
 			path,
 			array_cell(v.iter().map(|x| format!("{}", x)).collect()),
 		)
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool_array(&mut self, path: &str, v: &[bool]) -> bool {
 		self.set_value(
 			path,
@@ -2899,35 +2914,41 @@ impl Document {
 			),
 		)
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string_array(&mut self, path: &str, v: &[&str]) -> bool {
 		self.set_value(
 			path,
 			array_cell(v.iter().map(|x| encode_string(x)).collect()),
 		)
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime_array(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
 		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
 
 	// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int_default(&mut self, path: &str, v: i64) -> bool {
 		if !self.exists(path) {
 			return self.set_int(path, v);
 		}
 		true
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_default(&mut self, path: &str, v: f64) -> bool {
 		if !self.exists(path) {
 			return self.set_float(path, v);
 		}
 		true
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool_default(&mut self, path: &str, v: bool) -> bool {
 		if !self.exists(path) {
 			return self.set_bool(path, v);
 		}
 		true
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string_default(&mut self, path: &str, v: &str) -> bool {
 		if !self.exists(path) {
 			return self.set_string(path, v);
@@ -2939,54 +2960,63 @@ impl Document {
 	/// be quoted. This is how a caller holding value text - a config line, a
 	/// user's `--set` argument - writes it without knowing its shape first.
 	/// Fails on text that could not be one line's value (see `literal_value`).
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_literal(&mut self, path: &str, text: &str) -> bool {
 		match literal_value(text) {
 			Some(v) => self.set_value(path, v),
 			None => false,
 		}
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_literal_default(&mut self, path: &str, text: &str) -> bool {
 		if !self.exists(path) {
 			return self.set_literal(path, text);
 		}
 		true
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime_default(&mut self, path: &str, v: &ShclDateTime) -> bool {
 		if !self.exists(path) {
 			return self.set_datetime(path, v);
 		}
 		true
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw_default(&mut self, path: &str, content: &str, info: &str) -> bool {
 		if !self.exists(path) {
 			return self.set_raw(path, content, info);
 		}
 		true
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int_array_default(&mut self, path: &str, v: &[i64]) -> bool {
 		if !self.exists(path) {
 			return self.set_int_array(path, v);
 		}
 		true
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_array_default(&mut self, path: &str, v: &[f64]) -> bool {
 		if !self.exists(path) {
 			return self.set_float_array(path, v);
 		}
 		true
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool_array_default(&mut self, path: &str, v: &[bool]) -> bool {
 		if !self.exists(path) {
 			return self.set_bool_array(path, v);
 		}
 		true
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string_array_default(&mut self, path: &str, v: &[&str]) -> bool {
 		if !self.exists(path) {
 			return self.set_string_array(path, v);
 		}
 		true
 	}
+	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime_array_default(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
 		if !self.exists(path) {
 			return self.set_datetime_array(path, v);

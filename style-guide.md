@@ -59,6 +59,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Derive (`Debug`, `Clone`, `PartialEq`) rather than hand-roll. Public items get `///` docs. Early returns and `let .. else` over nesting.
 
+- The setters are `#[must_use]`. Surface-only, so parity is untouched - the other three have no equivalent and say the same thing in prose. A dropped `false` means the save that follows writes a config missing the edit and reports success, which is the one failure here that leaves no trace anywhere; the compiler catches it for free in the one language that can.
+
 ### Go
 
 - gofmt and `go vet` gate. Standard library only.

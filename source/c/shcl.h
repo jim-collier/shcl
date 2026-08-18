@@ -276,6 +276,8 @@ int     shcl_get_bool(shcl_doc *d, const char *path, size_t plen, int def);
 // Setters return 1 when the write applied, 0 when the path is unusable
 // (wildcard, missing [#N] instance, a value part, or past the depth cap) -
 // nothing is created on failure. _default forms return 1 when already present.
+// Worth checking rather than assuming: an ignored 0 means the save that follows
+// writes a document missing the edit, and reports success doing it.
 shcl_doc *shcl_new(void); // an empty document (start point for generation)
 int shcl_exists(shcl_doc *d, const char *path, size_t plen);       // 0/1
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen);    // count deleted
