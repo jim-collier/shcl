@@ -142,6 +142,11 @@ class Read:
 		return self
 
 	def ok(self):
+		"""Whether the author addressed this field at all: Good or Empty. Note
+		this deliberately answers differently from the convenience tier, which
+		falls back on Empty like any other non-Good read - ok() asks "is this
+		field spoken for", get_*_or() asks "do I have a usable value", and an
+		explicitly emptied field is the case where those two diverge."""
 		return self.status in (Status.Good, Status.Empty)
 
 
@@ -2646,7 +2651,11 @@ class Document:
 	# document strictness composes for free. Schema faults (V09x) come first
 	# and the surviving constraints still check the document; the unknown-field
 	# sweep skips only when a fault cost a path spelling. One line-number space
-	# per result.
+	# per result. The H001/H002 hints a schema disavows are NOT dropped here:
+	# they live on the parse's diagnostics, which validation does not touch.
+	# Parse then validate and they are still there - call
+	# suppress_declared_repeats/suppress_declared_reopens yourself, or use
+	# load_and_validate, which runs both for you.
 
 	def validate(self, schema):
 		"""Validate against a schema document (itself plain SHCL). Empty result

@@ -32,6 +32,11 @@ template <class T> struct Read {
 	// slots failed and why rather than only that the whole read did. Empty for
 	// a scalar read.
 	std::vector<Status> slots{};
+	// Whether the author addressed this field at all: Good or Empty. Note this
+	// deliberately answers differently from get_or, which falls back on Empty
+	// like any other non-Good read - ok() asks "is this field spoken for",
+	// get_or() asks "do I have a usable value", and an explicitly emptied field
+	// is the case where those two diverge.
 	bool ok() const { return status == Status::Good || status == Status::Empty; }
 };
 
@@ -152,7 +157,10 @@ public:
 	// Schema validation (spec.md "Schema validation"): empty result = conforms.
 	// Schema faults (V09x, schema-file lines) come first; the surviving
 	// constraints still check the document, and the unknown-field sweep skips
-	// only when a fault cost a path spelling.
+	// only when a fault cost a path spelling. The H001/H002 hints a schema
+	// disavows are NOT dropped here - they live on the parse's diagnostics,
+	// which validation does not touch; load_and_validate is the call that
+	// drops them.
 	std::vector<Diagnostic> validate(const Document &schema) const {
 		std::vector<Diagnostic> v;
 		shcl_validation *r = shcl_validate(d_, schema.d_);

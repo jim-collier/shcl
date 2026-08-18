@@ -268,15 +268,22 @@ None open.
 			- Also fixed while in there: c's doc comment for the lost count was the error count's, so the lost count was undocumented and the error count read as describing the wrong call - the same defect item 16 fixed in go.
 			- The veneer smoke now covers the file tier at all, which it did not before.
 
-		- 🔘 Code Review 20260817 item 22: the spec normatively describes a parameter no binding implements.
+		- ✅ Code Review 20260817 item 22: the spec normatively describes a parameter no binding implements.
 			- The spec calls the three on-bad modes the canonical surface everywhere and even names python's spelling for it. It exists only as a cli flag; no library has it.
 			- The two shipped tiers already cover two of the three modes honestly. Only the spec is wrong.
 			- Fix: describe the tiers as shipped, and mark the per-slot substitution behavior cli-only. Do it before the cut so the published spec matches the published api.
+			- Fixed that way, in the spec's core-call section and the six other places that referred to on-bad as a per-call parameter. The mode is now stated as which tier you call: the full tier is Flag, the convenience tier is Default, and Error has no library form at all - a read that cannot reach a value is a normal outcome here, so a caller who wants a throw raises on the status themselves.
+			- Per-slot substitution is marked cli-only for the same reason it exists there: a shell caller has no slot list to inspect.
+			- design.md's three accessor bullets said the same thing and were rewritten with it, so the decision and the spec cannot drift apart again.
 
-		- 🔘 Code Review 20260817 item 23: two documented behaviors that quietly disagree.
+		- ✅ Code Review 20260817 item 23: two documented behaviors that quietly disagree.
 			- The `ok` helper counts empty as fine; the convenience tier falls back on empty. So there are two blessed ways to ask "did I get a value" that answer differently for an explicitly emptied field - which is exactly the case the empty-versus-missing distinction is sold on.
 			- The declared-repeat and declared-reopen suppressors are applied automatically only by the combined load-and-validate call. A caller who parses and then validates - the composition the api most obviously invites - gets the hints a schema explicitly disavowed, with nothing at the call site saying so.
 			- Both are doc-only fixes: one sentence each, in all four.
+			- Both done. The `ok` sentence names the divergence rather than hiding it: one asks whether the author spoke for the field, the other whether there is a usable value, and an explicitly emptied field is where they part.
+			- Not doc-only in the end for `ok`: it existed in rust, python and the veneer only, so go gained `Ok` and c a `shcl_status_ok` predicate - a status predicate rather than a per-struct helper, since all five read structs carry the same status. Documenting a distinction two bindings could not express would have been the wrong half of the fix.
+			- The suppressor sentence says the hints live on the parse's diagnostics, which validation does not touch, and names both the manual calls and the one-shot that runs them.
+			- The divergence is pinned in all four runners, not just described.
 
 		- 🔘 Code Review 20260817 item 24: two names worth settling while they are still free.
 			- The as-authored name call reads as though it might return the file it came from, now that loading from a file exists. "Source" already means the source text and the source line elsewhere in the api.

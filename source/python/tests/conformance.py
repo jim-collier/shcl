@@ -786,6 +786,13 @@ def main():
 		raise SystemExit("get_int_array_or missing did not fall back")
 	if cdoc.get_string_or("missing", "fb") != "fb":
 		raise SystemExit("get_string_or missing did not fall back")
+	# ok() and the convenience tier deliberately disagree on an explicitly
+	# emptied field: one asks whether the author spoke for it, the other whether
+	# there is a usable value.
+	if not cdoc.read_int("e").ok():
+		raise SystemExit("an emptied field is not ok()")
+	if cdoc.read_int("missing").ok():
+		raise SystemExit("a missing field is ok()")
 
 	print("conformance: {} case(s) pass".format(len(cases)))
 	return 0

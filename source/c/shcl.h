@@ -129,6 +129,11 @@ size_t shcl_error_count(const shcl_doc *d);
 // no declared fragment) - only those can turn declared fields into false
 // unknowns; a key-level fault keeps its entry's chain. The result owns copies
 // of all its strings - free with shcl_validation_free.
+// The H001/H002 hints a schema disavows are NOT dropped by this call: they live
+// on the parse's diagnostics, which validation does not touch. Parse then
+// validate and they are still there - call shcl_suppress_declared_repeats /
+// shcl_suppress_declared_reopens yourself, or use shcl_load_and_validate,
+// which runs both for you.
 typedef struct shcl_validation shcl_validation;
 shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema);
 size_t shcl_validation_count(const shcl_validation *v);
@@ -369,6 +374,13 @@ size_t shcl_datetime_str(const shcl_datetime *dt, char *out);
 // Status <-> the CLI exit code / textual name.
 int shcl_status_code(shcl_status s);
 const char *shcl_status_name(shcl_status s);
+// Whether the author addressed the field at all: Good or Empty. A status
+// predicate rather than a per-struct helper, since every read struct carries
+// the same status. Note this deliberately answers differently from the
+// convenience tier, which falls back on Empty like any other non-Good read -
+// this asks "is this field spoken for", shcl_get_int_or asks "do I have a
+// usable value", and an explicitly emptied field is where the two diverge.
+int shcl_status_ok(shcl_status s);
 
 #ifdef __cplusplus
 }
@@ -3234,6 +3246,7 @@ const char *shcl_status_name(shcl_status s) {
 	switch (s) { case SHCL_GOOD: return "Good"; case SHCL_EMPTY: return "Empty"; case SHCL_NOT_FOUND: return "NotFound"; case SHCL_BAD_TYPE: return "BadType"; case SHCL_MULTIPLE: return "Multiple"; }
 	return "Good";
 }
+int shcl_status_ok(shcl_status s) { return s == SHCL_GOOD || s == SHCL_EMPTY; }
 int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out) {
 	char buf[16]; if (n >= sizeof buf) return 0;
 	for (size_t i = 0; i < n; i++) { unsigned char c = (unsigned char)s[i]; buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c; }

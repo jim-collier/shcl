@@ -102,13 +102,13 @@ The consumer-facing surface is the **Accessor** (read) and the **Writer** (emit)
 
 The consuming programmer is assumed to be a junior in *every* binding, not just the dynamic ones, so ergonomics are a design constraint, not an afterthought. Decided:
 
-- Two tiers, junior-first. A convenience tier is the documented default: one value, one baked-in fallback, one return, no status to inspect. In languages with a native idiom for it, the convenience tier *is* that idiom (Rust `unwrap_or`, Python default arg, sh `--default=`). The full tier - the status-returning form - is there when the caller needs to know *why* a read failed.
+- Two tiers, junior-first. A convenience tier is the documented default: one value, one baked-in fallback, one return, no status to inspect. The full tier - the status-returning form - is there when the caller needs to know *why* a read failed. Every binding spells the convenience tier `_or`, so a routine ported between two of them cannot keep the call name while changing tier; each language's native idiom for the same thing still works where it has one (Rust `unwrap_or`, Python's default argument, the CLI's `--default=`).
 
-- A supplied default implies default-behavior. The caller never writes a fallback *and* an explicit on-bad; explicit `Error` mode is reserved for "I want this to blow up". This kills the redundancy of asking for both.
+- A supplied default implies default-behavior. The caller never writes a fallback *and* an explicit on-bad - which is why the libraries carry no on-bad parameter at all: the tier you call *is* the mode. `Error` mode has no library form, because a read that cannot reach a value is a normal outcome rather than a fault, and a caller who wants a throw already has the status to raise on. The CLI keeps the explicit `--on-bad`, having no tiers to choose between.
 
 - The convenience tier defuses the one real hazard of a forgiving accessor - a junior discarding the status and trusting a `0`/`""` that was actually empty or missing. Making the fallback mandatory and visible at the call site means an unwanted zero can't slip in unseen.
 
-- Portability is unaffected: the type is still fixed by the entry point/generic. `default` and `onBad` are ordinary parameters and may ride in an options struct where that reads better to a beginner than functional options.
+- Portability is unaffected: the type is still fixed by the entry point/generic, and the fallback is an ordinary parameter.
 
 ### Integration modes
 

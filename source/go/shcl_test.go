@@ -1026,6 +1026,15 @@ func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {
 	if _, st := d.GetIntArray("missing"); st != NotFound {
 		t.Fatalf("GetIntArray(missing) status = %v, want NotFound", st)
 	}
+	// Ok and the convenience tier deliberately disagree on an explicitly
+	// emptied field: one asks whether the author spoke for it, the other whether
+	// there is a usable value.
+	if !d.ReadInt("e").Ok() {
+		t.Error("an emptied field is not Ok")
+	}
+	if d.ReadInt("missing").Ok() {
+		t.Error("a missing field is Ok")
+	}
 }
 
 func TestReadsMatchExpected(t *testing.T) {
