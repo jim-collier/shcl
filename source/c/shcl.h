@@ -14,6 +14,15 @@
 // A companion C++ typed veneer (get<int64_t>() etc.) sits in shcl.hpp; it wraps
 // this core, it is not a second parser.
 
+// The file tier calls POSIX (fdopen, fileno, fchmod, open, fsync, getpid). Those
+// prototypes are feature-gated, and a feature request only counts before the
+// first system header - so it goes here rather than beside the code needing it,
+// and a consumer who already asked for a level keeps theirs.
+#if !defined(SHCL_NO_FILE_IO) && !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+	#define _POSIX_C_SOURCE 200809L
+	#define _XOPEN_SOURCE 700
+#endif
+
 #ifndef SHCL_H
 #define SHCL_H
 
@@ -346,6 +355,16 @@ const char *shcl_status_name(shcl_status s);
 #include <stdio.h>
 #include <math.h>
 #include <inttypes.h>
+#include <locale.h>
+
+// SHCL spells a float with '.', but strtod and printf use whatever the host
+// locale calls the decimal point - so in a consumer that has called setlocale
+// both directions of float conversion need translating. The CLI never sets a
+// locale, which is why only library callers ever saw this.
+static const char *dec_point(void) {
+	const char *p = localeconv()->decimal_point;
+	return (p && *p) ? p : ".";
+}
 
 // --- arena (bump allocator; growable vectors grow by copy, bulk-freed) -------
 
@@ -1009,15 +1028,15 @@ DEFINE_VEC(VecSlot, Slot)
 
 // --- coercion ("intelligent but safe"; Loose re-admits a closed list) --------
 
-static const uint32_t CURRENCY[] = {
+static const uint32_t SHCL_CURRENCY[] = {
 	'$', 0xA2, 0xA3, 0xA4, 0xA5, 0x20A9, 0x20AA, 0x20AB, 0x20AC, 0x20AD,
 	0x20AE, 0x20B1, 0x20B2, 0x20B4, 0x20B9, 0x20BA, 0x20BC, 0x20BD, 0x20BE, 0x20BF,
 };
 static S strip_currency(S t) {
 	if (t.n == 0) return t;
 	uint32_t c; size_t l = utf8_decode(t.p, t.n, 0, &c);
-	for (size_t i = 0; i < sizeof(CURRENCY) / sizeof(CURRENCY[0]); i++)
-		if (c == CURRENCY[i]) return s_slice(t, l, t.n);
+	for (size_t i = 0; i < sizeof(SHCL_CURRENCY) / sizeof(SHCL_CURRENCY[0]); i++)
+		if (c == SHCL_CURRENCY[i]) return s_slice(t, l, t.n);
 	return t;
 }
 
@@ -1082,10 +1101,16 @@ static int float_shape_ok(S t) {
 	return all_adigit0(ip) && all_adigit0(fp);
 }
 static int strtod_full(Arena *a, S t, double *out) {
-	char *buf = (char *)arena_alloc(a, t.n + 1);
-	memcpy(buf, t.p, t.n); buf[t.n] = '\0';
+	const char *dp = dec_point(); size_t dn = strlen(dp);
+	char *buf = (char *)arena_alloc(a, t.n * dn + 1);
+	size_t j = 0;
+	for (size_t i = 0; i < t.n; i++) {
+		if (t.p[i] == '.') { memcpy(buf + j, dp, dn); j += dn; }
+		else buf[j++] = t.p[i];
+	}
+	buf[j] = '\0';
 	char *end; double v = strtod(buf, &end);
-	if (end != buf + t.n) return 0;
+	if (end != buf + j) return 0;
 	*out = v; return 1;
 }
 static int parse_float_text(Arena *a, const Element *e, shcl_strictness level, double *out) {
@@ -3076,6 +3101,14 @@ size_t shcl_format_f64(double v, char *out) {
 	char tmp[64]; int prec;
 	for (prec = 1; prec <= 17; prec++) { snprintf(tmp, sizeof tmp, "%.*e", prec - 1, v); if (strtod(tmp, NULL) == v) break; }
 	if (prec > 17) prec = 17;
+	// The round-trip above needed tmp in the host locale; the scan below wants '.'.
+	{
+		const char *dp = dec_point(); size_t dn = strlen(dp);
+		if (dn != 1 || *dp != '.') {
+			char *q = strstr(tmp, dp);
+			if (q) { *q = '.'; memmove(q + 1, q + dn, strlen(q + dn) + 1); }
+		}
+	}
 	const char *s = tmp; int neg = 0;
 	if (*s == '-') { neg = 1; s++; } else if (*s == '+') s++;
 	char digits[24]; int nd = 0;
@@ -4549,6 +4582,14 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 #ifdef __cplusplus
 #pragma GCC diagnostic pop
 #endif
+
+// The implementation's short internal macros would otherwise outlive the header
+// in the consumer's own translation unit, where these names are common.
+#undef DEFINE_VEC
+#undef ROOT
+#undef NODE
+#undef GEN_MAX_FIELDS
+#undef GEN_BANNER
 
 #endif // SHCL_IMPLEMENTATION
 #endif // SHCL_H

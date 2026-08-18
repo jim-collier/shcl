@@ -74,23 +74,26 @@ None open.
 			- Moves output bytes in three bindings. Do it before the next cut - the ports currently ship a different language than the reference defines.
 			- Fixed: the three ports now take the fallback scan on an outright accelerator miss as well as on a wrong-shape hit, matching the reference. Case 051 pins the miss, the selection landing on the right instance, and the two paths that still create.
 
-		- 🔘 Code Review 20260817 item 2: the c library no longer builds for windows.
+		- ✅ Code Review 20260817 item 2: the c library no longer builds for windows.
 			- Reproduced: the file tier added a `windows.h` include, and one of the library's own tables shares a name with a type that header defines. The mingw build of the library alone now fails outright.
 			- New on dev, so it is an unreleased regression, not a shipped one. Defining the no-file-io switch still builds.
 			- Renaming the table with the library's own prefix clears it - a static in a public single header should carry the prefix anyway.
 			- Missed because the cross-compile stage only builds the rust binary, so the windows branches of the c code have never been compiled by cicd. See item 28.
+			- Fixed: the table carries the prefix, and the whole c cli now cross-compiles clean at the project's warning level. The four other short internal macros the implementation left behind are undefined at the end of the block for the same reason - they would otherwise outlive the header in the consumer's own file.
 
-		- 🔘 Code Review 20260817 item 3: the drop-in build the readme documents no longer compiles.
+		- ✅ Code Review 20260817 item 3: the drop-in build the readme documents no longer compiles.
 			- Reproduced: the readme's own compile line fails on dev with implicit declarations from the new file tier. Same for c99 and c17; only the gnu dialect or a posix define still works.
 			- The header already anticipated this for one symbol and guarded it, but the other seven from the same block went unguarded.
 			- The project never sees it because both of its own builds define the posix macro themselves. A consumer following the header's stated recipe does not.
 			- Fix: define the posix and xopen macros at the top of the file-io block, guarded so a consumer that already set them wins.
+			- Fixed, but at the top of the FILE rather than the block: a feature request only counts before the first system header, and the block sits well below them. Guarded, so a consumer who already asked for a level keeps theirs. The documented line now works on c99, c11, c17 and the gnu dialect.
 
-		- 🔘 Code Review 20260817 item 4: c float handling breaks under the host program's locale.
+		- ✅ Code Review 20260817 item 4: c float handling breaks under the host program's locale.
 			- Reproduced under a comma-decimal locale: canonical output diverges from the other three bindings, every float read comes back bad-type, and the float formatter truncates 1.5 to "1" - so every float the writer emits loses its fraction.
 			- Cause: the number parser and the number formatter both go through library calls that follow the locale's decimal point. The other three bindings' equivalents are locale-independent by definition.
 			- The cli is safe: it pins the locale at startup, with a comment saying exactly why. The library - which is the actual product for c - does not, and a host application setting its own locale is ordinary.
 			- Fix: pin the numeric locale around those two sites.
+			- Fixed by translating the decimal point at both sites instead of pinning: pinning is a process-wide side effect a library has no business causing, and it is not thread-safe. Whole corpus now formats byte-identically under a comma-decimal locale. Not corpus-pinnable (no case can set a locale), so it lives in the code and in the private notes.
 
 		- 🔘 Code Review 20260817 item 5: a setter accepts a path it cannot write back.
 			- Reproduced: setting a value under a quoted segment containing a newline succeeds, and produces a document that no longer parses. Reading the value back gives not-found and the file reports two errors.
