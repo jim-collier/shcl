@@ -37,7 +37,7 @@ Usage:
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
-  shcl help | version                    this help, or the version (also -h/--help, -V/--version)
+  shcl help | version                    this help, or the version (also -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
@@ -55,27 +55,29 @@ the edits, an empty base when the ops script has stdin instead. Ops:
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \n \t \\; a line starting with # is a script comment.
 
-Types (default --string):
+Types (get only; default --string):
   --int --float --bool --datetime --string --raw --rawinfo
   --array                                read the value as an array of the type
   --rawinfo reads a raw block's info-string (the fence tag), not its content
 
-Options:
-  --default=VALUE                        value to print when the read is not Good
-                                         (implies --on-bad=default; for arrays,
-                                         substituted per bad slot)
-  --on-bad=error|default|flag            error: fail loudly; default: print the
-                                         default; flag: print the value anyway and
-                                         report via exit code (the default mode)
-  --slots                                prefix each line with its slot status and
-                                         a tab (per element, or per wildcard slot)
+Options (the subcommands each belongs to are in parentheses):
+  --default=VALUE                        (get) value to print when the read is
+                                         not Good (implies --on-bad=default; for
+                                         arrays, substituted per bad slot)
+  --on-bad=error|default|flag            (get) error: fail loudly; default: print
+                                         the default; flag: print the value anyway
+                                         and report via exit code (the default)
+  --slots                                (get) prefix each line with its slot
+                                         status and a tab (per element, or per
+                                         wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
   --lossy                                (fmt/set) with --write, rewrite even
                                          when the load dropped lines this write
                                          would delete; without it the write
                                          refuses and nothing is changed
-  --strictness=loose|standard|strict     or 1|2|3 (default standard)
+  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
+                                         standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
   --layer=FILE                           (get/fmt/count/instances/set) merge a
@@ -200,7 +202,7 @@ func askedFor(argv []string) string {
 		switch {
 		case a == "-h" || a == "--help":
 			return "help"
-		case a == "-V" || a == "--version":
+		case a == "-v" || a == "-V" || a == "--version":
 			return "version"
 		case a == "--about":
 			return "about"
@@ -360,6 +362,17 @@ func checkOpts(cmd string, o *opts) int {
 		if !ok {
 			if s == "--<type>" {
 				fmt.Fprintf(os.Stderr, "type options are not valid for %s (see --help)\n", cmd)
+			} else if cmd == "init" && s == "--strictness" {
+				// Deliberate, not an oversight: the schema is a program artifact,
+				// so it always loads at Standard - the same rule `check --schema`
+				// follows for the schema half.
+				fmt.Fprintln(os.Stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data")
+			} else if cmd == "check" && (s == "--layer" || s == "--set" || s == "--set-literal") {
+				// The one refusal a user is likely to want anyway: check reports
+				// line numbers, and a merged document has no single file to
+				// number against. Naming the pipeline turns a dead end into a
+				// one-liner.
+				fmt.Fprintf(os.Stderr, "option %s not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt %s ... FILE | shcl check --schema=SCHEMA -\n", s, s)
 			} else {
 				fmt.Fprintf(os.Stderr, "option %s not valid for %s (see --help)\n", s, cmd)
 			}
@@ -604,6 +617,35 @@ func doGet(o *opts) int {
 			}
 		}
 	}
+	// Why the read failed is worth saying even when the exit code already
+	// carries it: at the default mode the user otherwise gets an empty line, a
+	// nonzero code, and nothing to go on. Stdout is untouched - this only ever
+	// goes to stderr. Two silences are deliberate: default mode, because a
+	// caller who supplied a fallback has already said the miss is expected, and
+	// Empty outside error mode, because an empty value is a legitimate answer
+	// here rather than a failure - the same reason Ok counts it as fine.
+	if status != shcl.Good && o.onBad != "default" && (status != shcl.Empty || o.onBad == "error") {
+		typeName := o.kind
+		if o.array {
+			typeName = o.kind + " array"
+		}
+		var reason string
+		switch status {
+		case shcl.BadType:
+			if raw := doc.ReadString(path).Raw; raw != nil {
+				reason = fmt.Sprintf("value %q is not a valid %s", *raw, typeName)
+			} else {
+				reason = fmt.Sprintf("value is not a valid %s", typeName)
+			}
+		case shcl.NotFound:
+			reason = "no value at that path"
+		case shcl.Empty:
+			reason = "the value is empty"
+		case shcl.Multiple:
+			reason = "the path matches multiple instances"
+		}
+		fmt.Fprintf(os.Stderr, "shcl: cannot read %s as %s: %s (in %s)\n", path, typeName, reason, file)
+	}
 	switch {
 	case status == shcl.Good || (status == shcl.Empty && o.onBad == "flag"):
 		emit(lines)
@@ -627,26 +669,8 @@ func doGet(o *opts) int {
 		}
 		return 0
 	case o.onBad == "error":
-		typeName := o.kind
-		if o.array {
-			typeName = o.kind + " array"
-		}
-		var reason string
-		switch status {
-		case shcl.BadType:
-			if raw := doc.ReadString(path).Raw; raw != nil {
-				reason = fmt.Sprintf("value %q is not a valid %s", *raw, typeName)
-			} else {
-				reason = fmt.Sprintf("value is not a valid %s", typeName)
-			}
-		case shcl.NotFound:
-			reason = "no value at that path"
-		case shcl.Empty:
-			reason = "the value is empty"
-		case shcl.Multiple:
-			reason = "the path matches multiple instances"
-		}
-		fmt.Fprintf(os.Stderr, "shcl: cannot read %s as %s: %s (in %s)\n", path, typeName, reason, file)
+		// The message already went to stderr above; error mode differs only in
+		// printing nothing on stdout.
 		return statusCode(status)
 	default:
 		// flag: print the zero/empty value anyway; the exit code carries the status
@@ -1032,6 +1056,10 @@ func doSet(o *opts) int {
 	var ops []byte
 	if len(o.sets) == 0 {
 		var err error
+		// Say so before blocking. With nothing on stdin this used to sit there
+		// silently, which reads as a hang rather than as a prompt; the note is
+		// unconditional so a pipeline and a terminal behave identically.
+		fmt.Fprintln(os.Stderr, "shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)")
 		ops, err = io.ReadAll(os.Stdin)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
@@ -1209,12 +1237,13 @@ func run() int {
 		}
 	}
 	asked := askedFor(argv)
-	// Bare invocation is a usage error, so it prints the help unpadded. The
-	// blank lines below are for a person who asked, to separate the block from
-	// the surrounding prompts.
+	// One convention: asking for the help - by name, by flag, or by asking for
+	// nothing at all - prints it and succeeds. The blank lines separate the
+	// block from the surrounding prompts. A bare run used to print the same
+	// text unpadded and exit 1, which read as neither a help nor an error.
 	if len(argv) == 0 {
-		fmt.Print(help)
-		return 1
+		fmt.Printf("\n%s\n", help)
+		return 0
 	}
 	if asked == "help" || argv[0] == "help" {
 		fmt.Printf("\n%s\n", help)
