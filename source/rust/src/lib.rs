@@ -3967,6 +3967,56 @@ impl Document {
 			Err(r.status)
 		}
 	}
+
+	// Convenience tier: the value, or the call-site fallback unless the read is
+	// Good. `get_int(p).unwrap_or(0)` says the same thing and still works; these
+	// exist so the spelling that means "with a fallback" is `_or` in every
+	// binding, and a routine ported between two of them cannot keep the call
+	// name while changing which tier it lands on.
+
+	pub fn get_int_or(&self, path: &str, def: i64) -> i64 {
+		self.get_int(path).unwrap_or(def)
+	}
+
+	pub fn get_float_or(&self, path: &str, def: f64) -> f64 {
+		self.get_float(path).unwrap_or(def)
+	}
+
+	pub fn get_bool_or(&self, path: &str, def: bool) -> bool {
+		self.get_bool(path).unwrap_or(def)
+	}
+
+	pub fn get_string_or(&self, path: &str, def: String) -> String {
+		self.get_string(path).unwrap_or(def)
+	}
+
+	pub fn get_raw_or(&self, path: &str, def: String) -> String {
+		self.get_raw(path).unwrap_or(def)
+	}
+
+	pub fn get_datetime_or(&self, path: &str, def: ShclDateTime) -> ShclDateTime {
+		self.get_datetime(path).unwrap_or(def)
+	}
+
+	pub fn get_int_array_or(&self, path: &str, def: Vec<i64>) -> Vec<i64> {
+		self.get_int_array(path).unwrap_or(def)
+	}
+
+	pub fn get_float_array_or(&self, path: &str, def: Vec<f64>) -> Vec<f64> {
+		self.get_float_array(path).unwrap_or(def)
+	}
+
+	pub fn get_bool_array_or(&self, path: &str, def: Vec<bool>) -> Vec<bool> {
+		self.get_bool_array(path).unwrap_or(def)
+	}
+
+	pub fn get_string_array_or(&self, path: &str, def: Vec<String>) -> Vec<String> {
+		self.get_string_array(path).unwrap_or(def)
+	}
+
+	pub fn get_datetime_array_or(&self, path: &str, def: Vec<ShclDateTime>) -> Vec<ShclDateTime> {
+		self.get_datetime_array(path).unwrap_or(def)
+	}
 }
 
 // ---------------------------------------------------------------------------

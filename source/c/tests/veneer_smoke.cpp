@@ -9,7 +9,12 @@
 #include "shcl.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
+#ifndef SHCL_NO_FILE_IO
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 static int fails = 0;
 #define CHECK(cond) do { if (!(cond)) { std::fprintf(stderr, "veneer FAIL: %s (line %d)\n", #cond, __LINE__); fails++; } } while (0)
@@ -80,6 +85,18 @@ int main() {
 	CHECK(doc.get_or<int64_t>("nope", 9) == 9);
 	CHECK(doc.get_or<std::string>("nope", std::string("fb")) == "fb");
 
+	// The rest of the read surface the veneer used to be missing: the quoted
+	// flag, existence, per-slot array statuses, and the datetime array.
+	auto qd = shcl::Document::parse("a: @null\nb: \"@null\"\nnums: 1, x, 3\nwhen: 2026-08-02, nope\n");
+	CHECK(!qd.quoted("a") && qd.quoted("b") && !qd.quoted("nope"));
+	CHECK(qd.exists("a") && !qd.exists("nope"));
+	auto nums = qd.read_int_array("nums");
+	CHECK(nums.slots.size() == 3 && nums.slots[0] == shcl::Status::Good && nums.slots[1] == shcl::Status::BadType);
+	CHECK(qd.read_int("a").slots.empty()); // scalar reads carry no slots
+	auto when = qd.read_datetime_array("when");
+	CHECK(when.value.size() == 2 && when.value[0] == "2026-08-02" && when.slots[1] == shcl::Status::BadType);
+	CHECK(std::string(shcl::to_string(shcl::Status::BadType)) == "BadType");
+
 	// Schema validation rides through the veneer: a conforming doc is clean, a
 	// violation carries its stable V-code, and a key-level schema fault still
 	// lets the unknown-field sweep run (the faulted entry keeps its path).
@@ -141,6 +158,34 @@ int main() {
 	target = std::move(moved.value);
 	CHECK(target.str() == outlives.value.str());
 	CHECK(moved.value.str() == "2026-08-02T10:20:30Z");
+
+#ifndef SHCL_NO_FILE_IO
+	// The file tier through the veneer: the load status, the strictness form,
+	// the lost count, and a save gate whose refusal is a value the caller can
+	// act on - which is the whole reason save_file is not a bool.
+	{
+		const char *tmp = std::getenv("TMPDIR");
+		std::string dir = std::string(tmp ? tmp : "/tmp") + "/shcl-veneer-" + std::to_string((long)getpid());
+		CHECK(mkdir(dir.c_str(), 0700) == 0);
+		std::string f = dir + "/t.shcl";
+		auto st = shcl::Document::FileStatus::Clean;
+		auto absent = shcl::Document::load_file(f, &st);
+		CHECK(st == shcl::Document::FileStatus::NotFound);
+		CHECK(std::string(shcl::Document::to_string(st)) == "NotFound");
+		{ FILE *fh = std::fopen(f.c_str(), "wb"); CHECK(fh && std::fputs("pct: 50%\n", fh) != EOF && std::fclose(fh) == 0); }
+		auto strict = shcl::Document::load_file_with(f, shcl::Strictness::Loose, &st);
+		CHECK(st == shcl::Document::FileStatus::Clean && strict.read_float("pct").value == 0.5);
+		CHECK(strict.lost_count() == 0);
+		CHECK(strict.save_file(f) == shcl::Document::SaveResult::Ok);
+		auto lost = shcl::Document::parse("a:\n\tb: 1\n  c: 2\n"); // indent matches no level
+		CHECK(lost.lost_count() == 1);
+		CHECK(lost.save_file(f) == shcl::Document::SaveResult::Refused);
+		CHECK(lost.save_file_lossy(f) == shcl::Document::SaveResult::Ok);
+		CHECK(strict.save_file(dir + "/nope/t.shcl") == shcl::Document::SaveResult::Failed);
+		std::remove(f.c_str());
+		rmdir(dir.c_str());
+	}
+#endif
 
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");

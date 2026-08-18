@@ -2600,6 +2600,45 @@ class Document:
 	def get_datetime_array(self, path, default=_NO_DEFAULT):
 		return self._get(self.read_datetime_array(path), default)
 
+	# The same convenience reads with the fallback required rather than optional.
+	# get_*(path, default) says the same thing and still works; these exist so
+	# the spelling that means "with a fallback" is `_or` in every binding, and a
+	# routine ported between two of them cannot keep the call name while changing
+	# which tier it lands on.
+
+	def get_int_or(self, path, default):
+		return self._get(self.read_int(path), default)
+
+	def get_float_or(self, path, default):
+		return self._get(self.read_float(path), default)
+
+	def get_bool_or(self, path, default):
+		return self._get(self.read_bool(path), default)
+
+	def get_string_or(self, path, default):
+		return self._get(self.read_string(path), default)
+
+	def get_raw_or(self, path, default):
+		return self._get(self.read_raw(path), default)
+
+	def get_datetime_or(self, path, default):
+		return self._get(self.read_datetime(path), default)
+
+	def get_int_array_or(self, path, default):
+		return self._get(self.read_int_array(path), default)
+
+	def get_float_array_or(self, path, default):
+		return self._get(self.read_float_array(path), default)
+
+	def get_bool_array_or(self, path, default):
+		return self._get(self.read_bool_array(path), default)
+
+	def get_string_array_or(self, path, default):
+		return self._get(self.read_string_array(path), default)
+
+	def get_datetime_array_or(self, path, default):
+		return self._get(self.read_datetime_array(path), default)
+
 	# --- Validator: schema-as-SHCL (see spec.md "Schema validation") ---------
 	# The schema is an ordinary parsed document: a flat list of `field: <path>`
 	# instances whose children are the constraints (closed vocabulary).

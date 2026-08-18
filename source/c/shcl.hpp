@@ -27,6 +27,11 @@ enum class WriteReason { Writable = SHCL_W_WRITABLE, BadPath = SHCL_W_BAD_PATH, 
 template <class T> struct Read {
 	T value{};
 	Status status{};
+	// Per-slot statuses, array reads only: one entry per slot the path
+	// resolved, aligned with value, so a partially-resolved array says which
+	// slots failed and why rather than only that the whole read did. Empty for
+	// a scalar read.
+	std::vector<Status> slots{};
 	bool ok() const { return status == Status::Good || status == Status::Empty; }
 };
 
@@ -59,6 +64,15 @@ public:
 
 inline std::string to_str(shcl_str s) { return std::string(s.p, s.n); }
 
+inline std::vector<Status> to_slots(const shcl_status *s, std::size_t n) {
+	std::vector<Status> v; v.reserve(n);
+	for (std::size_t i = 0; i < n; i++) v.push_back(static_cast<Status>(s[i]));
+	return v;
+}
+
+// Status as text, for a log line or a message. Borrowed from static storage.
+inline const char *to_string(Status s) { return shcl_status_name(static_cast<shcl_status>(s)); }
+
 class Document {
 	shcl_doc *d_ = nullptr;
 	static Status st(shcl_status s) { return static_cast<Status>(s); }
@@ -85,6 +99,14 @@ public:
 		// never depend on the callee having written it.
 		shcl_file_status cs = SHCL_FILE_UNREADABLE;
 		Document d(shcl_load_file(path.c_str(), &cs));
+		if (status) *status = static_cast<FileStatus>(cs);
+		return d;
+	}
+	// Textual name of a file status, for a log line. Borrowed, static.
+	static const char *to_string(FileStatus s) { return shcl_file_status_name(static_cast<shcl_file_status>(s)); }
+	static Document load_file_with(const std::string &path, Strictness s, FileStatus *status = nullptr) {
+		shcl_file_status cs = SHCL_FILE_UNREADABLE;
+		Document d(shcl_load_file_with(path.c_str(), static_cast<shcl_strictness>(s), &cs));
 		if (status) *status = static_cast<FileStatus>(cs);
 		return d;
 	}
@@ -121,6 +143,11 @@ public:
 	// this file have errors?" predicate. After load_and_validate, that
 	// includes validation errors.
 	std::size_t error_count() const { return shcl_error_count(d_); }
+
+	// How many lines or values parsing dropped that canonical output cannot
+	// re-emit. Content-malformed lines do NOT count - those survive a save.
+	// Nonzero is why save_file refuses; save_file_lossy is the override.
+	std::size_t lost_count() const { return shcl_lost_count(d_); }
 
 	// Schema validation (spec.md "Schema validation"): empty result = conforms.
 	// Schema faults (V09x, schema-file lines) come first; the surviving
@@ -175,6 +202,14 @@ public:
 	// to exactly one node or the node was writer-built.
 	std::size_t line(std::string_view p) const { return shcl_line(d_, p.data(), p.size()); }
 
+	// Whether the single scalar value at a path was quoted in the source, so a
+	// quoted plain string is distinguishable from a bare word that happens to
+	// spell a reserved one. False for anything that is not one scalar element.
+	bool quoted(std::string_view p) const { return shcl_quoted(d_, p.data(), p.size()) != 0; }
+
+	// Whether a path resolves to at least one node.
+	bool exists(std::string_view p) const { return shcl_exists(d_, p.data(), p.size()) != 0; }
+
 	// The field name at a path exactly as the author spelled it (case
 	// unfolded, outer quotes stripped - escape sequences stay as written, the
 	// way every other name operation treats them); empty when the path does
@@ -222,17 +257,27 @@ public:
 	// (unlike the core's shcl_read_datetime), so it may outlive the Document.
 	Read<Datetime> read_datetime_raw(std::string_view p) const { auto r = shcl_read_datetime(d_, p.data(), p.size()); return {Datetime(r.value), st(r.status)}; }
 
-	Read<std::vector<int64_t>> read_int_array(std::string_view p) const { auto r = shcl_read_int_array(d_, p.data(), p.size()); return {std::vector<int64_t>(r.values, r.values + r.n), st(r.status)}; }
-	Read<std::vector<double>> read_float_array(std::string_view p) const { auto r = shcl_read_float_array(d_, p.data(), p.size()); return {std::vector<double>(r.values, r.values + r.n), st(r.status)}; }
+	// Array reads carry the per-slot statuses in .slots, so a partly-resolved
+	// array says which slots failed rather than only that the read did.
+	Read<std::vector<int64_t>> read_int_array(std::string_view p) const { auto r = shcl_read_int_array(d_, p.data(), p.size()); return {std::vector<int64_t>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
+	Read<std::vector<double>> read_float_array(std::string_view p) const { auto r = shcl_read_float_array(d_, p.data(), p.size()); return {std::vector<double>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
 	Read<std::vector<bool>> read_bool_array(std::string_view p) const {
 		auto r = shcl_read_bool_array(d_, p.data(), p.size());
 		std::vector<bool> v; v.reserve(r.n); for (std::size_t i = 0; i < r.n; i++) v.push_back(r.values[i] != 0);
-		return {std::move(v), st(r.status)};
+		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
 	}
 	Read<std::vector<std::string>> read_string_array(std::string_view p) const {
 		auto r = shcl_read_string_array(d_, p.data(), p.size());
 		std::vector<std::string> v; v.reserve(r.n); for (std::size_t i = 0; i < r.n; i++) v.push_back(to_str(r.values[i]));
-		return {std::move(v), st(r.status)};
+		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
+	}
+	// Datetimes as their textual form, matching read_datetime; the owning
+	// Datetime form is per-element and stays on the scalar read.
+	Read<std::vector<std::string>> read_datetime_array(std::string_view p) const {
+		auto r = shcl_read_datetime_array(d_, p.data(), p.size());
+		std::vector<std::string> v; v.reserve(r.n);
+		for (std::size_t i = 0; i < r.n; i++) { char buf[64]; std::size_t k = shcl_datetime_str(&r.values[i], buf); v.push_back(std::string(buf, k)); }
+		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
 	}
 
 	// Compile-time-typed read: get<int64_t>/get<double>/get<bool>/get<std::string>.

@@ -687,8 +687,8 @@ func TestWriteReasonNamesTheFailure(t *testing.T) {
 
 func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	// Line/Quoted on the read result, Line(path), Children(path). Same
-	// fixture in every runner (C pins the accessors; its read structs stay
-	// value+status).
+	// fixture in every runner (C pins the same answers on shcl_quoted and
+	// shcl_line; its read structs stay value+status).
 	text := "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n"
 	doc := Parse(text)
 	if doc.ReadString("a").Quoted {
@@ -696,6 +696,12 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	}
 	if !doc.ReadString("b").Quoted {
 		t.Error("b reads unquoted")
+	}
+	if doc.ReadString("code").Quoted {
+		t.Error("a block reads quoted")
+	}
+	if doc.ReadString("missing").Quoted {
+		t.Error("a missing path reads quoted")
 	}
 	if got := doc.ReadString("b").Line; got != 2 {
 		t.Errorf("b line: got %d, want 2", got)
@@ -1011,6 +1017,14 @@ func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {
 	}
 	if got := d.GetIntArrayOr("missing", []int64{7}); len(got) != 1 || got[0] != 7 {
 		t.Fatalf("GetIntArrayOr missing = %v, want fallback [7]", got)
+	}
+	// The array status tier, the reduction the scalars already had: the whole
+	// read's status beside the resolved values.
+	if got, st := d.GetIntArray("arr"); st != Good || len(got) != 3 {
+		t.Fatalf("GetIntArray(arr) = %v, %v", got, st)
+	}
+	if _, st := d.GetIntArray("missing"); st != NotFound {
+		t.Fatalf("GetIntArray(missing) status = %v, want NotFound", st)
 	}
 }
 

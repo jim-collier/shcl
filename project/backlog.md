@@ -247,18 +247,26 @@ None open.
 			- The examples check a setter and print the write reason: all three writes in the front-page rust one (must_use leaves no choice), one write in go, python and c, and one in each per-binding readme. Every example was recompiled and run, the rust ones under `-D warnings`.
 			- One sentence about the ignored-false consequence went into all four setter docs plus the spec; the rust-only annotation is recorded as a sanctioned surface deviation in the style guide.
 
-		- 🔘 Code Review 20260817 item 20: the same call name lands on a different tier in each binding.
+		- ✅ Code Review 20260817 item 20: the same call name lands on a different tier in each binding.
 			- The reference and go put `get` on the status tier. Python puts it on the convenience tier with a raising mode. C puts it on the convenience tier with a mandatory default argument.
 			- Each is defensible alone; the set is not, while the product's pitch is that a version means the same behavior in every language.
 			- Porting a routine between two of them keeps the call name, changes the arity, and converts "I inspect the status" into "I never find out".
 			- Fix additively: add the `_or` spelling the spec's own table already uses where it is missing, and keep the existing names. Removing anything is breaking.
+			- Fixed that way. Rust and python gained all eleven `get_*_or`, c the three its convenience tier covers; go already had them. Nothing was removed - the native idiom still reads the same (`get_int(p).unwrap_or(0)`, `get_int(p, default=0)`), and the plain `get_*` keeps whatever it meant in each binding.
+			- `_or` now means "with a fallback" in all four with no exception to remember, which is the property that makes the spec's table portable rather than a per-binding lookup. The table and its surrounding paragraph say so.
+			- Pinned by extending the existing convenience-tier fixture rather than adding a second one, and that fixture now exists in all four runners - it was rust and go only.
 
-		- 🔘 Code Review 20260817 item 21: inventory gaps between the bindings.
+		- ✅ Code Review 20260817 item 21: inventory gaps between the bindings.
 			- Go is missing all five array forms of the status tier, so it offers three tiers for scalars and two for arrays.
 			- C and c++ cannot read the quoted flag at all. This round changed the formatter specifically so a consumer can tell a reserved word from a quoted plain string, and half the bindings cannot make that distinction.
 			- The c++ veneer has only half the new file tier: no lost count, no lossy save, no strictness form, and its array reads drop the per-slot statuses. A user whose save returns false has no route to the reason without dropping to the raw pointer the veneer exists to hide.
 			- Go's load status is the only enum in the package with no text form, so logging one prints a number.
 			- All additive. Worth landing with the same cut that ships the tier.
+			- All four closed. Go gained the five `Get*Array` reductions and a `String` on the load status; c and the veneer gained a `quoted` accessor, which sits beside `line` rather than in the read structs for the same reason the raw text does.
+			- The veneer gained the rest of the file tier (lost count, the strictness form, a name for the load status) plus per-slot statuses on every array read, a datetime array read it never had, `exists`, and a status-to-text helper. The lossy save landed with item 17.
+			- C got the same load-status name function, since `shcl_status_name` exists and a file status had nothing - the gap the item names in go was in c too.
+			- Also fixed while in there: c's doc comment for the lost count was the error count's, so the lost count was undocumented and the error count read as describing the wrong call - the same defect item 16 fixed in go.
+			- The veneer smoke now covers the file tier at all, which it did not before.
 
 		- 🔘 Code Review 20260817 item 22: the spec normatively describes a parameter no binding implements.
 			- The spec calls the three on-bad modes the canonical surface everywhere and even names python's spelling for it. It exists only as a cli flag; no library has it.

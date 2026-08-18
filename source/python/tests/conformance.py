@@ -562,13 +562,17 @@ def main():
 	if wdoc.paths() != ["a", "a.b"]:
 		raise SystemExit("write_reason probe changed paths: {}".format(wdoc.paths()))
 	# line/quoted on the read result, line(path), children(path). Same
-	# fixture in every runner (C pins the accessors; its read structs stay
-	# value+status).
+	# fixture in every runner (C pins the same answers on shcl_quoted and
+	# shcl_line; its read structs stay value+status).
 	ldoc = shcl.Document.parse('a: @null\nb: "@null"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n')
 	if ldoc.read_string("a").quoted:
 		raise SystemExit("unquoted read reports quoted")
 	if not ldoc.read_string("b").quoted:
 		raise SystemExit("quoted read not flagged")
+	if ldoc.read_string("code").quoted:
+		raise SystemExit("a block reports quoted")
+	if ldoc.read_string("missing").quoted:
+		raise SystemExit("missing path reports quoted")
 	if ldoc.read_string("b").line != 2:
 		raise SystemExit("read line got {}".format(ldoc.read_string("b").line))
 	if ldoc.line("code.done") != 6:
@@ -765,6 +769,23 @@ def main():
 		raise SystemExit("escaped selector read failed")
 	if rr.raw != "5":
 		raise SystemExit("written raw mismatch: {!r}".format(rr.raw))
+	# The get-tier value survives only on Good; Empty/BadType/NotFound all fall
+	# back to the call-site default, so a real zero can't be faked. `_or` is the
+	# cross-binding spelling for it, so a routine ported between two bindings
+	# cannot keep the call name while changing which tier it lands on. Same
+	# fixture in every runner.
+	cdoc = shcl.Document.parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\n")
+	if cdoc.get_int_or("a", 9) != 42:
+		raise SystemExit("get_int_or Good got {}".format(cdoc.get_int_or("a", 9)))
+	for p in ("b", "e", "missing"):
+		if cdoc.get_int_or(p, 9) != 9:
+			raise SystemExit("get_int_or({!r}) did not fall back".format(p))
+	if cdoc.get_int_array_or("arr", [7]) != [1, 2, 3]:
+		raise SystemExit("get_int_array_or Good got {}".format(cdoc.get_int_array_or("arr", [7])))
+	if cdoc.get_int_array_or("missing", [7]) != [7]:
+		raise SystemExit("get_int_array_or missing did not fall back")
+	if cdoc.get_string_or("missing", "fb") != "fb":
+		raise SystemExit("get_string_or missing did not fall back")
 
 	print("conformance: {} case(s) pass".format(len(cases)))
 	return 0
