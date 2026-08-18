@@ -21,7 +21,7 @@
 ##		mapfile -t hosts < <(shcl_array --string app.shcl cluster.hosts)
 ##
 ##	Functions defined when sourced (each mirrors the CLI and returns its code):
-##		shcl                 the whole CLI: get|fmt|check|count|instances ...
+##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances ...
 ##		shcl_get             read a string (the default type)
 ##		shcl_int shcl_float shcl_bool shcl_datetime shcl_raw
 ##		                     read one typed value

@@ -54,7 +54,7 @@ static const char *HELP =
 	"                                         commented, wildcards noted)\n"
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
-	"  shcl help | version                    this help, or the version (also -h/--help, -V/--version)\n"
+	"  shcl help | version                    this help, or the version (also -h/--help, -v/-V/--version)\n"
 	"  shcl about | donate                    what shcl is, or how to support it\n"
 	"                                         (also --about, --donate)\n"
 	"\n"
@@ -72,27 +72,29 @@ static const char *HELP =
 	"  empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH\n"
 	"string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.\n"
 	"\n"
-	"Types (default --string):\n"
+	"Types (get only; default --string):\n"
 	"  --int --float --bool --datetime --string --raw --rawinfo\n"
 	"  --array                                read the value as an array of the type\n"
 	"  --rawinfo reads a raw block's info-string (the fence tag), not its content\n"
 	"\n"
-	"Options:\n"
-	"  --default=VALUE                        value to print when the read is not Good\n"
-	"                                         (implies --on-bad=default; for arrays,\n"
-	"                                         substituted per bad slot)\n"
-	"  --on-bad=error|default|flag            error: fail loudly; default: print the\n"
-	"                                         default; flag: print the value anyway and\n"
-	"                                         report via exit code (the default mode)\n"
-	"  --slots                                prefix each line with its slot status and\n"
-	"                                         a tab (per element, or per wildcard slot)\n"
+	"Options (the subcommands each belongs to are in parentheses):\n"
+	"  --default=VALUE                        (get) value to print when the read is\n"
+	"                                         not Good (implies --on-bad=default; for\n"
+	"                                         arrays, substituted per bad slot)\n"
+	"  --on-bad=error|default|flag            (get) error: fail loudly; default: print\n"
+	"                                         the default; flag: print the value anyway\n"
+	"                                         and report via exit code (the default)\n"
+	"  --slots                                (get) prefix each line with its slot\n"
+	"                                         status and a tab (per element, or per\n"
+	"                                         wildcard slot)\n"
 	"  --no-banner                            (init) leave out the footer naming the\n"
 	"                                         format and pointing at its spec\n"
 	"  --lossy                                (fmt/set) with --write, rewrite even\n"
 	"                                         when the load dropped lines this write\n"
 	"                                         would delete; without it the write\n"
 	"                                         refuses and nothing is changed\n"
-	"  --strictness=loose|standard|strict     or 1|2|3 (default standard)\n"
+	"  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default\n"
+	"                                         standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
 	"                                         schema; adds V### diagnostics\n"
 	"  --layer=FILE                           (get/fmt/count/instances/set) merge a\n"
@@ -324,6 +326,31 @@ static int do_get(Opts *o) {
 	// Per-line slot status: falls back to the aggregate for scalar reads.
 	#define SLOT_AT(I) (slotSts && (I) < nSlots ? slotSts[I] : status)
 	#define EMITLINE(I, P, N) do { if (o->slots) printf("%s\t", shcl_status_name(SLOT_AT(I))); outln((P), (N)); } while (0)
+	// Why the read failed is worth saying even when the exit code already
+	// carries it: at the default mode the user otherwise gets an empty line, a
+	// nonzero code, and nothing to go on. Stdout is untouched - this only ever
+	// goes to stderr. Two silences are deliberate: default mode, because a
+	// caller who supplied a fallback has already said the miss is expected, and
+	// Empty outside error mode, because an empty value is a legitimate answer
+	// here rather than a failure - the same reason shcl_status_ok counts it so.
+	if (status != SHCL_GOOD && strcmp(o->on_bad, "default") != 0
+	    && (status != SHCL_EMPTY || !strcmp(o->on_bad, "error"))) {
+		char tbuf[32];
+		snprintf(tbuf, sizeof tbuf, o->array ? "%s array" : "%s", o->kind);
+		if (status == SHCL_BAD_TYPE) {
+			shcl_read_str rs = shcl_read_string(d, path, plen);
+			if (rs.status == SHCL_GOOD)
+				fprintf(stderr, "shcl: cannot read %s as %s: value \"%.*s\" is not a valid %s (in %s)\n", path, tbuf, (int)rs.value.n, rs.value.p, tbuf, file);
+			else
+				fprintf(stderr, "shcl: cannot read %s as %s: value is not a valid %s (in %s)\n", path, tbuf, tbuf, file);
+		} else if (status == SHCL_NOT_FOUND) {
+			fprintf(stderr, "shcl: cannot read %s as %s: no value at that path (in %s)\n", path, tbuf, file);
+		} else if (status == SHCL_EMPTY) {
+			fprintf(stderr, "shcl: cannot read %s as %s: the value is empty (in %s)\n", path, tbuf, file);
+		} else {
+			fprintf(stderr, "shcl: cannot read %s as %s: the path matches multiple instances (in %s)\n", path, tbuf, file);
+		}
+	}
 	int rc;
 	int flag_ok = (status == SHCL_GOOD) || (status == SHCL_EMPTY && !strcmp(o->on_bad, "flag"));
 	if (flag_ok) {
@@ -343,21 +370,8 @@ static int do_get(Opts *o) {
 		}
 		rc = 0;
 	} else if (!strcmp(o->on_bad, "error")) {
-		char tbuf[32];
-		snprintf(tbuf, sizeof tbuf, o->array ? "%s array" : "%s", o->kind);
-		if (status == SHCL_BAD_TYPE) {
-			shcl_read_str rs = shcl_read_string(d, path, plen);
-			if (rs.status == SHCL_GOOD)
-				fprintf(stderr, "shcl: cannot read %s as %s: value \"%.*s\" is not a valid %s (in %s)\n", path, tbuf, (int)rs.value.n, rs.value.p, tbuf, file);
-			else
-				fprintf(stderr, "shcl: cannot read %s as %s: value is not a valid %s (in %s)\n", path, tbuf, tbuf, file);
-		} else if (status == SHCL_NOT_FOUND) {
-			fprintf(stderr, "shcl: cannot read %s as %s: no value at that path (in %s)\n", path, tbuf, file);
-		} else if (status == SHCL_EMPTY) {
-			fprintf(stderr, "shcl: cannot read %s as %s: the value is empty (in %s)\n", path, tbuf, file);
-		} else {
-			fprintf(stderr, "shcl: cannot read %s as %s: the path matches multiple instances (in %s)\n", path, tbuf, file);
-		}
+		// The message already went to stderr above; error mode differs only in
+		// printing nothing on stdout.
 		rc = shcl_status_code(status);
 	} else {
 		for (size_t i = 0; i < nlines; i++) EMITLINE(i, LINEPTR(i), lines[i].n);
@@ -581,6 +595,10 @@ static int do_set(Opts *o) {
 	// block on the console for anyone who passed edits as options.
 	size_t opslen = 0; char *ops = NULL;
 	if (o->nsets == 0) {
+		// Say so before blocking. With nothing on stdin this used to sit there
+		// silently, which reads as a hang rather than as a prompt; the note is
+		// unconditional so a pipeline and a terminal behave identically.
+		fprintf(stderr, "shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)\n");
 		ops = read_all_fp(stdin, &opslen);
 		// The ops script gets the same UTF-8 gate as any file input (exit 1).
 		if (!utf8_valid(ops, opslen)) {
@@ -835,6 +853,16 @@ static int check_opts(const char *cmd, Opts *o) {
 		for (int k = 0; allowed[k]; k++) if (!strcmp(o->seen[i], allowed[k])) { ok = 1; break; }
 		if (!ok) {
 			if (!strcmp(o->seen[i], "--<type>")) fprintf(stderr, "type options are not valid for %s (see --help)\n", cmd);
+			// The one refusal a user is likely to want anyway: check reports
+			// line numbers, and a merged document has no single file to number
+			// against. Naming the pipeline turns a dead end into a one-liner.
+			// Deliberate, not an oversight: the schema is a program artifact, so
+			// it always loads at Standard - the same rule `check --schema`
+			// follows for the schema half.
+			else if (!strcmp(cmd, "init") && !strcmp(o->seen[i], "--strictness"))
+				fprintf(stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data\n");
+			else if (!strcmp(cmd, "check") && (!strcmp(o->seen[i], "--layer") || !strcmp(o->seen[i], "--set") || !strcmp(o->seen[i], "--set-literal")))
+				fprintf(stderr, "option %s not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt %s ... FILE | shcl check --schema=SCHEMA -\n", o->seen[i], o->seen[i]);
 			else fprintf(stderr, "option %s not valid for %s (see --help)\n", o->seen[i], cmd);
 			return 1;
 		}
@@ -877,7 +905,7 @@ static const char *asked_for(int argc, char **argv) {
 	for (int i = 1; i < argc; i++) {
 		const char *a = argv[i];
 		if (!strcmp(a, "-h") || !strcmp(a, "--help")) return "help";
-		if (!strcmp(a, "-V") || !strcmp(a, "--version")) return "version";
+		if (!strcmp(a, "-v") || !strcmp(a, "-V") || !strcmp(a, "--version")) return "version";
 		if (!strcmp(a, "--about")) return "about";
 		if (!strcmp(a, "--donate")) return "donate";
 		if (!strcmp(a, "--")) return NULL;
@@ -900,10 +928,11 @@ int main(int argc, char **argv) {
 		}
 	}
 	const char *asked = asked_for(argc, argv);
-	// Bare invocation is a usage error, so it prints the help unpadded. The
-	// blank lines below are for a person who asked, to separate the block from
-	// the surrounding prompts.
-	if (argc <= 1) { fputs(HELP, stdout); return 1; }
+	// One convention: asking for the help - by name, by flag, or by asking for
+	// nothing at all - prints it and succeeds. The blank lines separate the
+	// block from the surrounding prompts. A bare run used to print the same
+	// text unpadded and exit 1, which read as neither a help nor an error.
+	if (argc <= 1) { printf("\n%s\n", HELP); return 0; }
 	if ((asked && !strcmp(asked, "help")) || !strcmp(argv[1], "help")) { printf("\n%s\n", HELP); return 0; }
 	if ((asked && !strcmp(asked, "version")) || !strcmp(argv[1], "version")) { printf("shcl %s\n", VERSION); return 0; }
 	if ((asked && !strcmp(asked, "about")) || !strcmp(argv[1], "about")) { printf("\n%s\n", ABOUT); return 0; }

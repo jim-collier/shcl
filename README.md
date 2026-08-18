@@ -313,9 +313,9 @@ Run `shcl-1.2.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl
 
 Downloads a release, checks its signature, and installs the binary plus the drop-in files and wrappers. Idempotent. It states its plan and asks before touching anything. The default channel is `dev`, which means the newest release including pre-releases. Pass `stable` to take the newest full release only.
 
-Each release includes a `sha256sums.txt` and a detached `.sig` over it. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY install](#diy-install) route on a machine that lacks it.
+Each release includes a `sha256sums.txt` and a detached `.sig` over it, covering every asset - the binary, the packages, and the drop-in payload alike. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. Nothing unverified is installed: a release with no signed drop-in payload gets the binary and a note saying what was skipped. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY install](#diy-install) route on a machine that lacks it.
 
-Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows).
+Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows). `--uninstall` (`-Uninstall`) removes what an install of the same target laid down, and nothing else.
 
 ##### Linux and WSL
 

@@ -27,7 +27,7 @@ Usage:
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
-  shcl help | version                    this help, or the version (also -h/--help, -V/--version)
+  shcl help | version                    this help, or the version (also -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
@@ -45,27 +45,29 @@ the edits, an empty base when the ops script has stdin instead. Ops:
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 
-Types (default --string):
+Types (get only; default --string):
   --int --float --bool --datetime --string --raw --rawinfo
   --array                                read the value as an array of the type
   --rawinfo reads a raw block's info-string (the fence tag), not its content
 
-Options:
-  --default=VALUE                        value to print when the read is not Good
-                                         (implies --on-bad=default; for arrays,
-                                         substituted per bad slot)
-  --on-bad=error|default|flag            error: fail loudly; default: print the
-                                         default; flag: print the value anyway and
-                                         report via exit code (the default mode)
-  --slots                                prefix each line with its slot status and
-                                         a tab (per element, or per wildcard slot)
+Options (the subcommands each belongs to are in parentheses):
+  --default=VALUE                        (get) value to print when the read is
+                                         not Good (implies --on-bad=default; for
+                                         arrays, substituted per bad slot)
+  --on-bad=error|default|flag            (get) error: fail loudly; default: print
+                                         the default; flag: print the value anyway
+                                         and report via exit code (the default)
+  --slots                                (get) prefix each line with its slot
+                                         status and a tab (per element, or per
+                                         wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
   --lossy                                (fmt/set) with --write, rewrite even
                                          when the load dropped lines this write
                                          would delete; without it the write
                                          refuses and nothing is changed
-  --strictness=loose|standard|strict     or 1|2|3 (default standard)
+  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
+                                         standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
   --layer=FILE                           (get/fmt/count/instances/set) merge a
@@ -192,7 +194,7 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 		let a = argv[i].as_str();
 		match a {
 			"-h" | "--help" => return Some("help"),
-			"-V" | "--version" => return Some("version"),
+			"-v" | "-V" | "--version" => return Some("version"),
 			"--about" => return Some("about"),
 			"--donate" => return Some("donate"),
 			"--" => return None,
@@ -375,6 +377,22 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		if !allowed.contains(s) {
 			if *s == "--<type>" {
 				eprintln!("type options are not valid for {} (see --help)", cmd);
+			} else if cmd == "init" && *s == "--strictness" {
+				// Deliberate, not an oversight: the schema is a program artifact,
+				// so it always loads at Standard - the same rule `check --schema`
+				// follows for the schema half.
+				eprintln!(
+					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data"
+				);
+			} else if cmd == "check" && matches!(*s, "--layer" | "--set" | "--set-literal") {
+				// The one refusal a user is likely to want anyway: check reports
+				// line numbers, and a merged document has no single file to
+				// number against. Naming the pipeline turns a dead end into a
+				// one-liner.
+				eprintln!(
+					"option {} not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt {} ... FILE | shcl check --schema=SCHEMA -",
+					s, s
+				);
 			} else {
 				eprintln!("option {} not valid for {} (see --help)", s, cmd);
 			}
@@ -600,6 +618,37 @@ fn do_get(o: &Opts) -> u8 {
 			}
 		}
 	};
+	// Why the read failed is worth saying even when the exit code already
+	// carries it: at the default mode the user otherwise gets an empty line, a
+	// nonzero code, and nothing to go on. Stdout is untouched - this only ever
+	// goes to stderr. Two silences are deliberate: `default` mode, because a
+	// caller who supplied a fallback has already said the miss is expected, and
+	// Empty outside `error` mode, because an empty value is a legitimate answer
+	// here rather than a failure - the same reason `ok()` counts it as fine.
+	let say = status != Status::Good
+		&& o.on_bad != "default"
+		&& (status != Status::Empty || o.on_bad == "error");
+	if say {
+		let type_name = if o.array {
+			format!("{} array", o.kind)
+		} else {
+			o.kind.clone()
+		};
+		let reason = match status {
+			Status::BadType => match doc.read_string(path).raw {
+				Some(raw) => format!("value {:?} is not a valid {}", raw, type_name),
+				None => format!("value is not a valid {}", type_name),
+			},
+			Status::NotFound => "no value at that path".to_string(),
+			Status::Empty => "the value is empty".to_string(),
+			Status::Multiple => "the path matches multiple instances".to_string(),
+			Status::Good => String::new(), // handled above; keep the match total
+		};
+		eprintln!(
+			"shcl: cannot read {} as {}: {} (in {})",
+			path, type_name, reason, file
+		);
+	}
 	match (status, o.on_bad.as_str()) {
 		(Status::Good, _) | (Status::Empty, "flag") => {
 			emit(&lines);
@@ -631,28 +680,9 @@ fn do_get(o: &Opts) -> u8 {
 			}
 			0
 		}
-		(_, "error") => {
-			let type_name = if o.array {
-				format!("{} array", o.kind)
-			} else {
-				o.kind.clone()
-			};
-			let reason = match status {
-				Status::BadType => match doc.read_string(path).raw {
-					Some(raw) => format!("value {:?} is not a valid {}", raw, type_name),
-					None => format!("value is not a valid {}", type_name),
-				},
-				Status::NotFound => "no value at that path".to_string(),
-				Status::Empty => "the value is empty".to_string(),
-				Status::Multiple => "the path matches multiple instances".to_string(),
-				Status::Good => String::new(), // handled above; keep the match total
-			};
-			eprintln!(
-				"shcl: cannot read {} as {}: {} (in {})",
-				path, type_name, reason, file
-			);
-			status_code(status)
-		}
+		// The message already went to stderr above; error mode differs only in
+		// printing nothing on stdout.
+		(_, "error") => status_code(status),
 		(_, _) => {
 			// flag: print the zero/empty value anyway; the exit code carries the status
 			emit(&lines);
@@ -859,6 +889,12 @@ fn do_set(o: &Opts) -> u8 {
 	let mut ops = String::new();
 	if o.sets.is_empty() {
 		use std::io::Read;
+		// Say so before blocking. With nothing on stdin this used to sit there
+		// silently, which reads as a hang rather than as a prompt; the note is
+		// unconditional so a pipeline and a terminal behave identically.
+		eprintln!(
+			"shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)"
+		);
 		if let Err(e) = std::io::stdin().read_to_string(&mut ops) {
 			eprintln!("stdin: {}", e);
 			return 1;
@@ -1118,14 +1154,11 @@ fn main() -> ExitCode {
 	};
 	let first = argv.first().map(|s| s.as_str());
 	let asked = asked_for(&argv);
-	// Bare invocation is a usage error, so it prints the help unpadded. The
-	// blank lines below are for a person who asked, to separate the block from
-	// the surrounding prompts.
-	if argv.is_empty() {
-		print!("{}", HELP);
-		return ExitCode::from(1);
-	}
-	if asked == Some("help") || first == Some("help") {
+	// One convention: asking for the help - by name, by flag, or by asking for
+	// nothing at all - prints it and succeeds. The blank lines separate the
+	// block from the surrounding prompts. A bare run used to print the same
+	// text unpadded and exit 1, which read as neither a help nor an error.
+	if asked == Some("help") || first == Some("help") || argv.is_empty() {
 		print!("\n{}\n", HELP);
 		return ExitCode::from(0);
 	}

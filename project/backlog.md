@@ -58,6 +58,11 @@ None open.
 
 ### Features and enhancements
 
+- 🔘 A man page and shell completions for the CLI.
+	- Split out of Code Review 20260817 item 28, which batched them with polish they do not belong with: this is a new deliverable, not a fix.
+	- `shcl.1` in roff, plus bash and zsh completions that know which options each subcommand takes - the same table the CLIs already carry for their usage check, so the two can be kept in step.
+	- Packaging follows: the .deb and .rpm need a man dir and a completions dir, and the installer needs somewhere to put them for a user-target install.
+
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
 	- Type via a typed entry point or compile-time generic, never a runtime type field:
@@ -332,7 +337,7 @@ None open.
 			- Python: the bare-name predicate is a frozenset lookup and the emitter's per-character generator is one C-level set operation. About a tenth off a parse-and-emit run, as filed.
 			- Verified beyond the usual gate, since none of this may move a byte: a C build that poisons every arena reset agrees with the reference across the corpus and 826 fuzzer-dumped documents, and the four-way crosscheck is unchanged.
 
-		- 🔘 Code Review 20260817 item 28: cli and installer polish, batched.
+		- 🛠️ Code Review 20260817 item 28: cli and installer polish, batched.
 			- Every read failure is silent at the default mode - a wrong type, a typo'd path and a missing value all give an empty result, a meaningful exit code, and nothing on stderr. The error-mode message is excellent and is not what anyone gets by default. Printing it to stderr regardless would leave stdout byte-identical.
 			- `set` with a file and no ops flag blocks on stdin at a terminal with no prompt and no output, which reads as a hang.
 			- `check` is the only subcommand that rejects the layer and set options, so the merged document a program will actually load cannot be validated directly. The pipe workaround is clean but not obvious.
@@ -341,6 +346,14 @@ None open.
 			- There is no uninstall path at all, and the success message does not say how to undo the install.
 			- The installer's no-terminal guard does not fire, so an unattended install dies on a raw shell error instead of the intended message.
 			- Smaller: bare `shcl` prints the full help to stdout and exits 1 - pick one convention; `-v` is rejected while `-V` works; the prompt accepts only a bare "y" and rejects "yes"; the elevation path is chosen without checking the tool exists, so it fails after both downloads; the path note says what is wrong but not how to fix it; the two shell wrappers list different subcommands and neither lists `init`; `--strictness` is rejected on `init` though it parses a shcl file.
+			- ✅ Silent reads: the reason now goes to stderr in every mode, so the excellent message is what a user gets by default rather than what they get only after finding a flag. Stdout is byte-identical. Two silences are deliberate and commented: `--on-bad=default`, where the caller has already said the miss is expected, and Empty outside error mode, since an empty value is a legitimate answer here - the same reason `ok` counts it as fine.
+			- ✅ `set` blocking on stdin: it says what it is waiting for before it waits. Unconditional, so a pipeline and a terminal behave identically - the alternative was sniffing the terminal, which this round already rejected once for good reasons.
+			- ✅ `check` and `--layer`: the refusal stands, because diagnostics cite line numbers and a merged document has none, but the message now spells out the pipeline that does the job. Same for `--strictness` on `init`, which was never an oversight - a schema is a program artifact and always loads at Standard.
+			- ✅ Smaller ones: a bare run now prints the help and exits 0, the same as `shcl help` - one convention, "asking for help succeeds"; `-v` works; the prompt takes "yes"; sudo is checked for before the plan promises it; the path note carries the export line to paste; both wrappers list the same subcommands, `init` included; every help option now names the subcommands it belongs to.
+			- ✅ Installer payload: the drop-ins and wrappers ship as a release asset covered by the same signed sums as the binary, built by the pipeline into the artifact dir before the sums are written. The generated source tarball, which carries no signature at all, is out of the path - and the one file the installer marks executable is now one it verified. A release without the asset installs the binary and says what it skipped rather than falling back to something unverified.
+			- ✅ Uninstall: `--uninstall`/`-Uninstall` removes exactly what the matching install laid down - binary, symlink or PATH entry, and the two payload dirs - and the success message names it. It runs before any network call, so removing does not need a release to exist.
+			- ✅ The no-terminal guard now asks the question it means: it tries the read and treats failure as the abort. Testing `/dev/tty` for readability passed in plenty of unattended contexts where the read then died on a raw shell error.
+			- ✋ Deferred: the man page and shell completions. Those are a new deliverable with packaging consequences (.deb/.rpm placement, a completions dir per shell), not polish on an existing one - filed on their own below.
 
 		- 🔘 Code Review 20260817 item 29: the gaps that let this round through.
 			- The cross-binding check cannot see any defect the four bindings share, and most of the bugs above are exactly that shape. The corpus is the only thing that can catch them, and only if a case has the shape.

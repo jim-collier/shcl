@@ -34,7 +34,7 @@ Usage:
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
-  shcl help | version                    this help, or the version (also -h/--help, -V/--version)
+  shcl help | version                    this help, or the version (also -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
@@ -52,27 +52,29 @@ the edits, an empty base when the ops script has stdin instead. Ops:
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 
-Types (default --string):
+Types (get only; default --string):
   --int --float --bool --datetime --string --raw --rawinfo
   --array                                read the value as an array of the type
   --rawinfo reads a raw block's info-string (the fence tag), not its content
 
-Options:
-  --default=VALUE                        value to print when the read is not Good
-                                         (implies --on-bad=default; for arrays,
-                                         substituted per bad slot)
-  --on-bad=error|default|flag            error: fail loudly; default: print the
-                                         default; flag: print the value anyway and
-                                         report via exit code (the default mode)
-  --slots                                prefix each line with its slot status and
-                                         a tab (per element, or per wildcard slot)
+Options (the subcommands each belongs to are in parentheses):
+  --default=VALUE                        (get) value to print when the read is
+                                         not Good (implies --on-bad=default; for
+                                         arrays, substituted per bad slot)
+  --on-bad=error|default|flag            (get) error: fail loudly; default: print
+                                         the default; flag: print the value anyway
+                                         and report via exit code (the default)
+  --slots                                (get) prefix each line with its slot
+                                         status and a tab (per element, or per
+                                         wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
   --lossy                                (fmt/set) with --write, rewrite even
                                          when the load dropped lines this write
                                          would delete; without it the write
                                          refuses and nothing is changed
-  --strictness=loose|standard|strict     or 1|2|3 (default standard)
+  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
+                                         standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
   --layer=FILE                           (get/fmt/count/instances/set) merge a
@@ -216,7 +218,7 @@ def asked_for(argv):
 		a = argv[i]
 		if a in ("-h", "--help"):
 			return "help"
-		if a in ("-V", "--version"):
+		if a in ("-v", "-V", "--version"):
 			return "version"
 		if a == "--about":
 			return "about"
@@ -385,6 +387,21 @@ def check_opts(cmd, o):
 		if s not in allowed:
 			if s == "--<type>":
 				sys.stderr.write("type options are not valid for {} (see --help)\n".format(cmd))
+			elif cmd == "init" and s == "--strictness":
+				# Deliberate, not an oversight: the schema is a program artifact,
+				# so it always loads at Standard - the same rule `check --schema`
+				# follows for the schema half.
+				sys.stderr.write(
+					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data\n"
+				)
+			elif cmd == "check" and s in ("--layer", "--set", "--set-literal"):
+				# The one refusal a user is likely to want anyway: check reports
+				# line numbers, and a merged document has no single file to
+				# number against. Naming the pipeline turns a dead end into a
+				# one-liner.
+				sys.stderr.write(
+					"option {} not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt {} ... FILE | shcl check --schema=SCHEMA -\n".format(s, s)
+				)
 			else:
 				sys.stderr.write("option {} not valid for {} (see --help)\n".format(s, cmd))
 			return 1
@@ -487,20 +504,18 @@ def do_get(o):
 			else:
 				print(ln)
 
-	if status == shcl.Status.Good or (status == shcl.Status.Empty and o.on_bad == "flag"):
-		emit(lines)
-		return status_code(status)
-	if o.on_bad == "default":
-		dv = o.default if o.default is not None else ""
-		if slots:
-			# Array read: the default substitutes per bad slot; alignment holds.
-			emit([ln if slot_at(i) == shcl.Status.Good else dv for i, ln in enumerate(lines)])
-		elif o.slots:
-			print("{}\t{}".format(status.name, dv))
-		else:
-			print(dv)
-		return 0
-	if o.on_bad == "error":
+	# Why the read failed is worth saying even when the exit code already carries
+	# it: at the default mode the user otherwise gets an empty line, a nonzero
+	# code, and nothing to go on. Stdout is untouched - this only ever goes to
+	# stderr. Two silences are deliberate: default mode, because a caller who
+	# supplied a fallback has already said the miss is expected, and Empty
+	# outside error mode, because an empty value is a legitimate answer here
+	# rather than a failure - the same reason ok() counts it as fine.
+	if (
+		status != shcl.Status.Good
+		and o.on_bad != "default"
+		and (status != shcl.Status.Empty or o.on_bad == "error")
+	):
 		type_name = "{} array".format(o.kind) if o.array else o.kind
 		if status == shcl.Status.BadType:
 			raw = doc.read_string(path).raw
@@ -518,6 +533,22 @@ def do_get(o):
 		sys.stderr.write(
 			"shcl: cannot read {} as {}: {} (in {})\n".format(path, type_name, reason, file)
 		)
+	if status == shcl.Status.Good or (status == shcl.Status.Empty and o.on_bad == "flag"):
+		emit(lines)
+		return status_code(status)
+	if o.on_bad == "default":
+		dv = o.default if o.default is not None else ""
+		if slots:
+			# Array read: the default substitutes per bad slot; alignment holds.
+			emit([ln if slot_at(i) == shcl.Status.Good else dv for i, ln in enumerate(lines)])
+		elif o.slots:
+			print("{}\t{}".format(status.name, dv))
+		else:
+			print(dv)
+		return 0
+	if o.on_bad == "error":
+		# The message already went to stderr above; error mode differs only in
+		# printing nothing on stdout.
 		return status_code(status)
 	# flag: print the zero/empty value anyway; the exit code carries the status.
 	emit(lines)
@@ -744,6 +775,12 @@ def do_set(o):
 	# bad bytes are a hard error, never silently replaced.
 	ops = ""
 	if not o.sets:
+		# Say so before blocking. With nothing on stdin this used to sit there
+		# silently, which reads as a hang rather than as a prompt; the note is
+		# unconditional so a pipeline and a terminal behave identically.
+		sys.stderr.write(
+			"shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)\n"
+		)
 		try:
 			ops = sys.stdin.buffer.read().decode("utf-8")
 		except UnicodeDecodeError:
@@ -881,12 +918,13 @@ def run(argv):
 			sys.stderr.write("invalid argument encoding (expected UTF-8)\n")
 			return 1
 	asked = asked_for(argv)
-	# Bare invocation is a usage error, so it prints the help unpadded. The
-	# blank lines below are for a person who asked, to separate the block from
-	# the surrounding prompts.
+	# One convention: asking for the help - by name, by flag, or by asking for
+	# nothing at all - prints it and succeeds. The blank lines separate the
+	# block from the surrounding prompts. A bare run used to print the same
+	# text unpadded and exit 1, which read as neither a help nor an error.
 	if not argv:
-		sys.stdout.write(HELP)
-		return 1
+		sys.stdout.write("\n" + HELP + "\n")
+		return 0
 	if asked == "help" or argv[0] == "help":
 		sys.stdout.write("\n" + HELP + "\n")
 		return 0

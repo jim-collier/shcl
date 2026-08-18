@@ -24,6 +24,9 @@
 ##		                         user: ~/.local/share/shcl + a symlink at
 ##		                         ~/.local/bin/shcl. No sudo.
 ##		--yes | -y               skip the confirmation prompt.
+##		--uninstall              remove what an install of the same --target
+##		                         laid down (binary, symlink, code/, scripts/),
+##		                         and nothing else.
 ##
 ##	Layout under the install dir:
 ##		shcl        the CLI binary
@@ -46,6 +49,7 @@ REPO="jim-collier/shcl"
 release="dev"
 target="system"
 assume_yes=0
+uninstall=0
 
 ## Release signing key. The sha256sums file is signed offline with the matching
 ## private key, so replacing a release asset is not enough - an attacker would
@@ -98,6 +102,9 @@ usage() {
 ##		                         user: ~/.local/share/shcl + a symlink at
 ##		                         ~/.local/bin/shcl. No sudo.
 ##		--yes | -y               skip the confirmation prompt.
+##		--uninstall              remove what an install of the same --target
+##		                         laid down (binary, symlink, code/, scripts/),
+##		                         and nothing else.
 ##
 ##	Layout under the install dir:
 ##		shcl        the CLI binary
@@ -116,6 +123,7 @@ while (( $# )); do
 		--target=*)  target="${1#*=}" ;;
 		--target)    (( $# >= 2 )) || die "missing value for --target (try --target=VALUE)"; shift; target="$1" ;;
 		-y|--yes)    assume_yes=1 ;;
+		--uninstall) uninstall=1 ;;
 		-h|--help)   usage; exit 0 ;;
 		*) die "unknown option: $1" ;;
 	esac
@@ -147,6 +155,43 @@ fi
 ## offer. Verify by hand and use the DIY path if the box genuinely lacks it.
 command -v openssl >/dev/null || die "need openssl to verify the release signature (see README.md for a manual install)"
 
+## Destinations.
+if [[ "${target}" == "system" ]]; then
+	dest="/opt/shcl"
+	link="/usr/local/bin/shcl"
+	asroot=""
+	## Check sudo is actually here before planning to use it: choosing it blind
+	## fails at the first write, after both downloads and the confirmation.
+	if [[ "$(id -u)" != 0 ]]; then
+		command -v sudo >/dev/null || die "a system install needs root: run as root, install sudo, or use --target=user"
+		asroot="sudo"
+	fi
+else
+	dest="${HOME}/.local/share/shcl"
+	link="${HOME}/.local/bin/shcl"
+	asroot=""
+fi
+
+## Uninstall: the reverse of what the install lays down, and nothing else - the
+## symlink, the binary, and the two payload dirs, then the install dir if it is
+## empty. Never a recursive delete of a path the user may have pointed elsewhere.
+if (( uninstall )); then
+	printf 'removing shcl: %s and %s\n' "${dest}" "${link}"
+	if (( ! assume_yes )); then
+		reply=""
+		if ! read -r -p "Proceed? [y/N] " reply </dev/tty 2>/dev/null; then
+			die "no terminal to confirm on - pass --yes"
+		fi
+		case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
+	fi
+	[[ -L "${link}" || -e "${link}" ]] && ${asroot} rm -f "${link}"
+	${asroot} rm -f "${dest}/shcl"
+	${asroot} rm -f "${dest}/code"/* "${dest}/scripts"/* 2>/dev/null || true
+	${asroot} rmdir "${dest}/code" "${dest}/scripts" "${dest}" 2>/dev/null || true
+	echo "removed"
+	exit 0
+fi
+
 ## Resolve the tag. GitHub's /releases/latest is exactly "newest non-prerelease";
 ## dev takes the newest of everything.
 if [[ "${release}" == "stable" ]]; then
@@ -161,18 +206,6 @@ tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | head -n1 | sed 's/.*"\
 [[ -n "${tag}" && "${tag}" != null ]] || die "no ${release} release found"
 version="${tag#v}"
 
-## Destinations.
-if [[ "${target}" == "system" ]]; then
-	dest="/opt/shcl"
-	link="/usr/local/bin/shcl"
-	asroot=""
-	[[ "$(id -u)" == 0 ]] || asroot="sudo"
-else
-	dest="${HOME}/.local/share/shcl"
-	link="${HOME}/.local/bin/shcl"
-	asroot=""
-fi
-
 ## State the plan; abort is the default when there is no tty to confirm on.
 existing="new install"
 [[ -e "${dest}/shcl" ]] && existing="updates the existing install"
@@ -181,9 +214,14 @@ printf '  binary   %s/shcl (symlink %s)\n' "${dest}" "${link}"
 printf '  drop-ins %s/code/, wrappers %s/scripts/\n' "${dest}" "${dest}"
 [[ -n "${asroot}" ]] && printf '  uses sudo for %s and %s\n' "${dest}" "${link}"
 if (( ! assume_yes )); then
-	[[ -r /dev/tty ]] || die "no tty to confirm on - pass --yes"
-	read -r -p "Proceed? [y/N] " reply </dev/tty
-	[[ "${reply}" == y || "${reply}" == Y ]] || { echo "aborted"; exit 1; }
+	## Ask on the terminal, and treat "cannot ask" as the abort it is. Testing
+	## /dev/tty for readability was not the same question: it passes in plenty of
+	## unattended contexts where the read then dies on a raw shell error.
+	reply=""
+	if ! read -r -p "Proceed? [y/N] " reply </dev/tty 2>/dev/null; then
+		die "no terminal to confirm on - pass --yes"
+	fi
+	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
 fi
 
 ## Download and verify the binary.
@@ -204,32 +242,50 @@ want="$(grep " ${asset}\$" "${tmp}/sums" | cut -d' ' -f1)"
 got="$(sha256sum "${tmp}/shcl" | cut -d' ' -f1)"
 [[ -n "${want}" && "${got}" == "${want}" ]] || die "sha256 mismatch on ${asset}"
 
-## Drop-in code files and wrappers come from the tag's source tarball.
-echo "downloading source payload (${tag})..."
-fetch "https://github.com/${REPO}/archive/refs/tags/${tag}.tar.gz" "${tmp}/src.tgz" || die "download failed: source tarball"
-tar -xzf "${tmp}/src.tgz" -C "${tmp}"
-srcroot="$(find "${tmp}" -maxdepth 1 -type d -name "shcl-*" | head -n1)"
-[[ -n "${srcroot}" ]] || die "unexpected source tarball layout"
-mkdir -p "${tmp}/code" "${tmp}/scripts"
-cp "${srcroot}/source/rust/src/lib.rs" "${srcroot}/source/go/shcl.go" "${srcroot}/source/python/shcl.py" \
-   "${srcroot}/source/c/shcl.h" "${srcroot}/source/c/shcl.hpp" "${tmp}/code/"
-cp "${srcroot}/source/bash/shcl.bash" "${srcroot}/source/powershell/shcl.ps1" "${tmp}/scripts/"
-chmod 755 "${tmp}/shcl" "${tmp}/scripts/shcl.bash"
+## Drop-in code files and wrappers come from a release asset covered by the same
+## signed sums file as the binary. They used to come from GitHub's generated
+## source tarball, which carries neither a signature nor a checksum - so the one
+## payload we made executable was the one nothing had verified. Releases before
+## the asset existed simply install the binary and say what was skipped.
+chmod 755 "${tmp}/shcl"
+dropins="shcl-${version}-dropins.tar.gz"
+want_src="$(grep " ${dropins}\$" "${tmp}/sums" | cut -d' ' -f1)"
+have_dropins=0
+if [[ -n "${want_src}" ]]; then
+	echo "downloading ${dropins}..."
+	fetch "${base}/${dropins}" "${tmp}/dropins.tgz" || die "download failed: ${dropins}"
+	got_src="$(sha256sum "${tmp}/dropins.tgz" | cut -d' ' -f1)"
+	[[ "${got_src}" == "${want_src}" ]] || die "sha256 mismatch on ${dropins}"
+	mkdir -p "${tmp}/x" "${tmp}/code" "${tmp}/scripts"
+	tar -xzf "${tmp}/dropins.tgz" -C "${tmp}/x"
+	cp "${tmp}/x/source/rust/src/lib.rs" "${tmp}/x/source/go/shcl.go" "${tmp}/x/source/python/shcl.py" \
+	   "${tmp}/x/source/c/shcl.h" "${tmp}/x/source/c/shcl.hpp" "${tmp}/code/"
+	cp "${tmp}/x/source/bash/shcl.bash" "${tmp}/x/source/powershell/shcl.ps1" "${tmp}/scripts/"
+	chmod 755 "${tmp}/scripts/shcl.bash"
+	have_dropins=1
+fi
 
 ## Install. The binary goes in via a hidden temp + mv in the same dir, so a
 ## running copy only ever sees the complete old or new file.
-${asroot} mkdir -p "${dest}/code" "${dest}/scripts" "$(dirname "${link}")"
+${asroot} mkdir -p "${dest}" "$(dirname "${link}")"
 ${asroot} cp "${tmp}/shcl" "${dest}/.shcl.new"
 ${asroot} mv -f "${dest}/.shcl.new" "${dest}/shcl"
-${asroot} cp "${tmp}"/code/* "${dest}/code/"
-${asroot} cp "${tmp}"/scripts/* "${dest}/scripts/"
+if (( have_dropins )); then
+	${asroot} mkdir -p "${dest}/code" "${dest}/scripts"
+	${asroot} cp "${tmp}"/code/* "${dest}/code/"
+	${asroot} cp "${tmp}"/scripts/* "${dest}/scripts/"
+fi
 ${asroot} ln -sfn "${dest}/shcl" "${link}"
 
 printf 'installed shcl %s -> %s\n' "${version}" "${link}"
+(( have_dropins )) || printf 'note: this release ships no signed drop-in payload, so %s/code and %s/scripts were skipped - take them from the repo if you want them\n' "${dest}" "${dest}"
+printf 'to remove it again: %s --uninstall --target %s\n' "${0##*/}" "${target}"
 ## Both targets: an install nobody can invoke by name looks fine to the version
 ## check below, so say something when the symlink dir is off the PATH.
 linkdir="$(dirname "${link}")"
 if [[ ":${PATH}:" != *":${linkdir}:"* ]]; then
-	printf 'note: %s is not on your PATH\n' "${linkdir}"
+	# The PATH expansion is for the user to paste, not for us to expand here.
+	# shellcheck disable=SC2016
+	printf 'note: %s is not on your PATH - add it with:\n  export PATH="%s:$PATH"\n(put that line in your shell profile to make it stick)\n' "${linkdir}" "${linkdir}"
 fi
 "${link}" version 2>/dev/null || "${dest}/shcl" version
