@@ -417,28 +417,49 @@ static const char *dec_point(void) {
 // --- arena (bump allocator; growable vectors grow by copy, bulk-freed) -------
 
 typedef struct ShclBlock { struct ShclBlock *next; size_t used, cap; } ShclBlock;
-typedef struct { ShclBlock *head; } Arena;
+/* last/last_n: the most recent allocation, so a vector or string builder that
+   grows with nothing allocated after it extends in place. A bump arena cannot
+   free, so without this every doubling abandons the copy before it - measured
+   at two thirds of a large parse's memory. `last` always points into `head`. */
+typedef struct { ShclBlock *head; void *last; size_t last_n; int growing; } Arena;
 
 static void *arena_alloc(Arena *a, size_t n) {
 	n = (n + 15u) & ~(size_t)15u;
 	if (n == 0) n = 16;
 	if (!a->head || a->head->used + n > a->head->cap) {
-		size_t cap = n > (size_t)65536 ? n : (size_t)65536;
+		/* A block opened for a vector or builder that just doubled gets room to
+		   double once more, so the next growth extends in place instead of
+		   abandoning this copy. Without it a buffer that reaches N bytes has
+		   spent about 2N getting there, and none of it is reclaimable. */
+		size_t cap = n > (size_t)65536 ? (a->growing ? n * 2 : n) : (size_t)65536;
 		ShclBlock *b = (ShclBlock *)malloc(sizeof(ShclBlock) + cap);
 		if (!b) { fprintf(stderr, "shcl: out of memory\n"); exit(70); }
 		b->next = a->head; b->used = 0; b->cap = cap; a->head = b;
 	}
 	void *p = (char *)(a->head + 1) + a->head->used;
 	a->head->used += n;
+	a->last = p; a->last_n = n;
 	return p;
 }
 static void arena_free(Arena *a) {
 	ShclBlock *b = a->head;
 	while (b) { ShclBlock *n = b->next; free(b); b = n; }
-	a->head = NULL;
+	a->head = NULL; a->last = NULL; a->last_n = 0; a->growing = 0;
 }
 static void *arena_grow(Arena *a, void *old, size_t oldcap, size_t newcap, size_t sz) {
+	/* Extend in place when nothing has been allocated since `old`. */
+	if (old && a->head && old == a->last) {
+		size_t want = (newcap * sz + 15u) & ~(size_t)15u;
+		if (want <= a->last_n) return old;
+		size_t extra = want - a->last_n;
+		if (a->head->used + extra <= a->head->cap) {
+			a->head->used += extra; a->last_n = want;
+			return old;
+		}
+	}
+	a->growing = 1;
 	void *p = arena_alloc(a, newcap * sz);
+	a->growing = 0;
 	if (old && oldcap) memcpy(p, old, oldcap * sz);
 	return p;
 }
@@ -451,6 +472,7 @@ static void arena_reset(Arena *a) {
 	ShclBlock *b = a->head->next;
 	while (b) { ShclBlock *n = b->next; free(b); b = n; }
 	a->head->next = NULL; a->head->used = 0;
+	a->last = NULL; a->last_n = 0;
 }
 
 #define DEFINE_VEC(Name, T) \
@@ -541,9 +563,6 @@ static CPs decode_cps(Arena *a, S s) {
 	while (i < s.n) { uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c); r.cp[k] = c; r.off[k] = i; i += l; k++; }
 	r.off[m] = s.n;
 	return r;
-}
-static S cps_slice(S src, CPs c, size_t from, size_t to) {
-	S r; r.p = src.p + c.off[from]; r.n = c.off[to] - c.off[from]; return r;
 }
 
 // --- whitespace (Rust char::is_whitespace / Unicode White_Space) + ascii ------
@@ -799,13 +818,17 @@ static int unterminated_quote(Arena *a, S text) {
 		S piece; piece.p = text.p + starts.data[i]; piece.n = ends.data[i] - starts.data[i];
 		S t = s_trim(piece);
 		if (t.n == 0) continue;
-		CPs c = decode_cps(a, t);
-		uint32_t first = c.cp[0];
+		/* Bytes, not code points: both quotes and the backslash are ASCII, and
+		   UTF-8 never puts an ASCII byte inside a multibyte sequence, so the
+		   first byte, the last byte and the escape parity are the same answers
+		   the decoded form gives. Decoding here allocated a u32 array per
+		   element of every line parsed. */
+		unsigned char first = (unsigned char)t.p[0];
 		if (first != '"' && first != '\'') continue;
 		int closed = 0;
-		if (c.n >= 2 && c.cp[c.n - 1] == first) {
+		if (t.n >= 2 && (unsigned char)t.p[t.n - 1] == first) {
 			int esc = 0;
-			for (size_t k = 1; k < c.n - 1; k++) esc = (c.cp[k] == '\\' && !esc);
+			for (size_t k = 1; k + 1 < t.n; k++) esc = (t.p[k] == '\\' && !esc);
 			closed = !esc;
 		}
 		if (!closed) return 1;
@@ -817,13 +840,14 @@ static int unterminated_quote(Arena *a, S text) {
 static int parse_element(Arena *a, S piece, Element *out) {
 	S t = s_trim(piece);
 	if (t.n == 0) return 0;
-	CPs c = decode_cps(a, t);
-	uint32_t first = c.cp[0];
-	if ((first == '"' || first == '\'') && c.n >= 2 && c.cp[c.n - 1] == first) {
+	/* Bytes, not code points - see unterminated_quote for why the answers are
+	   identical, and why this used to allocate per element of every line. */
+	unsigned char first = (unsigned char)t.p[0];
+	if ((first == '"' || first == '\'') && t.n >= 2 && (unsigned char)t.p[t.n - 1] == first) {
 		int esc = 0;
-		for (size_t i = 1; i < c.n - 1; i++) esc = (c.cp[i] == '\\' && !esc);
+		for (size_t i = 1; i + 1 < t.n; i++) esc = (t.p[i] == '\\' && !esc);
 		if (!esc) {
-			out->text = s_dup(a, cps_slice(t, c, 1, c.n - 1));
+			out->text = s_dup(a, s_slice(t, 1, t.n - 1));
 			out->quoted = 1; return 1;
 		}
 	}
@@ -1520,7 +1544,14 @@ DEFINE_VEC(VecPend, Pend)
 // the newest child at its own scope - that is how every merged level reports,
 // not just the outermost. The stored line splits old children (hint) from ones
 // the re-opened region itself created (silent).
-typedef struct { shcl_doc *d; VecStack stack; VecMap cmaps; VecMap dmaps; VecPend pending; int star_open; size_t star_node; S star_key; S star_disp; int saw_blank; VecSize reent_node; VecSize reent_line; } Parser;
+/* tmp: the parser's own bookkeeping - the child accelerator, the indent stack,
+   the pending-comment list, the line index - is dead the moment parsing ends,
+   so it goes in the scratch arena rather than the document's. In a bump arena
+   the document's is never reclaimed, and the accelerator alone is one hash map
+   per node. Everything a node keeps (name, value, trivia text) is still dup'd
+   into the document arena. Nothing resets scratch during a parse; the first
+   read after it does. */
+typedef struct { shcl_doc *d; Arena *tmp; Arena *line; VecStack stack; VecMap cmaps; VecMap dmaps; VecPend pending; int star_open; size_t star_node; S star_key; S star_disp; int saw_blank; VecSize reent_node; VecSize reent_line; } Parser;
 
 // The one place prose couples to a code, so the wording stays free everywhere else.
 static const char *diag_code(shcl_severity sev, S msg) {
@@ -1589,15 +1620,15 @@ static size_t select_or_create(Parser *P, size_t parent, S name, S name_src, Val
 	VecNode_push(a, &P->d->nodes, n);
 	VecSize_push(a, &NODE(P->d, parent).children, idx);
 	CMap empty; memset(&empty, 0, sizeof empty);
-	VecMap_push(a, &P->cmaps, empty);
+	VecMap_push(P->tmp, &P->cmaps, empty);
 	CMap dempty; memset(&dempty, 0, sizeof dempty);
-	VecMap_push(a, &P->dmaps, dempty);
+	VecMap_push(P->tmp, &P->dmaps, dempty);
 	/* store the arena-owned name; the caller's may point into the input buffer */
-	cmap_put(a, &P->cmaps.data[parent], h, NODE(P->d, idx).name, key, idx);
+	cmap_put(P->tmp, &P->cmaps.data[parent], h, NODE(P->d, idx).name, key, idx);
 	S disp = disp_key(a, &NODE(P->d, idx).value);
 	uint64_t hd = cmap_hash(NODE(P->d, idx).name, disp);
 	if (cmap_get(&P->dmaps.data[parent], hd, NODE(P->d, idx).name, disp) == (size_t)-1)
-		cmap_put(a, &P->dmaps.data[parent], hd, NODE(P->d, idx).name, disp, idx);
+		cmap_put(P->tmp, &P->dmaps.data[parent], hd, NODE(P->d, idx).name, disp, idx);
 	return idx;
 }
 
@@ -1732,10 +1763,9 @@ static size_t reent_get(const Parser *P, size_t node) {
 	return 0;
 }
 static void reent_set(Parser *P, size_t node, size_t line) {
-	Arena *a = &P->d->arena;
 	for (size_t i = 0; i < P->reent_node.len; i++)
 		if (P->reent_node.data[i] == node) { P->reent_line.data[i] = line; return; }
-	VecSize_push(a, &P->reent_node, node); VecSize_push(a, &P->reent_line, line);
+	VecSize_push(P->tmp, &P->reent_node, node); VecSize_push(P->tmp, &P->reent_line, line);
 }
 static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Value value, size_t line, size_t *out) {
 	Arena *a = &P->d->arena;
@@ -1766,7 +1796,7 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 			   creating a spurious second one - via the dmaps accelerator (the
 			   inline spelling was quadratic in siblings without it). Create
 			   only when nothing matches. */
-			S want = apply_escapes(a, seg->sel.value);
+			S want = apply_escapes(P->line, seg->sel.value);
 			uint64_t hd = cmap_hash(seg->name, want);
 			size_t found = cmap_get(&P->dmaps.data[cur], hd, seg->name, want);
 			/* A quoted selector is scalar-only, and the accelerator keeps just
@@ -1801,7 +1831,7 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 		}
 		case SEL_INDEX: {
 			VecSize matches = {0}; VecSize ch = NODE(P->d, cur).children;
-			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(P->d, c).name, seg->name)) VecSize_push(a, &matches, c); }
+			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(P->d, c).name, seg->name)) VecSize_push(P->line, &matches, c); }
 			if (seg->sel.index < matches.len) cur = matches.data[seg->sel.index];
 			else {
 				SB m = {0}; sb_puts(a, &m, "no instance "); sb_put_u64(a, &m, seg->sel.index); sb_puts(a, &m, " of '"); sb_putS(a, &m, seg->name); sb_putc(a, &m, '\'');
@@ -1988,12 +2018,18 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	Arena *a = &d->arena;
 	Node root; memset(&root, 0, sizeof root); root.value = v_empty(); root.parent = 0; root.line = 0;
 	VecNode_push(a, &d->nodes, root);
-	Parser P; P.d = d; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps); memset(&P.dmaps, 0, sizeof P.dmaps); memset(&P.pending, 0, sizeof P.pending);
+	/* Per-line temporaries - the path scan above all, which allocates a segment
+	   vector for every line parsed - reset at the top of each iteration. They
+	   cannot share the scratch arena: that one carries the parser's bookkeeping
+	   for the whole parse. Everything a node keeps is dup'd into the document
+	   arena before the next reset. */
+	Arena line_arena; memset(&line_arena, 0, sizeof line_arena);
+	Parser P; P.d = d; P.tmp = &d->scratch; P.line = &line_arena; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps); memset(&P.dmaps, 0, sizeof P.dmaps); memset(&P.pending, 0, sizeof P.pending);
 	P.star_open = 0; P.star_node = 0; P.star_key = s_empty(); P.star_disp = s_empty(); P.saw_blank = 0;
 	memset(&P.reent_node, 0, sizeof P.reent_node); memset(&P.reent_line, 0, sizeof P.reent_line);
-	StackEnt e0; e0.indent = s_empty(); e0.node = ROOT; VecStack_push(a, &P.stack, e0);
-	CMap m0; memset(&m0, 0, sizeof m0); VecMap_push(a, &P.cmaps, m0);
-	CMap d0; memset(&d0, 0, sizeof d0); VecMap_push(a, &P.dmaps, d0);
+	StackEnt e0; e0.indent = s_empty(); e0.node = ROOT; VecStack_push(P.tmp, &P.stack, e0);
+	CMap m0; memset(&m0, 0, sizeof m0); VecMap_push(P.tmp, &P.cmaps, m0);
+	CMap d0; memset(&d0, 0, sizeof d0); VecMap_push(P.tmp, &P.dmaps, d0);
 
 	S full; full.p = text ? text : ""; full.n = len;
 	if (full.n >= 3 && (unsigned char)full.p[0] == 0xEF && (unsigned char)full.p[1] == 0xBB && (unsigned char)full.p[2] == 0xBF) full = s_slice(full, 3, full.n);
@@ -2004,13 +2040,14 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			if (i == full.n || full.p[i] == '\n') {
 				S l = s_slice(full, start, i);
 				if (l.n > 0 && l.p[l.n - 1] == '\r') l.n--;
-				VecS_push(a, &lines, l);
+				VecS_push(P.tmp, &lines, l);
 				start = i + 1;
 			}
 		}
 	}
 	size_t i = 0;
 	while (i < lines.len) {
+		arena_reset(&line_arena);
 		size_t lineno = i + 1;
 		S line = trim_end(lines.data[i]);
 		size_t ind = 0; while (ind < line.n && (line.p[ind] == ' ' || line.p[ind] == '\t')) ind++;
@@ -2023,7 +2060,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		   dup'd - the caller's buffer may not outlive the document. */
 		if (rest.p[0] == '#') {
 			Pend pd; pd.text = s_dup(a, rest); pd.indent = s_dup(a, indent); pd.blank_before = P.saw_blank; P.saw_blank = 0;
-			VecPend_push(a, &P.pending, pd);
+			VecPend_push(P.tmp, &P.pending, pd);
 			i++; continue;
 		}
 		/* Any other line consumes the pending blank; only a field line that
@@ -2060,7 +2097,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			   with the '*' that brought us in. */
 			{
 				Pend pd; pd.text = s_dup(a, trim_end(rest)); pd.indent = s_dup(a, indent); pd.blank_before = had_blank;
-				VecPend_push(a, &P.pending, pd);
+				VecPend_push(P.tmp, &P.pending, pd);
 			}
 			i++; continue;
 		}
@@ -2070,13 +2107,13 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			/* Only a comment survived (e.g. an escaped lead-in); keep it. */
 			if (comment.n) {
 				Pend pd; pd.text = s_dup(a, comment); pd.indent = s_dup(a, indent); pd.blank_before = had_blank;
-				VecPend_push(a, &P.pending, pd);
+				VecPend_push(P.tmp, &P.pending, pd);
 			}
 			i++; continue;
 		}
 		size_t parent;
 		if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
-		PathScan scan = scan_path(a, content);
+		PathScan scan = scan_path(&line_arena, content);
 		if (!scan.ok) {
 			SB m = {0}; sb_puts(a, &m, "malformed line skipped: "); sb_putS(a, &m, scan.err); p_err(&P, lineno, sb_S(&m));
 			/* Content-malformed at any position - retained as trivia, same
@@ -2084,7 +2121,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			if (rest.n >= 3 && (unsigned char)rest.p[0] == 0xEF && (unsigned char)rest.p[1] == 0xBB && (unsigned char)rest.p[2] == 0xBF) d->lost++;
 			else {
 				Pend pd; pd.text = s_dup(a, trim_end(rest)); pd.indent = s_dup(a, indent); pd.blank_before = had_blank;
-				VecPend_push(a, &P.pending, pd);
+				VecPend_push(P.tmp, &P.pending, pd);
 			}
 			i++; continue;
 		}
@@ -2096,7 +2133,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			Fence vf = fence_open(a, scan.value_text);
 			if (vf.ok) value = consume_raw(&P, lines.data, lines.len, i + 1, lineno, vf.ch, vf.len, vf.info, &next);
 			else {
-				if (unterminated_quote(a, scan.value_text)) p_err(&P, lineno, s_lit("unterminated quote in value"));
+				if (unterminated_quote(&line_arena, scan.value_text)) p_err(&P, lineno, s_lit("unterminated quote in value"));
 				value = parse_cell(a, scan.value_text);
 			}
 		}
@@ -2104,7 +2141,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		if (attach_path(&P, parent, scan.segs.data, scan.segs.len, value, lineno, &node)) {
 			if (had_blank) NODE(d, node).blank_before = 1;
 			attach_trivia(&P, node, comment);
-			StackEnt se; se.indent = s_dup(a, indent); se.node = node; VecStack_push(a, &P.stack, se);
+			StackEnt se; se.indent = s_dup(a, indent); se.node = node; VecStack_push(P.tmp, &P.stack, se);
 		}
 		i = next;
 	}
@@ -2115,6 +2152,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	hang_deeper_pending(&P, s_empty());
 	for (size_t k = 0; k < P.pending.len; k++)
 		VecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before));
+	arena_free(&line_arena);
 	return d;
 }
 
@@ -2461,8 +2499,13 @@ static size_t w_new_child(shcl_doc *d, size_t parent, S name, S name_src, Value 
 // Why a write at this path would fail - the validation walk w_place runs
 // before creating anything. SHCL_W_WRITABLE means w_place's gate would pass;
 // nothing is created. Temporaries (scan, compare strings) go into `a`.
-static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
-	PathScan ps = scan_lookup(a, path);
+/* The validation walk w_write_reason and w_place share. `trail`, when non-NULL,
+   receives where each segment landed - (size_t)-1 from the point the path falls
+   off the existing tree - so w_place can create from exactly there instead of
+   scanning the path and walking the tree a second time. `ps` is the caller's
+   already-scanned path, so the scan happens once too. */
+static shcl_write_reason w_probe_write(shcl_doc *d, Arena *a, const PathScan *psp, size_t *trail) {
+	const PathScan ps = *psp;
 	if (!ps.ok) return SHCL_W_BAD_PATH;
 	if (ps.has_value) return SHCL_W_VALUE_IN_PATH;
 	if (ps.segs.len == 0) return SHCL_W_BAD_PATH;
@@ -2501,8 +2544,14 @@ static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
 			}
 			if (found == (size_t)-1) off = 1; else pr = found;
 		}
+		if (trail) trail[i] = off ? (size_t)-1 : pr;
 	}
 	return SHCL_W_WRITABLE;
+}
+
+static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
+	PathScan ps = scan_lookup(a, path);
+	return w_probe_write(d, a, &ps, NULL);
 }
 
 // Walk (creating as needed) to the node a write targets. Returns 1 + *out, or 0
@@ -2516,30 +2565,20 @@ static int w_place(shcl_doc *d, S path, size_t *out) {
 	// dups persists.
 	Arena *t = &d->scratch;
 	arena_reset(t);
-	if (w_write_reason(d, t, path) != SHCL_W_WRITABLE) return 0;
 	PathScan ps = scan_lookup(t, path);
+	size_t *trail = (size_t *)arena_alloc(t, (ps.segs.len ? ps.segs.len : 1) * sizeof(size_t));
+	if (w_probe_write(d, t, &ps, trail) != SHCL_W_WRITABLE) return 0;
 	size_t cur = ROOT;
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		Segment *seg = &ps.segs.data[i];
-		if (seg->star) return 0; // write_reason gates this; belt only
-		if (seg->sel.tag == SEL_NONE) {
-			size_t found = (size_t)-1;
-			VecSize ch = NODE(d, cur).children;
-			for (size_t k = 0; k < ch.len; k++) if (s_eq(NODE(d, ch.data[k]).name, seg->name)) { found = ch.data[k]; break; }
-			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, seg->name_src, v_empty());
-		} else if (seg->sel.tag == SEL_VALUE) {
-			size_t found = (size_t)-1;
-			S want = apply_escapes(t, seg->sel.value);
-			VecSize ch = NODE(d, cur).children;
-			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(d, c).name, seg->name) && s_eq(disp_key(t, &NODE(d, c).value), want) && (!seg->sel.quoted || single_scalar(&NODE(d, c).value))) { found = c; break; } }
-			cur = (found != (size_t)-1) ? found : w_new_child(d, cur, seg->name, seg->name_src, w_cell1(a, s_dup(a, seg->sel.value)));
-		} else if (seg->sel.tag == SEL_INDEX) {
-			size_t match = (size_t)-1, cnt = 0;
-			VecSize ch = NODE(d, cur).children;
-			for (size_t k = 0; k < ch.len; k++) if (s_eq(NODE(d, ch.data[k]).name, seg->name)) { if (cnt == seg->sel.index) { match = ch.data[k]; break; } cnt++; }
-			if (match == (size_t)-1) return 0;
-			cur = match;
-		} else return 0; // wildcard is query-only
+		/* The probe already resolved every segment that exists; only the tail
+		   it fell off has anything to create. */
+		if (trail[i] != (size_t)-1) { cur = trail[i]; continue; }
+		if (seg->sel.tag == SEL_NONE) cur = w_new_child(d, cur, seg->name, seg->name_src, v_empty());
+		else if (seg->sel.tag == SEL_VALUE) cur = w_new_child(d, cur, seg->name, seg->name_src, w_cell1(a, s_dup(a, seg->sel.value)));
+		/* Unreachable: w_probe_write refuses a wildcard outright and an
+		   unresolvable index, so neither reaches an empty trail slot. */
+		else return 0;
 	}
 	*out = cur; return 1;
 }
@@ -3038,8 +3077,19 @@ static S quote_text(Arena *a, S t) {
 // is_data_format: true when the text reads as an int, float, bool, or datetime
 // at standard strictness - fixed there deliberately, so canonical form cannot
 // vary with the load strictness.
+// One pass over the bytes before any coercion. At Standard the int, float and
+// datetime forms all require at least one ASCII digit; the only formats that do
+// not are the boolean words, and the longest of those is "false". An ordinary
+// quoted string fails both tests, so emit stops running four full coercions on
+// every quoted element it writes.
 static int is_data_format(Arena *a, const Element *e) {
 	int64_t iv; double fv; int bv; shcl_datetime dv;
+	int has_digit = 0;
+	for (size_t i = 0; i < e->text.n; i++) if (e->text.p[i] >= '0' && e->text.p[i] <= '9') { has_digit = 1; break; }
+	if (!has_digit) {
+		S t = s_trim(e->text);
+		return t.n <= 5 && parse_bool_text(a, t, SHCL_STANDARD, &bv);
+	}
 	if (parse_int_text(a, e, SHCL_STANDARD, &iv)) return 1;
 	if (parse_float_text(a, e, SHCL_STANDARD, &fv)) return 1;
 	if (parse_bool_text(a, e->text, SHCL_STANDARD, &bv)) return 1;
@@ -3101,7 +3151,11 @@ static void emit_children(shcl_doc *d, const VecSize *kids, size_t depth, SB *ou
 }
 
 static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB *out) {
-	Arena *a = &d->arena;
+	/* The whole emit - the output buffer and the quoted/escaped spellings both -
+	   is built in scratch; shcl_to_canonical copies the finished bytes into the
+	   document arena once. Building it there instead retained several times the
+	   output on every save, in an arena that cannot give it back. */
+	Arena *a = &d->scratch;
 	Node *node = &NODE(d, idx);
 	Value *v = &node->value;
 	/* Same-line fence spelling can't carry an inline comment (an unbalanced
@@ -3166,15 +3220,19 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 	}
 }
 shcl_str shcl_to_canonical(shcl_doc *d) {
+	/* Emit's own temporaries go in scratch, so a program that saves periodically
+	   does not grow by several times the output on every save. The returned bytes
+	   still live in the document arena - that is the documented contract. */
+	arena_reset(&d->scratch);
 	SB out = {0};
 	VecSize rc = NODE(d, ROOT).children;
 	emit_children(d, &rc, 0, &out);
 	/* Comments that never found a following line re-emit at the end. */
 	for (size_t k = 0; k < d->orphans.len; k++) {
-		if (d->orphans.data[k].blank_before && out.len) sb_putc(&d->arena, &out, '\n');
-		sb_putS(&d->arena, &out, d->orphans.data[k].text); sb_putc(&d->arena, &out, '\n');
+		if (d->orphans.data[k].blank_before && out.len) sb_putc(&d->scratch, &out, '\n');
+		sb_putS(&d->scratch, &out, d->orphans.data[k].text); sb_putc(&d->scratch, &out, '\n');
 	}
-	return sb_S(&out);
+	return s_dup(&d->arena, sb_S(&out));
 }
 
 // --- format helpers + remaining public API ----------------------------------
@@ -3953,7 +4011,7 @@ static void v_unknown(Arena *a, shcl_doc *d, const VSchemaDef *def, VecDiag *out
 	// Chains below a fragment mount only match by descending the mounts.
 	int has_mounts = 0;
 	for (size_t i = 0; i < cons->len; i++) if (cons->data[i].inherits.n) { has_mounts = 1; break; }
-	Arena tmp; tmp.head = NULL; // v_suggest scratch, reset per unknown field
+	Arena tmp; memset(&tmp, 0, sizeof tmp); // v_suggest scratch, reset per unknown field
 	// Legal chains in a hash set (the linear scan compounded the quadratic),
 	// and sibling names bucketed per parent chain, built once: v_suggest used
 	// to rebuild every chain per unknown field.
@@ -4065,7 +4123,7 @@ void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 	   the collected names (which must survive the per-read scratch resets) -
 	   goes into its own arena, freed on exit: the function owns neither doc,
 	   so it must not leave allocations behind in either. */
-	Arena tmp; tmp.head = NULL;
+	Arena tmp; memset(&tmp, 0, sizeof tmp);
 	VecS names = {0};
 	/* Top-level fields plus every fragment's fields: a repeat declared inside
 	   a mounted shape disavows the hint the same way. */
@@ -4118,7 +4176,7 @@ void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 
 void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc) {
 	/* Same arena discipline as the H001 suppressor above. */
-	Arena tmp; tmp.head = NULL;
+	Arena tmp; memset(&tmp, 0, sizeof tmp);
 	VecS names = {0};
 	size_t nfrag = shcl_count(schema, "fragment", 8);
 	for (size_t g = 0; g <= nfrag; g++) {
@@ -4584,7 +4642,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	// the constraint/fault lists, expansion copies, and the output builder are
 	// ~60x that, so they build in a private arena (shcl_validate's discipline)
 	// and die here - the caller may generate from one schema repeatedly.
-	Arena tmp; tmp.head = NULL;
+	Arena tmp; memset(&tmp, 0, sizeof tmp);
 	Arena *a = &tmp;
 	VSchemaDef def; memset(&def, 0, sizeof def);
 	VecDiag faults = {0, 0, 0};

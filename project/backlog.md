@@ -310,13 +310,21 @@ None open.
 			- `format_f64` is a wrapper over rust's own Display, which already spells floats the way the contract requires. The two setter sites call it now, so the rule has one home rather than a `format!` at each.
 			- Rust-only fixture, deliberately: nothing here is new behavior, and the other three already export the same capabilities under their own names.
 
-		- 🔘 Code Review 20260817 item 27: performance, six measured items.
+		- ✅ Code Review 20260817 item 27: performance, six measured items.
 			- The new author-quoting clause runs four full coercions per quoted element on every emit. Measured, emitting a quoted document costs about three times the same document bare, and it lands on formatting - the command most likely to run on a large file. A cheap first-character test or a cached classification removes it.
 			- Every setter scans the path and walks the tree twice: the write check does both, throws them away, and the caller redoes them. One of each would do.
 			- C routes every per-line temporary into the permanent document arena, so parse memory is about a hundred times the input and cannot be reclaimed - 277 MB against the reference's 95 MB on the same file. There is already a scratch arena for exactly this; parsing does not use it.
 			- C's emit-path format probe allocates into the document arena too, so each save retains about four times the output size. A long-running program that saves periodically grows without bound.
 			- Go decodes to a rune slice and back in three string helpers on hot paths, where every character it matches is ascii. Measured at about 2.7x the byte-loop equivalent, and the binding uses 120 MB against the reference's 75 MB.
 			- Python calls a per-character predicate from the path scanner and the emitter. It is the top entry by self time in a parse-and-emit profile at about a fifth of the total; a character-set membership test cuts about a tenth off the whole run.
+			- All six done, each measured before and after on a 400k-binding document (12 MB); numbers below are that workload.
+			- Quoting clause: one pass over the bytes gates the four coercions. At standard strictness int, float and datetime all need an ASCII digit, and the only formats that do not are the boolean words, so a plain quoted string is rejected without coercing anything. The extra cost of a fully-quoted document over a bare one fell from 0.24 s to 0.09 s.
+			- Setters: `write_reason` and `place` share one path scan and one tree walk. The validation walk now records where each segment landed, so the create pass starts exactly where the path fell off the tree instead of re-walking it. 80k writes went 1.31 s to 1.14 s. Validation still runs before anything is created, so a doomed path still leaves nothing behind.
+			- C memory: 1332 MB to 751 MB, and 1.19 s to 0.80 s. Three parts - the parser's own bookkeeping (the child accelerator above all) moved to the scratch arena, the per-line temporaries got their own arena reset each line, and the element parser stopped decoding every element to a code-point array to look at its two ends. The last of those is the same defect as the go item below.
+			- C emit: the output is built in scratch and copied into the document arena once, so a save retains exactly its output rather than about four times it. The arena also grows the last allocation in place now, which a bump arena could never do before.
+			- Go: the same code-point round-trips, byte-level now - the quote scan, the element parser, the quote counter, the quoting rewrite, and `applyEscapes`, which runs on every string read and every selector compare. 660 MB to 593 MB, 1.42 s to 1.11 s.
+			- Python: the bare-name predicate is a frozenset lookup and the emitter's per-character generator is one C-level set operation. About a tenth off a parse-and-emit run, as filed.
+			- Verified beyond the usual gate, since none of this may move a byte: a C build that poisons every arena reset agrees with the reference across the corpus and 826 fuzzer-dumped documents, and the four-way crosscheck is unchanged.
 
 		- 🔘 Code Review 20260817 item 28: cli and installer polish, batched.
 			- Every read failure is silent at the default mode - a wrong type, a typo'd path and a missing value all give an empty result, a meaningful exit code, and nothing on stderr. The error-mode message is excellent and is not what anyone gets by default. Printing it to stderr regardless would leave stdout byte-identical.
