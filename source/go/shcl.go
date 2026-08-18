@@ -215,7 +215,7 @@ type WriteReason int
 
 const (
 	Writable    WriteReason = iota // the path passes the writer's validation
-	BadPath                        // empty path, or the scanner rejected it
+	BadPath                        // empty path, the scanner rejected it, or a segment carries a line break
 	ValueInPath                    // the path carries a `: value` part; writes take values separately
 	Wildcard                       // wildcard selectors are query-only
 	NoSuchIndex                    // a `[#k]` instance that does not (and can never) exist
@@ -848,6 +848,18 @@ func isFenceClose(line string, ch byte, minLen int) bool {
 	return true
 }
 
+// stripCommon removes a raw block's common indent from one content line. A
+// whitespace-only line took no part in computing that indent, so it can be
+// shorter than it - strip only what it actually shares, rather than blanking it.
+// Blanking drops author spacing on a line the spec calls verbatim.
+func stripCommon(line, common string) string {
+	k := 0
+	for k < len(common) && k < len(line) && common[k] == line[k] {
+		k++
+	}
+	return line[k:]
+}
+
 // ---------------------------------------------------------------------------
 // Path scanner (shared by file lines and accessor queries)
 // ---------------------------------------------------------------------------
@@ -1326,13 +1338,16 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			// a spurious second one - via the dispMap accelerator (the inline
 			// spelling was quadratic in siblings without it). Create only when
 			// nothing matches.
-			// A quoted selector is scalar-only; the accelerator keeps the
-			// first same-display child, so when that one is not a scalar the
-			// (rare) fallback scan looks for one that is.
+			// A quoted selector is scalar-only, and the accelerator keeps just
+			// the first same-display child - a later remap can drop an entry a
+			// different sibling still satisfies - so a non-scalar hit and an
+			// outright miss both fall to the (rare) fallback scan.
 			want := applyEscapes(seg.sel.value)
 			found, ok := p.dispMap[cur][[2]string{seg.name, want}]
 			if ok && seg.sel.quoted && !singleScalar(&p.arena[found].value) {
 				ok = false
+			}
+			if !ok && seg.sel.quoted {
 				for _, c := range p.arena[cur].children {
 					if p.arena[c].name == seg.name && singleScalar(&p.arena[c].value) && dispKey(&p.arena[c].value) == want {
 						found, ok = c, true
@@ -1443,11 +1458,7 @@ func (p *parser) consumeRaw(lines []string, i, openLine int, ch byte, length int
 	}
 	stripped := make([]string, len(content))
 	for j, l := range content {
-		if strings.TrimSpace(l) == "" {
-			stripped[j] = ""
-		} else {
-			stripped[j] = strings.TrimPrefix(l, common)
-		}
+		stripped[j] = stripCommon(l, common)
 	}
 	return value{
 		kind: vRaw,
@@ -2314,6 +2325,17 @@ func emitElement(e *element) string {
 			}
 		}
 	}
+	// Edge whitespace beyond the space/tab above still has to force quotes: the
+	// parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
+	// ideographic space) at either end would not survive the reload. Edges only
+	// - interior whitespace is never trimmed and quoting it would move bytes.
+	if !needs && t != "" {
+		r, _ := utf8.DecodeRuneInString(t)
+		l, _ := utf8.DecodeLastRuneInString(t)
+		if unicode.IsSpace(r) || unicode.IsSpace(l) {
+			needs = true
+		}
+	}
 	if !needs {
 		if _, _, _, ok := fenceOpen(t); ok {
 			needs = true
@@ -2820,6 +2842,14 @@ func (d *Document) WriteReason(path string) WriteReason {
 		seg := &scan.segments[i]
 		if seg.star {
 			return Wildcard
+		}
+		// A newline has no one-line spelling, so the emitted binding would split
+		// across two lines and reparse as neither. Generate already refuses these
+		// paths; the writer has to as well, and before any node is created - the
+		// reload loses nothing it can count, so the save gate would not catch it.
+		if strings.Contains(seg.name, "\n") ||
+			(seg.sel != nil && seg.sel.kind == selByValue && strings.Contains(seg.sel.value, "\n")) {
+			return BadPath
 		}
 		switch {
 		case seg.sel == nil:

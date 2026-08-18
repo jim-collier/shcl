@@ -651,6 +651,13 @@ int main(int argc, char **argv) {
 			for (size_t i = 0; i < 513; i++) { if (i) deep[dn++] = '.'; deep[dn++] = 'd'; }
 			if (shcl_write_reason_(wd, deep, dn) != SHCL_W_TOO_DEEP) fail("write_reason", "513 segments not too deep");
 		}
+		// A literal line break in a segment: the binding would emit across two
+		// lines and reparse as neither. The escaped spelling is a different path
+		// and writes fine. Not corpus-pinnable - an ops line cannot carry a raw
+		// newline.
+		if (shcl_write_reason_(wd, "\"x\ny\".b", 7) != SHCL_W_BAD_PATH) fail("write_reason", "newline in name not flagged");
+		if (shcl_write_reason_(wd, "a[\"p\nq\"].b", 10) != SHCL_W_BAD_PATH) fail("write_reason", "newline in selector not flagged");
+		if (shcl_write_reason_(wd, "\"x\\ny\".b", 8) != SHCL_W_WRITABLE) fail("write_reason", "escaped newline not writable");
 		// The probe never creates: the doc is unchanged after all of the above.
 		if (shcl_count(wd, "a", 1) != 1) fail("write_reason", "probe created nodes");
 		shcl_free(wd);

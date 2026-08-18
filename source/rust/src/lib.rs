@@ -152,7 +152,7 @@ pub enum FileStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteReason {
 	Writable,
-	BadPath,     // empty path, or the scanner rejected it
+	BadPath,     // empty path, the scanner rejected it, or a segment carries a line break
 	ValueInPath, // the path carries a `: value` part; writes take values separately
 	Wildcard,    // wildcard selectors are query-only
 	NoSuchIndex, // a `[#k]` instance that does not (and can never) exist
@@ -656,6 +656,21 @@ fn fence_open(rest: &str) -> Option<(u8, usize, String)> {
 fn is_fence_close(line: &str, ch: u8, min_len: usize) -> bool {
 	let t = line.trim();
 	t.len() >= min_len && !t.is_empty() && t.bytes().all(|b| b == ch)
+}
+
+/// Remove a raw block's common indent from one content line. A whitespace-only
+/// line took no part in computing that indent, so it can be shorter than it -
+/// strip only what it actually shares, rather than blanking it. Blanking drops
+/// author spacing on a line the spec calls verbatim.
+fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
+	let mut k = 0;
+	for (a, b) in common.chars().zip(line.chars()) {
+		if a != b {
+			break;
+		}
+		k += a.len_utf8();
+	}
+	&line[k..]
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,9 +1177,10 @@ impl Parser {
 					// creating a spurious second one - via the disp_map accelerator
 					// (the inline spelling was quadratic in siblings without it).
 					// Create only when nothing matches. A quoted selector is
-					// scalar-only; the accelerator keeps the first same-display
-					// child, so when that one is not a scalar the (rare) fallback
-					// scan looks for one that is.
+					// scalar-only, and the accelerator keeps just the first
+					// same-display child - a later remap can drop an entry a
+					// different sibling still satisfies - so a non-scalar hit and
+					// an outright miss both fall to the (rare) fallback scan.
 					let want = apply_escapes(text);
 					let found = self.disp_map[cur]
 						.get(&(seg.name.clone(), want.clone()))
@@ -1308,16 +1324,7 @@ impl Parser {
 			});
 		}
 		let common = common.unwrap_or_default();
-		let stripped: Vec<&str> = content
-			.iter()
-			.map(|l| {
-				if l.trim().is_empty() {
-					""
-				} else {
-					l.strip_prefix(&common).unwrap_or(l)
-				}
-			})
-			.collect();
+		let stripped: Vec<&str> = content.iter().map(|l| strip_common(l, &common)).collect();
 		(
 			Value::Raw {
 				content: stripped.join("\n"),
@@ -2177,9 +2184,15 @@ pub fn suppress_declared_reopens(schema: &Document, diags: &mut Vec<Diagnostic>)
 /// canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
 fn emit_element(e: &Element) -> String {
 	let t = &e.text;
+	// Edge whitespace beyond the space/tab above still has to force quotes: the
+	// parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
+	// ideographic space) at either end would not survive the reload. Edges only
+	// - interior whitespace is never trimmed and quoting it would move bytes.
 	let needs = t.is_empty()
 		|| t.chars()
 			.any(|c| matches!(c, ' ' | '\t' | ',' | ':' | '#' | '"' | '\'' | '[' | ']'))
+		|| t.starts_with(char::is_whitespace)
+		|| t.ends_with(char::is_whitespace)
 		|| fence_open(t).is_some()
 		|| (e.quoted && !is_data_format(e));
 	if needs { quote_text(t) } else { t.clone() }
@@ -2622,6 +2635,16 @@ impl Document {
 		for seg in &scan.segments {
 			if seg.star {
 				return WriteReason::Wildcard;
+			}
+			// A newline has no one-line spelling, so the emitted binding would
+			// split across two lines and reparse as neither. `generate` already
+			// refuses these paths; the writer has to as well, and before any
+			// node is created - the reload loses nothing it can count, so the
+			// save gate would not catch it either.
+			if seg.name.contains('\n')
+				|| matches!(&seg.selector, Some(Selector::ByValue { text, .. }) if text.contains('\n'))
+			{
+				return WriteReason::BadPath;
 			}
 			match &seg.selector {
 				Some(Selector::Wildcard) => return WriteReason::Wildcard,

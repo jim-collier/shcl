@@ -663,6 +663,18 @@ func TestWriteReasonNamesTheFailure(t *testing.T) {
 	if got := doc.WriteReason(deep); got != TooDeep {
 		t.Errorf("deep path: got %v, want TooDeep", got)
 	}
+	// A literal line break in a segment: the binding would emit across two lines
+	// and reparse as neither. The escaped spelling is a different path and writes
+	// fine. Not corpus-pinnable - an ops line cannot carry a raw newline.
+	if got := doc.WriteReason("\"x\ny\".b"); got != BadPath {
+		t.Errorf("newline in name: got %v, want BadPath", got)
+	}
+	if got := doc.WriteReason("a[\"p\nq\"].b"); got != BadPath {
+		t.Errorf("newline in selector: got %v, want BadPath", got)
+	}
+	if got := doc.WriteReason("\"x\\ny\".b"); got != Writable {
+		t.Errorf("escaped newline in name: got %v, want Writable", got)
+	}
 	// The probe never creates: the doc is unchanged after all of the above.
 	if n := doc.Count("a"); n != 1 {
 		t.Errorf("count a: got %d, want 1", n)

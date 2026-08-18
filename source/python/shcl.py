@@ -57,7 +57,7 @@ class WriteReason(Enum):
 	setter's bare False. Writable = the path passes the writer's validation;
 	the rest name the five ways it cannot."""
 	Writable = 0
-	BadPath = 1       # empty path, or the scanner rejected it
+	BadPath = 1       # empty path, the scanner rejected it, or a segment carries a line break
 	ValueInPath = 2   # the path carries a `: value` part; writes take values separately
 	Wildcard = 3      # wildcard selectors are query-only
 	NoSuchIndex = 4   # a `[#k]` instance that does not (and can never) exist
@@ -695,6 +695,19 @@ def _is_fence_close(line, ch, min_len):
 	return len(t) >= min_len and len(t) > 0 and all(c == ch for c in t)
 
 
+def _strip_common(line, common):
+	"""Remove a raw block's common indent from one content line.
+
+	A whitespace-only line took no part in computing that indent, so it can be
+	shorter than it - strip only what it actually shares, rather than blanking
+	it. Blanking drops author spacing on a line the spec calls verbatim.
+	"""
+	k = 0
+	while k < len(common) and k < len(line) and common[k] == line[k]:
+		k += 1
+	return line[k:]
+
+
 # ---------------------------------------------------------------------------
 # Path scanner (shared by file lines and accessor queries)
 # ---------------------------------------------------------------------------
@@ -1054,13 +1067,15 @@ class _Parser:
 				# creating a spurious second one - via the disp_map accelerator
 				# (the inline spelling was quadratic in siblings without it).
 				# Create only when nothing matches.
-				# A quoted selector is scalar-only; the accelerator keeps the
-				# first same-display child, so when that one is not a scalar
-				# the (rare) fallback scan looks for one that is.
+				# A quoted selector is scalar-only, and the accelerator keeps
+				# just the first same-display child - a later remap can drop an
+				# entry a different sibling still satisfies - so a non-scalar hit
+				# and an outright miss both fall to the (rare) fallback scan.
 				want = _apply_escapes(sel[1])
 				found = self.disp_map[cur].get((seg.name, want))
 				if found is not None and sel[2] and not _single_scalar(self.arena[found].value):
 					found = None
+				if found is None and sel[2]:
 					for c in self.arena[cur].children:
 						nd = self.arena[c]
 						if nd.name == seg.name and _single_scalar(nd.value) and _disp_key(nd.value) == want:
@@ -1155,14 +1170,7 @@ class _Parser:
 				common = "".join(p)
 		if common is None:
 			common = ""
-		stripped = []
-		for ln in content:
-			if not _trim(ln):
-				stripped.append("")
-			elif ln.startswith(common):
-				stripped.append(ln[len(common):])
-			else:
-				stripped.append(ln)
+		stripped = [_strip_common(ln, common) for ln in content]
 		return _raw("\n".join(stripped), info, ch, length), i
 
 	def _bind_block(self, parent, value, line):
@@ -1901,6 +1909,13 @@ class Document:
 			if seg.star:
 				return WriteReason.Wildcard
 			sel = seg.selector
+			# A newline has no one-line spelling, so the emitted binding would
+			# split across two lines and reparse as neither. generate already
+			# refuses these paths; the writer has to as well, and before any node
+			# is created - the reload loses nothing it can count, so the save gate
+			# would not catch it either.
+			if "\n" in seg.name or (sel is not None and sel[0] == "val" and "\n" in sel[1]):
+				return WriteReason.BadPath
 			if sel is not None and sel[0] == "wild":
 				return WriteReason.Wildcard
 			if sel is not None and sel[0] == "idx":
@@ -2970,6 +2985,12 @@ def _emit_element(e):
 	"""
 	t = e.text
 	needs = (not t) or any(c in _RESERVED for c in t) or (_fence_open(t) is not None)
+	# Edge whitespace beyond the space/tab in _RESERVED still has to force quotes:
+	# the parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
+	# ideographic space) at either end would not survive the reload. Edges only -
+	# interior whitespace is never trimmed and quoting it would move bytes.
+	if not needs and t and (t[0] in _WS_SET or t[-1] in _WS_SET):
+		needs = True
 	if not needs and e.quoted and not _is_data_format(e):
 		needs = True
 	return _quote_text(t) if needs else t

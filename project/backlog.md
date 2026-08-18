@@ -66,48 +66,60 @@ None open.
 
 	- **Bugs**:
 
-		- 🔘 Code Review 20260817 item 1: the three ports disagree with the reference on a quoted selector.
+		- ✅ Code Review 20260817 item 1: the three ports disagree with the reference on a quoted selector.
 			- Reproduced: a document whose quoted selector needs the rare fallback scan formats to two lines under the reference and three under go, python and c.
 			- Cause: the reference rescans whenever the lookup accelerator fails to hand back a single scalar. The ports only rescan when the accelerator found something and it was the wrong shape, so an outright miss falls through and creates a node instead of selecting one.
 			- The accelerator is meant to be a pure speed-up, so a miss must never change the answer. The reference is right and the three ports need to follow it.
 			- Not visible to the corpus or the cross-binding check, because no case has this shape. Needs a case as part of the fix.
 			- Moves output bytes in three bindings. Do it before the next cut - the ports currently ship a different language than the reference defines.
+			- Fixed: the three ports now take the fallback scan on an outright accelerator miss as well as on a wrong-shape hit, matching the reference. Case 051 pins the miss, the selection landing on the right instance, and the two paths that still create.
 
-		- 🔘 Code Review 20260817 item 2: the c library no longer builds for windows.
+		- ✅ Code Review 20260817 item 2: the c library no longer builds for windows.
 			- Reproduced: the file tier added a `windows.h` include, and one of the library's own tables shares a name with a type that header defines. The mingw build of the library alone now fails outright.
 			- New on dev, so it is an unreleased regression, not a shipped one. Defining the no-file-io switch still builds.
 			- Renaming the table with the library's own prefix clears it - a static in a public single header should carry the prefix anyway.
 			- Missed because the cross-compile stage only builds the rust binary, so the windows branches of the c code have never been compiled by cicd. See item 28.
+			- Fixed: the table carries the prefix, and the whole c cli now cross-compiles clean at the project's warning level. The four other short internal macros the implementation left behind are undefined at the end of the block for the same reason - they would otherwise outlive the header in the consumer's own file.
 
-		- 🔘 Code Review 20260817 item 3: the drop-in build the readme documents no longer compiles.
+		- ✅ Code Review 20260817 item 3: the drop-in build the readme documents no longer compiles.
 			- Reproduced: the readme's own compile line fails on dev with implicit declarations from the new file tier. Same for c99 and c17; only the gnu dialect or a posix define still works.
 			- The header already anticipated this for one symbol and guarded it, but the other seven from the same block went unguarded.
 			- The project never sees it because both of its own builds define the posix macro themselves. A consumer following the header's stated recipe does not.
 			- Fix: define the posix and xopen macros at the top of the file-io block, guarded so a consumer that already set them wins.
+			- Fixed, but at the top of the FILE rather than the block: a feature request only counts before the first system header, and the block sits well below them. Guarded, so a consumer who already asked for a level keeps theirs. The documented line now works on c99, c11, c17 and the gnu dialect.
 
-		- 🔘 Code Review 20260817 item 4: c float handling breaks under the host program's locale.
+		- ✅ Code Review 20260817 item 4: c float handling breaks under the host program's locale.
 			- Reproduced under a comma-decimal locale: canonical output diverges from the other three bindings, every float read comes back bad-type, and the float formatter truncates 1.5 to "1" - so every float the writer emits loses its fraction.
 			- Cause: the number parser and the number formatter both go through library calls that follow the locale's decimal point. The other three bindings' equivalents are locale-independent by definition.
 			- The cli is safe: it pins the locale at startup, with a comment saying exactly why. The library - which is the actual product for c - does not, and a host application setting its own locale is ordinary.
 			- Fix: pin the numeric locale around those two sites.
+			- Fixed by translating the decimal point at both sites instead of pinning: pinning is a process-wide side effect a library has no business causing, and it is not thread-safe. Whole corpus now formats byte-identically under a comma-decimal locale. Not corpus-pinnable (no case can set a locale), so it lives in the code and in the private notes.
 
-		- 🔘 Code Review 20260817 item 5: a setter accepts a path it cannot write back.
+		- ✅ Code Review 20260817 item 5: a setter accepts a path it cannot write back.
 			- Reproduced: setting a value under a quoted segment containing a newline succeeds, and produces a document that no longer parses. Reading the value back gives not-found and the file reports two errors.
 			- All four bindings. The generator already rejects this exact case; the writer's own path check does not.
 			- Worse, the reload counts nothing as lost, so the new save gate does not refuse - which is precisely the class of loss the gate was added for.
 			- Fix: reject a newline or carriage return in a segment at the write check, so nothing is created. A carriage return alone is the same class.
+			- Fixed in all four, for a segment name and for a by-value selector - the selector stores the path text raw, so it bypassed the escaping the ordinary setters already do. The escaped spelling is a different path and still writes fine.
+			- A carriage return turned out NOT to be the same class: it round-trips intact, so rejecting it would be a behavior change with no defect behind it. Only the line break is refused.
+			- Pinned by the write-reason fixture in all four runners rather than the corpus: an ops line is line-based and cannot carry a raw newline. Same reason the reason-code list is spelled out in the spec instead.
 
-		- 🔘 Code Review 20260817 item 6: values with unusual whitespace at the edges are silently truncated on reload.
+		- ✅ Code Review 20260817 item 6: values with unusual whitespace at the edges are silently truncated on reload.
 			- The emitter decides whether to quote from a fixed short list of characters, but the parser trims values against the full unicode whitespace set. Anything in the gap has no spelling that survives a round trip.
 			- Measured across the gap: a value ending in a carriage return, a non-breaking space, a vertical tab, or any of the unicode spaces comes back shortened. Same loss through arrays and through comments. Plain spaces and tabs are fine - they are on the list.
 			- All four bindings. The writer fuzzer cannot see it: its character set contains none of these.
 			- Fix: also quote when the first or last character is whitespace by the same definition the parser trims by. Edge-only on purpose - quoting on interior whitespace would move bytes for documents that round-trip fine today.
+			- Fixed in all four exactly that way; every existing case still matches byte for byte, so nothing moved. Checked first that all four already agree on which characters count as whitespace - they do, or the fix itself would have split them.
+			- Case 052 pins it through the writer, where the loss was reachable: an author-quoted value already survived, so only a written one showed it.
 
-		- 🔘 Code Review 20260817 item 7: formatting deletes the contents of a blank-looking line inside a raw block.
+		- ✅ Code Review 20260817 item 7: formatting deletes the contents of a blank-looking line inside a raw block.
 			- Reproduced: a raw block whose body has a line of only spaces formats with that line emptied. Reading the block back confirms the spaces are gone.
 			- A raw block is contracted as verbatim, with only the common nesting indent stripped, so this is content loss rather than a documented normalization.
 			- All four bindings. No corpus case has a whitespace-only line, so nothing pins the current behavior.
 			- Fix: strip the common indent from such a line like any other, and fall back to empty only when the prefix is absent.
+			- Fixed in all four with one shared helper: strip however much of the common indent the line actually shares. A blank-looking line takes no part in computing that indent, so it can be shorter than it - which is why the old code special-cased it at all, and blanking was the wrong way out.
+			- Case 053 pins the whole gradient: a line longer than the indent, one shorter, and a truly empty one.
+			- The case carries meaningful trailing whitespace. An editor that trims on save would quietly break it; that is the first thing to check if it ever starts failing on its own.
 
 		- 🔘 Code Review 20260817 item 8: an in-place write silently deletes lines it could not read.
 			- Reproduced: a config with one unreadable line, plus one setting change, comes back a line shorter. Exit code zero, nothing on stdout, nothing on stderr, no record the line existed.

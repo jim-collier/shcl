@@ -14,6 +14,15 @@
 // A companion C++ typed veneer (get<int64_t>() etc.) sits in shcl.hpp; it wraps
 // this core, it is not a second parser.
 
+// The file tier calls POSIX (fdopen, fileno, fchmod, open, fsync, getpid). Those
+// prototypes are feature-gated, and a feature request only counts before the
+// first system header - so it goes here rather than beside the code needing it,
+// and a consumer who already asked for a level keeps theirs.
+#if !defined(SHCL_NO_FILE_IO) && !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+	#define _POSIX_C_SOURCE 200809L
+	#define _XOPEN_SOURCE 700
+#endif
+
 #ifndef SHCL_H
 #define SHCL_H
 
@@ -40,7 +49,7 @@ typedef enum {
 // the rest name the five ways it cannot.
 typedef enum {
 	SHCL_W_WRITABLE,
-	SHCL_W_BAD_PATH,      // empty path, or the scanner rejected it
+	SHCL_W_BAD_PATH,      // empty path, the scanner rejected it, or a segment carries a line break
 	SHCL_W_VALUE_IN_PATH, // the path carries a `: value` part; writes take values separately
 	SHCL_W_WILDCARD,      // wildcard selectors are query-only
 	SHCL_W_NO_SUCH_INDEX, // a `[#k]` instance that does not (and can never) exist
@@ -346,6 +355,16 @@ const char *shcl_status_name(shcl_status s);
 #include <stdio.h>
 #include <math.h>
 #include <inttypes.h>
+#include <locale.h>
+
+// SHCL spells a float with '.', but strtod and printf use whatever the host
+// locale calls the decimal point - so in a consumer that has called setlocale
+// both directions of float conversion need translating. The CLI never sets a
+// locale, which is why only library callers ever saw this.
+static const char *dec_point(void) {
+	const char *p = localeconv()->decimal_point;
+	return (p && *p) ? p : ".";
+}
 
 // --- arena (bump allocator; growable vectors grow by copy, bulk-freed) -------
 
@@ -399,6 +418,7 @@ typedef shcl_str S;
 static S s_lit(const char *z) { S s; s.p = z; s.n = strlen(z); return s; }
 static S s_empty(void) { S s; s.p = ""; s.n = 0; return s; }
 static int s_eq(S a, S b) { return a.n == b.n && (a.n == 0 || memcmp(a.p, b.p, a.n) == 0); }
+static int s_has_nl(S s) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == '\n') return 1; return 0; }
 static S s_dup(Arena *a, S x) {
 	if (x.n == 0) return s_empty();
 	char *m = (char *)arena_alloc(a, x.n); memcpy(m, x.p, x.n);
@@ -832,6 +852,16 @@ static int is_fence_close(S line, unsigned char ch, size_t min_len) {
 	return 1;
 }
 
+/* Remove a raw block's common indent from one content line. A whitespace-only
+   line took no part in computing that indent, so it can be shorter than it -
+   strip only what it actually shares, rather than blanking it. Blanking drops
+   author spacing on a line the spec calls verbatim. */
+static S strip_common(S line, S common) {
+	size_t k = 0;
+	while (k < common.n && k < line.n && common.p[k] == line.p[k]) k++;
+	return s_slice(line, k, line.n);
+}
+
 // --- path scanner ------------------------------------------------------------
 
 typedef enum { SEL_NONE, SEL_VALUE, SEL_INDEX, SEL_WILDCARD } seltag;
@@ -1009,15 +1039,15 @@ DEFINE_VEC(VecSlot, Slot)
 
 // --- coercion ("intelligent but safe"; Loose re-admits a closed list) --------
 
-static const uint32_t CURRENCY[] = {
+static const uint32_t SHCL_CURRENCY[] = {
 	'$', 0xA2, 0xA3, 0xA4, 0xA5, 0x20A9, 0x20AA, 0x20AB, 0x20AC, 0x20AD,
 	0x20AE, 0x20B1, 0x20B2, 0x20B4, 0x20B9, 0x20BA, 0x20BC, 0x20BD, 0x20BE, 0x20BF,
 };
 static S strip_currency(S t) {
 	if (t.n == 0) return t;
 	uint32_t c; size_t l = utf8_decode(t.p, t.n, 0, &c);
-	for (size_t i = 0; i < sizeof(CURRENCY) / sizeof(CURRENCY[0]); i++)
-		if (c == CURRENCY[i]) return s_slice(t, l, t.n);
+	for (size_t i = 0; i < sizeof(SHCL_CURRENCY) / sizeof(SHCL_CURRENCY[0]); i++)
+		if (c == SHCL_CURRENCY[i]) return s_slice(t, l, t.n);
 	return t;
 }
 
@@ -1082,10 +1112,16 @@ static int float_shape_ok(S t) {
 	return all_adigit0(ip) && all_adigit0(fp);
 }
 static int strtod_full(Arena *a, S t, double *out) {
-	char *buf = (char *)arena_alloc(a, t.n + 1);
-	memcpy(buf, t.p, t.n); buf[t.n] = '\0';
+	const char *dp = dec_point(); size_t dn = strlen(dp);
+	char *buf = (char *)arena_alloc(a, t.n * dn + 1);
+	size_t j = 0;
+	for (size_t i = 0; i < t.n; i++) {
+		if (t.p[i] == '.') { memcpy(buf + j, dp, dn); j += dn; }
+		else buf[j++] = t.p[i];
+	}
+	buf[j] = '\0';
 	char *end; double v = strtod(buf, &end);
-	if (end != buf + t.n) return 0;
+	if (end != buf + j) return 0;
 	*out = v; return 1;
 }
 static int parse_float_text(Arena *a, const Element *e, shcl_strictness level, double *out) {
@@ -1685,11 +1721,14 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 			S want = apply_escapes(a, seg->sel.value);
 			uint64_t hd = cmap_hash(seg->name, want);
 			size_t found = cmap_get(&P->dmaps.data[cur], hd, seg->name, want);
-			/* A quoted selector is scalar-only; the accelerator keeps the
-			   first same-display child, so when that one is not a scalar the
-			   (rare) fallback scan looks for one that is. */
+			/* A quoted selector is scalar-only, and the accelerator keeps just
+			   the first same-display child - a later remap can drop an entry a
+			   different sibling still satisfies - so a non-scalar hit and an
+			   outright miss both fall to the (rare) fallback scan. */
 			if (found != (size_t)-1 && seg->sel.quoted && !single_scalar(&NODE(P->d, found).value)) {
 				found = (size_t)-1;
+			}
+			if (found == (size_t)-1 && seg->sel.quoted) {
 				VecSize ch = NODE(P->d, cur).children;
 				for (size_t k = 0; k < ch.len; k++) {
 					size_t c = ch.data[k];
@@ -1778,9 +1817,7 @@ static Value consume_raw(Parser *P, S *lines, size_t nlines, size_t i, size_t op
 	for (size_t k = 0; k < content.len; k++) {
 		if (k) sb_putc(a, &out, '\n');
 		S l = content.data[k];
-		if (s_trim(l).n == 0) { /* blank -> "" */ }
-		else if (common.n > 0 && l.n >= common.n && memcmp(l.p, common.p, common.n) == 0) sb_putS(a, &out, s_slice(l, common.n, l.n));
-		else sb_putS(a, &out, l);
+		sb_putS(a, &out, strip_common(l, common));
 	}
 	Value v; memset(&v, 0, sizeof v);
 	v.kind = V_RAW; v.content = sb_S(&out); v.info = info; v.fence_char = ch; v.fence_len = len;
@@ -2385,6 +2422,12 @@ static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		Segment *seg = &ps.segs.data[i];
 		if (seg->star) return SHCL_W_WILDCARD;
+		/* A newline has no one-line spelling, so the emitted binding would split
+		   across two lines and reparse as neither. Generation already refuses
+		   these paths; the writer has to as well, and before any node is created
+		   - the reload loses nothing it can count, so the save gate would not
+		   catch it either. */
+		if (s_has_nl(seg->name) || (seg->sel.tag == SEL_VALUE && s_has_nl(seg->sel.value))) return SHCL_W_BAD_PATH;
 		if (seg->sel.tag == SEL_WILDCARD) return SHCL_W_WILDCARD;
 		if (seg->sel.tag == SEL_INDEX) {
 			if (off) return SHCL_W_NO_SUCH_INDEX;
@@ -2954,6 +2997,14 @@ static S emit_element(Arena *a, const Element *e) {
 		while (i < t.n) { uint32_t c; size_t l = utf8_decode(t.p, t.n, i, &c); i += l;
 			if (c == ' ' || c == '\t' || c == ',' || c == ':' || c == '#' || c == '"' || c == '\'' || c == '[' || c == ']') { needs = 1; break; } }
 	}
+	/* Edge whitespace beyond the space/tab above still has to force quotes: the
+	   parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
+	   ideographic space) at either end would not survive the reload. Edges only
+	   - interior whitespace is never trimmed and quoting it would move bytes. */
+	if (!needs && t.n) {
+		uint32_t f, l; utf8_decode(t.p, t.n, 0, &f); utf8_last(t, &l);
+		if (is_ws(f) || is_ws(l)) needs = 1;
+	}
 	if (!needs) { Fence f = fence_open(a, t); if (f.ok) needs = 1; }
 	if (!needs && e->quoted && !is_data_format(a, e)) needs = 1;
 	return needs ? quote_text(a, t) : t;
@@ -3073,6 +3124,14 @@ size_t shcl_format_f64(double v, char *out) {
 	char tmp[64]; int prec;
 	for (prec = 1; prec <= 17; prec++) { snprintf(tmp, sizeof tmp, "%.*e", prec - 1, v); if (strtod(tmp, NULL) == v) break; }
 	if (prec > 17) prec = 17;
+	// The round-trip above needed tmp in the host locale; the scan below wants '.'.
+	{
+		const char *dp = dec_point(); size_t dn = strlen(dp);
+		if (dn != 1 || *dp != '.') {
+			char *q = strstr(tmp, dp);
+			if (q) { *q = '.'; memmove(q + 1, q + dn, strlen(q + dn) + 1); }
+		}
+	}
 	const char *s = tmp; int neg = 0;
 	if (*s == '-') { neg = 1; s++; } else if (*s == '+') s++;
 	char digits[24]; int nd = 0;
@@ -4546,6 +4605,14 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 #ifdef __cplusplus
 #pragma GCC diagnostic pop
 #endif
+
+// The implementation's short internal macros would otherwise outlive the header
+// in the consumer's own translation unit, where these names are common.
+#undef DEFINE_VEC
+#undef ROOT
+#undef NODE
+#undef GEN_MAX_FIELDS
+#undef GEN_BANNER
 
 #endif // SHCL_IMPLEMENTATION
 #endif // SHCL_H

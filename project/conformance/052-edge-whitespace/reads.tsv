@@ -1,0 +1,5 @@
+query	type	expected	status
+-	load	ok	-
+kept	string	x 	Good
+inner	string	a b	Good
+base	int	0	Good
