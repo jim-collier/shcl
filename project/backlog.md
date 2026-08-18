@@ -48,7 +48,13 @@ None open.
 
 ### Bugs
 
-None open.
+- 🔘 Merged output is not always a formatter fixpoint: an empty binding in the base and a same-named block in the overlay both survive the merge, where a parse of the two would fold them.
+	- Found by a 200k-iteration fuzz soak; the pipeline runs 20k, which never reaches it. Pre-existing - reproduces identically on the commit before the performance pass.
+	- Minimal reproducer. Base: `blk:` alone. Overlay: `blk:` carrying a raw block and a child. Merged, both survive; re-parsed, they fold, so the canonical form changes on the second pass.
+	- Cause: the overlay's node has a child, so it takes the instance-merge path and looks for a base sibling with the same (name, value) key. An empty node's key never matches a block's, so it appends instead of filling - while the parser's own rule is that a later binding FILLS an earlier empty one of the same name. Parser and merge disagree about the same two lines.
+	- A second face of the same bug, and the one that showed first: the emitter works around the pair by writing the block's fence on the name's line (`blk: ```info`), and the value half of that line is comment-split on reparse - so an info string containing `#` comes back as a trailing comment and the fence loses it outright. That half is content loss, not just instability.
+	- Deferred, not dropped: the fix means deciding whether merge should adopt the parser's empty-fill rule - the likely answer, since it makes merge agree with a parse of the two documents concatenated - and that is a semantics change across all four bindings, the corpus and the spec. Worth its own chunk rather than riding on an unrelated one.
+	- Raise the soak in the pipeline, or at least run one at 200k before a cut: the 20k gate cannot see this class. Related to Code Review 20260817 item 29.
 
 ### Features and enhancements
 
