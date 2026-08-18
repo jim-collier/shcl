@@ -172,10 +172,20 @@ typedef enum {
 	SHCL_FILE_NOT_FOUND,  /* no file at the path */
 	SHCL_FILE_UNREADABLE  /* exists but could not be read (permissions, a directory, bad encoding) */
 } shcl_file_status;
+/* Save refuses while the load dropped content the write would silently delete
+   (shcl_lost_count); shcl_save_file_lossy is the override, and is the only way
+   to write then. The two failures are separate values rather than one falsey
+   answer because they need different handling: a refusal is the caller's to
+   reverse, a write failure is the disk's answer with errno describing it. */
+typedef enum {
+	SHCL_SAVE_OK,      /* written */
+	SHCL_SAVE_REFUSED, /* the lost-content gate fired; lossy overrides */
+	SHCL_SAVE_FAILED   /* the write itself failed; errno describes it */
+} shcl_save_result;
 shcl_doc *shcl_load_file(const char *path, shcl_file_status *status);
 shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status);
-int shcl_save_file(shcl_doc *d, const char *path);
-int shcl_save_file_lossy(shcl_doc *d, const char *path);
+shcl_save_result shcl_save_file(shcl_doc *d, const char *path);
+shcl_save_result shcl_save_file_lossy(shcl_doc *d, const char *path);
 int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 #endif
 
@@ -4305,20 +4315,22 @@ shcl_doc *shcl_load_file(const char *path, shcl_file_status *status) {
 }
 
 // File tier, save half: write the document's canonical text to PATH through
-// shcl_write_file_atomic. Returns 1 on success, 0 on failure. Refuses when
-// parsing lost content that a save would silently delete (shcl_lost_count);
-// shcl_save_file_lossy writes anyway.
-int shcl_save_file(shcl_doc *d, const char *path) {
-	if (d->lost > 0) return 0;
+// shcl_write_file_atomic. SHCL_SAVE_OK on success. Refuses when parsing lost
+// content that a save would silently delete (shcl_lost_count) - that is
+// SHCL_SAVE_REFUSED, distinct from SHCL_SAVE_FAILED so the caller need not
+// guess which happened; shcl_save_file_lossy writes anyway.
+shcl_save_result shcl_save_file(shcl_doc *d, const char *path) {
+	if (d->lost > 0) return SHCL_SAVE_REFUSED;
 	shcl_str c = shcl_to_canonical(d);
-	return shcl_write_file_atomic(path, c.p, c.n);
+	return shcl_write_file_atomic(path, c.p, c.n) ? SHCL_SAVE_OK : SHCL_SAVE_FAILED;
 }
 
 // shcl_save_file without the lost-content gate: writes even when parsing
-// dropped lines this save deletes. The caller owns that choice.
-int shcl_save_file_lossy(shcl_doc *d, const char *path) {
+// dropped lines this save deletes. The caller owns that choice. Never returns
+// SHCL_SAVE_REFUSED - the gate is the one thing it skips.
+shcl_save_result shcl_save_file_lossy(shcl_doc *d, const char *path) {
 	shcl_str c = shcl_to_canonical(d);
-	return shcl_write_file_atomic(path, c.p, c.n);
+	return shcl_write_file_atomic(path, c.p, c.n) ? SHCL_SAVE_OK : SHCL_SAVE_FAILED;
 }
 #endif /* SHCL_NO_FILE_IO */
 

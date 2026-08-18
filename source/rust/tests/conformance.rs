@@ -851,6 +851,16 @@ fn lost_and_save_gate() {
 	assert!(back.to_canonical().contains("square-miles 300\n"));
 	assert!(lost.save_file(fs).is_err());
 	assert!(lost.save_file_lossy(fs).is_ok());
+	// A refusal and a failed write are separate values, not two spellings of one
+	// message, and the gate answers before any i/o - so an unwritable path still
+	// reports the refusal. Same fixture in every runner.
+	let bad = dir.join("nope").join("t.shcl");
+	let bads = bad.to_str().unwrap();
+	assert!(matches!(kept.save_file(bads), Err(shcl::SaveError::Io(_))));
+	assert!(matches!(
+		lost.save_file(bads),
+		Err(shcl::SaveError::Refused { lost: 1, .. })
+	));
 	let _ = std::fs::remove_file(&f);
 	let _ = std::fs::remove_dir(&dir);
 }

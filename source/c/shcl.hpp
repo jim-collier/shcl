@@ -88,7 +88,12 @@ public:
 		if (status) *status = static_cast<FileStatus>(cs);
 		return d;
 	}
-	bool save_file(const std::string &path) const { return shcl_save_file(d_, path.c_str()) != 0; }
+	enum class SaveResult { Ok = SHCL_SAVE_OK, Refused = SHCL_SAVE_REFUSED, Failed = SHCL_SAVE_FAILED };
+	// Not a bool: Refused is the lost-content gate, which save_file_lossy
+	// overrides, and folding it into a failed write leaves the caller with an
+	// override they cannot tell they need.
+	SaveResult save_file(const std::string &path) const { return static_cast<SaveResult>(shcl_save_file(d_, path.c_str())); }
+	SaveResult save_file_lossy(const std::string &path) const { return static_cast<SaveResult>(shcl_save_file_lossy(d_, path.c_str())); }
 #endif
 
 	// One-shot load-and-validate: parse at a strictness, validate against a

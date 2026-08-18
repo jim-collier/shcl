@@ -8,6 +8,7 @@
 package shcl
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -852,6 +853,17 @@ func TestLostAndSaveGate(t *testing.T) {
 	}
 	if err := lost.SaveFileLossy(f); err != nil {
 		t.Fatal(err)
+	}
+	// A refusal and a failed write are separate values, not two spellings of one
+	// message, and the gate answers before any i/o - so an unwritable path still
+	// reports the refusal. Same fixture in every runner.
+	bad := t.TempDir() + "/nope/t.shcl"
+	var refused *SaveRefused
+	if err := kept.SaveFile(bad); err == nil || errors.As(err, &refused) {
+		t.Errorf("a failed write reported as a refusal: %v", err)
+	}
+	if err := lost.SaveFile(bad); !errors.As(err, &refused) || refused.Lost != 1 {
+		t.Errorf("refusal did not survive an unwritable path: %v", err)
 	}
 }
 

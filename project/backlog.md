@@ -208,17 +208,25 @@ None open.
 
 	- **Improvements**:
 
-		- 🔘 Names compare by their escaped spelling, so two spellings of the same name are two names.
+		- ✋ Names compare by their escaped spelling, so two spellings of the same name are two names. DECIDED: resolve escapes on names, at the next major.
 			- Found while settling Code Review 20260817 item 15. A name authored `"q\"r"` is stored, matched and emitted with the backslash intact, so it is a different name from one authored `'q"r'` - while the same two spellings as VALUES are the same string, which the spec states outright for selectors.
 			- Not a bug against any current contract: every part of the name pipeline agrees, and item 15's fix documents it. But the two halves of the language disagree about what a quoted string means, and a consumer building a path from user text has to know which half it is in.
-			- `QuoteSegment` is the existing mitigation and does the right thing. The open question is whether names should resolve escapes like values do - which would move canonical output for an already-released spelling, so it is a major-version question, not a patch.
-			- Decide before the next major. Doing nothing is a defensible answer; leaving it unrecorded is not.
+			- It does not take an exotic character: there are two quote styles, so `'a"b'` and `"a\"b"` are two fields, and the same pair as values are one string. Verified.
+			- Decided to resolve, because names already normalize once - ASCII case folds - so this finishes a rule rather than adding one. Rationale in `design.md` -> Guiding principles.
+			- Deferred to the next major, not scheduled: it moves canonical output for a published spelling, and two fields distinct today would merge. `QuoteSegment` stays the mitigation until then.
+			- Version cost is a number, not a migration. crates.io and PyPI carry 2.x beside 1.x with nothing to do; only Go pays, since v2 goes in the module path (`source/go/v2`) and every Go consumer edits an import.
+			- Shape when it comes: two sites per binding - unescape on name parse, and point name emit at the value escaper instead of the minimal name one. `SourceName` then becomes the real as-authored escape hatch rather than differing only by case, and item 15's doc decision still holds, since it returns source text. The fiddly part is the schema's two-level path quoting, which gains an unescape level and needs its own corpus case.
+			- Do not cut a major for this alone - batch it with item 24's c++ date read pair.
 
-		- 🔘 Code Review 20260817 item 17: the save gate's failure channel is wrong in three bindings.
+		- ✅ Code Review 20260817 item 17: the save gate's failure channel is wrong in three bindings.
 			- Python returns an error string, so `doc.save_file(path)` on its own line - the obvious spelling - silently does nothing when the gate fires and the program reports success. That is worse than the loss it prevents, because at least a lossy save leaves a file. It should raise.
 			- The reference returns a plain-string error, which does not compose into a caller's error type and makes the refusal distinguishable from a disk failure only by matching on prose.
 			- C returns the same value for "refused for safety" and "the write failed", and the header never mentions the gate or that the lossy call is its override.
 			- All three are free to fix now and expensive after the cut, because the whole file tier is unreleased.
+			- Fixed in all four plus the veneer, one channel per language: `SaveError::Refused`/`Io` in the reference, a `*SaveRefused` error in go, `SaveRefused`/`SaveFailed` raised from a `SaveError` base in python, and `SHCL_SAVE_OK`/`REFUSED`/`FAILED` in c. The header now states the gate and names the lossy call as its override.
+			- The four CLIs stopped sniffing `lost_count() > 0` to guess which failure they were looking at and branch on the value. Output is byte-identical.
+			- The veneer's `save_file` returned a bool, which folded the same two cases, so it returns the result type now - and gained `save_file_lossy`, since a refusal it cannot override is a dead end. The rest of item 21's veneer list is still open.
+			- New shared fixture in all four runners: the gate answers before any i/o, so a lost document saved to an unwritable path still reports the refusal, and a clean one reports the write failure. Nothing here is visible on stdout, so the corpus cannot see it.
 
 		- 🔘 Code Review 20260817 item 18: the documentation teaches the bug the file tier was built to remove.
 			- Every headline example in the front-page readme and the per-binding readmes hand-rolls file i/o: a plain read, and a plain non-atomic write back. The file tier, the load status, the lost-line count and the as-authored name appear in no readme at all.

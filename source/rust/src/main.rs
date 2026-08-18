@@ -5,7 +5,7 @@
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
 use shcl::{
-	Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime,
+	Diagnostic, Document, SaveError, Severity, Status, Strictness, generate, parse_datetime,
 	suppress_declared_reopens, suppress_declared_repeats,
 };
 use std::process::ExitCode;
@@ -458,18 +458,17 @@ fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
 	};
 	match r {
 		Ok(()) => 0,
-		Err(e) => {
+		Err(SaveError::Refused { lost, .. }) => {
 			// The rule stays in the library; only the wording is the CLI's,
 			// because the override a user has here is a flag, not a function.
-			if !o.lossy && doc.lost_count() > 0 {
-				eprintln!(
-					"{}: refusing to rewrite: the load dropped {} line(s)/value(s) this write would delete (--lossy overrides)",
-					file,
-					doc.lost_count()
-				);
-			} else {
-				eprintln!("{}", e);
-			}
+			eprintln!(
+				"{}: refusing to rewrite: the load dropped {} line(s)/value(s) this write would delete (--lossy overrides)",
+				file, lost
+			);
+			1
+		}
+		Err(e) => {
+			eprintln!("{}", e);
 			1
 		}
 	}
