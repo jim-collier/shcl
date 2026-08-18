@@ -121,12 +121,18 @@ None open.
 			- Case 053 pins the whole gradient: a line longer than the indent, one shorter, and a truly empty one.
 			- The case carries meaningful trailing whitespace. An editor that trims on save would quietly break it; that is the first thing to check if it ever starts failing on its own.
 
-		- 🔘 Code Review 20260817 item 8: an in-place write silently deletes lines it could not read.
+		- ✅ Code Review 20260817 item 8: an in-place write silently deletes lines it could not read.
 			- Reproduced: a config with one unreadable line, plus one setting change, comes back a line shorter. Exit code zero, nothing on stdout, nothing on stderr, no record the line existed.
 			- All four clis. Same for formatting in place.
 			- The library grew a save gate for exactly this in the round just finished. The clis neither call it nor consult the count behind it.
 			- design.md justifies the current behavior on the grounds that a human sees the diagnostics on stderr. At the default strictness they see nothing at all, so either the code or that sentence has to change.
 			- Fix: print the load's errors to stderr on an in-place write, and refuse when anything was dropped unless an override flag is passed - mirroring the library so the two cannot disagree about what is safe.
+			- Fixed exactly that way in all four clis, with `--lossy` as the override. The mirroring is literal: the write now calls the library's own save rather than the raw atomic write, so there is one copy of the rule, not five. Only the refusal's wording is the cli's, since the override a user has is a flag rather than a function name.
+			- The whole load's diagnostics go out, not just the errors, so what an in-place write reports and what `check` reports on the same file cannot drift apart.
+			- `--lossy` on its own is a usage error: it would read as protection the command never had.
+			- Retained malformed lines do not trip it - they survive the rewrite - so the refusal fires only where content would actually be deleted.
+			- design.md's justifying sentence was the false half and is rewritten; the spec and the readme now state the refusal.
+			- Pinned in `crosscheck.bash`, not the corpus: refusing leaves the file byte-identical, which only the write dimension's tree compare can see. That compare was itself blind to the exit code - a refusal and a no-op success looked alike - so it now carries the code too.
 
 		- 🔘 Code Review 20260817 item 9: piping a document into `set` throws it away.
 			- Reproduced: `cat app.shcl | shcl set - --set workers=99` prints only the new setting. The piped document is gone, exit code zero, nothing on stderr. Chaining two `set` calls loses the first.
