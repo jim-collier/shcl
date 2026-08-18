@@ -40,11 +40,12 @@ Usage:
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
-set edits FILE, the base document ('-' = empty base). Values go in as
-repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
-arrays work) options, which persist with --write; given either, no ops are read
-from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
-script on stdin, one op per line, tab-separated. Ops:
+set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE
+(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which
+persist with --write; given either, no ops are read from stdin. Raw blocks,
+set-only-if-absent and removal go in as a write-ops script on stdin, one op per
+line, tab-separated. FILE '-' follows stdin: the document when an option holds
+the edits, an empty base when the ops script has stdin instead. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -386,7 +387,7 @@ func checkOpts(cmd string, o *opts) int {
 	if cmd == "set" {
 		for _, l := range o.layers {
 			if l == "-" {
-				fmt.Fprintln(os.Stderr, "--layer=- is not valid for set (stdin carries the ops script)")
+				fmt.Fprintln(os.Stderr, "--layer=- is not valid for set (stdin carries the ops script or the document)")
 				return 1
 			}
 		}
@@ -980,7 +981,10 @@ func doSet(o *opts) int {
 		fmt.Fprintln(os.Stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
-	// Base doc: '-' means an empty base, since stdin carries the ops script.
+	// Base doc: with the edits given as options no ops script is read, so a '-'
+	// file is the document on stdin the way it is everywhere else; only when
+	// stdin is the ops script does '-' mean an empty base. Reading neither threw
+	// a piped document away at exit 0.
 	// Any --layer files sit under it and --set overrides sit on top, before ops.
 	layerTexts := make([]string, 0, len(o.layers)+1)
 	for _, lf := range o.layers {
@@ -992,7 +996,7 @@ func doSet(o *opts) int {
 		layerTexts = append(layerTexts, t)
 	}
 	base := ""
-	if file != "-" {
+	if file != "-" || len(o.sets) > 0 {
 		t, err := readInput(file)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)

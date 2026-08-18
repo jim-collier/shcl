@@ -345,6 +345,13 @@ fCompareWrite "set --write --set adds a path" fFixMode set --write --set b.c=hel
 fCompare "set --write rejects --layer" set --write --layer=missing.shcl missing.shcl
 fCompare "fmt --write rejects --set" fmt --write --set a=1 missing.shcl
 
+# `set -` follows stdin, so the same spelling means two things and both are
+# pinned: the piped document when an option holds the edits, an empty base when
+# stdin is the ops script instead.
+printf 'int\tx\t7\n' >"${tmpDir}/emptybase.ops"
+fCompareStdin "set - reads the piped document" project/conformance/044-write-literal/input.shcl set - --set b=2
+fCompareStdin "set - is an empty base for ops" "${tmpDir}/emptybase.ops" set -
+
 # --set-literal takes value syntax, so the same text lands as an array where
 # --set stores one quoted string; the pair is compared to pin that difference.
 # The rejections are the parser's own, so they have to agree with it.

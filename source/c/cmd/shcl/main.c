@@ -58,11 +58,12 @@ static const char *HELP =
 	"  shcl about | donate                    what shcl is, or how to support it\n"
 	"                                         (also --about, --donate)\n"
 	"\n"
-	"set edits FILE, the base document ('-' = empty base). Values go in as\n"
-	"repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so\n"
-	"arrays work) options, which persist with --write; given either, no ops are read\n"
-	"from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops\n"
-	"script on stdin, one op per line, tab-separated. Ops:\n"
+	"set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE\n"
+	"(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which\n"
+	"persist with --write; given either, no ops are read from stdin. Raw blocks,\n"
+	"set-only-if-absent and removal go in as a write-ops script on stdin, one op per\n"
+	"line, tab-separated. FILE '-' follows stdin: the document when an option holds\n"
+	"the edits, an empty base when the ops script has stdin instead. Ops:\n"
 	"  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar\n"
 	"  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array\n"
 	"  <type>[-array]-default<TAB>...                          set only if absent\n"
@@ -545,9 +546,13 @@ static int do_set(Opts *o) {
 		fprintf(stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
-	// Base doc: '-' means an empty base, since stdin carries the ops script. Any
-	// --layer files sit under it and --set overrides sit on top, before ops. The
-	// base layer's node strings are not dup'd off its text, so keep all buffers.
+	// Base doc: with the edits given as options no ops script is read, so a '-'
+	// file is the document on stdin the way it is everywhere else; only when
+	// stdin is the ops script does '-' mean an empty base. Reading neither threw
+	// a piped document away at exit 0.
+	// Any --layer files sit under it and --set overrides sit on top, before ops.
+	// The base layer's node strings are not dup'd off its text, so keep all
+	// buffers.
 	LayeredDoc L; L.doc = NULL; L.texts = NULL; L.ntexts = 0;
 	for (int i = 0; i < o->nlayers; i++) {
 		size_t llen; char *lt = read_input(o->layers[i], &llen);
@@ -559,7 +564,7 @@ static int do_set(Opts *o) {
 		if (!L.doc) L.doc = dd; else { shcl_merge(L.doc, dd); shcl_free(dd); }
 	}
 	char *text; size_t len;
-	if (!strcmp(file, "-")) { text = (char *)xrealloc(NULL, 1); len = 0; }
+	if (!strcmp(file, "-") && o->nsets == 0) { text = (char *)xrealloc(NULL, 1); len = 0; }
 	else { text = read_input(file, &len); if (!text) { layered_free(&L); return 1; } }
 	layered_push_text(&L, text);
 	{
@@ -856,7 +861,7 @@ static int check_opts(const char *cmd, Opts *o) {
 	if (!strcmp(cmd, "set")) {
 		for (int i = 0; i < o->nlayers; i++) {
 			if (!strcmp(o->layers[i], "-")) {
-				fprintf(stderr, "--layer=- is not valid for set (stdin carries the ops script)\n");
+				fprintf(stderr, "--layer=- is not valid for set (stdin carries the ops script or the document)\n");
 				return 1;
 			}
 		}

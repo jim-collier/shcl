@@ -38,11 +38,12 @@ Usage:
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
-set edits FILE, the base document ('-' = empty base). Values go in as
-repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
-arrays work) options, which persist with --write; given either, no ops are read
-from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
-script on stdin, one op per line, tab-separated. Ops:
+set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE
+(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which
+persist with --write; given either, no ops are read from stdin. Raw blocks,
+set-only-if-absent and removal go in as a write-ops script on stdin, one op per
+line, tab-separated. FILE '-' follows stdin: the document when an option holds
+the edits, an empty base when the ops script has stdin instead. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -401,7 +402,7 @@ def check_opts(cmd, o):
 		return 1
 	# The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" and any(lf == "-" for lf in o.layers):
-		sys.stderr.write("--layer=- is not valid for set (stdin carries the ops script)\n")
+		sys.stderr.write("--layer=- is not valid for set (stdin carries the ops script or the document)\n")
 		return 1
 	return None
 
@@ -710,11 +711,14 @@ def do_set(o):
 	if o.write and file == "-":
 		sys.stderr.write("set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
-	# Base doc: '-' means an empty base, since stdin carries the ops script.
+	# Base doc: with the edits given as options no ops script is read, so a '-'
+	# file is the document on stdin the way it is everywhere else; only when
+	# stdin is the ops script does '-' mean an empty base. Reading neither threw
+	# a piped document away at exit 0.
 	# Any --layer files sit under it and --set overrides sit on top, before ops.
 	try:
 		layer_texts = [read_input(lf) for lf in o.layers]
-		base = "" if file == "-" else read_input(file)
+		base = "" if file == "-" and not o.sets else read_input(file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1

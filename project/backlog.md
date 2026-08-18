@@ -134,11 +134,16 @@ None open.
 			- design.md's justifying sentence was the false half and is rewritten; the spec and the readme now state the refusal.
 			- Pinned in `crosscheck.bash`, not the corpus: refusing leaves the file byte-identical, which only the write dimension's tree compare can see. That compare was itself blind to the exit code - a refusal and a no-op success looked alike - so it now carries the code too.
 
-		- 🔘 Code Review 20260817 item 9: piping a document into `set` throws it away.
+		- ✅ Code Review 20260817 item 9: piping a document into `set` throws it away.
 			- Reproduced: `cat app.shcl | shcl set - --set workers=99` prints only the new setting. The piped document is gone, exit code zero, nothing on stderr. Chaining two `set` calls loses the first.
 			- Cause: `-` means "read the document from stdin" on every other subcommand, and "empty base" on `set`, where stdin is reserved for the ops script. With `--set` given, stdin is never read.
 			- All four clis. Without `--set` the same command is loud and correct, so it is the combination that goes quiet.
 			- Fix: either make `set -` read the document like everything else and move the ops script to its own option, or make the quiet combination an error.
+			- Fixed as the first option, but without a new option for the ops script: `-` follows stdin. With the edits given as options no ops are read, so stdin carries the document the way it does on every other subcommand; only when stdin IS the ops script does `-` still mean an empty base. The two meanings never compete, so nothing that works today changes.
+			- Erroring instead was rejected: `set - --set a=1` to build a document from nothing is a legitimate use, and refusing it would leave no spelling at all for the piped case the item is about.
+			- Sniffing whether stdin is a terminal was also rejected - it would make the same command mean different things in a pipeline and interactively, which the corpus and the crosscheck could never pin.
+			- The one behavior change: `set - --set ...` with no redirection now waits on stdin at a terminal, exactly as `fmt -` and every other `-` already does. Redirect from /dev/null for an empty base.
+			- Both meanings pinned in `crosscheck.bash` (the piped document, and the ops script over an empty base). Help, spec and the `--layer=-` refusal wording updated to match.
 
 		- 🔘 Code Review 20260817 item 10: go accepts a non-text file as cleanly loaded.
 			- The new file tier reports clean for a file that is not valid text, where the reference and python both report unreadable and hand back an empty document.
