@@ -121,52 +121,80 @@ None open.
 			- Case 053 pins the whole gradient: a line longer than the indent, one shorter, and a truly empty one.
 			- The case carries meaningful trailing whitespace. An editor that trims on save would quietly break it; that is the first thing to check if it ever starts failing on its own.
 
-		- 🔘 Code Review 20260817 item 8: an in-place write silently deletes lines it could not read.
+		- ✅ Code Review 20260817 item 8: an in-place write silently deletes lines it could not read.
 			- Reproduced: a config with one unreadable line, plus one setting change, comes back a line shorter. Exit code zero, nothing on stdout, nothing on stderr, no record the line existed.
 			- All four clis. Same for formatting in place.
 			- The library grew a save gate for exactly this in the round just finished. The clis neither call it nor consult the count behind it.
 			- design.md justifies the current behavior on the grounds that a human sees the diagnostics on stderr. At the default strictness they see nothing at all, so either the code or that sentence has to change.
 			- Fix: print the load's errors to stderr on an in-place write, and refuse when anything was dropped unless an override flag is passed - mirroring the library so the two cannot disagree about what is safe.
+			- Fixed exactly that way in all four clis, with `--lossy` as the override. The mirroring is literal: the write now calls the library's own save rather than the raw atomic write, so there is one copy of the rule, not five. Only the refusal's wording is the cli's, since the override a user has is a flag rather than a function name.
+			- The whole load's diagnostics go out, not just the errors, so what an in-place write reports and what `check` reports on the same file cannot drift apart.
+			- `--lossy` on its own is a usage error: it would read as protection the command never had.
+			- Retained malformed lines do not trip it - they survive the rewrite - so the refusal fires only where content would actually be deleted.
+			- design.md's justifying sentence was the false half and is rewritten; the spec and the readme now state the refusal.
+			- Pinned in `crosscheck.bash`, not the corpus: refusing leaves the file byte-identical, which only the write dimension's tree compare can see. That compare was itself blind to the exit code - a refusal and a no-op success looked alike - so it now carries the code too.
 
-		- 🔘 Code Review 20260817 item 9: piping a document into `set` throws it away.
+		- ✅ Code Review 20260817 item 9: piping a document into `set` throws it away.
 			- Reproduced: `cat app.shcl | shcl set - --set workers=99` prints only the new setting. The piped document is gone, exit code zero, nothing on stderr. Chaining two `set` calls loses the first.
 			- Cause: `-` means "read the document from stdin" on every other subcommand, and "empty base" on `set`, where stdin is reserved for the ops script. With `--set` given, stdin is never read.
 			- All four clis. Without `--set` the same command is loud and correct, so it is the combination that goes quiet.
 			- Fix: either make `set -` read the document like everything else and move the ops script to its own option, or make the quiet combination an error.
+			- Fixed as the first option, but without a new option for the ops script: `-` follows stdin. With the edits given as options no ops are read, so stdin carries the document the way it does on every other subcommand; only when stdin IS the ops script does `-` still mean an empty base. The two meanings never compete, so nothing that works today changes.
+			- Erroring instead was rejected: `set - --set a=1` to build a document from nothing is a legitimate use, and refusing it would leave no spelling at all for the piped case the item is about.
+			- Sniffing whether stdin is a terminal was also rejected - it would make the same command mean different things in a pipeline and interactively, which the corpus and the crosscheck could never pin.
+			- The one behavior change: `set - --set ...` with no redirection now waits on stdin at a terminal, exactly as `fmt -` and every other `-` already does. Redirect from /dev/null for an empty base.
+			- Both meanings pinned in `crosscheck.bash` (the piped document, and the ops script over an empty base). Help, spec and the `--layer=-` refusal wording updated to match.
 
-		- 🔘 Code Review 20260817 item 10: go accepts a non-text file as cleanly loaded.
+		- ✅ Code Review 20260817 item 10: go accepts a non-text file as cleanly loaded.
 			- The new file tier reports clean for a file that is not valid text, where the reference and python both report unreadable and hand back an empty document.
 			- Go's own status comment dropped the bad-encoding clause the other two keep, which reads as an omission rather than a decision.
 			- Values then come back mangled while the canonical form re-emits the original bytes, and a later save writes the mangled version.
 			- The cli is unaffected - it checks separately. Library only.
+			- Fixed in go, and in C, which had it too and the item did not name: neither read path validates, so both loaded a binary file clean. Rust's read-to-string and python's decoding open reject it for free.
+			- C's validator is its own copy rather than the cli's: that one also gates argv and the ops script, which exist with the file tier compiled out.
+			- Both status comments now carry the bad-encoding clause the other two kept. Pinned by the shared file-tier fixture in all four runners.
 
-		- 🔘 Code Review 20260817 item 11: the python file tier raises where it promises a status.
+		- ✅ Code Review 20260817 item 11: the python file tier raises where it promises a status.
 			- A path containing a null byte raises out of both load and save, which their own docstrings say cannot happen. The catch lists two exception types and the one that actually fires is a third.
 			- The reference returns unreadable and an error respectively, so a consumer porting the four-case handling gets an exception on python and a status everywhere else.
 			- Fix: add the missing type to both catch clauses.
+			- Fixed. The save half raised from the path resolution before any i/o, so that call is what got the guard rather than a catch clause.
+			- Pinned in the python runner only, not the shared fixture: a C path string cannot carry a NUL at all, so there is nothing to compare against.
 
-		- 🔘 Code Review 20260817 item 12: python accepts an integer the other bindings cannot express.
+		- ✅ Code Review 20260817 item 12: python accepts an integer the other bindings cannot express.
 			- Python has no fixed integer width, and the setter adds no range check, so a value beyond the 64-bit range writes happily and then reads back as bad-type - by every binding, including python itself.
 			- The cli already range-checks in the same situation. The library does not.
 			- Fix: range-check in the integer setters and return false, which is the failure channel they already have.
+			- Fixed in the scalar and array setters; the only-if-absent forms delegate to those, so all four are covered. The style guide already listed unbounded int as a banned shortcut - the rule existed, the setter just never applied it.
+			- Pinned in the python runner, including both in-range edges so the check cannot drift inward.
 
-		- 🔘 Code Review 20260817 item 13: the c++ date wrapper leaves the moved-from object pointing at freed memory.
+		- ✅ Code Review 20260817 item 13: the c++ date wrapper leaves the moved-from object pointing at freed memory.
 			- Both move operations rebind only the destination, so the source still points into the buffer the destination took, and reads from it after the destination dies.
 			- Short values hide it; a date with a long fractional part does not.
 			- Fix: rebind the source too. One line in each of the two operations.
+			- Fixed, and the invariant moved into the rebind helper itself rather than the two call sites: the view always describes this object's own storage, has_frac included, so a moved-from value can no longer format a fraction it no longer holds.
+			- Correction to the filing: the fraction is capped at nine digits, which fits the small-string buffer on the common implementations, so in practice this read a stale-but-live buffer rather than a freed one. Still wrong, still unspecified, and the fix is the same.
+			- The smoke test moved a value and only ever checked the destination, which is why it survived. It now checks the moved-from half of both operations.
 
-		- 🔘 Code Review 20260817 item 14: python can raise on a document at the documented depth limit.
+		- ✅ Code Review 20260817 item 14: python can raise on a document at the documented depth limit.
 			- The parse-side walks were deliberately made iterative because python's frame budget is small. The merge, clone, validate and resolve walks kept the reference's recursion.
 			- A document at the 512-level cap costs about 516 frames, so it succeeds from a shallow caller and raises from a deep one. The depth cap is documented as what makes a hostile document fail without crashing the consumer; on this binding it can crash the consumer.
 			- The partially merged base document is left mutated when it raises.
 			- Fix: convert the merge and clone walks to explicit stacks like the parse side, or document the requirement and raise something typed.
+			- Fixed the first way, which the parse and emit walks already set the precedent for. Clone became a node copy driven by a stack; overlay split into a driver and a one-level worker that returns the pairs still to merge.
+			- Deferring those pairs changes no result: each level's rebuild depends on nothing the deeper levels do, and a name that produces a pending pair is never one the rebuild replaces, so the base node it names survives. The walk stays depth-first and in order.
+			- Validate and resolve turned out not to need it - measured, not assumed. All four walks now survive a document at the cap from a caller 900 frames deep, where merge used to raise past about 485.
 
-		- 🔘 Code Review 20260817 item 15: the as-authored name does not resolve escapes, against the spec and its own three comments.
+		- ✅ Code Review 20260817 item 15: the as-authored name does not resolve escapes, against the spec and its own three comments.
 			- The spec and the doc comments in all four bindings say the name comes back with quotes and escapes resolved. Escapes are not resolved - a name written with an escaped tab comes back as a backslash and a "t".
 			- The value side does resolve escapes, so the two halves of the api disagree about what "as authored" means.
 			- New and unreleased, so settling it is free now and expensive after the cut. Pick one: resolve the escapes, or correct the spec and the three comments to say quotes only.
+			- Settled the second way: the docs were the wrong half. Names are never escape-processed anywhere - the spec's escape rule is a value rule, and a name is stored, compared, emitted and enumerated in its escaped spelling. Resolving in this one call would hand back a string that no longer names the node.
+			- Five comments, not three: rust, go, python, c and the c++ veneer. Spec corrected to say so explicitly, so the next reader does not re-open it.
+			- Pinned in all four runners, so a later pass cannot quietly flip it back.
+			- What this exposed is worth its own item, filed below: two names that differ only in escaping are different names, where the equivalent two values are the same string.
 
-		- 🔘 Code Review 20260817 item 16: small defects, batched.
+		- ✅ Code Review 20260817 item 16: small defects, batched.
 			- Python's merge docstring sits below the first statement, so it is an inert expression and the method has no documentation at all - the one method whose override rule most needs explaining.
 			- Go's error-count doc comment was split by an insertion, so the count function is undocumented and the lost-line count renders under the wrong name on the package page.
 			- Go flattens the underlying i/o error to text in three places, so a caller cannot tell a permission failure from a full disk without matching on the message. The directive is to wrap.
@@ -174,8 +202,17 @@ None open.
 			- The reference carries a dead byte-order-mark branch, with a comment describing behavior that only exists at the sibling site. Harmless, but it reads as a live invariant and will be copied.
 			- The c++ header uses two standard types without including their headers, and declares one status out-parameter uninitialized.
 			- One go doc line left at 146 columns where the rest of the block wraps at about 78.
+			- All seven fixed. The python docstring move needed care - the statement it sat below is the one that carries a merged layer's lost count forward, and dropping it would have silently disarmed the save gate on any merged document.
+			- The dead branch was the one under the bad-`*` line: that line begins with the `*` that got it there, so it can never also begin with a byte-order mark. Removed in all four, with the comment now pointing at the sibling site where the exception is real.
+			- Go's i/o failures wrap instead of flattening, so a caller can separate a permission failure from a full disk without matching on prose. Printed text is unchanged.
 
 	- **Improvements**:
+
+		- 🔘 Names compare by their escaped spelling, so two spellings of the same name are two names.
+			- Found while settling Code Review 20260817 item 15. A name authored `"q\"r"` is stored, matched and emitted with the backslash intact, so it is a different name from one authored `'q"r'` - while the same two spellings as VALUES are the same string, which the spec states outright for selectors.
+			- Not a bug against any current contract: every part of the name pipeline agrees, and item 15's fix documents it. But the two halves of the language disagree about what a quoted string means, and a consumer building a path from user text has to know which half it is in.
+			- `QuoteSegment` is the existing mitigation and does the right thing. The open question is whether names should resolve escapes like values do - which would move canonical output for an already-released spelling, so it is a major-version question, not a patch.
+			- Decide before the next major. Doing nothing is a defensible answer; leaving it unrecorded is not.
 
 		- 🔘 Code Review 20260817 item 17: the save gate's failure channel is wrong in three bindings.
 			- Python returns an error string, so `doc.save_file(path)` on its own line - the obvious spelling - silently does nothing when the gate fires and the program reports success. That is worse than the loss it prevents, because at least a lossy save leaves a file. It should raise.

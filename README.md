@@ -346,6 +346,8 @@ shcl fmt --write server.shcl
 shcl set --write server.shcl --set 'workers=8'
 ```
 
+An in-place write prints whatever the load found on stderr, and refuses outright when the load dropped a line the rewrite would delete - your typo does not cost you the line above it. `--lossy` is the way to say you meant it.
+
 `shcl help` covers the rest, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
 
 ## Example use-cases in your code

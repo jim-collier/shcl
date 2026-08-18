@@ -40,11 +40,12 @@ Usage:
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
-set edits FILE, the base document ('-' = empty base). Values go in as
-repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
-arrays work) options, which persist with --write; given either, no ops are read
-from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
-script on stdin, one op per line, tab-separated. Ops:
+set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE
+(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which
+persist with --write; given either, no ops are read from stdin. Raw blocks,
+set-only-if-absent and removal go in as a write-ops script on stdin, one op per
+line, tab-separated. FILE '-' follows stdin: the document when an option holds
+the edits, an empty base when the ops script has stdin instead. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -69,6 +70,10 @@ Options:
                                          a tab (per element, or per wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
+  --lossy                                (fmt/set) with --write, rewrite even
+                                         when the load dropped lines this write
+                                         would delete; without it the write
+                                         refuses and nothing is changed
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
@@ -94,6 +99,8 @@ the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
+An in-place write prints the load's diagnostics to stderr, and refuses when the
+load dropped content the rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
@@ -173,6 +180,7 @@ type opts struct {
 	onBad      string // error|default|flag
 	strictness shcl.Strictness
 	write      bool
+	lossy      bool
 	noBanner   bool
 	schema     string
 	layers     []string // lower-priority layers, in listed order
@@ -270,6 +278,9 @@ func parseOpts(argv []string) (*opts, error) {
 		case a == "--write" || a == "-w":
 			o.write = true
 			o.seen = append(o.seen, "--write")
+		case a == "--lossy":
+			o.lossy = true
+			o.seen = append(o.seen, "--lossy")
 		case a == "--no-banner":
 			o.noBanner = true
 			o.seen = append(o.seen, "--no-banner")
@@ -327,9 +338,9 @@ func checkOpts(cmd string, o *opts) int {
 	case "get":
 		allowed = []string{"--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal"}
 	case "set":
-		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--write"}
+		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy"}
 	case "fmt":
-		allowed = []string{"--write", "--strictness", "--layer", "--set", "--set-literal"}
+		allowed = []string{"--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal"}
 	case "check":
 		allowed = []string{"--strictness", "--schema"}
 	case "init":
@@ -366,11 +377,17 @@ func checkOpts(cmd string, o *opts) int {
 		fmt.Fprintln(os.Stderr, "--write cannot be combined with --set (see --help)")
 		return 1
 	}
+	// --lossy only overrides the in-place write's refusal, so on its own it says
+	// nothing and would read as protection the command never had.
+	if o.lossy && !o.write {
+		fmt.Fprintln(os.Stderr, "--lossy is only meaningful with --write (see --help)")
+		return 1
+	}
 	// The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" {
 		for _, l := range o.layers {
 			if l == "-" {
-				fmt.Fprintln(os.Stderr, "--layer=- is not valid for set (stdin carries the ops script)")
+				fmt.Fprintln(os.Stderr, "--layer=- is not valid for set (stdin carries the ops script or the document)")
 				return 1
 			}
 		}
@@ -402,14 +419,45 @@ func readInput(file string) (string, error) {
 func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
 	doc, err := shcl.ParseWith(text, strictness)
 	if err != nil {
-		le := err.(*shcl.LoadError)
-		for _, d := range le.Diagnostics {
-			fmt.Fprintf(os.Stderr, "line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+		// Checked form: this is the top-level error path, so a future error type
+		// here has to report rather than panic.
+		if le, ok := err.(*shcl.LoadError); ok {
+			for _, d := range le.Diagnostics {
+				fmt.Fprintf(os.Stderr, "line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+			}
 		}
-		fmt.Fprintln(os.Stderr, le.Error())
+		fmt.Fprintln(os.Stderr, err)
 		return nil, 6
 	}
 	return doc, 0
+}
+
+// writeBack is the in-place half of fmt/set. Overwriting the source is the one
+// place a recovered load turns destructive, so the diagnostics go out even
+// though the command succeeded, and the save runs through the library's own
+// gate rather than a second copy of the rule - the CLI and a consumer program
+// cannot then disagree about which rewrites are safe.
+func writeBack(doc *shcl.Document, file string, o *opts) int {
+	for _, d := range doc.Diagnostics() {
+		fmt.Fprintf(os.Stderr, "line %d: %s: %s %s\n", d.Line, d.Severity, d.Code, d.Message)
+	}
+	var werr error
+	if o.lossy {
+		werr = doc.SaveFileLossy(file)
+	} else {
+		werr = doc.SaveFile(file)
+	}
+	if werr == nil {
+		return 0
+	}
+	// The rule stays in the library; only the wording is the CLI's, because the
+	// override a user has here is a flag, not a function.
+	if !o.lossy && doc.LostCount() > 0 {
+		fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the load dropped %d line(s)/value(s) this write would delete (--lossy overrides)\n", file, doc.LostCount())
+	} else {
+		fmt.Fprintln(os.Stderr, werr)
+	}
+	return 1
 }
 
 // loadLayered loads file with o's lower-priority --layer files underneath and
@@ -619,15 +667,10 @@ func doFmt(o *opts) int {
 	if doc == nil {
 		return code
 	}
-	canonical := doc.ToCanonical()
 	if o.write {
-		if werr := shcl.WriteFileAtomic(file, canonical); werr != nil {
-			fmt.Fprintln(os.Stderr, werr)
-			return 1
-		}
-	} else {
-		fmt.Print(canonical)
+		return writeBack(doc, file, o)
 	}
+	fmt.Print(doc.ToCanonical())
 	return 0
 }
 
@@ -941,7 +984,10 @@ func doSet(o *opts) int {
 		fmt.Fprintln(os.Stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
-	// Base doc: '-' means an empty base, since stdin carries the ops script.
+	// Base doc: with the edits given as options no ops script is read, so a '-'
+	// file is the document on stdin the way it is everywhere else; only when
+	// stdin is the ops script does '-' mean an empty base. Reading neither threw
+	// a piped document away at exit 0.
 	// Any --layer files sit under it and --set overrides sit on top, before ops.
 	layerTexts := make([]string, 0, len(o.layers)+1)
 	for _, lf := range o.layers {
@@ -953,7 +999,7 @@ func doSet(o *opts) int {
 		layerTexts = append(layerTexts, t)
 	}
 	base := ""
-	if file != "-" {
+	if file != "-" || len(o.sets) > 0 {
 		t, err := readInput(file)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -1005,15 +1051,10 @@ func doSet(o *opts) int {
 			return 1
 		}
 	}
-	canonical := doc.ToCanonical()
 	if o.write {
-		if werr := shcl.WriteFileAtomic(file, canonical); werr != nil {
-			fmt.Fprintln(os.Stderr, werr)
-			return 1
-		}
-	} else {
-		fmt.Print(canonical)
+		return writeBack(doc, file, o)
 	}
+	fmt.Print(doc.ToCanonical())
 	return 0
 }
 
@@ -1030,7 +1071,9 @@ func doCheck(o *opts) int {
 	var diags []shcl.Diagnostic
 	strictFailed := false
 	if doc, perr := shcl.ParseWith(text, o.strictness); perr != nil {
-		diags = perr.(*shcl.LoadError).Diagnostics
+		if le, ok := perr.(*shcl.LoadError); ok {
+			diags = le.Diagnostics
+		}
 		strictFailed = true
 	} else {
 		diags = doc.Diagnostics()

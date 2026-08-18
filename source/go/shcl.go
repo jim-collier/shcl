@@ -1679,14 +1679,10 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			// Content-malformed at any position, so it is safe to retain
 			// verbatim as trivia: re-emitted, it re-diagnoses identically
 			// and can never read as a live binding. A hand-typo no longer
-			// vanishes on the consumer's next save. The one exception is a
-			// leading BOM - the file-start strip would rewrite it, so that
-			// line counts as lost instead.
-			if strings.HasPrefix(rest, "\ufeff") {
-				p.lost++
-			} else {
-				p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank})
-			}
+			// vanishes on the consumer's next save. The BOM exception the
+			// sibling site below carries cannot apply here: this line starts
+			// with the '*' that brought us in.
+			p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank})
 			i++
 			continue
 		}
@@ -1811,10 +1807,6 @@ func (d *Document) Diagnostics() []Diagnostic {
 	return d.diags
 }
 
-// ErrorCount is how many error-severity diagnostics the document carries - the
-// "did this file have errors?" predicate, so recover-and-continue can't read
-// as success by accident. Counts whatever Diagnostics() holds (after
-// LoadAndValidate, that includes validation errors).
 // LostCount is how many lines or values parsing dropped that canonical
 // output cannot re-emit - bad indentation, an unusable selector, a line past
 // the depth cap. Content-malformed lines do NOT count: those are retained as
@@ -1824,6 +1816,10 @@ func (d *Document) LostCount() int {
 	return d.lost
 }
 
+// ErrorCount is how many error-severity diagnostics the document carries - the
+// "did this file have errors?" predicate, so recover-and-continue can't read
+// as success by accident. Counts whatever Diagnostics() holds (after
+// LoadAndValidate, that includes validation errors).
 func (d *Document) ErrorCount() int {
 	n := 0
 	for _, dg := range d.diags {
@@ -2118,7 +2114,8 @@ func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic 
 }
 
 // WriteFileAtomic is the file tier's write mechanism (also what the CLI's
-// `--write` uses): a temp file in the same dir, then a rename over the target, so an interrupted write can never truncate the config it rewrites.
+// `--write` uses): a temp file in the same dir, then a rename over the
+// target, so an interrupted write can never truncate the config it rewrites.
 // The data is synced before the rename so a crash cannot publish an empty file.
 //
 // A rename publishes a new inode, so the target is resolved through symlinks
@@ -2126,6 +2123,8 @@ func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic 
 // real one is left stale) and the original's mode is copied onto the temp file
 // (otherwise a 600 config comes back at whatever the umask allows). Other hard
 // links to the old inode cannot survive a rename and keep the old content.
+// The i/o failures wrap rather than flatten, so a caller can tell a permission
+// failure from a full disk with errors.Is instead of matching on prose.
 func WriteFileAtomic(file, data string) error {
 	// EvalSymlinks fails when the target does not exist yet; that is a plain
 	// create, so the path as given is already the right one.
@@ -2154,7 +2153,7 @@ func WriteFileAtomic(file, data string) error {
 		last = oerr
 	}
 	if f == nil {
-		return fmt.Errorf("%s: cannot create temporary file: %s", file, last)
+		return fmt.Errorf("%s: cannot create temporary file: %w", file, last)
 	}
 	// On the handle, so umask cannot narrow it the way it narrows a create
 	// mode. Best effort: a filesystem that cannot carry the mode is not a
@@ -2171,11 +2170,11 @@ func WriteFileAtomic(file, data string) error {
 	f.Close()
 	if err != nil {
 		os.Remove(tmp)
-		return fmt.Errorf("%s: %s", file, err)
+		return fmt.Errorf("%s: %w", file, err)
 	}
 	if rerr := os.Rename(tmp, target); rerr != nil {
 		os.Remove(tmp)
-		return fmt.Errorf("%s: %s", file, rerr)
+		return fmt.Errorf("%s: %w", file, rerr)
 	}
 	return nil
 }
@@ -2189,7 +2188,7 @@ const (
 	FileClean      FileStatus = iota // read and parsed, no error diagnostics (hints allowed)
 	FileHadErrors                    // read and parsed, but error diagnostics are present
 	FileNotFound                     // no file at the path
-	FileUnreadable                   // exists but could not be read (permissions, a directory)
+	FileUnreadable                   // exists but could not be read (permissions, a directory, bad encoding)
 )
 
 // LoadFile is the file tier's load half: read and parse path at Standard.
@@ -2211,6 +2210,13 @@ func LoadFileWith(path string, level Strictness) (*Document, FileStatus) {
 			st = FileNotFound
 		}
 		return newParser().parse("", level), st
+	}
+	// Reading succeeds on any bytes here, unlike the reference's read-to-string
+	// and python's decoding open - so bad encoding needs its own test, or a
+	// binary file loads Clean, reads back mangled, and a later save writes the
+	// mangled version over the original.
+	if !utf8.Valid(data) {
+		return newParser().parse("", level), FileUnreadable
 	}
 	doc := newParser().parse(string(data), level)
 	for _, d := range doc.diags {
@@ -2611,11 +2617,13 @@ func (d *Document) Line(path string) int {
 }
 
 // SourceName is the field name at a path exactly as the author spelled it
-// (case unfolded, quotes and escapes resolved), so a message can echo
-// `SYMBOLS` when the file said SYMBOLS. Resolution mirrors Line(): empty when
-// the path does not resolve to exactly one node. Merged instances keep the
-// first binding's spelling; a writer-built node keeps the spelling the
-// setter's path used.
+// (case unfolded, outer quotes stripped), so a message can echo `SYMBOLS` when
+// the file said SYMBOLS. Escape sequences stay as written: names carry their
+// escaped spelling everywhere - stored, compared, emitted, and in Paths() - so
+// resolving them here alone would hand back a string that no longer names the
+// node. Resolution mirrors Line(): empty when the path does not resolve to
+// exactly one node. Merged instances keep the first binding's spelling; a
+// writer-built node keeps the spelling the setter's path used.
 func (d *Document) SourceName(path string) string {
 	r, ok := d.resolve(path)
 	if !ok || r.kind != resOne {

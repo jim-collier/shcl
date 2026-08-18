@@ -6,7 +6,7 @@
 
 use shcl::{
 	Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime,
-	suppress_declared_reopens, suppress_declared_repeats, write_file_atomic,
+	suppress_declared_reopens, suppress_declared_repeats,
 };
 use std::process::ExitCode;
 
@@ -31,11 +31,12 @@ Usage:
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
-set edits FILE, the base document ('-' = empty base). Values go in as
-repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
-arrays work) options, which persist with --write; given either, no ops are read
-from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
-script on stdin, one op per line, tab-separated. Ops:
+set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE
+(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which
+persist with --write; given either, no ops are read from stdin. Raw blocks,
+set-only-if-absent and removal go in as a write-ops script on stdin, one op per
+line, tab-separated. FILE '-' follows stdin: the document when an option holds
+the edits, an empty base when the ops script has stdin instead. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -60,6 +61,10 @@ Options:
                                          a tab (per element, or per wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
+  --lossy                                (fmt/set) with --write, rewrite even
+                                         when the load dropped lines this write
+                                         would delete; without it the write
+                                         refuses and nothing is changed
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
@@ -85,6 +90,8 @@ the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
+An in-place write prints the load's diagnostics to stderr, and refuses when the
+load dropped content the rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
@@ -166,6 +173,7 @@ struct Opts {
 	on_bad: String, // error|default|flag
 	strictness: Strictness,
 	write: bool,
+	lossy: bool,
 	no_banner: bool,
 	schema: Option<String>,
 	layers: Vec<String>,     // lower-priority layers, in listed order
@@ -209,6 +217,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		on_bad: "flag".into(),
 		strictness: Strictness::Standard,
 		write: false,
+		lossy: false,
 		no_banner: false,
 		schema: None,
 		layers: Vec::new(),
@@ -242,6 +251,10 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			"--write" | "-w" => {
 				o.write = true;
 				o.seen.push("--write");
+			}
+			"--lossy" => {
+				o.lossy = true;
+				o.seen.push("--lossy");
 			}
 			"--no-banner" => {
 				o.no_banner = true;
@@ -343,9 +356,11 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			"--set",
 			"--set-literal",
 			"--write",
+			"--lossy",
 		],
 		"fmt" => &[
 			"--write",
+			"--lossy",
 			"--strictness",
 			"--layer",
 			"--set",
@@ -378,9 +393,15 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		eprintln!("--write cannot be combined with --set (see --help)");
 		return Err(1);
 	}
+	// --lossy only overrides the in-place write's refusal, so on its own it says
+	// nothing and would read as protection the command never had.
+	if o.lossy && !o.write {
+		eprintln!("--lossy is only meaningful with --write (see --help)");
+		return Err(1);
+	}
 	// The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" && o.layers.iter().any(|l| l == "-") {
-		eprintln!("--layer=- is not valid for set (stdin carries the ops script)");
+		eprintln!("--layer=- is not valid for set (stdin carries the ops script or the document)");
 		return Err(1);
 	}
 	Ok(())
@@ -416,6 +437,42 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 		}
 	}
 	Ok(doc)
+}
+
+/// The in-place half of `fmt`/`set`. Overwriting the source is the one place a
+/// recovered load turns destructive, so the diagnostics go out even though the
+/// command succeeded, and the save runs through the library's own gate rather
+/// than a second copy of the rule - the CLI and a consumer program cannot then
+/// disagree about which rewrites are safe.
+fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
+	for d in doc.diagnostics() {
+		eprintln!(
+			"line {}: {:?}: {} {}",
+			d.line, d.severity, d.code, d.message
+		);
+	}
+	let r = if o.lossy {
+		doc.save_file_lossy(file)
+	} else {
+		doc.save_file(file)
+	};
+	match r {
+		Ok(()) => 0,
+		Err(e) => {
+			// The rule stays in the library; only the wording is the CLI's,
+			// because the override a user has here is a flag, not a function.
+			if !o.lossy && doc.lost_count() > 0 {
+				eprintln!(
+					"{}: refusing to rewrite: the load dropped {} line(s)/value(s) this write would delete (--lossy overrides)",
+					file,
+					doc.lost_count()
+				);
+			} else {
+				eprintln!("{}", e);
+			}
+			1
+		}
+	}
 }
 
 fn read_input(file: &str) -> Result<String, String> {
@@ -617,18 +674,14 @@ fn do_fmt(o: &Opts) -> u8 {
 		eprintln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	let canonical = match load_layered(o, file) {
-		Ok(d) => d.to_canonical(),
+	let doc = match load_layered(o, file) {
+		Ok(d) => d,
 		Err(code) => return code,
 	};
 	if o.write {
-		if let Err(e) = write_file_atomic(file, &canonical) {
-			eprintln!("{}", e);
-			return 1;
-		}
-	} else {
-		print!("{}", canonical);
+		return write_back(&doc, file, o);
 	}
+	print!("{}", doc.to_canonical());
 	0
 }
 
@@ -759,7 +812,10 @@ fn do_set(o: &Opts) -> u8 {
 		eprintln!("set --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	// Base doc: '-' means an empty base, since stdin carries the ops script.
+	// Base doc: with the edits given as options no ops script is read, so a '-'
+	// file is the document on stdin the way it is everywhere else; only when
+	// stdin is the ops script does '-' mean an empty base. Reading neither threw
+	// a piped document away at exit 0.
 	// Any --layer files sit under it and --set overrides sit on top, before ops.
 	let mut layer_texts: Vec<String> = Vec::new();
 	for lf in &o.layers {
@@ -771,7 +827,7 @@ fn do_set(o: &Opts) -> u8 {
 			}
 		}
 	}
-	let base_text = if file == "-" {
+	let base_text = if file == "-" && o.sets.is_empty() {
 		String::new()
 	} else {
 		match read_input(file) {
@@ -818,15 +874,10 @@ fn do_set(o: &Opts) -> u8 {
 			return 1;
 		}
 	}
-	let canonical = doc.to_canonical();
 	if o.write {
-		if let Err(e) = write_file_atomic(file, &canonical) {
-			eprintln!("{}", e);
-			return 1;
-		}
-	} else {
-		print!("{}", canonical);
+		return write_back(&doc, file, o);
 	}
+	print!("{}", doc.to_canonical());
 	0
 }
 

@@ -579,6 +579,14 @@ int main(int argc, char **argv) {
 		sn = shcl_source_name(nd, "newtop", 6);
 		if (sn.n != 6 || memcmp(sn.p, "NewTop", 6) != 0) fail("source_name", "newtop spelling mismatch");
 		shcl_free(nd);
+		// Escapes are NOT resolved: a name is stored, compared and emitted in
+		// its escaped spelling, so resolving here would name a node that does
+		// not exist.
+		const char *et = "\"Ab\\tCd\": 2\n";
+		shcl_doc *ed = shcl_parse(et, strlen(et));
+		sn = shcl_source_name(ed, "\"ab\\tcd\"", 8);
+		if (sn.n != 6 || memcmp(sn.p, "Ab\\tCd", 6) != 0) fail("source_name", "escaped spelling mismatch");
+		shcl_free(ed);
 	}
 	// load_file/save_file: the status separates absent / unreadable / parsed
 	// with errors / clean, and a save round-trips through the atomic write.
@@ -595,6 +603,17 @@ int main(int argc, char **argv) {
 		fd = shcl_load_file(tdir, &fst); // a directory is not readable
 		if (fst != SHCL_FILE_UNREADABLE) fail("file_tier", "directory status");
 		shcl_free(fd);
+		// Bad encoding is unreadable too: the parser assumes well-formed text, so a
+		// binary file loading clean would read back mangled and a later save would
+		// write the mangled version over the original.
+		{
+			FILE *bf = fopen(tfile, "wb");
+			if (!bf || fputs("a: 1\nb: \xff\xfe bad\n", bf) == EOF || fclose(bf) != 0) fail("file_tier", "seed write failed");
+			fd = shcl_load_file(tfile, &fst);
+			if (fst != SHCL_FILE_UNREADABLE) fail("file_tier", "bad encoding status");
+			if (shcl_to_canonical(fd).n != 0) fail("file_tier", "bad encoding document");
+			shcl_free(fd);
+		}
 		FILE *tf = fopen(tfile, "wb");
 		if (!tf || fputs("a: 1\n: broken\n", tf) == EOF || fclose(tf) != 0) fail("file_tier", "seed write failed");
 		fd = shcl_load_file(tfile, &fst);

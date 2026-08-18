@@ -38,11 +38,12 @@ Usage:
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
-set edits FILE, the base document ('-' = empty base). Values go in as
-repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
-arrays work) options, which persist with --write; given either, no ops are read
-from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
-script on stdin, one op per line, tab-separated. Ops:
+set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE
+(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which
+persist with --write; given either, no ops are read from stdin. Raw blocks,
+set-only-if-absent and removal go in as a write-ops script on stdin, one op per
+line, tab-separated. FILE '-' follows stdin: the document when an option holds
+the edits, an empty base when the ops script has stdin instead. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -67,6 +68,10 @@ Options:
                                          a tab (per element, or per wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
+  --lossy                                (fmt/set) with --write, rewrite even
+                                         when the load dropped lines this write
+                                         would delete; without it the write
+                                         refuses and nothing is changed
   --strictness=loose|standard|strict     or 1|2|3 (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
@@ -92,6 +97,8 @@ the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
+An in-place write prints the load's diagnostics to stderr, and refuses when the
+load dropped content the rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
@@ -150,7 +157,7 @@ class _SetOpt:
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "no_banner", "schema", "layers", "sets", "args", "seen")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "lossy", "no_banner", "schema", "layers", "sets", "args", "seen")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -161,6 +168,7 @@ class _Opts:
 		self.strictness = shcl.Strictness.Standard
 		self.schema = None
 		self.write = False
+		self.lossy = False
 		self.no_banner = False
 		self.layers = []         # lower-priority layers, in listed order
 		self.sets = []           # final override layer: _SetOpt, in the order given
@@ -253,6 +261,9 @@ def parse_opts(argv):
 		elif a in ("--write", "-w"):
 			o.write = True
 			o.seen.append("--write")
+		elif a == "--lossy":
+			o.lossy = True
+			o.seen.append("--lossy")
 		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal"):
 			i += 1
 			if i >= len(argv):
@@ -305,6 +316,26 @@ def load_doc(text, strictness):
 		return None, 6
 
 
+def write_back(doc, file, o):
+	# The in-place half of fmt/set. Overwriting the source is the one place a
+	# recovered load turns destructive, so the diagnostics go out even though the
+	# command succeeded, and the save runs through the library's own gate rather
+	# than a second copy of the rule - the CLI and a consumer program cannot then
+	# disagree about which rewrites are safe.
+	for d in doc.diagnostics():
+		sys.stderr.write("line {}: {}: {} {}\n".format(d.line, d.severity.name, d.code, d.message))
+	err = doc.save_file_lossy(file) if o.lossy else doc.save_file(file)
+	if err is None:
+		return 0
+	# The rule stays in the library; only the wording is the CLI's, because the
+	# override a user has here is a flag, not a function.
+	if not o.lossy and doc.lost_count() > 0:
+		sys.stderr.write("{}: refusing to rewrite: the load dropped {} line(s)/value(s) this write would delete (--lossy overrides)\n".format(file, doc.lost_count()))
+	else:
+		sys.stderr.write(err + "\n")
+	return 1
+
+
 def load_layered(o, file):
 	# Load file with o's lower-priority --layer files underneath and its --set
 	# overrides on top - the layered-load fold. Every layer parses at the
@@ -336,9 +367,9 @@ def check_opts(cmd, o):
 	if cmd == "get":
 		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal")
 	elif cmd == "set":
-		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--write")
+		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy")
 	elif cmd == "fmt":
-		allowed = ("--write", "--strictness", "--layer", "--set", "--set-literal")
+		allowed = ("--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal")
 	elif cmd == "check":
 		allowed = ("--strictness", "--schema")
 	elif cmd == "init":
@@ -364,9 +395,14 @@ def check_opts(cmd, o):
 	if o.write and o.sets and cmd != "set":
 		sys.stderr.write("--write cannot be combined with --set (see --help)\n")
 		return 1
+	# --lossy only overrides the in-place write's refusal, so on its own it says
+	# nothing and would read as protection the command never had.
+	if o.lossy and not o.write:
+		sys.stderr.write("--lossy is only meaningful with --write (see --help)\n")
+		return 1
 	# The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" and any(lf == "-" for lf in o.layers):
-		sys.stderr.write("--layer=- is not valid for set (stdin carries the ops script)\n")
+		sys.stderr.write("--layer=- is not valid for set (stdin carries the ops script or the document)\n")
 		return 1
 	return None
 
@@ -500,14 +536,9 @@ def do_fmt(o):
 		return 1
 	if doc is None:
 		return code
-	canonical = doc.to_canonical()
 	if o.write:
-		err = shcl.write_file_atomic(file, canonical)
-		if err is not None:
-			sys.stderr.write(err + "\n")
-			return 1
-	else:
-		sys.stdout.write(canonical)
+		return write_back(doc, file, o)
+	sys.stdout.write(doc.to_canonical())
 	return 0
 
 
@@ -680,11 +711,14 @@ def do_set(o):
 	if o.write and file == "-":
 		sys.stderr.write("set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
-	# Base doc: '-' means an empty base, since stdin carries the ops script.
+	# Base doc: with the edits given as options no ops script is read, so a '-'
+	# file is the document on stdin the way it is everywhere else; only when
+	# stdin is the ops script does '-' mean an empty base. Reading neither threw
+	# a piped document away at exit 0.
 	# Any --layer files sit under it and --set overrides sit on top, before ops.
 	try:
 		layer_texts = [read_input(lf) for lf in o.layers]
-		base = "" if file == "-" else read_input(file)
+		base = "" if file == "-" and not o.sets else read_input(file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
@@ -721,14 +755,9 @@ def do_set(o):
 		except ValueError as e:
 			sys.stderr.write("op line {}: {}\n".format(n + 1, e))
 			return 1
-	canonical = doc.to_canonical()
 	if o.write:
-		err = shcl.write_file_atomic(file, canonical)
-		if err is not None:
-			sys.stderr.write(err + "\n")
-			return 1
-	else:
-		sys.stdout.write(canonical)
+		return write_back(doc, file, o)
+	sys.stdout.write(doc.to_canonical())
 	return 0
 
 

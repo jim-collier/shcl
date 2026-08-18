@@ -136,14 +136,14 @@ fCompareWrite(){
 	local want got b name cli root target
 	root="${tmpDir}/write-${refName}"; rm -rf "$root"; mkdir -p "$root"
 	target="$("$fixture" "$root")"
-	fRun "$refCli" "$@" "$target" >/dev/null
-	want="$(fWriteState "$root")"
+	# The exit code rides along: a write that refuses leaves the tree alone, so
+	# the state compare alone cannot tell a refusal from a no-op success.
+	want="$(fRun "$refCli" "$@" "$target")$(fWriteState "$root")"
 	for b in "${bindings[@]:1}"; do
 		name="${b%%|*}"; cli="${b#*|}"
 		root="${tmpDir}/write-${name}"; rm -rf "$root"; mkdir -p "$root"
 		target="$("$fixture" "$root")"
-		fRun "$cli" "$@" "$target" >/dev/null
-		got="$(fWriteState "$root")"
+		got="$(fRun "$cli" "$@" "$target")$(fWriteState "$root")"
 		nCompared+=1
 		if [[ "$got" != "$want" ]]; then
 			nBad+=1
@@ -194,6 +194,9 @@ fComparePlant(){
 fFixMode(){    printf 'a:  1\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
 fFixSymlink(){ mkdir -p "$1/real"; printf 'a:  1\n' >"$1/real/c.shcl"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.shcl"; }
 fFixHardlink(){ printf 'a:  1\n' >"$1/c.shcl"; ln "$1/c.shcl" "$1/other.shcl"; echo "$1/c.shcl"; }
+##	A load that dropped a line canonical output cannot re-emit (a BOM-led one),
+##	so the in-place write is the destructive case the save gate exists for.
+fFixLost(){    printf 'a:  1\n\xef\xbb\xbfb: 2\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
 
 ##	Map one reads.tsv row to a CLI call. Columns: query, type, expected, status,
 ##	optional level. expected/status are the corpus contract (each binding's own
@@ -325,6 +328,15 @@ fCompareWrite "write follows symlink" fFixSymlink fmt --write
 fCompareWrite "write breaks hard link" fFixHardlink fmt --write
 fComparePlant "write refuses a planted temp" fmt --write
 
+# The save gate, from the CLI side. Refusing leaves the file byte-identical, so
+# the tree compare is what sees it; --lossy is the only way past.
+fCompareWrite "write refuses to drop a line" fFixLost fmt --write
+fCompareWrite "write --lossy drops it anyway" fFixLost fmt --write --lossy
+fCompareWrite "set --write refuses to drop a line" fFixLost set --write --set a=2
+fCompareWrite "set --write --lossy drops it anyway" fFixLost set --write --lossy --set a=2
+fCompare "--lossy needs --write" fmt --lossy missing.shcl
+fCompare "--lossy is not valid for get" get --lossy missing.shcl a
+
 # `set --write --set` persists edits given as options and reads no ops from
 # stdin, so nothing here feeds one. The gates around it are pinned too: --layer
 # still cannot be written back anywhere, and --set stays ephemeral off 'set'.
@@ -332,6 +344,13 @@ fCompareWrite "set --write applies --set" fFixMode set --write --set a=2
 fCompareWrite "set --write --set adds a path" fFixMode set --write --set b.c=hello
 fCompare "set --write rejects --layer" set --write --layer=missing.shcl missing.shcl
 fCompare "fmt --write rejects --set" fmt --write --set a=1 missing.shcl
+
+# `set -` follows stdin, so the same spelling means two things and both are
+# pinned: the piped document when an option holds the edits, an empty base when
+# stdin is the ops script instead.
+printf 'int\tx\t7\n' >"${tmpDir}/emptybase.ops"
+fCompareStdin "set - reads the piped document" project/conformance/044-write-literal/input.shcl set - --set b=2
+fCompareStdin "set - is an empty base for ops" "${tmpDir}/emptybase.ops" set -
 
 # --set-literal takes value syntax, so the same text lands as an array where
 # --set stores one quoted string; the pair is compared to pin that difference.

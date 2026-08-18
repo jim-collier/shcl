@@ -133,6 +133,14 @@ int main() {
 	CHECK(copied.value.str() == outlives.value.str());
 	auto moved = std::move(copied);
 	CHECK(moved.value.str() == outlives.value.str());
+	// The moved-from half is the half that used to be wrong: it kept a view into
+	// the digits it had just handed away, so it formatted a fraction it no longer
+	// held. Reading it is legal - unspecified value, not undefined behavior.
+	CHECK(copied.value.str() == "2026-08-02T10:20:30Z");
+	shcl::Datetime target;
+	target = std::move(moved.value);
+	CHECK(target.str() == outlives.value.str());
+	CHECK(moved.value.str() == "2026-08-02T10:20:30Z");
 
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");

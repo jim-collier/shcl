@@ -323,6 +323,14 @@ def _literal_value(text):
 	return _parse_cell(v)
 
 
+def _fits_i64(v):
+	# Python's int is unbounded, the other three bindings' are 64-bit. Text for a
+	# value outside that range reads back bad-type in every binding, python
+	# included, so a setter refuses it rather than writing a value nothing can
+	# read. Same range-check the CLI already does on its side.
+	return -(1 << 63) <= v <= (1 << 63) - 1
+
+
 def _cell_of(text):
 	return _cell([_Element(text, False)])
 
@@ -1349,13 +1357,10 @@ class _Parser:
 				# Content-malformed at any position, so it is safe to retain
 				# verbatim as trivia: re-emitted, it re-diagnoses identically
 				# and can never read as a live binding. A hand-typo no longer
-				# vanishes on the consumer's next save. The one exception is a
-				# leading BOM - the file-start strip would rewrite it, so that
-				# line counts as lost instead.
-				if rest.startswith("\ufeff"):
-					self.lost += 1
-				else:
-					self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
+				# vanishes on the consumer's next save. The BOM exception the
+				# sibling site below carries cannot apply here: this line
+				# starts with the '*' that brought us in.
+				self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
 				i += 1
 				continue
 			# Field line.
@@ -1486,7 +1491,9 @@ class Document:
 				text = f.read()
 		except FileNotFoundError:
 			return _Parser().parse("", strictness), FileStatus.NotFound
-		except (OSError, UnicodeDecodeError):
+		except (OSError, UnicodeDecodeError, ValueError):
+			# ValueError is not decorative: a NUL in the path raises it rather
+			# than an OSError, and this call promises a status, never a throw.
 			return _Parser().parse("", strictness), FileStatus.Unreadable
 		doc = _Parser().parse(text, strictness)
 		if any(d.severity == Severity.Error for d in doc.diags):
@@ -1804,11 +1811,14 @@ class Document:
 
 	def source_name(self, path):
 		"""The field name at a path exactly as the author spelled it (case
-		unfolded, quotes and escapes resolved), so a message can echo `SYMBOLS`
-		when the file said SYMBOLS. Resolution mirrors line(): empty when the
-		path does not resolve to exactly one node. Merged instances keep the
-		first binding's spelling; a writer-built node keeps the spelling the
-		setter's path used."""
+		unfolded, outer quotes stripped), so a message can echo `SYMBOLS` when
+		the file said SYMBOLS. Escape sequences stay as written: names carry
+		their escaped spelling everywhere - stored, compared, emitted, and in
+		paths() - so resolving them here alone would hand back a string that no
+		longer names the node. Resolution mirrors line(): empty when the path
+		does not resolve to exactly one node. Merged instances keep the first
+		binding's spelling; a writer-built node keeps the spelling the setter's
+		path used."""
 		r = self._resolve(path)
 		if r[0] == "one":
 			return self.arena[r[1]].name_src
@@ -2053,6 +2063,8 @@ class Document:
 		return True
 
 	def set_int(self, path, v):
+		if not _fits_i64(v):
+			return False
 		return self._set_value(path, _cell_of(str(v)))
 
 	def set_float(self, path, v):
@@ -2075,6 +2087,8 @@ class Document:
 		return self._set_value(path, _empty())
 
 	def set_int_array(self, path, v):
+		if not all(_fits_i64(x) for x in v):
+			return False
 		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	def set_float_array(self, path, v):
@@ -2166,7 +2180,6 @@ class Document:
 	# ----- layered loading: overlay a higher-priority document -----
 
 	def merge(self, over):
-		self._lost += over._lost
 		"""Overlay `over` (a higher-priority layer) onto self (the lower one).
 		Container instances merge by (name, value) exactly like the in-file rule;
 		a leaf name present in `over` replaces self's same-named children at that
@@ -2175,6 +2188,7 @@ class Document:
 		instead of wiping. over-only nodes are appended. Comment trivia rides
 		with each node. Load(defaults, site, user) is a left fold of this: each
 		later file overlaid on the earlier ones."""
+		self._lost += over._lost
 		self._overlay(ROOT, over, ROOT)
 		# Layers commonly share a footer; keeping one copy of each keeps a
 		# stack of files from repeating it once per layer.
@@ -2203,6 +2217,17 @@ class Document:
 		self.arena[base].inside.extend(_Lead(c.text, c.blank_before) for c in src.inside)
 
 	def _overlay(self, base_parent, over, over_parent):
+		"""Explicit stack rather than recursion, for the same reason _clone_subtree
+		uses one. Each level's rebuild depends on nothing the deeper levels do, so
+		deferring them changes no result; the walk stays depth-first and in order."""
+		stack = [(base_parent, over_parent)]
+		while stack:
+			bp, op = stack.pop()
+			stack.extend(reversed(self._overlay_level(bp, over, op)))
+
+	def _overlay_level(self, base_parent, over, over_parent):
+		"""One level of the overlay. Returns the (base, over) pairs whose subtrees
+		still have to be merged, in order."""
 		over_kids = list(over.arena[over_parent].children)
 		# Over side: name -> node bucket, in first-appearance order.
 		order = []
@@ -2233,6 +2258,7 @@ class Document:
 		# instances, and replaced names base never had) keeps processing order.
 		replace = {}
 		appended = []
+		pending = []
 		for name in order:
 			group = groups[name]
 			over_leafy = all(not over.arena[k].children for k in group)
@@ -2250,11 +2276,13 @@ class Document:
 					b = by_key.get((name, okey))
 					if b is not None:
 						self._adopt_trivia(b, over, ok)
-						self._overlay(b, over, ok)
+						# A name that reaches here is never in `replace`, so `b`
+						# survives the rebuild below and can wait for it.
+						pending.append((b, ok))
 					else:
 						appended.append(self._clone_subtree(over, ok, base_parent))
 		if not replace and not appended:
-			return
+			return pending
 		# Rebuild once: each replaced group lands at its name's first original
 		# position (dropped nodes stay in the arena, unreferenced - reads and
 		# emit walk children from the root), appends go at the end.
@@ -2270,9 +2298,30 @@ class Document:
 				new_kids.extend(clones)
 		new_kids.extend(appended)
 		self.arena[base_parent].children = new_kids
+		return pending
 
 	def _clone_subtree(self, over, oi, parent):
-		"""Deep-copy `over`'s subtree at `oi` into self's arena under `parent`."""
+		"""Deep-copy `over`'s subtree at `oi` into self's arena under `parent`.
+		Explicit stack rather than recursion, for the same reason the parse and
+		emit walks are iterative: python's frame budget is small enough that a
+		document at the documented depth cap can exhaust it from an already-deep
+		caller, and a raise part-way through leaves the base document mutated."""
+		root = self._clone_node(over, oi, parent)
+		stack = [(oi, root)]
+		while stack:
+			si, di = stack.pop()
+			# Children are pushed reversed so they pop in source order; each
+			# appends to its own parent, so sibling order is preserved.
+			kids = []
+			for ok in over.arena[si].children:
+				ci = self._clone_node(over, ok, di)
+				self.arena[di].children.append(ci)
+				kids.append((ok, ci))
+			stack.extend(reversed(kids))
+		return root
+
+	def _clone_node(self, over, oi, parent):
+		"""One node of _clone_subtree: everything but the children."""
 		src = over.arena[oi]
 		# Copy the value too - sharing the object (and its element list) with
 		# `over` would break the promise that the clone survives its release.
@@ -2293,9 +2342,6 @@ class Document:
 		node.src = src.src
 		idx = len(self.arena)
 		self.arena.append(node)
-		for ok in list(over.arena[oi].children):
-			c = self._clone_subtree(over, ok, idx)
-			self.arena[idx].children.append(c)
 		return idx
 
 	# ----- accessor: typed reads -----
@@ -2871,7 +2917,13 @@ def write_file_atomic(file, data):
 	# real one is left stale) and the original's mode is copied onto the temp file
 	# (otherwise a 600 config comes back at whatever the umask allows). Other hard
 	# links to the old inode cannot survive a rename and keep the old content.
-	target = os.path.realpath(file)
+	# Resolving the path can raise before any I/O is attempted - a NUL in it
+	# raises ValueError, not OSError - and the contract here is a returned
+	# message, never a throw.
+	try:
+		target = os.path.realpath(file)
+	except ValueError as e:
+		return "{}: {}".format(file, e)
 	d = os.path.dirname(target)
 	if d == "":
 		d = "."

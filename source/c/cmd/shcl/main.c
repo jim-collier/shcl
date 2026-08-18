@@ -58,11 +58,12 @@ static const char *HELP =
 	"  shcl about | donate                    what shcl is, or how to support it\n"
 	"                                         (also --about, --donate)\n"
 	"\n"
-	"set edits FILE, the base document ('-' = empty base). Values go in as\n"
-	"repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so\n"
-	"arrays work) options, which persist with --write; given either, no ops are read\n"
-	"from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops\n"
-	"script on stdin, one op per line, tab-separated. Ops:\n"
+	"set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE\n"
+	"(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which\n"
+	"persist with --write; given either, no ops are read from stdin. Raw blocks,\n"
+	"set-only-if-absent and removal go in as a write-ops script on stdin, one op per\n"
+	"line, tab-separated. FILE '-' follows stdin: the document when an option holds\n"
+	"the edits, an empty base when the ops script has stdin instead. Ops:\n"
 	"  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar\n"
 	"  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array\n"
 	"  <type>[-array]-default<TAB>...                          set only if absent\n"
@@ -87,6 +88,10 @@ static const char *HELP =
 	"                                         a tab (per element, or per wildcard slot)\n"
 	"  --no-banner                            (init) leave out the footer naming the\n"
 	"                                         format and pointing at its spec\n"
+	"  --lossy                                (fmt/set) with --write, rewrite even\n"
+	"                                         when the load dropped lines this write\n"
+	"                                         would delete; without it the write\n"
+	"                                         refuses and nothing is changed\n"
 	"  --strictness=loose|standard|strict     or 1|2|3 (default standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
 	"                                         schema; adds V### diagnostics\n"
@@ -112,6 +117,8 @@ static const char *HELP =
 	"so --default --int reads --int as the default. Use -- to end the options when a\n"
 	"FILE or PATH begins with a dash.\n"
 	"An option a subcommand does not use is a usage error, not ignored.\n"
+	"An in-place write prints the load's diagnostics to stderr, and refuses when the\n"
+	"load dropped content the rewrite would delete (--lossy overrides).\n"
 	"FILE may be '-' for stdin. With --layer, FILE is the highest file layer and\n"
 	"each --layer is merged under it in order; --set applies last. 'fmt' with\n"
 	"layers prints the merged canonical document.\n"
@@ -151,6 +158,7 @@ typedef struct {
 	const char *on_bad;       // error|default|flag
 	shcl_strictness strictness;
 	int write;
+	int lossy;
 	int no_banner;
 	const char *schema;       // NULL if unset
 	const char **layers; int nlayers; // lower-priority layers, in listed order (unbounded)
@@ -358,14 +366,28 @@ static int do_get(Opts *o) {
 	free(lines); layered_free(&L); return rc;
 }
 
-// The atomic write itself lives in the library (shcl_write_file_atomic); the
-// CLI adds the error report and its 0-ok/1-fail exit convention.
-static int write_atomic(const char *file, const char *data, size_t n) {
-	if (!shcl_write_file_atomic(file, data, n)) {
-		fprintf(stderr, "%s: %s\n", file, strerror(errno));
-		return 1;
+// The in-place half of fmt/set. Overwriting the source is the one place a
+// recovered load turns destructive, so the diagnostics go out even though the
+// command succeeded, and the save runs through the library's own gate rather
+// than a second copy of the rule - the CLI and a consumer program cannot then
+// disagree about which rewrites are safe.
+static int write_back(shcl_doc *d, const char *file, Opts *o) {
+	size_t n = shcl_diag_count(d);
+	for (size_t i = 0; i < n; i++) {
+		const char *sev = shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+		shcl_str m = shcl_diag_message(d, i);
+		fprintf(stderr, "line %zu: %s: %s ", shcl_diag_line(d, i), sev, shcl_diag_code(d, i));
+		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 	}
-	return 0;
+	if (o->lossy ? shcl_save_file_lossy(d, file) : shcl_save_file(d, file)) return 0;
+	// The rule stays in the library; only the wording is the CLI's, because the
+	// override a user has here is a flag, not a function.
+	size_t lost = shcl_lost_count(d);
+	if (!o->lossy && lost > 0)
+		fprintf(stderr, "%s: refusing to rewrite: the load dropped %zu line(s)/value(s) this write would delete (--lossy overrides)\n", file, lost);
+	else
+		fprintf(stderr, "%s: %s\n", file, strerror(errno));
+	return 1;
 }
 
 static int do_fmt(Opts *o) {
@@ -377,12 +399,13 @@ static int do_fmt(Opts *o) {
 	}
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
-	shcl_str c = shcl_to_canonical(L.doc);
-	int rc = 0;
+	int rc;
 	if (o->write) {
-		rc = write_atomic(file, c.p, c.n);
+		rc = write_back(L.doc, file, o);
 	} else {
+		shcl_str c = shcl_to_canonical(L.doc);
 		fwrite(c.p, 1, c.n, stdout);
+		rc = 0;
 	}
 	layered_free(&L); return rc;
 }
@@ -523,9 +546,13 @@ static int do_set(Opts *o) {
 		fprintf(stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
-	// Base doc: '-' means an empty base, since stdin carries the ops script. Any
-	// --layer files sit under it and --set overrides sit on top, before ops. The
-	// base layer's node strings are not dup'd off its text, so keep all buffers.
+	// Base doc: with the edits given as options no ops script is read, so a '-'
+	// file is the document on stdin the way it is everywhere else; only when
+	// stdin is the ops script does '-' mean an empty base. Reading neither threw
+	// a piped document away at exit 0.
+	// Any --layer files sit under it and --set overrides sit on top, before ops.
+	// The base layer's node strings are not dup'd off its text, so keep all
+	// buffers.
 	LayeredDoc L; L.doc = NULL; L.texts = NULL; L.ntexts = 0;
 	for (int i = 0; i < o->nlayers; i++) {
 		size_t llen; char *lt = read_input(o->layers[i], &llen);
@@ -537,7 +564,7 @@ static int do_set(Opts *o) {
 		if (!L.doc) L.doc = dd; else { shcl_merge(L.doc, dd); shcl_free(dd); }
 	}
 	char *text; size_t len;
-	if (!strcmp(file, "-")) { text = (char *)xrealloc(NULL, 1); len = 0; }
+	if (!strcmp(file, "-") && o->nsets == 0) { text = (char *)xrealloc(NULL, 1); len = 0; }
 	else { text = read_input(file, &len); if (!text) { layered_free(&L); return 1; } }
 	layered_push_text(&L, text);
 	{
@@ -573,9 +600,8 @@ static int do_set(Opts *o) {
 		}
 	}
 	if (rc == 0) {
-		shcl_str c = shcl_to_canonical(d);
-		if (o->write) rc = write_atomic(file, c.p, c.n);
-		else fwrite(c.p, 1, c.n, stdout);
+		if (o->write) rc = write_back(d, file, o);
+		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
 	}
 	free(ops); layered_free(&L); return rc;
 }
@@ -752,7 +778,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
-	o->strictness = SHCL_STANDARD; o->write = 0; o->no_banner = 0; o->schema = NULL;
+	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->no_banner = 0; o->schema = NULL;
 	o->layers = o->sets = o->set_opts = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
@@ -767,6 +793,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strcmp(a, "--array")) { o->array = 1; opt_seen(o, "--array"); }
 		else if (!strcmp(a, "--slots")) { o->slots = 1; opt_seen(o, "--slots"); }
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) { o->write = 1; opt_seen(o, "--write"); }
+		else if (!strcmp(a, "--lossy")) { o->lossy = 1; opt_seen(o, "--lossy"); }
 		else if (!strcmp(a, "--no-banner")) { o->no_banner = 1; opt_seen(o, "--no-banner"); }
 		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) {
 			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
@@ -790,8 +817,8 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 // usage error instead.
 static int check_opts(const char *cmd, Opts *o) {
 	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", NULL };
-	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--write", NULL };
-	static const char *fmt_ok[] = { "--write", "--strictness", "--layer", "--set", "--set-literal", NULL };
+	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy", NULL };
+	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", NULL };
 	static const char *check_ok[] = { "--strictness", "--schema", NULL };
 	static const char *init_ok[] = { "--schema", "--no-banner", NULL };
 	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", NULL };
@@ -824,11 +851,17 @@ static int check_opts(const char *cmd, Opts *o) {
 		fprintf(stderr, "--write cannot be combined with --set (see --help)\n");
 		return 1;
 	}
+	// --lossy only overrides the in-place write's refusal, so on its own it says
+	// nothing and would read as protection the command never had.
+	if (o->lossy && !o->write) {
+		fprintf(stderr, "--lossy is only meaningful with --write (see --help)\n");
+		return 1;
+	}
 	// The ops script already has stdin, so a layer cannot read it too.
 	if (!strcmp(cmd, "set")) {
 		for (int i = 0; i < o->nlayers; i++) {
 			if (!strcmp(o->layers[i], "-")) {
-				fprintf(stderr, "--layer=- is not valid for set (stdin carries the ops script)\n");
+				fprintf(stderr, "--layer=- is not valid for set (stdin carries the ops script or the document)\n");
 				return 1;
 			}
 		}

@@ -1561,18 +1561,14 @@ impl Parser {
 				// Content-malformed at any position, so it is safe to retain
 				// verbatim as trivia: re-emitted, it re-diagnoses identically
 				// and can never read as a live binding. A hand-typo no longer
-				// vanishes on the consumer's next save. The one exception is a
-				// leading BOM - the file-start strip would rewrite it, so that
-				// line counts as lost instead.
-				if rest.starts_with('\u{feff}') {
-					self.lost += 1;
-				} else {
-					self.pending.push(Pend {
-						text: rest.trim_end().to_string(),
-						indent: indent.to_string(),
-						blank_before: had_blank,
-					});
-				}
+				// vanishes on the consumer's next save. The BOM exception the
+				// sibling site below carries cannot apply here: this line
+				// starts with the '*' that brought us in.
+				self.pending.push(Pend {
+					text: rest.trim_end().to_string(),
+					indent: indent.to_string(),
+					blank_before: had_blank,
+				});
 				i += 1;
 				continue;
 			}
@@ -2420,11 +2416,14 @@ impl Document {
 	}
 
 	/// The field name at a path exactly as the author spelled it (case
-	/// unfolded, quotes and escapes resolved), so a message can echo `SYMBOLS`
-	/// when the file said SYMBOLS. Resolution mirrors line(): empty when the
-	/// path does not resolve to exactly one node. Merged instances keep the
-	/// first binding's spelling; a writer-built node keeps the spelling the
-	/// setter's path used.
+	/// unfolded, outer quotes stripped), so a message can echo `SYMBOLS` when
+	/// the file said SYMBOLS. Escape sequences stay as written: names carry
+	/// their escaped spelling everywhere - stored, compared, emitted, and in
+	/// paths() - so resolving them here alone would hand back a string that no
+	/// longer names the node. Resolution mirrors line(): empty when the path
+	/// does not resolve to exactly one node. Merged instances keep the first
+	/// binding's spelling; a writer-built node keeps the spelling the setter's
+	/// path used.
 	pub fn source_name(&self, path: &str) -> String {
 		match self.resolve(path) {
 			Ok(Resolved::One(n)) => self.arena[n].name_src.clone(),

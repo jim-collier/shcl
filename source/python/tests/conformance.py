@@ -613,6 +613,11 @@ def main():
 		raise SystemExit("set_int NewTop.n failed")
 	if sdoc2.source_name("newtop") != "NewTop":
 		raise SystemExit("source_name(newtop) got {}".format(sdoc2.source_name("newtop")))
+	# Escapes are NOT resolved: a name is stored, compared and emitted in its
+	# escaped spelling, so resolving here would name a node that does not exist.
+	sdoc3 = shcl.Document.parse('"Ab\\tCd": 2\n')
+	if sdoc3.source_name('"ab\\tcd"') != "Ab\\tCd":
+		raise SystemExit("source_name escaped got {!r}".format(sdoc3.source_name('"ab\\tcd"')))
 	# load_file/save_file: the status separates absent / unreadable / parsed
 	# with errors / clean, and a save round-trips through the atomic write.
 	# Same fixture in every runner.
@@ -625,6 +630,51 @@ def main():
 		_, fst = shcl.Document.load_file(td)  # a directory is not readable
 		if fst != shcl.FileStatus.Unreadable:
 			raise SystemExit("load_file directory got {}".format(fst))
+		# Python-only, so not in the shared fixture: a NUL in the path raises
+		# ValueError out of the path calls where the other bindings report. Both
+		# halves promise a status or a message, never a throw.
+		_, fst = shcl.Document.load_file("a\0b")
+		if fst != shcl.FileStatus.Unreadable:
+			raise SystemExit("load_file NUL path got {}".format(fst))
+		if shcl.Document.parse("a: 1").save_file("a\0b") is None:
+			raise SystemExit("save_file NUL path reported success")
+		# Also python-only: an int outside the 64-bit range the other three
+		# bindings use writes text every reader calls bad-type, so the setter
+		# refuses instead. The edges themselves still write.
+		rdoc = shcl.Document.parse("a: 1")
+		if rdoc.set_int("b", 1 << 63) or rdoc.set_int("b", -(1 << 63) - 1):
+			raise SystemExit("set_int accepted an out-of-range value")
+		if rdoc.set_int_array("c", [1, 1 << 64]):
+			raise SystemExit("set_int_array accepted an out-of-range value")
+		if not rdoc.set_int("d", (1 << 63) - 1) or not rdoc.set_int("e", -(1 << 63)):
+			raise SystemExit("set_int refused an in-range edge")
+		if rdoc.to_canonical() != "a: 1\n\nd: 9223372036854775807\n\ne: -9223372036854775808\n":
+			raise SystemExit("set_int range check left the wrong document: {!r}".format(rdoc.to_canonical()))
+		# Also python-only: the frame budget is small, so a document at the
+		# documented depth cap has to survive every walk from an already-deep
+		# caller. Merge and clone were the two still recursing.
+		deep = "\n".join("\t" * i + "l{}:".format(i) for i in range(511)) + "\n" + "\t" * 511 + "v: 1\n"
+
+		def _at_depth(k, fn):
+			if k:
+				return _at_depth(k - 1, fn)
+			return fn()
+
+		def _merge_deep():
+			base = shcl.Document.parse(deep)
+			base.merge(shcl.Document.parse(deep))
+			return base.to_canonical()
+
+		if _at_depth(900, _merge_deep) != _merge_deep():
+			raise SystemExit("deep merge from a deep caller diverged")
+		# Bad encoding is unreadable too: the parser assumes well-formed text, so a
+		# binary file loading clean would read back mangled and a later save would
+		# write the mangled version over the original.
+		with open(fpath, "wb") as fh:
+			fh.write(b"a: 1\nb: \xff\xfe bad\n")
+		fdoc, fst = shcl.Document.load_file(fpath)
+		if fst != shcl.FileStatus.Unreadable or fdoc.to_canonical() != "":
+			raise SystemExit("load_file bad encoding got {} {!r}".format(fst, fdoc.to_canonical()))
 		with open(fpath, "w", encoding="utf-8") as fh:
 			fh.write("a: 1\n: broken\n")
 		fdoc, fst = shcl.Document.load_file(fpath)
