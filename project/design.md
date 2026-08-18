@@ -110,6 +110,8 @@ The consuming programmer is assumed to be a junior in *every* binding, not just 
 
 - Portability is unaffected: the type is still fixed by the entry point/generic, and the fallback is an ordinary parameter.
 
+- **Reading a whole config into one structure is declined, not overlooked.** Every binding is path-at-a-time, so a forty-key config is forty call sites - and users arriving from libraries that decode a document into a typed struct in one call will notice. It was considered and turned down, because the reference cannot implement it: a derive-based decoder needs a proc-macro, which is a second crate, and one file per binding with no dependencies is what the product *is*. Hand-writing the reflection instead would give each binding its own machinery with nothing in the reference to mirror - the parity rule inverted, and the thing that keeps a fix portable by mechanical diff. A binding-local decoder in the two languages that could do it cheaply would be worse than none, since the same config would then load two different ways depending on the language. The honest answer is that the forty call sites are one loader function a consumer writes once, and `Children`/`Paths` plus the typed reads are the material for it.
+
 ### Integration modes
 
 One question - "how do you pull SHCL into your project?" - with two kinds of answer: *run it* or *embed it*. Named plainly and ordered easiest-first, so a beginner starts at the top:

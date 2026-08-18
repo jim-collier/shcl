@@ -135,6 +135,20 @@ pub enum Status {
 	Multiple,
 }
 
+impl std::fmt::Display for Status {
+	/// The names the other three bindings print. Without this a status reaches
+	/// a user-facing message as debug output.
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(match self {
+			Status::Good => "Good",
+			Status::Empty => "Empty",
+			Status::NotFound => "NotFound",
+			Status::BadType => "BadType",
+			Status::Multiple => "Multiple",
+		})
+	}
+}
+
 /// What load_file found: the four cases a consumer's own load path otherwise
 /// confuses. Clean and HadErrors both carry a usable document; NotFound and
 /// Unreadable come back with an empty one.
@@ -409,7 +423,7 @@ impl Value {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct NodeData {
 	name: String, // ASCII-folded to lower; non-ASCII never folds
 	value: Value,
@@ -447,7 +461,9 @@ struct NodeData {
 }
 
 /// A parsed SHCL document: the tree, its diagnostics, and its strictness level.
-#[derive(Debug)]
+// Clone is a plain deep copy: the arena is index-based, so cloning the vector
+// copies the whole tree with no reference to fix up.
+#[derive(Debug, Clone)]
 pub struct Document {
 	arena: Vec<NodeData>,
 	diags: Vec<Diagnostic>,
@@ -2020,6 +2036,16 @@ fn emit_name(name: &str) -> String {
 /// path scanner accepts. Splicing user-typed text into a path without this is
 /// path injection - a dotted name silently reads as nesting. Same spelling
 /// `paths()` and the canonical emitter produce.
+/// Render a float the way the writer and the CLI do: shortest round-trip
+/// decimal, never scientific notation, `inf`/`-inf`/`NaN` spelled out. Rust's
+/// own Display already does exactly that, which is why this is a wrapper - the
+/// other three bindings have to implement it, and a consumer building canonical
+/// text by hand should not have to know which of the four they are reading.
+#[must_use]
+pub fn format_f64(v: f64) -> String {
+	format!("{v}")
+}
+
 pub fn quote_segment(name: &str) -> String {
 	emit_name(name)
 }
@@ -2865,7 +2891,7 @@ impl Document {
 	}
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float(&mut self, path: &str, v: f64) -> bool {
-		self.set_value(path, cell_of(format!("{}", v)))
+		self.set_value(path, cell_of(format_f64(v)))
 	}
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool(&mut self, path: &str, v: bool) -> bool {
@@ -2903,10 +2929,7 @@ impl Document {
 	}
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_array(&mut self, path: &str, v: &[f64]) -> bool {
-		self.set_value(
-			path,
-			array_cell(v.iter().map(|x| format!("{}", x)).collect()),
-		)
+		self.set_value(path, array_cell(v.iter().map(|x| format_f64(*x)).collect()))
 	}
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool_array(&mut self, path: &str, v: &[bool]) -> bool {
@@ -3204,6 +3227,24 @@ impl Document {
 impl Default for Document {
 	fn default() -> Document {
 		Document::new()
+	}
+}
+
+impl std::str::FromStr for Document {
+	/// Parsing at Standard cannot fail - a malformed line becomes a diagnostic,
+	/// not a refusal - so `"a: 1".parse::<Document>()` is infallible. Use
+	/// `parse_with(text, Strictness::Strict)` for the load that can fail.
+	type Err = std::convert::Infallible;
+	fn from_str(text: &str) -> Result<Document, Self::Err> {
+		Ok(Document::parse(text))
+	}
+}
+
+impl std::fmt::Display for Document {
+	/// The canonical form, so `println!("{doc}")` prints the document the way
+	/// `fmt` would write it.
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(&self.to_canonical())
 	}
 }
 
