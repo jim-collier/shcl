@@ -239,10 +239,13 @@ None open.
 			- The schema-fault sentence now matches the code: a broken constraint keeps its entry so the sweep still runs, and only a lost path spelling turns it off.
 			- Installation moved above "Using the CLI" - install, then use, then embed. The one "below" in a cross-reference went with it.
 
-		- 🔘 Code Review 20260817 item 19: a setter returning false is a real failure mode that nothing makes discoverable.
+		- ✅ Code Review 20260817 item 19: a setter returning false is a real failure mode that nothing makes discoverable.
 			- Setters report failure only through their return value, and every documented example discards it. The write-reason call exists, is well designed, and is referenced from nowhere a reader will look.
 			- A wildcard path or an out-of-range instance applies nothing, returns false, and the program then saves a config missing the change and reports success. In the reference it compiles without a warning.
 			- Fix: mark the setters must-use in the reference, and have at least one example per binding check a setter and print the reason. Both additive.
+			- All 26 reference setters are `#[must_use]` now. Only five sites in the whole repo were discarding one, all in tests - the CLIs already checked - and each became an assertion, including one that pins a too-deep path as NOT writable.
+			- The examples check a setter and print the write reason: all three writes in the front-page rust one (must_use leaves no choice), one write in go, python and c, and one in each per-binding readme. Every example was recompiled and run, the rust ones under `-D warnings`.
+			- One sentence about the ignored-false consequence went into all four setter docs plus the spec; the rust-only annotation is recorded as a sanctioned surface deviation in the style guide.
 
 		- 🔘 Code Review 20260817 item 20: the same call name lands on a different tier in each binding.
 			- The reference and go put `get` on the status tier. Python puts it on the convenience tier with a raising mode. C puts it on the convenience tier with a mandatory default argument.

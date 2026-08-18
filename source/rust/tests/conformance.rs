@@ -550,7 +550,12 @@ fn layered_merge_matches_expected() {
 				let (p, v) = line
 					.split_once('=')
 					.unwrap_or_else(|| panic!("{}: bad merge.sets line: {}", case.name, line));
-				doc.set_string(p, v);
+				assert!(
+					doc.set_string(p, v),
+					"{}: merge.set did not apply: {}",
+					case.name,
+					line
+				);
 			}
 		}
 		let got = doc.to_canonical();
@@ -644,12 +649,12 @@ fn depth_cap_boundary_and_writer() {
 	// The Writer refuses to create past the cap and stays a no-op.
 	let mut w = Document::new();
 	let deep_path = format!("a.{}", segs.join("."));
-	w.set_int(&deep_path, 1);
+	assert!(!w.set_int(&deep_path, 1), "a too-deep path is not writable");
 	assert!(
 		!w.exists("a"),
 		"writer must not half-create a too-deep path"
 	);
-	w.set_int(&segs.join("."), 2);
+	assert!(w.set_int(&segs.join("."), 2));
 	assert!(w.exists("a0"), "writer must still create an at-cap path");
 }
 

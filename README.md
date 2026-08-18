@@ -514,10 +514,19 @@ match doc.get_int("site[example.com].max-upload-mb") {
 	Err(other) => println!("unusable: {other:?}"),
 }
 
-// Writes create what they need to: this adds a site and a nested block
-doc.set_int("workers", workers * 2);
-doc.set_bool("site[example.com].tls.hsts", true);
-doc.set_string("site[blog.example.com].root", "/srv/www/blog");
+// Writes create what they need to: this adds a site and a nested block.
+// Each one reports whether it applied - a path that cannot be written writes
+// nothing at all rather than half of it - and the setters are `#[must_use]`,
+// so that answer cannot go missing by accident.
+if !doc.set_int("workers", workers * 2) {
+	eprintln!("workers: {:?}", doc.write_reason("workers"));
+}
+if !doc.set_bool("site[example.com].tls.hsts", true) {
+	eprintln!("hsts: {:?}", doc.write_reason("site[example.com].tls.hsts"));
+}
+if !doc.set_string("site[blog.example.com].root", "/srv/www/blog") {
+	eprintln!("blog root: {:?}", doc.write_reason("site[blog.example.com].root"));
+}
 
 // Writes through a temp file and a rename, so an interrupted save cannot
 // truncate the config - and refuses outright if the load dropped a line this
@@ -553,9 +562,14 @@ if mb, st := doc.GetInt("site[example.com].max-upload-mb"); st == shcl.Good {
 	fmt.Println("unusable:", st)
 }
 
+// A setter reports whether the write applied: a path that cannot be written
+// writes nothing at all rather than half of it, and WriteReason names which of
+// the five reasons it hit.
 doc.SetInt("workers", workers*2)
 doc.SetBool("site[example.com].tls.hsts", true)
-doc.SetString("site[blog.example.com].root", "/srv/www/blog")
+if !doc.SetString("site[blog.example.com].root", "/srv/www/blog") {
+	fmt.Println("blog root:", doc.WriteReason("site[blog.example.com].root"))
+}
 
 // Writes through a temp file and a rename, so an interrupted save cannot
 // truncate the config - and refuses outright if the load dropped a line this
@@ -591,9 +605,13 @@ read = doc.read_int("site[example.com].max-upload-mb")
 if read.status is not shcl.Status.Good:
 	print("unusable:", read.status)
 
+# A setter reports whether the write applied: a path that cannot be written
+# writes nothing at all rather than half of it, and write_reason names which of
+# the five reasons it hit.
 doc.set_int("workers", workers * 2)
 doc.set_bool("site[example.com].tls.hsts", True)
-doc.set_string("site[blog.example.com].root", "/srv/www/blog")
+if not doc.set_string("site[blog.example.com].root", "/srv/www/blog"):
+	print("blog root:", doc.write_reason("site[blog.example.com].root"))
 
 # Writes through a temp file and a rename, so an interrupted save cannot
 # truncate the config - and raises SaveRefused if the load dropped a line this
@@ -675,9 +693,13 @@ shcl_read_str root = shcl_read_string(doc, P("site[example.com].root"));
 if (root.status == SHCL_GOOD)
 	printf("%.*s\n", (int)root.value.n, root.value.p);
 
+// A setter reports whether the write applied: a path that cannot be written
+// writes nothing at all rather than half of it, and shcl_write_reason_ names
+// which of the five reasons it hit (SHCL_W_WILDCARD here, say).
 shcl_set_int(doc, P("workers"), workers * 2);
 shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1);
-shcl_set_string(doc, P("site[blog.example.com].root"), P("/srv/www/blog"));
+if (!shcl_set_string(doc, P("site[blog.example.com].root"), P("/srv/www/blog")))
+	fprintf(stderr, "blog root: reason %d\n", shcl_write_reason_(doc, P("site[blog.example.com].root")));
 
 // Writes through a temp file and a rename, so an interrupted save cannot
 // truncate the config. SHCL_SAVE_REFUSED means the load dropped a line this
@@ -789,7 +811,7 @@ That is the whole file after the edits, not an excerpt - a formatter that can su
 
 And the save protects the file it is overwriting. It goes through a temp file in the same directory plus a rename, so an interrupted save cannot leave a truncated config behind, and a linked-in config is written through rather than replaced. It also refuses when the load dropped something the write would delete. A line the parser cannot read at all is kept verbatim and survives the save untouched, but a line it could read and not place - a stray indent, an impossible selector - has no safe spelling to re-emit, so it counts into `lost_count()` and the save stops rather than quietly dropping a line somebody typed. `save_file_lossy` is there for when deleting it is what you actually want, so it is always a stated choice.
 
-A setter returns failure - `false`, or `0` in C - when a path cannot be written at all. Wildcards are the usual case, since those are query-only. `write_reason(path)` says which of the five reasons applied.
+A setter returns failure - `false`, or `0` in C - when a path cannot be written at all. Wildcards are the usual case, since those are query-only. Nothing is half-written, and `write_reason(path)` says which of the five reasons applied. Worth checking rather than assuming: an ignored failure means the save that follows writes a config missing the edit, and reports success doing it. In Rust the setters are `#[must_use]`, so dropping the answer is a compile warning.
 
 One read-side companion belongs with this: canonical output lowercases field names, and `source_name(path)` hands back the spelling the author actually used. It is what you want in a message about their file - reporting `Max-Upload-MB` as `max-upload-mb` reads like a different setting to the person who wrote it.
 

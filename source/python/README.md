@@ -38,7 +38,10 @@ roots = doc.read_string_array("site[*].root")
 # Writes through a temp file and a rename, so an interrupted save cannot
 # truncate the config - and raises SaveRefused if the load dropped a line this
 # write would delete (save_file_lossy is the override).
-doc.set_int("site[example.com].max-upload-mb", limit * 2)
+# A setter reports whether the write applied: a path that cannot be written
+# writes nothing at all, and write_reason names which of the five reasons.
+if not doc.set_int("site[example.com].max-upload-mb", limit * 2):
+	print(doc.write_reason("site[example.com].max-upload-mb"))
 doc.save_file("server.shcl")
 ```
 
