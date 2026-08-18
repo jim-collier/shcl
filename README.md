@@ -52,16 +52,6 @@
 - [Features](#features)
 - [Shcl is used by multiple projects](#shcl-is-used-by-multiple-projects)
 - [What a .shcl file looks like](#what-a-shcl-file-looks-like)
-- [Using the CLI](#using-the-cli)
-- [Example use-cases in your code](#example-use-cases-in-your-code)
-	- [Rust](#rust)
-	- [Go](#go)
-	- [Python](#python)
-	- [Zig](#zig)
-	- [C, C++](#c-c)
-	- [Bash](#bash)
-	- [PowerShell](#powershell)
-	- [What saving does](#what-saving-does)
 - [Installation](#installation)
 	- [Language packages](#language-packages)
 		- [Cargo](#cargo)
@@ -77,6 +67,16 @@
 			- [Linux and WSL](#linux-and-wsl)
 			- [Windows PowerShell](#windows-powershell)
 		- [DIY install](#diy-install)
+- [Using the CLI](#using-the-cli)
+- [Example use-cases in your code](#example-use-cases-in-your-code)
+	- [Rust](#rust)
+	- [Go](#go)
+	- [Python](#python)
+	- [Zig](#zig)
+	- [C, C++](#c-c)
+	- [Bash](#bash)
+	- [PowerShell](#powershell)
+	- [What saving does](#what-saving-does)
 - [Set up a development environment](#set-up-a-development-environment)
 - [Docs](#docs)
 - [Contributing and support](#contributing-and-support)
@@ -182,6 +182,8 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 - Full read *and* write. Setters build any missing structure along the path, and saving canonicalizes the file while keeping your comments attached to what they documented.
 
+- A file tier that carries the whole load/save lifecycle, since that is where a config program's bugs actually live: one call to read and parse, a status that separates missing from unreadable from parsed-with-errors, and a save through a temp file and a rename that refuses when writing back would delete a line the load could not keep.
+
 - Schema validation, layered loading (defaults, site, user), and commented starter-config generation, all as library features.
 
 - Raw fenced blocks embed anything verbatim: SQL, code, templates, Markdown-style.
@@ -242,391 +244,6 @@ maintenance-page:
 ```
 
 Field names are case-insensitive. Repeated paths merge. `site` here is not one key but a set of instances (example.com, blog.example.com), each with its own children - arrays of objects without inventing syntax for them.
-
-## Using the CLI
-
-Everything the library does, the `shcl` binary does from a shell: typed reads, edits, validation, formatting, and starter-config generation. One dependency-free executable, so it is also a config probe for shell scripts, Makefiles, and CI.
-
-Reads are typed at the call site exactly as they are in code, and a fallback is one option away:
-
-```console
-$ shcl get --int server.shcl workers
-4
-
-$ shcl get --int --default=8 server.shcl thread-pool     # absent from the file
-8
-
-$ shcl get server.shcl 'site[example.com].tls.cert'
-/etc/ssl/example.pem
-```
-
-Repeated fields are queryable as a set, and `[*]` fans one read across every instance:
-
-```console
-$ shcl count server.shcl site
-2
-
-$ shcl instances server.shcl site
-example.com
-blog.example.com
-
-$ shcl get --array --slots server.shcl 'site[*].tls.hsts'
-Good	on
-Good	off
-```
-
-`check` is where the forgiving parser shows its hand. Knock the colon off line 3 of that file, and line 3 is all you lose:
-
-```console
-$ shcl check server.shcl
-line 3: Error: E014
-line 3: Error: malformed line skipped: unexpected '4' after field
-failed: 1 diagnostic(s), 1 error(s)
-
-$ shcl get server.shcl log-level     # the rest of the file loaded fine
-warn
-```
-
-The stable code goes to stdout and the prose to stderr, so a script can match on `E014` without parsing English, and `check` exits 6 when it found errors - enough to gate a build.
-
-Hand it a schema and it validates against that too. A schema is an ordinary `.shcl` file: one `field:` instance per path, constraints written as its children ([the spec](project/spec.md#schema-validation) has the full vocabulary).
-
-```text
-field: workers
-	type: int
-	desc: Worker threads.
-	min: 1
-	max: 256
-	default: 4
-	required: yes
-
-field: log-level
-	type: string
-	desc: How chatty the log is.
-	allowed: debug, info, warn, error
-	default: warn
-```
-
-That catches wrong types, out-of-range numbers, and unknown fields - and for the last one it names the field you probably meant:
-
-```console
-$ shcl check --schema=app-schema.shcl app.shcl
-line 2: Error: V001
-line 2: Error: unknown field 'log-levle'; did you mean 'log-level'?
-failed: 1 diagnostic(s), 1 error(s)
-```
-
-A broken schema cannot mask a broken config: a fault in the schema itself is reported as its own error (`V090`+), and the constraints that did parse still check the file. The one thing a schema fault turns off is the unknown-field sweep, which only makes sense against the complete declared vocabulary.
-
-The same schema, pointed the other way, writes a starting file for your own users - commented, correctly typed, required fields live and optional ones left commented out:
-
-```console
-$ shcl init --schema=app-schema.shcl
-# Worker threads.
-# int, 1-256, required
-workers: 4
-
-# How chatty the log is.
-# string, one of: debug, info, warn, error
-#log-level: warn
-
-#
-# This config file format is SHCL.
-# "Simple Hierarchical Config Language"
-#    Home     https://github.com/jim-collier/shcl
-#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
-#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
-#
-```
-
-The footer tells whoever opens that file later what it is and where the syntax is written down; `--no-banner` leaves it out. Rounding out the verbs, `fmt` normalizes a file and `set` edits one, both in place with `--write`:
-
-```sh
-shcl fmt --write server.shcl
-shcl set --write server.shcl --set 'workers=8'
-```
-
-An in-place write prints whatever the load found on stderr, and refuses outright when the load dropped a line the rewrite would delete - your typo does not cost you the line above it. `--lossy` is the way to say you meant it.
-
-`shcl help` covers the rest, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
-
-## Example use-cases in your code
-
-Bindings are versioned in lockstep, so `1.x` means the same behavior and the same conformance corpus in every language. Each ecosystem's usual compatible-version operator is all you need: it picks up minor and patch releases on its own, and never crosses a major version without you editing the line yourself.
-
-Every binding is one file with no dependencies. You can optionally just copy it out of `source/` and commit it - see [DIY install](#diy-install) below.
-
-### Rust
-
-- Install: `cargo add shcl`
-
-- Dependency line: `shcl = "1"`
-
-- Note: The Rust crate carries the library and the CLI together. See [Language packages](#language-packages) if the binary is what you are after.
-
-```rust
-use shcl::{Document, Status};
-
-let text = std::fs::read_to_string("server.shcl")?;
-let mut doc = Document::parse(&text);
-
-// Typed read, with a fallback if the path is missing
-let workers = doc.get_int("workers").unwrap_or(4);
-let root = doc.get_string("site[example.com].root").unwrap_or_default();
-
-// Or ask why a read failed, when the difference matters
-match doc.get_int("site[example.com].max-upload-mb") {
-	Ok(mb) => println!("{mb} MB"),
-	Err(Status::NotFound) => println!("not configured"),
-	Err(other) => println!("unusable: {other:?}"),
-}
-
-// Writes create what they need to: this adds a site and a nested block
-doc.set_int("workers", workers * 2);
-doc.set_bool("site[example.com].tls.hsts", true);
-doc.set_string("site[blog.example.com].root", "/srv/www/blog");
-
-std::fs::write("server.shcl", doc.to_canonical())?;
-```
-
-### Go
-
-- Install the module: `go get github.com/jim-collier/shcl/source/go`
-
-- Dependency line: `require github.com/jim-collier/shcl/source/go v1.2.0`
-
-- Notes: Go keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
-
-```go
-import shcl "github.com/jim-collier/shcl/source/go"
-
-text, err := os.ReadFile("server.shcl")
-doc := shcl.Parse(string(text))
-
-workers := doc.GetIntOr("workers", 4)
-root := doc.GetStringOr("site[example.com].root", "")
-
-if mb, st := doc.GetInt("site[example.com].max-upload-mb"); st == shcl.Good {
-	fmt.Println(mb, "MB")
-} else {
-	fmt.Println("unusable:", st)
-}
-
-doc.SetInt("workers", workers*2)
-doc.SetBool("site[example.com].tls.hsts", true)
-doc.SetString("site[blog.example.com].root", "/srv/www/blog")
-
-os.WriteFile("server.shcl", []byte(doc.ToCanonical()), 0o644)
-```
-
-### Python
-
-- Install: `pip install shcl`
-
-- Dependency line: `shcl~=1.0`
-
-- Note: The PyPI distribution is the library module by itself. Installing it does not put a `shcl` command on your `PATH`.
-	- If you want the CLI too, get it from a package or an installer.
-
-```python
-import shcl
-
-with open("server.shcl") as f:
-	doc = shcl.Document.parse(f.read())
-
-workers = doc.get_int("workers", default=4)
-root = doc.get_string("site[example.com].root", default="")
-
-read = doc.read_int("site[example.com].max-upload-mb")
-if read.status is not shcl.Status.Good:
-	print("unusable:", read.status)
-
-doc.set_int("workers", workers * 2)
-doc.set_bool("site[example.com].tls.hsts", True)
-doc.set_string("site[blog.example.com].root", "/srv/www/blog")
-
-with open("server.shcl", "w") as f:
-	f.write(doc.to_canonical())
-```
-
-### Zig
-
-Zig needs no binding of its own - it consumes the C header directly. `@cImport` takes the declarations, one C file carries the implementation, and thin wrappers let Zig slices supply the pointer-and-length pairs the C API wants:
-
-```zig
-const std = @import("std");
-const c = @cImport(@cInclude("shcl.h"));
-
-// The C API takes (pointer, length) paths; a Zig slice already carries both.
-fn getInt(doc: ?*c.shcl_doc, path: []const u8, def: i64) i64 {
-	return c.shcl_get_int(doc, path.ptr, path.len, def);
-}
-fn setInt(doc: ?*c.shcl_doc, path: []const u8, v: i64) bool {
-	return c.shcl_set_int(doc, path.ptr, path.len, v) != 0;
-}
-fn setBool(doc: ?*c.shcl_doc, path: []const u8, v: bool) bool {
-	return c.shcl_set_bool(doc, path.ptr, path.len, @intFromBool(v)) != 0;
-}
-fn setString(doc: ?*c.shcl_doc, path: []const u8, v: []const u8) bool {
-	return c.shcl_set_string(doc, path.ptr, path.len, v.ptr, v.len) != 0;
-}
-fn readString(doc: ?*c.shcl_doc, path: []const u8) c.shcl_read_str {
-	return c.shcl_read_string(doc, path.ptr, path.len);
-}
-
-// text is the config file, already read into memory
-const doc = c.shcl_parse(text.ptr, text.len);
-defer c.shcl_free(doc);
-
-const workers = getInt(doc, "workers", 4);
-
-const root = readString(doc, "site[example.com].root");
-if (root.status == c.SHCL_GOOD)
-	std.debug.print("{s}\n", .{root.value.p[0..root.value.n]});
-
-_ = setInt(doc, "workers", workers * 2);
-_ = setBool(doc, "site[example.com].tls.hsts", true);
-_ = setString(doc, "site[blog.example.com].root", "/srv/www/blog");
-
-const out = c.shcl_to_canonical(doc);
-```
-
-Alongside it, an `impl.c` of two lines - `#define SHCL_IMPLEMENTATION`, then `#include "shcl.h"` - and build with `zig build-exe main.zig impl.c -lc -lm -I.`. The interop above is stable, but Zig's own standard library is not, so the surrounding file IO moves between Zig releases; this was checked on 0.16.
-
-### C, C++
-
-C and C++ have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit, and link `-lm`. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
-
-- Install: vendor `shcl.h`
-
-- Dependency line: pin the release tag
-
-```c
-#define SHCL_IMPLEMENTATION   // in exactly one translation unit
-#include "shcl.h"
-
-#define P(s) s, strlen(s)     // paths take a pointer and a length, not a NUL terminator
-
-// text/len is the config file, already read into memory
-shcl_doc *doc = shcl_parse(text, len);
-
-int64_t workers = shcl_get_int(doc, P("workers"), 4);
-
-// Strings keep the status tier, so missing and empty stay distinguishable
-shcl_read_str root = shcl_read_string(doc, P("site[example.com].root"));
-if (root.status == SHCL_GOOD)
-	printf("%.*s\n", (int)root.value.n, root.value.p);
-
-shcl_set_int(doc, P("workers"), workers * 2);
-shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1);
-shcl_set_string(doc, P("site[blog.example.com].root"), P("/srv/www/blog"));
-
-shcl_str out = shcl_to_canonical(doc);   // lives in the document's arena
-fwrite(out.p, 1, out.n, f);
-
-shcl_free(doc);   // frees the document and everything handed out from it
-```
-
-The C binding uses `round()`, so link the math library - `cc -std=c11 -O2 ex.c -o ex -lm`. There are no per-object frees: reads hand back pointers into the document's arena, and the single `shcl_free` releases all of it, so anything you need afterwards must be copied out first.
-
-### Bash
-
-The shell wrappers are not parsers; they wrap the CLI, which is why they inherit its conformance for free. Source one and you get typed sugar over the same commands:
-
-- Install: install the CLI, source the wrapper
-
-- Dependency line: n/a - it wraps the CLI
-
-```bash
-source shcl.bash
-
-workers=$(shcl_int --default=4 server.shcl workers)
-root=$(shcl_get --default='' server.shcl 'site[example.com].root')
-
-# Repeatable, applied in order; --write rewrites the file in place.
-shcl set --write server.shcl \
-    --set "workers=$((workers * 2))" \
-    --set 'site[example.com].tls.hsts=true' \
-    --set-literal 'cluster.hosts=a.example.com, b.example.com'
-```
-
-The two spellings differ in how the value is read. `--set` takes **data**: its type follows the text, so `workers=8` writes an integer, but a comma in it is content - `hosts=a, b` would store one quoted string. `--set-literal` takes **value syntax**, the way a file spells it, so that same text writes a two-element array. Reach for it whenever the value is not a plain scalar.
-
-Raw blocks, set-only-if-absent and removal have no option form; those go in as a write-ops script on stdin, one op per line, fields separated by a literal tab:
-
-```bash
-shcl set --write server.shcl <<OPS
-remove	site[old.example.com]
-raw	motd		Welcome.
-OPS
-```
-
-### PowerShell
-
-Dot-source it for the same helper names:
-
-```powershell
-. ./shcl.ps1
-
-$workers = [int](shcl_int --default=4 server.shcl workers)
-$root    = shcl_get --default='' server.shcl 'site[example.com].root'
-
-shcl set --write server.shcl `
-         --set "workers=$($workers * 2)" `
-         --set 'site[example.com].tls.hsts=true' `
-         --set-literal 'cluster.hosts=a.example.com, b.example.com'
-```
-
-The op-script form works here too - the sourced `shcl` forwards pipeline input to the binary:
-
-```powershell
-$ops = "remove`tsite[old.example.com]",
-       "raw`tmotd`t`tWelcome."
-$ops | shcl set --write server.shcl
-```
-
-### What saving does
-
-Two behaviors of the write half are easy to miss, and they are the same in every binding.
-
-Setters build whatever is missing along the path, so the `tls.hsts` and `blog.example.com` lines in the examples above arrive as a nested block and a new site instance without you assembling either.
-
-And saving rewrites the file in canonical form - spacing normalized, field names lowercased, the dotted `site[blog.example.com].tls.hsts` line folded into the block form it was always spelling - while **keeping your comments** attached to whatever they documented, including the one that travels with that folded line:
-
-```text
-# Flat, TOML-style settings
-listen: "0.0.0.0:443"
-workers: 8
-log-level: warn
-
-# Hierarchy when you need it: one instance per site
-site: example.com
-	root: /srv/www/example
-	max-upload-mb: 50
-	methods: GET, POST, HEAD
-	tls:
-		cert: /etc/ssl/example.pem
-		hsts: true
-
-# Repeating the field adds another site - arrays of objects
-# no syntax to invent
-site: blog.example.com
-	root: /srv/www/blog
-	tls:
-
-		# Dotted paths spell the same tree; add to any instance from anywhere
-		hsts: off
-
-# Multi-line content goes in a fenced block, kept verbatim
-maintenance-page:
-	~~~html
-	<h1>Down for maintenance - back in five.</h1>
-	~~~
-```
-
-That is the whole file after the edits, not an excerpt - a formatter that can survive a round trip through an editing tool is the point.
-
-A setter returns failure - `false`, or `0` in C - when a path cannot be written at all. Wildcards are the usual case, since those are query-only. `write_reason(path)` says which of the five reasons applied.
 
 ## Installation
 
@@ -753,6 +370,428 @@ macOS and the BSDs have no prebuilt binaries yet. Use `cargo install shcl`, a dr
 	```
 
 	Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
+
+## Using the CLI
+
+Everything the library does, the `shcl` binary does from a shell: typed reads, edits, validation, formatting, and starter-config generation. One dependency-free executable, so it is also a config probe for shell scripts, Makefiles, and CI.
+
+Reads are typed at the call site exactly as they are in code, and a fallback is one option away:
+
+```console
+$ shcl get --int server.shcl workers
+4
+
+$ shcl get --int --default=8 server.shcl thread-pool     # absent from the file
+8
+
+$ shcl get server.shcl 'site[example.com].tls.cert'
+/etc/ssl/example.pem
+```
+
+Repeated fields are queryable as a set, and `[*]` fans one read across every instance:
+
+```console
+$ shcl count server.shcl site
+2
+
+$ shcl instances server.shcl site
+example.com
+blog.example.com
+
+$ shcl get --array --slots server.shcl 'site[*].tls.hsts'
+Good	on
+Good	off
+```
+
+`check` is where the forgiving parser shows its hand. Knock the colon off line 3 of that file, and line 3 is all you lose:
+
+```console
+$ shcl check server.shcl
+line 3: Error: E014
+line 3: Error: malformed line skipped: unexpected '4' after field
+failed: 1 diagnostic(s), 1 error(s)
+
+$ shcl get server.shcl log-level     # the rest of the file loaded fine
+warn
+```
+
+The stable code goes to stdout and the prose to stderr, so a script can match on `E014` without parsing English, and `check` exits 6 when it found errors - enough to gate a build.
+
+Hand it a schema and it validates against that too. A schema is an ordinary `.shcl` file: one `field:` instance per path, constraints written as its children ([the spec](project/spec.md#schema-validation) has the full vocabulary).
+
+```text
+field: workers
+	type: int
+	desc: Worker threads.
+	min: 1
+	max: 256
+	default: 4
+	required: yes
+
+field: log-level
+	type: string
+	desc: How chatty the log is.
+	allowed: debug, info, warn, error
+	default: warn
+```
+
+That catches wrong types, out-of-range numbers, and unknown fields - and for the last one it names the field you probably meant:
+
+```console
+$ shcl check --schema=app-schema.shcl app.shcl
+line 2: Error: V001
+line 2: Error: unknown field 'log-levle'; did you mean 'log-level'?
+failed: 1 diagnostic(s), 1 error(s)
+```
+
+A broken schema cannot mask a broken config: a fault in the schema itself is reported as its own error (`V090`+), and the constraints that did parse still check the file. The unknown-field sweep keeps running through a broken constraint, since the field is still declared by name; it turns off only when a fault costs a path spelling outright - an unreadable `field:` path, or a mount naming no declared fragment - because only those can turn a declared field into a false unknown.
+
+The same schema, pointed the other way, writes a starting file for your own users - commented, correctly typed, required fields live and optional ones left commented out:
+
+```console
+$ shcl init --schema=app-schema.shcl
+# Worker threads.
+# int, 1-256, required
+workers: 4
+
+# How chatty the log is.
+# string, one of: debug, info, warn, error
+#log-level: warn
+
+#
+# This config file format is SHCL.
+# "Simple Hierarchical Config Language"
+#    Home     https://github.com/jim-collier/shcl
+#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+#
+```
+
+The footer tells whoever opens that file later what it is and where the syntax is written down; `--no-banner` leaves it out. Rounding out the verbs, `fmt` normalizes a file and `set` edits one, both in place with `--write`:
+
+```sh
+shcl fmt --write server.shcl
+shcl set --write server.shcl --set 'workers=8'
+```
+
+An in-place write prints whatever the load found on stderr, and refuses outright when the load dropped a line the rewrite would delete - your typo does not cost you the line above it. `--lossy` is the way to say you meant it.
+
+`shcl help` covers the rest, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
+
+## Example use-cases in your code
+
+Bindings are versioned in lockstep, so `1.x` means the same behavior and the same conformance corpus in every language. Each ecosystem's usual compatible-version operator is all you need: it picks up minor and patch releases on its own, and never crosses a major version without you editing the line yourself.
+
+Every binding is one file with no dependencies. You can optionally just copy it out of `source/` and commit it - see [DIY install](#diy-install).
+
+### Rust
+
+- Install: `cargo add shcl`
+
+- Dependency line: `shcl = "1"`
+
+- Note: The Rust crate carries the library and the CLI together. See [Language packages](#language-packages) if the binary is what you are after.
+
+```rust
+use shcl::{Document, FileStatus, Status};
+
+// One call reads and parses, and never fails: the document comes back usable
+// either way, and the status tells missing apart from unreadable and from
+// parsed-with-errors - three cases a hand-written load path tends to blur.
+let (mut doc, file_status) = Document::load_file("server.shcl");
+if file_status == FileStatus::NotFound {
+	println!("no config yet - starting from defaults");
+}
+
+// Typed read, with a fallback if the path is missing
+let workers = doc.get_int("workers").unwrap_or(4);
+let root = doc.get_string("site[example.com].root").unwrap_or_default();
+
+// Or ask why a read failed, when the difference matters
+match doc.get_int("site[example.com].max-upload-mb") {
+	Ok(mb) => println!("{mb} MB"),
+	Err(Status::NotFound) => println!("not configured"),
+	Err(other) => println!("unusable: {other:?}"),
+}
+
+// Writes create what they need to: this adds a site and a nested block
+doc.set_int("workers", workers * 2);
+doc.set_bool("site[example.com].tls.hsts", true);
+doc.set_string("site[blog.example.com].root", "/srv/www/blog");
+
+// Writes through a temp file and a rename, so an interrupted save cannot
+// truncate the config - and refuses outright if the load dropped a line this
+// write would delete (save_file_lossy is the override).
+doc.save_file("server.shcl")?;
+```
+
+### Go
+
+- Install the module: `go get github.com/jim-collier/shcl/source/go`
+
+- Dependency line: `require github.com/jim-collier/shcl/source/go v1.2.0`
+
+- Notes: Go keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
+
+```go
+import shcl "github.com/jim-collier/shcl/source/go"
+
+// One call reads and parses, and never fails: the document comes back usable
+// either way, and the status tells missing apart from unreadable and from
+// parsed-with-errors - three cases a hand-written load path tends to blur.
+doc, fileStatus := shcl.LoadFile("server.shcl")
+if fileStatus == shcl.FileNotFound {
+	fmt.Println("no config yet - starting from defaults")
+}
+
+workers := doc.GetIntOr("workers", 4)
+root := doc.GetStringOr("site[example.com].root", "")
+
+if mb, st := doc.GetInt("site[example.com].max-upload-mb"); st == shcl.Good {
+	fmt.Println(mb, "MB")
+} else {
+	fmt.Println("unusable:", st)
+}
+
+doc.SetInt("workers", workers*2)
+doc.SetBool("site[example.com].tls.hsts", true)
+doc.SetString("site[blog.example.com].root", "/srv/www/blog")
+
+// Writes through a temp file and a rename, so an interrupted save cannot
+// truncate the config - and refuses outright if the load dropped a line this
+// write would delete (SaveFileLossy is the override).
+if err := doc.SaveFile("server.shcl"); err != nil {
+	log.Fatal(err)
+}
+```
+
+### Python
+
+- Install: `pip install shcl`
+
+- Dependency line: `shcl~=1.0`
+
+- Note: The PyPI distribution is the library module by itself. Installing it does not put a `shcl` command on your `PATH`.
+	- If you want the CLI too, get it from a package or an installer.
+
+```python
+import shcl
+
+# One call reads and parses, and never fails: the document comes back usable
+# either way, and the status tells missing apart from unreadable and from
+# parsed-with-errors - three cases a hand-written load path tends to blur.
+doc, file_status = shcl.Document.load_file("server.shcl")
+if file_status is shcl.FileStatus.NotFound:
+	print("no config yet - starting from defaults")
+
+workers = doc.get_int("workers", default=4)
+root = doc.get_string("site[example.com].root", default="")
+
+read = doc.read_int("site[example.com].max-upload-mb")
+if read.status is not shcl.Status.Good:
+	print("unusable:", read.status)
+
+doc.set_int("workers", workers * 2)
+doc.set_bool("site[example.com].tls.hsts", True)
+doc.set_string("site[blog.example.com].root", "/srv/www/blog")
+
+# Writes through a temp file and a rename, so an interrupted save cannot
+# truncate the config - and raises SaveRefused if the load dropped a line this
+# write would delete (save_file_lossy is the override).
+doc.save_file("server.shcl")
+```
+
+### Zig
+
+Zig needs no binding of its own - it consumes the C header directly. `@cImport` takes the declarations, one C file carries the implementation, and thin wrappers let Zig slices supply the pointer-and-length pairs the C API wants:
+
+```zig
+const std = @import("std");
+const c = @cImport(@cInclude("shcl.h"));
+
+// The C API takes (pointer, length) paths; a Zig slice already carries both.
+fn getInt(doc: ?*c.shcl_doc, path: []const u8, def: i64) i64 {
+	return c.shcl_get_int(doc, path.ptr, path.len, def);
+}
+fn setInt(doc: ?*c.shcl_doc, path: []const u8, v: i64) bool {
+	return c.shcl_set_int(doc, path.ptr, path.len, v) != 0;
+}
+fn setBool(doc: ?*c.shcl_doc, path: []const u8, v: bool) bool {
+	return c.shcl_set_bool(doc, path.ptr, path.len, @intFromBool(v)) != 0;
+}
+fn setString(doc: ?*c.shcl_doc, path: []const u8, v: []const u8) bool {
+	return c.shcl_set_string(doc, path.ptr, path.len, v.ptr, v.len) != 0;
+}
+fn readString(doc: ?*c.shcl_doc, path: []const u8) c.shcl_read_str {
+	return c.shcl_read_string(doc, path.ptr, path.len);
+}
+
+// The C file tier loads and saves, so no Zig file IO is involved
+var st: c.shcl_file_status = undefined;
+const doc = c.shcl_load_file("server.shcl", &st);
+defer c.shcl_free(doc);
+
+const workers = getInt(doc, "workers", 4);
+
+const root = readString(doc, "site[example.com].root");
+if (root.status == c.SHCL_GOOD)
+	std.debug.print("{s}\n", .{root.value.p[0..root.value.n]});
+
+_ = setInt(doc, "workers", workers * 2);
+_ = setBool(doc, "site[example.com].tls.hsts", true);
+_ = setString(doc, "site[blog.example.com].root", "/srv/www/blog");
+
+_ = c.shcl_save_file(doc, "server.shcl");
+```
+
+Alongside it, an `impl.c` of two lines - `#define SHCL_IMPLEMENTATION`, then `#include "shcl.h"` - and build with `zig build-exe main.zig impl.c -lc -lm -I.`. Letting the C file tier do the loading and saving keeps Zig's own standard library out of it, which matters here because that library still moves between releases while this interop does not; checked on 0.16.
+
+### C, C++
+
+C and C++ have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit, and link `-lm`. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
+
+- Install: vendor `shcl.h`
+
+- Dependency line: pin the release tag
+
+```c
+#define SHCL_IMPLEMENTATION   // in exactly one translation unit
+#include "shcl.h"
+
+#define P(s) s, strlen(s)     // paths take a pointer and a length, not a NUL terminator
+
+// Reads and parses in one call, and never fails: the document comes back
+// usable either way, and the status tells missing apart from unreadable and
+// from parsed-with-errors. (shcl_parse takes text you already hold.)
+shcl_file_status st;
+shcl_doc *doc = shcl_load_file("server.shcl", &st);
+if (st == SHCL_FILE_NOT_FOUND)
+	puts("no config yet - starting from defaults");
+
+int64_t workers = shcl_get_int(doc, P("workers"), 4);
+
+// Strings keep the status tier, so missing and empty stay distinguishable
+shcl_read_str root = shcl_read_string(doc, P("site[example.com].root"));
+if (root.status == SHCL_GOOD)
+	printf("%.*s\n", (int)root.value.n, root.value.p);
+
+shcl_set_int(doc, P("workers"), workers * 2);
+shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1);
+shcl_set_string(doc, P("site[blog.example.com].root"), P("/srv/www/blog"));
+
+// Writes through a temp file and a rename, so an interrupted save cannot
+// truncate the config. SHCL_SAVE_REFUSED means the load dropped a line this
+// write would delete; shcl_save_file_lossy is the override.
+if (shcl_save_file(doc, "server.shcl") != SHCL_SAVE_OK)
+	fprintf(stderr, "could not save\n");
+
+shcl_free(doc);   // frees the document and everything handed out from it
+```
+
+The C binding uses `round()`, so link the math library - `cc -std=c11 -O2 ex.c -o ex -lm`. There are no per-object frees: reads hand back pointers into the document's arena, and the single `shcl_free` releases all of it, so anything you need afterwards must be copied out first. The file calls are an optional companion: `-DSHCL_NO_FILE_IO` compiles them out for an embedded target, leaving `shcl_parse` and `shcl_to_canonical` to work on text you hold yourself.
+
+### Bash
+
+The shell wrappers are not parsers; they wrap the CLI, which is why they inherit its conformance for free. Source one and you get typed sugar over the same commands:
+
+- Install: install the CLI, source the wrapper
+
+- Dependency line: n/a - it wraps the CLI
+
+```bash
+source shcl.bash
+
+workers=$(shcl_int --default=4 server.shcl workers)
+root=$(shcl_get --default='' server.shcl 'site[example.com].root')
+
+# Repeatable, applied in order; --write rewrites the file in place.
+shcl set --write server.shcl \
+    --set "workers=$((workers * 2))" \
+    --set 'site[example.com].tls.hsts=true' \
+    --set-literal 'cluster.hosts=a.example.com, b.example.com'
+```
+
+The two spellings differ in how the value is read. `--set` takes **data**: its type follows the text, so `workers=8` writes an integer, but a comma in it is content - `hosts=a, b` would store one quoted string. `--set-literal` takes **value syntax**, the way a file spells it, so that same text writes a two-element array. Reach for it whenever the value is not a plain scalar.
+
+Raw blocks, set-only-if-absent and removal have no option form; those go in as a write-ops script on stdin, one op per line, fields separated by a literal tab:
+
+```bash
+shcl set --write server.shcl <<OPS
+remove	site[old.example.com]
+raw	motd		Welcome.
+OPS
+```
+
+### PowerShell
+
+Dot-source it for the same helper names:
+
+```powershell
+. ./shcl.ps1
+
+$workers = [int](shcl_int --default=4 server.shcl workers)
+$root    = shcl_get --default='' server.shcl 'site[example.com].root'
+
+shcl set --write server.shcl `
+         --set "workers=$($workers * 2)" `
+         --set 'site[example.com].tls.hsts=true' `
+         --set-literal 'cluster.hosts=a.example.com, b.example.com'
+```
+
+The op-script form works here too - the sourced `shcl` forwards pipeline input to the binary:
+
+```powershell
+$ops = "remove`tsite[old.example.com]",
+       "raw`tmotd`t`tWelcome."
+$ops | shcl set --write server.shcl
+```
+
+### What saving does
+
+Three behaviors of the write half are easy to miss, and they are the same in every binding.
+
+Setters build whatever is missing along the path, so the `tls.hsts` and `blog.example.com` lines in the examples above arrive as a nested block and a new site instance without you assembling either.
+
+And saving rewrites the file in canonical form - spacing normalized, field names lowercased, the dotted `site[blog.example.com].tls.hsts` line folded into the block form it was always spelling - while **keeping your comments** attached to whatever they documented, including the one that travels with that folded line:
+
+```text
+# Flat, TOML-style settings
+listen: "0.0.0.0:443"
+workers: 8
+log-level: warn
+
+# Hierarchy when you need it: one instance per site
+site: example.com
+	root: /srv/www/example
+	max-upload-mb: 50
+	methods: GET, POST, HEAD
+	tls:
+		cert: /etc/ssl/example.pem
+		hsts: true
+
+# Repeating the field adds another site - arrays of objects
+# no syntax to invent
+site: blog.example.com
+	root: /srv/www/blog
+	tls:
+
+		# Dotted paths spell the same tree; add to any instance from anywhere
+		hsts: off
+
+# Multi-line content goes in a fenced block, kept verbatim
+maintenance-page:
+	~~~html
+	<h1>Down for maintenance - back in five.</h1>
+	~~~
+```
+
+That is the whole file after the edits, not an excerpt - a formatter that can survive a round trip through an editing tool is the point.
+
+And the save protects the file it is overwriting. It goes through a temp file in the same directory plus a rename, so an interrupted save cannot leave a truncated config behind, and a linked-in config is written through rather than replaced. It also refuses when the load dropped something the write would delete. A line the parser cannot read at all is kept verbatim and survives the save untouched, but a line it could read and not place - a stray indent, an impossible selector - has no safe spelling to re-emit, so it counts into `lost_count()` and the save stops rather than quietly dropping a line somebody typed. `save_file_lossy` is there for when deleting it is what you actually want, so it is always a stated choice.
+
+A setter returns failure - `false`, or `0` in C - when a path cannot be written at all. Wildcards are the usual case, since those are query-only. `write_reason(path)` says which of the five reasons applied.
+
+One read-side companion belongs with this: canonical output lowercases field names, and `source_name(path)` hands back the spelling the author actually used. It is what you want in a message about their file - reporting `Max-Upload-MB` as `max-upload-mb` reads like a different setting to the person who wrote it.
 
 ## Set up a development environment
 

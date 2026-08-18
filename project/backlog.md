@@ -228,12 +228,16 @@ None open.
 			- The veneer's `save_file` returned a bool, which folded the same two cases, so it returns the result type now - and gained `save_file_lossy`, since a refusal it cannot override is a dead end. The rest of item 21's veneer list is still open.
 			- New shared fixture in all four runners: the gate answers before any i/o, so a lost document saved to an unwritable path still reports the refusal, and a clean one reports the write failure. Nothing here is visible on stdout, so the corpus cannot see it.
 
-		- 🔘 Code Review 20260817 item 18: the documentation teaches the bug the file tier was built to remove.
+		- ✅ Code Review 20260817 item 18: the documentation teaches the bug the file tier was built to remove.
 			- Every headline example in the front-page readme and the per-binding readmes hand-rolls file i/o: a plain read, and a plain non-atomic write back. The file tier, the load status, the lost-line count and the as-authored name appear in no readme at all.
 			- A newcomer copying the example ships a config writer that can truncate a file on interrupt and silently drops lines the parser could not read.
 			- The package pages bake their readme in permanently at publish, so a bad example on the next cut is unfixable for that version.
 			- Also: the front-page readme states a schema-fault rule the code does not implement - a key-level fault no longer switches off the unknown-field sweep. The spec has it right; the readme is stale from that chunk.
 			- Also: installation sits about four fifths of the way down the front page, after seven language examples. The first screenful is good; the ordering is not.
+			- All seven front-page examples and both per-binding readmes load and save through the file tier now. The load status is in each one, and the lost count, the save gate and the as-authored name are in "What saving does". Features gained a file-tier bullet.
+			- Every example was compiled and run against the working tree, zig included - the c one under the readme's own `-std=c11` line. The zig note about its standard library moving between releases got shorter rather than longer: routing the file work through the c tier removes the part that was actually unstable.
+			- The schema-fault sentence now matches the code: a broken constraint keeps its entry so the sweep still runs, and only a lost path spelling turns it off.
+			- Installation moved above "Using the CLI" - install, then use, then embed. The one "below" in a cross-reference went with it.
 
 		- 🔘 Code Review 20260817 item 19: a setter returning false is a real failure mode that nothing makes discoverable.
 			- Setters report failure only through their return value, and every documented example discards it. The write-reason call exists, is well designed, and is referenced from nowhere a reader will look.

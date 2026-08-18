@@ -15,10 +15,14 @@ pip install shcl
 ## Use
 
 ```python
-from shcl import Document, Status
+from shcl import Document, FileStatus, Status
 
-with open("server.shcl", encoding="utf-8") as f:
-	doc = Document.parse(f.read())
+# Reads and parses in one call, and never raises: the document is usable
+# either way, and the status separates missing from unreadable from
+# parsed-with-errors.
+doc, file_status = Document.load_file("server.shcl")
+if file_status is FileStatus.NotFound:
+	print("no config yet - using defaults")
 
 # One call, a typed value, a visible fallback at the call site.
 limit = doc.get_int("site[example.com].max-upload-mb", default=10)
@@ -30,9 +34,15 @@ if r.status is not Status.Good:
 
 # Wildcards read across instances, with a status per slot.
 roots = doc.read_string_array("site[*].root")
+
+# Writes through a temp file and a rename, so an interrupted save cannot
+# truncate the config - and raises SaveRefused if the load dropped a line this
+# write would delete (save_file_lossy is the override).
+doc.set_int("site[example.com].max-upload-mb", limit * 2)
+doc.save_file("server.shcl")
 ```
 
-`Document.parse` never raises. When you want a hard error instead, use `Document.parse_with(text, Strictness.Strict)`, which raises `LoadError`. A `get_*` call with no `default=` raises `StatusError` rather than inventing a value.
+`Document.parse` never raises, and neither does `load_file`. When you want a hard error instead, use `Document.parse_with(text, Strictness.Strict)`, which raises `LoadError`. A `get_*` call with no `default=` raises `StatusError` rather than inventing a value.
 
 Also here: `merge` for layered config (defaults, site, user), `validate` against a schema that is itself a SHCL file, a full writer, and a canonical formatter that preserves comments.
 

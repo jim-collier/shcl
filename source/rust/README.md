@@ -21,10 +21,15 @@ cargo install shcl
 ## Use
 
 ```rust
-use shcl::Document;
+use shcl::{Document, FileStatus};
 
-let text = std::fs::read_to_string("server.shcl").unwrap();
-let doc = Document::parse(&text);
+// Reads and parses in one call, and never fails: the document is usable
+// either way, and the status separates missing from unreadable from
+// parsed-with-errors.
+let (mut doc, file_status) = Document::load_file("server.shcl");
+if file_status == FileStatus::NotFound {
+	eprintln!("no config yet - using defaults");
+}
 
 // One call, a typed value, a visible fallback at the call site.
 let limit = doc.get_int("site[example.com].max-upload-mb").unwrap_or(10);
@@ -37,9 +42,15 @@ if !r.ok() {
 
 // Wildcards read across instances, with a status per slot.
 let roots = doc.read_string_array("site[*].root");
+
+// Writes through a temp file and a rename, so an interrupted save cannot
+// truncate the config - and refuses if the load dropped a line this write
+// would delete (save_file_lossy is the override).
+doc.set_int("site[example.com].max-upload-mb", limit * 2);
+doc.save_file("server.shcl").unwrap();
 ```
 
-`Document::parse` never fails. When you want a hard error instead, use `Document::parse_with(&text, Strictness::Strict)`.
+`Document::parse` never fails, and neither does `load_file`. When you want a hard error instead, use `Document::parse_with(&text, Strictness::Strict)`.
 
 Also here: `merge` for layered config (defaults, site, user), `validate` against a schema that is itself a SHCL file, a full writer, and a canonical formatter that preserves comments.
 
