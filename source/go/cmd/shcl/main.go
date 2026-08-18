@@ -419,11 +419,14 @@ func readInput(file string) (string, error) {
 func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
 	doc, err := shcl.ParseWith(text, strictness)
 	if err != nil {
-		le := err.(*shcl.LoadError)
-		for _, d := range le.Diagnostics {
-			fmt.Fprintf(os.Stderr, "line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+		// Checked form: this is the top-level error path, so a future error type
+		// here has to report rather than panic.
+		if le, ok := err.(*shcl.LoadError); ok {
+			for _, d := range le.Diagnostics {
+				fmt.Fprintf(os.Stderr, "line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+			}
 		}
-		fmt.Fprintln(os.Stderr, le.Error())
+		fmt.Fprintln(os.Stderr, err)
 		return nil, 6
 	}
 	return doc, 0
@@ -1068,7 +1071,9 @@ func doCheck(o *opts) int {
 	var diags []shcl.Diagnostic
 	strictFailed := false
 	if doc, perr := shcl.ParseWith(text, o.strictness); perr != nil {
-		diags = perr.(*shcl.LoadError).Diagnostics
+		if le, ok := perr.(*shcl.LoadError); ok {
+			diags = le.Diagnostics
+		}
 		strictFailed = true
 	} else {
 		diags = doc.Diagnostics()

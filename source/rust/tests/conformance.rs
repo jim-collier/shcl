@@ -784,6 +784,10 @@ fn read_surface_line_quoted_children() {
 	assert_eq!(d2.source_name("missing"), "");
 	assert!(d2.set_int("NewTop.n", 1));
 	assert_eq!(d2.source_name("newtop"), "NewTop");
+	// Escapes are NOT resolved: a name is stored, compared and emitted in its
+	// escaped spelling, so resolving here would name a node that does not exist.
+	let d3 = Document::parse("\"Ab\\tCd\": 2\n");
+	assert_eq!(d3.source_name("\"ab\\tcd\""), "Ab\\tCd");
 }
 
 #[test]
@@ -801,6 +805,13 @@ fn file_tier_load_save() {
 	assert_eq!(st, FileStatus::NotFound);
 	let (_, st) = Document::load_file(dir.to_str().unwrap()); // a directory is not readable
 	assert_eq!(st, FileStatus::Unreadable);
+	// Bad encoding is unreadable too: the parser assumes well-formed text, so a
+	// binary file loading clean would read back mangled and a later save would
+	// write the mangled version over the original.
+	std::fs::write(&f, b"a: 1\nb: \xff\xfe bad\n").unwrap();
+	let (doc, st) = Document::load_file(fs);
+	assert_eq!(st, FileStatus::Unreadable);
+	assert_eq!(doc.to_canonical(), "");
 
 	std::fs::write(&f, "a: 1\n: broken\n").unwrap();
 	let (doc, st) = Document::load_file(fs);

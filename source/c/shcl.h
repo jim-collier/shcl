@@ -170,7 +170,7 @@ typedef enum {
 	SHCL_FILE_CLEAN,      /* read and parsed, no error diagnostics (hints allowed) */
 	SHCL_FILE_HAD_ERRORS, /* read and parsed, but error diagnostics are present */
 	SHCL_FILE_NOT_FOUND,  /* no file at the path */
-	SHCL_FILE_UNREADABLE  /* exists but could not be read (permissions, a directory) */
+	SHCL_FILE_UNREADABLE  /* exists but could not be read (permissions, a directory, bad encoding) */
 } shcl_file_status;
 shcl_doc *shcl_load_file(const char *path, shcl_file_status *status);
 shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status);
@@ -203,10 +203,13 @@ size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out
 size_t shcl_line(shcl_doc *d, const char *path, size_t plen);
 
 // The field name at a path exactly as the author spelled it (case unfolded,
-// quotes and escapes resolved), so a message can echo SYMBOLS when the file
-// said SYMBOLS. Resolution mirrors shcl_line: empty when the path does not
-// resolve to exactly one node. Merged instances keep the first binding's
-// spelling; a writer-built node keeps the spelling the setter's path used.
+// outer quotes stripped), so a message can echo SYMBOLS when the file said
+// SYMBOLS. Escape sequences stay as written: names carry their escaped
+// spelling everywhere - stored, compared, emitted, and in shcl_paths - so
+// resolving them here alone would hand back a string that no longer names the
+// node. Resolution mirrors shcl_line: empty when the path does not resolve to
+// exactly one node. Merged instances keep the first binding's spelling; a
+// writer-built node keeps the spelling the setter's path used.
 // Borrowed from the document's arena; valid until shcl_free.
 shcl_str shcl_source_name(shcl_doc *d, const char *path, size_t plen);
 // The plural shcl_line: 1-based source lines at a path, in file order, so a
@@ -2007,11 +2010,10 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			/* Content-malformed at any position, so it is safe to retain
 			   verbatim as trivia: re-emitted, it re-diagnoses identically and
 			   can never read as a live binding. A hand-typo no longer
-			   vanishes on the consumer's next save. The one exception is a
-			   leading BOM - the file-start strip would rewrite it, so that
-			   line counts as lost instead. */
-			if (rest.n >= 3 && (unsigned char)rest.p[0] == 0xEF && (unsigned char)rest.p[1] == 0xBB && (unsigned char)rest.p[2] == 0xBF) d->lost++;
-			else {
+			   vanishes on the consumer's next save. The BOM exception the
+			   sibling site below carries cannot apply here: this line starts
+			   with the '*' that brought us in. */
+			{
 				Pend pd; pd.text = s_dup(a, trim_end(rest)); pd.indent = s_dup(a, indent); pd.blank_before = had_blank;
 				VecPend_push(a, &P.pending, pd);
 			}
@@ -4225,6 +4227,27 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	return ok ? 1 : 0;
 }
 
+// Whole-buffer UTF-8 validation. The parser assumes well-formed input, so the
+// file tier has to reject bad bytes the way the reference's read-to-string and
+// python's decoding open do.
+static int shcl_utf8_valid(const char *p, size_t n) {
+	size_t i = 0;
+	while (i < n) {
+		unsigned char c = (unsigned char)p[i];
+		if (c < 0x80) { i++; continue; }
+		size_t need; uint32_t cp; uint32_t lo;
+		if ((c >> 5) == 0x6) { need = 1; cp = c & 0x1F; lo = 0x80; }
+		else if ((c >> 4) == 0xE) { need = 2; cp = c & 0x0F; lo = 0x800; }
+		else if ((c >> 3) == 0x1E) { need = 3; cp = c & 0x07; lo = 0x10000; }
+		else return 0;
+		if (i + need >= n) return 0;
+		for (size_t k = 1; k <= need; k++) { unsigned char cc = (unsigned char)p[i + k]; if ((cc & 0xC0) != 0x80) return 0; cp = (cp << 6) | (cc & 0x3F); }
+		if (cp < lo || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
+		i += need + 1;
+	}
+	return 1;
+}
+
 // File tier, load half: read and parse PATH. Never fails - the document
 // always comes back usable (empty when the file could not be read), and the
 // status out-param separates the four cases consumers otherwise confuse:
@@ -4253,6 +4276,16 @@ shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_sta
 	}
 	fclose(f);
 	if (rerr) {
+		free(buf);
+		if (status) *status = SHCL_FILE_UNREADABLE;
+		return shcl_parse_with("", 0, s);
+	}
+	// The read succeeds on any bytes, unlike the reference's read-to-string and
+	// python's decoding open - so bad encoding needs its own test, or a binary
+	// file loads clean, reads back mangled, and a later save writes the mangled
+	// version over the original. Its own copy rather than the CLI's: that one
+	// also gates argv and stdin, which exist with the file tier compiled out.
+	if (!shcl_utf8_valid(buf, len)) {
 		free(buf);
 		if (status) *status = SHCL_FILE_UNREADABLE;
 		return shcl_parse_with("", 0, s);

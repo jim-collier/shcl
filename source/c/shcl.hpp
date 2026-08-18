@@ -11,6 +11,8 @@
 
 #include "shcl.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,19 +34,23 @@ struct Diagnostic { std::size_t line; bool is_error; std::string message; std::s
 
 // Owning structured datetime. The core's shcl_datetime borrows its frac digits
 // from the document's arena; this copies them so the value keeps the veneer's
-// RAII promise and may outlive the Document. Copies/moves re-point the C view
-// at their own storage.
+// RAII promise and may outlive the Document. Copies and moves re-point the C
+// view at their own storage - a move re-points the source's too, or the
+// moved-from object keeps a view into storage it just handed away.
 class Datetime {
 	shcl_datetime v_{};
 	std::string frac_;
-	void rebind() { v_.frac.p = frac_.data(); v_.frac.n = frac_.size(); }
+	// The view always describes this object's own storage, has_frac included -
+	// so a moved-from Datetime, whose string is emptied, cannot go on formatting
+	// a fraction it no longer holds.
+	void rebind() { v_.frac.p = frac_.data(); v_.frac.n = frac_.size(); v_.has_frac = !frac_.empty(); }
 public:
 	Datetime() { v_.zone = SHCL_ZONE_NONE; }
 	explicit Datetime(const shcl_datetime &v) : v_(v), frac_(v.frac.p ? std::string(v.frac.p, v.frac.n) : std::string()) { rebind(); }
 	Datetime(const Datetime &o) : v_(o.v_), frac_(o.frac_) { rebind(); }
 	Datetime &operator=(const Datetime &o) { v_ = o.v_; frac_ = o.frac_; rebind(); return *this; }
-	Datetime(Datetime &&o) noexcept : v_(o.v_), frac_(std::move(o.frac_)) { rebind(); }
-	Datetime &operator=(Datetime &&o) noexcept { v_ = o.v_; frac_ = std::move(o.frac_); rebind(); return *this; }
+	Datetime(Datetime &&o) noexcept : v_(o.v_), frac_(std::move(o.frac_)) { rebind(); o.rebind(); }
+	Datetime &operator=(Datetime &&o) noexcept { v_ = o.v_; frac_ = std::move(o.frac_); rebind(); o.rebind(); return *this; }
 	// The C view, for shcl_datetime_str and friends: valid as long as *this.
 	const shcl_datetime &c() const noexcept { return v_; }
 	// The reference's textual form.
@@ -75,7 +81,9 @@ public:
 	// text atomically - the CLI --write mechanics.
 	enum class FileStatus { Clean = SHCL_FILE_CLEAN, HadErrors = SHCL_FILE_HAD_ERRORS, NotFound = SHCL_FILE_NOT_FOUND, Unreadable = SHCL_FILE_UNREADABLE };
 	static Document load_file(const std::string &path, FileStatus *status = nullptr) {
-		shcl_file_status cs;
+		// Initialized: an out-parameter the caller reads unconditionally should
+		// never depend on the callee having written it.
+		shcl_file_status cs = SHCL_FILE_UNREADABLE;
 		Document d(shcl_load_file(path.c_str(), &cs));
 		if (status) *status = static_cast<FileStatus>(cs);
 		return d;
@@ -163,8 +171,9 @@ public:
 	std::size_t line(std::string_view p) const { return shcl_line(d_, p.data(), p.size()); }
 
 	// The field name at a path exactly as the author spelled it (case
-	// unfolded, quotes and escapes resolved); empty when the path does not
-	// resolve to exactly one node.
+	// unfolded, outer quotes stripped - escape sequences stay as written, the
+	// way every other name operation treats them); empty when the path does
+	// not resolve to exactly one node.
 	std::string source_name(std::string_view p) const { return to_str(shcl_source_name(d_, p.data(), p.size())); }
 
 	// The plural line(): 1-based source lines at a path, in file order, so a

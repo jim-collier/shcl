@@ -759,6 +759,12 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	if got := d2.SourceName("newtop"); got != "NewTop" {
 		t.Errorf("SourceName(newtop): got %q", got)
 	}
+	// Escapes are NOT resolved: a name is stored, compared and emitted in its
+	// escaped spelling, so resolving here would name a node that does not exist.
+	d3 := Parse("\"Ab\\tCd\": 2\n")
+	if got := d3.SourceName("\"ab\\tcd\""); got != "Ab\\tCd" {
+		t.Errorf("SourceName escaped: got %q", got)
+	}
 }
 
 func TestFileTierLoadSave(t *testing.T) {
@@ -773,6 +779,15 @@ func TestFileTierLoadSave(t *testing.T) {
 	}
 	if _, st := LoadFile(dir); st != FileUnreadable { // a directory is not readable
 		t.Errorf("directory: got status %v", st)
+	}
+	// Bad encoding is unreadable too: the parser assumes well-formed text, so a
+	// binary file loading clean would read back mangled and a later save would
+	// write the mangled version over the original.
+	if err := os.WriteFile(f, []byte("a: 1\nb: \xff\xfe bad\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d, st := LoadFile(f); st != FileUnreadable || d.ToCanonical() != "" {
+		t.Errorf("bad encoding: got status %v canonical %q", st, d.ToCanonical())
 	}
 
 	if err := os.WriteFile(f, []byte("a: 1\n: broken\n"), 0o644); err != nil {
