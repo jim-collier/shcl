@@ -52,10 +52,6 @@ None open.
 
 ### Features and enhancements
 
-- 🔘 By-value selectors: distinguish scalar `"a, b"` from list `a, b`.
-	- From convert-base-v2, still open at v1.2.0 - the earlier round closed it as a spec paragraph only. Both spellings meet the same selector because matching is against the display form, and the read comes back Multiple.
-	- Needs a matching-rule decision; behavior change, corpus impact.
-
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
 	- Type via a typed entry point or compile-time generic, never a runtime type field:
@@ -147,6 +143,11 @@ None open.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 
 #### Done - Features and enhancements
+
+- ✅ A quoted by-value selector is scalar-only.
+	- From convert-base-v2, still open at v1.2.0: the scalar `"a, b"` and the list `a, b` met the same selector (display-form matching), so the read could only come back Multiple.
+	- Done, all four bindings: `x["a, b"]` matches only a single-element value whose logical string equals the text; bare selectors keep the whole-display match, so existing paths behave identically. The quoted flag rides the scanner's selector, the parser accelerator gets a rare fallback scan, and the generator re-emits quoted selectors quoted.
+	- Root cause of one C-only corpus failure en route: the flag was uninitialized on the bare path - fixed at the single declaration site. New case 050; spec selector prose updated in both places; decision in `design.md`.
 
 - ✅ Hand-edited configs are structurally safe across a round trip.
 	- From nemo-anywhere, their strongest ask: a malformed line was diagnosed and dropped, so a stray typo plus one settings change equaled a silently vanished hand-written line on write-back.

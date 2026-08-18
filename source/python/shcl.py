@@ -658,6 +658,13 @@ def _apply_escapes(s):
 	return "".join(out)
 
 
+def _single_scalar(v):
+	"""The restriction a QUOTED [value] selector adds on top of the display
+	match: quoting selects the scalar spelling only, so the scalar "a, b" and
+	the list a, b stop meeting the same selector."""
+	return v.kind == "cell" and v.els is not None and len(v.els) == 1
+
+
 def _disp_key(v):
 	"""The predicate a `[value]` selector matches with: display form with escapes
 	applied on both sides, so `["q\\"uote"]` finds `'q"uote'` - a logical-string
@@ -691,7 +698,11 @@ def _is_fence_close(line, ch, min_len):
 # ---------------------------------------------------------------------------
 # Path scanner (shared by file lines and accessor queries)
 # ---------------------------------------------------------------------------
-# Selector is a tuple: ("val", str) | ("idx", int) | ("wild", None).
+# Selector is a tuple: ("val", str, quoted) | ("idx", int) | ("wild", None).
+# quoted: the selector text was quoted in the path. A quoted selector is
+# scalar-only - it matches a single-element value whose logical string equals
+# the text - so quoting distinguishes the scalar "a, b" from the two-element
+# list a, b, the same way quoting escapes elsewhere.
 
 
 class _Segment:
@@ -808,7 +819,7 @@ def _scan_path_ex(inp, stars):
 			pos = skip_ws(bracket_at + 1)
 			if pos < n and (chars[pos] == '"' or chars[pos] == "'"):
 				v, pos = read_quoted(pos)
-				selector = ("val", v)   # quotes force a value match, even numeric
+				selector = ("val", v, True)   # quotes force a value match, even numeric - and scalar-only
 			else:
 				start = pos
 				while pos < n and chars[pos] != "]":
@@ -823,7 +834,7 @@ def _scan_path_ex(inp, stars):
 				elif body == "":
 					raise _PathError("empty selector")
 				else:
-					selector = ("val", _normalize_dangling_backslash(body))
+					selector = ("val", _normalize_dangling_backslash(body), False)
 			pos = skip_ws(pos)
 			if pos >= n or chars[pos] != "]":
 				raise _PathError("unterminated selector")
@@ -1043,7 +1054,18 @@ class _Parser:
 				# creating a spurious second one - via the disp_map accelerator
 				# (the inline spelling was quadratic in siblings without it).
 				# Create only when nothing matches.
-				found = self.disp_map[cur].get((seg.name, _apply_escapes(sel[1])))
+				# A quoted selector is scalar-only; the accelerator keeps the
+				# first same-display child, so when that one is not a scalar
+				# the (rare) fallback scan looks for one that is.
+				want = _apply_escapes(sel[1])
+				found = self.disp_map[cur].get((seg.name, want))
+				if found is not None and sel[2] and not _single_scalar(self.arena[found].value):
+					found = None
+					for c in self.arena[cur].children:
+						nd = self.arena[c]
+						if nd.name == seg.name and _single_scalar(nd.value) and _disp_key(nd.value) == want:
+							found = c
+							break
 				if found is not None:
 					cur = found
 				else:
@@ -1696,7 +1718,7 @@ class Document:
 				cur = nxt
 			elif sel[0] == "val":
 				want = _apply_escapes(sel[1])
-				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want]
+				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
 			elif sel[0] == "idx":
 				k = sel[1]
 				cur = [nxt[k]] if k < len(nxt) else []
@@ -1893,7 +1915,7 @@ class Document:
 					want = _apply_escapes(sel[1])
 					found = None
 					for c in self.arena[probe].children:
-						if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want:
+						if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value)):
 							found = c
 							break
 					probe = found
@@ -1931,7 +1953,7 @@ class Document:
 				want = _apply_escapes(sel[1])
 				found = None
 				for c in self.arena[cur].children:
-					if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want:
+					if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value)):
 						found = c
 						break
 				cur = found if found is not None else self._new_child(cur, seg.name, seg.name_src, _cell_of(sel[1]))
@@ -2541,7 +2563,7 @@ class Document:
 				cur = nxt
 			elif sel[0] == "val":
 				want = _apply_escapes(sel[1])
-				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want]
+				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
 			elif sel[0] == "idx":
 				cur = [nxt[sel[1]]] if sel[1] < len(nxt) else []
 			else:
@@ -3937,7 +3959,7 @@ def _gen_path_text(segs):
 			out.append(_emit_name(s.name))
 		if s.selector is not None:
 			if s.selector[0] == "val":
-				out.append("[{}]".format(s.selector[1]))
+				out.append("[{}]".format(_quote_text(s.selector[1]) if s.selector[2] else s.selector[1]))
 			elif s.selector[0] == "idx":
 				out.append("[#{}]".format(s.selector[1]))
 			# a wildcard selector is dropped
