@@ -324,15 +324,18 @@ def write_back(doc, file, o):
 	# disagree about which rewrites are safe.
 	for d in doc.diagnostics():
 		sys.stderr.write("line {}: {}: {} {}\n".format(d.line, d.severity.name, d.code, d.message))
-	err = doc.save_file_lossy(file) if o.lossy else doc.save_file(file)
-	if err is None:
+	try:
+		if o.lossy:
+			doc.save_file_lossy(file)
+		else:
+			doc.save_file(file)
 		return 0
 	# The rule stays in the library; only the wording is the CLI's, because the
 	# override a user has here is a flag, not a function.
-	if not o.lossy and doc.lost_count() > 0:
-		sys.stderr.write("{}: refusing to rewrite: the load dropped {} line(s)/value(s) this write would delete (--lossy overrides)\n".format(file, doc.lost_count()))
-	else:
-		sys.stderr.write(err + "\n")
+	except shcl.SaveRefused as e:
+		sys.stderr.write("{}: refusing to rewrite: the load dropped {} line(s)/value(s) this write would delete (--lossy overrides)\n".format(file, e.lost))
+	except shcl.SaveError as e:
+		sys.stderr.write(str(e) + "\n")
 	return 1
 
 

@@ -636,8 +636,11 @@ def main():
 		_, fst = shcl.Document.load_file("a\0b")
 		if fst != shcl.FileStatus.Unreadable:
 			raise SystemExit("load_file NUL path got {}".format(fst))
-		if shcl.Document.parse("a: 1").save_file("a\0b") is None:
+		try:
+			shcl.Document.parse("a: 1").save_file("a\0b")
 			raise SystemExit("save_file NUL path reported success")
+		except shcl.SaveFailed:
+			pass
 		# Also python-only: an int outside the 64-bit range the other three
 		# bindings use writes text every reader calls bad-type, so the setter
 		# refuses instead. The edges themselves still write.
@@ -689,8 +692,7 @@ def main():
 			raise SystemExit("load_file clean got {}".format(fst))
 		if not fdoc.set_int("c", 3):
 			raise SystemExit("set_int c failed")
-		if fdoc.save_file(fpath) is not None:
-			raise SystemExit("save_file failed")
+		fdoc.save_file(fpath)
 		fback, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.Clean or fback.to_canonical() != fdoc.to_canonical():
 			raise SystemExit("save round-trip mismatch")
@@ -706,15 +708,33 @@ def main():
 		lostdoc = shcl.Document.parse("a:\n\tb: 1\n  c: 2\n")  # indent matches no level
 		if lostdoc.lost_count() != 1:
 			raise SystemExit("lost lost_count got {}".format(lostdoc.lost_count()))
-		if kept.save_file(fpath) is not None:
-			raise SystemExit("kept save_file failed")
+		kept.save_file(fpath)
 		kback, _ = shcl.Document.load_file(fpath)
 		if "square-miles 300\n" not in kback.to_canonical():
 			raise SystemExit("retained line lost through save round-trip")
-		if lostdoc.save_file(fpath) is None:
+		try:
+			lostdoc.save_file(fpath)
 			raise SystemExit("save_file did not refuse a lossy save")
-		if lostdoc.save_file_lossy(fpath) is not None:
-			raise SystemExit("save_file_lossy failed")
+		except shcl.SaveRefused:
+			pass
+		lostdoc.save_file_lossy(fpath)
+		# A refusal and a failed write are separate classes, not two spellings of
+		# one message, and the gate answers before any i/o - so an unwritable path
+		# still reports the refusal. Same fixture in every runner.
+		bad = os.path.join(td, "nope", "t.shcl")
+		try:
+			kept.save_file(bad)
+			raise SystemExit("save_file to an unwritable path reported success")
+		except shcl.SaveRefused:
+			raise SystemExit("a failed write reported as a refusal")
+		except shcl.SaveFailed:
+			pass
+		try:
+			lostdoc.save_file(bad)
+			raise SystemExit("save_file did not refuse an unwritable path")
+		except shcl.SaveRefused as e:
+			if e.lost != 1:
+				raise SystemExit("SaveRefused lost got {}".format(e.lost))
 	# A failed strict load hands back the document and names the first
 	# failures in the message - the diagnostics are the point.
 	try:

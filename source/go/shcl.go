@@ -2227,20 +2227,36 @@ func LoadFileWith(path string, level Strictness) (*Document, FileStatus) {
 	return doc, FileClean
 }
 
+// SaveRefused is the error SaveFile returns when the lost-content gate fires.
+// It is its own type so a caller can tell a refusal from a write failure with
+// errors.As rather than by matching on the message: a refusal is the caller's
+// to reverse (SaveFileLossy is the override), a write failure is the disk's
+// answer.
+type SaveRefused struct {
+	Path string
+	Lost int // lines/values the load dropped (see LostCount)
+}
+
+func (e *SaveRefused) Error() string {
+	return fmt.Sprintf("%s: refusing to save: load dropped %d line(s)/value(s) this write would delete (see diagnostics; SaveFileLossy overrides)", e.Path, e.Lost)
+}
+
 // SaveFile is the file tier's save half: write this document's canonical text
 // to path through WriteFileAtomic, so an interrupted save can never truncate
 // the config it rewrites - the same mechanics the CLI's `--write` uses.
 // Refuses when parsing lost content that a save would silently delete (see
-// LostCount); SaveFileLossy writes anyway.
+// LostCount); SaveFileLossy writes anyway. A refusal comes back as
+// *SaveRefused, a write failure as the wrapped i/o error.
 func (d *Document) SaveFile(path string) error {
 	if d.lost > 0 {
-		return fmt.Errorf("%s: refusing to save: load dropped %d line(s)/value(s) this write would delete (see diagnostics; SaveFileLossy overrides)", path, d.lost)
+		return &SaveRefused{Path: path, Lost: d.lost}
 	}
 	return WriteFileAtomic(path, d.ToCanonical())
 }
 
 // SaveFileLossy is SaveFile without the lost-content gate: writes even when
-// parsing dropped lines this save deletes. The caller owns that choice.
+// parsing dropped lines this save deletes. The caller owns that choice. It
+// never returns *SaveRefused - the gate is the one thing it skips.
 func (d *Document) SaveFileLossy(path string) error {
 	return WriteFileAtomic(path, d.ToCanonical())
 }

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -452,8 +453,9 @@ func writeBack(doc *shcl.Document, file string, o *opts) int {
 	}
 	// The rule stays in the library; only the wording is the CLI's, because the
 	// override a user has here is a flag, not a function.
-	if !o.lossy && doc.LostCount() > 0 {
-		fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the load dropped %d line(s)/value(s) this write would delete (--lossy overrides)\n", file, doc.LostCount())
+	var refused *shcl.SaveRefused
+	if errors.As(werr, &refused) {
+		fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the load dropped %d line(s)/value(s) this write would delete (--lossy overrides)\n", file, refused.Lost)
 	} else {
 		fmt.Fprintln(os.Stderr, werr)
 	}

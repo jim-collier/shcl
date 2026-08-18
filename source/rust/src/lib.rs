@@ -146,6 +146,33 @@ pub enum FileStatus {
 	Unreadable, // exists but could not be read (permissions, a directory, bad encoding)
 }
 
+/// Why a save did not happen. The two cases need different handling, so they
+/// are separate values rather than two spellings of one message: `Refused` is
+/// the lost-content gate, which the caller can reverse with `save_file_lossy`,
+/// and `Io` is the disk's answer, which they cannot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveError {
+	/// The load dropped content this save would delete (see `lost_count`).
+	Refused { path: String, lost: usize },
+	/// The write itself failed; carries the reported message.
+	Io(String),
+}
+
+impl std::fmt::Display for SaveError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			SaveError::Refused { path, lost } => write!(
+				f,
+				"{}: refusing to save: load dropped {} line(s)/value(s) this write would delete (see diagnostics; save_file_lossy overrides)",
+				path, lost
+			),
+			SaveError::Io(m) => f.write_str(m),
+		}
+	}
+}
+
+impl std::error::Error for SaveError {}
+
 /// Why a write would fail (`write_reason()`): the distinctions behind a
 /// setter's bare `false`. `Writable` = the path passes the writer's
 /// validation; the rest name the five ways it cannot.
@@ -1806,23 +1833,25 @@ impl Document {
 	/// File tier, save half: write this document's canonical text to PATH
 	/// through a temp file in the same directory plus a rename, so an
 	/// interrupted save can never truncate the config it rewrites - the same
-	/// mechanics the CLI's `--write` uses. Err carries the message. Refuses
-	/// when parsing lost content that a save would silently delete (see
-	/// lost_count); save_file_lossy writes anyway.
-	pub fn save_file(&self, path: &str) -> Result<(), String> {
+	/// mechanics the CLI's `--write` uses. Refuses when parsing lost content
+	/// that a save would silently delete (see lost_count); save_file_lossy
+	/// writes anyway. The Err tells the two apart without matching on prose:
+	/// SaveError::Refused is the gate, SaveError::Io is the write failing.
+	pub fn save_file(&self, path: &str) -> Result<(), SaveError> {
 		if self.lost > 0 {
-			return Err(format!(
-				"{}: refusing to save: load dropped {} line(s)/value(s) this write would delete (see diagnostics; save_file_lossy overrides)",
-				path, self.lost
-			));
+			return Err(SaveError::Refused {
+				path: path.to_string(),
+				lost: self.lost,
+			});
 		}
-		write_file_atomic(path, &self.to_canonical())
+		write_file_atomic(path, &self.to_canonical()).map_err(SaveError::Io)
 	}
 
 	/// save_file without the lost-content gate: writes even when parsing
-	/// dropped lines this save deletes. The caller owns that choice.
-	pub fn save_file_lossy(&self, path: &str) -> Result<(), String> {
-		write_file_atomic(path, &self.to_canonical())
+	/// dropped lines this save deletes. The caller owns that choice. Only ever
+	/// Errs with SaveError::Io - the gate is the one thing it skips.
+	pub fn save_file_lossy(&self, path: &str) -> Result<(), SaveError> {
+		write_file_atomic(path, &self.to_canonical()).map_err(SaveError::Io)
 	}
 
 	/// Canonical form: block layout, tabs, insertion order, minimal quoting,

@@ -379,12 +379,12 @@ static int write_back(shcl_doc *d, const char *file, Opts *o) {
 		fprintf(stderr, "line %zu: %s: %s ", shcl_diag_line(d, i), sev, shcl_diag_code(d, i));
 		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 	}
-	if (o->lossy ? shcl_save_file_lossy(d, file) : shcl_save_file(d, file)) return 0;
+	shcl_save_result r = o->lossy ? shcl_save_file_lossy(d, file) : shcl_save_file(d, file);
+	if (r == SHCL_SAVE_OK) return 0;
 	// The rule stays in the library; only the wording is the CLI's, because the
 	// override a user has here is a flag, not a function.
-	size_t lost = shcl_lost_count(d);
-	if (!o->lossy && lost > 0)
-		fprintf(stderr, "%s: refusing to rewrite: the load dropped %zu line(s)/value(s) this write would delete (--lossy overrides)\n", file, lost);
+	if (r == SHCL_SAVE_REFUSED)
+		fprintf(stderr, "%s: refusing to rewrite: the load dropped %zu line(s)/value(s) this write would delete (--lossy overrides)\n", file, shcl_lost_count(d));
 	else
 		fprintf(stderr, "%s: %s\n", file, strerror(errno));
 	return 1;

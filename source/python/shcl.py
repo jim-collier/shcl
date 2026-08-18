@@ -163,6 +163,25 @@ class LoadError(Exception):
 		super().__init__(msg)
 
 
+class SaveError(Exception):
+	"""Base for the two ways a save does not happen. They are separate classes
+	so a caller can tell them apart with `except` rather than by matching on the
+	message: a refusal is theirs to reverse, a write failure is not."""
+
+
+class SaveRefused(SaveError):
+	"""The lost-content gate fired: the load dropped content this save would
+	delete (see lost_count). save_file_lossy is the override."""
+	def __init__(self, path, lost):
+		self.path = path
+		self.lost = lost
+		super().__init__("{}: refusing to save: load dropped {} line(s)/value(s) this write would delete (see diagnostics; save_file_lossy overrides)".format(path, lost))
+
+
+class SaveFailed(SaveError):
+	"""The write itself failed; the message is what the system reported."""
+
+
 class ShclDateTime:
 	"""Local (floating) date/time unless a zone suffix was present. Fields mirror
 	what was written: a date-only value has no time, and vice versa."""
@@ -1504,17 +1523,24 @@ class Document:
 		"""File tier, save half: write this document's canonical text to path
 		through a temp file in the same directory plus a rename, so an
 		interrupted save can never truncate the config it rewrites - the same
-		mechanics the CLI's --write uses. Returns None on success, or the
-		error message. Refuses when parsing lost content that a save would
-		silently delete (see lost_count); save_file_lossy writes anyway."""
+		mechanics the CLI's --write uses. Refuses when parsing lost content that
+		a save would silently delete (see lost_count); save_file_lossy writes
+		anyway. Raises SaveRefused for the gate and SaveFailed for a failed
+		write: returning the message instead would let the obvious spelling -
+		the call on a line of its own - report success while doing nothing."""
 		if self._lost > 0:
-			return "{}: refusing to save: load dropped {} line(s)/value(s) this write would delete (see diagnostics; save_file_lossy overrides)".format(path, self._lost)
-		return write_file_atomic(path, self.to_canonical())
+			raise SaveRefused(path, self._lost)
+		err = write_file_atomic(path, self.to_canonical())
+		if err is not None:
+			raise SaveFailed(err)
 
 	def save_file_lossy(self, path):
 		"""save_file without the lost-content gate: writes even when parsing
-		dropped lines this save deletes. The caller owns that choice."""
-		return write_file_atomic(path, self.to_canonical())
+		dropped lines this save deletes. The caller owns that choice. Never
+		raises SaveRefused - the gate is the one thing it skips."""
+		err = write_file_atomic(path, self.to_canonical())
+		if err is not None:
+			raise SaveFailed(err)
 
 	def diagnostics(self):
 		return self.diags
