@@ -603,25 +603,25 @@ def main():
 		raise SystemExit("top-level children() got {}".format(ldoc.children("")))
 	if ldoc.children("missing"):
 		raise SystemExit("children() on missing path not empty")
-	# source_name(): the author's spelling, unfolded; merged instances keep
+	# authored_name(): the author's spelling, unfolded; merged instances keep
 	# the first binding's; unresolved or Multiple is empty; writer-built
 	# keeps the setter path's spelling.
 	sdoc2 = shcl.Document.parse("SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n")
-	if sdoc2.source_name("symbols") != "SYMBOLS":
-		raise SystemExit("source_name(symbols) got {}".format(sdoc2.source_name("symbols")))
-	if sdoc2.source_name("code") != "Code":
-		raise SystemExit("source_name(code) got {}".format(sdoc2.source_name("code")))
-	if sdoc2.source_name("missing") != "":
-		raise SystemExit("source_name(missing) not empty")
+	if sdoc2.authored_name("symbols") != "SYMBOLS":
+		raise SystemExit("authored_name(symbols) got {}".format(sdoc2.authored_name("symbols")))
+	if sdoc2.authored_name("code") != "Code":
+		raise SystemExit("authored_name(code) got {}".format(sdoc2.authored_name("code")))
+	if sdoc2.authored_name("missing") != "":
+		raise SystemExit("authored_name(missing) not empty")
 	if not sdoc2.set_int("NewTop.n", 1):
 		raise SystemExit("set_int NewTop.n failed")
-	if sdoc2.source_name("newtop") != "NewTop":
-		raise SystemExit("source_name(newtop) got {}".format(sdoc2.source_name("newtop")))
+	if sdoc2.authored_name("newtop") != "NewTop":
+		raise SystemExit("authored_name(newtop) got {}".format(sdoc2.authored_name("newtop")))
 	# Escapes are NOT resolved: a name is stored, compared and emitted in its
 	# escaped spelling, so resolving here would name a node that does not exist.
 	sdoc3 = shcl.Document.parse('"Ab\\tCd": 2\n')
-	if sdoc3.source_name('"ab\\tcd"') != "Ab\\tCd":
-		raise SystemExit("source_name escaped got {!r}".format(sdoc3.source_name('"ab\\tcd"')))
+	if sdoc3.authored_name('"ab\\tcd"') != "Ab\\tCd":
+		raise SystemExit("authored_name escaped got {!r}".format(sdoc3.authored_name('"ab\\tcd"')))
 	# load_file/save_file: the status separates absent / unreadable / parsed
 	# with errors / clean, and a save round-trips through the atomic write.
 	# Same fixture in every runner.

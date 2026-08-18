@@ -486,7 +486,7 @@ func (v *value) isEmpty() bool {
 type nodeData struct {
 	name string // ASCII-folded to lower; non-ASCII never folds
 	// The name as the author spelled it (case unfolded, quotes and escapes
-	// resolved) - what SourceName() hands back. Merged instances keep the
+	// resolved) - what AuthoredName() hands back. Merged instances keep the
 	// first binding's spelling, like Line() and comments.
 	nameSrc   string
 	value     value
@@ -2655,7 +2655,7 @@ func (d *Document) Line(path string) int {
 	return d.arena[r.one].line
 }
 
-// SourceName is the field name at a path exactly as the author spelled it
+// AuthoredName is the field name at a path exactly as the author spelled it
 // (case unfolded, outer quotes stripped), so a message can echo `SYMBOLS` when
 // the file said SYMBOLS. Escape sequences stay as written: names carry their
 // escaped spelling everywhere - stored, compared, emitted, and in Paths() - so
@@ -2663,7 +2663,7 @@ func (d *Document) Line(path string) int {
 // node. Resolution mirrors Line(): empty when the path does not resolve to
 // exactly one node. Merged instances keep the first binding's spelling; a
 // writer-built node keeps the spelling the setter's path used.
-func (d *Document) SourceName(path string) string {
+func (d *Document) AuthoredName(path string) string {
 	r, ok := d.resolve(path)
 	if !ok || r.kind != resOne {
 		return ""

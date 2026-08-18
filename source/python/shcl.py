@@ -403,7 +403,7 @@ class _Node:
 	def __init__(self, name, value, parent, line, name_src=""):
 		self.name = name          # ASCII-folded to lower; non-ASCII never folds
 		# The name as the author spelled it (case unfolded, quotes and escapes
-		# resolved) - what source_name() hands back. Merged instances keep the
+		# resolved) - what authored_name() hands back. Merged instances keep the
 		# first binding's spelling, like line() and comments.
 		self.name_src = name_src
 		self.value = value
@@ -1840,7 +1840,7 @@ class Document:
 			return self.arena[r[1]].line
 		return 0
 
-	def source_name(self, path):
+	def authored_name(self, path):
 		"""The field name at a path exactly as the author spelled it (case
 		unfolded, outer quotes stripped), so a message can echo `SYMBOLS` when
 		the file said SYMBOLS. Escape sequences stay as written: names carry

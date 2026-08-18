@@ -441,7 +441,7 @@ struct NodeData {
 	// the display form.
 	src: Option<String>,
 	// The name as the author spelled it (case unfolded, quotes and escapes
-	// resolved) - what source_name() hands back. Merged instances keep the
+	// resolved) - what authored_name() hands back. Merged instances keep the
 	// first binding's spelling, like line() and comments.
 	name_src: String,
 }
@@ -2458,7 +2458,7 @@ impl Document {
 	/// does not resolve to exactly one node. Merged instances keep the first
 	/// binding's spelling; a writer-built node keeps the spelling the setter's
 	/// path used.
-	pub fn source_name(&self, path: &str) -> String {
+	pub fn authored_name(&self, path: &str) -> String {
 		match self.resolve(path) {
 			Ok(Resolved::One(n)) => self.arena[n].name_src.clone(),
 			_ => String::new(),
