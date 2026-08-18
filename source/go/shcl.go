@@ -261,6 +261,13 @@ type Read[T any] struct {
 	Quoted bool
 }
 
+// Ok reports whether the author addressed this field at all: Good or Empty.
+// Note this deliberately answers differently from the *Or tier, which falls
+// back on Empty like any other non-Good read - Ok asks "is this field spoken
+// for", GetIntOr asks "do I have a usable value", and an explicitly emptied
+// field is the case where those two diverge.
+func (r Read[T]) Ok() bool { return r.Status == Good || r.Status == Empty }
+
 func (r Read[T]) at(line int, quoted bool) Read[T] {
 	r.Line = line
 	r.Quoted = quoted
@@ -5258,6 +5265,11 @@ func min3(a, b, c int) int {
 // the schema a path spelling (an unreadable `field:` path, or a mount naming
 // no declared fragment) - only those can turn declared fields into false
 // unknowns; a key-level fault keeps its entry's chain.
+// The H001/H002 hints a schema disavows are NOT dropped by this call: they
+// live on the parse's diagnostics, which validation does not touch. Parse then
+// validate and they are still there - apply SuppressDeclaredRepeats /
+// SuppressDeclaredReopens yourself, or use LoadAndValidate, which runs both
+// for you.
 func (d *Document) Validate(schema *Document) []Diagnostic {
 	def, faults := buildSchema(schema)
 	out := faults

@@ -232,6 +232,11 @@ impl<T> Read<T> {
 		self.quoted = quoted;
 		self
 	}
+	/// Whether the author addressed this field at all: `Good` or `Empty`. Note
+	/// this deliberately answers differently from the convenience tier, which
+	/// falls back on `Empty` like any other non-Good read - `ok` asks "is this
+	/// field spoken for", `get_*_or` asks "do I have a usable value", and an
+	/// explicitly emptied field is the case where those two diverge.
 	pub fn ok(&self) -> bool {
 		matches!(self.status, Status::Good | Status::Empty)
 	}
@@ -4784,6 +4789,11 @@ impl Document {
 	/// fault cost the schema a path spelling (an unreadable `field:` path, or
 	/// a mount naming no declared fragment) - only those can turn declared
 	/// fields into false unknowns; a key-level fault keeps its entry's chain.
+	/// The H001/H002 hints a schema disavows are NOT dropped by this call: they
+	/// live on the parse's diagnostics, which validation does not touch. Parse
+	/// then validate and they are still there - apply
+	/// `suppress_declared_repeats`/`suppress_declared_reopens` yourself, or use
+	/// `load_and_validate`, which runs both for you.
 	pub fn validate(&self, schema: &Document) -> Vec<Diagnostic> {
 		let (def, faults) = build_schema(schema);
 		let mut out = faults;

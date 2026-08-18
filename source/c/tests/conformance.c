@@ -607,6 +607,11 @@ int main(int argc, char **argv) {
 		if (shcl_get_int_or(cd, "missing", 7, 9) != 9) fail("get_or", "NotFound did not fall back");
 		if (shcl_get_float_or(cd, "missing", 7, 1.5) != 1.5) fail("get_or", "float did not fall back");
 		if (shcl_get_bool_or(cd, "missing", 7, 1) != 1) fail("get_or", "bool did not fall back");
+		// The ok predicate and the convenience tier deliberately disagree on an
+		// explicitly emptied field: one asks whether the author spoke for it, the
+		// other whether there is a usable value.
+		if (!shcl_status_ok(shcl_read_int(cd, "e", 1).status)) fail("status_ok", "an emptied field is not ok");
+		if (shcl_status_ok(shcl_read_int(cd, "missing", 7).status)) fail("status_ok", "a missing field is ok");
 		shcl_free(cd);
 	}
 	// load_file/save_file: the status separates absent / unreadable / parsed

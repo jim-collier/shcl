@@ -337,6 +337,11 @@ fn convenience_tier_falls_back_only_on_good() {
 	assert_eq!(doc.get_int_array_or("arr", vec![7]), vec![1, 2, 3]);
 	assert_eq!(doc.get_int_array_or("missing", vec![7]), vec![7]);
 	assert_eq!(doc.get_string_or("missing", "fb".to_string()), "fb");
+	// ok() and the convenience tier deliberately disagree on an explicitly
+	// emptied field: one asks whether the author spoke for it, the other whether
+	// there is a usable value.
+	assert!(doc.read_int("e").ok());
+	assert!(!doc.read_int("missing").ok());
 }
 
 #[test]
