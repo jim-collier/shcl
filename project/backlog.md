@@ -128,7 +128,7 @@ None open.
 			- The version comes from `Cargo.toml` through the build environment, so it cannot drift and the release bump still touches the same eight files.
 			- No new dependency, and nothing is required: a build with no resource compiler around warns and carries on rather than failing.
 			- The setup gets the same icon and its own metadata. Verified by reading the resource directory back out of all three binaries.
-			- `assets/shcl.ico` is a plain placeholder mark, drawn to be replaced whenever there is a real one.
+			- `assets/shcl.ico` is built from `assets/icon.png`, the project mark. Seven sizes from 16 up to 256; the four letters stay readable at the smallest.
 
 		- ✅ Code Review 20260819 item 3: nothing addresses reproducible builds.
 			- Two machines building the same tag should produce the same checksum. Never attempted, never measured, so it is unknown whether the build is already close.
