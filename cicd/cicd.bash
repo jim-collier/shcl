@@ -370,14 +370,16 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 		## Installer packages (.deb/.rpm via nfpm, NSIS setup per Windows exe) join
 		## the artifact family before the sums are written, so they ship verified too.
 		((PACKAGE_ENABLE)) && "${here}/utility/package.bash" "${root}" "${art_dir}" "${ver}"
-		## The drop-in sources and shell wrappers the installer lays down, as one
+		## The drop-in sources, wrappers, man page and completions the installer
+		## lays down, as one
 		## asset in the same family - so they are covered by the signed sums like
 		## everything else. The installer used to take them from GitHub's generated
 		## source tarball, which carries no signature and no checksum.
 		( cd "${root}" && tar -czf "${art_dir}/${EXE_NAME}-${ver}-dropins.tar.gz" \
 			source/rust/src/lib.rs source/go/shcl.go source/python/shcl.py \
 			source/c/shcl.h source/c/shcl.hpp \
-			source/bash/shcl.bash source/powershell/shcl.ps1 )
+			source/bash/shcl.bash source/powershell/shcl.ps1 \
+			source/man/shcl.1 source/completions/shcl.bash source/completions/_shcl )
 		fWriteSums
 		fEcho "OK: ${#built_arts[@]} release artifact(s) + ${sums} -> ${RELEASE_ARTIFACT_DIR}/"
 		((${#CROSS_TARGETS[@]})) || fEcho_Clean "note: cross targets skipped - artifact set is partial (native only)"
