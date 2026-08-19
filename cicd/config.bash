@@ -80,6 +80,7 @@ LINT_EXTRA=(
 	'markdownlint-cli2'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Severity Warning,Error -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Severity Warning,Error -EnableExit"'
 	'cicd/utility/check-completions.bash'
 )
 ## n8git_backup-and-publish is excluded: SC1083 false-hits its legitimate git
@@ -95,6 +96,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/package.bash
 	cicd/utility/sign-release.bash
 	cicd/utility/git-auto-msg.bash
+	cicd/hooks/pre-push
 	cicd/utility/include/gfs-rotate.bash
 	source/bash/shcl.bash
 	source/completions/shcl.bash
