@@ -90,6 +90,7 @@ SHELLCHECK_TARGETS=(
 	cicd/config.bash
 	cicd/utility/check-completions.bash
 	cicd/utility/crosscheck.bash
+	cicd/utility/largedoc.bash
 	cicd/utility/lint-report.bash
 	cicd/utility/package.bash
 	cicd/utility/sign-release.bash
@@ -130,6 +131,18 @@ BINDING_CLIS=(
 	"c|source/c/shcl"
 )
 XCHECK_GEN='env SHCL_FUZZ_DUMP="${XCHECK_DUMP_DIR}" SHCL_FUZZ_ITERS=2000 SHCL_FUZZ_DUMP_MAX=500 cargo test -j "${CPU_CAP}" --manifest-path '"${MANIFEST}"' --test fuzz_smoke --quiet'
+
+
+## Stage 4c: large document. The corpus cases are a few hundred bytes each and
+## the fuzz inputs are smaller, so nothing else here would see a parser going
+## quadratic or a buffer that only misbehaves past a few megabytes. One generated
+## document goes through every binding in BINDING_CLIS; they must agree on it
+## byte for byte, and each stays inside the wall-clock and peak-RSS ceilings
+## largedoc.bash carries. Set 0 to skip (--no-largedoc does the same).
+##
+## 100 MiB is the floor worth testing: the memory multiplier is 40-70x input, so
+## this is also the only place the pipeline notices a document costing gigabytes.
+LARGEDOC_MIB=100
 
 ## Stage 5: profiler. Optimized-with-symbols build (cargo profile "profiling",
 ## feature-gated pprof sampler - never in a normal build), run over a workload big

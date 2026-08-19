@@ -74,6 +74,20 @@ None open.
 
 ### Features and enhancements
 
+- ✅ Test every binding against a document far larger than the corpus.
+	- Nothing in the pipeline parsed more than a few kilobytes: 56 corpus cases of a few hundred bytes each, and fuzz inputs smaller still. A parser going quadratic, or a buffer that only misbehaves past a few megabytes, had no gate at all - and this project has already shipped one buffer-growth defect that no small case could see.
+	- Done: `cicd/utility/largedoc.bash` generates a document (100 MiB by default, `LARGEDOC_MIB` in `config.bash`), formats it through all four bindings, and requires them to agree on the result byte for byte. It also holds each binding to a wall-clock and peak-RSS ceiling, checks that formatting is a fixpoint at that size, and reads back a 20000-element array whole.
+	- Done: it runs in the tests stage after the crosscheck, in full local runs and in the GitHub gate. `--quick` skips it, since the fast loop is for the small cases, and `--no-largedoc` skips it outright.
+	- The generated document is shaped, not padded: repeated instances of one name, nesting, inline and bullet arrays, quoted values holding the separator, raw blocks, comments, blank lines and non-ASCII.
+	- The measurements it produced are the item below.
+
+- 🔘 Cut what a document costs in memory, and what Python costs in time.
+	- Found by the gate above - the first time anything measured either. A 100 MiB document costs 3.8 GB in the reference, 5.5 GB in Go, 6.1 GB in Python and 7.0 GB in C: 39x to 72x the input. A config that size is not exotic, and 7 GB puts it out of reach on an ordinary machine.
+	- C is both the fastest and the heaviest, which is the wrong way round for the binding most likely to be embedded somewhere small.
+	- Python is 1.16 s/MiB against 0.07 for C and 0.10 for Go - a minute and a half on a document the others finish in ten seconds.
+	- Not yet diagnosed, only measured. The obvious suspects are per-node allocation and how much source text each binding keeps alive after parsing; the earlier performance pass halved C's peak and never looked at the multiplier itself.
+	- No target set yet. Getting the multiplier under 20x would put a 100 MiB document inside 2 GB everywhere.
+
 - ✅ A man page and shell completions for the CLI.
 	- Split out of Code Review 20260817 item 28, which batched them with polish they do not belong with: this is a new deliverable, not a fix.
 	- `shcl.1` in roff, plus bash and zsh completions that know which options each subcommand takes - the same table the CLIs already carry for their usage check, so the two can be kept in step.
