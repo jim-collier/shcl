@@ -15,11 +15,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	shcl "github.com/jim-collier/shcl/source/go"
+	shcl "github.com/jim-collier/shcl/source/go/v2"
 )
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
-const version = "1.2.0"
+const version = "2.0.0"
 
 const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 

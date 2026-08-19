@@ -18,7 +18,7 @@
 [![Latest release](https://img.shields.io/github/v/release/jim-collier/shcl?sort=semver)](https://github.com/jim-collier/shcl/releases)
 [![crates.io](https://img.shields.io/crates/v/shcl?logo=rust&label=crates.io)](https://crates.io/crates/shcl)
 [![PyPI](https://img.shields.io/pypi/v/shcl?logo=python&logoColor=white&label=PyPI)](https://pypi.org/project/shcl/)
-[![Go module](https://pkg.go.dev/badge/github.com/jim-collier/shcl/source/go.svg)](https://pkg.go.dev/github.com/jim-collier/shcl/source/go)
+[![Go module](https://pkg.go.dev/badge/github.com/jim-collier/shcl/source/go/v2.svg)](https://pkg.go.dev/github.com/jim-collier/shcl/source/go/v2)
 
 <!-- TOC ignore:true -->
 # SHCL
@@ -247,11 +247,11 @@ Field names are case-insensitive. Repeated paths merge. `site` here is not one k
 
 ## Installation
 
-The latest release, `v1.2.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
+The latest release, `v2.0.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
 
 ### Language packages
 
-Each binding is published where its own ecosystem looks for it, all under the name `shcl`: [crates.io](https://crates.io/crates/shcl) for Rust, [PyPI](https://pypi.org/project/shcl/) for Python, and the [Go module](https://pkg.go.dev/github.com/jim-collier/shcl/source/go) for Go.
+Each binding is published where its own ecosystem looks for it, all under the name `shcl`: [crates.io](https://crates.io/crates/shcl) for Rust, [PyPI](https://pypi.org/project/shcl/) for Python, and the [Go module](https://pkg.go.dev/github.com/jim-collier/shcl/source/go/v2) for Go.
 
 Two of them carry the CLI as well as the library, which is the easiest way to get the binary on a platform with no prebuilt one - macOS and the BSDs included:
 
@@ -268,7 +268,7 @@ cargo install shcl
 The module carries the library, and this installs the CLI from it:
 
 ```sh
-go install github.com/jim-collier/shcl/source/go/cmd/shcl@latest
+go install github.com/jim-collier/shcl/source/go/v2/cmd/shcl@latest
 ```
 
 #### PyPI
@@ -296,18 +296,18 @@ Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wr
 ##### Debian
 
 ```sh
-sudo dpkg -i shcl-1.2.0-linux-x86_64.deb
+sudo dpkg -i shcl-2.0.0-linux-x86_64.deb
 ```
 
 ##### Fedora, RHEL, openSUSE
 
 ```sh
-sudo rpm -i shcl-1.2.0-linux-x86_64.rpm
+sudo rpm -i shcl-2.0.0-linux-x86_64.rpm
 ```
 
 ##### Windows
 
-Run `shcl-1.2.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
+Run `shcl-2.0.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl`, adds that to `PATH`, and can uninstall itself later.
 
 #### Scripted installation direct from web - dev or stable
 
@@ -356,8 +356,8 @@ macOS and the BSDs have no prebuilt binaries yet. Use `cargo install shcl`, a dr
 
 	```sh
 	openssl dgst -sha256 -verify shcl-signing.pub \
-		-signature shcl-1.2.0-sha256sums.txt.sig shcl-1.2.0-sha256sums.txt
-	sha256sum -c --ignore-missing shcl-1.2.0-sha256sums.txt
+		-signature shcl-2.0.0-sha256sums.txt.sig shcl-2.0.0-sha256sums.txt
+	sha256sum -c --ignore-missing shcl-2.0.0-sha256sums.txt
 	```
 
 - **Drop-in source**. Copy one file into your project. No dependency, no build step. Rust `source/rust/src/lib.rs`, Go `source/go/shcl.go`, Python `source/python/shcl.py`, C `source/c/shcl.h`.
@@ -480,7 +480,7 @@ An in-place write prints whatever the load found on stderr, and refuses outright
 
 ## Example use-cases in your code
 
-Bindings are versioned in lockstep, so `1.x` means the same behavior and the same conformance corpus in every language. Each ecosystem's usual compatible-version operator is all you need: it picks up minor and patch releases on its own, and never crosses a major version without you editing the line yourself.
+Bindings are versioned in lockstep, so `2.x` means the same behavior and the same conformance corpus in every language. Each ecosystem's usual compatible-version operator is all you need: it picks up minor and patch releases on its own, and never crosses a major version without you editing the line yourself.
 
 Every binding is one file with no dependencies. You can optionally just copy it out of `source/` and commit it - see [DIY install](#diy-install).
 
@@ -488,7 +488,7 @@ Every binding is one file with no dependencies. You can optionally just copy it 
 
 - Install: `cargo add shcl`
 
-- Dependency line: `shcl = "1"`
+- Dependency line: `shcl = "2"`
 
 - Note: The Rust crate carries the library and the CLI together. See [Language packages](#language-packages) if the binary is what you are after.
 
@@ -536,14 +536,14 @@ doc.save_file("server.shcl")?;
 
 ### Go
 
-- Install the module: `go get github.com/jim-collier/shcl/source/go`
+- Install the module: `go get github.com/jim-collier/shcl/source/go/v2`
 
-- Dependency line: `require github.com/jim-collier/shcl/source/go v1.2.0`
+- Dependency line: `require github.com/jim-collier/shcl/source/go/v2 v2.0.0`
 
-- Notes: Go keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. `go get -u` tracks `1.x`. A future 2.0 would import as `.../source/go/v2`, so a major version cannot arrive by surprise.
+- Notes: Go keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. From 2.0 the major goes in the path too, as Go requires, so the import ends `/source/go/v2` and `go get -u` tracks `2.x` without ever crossing to a 3.x. A 1.x consumer keeps working on the old path until it edits the import.
 
 ```go
-import shcl "github.com/jim-collier/shcl/source/go"
+import shcl "github.com/jim-collier/shcl/source/go/v2"
 
 // One call reads and parses, and never fails: the document comes back usable
 // either way, and the status tells missing apart from unreadable and from
@@ -583,7 +583,7 @@ if err := doc.SaveFile("server.shcl"); err != nil {
 
 - Install: `pip install shcl`
 
-- Dependency line: `shcl~=1.0`
+- Dependency line: `shcl~=2.0`
 
 - Note: The PyPI distribution is the library module by itself. Installing it does not put a `shcl` command on your `PATH`.
 	- If you want the CLI too, get it from a package or an installer.
@@ -845,7 +845,7 @@ cicd/cicd.bash --ci
 
 - [`style-guide.md`](style-guide.md): coding and prose style. The bindings deliberately mirror the reference's structure over per-language idiom, so they stay byte-for-byte in sync.
 
-Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, [pkg.go.dev](https://pkg.go.dev/github.com/jim-collier/shcl/source/go) for Go.
+Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, [pkg.go.dev](https://pkg.go.dev/github.com/jim-collier/shcl/source/go/v2) for Go.
 
 ## Contributing and support
 
