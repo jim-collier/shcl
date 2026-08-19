@@ -102,14 +102,12 @@ SHELLCHECK_TARGETS=(
 ## plus the deterministic fuzz smoke; the env var raises the fuzz iteration count
 ## well past the quick in-editor default.
 ##
-## 20k is the gate, not the ceiling. Two real defects sat past it and surfaced
-## only at 200k, so run a deep soak before a release cut:
-##     SHCL_FUZZ_ITERS=200000 cargo test --manifest-path source/rust/Cargo.toml \
+## 200k, raised from 20k: the two fixpoint defects that sat past the old gate are
+## fixed, and both needed this depth to surface at all. Costs about a minute.
+## Deeper still is worth a run before a release cut:
+##     SHCL_FUZZ_ITERS=1000000 cargo test --manifest-path source/rust/Cargo.toml \
 ##         --test fuzz_smoke
-## It costs about 45 seconds. Raise this number to 200000 once the two fixpoint
-## bugs it found are fixed - until then the gate would be red for known reasons,
-## which is worse than a gate that runs shallow.
-TEST_CMD=(env SHCL_FUZZ_ITERS=20000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
+TEST_CMD=(env SHCL_FUZZ_ITERS=200000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 TEST_EXTRA=(
 	'go -C source/go test ./...'
 	'python3 source/python/tests/conformance.py'

@@ -531,6 +531,23 @@ int main(int argc, char **argv) {
 		if (qr.value != 3 || qr.status != SHCL_GOOD) fail("paths", "quoted segment read failed");
 		shcl_free(pd);
 	}
+	// A raw body is the only content kept untrimmed, so it is the only place a
+	// trailing CR survives the load - and one written back becomes CRLF, which
+	// reads as neither. The whole trailing run comes off instead; a CR inside a
+	// line is content and stays. Same fixture in every runner: a golden would be
+	// rewritten by any platform's line-ending translation.
+	{
+		const char *rt = "r:\n\t~~~\n\tone\r\r\n\ta\rb\n\t~~~\n";
+		shcl_doc *rd = shcl_parse(rt, strlen(rt));
+		shcl_read_str rr = shcl_read_raw(rd, "r", 1);
+		if (rr.value.n != 7 || memcmp(rr.value.p, "one\na\rb", 7) != 0) fail("raw", "trailing CR run not normalized");
+		shcl_str rc = shcl_to_canonical(rd);
+		shcl_doc *rd2 = shcl_parse(rc.p, rc.n);
+		shcl_str rc2 = shcl_to_canonical(rd2);
+		if (rc.n != rc2.n || memcmp(rc.p, rc2.p, rc.n) != 0) fail("raw", "raw block with CR is not a formatter fixpoint");
+		shcl_free(rd2);
+		shcl_free(rd);
+	}
 	// line()/quoted()/children(): read-surface accessors. Same fixture in every
 	// runner - the other three carry line and quoted on the read result, C
 	// keeps its read structs value+status and answers with these instead.

@@ -2042,7 +2042,10 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		for (size_t i = 0; i <= full.n; i++) {
 			if (i == full.n || full.p[i] == '\n') {
 				S l = s_slice(full, start, i);
-				if (l.n > 0 && l.p[l.n - 1] == '\r') l.n--;
+				/* The whole trailing CR run goes, not just one: a raw block keeps its
+				   content untrimmed, so a line left ending in CR would be written back
+				   as CRLF and read as neither - the one shape where the count shows. */
+				while (l.n > 0 && l.p[l.n - 1] == '\r') l.n--;
 				VecS_push(P.tmp, &lines, l);
 				start = i + 1;
 			}
@@ -2853,6 +2856,8 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 	int *is_rep = (int *)arena_alloc(t, (nb ? nb : 1) * sizeof(int));
 	VecSize appended = {0};
 	int any_rep = 0;
+	S empty_key;
+	{ Value ev; memset(&ev, 0, sizeof ev); ev.kind = V_EMPTY; empty_key = value_key(t, &ev); }
 	for (size_t gi = 0; gi < nb; gi++) {
 		S name = order.data[gi];
 		VecSize grp = buckets[gi];
@@ -2874,6 +2879,21 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 				S okey = value_key(t, &over->nodes.data[ok].value);
 				uint64_t hk = cmap_hash(name, okey);
 				size_t b = cmap_get(&by_key, hk, name, okey);
+				/* A raw block in the higher layer fills a same-named empty binding
+				   below, exactly as a fence line fills one inside a single file.
+				   Without it, merging two documents and parsing them run together
+				   disagree: both bindings survive here and fold there, so the
+				   merged output is not a formatter fixpoint. */
+				if (b == (size_t)-1 && over->nodes.data[ok].value.kind == V_RAW) {
+					uint64_t he = cmap_hash(name, empty_key);
+					size_t e = cmap_get(&by_key, he, name, empty_key);
+					if (e != (size_t)-1) {
+						NODE(d, e).value = w_dup_value(a, &over->nodes.data[ok].value);
+						cmap_del(&by_key, he, name, empty_key, e);
+						if (cmap_get(&by_key, hk, name, okey) == (size_t)-1) cmap_put(t, &by_key, hk, name, okey, e);
+						b = e;
+					}
+				}
 				if (b != (size_t)-1) { adopt_trivia(d, b, over, ok); w_overlay(d, b, over, ok); }
 				else VecSize_push(t, &appended, w_clone_subtree(d, over, ok, bp));
 			}
@@ -3214,10 +3234,18 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 		if (v->info.n > 0) { if ((unsigned char)v->info.p[0] == v->fence_char) sb_putc(a, out, ' '); sb_putS(a, out, v->info); }
 		sb_putc(a, out, '\n');
 		if (v->content.n > 0) {
+			/* A body with no non-blank line has no common indent for the reload to
+			   strip back off, so indenting it here would add a level on every pass,
+			   without bound. Leave it as it stands. */
+			int all_blank = 1;
+			for (size_t i = 0, start = 0; i <= v->content.n; i++) if (i == v->content.n || v->content.p[i] == '\n') {
+				if (s_trim(s_slice(v->content, start, i)).n > 0) { all_blank = 0; break; }
+				start = i + 1;
+			}
 			size_t start = 0;
 			for (size_t i = 0; i <= v->content.n; i++) if (i == v->content.n || v->content.p[i] == '\n') {
 				S l = s_slice(v->content, start, i);
-				if (l.n > 0) for (size_t z = 0; z < depth + 1; z++) sb_putc(a, out, '\t');
+				if (l.n > 0 && !all_blank) for (size_t z = 0; z < depth + 1; z++) sb_putc(a, out, '\t');
 				sb_putS(a, out, l); sb_putc(a, out, '\n');
 				start = i + 1;
 			}

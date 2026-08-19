@@ -338,6 +338,17 @@ class _Value:
 	def is_empty(self):
 		return self.kind == "empty"
 
+	def copy(self):
+		"""Independent copy, element list included - a clone or a merged-in value
+		has to survive the document it came from being released."""
+		v = _Value(self.kind)
+		v.els = [_Element(e.text, e.quoted) for e in self.els]
+		v.content = self.content
+		v.info = self.info
+		v.fence_char = self.fence_char
+		v.fence_len = self.fence_len
+		return v
+
 	def key(self):
 		"""Merge key: nodes with equal (name, key) collapse into one."""
 		if self.kind == "empty":
@@ -1376,7 +1387,10 @@ class _Parser:
 		# UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
 		if text.startswith("﻿"):
 			text = text[1:]
-		lines = [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
+		# The whole trailing CR run goes, not just one: a raw block keeps its
+		# content untrimmed, so a line left ending in CR would be written back as
+		# CRLF and read as neither - the one shape where the count is visible.
+		lines = [ln.rstrip("\r") for ln in text.split("\n")]
 		i = 0
 		nlines = len(lines)
 		while i < nlines:
@@ -1779,8 +1793,12 @@ class Document:
 				out.append(v.info)
 			out.append("\n")
 			if v.content:
+				# A body with no non-blank line has no common indent for the
+				# reload to strip back off, so indenting it here would add a
+				# level on every pass, without bound. Leave it as it stands.
+				all_blank = all(not _trim(ln) for ln in v.content.split("\n"))
 				for ln in v.content.split("\n"):
-					if ln:
+					if ln and not all_blank:
 						out.append(body_pad)
 					out.append(ln)
 					out.append("\n")
@@ -2357,6 +2375,7 @@ class Document:
 		replace = {}
 		appended = []
 		pending = []
+		empty_key = _Value("empty").key()
 		for name in order:
 			group = groups[name]
 			over_leafy = all(not over.arena[k].children for k in group)
@@ -2372,6 +2391,18 @@ class Document:
 				for ok in group:
 					okey = over.arena[ok].value.key()
 					b = by_key.get((name, okey))
+					# A raw block in the higher layer fills a same-named empty
+					# binding below, exactly as a fence line fills one inside a
+					# single file. Without it, merging two documents and parsing
+					# them run together disagree: both bindings survive here and
+					# fold there, so merged output is not a formatter fixpoint.
+					if b is None and over.arena[ok].value.kind == "raw":
+						hit = by_key.get((name, empty_key))
+						if hit is not None:
+							self.arena[hit].value = over.arena[ok].value.copy()
+							del by_key[(name, empty_key)]
+							by_key.setdefault((name, okey), hit)
+							b = hit
 					if b is not None:
 						self._adopt_trivia(b, over, ok)
 						# A name that reaches here is never in `replace`, so `b`
@@ -2423,12 +2454,7 @@ class Document:
 		src = over.arena[oi]
 		# Copy the value too - sharing the object (and its element list) with
 		# `over` would break the promise that the clone survives its release.
-		cv = _Value(src.value.kind)
-		cv.els = [_Element(e.text, e.quoted) for e in src.value.els]
-		cv.content = src.value.content
-		cv.info = src.value.info
-		cv.fence_char = src.value.fence_char
-		cv.fence_len = src.value.fence_len
+		cv = src.value.copy()
 		node = _Node(src.name, cv, parent, src.line, src.name_src)
 		node.star_list = src.star_list
 		node.star_mixed = src.star_mixed

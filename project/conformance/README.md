@@ -115,6 +115,10 @@ Note when reading comparison counts: the fuzz seed set includes the corpus input
 
 Case `046` pins partial validation under a schema fault: a bad `min` is a `V092` at its schema line, the surviving constraints still flag a wrong type and a missing required field, and the unknown field draws no `V001` (the sweep needs a fault-free schema).
 
+Case `055` pins a raw block whose body has no non-blank line: there is no common indent to derive, so the body is neither stripped on load nor indented on emit and survives byte-for-byte. Without that pairing the emitter added a level per pass and the block grew without bound. The second block pins the same for a body whose only line is a non-space whitespace character.
+
+Case `056` pins the merge rule for an empty binding: a raw block in the higher layer fills a same-named empty binding below (`blk`), exactly as a fence line fills one inside a single file, while a valued binding still appends beside it (`two`). The merged golden is what parsing the two layers run together produces, which is what makes it a formatter fixpoint.
+
 Case `045` pins comment depth under childless headers: a header whose children are all commented keeps them indented under it (top-level, nested, and at end of file), while a commented line trailing a live child keeps the existing trails-the-binding placement.
 
 Case `044` pins the value-syntax setter: an array, a single element, a quoted element keeping its internal comma, trimming, an unquoted `#` ending the value, an empty value, and the only-if-absent form both skipping an existing path and creating a new one. Its `write-bad.ops` pins the two rejections - a value opening a quote it never closes (the same text the parser reports `E017` for) and a wildcard path.

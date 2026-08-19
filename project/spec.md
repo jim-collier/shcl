@@ -270,6 +270,8 @@ An array (either spelling) is **one cell holding many values** - not the same as
 
 ## Raw blocks
 
+Line endings normalize on load: a line's entire trailing carriage-return run is removed, so CRLF and LF files parse identically. This is visible only inside a raw block, the one place content is kept untrimmed - a body line ending in CR has no spelling that survives a write, since the writer's own newline would turn it into a line ending. A carriage return *inside* a line is content and is preserved.
+
 A raw block embeds verbatim multi-line content - a DDL, a code snippet, a template - exempt from all SHCL rules (indentation, escapes, `#` comments, reserved characters). A file may contain any number of them.
 
 - **Fenced, Markdown-style.** A block opens with a run of at least three identical fence characters, `` ``` `` or `~~~`. The opening run's character and length define the block; it closes at the first later line whose trimmed text is a run of the *same* character with length **>=** the opener. (So content may itself contain shorter fences.) An optional info-string may follow the opening fence (e.g. `~~~sql`); it is a free-form advisory label - captured and exposed to the consumer (a raw-block accessor returns it), but never interpreted by the parser. No values are reserved; a consumer may treat it as a content-type hint if it wants.
@@ -280,7 +282,7 @@ A raw block embeds verbatim multi-line content - a DDL, a code snippet, a templa
 
 - **Reading:** `Get`/`GetRaw` at the field path. A path resolving to several block instances reports `Multiple` on a single-value read, like any other field.
 
-- **Indentation:** the block is visually nested at a child indent for clarity. The parser strips the block's common leading indentation (the nesting) and preserves the relative internal indentation. Content `a` then `  b` under nesting yields the value `"a\n  b"`.
+- **Indentation:** the block is visually nested at a child indent for clarity. The parser strips the block's common leading indentation (the nesting) and preserves the relative internal indentation. Content `a` then `  b` under nesting yields the value `"a\n  b"`. The common indentation is taken from the block's non-blank lines only. A body with no non-blank line therefore has none to strip, and the formatter adds none back: such a body is emitted exactly as it stands, so its whitespace survives verbatim and the block cannot gain a level per pass.
 
 ```text
 config:
@@ -547,6 +549,8 @@ The overlay rule, per parent scope:
 - A childless `over` node whose `base`-side name group has any **container** instance is a **wrapper mention**, not a leaf override: it merges by `(field-name, value)` like any container instance, so a matching instance is left untouched and an unmatched one is appended as a new empty instance. A bare section header (`server:`, or `server: web1` with no body) in a higher layer therefore never deletes the base subtree beneath it - the same choice JSON Merge Patch and kustomize make. The deliberate cost: there is no way to blank a whole section from a higher layer; an explicit deletion spelling may be added post-1.0 if one proves necessary.
 
 - A name with any **container** instance (a node with children) in `over` merges instance-by-instance: each `over` instance matches a `base` instance by `(field-name, value)` - the same key the in-file merge rule uses - and recurses; an unmatched `over` instance is appended in file order. So two layers' children under `server: web1` combine, while a new `server: web3` is added.
+
+- One exception to matching by `(field-name, value)`: an unmatched `over` instance carrying a **raw block** fills a same-named **empty** `base` binding rather than appending beside it, which is what a fence line does to an empty binding inside a single file. Without it a merge and a parse of the two layers run together would disagree about the same two lines, and the merged document would not be a formatter fixpoint. Only a raw block fills; an unmatched valued instance still appends, matching what the parser does with the same two lines.
 
 Comment trivia rides with the nodes that carry it, and the merged document is a formatter fixpoint like any other. Where an `over` instance matches a `base` one, the `base` node survives and takes on the `over` node's comments under the in-file rule: leading comments concatenate in layer order, and the first trailing comment wins. End-of-file comments are carried over once each, so a footer several layers share is not repeated per layer. `over`'s content is copied into `base`, so `base` stays valid after `over` is released.
 
