@@ -25,9 +25,21 @@ impl Rng {
 	}
 }
 
+// The characters the mutator splices in. The whitespace tail past space and tab
+// is why it is worth listing them out: the parser trims the whole Unicode
+// White_Space set while the emitter quotes from a much shorter list, and a value
+// whose edge lands in that gap used to be truncated on reload. With none of
+// these in the set, the fuzzer could not reach it - a corpus case had to.
 const INTERESTING: &[char] = &[
 	':', '[', ']', ',', '#', '"', '\'', '*', '~', '`', '\t', '\n', ' ', '.', '-', '\\', '%', '$',
 	'0', '9', 'a', 'Z', '_', 'é', '\u{feff}',
+	'\r',       // carriage return: round-trips, but only if nothing eats it
+	'\u{0b}',   // vertical tab
+	'\u{0c}',   // form feed
+	'\u{85}',   // next line
+	'\u{a0}',   // no-break space
+	'\u{2028}', // line separator
+	'\u{3000}', // ideographic space
 ];
 
 fn mutate(rng: &mut Rng, base: &str) -> String {

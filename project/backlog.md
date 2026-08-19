@@ -48,6 +48,13 @@ None open.
 
 ### Bugs
 
+- 🔘 A raw block whose body is entirely whitespace grows by one indent level on every `fmt`.
+	- Found by the widened fuzzer character set from Code Review 20260817 item 29 - the old set could not reach it.
+	- Minimal reproducer: `r:` then a fenced block at one tab whose only body line is a single tab. Each `fmt` adds a tab to that line, without bound. All four bindings, so the corpus is what can pin it.
+	- Cause: the common indent a raw block strips on reload is computed from its non-blank lines, and this block has none - so nothing is stripped, while emit adds depth+1 tabs every pass. Pre-existing: reproduces before the performance pass, and arrived with Code Review 20260817 item 7, which stopped blanking such lines.
+	- Proposed fix: when a block has no non-blank content line, take the common indent from the whitespace-only lines themselves. That normalizes an all-whitespace body to empty once, which is the lesser evil against growth without bound - but it moves canonical output, so it wants a decision, a corpus case and a spec sentence.
+	- Same family as the merge item below: raw blocks and whitespace. Worth settling together.
+
 - 🔘 Merged output is not always a formatter fixpoint: an empty binding in the base and a same-named block in the overlay both survive the merge, where a parse of the two would fold them.
 	- Found by a 200k-iteration fuzz soak; the pipeline runs 20k, which never reaches it. Pre-existing - reproduces identically on the commit before the performance pass.
 	- Minimal reproducer. Base: `blk:` alone. Overlay: `blk:` carrying a raw block and a child. Merged, both survive; re-parsed, they fold, so the canonical form changes on the second pass.
@@ -355,13 +362,20 @@ None open.
 			- ✅ The no-terminal guard now asks the question it means: it tries the read and treats failure as the abort. Testing `/dev/tty` for readability passed in plenty of unattended contexts where the read then died on a raw shell error.
 			- ✋ Deferred: the man page and shell completions. Those are a new deliverable with packaging consequences (.deb/.rpm placement, a completions dir per shell), not polish on an existing one - filed on their own below.
 
-		- 🔘 Code Review 20260817 item 29: the gaps that let this round through.
+		- 🛠️ Code Review 20260817 item 29: the gaps that let this round through.
 			- The cross-binding check cannot see any defect the four bindings share, and most of the bugs above are exactly that shape. The corpus is the only thing that can catch them, and only if a case has the shape.
 			- The cross-compile stage builds the rust binary only, so the c binding's windows branches have never been compiled here. That is how item 2 landed.
 			- The python lint and type gates run at defaults with no configuration, and the module has no type hints - so the type gate analyzes almost nothing and cannot fail. Turning on checking of unannotated bodies surfaces a real misuse trap immediately.
 			- Nothing is built for a 32-bit target, so the size arithmetic there is unverified.
 			- The writer fuzzer's character set contains no carriage return and no unusual whitespace, which is why item 6 survived.
 			- Python exports its own imports and one internal constant, because the module declares no public list.
+			- ✅ The type gate is live. Checking of unannotated bodies is on, and the two core data classes carry field types - without those every field was `Any` and the checker still had nothing to check. Proved by injecting a wrong operand and watching it fail. `assignment` stays off, because the structures mirrored from the reference are tagged tuples and index-or-None locals; everything that catches a real misuse is on. Seventeen locals gained a one-word annotation and two accumulators that changed type mid-function were split in the process.
+			- ✅ Python declares `__all__`, so `import *` no longer hands out math, os, stat, Decimal, Enum and an internal constant alongside the API.
+			- ✅ The writer fuzzer's character set gained the carriage return and six unusual whitespace characters - the gap that let the edge-whitespace truncation through. It paid immediately: a 200k soak on the new set found a raw block whose all-whitespace body grows by one indent level on every `fmt`, filed above.
+			- ✅ The cross stage runs cross-compile CHECKS as well as artifact builds: the C library and CLI for Windows through mingw, and the library with file I/O compiled out. Neither had ever been built here, which is how the Windows regression reached dev.
+			- ✅ The deep soak is written down where it will be seen (`cicd/config.bash`, beside the 20k gate) with the command and the reason. Raising the gate itself waits on the two fixpoint bugs it found - a gate that is red for known reasons is worse than one that runs shallow.
+			- ✋ Deferred: a 32-bit build. This box has no 32-bit libc and no i686 rust target, so it needs `gcc-multilib` (a sudo install) plus a toolchain target added to `rust-toolchain.toml`. Worth doing, but it is an environment change to agree to rather than a code fix.
+			- ✋ Standing, not fixable by a gate: the cross-binding check cannot see a defect all four bindings share. Only the corpus can, and only if a case has the shape. Both bugs filed this round are exactly that shape, and both were found by the fuzzer rather than the differential - which is the practical answer: widen the fuzzer, and add a corpus case whenever it finds something.
 
 - **20260804**:
 
