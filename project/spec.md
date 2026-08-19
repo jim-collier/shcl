@@ -560,9 +560,13 @@ On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `set`)
 
 - A `--set` is a Writer edit, not a merged layer. It targets the first matching instance, or creates the path. On a repeated leaf that means it edits one instance, where a real top-layer file would replace the whole same-named group wholesale. Put it in a `--layer` file when whole-group override is the intent.
 
-- That distinction decides persistence. On `set`, a `--set` edits the document rather than layering over it, so `set --write` writes those edits back; giving any `--set` also means no write-ops script is read from stdin. Everywhere else a `--set` stays ephemeral and `--write` refuses it, as `--write` refuses `--layer` everywhere - folding a lower layer permanently into the top file is the opposite of what layering is for.
-- `--lossy` is meaningful only alongside `--write` - on its own it would read as protection the command never had - and is a usage error anywhere else, like every other option a subcommand does not use.
-- A FILE of `-` is stdin on every subcommand, `set` included: with the edits given as options no ops script is read, so stdin carries the document there as it does everywhere else. Only when stdin is the ops script does `-` mean an empty base instead - it cannot carry both. Reading neither, which is what the two used to combine to, threw a piped document away at exit 0.
+- That distinction decides persistence. On `set`, a `--set` edits the document rather than layering over it, so `set --write` writes those edits back. Giving any `--set` also means no write-ops script is read from stdin.
+
+- Everywhere else a `--set` stays ephemeral and `--write` refuses it. `--write` refuses `--layer` everywhere, for the same reason: folding a lower layer permanently into the top file is the opposite of what layering is for.
+
+- `--lossy` only means anything alongside `--write`. On its own it would read as protection against something the command never did, so it is a usage error anywhere else, like every other option a subcommand does not take.
+
+- A FILE of `-` is stdin on every subcommand, `set` included. When the edits arrive as options, no ops script is read, so stdin carries the document there as it does everywhere else. Only when stdin is the ops script does `-` mean an empty base instead. It cannot carry both, and reading neither is what the two used to combine to: a piped document thrown away at exit 0.
 
 - A `--set` value goes in as **data**. Its type still follows the text (`workers=8` is an integer), but a comma or quote inside it is content, so `ports=80, 443` stores one quoted string.
 

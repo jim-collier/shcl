@@ -52,6 +52,12 @@ TOOL_PINS=(
 	## Gating, and its findings move between releases, so CI installs this exact
 	## version rather than using whatever the runner image ships.
 	"shellcheck|0.11.0|shellcheck --version"
+	## Supply-chain trio. Findings move as advisory databases update, so pin them
+	## the same way and let the drift warning say when a result changed because
+	## the tool did.
+	"staticcheck|2026.1|staticcheck -version"
+	"govulncheck|v1.5.0|govulncheck -version"
+	"cargo-deny|0.19.9|cargo deny --version"
 )
 
 ## Stage 2: debug build (what the tests exercise). Capped at half the cores.
@@ -71,16 +77,26 @@ BUILD_EXTRA=(
 ## over all tracked .md (config in .markdownlint-cli2.jsonc at repo root), and
 ## PSScriptAnalyzer on the ps1 wrapper. shfmt is deliberately NOT here - its
 ## output fights the hand-formatted shell style, so it stays interactive-only.
+##
+## The last three are the supply-chain half: staticcheck alongside go vet,
+## govulncheck against the Go standard library and module graph, and cargo-deny
+## over the rust lockfile (config in source/rust/deny.toml). All four libraries
+## are dependency-free, so what these actually watch is the toolchain and the
+## feature-gated profiler chain - small, and not nothing.
 LINT_CMD=(cargo clippy -j "${CPU_CAP}" --manifest-path "${MANIFEST}" --all-targets -- -D warnings)
 LINT_EXTRA=(
 	'go -C source/go vet ./...'
-	'ruff check source/python'
-	'env MYPYPATH=source/python mypy source/python/shcl.py source/python/cmd/shcl/main.py source/python/tests/conformance.py'
+	'( cd source/go && staticcheck ./... )'
+	'( cd source/python && ruff check . )'
+	'( cd source/python && MYPYPATH=. mypy )'
 	'cppcheck --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
 	'markdownlint-cli2'
-	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Severity Warning,Error -EnableExit"'
-	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'cicd/utility/check-completions.bash'
+	'govulncheck -C source/go ./...'
+	'cargo deny --manifest-path source/rust/Cargo.toml --all-features check'
 )
 ## n8git_backup-and-publish is excluded: SC1083 false-hits its legitimate git
 ## @{u} upstream refs, and the script is a proven drop-in kept byte-close to its
@@ -95,6 +111,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/package.bash
 	cicd/utility/sign-release.bash
 	cicd/utility/git-auto-msg.bash
+	cicd/hooks/pre-push
 	cicd/utility/include/gfs-rotate.bash
 	source/bash/shcl.bash
 	source/completions/shcl.bash

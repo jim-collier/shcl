@@ -1,0 +1,24 @@
+## Reproducible Windows builds. Without this the linker stamps the current time
+## into the PE header, so two builds of the same commit differ in exactly two
+## bytes and a published checksum cannot be reproduced. Every other target is
+## already byte-identical across machines and across source paths.
+##
+## Windows-only on purpose: the flag is a mingw/lld linker option and means
+## nothing to the ELF targets.
+##
+## It lives at the repo root rather than beside Cargo.toml because cargo reads
+## config relative to the working directory, and every build here is driven from
+## the root. Note that a RUSTFLAGS in the environment replaces this outright
+## rather than adding to it - nothing in the pipeline sets one.
+##
+## This file is not part of the published crate, so it changes nothing for
+## anyone depending on shcl.
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-Clink-arg=-Wl,--no-insert-timestamp"]
+
+## The ARM64 Windows target links through zig's lld, which rejects the mingw
+## spelling of the flag and wants /Brepro instead.
+
+[target.aarch64-pc-windows-gnullvm]
+rustflags = ["-Clink-arg=-Wl,/Brepro"]

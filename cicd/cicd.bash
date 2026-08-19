@@ -11,6 +11,7 @@
 
 ##	- Purpose: Local CI/CD pipeline. Generic engine, per-project settings live in config.bash.
 ##	- Stages (fail-fast, any error aborts before the next stage):
+##	   0. remote sync (fast-forward from upstream before anything is built)
 ##	   1. format (in place locally; check-only under --ci)
 ##	   2. build (debug - what the tests run against)
 ##	   3. lint (project lint + shellcheck of the cicd scripts themselves)
@@ -32,6 +33,7 @@
 ##	   -q, --quiet         quiet + unattended (no prompt)
 ##	   -y, --yes           unattended (no prompt) but not quiet
 ##	   -m, --message MSG   publish hands-off with this commit message (no editor)
+##	   --no-sync           skip the remote sync stage
 ##	   --no-fmt            skip the formatter stage
 ##	   --no-lint           skip the lint stage
 ##	   --no-cross          skip the cross-compile targets (native release still builds)
@@ -83,12 +85,13 @@ cd "${root}"
 stamp="$(date +%Y%m%d-%H%M%S)"
 
 ## Parse options.
-assume_yes=0; quiet=0; ci_mode=0; quick=0; cli_message=""
+assume_yes=0; quiet=0; ci_mode=0; quick=0; cli_message=""; sync_enable=1
 while (($#)); do case "$1" in
 	--ci)                     ci_mode=1; assume_yes=1; shift ;;
 	--quick)                  quick=1; shift ;;
 	-q|--quiet)               quiet=1; assume_yes=1; shift ;;
 	-y|--yes)                 assume_yes=1; shift ;;
+	--no-sync)                sync_enable=0; shift ;;
 	--no-fmt)                 FMT_CMD=(); FMT_CHECK_CMD=(); FMT_EXTRA=(); FMT_CHECK_EXTRA=(); shift ;;
 	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); LINT_EXTRA=(); shift ;;
 	--no-cross)               CROSS_TARGETS=(); shift ;;
@@ -106,6 +109,7 @@ esac; done
 
 ## --ci: correctness only, deterministic, side-effect free.
 if ((ci_mode)); then
+	sync_enable=0       ## the runner already checked out the exact commit under test
 	FMT_CMD=()          ## check-only via FMT_CHECK_CMD; never rewrite in CI
 	CROSS_TARGETS=()
 	RELEASE_NATIVE_CMD=()
@@ -161,6 +165,7 @@ if ((! quiet)); then
 	fEcho_Clean "${APP_NAME} $( ((ci_mode)) && echo 'CI gate' || echo 'local CI/CD')"
 	fEcho_Clean
 	fEcho_Clean "Repo root ......: ${root}"
+	fEcho_Clean "Remote sync ....: $( ((sync_enable)) && echo 'fast-forward when behind; abort when diverged' || echo '(skipped)')"
 	fEcho_Clean "Format .........: $( ((ci_mode)) && echo "${FMT_CHECK_CMD[*]:-(none configured)}" || echo "${FMT_CMD[*]:-(skipped)}")$( ((${#FMT_EXTRA[@]} + ${#FMT_CHECK_EXTRA[@]})) && echo "  (+ extras)" )"
 	fEcho_Clean "Build (debug) ..: ${BUILD_CMD[*]:-(none configured)}$( ((${#BUILD_EXTRA[@]})) && echo "  (+ ${#BUILD_EXTRA[@]} extra)" )"
 	fEcho_Clean "Lint ...........: ${LINT_CMD[*]:-(none configured)}$( ((${#LINT_EXTRA[@]})) && echo "  (+ ${#LINT_EXTRA[@]} extra)" )  + shellcheck: ${#SHELLCHECK_TARGETS[@]} file(s)"
@@ -210,6 +215,45 @@ if declare -p TOOL_PINS &>/dev/null; then
 			fEcho "WARNING: ${pin_name} drifted from pin ${pin_ver}: ${have}"
 		fi
 	done
+fi
+
+## Stage 0: take the remote's work before anything is built, so the pipeline
+## validates the tree that will be pushed. The publish stage pulls too, but that
+## happens after the tests - a change merged upstream meanwhile would go out
+## having never been built here.
+if ((sync_enable)); then
+	fSection "0/9  Remote sync"
+	branch="$(git -C "${root}" symbolic-ref --quiet --short HEAD || true)"
+	upstream="$(git -C "${root}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+	if [[ -z "$branch" ]]; then
+		fEcho "WARNING: detached HEAD; nothing to sync"
+	elif [[ -z "$upstream" ]]; then
+		fEcho "WARNING: ${branch} tracks no upstream; nothing to sync"
+	elif ! git -C "${root}" fetch --quiet 2>/dev/null; then
+		fEcho "WARNING: fetch failed (offline?); continuing against the local tree"
+	else
+		## Counts either side of the merge base, so "diverged" is distinguishable
+		## from "behind" - only the latter can fast-forward.
+		read -r ahead behind < <(git -C "${root}" rev-list --left-right --count "HEAD...${upstream}")
+		if   ((ahead && behind)); then fDie "${branch} and ${upstream} have diverged (${ahead} local, ${behind} remote); reconcile by hand"
+		elif ((behind)); then
+			## Stash-wrapped: the working tree is routinely dirty here, and a
+			## fast-forward can refuse rather than touch a modified file.
+			dirty=0; git -C "${root}" diff --quiet && git -C "${root}" diff --cached --quiet || dirty=1
+			((dirty)) && git -C "${root}" stash push --quiet --include-untracked --message "cicd sync ${stamp}"
+			ff=0; git -C "${root}" merge --ff-only --quiet "${upstream}" && ff=1
+			## A pop that conflicts writes conflict markers into the tree, so it
+			## has to stop the run - building those bytes proves nothing. Git
+			## keeps the entry on a failed pop, so the work is still recoverable.
+			if ((dirty)) && ! git -C "${root}" stash pop --quiet; then
+				fDie "the local changes conflict with ${upstream}; they are safe in the stash - resolve, then 'git stash drop'"
+			fi
+			((ff)) || fDie "fast-forward from ${upstream} failed"
+			fEcho "OK: fast-forwarded ${behind} commit(s) from ${upstream}"
+		elif ((ahead)); then fEcho "OK: ${ahead} commit(s) ahead of ${upstream}, nothing to take"
+		else                 fEcho "OK: level with ${upstream}"
+		fi
+	fi
 fi
 
 ## Stage 1: format. In place locally; check-only (fail on diff) under --ci.
@@ -499,3 +543,4 @@ fEcho_Clean
 ##		- 2026-07-12 JC: Per-stage extras (FMT/BUILD/LINT/TEST_EXTRA eval lists) so additional bindings wire in via config only; first consumer is the Go binding.
 ##		- 2026-07-13 JC: Dogfood stage (7/9) between release and demo gif: installs the native release binary + bash wrapper (when present) to a fixed local dir; --no-dogfood, off under --ci.
 ##		- 2026-07-22 JC: Installer packages in stage 6 (utility/package.bash: nfpm .deb/.rpm + NSIS setup), before the sums write; --no-package, off under --ci/--quick.
+##		- 2026-08-19 JC: Stage 0 remote sync ahead of the format stage: fast-forwards when only behind (stash-wrapped), stops on a diverged branch, warns and continues when offline or untracked; --no-sync, off under --ci.

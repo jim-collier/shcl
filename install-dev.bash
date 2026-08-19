@@ -164,6 +164,13 @@ if have pwsh; then
 	pwsh -NoProfile -Command "if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Install-Module PSScriptAnalyzer -Scope CurrentUser -Force }"
 fi
 
+## Point git at the tracked hooks rather than copying them in, so an update to
+## the hook arrives with a pull instead of needing a reinstall.
+if [[ -d "${clone_dir}/.git" ]]; then
+	git -C "${clone_dir}" config core.hooksPath cicd/hooks
+	echo "git hooks: core.hooksPath -> cicd/hooks (pre-push gates main and dev)"
+fi
+
 echo
 echo "done. The gate is:  cicd/cicd.bash --ci"
 echo "(rust-toolchain.toml pins the toolchain; the first cargo run fetches it.)"

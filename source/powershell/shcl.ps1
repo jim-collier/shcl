@@ -155,5 +155,9 @@ function shcl_instances { shcl instances @args }
 ## InvocationName is '.' only when dot-sourced.
 if ($MyInvocation.InvocationName -ne '.') {
 	shcl @args
-	exit ($LASTEXITCODE ?? 1)      ## null only if nothing ran; treat as usage/IO
+	## Spelled the long way rather than with ??, so this runs on the Windows
+	## PowerShell 5.1 that ships with the OS as well as on 7.
+	$rc = $LASTEXITCODE
+	if ($null -eq $rc) { $rc = 1 }   ## null only if nothing ran; treat as usage/IO
+	exit $rc
 }

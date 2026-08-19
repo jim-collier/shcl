@@ -75,12 +75,15 @@ fi
 ## Windows: an NSIS setup per built .exe. The x86 installer stub runs fine on
 ## ARM64 Windows (emulated), so one .nsi covers both.
 if command -v makensis >/dev/null 2>&1; then
+	## Same icon the executables carry. Absent is not an error - the setup just
+	## falls back to the NSIS default.
+	icoArg=""; [[ -f "${root}/assets/shcl.ico" ]] && icoArg="${root}/assets/shcl.ico"
 	for osarch in x86_64 arm64; do
 		exe="${artDir}/shcl-${ver}-windows-${osarch}.exe"
 		[[ -f "${exe}" ]] || continue
 		out="${artDir}/shcl-${ver}-windows-${osarch}-setup.exe"
 		makensis -V2 -DVERSION="${ver}" -DSRCEXE="${exe}" -DPAYLOAD="${payload}" -DOUTFILE="${out}" \
-			"${meDir}/../packaging/shcl.nsi" >/dev/null
+			${icoArg:+-DICON="${icoArg}"} "${meDir}/../packaging/shcl.nsi" >/dev/null
 		fEcho "OK: package: $(basename "${out}") ($(du -h --apparent-size "${out}" | cut -f1))"
 		built=$((built + 1))
 	done
