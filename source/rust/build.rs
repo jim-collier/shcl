@@ -34,6 +34,7 @@ fn main() {
 	}
 	let quad = parts[..4].join(",");
 
+	// Built from assets/icon.png, not drawn by hand - regenerate it from there.
 	let icon = Path::new("../../assets/shcl.ico").canonicalize().ok();
 	let icon_line = match &icon {
 		// Backslashes so the resource compiler does not read the path as escapes.
