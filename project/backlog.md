@@ -121,13 +121,22 @@ None open.
 			- Done: a sync stage ahead of the format stage. Fast-forwards when only behind, wrapping a dirty tree in a stash; stops the run when the branch and its upstream have both moved; warns and carries on when offline, untracked, or on a detached head. `--no-sync` skips it, and `--ci` turns it off since the runner already has the exact commit.
 			- A stash pop that conflicts now stops the run rather than letting the build proceed over conflict markers. Git keeps the entry, so the work is recoverable.
 
-		- 🔘 Code Review 20260819 item 2: Windows executables carry no icon and no file metadata.
+		- ✅ Code Review 20260819 item 2: Windows executables carry no icon and no file metadata.
 			- Nothing in the repo embeds a resource, and there is no icon file to embed. The cross-built exe gets the generic shell icon, and its properties panel is blank where a version, description and copyright belong.
 			- Affects both Windows targets and the setup they ship inside.
+			- Done: a build script writes the resource and hands it to whichever resource compiler is present, so both Windows binaries now carry the icon and a filled-in properties panel - product name, description, version, company and copyright.
+			- The version comes from `Cargo.toml` through the build environment, so it cannot drift and the release bump still touches the same eight files.
+			- No new dependency, and nothing is required: a build with no resource compiler around warns and carries on rather than failing.
+			- The setup gets the same icon and its own metadata. Verified by reading the resource directory back out of all three binaries.
+			- `assets/shcl.ico` is a plain placeholder mark, drawn to be replaced whenever there is a real one.
 
-		- 🔘 Code Review 20260819 item 3: nothing addresses reproducible builds.
+		- ✅ Code Review 20260819 item 3: nothing addresses reproducible builds.
 			- Two machines building the same tag should produce the same checksum. Never attempted, never measured, so it is unknown whether the build is already close.
 			- Worth assessing before promising anything: if it holds, say so in README.md, since the release already publishes signed checksums and that is what a reader would want to check against.
+			- Measured, and it now holds: the same commit builds byte-identical on all four shipped targets, from different directories.
+			- One thing was actually broken. The Windows linker stamps the build time into the header, so two builds of one commit differed in exactly two bytes. Both Windows targets now ask the linker not to, each in the spelling its own linker accepts.
+			- The other targets already reproduced and needed nothing.
+			- README.md says so now, next to the checksum instructions, since verifying a download against a checksum you produced yourself is the point.
 
 		- ✅ Code Review 20260819 item 4: no runner for the latest build.
 			- A sister project keeps a script that copies the newest release build somewhere off `PATH` under a timestamped name, ages out the copies nothing is using, and launches the newest with arguments passed through. The dogfood stage covers the installed copy only.

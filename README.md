@@ -371,6 +371,8 @@ macOS and the BSDs have no prebuilt binaries yet. Use `cargo install shcl`, a dr
 	# binary at source/rust/target/release/shcl
 	```
 
+	Release builds are reproducible: on the pinned toolchain in `rust-toolchain.toml`, building a given commit produces a byte-identical binary on any machine, from any directory. So you can build a release tag yourself and check your own binary against the published checksum, rather than taking the download on trust. This holds for all four shipped targets.
+
 	Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
 
 ## Using the CLI
