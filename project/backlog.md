@@ -371,7 +371,7 @@ None open.
 			- The cross-binding check cannot see any defect the four bindings share, and most of the bugs above are exactly that shape. The corpus is the only thing that can catch them, and only if a case has the shape.
 			- The cross-compile stage builds the rust binary only, so the c binding's windows branches have never been compiled here. That is how item 2 landed.
 			- The python lint and type gates run at defaults with no configuration, and the module has no type hints - so the type gate analyzes almost nothing and cannot fail. Turning on checking of unannotated bodies surfaces a real misuse trap immediately.
-			- Nothing is built for a 32-bit target, so the size arithmetic there is unverified.
+			- Nothing is built for a 32-bit target, so the size arithmetic there is unverified. (Moot - see the cancellation below.)
 			- The writer fuzzer's character set contains no carriage return and no unusual whitespace, which is why item 6 survived.
 			- Python exports its own imports and one internal constant, because the module declares no public list.
 			- ✅ The type gate is live. Checking of unannotated bodies is on, and the two core data classes carry field types - without those every field was `Any` and the checker still had nothing to check. Proved by injecting a wrong operand and watching it fail. `assignment` stays off, because the structures mirrored from the reference are tagged tuples and index-or-None locals; everything that catches a real misuse is on. Seventeen locals gained a one-word annotation and two accumulators that changed type mid-function were split in the process.
@@ -379,7 +379,7 @@ None open.
 			- ✅ The writer fuzzer's character set gained the carriage return and six unusual whitespace characters - the gap that let the edge-whitespace truncation through. It paid immediately: a 200k soak on the new set found a raw block whose all-whitespace body grows by one indent level on every `fmt`, filed above.
 			- ✅ The cross stage runs cross-compile CHECKS as well as artifact builds: the C library and CLI for Windows through mingw, and the library with file I/O compiled out. Neither had ever been built here, which is how the Windows regression reached dev.
 			- ✅ The deep soak is written down where it will be seen (`cicd/config.bash`, beside the 20k gate) with the command and the reason. Raising the gate itself waits on the two fixpoint bugs it found - a gate that is red for known reasons is worse than one that runs shallow.
-			- ✋ Deferred: a 32-bit build. This box has no 32-bit libc and no i686 rust target, so it needs `gcc-multilib` (a sudo install) plus a toolchain target added to `rust-toolchain.toml`. Worth doing, but it is an environment change to agree to rather than a code fix.
+			- 🚫 Canceled: a 32-bit build. 32-bit is not a target, so there is nothing to verify. The whole line traces to one observation - C's `decode_cps` sizes an allocation as `(m+1) * sizeof(size_t)` unchecked - which only overflows where `size_t` is 32 bits, and then only past about 1.07 GB of input. On every supported target that arithmetic is 64-bit and cannot overflow at any input size the parser will accept.
 			- ✋ Standing, not fixable by a gate: the cross-binding check cannot see a defect all four bindings share. Only the corpus can, and only if a case has the shape. Both bugs filed this round are exactly that shape, and both were found by the fuzzer rather than the differential - which is the practical answer: widen the fuzzer, and add a corpus case whenever it finds something.
 
 - **20260804**:
