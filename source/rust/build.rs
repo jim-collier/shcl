@@ -37,7 +37,10 @@ fn main() {
 	let icon = Path::new("../../assets/shcl.ico").canonicalize().ok();
 	let icon_line = match &icon {
 		// Backslashes so the resource compiler does not read the path as escapes.
-		Some(p) => format!("1 ICON \"{}\"\n", p.display().to_string().replace('\\', "\\\\")),
+		Some(p) => format!(
+			"1 ICON \"{}\"\n",
+			p.display().to_string().replace('\\', "\\\\")
+		),
 		None => String::new(),
 	};
 
@@ -84,18 +87,50 @@ END
 	// link fails at the linker with a machine-type conflict.
 	let target = env::var("TARGET").unwrap_or_default();
 	let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".into());
-	let mingw = format!("{}-windres", target.replace("-pc-windows-gnu", "-w64-mingw32"));
+	let mingw = format!(
+		"{}-windres",
+		target.replace("-pc-windows-gnu", "-w64-mingw32")
+	);
 	let attempts: [(&str, Vec<String>); 3] = [
-		("zig", vec!["rc".into(), "/:target".into(), arch.clone(), "/fo".into(), res_path.display().to_string(), rc_path.display().to_string()]),
-		(mingw.as_str(), vec![rc_path.display().to_string(), "-O".into(), "coff".into(), "-o".into(), res_path.display().to_string()]),
-		("llvm-rc", vec![format!("/fo{}", res_path.display()), rc_path.display().to_string()]),
+		(
+			"zig",
+			vec![
+				"rc".into(),
+				"/:target".into(),
+				arch.clone(),
+				"/fo".into(),
+				res_path.display().to_string(),
+				rc_path.display().to_string(),
+			],
+		),
+		(
+			mingw.as_str(),
+			vec![
+				rc_path.display().to_string(),
+				"-O".into(),
+				"coff".into(),
+				"-o".into(),
+				res_path.display().to_string(),
+			],
+		),
+		(
+			"llvm-rc",
+			vec![
+				format!("/fo{}", res_path.display()),
+				rc_path.display().to_string(),
+			],
+		),
 	];
 
 	for (tool, args) in &attempts {
-		if matches!(Command::new(tool).args(args).status(), Ok(s) if s.success()) && res_path.exists() {
+		if matches!(Command::new(tool).args(args).status(), Ok(s) if s.success())
+			&& res_path.exists()
+		{
 			println!("cargo:rustc-link-arg-bins={}", res_path.display());
 			return;
 		}
 	}
-	println!("cargo:warning=no Windows resource compiler found; the exe gets no icon or version metadata");
+	println!(
+		"cargo:warning=no Windows resource compiler found; the exe gets no icon or version metadata"
+	);
 }

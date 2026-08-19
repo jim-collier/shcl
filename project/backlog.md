@@ -210,41 +210,52 @@ None open.
 
 	- **Performance**:
 
-		- 🔘 Code Review 20260819 item 14: the release profile was never compared for size.
+		- ✅ Code Review 20260819 item 14: the release profile was never compared for size.
 			- Size and speed are the two priorities for a shipped binary, and only speed has been chosen for. The size-first optimization level has never been built or measured against the current one.
 			- Cheap to settle: build both, compare bytes and the large-document timings, keep whichever wins.
+			- Measured on a 21 MiB document, best of three runs each. Size-first costs far more speed than it saves space: the smallest setting is 18 percent smaller and 55 percent slower, and the middle one 13 percent smaller and 11 percent slower.
+			- Decision: keep the speed-first setting. Saving 125 KB on a 690 KB binary is not worth halving the throughput of a tool whose whole job is reading large files.
+			- Numbers are in the private notes so this does not get re-asked.
 
 		- See the open item under Features about what a document costs in memory. It is the one performance finding with measurements behind it, and this review adds nothing to it.
 
 	- **Housecleaning**:
 
-		- 🔘 Code Review 20260819 item 15: a release behind in build leftovers.
+		- ✅ Code Review 20260819 item 15: a release behind in build leftovers.
 			- `source/python/dist/` still holds the 1.2.0 wheel and archive, and the metadata directory beside it matches. Ignored by git, so they sit there indefinitely.
 			- The release recipe already says to clear them before a cut. Clearing them now costs nothing.
+			- Done: removed. They regenerate at the next cut.
 
-		- 🔘 Code Review 20260819 item 16: two run-on bullets in `spec.md`.
+		- ✅ Code Review 20260819 item 16: two run-on bullets in `spec.md`.
 			- The pair covering `--lossy` and what a bare `-` means. Both pack several clauses into one sentence with dashes doing the joining, and they are the only two top-level bullets in the file not separated by a blank line.
+			- Done: split into separate sentences and bullets, and the neighbouring bullet above them had the same problem and got the same treatment. No top-level bullet in the file is missing its blank line now.
 
-		- 🔘 Code Review 20260819 item 17: the AI acceptability guidelines are unreachable from the README.
+		- ✅ Code Review 20260819 item 17: the AI acceptability guidelines are unreachable from the README.
 			- A substantial public document that the Docs list does not mention, so the only way to find it is to browse the file listing.
+			- Done: listed under Docs, with a line saying what it covers.
 
 	- **Marketing**:
 
-		- 🔘 Code Review 20260819 item 18: the "5/10" disclosure under the projects table looks low.
+		- ✅ Code Review 20260819 item 18: the "5/10" disclosure under the projects table looks low.
 			- Counting the table, more than five entries appear to trace back to the same author once the company-hosted ones are included.
 			- The line exists to build trust. An undercount does the opposite, so it is worth getting exactly right or dropping the count and naming the relationship instead.
+			- Done: reads "most of these are by the same author" now. A count that can be argued with is worse than none, and the disclosure is the point.
 
-		- 🔘 Code Review 20260819 item 19: the repository About panel is thinner than it needs to be.
+		- ✅ Code Review 20260819 item 19: the repository About panel is thinner than it needs to be.
 			- No website link at all, though the spec and the generated API docs are both obvious candidates.
 			- The topic list names Rust, Go and Python but not C, C++ or the CLI, so two of the four bindings and half the product are invisible to topic search.
+			- Done: the About panel points at the spec, and the topic list gained c, cpp, cli and config-management.
 
-		- 🔘 Code Review 20260819 item 20: one project in the table has a blank release status.
+		- ✅ Code Review 20260819 item 20: one project in the table has a blank release status.
+			- Done: filled in as in development, which is what the repository shows - active, no release yet. Worth a second look if that is not the intended wording.
 
 	- **Installer**:
 
-		- 🔘 Code Review 20260819 item 21: the Windows installer has no help switch.
+		- ✅ Code Review 20260819 item 21: the Windows installer has no help switch.
 			- The Linux one answers `--help`. The Windows one relies on the comment block at the top of the file, which the documented one-liner cannot reach - it pipes the script straight into the shell, so there is nothing left to ask for help about.
 			- Everything else in both installers matches: signature checked before any checksum, idempotent, states its plan and asks, detects the architecture, and uninstalls only what it laid down.
+			- Done: `-Help` prints the options and exits. Written into the script rather than left to the comment block, because the documented one-liner pipes the script into the shell and leaves nothing to ask about.
+			- README lists it alongside the others.
 
 - **20260817**:
 
