@@ -5,7 +5,8 @@
 ##		.deb + .rpm via nfpm (x86_64 and arm64, whichever binaries exist) and an
 ##		NSIS setup .exe per Windows binary. Payload mirrors install.bash: binary,
 ##		code/ drop-ins (lib.rs, shcl.go, shcl.py, shcl.h, shcl.hpp), scripts/
-##		wrappers (shcl.bash, shcl.ps1). Packages land beside the raw binaries in
+##		wrappers (shcl.bash, shcl.ps1), man/ page, completions/ for bash and zsh.
+##		Packages land beside the raw binaries in
 ##		the artifact dir, named into the same shcl-<version>-* family so the
 ##		engine's sha256sums rewrite picks them up.
 ##	Syntax:
@@ -33,13 +34,19 @@ fWarn(){ fEcho "WARNING: $*"; }
 ## Stage the shared payload (same file set install.bash pulls from a tag).
 payload="$(mktemp -d)"
 trap 'rm -rf "${payload}"' EXIT
-mkdir -p "${payload}/code" "${payload}/scripts"
+mkdir -p "${payload}/code" "${payload}/scripts" "${payload}/man" "${payload}/completions"
 chmod 755 "${payload}" "${payload}/code" "${payload}/scripts"   ## tree type copies dir modes into the package
 cp "${root}/source/rust/src/lib.rs" "${root}/source/go/shcl.go" "${root}/source/python/shcl.py" \
    "${root}/source/c/shcl.h" "${root}/source/c/shcl.hpp" "${payload}/code/"
 cp "${root}/source/bash/shcl.bash" "${root}/source/powershell/shcl.ps1" "${payload}/scripts/"
 chmod 644 "${payload}"/code/* "${payload}/scripts/shcl.ps1"
 chmod 755 "${payload}/scripts/shcl.bash"
+## Both package formats want the man page compressed. -n keeps the timestamp and
+## the original name out of the gzip header, so the same source gives the same
+## bytes on every build.
+gzip -9 -n -c "${root}/source/man/shcl.1" > "${payload}/man/shcl.1.gz"
+cp "${root}/source/completions/shcl.bash" "${root}/source/completions/_shcl" "${payload}/completions/"
+chmod 644 "${payload}/man/shcl.1.gz" "${payload}"/completions/*
 
 built=0
 

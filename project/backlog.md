@@ -74,10 +74,15 @@ None open.
 
 ### Features and enhancements
 
-- 🔘 A man page and shell completions for the CLI.
+- ✅ A man page and shell completions for the CLI.
 	- Split out of Code Review 20260817 item 28, which batched them with polish they do not belong with: this is a new deliverable, not a fix.
 	- `shcl.1` in roff, plus bash and zsh completions that know which options each subcommand takes - the same table the CLIs already carry for their usage check, so the two can be kept in step.
 	- Packaging follows: the .deb and .rpm need a man dir and a completions dir, and the installer needs somewhere to put them for a user-target install.
+	- Done: `source/man/shcl.1` covers every subcommand, option, write op and exit code, with the per-subcommand ownership the help only hints at. No version string in it, so the release bump is still eight files.
+	- Done: `source/completions/shcl.bash` and `source/completions/_shcl` carry the CLI's own option table, one arm per subcommand, spelled identically in both files. They complete values for `--strictness` and `--on-bad`, files for `--schema`/`--layer` and the FILE slot, and nothing for a PATH - no filename there could ever be right.
+	- Done: `cicd/utility/check-completions.bash` diffs the CLI's table against both completion files and fails the lint stage on any disagreement, so an option added to one cannot drift from the others.
+	- Done: the .deb and .rpm install the man page and both completions into the distribution's own directories, so they work with nothing to configure. The installer symlinks the man page into the target's man1 dir and leaves the completions under the install dir with the line to paste for each shell - the reasoning is in `design.md`. Uninstall removes both, and the man symlink only when it points back into the install dir.
+	- Done: the man page and completions ride in the signed drop-in payload, so nothing unverified is installed. A payload from before they existed installs what it has and says so.
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
@@ -374,7 +379,7 @@ None open.
 			- ✅ Installer payload: the drop-ins and wrappers ship as a release asset covered by the same signed sums as the binary, built by the pipeline into the artifact dir before the sums are written. The generated source tarball, which carries no signature at all, is out of the path - and the one file the installer marks executable is now one it verified. A release without the asset installs the binary and says what it skipped rather than falling back to something unverified.
 			- ✅ Uninstall: `--uninstall`/`-Uninstall` removes exactly what the matching install laid down - binary, symlink or PATH entry, and the two payload dirs - and the success message names it. It runs before any network call, so removing does not need a release to exist.
 			- ✅ The no-terminal guard now asks the question it means: it tries the read and treats failure as the abort. Testing `/dev/tty` for readability passed in plenty of unattended contexts where the read then died on a raw shell error.
-			- ✋ Deferred: the man page and shell completions. Those are a new deliverable with packaging consequences (.deb/.rpm placement, a completions dir per shell), not polish on an existing one - filed on their own below.
+			- ✋ Deferred: the man page and shell completions. Those are a new deliverable with packaging consequences (.deb/.rpm placement, a completions dir per shell), not polish on an existing one - filed on their own under Features, where they are now done.
 
 		- 🛠️ Code Review 20260817 item 29: the gaps that let this round through.
 			- The cross-binding check cannot see any defect the four bindings share, and most of the bugs above are exactly that shape. The corpus is the only thing that can catch them, and only if a case has the shape.

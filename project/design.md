@@ -27,6 +27,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Go binding Tier 2](#go-binding-tier-2)
 	- [C binding Tier 2](#c-binding-tier-2)
 	- [Shell wrappers](#shell-wrappers)
+	- [Man page and completions](#man-page-and-completions)
 
 <!-- /TOC -->
 
@@ -321,3 +322,25 @@ The responsibility is split rather than duplicate the pipeline:
 	- Leak shell options into the caller. Strict mode is armed only on the run path.
 
 	- Let its own `shcl` function shadow the binary during lookup. The binary is resolved via `$SHCL_BIN`, a co-located `shcl`, PATH, then the repo build, so a dogfooded install and in-repo dev both work without configuration.
+
+### Man page and completions
+
+- `source/man/shcl.1` is roff by hand rather than generated from the help text. The help is a byte-for-byte contract across the four CLIs and is shaped by an 80-column terminal; a man page has different obligations - sections a reader can jump to, and room to say why a refusal exists. Generating one from the other would either bloat the help or flatten the page.
+
+- The man page carries no version string, so the release bump stays the same eight files it has always been. What it does carry is a revision date.
+
+- The completions mirror the CLI's own per-subcommand option table rather than inventing one. Offering an option the subcommand rejects is worse than offering none, because the CLI treats an unusable option as a usage error rather than ignoring it. `cicd/utility/check-completions.bash` diffs the CLI's table against both completion files at lint time, so the three cannot drift apart silently.
+
+- Bash and zsh completion files are kept structurally parallel - the same table, the same helper names, the same positional-counting loop - for the same reason the bindings are: a fix ports across by mechanical diff.
+
+- Neither completion offers anything for a `PATH` argument. Nothing can enumerate the paths in a document without reading it, and filenames - the obvious fallback - would be wrong every single time.
+
+- **Where each channel installs them.** Among the options it was decided that the packages and the installer should behave differently, because they are different kinds of thing:
+
+	- The `.deb` and `.rpm` put the man page and both completions in the distribution's own directories, where each shell already looks. That is what a package is for, and it is the only channel that can do it without stepping on the package manager.
+
+	- The installer symlinks the man page into the target's `man1` directory, mirroring the binary symlink exactly - the same trick, and it makes `man shcl` work as soon as the install directory is on `PATH`, since man derives its search path from the `bin` directories there.
+
+	- The installer leaves the completions under the install directory and prints the line to paste for each shell. There is no one directory that works: bash's autoload directory varies with the bash-completion version, zsh needs a directory already on `$fpath`, and writing into the distribution's own would collide with the packaged copy. Printing the line is the same bargain the `PATH` note already strikes - honest about what was not done, with the fix one paste away.
+
+	- Uninstall removes only what a matching install laid down, and the man symlink only when it points back into the install directory. One that does not came from a package, and removing it would break a working install.
