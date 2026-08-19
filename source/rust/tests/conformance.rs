@@ -773,6 +773,19 @@ fn setter_refuses_a_path_it_could_not_write_back() {
 }
 
 #[test]
+fn raw_block_line_endings_normalize_and_round_trip() {
+	// A raw body is the only content kept untrimmed, so it is the only place a
+	// trailing CR survives the load - and one written back becomes CRLF, which
+	// reads as neither. The whole trailing run comes off instead; a CR inside a
+	// line is content and stays. Same fixture in every runner: a golden would be
+	// rewritten by any platform's line-ending translation.
+	let doc = Document::parse("r:\n\t~~~\n\tone\r\r\n\ta\rb\n\t~~~\n");
+	assert_eq!(doc.read_raw("r").value, "one\na\rb");
+	let canon = doc.to_canonical();
+	assert_eq!(Document::parse(&canon).to_canonical(), canon);
+}
+
+#[test]
 fn read_surface_line_quoted_children() {
 	// line/quoted on the read result, line(path), children(path). Same
 	// fixture in every runner (C pins the same answers on shcl_quoted and

@@ -562,6 +562,17 @@ def main():
 		raise SystemExit("write_reason probe created an instance")
 	if wdoc.paths() != ["a", "a.b"]:
 		raise SystemExit("write_reason probe changed paths: {}".format(wdoc.paths()))
+	# A raw body is the only content kept untrimmed, so it is the only place a
+	# trailing CR survives the load - and one written back becomes CRLF, which
+	# reads as neither. The whole trailing run comes off instead; a CR inside a
+	# line is content and stays. Same fixture in every runner: a golden would be
+	# rewritten by any platform's line-ending translation.
+	rdoc = shcl.Document.parse("r:\n\t~~~\n\tone\r\r\n\ta\rb\n\t~~~\n")
+	if rdoc.read_raw("r").value != "one\na\rb":
+		raise SystemExit("raw content: {!r}".format(rdoc.read_raw("r").value))
+	rcanon = rdoc.to_canonical()
+	if shcl.Document.parse(rcanon).to_canonical() != rcanon:
+		raise SystemExit("raw block with CR is not a formatter fixpoint")
 	# line/quoted on the read result, line(path), children(path). Same
 	# fixture in every runner (C pins the same answers on shcl_quoted and
 	# shcl_line; its read structs stay value+status).

@@ -1,0 +1,8 @@
+blk:
+	~~~info#hash
+	body
+	~~~
+	child: 1
+two:
+two: 5
+	kid: a

@@ -1629,10 +1629,13 @@ func (p *parser) emitRepeatedLeafHints() {
 
 func (p *parser) parse(text string, strictness Strictness) *Document {
 	// UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
+	// The whole trailing CR run goes, not just one: a raw block keeps its content
+	// untrimmed, so a line left ending in CR would be written back as CRLF and
+	// read as neither - the one shape where the count is visible.
 	text = strings.TrimPrefix(text, "\uFEFF")
 	lines := strings.Split(text, "\n")
 	for j, l := range lines {
-		lines[j] = strings.TrimSuffix(l, "\r")
+		lines[j] = strings.TrimRight(l, "\r")
 	}
 	i := 0
 	for i < len(lines) {
@@ -1995,8 +1998,18 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 		}
 		out.WriteByte('\n')
 		if r.content != "" {
+			// A body with no non-blank line has no common indent for the reload
+			// to strip back off, so indenting it here would add a level on every
+			// pass, without bound. Leave it as it stands.
+			allBlank := true
 			for _, l := range strings.Split(r.content, "\n") {
-				if l != "" {
+				if strings.TrimSpace(l) != "" {
+					allBlank = false
+					break
+				}
+			}
+			for _, l := range strings.Split(r.content, "\n") {
+				if l != "" && !allBlank {
 					out.WriteString(bodyPad)
 				}
 				out.WriteString(l)
@@ -3456,6 +3469,7 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	// instances, and replaced names base never had) keeps processing order.
 	replace := map[string][]int{}
 	var appended []int
+	emptyKey := (&value{kind: vEmpty}).key()
 	for _, name := range order {
 		group := groups[name]
 		overLeafy := true
@@ -3479,9 +3493,28 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 		} else {
 			for _, ok := range group {
 				okey := over.arena[ok].value.key()
-				if b, found := byKey[[2]string{name, okey}]; found {
-					d.adoptTrivia(b, over, ok)
-					d.overlay(b, over, ok)
+				target, found := byKey[[2]string{name, okey}]
+				// A raw block in the higher layer fills a same-named empty
+				// binding below, exactly as a fence line fills one inside a
+				// single file. Without it, merging two documents and parsing
+				// them run together disagree: both bindings survive here and
+				// fold there, so the merged output is not a formatter fixpoint.
+				if !found && over.arena[ok].value.kind == vRaw {
+					empty := [2]string{name, emptyKey}
+					if b, hit := byKey[empty]; hit {
+						cv := over.arena[ok].value
+						cv.els = append([]element(nil), cv.els...)
+						d.arena[b].value = cv
+						delete(byKey, empty)
+						if _, dup := byKey[[2]string{name, okey}]; !dup {
+							byKey[[2]string{name, okey}] = b
+						}
+						target, found = b, true
+					}
+				}
+				if found {
+					d.adoptTrivia(target, over, ok)
+					d.overlay(target, over, ok)
 				} else {
 					c := d.cloneSubtree(over, ok, baseParent)
 					appended = append(appended, c)

@@ -48,19 +48,28 @@ None open.
 
 ### Bugs
 
-- 🔘 A raw block whose body is entirely whitespace grows by one indent level on every `fmt`.
+- ✅ A raw block body line ending in more than one carriage return is not a `fmt` fixpoint.
+	- Found by the raised 200k gate, immediately after the two below were fixed - same family, and the third one none of the shallower runs could reach.
+	- Minimal reproducer: a fenced block whose body line ends `\r\r\n`. Load strips one CR, emit writes the survivor back, and the reload reads `\r\n` as an ordinary line ending and drops it. All four bindings.
+	- A raw body is the only content kept untrimmed, so it is the only place a trailing CR is visible at all; everywhere else the line trim removes it.
+	- Fixed by taking the whole trailing CR run off at load, not just one. A line ending in CR has no spelling that survives a write, so normalizing once is the only stable answer - and it matches the line-ending policy already in place rather than inventing a second one. A CR *inside* a line is content and still round-trips untouched.
+	- Pinned by a fixture in all four runners rather than a corpus case: a golden holding the bytes would be rewritten by any platform's line-ending translation.
+
+- ✅ A raw block whose body is entirely whitespace grows by one indent level on every `fmt`.
 	- Found by the widened fuzzer character set from Code Review 20260817 item 29 - the old set could not reach it.
 	- Minimal reproducer: `r:` then a fenced block at one tab whose only body line is a single tab. Each `fmt` adds a tab to that line, without bound. All four bindings, so the corpus is what can pin it.
 	- Cause: the common indent a raw block strips on reload is computed from its non-blank lines, and this block has none - so nothing is stripped, while emit adds depth+1 tabs every pass. Pre-existing: reproduces before the performance pass, and arrived with Code Review 20260817 item 7, which stopped blanking such lines.
 	- Proposed fix: when a block has no non-blank content line, take the common indent from the whitespace-only lines themselves. That normalizes an all-whitespace body to empty once, which is the lesser evil against growth without bound - but it moves canonical output, so it wants a decision, a corpus case and a spec sentence.
-	- Same family as the merge item below: raw blocks and whitespace. Worth settling together.
+	- Same family as the merge item below: raw blocks and whitespace. Settled together, as one branch.
+	- Fixed, but by leaving the body alone rather than normalizing it to empty as proposed above. Emit adds no indent exactly where load stripped none, so the two stay inverses and the body survives byte-for-byte. Normalizing would also have ended the growth, but it discards whatever the body held - and a line of non-breaking or ideographic space is content, not layout, inside a construct whose whole promise is verbatim. Case 055 pins both, including the non-space-whitespace body.
 
-- 🔘 Merged output is not always a formatter fixpoint: an empty binding in the base and a same-named block in the overlay both survive the merge, where a parse of the two would fold them.
+- ✅ Merged output is not always a formatter fixpoint: an empty binding in the base and a same-named block in the overlay both survive the merge, where a parse of the two would fold them.
 	- Found by a 200k-iteration fuzz soak; the pipeline runs 20k, which never reaches it. Pre-existing - reproduces identically on the commit before the performance pass.
 	- Minimal reproducer. Base: `blk:` alone. Overlay: `blk:` carrying a raw block and a child. Merged, both survive; re-parsed, they fold, so the canonical form changes on the second pass.
 	- Cause: the overlay's node has a child, so it takes the instance-merge path and looks for a base sibling with the same (name, value) key. An empty node's key never matches a block's, so it appends instead of filling - while the parser's own rule is that a later binding FILLS an earlier empty one of the same name. Parser and merge disagree about the same two lines.
 	- A second face of the same bug, and the one that showed first: the emitter works around the pair by writing the block's fence on the name's line (`blk: ```info`), and the value half of that line is comment-split on reparse - so an info string containing `#` comes back as a trailing comment and the fence loses it outright. That half is content loss, not just instability.
-	- Deferred, not dropped: the fix means deciding whether merge should adopt the parser's empty-fill rule - the likely answer, since it makes merge agree with a parse of the two documents concatenated - and that is a semantics change across all four bindings, the corpus and the spec. Worth its own chunk rather than riding on an unrelated one.
+	- Fixed: merge adopts the parser's empty-fill rule, so a merge and a parse of the two layers run together produce the same document. The fill is limited to a raw block, which is the limit of the parser's own rule - an unmatched valued instance still appends, as a parse of the same two lines does. Case 056 pins both halves.
+	- The info-string half needed no separate fix: with the pair folded, the emitter never reaches the same-line-fence spelling for it, so the `#` survives. Pinned in the same case.
 	- Raise the soak in the pipeline, or at least run one at 200k before a cut: the 20k gate cannot see this class. Related to Code Review 20260817 item 29.
 
 ### Features and enhancements
@@ -378,7 +387,7 @@ None open.
 			- ✅ Python declares `__all__`, so `import *` no longer hands out math, os, stat, Decimal, Enum and an internal constant alongside the API.
 			- ✅ The writer fuzzer's character set gained the carriage return and six unusual whitespace characters - the gap that let the edge-whitespace truncation through. It paid immediately: a 200k soak on the new set found a raw block whose all-whitespace body grows by one indent level on every `fmt`, filed above.
 			- ✅ The cross stage runs cross-compile CHECKS as well as artifact builds: the C library and CLI for Windows through mingw, and the library with file I/O compiled out. Neither had ever been built here, which is how the Windows regression reached dev.
-			- ✅ The deep soak is written down where it will be seen (`cicd/config.bash`, beside the 20k gate) with the command and the reason. Raising the gate itself waits on the two fixpoint bugs it found - a gate that is red for known reasons is worse than one that runs shallow.
+			- ✅ The deep soak is written down where it will be seen (`cicd/config.bash`, beside the gate) with the command and the reason. The gate itself is now 200k, raised once the two fixpoint bugs it found were fixed - both needed that depth to surface at all, so a gate below it could not see the class that produced them.
 			- 🚫 Canceled: a 32-bit build. 32-bit is not a target, so there is nothing to verify. The whole line traces to one observation - C's `decode_cps` sizes an allocation as `(m+1) * sizeof(size_t)` unchecked - which only overflows where `size_t` is 32 bits, and then only past about 1.07 GB of input. On every supported target that arithmetic is 64-bit and cannot overflow at any input size the parser will accept.
 			- ✋ Standing, not fixable by a gate: the cross-binding check cannot see a defect all four bindings share. Only the corpus can, and only if a case has the shape. Both bugs filed this round are exactly that shape, and both were found by the fuzzer rather than the differential - which is the practical answer: widen the fuzzer, and add a corpus case whenever it finds something.
 

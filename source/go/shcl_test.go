@@ -687,6 +687,22 @@ func TestWriteReasonNamesTheFailure(t *testing.T) {
 	}
 }
 
+func TestRawBlockLineEndingsNormalizeAndRoundTrip(t *testing.T) {
+	// A raw body is the only content kept untrimmed, so it is the only place a
+	// trailing CR survives the load - and one written back becomes CRLF, which
+	// reads as neither. The whole trailing run comes off instead; a CR inside a
+	// line is content and stays. Same fixture in every runner: a golden would be
+	// rewritten by any platform's line-ending translation.
+	doc := Parse("r:\n\t~~~\n\tone\r\r\n\ta\rb\n\t~~~\n")
+	if got := doc.ReadRaw("r").Value; got != "one\na\rb" {
+		t.Errorf("raw content: got %q", got)
+	}
+	canon := doc.ToCanonical()
+	if again := Parse(canon).ToCanonical(); again != canon {
+		t.Errorf("not a fixpoint: %q vs %q", again, canon)
+	}
+}
+
 func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	// Line/Quoted on the read result, Line(path), Children(path). Same
 	// fixture in every runner (C pins the same answers on shcl_quoted and

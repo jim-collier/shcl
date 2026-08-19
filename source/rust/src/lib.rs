@@ -1530,11 +1530,11 @@ impl Parser {
 	fn parse(mut self, text: &str, strictness: Strictness) -> Document {
 		// UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
 		// Lines borrow `text`: they are only read, so no owned copies needed.
+		// The whole trailing CR run goes, not just one: a raw block keeps its
+		// content untrimmed, so a line left ending in CR would be written back as
+		// CRLF and read as neither - the one shape where the count is visible.
 		let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-		let lines: Vec<&str> = text
-			.split('\n')
-			.map(|l| l.strip_suffix('\r').unwrap_or(l))
-			.collect();
+		let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
 		let mut i = 0usize;
 		while i < lines.len() {
 			let lineno = i + 1;
@@ -1982,8 +1982,12 @@ impl Document {
 				}
 				out.push('\n');
 				if !content.is_empty() {
+					// A body with no non-blank line has no common indent for the
+					// reload to strip back off, so indenting it here would add a
+					// level on every pass, without bound. Leave it as it stands.
+					let all_blank = content.split('\n').all(|l| l.trim().is_empty());
 					for l in content.split('\n') {
-						if !l.is_empty() {
+						if !l.is_empty() && !all_blank {
 							out.push_str(&pad);
 						}
 						out.push_str(l);
@@ -3160,6 +3164,7 @@ impl Document {
 		// instances, and replaced names base never had) keeps processing order.
 		let mut replace: HashMap<String, Vec<usize>> = HashMap::new();
 		let mut appended: Vec<usize> = Vec::new();
+		let empty_key = Value::Empty.key();
 		for name in &order {
 			let group = &groups[name];
 			let over_leafy = group.iter().all(|&k| over.arena[k].children.is_empty());
@@ -3178,8 +3183,24 @@ impl Document {
 			} else {
 				for &ok in group {
 					let okey = over.arena[ok].value.key();
-					match by_key.get(&(name.clone(), okey)) {
-						Some(&b) => {
+					// A raw block in the higher layer fills a same-named empty
+					// binding below, exactly as a fence line fills one inside a
+					// single file. Without it, merging two documents and parsing
+					// them run together disagree: both bindings survive here and
+					// fold there, so the merged output is not a formatter fixpoint.
+					let mut target = by_key.get(&(name.clone(), okey.clone())).copied();
+					if target.is_none() && matches!(over.arena[ok].value, Value::Raw { .. }) {
+						let empty = (name.clone(), empty_key.clone());
+						let hit = by_key.get(&empty).copied();
+						if let Some(b) = hit {
+							self.arena[b].value = over.arena[ok].value.clone();
+							by_key.remove(&empty);
+							by_key.entry((name.clone(), okey)).or_insert(b);
+							target = Some(b);
+						}
+					}
+					match target {
+						Some(b) => {
 							self.adopt_trivia(b, over, ok);
 							self.overlay(b, over, ok);
 						}
