@@ -22,6 +22,7 @@
 ##		-Uninstall              remove what an install of the same -Target laid
 ##		                        down (binary, code\, scripts\, PATH entry).
 ##		-Yes                    skip the confirmation prompt.
+##		-Help                   print the options and exit.
 ##
 ##	Layout under the install dir:
 ##		shcl.exe    the CLI binary
@@ -39,11 +40,40 @@ param(
 	[ValidateSet('dev', 'development', 'stable')] [string]$Release = 'dev',
 	[ValidateSet('user', 'system')] [string]$Target = 'system',
 	[switch]$Yes,
-	[switch]$Uninstall
+	[switch]$Uninstall,
+	[switch]$Help
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+## Spelled out here rather than left to Get-Help: the documented one-liner pipes
+## this script straight into the shell, so there is no file left to ask about.
+if ($Help) {
+	@'
+shcl installer
+
+Usage:
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1))) -Target user
+
+Options:
+    -Release <dev|stable>   dev = newest release including pre-releases
+                            (default); stable = newest full release.
+    -Target <user|system>   system (default): C:\Program Files\Shcl, added to
+                            the machine PATH (needs an elevated shell).
+                            user: %LOCALAPPDATA%\Programs\Shcl, added to the
+                            user PATH. No elevation needed.
+    -Uninstall              remove what an install of the same -Target laid
+                            down, and nothing else.
+    -Yes                    skip the confirmation prompt.
+    -Help                   this text.
+
+The release signature is checked before any checksum is read out of the sums
+file. Nothing unverified is installed.
+'@ | Write-Output
+	exit 0
+}
+
 if ($Release -eq 'development') { $Release = 'dev' }
 
 $repo = 'jim-collier/shcl'

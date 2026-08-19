@@ -13,7 +13,7 @@ import sys
 # The single-file library sits two directories up (lib in source/python/, CLI in
 # source/python/cmd/shcl/, mirroring the Go layout).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
-import shcl  # noqa: E402
+import shcl
 
 # Keep in step with source/rust/Cargo.toml, the canonical version source.
 VERSION = "1.2.0"
@@ -185,13 +185,13 @@ def _set_value_opt(o, name, v):
 		o.seen.append("--default")
 	elif name == "--on-bad":
 		if v not in ("error", "default", "flag"):
-			raise ValueError("bad --on-bad value: {}".format(v))
+			raise ValueError(f"bad --on-bad value: {v}")
 		o.on_bad = v
 		o.seen.append("--on-bad")
 	elif name == "--strictness":
 		s = shcl.Strictness.from_arg(v)
 		if s is None:
-			raise ValueError("bad --strictness value: {}".format(v))
+			raise ValueError(f"bad --strictness value: {v}")
 		o.strictness = s
 		o.seen.append("--strictness")
 	elif name == "--schema":
@@ -203,7 +203,7 @@ def _set_value_opt(o, name, v):
 	elif name in ("--set", "--set-literal"):
 		eq = v.find("=")
 		if eq < 0:
-			raise ValueError("bad {} value (want PATH=VALUE): {}".format(name, v))
+			raise ValueError(f"bad {name} value (want PATH=VALUE): {v}")
 		o.sets.append(_SetOpt(v[:eq], v[eq + 1:], name == "--set-literal"))
 		o.seen.append(name)
 
@@ -269,7 +269,7 @@ def parse_opts(argv):
 		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal"):
 			i += 1
 			if i >= len(argv):
-				raise ValueError("missing value for {0} (try {0}=VALUE)".format(a))
+				raise ValueError(f"missing value for {a} (try {a}=VALUE)")
 			_set_value_opt(o, a, argv[i])
 		elif a.startswith("--default="):
 			_set_value_opt(o, "--default", a[len("--default="):])
@@ -286,7 +286,7 @@ def parse_opts(argv):
 		elif a.startswith("--set="):
 			_set_value_opt(o, "--set", a[len("--set="):])
 		elif a.startswith("-") and len(a) > 1:
-			raise ValueError("unknown option: {}".format(a))
+			raise ValueError(f"unknown option: {a}")
 		else:
 			o.args.append(a)
 		i += 1
@@ -302,8 +302,8 @@ def read_input(file):
 	# The reference reads as UTF-8 and fails on bad bytes; match its exit path.
 	try:
 		return data.decode("utf-8")
-	except UnicodeDecodeError:
-		raise ValueError("{}: stream did not contain valid UTF-8".format(file))
+	except UnicodeDecodeError as e:
+		raise ValueError(f"{file}: stream did not contain valid UTF-8") from e
 
 
 def load_doc(text, strictness):
@@ -313,7 +313,7 @@ def load_doc(text, strictness):
 		return shcl.Document.parse_with(text, strictness), None
 	except shcl.LoadError as le:
 		for d in le.diagnostics:
-			sys.stderr.write("line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+			sys.stderr.write(f"line {d.line}: {d.severity.name}: {d.message}\n")
 		sys.stderr.write(str(le) + "\n")
 		return None, 6
 
@@ -325,7 +325,7 @@ def write_back(doc, file, o):
 	# than a second copy of the rule - the CLI and a consumer program cannot then
 	# disagree about which rewrites are safe.
 	for d in doc.diagnostics():
-		sys.stderr.write("line {}: {}: {} {}\n".format(d.line, d.severity.name, d.code, d.message))
+		sys.stderr.write(f"line {d.line}: {d.severity.name}: {d.code} {d.message}\n")
 	try:
 		if o.lossy:
 			doc.save_file_lossy(file)
@@ -335,7 +335,7 @@ def write_back(doc, file, o):
 	# The rule stays in the library; only the wording is the CLI's, because the
 	# override a user has here is a flag, not a function.
 	except shcl.SaveRefused as e:
-		sys.stderr.write("{}: refusing to rewrite: the load dropped {} line(s)/value(s) this write would delete (--lossy overrides)\n".format(file, e.lost))
+		sys.stderr.write(f"{file}: refusing to rewrite: the load dropped {e.lost} line(s)/value(s) this write would delete (--lossy overrides)\n")
 	except shcl.SaveError as e:
 		sys.stderr.write(str(e) + "\n")
 	return 1
@@ -360,7 +360,7 @@ def load_layered(o, file):
 		doc.merge(over)
 	for st in o.sets:
 		if not st.apply(doc):
-			sys.stderr.write("shcl: cannot write {} (from {})\n".format(st.path, st.opt()))
+			sys.stderr.write(f"shcl: cannot write {st.path} (from {st.opt()})\n")
 			return None, 1
 	return doc, None
 
@@ -386,7 +386,7 @@ def check_opts(cmd, o):
 	for s in o.seen:
 		if s not in allowed:
 			if s == "--<type>":
-				sys.stderr.write("type options are not valid for {} (see --help)\n".format(cmd))
+				sys.stderr.write(f"type options are not valid for {cmd} (see --help)\n")
 			elif cmd == "init" and s == "--strictness":
 				# Deliberate, not an oversight: the schema is a program artifact,
 				# so it always loads at Standard - the same rule `check --schema`
@@ -400,10 +400,10 @@ def check_opts(cmd, o):
 				# number against. Naming the pipeline turns a dead end into a
 				# one-liner.
 				sys.stderr.write(
-					"option {} not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt {} ... FILE | shcl check --schema=SCHEMA -\n".format(s, s)
+					f"option {s} not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt {s} ... FILE | shcl check --schema=SCHEMA -\n"
 				)
 			else:
-				sys.stderr.write("option {} not valid for {} (see --help)\n".format(s, cmd))
+				sys.stderr.write(f"option {s} not valid for {cmd} (see --help)\n")
 			return 1
 	# Writing back the merged document would fold the lower layers permanently
 	# into the top file, which is the opposite of what layering is for. On 'set'
@@ -464,7 +464,7 @@ def do_get(o):
 			r = doc.read_datetime_array(path)
 			lines = [str(v) for v in r.value]
 		elif o.kind in ("raw", "rawinfo"):
-			sys.stderr.write("--{} has no --array form\n".format(o.kind))
+			sys.stderr.write(f"--{o.kind} has no --array form\n")
 			return 1
 		else:
 			r = doc.read_string_array(path)
@@ -500,7 +500,7 @@ def do_get(o):
 	def emit(lns):
 		for i, ln in enumerate(lns):
 			if o.slots:
-				print("{}\t{}".format(slot_at(i).name, ln))
+				print(f"{slot_at(i).name}\t{ln}")
 			else:
 				print(ln)
 
@@ -516,13 +516,13 @@ def do_get(o):
 		and o.on_bad != "default"
 		and (status != shcl.Status.Empty or o.on_bad == "error")
 	):
-		type_name = "{} array".format(o.kind) if o.array else o.kind
+		type_name = f"{o.kind} array" if o.array else o.kind
 		if status == shcl.Status.BadType:
 			raw = doc.read_string(path).raw
 			reason = (
-				'value "{}" is not a valid {}'.format(raw, type_name)
+				f'value "{raw}" is not a valid {type_name}'
 				if raw is not None
-				else "value is not a valid {}".format(type_name)
+				else f"value is not a valid {type_name}"
 			)
 		elif status == shcl.Status.NotFound:
 			reason = "no value at that path"
@@ -531,7 +531,7 @@ def do_get(o):
 		else:
 			reason = "the path matches multiple instances"
 		sys.stderr.write(
-			"shcl: cannot read {} as {}: {} (in {})\n".format(path, type_name, reason, file)
+			f"shcl: cannot read {path} as {type_name}: {reason} (in {file})\n"
 		)
 	if status == shcl.Status.Good or (status == shcl.Status.Empty and o.on_bad == "flag"):
 		emit(lines)
@@ -542,7 +542,7 @@ def do_get(o):
 			# Array read: the default substitutes per bad slot; alignment holds.
 			emit([ln if slot_at(i) == shcl.Status.Good else dv for i, ln in enumerate(lines)])
 		elif o.slots:
-			print("{}\t{}".format(status.name, dv))
+			print(f"{status.name}\t{dv}")
 		else:
 			print(dv)
 		return 0
@@ -603,7 +603,7 @@ def _unescape_ops(s):
 def _op_dt(s):
 	dt = shcl.parse_datetime(s)
 	if dt is None:
-		raise ValueError("bad datetime: {}".format(s))
+		raise ValueError(f"bad datetime: {s}")
 	return dt
 
 
@@ -612,15 +612,15 @@ def _op_int(s):
 	# underscores, surrounding whitespace, and non-ASCII digits).
 	t = s[1:] if s[:1] in ("+", "-") else s
 	if t == "" or any(c < "0" or c > "9" for c in t):
-		raise ValueError("bad int: {}".format(s))
+		raise ValueError(f"bad int: {s}")
 	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
 	# reference just overflows. Leading zeros are legal and don't count toward range.
 	digits = t.lstrip("0") or "0"
 	if len(digits) > 19:
-		raise ValueError("bad int: {}".format(s))
+		raise ValueError(f"bad int: {s}")
 	v = -int(digits) if s[:1] == "-" else int(digits)
 	if v < -(2 ** 63) or v > 2 ** 63 - 1:
-		raise ValueError("bad int: {}".format(s))
+		raise ValueError(f"bad int: {s}")
 	return v
 
 
@@ -663,7 +663,7 @@ def _op_flt(s):
 	# float() after the grammar gate is safe; overflow (1e400) yields inf,
 	# matching Rust's parse.
 	if not _float_grammar_ok(s):
-		raise ValueError("bad float: {}".format(s))
+		raise ValueError(f"bad float: {s}")
 	return float(s)
 
 
@@ -732,9 +732,9 @@ def apply_op(doc, line):
 		doc.remove(path)
 		wrote = True
 	else:
-		raise ValueError("unknown op: {}".format(op))
+		raise ValueError(f"unknown op: {op}")
 	if not wrote:
-		raise ValueError("cannot write {}".format(path))
+		raise ValueError(f"cannot write {path}")
 
 
 def do_set(o):
@@ -767,7 +767,7 @@ def do_set(o):
 		doc.merge(over)
 	for st in o.sets:
 		if not st.apply(doc):
-			sys.stderr.write("shcl: cannot write {} (from {})\n".format(st.path, st.opt()))
+			sys.stderr.write(f"shcl: cannot write {st.path} (from {st.opt()})\n")
 			return 1
 	# --set carries the edits, so stdin is left alone: reading it here would
 	# block on the console for anyone who passed edits as options.
@@ -793,7 +793,7 @@ def do_set(o):
 		try:
 			apply_op(doc, line)
 		except ValueError as e:
-			sys.stderr.write("op line {}: {}\n".format(n + 1, e))
+			sys.stderr.write(f"op line {n + 1}: {e}\n")
 			return 1
 	if o.write:
 		return write_back(doc, file, o)
@@ -826,7 +826,7 @@ def do_check(o):
 			sdoc = shcl.Document.parse(stext)
 			if any(sd.severity == shcl.Severity.Error for sd in sdoc.diagnostics()):
 				for sd in sdoc.diagnostics():
-					sys.stderr.write("schema line {}: {}: {}\n".format(sd.line, sd.severity.name, sd.message))
+					sys.stderr.write(f"schema line {sd.line}: {sd.severity.name}: {sd.message}\n")
 				diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
 			else:
 				diags.extend(doc.validate(sdoc))
@@ -841,19 +841,19 @@ def do_check(o):
 	# prose names the file so the two number spaces cannot be confused.
 	errors = 0
 	for d in diags:
-		print("line {}: {}: {}".format(d.line, d.severity.name, d.code))
+		print(f"line {d.line}: {d.severity.name}: {d.code}")
 		space = "schema line" if d.code.startswith("V09") and d.code != "V099" else "line"
-		sys.stderr.write("{} {}: {}: {}\n".format(space, d.line, d.severity.name, d.message))
+		sys.stderr.write(f"{space} {d.line}: {d.severity.name}: {d.message}\n")
 		if d.severity == shcl.Severity.Error:
 			errors += 1
 	if strict_failed:
-		print("strict load failed: {} diagnostic(s)".format(len(diags)))
+		print(f"strict load failed: {len(diags)} diagnostic(s)")
 		return 6
 	if errors > 0:
 		# Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
-		print("failed: {} diagnostic(s), {} error(s)".format(len(diags), errors))
+		print(f"failed: {len(diags)} diagnostic(s), {errors} error(s)")
 		return 6
-	print("ok ({} diagnostic(s))".format(len(diags)))
+	print(f"ok ({len(diags)} diagnostic(s))")
 	return 0
 
 
@@ -873,7 +873,7 @@ def do_init(o):
 	sdoc = shcl.Document.parse(stext)
 	if any(d.severity == shcl.Severity.Error for d in sdoc.diagnostics()):
 		for d in sdoc.diagnostics():
-			sys.stderr.write("schema line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+			sys.stderr.write(f"schema line {d.line}: {d.severity.name}: {d.message}\n")
 		sys.stderr.write("init: schema failed to load\n")
 		# A broken schema is a config-semantics failure, not a usage error:
 		# same exit as `check --schema` reporting it.
@@ -881,7 +881,7 @@ def do_init(o):
 	text, faults = shcl.generate(sdoc, o.no_banner)
 	if faults:
 		for d in faults:
-			sys.stderr.write("schema line {}: {}: {}\n".format(d.line, d.severity.name, d.message))
+			sys.stderr.write(f"schema line {d.line}: {d.severity.name}: {d.message}\n")
 		sys.stderr.write("init: schema has faults\n")
 		return 6
 	sys.stdout.write(text)
@@ -929,7 +929,7 @@ def run(argv):
 		sys.stdout.write("\n" + HELP + "\n")
 		return 0
 	if asked == "version" or argv[0] == "version":
-		print("shcl {}".format(VERSION))
+		print(f"shcl {VERSION}")
 		return 0
 	if asked == "about" or argv[0] == "about":
 		sys.stdout.write("\n" + ABOUT + "\n")
@@ -960,7 +960,7 @@ def run(argv):
 		return do_enum(o, True)
 	if cmd == "instances":
 		return do_enum(o, False)
-	sys.stderr.write("unknown command: {} (see --help)\n".format(cmd))
+	sys.stderr.write(f"unknown command: {cmd} (see --help)\n")
 	return 1
 
 

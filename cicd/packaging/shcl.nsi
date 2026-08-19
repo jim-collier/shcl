@@ -23,6 +23,20 @@ InstallDir "$PROGRAMFILES64\Shcl"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
+; Same icon the executable carries, and the metadata Windows shows for the
+; setup itself. VIProductVersion needs four numbers where the project has three.
+!ifdef ICON
+	Icon "${ICON}"
+	UninstallIcon "${ICON}"
+!endif
+VIProductVersion "${VERSION}.0"
+VIAddVersionKey "ProductName"     "SHCL"
+VIAddVersionKey "FileDescription" "SHCL installer"
+VIAddVersionKey "FileVersion"     "${VERSION}"
+VIAddVersionKey "ProductVersion"  "${VERSION}"
+VIAddVersionKey "CompanyName"     "Jim Collier"
+VIAddVersionKey "LegalCopyright"  "Copyright (C) 2026 Jim Collier. MIT License."
+
 !include "WinMessages.nsh"
 
 !define REG_UNINST "Software\Microsoft\Windows\CurrentVersion\Uninstall\Shcl"

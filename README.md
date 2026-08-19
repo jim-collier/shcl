@@ -202,12 +202,12 @@ Shcl is in use today - and made further bullet-proof - by these projects:
 | [convert-base-v2](https://github.com/jim-collier/convert-base-v2)                          |  Y   | **stable**     | Config
 | [Rapid Photo Downloader Pro](https://github.com/jim-collier/rapid-photo-downloader-pro)    |  Y   | alpha          | Config
 | [Nemo Anywhere](https://www.yottacore.com/product/nemo-anywhere)                           |  Y   | beta           | Config
-| [Captain Nemo](https://github.com/t00mietum/captain-nemo)                                  |  Y   |                | Config
+| [Captain Nemo](https://github.com/t00mietum/captain-nemo)                                  |  Y   | in development | Config
 | [TradeClanker](https://www.yottacore.com/product/tradeclanker)                             |  n   | beta           | Config & User's rules
 | SlodWorld                                                                                  |  n   | beta           | Config
 | [SlodWorld2](https://www.yottacore.com/product/slodworld2)                                 |  n   | beta           | Config
 
-(5/10 of these are by the same author.)
+(Most of these are by the same author.)
 
 ## What a .shcl file looks like
 
@@ -315,7 +315,7 @@ Downloads a release, checks its signature, and installs the binary plus the drop
 
 Each release includes a `sha256sums.txt` and a detached `.sig` over it, covering every asset - the binary, the packages, and the drop-in payload alike. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. Nothing unverified is installed: a release with no signed drop-in payload gets the binary and a note saying what was skipped. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY install](#diy-install) route on a machine that lacks it.
 
-Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows). `--uninstall` (`-Uninstall`) removes what an install of the same target laid down, and nothing else.
+Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows). `--uninstall` (`-Uninstall`) removes what an install of the same target laid down, and nothing else. `--help` (`-Help`) lists them all.
 
 The Linux installer also lays down the man page and the shell completions. It symlinks the man page into the target's own `man1` directory, so `man shcl` works once the install directory is on your `PATH` - man derives its search path from the `bin` directories there. Completions are left under `<install dir>/completions/` for you to enable, and the installer prints the line to paste for each shell: there is no single directory that works everywhere, and writing into the distribution's own is the packages' job, not a tarball installer's.
 
@@ -370,6 +370,8 @@ macOS and the BSDs have no prebuilt binaries yet. Use `cargo install shcl`, a dr
 	cargo build --release --manifest-path source/rust/Cargo.toml
 	# binary at source/rust/target/release/shcl
 	```
+
+	Release builds are reproducible: on the pinned toolchain in `rust-toolchain.toml`, building a given commit produces a byte-identical binary on any machine, from any directory. So you can build a release tag yourself and check your own binary against the published checksum, rather than taking the download on trust. This holds for all four shipped targets.
 
 	Each other binding builds with its own toolchain (`go build`, a C compiler, a Python interpreter). All of them run the same conformance corpus.
 
@@ -846,6 +848,8 @@ cicd/cicd.bash --ci
 - [`contributing.md`](contributing.md): how to help.
 
 - [`style-guide.md`](style-guide.md): coding and prose style. The bindings deliberately mirror the reference's structure over per-language idiom, so they stay byte-for-byte in sync.
+
+- [`ai_acceptability_guidelines.md`](ai_acceptability_guidelines.md): where AI is welcome near this project, where it is not, and who answers for it either way.
 
 Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, [pkg.go.dev](https://pkg.go.dev/github.com/jim-collier/shcl/source/go) for Go.
 
