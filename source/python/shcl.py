@@ -197,11 +197,11 @@ class LoadError(Exception):
 		# Name the first few failures right in the message; the bare count made
 		# callers dig for information the error was already holding.
 		errs = [d for d in diagnostics if d.severity == Severity.Error]
-		msg = "strict load failed: {} error diagnostic(s)".format(len(errs))
+		msg = f"strict load failed: {len(errs)} error diagnostic(s)"
 		for d in errs[:3]:
-			msg += "; line {}: {} {}".format(d.line, d.code, d.message)
+			msg += f"; line {d.line}: {d.code} {d.message}"
 		if len(errs) > 3:
-			msg += "; +{} more".format(len(errs) - 3)
+			msg += f"; +{len(errs) - 3} more"
 		super().__init__(msg)
 
 
@@ -217,7 +217,7 @@ class SaveRefused(SaveError):
 	def __init__(self, path, lost):
 		self.path = path
 		self.lost = lost
-		super().__init__("{}: refusing to save: load dropped {} line(s)/value(s) this write would delete (see diagnostics; save_file_lossy overrides)".format(path, lost))
+		super().__init__(f"{path}: refusing to save: load dropped {lost} line(s)/value(s) this write would delete (see diagnostics; save_file_lossy overrides)")
 
 
 class SaveFailed(SaveError):
@@ -239,14 +239,14 @@ class ShclDateTime:
 		out = []
 		if self.date is not None:
 			y, m, d = self.date
-			out.append("{:04d}-{:02d}-{:02d}".format(y, m, d))
+			out.append(f"{y:04d}-{m:02d}-{d:02d}")
 			if self.time is not None:
 				out.append("T")
 		if self.time is not None:
 			h, mi, s = self.time
-			out.append("{:02d}:{:02d}".format(h, mi))
+			out.append(f"{h:02d}:{mi:02d}")
 			if s is not None:
-				out.append(":{:02d}".format(s))
+				out.append(f":{s:02d}")
 			if self.frac is not None:
 				out.append("." + self.frac)
 		if self.zone is not None:
@@ -256,7 +256,7 @@ class ShclDateTime:
 				off = self.zone[1]
 				sign = "-" if off < 0 else "+"
 				a = abs(off)
-				out.append("{}{:02d}:{:02d}".format(sign, a // 60, a % 60))
+				out.append(f"{sign}{a // 60:02d}:{a % 60:02d}")
 		return "".join(out)
 
 
@@ -543,10 +543,15 @@ MAX_DEPTH = 512
 
 # White_Space set, matching Rust char::is_whitespace exactly (so trims agree on
 # exotic input - e.g. U+001C-1F are NOT whitespace here, unlike Python's default).
+#
+# The characters are written out rather than escaped, which is why the noqa is
+# here: a linter reads them as typos for a plain space. Do not "fix" them, and do
+# not add or drop one without changing the C, Go and Rust sets in the same pass -
+# the four have to agree or the bindings stop trimming alike.
 _WS = (
-	"\t\n\x0b\x0c\r\x20\x85\xa0 "
-	"           "
-	"    　"
+	"\t\n\x0b\x0c\r\x20\x85\xa0 "  # noqa: RUF001
+	"           "  # noqa: RUF001
+	"    　"  # noqa: RUF001
 )
 _WS_SET = set(_WS)
 
@@ -917,7 +922,7 @@ def _scan_path_ex(inp, stars):
 			while pos < n and chars[pos] in _BARE_NAME_CHARS:
 				pos += 1
 			if pos == start:
-				raise _PathError("expected field name, found '{}'".format(chars[pos]))
+				raise _PathError(f"expected field name, found '{chars[pos]}'")
 			name = chars[start:pos]
 		selector = None
 		pos = skip_ws(pos)
@@ -969,7 +974,7 @@ def _scan_path_ex(inp, stars):
 			pos += 1
 			return segments, _trim(chars[pos:])
 		else:
-			raise _PathError("unexpected '{}' after field".format(c))
+			raise _PathError(f"unexpected '{c}' after field")
 
 
 # ---------------------------------------------------------------------------
@@ -1158,7 +1163,7 @@ class _Parser:
 			parent_depth += 1
 			up = self.arena[up].parent
 		if parent_depth + len(segs) > MAX_DEPTH:
-			self._err(line, "nesting deeper than {} levels; line skipped".format(MAX_DEPTH))
+			self._err(line, f"nesting deeper than {MAX_DEPTH} levels; line skipped")
 			self.lost += 1
 			return None
 		cur = parent
@@ -1194,7 +1199,7 @@ class _Parser:
 				if is_last and not value.is_empty():
 					# `a.b[X]: v` - the discriminator is the value; a second
 					# value has nowhere unambiguous to go.
-					self._err(line, "value after selector on '{}' ignored".format(seg.name))
+					self._err(line, f"value after selector on '{seg.name}' ignored")
 					self.lost += 1
 			elif sel is not None and sel[0] == "idx":
 				matches = [c for c in self.arena[cur].children if self.arena[c].name == seg.name]
@@ -1202,7 +1207,7 @@ class _Parser:
 				if k < len(matches):
 					cur = matches[k]
 				else:
-					self._err(line, "no instance {} of '{}'".format(k, seg.name))
+					self._err(line, f"no instance {k} of '{seg.name}'")
 					self.lost += 1
 					return None
 			elif sel is not None and sel[0] == "wild":
@@ -1231,7 +1236,7 @@ class _Parser:
 						at = self.arena[cur].line
 						self.diags.append(Diagnostic(
 							line, Severity.Hint,
-							"{}line {} (same name and value combine)".format(_h002_head(seg.name), at),
+							f"{_h002_head(seg.name)}line {at} (same name and value combine)",
 							"H002"))
 						self.reentered[cur] = line
 		return cur
@@ -1379,7 +1384,7 @@ class _Parser:
 				if all_scalar_leaves:
 					line = max(self.arena[c].line for c in group)
 					joined = ", ".join(self.arena[c].value.display() for c in group)
-					hints.append((line, "{}{}'?".format(_h001_head(name), joined)))
+					hints.append((line, f"{_h001_head(name)}{joined}'?"))
 		for line, message in hints:
 			self.diags.append(Diagnostic(line, Severity.Hint, message, "H001"))
 
@@ -1481,7 +1486,7 @@ class _Parser:
 			try:
 				segments, value_text = _scan_path(content)
 			except _PathError as e:
-				self._err(lineno, "malformed line skipped: {}".format(e.args[0]))
+				self._err(lineno, f"malformed line skipped: {e.args[0]}")
 				# Content-malformed at any position - retained as trivia, same
 				# rationale (and same BOM exception) as the bad '*' line above.
 				if rest.startswith("\ufeff"):
@@ -2816,12 +2821,12 @@ class Document:
 		self._v_contexts([start], c.segs, anchor0, ctxs)
 		for anchor, found in ctxs:
 			if c.required and not found:
-				_vdiag(out, anchor, "required path missing: {}".format(c.path))
+				_vdiag(out, anchor, f"required path missing: {c.path}")
 			if c.repeat is not None:
 				lo, hi = c.repeat
 				n = len(found)
 				if n < lo or n > hi:
-					_vdiag(out, anchor, "instance count out of bounds at '{}': {} not in {}..{}".format(c.path, n, lo, hi))
+					_vdiag(out, anchor, f"instance count out of bounds at '{c.path}': {n} not in {lo}..{hi}")
 			for n in found:
 				self._v_node(c, n, out)
 				if c.inherits is not None:
@@ -2844,7 +2849,7 @@ class Document:
 		is_array = c.ty is not None and c.ty.endswith("-array")
 
 		def wrong():
-			_vdiag(out, line, "wrong type at '{}': value is not a valid {}".format(c.path, c.ty))
+			_vdiag(out, line, f"wrong type at '{c.path}': value is not a valid {c.ty}")
 
 		if node.value.kind == "empty":
 			# Empty passes everything; required already counted it as present.
@@ -2857,7 +2862,7 @@ class Document:
 				return
 			if c.allowed is not None and c.allowed[0] == "strings":
 				if node.value.content not in c.allowed[1]:
-					_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, node.value.content))
+					_vdiag(out, line, f"value not allowed at '{c.path}': {node.value.content}")
 			return
 		els = node.value.els
 		if base == "raw":
@@ -2879,12 +2884,12 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "ints":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
 						break
 			if c.min_i is not None and any(v < c.min_i for v in vals):
-				_vdiag(out, line, "value below min at '{}'".format(c.path))
+				_vdiag(out, line, f"value below min at '{c.path}'")
 			if c.max_i is not None and any(v > c.max_i for v in vals):
-				_vdiag(out, line, "value above max at '{}'".format(c.path))
+				_vdiag(out, line, f"value above max at '{c.path}'")
 		elif base == "float":
 			vals = []
 			for e in els:
@@ -2896,12 +2901,12 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "floats":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
 						break
 			if c.min_f is not None and any(v < c.min_f for v in vals):
-				_vdiag(out, line, "value below min at '{}'".format(c.path))
+				_vdiag(out, line, f"value below min at '{c.path}'")
 			if c.max_f is not None and any(v > c.max_f for v in vals):
-				_vdiag(out, line, "value above max at '{}'".format(c.path))
+				_vdiag(out, line, f"value above max at '{c.path}'")
 		elif base == "bool":
 			vals = []
 			for e in els:
@@ -2913,7 +2918,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "bools":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
 						break
 		elif base == "datetime":
 			vals = []
@@ -2926,7 +2931,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "dates":
 				for i, v in enumerate(vals):
 					if not any(_dt_equal(v, a) for a in c.allowed[1]):
-						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
 						break
 		else:
 			# string kind or untyped: every element coerces; only the allowed
@@ -2935,7 +2940,7 @@ class Document:
 				for e in els:
 					s = _apply_escapes(e.text)
 					if s not in c.allowed[1]:
-						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, s))
+						_vdiag(out, line, f"value not allowed at '{c.path}': {s}")
 						break
 
 	def _v_unknown(self, sdef, out):
@@ -2975,7 +2980,7 @@ class Document:
 				and not (has_mounts and _chain_legal(cons, sdef.frags, chain))
 			):
 				hint = _v_suggest(siblings, pchain, node.name)
-				_vdiag(out, node.line, "unknown field '{}'{}".format(shown, hint))
+				_vdiag(out, node.line, f"unknown field '{shown}'{hint}")
 				continue
 			for k in reversed(node.children):
 				stack.append((k, chain, shown))
@@ -3036,7 +3041,7 @@ def _h001_head(name):
 	emitted - never a re-parse of free prose. (The leaf name cannot ride on
 	Diagnostic itself: consumers build Diagnostic literals, so its field set
 	is frozen.)"""
-	return "'{}' repeats as a bare leaf - did you mean '{}: ".format(name, name)
+	return f"'{name}' repeats as a bare leaf - did you mean '{name}: "
 
 
 def suppress_declared_repeats(schema, diags):
@@ -3051,14 +3056,14 @@ def suppress_declared_repeats(schema, diags):
 	# a mounted shape disavows the hint the same way.
 	groups = [("field", schema.instances("field"))]
 	for k in range(schema.count("fragment")):
-		base = "fragment[#{}].field".format(k)
+		base = f"fragment[#{k}].field"
 		groups.append((base, schema.instances(base)))
 	names = []
 	for base, paths in groups:
 		for i, p in enumerate(paths):
 			# repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
 			# that matters here is the last one.
-			rep = schema.read_int_array("{}[#{}].repeat".format(base, i))
+			rep = schema.read_int_array(f"{base}[#{i}].repeat")
 			if rep.status != Status.Good:
 				continue
 			if not rep.value or rep.value[-1] <= 1:
@@ -3115,7 +3120,7 @@ def write_file_atomic(file, data):
 	try:
 		target = os.path.realpath(file)
 	except ValueError as e:
-		return "{}: {}".format(file, e)
+		return f"{file}: {e}"
 	d = os.path.dirname(target)
 	if d == "":
 		d = "."
@@ -3130,7 +3135,7 @@ def write_file_atomic(file, data):
 	tmp = ""
 	last = ""
 	for attempt in range(8):
-		tmp = os.path.join(d, ".{}.tmp{}.{}".format(base, os.getpid(), attempt))
+		tmp = os.path.join(d, f".{base}.tmp{os.getpid()}.{attempt}")
 		try:
 			# Born private, so the copy is never briefly readable to anyone the
 			# original was not. The real mode goes on below, before any data.
@@ -3140,7 +3145,7 @@ def write_file_atomic(file, data):
 		except OSError as e:
 			last = str(e)
 	if f is None:
-		return "{}: cannot create temporary file: {}".format(file, last)
+		return f"{file}: cannot create temporary file: {last}"
 	try:
 		try:
 			# On the handle, so umask cannot narrow it the way it narrows a
@@ -3160,7 +3165,7 @@ def write_file_atomic(file, data):
 			os.remove(tmp)
 		except OSError:
 			pass
-		return "{}: {}".format(file, e)
+		return f"{file}: {e}"
 	try:
 		os.replace(tmp, target)
 	except OSError as e:
@@ -3168,14 +3173,14 @@ def write_file_atomic(file, data):
 			os.remove(tmp)
 		except OSError:
 			pass
-		return "{}: {}".format(file, e)
+		return f"{file}: {e}"
 	return None
 
 
 def _h002_head(name):
 	"""The single H002 wording site: the merge hint and the schema suppressor
 	both come here, same discipline as _h001_head."""
-	return "merged with '{}' at ".format(name)
+	return f"merged with '{name}' at "
 
 
 def suppress_declared_reopens(schema, diags):
@@ -3187,12 +3192,12 @@ def suppress_declared_reopens(schema, diags):
 	and a schema meet. Mutates diags in place."""
 	groups = [("field", schema.instances("field"))]
 	for k in range(schema.count("fragment")):
-		base = "fragment[#{}].field".format(k)
+		base = f"fragment[#{k}].field"
 		groups.append((base, schema.instances(base)))
 	names = []
 	for base, paths in groups:
 		for i, p in enumerate(paths):
-			re = schema.read_bool("{}[#{}].reopen".format(base, i))
+			re = schema.read_bool(f"{base}[#{i}].reopen")
 			if re.status != Status.Good or not re.value:
 				continue
 			try:
@@ -3838,7 +3843,7 @@ def _build_schema(schema):
 				_vdiag(faults, node.line, "bad schema fragment")
 				continue
 			if name in frags:
-				_vdiag(faults, node.line, "bad schema fragment '{}': duplicate".format(name))
+				_vdiag(faults, node.line, f"bad schema fragment '{name}': duplicate")
 				continue
 			fcs = []
 			for k in schema.arena[f].children:
@@ -3850,15 +3855,15 @@ def _build_schema(schema):
 					else:
 						paths_complete = False
 				else:
-					_vdiag(faults, kid.line, "bad schema fragment '{}': unknown key '{}'".format(name, kid.name))
+					_vdiag(faults, kid.line, f"bad schema fragment '{name}': unknown key '{kid.name}'")
 			frags[name] = fcs
 		else:
-			_vdiag(faults, node.line, "unknown schema key '{}'".format(node.name))
+			_vdiag(faults, node.line, f"unknown schema key '{node.name}'")
 	# Every mount must name a declared fragment; cycles (self or mutual) are
 	# legal - expansion is demand-driven against a finite document.
 	for c in cons + [fc for fcs in frags.values() for fc in fcs]:
 		if c.inherits is not None and c.inherits not in frags:
-			_vdiag(faults, c.inherits_line, "unknown schema fragment '{}'".format(c.inherits))
+			_vdiag(faults, c.inherits_line, f"unknown schema fragment '{c.inherits}'")
 			paths_complete = False
 	# One constraint per line in practice, so line order = file order.
 	faults.sort(key=lambda d: d.line)
@@ -3878,7 +3883,7 @@ def _parse_field(schema, f, faults):
 	except _PathError:
 		segs, value_text = None, None
 	if segs is None or value_text is not None:
-		_vdiag(faults, node.line, "bad schema path: {}".format(path))
+		_vdiag(faults, node.line, f"bad schema path: {path}")
 		return None
 	c = _Constraint(path, segs)
 	# Deferred so `min: 1` may precede `type: int` in the file.
@@ -3901,7 +3906,7 @@ def _parse_field(schema, f, faults):
 				else:
 					c.ty = t
 			elif t is not None:
-				_vdiag(faults, kid.line, "unknown schema type '{}'".format(t))
+				_vdiag(faults, kid.line, f"unknown schema type '{t}'")
 			else:
 				_vdiag(faults, kid.line, "bad schema constraint 'type'")
 		elif kid.name == "required":
@@ -3961,7 +3966,7 @@ def _parse_field(schema, f, faults):
 			if c.default_text is None:
 				c.default_text = _emit_value_inline(kid.value)
 		else:
-			_vdiag(faults, kid.line, "unknown schema key '{}'".format(kid.name))
+			_vdiag(faults, kid.line, f"unknown schema key '{kid.name}'")
 	if required is not None:
 		c.required = required
 	base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
@@ -4007,7 +4012,7 @@ def _parse_field(schema, f, faults):
 		if base == "int":
 			v = _parse_int_text(el, Strictness.Standard)
 			if v is None:
-				_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+				_vdiag(faults, kid.line, f"bad schema constraint '{key}'")
 			elif is_min:
 				c.min_i = v
 			else:
@@ -4015,13 +4020,13 @@ def _parse_field(schema, f, faults):
 		elif base == "float":
 			v = _parse_float_text(el, Strictness.Standard)
 			if v is None:
-				_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+				_vdiag(faults, kid.line, f"bad schema constraint '{key}'")
 			elif is_min:
 				c.min_f = v
 			else:
 				c.max_f = v
 		else:
-			_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+			_vdiag(faults, kid.line, f"bad schema constraint '{key}'")
 	return c
 
 
@@ -4054,11 +4059,11 @@ def _gen_annotation(c, tyname):
 		parts.append("one of: " + _allowed_join(c.allowed))
 	elif c.min_i is not None or c.max_i is not None:
 		if c.min_i is not None and c.max_i is not None:
-			parts.append("{}-{}".format(c.min_i, c.max_i))
+			parts.append(f"{c.min_i}-{c.max_i}")
 		elif c.min_i is not None:
-			parts.append(">= {}".format(c.min_i))
+			parts.append(f">= {c.min_i}")
 		else:
-			parts.append("<= {}".format(c.max_i))
+			parts.append(f"<= {c.max_i}")
 	elif c.min_f is not None or c.max_f is not None:
 		if c.min_f is not None and c.max_f is not None:
 			parts.append(format_float(c.min_f) + "-" + format_float(c.max_f))
@@ -4068,7 +4073,7 @@ def _gen_annotation(c, tyname):
 			parts.append("<= " + format_float(c.max_f))
 	if c.repeat is not None:
 		lo, hi = c.repeat
-		parts.append("repeat {}".format(lo) if lo == hi else "repeat {}-{}".format(lo, hi))
+		parts.append(f"repeat {lo}" if lo == hi else f"repeat {lo}-{hi}")
 	if c.required:
 		parts.append("required")
 	return ", ".join(parts)
@@ -4118,7 +4123,7 @@ def generate(schema, no_banner=False):
 	cons, cuts = _expand_mounts(sdef)
 	if len(cons) >= _GEN_MAX_FIELDS:
 		faults = []
-		_vdiag(faults, 0, "schema expands past {} fields; fragments mounted at more than one path multiply".format(_GEN_MAX_FIELDS))
+		_vdiag(faults, 0, f"schema expands past {_GEN_MAX_FIELDS} fields; fragments mounted at more than one path multiply")
 		return "", faults
 
 	def must_exist(c):
@@ -4180,9 +4185,9 @@ def generate(schema, no_banner=False):
 		path = _gen_path_text(c.segs) if fill[i] else c.path
 		prefix = "" if must_exist(c) else "#"
 		if c.default_text is not None:
-			out.append("{}{}: {}\n".format(prefix, path, _gen_default_text(c.default_text)))
+			out.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
 		else:
-			out.append("{}{}:\n".format(prefix, path))
+			out.append(f"{prefix}{path}:\n")
 	# Cycle-cut mounts last: their "type" column names the fragment that
 	# belongs at the path.
 	wild.extend(cuts)
@@ -4191,7 +4196,7 @@ def generate(schema, no_banner=False):
 			out.append("\n")
 		out.append("# Paths needing an instance name (not generated):\n")
 		for path, tyname in wild:
-			out.append("#   {}   {}\n".format(path, tyname))
+			out.append(f"#   {path}   {tyname}\n")
 	text = "".join(out)
 	if not no_banner:
 		if text:
@@ -4235,9 +4240,9 @@ def _gen_path_text(segs):
 			out.append(_emit_name(s.name))
 		if s.selector is not None:
 			if s.selector[0] == "val":
-				out.append("[{}]".format(_quote_text(s.selector[1]) if s.selector[2] else s.selector[1]))
+				out.append(f"[{_quote_text(s.selector[1]) if s.selector[2] else s.selector[1]}]")
 			elif s.selector[0] == "idx":
-				out.append("[#{}]".format(s.selector[1]))
+				out.append(f"[#{s.selector[1]}]")
 			# a wildcard selector is dropped
 	return "".join(out)
 
@@ -4256,7 +4261,7 @@ def _expand_mounts(sdef):
 			cc = c.clone()
 			if at is not None:
 				p, s = at
-				cc.path = "{}.{}".format(p, c.path)
+				cc.path = f"{p}.{c.path}"
 				cc.segs = list(s) + list(c.segs)
 			path = cc.path
 			segs = cc.segs
@@ -4366,4 +4371,4 @@ def _v_suggest(siblings, parent_chain, name):
 			best = (dist, s)
 	if best is None:
 		return ""
-	return "; did you mean '{}'?".format(best[1])
+	return f"; did you mean '{best[1]}'?"

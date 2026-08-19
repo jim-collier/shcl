@@ -136,10 +136,14 @@ None open.
 			- The stamp comes from the build's own timestamp, so running twice against one build reuses its copy instead of piling up duplicates.
 			- Aged-out copies are removed only when nothing is running them - checked by an exclusive open on Windows and by which image each process was started from elsewhere.
 
-		- 🔘 Code Review 20260819 item 5: no advisory gate, and Go is linted by `go vet` alone.
+		- ✅ Code Review 20260819 item 5: no advisory gate, and Go is linted by `go vet` alone.
 			- Nothing runs cargo-deny, cargo-audit, govulncheck or pip-audit. Nothing would report a toolchain advisory.
 			- Small surface, not an empty one: the libraries are dependency-free by design, but the profiler chain, the Go standard library version and the pinned toolchain are all real.
 			- `staticcheck` is expected of Go and is not wired in, though it has been run by hand and was clean.
+			- Done: staticcheck and govulncheck join go vet, and cargo-deny runs over the rust lockfile with all features on. All three are pinned like the rest of the tooling, so a result that changes because the tool moved says so.
+			- The deny config is `source/rust/deny.toml`: permissive licenses only, unknown registries refused, a known vulnerability fails the run.
+			- Two advisories are recorded as accepted rather than hidden. Both are quick-xml 0.26 under inferno under pprof - nothing here parses XML, the chain is behind the profiling feature and never ships, and inferno pins that version so there is nowhere to move. They come out when pprof carries a newer inferno.
+			- A dependency refresh went with it and cleared the yanked `spin` the release notes used to have to explain.
 
 		- ✅ Code Review 20260819 item 6: the gate is not wired to a pre-push hook.
 			- `--ci` already is the gate. Nothing runs it automatically, so the only automatic check happens after a push, in the hosted workflow.
@@ -154,32 +158,46 @@ None open.
 
 	- **Code style**:
 
-		- 🔘 Code Review 20260819 item 8: the Python linter runs with almost no rules, and neither linter nor type checker is configured where it can be seen.
+		- ✅ Code Review 20260819 item 8: the Python linter runs with almost no rules, and neither linter nor type checker is configured where it can be seen.
 			- `ruff` at defaults is pycodestyle errors plus pyflakes. None of the Python style rules apply at that selection.
 			- `pyproject.toml` has no `[tool.ruff]` and no `[tool.mypy]`. The type checker's strictness is a comment at the top of `shcl.py`, so it covers that one file - the CLI and the test runner are checked at bare defaults, where an untyped function passes.
 			- A full rule selection was measured before and mostly conflicts with the parity rule. The answer is a curated selection plus config that lives in `pyproject.toml`, not the full set.
+			- Done: `[tool.ruff]` and `[tool.mypy]` in `pyproject.toml`, so running either by hand gives what the pipeline gets.
+			- The rule selection is curated, and every exclusion says why. Most of what a full selection reports is shapes this binding has to keep to stay in step with the reference; the ones that were real are fixed.
+			- The type check now covers all three files instead of one, and found two genuine errors in the test runner - one name bound to both a text and a binary file handle in the same scope.
 
-		- 🔘 Code Review 20260819 item 9: the Python CLI builds every message with `.format()`.
+		- ✅ Code Review 20260819 item 9: the Python CLI builds every message with `.format()`.
 			- About a dozen sites. The package claims 3.9 and up, where f-strings have always been available.
 			- Cosmetic, but it is the one place the Python binding reads dated.
+			- Done: 149 sites across the library and both CLIs, converted mechanically rather than by hand given how many there were.
+			- Verified the messages did not move: every diagnostic the corpus produces is byte-identical before and after, and the four bindings still agree.
+			- 42 remain in the test runner, where the conversion is not mechanical. Left alone.
 
-		- 🔘 Code Review 20260819 item 10: five `raise` statements inside an `except` drop the original cause, and two suppression comments are dead.
+		- ✅ Code Review 20260819 item 10: five `raise` statements inside an `except` drop the original cause, and two suppression comments are dead.
 			- One is in the shipped CLI, on the path that reports a stream that was not valid UTF-8. The other four are in the Python test runner.
 			- The two dead comments suppress a rule that is not enabled, so they suppress nothing.
+			- Done: the CLI's decode failure now carries its cause, and the four in the test runner drop theirs deliberately - an assertion failure is not caused by the exception it caught.
+			- The dead suppression comment is gone; the other turned out to be live once the rule set grew.
 
-		- 🔘 Code Review 20260819 item 11: the whitespace table's characters read as mistakes.
+		- ✅ Code Review 20260819 item 11: the whitespace table's characters read as mistakes.
 			- 16 of them are spelled as literal invisible characters in the Python module, which is exactly what a linter flags as an ambiguous character. They are deliberate, and nothing in the file says so.
 			- The C copy spells the same set numerically. Either spelling works; what is missing is the note that the Python one is on purpose, so nobody "fixes" it and splits the bindings.
+			- Done: the table carries a suppression on each of its lines, with a note saying the characters are deliberate and that changing the set means changing it in all four bindings at once.
 
-		- ✋ Code Review 20260819 item 12: the two style documents disagree about indentation.
+		- ✅ Code Review 20260819 item 12: the two style documents disagree about indentation.
 			- One asks for four spaces in Rust, Python and PowerShell. The project uses hard tabs in all three, and `rustfmt.toml` sets `hard_tabs` to get it - which is also a formatter default being overridden, in a rule set that says not to override them.
 			- Not something to change quietly in either direction. Every binding and every conformance golden would move.
 			- Needs a ruling on which document wins.
+			- Settled: tabs, unless a language prevents it or pushes hard the other way. None of the six here do, so all six stay on tabs and no code moves.
+			- `style-guide.md` carries the reasoning, including that PEP 8 itself asks for consistency with existing tab-indented code, and that the Python tab rule is switched off on purpose rather than by oversight.
 
-		- 🔘 Code Review 20260819 item 13: three languages have no style enforcement file.
+		- ✅ Code Review 20260819 item 13: three languages have no style enforcement file.
 			- Missing: a golangci config, a clang-format and clang-tidy pair, and a PSScriptAnalyzer settings file.
 			- C is the only binding with no format gate at all, which is deliberate - there is no zero-dependency formatter to commit - but it means C style is held by review alone.
 			- Some of this is already settled: pedantic clippy is advisory, and shfmt and clang-tidy were both rejected as gates. The rest was never decided.
+			- Done for PowerShell: `PSScriptAnalyzerSettings.psd1`, applied to all three scripts. It pins the severity set and checks syntax against both 5.1 and 7.
+			- That check found the wrapper using an operator only 7 understands. Rewritten the long way, so the wrapper now runs on the PowerShell that ships with Windows.
+			- Declined, with reasons recorded in `style-guide.md`: clang-format and clang-tidy would rewrite about nine lines in ten of the C binding; golangci-lint wraps checks that already gate on their own.
 
 	- **Performance**:
 

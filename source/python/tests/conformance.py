@@ -28,7 +28,7 @@ def parse_level(s):
 		return shcl.Strictness.Loose
 	if s == "strict":
 		return shcl.Strictness.Strict
-	raise SystemExit("unknown level '{}' in reads.tsv".format(s))
+	raise SystemExit(f"unknown level '{s}' in reads.tsv")
 
 
 def load_cases():
@@ -84,7 +84,7 @@ def load_cases():
 			case["expected_init"] = _read(os.path.join(d, "expected-init.shcl"))
 		cases.append(case)
 	if not cases:
-		raise SystemExit("no corpus cases found under {}".format(CORPUS))
+		raise SystemExit(f"no corpus cases found under {CORPUS}")
 	return cases
 
 
@@ -131,7 +131,7 @@ def scalar_read(doc, kind, query):
 	if kind == "string[]":
 		r = doc.read_string_array(query)
 		return "|".join(tsv_escape(v) for v in r.value), r.status, r.slots
-	raise SystemExit("unknown type '{}'".format(kind))
+	raise SystemExit(f"unknown type '{kind}'")
 
 
 def _unescape_ops(s):
@@ -153,7 +153,7 @@ def _unescape_ops(s):
 def _op_dt(s):
 	dt = shcl.parse_datetime(s)
 	if dt is None:
-		raise ValueError("bad datetime: {}".format(s))
+		raise ValueError(f"bad datetime: {s}")
 	return dt
 
 
@@ -162,10 +162,10 @@ def _op_int(s):
 	# underscores, surrounding whitespace, and non-ASCII digits).
 	t = s[1:] if s[:1] in ("+", "-") else s
 	if t == "" or any(c < "0" or c > "9" for c in t):
-		raise ValueError("bad int: {}".format(s))
+		raise ValueError(f"bad int: {s}")
 	v = int(s)
 	if v < -(2 ** 63) or v > 2 ** 63 - 1:
-		raise ValueError("bad int: {}".format(s))
+		raise ValueError(f"bad int: {s}")
 	return v
 
 
@@ -208,7 +208,7 @@ def _op_flt(s):
 	# float() after the grammar gate is safe; overflow (1e400) yields inf,
 	# matching Rust's parse.
 	if not _float_grammar_ok(s):
-		raise ValueError("bad float: {}".format(s))
+		raise ValueError(f"bad float: {s}")
 	return float(s)
 
 
@@ -281,11 +281,11 @@ def try_apply_op(doc, line):
 			doc.remove(path)
 			wrote = True
 		else:
-			return "unknown op: {}".format(op)
+			return f"unknown op: {op}"
 	except ValueError as e:
 		return str(e)
 	if not wrote:
-		return "cannot write {}".format(path)
+		return f"cannot write {path}"
 	return None
 
 
@@ -293,7 +293,7 @@ def apply_op(doc, line, at):
 	# Good-path wrapper: the op must apply.
 	err = try_apply_op(doc, line)
 	if err is not None:
-		raise SystemExit("{}: {}".format(at, err))
+		raise SystemExit(f"{at}: {err}")
 
 
 def main():
@@ -392,13 +392,13 @@ def main():
 		got = ""
 		errors = 0
 		for d in diags:
-			got += "line {}: {}: {}\n".format(d.line, d.severity.name, d.code)
+			got += f"line {d.line}: {d.severity.name}: {d.code}\n"
 			if d.severity == shcl.Severity.Error:
 				errors += 1
 		if errors > 0:
-			got += "failed: {} diagnostic(s), {} error(s)\n".format(len(diags), errors)
+			got += f"failed: {len(diags)} diagnostic(s), {errors} error(s)\n"
 		else:
-			got += "ok ({} diagnostic(s))\n".format(len(diags))
+			got += f"ok ({len(diags)} diagnostic(s))\n"
 		if got != case["expected_diags"]:
 			fails.append("{}: diagnostics differ from expected-diags.txt".format(case["name"]))
 
@@ -420,13 +420,13 @@ def main():
 		got = ""
 		errors = 0
 		for d in diags:
-			got += "line {}: {}: {}\n".format(d.line, d.severity.name, d.code)
+			got += f"line {d.line}: {d.severity.name}: {d.code}\n"
 			if d.severity == shcl.Severity.Error:
 				errors += 1
 		if errors > 0:
-			got += "failed: {} diagnostic(s), {} error(s)\n".format(len(diags), errors)
+			got += f"failed: {len(diags)} diagnostic(s), {errors} error(s)\n"
 		else:
-			got += "ok ({} diagnostic(s))\n".format(len(diags))
+			got += f"ok ({len(diags)} diagnostic(s))\n"
 		if got != case["expected_validate"]:
 			fails.append("{}: validation output differs from expected-validate.txt".format(case["name"]))
 
@@ -460,48 +460,48 @@ def main():
 					ok = False
 				want = {"ok": True, "fail": False}.get(expected)
 				if want is None:
-					fails.append("{}: bad load expectation '{}'".format(at, expected))
+					fails.append(f"{at}: bad load expectation '{expected}'")
 				elif ok != want:
-					fails.append("{}: load outcome (got {}, want {})".format(at, ok, want))
+					fails.append(f"{at}: load outcome (got {ok}, want {want})")
 				continue
 
 			try:
 				doc = shcl.Document.parse_with(case["input"], level)
 			except shcl.LoadError as e:
-				fails.append("{}: load failed but reads.tsv has reads there: {}".format(at, e))
+				fails.append(f"{at}: load failed but reads.tsv has reads there: {e}")
 				continue
 
 			if kind == "count":
 				if str(doc.count(query)) != expected:
-					fails.append("{}: count got {} want {}".format(at, doc.count(query), expected))
+					fails.append(f"{at}: count got {doc.count(query)} want {expected}")
 				continue
 			if kind == "instances":
 				got = "|".join(doc.instances(query))
 				if got != expected:
-					fails.append("{}: instances got {!r} want {!r}".format(at, got, expected))
+					fails.append(f"{at}: instances got {got!r} want {expected!r}")
 				continue
 
 			got_value, got_status, got_slots = scalar_read(doc, kind, query)
 			if got_status.name != status:
-				fails.append("{}: status got {} want {}".format(at, got_status.name, status))
+				fails.append(f"{at}: status got {got_status.name} want {status}")
 			if expected != "-" and got_value != expected:
-				fails.append("{}: value got {!r} want {!r}".format(at, got_value, expected))
+				fails.append(f"{at}: value got {got_value!r} want {expected!r}")
 			# Optional 6th column: per-slot statuses, |-joined (needs col 5 set).
 			if len(cols) > 5:
 				got = "|".join(st.name for st in got_slots)
 				if got != cols[5]:
-					fails.append("{}: slots got {!r} want {!r}".format(at, got, cols[5]))
+					fails.append(f"{at}: slots got {got!r} want {cols[5]!r}")
 
 	if fails:
 		for f in fails:
 			sys.stderr.write("FAIL " + f + "\n")
-		sys.stderr.write("conformance: {} failure(s)\n".format(len(fails)))
+		sys.stderr.write(f"conformance: {len(fails)} failure(s)\n")
 		return 1
 	# paths(): file order, deduplicated, non-bare segments quoted so every
 	# path resolves. Same fixture is pinned in every runner.
 	pdoc = shcl.Document.parse('a: 1\na.b: 2\n"q n": 3\nx:\n\tb: 4\nx.b: 5\n')
 	if pdoc.paths() != ["a", "a.b", '"q n"', "x", "x.b"]:
-		raise SystemExit("paths() fixture mismatch: {}".format(pdoc.paths()))
+		raise SystemExit(f"paths() fixture mismatch: {pdoc.paths()}")
 	for p in pdoc.paths():
 		if pdoc.count(p) < 1:
 			raise SystemExit("emitted path does not resolve: " + p)
@@ -519,15 +519,15 @@ def main():
 	odoc = shcl.Document.load_and_validate(otext, oschema, shcl.Strictness.Standard)
 	ocodes = [d.code for d in odoc.diagnostics()]
 	if ocodes != ["E014", "V003"]:
-		raise SystemExit("load_and_validate codes got {}".format(ocodes))
+		raise SystemExit(f"load_and_validate codes got {ocodes}")
 	if odoc.error_count() != 2:
-		raise SystemExit("error_count got {}".format(odoc.error_count()))
+		raise SystemExit(f"error_count got {odoc.error_count()}")
 	if odoc.read_string("port").value != "x":  # doc still usable
 		raise SystemExit("load_and_validate doc not readable")
 	# Strict never raises here; the diagnostics are the answer.
 	ostrict = shcl.Document.load_and_validate(otext, oschema, shcl.Strictness.Strict)
 	if ostrict.error_count() < 2:
-		raise SystemExit("strict error_count got {}".format(ostrict.error_count()))
+		raise SystemExit(f"strict error_count got {ostrict.error_count()}")
 	# An empty schema declares nothing and validates nothing.
 	oplain = shcl.Document.load_and_validate("a: 1\n", "", shcl.Strictness.Standard)
 	if (oplain.error_count(), len(oplain.diagnostics())) != (0, 0):
@@ -556,12 +556,12 @@ def main():
 	):
 		got = wdoc.write_reason(wpath)
 		if got is not want:
-			raise SystemExit("write_reason({!r}) got {} want {}".format(wpath, got, want))
+			raise SystemExit(f"write_reason({wpath!r}) got {got} want {want}")
 	# The probe never creates: the doc is unchanged after all of the above.
 	if wdoc.count("a") != 1:
 		raise SystemExit("write_reason probe created an instance")
 	if wdoc.paths() != ["a", "a.b"]:
-		raise SystemExit("write_reason probe changed paths: {}".format(wdoc.paths()))
+		raise SystemExit(f"write_reason probe changed paths: {wdoc.paths()}")
 	# A raw body is the only content kept untrimmed, so it is the only place a
 	# trailing CR survives the load - and one written back becomes CRLF, which
 	# reads as neither. The whole trailing run comes off instead; a CR inside a
@@ -641,7 +641,7 @@ def main():
 		raise SystemExit("read via the literal spelling failed")
 	# Canonical output folds the case, as it always has, and escapes the tab.
 	if sdoc3.to_canonical() != '"ab\\tcd": 2\n':
-		raise SystemExit("canonical name spelling got {!r}".format(sdoc3.to_canonical()))
+		raise SystemExit(f"canonical name spelling got {sdoc3.to_canonical()!r}")
 	# load_file/save_file: the status separates absent / unreadable / parsed
 	# with errors / clean, and a save round-trips through the atomic write.
 	# Same fixture in every runner.
@@ -650,16 +650,16 @@ def main():
 		fpath = os.path.join(td, "t.shcl")
 		_, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.NotFound:
-			raise SystemExit("load_file missing got {}".format(fst))
+			raise SystemExit(f"load_file missing got {fst}")
 		_, fst = shcl.Document.load_file(td)  # a directory is not readable
 		if fst != shcl.FileStatus.Unreadable:
-			raise SystemExit("load_file directory got {}".format(fst))
+			raise SystemExit(f"load_file directory got {fst}")
 		# Python-only, so not in the shared fixture: a NUL in the path raises
 		# ValueError out of the path calls where the other bindings report. Both
 		# halves promise a status or a message, never a throw.
 		_, fst = shcl.Document.load_file("a\0b")
 		if fst != shcl.FileStatus.Unreadable:
-			raise SystemExit("load_file NUL path got {}".format(fst))
+			raise SystemExit(f"load_file NUL path got {fst}")
 		try:
 			shcl.Document.parse("a: 1").save_file("a\0b")
 			raise SystemExit("save_file NUL path reported success")
@@ -676,11 +676,11 @@ def main():
 		if not rdoc.set_int("d", (1 << 63) - 1) or not rdoc.set_int("e", -(1 << 63)):
 			raise SystemExit("set_int refused an in-range edge")
 		if rdoc.to_canonical() != "a: 1\n\nd: 9223372036854775807\n\ne: -9223372036854775808\n":
-			raise SystemExit("set_int range check left the wrong document: {!r}".format(rdoc.to_canonical()))
+			raise SystemExit(f"set_int range check left the wrong document: {rdoc.to_canonical()!r}")
 		# Also python-only: the frame budget is small, so a document at the
 		# documented depth cap has to survive every walk from an already-deep
 		# caller. Merge and clone were the two still recursing.
-		deep = "\n".join("\t" * i + "l{}:".format(i) for i in range(511)) + "\n" + "\t" * 511 + "v: 1\n"
+		deep = "\n".join("\t" * i + f"l{i}:" for i in range(511)) + "\n" + "\t" * 511 + "v: 1\n"
 
 		def _at_depth(k, fn):
 			if k:
@@ -697,23 +697,23 @@ def main():
 		# Bad encoding is unreadable too: the parser assumes well-formed text, so a
 		# binary file loading clean would read back mangled and a later save would
 		# write the mangled version over the original.
-		with open(fpath, "wb") as fh:
-			fh.write(b"a: 1\nb: \xff\xfe bad\n")
+		with open(fpath, "wb") as fbin:
+			fbin.write(b"a: 1\nb: \xff\xfe bad\n")
 		fdoc, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.Unreadable or fdoc.to_canonical() != "":
-			raise SystemExit("load_file bad encoding got {} {!r}".format(fst, fdoc.to_canonical()))
+			raise SystemExit(f"load_file bad encoding got {fst} {fdoc.to_canonical()!r}")
 		with open(fpath, "w", encoding="utf-8") as fh:
 			fh.write("a: 1\n: broken\n")
 		fdoc, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.HadErrors:
-			raise SystemExit("load_file broken got {}".format(fst))
+			raise SystemExit(f"load_file broken got {fst}")
 		if fdoc.get_int("a", default=0) != 1:
 			raise SystemExit("load_file broken read failed")
 		with open(fpath, "w", encoding="utf-8") as fh:
 			fh.write("a: 1\nb: x\n")
 		fdoc, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.Clean:
-			raise SystemExit("load_file clean got {}".format(fst))
+			raise SystemExit(f"load_file clean got {fst}")
 		if not fdoc.set_int("c", 3):
 			raise SystemExit("set_int c failed")
 		fdoc.save_file(fpath)
@@ -726,12 +726,12 @@ def main():
 		# Same fixture in every runner.
 		kept = shcl.Document.parse("a: 1\nsquare-miles 300\nb: 2\n")
 		if kept.lost_count() != 0:
-			raise SystemExit("kept lost_count got {}".format(kept.lost_count()))
+			raise SystemExit(f"kept lost_count got {kept.lost_count()}")
 		if "square-miles 300\n" not in kept.to_canonical():
 			raise SystemExit("retained line missing from canonical output")
 		lostdoc = shcl.Document.parse("a:\n\tb: 1\n  c: 2\n")  # indent matches no level
 		if lostdoc.lost_count() != 1:
-			raise SystemExit("lost lost_count got {}".format(lostdoc.lost_count()))
+			raise SystemExit(f"lost lost_count got {lostdoc.lost_count()}")
 		kept.save_file(fpath)
 		kback, _ = shcl.Document.load_file(fpath)
 		if "square-miles 300\n" not in kback.to_canonical():
@@ -750,7 +750,7 @@ def main():
 			kept.save_file(bad)
 			raise SystemExit("save_file to an unwritable path reported success")
 		except shcl.SaveRefused:
-			raise SystemExit("a failed write reported as a refusal")
+			raise SystemExit("a failed write reported as a refusal") from None
 		except shcl.SaveFailed:
 			pass
 		try:
@@ -758,7 +758,7 @@ def main():
 			raise SystemExit("save_file did not refuse an unwritable path")
 		except shcl.SaveRefused as e:
 			if e.lost != 1:
-				raise SystemExit("SaveRefused lost got {}".format(e.lost))
+				raise SystemExit(f"SaveRefused lost got {e.lost}") from None
 	# A failed strict load hands back the document and names the first
 	# failures in the message - the diagnostics are the point.
 	try:
@@ -766,9 +766,9 @@ def main():
 		raise SystemExit("strict load unexpectedly passed")
 	except shcl.LoadError as le:
 		if le.document is None or le.document.read_int("ok").value != 1:
-			raise SystemExit("LoadError does not carry a usable document")
+			raise SystemExit("LoadError does not carry a usable document") from None
 		if "; line " not in str(le):
-			raise SystemExit("LoadError message lacks diagnostics: " + str(le))
+			raise SystemExit("LoadError message lacks diagnostics: " + str(le)) from None
 	# raw: the verbatim value span from the source line - not the display
 	# join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner
 	# whose read result exposes raw (the C read structs deliberately do not).
@@ -788,7 +788,7 @@ def main():
 	if (rr.value, rr.status) != (5, shcl.Status.Good):
 		raise SystemExit("escaped selector read failed")
 	if rr.raw != "5":
-		raise SystemExit("written raw mismatch: {!r}".format(rr.raw))
+		raise SystemExit(f"written raw mismatch: {rr.raw!r}")
 	# The get-tier value survives only on Good; Empty/BadType/NotFound all fall
 	# back to the call-site default, so a real zero can't be faked. `_or` is the
 	# cross-binding spelling for it, so a routine ported between two bindings
@@ -799,7 +799,7 @@ def main():
 		raise SystemExit("get_int_or Good got {}".format(cdoc.get_int_or("a", 9)))
 	for p in ("b", "e", "missing"):
 		if cdoc.get_int_or(p, 9) != 9:
-			raise SystemExit("get_int_or({!r}) did not fall back".format(p))
+			raise SystemExit(f"get_int_or({p!r}) did not fall back")
 	if cdoc.get_int_array_or("arr", [7]) != [1, 2, 3]:
 		raise SystemExit("get_int_array_or Good got {}".format(cdoc.get_int_array_or("arr", [7])))
 	if cdoc.get_int_array_or("missing", [7]) != [7]:
@@ -814,7 +814,7 @@ def main():
 	if cdoc.read_int("missing").ok():
 		raise SystemExit("a missing field is ok()")
 
-	print("conformance: {} case(s) pass".format(len(cases)))
+	print(f"conformance: {len(cases)} case(s) pass")
 	return 0
 
 

@@ -33,7 +33,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Formatters win. Where a canonical formatter exists (rustfmt, gofmt), its output is the law - run it, don't hand-format against it. Intentional data tables get the formatter's skip pragma rather than a fight.
 
-- Tabs for indentation, spaces for alignment, in every language that allows it. This repo pins rustfmt to `hard_tabs`; gofmt is tabs natively; Python and shell follow suit. Yes, PEP 8 prefers spaces - one indentation style across a multi-language repo is worth more than per-language purity here.
+- Tabs for indentation, spaces for alignment. The test is whether the language prevents it or strongly pushes the other way; none of the six here do, so all six use tabs. This repo pins rustfmt to `hard_tabs`; gofmt is tabs natively; Python, C and both shells follow suit. PEP 8 does prefer spaces, but it also says to stay consistent with code already indented with tabs, and one indentation style across a multi-language repo is worth more than per-language purity. The Python linter's tab rule (`W191`) is switched off for exactly this reason, not overlooked.
 
 - Names are meaningful and human-searchable: `upperBound`, not `ub`. Short conventional names are fine where they are idiomatic - loop indices (`i`), a local `err`, a receiver letter in Go, and few-line locals in the compact parser cores (`t` for a just-trimmed line, `q` for the current quote char) where the same short name means the same thing at the same site in every binding. The test is "can a reader find and search-replace what you mean", not maximal length.
 
@@ -46,6 +46,12 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - Single file per binding, zero dependencies. That is the product ("copy this file into your tree"), so no module splits, no helper crates/packages, and no dependency however good.
 
 - Small standalone utility scripts are MIT regardless of anything else, and carry their license in the header.
+
+- What analysis runs, and what deliberately does not. Gating: rustfmt and clippy, gofmt, go vet, staticcheck, govulncheck, cargo-deny, ruff, mypy, cppcheck, PSScriptAnalyzer, shellcheck, markdownlint. Declined, each for a reason that is not going to change:
+	- `clang-format` and `clang-tidy`. Reformatting the C drop-in rewrites roughly nine lines in ten, which throws away the hand-aligned tables and the structural match with the other bindings.
+	- `golangci-lint`. It wraps checks that already gate individually, so it would add a dependency and no signal.
+	- `shfmt`. Its output fights the shell style the pipeline scripts are written in.
+	- Pedantic clippy. Satisfying it means restructuring away from the reference's shape, which is the one thing parity forbids.
 
 ## Per-language
 
