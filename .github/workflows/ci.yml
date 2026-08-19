@@ -18,7 +18,9 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    ## 25 was enough until the large-document gate; that adds several minutes of
+    ## single-threaded parsing per binding, and a hosted runner is slower again.
+    timeout-minutes: 45
     steps:
       ## Actions by commit SHA (tag in the comment), so a moved tag cannot
       ## silently change what runs.
