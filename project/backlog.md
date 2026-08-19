@@ -108,6 +108,109 @@ None open.
 
 ### Code Reviews
 
+- **20260819**:
+
+	Conformance pass against the standing style, performance, pipeline, housecleaning, marketing and installer directives, rather than a defect hunt. No correctness defect turned up, and the full gate is green: 56 corpus cases through all four bindings, 6069 four-way crosscheck comparisons, a 200k fuzz soak, and the 100 MiB gate with all four agreeing byte for byte. Everything below is a gap against a directive, not a bug.
+
+	- **CI/CD**:
+
+		- 🔘 Code Review 20260819 item 1: the pipeline never refreshes from the remote before it runs.
+			- The only pull happens inside the publish stage, after build and tests. Anything merged upstream in the meantime gets pushed without the pipeline having seen it.
+			- Wanted: a sync step ahead of stage 1 that fetches, fast-forwards when only behind, and stops early when the branches have diverged. Offline or no upstream should warn and carry on. Needs a flag to skip it.
+			- Publish keeps its own pull either way, as a second guard.
+
+		- 🔘 Code Review 20260819 item 2: Windows executables carry no icon and no file metadata.
+			- Nothing in the repo embeds a resource, and there is no icon file to embed. The cross-built exe gets the generic shell icon, and its properties panel is blank where a version, description and copyright belong.
+			- Affects both Windows targets and the setup they ship inside.
+
+		- 🔘 Code Review 20260819 item 3: nothing addresses reproducible builds.
+			- Two machines building the same tag should produce the same checksum. Never attempted, never measured, so it is unknown whether the build is already close.
+			- Worth assessing before promising anything: if it holds, say so in README.md, since the release already publishes signed checksums and that is what a reader would want to check against.
+
+		- 🔘 Code Review 20260819 item 4: no runner for the latest build.
+			- A sister project keeps a script that copies the newest release build somewhere off `PATH` under a timestamped name, ages out the copies nothing is using, and launches the newest with arguments passed through. The dogfood stage covers the installed copy only.
+			- One cross-platform PowerShell script is enough.
+
+		- 🔘 Code Review 20260819 item 5: no advisory gate, and Go is linted by `go vet` alone.
+			- Nothing runs cargo-deny, cargo-audit, govulncheck or pip-audit. Nothing would report a toolchain advisory.
+			- Small surface, not an empty one: the libraries are dependency-free by design, but the profiler chain, the Go standard library version and the pinned toolchain are all real.
+			- `staticcheck` is expected of Go and is not wired in, though it has been run by hand and was clean.
+
+		- 🔘 Code Review 20260819 item 6: the gate is not wired to a pre-push hook.
+			- `--ci` already is the gate. Nothing runs it automatically, so the only automatic check happens after a push, in the hosted workflow.
+			- A hook would catch it before the push instead.
+
+		- ✋ Code Review 20260819 item 7: no BSD package.
+			- Listed among the packaging targets and never built. README.md is straight about it, so nothing overpromises.
+			- Deferred until there is demand: it needs a BSD build first, and there is none.
+
+	- **Code style**:
+
+		- 🔘 Code Review 20260819 item 8: the Python linter runs with almost no rules, and neither linter nor type checker is configured where it can be seen.
+			- `ruff` at defaults is pycodestyle errors plus pyflakes. None of the Python style rules apply at that selection.
+			- `pyproject.toml` has no `[tool.ruff]` and no `[tool.mypy]`. The type checker's strictness is a comment at the top of `shcl.py`, so it covers that one file - the CLI and the test runner are checked at bare defaults, where an untyped function passes.
+			- A full rule selection was measured before and mostly conflicts with the parity rule. The answer is a curated selection plus config that lives in `pyproject.toml`, not the full set.
+
+		- 🔘 Code Review 20260819 item 9: the Python CLI builds every message with `.format()`.
+			- About a dozen sites. The package claims 3.9 and up, where f-strings have always been available.
+			- Cosmetic, but it is the one place the Python binding reads dated.
+
+		- 🔘 Code Review 20260819 item 10: five `raise` statements inside an `except` drop the original cause, and two suppression comments are dead.
+			- One is in the shipped CLI, on the path that reports a stream that was not valid UTF-8. The other four are in the Python test runner.
+			- The two dead comments suppress a rule that is not enabled, so they suppress nothing.
+
+		- 🔘 Code Review 20260819 item 11: the whitespace table's characters read as mistakes.
+			- 16 of them are spelled as literal invisible characters in the Python module, which is exactly what a linter flags as an ambiguous character. They are deliberate, and nothing in the file says so.
+			- The C copy spells the same set numerically. Either spelling works; what is missing is the note that the Python one is on purpose, so nobody "fixes" it and splits the bindings.
+
+		- ✋ Code Review 20260819 item 12: the two style documents disagree about indentation.
+			- One asks for four spaces in Rust, Python and PowerShell. The project uses hard tabs in all three, and `rustfmt.toml` sets `hard_tabs` to get it - which is also a formatter default being overridden, in a rule set that says not to override them.
+			- Not something to change quietly in either direction. Every binding and every conformance golden would move.
+			- Needs a ruling on which document wins.
+
+		- 🔘 Code Review 20260819 item 13: three languages have no style enforcement file.
+			- Missing: a golangci config, a clang-format and clang-tidy pair, and a PSScriptAnalyzer settings file.
+			- C is the only binding with no format gate at all, which is deliberate - there is no zero-dependency formatter to commit - but it means C style is held by review alone.
+			- Some of this is already settled: pedantic clippy is advisory, and shfmt and clang-tidy were both rejected as gates. The rest was never decided.
+
+	- **Performance**:
+
+		- 🔘 Code Review 20260819 item 14: the release profile was never compared for size.
+			- Size and speed are the two priorities for a shipped binary, and only speed has been chosen for. The size-first optimization level has never been built or measured against the current one.
+			- Cheap to settle: build both, compare bytes and the large-document timings, keep whichever wins.
+
+		- See the open item under Features about what a document costs in memory. It is the one performance finding with measurements behind it, and this review adds nothing to it.
+
+	- **Housecleaning**:
+
+		- 🔘 Code Review 20260819 item 15: a release behind in build leftovers.
+			- `source/python/dist/` still holds the 1.2.0 wheel and archive, and the metadata directory beside it matches. Ignored by git, so they sit there indefinitely.
+			- The release recipe already says to clear them before a cut. Clearing them now costs nothing.
+
+		- 🔘 Code Review 20260819 item 16: two run-on bullets in `spec.md`.
+			- The pair covering `--lossy` and what a bare `-` means. Both pack several clauses into one sentence with dashes doing the joining, and they are the only two top-level bullets in the file not separated by a blank line.
+
+		- 🔘 Code Review 20260819 item 17: the AI acceptability guidelines are unreachable from the README.
+			- A substantial public document that the Docs list does not mention, so the only way to find it is to browse the file listing.
+
+	- **Marketing**:
+
+		- 🔘 Code Review 20260819 item 18: the "5/10" disclosure under the projects table looks low.
+			- Counting the table, more than five entries appear to trace back to the same author once the company-hosted ones are included.
+			- The line exists to build trust. An undercount does the opposite, so it is worth getting exactly right or dropping the count and naming the relationship instead.
+
+		- 🔘 Code Review 20260819 item 19: the repository About panel is thinner than it needs to be.
+			- No website link at all, though the spec and the generated API docs are both obvious candidates.
+			- The topic list names Rust, Go and Python but not C, C++ or the CLI, so two of the four bindings and half the product are invisible to topic search.
+
+		- 🔘 Code Review 20260819 item 20: one project in the table has a blank release status.
+
+	- **Installer**:
+
+		- 🔘 Code Review 20260819 item 21: the Windows installer has no help switch.
+			- The Linux one answers `--help`. The Windows one relies on the comment block at the top of the file, which the documented one-liner cannot reach - it pipes the script straight into the shell, so there is nothing left to ask for help about.
+			- Everything else in both installers matches: signature checked before any checksum, idempotent, states its plan and asks, detects the architecture, and uninstalls only what it laid down.
+
 - **20260817**:
 
 	- **Bugs**:
