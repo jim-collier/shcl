@@ -742,11 +742,13 @@ fn write_reason_names_the_failure() {
 	assert_eq!(doc.write_reason("nope[#0].b"), NoSuchIndex);
 	let deep = vec!["d"; 513].join(".");
 	assert_eq!(doc.write_reason(&deep), TooDeep);
-	// A literal line break in a segment: the binding would emit across two lines
-	// and reparse as neither. The escaped spelling is a different path and writes
-	// fine. Not corpus-pinnable - an ops line cannot carry a raw newline.
-	assert_eq!(doc.write_reason("\"x\ny\".b"), BadPath);
+	// A literal line break in a SELECTOR: the binding would emit across two lines
+	// and reparse as neither, and the value emitter never escapes one. In a NAME
+	// it is writable - names emit through the name escaper, which spells a line
+	// break `\n`, so the escaped and literal spellings are one path now. Not
+	// corpus-pinnable - an ops line cannot carry a raw newline.
 	assert_eq!(doc.write_reason("a[\"p\nq\"].b"), BadPath);
+	assert_eq!(doc.write_reason("\"x\ny\".b"), Writable);
 	assert_eq!(doc.write_reason("\"x\\ny\".b"), Writable);
 	// The probe never creates: the doc is unchanged after all of the above.
 	assert_eq!(doc.count("a"), 1);
@@ -759,13 +761,15 @@ fn setter_refuses_a_path_it_could_not_write_back() {
 	// node here would leave a document that no longer parses, and the reload
 	// counts nothing lost, so the save gate would not catch it.
 	let mut doc = Document::parse("z: 0\n");
-	assert!(!doc.set_int("\"a\nb\".c", 1));
 	assert!(!doc.set_int("x[\"p\nq\"].c", 1));
 	assert_eq!(doc.to_canonical(), "z: 0\n");
-	assert!(doc.set_int("\"a\\nb\".c", 1));
+	// A line break in a NAME writes and reads back: the two spellings are one
+	// path, and the emitter escapes it rather than splitting the line.
+	assert!(doc.set_int("\"a\nb\".c", 1));
 	let back = Document::parse(&doc.to_canonical());
 	assert_eq!(back.error_count(), 0);
 	assert_eq!(back.read_int("\"a\\nb\".c").value, 1);
+	assert_eq!(back.read_int("\"a\nb\".c").value, 1);
 }
 
 #[test]
@@ -806,10 +810,15 @@ fn read_surface_line_quoted_children() {
 	assert_eq!(d2.authored_name("missing"), "");
 	assert!(d2.set_int("NewTop.n", 1));
 	assert_eq!(d2.authored_name("newtop"), "NewTop");
-	// Escapes are NOT resolved: a name is stored, compared and emitted in its
-	// escaped spelling, so resolving here would name a node that does not exist.
+	// Escapes ARE resolved on a name, so both spellings of the path find the
+	// same node - while authored_name still hands back the source spelling,
+	// which is the one thing it is for. Same fixture in every runner.
 	let d3 = Document::parse("\"Ab\\tCd\": 2\n");
 	assert_eq!(d3.authored_name("\"ab\\tcd\""), "Ab\\tCd");
+	assert_eq!(d3.authored_name("\"ab\tcd\""), "Ab\\tCd");
+	assert_eq!(d3.read_int("\"ab\tcd\"").value, 2);
+	// Canonical output folds the case, as it always has, and escapes the tab.
+	assert_eq!(d3.to_canonical(), "\"ab\\tcd\": 2\n");
 }
 
 #[test]

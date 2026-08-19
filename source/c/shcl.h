@@ -234,10 +234,10 @@ int shcl_quoted(shcl_doc *d, const char *path, size_t plen);
 
 // The field name at a path exactly as the author spelled it (case unfolded,
 // outer quotes stripped), so a message can echo SYMBOLS when the file said
-// SYMBOLS. Escape sequences stay as written: names carry their escaped
-// spelling everywhere - stored, compared, emitted, and in shcl_paths - so
-// resolving them here alone would hand back a string that no longer names the
-// node. Resolution mirrors shcl_line: empty when the path does not resolve to
+// SYMBOLS. Escape sequences stay as written too: a name is stored, compared
+// and emitted with its escapes RESOLVED, so this is the one call that hands the
+// source spelling back - which is what an as-authored accessor is for.
+// Resolution mirrors shcl_line: empty when the path does not resolve to
 // exactly one node. Merged instances keep the first binding's spelling; a
 // writer-built node keeps the spelling the setter's path used.
 // Borrowed from the document's arena; valid until shcl_free.
@@ -1071,7 +1071,10 @@ static PathScan scan_path_ex(Arena *a, S input, int stars) {
 			skip_ws_path(input, &pos);
 		}
 		if (star && sel.tag != SEL_NONE) { ps.err = s_lit("selector on a name wildcard"); return ps; }
-		Segment seg; seg.name = fold_name(a, name); seg.name_src = name; seg.sel = sel; seg.star = star;
+		/* Names resolve escapes, the same rule values follow when they are
+		   compared: two spellings of one name are one name. name_src keeps the
+		   source spelling, which is what shcl_authored_name hands back. */
+		Segment seg; seg.name = fold_name(a, apply_escapes(a, name)); seg.name_src = name; seg.sel = sel; seg.star = star;
 		VecSeg_push(a, &ps.segs, seg);
 		if (pos >= input.n) { ps.ok = 1; ps.has_value = 0; return ps; }
 		uint32_t dc; size_t dl = utf8_decode(input.p, input.n, pos, &dc);
@@ -2518,12 +2521,15 @@ static shcl_write_reason w_probe_write(shcl_doc *d, Arena *a, const PathScan *ps
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		Segment *seg = &ps.segs.data[i];
 		if (seg->star) return SHCL_W_WILDCARD;
-		/* A newline has no one-line spelling, so the emitted binding would split
-		   across two lines and reparse as neither. Generation already refuses
-		   these paths; the writer has to as well, and before any node is created
-		   - the reload loses nothing it can count, so the save gate would not
-		   catch it either. */
-		if (s_has_nl(seg->name) || (seg->sel.tag == SEL_VALUE && s_has_nl(seg->sel.value))) return SHCL_W_BAD_PATH;
+		/* A newline in a SELECTOR has no one-line spelling, so the emitted
+		   binding would split across two lines and reparse as neither. The
+		   selector stores its path text raw and the value emitter never escapes
+		   a line break, so nothing downstream can rescue it - and the reload
+		   loses nothing it can count, so the save gate would not catch it. A
+		   newline in a NAME is fine: names are stored escape-resolved and
+		   emitted through the name escaper, which spells a line break \n and
+		   reads it back as one. */
+		if (seg->sel.tag == SEL_VALUE && s_has_nl(seg->sel.value)) return SHCL_W_BAD_PATH;
 		if (seg->sel.tag == SEL_WILDCARD) return SHCL_W_WILDCARD;
 		if (seg->sel.tag == SEL_INDEX) {
 			if (off) return SHCL_W_NO_SUCH_INDEX;
@@ -3121,14 +3127,32 @@ static S emit_element(Arena *a, const Element *e) {
 	if (!needs && e->quoted && !is_data_format(a, e)) needs = 1;
 	return needs ? quote_text(a, t) : t;
 }
-static S emit_name(Arena *a, S name) {
+/* Emit a stored (escape-resolved) name in a spelling that reads back as the
+   same name: bare when it can be, else quoted with the escapes apply_escapes
+   undoes. This is a true inverse of the name parse, which quote_text is not -
+   that one picks a quote style to AVOID escaping and never escapes a backslash,
+   which is right for a value (stored in its escaped spelling) and wrong for a
+   name (stored resolved). */
+static S escape_name(Arena *a, S name) {
 	if (name.n > 0) {
 		int allbare = 1; size_t i = 0;
 		while (i < name.n) { uint32_t c; size_t l = utf8_decode(name.p, name.n, i, &c); i += l; if (!is_bare_name_char(c)) { allbare = 0; break; } }
 		if (allbare) return name;
 	}
-	return quote_text(a, name);
+	SB b = {0};
+	sb_putc(a, &b, '"');
+	for (size_t i = 0; i < name.n; i++) {
+		char c = name.p[i];
+		if (c == '\\') sb_puts(a, &b, "\\\\");
+		else if (c == '"') sb_puts(a, &b, "\\\"");
+		else if (c == '\t') sb_puts(a, &b, "\\t");
+		else if (c == '\n') sb_puts(a, &b, "\\n");
+		else sb_putc(a, &b, c);
+	}
+	sb_putc(a, &b, '"');
+	return sb_S(&b);
 }
+static S emit_name(Arena *a, S name) { return escape_name(a, name); }
 /* Inline comment, canonically two spaces before the `#`. */
 static void emit_trailing(Arena *a, SB *out, S trailing) {
 	if (trailing.n) { sb_puts(a, out, "  "); sb_putS(a, out, trailing); }
