@@ -27,7 +27,8 @@
 ##	   --ci                correctness gate only: format check (no rewrite), build,
 ##	                       lint, tests; non-interactive, no cross/publish. This is
 ##	                       what the GitHub workflow runs - one definition of "passing".
-##	   --quick             skip the slow stages: cross-compile, profiler, demo gif
+##	   --quick             skip the slow stages: large-document gate, cross-compile,
+##	                       profiler, demo gif
 ##	   -q, --quiet         quiet + unattended (no prompt)
 ##	   -y, --yes           unattended (no prompt) but not quiet
 ##	   -m, --message MSG   publish hands-off with this commit message (no editor)
@@ -35,6 +36,7 @@
 ##	   --no-lint           skip the lint stage
 ##	   --no-cross          skip the cross-compile targets (native release still builds)
 ##	   --no-package        skip building installer packages (.deb/.rpm/NSIS setup)
+##	   --no-largedoc       skip the large-document gate in the tests stage
 ##	   --no-profile        skip the profiler stage
 ##	   --no-dogfood        skip installing the native release build locally
 ##	   --no-gif            skip the demo gif refresh
@@ -91,6 +93,7 @@ while (($#)); do case "$1" in
 	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); LINT_EXTRA=(); shift ;;
 	--no-cross)               CROSS_TARGETS=(); shift ;;
 	--no-package)             PACKAGE_ENABLE=0; shift ;;
+	--no-largedoc)            LARGEDOC_MIB=0; shift ;;
 	--no-profile)             PROFILE_ENABLE=0; shift ;;
 	--no-dogfood)             DOGFOOD_FIXED_DESTS=(); shift ;;
 	--no-gif)                 GIF_ENABLE=0; shift ;;
@@ -115,6 +118,7 @@ else
 	FMT_CHECK_CMD=()    ## locally the formatter rewrites in place instead
 fi
 if ((quick)); then
+	LARGEDOC_MIB=0     ## minutes of parsing; the fast loop is for the small cases
 	CROSS_TARGETS=()
 	PACKAGE_ENABLE=0   ## artifact set is partial without cross targets
 	PROFILE_ENABLE=0
@@ -160,7 +164,7 @@ if ((! quiet)); then
 	fEcho_Clean "Format .........: $( ((ci_mode)) && echo "${FMT_CHECK_CMD[*]:-(none configured)}" || echo "${FMT_CMD[*]:-(skipped)}")$( ((${#FMT_EXTRA[@]} + ${#FMT_CHECK_EXTRA[@]})) && echo "  (+ extras)" )"
 	fEcho_Clean "Build (debug) ..: ${BUILD_CMD[*]:-(none configured)}$( ((${#BUILD_EXTRA[@]})) && echo "  (+ ${#BUILD_EXTRA[@]} extra)" )"
 	fEcho_Clean "Lint ...........: ${LINT_CMD[*]:-(none configured)}$( ((${#LINT_EXTRA[@]})) && echo "  (+ ${#LINT_EXTRA[@]} extra)" )  + shellcheck: ${#SHELLCHECK_TARGETS[@]} file(s)"
-	fEcho_Clean "Tests ..........: ${TEST_CMD[*]:-(none configured)}$( ((${#TEST_EXTRA[@]})) && echo "  (+ ${#TEST_EXTRA[@]} extra)" )  + crosscheck: ${#BINDING_CLIS[@]} binding(s)"
+	fEcho_Clean "Tests ..........: ${TEST_CMD[*]:-(none configured)}$( ((${#TEST_EXTRA[@]})) && echo "  (+ ${#TEST_EXTRA[@]} extra)" )  + crosscheck: ${#BINDING_CLIS[@]} binding(s)$( ((LARGEDOC_MIB)) && echo "  + large doc: ${LARGEDOC_MIB} MiB" )"
 	fEcho_Clean "Profiler .......: $( ((PROFILE_ENABLE)) && echo "${PROFILE_SECS}s run -> flamegraph SVG -> ${PROFILE_OUT_DIR}/" || echo '(skipped)')"
 	if ((${#RELEASE_NATIVE_CMD[@]})); then
 		fEcho_Clean "Release ........: native + ${#CROSS_TARGETS[@]} cross target(s) + ${#CROSS_CHECKS[@]} cross check(s) -> ${RELEASE_ARTIFACT_DIR}/"
@@ -260,6 +264,8 @@ fi
 ## then the cross-binding differential check: every binding CLI must agree with
 ## every other, byte for byte, on the corpus AND on a freshly fuzz-dumped input set.
 ## With one binding it is a no-op note; it gets teeth the day a second binding lands.
+## Last comes the large-document gate - the same agreement plus time and memory
+## ceilings, at a size no corpus case can reach.
 fSection "4/9  Tests"
 if ((${#TEST_CMD[@]})); then
 	"${TEST_CMD[@]}"
@@ -277,6 +283,9 @@ if ((${#BINDING_CLIS[@]})); then
 		xcheck_extra=(--extra "${XCHECK_DUMP_DIR}")
 	fi
 	"${here}/utility/crosscheck.bash" --corpus "${root}/project/conformance" "${xcheck_extra[@]}" "${BINDING_CLIS[@]}"
+	if ((LARGEDOC_MIB)); then
+		"${here}/utility/largedoc.bash" --mib "${LARGEDOC_MIB}" "${BINDING_CLIS[@]}"
+	fi
 fi
 
 ## Stage 5: profiler. Non-gating artifact, not a pass/fail test: an optimized

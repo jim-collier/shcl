@@ -234,6 +234,16 @@ Passing the corpus independently is necessary but not sufficient once there is m
 
 - stderr is deliberately outside the contract. Diagnostic wording and OS error text are per-binding voice. stdout and exit codes are the contract.
 
+Both of those run on small inputs, which leaves a whole class of defect unwatched: anything that only appears at scale. A parser that is accidentally quadratic, a buffer that grows wrong past a few megabytes, or a memory profile that puts a real config out of reach all pass a corpus of few-hundred-byte cases. So the pipeline also formats one large generated document - 100 MiB by default - through every binding:
+
+- The bindings must agree on the result byte for byte, exactly as on the corpus. The document is generated rather than stored: a fixture that size has no business in a repo, and the shape matters more than the bytes.
+
+- Each binding is held to a wall-clock and a peak-memory ceiling, expressed per input MiB so they follow the configured size. The ceilings are set to catch a change in growth rate, not to time a machine - the time ones carry wide headroom, because the pipeline runs the reference unoptimized and a hosted runner is slower again. Memory is held closer, since peak usage barely moves between machines.
+
+- At that size the reference also has to prove formatting is a fixpoint and that a long array reads back whole, both of which are cheap to state and impossible for a small case to check.
+
+The size is deliberately a floor rather than a target. It was chosen because it is roughly where memory stops being free: every binding holds tens of times the input size in memory while parsing, so a document this big is the first one whose cost is worth a decision.
+
 Two portability rules bind every binding:
 
 - Floats render as shortest round-trip decimal, never scientific notation. This matches the reference's native float formatting.
