@@ -291,7 +291,7 @@ For version pinning and the dependency line per ecosystem, see [Example use-case
 
 The simplest route, if your system has a package manager. Download the `.deb`, `.rpm`, or Windows setup for your architecture (`x86_64` or `arm64`) from the releases page.
 
-Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wrappers under `/usr/share/shcl/`.
+Packages put the binary at `/usr/bin/shcl`, and the drop-in sources and shell wrappers under `/usr/share/shcl/`. They also install the man page and the bash and zsh completions where each shell already looks, so `man shcl` and tab completion work with nothing to configure.
 
 ##### Debian
 
@@ -316,6 +316,8 @@ Downloads a release, checks its signature, and installs the binary plus the drop
 Each release includes a `sha256sums.txt` and a detached `.sig` over it, covering every asset - the binary, the packages, and the drop-in payload alike. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. Nothing unverified is installed: a release with no signed drop-in payload gets the binary and a note saying what was skipped. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY install](#diy-install) route on a machine that lacks it.
 
 Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows). `--uninstall` (`-Uninstall`) removes what an install of the same target laid down, and nothing else.
+
+The Linux installer also lays down the man page and the shell completions. It symlinks the man page into the target's own `man1` directory, so `man shcl` works once the install directory is on your `PATH` - man derives its search path from the `bin` directories there. Completions are left under `<install dir>/completions/` for you to enable, and the installer prints the line to paste for each shell: there is no single directory that works everywhere, and writing into the distribution's own is the packages' job, not a tarball installer's.
 
 ##### Linux and WSL
 
@@ -476,7 +478,7 @@ shcl set --write server.shcl --set 'workers=8'
 
 An in-place write prints whatever the load found on stderr, and refuses outright when the load dropped a line the rewrite would delete - your typo does not cost you the line above it. `--lossy` is the way to say you meant it.
 
-`shcl help` covers the rest, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
+`shcl help` covers the rest and `man shcl` says the same at more length, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. Tab completion for bash and zsh ships alongside. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
 
 ## Example use-cases in your code
 
