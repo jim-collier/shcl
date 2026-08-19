@@ -142,8 +142,10 @@ int main() {
 	shcl::Read<shcl::Datetime> outlives;
 	{
 		auto tmp = shcl::Document::parse("t: 2026-08-02T10:20:30.123456789Z\n");
-		outlives = tmp.read_datetime_raw("t");
-		CHECK(tmp.read_datetime_str("t").value == tmp.read_datetime("t").value); // the retiring spelling still forwards
+		outlives = tmp.read_datetime("t");
+		// read_datetime is the structured read, matching every other binding;
+		// read_datetime_str is the textual one. The old backwards pair is gone.
+		CHECK(tmp.read_datetime_str("t").value == outlives.value.str());
 	}
 	CHECK(outlives.status == shcl::Status::Good);
 	CHECK(outlives.value.str() == "2026-08-02T10:20:30.123456789Z");

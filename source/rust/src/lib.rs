@@ -341,7 +341,7 @@ impl std::fmt::Display for ShclDateTime {
 
 #[derive(Debug, Clone, PartialEq)]
 struct Element {
-	text: String, // quote-stripped, escapes NOT applied (applied on string read)
+	text: String, // quote-stripped, escapes NOT applied (applied on string read; names differ - see scan_path_ex)
 	quoted: bool,
 }
 
@@ -896,7 +896,10 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 			return Err("selector on a name wildcard".into());
 		}
 		segments.push(Segment {
-			name: fold_name(&name),
+			// Names resolve escapes, the same rule values follow when they are
+			// compared: two spellings of one name are one name. name_src keeps
+			// the source spelling, which is what `authored_name` hands back.
+			name: fold_name(&apply_escapes(&name)),
 			name_src: name,
 			selector,
 			star,
@@ -2023,12 +2026,33 @@ fn push_trailing(out: &mut String, trailing: &str) {
 	}
 }
 
-fn emit_name(name: &str) -> String {
+/// Emit a stored (escape-resolved) name in a spelling that reads back as the
+/// same name: bare when it can be, else quoted with the escapes `apply_escapes`
+/// undoes. This is a true inverse of the name parse, which `quote_text` is not -
+/// that one picks a quote style to AVOID escaping and never escapes a
+/// backslash, which is right for a value (stored in its escaped spelling) and
+/// wrong for a name (stored resolved).
+fn escape_name(name: &str) -> String {
 	if !name.is_empty() && name.chars().all(is_bare_name_char) {
-		name.to_string()
-	} else {
-		quote_text(name)
+		return name.to_string();
 	}
+	let mut out = String::with_capacity(name.len() + 2);
+	out.push('"');
+	for c in name.chars() {
+		match c {
+			'\\' => out.push_str("\\\\"),
+			'"' => out.push_str("\\\""),
+			'\t' => out.push_str("\\t"),
+			'\n' => out.push_str("\\n"),
+			_ => out.push(c),
+		}
+	}
+	out.push('"');
+	out
+}
+
+fn emit_name(name: &str) -> String {
+	escape_name(name)
 }
 
 /// Quote one path segment so it can be spliced into a lookup path: a bare name
@@ -2486,10 +2510,10 @@ impl Document {
 
 	/// The field name at a path exactly as the author spelled it (case
 	/// unfolded, outer quotes stripped), so a message can echo `SYMBOLS` when
-	/// the file said SYMBOLS. Escape sequences stay as written: names carry
-	/// their escaped spelling everywhere - stored, compared, emitted, and in
-	/// paths() - so resolving them here alone would hand back a string that no
-	/// longer names the node. Resolution mirrors line(): empty when the path
+	/// the file said SYMBOLS. Escape sequences stay as written too: a name is
+	/// stored, compared and emitted with its escapes RESOLVED, so this is the
+	/// one call that hands the source spelling back - which is what an
+	/// as-authored accessor is for. Resolution mirrors line(): empty when the path
 	/// does not resolve to exactly one node. Merged instances keep the first
 	/// binding's spelling; a writer-built node keeps the spelling the setter's
 	/// path used.
@@ -2701,13 +2725,15 @@ impl Document {
 			if seg.star {
 				return WriteReason::Wildcard;
 			}
-			// A newline has no one-line spelling, so the emitted binding would
-			// split across two lines and reparse as neither. `generate` already
-			// refuses these paths; the writer has to as well, and before any
-			// node is created - the reload loses nothing it can count, so the
-			// save gate would not catch it either.
-			if seg.name.contains('\n')
-				|| matches!(&seg.selector, Some(Selector::ByValue { text, .. }) if text.contains('\n'))
+			// A newline in a SELECTOR has no one-line spelling, so the emitted
+			// binding would split across two lines and reparse as neither. The
+			// selector stores its path text raw and the value emitter never
+			// escapes a line break, so nothing downstream can rescue it - and
+			// the reload loses nothing it can count, so the save gate would not
+			// catch it either. A newline in a NAME is fine: names are stored
+			// escape-resolved and emitted through the name escaper, which spells
+			// a line break `\n` and reads it back as one.
+			if matches!(&seg.selector, Some(Selector::ByValue { text, .. }) if text.contains('\n'))
 			{
 				return WriteReason::BadPath;
 			}

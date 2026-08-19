@@ -664,14 +664,16 @@ func TestWriteReasonNamesTheFailure(t *testing.T) {
 	if got := doc.WriteReason(deep); got != TooDeep {
 		t.Errorf("deep path: got %v, want TooDeep", got)
 	}
-	// A literal line break in a segment: the binding would emit across two lines
-	// and reparse as neither. The escaped spelling is a different path and writes
-	// fine. Not corpus-pinnable - an ops line cannot carry a raw newline.
-	if got := doc.WriteReason("\"x\ny\".b"); got != BadPath {
-		t.Errorf("newline in name: got %v, want BadPath", got)
-	}
+	// A literal line break in a SELECTOR: the binding would emit across two lines
+	// and reparse as neither, and the value emitter never escapes one. In a NAME
+	// it is writable - names emit through the name escaper, which spells a line
+	// break \n, so the escaped and literal spellings are one path now. Not
+	// corpus-pinnable - an ops line cannot carry a raw newline.
 	if got := doc.WriteReason("a[\"p\nq\"].b"); got != BadPath {
 		t.Errorf("newline in selector: got %v, want BadPath", got)
+	}
+	if got := doc.WriteReason("\"x\ny\".b"); got != Writable {
+		t.Errorf("newline in name: got %v, want Writable", got)
 	}
 	if got := doc.WriteReason("\"x\\ny\".b"); got != Writable {
 		t.Errorf("escaped newline in name: got %v, want Writable", got)
@@ -766,9 +768,20 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	if got := d2.AuthoredName("newtop"); got != "NewTop" {
 		t.Errorf("AuthoredName(newtop): got %q", got)
 	}
-	// Escapes are NOT resolved: a name is stored, compared and emitted in its
-	// escaped spelling, so resolving here would name a node that does not exist.
+	// Escapes ARE resolved on a name, so both spellings of the path find the
+	// same node - while AuthoredName still hands back the source spelling,
+	// which is the one thing it is for. Same fixture in every runner.
 	d3 := Parse("\"Ab\\tCd\": 2\n")
+	if got := d3.AuthoredName("\"ab\tcd\""); got != "Ab\\tCd" {
+		t.Errorf("AuthoredName via the literal spelling: got %q", got)
+	}
+	if got := d3.ReadInt("\"ab\tcd\"").Value; got != 2 {
+		t.Errorf("read via the literal spelling: got %d", got)
+	}
+	// Canonical output folds the case, as it always has, and escapes the tab.
+	if got := d3.ToCanonical(); got != "\"ab\\tcd\": 2\n" {
+		t.Errorf("canonical name spelling: got %q", got)
+	}
 	if got := d3.AuthoredName("\"ab\\tcd\""); got != "Ab\\tCd" {
 		t.Errorf("AuthoredName escaped: got %q", got)
 	}

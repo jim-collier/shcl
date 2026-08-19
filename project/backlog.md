@@ -226,7 +226,7 @@ None open.
 
 	- **Improvements**:
 
-		- ✋ Names compare by their escaped spelling, so two spellings of the same name are two names. DECIDED: resolve escapes on names, at the next major.
+		- ✅ Names compare by their escaped spelling, so two spellings of the same name are two names. DONE: escapes resolve on names, as of the coming major.
 			- Found while settling Code Review 20260817 item 15. A name authored `"q\"r"` is stored, matched and emitted with the backslash intact, so it is a different name from one authored `'q"r'` - while the same two spellings as VALUES are the same string, which the spec states outright for selectors.
 			- Not a bug against any current contract: every part of the name pipeline agrees, and item 15's fix documents it. But the two halves of the language disagree about what a quoted string means, and a consumer building a path from user text has to know which half it is in.
 			- It does not take an exotic character: there are two quote styles, so `'a"b'` and `"a\"b"` are two fields, and the same pair as values are one string. Verified.
@@ -235,6 +235,11 @@ None open.
 			- Version cost is a number, not a migration. crates.io and PyPI carry 2.x beside 1.x with nothing to do; only Go pays, since v2 goes in the module path (`source/go/v2`) and every Go consumer edits an import.
 			- Shape when it comes: two sites per binding - unescape on name parse, and point name emit at the value escaper instead of the minimal name one. `AuthoredName` then becomes the real as-authored escape hatch rather than differing only by case, and item 15's doc decision still holds, since it returns source text. The fiddly part is the schema's two-level path quoting, which gains an unescape level and needs its own corpus case.
 			- Do not cut a major for this alone - batch it with item 24's c++ date read pair.
+			- Done, batched with that pair. Two sites per binding as planned: escapes resolve where the path scanner stores a segment name, and names emit through a new name escaper. The shape note was half wrong - the value escaper could not be reused. It picks a quote style to AVOID escaping and never escapes a backslash, which is right for a value (stored in its escaped spelling) and wrong for a name (now stored resolved), so the four bindings gained a real inverse of the name parse instead.
+			- The as-authored accessor still hands back the source spelling, deliberately: that is what it is for, and item 15's decision stands unchanged - only its justification moved.
+			- One restriction fell away: a line break in a NAME is writable now, since the name escaper spells it `\n` and reads it back. One in a `[value]` selector is still refused - the value emitter has no such spelling, so nothing downstream could rescue it. The write-reason fixture in all four runners pins both halves.
+			- The schema's two-level path quoting needed no code change: the outer level is an ordinary string read and the inner is the path scanner, which now resolves. Corpus case 054 pins it along with the merge of two spellings, a tab, a backslash and an apostrophe in a name, and the H001 that now fires because the two spellings are one repeated leaf.
+			- Not done here and not this chunk's to do: the version identity. The major bump, the Go module path (`source/go/v2`) and the tags belong to the release cut.
 
 		- ✅ Code Review 20260817 item 17: the save gate's failure channel is wrong in three bindings.
 			- Python returns an error string, so `doc.save_file(path)` on its own line - the obvious spelling - silently does nothing when the gate fires and the program reports success. That is worse than the loss it prevents, because at least a lossy save leaves a file. It should raise.
@@ -303,12 +308,12 @@ None open.
 			- The suppressor sentence says the hints live on the parse's diagnostics, which validation does not touch, and names both the manual calls and the one-shot that runs them.
 			- The divergence is pinned in all four runners, not just described.
 
-		- 🛠️ Code Review 20260817 item 24: two names worth settling while they are still free.
+		- ✅ Code Review 20260817 item 24: two names worth settling while they are still free.
 			- The as-authored name call reads as though it might return the file it came from, now that loading from a file exists. "Source" already means the source text and the source line elsewhere in the api.
 			- The c++ date reads are inverted against the rest of the api: the plain name returns text and the "raw" name returns the parsed value, while "raw" everywhere else means the text exactly as written.
 			- The first is unreleased, so renaming costs nothing today. The second can be fixed additively by adding clear names and retiring the old pair at a major.
 			- ✅ First half done: `SourceName` is `AuthoredName` in all four bindings plus the veneer, with no alias, since nothing has shipped it. "Authored" says what it returns without borrowing a word the api already spends on the source text and the source line.
-			- 🛠️ Second half: `read_datetime_str` is added as the correctly named textual read, and the two old spellings are documented as retiring. The retirement itself lands with the names major - at which point `read_datetime` becomes the structured read it is in every other binding, which is the actual parity defect underneath the naming one.
+			- ✅ Second half done, with the names major as planned: `read_datetime` is the structured read it is in every other binding, `read_datetime_str` is the textual one, and `read_datetime_raw` is gone. The parity defect underneath the naming one goes with it.
 
 		- 🚫 Code Review 20260817 item 25: no way to read a whole config into a structure. DECLINED, recorded as a decision.
 			- Declined because the reference cannot implement it: a derive-based decoder needs a proc-macro, which is a second crate, and one file per binding with no dependencies is what the product is. Hand-written reflection instead gives each binding its own machinery with nothing to mirror - the parity rule inverted.

@@ -280,7 +280,7 @@ def format_float(v):
 
 
 class _Element:
-	__slots__ = ("text", "quoted")   # text: quote-stripped, escapes NOT applied
+	__slots__ = ("text", "quoted")   # text: quote-stripped, escapes NOT applied (names differ - see _scan_path_ex)
 	# Declared, not assigned - __slots__ forbids class attributes. The point is
 	# the type gate: without a type here every field is Any and the checker has
 	# nothing to check.
@@ -945,7 +945,10 @@ def _scan_path_ex(inp, stars):
 			pos = skip_ws(pos + 1)
 		if star and selector is not None:
 			raise _PathError("selector on a name wildcard")
-		segments.append(_Segment(_fold_name(name), name, selector, star))
+		# Names resolve escapes, the same rule values follow when they are
+		# compared: two spellings of one name are one name. name_src keeps the
+		# source spelling, which is what authored_name hands back.
+		segments.append(_Segment(_fold_name(_apply_escapes(name)), name, selector, star))
 		if pos >= n:
 			return segments, None
 		c = chars[pos]
@@ -1902,10 +1905,10 @@ class Document:
 	def authored_name(self, path):
 		"""The field name at a path exactly as the author spelled it (case
 		unfolded, outer quotes stripped), so a message can echo `SYMBOLS` when
-		the file said SYMBOLS. Escape sequences stay as written: names carry
-		their escaped spelling everywhere - stored, compared, emitted, and in
-		paths() - so resolving them here alone would hand back a string that no
-		longer names the node. Resolution mirrors line(): empty when the path
+		the file said SYMBOLS. Escape sequences stay as written too: a name is
+		stored, compared and emitted with its escapes RESOLVED, so this is the
+		one call that hands the source spelling back - which is what an
+		as-authored accessor is for. Resolution mirrors line(): empty when the path
 		does not resolve to exactly one node. Merged instances keep the first
 		binding's spelling; a writer-built node keeps the spelling the setter's
 		path used."""
@@ -2010,12 +2013,15 @@ class Document:
 			if seg.star:
 				return (WriteReason.Wildcard, None)
 			sel = seg.selector
-			# A newline has no one-line spelling, so the emitted binding would
-			# split across two lines and reparse as neither. generate already
-			# refuses these paths; the writer has to as well, and before any node
-			# is created - the reload loses nothing it can count, so the save gate
-			# would not catch it either.
-			if "\n" in seg.name or (sel is not None and sel[0] == "val" and "\n" in sel[1]):
+			# A newline in a SELECTOR has no one-line spelling, so the emitted
+			# binding would split across two lines and reparse as neither. The
+			# selector stores its path text raw and the value emitter never
+			# escapes a line break, so nothing downstream can rescue it - and the
+			# reload loses nothing it can count, so the save gate would not catch
+			# it. A newline in a NAME is fine: names are stored escape-resolved
+			# and emitted through the name escaper, which spells a line break \n
+			# and reads it back as one.
+			if sel is not None and sel[0] == "val" and "\n" in sel[1]:
 				return (WriteReason.BadPath, None)
 			if sel is not None and sel[0] == "wild":
 				return (WriteReason.Wildcard, None)
@@ -2958,12 +2964,35 @@ class StatusError(Exception):
 		super().__init__(status.name)
 
 
-def _emit_name(name):
+def _escape_name(name):
+	"""Emit a stored (escape-resolved) name in a spelling that reads back as the
+	same name: bare when it can be, else quoted with the escapes _apply_escapes
+	undoes. This is a true inverse of the name parse, which _quote_text is not -
+	that one picks a quote style to AVOID escaping and never escapes a
+	backslash, which is right for a value (stored in its escaped spelling) and
+	wrong for a name (stored resolved)."""
 	# set(name) and the difference are both C-level; the generator this replaced
 	# made one Python call per character of every name emitted.
 	if name and not set(name) - _BARE_NAME_CHARS:
 		return name
-	return _quote_text(name)
+	out = ['"']
+	for c in name:
+		if c == "\\":
+			out.append("\\\\")
+		elif c == '"':
+			out.append('\\"')
+		elif c == "\t":
+			out.append("\\t")
+		elif c == "\n":
+			out.append("\\n")
+		else:
+			out.append(c)
+	out.append('"')
+	return "".join(out)
+
+
+def _emit_name(name):
+	return _escape_name(name)
 
 
 def quote_segment(name):

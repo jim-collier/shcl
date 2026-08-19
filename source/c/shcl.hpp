@@ -219,9 +219,9 @@ public:
 	bool exists(std::string_view p) const { return shcl_exists(d_, p.data(), p.size()) != 0; }
 
 	// The field name at a path exactly as the author spelled it (case
-	// unfolded, outer quotes stripped - escape sequences stay as written, the
-	// way every other name operation treats them); empty when the path does
-	// not resolve to exactly one node.
+	// unfolded, outer quotes stripped - escape sequences stay as written too,
+	// where every other name operation sees them resolved); empty when the path
+	// does not resolve to exactly one node.
 	std::string authored_name(std::string_view p) const { return to_str(shcl_authored_name(d_, p.data(), p.size())); }
 
 	// The plural line(): 1-based source lines at a path, in file order, so a
@@ -261,15 +261,12 @@ public:
 		char buf[64]; std::size_t k = shcl_datetime_str(&r.value, buf);
 		return {std::string(buf, k), st(r.status)};
 	}
-	// This pair is spelled backwards against the rest of the api - "raw" means
-	// the text exactly as written everywhere else, and read_datetime returns
-	// the parsed value in every other binding. Both are retired at the next
-	// major, when read_datetime becomes the structured read and
-	// read_datetime_str stays the textual one. Prefer those two now.
-	Read<std::string> read_datetime(std::string_view p) const { return read_datetime_str(p); }
-	// Structured datetime, if the caller wants the parsed fields. Owning
+	// Structured datetime, matching read_datetime in every other binding. Owning
 	// (unlike the core's shcl_read_datetime), so it may outlive the Document.
-	Read<Datetime> read_datetime_raw(std::string_view p) const { auto r = shcl_read_datetime(d_, p.data(), p.size()); return {Datetime(r.value), st(r.status)}; }
+	// This used to be spelled read_datetime_raw, with read_datetime returning
+	// the text - backwards twice over, since "raw" means the text exactly as
+	// written everywhere else. Both old spellings are gone as of this major.
+	Read<Datetime> read_datetime(std::string_view p) const { auto r = shcl_read_datetime(d_, p.data(), p.size()); return {Datetime(r.value), st(r.status)}; }
 
 	// Array reads carry the per-slot statuses in .slots, so a partly-resolved
 	// array says which slots failed rather than only that the read did.
@@ -285,7 +282,7 @@ public:
 		std::vector<std::string> v; v.reserve(r.n); for (std::size_t i = 0; i < r.n; i++) v.push_back(to_str(r.values[i]));
 		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
 	}
-	// Datetimes as their textual form, matching read_datetime; the owning
+	// Datetimes as their textual form, matching read_datetime_str; the owning
 	// Datetime form is per-element and stays on the scalar read.
 	Read<std::vector<std::string>> read_datetime_array(std::string_view p) const {
 		auto r = shcl_read_datetime_array(d_, p.data(), p.size());

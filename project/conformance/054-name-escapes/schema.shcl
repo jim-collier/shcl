@@ -1,0 +1,10 @@
+field: "\"a\\\"b\""
+	type: int
+field: "\"tab\\there\""
+	type: int
+field: "\"back\\\\slash\""
+	type: int
+field: "\"it's\""
+	type: int
+field: "sect.\"x\\\"y\""
+	type: int

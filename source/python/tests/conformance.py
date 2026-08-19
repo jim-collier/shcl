@@ -545,12 +545,13 @@ def main():
 		("a[#5].b", shcl.WriteReason.NoSuchIndex),
 		("nope[#0].b", shcl.WriteReason.NoSuchIndex),
 		(".".join(["d"] * 513), shcl.WriteReason.TooDeep),
-		# A literal line break in a segment: the binding would emit across two
-		# lines and reparse as neither. The escaped spelling is a different path
-		# and writes fine. Not corpus-pinnable - an ops line cannot carry a raw
-		# newline.
-		('"x\ny".b', shcl.WriteReason.BadPath),
+		# A literal line break in a SELECTOR: the binding would emit across two
+		# lines and reparse as neither, and the value emitter never escapes one.
+		# In a NAME it is writable - names emit through the name escaper, which
+		# spells a line break \n, so the escaped and literal spellings are one
+		# path now. Not corpus-pinnable - an ops line cannot carry a raw newline.
 		('a["p\nq"].b', shcl.WriteReason.BadPath),
+		('"x\ny".b', shcl.WriteReason.Writable),
 		('"x\\ny".b', shcl.WriteReason.Writable),
 	):
 		got = wdoc.write_reason(wpath)
@@ -617,11 +618,19 @@ def main():
 		raise SystemExit("set_int NewTop.n failed")
 	if sdoc2.authored_name("newtop") != "NewTop":
 		raise SystemExit("authored_name(newtop) got {}".format(sdoc2.authored_name("newtop")))
-	# Escapes are NOT resolved: a name is stored, compared and emitted in its
-	# escaped spelling, so resolving here would name a node that does not exist.
+	# Escapes ARE resolved on a name, so both spellings of the path find the same
+	# node - while authored_name still hands back the source spelling, which is
+	# the one thing it is for. Same fixture in every runner.
 	sdoc3 = shcl.Document.parse('"Ab\\tCd": 2\n')
 	if sdoc3.authored_name('"ab\\tcd"') != "Ab\\tCd":
 		raise SystemExit("authored_name escaped got {!r}".format(sdoc3.authored_name('"ab\\tcd"')))
+	if sdoc3.authored_name('"ab\tcd"') != "Ab\\tCd":
+		raise SystemExit("authored_name via the literal spelling got {!r}".format(sdoc3.authored_name('"ab\tcd"')))
+	if sdoc3.read_int('"ab\tcd"').value != 2:
+		raise SystemExit("read via the literal spelling failed")
+	# Canonical output folds the case, as it always has, and escapes the tab.
+	if sdoc3.to_canonical() != '"ab\\tcd": 2\n':
+		raise SystemExit("canonical name spelling got {!r}".format(sdoc3.to_canonical()))
 	# load_file/save_file: the status separates absent / unreadable / parsed
 	# with errors / clean, and a save round-trips through the atomic write.
 	# Same fixture in every runner.

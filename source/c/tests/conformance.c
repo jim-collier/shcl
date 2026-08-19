@@ -584,13 +584,22 @@ int main(int argc, char **argv) {
 		sn = shcl_authored_name(nd, "newtop", 6);
 		if (sn.n != 6 || memcmp(sn.p, "NewTop", 6) != 0) fail("authored_name", "newtop spelling mismatch");
 		shcl_free(nd);
-		// Escapes are NOT resolved: a name is stored, compared and emitted in
-		// its escaped spelling, so resolving here would name a node that does
-		// not exist.
+		// Escapes ARE resolved on a name, so both spellings of the path find the
+		// same node - while shcl_authored_name still hands back the source
+		// spelling, which is the one thing it is for. Same fixture everywhere.
 		const char *et = "\"Ab\\tCd\": 2\n";
 		shcl_doc *ed = shcl_parse(et, strlen(et));
 		sn = shcl_authored_name(ed, "\"ab\\tcd\"", 8);
 		if (sn.n != 6 || memcmp(sn.p, "Ab\\tCd", 6) != 0) fail("authored_name", "escaped spelling mismatch");
+		sn = shcl_authored_name(ed, "\"ab\tcd\"", 7); // a real tab: one byte shorter than the escaped spelling
+		if (sn.n != 6 || memcmp(sn.p, "Ab\\tCd", 6) != 0) fail("authored_name", "literal spelling mismatch");
+		if (shcl_read_int(ed, "\"ab\tcd\"", 7).value != 2) fail("authored_name", "read via the literal spelling failed");
+		{
+			// Canonical output folds the case, as it always has, and escapes the tab.
+			const char *ec = "\"ab\\tcd\": 2\n";
+			shcl_str cn = shcl_to_canonical(ed);
+			if (cn.n != strlen(ec) || memcmp(cn.p, ec, cn.n) != 0) fail("authored_name", "canonical name spelling moved");
+		}
 		shcl_free(ed);
 	}
 	// The get-tier value survives only on Good; Empty/BadType/NotFound all fall
@@ -703,12 +712,13 @@ int main(int argc, char **argv) {
 			for (size_t i = 0; i < 513; i++) { if (i) deep[dn++] = '.'; deep[dn++] = 'd'; }
 			if (shcl_write_reason_(wd, deep, dn) != SHCL_W_TOO_DEEP) fail("write_reason", "513 segments not too deep");
 		}
-		// A literal line break in a segment: the binding would emit across two
-		// lines and reparse as neither. The escaped spelling is a different path
-		// and writes fine. Not corpus-pinnable - an ops line cannot carry a raw
-		// newline.
-		if (shcl_write_reason_(wd, "\"x\ny\".b", 7) != SHCL_W_BAD_PATH) fail("write_reason", "newline in name not flagged");
+		// A literal line break in a SELECTOR: the binding would emit across two
+		// lines and reparse as neither, and the value emitter never escapes one.
+		// In a NAME it is writable - names emit through the name escaper, which
+		// spells a line break \n, so the escaped and literal spellings are one
+		// path now. Not corpus-pinnable - an ops line cannot carry a raw newline.
 		if (shcl_write_reason_(wd, "a[\"p\nq\"].b", 10) != SHCL_W_BAD_PATH) fail("write_reason", "newline in selector not flagged");
+		if (shcl_write_reason_(wd, "\"x\ny\".b", 7) != SHCL_W_WRITABLE) fail("write_reason", "newline in name not writable");
 		if (shcl_write_reason_(wd, "\"x\\ny\".b", 8) != SHCL_W_WRITABLE) fail("write_reason", "escaped newline not writable");
 		// The probe never creates: the doc is unchanged after all of the above.
 		if (shcl_count(wd, "a", 1) != 1) fail("write_reason", "probe created nodes");

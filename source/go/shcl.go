@@ -395,7 +395,7 @@ func FormatFloat(v float64) string {
 // merge when (name, value) matches; empty values merge into the wrapper node.
 
 type element struct {
-	text   string // quote-stripped, escapes NOT applied (applied on string read)
+	text   string // quote-stripped, escapes NOT applied (applied on string read; names differ - see scanPathEx)
 	quoted bool
 }
 
@@ -1078,7 +1078,10 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 		if star && sel != nil {
 			return pathScan{}, errors.New("selector on a name wildcard")
 		}
-		segments = append(segments, segment{name: asciiLower(name), nameSrc: name, sel: sel, star: star})
+		// Names resolve escapes, the same rule values follow when they are
+		// compared: two spellings of one name are one name. nameSrc keeps the
+		// source spelling, which is what AuthoredName hands back.
+		segments = append(segments, segment{name: asciiLower(applyEscapes(name)), nameSrc: name, sel: sel, star: star})
 		if pos >= len(input) {
 			return pathScan{segments: segments}, nil
 		}
@@ -2026,7 +2029,13 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 	}
 }
 
-func emitName(name string) string {
+// escapeName emits a stored (escape-resolved) name in a spelling that reads
+// back as the same name: bare when it can be, else quoted with the escapes
+// applyEscapes undoes. This is a true inverse of the name parse, which quoteText
+// is not - that one picks a quote style to AVOID escaping and never escapes a
+// backslash, which is right for a value (stored in its escaped spelling) and
+// wrong for a name (stored resolved).
+func escapeName(name string) string {
 	if name != "" {
 		bare := true
 		for _, c := range name {
@@ -2039,7 +2048,28 @@ func emitName(name string) string {
 			return name
 		}
 	}
-	return quoteText(name)
+	var out strings.Builder
+	out.WriteByte('"')
+	for i := 0; i < len(name); i++ {
+		switch name[i] {
+		case '\\':
+			out.WriteString(`\\`)
+		case '"':
+			out.WriteString(`\"`)
+		case '\t':
+			out.WriteString(`\t`)
+		case '\n':
+			out.WriteString(`\n`)
+		default:
+			out.WriteByte(name[i])
+		}
+	}
+	out.WriteByte('"')
+	return out.String()
+}
+
+func emitName(name string) string {
+	return escapeName(name)
 }
 
 // QuoteSegment quotes one path segment so it can be spliced into a lookup
@@ -2690,10 +2720,10 @@ func (d *Document) Line(path string) int {
 
 // AuthoredName is the field name at a path exactly as the author spelled it
 // (case unfolded, outer quotes stripped), so a message can echo `SYMBOLS` when
-// the file said SYMBOLS. Escape sequences stay as written: names carry their
-// escaped spelling everywhere - stored, compared, emitted, and in Paths() - so
-// resolving them here alone would hand back a string that no longer names the
-// node. Resolution mirrors Line(): empty when the path does not resolve to
+// the file said SYMBOLS. Escape sequences stay as written too: a name is
+// stored, compared and emitted with its escapes RESOLVED, so this is the one
+// call that hands the source spelling back - which is what an as-authored
+// accessor is for. Resolution mirrors Line(): empty when the path does not resolve to
 // exactly one node. Merged instances keep the first binding's spelling; a
 // writer-built node keeps the spelling the setter's path used.
 func (d *Document) AuthoredName(path string) string {
@@ -2924,12 +2954,15 @@ func (d *Document) probeWrite(scan pathScan) (WriteReason, []int) {
 		if seg.star {
 			return Wildcard, nil
 		}
-		// A newline has no one-line spelling, so the emitted binding would split
-		// across two lines and reparse as neither. Generate already refuses these
-		// paths; the writer has to as well, and before any node is created - the
-		// reload loses nothing it can count, so the save gate would not catch it.
-		if strings.Contains(seg.name, "\n") ||
-			(seg.sel != nil && seg.sel.kind == selByValue && strings.Contains(seg.sel.value, "\n")) {
+		// A newline in a SELECTOR has no one-line spelling, so the emitted
+		// binding would split across two lines and reparse as neither. The
+		// selector stores its path text raw and the value emitter never escapes
+		// a line break, so nothing downstream can rescue it - and the reload
+		// loses nothing it can count, so the save gate would not catch it. A
+		// newline in a NAME is fine: names are stored escape-resolved and
+		// emitted through the name escaper, which spells a line break \n and
+		// reads it back as one.
+		if seg.sel != nil && seg.sel.kind == selByValue && strings.Contains(seg.sel.value, "\n") {
 			return BadPath, nil
 		}
 		switch {
