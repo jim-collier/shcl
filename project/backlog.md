@@ -114,10 +114,12 @@ None open.
 
 	- **CI/CD**:
 
-		- 🔘 Code Review 20260819 item 1: the pipeline never refreshes from the remote before it runs.
+		- ✅ Code Review 20260819 item 1: the pipeline never refreshes from the remote before it runs.
 			- The only pull happens inside the publish stage, after build and tests. Anything merged upstream in the meantime gets pushed without the pipeline having seen it.
 			- Wanted: a sync step ahead of stage 1 that fetches, fast-forwards when only behind, and stops early when the branches have diverged. Offline or no upstream should warn and carry on. Needs a flag to skip it.
 			- Publish keeps its own pull either way, as a second guard.
+			- Done: a sync stage ahead of the format stage. Fast-forwards when only behind, wrapping a dirty tree in a stash; stops the run when the branch and its upstream have both moved; warns and carries on when offline, untracked, or on a detached head. `--no-sync` skips it, and `--ci` turns it off since the runner already has the exact commit.
+			- A stash pop that conflicts now stops the run rather than letting the build proceed over conflict markers. Git keeps the entry, so the work is recoverable.
 
 		- 🔘 Code Review 20260819 item 2: Windows executables carry no icon and no file metadata.
 			- Nothing in the repo embeds a resource, and there is no icon file to embed. The cross-built exe gets the generic shell icon, and its properties panel is blank where a version, description and copyright belong.
@@ -127,18 +129,24 @@ None open.
 			- Two machines building the same tag should produce the same checksum. Never attempted, never measured, so it is unknown whether the build is already close.
 			- Worth assessing before promising anything: if it holds, say so in README.md, since the release already publishes signed checksums and that is what a reader would want to check against.
 
-		- 🔘 Code Review 20260819 item 4: no runner for the latest build.
+		- ✅ Code Review 20260819 item 4: no runner for the latest build.
 			- A sister project keeps a script that copies the newest release build somewhere off `PATH` under a timestamped name, ages out the copies nothing is using, and launches the newest with arguments passed through. The dogfood stage covers the installed copy only.
 			- One cross-platform PowerShell script is enough.
+			- Done: `cicd/utility/n8runshcl.ps1`. Stamps a dated copy of the release build into `cicd/artifacts/runbuilds/`, well off PATH, and launches it with every argument passed through. `-ListCopies` reports what is staged, `-NoLaunch` just stages and prints the path, `-Keep` sets how many to retain.
+			- The stamp comes from the build's own timestamp, so running twice against one build reuses its copy instead of piling up duplicates.
+			- Aged-out copies are removed only when nothing is running them - checked by an exclusive open on Windows and by which image each process was started from elsewhere.
 
 		- 🔘 Code Review 20260819 item 5: no advisory gate, and Go is linted by `go vet` alone.
 			- Nothing runs cargo-deny, cargo-audit, govulncheck or pip-audit. Nothing would report a toolchain advisory.
 			- Small surface, not an empty one: the libraries are dependency-free by design, but the profiler chain, the Go standard library version and the pinned toolchain are all real.
 			- `staticcheck` is expected of Go and is not wired in, though it has been run by hand and was clean.
 
-		- 🔘 Code Review 20260819 item 6: the gate is not wired to a pre-push hook.
+		- ✅ Code Review 20260819 item 6: the gate is not wired to a pre-push hook.
 			- `--ci` already is the gate. Nothing runs it automatically, so the only automatic check happens after a push, in the hosted workflow.
 			- A hook would catch it before the push instead.
+			- Done: `cicd/hooks/pre-push`, enabled by pointing `core.hooksPath` at `cicd/hooks`. `install-dev.bash` sets it up.
+			- It only runs the gate when the push would move `main` or `dev`; feature branches push without waiting. It leaves out the large-document stage, which the hosted workflow still covers.
+			- `git push --no-verify` overrides it.
 
 		- ✋ Code Review 20260819 item 7: no BSD package.
 			- Listed among the packaging targets and never built. README.md is straight about it, so nothing overpromises.
