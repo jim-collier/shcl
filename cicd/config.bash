@@ -101,6 +101,14 @@ SHELLCHECK_TARGETS=(
 ## Stage 4: tests. cargo test runs the conformance corpus (project/conformance/)
 ## plus the deterministic fuzz smoke; the env var raises the fuzz iteration count
 ## well past the quick in-editor default.
+##
+## 20k is the gate, not the ceiling. Two real defects sat past it and surfaced
+## only at 200k, so run a deep soak before a release cut:
+##     SHCL_FUZZ_ITERS=200000 cargo test --manifest-path source/rust/Cargo.toml \
+##         --test fuzz_smoke
+## It costs about 45 seconds. Raise this number to 200000 once the two fixpoint
+## bugs it found are fixed - until then the gate would be red for known reasons,
+## which is worse than a gate that runs shallow.
 TEST_CMD=(env SHCL_FUZZ_ITERS=20000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 TEST_EXTRA=(
 	'go -C source/go test ./...'
@@ -159,6 +167,15 @@ CROSS_TARGETS=(
 	"Linux ARM64 (zig)|linux-arm64|source/rust/target/aarch64-unknown-linux-gnu/release/${EXE_NAME}|cargo zigbuild --release -j \${CPU_CAP} --manifest-path ${MANIFEST} --target aarch64-unknown-linux-gnu"
 	"Windows ARM64 (zig)|windows-arm64|source/rust/target/aarch64-pc-windows-gnullvm/release/${EXE_NAME}.exe|cargo zigbuild --release -j \${CPU_CAP} --manifest-path ${MANIFEST} --target aarch64-pc-windows-gnullvm"
 )
+## Cross-compile checks that ship nothing: they exist so the non-Rust bindings'
+## platform branches are compiled somewhere. The C header's Windows path had
+## never been built here, which is how a regression in it reached dev. Same
+## "label|command" shape as CROSS_TARGETS, minus the artifact.
+CROSS_CHECKS=(
+	"C library + CLI for Windows x86_64 (mingw)|wbin=\"\$(mktemp -u)\".exe; x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/cmd/shcl/main.c -o \"\${wbin}\"; wrc=\$?; rm -f \"\${wbin}\"; ((wrc==0))"
+	"C library with file I/O compiled out|printf '#define SHCL_NO_FILE_IO\\n#define SHCL_IMPLEMENTATION\\n#include \"shcl.h\"\\n' | cc -x c -std=c11 -O2 -Wall -Wextra -Werror -Isource/c -c - -o /dev/null"
+)
+
 RELEASE_ARTIFACT_DIR="cicd/artifacts/release"   ## relative to repo root; gitignored
 
 ## Stage 6b: installer packages over the artifact dir (utility/package.bash):

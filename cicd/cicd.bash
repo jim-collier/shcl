@@ -163,7 +163,7 @@ if ((! quiet)); then
 	fEcho_Clean "Tests ..........: ${TEST_CMD[*]:-(none configured)}$( ((${#TEST_EXTRA[@]})) && echo "  (+ ${#TEST_EXTRA[@]} extra)" )  + crosscheck: ${#BINDING_CLIS[@]} binding(s)"
 	fEcho_Clean "Profiler .......: $( ((PROFILE_ENABLE)) && echo "${PROFILE_SECS}s run -> flamegraph SVG -> ${PROFILE_OUT_DIR}/" || echo '(skipped)')"
 	if ((${#RELEASE_NATIVE_CMD[@]})); then
-		fEcho_Clean "Release ........: native + ${#CROSS_TARGETS[@]} cross target(s) -> ${RELEASE_ARTIFACT_DIR}/"
+		fEcho_Clean "Release ........: native + ${#CROSS_TARGETS[@]} cross target(s) + ${#CROSS_CHECKS[@]} cross check(s) -> ${RELEASE_ARTIFACT_DIR}/"
 	else
 		fEcho_Clean "Release ........: (skipped)"
 	fi
@@ -345,6 +345,16 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 		[[ -f "${t_art}" ]] || fDie "missing artifact for ${t_label}: ${t_art}"
 		fEcho "OK: ${t_label}: ${t_art} ($(du -h "${t_art}" | cut -f1))"
 		built_arts+=("${t_osarch}|${t_art}")
+	done
+	## Cross-compile checks that produce no artifact: the other bindings' own
+	## platform branches. Without these the C header's Windows path is never
+	## compiled here at all, which is exactly how a build-breaking regression in
+	## it reached dev unnoticed.
+	for c in "${CROSS_CHECKS[@]}"; do
+		c_label="${c%%|*}"; c_cmd="${c#*|}"
+		fEcho "cross check: ${c_label}"
+		eval "${c_cmd}" || fDie "cross check failed: ${c_label}"
+		fEcho "OK: ${c_label}"
 	done
 	if [[ -n "${RELEASE_ARTIFACT_DIR:-}" ]]; then
 		ver="$(fVersion)"

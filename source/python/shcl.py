@@ -11,11 +11,48 @@ Structure deliberately mirrors the reference over Python idiom, so a fix there
 ports here by mechanical diff (parity over idiom - see style-guide.md).
 """
 
+# The type gate, turned on here rather than left at its default: without this the
+# checker skips every unannotated body, which in a module with no annotations is
+# the whole file - a gate that cannot fail. `assignment` stays off because the
+# structures mirrored from the reference are tagged tuples and index-or-None
+# locals, which read as type changes to a checker and are not; everything that
+# catches a real misuse (a None reaching an operator, a wrong argument, a bad
+# return) is live.
+# mypy: check-untyped-defs, disable-error-code="assignment"
+
 import math
 import os
 import stat
 from decimal import Decimal
 from enum import Enum
+
+# The public surface, stated rather than inferred: without this `from shcl
+# import *` hands out this module's own imports (math, os, stat, Decimal, Enum)
+# and its internal ROOT constant alongside the real API.
+__all__ = [
+	"Diagnostic",
+	"Document",
+	"FileStatus",
+	"LoadError",
+	"MAX_DEPTH",
+	"Read",
+	"SaveError",
+	"SaveFailed",
+	"SaveRefused",
+	"Severity",
+	"ShclDateTime",
+	"Status",
+	"StatusError",
+	"Strictness",
+	"WriteReason",
+	"format_float",
+	"generate",
+	"parse_datetime",
+	"quote_segment",
+	"suppress_declared_reopens",
+	"suppress_declared_repeats",
+	"write_file_atomic",
+]
 
 # ---------------------------------------------------------------------------
 # Public surface
@@ -244,6 +281,11 @@ def format_float(v):
 
 class _Element:
 	__slots__ = ("text", "quoted")   # text: quote-stripped, escapes NOT applied
+	# Declared, not assigned - __slots__ forbids class attributes. The point is
+	# the type gate: without a type here every field is Any and the checker has
+	# nothing to check.
+	text: str
+	quoted: bool
 
 	def __init__(self, text, quoted):
 		self.text = text
@@ -275,12 +317,21 @@ class _Pend:
 class _Value:
 	# kind: "empty" | "cell" (els) | "raw" (content/info/fence_char/fence_len)
 	__slots__ = ("kind", "els", "content", "info", "fence_char", "fence_len")
+	kind: str
+	els: list
+	content: str
+	info: str
+	fence_char: str
+	fence_len: int
 
 	def __init__(self, kind):
+		# Empty rather than None for the three the kind decides: the fields a kind
+		# does not use are never read, and starting them at their own empty value
+		# keeps every reader's type honest without a guard at each use.
 		self.kind = kind
-		self.els = None
-		self.content = None
-		self.info = None
+		self.els = []
+		self.content = ""
+		self.info = ""
 		self.fence_char = None
 		self.fence_len = None
 
@@ -507,7 +558,7 @@ def _trim_end(s):
 def _split_ws(s):
 	# Like Rust split_whitespace: split on White_Space runs, no empty tokens.
 	out = []
-	cur = []
+	cur: list = []
 	for c in s:
 		if c in _WS_SET:
 			if cur:
@@ -920,11 +971,11 @@ class _Parser:
 		self.stack = [("", ROOT)]
 		# Per-node (name, value-key) -> first matching child, parallel to arena.
 		# Pure lookup accelerator for _select_or_create; children keeps the order.
-		self.child_map = [{}]
+		self.child_map: list = [{}]
 		# Per-node (name, display) -> first matching child: the `[value]` selector
 		# accelerator (its predicate is display(), a different and non-injective
 		# key from child_map's). Same first-wins discipline, same mutation sites.
-		self.disp_map = [{}]
+		self.disp_map: list = [{}]
 		# Whole-line comments waiting for the next line that binds a node. The
 		# source indent is kept only to decide after-attachment (a comment
 		# deeper than the next binding hangs on the block it sits in).
@@ -998,7 +1049,7 @@ class _Parser:
 		while stack:
 			parent = stack.pop()
 			kids = self.arena[parent].children
-			first = {}
+			first: dict = {}
 			keep = []
 			for c in kids:
 				key = (self.arena[c].name, self.arena[c].value.key())
@@ -1191,13 +1242,13 @@ class _Parser:
 		for ln in content:
 			if not _trim(ln):
 				continue
-			lead = []
+			lead_chars: list = []
 			for c in ln:
 				if c == " " or c == "\t":
-					lead.append(c)
+					lead_chars.append(c)
 				else:
 					break
-			lead = "".join(lead)
+			lead = "".join(lead_chars)
 			if common is None:
 				common = lead
 			else:
@@ -1292,8 +1343,8 @@ class _Parser:
 		for parent in range(len(self.arena)):
 			# Group by name in first-appearance order: hint order must be
 			# deterministic or the cross-binding check can't compare `check` output.
-			by_name = []
-			group_of = {}
+			by_name: list = []
+			group_of: dict = {}
 			for c in self.arena[parent].children:
 				name = self.arena[c].name
 				g = group_of.get(name)
@@ -1610,8 +1661,8 @@ class Document:
 		text is never rewritten."""
 		# Explicit stack, children pushed in reverse: the reference handles depths
 		# far past Python's recursion limit, so emit must not recurse.
-		out = []
-		stack = []
+		out: list = []
+		stack: list = []
 		self._emit_children(self.arena[ROOT].children, 0, stack)
 		while stack:
 			idx, depth, would_merge = stack.pop()
@@ -2007,7 +2058,7 @@ class Document:
 			segments, value_text = _scan_lookup(path)
 		except _PathError:
 			return None
-		trail = []
+		trail: list = []
 		if self._probe_write(segments, value_text, trail)[0] != WriteReason.Writable:
 			return None
 		cur = ROOT
@@ -2272,7 +2323,7 @@ class Document:
 		over_kids = list(over.arena[over_parent].children)
 		# Over side: name -> node bucket, in first-appearance order.
 		order = []
-		groups = {}
+		groups: dict = {}
 		for k in over_kids:
 			n = over.arena[k].name
 			g = groups.get(n)
@@ -2284,8 +2335,8 @@ class Document:
 		# Base side, one pass: does the name have a container instance, and
 		# which child carries each (name, key) - every key computed once.
 		base_kids = list(self.arena[base_parent].children)
-		has_container = {}
-		by_key = {}
+		has_container: dict = {}
+		by_key: dict = {}
 		for b in base_kids:
 			name = self.arena[b].name
 			has_container[name] = has_container.get(name, False) or bool(self.arena[b].children)
@@ -2367,7 +2418,7 @@ class Document:
 		# Copy the value too - sharing the object (and its element list) with
 		# `over` would break the promise that the clone survives its release.
 		cv = _Value(src.value.kind)
-		cv.els = None if src.value.els is None else [_Element(e.text, e.quoted) for e in src.value.els]
+		cv.els = [_Element(e.text, e.quoted) for e in src.value.els]
 		cv.content = src.value.content
 		cv.info = src.value.info
 		cv.fence_char = src.value.fence_char
@@ -2729,7 +2780,7 @@ class Document:
 	# stays derivable. Termination is structural: every mount descends at
 	# least one document level, and the document is finite.
 	def _v_check_from(self, c, sdef, start, anchor0, out, mounted):
-		ctxs = []
+		ctxs: list = []
 		self._v_contexts([start], c.segs, anchor0, ctxs)
 		for anchor, found in ctxs:
 			if c.required and not found:
@@ -2866,7 +2917,7 @@ class Document:
 		# Sibling names per parent chain, built once (schema order): _v_suggest
 		# used to rebuild every chain per unknown field, which bit hardest on
 		# the wholesale-unmatched documents the feature exists for.
-		siblings = {}
+		siblings: dict = {}
 		# Paths with a `*` segment can't live in the exact-chain hash; they
 		# match element-wise (a star matches any one name, prefixes included).
 		star_pats = []
@@ -3714,7 +3765,7 @@ def _build_schema(schema):
 	kept even when faults are present - a broken key drops that key, a broken
 	field drops that field - so a caller can still check the document against
 	the surviving constraints."""
-	faults = []
+	faults: list = []
 	cons = []
 	frags = {}
 	paths_complete = True
@@ -4141,9 +4192,9 @@ def _expand_mounts(sdef):
 	schema order, each field's path and segments prefixed by its mount's. A
 	mount whose fragment is already expanding (a cycle) stops there and is
 	returned as (path, fragment name) for the trailing not-generated block."""
-	out = []
+	out: list = []
 	cuts = []
-	stack = []
+	stack: list = []
 
 	def go(lst, at):
 		for c in lst:
