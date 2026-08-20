@@ -112,6 +112,7 @@ SHELLCHECK_TARGETS=(
 	cicd/config.bash
 	cicd/utility/check-completions.bash
 	cicd/utility/check-wheel.bash
+	cicd/utility/comparison/compare.bash
 	cicd/utility/crosscheck.bash
 	cicd/utility/largedoc.bash
 	cicd/utility/lint-report.bash
