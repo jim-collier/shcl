@@ -52,6 +52,8 @@ TOOL_PINS=(
 	## Gating, and its findings move between releases, so CI installs this exact
 	## version rather than using whatever the runner image ships.
 	"shellcheck|0.11.0|shellcheck --version"
+	## Builds the python artifacts so check-wheel.bash can read what is in them.
+	"build|1.5.0|pyproject-build --version"
 	## Supply-chain trio. Findings move as advisory databases update, so pin them
 	## the same way and let the drift warning say when a result changed because
 	## the tool did.
@@ -97,6 +99,7 @@ LINT_EXTRA=(
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'cicd/utility/check-completions.bash'
+	'cicd/utility/check-wheel.bash'
 	'govulncheck -C source/go ./...'
 	'govulncheck -C source/go/cmd ./...'
 	'cargo deny --manifest-path source/rust/Cargo.toml --all-features check'
@@ -108,6 +111,7 @@ SHELLCHECK_TARGETS=(
 	cicd/cicd.bash
 	cicd/config.bash
 	cicd/utility/check-completions.bash
+	cicd/utility/check-wheel.bash
 	cicd/utility/crosscheck.bash
 	cicd/utility/largedoc.bash
 	cicd/utility/lint-report.bash
