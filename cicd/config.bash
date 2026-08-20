@@ -66,7 +66,7 @@ TOOL_PINS=(
 ## -Wall -Wextra -Werror compile is its quality gate, same spirit as clippy.
 BUILD_CMD=(cargo build -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 BUILD_EXTRA=(
-	'go -C source/go build -o shcl ./cmd/shcl'
+	'go -C source/go/cmd build -o ../shcl ./shcl'
 	'python3 -m py_compile source/python/shcl.py source/python/cmd/shcl/main.py source/python/tests/conformance.py'
 	'cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/cmd/shcl/main.c -o source/c/shcl -lm -s'
 )
@@ -86,7 +86,9 @@ BUILD_EXTRA=(
 LINT_CMD=(cargo clippy -j "${CPU_CAP}" --manifest-path "${MANIFEST}" --all-targets -- -D warnings)
 LINT_EXTRA=(
 	'go -C source/go vet ./...'
+	'go -C source/go/cmd vet ./...'
 	'( cd source/go && staticcheck ./... )'
+	'( cd source/go/cmd && staticcheck ./... )'
 	'( cd source/python && ruff check . )'
 	'( cd source/python && MYPYPATH=. mypy )'
 	'cppcheck --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
@@ -96,6 +98,7 @@ LINT_EXTRA=(
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'cicd/utility/check-completions.bash'
 	'govulncheck -C source/go ./...'
+	'govulncheck -C source/go/cmd ./...'
 	'cargo deny --manifest-path source/rust/Cargo.toml --all-features check'
 )
 ## n8git_backup-and-publish is excluded: SC1083 false-hits its legitimate git
@@ -131,6 +134,7 @@ SHELLCHECK_TARGETS=(
 TEST_CMD=(env SHCL_FUZZ_ITERS=200000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 TEST_EXTRA=(
 	'go -C source/go test ./...'
+	'go -C source/go/cmd test ./...'
 	'python3 source/python/tests/conformance.py'
 	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
 	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'

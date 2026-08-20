@@ -297,7 +297,7 @@ The responsibility is split rather than duplicate the pipeline:
 
 ### Go binding (Tier 2)
 
-- Module at `source/go/`: single-file library (`shcl.go`, zero dependencies, generics for the typed reads) plus the CLI under `cmd/shcl/` - same flags, output, and exit codes as the reference.
+- Module at `source/go/`: single-file library (`shcl.go`, zero dependencies, generics for the typed reads). The CLI under `cmd/shcl/` is its own module, so it stays out of the published one - same flags, output, and exit codes as the reference, but it exists to be driven by the differential check rather than installed.
 
 - Conformance runs natively as `go test` (a port of the Rust runner over the same corpus), so the Go binding is corpus-green on its own, and the cicd crosscheck holds it byte-for-byte to the reference besides.
 
