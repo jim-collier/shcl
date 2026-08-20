@@ -720,23 +720,39 @@ def main():
 		fback, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.Clean or fback.to_canonical() != fdoc.to_canonical():
 			raise SystemExit("save round-trip mismatch")
+		# Creating a file and overwriting one are two different code paths in
+		# the write - the create picks its own mode, the overwrite copies the
+		# target's, and the publish step differs by platform (windows goes
+		# through ReplaceFile, with a rename fallback). Both run everywhere: an
+		# overwrite used to throw outright on windows here, which no POSIX-only
+		# fixture could ever have caught. Same fixture in every runner.
+		fresh = os.path.join(td, "fresh.shcl")
+		ndoc = shcl.Document.parse("a: 1\n")
+		ndoc.save_file(fresh)
+		back, bst = shcl.Document.load_file(fresh)
+		if bst != shcl.FileStatus.Clean or back.to_canonical() != "a: 1\n":
+			raise SystemExit("new file did not round-trip")
+		ndoc.save_file(fresh)
+		back, bst = shcl.Document.load_file(fresh)
+		if bst != shcl.FileStatus.Clean or back.to_canonical() != "a: 1\n":
+			raise SystemExit("overwritten file did not round-trip")
+
 		# A new file lands where an ordinary create lands - 0666 narrowed by the
 		# umask - and an existing one keeps the mode it had. Neither is visible
-		# on stdout, so no corpus case can see either. Same fixture in every
-		# runner.
+		# on stdout, so no corpus case can see either, and neither is a windows
+		# concept, so the mode half is POSIX-only.
 		if os.name == "posix":
 			probe = os.path.join(td, "probe")
 			open(probe, "w").close()
 			want = os.stat(probe).st_mode & 0o777
-			fresh = os.path.join(td, "fresh.shcl")
-			ndoc = shcl.Document.parse("a: 1\n")
-			ndoc.save_file(fresh)
-			got = os.stat(fresh).st_mode & 0o777
+			born = os.path.join(td, "born.shcl")
+			ndoc.save_file(born)
+			got = os.stat(born).st_mode & 0o777
 			if got != want:
 				raise SystemExit(f"new file mode {got:o}, want {want:o}")
-			os.chmod(fresh, 0o640)
-			ndoc.save_file(fresh)
-			got = os.stat(fresh).st_mode & 0o777
+			os.chmod(born, 0o640)
+			ndoc.save_file(born)
+			got = os.stat(born).st_mode & 0o777
 			if got != 0o640:
 				raise SystemExit(f"existing file mode {got:o}, want 640")
 		# Content-malformed lines are retained as trivia (lost_count 0, the

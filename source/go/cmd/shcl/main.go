@@ -46,7 +46,8 @@ set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE
 persist with --write; given either, no ops are read from stdin. Raw blocks,
 set-only-if-absent and removal go in as a write-ops script on stdin, one op per
 line, tab-separated. FILE '-' follows stdin: the document when an option holds
-the edits, an empty base when the ops script has stdin instead. Ops:
+the edits, an empty base when the ops script has stdin instead. With --write,
+a FILE that does not exist yet is created. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -1024,8 +1025,19 @@ func doSet(o *opts) int {
 		}
 		layerTexts = append(layerTexts, t)
 	}
+	// --write names the file this command produces, so a FILE that is not there
+	// yet is a create and the edits land in a new document. Only under --write,
+	// and only when nothing is at the path at all: without --write there is
+	// nothing to create, and a file that exists but cannot be read is still an
+	// error rather than something to quietly write over.
+	creating := false
+	if o.write && file != "-" {
+		if _, serr := os.Stat(file); os.IsNotExist(serr) {
+			creating = true
+		}
+	}
 	base := ""
-	if file != "-" || len(o.sets) > 0 {
+	if !creating && (file != "-" || len(o.sets) > 0) {
 		t, err := readInput(file)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)

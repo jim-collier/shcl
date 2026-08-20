@@ -2149,10 +2149,76 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 		return Err(format!("{}: {}", file, e));
 	}
 	drop(f);
-	std::fs::rename(&tmp, &target).map_err(|e| {
+	publish_file(&tmp, &target).map_err(|e| {
 		let _ = std::fs::remove_file(&tmp);
 		format!("{}: {}", file, e)
-	})
+	})?;
+	sync_dir(dir);
+	Ok(())
+}
+
+/// Move the finished temp file over the target. On windows that means
+/// ReplaceFile rather than a rename: a rename publishes a brand-new file and
+/// leaves the destination's ACLs, attributes and named streams behind, which
+/// ReplaceFile carries onto the replacement instead. It needs the destination
+/// to exist, and it fails rather than skip a merge it cannot do (no WRITE_DAC,
+/// say), so a create and any failure fall back to the rename.
+fn publish_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+	#[cfg(windows)]
+	if target.exists() && windows_replace_file(tmp, target) {
+		return Ok(());
+	}
+	std::fs::rename(tmp, target)
+}
+
+#[cfg(windows)]
+fn windows_replace_file(tmp: &std::path::Path, target: &std::path::Path) -> bool {
+	use std::os::windows::ffi::OsStrExt;
+	const REPLACEFILE_WRITE_THROUGH: u32 = 0x1;
+	// Declared here rather than pulled from a crate: this file has no
+	// dependencies and is not about to grow one for six lines of FFI.
+	#[link(name = "kernel32")]
+	unsafe extern "system" {
+		fn ReplaceFileW(
+			replaced: *const u16,
+			replacement: *const u16,
+			backup: *const u16,
+			flags: u32,
+			exclude: *mut core::ffi::c_void,
+			reserved: *mut core::ffi::c_void,
+		) -> i32;
+	}
+	fn wide(p: &std::path::Path) -> Vec<u16> {
+		p.as_os_str()
+			.encode_wide()
+			.chain(std::iter::once(0))
+			.collect()
+	}
+	let (replaced, replacement) = (wide(target), wide(tmp));
+	unsafe {
+		ReplaceFileW(
+			replaced.as_ptr(),
+			replacement.as_ptr(),
+			std::ptr::null(),
+			REPLACEFILE_WRITE_THROUGH,
+			std::ptr::null_mut(),
+			std::ptr::null_mut(),
+		) != 0
+	}
+}
+
+/// fsync the directory a save published into. The fsync on the file only
+/// covered the file; the rename is a directory change, so without this a power
+/// cut right after a save can lose the publish and leave the old content. Best
+/// effort - windows has no directory fsync, and a filesystem that refuses one
+/// is not a reason to fail a write that already succeeded.
+fn sync_dir(dir: &std::path::Path) {
+	#[cfg(unix)]
+	if let Ok(d) = std::fs::File::open(dir) {
+		let _ = d.sync_all();
+	}
+	#[cfg(not(unix))]
+	let _ = dir;
 }
 
 /// The single H001 wording site: the hint builder and the schema suppressor

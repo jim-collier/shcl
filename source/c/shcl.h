@@ -4334,6 +4334,27 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 	extern char *realpath(const char *, char *);
 #endif
 
+#ifndef _WIN32
+// fsync the directory a save published into. The fsync on the file only covered
+// the file; the rename is a directory change, so without this a power cut right
+// after a save can lose the publish and leave the old content. Best effort - a
+// filesystem that refuses an fsync on a directory is not a reason to fail a
+// write that already succeeded.
+static void shcl_sync_dir(const char *target) {
+	const char *slash = strrchr(target, '/');
+	size_t n = slash ? (size_t)(slash - target) : 0;
+	char *dir = (char *)malloc(n + 2);
+	if (!dir) return;
+	if (!slash) { dir[0] = '.'; n = 1; }
+	else if (n == 0) { dir[0] = '/'; n = 1; }
+	else memcpy(dir, target, n);
+	dir[n] = '\0';
+	int dfd = open(dir, O_RDONLY);
+	if (dfd >= 0) { (void)fsync(dfd); close(dfd); }
+	free(dir);
+}
+#endif
+
 // The file tier's write mechanism (also what the CLI's --write uses): a temp
 // file in the same dir, then a rename over the target, so an interrupted write
 // can never truncate the config it rewrites. The data is synced before the
@@ -4393,10 +4414,18 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #endif
 	ok = (fclose(f) == 0) && ok;
 #ifdef _WIN32
-	// C rename() will not replace an existing file on Windows.
-	ok = ok && MoveFileExA(tmp, target, MOVEFILE_REPLACE_EXISTING);
+	// ReplaceFile carries the destination's ACLs, attributes and named streams
+	// onto the replacement; a move publishes a brand-new file and leaves all of
+	// it behind. It needs the destination to exist, and it fails rather than
+	// skip a merge it cannot do (no WRITE_DAC, say), so a create and any failure
+	// fall back to MoveFileEx - which is there regardless because C rename()
+	// will not replace an existing file on Windows at all.
+	ok = ok && ((GetFileAttributesA(target) != INVALID_FILE_ATTRIBUTES
+			&& ReplaceFileA(target, tmp, NULL, REPLACEFILE_WRITE_THROUGH, NULL, NULL))
+		|| MoveFileExA(tmp, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH));
 #else
 	ok = ok && rename(tmp, target) == 0;
+	if (ok) shcl_sync_dir(target);
 #endif
 	if (!ok) remove(tmp);
 	free(tmp);

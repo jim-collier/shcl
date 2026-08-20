@@ -3102,6 +3102,52 @@ class FileStatus(Enum):
 	Unreadable = 3   # exists but could not be read (permissions, a directory, bad encoding)
 
 
+def _publish_file(tmp, target):
+	# Move the finished temp file over the target. On windows that means
+	# ReplaceFile rather than a rename: a rename publishes a brand-new file and
+	# leaves the destination's ACLs, attributes and named streams behind, which
+	# ReplaceFile carries onto the replacement instead. It needs the destination
+	# to exist, and it fails rather than skip a merge it cannot do (no WRITE_DAC,
+	# say), so a create and any failure fall back to os.replace.
+	if os.name == "nt" and os.path.exists(target):
+		import ctypes
+
+		REPLACEFILE_WRITE_THROUGH = 0x1
+		# WinDLL exists only on windows, and mypy checks this file against the
+		# POSIX stubs, where the name is simply absent.
+		k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+		k32.ReplaceFileW.restype = ctypes.c_int
+		k32.ReplaceFileW.argtypes = [
+			ctypes.c_wchar_p,
+			ctypes.c_wchar_p,
+			ctypes.c_wchar_p,
+			ctypes.c_ulong,
+			ctypes.c_void_p,
+			ctypes.c_void_p,
+		]
+		if k32.ReplaceFileW(target, tmp, None, REPLACEFILE_WRITE_THROUGH, None, None):
+			return
+	os.replace(tmp, target)
+
+
+def _sync_dir(d):
+	# The rename is a directory change, and the fsync on the file only covered
+	# the file: without this a power cut right after a save can lose the publish
+	# and leave the old content. Best effort - windows has no directory fsync,
+	# and a filesystem that refuses one is not a reason to fail a write that
+	# already succeeded.
+	try:
+		fd = os.open(d, os.O_RDONLY)
+	except OSError:
+		return
+	try:
+		os.fsync(fd)
+	except OSError:
+		pass
+	finally:
+		os.close(fd)
+
+
 def write_file_atomic(file, data):
 	# The file tier's write mechanism (also what the CLI's --write uses): a
 	# temp file in the same dir, then a rename over the target,
@@ -3158,8 +3204,11 @@ def write_file_atomic(file, data):
 		try:
 			# On the handle, so umask cannot narrow it the way it narrows a
 			# create mode. Best effort: a filesystem that cannot carry the mode
-			# is not a reason to fail a write that otherwise succeeded.
-			if existing is not None:
+			# is not a reason to fail a write that otherwise succeeded. fchmod
+			# is POSIX-only, and so is the mode concept it copies - on windows
+			# the destination's attributes come across in the publish step
+			# instead, and calling it there would raise past this contract.
+			if existing is not None and hasattr(os, "fchmod"):
 				try:
 					os.fchmod(f.fileno(), stat.S_IMODE(existing.st_mode))
 				except OSError:
@@ -3176,13 +3225,14 @@ def write_file_atomic(file, data):
 			pass
 		return f"{file}: {e}"
 	try:
-		os.replace(tmp, target)
+		_publish_file(tmp, target)
 	except OSError as e:
 		try:
 			os.remove(tmp)
 		except OSError:
 			pass
 		return f"{file}: {e}"
+	_sync_dir(d)
 	return None
 
 

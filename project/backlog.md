@@ -84,6 +84,11 @@ None open.
 
 ### Features and enhancements
 
+- 🔘 Run the four runners on Windows in CI.
+	- The file tier now has real platform-specific code - the publish step differs by OS, and the create-versus-overwrite fixture in every runner was widened to exercise both paths on every platform. Nothing in the pipeline runs any of it on Windows, so the fixture only fires when someone loads the repo there by hand.
+	- The gap it would close is proven, not hypothetical: the Python binding threw on every Windows overwrite and no gate here could see it.
+	- Scope is one job, not a matrix: the four runners plus the file-tier fixtures. Rust, Go and Python need only their toolchains; C needs a compiler choice made. The cross stage already compiles the C and Go Windows paths, so this is about running them, not building them.
+
 - ✅ Test every binding against a document far larger than the corpus.
 	- Nothing in the pipeline parsed more than a few kilobytes: 56 corpus cases of a few hundred bytes each, and fuzz inputs smaller still. A parser going quadratic, or a buffer that only misbehaves past a few megabytes, had no gate at all - and this project has already shipped one buffer-growth defect that no small case could see.
 	- Done: `cicd/utility/largedoc.bash` generates a document (100 MiB by default, `LARGEDOC_MIB` in `config.bash`), formats it through all four bindings, and requires them to agree on the result byte for byte. It also holds each binding to a wall-clock and peak-RSS ceiling, checks that formatting is a fixpoint at that size, and reads back a 20000-element array whole.
@@ -627,6 +632,12 @@ None open.
 
 #### Done - Bugs
 
+- ✅ The Python binding threw outright when saving over an existing file on Windows.
+	- `os.fchmod` is POSIX-only, and the guard around the mode copy caught `OSError` - an `AttributeError` walks straight past it. So the whole call escaped `save_file`, which documents that it reports rather than throws. Only on the overwrite path, which is the common one.
+	- Found by reading the four write paths against each other after a question about how the file tier handles Windows and SELinux, not by a test - nothing here runs on Windows.
+	- Fixed by making the mode copy conditional on the function existing, which is the honest condition: the mode concept is POSIX's, and Windows now carries the destination's attributes across in the publish step instead.
+	- The runner fixture that missed it was POSIX-gated in all four bindings, because it asserts modes. Split so the create and the overwrite are exercised on **every** platform and only the mode assertions stay POSIX-only - the same fixture in all four, and it would have caught this.
+
 - ✅ Canonical output dropped the author's quoting on plain strings, in `fmt` and in `generate` defaults.
 	- From nano-git-db: a quoted `"fFoo()"` default came out bare in the starter file, so their function-ref convention read it back as a call - and one `fmt` pass did the same to a document (`"@null"` -> `@null`), un-escaping the sentinel the `quoted` read flag exists to protect. `emit_element` re-derived quoting from content alone.
 	- Done, all four bindings: a quoted element keeps its quotes unless the text reads as an int, float, bool, or datetime at standard strictness - those still normalize to bare (`ver: "8"` -> `ver: 8`). The clause only ever adds quoting over the reserved-character minimum, so no bare emit becomes unsafe (quoted thousands stay covered by the comma rule).
@@ -668,6 +679,17 @@ None open.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 
 #### Done - Features and enhancements
+
+- ✅ Windows saves go through `ReplaceFile`, and POSIX saves sync the directory.
+	- A move publishes a new file, so on Windows the destination's ACLs, attributes and named streams were left behind on every save. `ReplaceFile` exists for this exact step and carries them onto the replacement; it needs a destination and fails rather than skip a merge it cannot do, so a create or a failure falls back to the replacing move - never worse than before.
+	- All four bindings, none of them taking a dependency for it: the reference declares the one function it needs, C already had `windows.h`, Python goes through `ctypes`. Go could not, since `shcl.go` promises to work when copied out on its own and cannot name a windows-only symbol - so the publish step became a hook and a small windows-only file swaps it in. Compiled, vetted and staticchecked in the cross stage, which is the only place that sees `GOOS=windows` at all.
+	- Separately, the `fsync` on the file only ever promised the contents; the move is a directory change. All four now sync the directory after it, so a power cut cannot lose the publish and leave the old content. Best effort, POSIX-only, and confirmed by tracing all four.
+	- What still does not survive a save is written down rather than papered over - other hard links, POSIX ACLs, xattrs and SELinux labels among them. Spec and `design.md`.
+
+- ✅ `set --write` creates a FILE that does not exist yet.
+	- `--write` names the file the command produces, so refusing a missing one was an obstacle rather than a safeguard: the workaround was to `touch` it first, the same act with an extra step.
+	- Only `set --write`. `fmt --write` has nothing to format and still reports it missing, and a file that exists but cannot be read stays an error in both - the alternative is writing over something unread.
+	- All four CLIs, help text and man page moved together, and the four agree byte-for-byte on the create, both refusals and the unreadable case. Pinned in `crosscheck.bash` rather than a runner: this one **is** reachable from the CLI, and the tree compare covers the created file's mode as well.
 
 - ✅ A quoted by-value selector is scalar-only.
 	- From convert-base-v2, still open at v1.2.0: the scalar `"a, b"` and the list `a, b` met the same selector (display-form matching), so the read could only come back Multiple.
