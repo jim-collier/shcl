@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -856,6 +857,42 @@ func TestFileTierLoadSave(t *testing.T) {
 	}
 	if back.ToCanonical() != doc.ToCanonical() {
 		t.Errorf("save round-trip mismatch")
+	}
+
+	// A new file lands where an ordinary create lands - 0666 narrowed by the
+	// umask - and an existing one keeps the mode it had. Neither is visible on
+	// stdout, so no corpus case can see either. Same fixture in every runner.
+	if runtime.GOOS != "windows" {
+		modeOf := func(p string) os.FileMode {
+			st, serr := os.Stat(p)
+			if serr != nil {
+				t.Fatal(serr)
+			}
+			return st.Mode().Perm()
+		}
+		probe := dir + "/probe"
+		h, cerr := os.Create(probe)
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		h.Close()
+		fresh := dir + "/fresh.shcl"
+		fdoc := Parse("a: 1\n")
+		if serr := fdoc.SaveFile(fresh); serr != nil {
+			t.Fatal(serr)
+		}
+		if modeOf(fresh) != modeOf(probe) {
+			t.Errorf("new file: got mode %v, want %v", modeOf(fresh), modeOf(probe))
+		}
+		if cerr := os.Chmod(fresh, 0o640); cerr != nil {
+			t.Fatal(cerr)
+		}
+		if serr := fdoc.SaveFile(fresh); serr != nil {
+			t.Fatal(serr)
+		}
+		if modeOf(fresh) != 0o640 {
+			t.Errorf("existing file: got mode %v, want -rw-r-----", modeOf(fresh))
+		}
 	}
 }
 

@@ -3131,15 +3131,23 @@ def write_file_atomic(file, data):
 	# there - including a symlink someone else planted - must make this fail
 	# rather than be written through. Retry past a stale collision, then give
 	# up; refusing to write beats writing somewhere unintended.
+	# A file that already exists keeps its own mode, so its temp is born private
+	# and the real mode goes on below - the copy is never briefly readable to
+	# anyone the original was not. A file that does not exist yet has no mode to
+	# preserve, so it takes the one an ordinary create would: 0666 narrowed by
+	# the umask, like every other file the user's tools produce.
+	try:
+		existing = os.stat(target)
+	except OSError:
+		existing = None
+	born = 0o600 if existing is not None else 0o666
 	f = None
 	tmp = ""
 	last = ""
 	for attempt in range(8):
 		tmp = os.path.join(d, f".{base}.tmp{os.getpid()}.{attempt}")
 		try:
-			# Born private, so the copy is never briefly readable to anyone the
-			# original was not. The real mode goes on below, before any data.
-			fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+			fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, born)
 			f = os.fdopen(fd, "w", encoding="utf-8", newline="")
 			break
 		except OSError as e:
@@ -3151,10 +3159,11 @@ def write_file_atomic(file, data):
 			# On the handle, so umask cannot narrow it the way it narrows a
 			# create mode. Best effort: a filesystem that cannot carry the mode
 			# is not a reason to fail a write that otherwise succeeded.
-			try:
-				os.fchmod(f.fileno(), stat.S_IMODE(os.stat(target).st_mode))
-			except OSError:
-				pass
+			if existing is not None:
+				try:
+					os.fchmod(f.fileno(), stat.S_IMODE(existing.st_mode))
+				except OSError:
+					pass
 			f.write(data)
 			f.flush()
 			os.fsync(f.fileno())
