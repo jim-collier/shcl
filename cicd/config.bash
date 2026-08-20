@@ -93,6 +93,11 @@ LINT_EXTRA=(
 	'( cd source/go/cmd && staticcheck ./... )'
 	'( cd source/python && ruff check . )'
 	'( cd source/python && MYPYPATH=. mypy )'
+	## The comparison tool's rust half stays out of the gate - it is the one thing
+	## here with third-party crates, and the gate must not need crates.io. Its
+	## python half has no such problem: ruff never imports what it checks, so this
+	## costs nothing and the file is covered.
+	'ruff check cicd/utility/comparison/pyworker.py'
 	'cppcheck --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
 	'markdownlint-cli2'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'

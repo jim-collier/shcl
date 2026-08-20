@@ -257,7 +257,9 @@ The feature comparison on the front page says how SHCL differs from JSON, YAML, 
 
 Method, and why each part of it is the way it is:
 
-- **The language is held constant at Rust.** Every format is read by a mature native crate, built by the same compiler with the same flags. Measuring SHCL's C binding against a JSON parser in Python would compare implementations and call the answer a property of the formats.
+- **The language is held constant within a tier.** Every format in a tier is read by a library from that ecosystem, built the same way. Measuring SHCL's C binding against a JSON parser in Python would compare implementations and call the answer a property of the formats.
+
+- **Two tiers, never ranked against each other.** Rust is the headline, because there every format has a mature native parser and the comparison is as close to formats-only as it gets. Python then repeats the exercise over the same documents, to answer the question one tier cannot: how much of a format's cost is the format and how much is one implementation of it. Most of what Python reaches for is a C extension wearing a Python name - `json`, `ElementTree`, PyYAML's `CSafeLoader` - while this project's Python binding is pure Python, so the row that carries the weight there is `tomllib`, which is also pure Python. That pair is the tier's only like-for-like comparison, and every entry records which side of the line it is on. Python libraries that are not installed are skipped and named rather than failing the run.
 
 - **One abstract model per document, five encoders.** Each shape is built once as a small tree and then encoded five ways, so the files hold the same data by construction rather than by five hand-written generators happening to agree. Each encoding is the spelling a person would really use - SHCL raw blocks against YAML block scalars against XML CDATA - because a number taken from an unidiomatic encoding is not measuring the format.
 
@@ -277,11 +279,15 @@ Several choices deliberately cut against SHCL, so that a favorable result stays 
 
 - **The generated SHCL is canonical** - a `fmt` fixpoint - so the round-trip column reports what the format does rather than how the generator chose to space things.
 
+Rows are ordered by the geometric mean of each library's parse time across every shape, fastest first - one order used for every printed table and for the results file, so a row keeps its place from shape to shape. The geometric mean rather than the arithmetic one, so a single large shape cannot decide the whole order; the number it sorts on is recorded beside each library, so the ordering can be re-derived rather than trusted. SHCL sorts last in both tiers, which is the honest result and the reason the order is stated rather than chosen.
+
 Reading a value by path is deliberately not measured. The five lookup APIs differ enough that the harness would have to write the walk itself for most of them, and the result would be a measurement of harness code.
 
 It is not a pipeline gate. Benchmarks are noisy and slow, and a red build caused by a busy machine teaches nobody anything. It runs on demand, and its results accumulate in `results.shcl` - which is the tooling's storage format as well as its subject, written, pruned and read back through this repo's own library.
 
-What it found, at 64 MiB per shape: SHCL writes the smallest file of the five in three shapes of four, and the gap widens with nesting - half the size of JSON and of XML on deep structure. Gzipped, the five land within a tenth of each other, so the win is a plain-text one. SHCL is also the slowest to load, ten to seventeen times behind `serde_json`, and sits mid-pack on memory: heavier than the parsers that keep only data, lighter than the one other parser that keeps the file. That trade is the design working as intended rather than a defect, but the memory multiplier is a separate open item.
+One thing the tool found about a library rather than a format, worth stating so nobody re-derives it: `lxml` goes quadratic on the long-and-flat shape, dropping from 59 MiB/s at 3 MiB to 5.7 at 26 - measured with and without `huge_tree`, which makes no difference, so it is not the flag that lifts libxml2's size ceilings. The likely cause is the shape's millions of *distinct* element names against libxml2's name dictionary; the shapes whose names repeat show nothing of the sort, and no other library in either tier does this. It is a good argument for measuring more than one document shape.
+
+What it found, at 64 MiB per shape: SHCL writes the smallest file of the five in three shapes of four, and the gap widens with nesting - half the size of JSON and of XML on deep structure. Gzipped, the five land within a fifth of each other, so the win is a plain-text one. SHCL is also the slowest to load in both tiers, nine to seventeen times behind `serde_json`, and sits mid-pack on memory: heavier than the parsers that keep only data, lighter than the one other parser that keeps the file. The Python tier says that cost is the format's rather than one implementation's - against `tomllib`, the tier's one other pure-Python parser, SHCL lands 3.7x behind, against 3.5x behind `toml` in Rust. That trade is the design working as intended rather than a defect, but the memory multiplier is a separate open item.
 
 ### CI/CD
 
