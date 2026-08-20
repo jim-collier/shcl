@@ -685,31 +685,50 @@ int main(int argc, char **argv) {
 		shcl_str c1 = shcl_to_canonical(fd), c2 = shcl_to_canonical(fb);
 		if (fst != SHCL_FILE_CLEAN || c1.n != c2.n || memcmp(c1.p, c2.p, c1.n) != 0) fail("file_tier", "save round-trip mismatch");
 		shcl_free(fb); shcl_free(fd);
-		// A new file lands where an ordinary create lands - 0666 narrowed by
-		// the umask - and an existing one keeps the mode it had. Neither is
-		// visible on stdout, so no corpus case can see either. Same fixture in
+		// Creating a file and overwriting one are two different code paths in
+		// the write - the create picks its own mode, the overwrite copies the
+		// target's, and the publish step differs by platform (windows goes
+		// through ReplaceFile, with a rename fallback). Both run everywhere: an
+		// overwrite used to throw outright on windows in the python binding,
+		// which no POSIX-only fixture could ever have caught. Same fixture in
 		// every runner.
-#ifndef _WIN32
 		{
-			char probe[176], fresh[176];
-			snprintf(probe, sizeof probe, "%s/probe", tdir);
+			char fresh[176];
 			snprintf(fresh, sizeof fresh, "%s/fresh.shcl", tdir);
-			FILE *pf = fopen(probe, "wb");
-			if (!pf || fclose(pf) != 0) fail("file_tier", "probe create failed");
-			struct stat ps, ns;
-			if (stat(probe, &ps) != 0) fail("file_tier", "probe stat failed");
 			shcl_doc *nd = shcl_parse("a: 1\n", 5);
-			if (shcl_save_file(nd, fresh) != SHCL_SAVE_OK) fail("file_tier", "new file save failed");
-			if (stat(fresh, &ns) != 0) fail("file_tier", "new file stat failed");
-			if ((ns.st_mode & 0777) != (ps.st_mode & 0777)) fail("file_tier", "new file mode");
-			if (chmod(fresh, 0640) != 0) fail("file_tier", "chmod failed");
-			if (shcl_save_file(nd, fresh) != SHCL_SAVE_OK) fail("file_tier", "existing file save failed");
-			if (stat(fresh, &ns) != 0) fail("file_tier", "existing file stat failed");
-			if ((ns.st_mode & 0777) != 0640) fail("file_tier", "existing file mode");
-			shcl_free(nd);
-			remove(probe); remove(fresh);
-		}
+			for (int pass = 0; pass < 2; pass++) {
+				if (shcl_save_file(nd, fresh) != SHCL_SAVE_OK) fail("file_tier", pass ? "overwrite save failed" : "new file save failed");
+				shcl_doc *nb = shcl_load_file(fresh, &fst);
+				shcl_str nc = shcl_to_canonical(nb);
+				if (fst != SHCL_FILE_CLEAN || nc.n != 5 || memcmp(nc.p, "a: 1\n", 5) != 0) fail("file_tier", pass ? "overwritten file round-trip" : "new file round-trip");
+				shcl_free(nb);
+			}
+			// A new file lands where an ordinary create lands - 0666 narrowed
+			// by the umask - and an existing one keeps the mode it had. Neither
+			// is visible on stdout, so no corpus case can see either, and
+			// neither is a windows concept, so the mode half is POSIX-only.
+#ifndef _WIN32
+			{
+				char probe[176], born[176];
+				snprintf(probe, sizeof probe, "%s/probe", tdir);
+				snprintf(born, sizeof born, "%s/born.shcl", tdir);
+				FILE *pf = fopen(probe, "wb");
+				if (!pf || fclose(pf) != 0) fail("file_tier", "probe create failed");
+				struct stat ps, ns;
+				if (stat(probe, &ps) != 0) fail("file_tier", "probe stat failed");
+				if (shcl_save_file(nd, born) != SHCL_SAVE_OK) fail("file_tier", "new file save failed");
+				if (stat(born, &ns) != 0) fail("file_tier", "new file stat failed");
+				if ((ns.st_mode & 0777) != (ps.st_mode & 0777)) fail("file_tier", "new file mode");
+				if (chmod(born, 0640) != 0) fail("file_tier", "chmod failed");
+				if (shcl_save_file(nd, born) != SHCL_SAVE_OK) fail("file_tier", "existing file save failed");
+				if (stat(born, &ns) != 0) fail("file_tier", "existing file stat failed");
+				if ((ns.st_mode & 0777) != 0640) fail("file_tier", "existing file mode");
+				remove(probe); remove(born);
+			}
 #endif
+			shcl_free(nd);
+			remove(fresh);
+		}
 		// Content-malformed lines are retained as trivia (lost 0, the line
 		// survives a save); position-dependent drops count as lost and make
 		// shcl_save_file refuse until the caller opts into the lossy save.

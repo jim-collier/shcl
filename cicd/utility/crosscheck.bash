@@ -194,6 +194,9 @@ fComparePlant(){
 fFixMode(){    printf 'a:  1\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
 fFixSymlink(){ mkdir -p "$1/real"; printf 'a:  1\n' >"$1/real/c.shcl"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.shcl"; }
 fFixHardlink(){ printf 'a:  1\n' >"$1/c.shcl"; ln "$1/c.shcl" "$1/other.shcl"; echo "$1/c.shcl"; }
+##	Nothing at the path at all - the create case. The tree it leaves behind is
+##	the whole point, so the fixture deliberately builds nothing.
+fFixAbsent(){  echo "$1/c.shcl"; }
 ##	A load that dropped a line canonical output cannot re-emit (a BOM-led one),
 ##	so the in-place write is the destructive case the save gate exists for.
 fFixLost(){    printf 'a:  1\n\xef\xbb\xbfb: 2\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
@@ -344,6 +347,11 @@ fCompareWrite "set --write applies --set" fFixMode set --write --set a=2
 fCompareWrite "set --write --set adds a path" fFixMode set --write --set b.c=hello
 fCompare "set --write rejects --layer" set --write --layer=missing.shcl missing.shcl
 fCompare "fmt --write rejects --set" fmt --write --set a=1 missing.shcl
+# `set --write` on a FILE that is not there yet creates it; `fmt --write` has
+# nothing to format and still refuses. The state compare covers the created
+# file's mode too, which is umask-derived and so must match across bindings.
+fCompareWrite "set --write creates a missing file" fFixAbsent set --write --set a=1
+fCompareWrite "fmt --write still refuses a missing file" fFixAbsent fmt --write
 
 # `set -` follows stdin, so the same spelling means two things and both are
 # pinned: the piped document when an option holds the edits, an empty base when

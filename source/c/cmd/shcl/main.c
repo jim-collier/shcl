@@ -63,7 +63,8 @@ static const char *HELP =
 	"persist with --write; given either, no ops are read from stdin. Raw blocks,\n"
 	"set-only-if-absent and removal go in as a write-ops script on stdin, one op per\n"
 	"line, tab-separated. FILE '-' follows stdin: the document when an option holds\n"
-	"the edits, an empty base when the ops script has stdin instead. Ops:\n"
+	"the edits, an empty base when the ops script has stdin instead. With --write,\n"
+	"a FILE that does not exist yet is created. Ops:\n"
 	"  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar\n"
 	"  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array\n"
 	"  <type>[-array]-default<TAB>...                          set only if absent\n"
@@ -201,6 +202,15 @@ static void *xrealloc(void *p, size_t n) {
 
 // Reads FILE (or stdin for "-") fully. Returns malloc'd buffer + len, or NULL on
 // error (message printed to stderr). Rejects invalid UTF-8 like the reference.
+// Nothing at the path at all, as opposed to something there that will not open.
+// fopen rather than stat/access so the check needs no platform header: a
+// directory opens here and a protected file sets EACCES, so both stay errors.
+static int path_absent(const char *file) {
+	FILE *p = fopen(file, "rb");
+	if (p) { fclose(p); return 0; }
+	return errno == ENOENT;
+}
+
 static char *read_input(const char *file, size_t *len) {
 	char *buf = NULL; size_t cap = 0, n = 0;
 	FILE *f = strcmp(file, "-") == 0 ? stdin : fopen(file, "rb");
@@ -577,8 +587,16 @@ static int do_set(Opts *o) {
 		if (g) { shcl_free(dd); layered_free(&L); return g; }
 		if (!L.doc) L.doc = dd; else { shcl_merge(L.doc, dd); shcl_free(dd); }
 	}
+	// --write names the file this command produces, so a FILE that is not there
+	// yet is a create and the edits land in a new document. Only under --write,
+	// and only when nothing is at the path at all: without --write there is
+	// nothing to create, and a file that exists but cannot be read is still an
+	// error rather than something to quietly write over. Checked before the
+	// read, not after: read_input prints its own diagnostic, and a create has
+	// nothing to report.
+	int creating = o->write && strcmp(file, "-") != 0 && path_absent(file);
 	char *text; size_t len;
-	if (!strcmp(file, "-") && o->nsets == 0) { text = (char *)xrealloc(NULL, 1); len = 0; }
+	if (creating || (!strcmp(file, "-") && o->nsets == 0)) { text = (char *)xrealloc(NULL, 1); len = 0; }
 	else { text = read_input(file, &len); if (!text) { layered_free(&L); return 1; } }
 	layered_push_text(&L, text);
 	{

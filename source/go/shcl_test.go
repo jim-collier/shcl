@@ -859,9 +859,28 @@ func TestFileTierLoadSave(t *testing.T) {
 		t.Errorf("save round-trip mismatch")
 	}
 
+	// Creating a file and overwriting one are two different code paths in the
+	// write - the create picks its own mode, the overwrite copies the target's,
+	// and the publish step differs by platform (windows goes through
+	// ReplaceFile, with a rename fallback). Both run everywhere: an overwrite
+	// used to throw outright on windows in the python binding, which no
+	// POSIX-only fixture could ever have caught. Same fixture in every runner.
+	fresh := dir + "/fresh.shcl"
+	fdoc := Parse("a: 1\n")
+	for _, pass := range []string{"new", "overwritten"} {
+		if serr := fdoc.SaveFile(fresh); serr != nil {
+			t.Fatalf("%s file: %v", pass, serr)
+		}
+		fback, fst := LoadFile(fresh)
+		if fst != FileClean || fback.ToCanonical() != "a: 1\n" {
+			t.Errorf("%s file did not round-trip: status %v", pass, fst)
+		}
+	}
+
 	// A new file lands where an ordinary create lands - 0666 narrowed by the
 	// umask - and an existing one keeps the mode it had. Neither is visible on
-	// stdout, so no corpus case can see either. Same fixture in every runner.
+	// stdout, so no corpus case can see either, and neither is a windows
+	// concept, so the mode half is POSIX-only.
 	if runtime.GOOS != "windows" {
 		modeOf := func(p string) os.FileMode {
 			st, serr := os.Stat(p)
@@ -876,22 +895,21 @@ func TestFileTierLoadSave(t *testing.T) {
 			t.Fatal(cerr)
 		}
 		h.Close()
-		fresh := dir + "/fresh.shcl"
-		fdoc := Parse("a: 1\n")
-		if serr := fdoc.SaveFile(fresh); serr != nil {
+		born := dir + "/born.shcl"
+		if serr := fdoc.SaveFile(born); serr != nil {
 			t.Fatal(serr)
 		}
-		if modeOf(fresh) != modeOf(probe) {
-			t.Errorf("new file: got mode %v, want %v", modeOf(fresh), modeOf(probe))
+		if modeOf(born) != modeOf(probe) {
+			t.Errorf("new file: got mode %v, want %v", modeOf(born), modeOf(probe))
 		}
-		if cerr := os.Chmod(fresh, 0o640); cerr != nil {
+		if cerr := os.Chmod(born, 0o640); cerr != nil {
 			t.Fatal(cerr)
 		}
-		if serr := fdoc.SaveFile(fresh); serr != nil {
+		if serr := fdoc.SaveFile(born); serr != nil {
 			t.Fatal(serr)
 		}
-		if modeOf(fresh) != 0o640 {
-			t.Errorf("existing file: got mode %v, want -rw-r-----", modeOf(fresh))
+		if modeOf(born) != 0o640 {
+			t.Errorf("existing file: got mode %v, want -rw-r-----", modeOf(born))
 		}
 	}
 }

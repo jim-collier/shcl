@@ -43,7 +43,8 @@ set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE
 persist with --write; given either, no ops are read from stdin. Raw blocks,
 set-only-if-absent and removal go in as a write-ops script on stdin, one op per
 line, tab-separated. FILE '-' follows stdin: the document when an option holds
-the edits, an empty base when the ops script has stdin instead. Ops:
+the edits, an empty base when the ops script has stdin instead. With --write,
+a FILE that does not exist yet is created. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -750,9 +751,15 @@ def do_set(o):
 	# stdin is the ops script does '-' mean an empty base. Reading neither threw
 	# a piped document away at exit 0.
 	# Any --layer files sit under it and --set overrides sit on top, before ops.
+	# --write names the file this command produces, so a FILE that is not there
+	# yet is a create and the edits land in a new document. Only under --write,
+	# and only when nothing is at the path at all: without --write there is
+	# nothing to create, and a file that exists but cannot be read is still an
+	# error rather than something to quietly write over.
+	creating = o.write and file != "-" and not os.path.exists(file)
 	try:
 		layer_texts = [read_input(lf) for lf in o.layers]
-		base = "" if file == "-" and not o.sets else read_input(file)
+		base = "" if creating or (file == "-" and not o.sets) else read_input(file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
