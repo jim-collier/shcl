@@ -21,6 +21,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Power layer library-level, grammar untouched](#power-layer-library-level-grammar-untouched)
 	- [Schema validation](#schema-validation)
 	- [Formatter](#formatter)
+	- [Saving a file](#saving-a-file)
 	- [Testing](#testing)
 	- [Format comparison](#format-comparison)
 	- [CI/CD](#cicd)
@@ -222,6 +223,22 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 **A raw block whose body has no non-blank line is left alone in both directions.** The common indent a block strips on load is derived from its non-blank lines, so a body of nothing but whitespace has none - while emit was re-indenting it anyway, adding a level per pass, without bound. Among the options it was decided that the formatter simply adds no indent where it stripped none, rather than normalizing such a body to empty. Both end the growth; only this one keeps the body, and a raw block promising verbatim content should not be the place that quietly discards it - a line of non-breaking or ideographic space is content, not layout. It moves canonical output once, for that shape alone.
 
 **A raw block in a higher layer fills a same-named empty binding below.** Merge matched instances by `(name, value)` only, so a bare `blk:` in the base and a `blk:` carrying a block in the overlay both survived a merge, where parsing the two run together folds them - which made merged output not a formatter fixpoint, and dragged in a second defect, since the emitter's workaround for the resulting pair spells the fence on the name's line and loses an info string containing `#`. It was decided that merge adopts the parser's own empty-fill rule, so a merge and a parse of the concatenation agree. The fill is limited to raw blocks because that is the limit of the parser's rule: a valued instance still appends.
+
+### Saving a file
+
+- **A save publishes a new file in the old one's place** - write a temp file beside the target, then move it over. That is what makes an interrupted save unable to truncate a config, and it is also the source of every limitation below: the bytes are new, so anything the old file carried outside its contents has to be deliberately carried across or it is gone.
+
+- **What is carried, and what is not.** The permission bits are copied deliberately, and on POSIX that is the whole of what gets copied: ACLs, extended attributes, the SELinux label and any other xattr are lost, as are other hard links to the old file. None of that is fixable at this layer - a rename cannot preserve what a rename replaces - so it is documented in the spec rather than papered over. A relabelled config on an SELinux host is the case worth knowing about: the new file takes the label its parent directory and the writing process imply, which is the same label in the ordinary case and not the same one after a `chcon`.
+
+- **Windows goes through `ReplaceFile` instead**, because it does not have the same constraint. `ReplaceFile` exists for exactly this publish step and carries the destination's ACLs, attributes and named streams onto the replacement, which is the gap a plain move leaves. It needs a destination to replace, and it fails outright rather than skip a merge it cannot perform, so a create and any failure fall back to the replacing move - the behavior that was there before, never worse.
+
+- **The Go binding reaches it through a hook rather than a build-tagged pair.** Go has no way to name a windows-only symbol from a file that also compiles elsewhere, and `shcl.go` promises to work when copied into a tree on its own. So the publish step is a package-level variable holding the plain rename, and a small windows-only file swaps in the `ReplaceFile` version. Dropping the one file still works everywhere; taking the whole module gets the better windows publish. The consequence to remember is that the lint stage only ever sees the host's `GOOS`, so the windows file is compiled and vetted in the cross stage instead - it is the only thing that looks at it at all.
+
+- **The directory is synced after the move, not just the file before it.** The file's own `fsync` only promises the contents reached the disk; the move is a change to the directory, and without a sync there a power cut can lose the publish and leave the old content. It is best effort in every binding - a filesystem that refuses an `fsync` on a directory is not a reason to fail a save that already succeeded - and it is POSIX-only, since Windows has no equivalent and `ReplaceFile` is asked to write through instead.
+
+- **A file the save had to create takes the mode an ordinary create would**, `0666` narrowed by the umask, rather than a private `0600`. Among the options it was decided that a library should not quietly make a decision the user cannot see: a config that must be private needs that from the umask or a `chmod`, which are the mechanisms a person already reaches for. An existing file still keeps its own mode, and that case is why the temp file is born private - the copy is never briefly readable to anyone the original was not.
+
+- **`set --write` creates a FILE that is not there yet.** `--write` names the file the command produces, so reporting it missing was an obstacle rather than a safeguard - the workaround was to `touch` it first, which is the same act with an extra step. `fmt --write` deliberately does not, having nothing to format. A file that exists but cannot be read stays an error in both, since the alternative is writing over something unread.
 
 ### Testing
 

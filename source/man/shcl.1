@@ -77,7 +77,10 @@ Apply edits to
 the base document, and print the canonical result \- or rewrite
 .I FILE
 in place with
-.BR \-\-write .
+.BR \-\-write ,
+which creates
+.I FILE
+when nothing is there yet.
 Simple values go in as repeatable
 .B \-\-set
 or
@@ -182,7 +185,13 @@ Leave out the footer naming the format and pointing at its spec.
 Rewrite
 .I FILE
 in place instead of printing to stdout. The write goes through a temp file and
-a rename, so an interrupted run cannot truncate the config.
+a rename, so an interrupted run cannot truncate the config. On
+.B set
+a
+.I FILE
+that does not exist yet is created;
+.B fmt
+has nothing to format and reports it missing.
 .TP
 .B \-\-lossy
 .RB ( fmt ", " set )
