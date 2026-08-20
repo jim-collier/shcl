@@ -871,6 +871,27 @@ fn file_tier_load_save() {
 	assert_eq!(st, FileStatus::Clean);
 	assert_eq!(back.to_canonical(), doc.to_canonical());
 
+	// A new file lands where an ordinary create lands - 0666 narrowed by the
+	// umask - and an existing one keeps the mode it had. Neither is visible on
+	// stdout, so no corpus case can see either. Same fixture in every runner.
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		let mode_of =
+			|p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+		let probe = dir.join("probe");
+		std::fs::File::create(&probe).unwrap();
+		let fresh = dir.join("fresh.shcl");
+		let fdoc = Document::parse("a: 1\n");
+		fdoc.save_file(fresh.to_str().unwrap()).unwrap();
+		assert_eq!(mode_of(&fresh), mode_of(&probe));
+		std::fs::set_permissions(&fresh, std::fs::Permissions::from_mode(0o640)).unwrap();
+		fdoc.save_file(fresh.to_str().unwrap()).unwrap();
+		assert_eq!(mode_of(&fresh), 0o640);
+		let _ = std::fs::remove_file(&probe);
+		let _ = std::fs::remove_file(&fresh);
+	}
+
 	let _ = std::fs::remove_file(&f);
 	let _ = std::fs::remove_dir(&dir);
 }

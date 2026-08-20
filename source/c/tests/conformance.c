@@ -16,6 +16,9 @@
 #include <locale.h>
 #include <errno.h>
 #include <dirent.h>
+#ifndef _WIN32
+#include <sys/stat.h>   // the file-mode fixture stats and chmods for itself
+#endif
 
 static int nfail = 0;
 static void fail(const char *at, const char *msg) { fprintf(stderr, "FAIL %s: %s\n", at, msg); nfail++; }
@@ -682,6 +685,31 @@ int main(int argc, char **argv) {
 		shcl_str c1 = shcl_to_canonical(fd), c2 = shcl_to_canonical(fb);
 		if (fst != SHCL_FILE_CLEAN || c1.n != c2.n || memcmp(c1.p, c2.p, c1.n) != 0) fail("file_tier", "save round-trip mismatch");
 		shcl_free(fb); shcl_free(fd);
+		// A new file lands where an ordinary create lands - 0666 narrowed by
+		// the umask - and an existing one keeps the mode it had. Neither is
+		// visible on stdout, so no corpus case can see either. Same fixture in
+		// every runner.
+#ifndef _WIN32
+		{
+			char probe[176], fresh[176];
+			snprintf(probe, sizeof probe, "%s/probe", tdir);
+			snprintf(fresh, sizeof fresh, "%s/fresh.shcl", tdir);
+			FILE *pf = fopen(probe, "wb");
+			if (!pf || fclose(pf) != 0) fail("file_tier", "probe create failed");
+			struct stat ps, ns;
+			if (stat(probe, &ps) != 0) fail("file_tier", "probe stat failed");
+			shcl_doc *nd = shcl_parse("a: 1\n", 5);
+			if (shcl_save_file(nd, fresh) != SHCL_SAVE_OK) fail("file_tier", "new file save failed");
+			if (stat(fresh, &ns) != 0) fail("file_tier", "new file stat failed");
+			if ((ns.st_mode & 0777) != (ps.st_mode & 0777)) fail("file_tier", "new file mode");
+			if (chmod(fresh, 0640) != 0) fail("file_tier", "chmod failed");
+			if (shcl_save_file(nd, fresh) != SHCL_SAVE_OK) fail("file_tier", "existing file save failed");
+			if (stat(fresh, &ns) != 0) fail("file_tier", "existing file stat failed");
+			if ((ns.st_mode & 0777) != 0640) fail("file_tier", "existing file mode");
+			shcl_free(nd);
+			remove(probe); remove(fresh);
+		}
+#endif
 		// Content-malformed lines are retained as trivia (lost 0, the line
 		// survives a save); position-dependent drops count as lost and make
 		// shcl_save_file refuse until the caller opts into the lossy save.

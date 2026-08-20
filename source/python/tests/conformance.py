@@ -720,6 +720,25 @@ def main():
 		fback, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.Clean or fback.to_canonical() != fdoc.to_canonical():
 			raise SystemExit("save round-trip mismatch")
+		# A new file lands where an ordinary create lands - 0666 narrowed by the
+		# umask - and an existing one keeps the mode it had. Neither is visible
+		# on stdout, so no corpus case can see either. Same fixture in every
+		# runner.
+		if os.name == "posix":
+			probe = os.path.join(td, "probe")
+			open(probe, "w").close()
+			want = os.stat(probe).st_mode & 0o777
+			fresh = os.path.join(td, "fresh.shcl")
+			ndoc = shcl.Document.parse("a: 1\n")
+			ndoc.save_file(fresh)
+			got = os.stat(fresh).st_mode & 0o777
+			if got != want:
+				raise SystemExit(f"new file mode {got:o}, want {want:o}")
+			os.chmod(fresh, 0o640)
+			ndoc.save_file(fresh)
+			got = os.stat(fresh).st_mode & 0o777
+			if got != 0o640:
+				raise SystemExit(f"existing file mode {got:o}, want 640")
 		# Content-malformed lines are retained as trivia (lost_count 0, the
 		# line survives a save); position-dependent drops count as lost and
 		# make save_file refuse until the caller opts into save_file_lossy.

@@ -2105,6 +2105,12 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	// there - including a symlink someone else planted - must make this fail
 	// rather than be written through. Retry past a stale collision, then give
 	// up; refusing to write beats writing somewhere unintended.
+	// A file that already exists keeps its own mode, so its temp is born private
+	// and the real mode goes on below - the copy is never briefly readable to
+	// anyone the original was not. A file that does not exist yet has no mode to
+	// preserve, so it takes the one an ordinary create would: 0666 narrowed by
+	// the umask, like every other file the user's tools produce.
+	let existing = std::fs::metadata(&target).ok();
 	let mut file_handle = None;
 	let mut tmp = std::path::PathBuf::new();
 	let mut last = String::new();
@@ -2112,12 +2118,10 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 		tmp = dir.join(format!(".{}.tmp{}.{}", base, std::process::id(), attempt));
 		let mut opts = std::fs::OpenOptions::new();
 		opts.write(true).create_new(true);
-		// Born private, so the copy is never briefly readable to anyone the
-		// original was not. The real mode goes on below, before any data.
 		#[cfg(unix)]
 		{
 			use std::os::unix::fs::OpenOptionsExt;
-			opts.mode(0o600);
+			opts.mode(if existing.is_some() { 0o600 } else { 0o666 });
 		}
 		match opts.open(&tmp) {
 			Ok(f) => {
@@ -2134,7 +2138,7 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 		// On the handle, so umask cannot narrow it the way it narrows a create
 		// mode. Best effort: a filesystem that cannot carry the mode is not a
 		// reason to fail a write that otherwise succeeded.
-		if let Ok(m) = std::fs::metadata(&target) {
+		if let Some(m) = &existing {
 			let _ = f.set_permissions(m.permissions());
 		}
 		f.write_all(data.as_bytes())?;

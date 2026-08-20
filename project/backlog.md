@@ -72,12 +72,15 @@ None open.
 	- The info-string half needed no separate fix: with the pair folded, the emitter never reaches the same-line-fence spelling for it, so the `#` survives. Pinned in the same case.
 	- Raise the soak in the pipeline, or at least run one at 200k before a cut: the 20k gate cannot see this class. Related to Code Review 20260817 item 29.
 
-- 🔘 `SaveFile` creates a brand-new file at mode 0600, whatever the umask says.
+- ✅ `SaveFile` creates a brand-new file at mode 0600, whatever the umask says.
 	- Found by dogfooding the file tier from the new comparison tool: its `results.shcl` came out `rw-------` under a 0002 umask, where every other tool on the box would have written `rw-rw-r--`.
 	- Cause is one missing branch, not a mistake: `write_file_atomic` opens its temp file at 0600 on purpose, so the copy is never briefly readable to anyone the original was not, and then copies the real mode off the target. When the target does not exist yet there is no mode to copy, so the private one stays. All four bindings mirror it.
 	- Two defensible answers, and it wants a decision rather than a patch. Either 0600 is the right default for a file that may hold secrets and the spec should say so out loud, or a new file should land at `0666 & ~umask` like everything else a person runs, and only an *existing* file's mode is worth preserving.
 	- Cheap to settle now: the whole file tier is unreleased, so either answer is free today and a behavior change later.
-	- Whichever way it goes, the write dimension in `crosscheck.bash` is where it gets pinned - a new file's mode is not visible on stdout, so no corpus case can see it.
+	- Settled the second way: a new file lands at `0666 & ~umask`, like anything else a person runs. 0600 would be a surprise the caller never asked for and could not see, and a config that needs to be private needs that from the umask or an explicit chmod, not from a library quietly deciding.
+	- Fixed in all four bindings by choosing the temp file's create mode from whether the target already exists, rather than by chmod'ing afterwards. An existing target still gets a private temp and its own mode copied on, so nothing about the case the privacy was for changed.
+	- Pinned in all four runners rather than `crosscheck.bash`: the CLI cannot create a file at all (`set --write` on a missing FILE is an error), so the path is library-only and no CLI comparison can reach it. The fixture compares against a file made by the language's own ordinary create, so it states the rule without hard-coding a umask - and each of the four was fault-injected and confirmed to fail on the old behavior.
+	- Spec says it now, in the file-tier paragraph beside the rest of the save's mechanics.
 
 ### Features and enhancements
 
