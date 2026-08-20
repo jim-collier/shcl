@@ -2242,11 +2242,35 @@ func WriteFileAtomic(file, data string) error {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %w", file, err)
 	}
-	if rerr := os.Rename(tmp, target); rerr != nil {
+	if rerr := publishFile(tmp, target); rerr != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %w", file, rerr)
 	}
+	syncDir(dir)
 	return nil
+}
+
+// publishFile moves the finished temp file over the target. Rename is atomic
+// within a filesystem, which is all POSIX needs. The windows build swaps this
+// out for one that goes through ReplaceFile (shcl_windows.go): a rename there
+// publishes a brand-new file and leaves the destination's ACLs, attributes and
+// named streams behind.
+//
+// A hook rather than a build-tagged pair so that this file still compiles and
+// works on its own - the drop-in story is the whole point of the single file,
+// and a tree that took the module gets the better windows publish anyway.
+var publishFile = func(tmp, target string) error { return os.Rename(tmp, target) }
+
+// syncDir fsyncs the directory a save published into. The Sync on the file only
+// covered the file; the rename is a directory change, so without this a power
+// cut right after a save can lose the publish and leave the old content. Best
+// effort - windows has no directory fsync, and a filesystem that refuses one is
+// not a reason to fail a write that already succeeded.
+func syncDir(dir string) {
+	if d, derr := os.Open(dir); derr == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 }
 
 // FileStatus is what LoadFile found: the four cases a consumer's own load
