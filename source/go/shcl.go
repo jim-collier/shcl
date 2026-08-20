@@ -2200,14 +2200,22 @@ func WriteFileAtomic(file, data string) error {
 	// there - including a symlink someone else planted - must make this fail
 	// rather than be written through. Retry past a stale collision, then give
 	// up; refusing to write beats writing somewhere unintended.
+	// A file that already exists keeps its own mode, so its temp is born private
+	// and the real mode goes on below - the copy is never briefly readable to
+	// anyone the original was not. A file that does not exist yet has no mode to
+	// preserve, so it takes the one an ordinary create would: 0666 narrowed by
+	// the umask, like every other file the user's tools produce.
+	existing, existErr := os.Stat(target)
+	born := os.FileMode(0o600)
+	if existErr != nil {
+		born = 0o666
+	}
 	var f *os.File
 	var tmp string
 	var last error
 	for attempt := 0; attempt < 8; attempt++ {
 		tmp = filepath.Join(dir, "."+base+".tmp"+strconv.Itoa(os.Getpid())+"."+strconv.Itoa(attempt))
-		// Born private, so the copy is never briefly readable to anyone the
-		// original was not. The real mode goes on below, before any data.
-		h, oerr := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		h, oerr := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, born)
 		if oerr == nil {
 			f = h
 			break
@@ -2220,8 +2228,8 @@ func WriteFileAtomic(file, data string) error {
 	// On the handle, so umask cannot narrow it the way it narrows a create
 	// mode. Best effort: a filesystem that cannot carry the mode is not a
 	// reason to fail a write that otherwise succeeded.
-	if st, serr := os.Stat(target); serr == nil {
-		_ = f.Chmod(st.Mode().Perm())
+	if existErr == nil {
+		_ = f.Chmod(existing.Mode().Perm())
 	}
 	var err error
 	if _, werr := f.WriteString(data); werr != nil {

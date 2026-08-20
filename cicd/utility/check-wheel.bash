@@ -35,8 +35,13 @@ command -v pyproject-build >/dev/null 2>&1 \
 outDir="$(mktemp -d)"
 trap 'rm -rf "${outDir}" "${pyDir}/build" "${pyDir}/shcl.egg-info"' EXIT
 
-( cd "${pyDir}" && pyproject-build --outdir "${outDir}" ) >/dev/null 2>&1 \
-	|| { echo "check-wheel: build failed" >&2; exit 1; }
+## Output is kept rather than discarded: this build stands up an isolated
+## environment and can fail for reasons that have nothing to do with the
+## package - a network blip fetching the backend, most of them transient - and
+## a bare "build failed" leaves nothing to tell those apart from a real one.
+buildLog="${outDir}/build.log"
+( cd "${pyDir}" && pyproject-build --outdir "${outDir}" ) >"${buildLog}" 2>&1 \
+	|| { echo "check-wheel: build failed" >&2; tail -n 25 "${buildLog}" >&2; exit 1; }
 
 ## Indent a multi-line block for the error output. Parameter expansion rather
 ## than a sed pipe: one less fork, and shellcheck prefers it.

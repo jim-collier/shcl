@@ -1,9 +1,13 @@
 //! Measures SHCL against JSON, YAML, TOML and XML on documents that hold the
 //! same data in each format.
 //!
-//! The comparison holds the language constant at Rust: every format is parsed by
-//! a mature native crate, built by the same compiler with the same flags. Mixing
-//! languages would measure implementations, not formats.
+//! The comparison holds the language constant within a tier: every format in the
+//! Rust tier is parsed by a mature native crate, built by the same compiler with
+//! the same flags, so what is being compared is formats rather than
+//! implementations. The Python tier repeats the exercise over the same documents
+//! with the libraries a Python program would really import, which is the only way
+//! to tell how much of a format's cost is the format and how much is one
+//! implementation of it. Rows are never ranked across tiers.
 //!
 //! Each measurement runs in its own process, because peak resident memory is
 //! only attributable that way - one process that parsed six documents tells you
@@ -28,8 +32,9 @@ Usage: shcl-comparison [options]
   --mib N          target size of each shape's SHCL encoding (default 16)
   --iters N        timed runs per measurement, best wins (default 3)
   --shape NAME     only this shape; repeatable (flat, deep, records, text)
+  --tier NAME      only this language tier; repeatable (rust, python)
   --entry KEY      only this library; repeatable (shcl, json, yaml, toml,
-                   toml-edit, xml, xml-dom)
+                   toml-edit, xml, xml-dom, xml-lxml)
   --out FILE       results file to update (default results.shcl beside this tool)
   --keep-runs N    runs to retain in the results file, newest first (default 20)
   --no-record      print the table and write nothing
@@ -44,7 +49,8 @@ struct Opts {
 	mib: usize,
 	iters: usize,
 	shapes: Vec<Shape>,
-	entries: Vec<&'static str>,
+	tiers: Vec<Tier>,
+	entries: Vec<String>,
 	out: String,
 	keep_runs: usize,
 	record: bool,
@@ -79,6 +85,7 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
 		mib: 16,
 		iters: 3,
 		shapes: Vec::new(),
+		tiers: Vec::new(),
 		entries: Vec::new(),
 		out: format!("{}/results.shcl", env!("CARGO_MANIFEST_DIR")),
 		keep_runs: 20,
@@ -119,11 +126,12 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
 				o.shapes
 					.push(Shape::from_name(&v).ok_or(format!("unknown shape: {v}"))?);
 			}
-			"--entry" => {
-				let v = next!("--entry");
-				o.entries
-					.push(bench::entry(&v).ok_or(format!("unknown entry: {v}"))?.key);
+			"--tier" => {
+				let v = next!("--tier");
+				o.tiers
+					.push(Tier::from_name(&v).ok_or(format!("unknown tier: {v}"))?);
 			}
+			"--entry" => o.entries.push(next!("--entry")),
 			"--out" => o.out = next!("--out"),
 			"--keep-runs" => {
 				o.keep_runs = next!("--keep-runs")
@@ -149,8 +157,8 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
 	if o.shapes.is_empty() {
 		o.shapes = Shape::all().to_vec();
 	}
-	if o.entries.is_empty() {
-		o.entries = bench::ENTRIES.iter().map(|e| e.key).collect();
+	if o.tiers.is_empty() {
+		o.tiers = vec![Tier::Rust, Tier::Python];
 	}
 	Ok(o)
 }
@@ -207,12 +215,117 @@ fn render(shape: Shape, fmt: Fmt, units: usize, target: Option<usize>) -> (Strin
 }
 
 //••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+// Libraries under test
+//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Tier {
+	Rust,
+	Python,
+}
+
+impl Tier {
+	fn name(self) -> &'static str {
+		match self {
+			Tier::Rust => "rust",
+			Tier::Python => "python",
+		}
+	}
+	fn from_name(s: &str) -> Option<Tier> {
+		match s {
+			"rust" => Some(Tier::Rust),
+			"python" => Some(Tier::Python),
+			_ => None,
+		}
+	}
+}
+
+/// One measurable library. The Rust ones come from a static table compiled in;
+/// the Python ones are whatever `pyworker.py` reports it can import, so a box
+/// without tomlkit measures what it has and the run says what it skipped rather
+/// than failing over a library that was never required.
+struct Lib {
+	tier: Tier,
+	key: String,
+	format: String,
+	library: String,
+	version: String,
+	retains: String,
+	note: String,
+}
+
+fn pyworker() -> String {
+	format!("{}/pyworker.py", env!("CARGO_MANIFEST_DIR"))
+}
+
+fn discover_libs(o: &Opts) -> (Vec<Lib>, Vec<String>) {
+	let vers = lock_versions();
+	let mut libs = Vec::new();
+	let mut skipped = Vec::new();
+
+	if o.tiers.contains(&Tier::Rust) {
+		for e in bench::ENTRIES {
+			libs.push(Lib {
+				tier: Tier::Rust,
+				key: e.key.to_string(),
+				format: e.format.to_string(),
+				library: e.library.to_string(),
+				version: vers.get(e.library).cloned().unwrap_or_else(|| "?".into()),
+				retains: e.retains.to_string(),
+				note: e.note.to_string(),
+			});
+		}
+	}
+
+	if o.tiers.contains(&Tier::Python) {
+		match Command::new("python3")
+			.args([&pyworker(), "--list"])
+			.output()
+		{
+			Err(e) => skipped.push(format!("the whole python tier: cannot run python3 ({e})")),
+			Ok(out) => {
+				for line in String::from_utf8_lossy(&out.stdout).lines() {
+					let f: Vec<&str> = line.split('|').collect();
+					match f.as_slice() {
+						["available", key, fmt, lib, retains, version, note] => libs.push(Lib {
+							tier: Tier::Python,
+							key: (*key).to_string(),
+							format: (*fmt).to_string(),
+							library: (*lib).to_string(),
+							// The python binding ships no version of its own, so
+							// the repo's is the honest answer for it.
+							version: if *version == "working tree" {
+								vers.get("shcl")
+									.cloned()
+									.unwrap_or_else(|| "working tree".into())
+							} else {
+								(*version).to_string()
+							},
+							retains: (*retains).to_string(),
+							note: (*note).to_string(),
+						}),
+						["unavailable", key, why] => skipped.push(format!("python/{key}: {why}")),
+						_ => {}
+					}
+				}
+			}
+		}
+	}
+
+	if !o.entries.is_empty() {
+		libs.retain(|l| o.entries.contains(&l.key));
+	}
+	(libs, skipped)
+}
+
+//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 // Orchestration
 //••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 struct Row {
 	shape: Shape,
-	key: &'static str,
+	tier: Tier,
+	key: String,
 	bytes: usize,
 	gzip_bytes: usize,
 	m: bench::Measured,
@@ -240,6 +353,15 @@ fn orchestrate(o: &Opts) -> i32 {
 	};
 	let target = o.mib * 1024 * 1024;
 	let exe = std::env::current_exe().unwrap_or_else(|_| "shcl-comparison".into());
+
+	let (libs, skipped) = discover_libs(o);
+	if libs.is_empty() {
+		eprintln!("shcl-comparison: no libraries to measure");
+		return 1;
+	}
+	for s in &skipped {
+		println!("skipping {s}");
+	}
 
 	let mut rows: Vec<Row> = Vec::new();
 	let mut units_by_shape: HashMap<&'static str, usize> = HashMap::new();
@@ -272,23 +394,35 @@ fn orchestrate(o: &Opts) -> i32 {
 		}
 		drop(shcl_text);
 
-		for key in &o.entries {
-			let fmt = bench::source_fmt(key);
+		for lib in &libs {
+			let fmt = Fmt::from_name(&lib.format).expect("a library names a known format");
 			let path = &path_of[fmt.name()];
-			let m = spawn_worker(&exe, key, path, o.iters);
-			if let Some(e) = &m.failed {
-				eprintln!("shcl-comparison: {} / {key}: {e}", shape.name());
-				rc = 1;
+			let m = spawn_worker(&exe, lib, path, o.iters);
+			match &m.failed {
+				Some(e) => {
+					eprintln!("  {:<6} {:<10} FAILED: {e}", lib.tier.name(), lib.key);
+					rc = 1;
+				}
+				// A progress line per measurement rather than a table per shape:
+				// the tables cannot be printed until every shape is in, because
+				// the row order comes from an average over all of them.
+				None => println!(
+					"  {:<6} {:<10} {:>8.3} s  {:>7.0} MiB",
+					lib.tier.name(),
+					lib.key,
+					m.parse_secs,
+					mib(m.rss_bytes)
+				),
 			}
 			rows.push(Row {
 				shape,
-				key,
+				tier: lib.tier,
+				key: lib.key.clone(),
 				bytes: bytes_of[fmt.name()],
 				gzip_bytes: gzip_of[fmt.name()],
 				m,
 			});
 		}
-		print_table(&rows[rows.len() - o.entries.len()..]);
 	}
 
 	if !o.keep && o.work.is_none() {
@@ -297,8 +431,19 @@ fn orchestrate(o: &Opts) -> i32 {
 		println!("\nkept generated documents in {work}");
 	}
 
+	// One order everywhere - printed tables and the results file both - so a
+	// row keeps its place from shape to shape and the file reads the same way
+	// the table does.
+	let order = rank(&rows);
+	rows.sort_by(|a, b| {
+		(a.shape.name(), a.tier.name(), speed(&order, a))
+			.partial_cmp(&(b.shape.name(), b.tier.name(), speed(&order, b)))
+			.unwrap_or(std::cmp::Ordering::Equal)
+	});
+	print_tables(&rows, &libs);
+
 	if o.record {
-		match record(o, &rows, &units_by_shape) {
+		match record(o, &rows, &libs, &units_by_shape) {
 			Ok(id) => println!("\nrecorded run {id} in {}", o.out),
 			Err(e) => {
 				eprintln!("shcl-comparison: cannot record results: {e}");
@@ -373,10 +518,17 @@ fn verify(o: &Opts) -> bool {
 	ok
 }
 
-fn spawn_worker(exe: &std::path::Path, key: &str, path: &str, iters: usize) -> bench::Measured {
-	let out = Command::new(exe)
-		.args(["--worker", key, path, &iters.to_string()])
-		.output();
+fn spawn_worker(exe: &std::path::Path, lib: &Lib, path: &str, iters: usize) -> bench::Measured {
+	let iters_s = iters.to_string();
+	let py = pyworker();
+	let out = match lib.tier {
+		Tier::Rust => Command::new(exe)
+			.args(["--worker", lib.key.as_str(), path, iters_s.as_str()])
+			.output(),
+		Tier::Python => Command::new("python3")
+			.args([py.as_str(), lib.key.as_str(), path, iters_s.as_str()])
+			.output(),
+	};
 	let out = match out {
 		Ok(o) => o,
 		Err(e) => {
@@ -401,20 +553,24 @@ fn spawn_worker(exe: &std::path::Path, key: &str, path: &str, iters: usize) -> b
 	}
 	let num = |k: &str| -> f64 { kv.get(k).and_then(|v| v.parse().ok()).unwrap_or(0.0) };
 	let int = |k: &str| -> u64 { kv.get(k).and_then(|v| v.parse().ok()).unwrap_or(0) };
-	let failed = kv.get("failed").map(|s| (*s).to_string()).or_else(|| {
-		if out.status.success() {
-			None
-		} else {
-			Some(format!(
-				"worker exit {:?}: {}",
-				out.status.code(),
-				String::from_utf8_lossy(&out.stderr)
-					.lines()
-					.next()
-					.unwrap_or("")
-			))
-		}
-	});
+	let failed = kv
+		.get("failed")
+		.or_else(|| kv.get("skipped"))
+		.map(|s| (*s).to_string())
+		.or_else(|| {
+			if out.status.success() {
+				None
+			} else {
+				Some(format!(
+					"worker exit {:?}: {}",
+					out.status.code(),
+					String::from_utf8_lossy(&out.stderr)
+						.lines()
+						.next()
+						.unwrap_or("")
+				))
+			}
+		});
 	bench::Measured {
 		parse_secs: num("parse-secs"),
 		emit_secs: kv.get("emit-secs").and_then(|v| v.parse().ok()),
@@ -460,12 +616,45 @@ fn mib(bytes: u64) -> f64 {
 	bytes as f64 / (1024.0 * 1024.0)
 }
 
-fn print_table(rows: &[Row]) {
-	let mut shape = "";
+/// Geometric mean of a library's parse time across the shapes it ran. The
+/// geometric one rather than the arithmetic, so one large shape cannot decide
+/// the whole order on its own.
+fn rank(rows: &[Row]) -> HashMap<(Tier, String), f64> {
+	let mut acc: HashMap<(Tier, String), (f64, usize)> = HashMap::new();
 	for r in rows {
-		if r.shape.name() != shape {
-			shape = r.shape.name();
-			println!("\n{shape}");
+		if r.m.failed.is_some() || r.m.parse_secs <= 0.0 {
+			continue;
+		}
+		let e = acc.entry((r.tier, r.key.clone())).or_insert((0.0, 0));
+		e.0 += r.m.parse_secs.ln();
+		e.1 += 1;
+	}
+	acc.into_iter()
+		.map(|(k, (sum, n))| (k, (sum / n as f64).exp()))
+		.collect()
+}
+
+/// A row that never produced a time sorts last rather than first.
+fn speed(order: &HashMap<(Tier, String), f64>, r: &Row) -> f64 {
+	*order.get(&(r.tier, r.key.clone())).unwrap_or(&f64::MAX)
+}
+
+fn retains_of<'a>(libs: &'a [Lib], r: &Row) -> &'a str {
+	libs.iter()
+		.find(|l| l.tier == r.tier && l.key == r.key)
+		.map_or("?", |l| l.retains.as_str())
+}
+
+fn print_tables(rows: &[Row], libs: &[Lib]) {
+	println!(
+		"\nRows are ordered by the geometric mean of each library's parse time over\nevery shape measured, fastest first. Tiers are listed apart and never ranked\nagainst each other - they are different languages, not different formats."
+	);
+	let mut cur = ("", "");
+	for r in rows {
+		let group = (r.shape.name(), r.tier.name());
+		if group != cur {
+			cur = group;
+			println!("\n{} / {}", r.shape.name(), r.tier.name());
 			println!(
 				"  {:<10} {:>9} {:>9} {:>9} {:>8} {:>9} {:>9} {:>7}  {:<16} round-trip",
 				"library",
@@ -479,17 +668,10 @@ fn print_table(rows: &[Row]) {
 				"retains"
 			);
 		}
-		if r.m.failed.is_some() {
-			println!(
-				"  {:<10} {:>9}  FAILED: {}",
-				r.key,
-				"-",
-				r.m.failed.as_deref().unwrap_or("")
-			);
+		if let Some(e) = &r.m.failed {
+			println!("  {:<10} {:>9}  FAILED: {e}", r.key, "-");
 			continue;
 		}
-		let e = bench::entry(r.key).expect("entry exists");
-		let peak = mib(r.m.rss_bytes);
 		println!(
 			"  {:<10} {:>9.2} {:>9.2} {:>9.3} {:>8.1} {:>9} {:>9.0} {:>7.1}  {:<16} {}",
 			r.key,
@@ -498,9 +680,9 @@ fn print_table(rows: &[Row]) {
 			r.m.parse_secs,
 			mib(r.bytes as u64) / r.m.parse_secs,
 			r.m.emit_secs.map_or("-".to_string(), |s| format!("{s:.3}")),
-			peak,
+			mib(r.m.rss_bytes),
 			r.m.rss_bytes as f64 / r.bytes as f64,
-			e.retains,
+			retains_of(libs, r),
 			if r.m.emit_secs.is_none() {
 				"-"
 			} else if r.m.roundtrip {
@@ -516,7 +698,12 @@ fn print_table(rows: &[Row]) {
 // Recording, through this repo's own library
 //••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
-fn record(o: &Opts, rows: &[Row], units: &HashMap<&'static str, usize>) -> Result<String, String> {
+fn record(
+	o: &Opts,
+	rows: &[Row],
+	libs: &[Lib],
+	units: &HashMap<&'static str, usize>,
+) -> Result<String, String> {
 	let (mut doc, status) = shcl::Document::load_file(&o.out);
 	match status {
 		shcl::FileStatus::Clean | shcl::FileStatus::NotFound => {}
@@ -544,7 +731,8 @@ fn record(o: &Opts, rows: &[Row], units: &HashMap<&'static str, usize>) -> Resul
 	set!(format!("{run}.os"), &uname());
 	set!(
 		format!("{run}.notes"),
-		"same data in every format; one process per measurement; best of N runs"
+		"same data in every format; one process per measurement; best of N runs; \
+libraries ordered by geometric-mean parse time, fastest first; tiers are separate languages and are not ranked against each other"
 	);
 	let _ = doc.set_int(
 		&format!("{run}.host-cores"),
@@ -553,23 +741,31 @@ fn record(o: &Opts, rows: &[Row], units: &HashMap<&'static str, usize>) -> Resul
 	let _ = doc.set_int(&format!("{run}.target-mib"), o.mib as i64);
 	let _ = doc.set_int(&format!("{run}.iterations"), o.iters as i64);
 
+	// What each library IS goes under the run once; what it DID goes under the
+	// shape. Repeating five facts under every shape made the file four times
+	// longer and no more informative.
+	let order = rank(rows);
+	for l in libs {
+		let about = format!("{run}.tier[{}].library[{}]", l.tier.name(), l.key);
+		set!(format!("{about}.format"), &l.format);
+		set!(format!("{about}.library"), &l.library);
+		set!(format!("{about}.version"), &l.version);
+		set!(format!("{about}.retains"), &l.retains);
+		set!(format!("{about}.note"), &l.note);
+		if let Some(g) = order.get(&(l.tier, l.key.clone())) {
+			// The number the row order is derived from, so the ordering in this
+			// file can be re-derived rather than trusted.
+			let _ = doc.set_float(&format!("{about}.rank-parse-secs"), round6(*g));
+		}
+	}
+
 	for r in rows {
-		let sh = format!("{run}.shape[{}]", r.shape.name());
+		let sh = format!("{run}.tier[{}].shape[{}]", r.tier.name(), r.shape.name());
 		let _ = doc.set_int(
 			&format!("{sh}.units"),
 			*units.get(r.shape.name()).unwrap_or(&0) as i64,
 		);
 		let lib = format!("{sh}.library[{}]", r.key);
-		let e = bench::entry(r.key).expect("entry exists");
-		let about = format!("{run}.library[{}]", r.key);
-		set!(format!("{about}.format"), e.format);
-		set!(format!("{about}.crate"), e.library);
-		set!(
-			format!("{about}.version"),
-			vers.get(e.library).map_or("?", String::as_str)
-		);
-		set!(format!("{about}.retains"), e.retains);
-		set!(format!("{about}.note"), e.note);
 		if let Some(f) = &r.m.failed {
 			set!(format!("{lib}.failed"), f);
 			continue;

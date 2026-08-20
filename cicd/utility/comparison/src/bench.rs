@@ -41,10 +41,6 @@ pub const ENTRIES: &[Entry] = &[
 		note: "the read/write XML tree, which is the job the other libraries are doing" },
 ];
 
-pub fn entry(key: &str) -> Option<&'static Entry> {
-	ENTRIES.iter().find(|e| e.key == key)
-}
-
 /// Which generated file an entry reads.
 pub fn source_fmt(key: &str) -> crate::model::Fmt {
 	use crate::model::Fmt;

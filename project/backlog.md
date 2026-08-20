@@ -72,12 +72,15 @@ None open.
 	- The info-string half needed no separate fix: with the pair folded, the emitter never reaches the same-line-fence spelling for it, so the `#` survives. Pinned in the same case.
 	- Raise the soak in the pipeline, or at least run one at 200k before a cut: the 20k gate cannot see this class. Related to Code Review 20260817 item 29.
 
-- 🔘 `SaveFile` creates a brand-new file at mode 0600, whatever the umask says.
+- ✅ `SaveFile` creates a brand-new file at mode 0600, whatever the umask says.
 	- Found by dogfooding the file tier from the new comparison tool: its `results.shcl` came out `rw-------` under a 0002 umask, where every other tool on the box would have written `rw-rw-r--`.
 	- Cause is one missing branch, not a mistake: `write_file_atomic` opens its temp file at 0600 on purpose, so the copy is never briefly readable to anyone the original was not, and then copies the real mode off the target. When the target does not exist yet there is no mode to copy, so the private one stays. All four bindings mirror it.
 	- Two defensible answers, and it wants a decision rather than a patch. Either 0600 is the right default for a file that may hold secrets and the spec should say so out loud, or a new file should land at `0666 & ~umask` like everything else a person runs, and only an *existing* file's mode is worth preserving.
 	- Cheap to settle now: the whole file tier is unreleased, so either answer is free today and a behavior change later.
-	- Whichever way it goes, the write dimension in `crosscheck.bash` is where it gets pinned - a new file's mode is not visible on stdout, so no corpus case can see it.
+	- Settled the second way: a new file lands at `0666 & ~umask`, like anything else a person runs. 0600 would be a surprise the caller never asked for and could not see, and a config that needs to be private needs that from the umask or an explicit chmod, not from a library quietly deciding.
+	- Fixed in all four bindings by choosing the temp file's create mode from whether the target already exists, rather than by chmod'ing afterwards. An existing target still gets a private temp and its own mode copied on, so nothing about the case the privacy was for changed.
+	- Pinned in all four runners rather than `crosscheck.bash`: the CLI cannot create a file at all (`set --write` on a missing FILE is an error), so the path is library-only and no CLI comparison can reach it. The fixture compares against a file made by the language's own ordinary create, so it states the rule without hard-coding a umask - and each of the four was fault-injected and confirmed to fail on the old behavior.
+	- Spec says it now, in the file-tier paragraph beside the rest of the save's mechanics.
 
 ### Features and enhancements
 
@@ -116,6 +119,11 @@ None open.
 	- Deliberately not a pipeline gate: benchmarks are noisy and slow, and a red build caused by a busy machine teaches nothing. Reasoning and the full method are in `design.md` -> Format comparison.
 	- Done: the README carries a simplified table under "How it compares to...". It is favorable on size and unfavorable on speed, and says so - the front page already tells people not to use SHCL for high-volume machine data, so the honest table costs nothing and answers the question a reader would otherwise have to guess at.
 	- Found, and left for the item above: SHCL is nine to seventeen times slower to load than `serde_json` and holds 45x to 54x the input size in memory. Both are the memory-and-speed item, now with a second measurement backing it.
+	- Added after the first round: a **Python tier**, over the same documents, so the obvious objection - that this measures one implementation and calls it a format - has an answer. Most of what Python reaches for is a C extension wearing a Python name, so the row that carries the weight is `tomllib`, the one other pure-Python parser: SHCL lands 3.7x behind it in Python against 3.5x behind `toml` in Rust. That is the aggregate over four shapes, and it is the number worth quoting - the per-shape spread is wide in both tiers (2.4x to 6.7x in Python, 2.7x to 5.3x in Rust) and does not track shape for shape. Libraries that are not installed are skipped and named rather than failing the run.
+	- Added at the same time: rows are ordered by the geometric mean of each library's parse time over every shape, fastest first, in the printed tables and in the results file alike. SHCL sorts last in both tiers. The number the order comes from is recorded beside each library, so it can be re-derived rather than trusted.
+	- Turned up by the Python tier, about a library rather than a format: `lxml` goes quadratic on the long-and-flat shape - 59 MiB/s at 3 MiB down to 5.7 at 26 - with or without `huge_tree`, so it is not the ceiling-lifting flag. Millions of distinct element names against libxml2's name dictionary is the likely cause; nothing else in either tier does it, and the shapes whose names repeat are unaffected. Noted in `design.md`, not filed as our bug.
+	- `lxml` also needs `huge_tree` on to accept a document this size at all; without it the parse fails outright. That is the fair setting, not a thumb on the scale - the ceilings guard against hostile input, and this input is ours.
+	- Also fixed here, found by this branch's own gate run: `check-wheel.bash` discarded the build's output, so a transient failure - the build stands up an isolated environment and can fail for reasons that have nothing to do with the package - reported nothing but "build failed". It shows the tail of the log now.
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.

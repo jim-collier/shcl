@@ -4357,7 +4357,15 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	if (!tmp) { SHCL_FILE_CLEANUP(); return 0; }
 	// Exclusive create: anything already sitting at the predictable name -
 	// including a planted symlink - must fail rather than be written through.
-	// Born 0600; the real mode goes on below, before any data.
+	// A file that already exists keeps its own mode, so its temp is born private
+	// and the real mode goes on below - the copy is never briefly readable to
+	// anyone the original was not. A file that does not exist yet has no mode to
+	// preserve, so it takes the one an ordinary create would: 0666 narrowed by
+	// the umask, like every other file the user's tools produce.
+#ifndef _WIN32
+	struct stat st;
+	int have_st = (stat(target, &st) == 0);
+#endif
 	int fd = -1;
 	for (int attempt = 0; attempt < 8; attempt++) {
 		if (slash) sprintf(tmp, "%.*s.%s.tmp%ld.%d", (int)(slash - target + 1), target, slash + 1, (long)getpid(), attempt);
@@ -4365,7 +4373,7 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #ifdef _WIN32
 		fd = _open(tmp, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
 #else
-		fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+		fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, have_st ? 0600 : 0666);
 #endif
 		if (fd >= 0) break;
 	}
@@ -4375,8 +4383,7 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #ifndef _WIN32
 	// On the descriptor before any data, so umask cannot narrow it. Best
 	// effort: a filesystem that cannot carry the mode is not a failure.
-	struct stat st;
-	if (stat(target, &st) == 0) (void)fchmod(fileno(f), st.st_mode & 07777);
+	if (have_st) (void)fchmod(fileno(f), st.st_mode & 07777);
 #endif
 	int ok = fwrite(data, 1, n, f) == n && fflush(f) == 0;
 #ifdef _WIN32
