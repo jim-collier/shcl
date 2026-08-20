@@ -24,6 +24,8 @@ The first major since 1.0.0. Two things change incompatibly, both listed under C
 
 - `shcl --lossy` on `set --write`, the CLI half of the save gate, and `-v` beside `-V`. Read failures now explain themselves on stderr in every mode rather than only under `--on-bad=error`, with stdout byte-identical; `--on-bad=default` and an empty value outside error mode stay quiet on purpose.
 
+- `shcl set --write` creates FILE when nothing is at the path yet, so a first write no longer has to be preceded by a `touch`. `fmt --write` has nothing to format and still reports the file missing, and a file that exists but cannot be read stays an error in both - the alternative is writing over something unread.
+
 - A man page and shell completions. `man shcl` covers every subcommand, option, write op and exit code, with the per-subcommand option ownership the help only hints at, and the bash and zsh completions offer each subcommand exactly the options it accepts - an option a subcommand does not take is a usage error, so offering it would be a lie. The `.deb` and `.rpm` put all three where each shell already looks; the installer symlinks the man page into the target's own `man1` directory and leaves the completions with the line to enable them.
 
 - The installer gained `--uninstall`/`-Uninstall`, a sudo pre-check, a working no-terminal guard, and a pastable `export PATH=` line when the install directory is not on the path.
@@ -81,6 +83,8 @@ The first major since 1.0.0. Two things change incompatibly, both listed under C
 - Python's merge and clone walks are explicit stacks. A document at the documented depth cap, merged from a caller 900 frames deep, used to exhaust the interpreter's stack past about 485 levels and leave the base document half-mutated.
 
 - The C++ veneer's `Datetime` move operations left the moved-from value holding a view of digits it had handed away, so it formatted a fraction it no longer held. The invariant now lives in the rebind, which cannot be bypassed.
+
+- On Windows an in-place write left the file's ACLs, attributes and alternate data streams behind. A rename publishes a new file, and everything the old one carried outside its contents went with it; the write goes through `ReplaceFile` now, which carries them onto the replacement, and falls back to the old replacing move when the file is being created or the merge cannot be done. On POSIX the containing directory is synced after the rename as well as the file before it, so a power cut can no longer lose the publish itself and leave the old content. What a write still cannot carry - other hard links, POSIX ACLs, extended attributes and the SELinux label among them - is now stated in the spec rather than left to be discovered.
 
 - The PowerShell wrapper needed PowerShell 7. It used one operator that older versions do not have, on the line that forwards the binary's exit code, so it failed outright on the Windows PowerShell 5.1 that ships with the OS. Spelled the long way now, and it runs on both.
 
