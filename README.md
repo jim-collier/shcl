@@ -47,6 +47,7 @@
 - [What SHCL does about it](#what-shcl-does-about-it)
 - [How it compares to...](#how-it-compares-to)
 	- [Config languages - JSON, YAML, TOML, XML](#config-languages---json-yaml-toml-xml)
+	- [Performance - same data, five formats](#performance---same-data-five-formats)
 	- [DDL languages - Pkl, CUE, Dhall](#ddl-languages---pkl-cue-dhall)
 	- [When SHCL is the wrong choice](#when-shcl-is-the-wrong-choice)
 - [Features](#features)
@@ -137,6 +138,35 @@ When you do want zero-tolerance rigor: schema validation, plus a strict mode tha
 | Tells you what it fixed | ✅ Structured diagnostics | 🚫 | 🚫 | 🚫 | 🚫
 
 > *A note on types, because it is the big design difference: JSON and TOML store types in the file, so the author has to get them right. YAML infers types from the text, which is where `NO` becomes `false`. SHCL stores plain text and coerces when **you** ask for a type; the only code that decides a value is an int (for example), is the code that needed an int.*
+
+### Performance - same data, five formats
+
+Measured, not asserted. [`cicd/utility/comparison/`](cicd/utility/comparison/) builds one document per shape holding **the same data in every format**, loads each with its own ecosystem's Rust parser - same compiler, same flags - and records what it cost. The method and its caveats are in [design.md](project/design.md#format-comparison); every number, including the shapes not shown here, is in [results.shcl](cicd/utility/comparison/results.shcl).
+
+Below is 64 MiB of an array of records. The second row gives the range across all four shapes measured: long and flat, wide and deep, records, and multi-line text.
+
+| | SHCL | JSON | YAML | TOML | XML
+| :-- | :-- | :-- | :-- | :-- | :--
+| File size, same data | **1.00x** | 1.59x | 1.18x | 1.14x | 2.38x
+| ...across all four shapes | **1.00x** | 1.04 - 2.07x | 1.00 - 1.40x | 0.99 - 1.21x | 1.01 - 2.38x
+| ...gzipped | 1.00x | 0.97x | 1.04x | 1.02x | 1.20x
+| Load time | 8.4 s | **0.6 s** | 4.1 s | 1.8 s | 1.1 s
+| Peak memory | 3.4 GB | 2.0 GB | 3.7 GB | 2.9 GB | **1.4 GB**
+| What a load keeps | **your file as written** | your data | your data | your data | your data
+
+> *XML is measured with `roxmltree`, the fastest tree in Rust, which is read-only. The XML tree you can write back again takes 6.0 s and 10.4 GB.*
+
+The trade is explicit, and it is the one the design makes on purpose:
+
+- **SHCL writes the smallest file of the five**, and the gap widens with nesting - on deeply nested data it is half the size of JSON and of XML. On flat data everything ties. Gzipped the five land within a tenth of each other, so this is a plain-text win rather than a storage one.
+
+- **SHCL is the slowest to load** - nine to seventeen times behind `serde_json`, two to five times behind a TOML or YAML load. Note the scale, though: 64 MiB is a thousand times larger than a config anybody hand-edits, and the same load on a one-megabyte file is about an eighth of a second.
+
+- **Memory sits mid-pack** - roughly two to three times what a JSON load costs, and well under the one other parser here that keeps your file.
+
+That last table row is the reason for the three bullets above it. Every other parser here discards your comments, spacing and spelling the moment it loads, so a program that changes one value and saves rewrites the whole file around it. SHCL keeps all of it. Against `toml_edit` - the only other parser measured that does that same job - SHCL makes a smaller file in three shapes of four and uses 7% to 49% less memory, at two and a half to four and a half times the parse time.
+
+If you are moving high volumes of machine-generated data, none of this is your trade. Use JSON. SHCL is for files people edit.
 
 ### DDL languages - Pkl, CUE, Dhall
 

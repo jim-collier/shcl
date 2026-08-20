@@ -22,6 +22,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Schema validation](#schema-validation)
 	- [Formatter](#formatter)
 	- [Testing](#testing)
+	- [Format comparison](#format-comparison)
 	- [CI/CD](#cicd)
 	- [Reference implementation](#reference-implementation)
 	- [Go binding Tier 2](#go-binding-tier-2)
@@ -249,6 +250,38 @@ Two portability rules bind every binding:
 - Floats render as shortest round-trip decimal, never scientific notation. This matches the reference's native float formatting.
 
 - Diagnostic order must be deterministic, in first-appearance order. A port can match a rule, but not a coin flip.
+
+### Format comparison
+
+The feature comparison on the front page says how SHCL differs from JSON, YAML, TOML and XML. Nothing said what any of it costs, so `cicd/utility/comparison/` measures that, and the numbers README quotes come from there.
+
+Method, and why each part of it is the way it is:
+
+- **The language is held constant at Rust.** Every format is read by a mature native crate, built by the same compiler with the same flags. Measuring SHCL's C binding against a JSON parser in Python would compare implementations and call the answer a property of the formats.
+
+- **One abstract model per document, five encoders.** Each shape is built once as a small tree and then encoded five ways, so the files hold the same data by construction rather than by five hand-written generators happening to agree. Each encoding is the spelling a person would really use - SHCL raw blocks against YAML block scalars against XML CDATA - because a number taken from an unidiomatic encoding is not measuring the format.
+
+- **A pre-flight equivalence check.** At a small scale, every library has to parse its own file and find the same number of scalar values in it. One model does not rule out an escaping mistake in one encoder, and a size or speed number taken from documents that are not the same data is worth nothing.
+
+- **One process per measurement.** Peak resident memory is only attributable that way: a process that parsed six documents says nothing about what any one of them cost.
+
+- **Four shapes**, because one document shape hides most of what separates these formats - long and flat, wide and deep, an array of records, and multi-line text blocks.
+
+Several choices deliberately cut against SHCL, so that a favorable result stays one:
+
+- **No comments in any document.** Four of the five formats take them and JSON does not, so any comment at all would compare different documents - and comment retention is exactly the difference SHCL would most like to show off.
+
+- **JSON is pretty-printed and XML is indented**, since the premise is a file a person edits. JSON also gets `preserve_order`, because a config loader that silently sorts the file's keys is not one anybody would ship.
+
+- **TOML and XML each get two libraries.** `toml_edit` is the only mainstream non-SHCL parser here that keeps the file as written, which makes it the one genuinely like-for-like comparison. XML is measured both by the fastest tree in Rust and by the tree you can write back.
+
+- **The generated SHCL is canonical** - a `fmt` fixpoint - so the round-trip column reports what the format does rather than how the generator chose to space things.
+
+Reading a value by path is deliberately not measured. The five lookup APIs differ enough that the harness would have to write the walk itself for most of them, and the result would be a measurement of harness code.
+
+It is not a pipeline gate. Benchmarks are noisy and slow, and a red build caused by a busy machine teaches nobody anything. It runs on demand, and its results accumulate in `results.shcl` - which is the tooling's storage format as well as its subject, written, pruned and read back through this repo's own library.
+
+What it found, at 64 MiB per shape: SHCL writes the smallest file of the five in three shapes of four, and the gap widens with nesting - half the size of JSON and of XML on deep structure. Gzipped, the five land within a tenth of each other, so the win is a plain-text one. SHCL is also the slowest to load, ten to seventeen times behind `serde_json`, and sits mid-pack on memory: heavier than the parsers that keep only data, lighter than the one other parser that keeps the file. That trade is the design working as intended rather than a defect, but the memory multiplier is a separate open item.
 
 ### CI/CD
 

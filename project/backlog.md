@@ -72,6 +72,13 @@ None open.
 	- The info-string half needed no separate fix: with the pair folded, the emitter never reaches the same-line-fence spelling for it, so the `#` survives. Pinned in the same case.
 	- Raise the soak in the pipeline, or at least run one at 200k before a cut: the 20k gate cannot see this class. Related to Code Review 20260817 item 29.
 
+- 🔘 `SaveFile` creates a brand-new file at mode 0600, whatever the umask says.
+	- Found by dogfooding the file tier from the new comparison tool: its `results.shcl` came out `rw-------` under a 0002 umask, where every other tool on the box would have written `rw-rw-r--`.
+	- Cause is one missing branch, not a mistake: `write_file_atomic` opens its temp file at 0600 on purpose, so the copy is never briefly readable to anyone the original was not, and then copies the real mode off the target. When the target does not exist yet there is no mode to copy, so the private one stays. All four bindings mirror it.
+	- Two defensible answers, and it wants a decision rather than a patch. Either 0600 is the right default for a file that may hold secrets and the spec should say so out loud, or a new file should land at `0666 & ~umask` like everything else a person runs, and only an *existing* file's mode is worth preserving.
+	- Cheap to settle now: the whole file tier is unreleased, so either answer is free today and a behavior change later.
+	- Whichever way it goes, the write dimension in `crosscheck.bash` is where it gets pinned - a new file's mode is not visible on stdout, so no corpus case can see it.
+
 ### Features and enhancements
 
 - ✅ Test every binding against a document far larger than the corpus.
@@ -87,6 +94,7 @@ None open.
 	- Python is 1.16 s/MiB against 0.07 for C and 0.10 for Go - a minute and a half on a document the others finish in ten seconds.
 	- Not yet diagnosed, only measured. The obvious suspects are per-node allocation and how much source text each binding keeps alive after parsing; the earlier performance pass halved C's peak and never looked at the multiplier itself.
 	- No target set yet. Getting the multiplier under 20x would put a 100 MiB document inside 2 GB everywhere.
+	- Confirmed independently by the format comparison below, which measures the reference at 45x to 54x on four different document shapes and puts a number on the time half too: nine to seventeen times slower to load than `serde_json`, two to five times slower than a TOML or YAML load. Both halves of this item now have a second measurement behind them.
 
 - ✅ A man page and shell completions for the CLI.
 	- Split out of Code Review 20260817 item 28, which batched them with polish they do not belong with: this is a new deliverable, not a fix.
@@ -97,6 +105,17 @@ None open.
 	- Done: `cicd/utility/check-completions.bash` diffs the CLI's table against both completion files and fails the lint stage on any disagreement, so an option added to one cannot drift from the others.
 	- Done: the .deb and .rpm install the man page and both completions into the distribution's own directories, so they work with nothing to configure. The installer symlinks the man page into the target's man1 dir and leaves the completions under the install dir with the line to paste for each shell - the reasoning is in `design.md`. Uninstall removes both, and the man symlink only when it points back into the install dir.
 	- Done: the man page and completions ride in the signed drop-in payload, so nothing unverified is installed. A payload from before they existed installs what it has and says so.
+
+- ✅ Measure SHCL against JSON, YAML, TOML and XML.
+	- The front page compares the five on features and says nothing about what any of it costs, which leaves the obvious question unanswered and the obvious objection unmet.
+	- Done: `cicd/utility/comparison/` - a Rust tool and a `compare.bash` launcher. It builds one document per shape holding the same data in every format, loads each with its own ecosystem's crate, and reports file size, gzipped size, parse and emit time, peak memory and whether a load-and-save gives the file back.
+	- Four shapes, because one shape hides most of what separates these formats: long and flat, wide and deep, an array of records, and multi-line text blocks.
+	- The language is held constant at Rust so the comparison is between formats rather than between implementations. TOML and XML each get two libraries - one that keeps only the data and one that keeps the file - since only the second is doing the job SHCL does.
+	- A pre-flight check makes every library parse its own file and find the same number of scalar values, so a size or speed number can never come from documents that are not the same data.
+	- Results accumulate in `results.shcl`, written and pruned through this repo's own library and read back with its own CLI. Detailed enough to re-derive any published figure, and it keeps the newest runs only.
+	- Deliberately not a pipeline gate: benchmarks are noisy and slow, and a red build caused by a busy machine teaches nothing. Reasoning and the full method are in `design.md` -> Format comparison.
+	- Done: the README carries a simplified table under "How it compares to...". It is favorable on size and unfavorable on speed, and says so - the front page already tells people not to use SHCL for high-volume machine data, so the honest table costs nothing and answers the question a reader would otherwise have to guess at.
+	- Found, and left for the item above: SHCL is nine to seventeen times slower to load than `serde_json` and holds 45x to 54x the input size in memory. Both are the memory-and-speed item, now with a second measurement backing it.
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
