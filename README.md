@@ -849,8 +849,6 @@ cicd/cicd.bash --ci
 
 - [`style-guide.md`](style-guide.md): coding and prose style. The bindings deliberately mirror the reference's structure over per-language idiom, so they stay byte-for-byte in sync.
 
-- [`ai_acceptability_guidelines.md`](ai_acceptability_guidelines.md): where AI is welcome near this project, where it is not, and who answers for it either way.
-
 Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, [pkg.go.dev](https://pkg.go.dev/github.com/jim-collier/shcl/source/go/v2) for Go.
 
 ## Contributing and support

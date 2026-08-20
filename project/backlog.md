@@ -230,9 +230,10 @@ None open.
 			- The pair covering `--lossy` and what a bare `-` means. Both pack several clauses into one sentence with dashes doing the joining, and they are the only two top-level bullets in the file not separated by a blank line.
 			- Done: split into separate sentences and bullets, and the neighbouring bullet above them had the same problem and got the same treatment. No top-level bullet in the file is missing its blank line now.
 
-		- ✅ Code Review 20260819 item 17: the AI acceptability guidelines are unreachable from the README.
+		- 🚫 Code Review 20260819 item 17: the AI acceptability guidelines are unreachable from the README.
 			- A substantial public document that the Docs list does not mention, so the only way to find it is to browse the file listing.
-			- Done: listed under Docs, with a line saying what it covers.
+			- Not a defect. The file is meant to be there for anyone who goes looking, without the README pointing at it - the front page is about what the project does, and that document is not part of the pitch.
+			- It was briefly added to the Docs list and has been taken back out. Leave it unlinked.
 
 	- **Marketing**:
 
