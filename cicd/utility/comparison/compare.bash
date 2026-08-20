@@ -6,8 +6,13 @@
 ##		The README makes claims about how SHCL compares; this is where the
 ##		numbers behind them come from, and rerunning it is how they stay honest.
 ##
-##		The comparison holds the language constant at Rust, so every format is
-##		read by a mature native crate built with the same compiler and flags.
+##		The comparison holds the language constant within a tier, so every format
+##		is read by a library from the same ecosystem, built the same way. The
+##		Rust tier is the headline; the Python tier repeats it over the same
+##		documents to separate what a format costs from what one implementation
+##		of it costs. Python libraries that are not installed are skipped and
+##		named, never fatal - only python3 itself is needed.
+##
 ##		Detailed results accumulate in results.shcl - written, pruned and read
 ##		back through this repo's own library, which is both the storage format
 ##		and the point.

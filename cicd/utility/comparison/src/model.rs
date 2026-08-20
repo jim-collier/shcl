@@ -87,6 +87,16 @@ impl Fmt {
 			Fmt::Xml => "xml",
 		}
 	}
+	pub fn from_name(s: &str) -> Option<Fmt> {
+		match s {
+			"shcl" => Some(Fmt::Shcl),
+			"json" => Some(Fmt::Json),
+			"yaml" => Some(Fmt::Yaml),
+			"toml" => Some(Fmt::Toml),
+			"xml" => Some(Fmt::Xml),
+			_ => None,
+		}
+	}
 	pub fn all() -> [Fmt; 5] {
 		[Fmt::Shcl, Fmt::Json, Fmt::Yaml, Fmt::Toml, Fmt::Xml]
 	}
