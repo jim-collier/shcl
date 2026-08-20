@@ -54,7 +54,7 @@ jobs:
       ## releases stopped flagging, so a script can pass locally and fail here.
       ## Install the pinned version ahead of the image's copy on PATH.
       - run: |
-          pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1
+          pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1 build==1.5.0
           npm install -g markdownlint-cli2@0.23.1
           pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -Force -Scope CurrentUser'
           curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/shellcheck.tar.xz \

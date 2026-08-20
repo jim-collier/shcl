@@ -201,7 +201,8 @@ Behavior the corpus cannot see, because it is not stdout, belongs in `cicd/utili
 	- `rustfmt` + `clippy` - rustup components.
 	- `gofmt` + `go vet` - come with Go.
 	- `shellcheck` - the pipeline's own scripts and the bash wrapper.
-	- `ruff` + `mypy` - Python: `pipx install ruff` and `pipx install mypy`.
+	- `ruff` + `mypy` - Python: `pipx install ruff` and `pipx install mypy`; both read their settings from `source/python/pyproject.toml`.
+	- `build` - Python: `pipx install build`. The lint stage builds the wheel and sdist and checks they carry the library alone, since the CLI and the tests must never ship.
 	- `cppcheck` - C: `pipx install cppcheck` (PyPI wheel bundles the real binary).
 	- `markdownlint-cli2` - docs: `npm install -g markdownlint-cli2`; repo config in `.markdownlint-cli2.jsonc`.
 	- `PSScriptAnalyzer` - ps1 wrapper: `pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser'`.

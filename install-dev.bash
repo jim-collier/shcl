@@ -20,7 +20,7 @@
 ##
 ##	What a full dev box needs (see contributing.md "How to develop"):
 ##		gating:   rustup (rustfmt+clippy ride along), go, python3, gcc+g++,
-##		          shellcheck, ruff, mypy, cppcheck, markdownlint-cli2,
+##		          shellcheck, ruff, mypy, cppcheck, build, markdownlint-cli2,
 ##		          PSScriptAnalyzer (only if pwsh is present)
 ##		the gate: cicd/cicd.bash --ci
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
@@ -64,7 +64,7 @@ usage() {
 ##
 ##	What a full dev box needs (see contributing.md "How to develop"):
 ##		gating:   rustup (rustfmt+clippy ride along), go, python3, gcc+g++,
-##		          shellcheck, ruff, mypy, cppcheck, markdownlint-cli2,
+##		          shellcheck, ruff, mypy, cppcheck, build, markdownlint-cli2,
 ##		          PSScriptAnalyzer (only if pwsh is present)
 ##		the gate: cicd/cicd.bash --ci
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
@@ -107,8 +107,9 @@ have cc         || hints+=("gcc/g++     - ${pkg_hint} build-essential (or gcc gc
 have shellcheck || hints+=("shellcheck  - ${pkg_hint} shellcheck")
 if have pipx; then
 	for t in ruff mypy cppcheck; do have "$t" || todo+=("${t} (pipx, user-space)"); done
+	have pyproject-build || todo+=("build (pipx, user-space)")
 else
-	hints+=("pipx        - ${pkg_hint} pipx  (then re-run for ruff/mypy/cppcheck)")
+	hints+=("pipx        - ${pkg_hint} pipx  (then re-run for ruff/mypy/cppcheck/build)")
 fi
 if have npm; then
 	have markdownlint-cli2 || todo+=("markdownlint-cli2 (npm -g --prefix ~/.local)")
@@ -156,6 +157,7 @@ if ! have cargo && [[ ! -x "${HOME}/.cargo/bin/cargo" ]]; then
 fi
 if have pipx; then
 	for t in ruff mypy cppcheck; do have "$t" || pipx install "$t"; done
+	have pyproject-build || pipx install build   ## the package is "build", the command is not
 fi
 if have npm && ! have markdownlint-cli2; then
 	npm install -g --prefix "${HOME}/.local" markdownlint-cli2
