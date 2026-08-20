@@ -265,10 +265,10 @@ cargo install shcl
 
 #### Go module
 
-The module carries the library, and this installs the CLI from it:
+The module is the library by itself and installs no command, so this is a dependency, not an installation:
 
 ```sh
-go install github.com/jim-collier/shcl/source/go/v2/cmd/shcl@latest
+go get github.com/jim-collier/shcl/source/go/v2
 ```
 
 #### PyPI
