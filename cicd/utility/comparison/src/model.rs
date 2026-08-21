@@ -21,12 +21,27 @@ pub const DEEP_LEVELS: usize = 6;
 /// Lines in one `text` blob.
 pub const TEXT_LINES: usize = 8;
 
+/// Sections in the `config` shape - the whole file, not a repetition count.
+pub const CONFIG_UNITS: usize = 11;
+
+/// Size of the `ddl` shape's document. Big enough that a parser's behavior
+/// shows, small enough to be a file somebody actually maintains.
+pub const DDL_TARGET_BYTES: usize = 256 * 1024;
+
+/// How many units a shape's document holds, or how many bytes it should reach.
+pub enum Plan {
+	Units(usize),
+	Target(usize),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
 	Flat,
 	Deep,
 	Records,
 	Text,
+	Config,
+	Ddl,
 }
 
 impl Shape {
@@ -36,6 +51,8 @@ impl Shape {
 			Shape::Deep => "deep",
 			Shape::Records => "records",
 			Shape::Text => "text",
+			Shape::Config => "config",
+			Shape::Ddl => "ddl",
 		}
 	}
 	pub fn from_name(s: &str) -> Option<Shape> {
@@ -44,6 +61,8 @@ impl Shape {
 			"deep" => Some(Shape::Deep),
 			"records" => Some(Shape::Records),
 			"text" => Some(Shape::Text),
+			"config" => Some(Shape::Config),
+			"ddl" => Some(Shape::Ddl),
 			_ => None,
 		}
 	}
@@ -51,11 +70,41 @@ impl Shape {
 	pub fn list_key(self) -> Option<&'static str> {
 		match self {
 			Shape::Records => Some("service"),
+			Shape::Ddl => Some("table"),
 			_ => None,
 		}
 	}
-	pub fn all() -> [Shape; 4] {
-		[Shape::Flat, Shape::Deep, Shape::Records, Shape::Text]
+	/// The four scaling shapes take whatever size the run asks for, because what
+	/// they measure is parser behavior at volume. The two realistic ones carry
+	/// their own size instead: a config file is a few kilobytes and a schema
+	/// file a few hundred, and neither says anything useful at 64 MiB.
+	pub fn plan(self, mib: usize) -> Plan {
+		match self {
+			Shape::Config => Plan::Units(CONFIG_UNITS),
+			Shape::Ddl => Plan::Target(DDL_TARGET_BYTES),
+			_ => Plan::Target(mib * 1024 * 1024),
+		}
+	}
+	/// Units for the pre-flight equivalence check. The config file is checked
+	/// whole - repeating its sections would collide top-level keys - and the
+	/// deep shape is cut down because one unit of it is 729 leaf maps.
+	pub fn verify_units(self, default: usize) -> usize {
+		match self {
+			Shape::Config => CONFIG_UNITS,
+			Shape::Ddl => 20,
+			Shape::Deep => default.div_ceil(50).max(1),
+			_ => default,
+		}
+	}
+	pub fn all() -> [Shape; 6] {
+		[
+			Shape::Flat,
+			Shape::Deep,
+			Shape::Records,
+			Shape::Text,
+			Shape::Config,
+			Shape::Ddl,
+		]
 	}
 }
 
@@ -241,6 +290,292 @@ pub fn text_unit(i: usize) -> (String, Node) {
 		);
 	}
 	(format!("doc-{i:06}"), Node::Leaf(Val::Text(body)))
+}
+
+//•••• The two realistic shapes ••••
+
+fn s(v: &str) -> Node {
+	Node::Leaf(Val::Str(v.to_string()))
+}
+fn int(v: i64) -> Node {
+	Node::Leaf(Val::Int(v))
+}
+fn float(v: f64) -> Node {
+	Node::Leaf(Val::Float(v))
+}
+fn boolean(v: bool) -> Node {
+	Node::Leaf(Val::Bool(v))
+}
+fn list(items: &[&str]) -> Node {
+	Node::Leaf(Val::Arr(
+		items.iter().map(|x| Val::Str((*x).to_string())).collect(),
+	))
+}
+fn map(kids: Vec<(&str, Node)>) -> Node {
+	Node::Map(kids.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+}
+
+/// One `config` unit: a section of an ordinary application config, in the order
+/// somebody would write it. Sections rather than repetitions - a config file is
+/// not a million of anything, so the whole file is one measurement and its
+/// realistic size is the point.
+///
+/// The two top-level scalars come first because TOML requires that of any file
+/// holding both scalars and tables, and the rest is chosen to hit what a config
+/// actually contains: nesting, lists, every scalar type, a URL with a colon in
+/// it, and a banner nobody wants reflowed.
+pub fn config_unit(i: usize) -> (String, Node) {
+	match i {
+		0 => ("config_version".into(), int(3)),
+		1 => ("environment".into(), s("production")),
+		2 => (
+			"server".into(),
+			map(vec![
+				("host", s("0.0.0.0")),
+				("port", int(8443)),
+				("workers", int(8)),
+				("public_url", s("https://example.invalid/app")),
+				(
+					"tls",
+					map(vec![
+						("enabled", boolean(true)),
+						("certificate", s("/etc/ssl/certs/app.pem")),
+						("private_key", s("/etc/ssl/private/app.key")),
+						("protocols", list(&["TLSv1.3", "TLSv1.2"])),
+					]),
+				),
+				(
+					"timeouts",
+					map(vec![
+						("read_seconds", int(30)),
+						("write_seconds", int(30)),
+						("idle_seconds", int(120)),
+					]),
+				),
+			]),
+		),
+		3 => (
+			"logging".into(),
+			map(vec![
+				("level", s("info")),
+				("format", s("json")),
+				("targets", list(&["stderr", "/var/log/app/app.log"])),
+				("suppress", list(&["health-check", "static-asset"])),
+				(
+					"rotate",
+					map(vec![
+						("max_size_mb", int(64)),
+						("keep", int(7)),
+						("compress", boolean(true)),
+					]),
+				),
+			]),
+		),
+		4 => (
+			"database".into(),
+			map(vec![
+				("driver", s("postgres")),
+				("host", s("db.internal")),
+				("port", int(5432)),
+				("name", s("app_production")),
+				("user", s("app")),
+				("sslmode", s("verify-full")),
+				("statement_timeout_seconds", float(2.5)),
+				(
+					"pool",
+					map(vec![
+						("min_connections", int(2)),
+						("max_connections", int(32)),
+						("idle_timeout_seconds", int(300)),
+					]),
+				),
+			]),
+		),
+		5 => (
+			"cache".into(),
+			map(vec![
+				("backend", s("redis")),
+				(
+					"endpoints",
+					list(&["cache-a.internal:6379", "cache-b.internal:6379"]),
+				),
+				("ttl_seconds", int(900)),
+				("max_entries", int(50_000)),
+			]),
+		),
+		6 => (
+			"auth".into(),
+			map(vec![
+				("provider", s("oidc")),
+				("issuer", s("https://login.example.invalid")),
+				("session_minutes", int(720)),
+				("allow_signup", boolean(false)),
+				(
+					"administrators",
+					list(&["ops@example.invalid", "sre@example.invalid"]),
+				),
+				(
+					"password",
+					map(vec![
+						("min_length", int(12)),
+						("require_symbol", boolean(true)),
+						("reject_common", boolean(true)),
+					]),
+				),
+			]),
+		),
+		7 => (
+			"paths".into(),
+			map(vec![
+				("data", s("/var/lib/app")),
+				("uploads", s("/var/lib/app/uploads")),
+				("temporary", s("/tmp/app")),
+			]),
+		),
+		8 => (
+			"limits".into(),
+			map(vec![
+				("upload_mb", int(25)),
+				("requests_per_minute", int(600)),
+				("burst", int(50)),
+				("max_body_kb", int(512)),
+				("concurrent_jobs", int(4)),
+			]),
+		),
+		9 => (
+			"features".into(),
+			map(vec![
+				("new_dashboard", boolean(true)),
+				("audit_log", boolean(true)),
+				("beta_search", boolean(false)),
+				("export_csv", boolean(true)),
+			]),
+		),
+		_ => (
+			"motd".into(),
+			map(vec![
+				("enabled", boolean(true)),
+				(
+					"banner",
+					Node::Leaf(Val::Text(
+						"Maintenance runs Sundays, 02:00-03:00 UTC.\n\
+						 Reach the on-call team at ops@example.invalid <#ops>.\n\
+						 \"Read-only\" during a failover is normal; retry in a minute.\n\
+						 歓迎 - the Tokyo & Berlin sites read this banner too.\n"
+							.to_string(),
+					)),
+				),
+			]),
+		),
+	}
+}
+
+/// Column templates for the `ddl` shape. A table takes a run of them, so the
+/// definitions vary in width and in which optional clauses they carry, the way
+/// a real schema does. An empty default or comment means the clause is absent
+/// rather than blank.
+#[rustfmt::skip]
+const DDL_COLUMNS: &[(&str, &str, bool, &str, &str)] = &[
+	("id",         "bigint",        false, "",        "Surrogate key, never reused"),
+	("created_at", "timestamptz",   false, "now()",   "Set on insert, never touched again"),
+	("updated_at", "timestamptz",   true,  "",        "Maintained by the row trigger"),
+	("owner_id",   "bigint",        false, "",        ""),
+	("name",       "varchar(120)",  false, "",        "Display name, unique per tenant"),
+	("slug",       "varchar(120)",  false, "",        "URL segment, lower case"),
+	("status",     "varchar(24)",   false, "'draft'", "draft, active, archived"),
+	("amount",     "numeric(14,2)", true,  "0.00",    "Money, never a float"),
+	("currency",   "char(3)",       true,  "'USD'",   "ISO 4217"),
+	("quantity",   "integer",       true,  "0",       ""),
+	("notes",      "text",          true,  "",        "Free text, sometimes long"),
+	("metadata",   "jsonb",         true,  "'{}'",    "Whatever the app has not modelled yet"),
+	("is_deleted", "boolean",       false, "false",   "Soft delete, filtered by every view"),
+	("version",    "integer",       false, "1",       "Optimistic locking"),
+];
+
+const DDL_NOUNS: &[&str] = &[
+	"account",
+	"invoice",
+	"shipment",
+	"ledger_entry",
+	"subscription",
+	"audit_event",
+	"attachment",
+	"work_order",
+];
+
+/// One `ddl` unit: a table definition of the kind a schema file is full of -
+/// typed columns, nullability, defaults, keys, indexes, and the comments that
+/// are the reason such a file is kept by hand instead of dumped from a server.
+pub fn ddl_unit(i: usize) -> (String, Vec<(String, Node)>) {
+	let noun = DDL_NOUNS[i % DDL_NOUNS.len()];
+	let name = format!("{noun}_{:04}", i / DDL_NOUNS.len());
+	let width = 6 + i % (DDL_COLUMNS.len() - 5);
+
+	let mut columns = Vec::with_capacity(width);
+	for (col, ty, nullable, default, comment) in DDL_COLUMNS.iter().take(width) {
+		let mut spec = vec![("type", s(ty)), ("nullable", boolean(*nullable))];
+		if !default.is_empty() {
+			spec.push(("default", s(default)));
+		}
+		if !comment.is_empty() {
+			spec.push(("comment", s(comment)));
+		}
+		columns.push(((*col).to_string(), map(spec)));
+	}
+
+	let mut indexes = vec![(
+		"ix_owner".to_string(),
+		map(vec![
+			("columns", list(&["owner_id"])),
+			("unique", boolean(false)),
+			("method", s("btree")),
+		]),
+	)];
+	if width > 5 {
+		indexes.push((
+			"ix_slug".to_string(),
+			map(vec![
+				("columns", list(&["slug"])),
+				("unique", boolean(true)),
+				("method", s("btree")),
+			]),
+		));
+	}
+	if width > 9 {
+		indexes.push((
+			"ix_status_created".to_string(),
+			map(vec![
+				("columns", list(&["status", "created_at"])),
+				("unique", boolean(false)),
+				("method", s("btree")),
+			]),
+		));
+	}
+
+	let fields = vec![
+		("schema".to_string(), s("public")),
+		(
+			"comment".to_string(),
+			Node::Leaf(Val::Str(format!(
+				"One row per {noun}, partitioned by month, retained 7 years"
+			))),
+		),
+		("primary_key".to_string(), list(&["id"])),
+		("column".to_string(), Node::Map(columns)),
+		("index".to_string(), Node::Map(indexes)),
+		(
+			"foreign_key".to_string(),
+			Node::Map(vec![(
+				"fk_owner".to_string(),
+				map(vec![
+					("columns", list(&["owner_id"])),
+					("references", s("account(id)")),
+					("on_delete", s("cascade")),
+				]),
+			)]),
+		),
+	];
+	(name, fields)
 }
 
 //••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

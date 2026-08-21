@@ -284,7 +284,9 @@ Method, and why each part of it is the way it is:
 
 - **One process per measurement.** Peak resident memory is only attributable that way: a process that parsed six documents says nothing about what any one of them cost.
 
-- **Four shapes**, because one document shape hides most of what separates these formats - long and flat, wide and deep, an array of records, and multi-line text blocks.
+- **Six shapes**, because one document shape hides most of what separates these formats. Four of them scale to whatever size the run asks for: long and flat, wide and deep, an array of records, and multi-line text blocks. The other two carry their own realistic size instead - a hand-edited application config of a couple of kilobytes, and a schema definition file of a few hundred. A config file measured at 64 MiB is not a config file anybody has, and the scaling shapes measured at two kilobytes would be measuring process startup.
+
+- **The run count scales with the document.** Best of three says nothing when the parse takes microseconds, so a small document gets proportionally more timed runs, up to 200 times the count the run asked for. The count actually used is recorded beside each shape.
 
 Several choices deliberately cut against SHCL, so that a favorable result stays one:
 
@@ -304,7 +306,7 @@ It is not a pipeline gate. Benchmarks are noisy and slow, and a red build caused
 
 One thing the tool found about a library rather than a format, worth stating so nobody re-derives it: `lxml` goes quadratic on the long-and-flat shape, dropping from 59 MiB/s at 3 MiB to 5.7 at 26 - measured with and without `huge_tree`, which makes no difference, so it is not the flag that lifts libxml2's size ceilings. The likely cause is the shape's millions of *distinct* element names against libxml2's name dictionary; the shapes whose names repeat show nothing of the sort, and no other library in either tier does this. It is a good argument for measuring more than one document shape.
 
-What it found, at 64 MiB per shape: SHCL writes the smallest file of the five in three shapes of four, and the gap widens with nesting - half the size of JSON and of XML on deep structure. Gzipped, the five land within a fifth of each other, so the win is a plain-text one. SHCL is also the slowest to load in both tiers, nine to seventeen times behind `serde_json`, and sits mid-pack on memory: heavier than the parsers that keep only data, lighter than the one other parser that keeps the file. The Python tier says that cost is the format's rather than one implementation's - against `tomllib`, the tier's one other pure-Python parser, SHCL lands 3.7x behind, against 3.5x behind `toml` in Rust. That trade is the design working as intended rather than a defect, but the memory multiplier is a separate open item.
+What it found, at 64 MiB per shape: SHCL writes the smallest file of the five in three shapes of four, and the gap widens with nesting - half the size of JSON and of XML on deep structure. Gzipped, the five land within a fifth of each other, so the win is a plain-text one. SHCL is also the slowest to load in both tiers, nine to seventeen times behind `serde_json`, and sits mid-pack on memory: heavier than the parsers that keep only data, lighter than the one other parser that keeps the file. The Python tier says that cost is the format's rather than one implementation's - against `tomllib`, the tier's one other pure-Python parser, SHCL lands 3.7x behind, against 3.5x behind `toml` in Rust. That trade is the design working as intended rather than a defect, but the memory multiplier is a separate open item. At the two realistic sizes the size result holds and the speed result stops mattering: SHCL writes the smallest file of the five for both the config and the schema definition, and reads them in 0.1 ms and 17 ms.
 
 ### CI/CD
 
