@@ -29,9 +29,12 @@ shcl-comparison - measure SHCL against JSON, YAML, TOML and XML
 
 Usage: shcl-comparison [options]
 
-  --mib N          target size of each shape's SHCL encoding (default 16)
-  --iters N        timed runs per measurement, best wins (default 3)
-  --shape NAME     only this shape; repeatable (flat, deep, records, text)
+  --mib N          target size of each scaling shape's SHCL encoding (default
+                   16); the config and ddl shapes carry their own realistic size
+  --iters N        timed runs per measurement, best wins (default 3); scaled up
+                   on a document small enough to parse in microseconds
+  --shape NAME     only this shape; repeatable (flat, deep, records, text,
+                   config, ddl)
   --tier NAME      only this language tier; repeatable (rust, python)
   --entry KEY      only this library; repeatable (shcl, json, yaml, toml,
                    toml-edit, xml, xml-dom, xml-lxml)
@@ -185,6 +188,14 @@ fn emit_unit(g: &mut Gen, o: &mut String, shape: Shape, i: usize) {
 			let (name, f) = model::record_unit(i);
 			g.record(o, Shape::Records.list_key().unwrap(), &name, &f);
 		}
+		Shape::Config => {
+			let (k, n) = model::config_unit(i);
+			g.entry(o, &k, &n);
+		}
+		Shape::Ddl => {
+			let (name, f) = model::ddl_unit(i);
+			g.record(o, Shape::Ddl.list_key().unwrap(), &name, &f);
+		}
 	}
 }
 
@@ -212,6 +223,13 @@ fn render(shape: Shape, fmt: Fmt, units: usize, target: Option<usize>) -> (Strin
 	}
 	g.doc_close(&mut out);
 	(out, n)
+}
+
+/// Best-of-N says nothing when N is 3 and the parse takes microseconds, so a
+/// small document gets proportionally more runs. The clamp keeps a 64 MiB shape
+/// at the count the run asked for.
+fn scale_iters(iters: usize, bytes: usize) -> usize {
+	iters * ((1 << 20) / bytes.max(1)).clamp(1, 200)
 }
 
 //••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
@@ -351,7 +369,6 @@ fn orchestrate(o: &Opts) -> i32 {
 			}
 		},
 	};
-	let target = o.mib * 1024 * 1024;
 	let exe = std::env::current_exe().unwrap_or_else(|_| "shcl-comparison".into());
 
 	let (libs, skipped) = discover_libs(o);
@@ -365,14 +382,24 @@ fn orchestrate(o: &Opts) -> i32 {
 
 	let mut rows: Vec<Row> = Vec::new();
 	let mut units_by_shape: HashMap<&'static str, usize> = HashMap::new();
+	let mut iters_by_shape: HashMap<&'static str, usize> = HashMap::new();
 
 	for &shape in &o.shapes {
 		// SHCL sets the unit count by hitting the size target; every other
 		// format then encodes exactly that data, so size is a result rather
-		// than an input.
-		let (shcl_text, units) = render(shape, Fmt::Shcl, 0, Some(target));
+		// than an input. The shapes that carry their own size skip the target
+		// and render a fixed number of units instead.
+		let (shcl_text, units) = match shape.plan(o.mib) {
+			model::Plan::Units(n) => render(shape, Fmt::Shcl, n, None),
+			model::Plan::Target(t) => render(shape, Fmt::Shcl, 0, Some(t)),
+		};
+		let iters = scale_iters(o.iters, shcl_text.len());
 		units_by_shape.insert(shape.name(), units);
-		println!("generating {} ({units} units)", shape.name());
+		iters_by_shape.insert(shape.name(), iters);
+		println!(
+			"generating {} ({units} units, best of {iters})",
+			shape.name()
+		);
 
 		let mut path_of: HashMap<&str, String> = HashMap::new();
 		let mut bytes_of: HashMap<&str, usize> = HashMap::new();
@@ -397,7 +424,7 @@ fn orchestrate(o: &Opts) -> i32 {
 		for lib in &libs {
 			let fmt = Fmt::from_name(&lib.format).expect("a library names a known format");
 			let path = &path_of[fmt.name()];
-			let m = spawn_worker(&exe, lib, path, o.iters);
+			let m = spawn_worker(&exe, lib, path, iters);
 			match &m.failed {
 				Some(e) => {
 					eprintln!("  {:<6} {:<10} FAILED: {e}", lib.tier.name(), lib.key);
@@ -443,7 +470,7 @@ fn orchestrate(o: &Opts) -> i32 {
 	print_tables(&rows, &libs);
 
 	if o.record {
-		match record(o, &rows, &libs, &units_by_shape) {
+		match record(o, &rows, &libs, &units_by_shape, &iters_by_shape) {
 			Ok(id) => println!("\nrecorded run {id} in {}", o.out),
 			Err(e) => {
 				eprintln!("shcl-comparison: cannot record results: {e}");
@@ -461,11 +488,7 @@ fn orchestrate(o: &Opts) -> i32 {
 fn verify(o: &Opts) -> bool {
 	let mut ok = true;
 	for &shape in &o.shapes {
-		let units = if shape == Shape::Deep {
-			o.verify_units.div_ceil(50).max(1)
-		} else {
-			o.verify_units
-		};
+		let units = shape.verify_units(o.verify_units);
 		let mut counts: Vec<(&str, u64)> = Vec::new();
 		for fmt in Fmt::all() {
 			let (text, _) = render(shape, fmt, units, None);
@@ -486,7 +509,7 @@ fn verify(o: &Opts) -> bool {
 		// The four non-SHCL encodings carry the instance label as an ordinary
 		// `name` field, which SHCL spells as the binding's own value. Same data,
 		// one fewer scalar binding.
-		let offset = if shape == Shape::Records {
+		let offset = if shape.list_key().is_some() {
 			units as u64
 		} else {
 			0
@@ -703,6 +726,7 @@ fn record(
 	rows: &[Row],
 	libs: &[Lib],
 	units: &HashMap<&'static str, usize>,
+	iters: &HashMap<&'static str, usize>,
 ) -> Result<String, String> {
 	let (mut doc, status) = shcl::Document::load_file(&o.out);
 	match status {
@@ -764,6 +788,10 @@ libraries ordered by geometric-mean parse time, fastest first; tiers are separat
 		let _ = doc.set_int(
 			&format!("{sh}.units"),
 			*units.get(r.shape.name()).unwrap_or(&0) as i64,
+		);
+		let _ = doc.set_int(
+			&format!("{sh}.iterations"),
+			*iters.get(r.shape.name()).unwrap_or(&0) as i64,
 		);
 		let lib = format!("{sh}.library[{}]", r.key);
 		if let Some(f) = &r.m.failed {
