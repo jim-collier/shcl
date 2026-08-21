@@ -437,7 +437,7 @@ type rawValue struct {
 type value struct {
 	kind valueKind
 	els  []element
-	raw  rawValue
+	raw  *rawValue // behind a pointer: inline, its four fields would ride on every node
 }
 
 // key is the merge key: nodes with equal (name, key) collapse into one.
@@ -484,20 +484,38 @@ func (v *value) isEmpty() bool {
 }
 
 type nodeData struct {
-	name string // ASCII-folded to lower; non-ASCII never folds
-	// The name as the author spelled it (case unfolded, quotes and escapes
-	// resolved) - what AuthoredName() hands back. Merged instances keep the
-	// first binding's spelling, like Line() and comments.
-	nameSrc   string
+	name      string // ASCII-folded to lower; non-ASCII never folds
 	value     value
 	children  []int
 	parent    int
 	line      int
 	starList  bool // value built from stacked "* " lines
 	starMixed bool // mix of "* " and field children already diagnosed
-	// Comment trivia, verbatim from `#` to end of line. Never part of identity
-	// or reads; merged instances concatenate leading, first trailing wins
-	// (later ones demote to leading - a canonical line has room for one).
+	// Blank-line grouping is the other half of hand-authored layout: set when
+	// a blank line preceded this node's binding line (runs collapse to one).
+	blankBefore bool
+	// This node has decided its src - set by the first source line whose
+	// value the node holds, whether or not a string was worth keeping.
+	srcSet bool
+	// Comment trivia, kept off to the side: most nodes carry none, and the
+	// four empty containers were a third of every node.
+	trivia *trivia
+	// Verbatim value text from the source line (after the colon, comment
+	// stripped, trimmed) - what a read's Raw hands back. nil when the value
+	// was synthesized (writer, stacked list, fence) OR when the spelling is
+	// exactly the display form; raw falls back to the display form either way.
+	src *string
+	// The name as the author spelled it (case unfolded, quotes and escapes
+	// resolved) - what AuthoredName() hands back, via authored(). Merged
+	// instances keep the first binding's spelling, like Line() and comments.
+	// Empty = spelled exactly like name (the overwhelmingly common case).
+	nameSrc string
+}
+
+// trivia is comment trivia, verbatim from `#` to end of line. Never part of
+// identity or reads; merged instances concatenate leading, first trailing
+// wins (later ones demote to leading - a canonical line has room for one).
+type trivia struct {
 	leading  []lead
 	trailing string // empty = none
 	// Whole-line comments that followed this node's subtree at a deeper indent
@@ -509,14 +527,85 @@ type nodeData struct {
 	// could take them - a header whose children are all commented still owns
 	// those lines. Emitted after the subtree one level deeper than this node.
 	inside []lead
-	// Blank-line grouping is the other half of hand-authored layout: set when
-	// a blank line preceded this node's binding line (runs collapse to one).
-	blankBefore bool
-	// Verbatim value text from the source line (after the colon, comment
-	// stripped, trimmed) - what a read's Raw hands back. nil when the value
-	// was synthesized (writer, stacked list, fence), where raw falls back to
-	// the display form.
-	src *string
+}
+
+func (n *nodeData) leading() []lead {
+	if n.trivia == nil {
+		return nil
+	}
+	return n.trivia.leading
+}
+
+func (n *nodeData) trailing() string {
+	if n.trivia == nil {
+		return ""
+	}
+	return n.trivia.trailing
+}
+
+func (n *nodeData) after() []lead {
+	if n.trivia == nil {
+		return nil
+	}
+	return n.trivia.after
+}
+
+func (n *nodeData) inside() []lead {
+	if n.trivia == nil {
+		return nil
+	}
+	return n.trivia.inside
+}
+
+func (n *nodeData) trivMut() *trivia {
+	if n.trivia == nil {
+		n.trivia = &trivia{}
+	}
+	return n.trivia
+}
+
+// authored is the as-authored name spelling; empty nameSrc means "same as name".
+func (n *nodeData) authored() string {
+	if n.nameSrc == "" {
+		return n.name
+	}
+	return n.nameSrc
+}
+
+// spelled stores a name's authored spelling: the empty sentinel when it
+// matches the folded name, so the duplicate string never gets allocated.
+func spelled(name, nameSrc string) string {
+	if nameSrc == name {
+		return ""
+	}
+	return nameSrc
+}
+
+// srcMatchesDisplay: true when a source value spelling is exactly the display
+// form - the case where src need not be stored, since raw's fallback
+// reproduces it.
+func srcMatchesDisplay(v *value, s string) bool {
+	switch v.kind {
+	case vEmpty:
+		return s == ""
+	case vRaw:
+		return s == v.raw.content
+	}
+	rest := s
+	for i := range v.els {
+		var ok bool
+		if i > 0 {
+			rest, ok = strings.CutPrefix(rest, ", ")
+			if !ok {
+				return false
+			}
+		}
+		rest, ok = strings.CutPrefix(rest, v.els[i].text)
+		if !ok {
+			return false
+		}
+	}
+	return rest == ""
 }
 
 // Document is a parsed SHCL document: the tree, its diagnostics, and its
@@ -546,24 +635,20 @@ func foldNodeInto(arena []nodeData, survivor, loser int) {
 		arena[k].parent = survivor
 	}
 	arena[survivor].children = append(arena[survivor].children, kids...)
-	lead := arena[loser].leading
-	arena[loser].leading = nil
-	arena[survivor].leading = append(arena[survivor].leading, lead...)
-	trail := arena[loser].trailing
-	arena[loser].trailing = ""
-	if trail != "" {
-		if arena[survivor].trailing == "" {
-			arena[survivor].trailing = trail
-		} else {
-			arena[survivor].leading = append(arena[survivor].leading, plainLead(trail))
+	if lt := arena[loser].trivia; lt != nil {
+		arena[loser].trivia = nil
+		st := arena[survivor].trivMut()
+		st.leading = append(st.leading, lt.leading...)
+		if lt.trailing != "" {
+			if st.trailing == "" {
+				st.trailing = lt.trailing
+			} else {
+				st.leading = append(st.leading, plainLead(lt.trailing))
+			}
 		}
+		st.after = append(st.after, lt.after...)
+		st.inside = append(st.inside, lt.inside...)
 	}
-	after := arena[loser].after
-	arena[loser].after = nil
-	arena[survivor].after = append(arena[survivor].after, after...)
-	inside := arena[loser].inside
-	arena[loser].inside = nil
-	arena[survivor].inside = append(arena[survivor].inside, inside...)
 }
 
 // MaxDepth is the maximum nesting depth (levels below the document root),
@@ -832,6 +917,269 @@ func singleScalar(v *value) bool {
 
 func dispKey(v *value) string {
 	return applyEscapes(v.display())
+}
+
+// fnv is FNV-1a, fed the same byte sequence the key strings would spell - the
+// accelerator maps key on a uint64 and verify hits against the arena, so the
+// strings themselves never get built. The hash only has to be stable within
+// one parse, not injective; a collision just chains in the slot.
+type fnv struct {
+	h uint64
+}
+
+func newFnv() fnv {
+	return fnv{h: 0xcbf29ce484222325}
+}
+
+func (f *fnv) byte(b byte) {
+	f.h = (f.h ^ uint64(b)) * 0x100000001b3
+}
+
+func (f *fnv) bytes(s string) {
+	for i := 0; i < len(s); i++ {
+		f.byte(s[i])
+	}
+}
+
+// dec spells a length prefix in decimal, without allocating.
+func (f *fnv) dec(n int) {
+	var buf [20]byte
+	i := len(buf)
+	for {
+		i--
+		buf[i] = '0' + byte(n%10)
+		n /= 10
+		if n == 0 {
+			break
+		}
+	}
+	for ; i < len(buf); i++ {
+		f.byte(buf[i])
+	}
+}
+
+// mergeHash hashes the (name, merge-key) pair, spelling what value.key()
+// spells without building it.
+func mergeHash(name string, v *value) uint64 {
+	f := newFnv()
+	f.bytes(name)
+	f.byte(0xFF) // separator; equality still verifies both parts
+	switch v.kind {
+	case vEmpty:
+		f.byte('e')
+	case vCell:
+		f.bytes("c:")
+		for i := range v.els {
+			f.dec(len(v.els[i].text))
+			f.byte(':')
+			f.bytes(v.els[i].text)
+		}
+	default:
+		f.bytes("r:")
+		f.dec(len(v.raw.info))
+		f.byte(':')
+		f.bytes(v.raw.info)
+		f.bytes(v.raw.content)
+	}
+	return f.h
+}
+
+// valueHash hashes the value's merge key alone (no name part).
+func valueHash(v *value) uint64 {
+	return mergeHash("", v)
+}
+
+// mergeEq is the exact (name, merge-key) equality a hashed hit is verified
+// with - compares what the two key strings would hold, element by element.
+func mergeEq(nameA string, va *value, nameB string, vb *value) bool {
+	if nameA != nameB || va.kind != vb.kind {
+		return false
+	}
+	switch va.kind {
+	case vEmpty:
+		return true
+	case vCell:
+		if len(va.els) != len(vb.els) {
+			return false
+		}
+		for i := range va.els {
+			if va.els[i].text != vb.els[i].text {
+				return false
+			}
+		}
+		return true
+	}
+	return va.raw.info == vb.raw.info && va.raw.content == vb.raw.content
+}
+
+// escHash is applyEscapes as a streaming feed into the hash - the same state
+// machine, one byte at a time, no intermediate string.
+type escHash struct {
+	f       fnv
+	pending bool
+}
+
+func (e *escHash) push(b byte) {
+	switch {
+	case e.pending:
+		e.pending = false
+		switch b {
+		case 't':
+			e.f.byte('\t')
+		case 'n':
+			e.f.byte('\n')
+		case '\\':
+			e.f.byte('\\')
+		case '"':
+			e.f.byte('"')
+		case '\'':
+			e.f.byte('\'')
+		default:
+			e.f.byte('\\')
+			e.f.byte(b)
+		}
+	case b == '\\':
+		e.pending = true
+	default:
+		e.f.byte(b)
+	}
+}
+
+func (e *escHash) pushString(s string) {
+	for i := 0; i < len(s); i++ {
+		e.push(s[i])
+	}
+}
+
+func (e *escHash) finish() uint64 {
+	if e.pending {
+		e.f.byte('\\')
+	}
+	return e.f.h
+}
+
+// dispHash hashes the (name, display-with-escapes-applied) pair a `[value]`
+// selector matches with - what dispKey would spell, streamed instead of built.
+func dispHash(name string, v *value) uint64 {
+	f := newFnv()
+	f.bytes(name)
+	f.byte(0xFF)
+	e := escHash{f: f}
+	switch v.kind {
+	case vEmpty:
+	case vCell:
+		for i := range v.els {
+			if i > 0 {
+				e.push(',')
+				e.push(' ')
+			}
+			e.pushString(v.els[i].text)
+		}
+	default:
+		e.pushString(v.raw.content)
+	}
+	return e.finish()
+}
+
+// dispHashText is the query-side twin of dispHash: the selector's text already
+// has its escapes applied, so its bytes feed straight in.
+func dispHashText(name, want string) uint64 {
+	f := newFnv()
+	f.bytes(name)
+	f.byte(0xFF)
+	f.bytes(want)
+	return f.h
+}
+
+// slot is one accelerator bucket: node indices in insertion order. Nearly
+// always one entry; a second means two different keys collided in the 64-bit
+// hash.
+type slot struct {
+	one  int
+	many []int // nil = the single entry is `one`
+}
+
+func (s *slot) push(idx int) {
+	if s.many == nil {
+		s.many = []int{s.one, idx}
+	} else {
+		s.many = append(s.many, idx)
+	}
+}
+
+func (s *slot) firstMatch(f func(int) bool) (int, bool) {
+	if s.many == nil {
+		if f(s.one) {
+			return s.one, true
+		}
+		return 0, false
+	}
+	for _, c := range s.many {
+		if f(c) {
+			return c, true
+		}
+	}
+	return 0, false
+}
+
+// remove drops idx if present; true = the slot is now empty and the caller
+// should remove the map entry.
+func (s *slot) remove(idx int) bool {
+	if s.many == nil {
+		return s.one == idx
+	}
+	kept := s.many[:0]
+	for _, c := range s.many {
+		if c != idx {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == 1 {
+		s.one = kept[0]
+		s.many = nil
+		return false
+	}
+	s.many = kept
+	return len(kept) == 0
+}
+
+// The bucket helpers below carry the read-modify-write a map entry needs
+// (map values are not addressable), so the call sites stay one line each.
+
+// slotInsert chains idx into the bucket at h, insertion order preserved.
+func slotInsert(m map[uint64]slot, h uint64, idx int) {
+	if s, ok := m[h]; ok {
+		s.push(idx)
+		m[h] = s
+	} else {
+		m[h] = slot{one: idx}
+	}
+}
+
+// slotFirstMatch: the first index in the bucket at h passing the verify
+// callback (nil map = no bucket).
+func slotFirstMatch(m map[uint64]slot, h uint64, f func(int) bool) (int, bool) {
+	if m == nil {
+		return 0, false
+	}
+	s, ok := m[h]
+	if !ok {
+		return 0, false
+	}
+	return s.firstMatch(f)
+}
+
+// slotRemove drops idx from the bucket at h, deleting the entry when it empties.
+func slotRemove(m map[uint64]slot, h uint64, idx int) {
+	s, ok := m[h]
+	if !ok {
+		return
+	}
+	if s.remove(idx) {
+		delete(m, h)
+	} else {
+		m[h] = s
+	}
 }
 
 // fenceOpen matches an opening fence: a run of >=3 backticks or tildes, then
@@ -1120,25 +1468,29 @@ type parser struct {
 	diags []Diagnostic
 	// (indent, node) for each open level; [0] is the virtual root.
 	stack []stackEnt
-	// Per-node (name, value-key) -> first matching child, parallel to arena.
-	// Pure lookup accelerator for selectOrCreate; children keeps the order.
-	childMap []map[[2]string]int
-	// Per-node (name, display) -> first matching child: the `[value]` selector
-	// accelerator (its predicate is display(), a different and non-injective
-	// key from childMap's). Same first-wins discipline, same mutation sites.
-	dispMap []map[[2]string]int
+	// Per-node hash-of-(name, value-key) -> matching children, parallel to
+	// arena and nil until a parent's first insert, so leaves never allocate
+	// one. Pure lookup accelerator for selectOrCreate; children keeps the
+	// order. No key strings are stored - a hit is verified against the arena
+	// with mergeEq.
+	childMap []map[uint64]slot
+	// Per-node hash-of-(name, display) -> first matching child: the `[value]`
+	// selector accelerator (its predicate is display(), a different and
+	// non-injective key from childMap's). Same first-wins discipline, same
+	// mutation sites; ownership is by hash, and a query verifies its hit.
+	dispMap []map[uint64]int
 	// Whole-line comments waiting for the next line that binds a node. The
 	// source indent is kept only to decide after-attachment (a comment deeper
 	// than the next binding hangs on the block it sits in).
 	pending  []pend
 	sawBlank bool // a blank line waits to become the next bound node's blankBefore
 	// An open stacked list defers its merge-key remap (rebuilding the key per
-	// element is O(list^2) time); (node, key, display) at deferral start,
-	// flushed before any map lookup and at end of parse.
+	// element is O(list^2) time); (node, key hash, display hash) at deferral
+	// start, flushed before any map lookup and at end of parse.
 	starOpen bool
 	starNode int
-	starKey  string
-	starDisp string
+	starKey  uint64
+	starDisp uint64
 	// Node -> line of the re-open that H002-hinted it. A merge under a hinted
 	// container combines the same two textual regions, so it hints too even
 	// when it lands on the newest child at its own scope - that is how every
@@ -1152,8 +1504,8 @@ func newParser() *parser {
 	return &parser{
 		arena:     []nodeData{{}},
 		stack:     []stackEnt{{}},
-		childMap:  []map[[2]string]int{{}},
-		dispMap:   []map[[2]string]int{{}},
+		childMap:  []map[uint64]slot{nil},
+		dispMap:   []map[uint64]int{nil},
 		reentered: map[int]int{},
 	}
 }
@@ -1166,19 +1518,27 @@ func (p *parser) err(line int, msg string) {
 // this (name, value).
 func (p *parser) selectOrCreate(parent int, name, nameSrc string, v value, line int) int {
 	p.starFlush()
-	mapKey := [2]string{name, v.key()}
-	if c, ok := p.childMap[parent][mapKey]; ok {
+	h := mergeHash(name, &v)
+	if c, ok := slotFirstMatch(p.childMap[parent], h, func(c int) bool {
+		return mergeEq(p.arena[c].name, &p.arena[c].value, name, &v)
+	}); ok {
 		return c
 	}
 	idx := len(p.arena)
-	p.arena = append(p.arena, nodeData{name: name, nameSrc: nameSrc, value: v, parent: parent, line: line})
+	hd := dispHash(name, &v)
+	p.arena = append(p.arena, nodeData{name: name, nameSrc: spelled(name, nameSrc), value: v, parent: parent, line: line})
 	p.arena[parent].children = append(p.arena[parent].children, idx)
-	p.childMap = append(p.childMap, map[[2]string]int{})
-	p.childMap[parent][mapKey] = idx
-	p.dispMap = append(p.dispMap, map[[2]string]int{})
-	disp := [2]string{name, dispKey(&p.arena[idx].value)}
-	if _, ok := p.dispMap[parent][disp]; !ok {
-		p.dispMap[parent][disp] = idx
+	p.childMap = append(p.childMap, nil)
+	p.dispMap = append(p.dispMap, nil)
+	if p.childMap[parent] == nil {
+		p.childMap[parent] = map[uint64]slot{}
+	}
+	slotInsert(p.childMap[parent], h, idx)
+	if p.dispMap[parent] == nil {
+		p.dispMap[parent] = map[uint64]int{}
+	}
+	if _, ok := p.dispMap[parent][hd]; !ok {
+		p.dispMap[parent][hd] = idx
 	}
 	return idx
 }
@@ -1195,20 +1555,30 @@ func (p *parser) starFlush() {
 // remapChild: a node's value mutated in place (empty field filled, star element
 // added): move its map entry from the old key to the new one. First-wins on
 // both sides so lookups keep matching the earliest sibling, like the scan did.
-func (p *parser) remapChild(node int, oldKey, oldDisp string) {
+func (p *parser) remapChild(node int, oldKey, oldDisp uint64) {
 	parent := p.arena[node].parent
-	name := p.arena[node].name
-	if c, ok := p.childMap[parent][[2]string{name, oldKey}]; ok && c == node {
-		delete(p.childMap[parent], [2]string{name, oldKey})
+	if p.childMap[parent] != nil {
+		slotRemove(p.childMap[parent], oldKey, node)
 	}
-	newKey := [2]string{name, p.arena[node].value.key()}
-	if _, ok := p.childMap[parent][newKey]; !ok {
-		p.childMap[parent][newKey] = node
+	newKey := mergeHash(p.arena[node].name, &p.arena[node].value)
+	_, already := slotFirstMatch(p.childMap[parent], newKey, func(c int) bool {
+		return mergeEq(p.arena[c].name, &p.arena[c].value, p.arena[node].name, &p.arena[node].value)
+	})
+	if !already {
+		if p.childMap[parent] == nil {
+			p.childMap[parent] = map[uint64]slot{}
+		}
+		slotInsert(p.childMap[parent], newKey, node)
 	}
-	if c, ok := p.dispMap[parent][[2]string{name, oldDisp}]; ok && c == node {
-		delete(p.dispMap[parent], [2]string{name, oldDisp})
+	if m := p.dispMap[parent]; m != nil {
+		if c, ok := m[oldDisp]; ok && c == node {
+			delete(m, oldDisp)
+		}
 	}
-	newDisp := [2]string{name, dispKey(&p.arena[node].value)}
+	newDisp := dispHash(p.arena[node].name, &p.arena[node].value)
+	if p.dispMap[parent] == nil {
+		p.dispMap[parent] = map[uint64]int{}
+	}
 	if _, ok := p.dispMap[parent][newDisp]; !ok {
 		p.dispMap[parent][newDisp] = node
 	}
@@ -1226,14 +1596,16 @@ func (p *parser) foldLateDups() {
 		stack = stack[:len(stack)-1]
 		kids := p.arena[parent].children
 		p.arena[parent].children = nil
-		first := map[[2]string]int{}
+		first := map[uint64]slot{}
 		keep := make([]int, 0, len(kids))
 		for _, c := range kids {
-			key := [2]string{p.arena[c].name, p.arena[c].value.key()}
-			if survivor, ok := first[key]; ok {
+			h := mergeHash(p.arena[c].name, &p.arena[c].value)
+			if survivor, ok := slotFirstMatch(first, h, func(x int) bool {
+				return mergeEq(p.arena[x].name, &p.arena[x].value, p.arena[c].name, &p.arena[c].value)
+			}); ok {
 				foldNodeInto(p.arena, survivor, c)
 			} else {
-				first[key] = c
+				slotInsert(first, h, c)
 				keep = append(keep, c)
 			}
 		}
@@ -1246,15 +1618,19 @@ func (p *parser) foldLateDups() {
 // to a node. First trailing wins; a later one demotes to leading so nothing
 // is lost.
 func (p *parser) attachTrivia(node int, trailing string) {
-	for _, pn := range p.pending {
-		p.arena[node].leading = append(p.arena[node].leading, lead{text: pn.text, blankBefore: pn.blankBefore})
+	if len(p.pending) > 0 {
+		t := p.arena[node].trivMut()
+		for _, pn := range p.pending {
+			t.leading = append(t.leading, lead{text: pn.text, blankBefore: pn.blankBefore})
+		}
+		p.pending = p.pending[:0]
 	}
-	p.pending = p.pending[:0]
 	if trailing != "" {
-		if p.arena[node].trailing == "" {
-			p.arena[node].trailing = trailing
+		t := p.arena[node].trivMut()
+		if t.trailing == "" {
+			t.trailing = trailing
 		} else {
-			p.arena[node].leading = append(p.arena[node].leading, plainLead(trailing))
+			t.leading = append(t.leading, plainLead(trailing))
 		}
 	}
 }
@@ -1290,10 +1666,11 @@ func (p *parser) hangDeeperPending(newIndent string) {
 			}
 			if target >= 0 {
 				l := lead{text: pn.text, blankBefore: pn.blankBefore}
+				t := p.arena[target].trivMut()
 				if atOwnLevel {
-					p.arena[target].after = append(p.arena[target].after, l)
+					t.after = append(t.after, l)
 				} else {
-					p.arena[target].inside = append(p.arena[target].inside, l)
+					t.inside = append(t.inside, l)
 				}
 				continue
 			}
@@ -1365,7 +1742,12 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			// different sibling still satisfies - so a non-scalar hit and an
 			// outright miss both fall to the (rare) fallback scan.
 			want := applyEscapes(seg.sel.value)
-			found, ok := p.dispMap[cur][[2]string{seg.name, want}]
+			found, ok := 0, false
+			if m := p.dispMap[cur]; m != nil {
+				if c, hit := m[dispHashText(seg.name, want)]; hit && p.arena[c].name == seg.name && dispKey(&p.arena[c].value) == want {
+					found, ok = c, true
+				}
+			}
 			if ok && seg.sel.quoted && !singleScalar(&p.arena[found].value) {
 				ok = false
 			}
@@ -1484,7 +1866,7 @@ func (p *parser) consumeRaw(lines []string, i, openLine int, ch byte, length int
 	}
 	return value{
 		kind: vRaw,
-		raw:  rawValue{content: strings.Join(stripped, "\n"), info: info, fenceChar: ch, fenceLen: length},
+		raw:  &rawValue{content: strings.Join(stripped, "\n"), info: info, fenceChar: ch, fenceLen: length},
 	}, i
 }
 
@@ -1498,13 +1880,13 @@ func (p *parser) bindBlock(parent int, v value, line int) int {
 		return -1
 	}
 	if p.arena[parent].value.isEmpty() {
-		oldKey := p.arena[parent].value.key()
-		oldDisp := dispKey(&p.arena[parent].value)
+		oldKey := mergeHash(p.arena[parent].name, &p.arena[parent].value)
+		oldDisp := dispHash(p.arena[parent].name, &p.arena[parent].value)
 		p.arena[parent].value = v
 		p.remapChild(parent, oldKey, oldDisp)
 		return parent
 	}
-	name, nameSrc, grand := p.arena[parent].name, p.arena[parent].nameSrc, p.arena[parent].parent
+	name, nameSrc, grand := p.arena[parent].name, p.arena[parent].authored(), p.arena[parent].parent
 	return p.selectOrCreate(grand, name, nameSrc, v, line)
 }
 
@@ -1545,8 +1927,8 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 	}
 	switch {
 	case p.arena[parent].value.isEmpty():
-		oldKey := p.arena[parent].value.key()
-		oldDisp := dispKey(&p.arena[parent].value)
+		oldKey := mergeHash(p.arena[parent].name, &p.arena[parent].value)
+		oldDisp := dispHash(p.arena[parent].name, &p.arena[parent].value)
 		p.arena[parent].value = value{kind: vCell, els: []element{el}}
 		p.arena[parent].starList = true
 		// First element: remap now (Empty -> cell changes both keys), then
@@ -1556,15 +1938,15 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 		p.remapChild(parent, oldKey, oldDisp)
 		p.starOpen = true
 		p.starNode = parent
-		p.starKey = p.arena[parent].value.key()
-		p.starDisp = dispKey(&p.arena[parent].value)
+		p.starKey = mergeHash(p.arena[parent].name, &p.arena[parent].value)
+		p.starDisp = dispHash(p.arena[parent].name, &p.arena[parent].value)
 	case p.arena[parent].value.kind == vCell && p.arena[parent].starList:
 		if !(p.starOpen && p.starNode == parent) {
 			p.starFlush()
 			p.starOpen = true
 			p.starNode = parent
-			p.starKey = p.arena[parent].value.key()
-			p.starDisp = dispKey(&p.arena[parent].value)
+			p.starKey = mergeHash(p.arena[parent].name, &p.arena[parent].value)
+			p.starDisp = dispHash(p.arena[parent].name, &p.arena[parent].value)
 		}
 		p.arena[parent].value.els = append(p.arena[parent].value.els, el)
 	default:
@@ -1771,13 +2153,16 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// Record only when the bound node holds exactly this line's value
 		// (a merge into an equal-valued node keeps the first line's span;
 		// a value dropped after a last-segment selector records nothing).
-		vkey := ""
+		var vkey uint64
 		if srcText != nil {
-			vkey = v.key()
+			vkey = valueHash(&v)
 		}
 		if node, ok := p.attachPath(parent, scan.segments, v, lineno); ok {
-			if srcText != nil && p.arena[node].src == nil && p.arena[node].value.key() == vkey {
-				p.arena[node].src = srcText
+			if srcText != nil && !p.arena[node].srcSet && valueHash(&p.arena[node].value) == vkey {
+				p.arena[node].srcSet = true
+				if !srcMatchesDisplay(&p.arena[node].value, *srcText) {
+					p.arena[node].src = srcText
+				}
 			}
 			if hadBlank {
 				p.arena[node].blankBefore = true
@@ -1937,7 +2322,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 	// comment joins the leading lines instead; the flag comes from the parent's
 	// walk. Each blank rides its own comment (or the binding line), never as
 	// the first output line.
-	for _, c := range node.leading {
+	for _, c := range node.leading() {
 		if c.blankBefore && out.Len() > 0 {
 			out.WriteByte('\n')
 		}
@@ -1948,9 +2333,9 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 	if node.blankBefore && out.Len() > 0 {
 		out.WriteByte('\n')
 	}
-	if wouldMerge && node.trailing != "" {
+	if wouldMerge && node.trailing() != "" {
 		out.WriteString(pad)
-		out.WriteString(node.trailing)
+		out.WriteString(node.trailing())
 		out.WriteByte('\n')
 	}
 	out.WriteString(pad)
@@ -1958,7 +2343,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 	out.WriteByte(':')
 	switch node.value.kind {
 	case vEmpty:
-		writeTrailing(out, node.trailing)
+		writeTrailing(out, node.trailing())
 		out.WriteByte('\n')
 	case vCell:
 		out.WriteByte(' ')
@@ -1967,7 +2352,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 			parts[k] = emitElement(&node.value.els[k])
 		}
 		out.WriteString(strings.Join(parts, ", "))
-		writeTrailing(out, node.trailing)
+		writeTrailing(out, node.trailing())
 		out.WriteByte('\n')
 	default:
 		// Child-indent spelling is canonical: bare name line, fenced block one
@@ -1975,11 +2360,11 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 		// sibling is empty, the bare `name:` header would merge into it on
 		// reparse and the fence would fill that instance instead - so use the
 		// same-line spelling there.
-		r := &node.value.raw
+		r := node.value.raw
 		if wouldMerge {
 			out.WriteByte(' ')
 		} else {
-			writeTrailing(out, node.trailing)
+			writeTrailing(out, node.trailing())
 			out.WriteByte('\n')
 		}
 		bodyPad := strings.Repeat("\t", depth+1)
@@ -2023,7 +2408,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 	d.emitChildren(d.arena[idx].children, depth+1, out)
 	// Comments this block owns with no child to carry them, one deeper.
 	ipad := strings.Repeat("\t", depth+1)
-	for _, c := range d.arena[idx].inside {
+	for _, c := range d.arena[idx].inside() {
 		if c.blankBefore && out.Len() > 0 {
 			out.WriteByte('\n')
 		}
@@ -2032,7 +2417,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 		out.WriteByte('\n')
 	}
 	// Comments that hung on this block after its last child.
-	for _, c := range d.arena[idx].after {
+	for _, c := range d.arena[idx].after() {
 		if c.blankBefore && out.Len() > 0 {
 			out.WriteByte('\n')
 		}
@@ -2776,7 +3161,7 @@ func (d *Document) AuthoredName(path string) string {
 	if !ok || r.kind != resOne {
 		return ""
 	}
-	return d.arena[r.one].nameSrc
+	return d.arena[r.one].authored()
 }
 
 // Lines is the plural Line(): 1-based source lines at a path, in file order,
@@ -2956,7 +3341,7 @@ func (d *Document) newChild(parent int, name, nameSrc string, v value) int {
 	idx := len(d.arena)
 	// Hand-written files separate top-level sections with a blank line;
 	// writer-built ones do the same (the emitter never blanks line 1).
-	d.arena = append(d.arena, nodeData{name: name, nameSrc: nameSrc, value: v, parent: parent, blankBefore: parent == root})
+	d.arena = append(d.arena, nodeData{name: name, nameSrc: spelled(name, nameSrc), value: v, parent: parent, blankBefore: parent == root})
 	d.arena[parent].children = append(d.arena[parent].children, idx)
 	return idx
 }
@@ -3213,7 +3598,8 @@ func (d *Document) SetComment(path, text string) bool {
 	if !strings.HasPrefix(line, "#") {
 		line = "# " + line
 	}
-	d.arena[idx].leading = append(d.arena[idx].leading, plainLead(line))
+	t := d.arena[idx].trivMut()
+	t.leading = append(t.leading, plainLead(line))
 	return true
 }
 
@@ -3253,7 +3639,7 @@ func (d *Document) SetEmpty(path string) bool {
 // SetRaw binds a raw block at path, picking a fence longer than any content line.
 func (d *Document) SetRaw(path, content, info string) bool {
 	fc, fl := chooseFence(content)
-	return d.setValue(path, value{kind: vRaw, raw: rawValue{content: content, info: info, fenceChar: fc, fenceLen: fl}})
+	return d.setValue(path, value{kind: vRaw, raw: &rawValue{content: content, info: info, fenceChar: fc, fenceLen: fl}})
 }
 
 // SetIntArray binds an inline integer array at path.
@@ -3452,19 +3838,23 @@ func (d *Document) Merge(over *Document) {
 // comments have to move onto it or they are lost. Same rule as an in-file
 // merge: leading concatenates in layer order, first trailing wins.
 func (d *Document) adoptTrivia(base int, over *Document, ok int) {
-	src := &over.arena[ok]
+	st := over.arena[ok].trivia
+	if st == nil {
+		return
+	}
+	bt := d.arena[base].trivMut()
 	// append copies the lead values, so the merged doc never shares a
 	// backing array with over, which the caller may still mutate.
-	d.arena[base].leading = append(d.arena[base].leading, src.leading...)
-	if src.trailing != "" {
-		if d.arena[base].trailing == "" {
-			d.arena[base].trailing = src.trailing
+	bt.leading = append(bt.leading, st.leading...)
+	if st.trailing != "" {
+		if bt.trailing == "" {
+			bt.trailing = st.trailing
 		} else {
-			d.arena[base].leading = append(d.arena[base].leading, plainLead(src.trailing))
+			bt.leading = append(bt.leading, plainLead(st.trailing))
 		}
 	}
-	d.arena[base].after = append(d.arena[base].after, src.after...)
-	d.arena[base].inside = append(d.arena[base].inside, src.inside...)
+	bt.after = append(bt.after, st.after...)
+	bt.inside = append(bt.inside, st.inside...)
 }
 
 func (d *Document) overlay(baseParent int, over *Document, overParent int) {
@@ -3534,8 +3924,7 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 				if !found && over.arena[ok].value.kind == vRaw {
 					empty := [2]string{name, emptyKey}
 					if b, hit := byKey[empty]; hit {
-						cv := over.arena[ok].value
-						cv.els = append([]element(nil), cv.els...)
+						cv := cloneValue(&over.arena[ok].value)
 						d.arena[b].value = cv
 						delete(byKey, empty)
 						if _, dup := byKey[[2]string{name, okey}]; !dup {
@@ -3577,13 +3966,37 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	d.arena[baseParent].children = newKids
 }
 
+// cloneValue copies the value's storage too - a struct copy would share the
+// els backing array (and the raw block) with `over`, and the clone must
+// survive `over` being released.
+func cloneValue(v *value) value {
+	cv := *v
+	cv.els = append([]element(nil), cv.els...)
+	if cv.raw != nil {
+		r := *cv.raw
+		cv.raw = &r
+	}
+	return cv
+}
+
+// cloneTrivia deep-copies a trivia sidecar (nil stays nil).
+func cloneTrivia(t *trivia) *trivia {
+	if t == nil {
+		return nil
+	}
+	c := trivia{
+		leading:  append([]lead(nil), t.leading...),
+		trailing: t.trailing,
+		after:    append([]lead(nil), t.after...),
+		inside:   append([]lead(nil), t.inside...),
+	}
+	return &c
+}
+
 // cloneSubtree deep-copies over's subtree at oi into d's arena under parent.
 func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
 	src := over.arena[oi]
-	// Copy the element storage too - a struct copy would share the els backing
-	// array with `over`, and the clone must survive `over` being released.
-	cv := src.value
-	cv.els = append([]element(nil), cv.els...)
+	cv := cloneValue(&src.value)
 	var srcCopy *string
 	if src.src != nil {
 		s := *src.src
@@ -3597,11 +4010,9 @@ func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
 		line:        src.line,
 		starList:    src.starList,
 		starMixed:   src.starMixed,
-		leading:     append([]lead(nil), src.leading...),
-		trailing:    src.trailing,
-		after:       append([]lead(nil), src.after...),
-		inside:      append([]lead(nil), src.inside...),
+		trivia:      cloneTrivia(src.trivia),
 		blankBefore: src.blankBefore,
+		srcSet:      src.srcSet,
 		src:         srcCopy,
 	}
 	idx := len(d.arena)
