@@ -84,10 +84,13 @@ None open.
 
 ### Features and enhancements
 
-- 🔘 Run the four runners on Windows in CI.
-	- The file tier now has real platform-specific code - the publish step differs by OS, and the create-versus-overwrite fixture in every runner was widened to exercise both paths on every platform. Nothing in the pipeline runs any of it on Windows, so the fixture only fires when someone loads the repo there by hand.
-	- The gap it would close is proven, not hypothetical: the Python binding threw on every Windows overwrite and no gate here could see it.
-	- Scope is one job, not a matrix: the four runners plus the file-tier fixtures. Rust, Go and Python need only their toolchains; C needs a compiler choice made. The cross stage already compiles the C and Go Windows paths, so this is about running them, not building them.
+- ✅ Run the four runners on Windows in CI.
+	- The file tier now has real platform-specific code - the publish step differs by OS, and the create-versus-overwrite fixture in every runner was widened to exercise both paths on every platform. Nothing in the pipeline ran any of it on Windows, so the fixture only fired when someone loaded the repo there by hand.
+	- The gap it closes is proven, not hypothetical: the Python binding threw on every Windows overwrite and no gate here could see it.
+	- Done: a second `windows` job in `ci.yml` runs `cicd/utility/win-runners.bash` under Git Bash - the runners plus the veneer smoke, and nothing else. The corpus goldens, crosscheck, large document and every lint gate stay on the Linux job, which is where they are defined. gcc is the compiler because MSVC has no `dirent.h` for the C runner to walk the corpus with.
+	- Done: `.gitattributes` turns off end-of-line conversion. Git for Windows defaults `core.autocrlf` on, which would rewrite every golden on checkout - and the corpus deliberately holds cases whose line endings are the thing under test.
+	- Two real defects found on the way, both in test code: the C runner would not compile for Windows at all (POSIX two-argument `mkdir`, and a temp root that only knew `TMPDIR` and `/tmp`), and the Python runner seeded its file-tier fixtures in text mode, which would have fed different bytes there than everywhere else.
+	- Rust, Go and C were confirmed green on the Windows path before this shipped, by building for mingw and running under wine. Python is the one that could not be checked that way, which is also the one that has already broken there.
 
 - ✅ Test every binding against a document far larger than the corpus.
 	- Nothing in the pipeline parsed more than a few kilobytes: 56 corpus cases of a few hundred bytes each, and fuzz inputs smaller still. A parser going quadratic, or a buffer that only misbehaves past a few megabytes, had no gate at all - and this project has already shipped one buffer-growth defect that no small case could see.

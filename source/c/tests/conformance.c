@@ -16,9 +16,21 @@
 #include <locale.h>
 #include <errno.h>
 #include <dirent.h>
-#ifndef _WIN32
+#ifdef _WIN32
+#include <direct.h>   // _mkdir - windows' mkdir takes no mode argument
+#else
 #include <sys/stat.h>   // the file-mode fixture stats and chmods for itself
 #endif
+
+// Temp root for the file-tier fixture. TMPDIR is the POSIX spelling; windows
+// sets TEMP/TMP and has no /tmp to fall back on.
+static const char *tmp_root(void) {
+	const char *v;
+	if ((v = getenv("TMPDIR")) && *v) return v;
+	if ((v = getenv("TEMP")) && *v) return v;
+	if ((v = getenv("TMP")) && *v) return v;
+	return "/tmp";
+}
 
 static int nfail = 0;
 static void fail(const char *at, const char *msg) { fprintf(stderr, "FAIL %s: %s\n", at, msg); nfail++; }
@@ -647,9 +659,13 @@ int main(int argc, char **argv) {
 	// with errors / clean, and a save round-trips through the atomic write.
 	// Same fixture in every runner.
 	{
-		char tdir[128], tfile[160];
-		snprintf(tdir, sizeof tdir, "%s/shcl-filetier-%ld", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", (long)getpid());
+		char tdir[256], tfile[288];
+		snprintf(tdir, sizeof tdir, "%s/shcl-filetier-%ld", tmp_root(), (long)getpid());
+#ifdef _WIN32
+		if (_mkdir(tdir) != 0) fail("file_tier", "mkdir failed");
+#else
 		if (mkdir(tdir, 0700) != 0) fail("file_tier", "mkdir failed");
+#endif
 		snprintf(tfile, sizeof tfile, "%s/t.shcl", tdir);
 		shcl_file_status fst;
 		shcl_doc *fd = shcl_load_file(tfile, &fst);
@@ -693,7 +709,7 @@ int main(int argc, char **argv) {
 		// which no POSIX-only fixture could ever have caught. Same fixture in
 		// every runner.
 		{
-			char fresh[176];
+			char fresh[320];
 			snprintf(fresh, sizeof fresh, "%s/fresh.shcl", tdir);
 			shcl_doc *nd = shcl_parse("a: 1\n", 5);
 			for (int pass = 0; pass < 2; pass++) {
@@ -709,7 +725,7 @@ int main(int argc, char **argv) {
 			// neither is a windows concept, so the mode half is POSIX-only.
 #ifndef _WIN32
 			{
-				char probe[176], born[176];
+				char probe[320], born[320];
 				snprintf(probe, sizeof probe, "%s/probe", tdir);
 				snprintf(born, sizeof born, "%s/born.shcl", tdir);
 				FILE *pf = fopen(probe, "wb");
@@ -751,7 +767,7 @@ int main(int argc, char **argv) {
 		// A refusal and a failed write are separate values, not two spellings of
 		// one message, and the gate answers before any i/o - so an unwritable path
 		// still reports the refusal. Same fixture in every runner.
-		char bad[224];
+		char bad[320];
 		snprintf(bad, sizeof bad, "%s/nope/t.shcl", tdir);
 		if (shcl_save_file(kd, bad) != SHCL_SAVE_FAILED) fail("lost", "a failed write did not report as one");
 		if (shcl_save_file(lo, bad) != SHCL_SAVE_REFUSED) fail("lost", "refusal did not survive an unwritable path");

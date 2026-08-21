@@ -702,14 +702,16 @@ def main():
 		fdoc, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.Unreadable or fdoc.to_canonical() != "":
 			raise SystemExit(f"load_file bad encoding got {fst} {fdoc.to_canonical()!r}")
-		with open(fpath, "w", encoding="utf-8") as fh:
+		# newline="" on the seeds below: text mode would translate \n on windows,
+		# so the fixture would be feeding different bytes there than anywhere else.
+		with open(fpath, "w", encoding="utf-8", newline="") as fh:
 			fh.write("a: 1\n: broken\n")
 		fdoc, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.HadErrors:
 			raise SystemExit(f"load_file broken got {fst}")
 		if fdoc.get_int("a", default=0) != 1:
 			raise SystemExit("load_file broken read failed")
-		with open(fpath, "w", encoding="utf-8") as fh:
+		with open(fpath, "w", encoding="utf-8", newline="") as fh:
 			fh.write("a: 1\nb: x\n")
 		fdoc, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.Clean:
