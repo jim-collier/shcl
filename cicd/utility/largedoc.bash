@@ -45,13 +45,14 @@ if ! [[ "${mib}" =~ ^[1-9][0-9]*$ ]]; then echo "largedoc: --mib wants a positiv
 ## six times slower than a release build), and a shared CI runner is slower again;
 ## the target is a growth-rate regression, not a stopwatch. Memory is held much
 ## closer, since peak RSS barely moves between machines or build profiles.
-## Measured at 100 MiB on a workstation: rust 0.70 s/MiB and 39 MiB/MiB, go 0.10
-## and 56, c 0.07 and 72, python 1.16 and 62.
+## Measured at 100 MiB on a workstation: rust 0.53 s/MiB and 21 MiB/MiB, go 0.08
+## and 33-41 (concurrent GC moves it run to run, so its ceiling carries more
+## slack), c 0.04 and 30, python 1.11 and 47.
 limits=(
-	"rust|3.00|60"
-	"go|1.00|75"
-	"c|1.00|90"
-	"python|4.00|80"
+	"rust|3.00|32"
+	"go|1.00|55"
+	"c|1.00|45"
+	"python|4.00|65"
 )
 
 fLimit() {   ## $1 = binding name, $2 = field (2=secs, 3=rss); empty when unlisted
