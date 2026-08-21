@@ -141,33 +141,31 @@ When you do want zero-tolerance rigor: schema validation, plus a strict mode tha
 
 ### Performance comparison
 
-[`cicd/utility/comparison/`](cicd/utility/comparison/) writes the same data out in five formats, then loads each file with its own ecosystem's parser - same compiler, same flags, one process per measurement. Method and caveats: [design.md](project/design.md#format-comparison). Every number, including the other shapes and the Python tier: [results.shcl](cicd/utility/comparison/results.shcl).
+SHCL writes the smallest file of the five, and it is the slowest to read. That is the trade, and it is on purpose: SHCL is the only one of the five that gives your file back the way you wrote it.
 
-The table below is one array of 302,230 records, read by Rust libraries, fastest load first.
+Here is one array of 302,230 records, written five ways and read by Rust libraries, fastest first.
 
 | | JSON | XML | TOML | YAML | SHCL
 | :-- | :-- | :-- | :-- | :-- | :--
 | File size | 107 MB | 160 MB | 77 MB | 80 MB | **67 MB**
 | Gzipped | 8.9 MB | 11.0 MB | 9.3 MB | 9.4 MB | 9.1 MB
-| Load time | **0.60 s** | 1.07 s | 1.79 s | 4.14 s | 9.45 s
+| Read time | **0.60 s** | 1.07 s | 1.79 s | 4.14 s | 9.45 s
 | Peak memory | 2.1 GB | **1.5 GB** | 3.0 GB | 3.9 GB | 3.6 GB
 | Keeps your file as written | no | no | no | no | **yes**
 
 > *XML here is `roxmltree`, the fastest tree in Rust, and it is read-only. The XML tree you can write back again takes 6.21 s and 10.9 GB.*
 
-Three things fall out of that. All three are deliberate:
+The size win holds in three of the four data shapes tested, and it grows with nesting. On deeply nested data, JSON and XML are both more than twice the size of SHCL. Gzip them all and they land within a tenth of each other, so this helps you on disk and in a diff, not in an archive.
 
-- **SHCL writes the smallest file.** It wins on size in three of the four shapes tested, and the deeper the nesting the wider the gap - on deeply nested data, JSON and XML are both more than twice its size. Gzip them all and the difference nearly disappears, so this is a win on disk and in a diff, not in an archive.
+The speed cost is real, but look at the scale. 107 MB is about a thousand times bigger than a config file a person edits by hand, and a 1 MB file reads in about a tenth of a second. Multi-line text is the one shape where SHCL is not last: 0.53 s against YAML's 0.71 s.
 
-- **SHCL is the slowest to load.** Sixteen times behind `serde_json` here, five times behind TOML, twice behind YAML. (Multi-line text is the exception: there SHCL loads in 0.53 s against YAML's 0.71 s.) Mind the scale, though. 107 MB is a thousand times bigger than a config file anyone edits by hand, and a 1 MB file loads in about a tenth of a second.
+The last row is why the rest of the table looks the way it does. The other four parsers throw away your comments, your blank lines and your spelling the moment they read the file. Change one value, save, and the whole file comes back rewritten. `toml_edit` is the only other parser here that keeps your file, and against it SHCL makes a smaller file (67 MB to 77 MB) and uses half the memory (3.6 GB to 7.0 GB), at four times the read time.
 
-- **Memory sits mid-pack** - about 1.7 times what a JSON load costs, and half what the one other parser here that keeps your file costs.
+One library is not a format, so the tool measures Python too. Almost every Python parser is really C wearing a Python name - `json`, `ElementTree`, PyYAML's `CSafeLoader` - and SHCL's Python binding is pure Python, so `tomllib` is the only fair comparison. SHCL comes in 3.7x behind `tomllib` in Python, against 3.5x behind `toml` in Rust. Two languages, two separate implementations, the same ratio, so the cost belongs to the format and not to one library.
 
-That last row is the reason for the three above it. Every other parser here throws away your comments, your blank lines and your spelling the moment it loads. Change one value, save, and the whole file comes back rewritten. SHCL hands it back the way you wrote it. `toml_edit` is the only other parser measured that does that same job, and against it SHCL makes a smaller file (67 MB to 77 MB) and uses half the memory (3.6 GB to 7.0 GB), at four times the load time.
+If you are moving a lot of machine-generated data, none of this applies to you. Use JSON. SHCL is for files people edit.
 
-One library is not a format, though, so the tool measures Python as well. Nearly everything Python reaches for there is C wearing a Python name - `json`, `ElementTree`, PyYAML's `CSafeLoader` - which leaves `tomllib` as the only other pure-Python parser, and SHCL's Python binding is pure Python by design. That is the fair pair, and SHCL comes in **3.7x** behind `tomllib` in Python against **3.5x** behind `toml` in Rust. Two languages, two independent implementations, the same ratio - so the cost is the format's, not one library's.
-
-Moving high volumes of machine-generated data? None of this is your trade. Use JSON. SHCL is for files people edit.
+> *How it was measured: [`cicd/utility/comparison/`](cicd/utility/comparison/) writes the same data in all five formats, then reads each file back with its own ecosystem's parser - same compiler, same flags, one process per measurement. Method and caveats are in [design.md](project/design.md#format-comparison); every number, including the other shapes and the Python tier, is in [results.shcl](cicd/utility/comparison/results.shcl).*
 
 ### DDL languages - Pkl, CUE, Dhall
 
