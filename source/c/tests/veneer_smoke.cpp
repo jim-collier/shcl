@@ -14,6 +14,9 @@
 #ifndef SHCL_NO_FILE_IO
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <direct.h>   // _mkdir - windows' mkdir takes no mode argument
+#endif
 #endif
 
 static int fails = 0;
@@ -167,9 +170,16 @@ int main() {
 	// the lost count, and a save gate whose refusal is a value the caller can
 	// act on - which is the whole reason save_file is not a bool.
 	{
+		// TMPDIR is the POSIX spelling; windows sets TEMP/TMP and has no /tmp.
 		const char *tmp = std::getenv("TMPDIR");
-		std::string dir = std::string(tmp ? tmp : "/tmp") + "/shcl-veneer-" + std::to_string((long)getpid());
+		if (!tmp || !*tmp) tmp = std::getenv("TEMP");
+		if (!tmp || !*tmp) tmp = std::getenv("TMP");
+		std::string dir = std::string(tmp && *tmp ? tmp : "/tmp") + "/shcl-veneer-" + std::to_string((long)getpid());
+#ifdef _WIN32
+		CHECK(_mkdir(dir.c_str()) == 0);
+#else
 		CHECK(mkdir(dir.c_str(), 0700) == 0);
+#endif
 		std::string f = dir + "/t.shcl";
 		auto st = shcl::Document::FileStatus::Clean;
 		auto absent = shcl::Document::load_file(f, &st);
