@@ -460,7 +460,9 @@ int main(int argc, char **argv) {
 			char *ltexts[65]; size_t llens[65]; int nt = 0;
 			shcl_doc *md = NULL;
 			for (int li = 0; li < nlayer; li++) {
-				snprintf(path, sizeof path, "%s/%s/%s", corpus, names[ci], layerNames[li]);
+				// The precision is the same 256 the store above enforces: without it the
+				// compiler bounds layerNames[li] by the whole array, not by one row.
+				snprintf(path, sizeof path, "%s/%s/%.255s", corpus, names[ci], layerNames[li]);
 				ltexts[nt] = read_file(path, &llens[nt]);
 				shcl_doc *dd = shcl_parse(ltexts[nt], llens[nt]); nt++;
 				if (!md) md = dd; else { shcl_merge(md, dd); shcl_free(dd); }

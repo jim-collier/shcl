@@ -3160,9 +3160,11 @@ def write_file_atomic(file, data):
 	# real one is left stale) and the original's mode is copied onto the temp file
 	# (otherwise a 600 config comes back at whatever the umask allows). Other hard
 	# links to the old inode cannot survive a rename and keep the old content.
-	# Resolving the path can raise before any I/O is attempted - a NUL in it
-	# raises ValueError, not OSError - and the contract here is a returned
-	# message, never a throw.
+	# A NUL in the path raises ValueError rather than OSError, and this call
+	# promises a returned message, never a throw. POSIX raises it here, at the
+	# resolve; windows resolves such a path happily and raises at the first call
+	# that touches the filesystem instead, so every one of them below has to
+	# carry the same guard.
 	try:
 		target = os.path.realpath(file)
 	except ValueError as e:
@@ -3184,7 +3186,7 @@ def write_file_atomic(file, data):
 	# the umask, like every other file the user's tools produce.
 	try:
 		existing = os.stat(target)
-	except OSError:
+	except (OSError, ValueError):
 		existing = None
 	born = 0o600 if existing is not None else 0o666
 	f = None
@@ -3196,7 +3198,7 @@ def write_file_atomic(file, data):
 			fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, born)
 			f = os.fdopen(fd, "w", encoding="utf-8", newline="")
 			break
-		except OSError as e:
+		except (OSError, ValueError) as e:
 			last = str(e)
 	if f is None:
 		return f"{file}: cannot create temporary file: {last}"
