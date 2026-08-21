@@ -52,6 +52,7 @@ None open.
 	- `staticcheck`, `govulncheck` and `cargo-deny` went into `LINT_EXTRA` and `TOOL_PINS` in the 20260819 round, but nothing was ever added to `ci.yml` to install them. The lint stage aborted at exit 127 about a minute in, so every run since has been red while the local gate stayed green - which is exactly how it went unnoticed.
 	- Fixed by installing all three at their pinned versions. `cargo-deny` comes as a prebuilt binary with a sha256 pin, the same treatment `shellcheck` already gets: building it from source costs minutes and pulls a dependency tree the gate has no reason to compile.
 	- `cargo-zigbuild` is still missing there and stays that way - it only feeds the cross stage, which `--ci` skips, so it is a warning and not a failure.
+	- Second cause behind the same red, found once the first was cleared: the Go toolchain was `stable`, which had rolled to 1.27, and staticcheck carries its own type checker that cannot read export data from a Go newer than the release it was cut against. Pinned to the 1.26 series in both jobs, which is what this box runs - move it when the staticcheck pin moves.
 
 - ✅ A raw block body line ending in more than one carriage return is not a `fmt` fixpoint.
 	- Found by the raised 200k gate, immediately after the two below were fixed - same family, and the third one none of the shallower runs could reach.

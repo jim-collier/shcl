@@ -28,12 +28,16 @@ jobs:
       ## rustup on the runner reads rust-toolchain.toml and fetches the pinned
       ## toolchain on first cargo call; keep "what passing means" in the engine.
       ## The go.mod directive is the CONSUMER floor (1.20), not the pipeline's
-      ## toolchain: cicd's own `go -C` needs a current release, so install
-      ## stable and let the directive gate language features. (No go.sum - the
-      ## binding is zero-dep, so the module cache is off.)
+      ## toolchain: cicd's own `go -C` needs a current release. Pinned to a
+      ## series rather than stable, because staticcheck carries its own copy of
+      ## the type checker and cannot read export data from a Go newer than the
+      ## release it was cut against - stable rolling to 1.27 broke the lint
+      ## stage here while the local gate, on 1.26, stayed green. Move this when
+      ## the staticcheck pin in TOOL_PINS moves. (No go.sum - the binding is
+      ## zero-dep, so the module cache is off.)
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: stable
+          go-version: "1.26"
           cache: false
       ## Python binding is a zero-dep single file; pin the interpreter so a runner
       ## image bump can't silently shift float/coercion formatting under it.
@@ -113,7 +117,7 @@ jobs:
       ## rustup is preinstalled and reads rust-toolchain.toml, same as above.
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: stable
+          go-version: "1.26"
           cache: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
