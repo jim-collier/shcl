@@ -375,12 +375,15 @@ struct Pend {
 enum Value {
 	Empty,
 	Cell(Vec<Element>), // one element = scalar, more = inline array
-	Raw {
-		content: String,
-		info: String,
-		fence_char: u8,
-		fence_len: usize,
-	},
+	Raw(Box<RawVal>),   // boxed: the four fields would triple the enum's size
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RawVal {
+	content: String,
+	info: String,
+	fence_char: u8,
+	fence_len: usize,
 }
 
 impl Value {
@@ -403,7 +406,7 @@ impl Value {
 			// Info-string is part of identity (a `sql` and a `python` block are
 			// different values even with equal bodies); fence style is not. Info is
 			// length-prefixed for the same injectivity reason as cell elements.
-			Value::Raw { content, info, .. } => format!("r:{}:{}{}", info.len(), info, content),
+			Value::Raw(r) => format!("r:{}:{}{}", r.info.len(), r.info, r.content),
 		}
 	}
 	/// Human/display form; also what selectors match against (case-sensitive).
@@ -415,7 +418,7 @@ impl Value {
 				.map(|e| e.text.clone())
 				.collect::<Vec<_>>()
 				.join(", "),
-			Value::Raw { content, .. } => content.clone(),
+			Value::Raw(r) => r.content.clone(),
 		}
 	}
 	fn is_empty(&self) -> bool {
@@ -432,9 +435,32 @@ struct NodeData {
 	line: usize,
 	star_list: bool,  // value built from stacked "* " lines
 	star_mixed: bool, // mix of "* " and field children already diagnosed
-	// Comment trivia, verbatim from `#` to end of line. Never part of identity
-	// or reads; merged instances concatenate leading, first trailing wins
-	// (later ones demote to leading - a canonical line has room for one).
+	// Comment trivia, boxed off to the side: most nodes carry none, and the
+	// four empty containers were a third of every node.
+	trivia: Option<Box<Trivia>>,
+	// Blank-line grouping is the other half of hand-authored layout: set when
+	// a blank line preceded this node's binding line (runs collapse to one).
+	blank_before: bool,
+	// This node has decided its `src` - set by the first source line whose
+	// value the node holds, whether or not a string was worth keeping.
+	src_set: bool,
+	// Verbatim value text from the source line (after the colon, comment
+	// stripped, trimmed) - what a read's `raw` hands back. None when the value
+	// was synthesized (writer, stacked list, fence) OR when the spelling is
+	// exactly the display form; raw falls back to the display form either way.
+	src: Option<String>,
+	// The name as the author spelled it (case unfolded, quotes and escapes
+	// resolved) - what authored_name() hands back, via authored(). Merged
+	// instances keep the first binding's spelling, like line() and comments.
+	// Empty = spelled exactly like `name` (the overwhelmingly common case).
+	name_src: String,
+}
+
+/// Comment trivia, verbatim from `#` to end of line. Never part of identity
+/// or reads; merged instances concatenate leading, first trailing wins
+/// (later ones demote to leading - a canonical line has room for one).
+#[derive(Debug, Clone, Default)]
+struct Trivia {
 	leading: Vec<Lead>,
 	trailing: String, // empty = none
 	// Whole-line comments that followed this node's subtree at a deeper indent
@@ -446,18 +472,67 @@ struct NodeData {
 	// could take them - a header whose children are all commented still owns
 	// those lines. Emitted after the subtree one level deeper than this node.
 	inside: Vec<Lead>,
-	// Blank-line grouping is the other half of hand-authored layout: set when
-	// a blank line preceded this node's binding line (runs collapse to one).
-	blank_before: bool,
-	// Verbatim value text from the source line (after the colon, comment
-	// stripped, trimmed) - what a read's `raw` hands back. None when the value
-	// was synthesized (writer, stacked list, fence), where raw falls back to
-	// the display form.
-	src: Option<String>,
-	// The name as the author spelled it (case unfolded, quotes and escapes
-	// resolved) - what authored_name() hands back. Merged instances keep the
-	// first binding's spelling, like line() and comments.
-	name_src: String,
+}
+
+impl NodeData {
+	fn leading(&self) -> &[Lead] {
+		self.trivia.as_deref().map_or(&[], |t| &t.leading)
+	}
+	fn trailing(&self) -> &str {
+		self.trivia.as_deref().map_or("", |t| &t.trailing)
+	}
+	fn after(&self) -> &[Lead] {
+		self.trivia.as_deref().map_or(&[], |t| &t.after)
+	}
+	fn inside(&self) -> &[Lead] {
+		self.trivia.as_deref().map_or(&[], |t| &t.inside)
+	}
+	fn triv_mut(&mut self) -> &mut Trivia {
+		self.trivia.get_or_insert_with(Default::default)
+	}
+	/// The as-authored name spelling; empty name_src means "same as name".
+	fn authored(&self) -> &str {
+		if self.name_src.is_empty() {
+			&self.name
+		} else {
+			&self.name_src
+		}
+	}
+}
+
+/// Store a name's authored spelling: the empty sentinel when it matches the
+/// folded name, so the duplicate string never gets allocated.
+fn spelled(name: &str, name_src: &str) -> String {
+	if name_src == name {
+		String::new()
+	} else {
+		name_src.to_string()
+	}
+}
+
+/// True when a source value spelling is exactly the display form - the case
+/// where `src` need not be stored, since raw's fallback reproduces it.
+fn src_matches_display(v: &Value, s: &str) -> bool {
+	match v {
+		Value::Empty => s.is_empty(),
+		Value::Raw(r) => s == r.content,
+		Value::Cell(els) => {
+			let mut rest = s;
+			for (i, e) in els.iter().enumerate() {
+				if i > 0 {
+					match rest.strip_prefix(", ") {
+						Some(r) => rest = r,
+						None => return false,
+					}
+				}
+				match rest.strip_prefix(e.text.as_str()) {
+					Some(r) => rest = r,
+					None => return false,
+				}
+			}
+			rest.is_empty()
+		}
+	}
 }
 
 /// A parsed SHCL document: the tree, its diagnostics, and its strictness level.
@@ -488,20 +563,20 @@ fn fold_node_into(arena: &mut [NodeData], survivor: usize, loser: usize) {
 		arena[k].parent = survivor;
 	}
 	arena[survivor].children.extend(kids);
-	let mut lead = std::mem::take(&mut arena[loser].leading);
-	arena[survivor].leading.append(&mut lead);
-	let trail = std::mem::take(&mut arena[loser].trailing);
-	if !trail.is_empty() {
-		if arena[survivor].trailing.is_empty() {
-			arena[survivor].trailing = trail;
-		} else {
-			arena[survivor].leading.push(Lead::plain(trail));
+	if let Some(mut lt) = arena[loser].trivia.take() {
+		let st = arena[survivor].triv_mut();
+		st.leading.append(&mut lt.leading);
+		if !lt.trailing.is_empty() {
+			if st.trailing.is_empty() {
+				st.trailing = std::mem::take(&mut lt.trailing);
+			} else {
+				st.leading
+					.push(Lead::plain(std::mem::take(&mut lt.trailing)));
+			}
 		}
+		st.after.append(&mut lt.after);
+		st.inside.append(&mut lt.inside);
 	}
-	let mut after = std::mem::take(&mut arena[loser].after);
-	arena[survivor].after.append(&mut after);
-	let mut inside = std::mem::take(&mut arena[loser].inside);
-	arena[survivor].inside.append(&mut inside);
 }
 
 /// Maximum nesting depth (levels below the document root), enforced at load
@@ -686,6 +761,206 @@ fn disp_key(v: &Value) -> String {
 /// "a, b" and the list a, b stop meeting the same selector.
 fn single_scalar(v: &Value) -> bool {
 	matches!(v, Value::Cell(els) if els.len() == 1)
+}
+
+// FNV-1a, fed the same byte sequence the key strings would spell - the
+// accelerator maps key on a u64 and verify hits against the arena, so the
+// strings themselves never get built. The hash only has to be stable within
+// one parse, not injective; a collision just chains in the slot.
+struct Fnv(u64);
+
+impl Fnv {
+	fn new() -> Fnv {
+		Fnv(0xcbf2_9ce4_8422_2325)
+	}
+	fn byte(&mut self, b: u8) {
+		self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+	}
+	fn bytes(&mut self, s: &[u8]) {
+		for &b in s {
+			self.byte(b);
+		}
+	}
+	/// A length prefix in decimal, spelled without allocating.
+	fn dec(&mut self, mut n: usize) {
+		let mut buf = [0u8; 20];
+		let mut i = buf.len();
+		loop {
+			i -= 1;
+			buf[i] = b'0' + (n % 10) as u8;
+			n /= 10;
+			if n == 0 {
+				break;
+			}
+		}
+		self.bytes(&buf[i..]);
+	}
+}
+
+/// Hash of the (name, merge-key) pair, spelling what value.key() spells
+/// without building it.
+fn merge_hash(name: &str, v: &Value) -> u64 {
+	let mut h = Fnv::new();
+	h.bytes(name.as_bytes());
+	h.byte(0xFF); // separator; equality still verifies both parts
+	match v {
+		Value::Empty => h.byte(b'e'),
+		Value::Cell(els) => {
+			h.bytes(b"c:");
+			for e in els {
+				h.dec(e.text.len());
+				h.byte(b':');
+				h.bytes(e.text.as_bytes());
+			}
+		}
+		Value::Raw(r) => {
+			h.bytes(b"r:");
+			h.dec(r.info.len());
+			h.byte(b':');
+			h.bytes(r.info.as_bytes());
+			h.bytes(r.content.as_bytes());
+		}
+	}
+	h.0
+}
+
+/// Hash of the value's merge key alone (no name part).
+fn value_hash(v: &Value) -> u64 {
+	merge_hash("", v)
+}
+
+/// The exact (name, merge-key) equality a hashed hit is verified with -
+/// compares what the two key strings would hold, element by element.
+fn merge_eq(name_a: &str, va: &Value, name_b: &str, vb: &Value) -> bool {
+	if name_a != name_b {
+		return false;
+	}
+	match (va, vb) {
+		(Value::Empty, Value::Empty) => true,
+		(Value::Cell(a), Value::Cell(b)) => {
+			a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.text == y.text)
+		}
+		(Value::Raw(a), Value::Raw(b)) => a.info == b.info && a.content == b.content,
+		_ => false,
+	}
+}
+
+/// apply_escapes as a streaming feed into the hash - the same state machine,
+/// one char at a time, no intermediate string.
+struct EscHash {
+	h: Fnv,
+	pending: bool,
+}
+
+impl EscHash {
+	fn emit(&mut self, c: char) {
+		let mut b = [0u8; 4];
+		self.h.bytes(c.encode_utf8(&mut b).as_bytes());
+	}
+	fn push(&mut self, c: char) {
+		if self.pending {
+			self.pending = false;
+			match c {
+				't' => self.emit('\t'),
+				'n' => self.emit('\n'),
+				'\\' => self.emit('\\'),
+				'"' => self.emit('"'),
+				'\'' => self.emit('\''),
+				other => {
+					self.emit('\\');
+					self.emit(other);
+				}
+			}
+		} else if c == '\\' {
+			self.pending = true;
+		} else {
+			self.emit(c);
+		}
+	}
+	fn finish(mut self) -> u64 {
+		if self.pending {
+			self.emit('\\');
+		}
+		self.h.0
+	}
+}
+
+/// Hash of the (name, display-with-escapes-applied) pair a `[value]` selector
+/// matches with - what disp_key would spell, streamed instead of built.
+fn disp_hash(name: &str, v: &Value) -> u64 {
+	let mut h = Fnv::new();
+	h.bytes(name.as_bytes());
+	h.byte(0xFF);
+	let mut esc = EscHash { h, pending: false };
+	match v {
+		Value::Empty => {}
+		Value::Cell(els) => {
+			for (i, e) in els.iter().enumerate() {
+				if i > 0 {
+					esc.push(',');
+					esc.push(' ');
+				}
+				for c in e.text.chars() {
+					esc.push(c);
+				}
+			}
+		}
+		Value::Raw(r) => {
+			for c in r.content.chars() {
+				esc.push(c);
+			}
+		}
+	}
+	esc.finish()
+}
+
+/// The query-side twin of disp_hash: the selector's text already has its
+/// escapes applied, so its bytes feed straight in.
+fn disp_hash_text(name: &str, want: &str) -> u64 {
+	let mut h = Fnv::new();
+	h.bytes(name.as_bytes());
+	h.byte(0xFF);
+	h.bytes(want.as_bytes());
+	h.0
+}
+
+/// One accelerator bucket: node indices in insertion order. Nearly always one
+/// entry; a second means two different keys collided in the 64-bit hash.
+#[derive(Debug)]
+enum Slot {
+	One(usize),
+	Many(Vec<usize>),
+}
+
+impl Slot {
+	fn push(&mut self, idx: usize) {
+		match self {
+			Slot::One(a) => *self = Slot::Many(vec![*a, idx]),
+			Slot::Many(v) => v.push(idx),
+		}
+	}
+	fn first_match(&self, f: impl Fn(usize) -> bool) -> Option<usize> {
+		match self {
+			Slot::One(a) => f(*a).then_some(*a),
+			Slot::Many(v) => v.iter().copied().find(|&c| f(c)),
+		}
+	}
+	/// Drop `idx` if present; true = the slot is now empty and the caller
+	/// should remove the map entry.
+	fn remove(&mut self, idx: usize) -> bool {
+		match self {
+			Slot::One(a) => *a == idx,
+			Slot::Many(v) => {
+				v.retain(|&c| c != idx);
+				if v.len() == 1 {
+					let only = v[0];
+					*self = Slot::One(only);
+					return false;
+				}
+				v.is_empty()
+			}
+		}
+	}
 }
 
 /// Opening fence: a run of >=3 backticks or tildes, then an optional info-string.
@@ -935,22 +1210,28 @@ struct Parser {
 	diags: Vec<Diagnostic>,
 	// (indent string, node) for each open level; [0] is the virtual root.
 	stack: Vec<(String, usize)>,
-	// Per-node (name, value-key) -> first matching child, parallel to arena.
-	// Pure lookup accelerator for select_or_create; children keeps the order.
-	child_map: Vec<HashMap<(String, String), usize>>,
-	// Per-node (name, display) -> first matching child: the `[value]` selector
-	// accelerator (its predicate is display(), a different and non-injective
-	// key from child_map's). Same first-wins discipline, same mutation sites.
-	disp_map: Vec<HashMap<(String, String), usize>>,
+	// Per-node hash-of-(name, value-key) -> matching children, parallel to
+	// arena and lazily boxed so leaves never allocate one. Pure lookup
+	// accelerator for select_or_create; children keeps the order. No key
+	// strings are stored - a hit is verified against the arena with merge_eq.
+	// The box is the point: an inline Option<HashMap> costs 48 bytes per node.
+	#[allow(clippy::box_collection)]
+	child_map: Vec<Option<Box<HashMap<u64, Slot>>>>,
+	// Per-node hash-of-(name, display) -> first matching child: the `[value]`
+	// selector accelerator (its predicate is display(), a different and
+	// non-injective key from child_map's). Same first-wins discipline, same
+	// mutation sites; ownership is by hash, and a query verifies its hit.
+	#[allow(clippy::box_collection)]
+	disp_map: Vec<Option<Box<HashMap<u64, usize>>>>,
 	// Whole-line comments waiting for the next line that binds a node. The
 	// source indent is kept only to decide after-attachment (a comment deeper
 	// than the next binding hangs on the block it sits in).
 	pending: Vec<Pend>,
 	saw_blank: bool, // a blank line waits to become the next bound node's blank_before
 	// An open stacked list defers its merge-key remap (rebuilding the key per
-	// element is O(list^2) time); (node, key, display) at deferral start,
-	// flushed before any map lookup and at end of parse.
-	star_open: Option<(usize, String, String)>,
+	// element is O(list^2) time); (node, key hash, display hash) at deferral
+	// start, flushed before any map lookup and at end of parse.
+	star_open: Option<(usize, u64, u64)>,
 	// Node -> line of the re-open that H002-hinted it. A merge under a hinted
 	// container combines the same two textual regions, so it hints too even
 	// when it lands on the newest child at its own scope - that is how every
@@ -971,18 +1252,16 @@ impl Parser {
 				line: 0,
 				star_list: false,
 				star_mixed: false,
-				leading: Vec::new(),
-				trailing: String::new(),
-				after: Vec::new(),
-				inside: Vec::new(),
+				trivia: None,
 				blank_before: false,
+				src_set: false,
 				src: None,
 				name_src: String::new(),
 			}],
 			diags: Vec::new(),
 			stack: vec![(String::new(), ROOT)],
-			child_map: vec![HashMap::new()],
-			disp_map: vec![HashMap::new()],
+			child_map: vec![None],
+			disp_map: vec![None],
 			pending: Vec::new(),
 			saw_blank: false,
 			star_open: None,
@@ -1012,33 +1291,41 @@ impl Parser {
 		line: usize,
 	) -> usize {
 		self.star_flush();
-		let map_key = (name.to_string(), value.key());
-		if let Some(&c) = self.child_map[parent].get(&map_key) {
+		let h = merge_hash(name, &value);
+		if let Some(slot) = self.child_map[parent].as_deref().and_then(|m| m.get(&h))
+			&& let Some(c) = slot
+				.first_match(|c| merge_eq(&self.arena[c].name, &self.arena[c].value, name, &value))
+		{
 			return c;
 		}
 		let idx = self.arena.len();
+		let hd = disp_hash(name, &value);
 		self.arena.push(NodeData {
 			name: name.to_string(),
-			name_src: name_src.to_string(),
+			name_src: spelled(name, name_src),
 			value,
 			children: Vec::new(),
 			parent,
 			line,
 			star_list: false,
 			star_mixed: false,
-			leading: Vec::new(),
-			trailing: String::new(),
-			after: Vec::new(),
-			inside: Vec::new(),
+			trivia: None,
 			blank_before: false,
+			src_set: false,
 			src: None,
 		});
 		self.arena[parent].children.push(idx);
-		self.child_map.push(HashMap::new());
-		self.child_map[parent].insert(map_key, idx);
-		self.disp_map.push(HashMap::new());
-		let disp = (name.to_string(), disp_key(&self.arena[idx].value));
-		self.disp_map[parent].entry(disp).or_insert(idx);
+		self.child_map.push(None);
+		self.disp_map.push(None);
+		self.child_map[parent]
+			.get_or_insert_with(Default::default)
+			.entry(h)
+			.and_modify(|s| s.push(idx))
+			.or_insert(Slot::One(idx));
+		self.disp_map[parent]
+			.get_or_insert_with(Default::default)
+			.entry(hd)
+			.or_insert(idx);
 		idx
 	}
 
@@ -1053,22 +1340,44 @@ impl Parser {
 	/// A node's value mutated in place (empty field filled, star element added):
 	/// move its map entry from the old key to the new one. First-wins on both
 	/// sides so lookups keep matching the earliest sibling, like the scan did.
-	fn remap_child(&mut self, node: usize, old_key: String, old_disp: String) {
+	fn remap_child(&mut self, node: usize, old_key: u64, old_disp: u64) {
 		let parent = self.arena[node].parent;
-		let name = self.arena[node].name.clone();
-		if self.child_map[parent].get(&(name.clone(), old_key.clone())) == Some(&node) {
-			self.child_map[parent].remove(&(name.clone(), old_key));
+		if let Some(m) = self.child_map[parent].as_deref_mut()
+			&& let Some(slot) = m.get_mut(&old_key)
+			&& slot.remove(node)
+		{
+			m.remove(&old_key);
 		}
-		let new_key = self.arena[node].value.key();
-		self.child_map[parent]
-			.entry((name.clone(), new_key))
-			.or_insert(node);
-		if self.disp_map[parent].get(&(name.clone(), old_disp.clone())) == Some(&node) {
-			self.disp_map[parent].remove(&(name.clone(), old_disp));
+		let new_key = merge_hash(&self.arena[node].name, &self.arena[node].value);
+		let already = self.child_map[parent]
+			.as_deref()
+			.and_then(|m| m.get(&new_key))
+			.and_then(|s| {
+				s.first_match(|c| {
+					merge_eq(
+						&self.arena[c].name,
+						&self.arena[c].value,
+						&self.arena[node].name,
+						&self.arena[node].value,
+					)
+				})
+			});
+		if already.is_none() {
+			self.child_map[parent]
+				.get_or_insert_with(Default::default)
+				.entry(new_key)
+				.and_modify(|s| s.push(node))
+				.or_insert(Slot::One(node));
 		}
-		let new_disp = disp_key(&self.arena[node].value);
+		if let Some(m) = self.disp_map[parent].as_deref_mut()
+			&& m.get(&old_disp) == Some(&node)
+		{
+			m.remove(&old_disp);
+		}
+		let new_disp = disp_hash(&self.arena[node].name, &self.arena[node].value);
 		self.disp_map[parent]
-			.entry((name, new_disp))
+			.get_or_insert_with(Default::default)
+			.entry(new_disp)
 			.or_insert(node);
 	}
 
@@ -1081,14 +1390,27 @@ impl Parser {
 		let mut stack = vec![ROOT];
 		while let Some(parent) = stack.pop() {
 			let kids = std::mem::take(&mut self.arena[parent].children);
-			let mut first: HashMap<(String, String), usize> = HashMap::new();
+			let mut first: HashMap<u64, Slot> = HashMap::new();
 			let mut keep: Vec<usize> = Vec::with_capacity(kids.len());
 			for c in kids {
-				let key = (self.arena[c].name.clone(), self.arena[c].value.key());
-				match first.get(&key) {
-					Some(&survivor) => fold_node_into(&mut self.arena, survivor, c),
+				let h = merge_hash(&self.arena[c].name, &self.arena[c].value);
+				let survivor = first.get(&h).and_then(|s| {
+					s.first_match(|x| {
+						merge_eq(
+							&self.arena[x].name,
+							&self.arena[x].value,
+							&self.arena[c].name,
+							&self.arena[c].value,
+						)
+					})
+				});
+				match survivor {
+					Some(s) => fold_node_into(&mut self.arena, s, c),
 					None => {
-						first.insert(key, c);
+						first
+							.entry(h)
+							.and_modify(|s| s.push(c))
+							.or_insert(Slot::One(c));
 						keep.push(c);
 					}
 				}
@@ -1101,17 +1423,21 @@ impl Parser {
 	/// Hand pending leading comments (and this line's trailing one) to a node.
 	/// First trailing wins; a later one demotes to leading so nothing is lost.
 	fn attach_trivia(&mut self, node: usize, trailing: Option<&str>) {
-		for p in self.pending.drain(..) {
-			self.arena[node].leading.push(Lead {
-				text: p.text,
-				blank_before: p.blank_before,
-			});
+		if !self.pending.is_empty() {
+			let t = self.arena[node].triv_mut();
+			for p in self.pending.drain(..) {
+				t.leading.push(Lead {
+					text: p.text,
+					blank_before: p.blank_before,
+				});
+			}
 		}
-		if let Some(t) = trailing {
-			if self.arena[node].trailing.is_empty() {
-				self.arena[node].trailing = t.to_string();
+		if let Some(tr) = trailing {
+			let t = self.arena[node].triv_mut();
+			if t.trailing.is_empty() {
+				t.trailing = tr.to_string();
 			} else {
-				self.arena[node].leading.push(Lead::plain(t.to_string()));
+				t.leading.push(Lead::plain(tr.to_string()));
 			}
 		}
 	}
@@ -1150,9 +1476,9 @@ impl Parser {
 						blank_before: p.blank_before,
 					};
 					if at_own_level {
-						self.arena[n].after.push(lead);
+						self.arena[n].triv_mut().after.push(lead);
 					} else {
-						self.arena[n].inside.push(lead);
+						self.arena[n].triv_mut().inside.push(lead);
 					}
 					continue;
 				}
@@ -1234,8 +1560,12 @@ impl Parser {
 					// an outright miss both fall to the (rare) fallback scan.
 					let want = apply_escapes(text);
 					let found = self.disp_map[cur]
-						.get(&(seg.name.clone(), want.clone()))
+						.as_deref()
+						.and_then(|m| m.get(&disp_hash_text(&seg.name, &want)))
 						.copied()
+						.filter(|&c| {
+							self.arena[c].name == seg.name && disp_key(&self.arena[c].value) == want
+						})
 						.filter(|&c| !*quoted || single_scalar(&self.arena[c].value))
 						.or_else(|| {
 							if !*quoted {
@@ -1377,12 +1707,12 @@ impl Parser {
 		let common = common.unwrap_or_default();
 		let stripped: Vec<&str> = content.iter().map(|l| strip_common(l, &common)).collect();
 		(
-			Value::Raw {
+			Value::Raw(Box::new(RawVal {
 				content: stripped.join("\n"),
 				info,
 				fence_char: ch,
 				fence_len: len,
-			},
+			})),
 			i,
 		)
 	}
@@ -1397,15 +1727,15 @@ impl Parser {
 			return None;
 		}
 		if self.arena[parent].value.is_empty() {
-			let old_key = self.arena[parent].value.key();
-			let old_disp = disp_key(&self.arena[parent].value);
+			let old_key = merge_hash(&self.arena[parent].name, &self.arena[parent].value);
+			let old_disp = disp_hash(&self.arena[parent].name, &self.arena[parent].value);
 			self.arena[parent].value = value;
 			self.remap_child(parent, old_key, old_disp);
 			Some(parent)
 		} else {
 			let (name, name_src, grandparent) = (
 				self.arena[parent].name.clone(),
-				self.arena[parent].name_src.clone(),
+				self.arena[parent].authored().to_string(),
 				self.arena[parent].parent,
 			);
 			Some(self.select_or_create(grandparent, &name, &name_src, value, line))
@@ -1449,8 +1779,8 @@ impl Parser {
 			}
 		};
 		if self.arena[parent].value.is_empty() {
-			let old_key = self.arena[parent].value.key();
-			let old_disp = disp_key(&self.arena[parent].value);
+			let old_key = merge_hash(&self.arena[parent].name, &self.arena[parent].value);
+			let old_disp = disp_hash(&self.arena[parent].name, &self.arena[parent].value);
 			self.arena[parent].value = Value::Cell(vec![el]);
 			self.arena[parent].star_list = true;
 			// First element: remap now (Empty -> cell changes both keys), then
@@ -1458,15 +1788,15 @@ impl Parser {
 			// keys per appended element was O(list^2) time; the maps only need
 			// to be fresh when queried, and every query flushes first.
 			self.remap_child(parent, old_key, old_disp);
-			let k = self.arena[parent].value.key();
-			let d = disp_key(&self.arena[parent].value);
+			let k = merge_hash(&self.arena[parent].name, &self.arena[parent].value);
+			let d = disp_hash(&self.arena[parent].name, &self.arena[parent].value);
 			self.star_open = Some((parent, k, d));
 		} else if matches!(self.arena[parent].value, Value::Cell(_)) && self.arena[parent].star_list
 		{
 			if !matches!(self.star_open, Some((n, _, _)) if n == parent) {
 				self.star_flush();
-				let old_key = self.arena[parent].value.key();
-				let old_disp = disp_key(&self.arena[parent].value);
+				let old_key = merge_hash(&self.arena[parent].name, &self.arena[parent].value);
+				let old_disp = disp_hash(&self.arena[parent].name, &self.arena[parent].value);
 				self.star_open = Some((parent, old_key, old_disp));
 			}
 			if let Value::Cell(els) = &mut self.arena[parent].value {
@@ -1697,13 +2027,16 @@ impl Parser {
 			// Record only when the bound node holds exactly this line's value
 			// (a merge into an equal-valued node keeps the first line's span;
 			// a value dropped after a last-segment selector records nothing).
-			let vkey = src_text.as_ref().map(|_| value.key());
+			let vkey = src_text.as_ref().map(|_| value_hash(&value));
 			if let Some(node) = self.attach_path(parent, &scan.segments, value, lineno) {
 				if let (Some(s), Some(k)) = (src_text, vkey)
-					&& self.arena[node].src.is_none()
-					&& self.arena[node].value.key() == k
+					&& !self.arena[node].src_set
+					&& value_hash(&self.arena[node].value) == k
 				{
-					self.arena[node].src = Some(s);
+					self.arena[node].src_set = true;
+					if !src_matches_display(&self.arena[node].value, &s) {
+						self.arena[node].src = Some(s);
+					}
 				}
 				if had_blank {
 					self.arena[node].blank_before = true;
@@ -1918,7 +2251,7 @@ impl Document {
 		// trailing comment joins the leading lines instead; the flag comes from
 		// the parent's walk. Each blank rides its own comment (or the binding
 		// line), never as the first output line.
-		for c in &node.leading {
+		for c in node.leading() {
 			if c.blank_before && !out.is_empty() {
 				out.push('\n');
 			}
@@ -1929,9 +2262,9 @@ impl Document {
 		if node.blank_before && !out.is_empty() {
 			out.push('\n');
 		}
-		if would_merge && !node.trailing.is_empty() {
+		if would_merge && !node.trailing().is_empty() {
 			out.push_str(&pad);
-			out.push_str(&node.trailing);
+			out.push_str(node.trailing());
 			out.push('\n');
 		}
 		out.push_str(&pad);
@@ -1939,22 +2272,19 @@ impl Document {
 		out.push(':');
 		match &node.value {
 			Value::Empty => {
-				push_trailing(out, &node.trailing);
+				push_trailing(out, node.trailing());
 				out.push('\n');
 			}
 			Value::Cell(els) => {
 				out.push(' ');
 				let joined = els.iter().map(emit_element).collect::<Vec<_>>().join(", ");
 				out.push_str(&joined);
-				push_trailing(out, &node.trailing);
+				push_trailing(out, node.trailing());
 				out.push('\n');
 			}
-			Value::Raw {
-				content,
-				info,
-				fence_char,
-				fence_len,
-			} => {
+			Value::Raw(r) => {
+				let (content, info, fence_char, fence_len) =
+					(&r.content, &r.info, &r.fence_char, &r.fence_len);
 				// Child-indent spelling is canonical: bare name line, fenced
 				// block one level deeper, verbatim content. Exception: if an
 				// earlier same-name sibling is empty, the bare `name:` header
@@ -1963,7 +2293,7 @@ impl Document {
 				if would_merge {
 					out.push(' ');
 				} else {
-					push_trailing(out, &node.trailing);
+					push_trailing(out, node.trailing());
 					out.push('\n');
 				}
 				let pad: String = "\t".repeat(depth + 1); // block body pad, one deeper
@@ -2002,7 +2332,7 @@ impl Document {
 		self.emit_children(&self.arena[idx].children, depth + 1, out);
 		// Comments this block owns with no child to carry them, one deeper.
 		let ipad: String = "\t".repeat(depth + 1);
-		for c in &self.arena[idx].inside {
+		for c in self.arena[idx].inside() {
 			if c.blank_before && !out.is_empty() {
 				out.push('\n');
 			}
@@ -2011,7 +2341,7 @@ impl Document {
 			out.push('\n');
 		}
 		// Comments that hung on this block after its last child.
-		for c in &self.arena[idx].after {
+		for c in self.arena[idx].after() {
 			if c.blank_before && !out.is_empty() {
 				out.push('\n');
 			}
@@ -2593,7 +2923,7 @@ impl Document {
 	/// path used.
 	pub fn authored_name(&self, path: &str) -> String {
 		match self.resolve(path) {
-			Ok(Resolved::One(n)) => self.arena[n].name_src.clone(),
+			Ok(Resolved::One(n)) => self.arena[n].authored().to_string(),
 			_ => String::new(),
 		}
 	}
@@ -2744,20 +3074,18 @@ impl Document {
 		let idx = self.arena.len();
 		self.arena.push(NodeData {
 			name: name.to_string(),
-			name_src: name_src.to_string(),
+			name_src: spelled(name, name_src),
 			value,
 			children: Vec::new(),
 			parent,
 			line: 0,
 			star_list: false,
 			star_mixed: false,
-			leading: Vec::new(),
-			trailing: String::new(),
-			after: Vec::new(),
-			inside: Vec::new(),
+			trivia: None,
 			// Hand-written files separate top-level sections with a blank line;
 			// writer-built ones do the same (the emitter never blanks line 1).
 			blank_before: parent == ROOT,
+			src_set: false,
 			src: None,
 		});
 		self.arena[parent].children.push(idx);
@@ -2968,7 +3296,7 @@ impl Document {
 				} else {
 					format!("# {}", line)
 				};
-				self.arena[node].leading.push(Lead::plain(c));
+				self.arena[node].triv_mut().leading.push(Lead::plain(c));
 				true
 			}
 			None => false,
@@ -3004,12 +3332,12 @@ impl Document {
 		let (fence_char, fence_len) = choose_fence(content);
 		self.set_value(
 			path,
-			Value::Raw {
+			Value::Raw(Box::new(RawVal {
 				content: content.to_string(),
 				info: info.to_string(),
 				fence_char,
 				fence_len,
-			},
+			})),
 		)
 	}
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -3181,22 +3509,20 @@ impl Document {
 	/// to move onto it or they are lost. Same rule as an in-file merge: leading
 	/// concatenates in layer order, first trailing wins.
 	fn adopt_trivia(&mut self, base: usize, over: &Document, ok: usize) {
-		let src = &over.arena[ok];
-		let mut lead = src.leading.clone();
-		self.arena[base].leading.append(&mut lead);
-		if !src.trailing.is_empty() {
-			if self.arena[base].trailing.is_empty() {
-				self.arena[base].trailing = src.trailing.clone();
+		let Some(st) = over.arena[ok].trivia.as_deref() else {
+			return;
+		};
+		let bt = self.arena[base].triv_mut();
+		bt.leading.extend_from_slice(&st.leading);
+		if !st.trailing.is_empty() {
+			if bt.trailing.is_empty() {
+				bt.trailing = st.trailing.clone();
 			} else {
-				self.arena[base]
-					.leading
-					.push(Lead::plain(src.trailing.clone()));
+				bt.leading.push(Lead::plain(st.trailing.clone()));
 			}
 		}
-		let mut after = src.after.clone();
-		self.arena[base].after.append(&mut after);
-		let mut inside = src.inside.clone();
-		self.arena[base].inside.append(&mut inside);
+		bt.after.extend_from_slice(&st.after);
+		bt.inside.extend_from_slice(&st.inside);
 	}
 
 	fn overlay(&mut self, base_parent: usize, over: &Document, over_parent: usize) {
@@ -3316,11 +3642,9 @@ impl Document {
 			line: src.line,
 			star_list: src.star_list,
 			star_mixed: src.star_mixed,
-			leading: src.leading.clone(),
-			trailing: src.trailing.clone(),
-			after: src.after.clone(),
-			inside: src.inside.clone(),
+			trivia: src.trivia.clone(),
 			blank_before: src.blank_before,
+			src_set: src.src_set,
 			src: src.src.clone(),
 			name_src: src.name_src.clone(),
 		};
@@ -3869,9 +4193,7 @@ impl Document {
 		let line = self.arena[node].line;
 		match value {
 			Value::Empty => Read::new(String::new(), Status::Empty, raw).at(line, false),
-			Value::Raw { content, .. } => {
-				Read::new(content.clone(), Status::Good, raw).at(line, false)
-			}
+			Value::Raw(r) => Read::new(r.content.clone(), Status::Good, raw).at(line, false),
 			Value::Cell(els) if els.len() == 1 => {
 				Read::new(apply_escapes(&els[0].text), Status::Good, raw).at(line, els[0].quoted)
 			}
@@ -3896,9 +4218,7 @@ impl Document {
 		let raw = Some(self.raw_of(node));
 		let line = self.arena[node].line;
 		match value {
-			Value::Raw { content, .. } => {
-				Read::new(content.clone(), Status::Good, raw).at(line, false)
-			}
+			Value::Raw(r) => Read::new(r.content.clone(), Status::Good, raw).at(line, false),
 			Value::Empty => Read::new(String::new(), Status::Empty, raw).at(line, false),
 			_ => Read::new(String::new(), Status::BadType, raw).at(line, false),
 		}
@@ -3913,7 +4233,7 @@ impl Document {
 		let raw = Some(self.raw_of(node));
 		let line = self.arena[node].line;
 		match &self.arena[node].value {
-			Value::Raw { info, .. } => Read::new(info.clone(), Status::Good, raw).at(line, false),
+			Value::Raw(r) => Read::new(r.info.clone(), Status::Good, raw).at(line, false),
 			_ => Read::new(String::new(), Status::BadType, raw).at(line, false),
 		}
 	}
@@ -5106,7 +5426,8 @@ impl Document {
 		match &node.value {
 			// Empty passes everything; required already counted it as present.
 			Value::Empty => {}
-			Value::Raw { content, .. } => {
+			Value::Raw(r) => {
+				let content = &r.content;
 				// A raw block satisfies `raw` and scalar `string` (any value
 				// reads as a string); every other kind is a type miss.
 				if kind.is_some() && (base != "raw" && base != "string" || is_array) {
