@@ -46,10 +46,11 @@ if ! [[ "${mib}" =~ ^[1-9][0-9]*$ ]]; then echo "largedoc: --mib wants a positiv
 ## the target is a growth-rate regression, not a stopwatch. Memory is held much
 ## closer, since peak RSS barely moves between machines or build profiles.
 ## Measured at 100 MiB on a workstation: rust 0.53 s/MiB and 21 MiB/MiB, go 0.08
-## and 33, c 0.04 and 30, python 1.11 and 47.
+## and 33-41 (concurrent GC moves it run to run, so its ceiling carries more
+## slack), c 0.04 and 30, python 1.11 and 47.
 limits=(
 	"rust|3.00|32"
-	"go|1.00|45"
+	"go|1.00|55"
 	"c|1.00|45"
 	"python|4.00|65"
 )
