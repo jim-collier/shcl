@@ -141,29 +141,53 @@ When you do want zero-tolerance rigor: schema validation, plus a strict mode tha
 
 ### Performance comparison
 
-SHCL writes the smallest file of the five, and it is the slowest to read. That is the trade, and it is on purpose: SHCL is the only one of the five that gives your file back the way you wrote it.
+SHCL writes the smallest file of the five, and it is the slowest to read - which only costs you anything on unreasonably massive files. That's due to two tradeoffs, one of them advertised as a key feature:
 
-Here is one array of 302,230 records, written five ways and read by Rust libraries, fastest first.
+1. SHCL offloads much of the burden of parsing and datatype-correct formatting from the user and programmer, to the library itself.
 
-| | JSON | XML | TOML | YAML | SHCL
-| :-- | :-- | :-- | :-- | :-- | :--
-| File size | 107 MB | 160 MB | 77 MB | 80 MB | **67 MB**
-| Gzipped | 8.9 MB | 11.0 MB | 9.3 MB | 9.4 MB | 9.1 MB
-| Read time | **0.60 s** | 1.07 s | 1.79 s | 4.14 s | 9.45 s
-| Peak memory | 2.1 GB | **1.5 GB** | 3.0 GB | 3.9 GB | 3.6 GB
-| Keeps your file as written | no | no | no | no | **yes**
+2. SHCL is the only one of the five that gives your file back the way you wrote it.
+
+Three files, each holding the same data in all five formats, each read by a Rust library. Columns run fastest to slowest.
+
+**An application config**, the kind a person hand-edits: server, logging, database, cache, auth, paths, limits, feature flags, and a banner block.
+
+| Config file       | JSON      | XML   | TOML  | YAML  | SHCL
+| :--               | :--       | :--   | :--   | :--   | :--
+| File size (bytes) | 2,163     | 2,988 | 1,699 | 1,695 | **1,608**
+| Read time (ms)    | **0.009** | 0.015 | 0.025 | 0.066 | 0.108
+
+Nobody chooses a format on read times like those. The file itself is what differs: XML is nearly twice the size of SHCL, and JSON a third bigger.
+
+**A schema definition**: 197 table definitions, each with typed columns, nullability, defaults, keys, indexes, and comments.
+
+| Schema file    | JSON    | XML | TOML | YAML | SHCL
+| :--            | :--     | :-- | :--  | :--  | :--
+| File size (KB) | 431     | 498 | 298  | 322  | **262**
+| Read time (ms) | **1.7** | 2.7 | 4.6  | 11.4 | 17.4
+
+Here SHCL is 39% smaller than JSON and 47% smaller than XML, and still reads in under a fiftieth of a second. This is the size SHCL is built for: a big file that people still edit by hand.
+
+**A stress test**, far past anything anyone edits by hand: one array of 302,230 records.
+
+| Stress test                | JSON     | XML     | TOML | YAML | SHCL
+| :--                        | :--      | :--     | :--  | :--  | :--
+| File size (MB)             | 107      | 160     | 77   | 80   | **67**
+| Gzipped (MB)               | 8.9      | 11.0    | 9.3  | 9.4  | 9.1
+| Read time (s)              | **0.60** | 1.07    | 1.79 | 4.14 | 9.45
+| Peak memory (GB)           | 2.1      | **1.5** | 3.0  | 3.9  | 3.6
+| Keeps your file as written | no       | no      | no   | no   | **yes**
 
 > *XML here is `roxmltree`, the fastest tree in Rust, and it is read-only. The XML tree you can write back again takes 6.21 s and 10.9 GB.*
 
-The size win holds in three of the four data shapes tested, and it grows with nesting. On deeply nested data, JSON and XML are both more than twice the size of SHCL. Gzip them all and they land within a tenth of each other, so this helps you on disk and in a diff, not in an archive.
+On deeply nested data, JSON and XML are both more than twice the size of SHCL.
 
-The speed cost is real, but look at the scale. 107 MB is about a thousand times bigger than a config file a person edits by hand, and a 1 MB file reads in about a tenth of a second. Multi-line text is the one shape where SHCL is not last: 0.53 s against YAML's 0.71 s.
+The speed cost is real, but it only shows up at a size nobody hand-edits: that stress file is 250 times the schema file above. Multi-line text is the one shape where SHCL is not last: 0.53 s against YAML's 0.71 s.
 
-The last row is why the rest of the table looks the way it does. The other four parsers throw away your comments, your blank lines and your spelling the moment they read the file. Change one value, save, and the whole file comes back rewritten. `toml_edit` is the only other parser here that keeps your file, and against it SHCL makes a smaller file (67 MB to 77 MB) and uses half the memory (3.6 GB to 7.0 GB), at four times the read time.
+`toml_edit` is the only other parser here that keeps the file contents (e.g. comments), and against it SHCL makes a smaller file (67 MB to 77 MB) and uses half the memory (3.6 GB to 7.0 GB) - but at four times the read time.
 
-One library is not a format, so the tool measures Python too. Almost every Python parser is really C wearing a Python name - `json`, `ElementTree`, PyYAML's `CSafeLoader` - and SHCL's Python binding is pure Python, so `tomllib` is the only fair comparison. SHCL comes in 3.7x behind `tomllib` in Python, against 3.5x behind `toml` in Rust. Two languages, two separate implementations, the same ratio, so the cost belongs to the format and not to one library.
+Every number above comes from one Rust library per format. A slow library and a slow format are not the same thing, so the same files are read again in Python. Most Python parsers are C underneath - `json`, `ElementTree` and PyYAML all are - while SHCL's Python binding is pure Python. That leaves `tomllib`, also pure Python, as the only fair match. In Python, SHCL reads 3.7 times slower than `tomllib`; in Rust, 3.5 times slower than `toml`. Two languages, two separate implementations, the same gap - so the gap belongs to the format, not to one library.
 
-If you are moving a lot of machine-generated data, none of this applies to you. Use JSON. SHCL is for files people edit.
+If you are moving a lot of machine-generated data over a high-bandwidth connection, none of this applies to you. Use JSON. SHCL is for files that people edit.
 
 > *How it was measured: [`cicd/utility/comparison/`](cicd/utility/comparison/) writes the same data in all five formats, then reads each file back with its own ecosystem's parser - same compiler, same flags, one process per measurement. Method and caveats are in [design.md](project/design.md#format-comparison); every number, including the other shapes and the Python tier, is in [results.shcl](cicd/utility/comparison/results.shcl).*
 
