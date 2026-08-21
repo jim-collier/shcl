@@ -23,6 +23,7 @@ ports here by mechanical diff (parity over idiom - see style-guide.md).
 import math
 import os
 import stat
+import sys
 from decimal import Decimal
 from enum import Enum
 
@@ -314,11 +315,17 @@ class _Pend:
 		self.blank_before = blank_before
 
 
+# Shared empty element list for the kinds that have none: only "cell" ever
+# mutates els (the stacked-list append checks kind first), so "empty" and
+# "raw" values all point at this one tuple instead of a list each.
+_EMPTY_ELS: tuple = ()
+
+
 class _Value:
 	# kind: "empty" | "cell" (els) | "raw" (content/info/fence_char/fence_len)
 	__slots__ = ("kind", "els", "content", "info", "fence_char", "fence_len")
 	kind: str
-	els: list
+	els: list     # _EMPTY_ELS when the kind has no elements; list only for "cell"
 	content: str
 	info: str
 	fence_char: str
@@ -329,7 +336,7 @@ class _Value:
 		# does not use are never read, and starting them at their own empty value
 		# keeps every reader's type honest without a guard at each use.
 		self.kind = kind
-		self.els = []
+		self.els = _EMPTY_ELS
 		self.content = ""
 		self.info = ""
 		self.fence_char = None
@@ -342,7 +349,8 @@ class _Value:
 		"""Independent copy, element list included - a clone or a merged-in value
 		has to survive the document it came from being released."""
 		v = _Value(self.kind)
-		v.els = [_Element(e.text, e.quoted) for e in self.els]
+		if self.kind == "cell":
+			v.els = [_Element(e.text, e.quoted) for e in self.els]
 		v.content = self.content
 		v.info = self.info
 		v.fence_char = self.fence_char
@@ -455,28 +463,15 @@ def _choose_fence(content):
 	return ("`", max(3, maxrun + 1))
 
 
-class _Node:
-	__slots__ = (
-		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
-		"leading", "trailing", "after", "inside", "blank_before", "src",
-		"name_src",
-	)
+class _Trivia:
+	"""Comment trivia, boxed off to the side: most nodes carry none, and the
+	four empty containers were a third of every node. Verbatim from `#` to end
+	of line. Never part of identity or reads; merged instances concatenate
+	leading, first trailing wins (later ones demote to leading - a canonical
+	line has room for one)."""
+	__slots__ = ("leading", "trailing", "after", "inside")
 
-	def __init__(self, name, value, parent, line, name_src=""):
-		self.name = name          # ASCII-folded to lower; non-ASCII never folds
-		# The name as the author spelled it (case unfolded, quotes and escapes
-		# resolved) - what authored_name() hands back. Merged instances keep the
-		# first binding's spelling, like line() and comments.
-		self.name_src = name_src
-		self.value = value
-		self.children = []
-		self.parent = parent
-		self.line = line
-		self.star_list = False    # value built from stacked "* " lines
-		self.star_mixed = False   # mix of "* " and field children already diagnosed
-		# Comment trivia, verbatim from `#` to end of line. Never part of identity
-		# or reads; merged instances concatenate leading, first trailing wins
-		# (later ones demote to leading - a canonical line has room for one).
+	def __init__(self):
 		self.leading = []
 		self.trailing = ""        # empty = none
 		# Whole-line comments that followed this node's subtree at a deeper
@@ -489,14 +484,69 @@ class _Node:
 		# still owns those lines. Emitted after the subtree one level deeper
 		# than this node.
 		self.inside = []
+
+
+class _Node:
+	__slots__ = (
+		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
+		"trivia", "blank_before", "src_set", "src", "name_src",
+	)
+
+	def __init__(self, name, value, parent, line, name_src=""):
+		# ASCII-folded to lower; non-ASCII never folds. Interned: siblings and
+		# repeated sections share one string object instead of one per node.
+		self.name = sys.intern(name)
+		# The name as the author spelled it (case unfolded, quotes and escapes
+		# resolved) - what authored_name() hands back. Merged instances keep the
+		# first binding's spelling, like line() and comments. The same object as
+		# `name` when the spellings match (the overwhelmingly common case), so
+		# the duplicate per-node string never allocates.
+		self.name_src = self.name if name_src == name else sys.intern(name_src)
+		self.value = value
+		self.children = []
+		self.parent = parent
+		self.line = line
+		self.star_list = False    # value built from stacked "* " lines
+		self.star_mixed = False   # mix of "* " and field children already diagnosed
+		# Comment trivia sidecar (_Trivia): None until the first write, so the
+		# common comment-free node never allocates the four containers.
+		self.trivia = None
 		# Blank-line grouping is the other half of hand-authored layout: set
 		# when a blank line preceded this node's binding line (runs collapse).
 		self.blank_before = False
+		# This node has decided its `src` - set by the first source line whose
+		# value the node holds, whether or not a string was worth keeping.
+		self.src_set = False
 		# Verbatim value text from the source line (after the colon, comment
 		# stripped, trimmed) - what a read's `raw` hands back. None when the
-		# value was synthesized (writer, stacked list, fence), where raw falls
-		# back to the display form.
+		# value was synthesized (writer, stacked list, fence) OR when the
+		# spelling is exactly the display form; raw falls back to the display
+		# form either way.
 		self.src = None
+
+	# Trivia reads hand back the empty shape when no sidecar exists; _triv()
+	# allocates one on first write.
+	def leading(self):
+		t = self.trivia
+		return t.leading if t is not None else ()
+
+	def trailing(self):
+		t = self.trivia
+		return t.trailing if t is not None else ""
+
+	def after(self):
+		t = self.trivia
+		return t.after if t is not None else ()
+
+	def inside(self):
+		t = self.trivia
+		return t.inside if t is not None else ()
+
+	def _triv(self):
+		t = self.trivia
+		if t is None:
+			t = self.trivia = _Trivia()
+		return t
 
 
 ROOT = 0
@@ -514,19 +564,18 @@ def _fold_node_into(arena, survivor, loser):
 	for k in kids:
 		arena[k].parent = survivor
 	arena[survivor].children.extend(kids)
-	arena[survivor].leading.extend(arena[loser].leading)
-	arena[loser].leading = []
-	trail = arena[loser].trailing
-	arena[loser].trailing = ""
-	if trail:
-		if not arena[survivor].trailing:
-			arena[survivor].trailing = trail
-		else:
-			arena[survivor].leading.append(_Lead(trail, False))
-	arena[survivor].after.extend(arena[loser].after)
-	arena[loser].after = []
-	arena[survivor].inside.extend(arena[loser].inside)
-	arena[loser].inside = []
+	lt = arena[loser].trivia
+	if lt is not None:
+		arena[loser].trivia = None
+		st = arena[survivor]._triv()
+		st.leading.extend(lt.leading)
+		if lt.trailing:
+			if not st.trailing:
+				st.trailing = lt.trailing
+			else:
+				st.leading.append(_Lead(lt.trailing, False))
+		st.after.extend(lt.after)
+		st.inside.extend(lt.inside)
 
 
 # Maximum nesting depth (levels below the document root), enforced at load and
@@ -779,6 +828,34 @@ def _disp_key(v):
 	return _apply_escapes(v.display())
 
 
+def _merge_key(name, v):
+	"""The (name, merge-key) accelerator key, as an exact tuple reusing the
+	value's own strings: injective exactly like name plus _Value.key(), with no
+	key text built or copied. Where the reference streams these fields through
+	an FNV hash and verifies hits, tuples keep the lookup exact - dict and
+	tuple machinery here is C-speed, a hand-rolled hash loop is not."""
+	k = v.kind
+	if k == "cell":
+		return (name, "c", tuple(e.text for e in v.els))
+	if k == "empty":
+		return (name, "e")
+	return (name, "r", v.info, v.content)
+
+
+def _value_key(v):
+	"""The value's merge key alone (no name part) - the src-attach guard's
+	compare."""
+	return _merge_key("", v)
+
+
+def _src_matches_display(v, s):
+	"""True when a source value spelling is exactly the display form - the case
+	where `src` need not be stored, since raw's fallback reproduces it. The
+	single-scalar display() is the element text itself, so the common compare
+	builds nothing."""
+	return s == v.display()
+
+
 def _fence_open(rest):
 	"""Opening fence: a run of >=3 backticks or tildes, then an optional info-string."""
 	if not rest:
@@ -988,21 +1065,24 @@ class _Parser:
 		self.diags = []
 		# (indent string, node) for each open level; [0] is the virtual root.
 		self.stack = [("", ROOT)]
-		# Per-node (name, value-key) -> first matching child, parallel to arena.
-		# Pure lookup accelerator for _select_or_create; children keeps the order.
-		self.child_map: list = [{}]
+		# Per-node (name, value-key) -> first matching child, parallel to arena
+		# and None until a parent's first insert, so leaves never allocate one.
+		# Pure lookup accelerator for _select_or_create; children keeps the
+		# order. Keys are _merge_key tuples, so no key text is built or stored.
+		self.child_map: list = [None]
 		# Per-node (name, display) -> first matching child: the `[value]` selector
 		# accelerator (its predicate is display(), a different and non-injective
-		# key from child_map's). Same first-wins discipline, same mutation sites.
-		self.disp_map: list = [{}]
+		# key from child_map's). Same first-wins discipline, same mutation sites,
+		# same lazy allocation.
+		self.disp_map: list = [None]
 		# Whole-line comments waiting for the next line that binds a node. The
 		# source indent is kept only to decide after-attachment (a comment
 		# deeper than the next binding hangs on the block it sits in).
 		self.pending = []
 		self.saw_blank = False  # a blank line waits to become the next bound node's blank_before
 		# An open stacked list defers its merge-key remap (rebuilding the key per
-		# element is O(list^2) time); (node, key, display) at deferral start,
-		# flushed before any map lookup and at end of parse.
+		# element is O(list^2) time); (node, map key, display key) at deferral
+		# start, flushed before any map lookup and at end of parse.
 		self.star_open = None
 		# Node -> line of the re-open that H002-hinted it. A merge under a hinted
 		# container combines the same two textual regions, so it hints too even
@@ -1019,18 +1099,25 @@ class _Parser:
 	def _select_or_create(self, parent, name, name_src, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
 		self._star_flush()
-		map_key = (name, value.key())
-		found = self.child_map[parent].get(map_key)
-		if found is not None:
-			return found
+		map_key = _merge_key(name, value)
+		cmap = self.child_map[parent]
+		if cmap is not None:
+			found = cmap.get(map_key)
+			if found is not None:
+				return found
 		idx = len(self.arena)
 		node = _Node(name, value, parent, line, name_src)
 		self.arena.append(node)
 		self.arena[parent].children.append(idx)
-		self.child_map.append({})
-		self.child_map[parent][map_key] = idx
-		self.disp_map.append({})
-		self.disp_map[parent].setdefault((name, _disp_key(node.value)), idx)
+		self.child_map.append(None)
+		self.disp_map.append(None)
+		if cmap is None:
+			cmap = self.child_map[parent] = {}
+		cmap[map_key] = idx
+		dmap = self.disp_map[parent]
+		if dmap is None:
+			dmap = self.disp_map[parent] = {}
+		dmap.setdefault((name, _disp_key(node.value)), idx)
 		return idx
 
 	def _star_flush(self):
@@ -1048,12 +1135,16 @@ class _Parser:
 		parent = self.arena[node].parent
 		name = self.arena[node].name
 		cmap = self.child_map[parent]
-		if cmap.get((name, old_key)) == node:
-			del cmap[(name, old_key)]
-		cmap.setdefault((name, self.arena[node].value.key()), node)
+		if cmap is None:
+			cmap = self.child_map[parent] = {}
+		if cmap.get(old_key) == node:
+			del cmap[old_key]
+		cmap.setdefault(_merge_key(name, self.arena[node].value), node)
 		dmap = self.disp_map[parent]
-		if dmap.get((name, old_disp)) == node:
-			del dmap[(name, old_disp)]
+		if dmap is None:
+			dmap = self.disp_map[parent] = {}
+		if dmap.get(old_disp) == node:
+			del dmap[old_disp]
 		dmap.setdefault((name, _disp_key(self.arena[node].value)), node)
 
 	def _fold_late_dups(self):
@@ -1071,7 +1162,7 @@ class _Parser:
 			first: dict = {}
 			keep = []
 			for c in kids:
-				key = (self.arena[c].name, self.arena[c].value.key())
+				key = _merge_key(self.arena[c].name, self.arena[c].value)
 				survivor = first.get(key)
 				if survivor is not None:
 					_fold_node_into(self.arena, survivor, c)
@@ -1084,16 +1175,17 @@ class _Parser:
 	def _attach_trivia(self, node, trailing):
 		"""Hand pending leading comments (and this line's trailing one) to a node.
 		First trailing wins; a later one demotes to leading so nothing is lost."""
-		n = self.arena[node]
 		if self.pending:
+			t = self.arena[node]._triv()
 			for p in self.pending:
-				n.leading.append(_Lead(p.text, p.blank_before))
+				t.leading.append(_Lead(p.text, p.blank_before))
 			self.pending = []
 		if trailing:
-			if not n.trailing:
-				n.trailing = trailing
+			t = self.arena[node]._triv()
+			if not t.trailing:
+				t.trailing = trailing
 			else:
-				n.leading.append(_Lead(trailing, False))
+				t.leading.append(_Lead(trailing, False))
 
 	def _hang_deeper_pending(self, new_indent):
 		"""Comments written deeper than the incoming line belong to the block
@@ -1123,9 +1215,9 @@ class _Parser:
 				if target is not None:
 					lead = _Lead(p.text, p.blank_before)
 					if at_own_level:
-						self.arena[target].after.append(lead)
+						self.arena[target]._triv().after.append(lead)
 					else:
-						self.arena[target].inside.append(lead)
+						self.arena[target]._triv().inside.append(lead)
 					continue
 			self.pending.append(p)
 
@@ -1182,7 +1274,8 @@ class _Parser:
 				# entry a different sibling still satisfies - so a non-scalar hit
 				# and an outright miss both fall to the (rare) fallback scan.
 				want = _apply_escapes(sel[1])
-				found = self.disp_map[cur].get((seg.name, want))
+				dmap = self.disp_map[cur]
+				found = dmap.get((seg.name, want)) if dmap is not None else None
 				if found is not None and sel[2] and not _single_scalar(self.arena[found].value):
 					found = None
 				if found is None and sel[2]:
@@ -1292,9 +1385,10 @@ class _Parser:
 			self.lost += 1
 			return None
 		if self.arena[parent].value.is_empty():
-			old_key = self.arena[parent].value.key()
-			old_disp = _disp_key(self.arena[parent].value)
-			self.arena[parent].value = value
+			pnode = self.arena[parent]
+			old_key = _merge_key(pnode.name, pnode.value)
+			old_disp = (pnode.name, _disp_key(pnode.value))
+			pnode.value = value
 			self._remap_child(parent, old_key, old_disp)
 			return parent
 		name = self.arena[parent].name
@@ -1332,8 +1426,8 @@ class _Parser:
 			return
 		node = self.arena[parent]
 		if node.value.kind == "empty":
-			old_key = node.value.key()
-			old_disp = _disp_key(node.value)
+			old_key = _merge_key(node.name, node.value)
+			old_disp = (node.name, _disp_key(node.value))
 			node.value = _cell([el])
 			node.star_list = True
 			# First element: remap now (Empty -> cell changes both keys), then
@@ -1341,14 +1435,14 @@ class _Parser:
 			# keys per appended element was O(list^2) time; the maps only need
 			# to be fresh when queried, and every query flushes first.
 			self._remap_child(parent, old_key, old_disp)
-			k = node.value.key()
-			d = _disp_key(node.value)
+			k = _merge_key(node.name, node.value)
+			d = (node.name, _disp_key(node.value))
 			self.star_open = (parent, k, d)
 		elif node.value.kind == "cell" and node.star_list:
 			if self.star_open is None or self.star_open[0] != parent:
 				self._star_flush()
-				old_key = node.value.key()
-				old_disp = _disp_key(node.value)
+				old_key = _merge_key(node.name, node.value)
+				old_disp = (node.name, _disp_key(node.value))
 				self.star_open = (parent, old_key, old_disp)
 			node.value.els.append(el)
 		else:
@@ -1520,11 +1614,13 @@ class _Parser:
 			# Record only when the bound node holds exactly this line's value
 			# (a merge into an equal-valued node keeps the first line's span;
 			# a value dropped after a last-segment selector records nothing).
-			vkey = value.key() if src_text is not None else None
+			vkey = _value_key(value) if src_text is not None else None
 			node = self._attach_path(parent, segments, value, lineno)
 			if node is not None:
-				if src_text is not None and self.arena[node].src is None and self.arena[node].value.key() == vkey:
-					self.arena[node].src = src_text
+				if src_text is not None and not self.arena[node].src_set and _value_key(self.arena[node].value) == vkey:
+					self.arena[node].src_set = True
+					if not _src_matches_display(self.arena[node].value, src_text):
+						self.arena[node].src = src_text
 				if had_blank:
 					self.arena[node].blank_before = True
 				self._attach_trivia(node, comment)
@@ -1692,7 +1788,7 @@ class Document:
 				# Post-children marker. Comments this block owns with no child
 				# to carry them re-emit one deeper.
 				ipad = "\t" * (depth + 1)
-				for c in self.arena[idx].inside:
+				for c in self.arena[idx].inside():
 					if c.blank_before and out:
 						out.append("\n")
 					out.append(ipad)
@@ -1701,7 +1797,7 @@ class Document:
 				# Comments that hung on this block after its last child re-emit
 				# at the block's own depth.
 				pad = "\t" * depth
-				for c in self.arena[idx].after:
+				for c in self.arena[idx].after():
 					if c.blank_before and out:
 						out.append("\n")
 					out.append(pad)
@@ -1709,7 +1805,7 @@ class Document:
 					out.append("\n")
 				continue
 			self._emit_node(idx, depth, would_merge, out)
-			if self.arena[idx].after or self.arena[idx].inside:
+			if self.arena[idx].after() or self.arena[idx].inside():
 				# The marker sits under the children, so it pops after them.
 				stack.append((idx, depth, None))
 			self._emit_children(self.arena[idx].children, depth + 1, stack)
@@ -1745,7 +1841,8 @@ class Document:
 		# trailing comment joins the leading lines instead; the flag comes from
 		# the parent's walk. Each blank rides its own comment (or the binding
 		# line), never as the first output line.
-		for c in node.leading:
+		trailing = node.trailing()
+		for c in node.leading():
 			if c.blank_before and out:
 				out.append("\n")
 			out.append(pad)
@@ -1753,24 +1850,24 @@ class Document:
 			out.append("\n")
 		if node.blank_before and out:
 			out.append("\n")
-		if would_merge and node.trailing:
+		if would_merge and trailing:
 			out.append(pad)
-			out.append(node.trailing)
+			out.append(trailing)
 			out.append("\n")
 		out.append(pad)
 		out.append(_emit_name(node.name))
 		out.append(":")
 		if v.kind == "empty":
-			if node.trailing:
+			if trailing:
 				out.append("  ")
-				out.append(node.trailing)
+				out.append(trailing)
 			out.append("\n")
 		elif v.kind == "cell":
 			out.append(" ")
 			out.append(", ".join(_emit_element(e) for e in v.els))
-			if node.trailing:
+			if trailing:
 				out.append("  ")
-				out.append(node.trailing)
+				out.append(trailing)
 			out.append("\n")
 		else:
 			# Child-indent spelling is canonical: bare name line, fenced block one
@@ -1781,9 +1878,9 @@ class Document:
 			if would_merge:
 				out.append(" ")
 			else:
-				if node.trailing:
+				if trailing:
 					out.append("  ")
-					out.append(node.trailing)
+					out.append(trailing)
 				out.append("\n")
 			body_pad = "\t" * (depth + 1)
 			fence = v.fence_char * v.fence_len
@@ -2176,7 +2273,7 @@ class Document:
 		line = text.split("\n", 1)[0]
 		if not line.startswith("#"):
 			line = "# " + line
-		self.arena[idx].leading.append(_Lead(line, False))
+		self.arena[idx]._triv().leading.append(_Lead(line, False))
 		return True
 
 	def set_int(self, path, v):
@@ -2327,15 +2424,18 @@ class Document:
 		concatenates in layer order, first trailing wins."""
 		# Per-element copies: the merged document must not share list objects
 		# with `over`, which the caller may still use.
-		src = over.arena[ok]
-		self.arena[base].leading.extend(_Lead(c.text, c.blank_before) for c in src.leading)
-		if src.trailing:
-			if not self.arena[base].trailing:
-				self.arena[base].trailing = src.trailing
+		st = over.arena[ok].trivia
+		if st is None:
+			return
+		bt = self.arena[base]._triv()
+		bt.leading.extend(_Lead(c.text, c.blank_before) for c in st.leading)
+		if st.trailing:
+			if not bt.trailing:
+				bt.trailing = st.trailing
 			else:
-				self.arena[base].leading.append(_Lead(src.trailing, False))
-		self.arena[base].after.extend(_Lead(c.text, c.blank_before) for c in src.after)
-		self.arena[base].inside.extend(_Lead(c.text, c.blank_before) for c in src.inside)
+				bt.leading.append(_Lead(st.trailing, False))
+		bt.after.extend(_Lead(c.text, c.blank_before) for c in st.after)
+		bt.inside.extend(_Lead(c.text, c.blank_before) for c in st.inside)
 
 	def _overlay(self, base_parent, over, over_parent):
 		"""Explicit stack rather than recursion, for the same reason _clone_subtree
@@ -2463,11 +2563,15 @@ class Document:
 		node = _Node(src.name, cv, parent, src.line, src.name_src)
 		node.star_list = src.star_list
 		node.star_mixed = src.star_mixed
-		node.leading = [_Lead(c.text, c.blank_before) for c in src.leading]
-		node.trailing = src.trailing
-		node.after = [_Lead(c.text, c.blank_before) for c in src.after]
-		node.inside = [_Lead(c.text, c.blank_before) for c in src.inside]
+		st = src.trivia
+		if st is not None:
+			t = node._triv()
+			t.leading = [_Lead(c.text, c.blank_before) for c in st.leading]
+			t.trailing = st.trailing
+			t.after = [_Lead(c.text, c.blank_before) for c in st.after]
+			t.inside = [_Lead(c.text, c.blank_before) for c in st.inside]
 		node.blank_before = src.blank_before
+		node.src_set = src.src_set
 		node.src = src.src
 		idx = len(self.arena)
 		self.arena.append(node)
