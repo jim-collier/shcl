@@ -106,13 +106,18 @@ None open.
 	- The generated document is shaped, not padded: repeated instances of one name, nesting, inline and bullet arrays, quoted values holding the separator, raw blocks, comments, blank lines and non-ASCII.
 	- The measurements it produced are the item below.
 
-- 🔘 Cut what a document costs in memory, and what Python costs in time.
-	- Found by the gate above - the first time anything measured either. A 100 MiB document costs 3.8 GB in the reference, 5.5 GB in Go, 6.1 GB in Python and 7.0 GB in C: 39x to 72x the input. A config that size is not exotic, and 7 GB puts it out of reach on an ordinary machine.
-	- C is both the fastest and the heaviest, which is the wrong way round for the binding most likely to be embedded somewhere small.
-	- Python is 1.16 s/MiB against 0.07 for C and 0.10 for Go - a minute and a half on a document the others finish in ten seconds.
-	- Not yet diagnosed, only measured. The obvious suspects are per-node allocation and how much source text each binding keeps alive after parsing; the earlier performance pass halved C's peak and never looked at the multiplier itself.
-	- No target set yet. Getting the multiplier under 20x would put a 100 MiB document inside 2 GB everywhere.
-	- Confirmed independently by the format comparison below, which measures the reference at 45x to 54x on four different document shapes and puts a number on the time half too: nine to seventeen times slower to load than `serde_json`, two to five times slower than a TOML or YAML load. Both halves of this item now have a second measurement behind them.
+- ✅ Cut what a document costs in memory, and what Python costs in time.
+	- Found by the gate above - the first time anything measured either. A 100 MiB document cost 3.8 GB in the reference, 5.5 GB in Go, 6.1 GB in Python and 7.0 GB in C: 39x to 72x the input.
+	- Done: the multiplier is now 21x (rust), 30x (C), 33x (Go), 47x (Python) - a 100 MiB document fits in 2.1-4.7 GB instead of 3.8-7.0. Three shared cuts: the parser's accelerator maps key on hashes and verify against the tree instead of storing built key strings; comment trivia moved behind a per-node pointer most nodes never allocate; the authored name and source value spellings are stored only when they differ from what the node already holds.
+	- C got three more of its own - the node vector and map slots moved out of the bump arena (which cannot reclaim a doubling), strings slice one retained copy of the input instead of duplicating each piece, and the repeated-leaf hint pass stopped leaving its dead bookkeeping in the document arena - taking it from the heaviest binding to the second lightest.
+	- Every binding also got faster: C 0.07 -> 0.04 s/MiB, Go 0.10 -> 0.08, rust 0.70 -> 0.53 (debug).
+	- Python's time half moved only a little (1.16 -> 1.11 s/MiB): profiled, and the cost is spread across the interpreter's per-line work with no single hot spot left, so a real cut would mean restructuring the parser away from the reference's shape. Left there deliberately - the Python CLI exists for the differential check and stays well inside its gate ceiling.
+	- The largedoc gate's memory ceilings were lowered to match, so the gains cannot silently regress.
+	- Confirmed independently by the format comparison below, which measured the reference at 45x to 54x on four different document shapes and put a number on the time half too. Its published numbers predate this work; rerun the comparison before quoting them for the memory column.
+
+- 🔘 Rerun the format comparison and refresh the README performance numbers before the next cut.
+	- The memory-and-speed work above moved every number the comparison feeds the README (read time down a quarter, memory nearly halved in the reference); the published tables now understate the project.
+	- Rust tier and Python tier both; the Python-vs-`tomllib` ratio in the prose moves too.
 
 - ✅ A man page and shell completions for the CLI.
 	- Split out of Code Review 20260817 item 28, which batched them with polish they do not belong with: this is a new deliverable, not a fix.

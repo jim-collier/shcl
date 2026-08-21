@@ -87,13 +87,15 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Control flow mirrors the reference, so it leans more LBYL than idiomatic EAFP. That is the parity rule at work.
 
+- Deliberate deviation: the parser's child/display accelerator maps key on exact tuples of the strings already in hand, where the other three bindings stream an FNV hash and verify hits against the arena. CPython's dict and tuple machinery runs at C speed while a hand-rolled per-byte hash loop does not, and the tuple keys are exactly as injective - same first-wins semantics, same behavior.
+
 - Type hints exist where they pay; the public surface is not yet fully hinted and mypy strict is not a gate.
 
 ### C (and the C++ veneer)
 
 - C11, single header, STB-style (`#define SHCL_IMPLEMENTATION` in one TU). The gate is `-Wall -Wextra -Werror` plus cppcheck.
 
-- Memory model: one bump arena per document, `shcl_free` frees everything, no per-object ownership. Raw pointers are fine here - this is C working as designed, not a RAII gap.
+- Memory model: one bump arena per document, `shcl_free` frees everything, no per-object ownership. Raw pointers are fine here - this is C working as designed, not a RAII gap. The one exception is the node vector, which lives in malloc/realloc storage: a bump arena cannot reclaim the abandoned half of each doubling, and the node array is the biggest thing that doubles.
 
 - Strings are length-delimited byte spans with explicit UTF-8 iteration helpers, because the reference iterates `char`s and byte-wise shortcuts mis-handle multibyte input.
 
@@ -123,7 +125,7 @@ The wins that matter were locked in by the architecture, before any code was hot
 
 - C owns memory with a bump arena per document, plus a scratch arena that resets on every read call. No per-object ownership, no free list - `shcl_free` drops the whole thing.
 
-- The parser builds its `(name, value)` child index as it goes, so lookups and merges never rescan siblings. That index is discarded after parse; the Writer mutates the tree directly instead of maintaining it.
+- The parser builds its `(name, value)` child index as it goes, so lookups and merges never rescan siblings. The index holds hashes and node indices only - key strings are never built; a hit is verified against the arena. It is discarded after parse; the Writer mutates the tree directly instead of maintaining it.
 
 Then there are the habits, which cost nothing to write and are not premature:
 
