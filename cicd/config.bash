@@ -124,6 +124,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/package.bash
 	cicd/utility/sign-release.bash
 	cicd/utility/git-auto-msg.bash
+	cicd/utility/win-runners.bash
 	cicd/hooks/pre-push
 	cicd/utility/include/gfs-rotate.bash
 	source/bash/shcl.bash

@@ -1,0 +1,5 @@
+## Goldens are compared byte for byte. Git for Windows defaults core.autocrlf
+## to true, which would rewrite every expected.shcl on checkout and fail the
+## whole corpus there - and the corpus deliberately holds cases whose line
+## endings are the thing under test. Nothing in this repo wants conversion.
+* -text

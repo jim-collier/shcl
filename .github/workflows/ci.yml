@@ -73,3 +73,39 @@ jobs:
             source/rust/target
           key: ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'source/rust/Cargo.lock') }}
       - run: cicd/cicd.bash --ci
+
+  ## The file tier is the only part of the library carrying real per-platform
+  ## code - the publish step is a different path in all four bindings - and the
+  ## job above runs none of it on windows. The python binding threw on every
+  ## windows overwrite through a whole release without anything here noticing.
+  ## So: the runners and the veneer smoke, on windows, and nothing else. The
+  ## corpus goldens, crosscheck, large document and every lint gate stay above,
+  ## where they are defined; this is not a second definition of passing.
+  ##
+  ## Nothing is installed beyond the toolchains. mingw's gcc ships on the image
+  ## and MSVC has no <dirent.h> for the C runner to walk the corpus with, so gcc
+  ## is the compiler; win-runners.bash names the tool if the image ever drops it.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    ## Git Bash. The runner script is the same one a person runs by hand there.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      ## rustup is preinstalled and reads rust-toolchain.toml, same as above.
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: stable
+          cache: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            source/rust/target
+          key: ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'source/rust/Cargo.lock') }}
+      - run: bash cicd/utility/win-runners.bash

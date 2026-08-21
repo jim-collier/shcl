@@ -262,6 +262,12 @@ Both of those run on small inputs, which leaves a whole class of defect unwatche
 
 The size is deliberately a floor rather than a target. It was chosen because it is roughly where memory stops being free: every binding holds tens of times the input size in memory while parsing, so a document this big is the first one whose cost is worth a decision.
 
+All of that runs on Linux, which was enough while every binding did the same thing everywhere. The file tier ended that: publishing a written file is a different code path on Windows in all four bindings, so the platform-specific half was covered only where it never executes. A second CI job runs the runners and the veneer smoke on Windows.
+
+Its scope is deliberately narrow, and it is not a second definition of passing. The corpus goldens, the differential check, the large document and every lint gate stay on the Linux job, where they are defined. The Windows job is there for the code that only exists there.
+
+Two supporting decisions came with it. The C runner walks the corpus with `dirent.h`, which MSVC does not have, so the compiler is gcc. And end-of-line conversion is turned off repo-wide: Git for Windows defaults it on, the goldens are compared byte for byte, and some of them are about line endings specifically.
+
 Two portability rules bind every binding:
 
 - Floats render as shortest round-trip decimal, never scientific notation. This matches the reference's native float formatting.
