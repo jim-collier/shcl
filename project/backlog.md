@@ -48,6 +48,11 @@ None open.
 
 ### Bugs
 
+- ✅ Hosted CI has been failing on every push since the supply-chain gates landed.
+	- `staticcheck`, `govulncheck` and `cargo-deny` went into `LINT_EXTRA` and `TOOL_PINS` in the 20260819 round, but nothing was ever added to `ci.yml` to install them. The lint stage aborted at exit 127 about a minute in, so every run since has been red while the local gate stayed green - which is exactly how it went unnoticed.
+	- Fixed by installing all three at their pinned versions. `cargo-deny` comes as a prebuilt binary with a sha256 pin, the same treatment `shellcheck` already gets: building it from source costs minutes and pulls a dependency tree the gate has no reason to compile.
+	- `cargo-zigbuild` is still missing there and stays that way - it only feeds the cross stage, which `--ci` skips, so it is a warning and not a failure.
+
 - ✅ A raw block body line ending in more than one carriage return is not a `fmt` fixpoint.
 	- Found by the raised 200k gate, immediately after the two below were fixed - same family, and the third one none of the shallower runs could reach.
 	- Minimal reproducer: a fenced block whose body line ends `\r\r\n`. Load strips one CR, emit writes the survivor back, and the reload reads `\r\n` as an ordinary line ending and drops it. All four bindings.
@@ -91,6 +96,7 @@ None open.
 	- Done: `.gitattributes` turns off end-of-line conversion. Git for Windows defaults `core.autocrlf` on, which would rewrite every golden on checkout - and the corpus deliberately holds cases whose line endings are the thing under test.
 	- Two real defects found on the way, both in test code: the C runner would not compile for Windows at all (POSIX two-argument `mkdir`, and a temp root that only knew `TMPDIR` and `/tmp`), and the Python runner seeded its file-tier fixtures in text mode, which would have fed different bytes there than everywhere else.
 	- Rust, Go and C were confirmed green on the Windows path before this shipped, by building for mingw and running under wine. Python is the one that could not be checked that way, which is also the one that has already broken there.
+	- The first run paid for the item three times over. It caught a real library defect - `save_file` on a path holding a NUL raised `ValueError` straight past a contract that promises a returned message, because POSIX raises at the resolve and Windows raises later, at the first call that touches the filesystem. It also caught two test files that would not compile there at all: the C++ veneer smoke had the same POSIX two-argument `mkdir` as the C runner, and the C runner tripped a truncation diagnostic that gcc 15 raises and the gcc 14 on this box does not - so that one was never Windows-specific, just unseen.
 
 - ✅ Test every binding against a document far larger than the corpus.
 	- Nothing in the pipeline parsed more than a few kilobytes: 56 corpus cases of a few hundred bytes each, and fuzz inputs smaller still. A parser going quadratic, or a buffer that only misbehaves past a few megabytes, had no gate at all - and this project has already shipped one buffer-growth defect that no small case could see.
