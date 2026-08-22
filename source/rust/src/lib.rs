@@ -42,6 +42,7 @@ pub enum Severity {
 	Hint,
 }
 
+/// One parser or validator finding, tied to a source line.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
 	pub line: usize, // 1-based
@@ -256,6 +257,7 @@ impl<T> Read<T> {
 	}
 }
 
+/// A failed strict load: the diagnostics that failed it, plus the recovered tree.
 #[derive(Debug)]
 pub struct LoadError {
 	pub diagnostics: Vec<Diagnostic>,
@@ -297,6 +299,7 @@ pub struct ShclDateTime {
 	pub zone: Option<ZoneSpec>,
 }
 
+/// A datetime's zone suffix as written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZoneSpec {
 	Utc,
@@ -2095,6 +2098,8 @@ impl Document {
 		Ok(doc)
 	}
 
+	/// Everything the load recorded (after load_and_validate, validation
+	/// findings too).
 	pub fn diagnostics(&self) -> &[Diagnostic] {
 		&self.diags
 	}
@@ -2152,6 +2157,7 @@ impl Document {
 		doc
 	}
 
+	/// The level the document was loaded at.
 	pub fn strictness(&self) -> Strictness {
 		self.strictness
 	}
@@ -2389,11 +2395,6 @@ fn emit_name(name: &str) -> String {
 	escape_name(name)
 }
 
-/// Quote one path segment so it can be spliced into a lookup path: a bare name
-/// passes through, anything else comes back quoted and escaped in the form the
-/// path scanner accepts. Splicing user-typed text into a path without this is
-/// path injection - a dotted name silently reads as nesting. Same spelling
-/// `paths()` and the canonical emitter produce.
 /// Render a float the way the writer and the CLI do: shortest round-trip
 /// decimal, never scientific notation, `inf`/`-inf`/`NaN` spelled out. Rust's
 /// own Display already does exactly that, which is why this is a wrapper - the
@@ -2404,6 +2405,11 @@ pub fn format_f64(v: f64) -> String {
 	format!("{v}")
 }
 
+/// Quote one path segment so it can be spliced into a lookup path: a bare name
+/// passes through, anything else comes back quoted and escaped in the form the
+/// path scanner accepts. Splicing user-typed text into a path without this is
+/// path injection - a dotted name silently reads as nesting. Same spelling
+/// `paths()` and the canonical emitter produce.
 pub fn quote_segment(name: &str) -> String {
 	emit_name(name)
 }
@@ -3311,22 +3317,27 @@ impl Document {
 	pub fn set_int(&mut self, path: &str, v: i64) -> bool {
 		self.set_value(path, cell_of(v.to_string()))
 	}
+	/// Bind a float at a path, in the canonical shortest spelling.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float(&mut self, path: &str, v: f64) -> bool {
 		self.set_value(path, cell_of(format_f64(v)))
 	}
+	/// Bind true/false at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool(&mut self, path: &str, v: bool) -> bool {
 		self.set_value(path, cell_of(if v { "true" } else { "false" }.to_string()))
 	}
+	/// Bind a string at a path, escaped so it reads back exactly.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string(&mut self, path: &str, v: &str) -> bool {
 		self.set_value(path, cell_of(encode_string(v)))
 	}
+	/// Bind a datetime at a path, in its canonical spelling.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime(&mut self, path: &str, v: &ShclDateTime) -> bool {
 		self.set_value(path, cell_of(v.to_string()))
 	}
+	/// Bind a raw block at a path, picking a fence longer than any content line.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
 		let (fence_char, fence_len) = choose_fence(content);
@@ -3340,19 +3351,23 @@ impl Document {
 			})),
 		)
 	}
+	/// Bind an empty value at a path (distinct from the empty string).
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_empty(&mut self, path: &str) -> bool {
 		self.set_value(path, Value::Empty)
 	}
 
+	/// Bind an inline integer array at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int_array(&mut self, path: &str, v: &[i64]) -> bool {
 		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
+	/// Bind an inline float array at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_array(&mut self, path: &str, v: &[f64]) -> bool {
 		self.set_value(path, array_cell(v.iter().map(|x| format_f64(*x)).collect()))
 	}
+	/// Bind an inline bool array at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool_array(&mut self, path: &str, v: &[bool]) -> bool {
 		self.set_value(
@@ -3364,6 +3379,7 @@ impl Document {
 			),
 		)
 	}
+	/// Bind an inline string array at a path, per-element escaped.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string_array(&mut self, path: &str, v: &[&str]) -> bool {
 		self.set_value(
@@ -3371,12 +3387,14 @@ impl Document {
 			array_cell(v.iter().map(|x| encode_string(x)).collect()),
 		)
 	}
+	/// Bind an inline datetime array at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime_array(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
 		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
 
 	// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+	/// `set_int` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int_default(&mut self, path: &str, v: i64) -> bool {
 		if !self.exists(path) {
@@ -3384,6 +3402,7 @@ impl Document {
 		}
 		true
 	}
+	/// `set_float` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_default(&mut self, path: &str, v: f64) -> bool {
 		if !self.exists(path) {
@@ -3391,6 +3410,7 @@ impl Document {
 		}
 		true
 	}
+	/// `set_bool` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool_default(&mut self, path: &str, v: bool) -> bool {
 		if !self.exists(path) {
@@ -3398,6 +3418,7 @@ impl Document {
 		}
 		true
 	}
+	/// `set_string` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string_default(&mut self, path: &str, v: &str) -> bool {
 		if !self.exists(path) {
@@ -3417,6 +3438,7 @@ impl Document {
 			None => false,
 		}
 	}
+	/// `set_literal` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_literal_default(&mut self, path: &str, text: &str) -> bool {
 		if !self.exists(path) {
@@ -3424,6 +3446,7 @@ impl Document {
 		}
 		true
 	}
+	/// `set_datetime` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime_default(&mut self, path: &str, v: &ShclDateTime) -> bool {
 		if !self.exists(path) {
@@ -3431,6 +3454,7 @@ impl Document {
 		}
 		true
 	}
+	/// `set_raw` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw_default(&mut self, path: &str, content: &str, info: &str) -> bool {
 		if !self.exists(path) {
@@ -3438,6 +3462,7 @@ impl Document {
 		}
 		true
 	}
+	/// `set_int_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int_array_default(&mut self, path: &str, v: &[i64]) -> bool {
 		if !self.exists(path) {
@@ -3445,6 +3470,7 @@ impl Document {
 		}
 		true
 	}
+	/// `set_float_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_array_default(&mut self, path: &str, v: &[f64]) -> bool {
 		if !self.exists(path) {
@@ -3452,6 +3478,7 @@ impl Document {
 		}
 		true
 	}
+	/// `set_bool_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool_array_default(&mut self, path: &str, v: &[bool]) -> bool {
 		if !self.exists(path) {
@@ -3459,6 +3486,7 @@ impl Document {
 		}
 		true
 	}
+	/// `set_string_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string_array_default(&mut self, path: &str, v: &[&str]) -> bool {
 		if !self.exists(path) {
@@ -3466,6 +3494,7 @@ impl Document {
 		}
 		true
 	}
+	/// `set_datetime_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime_array_default(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
 		if !self.exists(path) {
@@ -4162,21 +4191,25 @@ impl Document {
 		}
 	}
 
+	/// Full-tier integer read at a path, coerced per the document's strictness.
 	pub fn read_int(&self, path: &str) -> Read<i64> {
 		let lvl = self.strictness;
 		self.read_scalar(path, |e| parse_int_text(e, lvl))
 	}
 
+	/// Full-tier float read at a path, coerced per the document's strictness.
 	pub fn read_float(&self, path: &str) -> Read<f64> {
 		let lvl = self.strictness;
 		self.read_scalar(path, |e| parse_float_text(e, lvl))
 	}
 
+	/// Full-tier bool read at a path, coerced per the document's strictness.
 	pub fn read_bool(&self, path: &str) -> Read<bool> {
 		let lvl = self.strictness;
 		self.read_scalar(path, |e| parse_bool_text(&e.text, lvl))
 	}
 
+	/// Full-tier datetime read at a path.
 	pub fn read_datetime(&self, path: &str) -> Read<ShclDateTime> {
 		self.read_scalar(path, |e| parse_datetime(&e.text))
 	}
@@ -4316,25 +4349,30 @@ impl Document {
 		}
 	}
 
+	/// Full-tier integer-array read at a path (per-slot statuses in `slots`).
 	pub fn read_int_array(&self, path: &str) -> Read<Vec<i64>> {
 		let lvl = self.strictness;
 		self.read_array(path, |e| parse_int_text(e, lvl))
 	}
 
+	/// Full-tier float-array read at a path.
 	pub fn read_float_array(&self, path: &str) -> Read<Vec<f64>> {
 		let lvl = self.strictness;
 		self.read_array(path, |e| parse_float_text(e, lvl))
 	}
 
+	/// Full-tier bool-array read at a path.
 	pub fn read_bool_array(&self, path: &str) -> Read<Vec<bool>> {
 		let lvl = self.strictness;
 		self.read_array(path, |e| parse_bool_text(&e.text, lvl))
 	}
 
+	/// Full-tier datetime-array read at a path.
 	pub fn read_datetime_array(&self, path: &str) -> Read<Vec<ShclDateTime>> {
 		self.read_array(path, |e| parse_datetime(&e.text))
 	}
 
+	/// Full-tier string-array read at a path, escapes applied per element.
 	pub fn read_string_array(&self, path: &str) -> Read<Vec<String>> {
 		self.read_array(path, |e| Some(apply_escapes(&e.text)))
 	}
@@ -4342,6 +4380,7 @@ impl Document {
 	// Full tier, Result form: Ok(value) on Good; the sentinel otherwise. Empty
 	// still comes back as Err(Empty) here; use read_* to also get the empty value.
 
+	/// `read_int` reduced to a `Result`.
 	pub fn get_int(&self, path: &str) -> Result<i64, Status> {
 		let r = self.read_int(path);
 		if r.status == Status::Good {
@@ -4351,6 +4390,7 @@ impl Document {
 		}
 	}
 
+	/// `read_float` reduced to a `Result`.
 	pub fn get_float(&self, path: &str) -> Result<f64, Status> {
 		let r = self.read_float(path);
 		if r.status == Status::Good {
@@ -4360,6 +4400,7 @@ impl Document {
 		}
 	}
 
+	/// `read_bool` reduced to a `Result`.
 	pub fn get_bool(&self, path: &str) -> Result<bool, Status> {
 		let r = self.read_bool(path);
 		if r.status == Status::Good {
@@ -4369,6 +4410,7 @@ impl Document {
 		}
 	}
 
+	/// `read_string` reduced to a `Result`.
 	pub fn get_string(&self, path: &str) -> Result<String, Status> {
 		let r = self.read_string(path);
 		if r.status == Status::Good {
@@ -4378,6 +4420,7 @@ impl Document {
 		}
 	}
 
+	/// `read_raw` reduced to a `Result`.
 	pub fn get_raw(&self, path: &str) -> Result<String, Status> {
 		let r = self.read_raw(path);
 		if r.status == Status::Good {
@@ -4387,6 +4430,7 @@ impl Document {
 		}
 	}
 
+	/// `read_datetime` reduced to a `Result`.
 	pub fn get_datetime(&self, path: &str) -> Result<ShclDateTime, Status> {
 		let r = self.read_datetime(path);
 		if r.status == Status::Good {
@@ -4400,6 +4444,7 @@ impl Document {
 	// gives the convenience "the array, or this fallback array" - the array
 	// analogue of the scalar get_*. Per-slot substitution is the full read_*
 	// tier (its `slots`) or the CLI's --default, not this.
+	/// `read_int_array` reduced to a `Result`.
 	pub fn get_int_array(&self, path: &str) -> Result<Vec<i64>, Status> {
 		let r = self.read_int_array(path);
 		if r.status == Status::Good {
@@ -4409,6 +4454,7 @@ impl Document {
 		}
 	}
 
+	/// `read_float_array` reduced to a `Result`.
 	pub fn get_float_array(&self, path: &str) -> Result<Vec<f64>, Status> {
 		let r = self.read_float_array(path);
 		if r.status == Status::Good {
@@ -4418,6 +4464,7 @@ impl Document {
 		}
 	}
 
+	/// `read_bool_array` reduced to a `Result`.
 	pub fn get_bool_array(&self, path: &str) -> Result<Vec<bool>, Status> {
 		let r = self.read_bool_array(path);
 		if r.status == Status::Good {
@@ -4427,6 +4474,7 @@ impl Document {
 		}
 	}
 
+	/// `read_string_array` reduced to a `Result`.
 	pub fn get_string_array(&self, path: &str) -> Result<Vec<String>, Status> {
 		let r = self.read_string_array(path);
 		if r.status == Status::Good {
@@ -4436,6 +4484,7 @@ impl Document {
 		}
 	}
 
+	/// `read_datetime_array` reduced to a `Result`.
 	pub fn get_datetime_array(&self, path: &str) -> Result<Vec<ShclDateTime>, Status> {
 		let r = self.read_datetime_array(path);
 		if r.status == Status::Good {
@@ -4451,46 +4500,57 @@ impl Document {
 	// binding, and a routine ported between two of them cannot keep the call
 	// name while changing which tier it lands on.
 
+	/// The integer at a path, or `def` when the read is not Good.
 	pub fn get_int_or(&self, path: &str, def: i64) -> i64 {
 		self.get_int(path).unwrap_or(def)
 	}
 
+	/// The float at a path, or `def` when the read is not Good.
 	pub fn get_float_or(&self, path: &str, def: f64) -> f64 {
 		self.get_float(path).unwrap_or(def)
 	}
 
+	/// The bool at a path, or `def` when the read is not Good.
 	pub fn get_bool_or(&self, path: &str, def: bool) -> bool {
 		self.get_bool(path).unwrap_or(def)
 	}
 
+	/// The string at a path, or `def` when the read is not Good.
 	pub fn get_string_or(&self, path: &str, def: String) -> String {
 		self.get_string(path).unwrap_or(def)
 	}
 
+	/// The raw-block content at a path, or `def` when the read is not Good.
 	pub fn get_raw_or(&self, path: &str, def: String) -> String {
 		self.get_raw(path).unwrap_or(def)
 	}
 
+	/// The datetime at a path, or `def` when the read is not Good.
 	pub fn get_datetime_or(&self, path: &str, def: ShclDateTime) -> ShclDateTime {
 		self.get_datetime(path).unwrap_or(def)
 	}
 
+	/// The integer array at a path, or `def` when the read is not Good.
 	pub fn get_int_array_or(&self, path: &str, def: Vec<i64>) -> Vec<i64> {
 		self.get_int_array(path).unwrap_or(def)
 	}
 
+	/// The float array at a path, or `def` when the read is not Good.
 	pub fn get_float_array_or(&self, path: &str, def: Vec<f64>) -> Vec<f64> {
 		self.get_float_array(path).unwrap_or(def)
 	}
 
+	/// The bool array at a path, or `def` when the read is not Good.
 	pub fn get_bool_array_or(&self, path: &str, def: Vec<bool>) -> Vec<bool> {
 		self.get_bool_array(path).unwrap_or(def)
 	}
 
+	/// The string array at a path, or `def` when the read is not Good.
 	pub fn get_string_array_or(&self, path: &str, def: Vec<String>) -> Vec<String> {
 		self.get_string_array(path).unwrap_or(def)
 	}
 
+	/// The datetime array at a path, or `def` when the read is not Good.
 	pub fn get_datetime_array_or(&self, path: &str, def: Vec<ShclDateTime>) -> Vec<ShclDateTime> {
 		self.get_datetime_array(path).unwrap_or(def)
 	}
