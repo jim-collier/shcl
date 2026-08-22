@@ -165,6 +165,24 @@ None open.
 
 ### Code Reviews
 
+- **20260822**:
+
+	Second standards pass, same scope as 20260819. One real bug, the rest polish; all fixed in one round.
+
+	- ✅ Code Review 20260822 item 1: `install-dev.bash` never set up the git hooks on a fresh clone.
+		- After the clone it changed into the new directory, so the relative clone path no longer resolved and the hooks step silently skipped at exit 0. The path is made absolute after the `cd` now.
+	- ✅ Code Review 20260822 item 2: installer output and dev-channel resolution.
+		- All three install scripts now open and close with a blank line and put one between output sections.
+		- The dev channel listed one release and took it, and the API orders that list by publish date - so a maintenance release cut on an older line would win. Both installers now list up to 100 and take the highest version, with a final outranking its own pre-releases.
+		- `install-dev.bash` confirms the same way `install.bash` does (try the terminal read, treat "cannot ask" as abort) and accepts "yes". `install.ps1` consults `PROCESSOR_ARCHITEW6432` and turns the progress bar off for the downloads.
+	- ✅ Code Review 20260822 item 3: the Go build, vet, test, staticcheck and govulncheck steps ran uncapped. They honor the same half-the-cores cap as cargo now, via `GOMAXPROCS`.
+	- ✅ Code Review 20260822 item 4: `--quick` still ran the long fuzz soak. It now swaps in the 20k depth; the 200k soak stays on full runs and the gate.
+	- ✅ Code Review 20260822 item 5: the dogfood fallback dir needed root, so it could never take. Replaced with `~/.local/bin`.
+	- ✅ Code Review 20260822 item 6: the demo gif ran 110 seconds. Cut to four steps at 33, and the high-level script now lives at `cicd/demo/script.txt` beside the scenario.
+	- ✅ Code Review 20260822 item 7: 60 public items in the Rust reference had no doc comment where the Go binding documents the same inventory. Filled from the Go text; one stranded doc block (`quote_segment`'s, sitting on `format_f64`) moved home.
+	- ✅ Code Review 20260822 item 8: comment tidy - the Python binding's five ad-hoc group dividers folded to plain comments per the style guide, the Go date cluster's `Atoi` discards got their safety note, and the style guide's lowercase-filename rule now names all the tool-fixed exceptions.
+	- ✅ Code Review 20260822 item 9: doc pass - README grammar and casing (`SHCL` throughout, one spelling of bulletproof), backlog and design.md long paragraphs broken into sub-bullets, the release section of design.md trimmed to decisions, and a stale pre-repo file reference reworded.
+
 - **20260819**:
 
 	Standards pass rather than a defect hunt: code style, performance, the pipeline, docs, the README pitch and the installers, each checked against how it is supposed to work. No correctness defect turned up, and the full gate is green. Everything below is a polish gap, not a bug.
