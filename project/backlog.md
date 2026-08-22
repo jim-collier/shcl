@@ -97,7 +97,10 @@ None open.
 	- Done: `.gitattributes` turns off end-of-line conversion. Git for Windows defaults `core.autocrlf` on, which would rewrite every golden on checkout - and the corpus deliberately holds cases whose line endings are the thing under test.
 	- Two real defects found on the way, both in test code: the C runner would not compile for Windows at all (POSIX two-argument `mkdir`, and a temp root that only knew `TMPDIR` and `/tmp`), and the Python runner seeded its file-tier fixtures in text mode, which would have fed different bytes there than everywhere else.
 	- Rust, Go and C were confirmed green on the Windows path before this shipped, by building for mingw and running under wine. Python is the one that could not be checked that way, which is also the one that has already broken there.
-	- The first run paid for the item three times over. It caught a real library defect - `save_file` on a path holding a NUL raised `ValueError` straight past a contract that promises a returned message, because POSIX raises at the resolve and Windows raises later, at the first call that touches the filesystem. It also caught two test files that would not compile there at all: the C++ veneer smoke had the same POSIX two-argument `mkdir` as the C runner, and the C runner tripped a truncation diagnostic that gcc 15 raises and the gcc 14 on this box does not - so that one was never Windows-specific, just unseen.
+	- The first run paid for the item three times over.
+		- It caught a real library defect: `save_file` on a path holding a NUL raised `ValueError` straight past a contract that promises a returned message. POSIX raises at the resolve; Windows raises later, at the first call that touches the filesystem.
+		- It also caught two test files that would not compile there at all. The C++ veneer smoke had the same POSIX two-argument `mkdir` as the C runner.
+		- The C runner tripped a truncation diagnostic that gcc 15 raises and the gcc 14 on this box does not - so that one was never Windows-specific, just unseen.
 
 - ✅ Test every binding against a document far larger than the corpus.
 	- Nothing in the pipeline parsed more than a few kilobytes: 56 corpus cases of a few hundred bytes each, and fuzz inputs smaller still. A parser going quadratic, or a buffer that only misbehaves past a few megabytes, had no gate at all - and this project has already shipped one buffer-growth defect that no small case could see.
@@ -140,7 +143,10 @@ None open.
 	- Deliberately not a pipeline gate: benchmarks are noisy and slow, and a red build caused by a busy machine teaches nothing. Reasoning and the full method are in `design.md` -> Format comparison.
 	- Done: the README carries a simplified table under "How it compares to...". It is favorable on size and unfavorable on speed, and says so - the front page already tells people not to use SHCL for high-volume machine data, so the honest table costs nothing and answers the question a reader would otherwise have to guess at.
 	- Found, and left for the item above: SHCL is nine to seventeen times slower to load than `serde_json` and holds 45x to 54x the input size in memory. Both are the memory-and-speed item, now with a second measurement backing it.
-	- Added after the first round: a **Python tier**, over the same documents, so the obvious objection - that this measures one implementation and calls it a format - has an answer. Most of what Python reaches for is a C extension wearing a Python name, so the row that carries the weight is `tomllib`, the one other pure-Python parser: SHCL lands 3.7x behind it in Python against 3.5x behind `toml` in Rust. That is the aggregate over four shapes, and it is the number worth quoting - the per-shape spread is wide in both tiers (2.4x to 6.7x in Python, 2.7x to 5.3x in Rust) and does not track shape for shape. Libraries that are not installed are skipped and named rather than failing the run.
+	- Added after the first round: a **Python tier**, over the same documents, so the obvious objection - that this measures one implementation and calls it a format - has an answer.
+		- Most of what Python reaches for is a C extension wearing a Python name, so the row that carries the weight is `tomllib`, the one other pure-Python parser: SHCL is 3.7x behind it in Python against 3.5x behind `toml` in Rust.
+		- That is the aggregate over four shapes, and it is the number worth quoting - the per-shape spread is wide in both tiers (2.4x to 6.7x in Python, 2.7x to 5.3x in Rust) and does not track shape for shape.
+		- Libraries that are not installed are skipped and named rather than failing the run.
 	- Added at the same time: rows are ordered by the geometric mean of each library's parse time over every shape, fastest first, in the printed tables and in the results file alike. SHCL sorts last in both tiers. The number the order comes from is recorded beside each library, so it can be re-derived rather than trusted.
 	- Turned up by the Python tier, about a library rather than a format: `lxml` goes quadratic on the long-and-flat shape - 59 MiB/s at 3 MiB down to 5.7 at 26 - with or without `huge_tree`, so it is not the ceiling-lifting flag. Millions of distinct element names against libxml2's name dictionary is the likely cause; nothing else in either tier does it, and the shapes whose names repeat are unaffected. Noted in `design.md`, not filed as our bug.
 	- `lxml` also needs `huge_tree` on to accept a document this size at all; without it the parse fails outright. That is the fair setting, not a thumb on the scale - the ceilings guard against hostile input, and this input is ours.
@@ -159,9 +165,27 @@ None open.
 
 ### Code Reviews
 
+- **20260822**:
+
+	Second standards pass, same scope as 20260819. One real bug, the rest polish; all fixed in one round.
+
+	- ✅ Code Review 20260822 item 1: `install-dev.bash` never set up the git hooks on a fresh clone.
+		- After the clone it changed into the new directory, so the relative clone path no longer resolved and the hooks step silently skipped at exit 0. The path is made absolute after the `cd` now.
+	- ✅ Code Review 20260822 item 2: installer output and dev-channel resolution.
+		- All three install scripts now open and close with a blank line and put one between output sections.
+		- The dev channel listed one release and took it, and the API orders that list by publish date - so a maintenance release cut on an older line would win. Both installers now list up to 100 and take the highest version, with a final outranking its own pre-releases.
+		- `install-dev.bash` confirms the same way `install.bash` does (try the terminal read, treat "cannot ask" as abort) and accepts "yes". `install.ps1` consults `PROCESSOR_ARCHITEW6432` and turns the progress bar off for the downloads.
+	- ✅ Code Review 20260822 item 3: the Go build, vet, test, staticcheck and govulncheck steps ran uncapped. They honor the same half-the-cores cap as cargo now, via `GOMAXPROCS`.
+	- ✅ Code Review 20260822 item 4: `--quick` still ran the long fuzz soak. It now swaps in the 20k depth; the 200k soak stays on full runs and the gate.
+	- ✅ Code Review 20260822 item 5: the dogfood fallback dir needed root, so it could never take. Replaced with `~/.local/bin`.
+	- ✅ Code Review 20260822 item 6: the demo gif ran 110 seconds. Cut to four steps at 33, and the high-level script now lives at `cicd/demo/script.txt` beside the scenario.
+	- ✅ Code Review 20260822 item 7: 60 public items in the Rust reference had no doc comment where the Go binding documents the same inventory. Filled from the Go text; one stranded doc block (`quote_segment`'s, sitting on `format_f64`) moved home.
+	- ✅ Code Review 20260822 item 8: comment tidy - the Python binding's five ad-hoc group dividers folded to plain comments per the style guide, the Go date cluster's `Atoi` discards got their safety note, and the style guide's lowercase-filename rule now names all the tool-fixed exceptions.
+	- ✅ Code Review 20260822 item 9: doc pass - README grammar and casing (`SHCL` throughout, one spelling of bulletproof), backlog and design.md long paragraphs broken into sub-bullets, the release section of design.md trimmed to decisions, and a stale pre-repo file reference reworded.
+
 - **20260819**:
 
-	Conformance pass against the standing style, performance, pipeline, housecleaning, marketing and installer directives, rather than a defect hunt. No correctness defect turned up, and the full gate is green: 56 corpus cases through all four bindings, 6069 four-way crosscheck comparisons, a 200k fuzz soak, and the 100 MiB gate with all four agreeing byte for byte. Everything below is a gap against a directive, not a bug.
+	Standards pass rather than a defect hunt: code style, performance, the pipeline, docs, the README pitch and the installers, each checked against how it is supposed to work. No correctness defect turned up, and the full gate is green. Everything below is a polish gap, not a bug.
 
 	- **CI/CD**:
 
@@ -270,7 +294,7 @@ None open.
 
 		- See the open item under Features about what a document costs in memory. It is the one performance finding with measurements behind it, and this review adds nothing to it.
 
-	- **Housecleaning**:
+	- **Cleanup**:
 
 		- ✅ Code Review 20260819 item 15: a release behind in build leftovers.
 			- `source/python/dist/` still holds the 1.2.0 wheel and archive, and the metadata directory beside it matches. Ignored by git, so they sit there indefinitely.
@@ -286,7 +310,7 @@ None open.
 			- Not a defect. The file is meant to be there for anyone who goes looking, without the README pointing at it - the front page is about what the project does, and that document is not part of the pitch.
 			- It was briefly added to the Docs list and has been taken back out. Leave it unlinked.
 
-	- **Marketing**:
+	- **README & pitch**:
 
 		- ✅ Code Review 20260819 item 18: the "5/10" disclosure under the projects table looks low.
 			- Counting the table, more than five entries appear to trace back to the same author once the company-hosted ones are included.
@@ -444,7 +468,7 @@ None open.
 		- ✅ Code Review 20260817 item 16: small defects, batched.
 			- Python's merge docstring sits below the first statement, so it is an inert expression and the method has no documentation at all - the one method whose override rule most needs explaining.
 			- Go's error-count doc comment was split by an insertion, so the count function is undocumented and the lost-line count renders under the wrong name on the package page.
-			- Go flattens the underlying i/o error to text in three places, so a caller cannot tell a permission failure from a full disk without matching on the message. The directive is to wrap.
+			- Go flattens the underlying i/o error to text in three places, so a caller cannot tell a permission failure from a full disk without matching on the message. The fix is to wrap.
 			- Go's cli asserts the parse error's type without the checked form. Unreachable today, but it is the top-level error path.
 			- The reference carries a dead byte-order-mark branch, with a comment describing behavior that only exists at the sibling site. Harmless, but it reads as a live invariant and will be copied.
 			- The c++ header uses two standard types without including their headers, and declares one status out-parameter uninitialized.
@@ -798,7 +822,10 @@ None open.
 	- Done: `fragment: <name>` declares (children are ordinary `field:` instances with relative paths), `inherits: <name>` mounts, all four bindings. Recursion/mutual refs legal with no depth limit (demand-driven expansion); `init` expands mounts and cuts where a fragment re-enters; H001 disavowal covers fragment-declared repeats; new V094/V095 faults. Cases 039-041; spec + design.md updated.
 
 - ✅ Lower the go directive to the tested floor.
-	- Declared 1.20 (strings.CutSuffix is the newest stdlib dependency; everything else predates generics). Hosted CI now installs a stable toolchain instead of reading go.mod - the pipeline's own `go -C` needs a current release - while the directive gates the consumer floor. From convert-base-v2: go.mod declares 1.24, and that directive is their recorded reason for vendoring the file instead of using it as a module - it would drag their deliberately-1.21 project up. The identical file compiles and passes their full suite under 1.21, so 1.24 is declaration, not need; find the real floor (generics suggest possibly 1.18) and declare that.
+	- Declared 1.20 (strings.CutSuffix is the newest stdlib dependency; everything else predates generics).
+		- Hosted CI now installs a stable toolchain instead of reading go.mod - the pipeline's own `go -C` needs a current release - while the go.mod directive gates the consumer floor.
+		- From convert-base-v2: go.mod declares 1.24, and that declaration is their recorded reason for vendoring the file instead of using it as a module - it would drag their deliberately-1.21 project up.
+		- The identical file compiles and passes their full suite under 1.21, so 1.24 is declaration, not need; find the real floor (generics suggest possibly 1.18) and declare that.
 
 - ✅ Docs batch from the feedback round:
 	- Done in the spec (Empty-vs-NotFound as an advertised full-tier feature; a "choosing [#i] vs [value] when mapping entities" bullet in the traversal section) and in the Go package docs (a "writing a mapper" worked example: one-shot load, Count+[#i] iteration, Children for open sections, QuoteSegment, raw blocks). IndexOf not added - Count+[#i] covers the need without growing the surface.
@@ -830,34 +857,49 @@ None open.
 	- Means recording indent (and probably original attachment) as trivia; fmt must stay a fixpoint. All four parsers + emit, golden churn expected.
 
 - ✅ Expose whether a value was quoted.
-	- Done: `quoted` on the read result (rust/go/python; C read structs stay value+status by design) - true for a quoted single scalar element, false for arrays/raw/empty. From nano-git-db: `a: @null` and `a: "@null"` read identically, so a language built on shcl can't reserve a sentinel value and still let a user write it literally - they had to make `@null` unconditionally reserved and walk back docs that promised quoting would escape it. The parser already tracks quoted per element and drops it at the read boundary; one field on the read result makes "quoting is the escape" true for every downstream language.
+	- Done: `quoted` on the read result (rust/go/python; C read structs stay value+status by design) - true for a quoted single scalar element, false for arrays/raw/empty.
+		- From nano-git-db: `a: @null` and `a: "@null"` read identically, so a language built on shcl can't reserve a sentinel value and still let a user write it literally - they had to make `@null` unconditionally reserved and walk back docs that promised quoting would escape it.
+		- The parser already tracks quoted per element and drops it at the read boundary; one field on the read result makes "quoting is the escape" true for every downstream language.
 
 - ✅ Line numbers on the read path.
 	- Done both ways as filed: `Line(path)` accessor in all four bindings + veneer, and `line` on the read result itself (rust/go/python). 0 = unresolved or writer-built; merged instances cite the first binding, matching diagnostics. From nano-git-db: node line is populated and never exported, so any consumer check the schema can't express can only name the entity, never the line - their warnings degraded from `line 81: ...` to `table issue: ...`. A Line(path) accessor is the cheapest high-value ask in their list.
-	- Second consumer, same gap (TradeClanker): parser diagnostics carry a line and reads don't, so half the errors a user sees cite a line and half don't - a bad value reports nothing while a malformed line one field above reports `line 12`. They want the line on the read result itself, not just a separate accessor; do both, it's the same plumbing.
+	- Second consumer, same gap (TradeClanker): parser diagnostics carry a line and reads don't, so half the errors a user sees cite a line and half don't - a bad value reports nothing while a malformed line one field above reports `line 12`. They want the line on the read result itself, not just a separate accessor; do both, it's the same code path.
 
 - ✅ Enumerate a node's children.
 	- Done: `Children(path)` in all four bindings + veneer - file order, duplicates included, empty path = top level; names as stored, QuoteSegment for splicing. From nano-git-db: Paths() dedupes, so there is no way to ask "what keys are under this section?" - they hardcode a ten-name hook list purely because they can't ask what's under `code:`, and any open-ended or map-shaped section is unmodellable. Children(path) returning child names in file order, duplicates included, deletes more of their workaround code than anything else they asked for.
 	- TradeClanker asks for the same thing for the same reason (reading an open section means scanning all of Paths() and prefix-matching), and notes it also sidesteps the Paths() quoted-name bug for that use.
 
 - ✅ Hint when a merge combines non-adjacent bindings.
-	- Done: H002, hint severity, at the later line with the earlier line named in the prose. Fires only on a last-segment no-selector merge into a non-last child - adjacent re-mentions and the dotted redundant-path idiom stay silent. Corpus case 035; 001/013 diags goldens gained one each. From nano-git-db: merge-by-(name, value) means two separately-written `table: t` sections silently become one combined table, and only the parser can know it happened - their consumer-side "already defined; first wins" check was unreachable and got deleted as dead code. A hint-severity diagnostic carrying both line numbers would make that class of check possible without touching the documented merge semantics.
+	- Done: H002, hint severity, at the later line with the earlier line named in the prose.
+		- Fires only on a last-segment no-selector merge into a non-last child - adjacent re-mentions and the dotted redundant-path idiom stay silent. Corpus case 035; 001/013 diags goldens gained one each.
+		- From nano-git-db: merge-by-(name, value) means two separately-written `table: t` sections silently become one combined table, and only the parser can know it happened - their consumer-side "already defined; first wins" check was unreachable and got deleted as dead code.
+		- A hint-severity diagnostic carrying both line numbers makes that class of check possible without touching the documented merge semantics.
 	- New H-code; diagnostics are contract, so all four bindings plus the expected-diags goldens move together.
 
 - ✅ Suppress H001 where the schema declares the repetition.
-	- Done at check --schema assembly (and inside the one-shot), via a shared library helper so CLIs and runners can't drift; matched by leaf name, the filter consumers hand-rolled. Corpus case 036. From nano-git-db: the repeated-bare-leaf hint is structurally a false positive for any field whose repetition is the instance mechanism (`unique:`, `index:`, `row:`), so every correct file warns on load and users learn to ignore warnings; they filter it by hand for exactly three names. When a schema is present and a path declares repeat with an upper bound above 1, drop H001 there - the information already exists and goes unused.
+	- Done at check --schema assembly (and inside the one-shot), via a shared library helper so CLIs and runners can't drift; matched by leaf name, the filter consumers hand-rolled. Corpus case 036.
+		- From nano-git-db: the repeated-bare-leaf hint is structurally a false positive for any field whose repetition is the instance mechanism (`unique:`, `index:`, `row:`), so every correct file warns on load and users learn to ignore warnings; they filter it by hand for exactly three names.
+		- When a schema is present and a path declares repeat with an upper bound above 1, H001 is dropped there - the information already exists and would otherwise go unused.
 	- H001 is parse-time and the schema arrives at validate, so the suppression belongs where check --schema assembles output, not in the parser.
 
 - ✅ One-shot load-and-validate, plus an error predicate.
-	- Done: LoadAndValidate(text, schema, strictness) -> document carrying one combined diagnostics list (never throws; empty schema skips validation; declared-repeat H001s dropped), plus ErrorCount() on the document. All four bindings + veneer. From nano-git-db: doc diagnostics and schema validation come back as two separate lists that must be merged by hand (forget one and half the errors vanish), and there's no HasErrors/ErrorCount, so "did this file have errors" is consumer bookkeeping - which matters, since recover-and-continue means a mixed-indentation file otherwise returns no error at all. A combined entry point (text + schema + strictness in, doc + one diagnostic list out) plus an error count removes a whole class of consumer mistake.
+	- Done: LoadAndValidate(text, schema, strictness) -> document carrying one combined diagnostics list (never throws; empty schema skips validation; declared-repeat H001s dropped), plus ErrorCount() on the document. All four bindings + veneer.
+		- From nano-git-db: doc diagnostics and schema validation come back as two separate lists that must be merged by hand (forget one and half the errors vanish), and there's no HasErrors/ErrorCount, so "did this file have errors" is consumer bookkeeping.
+		- That matters, since recover-and-continue means a mixed-indentation file otherwise returns no error at all.
+		- A combined entry point (text + schema + strictness in, doc + one diagnostic list out) plus an error count removes a whole class of consumer mistake.
 	- TradeClanker independently hand-rolled the same thing: no strictness level means "forgiving about spelling, loud about a dropped line", so at Standard an error diagnostic comes back beside a nil error and the line is silently skipped, and every consumer writes the same fifteen lines. An Errors() helper on the document is the smallest shape of this ask, from a second consumer.
 
 - ✅ Setters should say why they failed.
-	- Done as an additive probe (setter returns are frozen post-1.0): `WriteReason(path)` in all four bindings + veneer runs the writer's exact validation without creating anything and names the failure - Writable/BadPath/ValueInPath/Wildcard/NoSuchIndex/TooDeep. place() now pre-gates on it, so the two can't drift. CLI stays exit 1. From TradeClanker: Set* returns a bare pass/fail, and false covers an empty path, a malformed path, a wildcard, a depth overrun, and an unresolvable index indistinguishably - their workbench's error message is literally a guess because the library won't say. A small reason enum (or per-binding equivalent) on the write result fixes it; CLI behavior stays exit 1.
+	- Done as an additive probe (setter returns are frozen post-1.0): `WriteReason(path)` in all four bindings + veneer runs the writer's exact validation without creating anything and names the failure - Writable/BadPath/ValueInPath/Wildcard/NoSuchIndex/TooDeep. place() now pre-gates on it, so the two can't drift. CLI stays exit 1.
+		- From TradeClanker: Set* returns a bare pass/fail, and false covers an empty path, a malformed path, a wildcard, a depth overrun, and an unresolvable index indistinguishably - their workbench's error message is literally a guess because the library won't say.
+		- A small reason enum (or per-binding equivalent) on the write result fixes it; CLI behavior stays exit 1.
 	- All four bindings move together; the write corpus pins outputs, not the reason surface, so exposure should be small - verify.
 
 - ✅ Building a path from a user-typed name is injection.
-	- Done: QuoteSegment/quote_segment/shcl_quote_segment + veneer, sharing the emitter's name-quoting - same spelling both directions as the Paths() fix. From TradeClanker: Set* accepts segments that aren't valid bare names, and a dotted name is silently reinterpreted as nesting - a consumer concatenating a user-typed indicator name into a path is doing path injection without knowing it. Export a quote-segment helper (the escaping the path scanner already understands), or segment-wise setters taking a list that can't be injected into. Pairs naturally with the Paths() quoted-name bug above - same escaping code both directions.
+	- Done: QuoteSegment/quote_segment/shcl_quote_segment + veneer, sharing the emitter's name-quoting - same spelling both directions as the Paths() fix.
+		- From TradeClanker: Set* accepts segments that aren't valid bare names, and a dotted name is silently reinterpreted as nesting - a consumer concatenating a user-typed indicator name into a path is doing path injection without knowing it.
+		- Export a quote-segment helper (the escaping the path scanner already understands), or segment-wise setters taking a list that can't be injected into.
+		- Pairs naturally with the Paths() quoted-name bug above - same escaping code both directions.
 
 - ✅ Dev-environment install script (Linux, macOS, Windows), runnable via a single `curl` or `wget`. Clones, installs dependencies, states what it will do with an option to abort.
 	- Done: `install-dev.bash` at repo root. Linux + macOS directly; Windows via WSL (the dev pipeline is bash). Clones (or detects an existing clone), installs the no-sudo pieces itself (rustup, ruff/mypy/cppcheck via pipx, markdownlint via npm, PSScriptAnalyzer via pwsh), and prints the exact package-manager hint for what needs root (go, python3, gcc, shellcheck). Shellcheck-gated.
@@ -1407,7 +1449,7 @@ None open.
 
 		- ✅ Code Review 20260725 item 36: CI installs its lint toolchain unpinned every run.
 			- `TOOL_PINS` already tracks the versions the local gate uses, so CI and local disagree about what "passing" was tested against.
-			- Actions are also referenced by floating tag rather than commit SHA - generic hardening, small blast radius here.
+			- Actions are also referenced by floating tag rather than commit SHA - generic hardening, low risk here.
 			- Fixed: ci.yml installs ruff/mypy/cppcheck/markdownlint at the exact `TOOL_PINS` versions, and every action is referenced by commit SHA with the tag in a comment.
 
 		- ✅ Code Review 20260725 item 38: the style guide bans the section rules the code actually uses.

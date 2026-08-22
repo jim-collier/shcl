@@ -118,10 +118,12 @@ if (($PSVersionTable.PSVersion.Major -ge 6) -and -not $IsWindows) {
 	Fail 'this installer is for Windows - on Linux use install.bash, elsewhere build from source (see README.md)'
 }
 
-$arch = switch ($env:PROCESSOR_ARCHITECTURE) {
+## A 32-bit shell on a 64-bit OS reports x86; ARCHITEW6432 carries the real arch.
+$archRaw = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$arch = switch ($archRaw) {
 	'AMD64' { 'x86_64' }
 	'ARM64' { 'arm64' }
-	default { Fail "no prebuilt binary for $($env:PROCESSOR_ARCHITECTURE)" }
+	default { Fail "no prebuilt binary for $archRaw" }
 }
 
 ## Transport floor for every download: TLS 1.2+ (1.3 where the runtime knows it).
@@ -130,13 +132,25 @@ try {
 } catch {
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 }
+## Windows PowerShell repaints the progress bar per chunk, which slows a download
+## by an order of magnitude. Scoped to this script; nothing here needs the bar.
+$ProgressPreference = 'SilentlyContinue'
 
 ## Resolve the tag. GitHub's /releases/latest is exactly "newest non-prerelease";
-## dev takes the newest of everything.
+## dev lists everything and takes the highest version. The list endpoint orders by
+## publish date, so a maintenance release cut on an older line would otherwise
+## win. Within one version a final outranks its own pre-releases (v2.0.0-rc1 <
+## v2.0.0); pre-release suffixes compare as plain text, enough for rc-style tags.
 $api = if ($Release -eq 'stable') { "https://api.github.com/repos/$repo/releases/latest" }
-	else { "https://api.github.com/repos/$repo/releases?per_page=1" }
+	else { "https://api.github.com/repos/$repo/releases?per_page=100" }
 try { $rel = Invoke-RestMethod -Uri $api } catch { Fail "cannot fetch the $Release release (none published yet, or network down)" }
-if ($rel -is [array]) { $rel = $rel[0] }
+if ($rel -is [array]) {
+	$rel = @($rel) | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+' } | Sort-Object `
+		@{ Expression = { [version](($_.tag_name.TrimStart('v') -split '-', 2)[0]) } }, `
+		@{ Expression = { $_.tag_name -notmatch '-' } }, `
+		@{ Expression = { if ($_.tag_name -match '-') { ($_.tag_name -split '-', 2)[1] } else { '' } } } |
+		Select-Object -Last 1
+}
 if (-not $rel -or -not $rel.tag_name) { Fail "no $Release release found" }
 $tag = $rel.tag_name
 $version = $tag.TrimStart('v')
@@ -163,6 +177,7 @@ if ($Target -eq 'system') {
 ## binary, the two payload dirs, the install dir if it empties, and the PATH
 ## entry. Never a recursive delete of a path the user may have pointed elsewhere.
 if ($Uninstall) {
+	Write-Output ''
 	Write-Output "removing shcl: $dest (and the $pathScope PATH entry)"
 	if (-not $Yes) {
 		$reply = Read-Host 'Proceed? [y/N]'
@@ -179,10 +194,12 @@ if ($Uninstall) {
 	$envKey.SetValue('Path', ($parts -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
 	$envKey.Close()
 	Write-Output 'removed'
+	Write-Output ''
 	exit 0
 }
 
 ## State the plan, then confirm.
+Write-Output ''
 $existing = if (Test-Path (Join-Path $dest 'shcl.exe')) { 'updates the existing install' } else { 'new install' }
 Write-Output "shcl $version ($Release, windows-$arch) -> $dest ($existing)"
 Write-Output "  binary   $dest\shcl.exe"
@@ -197,6 +214,7 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ("shcl-install-" + [IO.Path]::GetRan
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
 	## Download and verify the binary.
+	Write-Output ''
 	$asset = "shcl-$version-windows-$arch.exe"
 	$base = "https://github.com/$repo/releases/download/$tag"
 	Write-Output "downloading $asset..."
@@ -272,10 +290,12 @@ try {
 	}
 	$envKey.Close()
 
+	Write-Output ''
 	Write-Output "installed shcl $version -> $dest\shcl.exe"
 	if (-not $haveDropins) { Write-Output "note: this release ships no signed drop-in payload, so $dest\code and $dest\scripts were skipped - take them from the repo if you want them" }
 	Write-Output "to remove it again: install.ps1 -Uninstall -Target $Target"
 	& (Join-Path $dest 'shcl.exe') version
+	Write-Output ''
 } finally {
 	Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

@@ -1771,7 +1771,7 @@ class Document:
 	def strictness(self):
 		return self._strictness
 
-	# ----- formatter -----
+	# Formatter
 
 	def to_canonical(self):
 		"""Canonical form: block layout, tabs, insertion order, minimal quoting,
@@ -1908,7 +1908,7 @@ class Document:
 			out.append(fence)
 			out.append("\n")
 
-	# ----- accessor: path resolution -----
+	# Accessor: path resolution
 
 	def _children_named(self, parent, name):
 		return [c for c in self.arena[parent].children if self.arena[c].name == name]
@@ -2081,7 +2081,7 @@ class Document:
 				for n in r[1]]
 		return []
 
-	# ----- writer: typed emit, defaults, comments, structural edits -----
+	# Writer: typed emit, defaults, comments, structural edits
 	# The reverse of the Accessor. A setter builds the canonical stored text for a
 	# typed value (the inverse of the matching read) and places it at a path,
 	# creating intermediate nodes on the way. Reads and to_canonical walk the
@@ -2395,7 +2395,7 @@ class Document:
 			return self.set_datetime_array(path, v)
 		return True
 
-	# ----- layered loading: overlay a higher-priority document -----
+	# Layered loading: overlay a higher-priority document
 
 	def merge(self, over):
 		"""Overlay `over` (a higher-priority layer) onto self (the lower one).
@@ -2577,7 +2577,7 @@ class Document:
 		self.arena.append(node)
 		return idx
 
-	# ----- accessor: typed reads -----
+	# Accessor: typed reads
 
 	def _node_at(self, path):
 		# Returns ("ok", node index) or ("err", Status).
