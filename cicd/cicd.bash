@@ -29,7 +29,8 @@
 ##	                       lint, tests; non-interactive, no cross/publish. This is
 ##	                       what the GitHub workflow runs - one definition of "passing".
 ##	   --quick             skip the slow stages: large-document gate, cross-compile,
-##	                       profiler, demo gif
+##	                       profiler, demo gif; tests run at the shorter fuzz depth
+##	                       when the config carries TEST_QUICK_CMD
 ##	   -q, --quiet         quiet + unattended (no prompt)
 ##	   -y, --yes           unattended (no prompt) but not quiet
 ##	   -m, --message MSG   publish hands-off with this commit message (no editor)
@@ -74,7 +75,7 @@ export CPU_CAP
 ## Per-stage extras: eval'd strings run after the stage's primary command, so a
 ## second binding (Go, C, ...) adds its fmt/build/lint/test commands in config
 ## without touching engine code. All default empty.
-FMT_EXTRA=(); FMT_CHECK_EXTRA=(); BUILD_EXTRA=(); LINT_EXTRA=(); TEST_EXTRA=()
+FMT_EXTRA=(); FMT_CHECK_EXTRA=(); BUILD_EXTRA=(); LINT_EXTRA=(); TEST_EXTRA=(); TEST_QUICK_CMD=()
 PACKAGE_ENABLE=0   ## config opts in; installer packages built off the release artifacts
 fRunExtras(){ local c; for c in "$@"; do fEcho_Clean "extra: ${c}"; eval "${c}"; done; }
 
@@ -127,6 +128,7 @@ if ((quick)); then
 	PACKAGE_ENABLE=0   ## artifact set is partial without cross targets
 	PROFILE_ENABLE=0
 	GIF_ENABLE=0
+	((${#TEST_QUICK_CMD[@]})) && TEST_CMD=("${TEST_QUICK_CMD[@]}")
 fi
 
 ## Publish commit message: -m wins, then config, then a default when unattended.
