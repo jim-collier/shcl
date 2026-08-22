@@ -186,6 +186,7 @@ fi
 ## symlink, the binary, and the two payload dirs, then the install dir if it is
 ## empty. Never a recursive delete of a path the user may have pointed elsewhere.
 if (( uninstall )); then
+	echo
 	printf 'removing shcl: %s, %s and %s\n' "${dest}" "${link}" "${manlink}"
 	if (( ! assume_yes )); then
 		reply=""
@@ -202,24 +203,33 @@ if (( uninstall )); then
 	${asroot} rm -f "${dest}/code"/* "${dest}/scripts"/* "${dest}/man"/* "${dest}/completions"/* 2>/dev/null || true
 	${asroot} rmdir "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions" "${dest}" 2>/dev/null || true
 	echo "removed"
+	echo
 	exit 0
 fi
 
 ## Resolve the tag. GitHub's /releases/latest is exactly "newest non-prerelease";
-## dev takes the newest of everything.
+## dev lists everything and takes the highest version. The list endpoint orders by
+## publish date, so a maintenance release cut on an older line would otherwise win.
+## sort -V with '-' mapped to '~' ranks a pre-release below its own final
+## (v2.0.0-rc1 < v2.0.0); mapped back afterwards.
 if [[ "${release}" == "stable" ]]; then
 	api="https://api.github.com/repos/${REPO}/releases/latest"
 else
-	api="https://api.github.com/repos/${REPO}/releases?per_page=1"
+	api="https://api.github.com/repos/${REPO}/releases?per_page=100"
 fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 fetch "${api}" "${tmp}/rel.json" || die "cannot fetch the ${release} release (none published yet, or network down)"
-tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | head -n1 | sed 's/.*"\(v[^"]*\)"/\1/')"
+if [[ "${release}" == "stable" ]]; then
+	tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | head -n1 | sed 's/.*"\(v[^"]*\)"/\1/')"
+else
+	tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | sed 's/.*"\(v[^"]*\)"/\1/; s/-/~/' | sort -V | tail -n1 | sed 's/~/-/')"
+fi
 [[ -n "${tag}" && "${tag}" != null ]] || die "no ${release} release found"
 version="${tag#v}"
 
 ## State the plan; abort is the default when there is no tty to confirm on.
+echo
 existing="new install"
 [[ -e "${dest}/shcl" ]] && existing="updates the existing install"
 printf 'shcl %s (%s, linux-%s) -> %s (%s)\n' "${version}" "${release}" "${arch}" "${dest}" "${existing}"
@@ -240,6 +250,7 @@ if (( ! assume_yes )); then
 fi
 
 ## Download and verify the binary.
+echo
 asset="shcl-${version}-linux-${arch}"
 base="https://github.com/${REPO}/releases/download/${tag}"
 echo "downloading ${asset}..."
@@ -309,6 +320,7 @@ if (( have_docs )); then
 fi
 ${asroot} ln -sfn "${dest}/shcl" "${link}"
 
+echo
 printf 'installed shcl %s -> %s\n' "${version}" "${link}"
 (( have_dropins )) || printf 'note: this release ships no signed drop-in payload, so %s/code and %s/scripts were skipped - take them from the repo if you want them\n' "${dest}" "${dest}"
 ## Completions are laid down but not wired in. There is no one directory that
@@ -335,3 +347,4 @@ if [[ ":${PATH}:" != *":${linkdir}:"* ]]; then
 	printf 'note: %s is not on your PATH, so neither shcl nor "man shcl" will be found - add it with:\n  export PATH="%s:$PATH"\n(put that line in your shell profile to make it stick)\n' "${linkdir}" "${linkdir}"
 fi
 "${link}" version 2>/dev/null || "${dest}/shcl" version
+echo
