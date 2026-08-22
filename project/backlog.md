@@ -115,9 +115,10 @@ None open.
 	- The largedoc gate's memory ceilings were lowered to match, so the gains cannot silently regress.
 	- Confirmed independently by the format comparison below, which measured the reference at 45x to 54x on four different document shapes and put a number on the time half too. Its published numbers predate this work; rerun the comparison before quoting them for the memory column.
 
-- 🔘 Rerun the format comparison and refresh the README performance numbers before the next cut.
-	- The memory-and-speed work above moved every number the comparison feeds the README (read time down a quarter, memory nearly halved in the reference); the published tables now understate the project.
-	- Rust tier and Python tier both; the Python-vs-`tomllib` ratio in the prose moves too.
+- ✅ Rerun the format comparison and refresh the README performance numbers before the next cut.
+	- Done: full two-tier run at 64 MiB (run 20260821-183218 in results.shcl), README tables and prose refreshed, design.md's summary paragraph too. Numbers only; the wording moved just where a claim would otherwise have gone false.
+	- The stress read fell 9.45 -> 4.78 s and peak memory 3.6 -> 1.8 GB, so SHCL now sits below TOML and YAML on memory and a quarter of `toml_edit` (was half, at four times the read; now a quarter, at twice).
+	- The like-for-like pair moved apart: Python 3.7x -> 3.5x behind `tomllib`, Rust 3.5x -> 2.1x behind `toml` - the Rust binding gained more than the Python one, so the closing sentence now says "the same few-fold gap" rather than "similar gap".
 
 - ✅ A man page and shell completions for the CLI.
 	- Split out of Code Review 20260817 item 28, which batched them with polish they do not belong with: this is a new deliverable, not a fix.
