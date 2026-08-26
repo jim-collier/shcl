@@ -264,6 +264,14 @@ DOGFOOD_WRAPPER_DESTS_bash=(
 DOGFOOD_WRAPPER_DESTS_ps1=(
 	"${HOME}/synced/0-0/common/exec/util/0_crossplatform"
 )
+## Cross-built binaries install too, into a dest keyed by their CROSS_TARGETS
+## os-arch label with '-' written as '_'. Same first-existing-and-writable rule; an
+## os-arch with no list here just isn't installed. No macOS entry because nothing
+## builds a macOS binary yet, and none for either arm64 because the synced tree has
+## no arm64 dir to put one in.
+DOGFOOD_CROSS_DESTS_windows_x86_64=(
+	"${HOME}/synced/0-0/common/exec/util/mswin/cli/by-self/win64"
+)
 
 ## Stage 8: demo gif for the README. Rendered from a scripted scenario against the
 ## fresh native release binary, so the captured output can never go stale.
@@ -295,3 +303,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-07-13 JC: C binding wired in: cc build extra (-Werror) + conformance/veneer test extras + fourth crosscheck entry.
 ##		- 2026-07-18 JC: Lint stage widened: ruff + mypy, cppcheck, markdownlint, PSScriptAnalyzer, with tool pins.
 ##		- 2026-07-22 JC: Packaging wired: PACKAGE_ENABLE + package.bash in the shellcheck list.
+##		- 2026-08-26 JC: Per-os-arch dogfood dests for the cross builds; windows-x86_64 goes to the synced mswin cli dir.

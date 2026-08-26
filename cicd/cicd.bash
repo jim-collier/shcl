@@ -19,7 +19,7 @@
 ##	   5. profiler (flamegraph SVG + hot-spot report; non-gating artifact, local only)
 ##	   6. release + cross-compile + versioned artifacts + packages (.deb/.rpm/
 ##	      NSIS setup) + sha256sums (local only)
-##	   7. dogfood (install the native release build to a fixed local dir; local only)
+##	   7. dogfood (install the release builds to fixed local dirs; local only)
 ##	   8. demo gif for the README (local only; non-gating)
 ##	   9. backup + publish to git (local only)
 ##	- Syntax:
@@ -41,7 +41,7 @@
 ##	   --no-package        skip building installer packages (.deb/.rpm/NSIS setup)
 ##	   --no-largedoc       skip the large-document gate in the tests stage
 ##	   --no-profile        skip the profiler stage
-##	   --no-dogfood        skip installing the native release build locally
+##	   --no-dogfood        skip installing the release builds locally
 ##	   --no-gif            skip the demo gif refresh
 ##	   --no-publish        skip the git backup + publish stage
 ##	   -h, --help          show this help
@@ -161,6 +161,22 @@ fWriteSums(){
 	  ((${#files[@]})) && sha256sum "${files[@]}" > "${sums}" )
 }
 
+## First existing+writable dir from the list; empty output when there is none.
+fFirstWritableDir(){ local d; for d in "$@"; do [[ -d "$d" && -w "$d" ]] && { echo "$d"; break; }; done; return 0; }
+
+## Install to <dest_dir>/<name> through a temp file in the SAME dir plus a rename,
+## so a copy launched by hand never sees a half-written file and a synced dest can't
+## propagate a torn one.
+fInstallAtomic(){
+	local src="$1" dest_dir="$2" name="$3" tmp="$2/.$3.$$.tmp"
+	if cp -f "$src" "$tmp" && chmod +x "$tmp" && mv -f "$tmp" "${dest_dir}/${name}"; then
+		fEcho "OK: installed ${dest_dir}/${name}"
+	else
+		rm -f "$tmp"
+		fEcho "WARNING: failed to install ${dest_dir}/${name}"
+	fi
+}
+
 ## Preflight: show the plan, then capture the commit message so the rest runs unattended.
 if ((! quiet)); then
 	fEcho_Clean
@@ -179,7 +195,7 @@ if ((! quiet)); then
 		fEcho_Clean "Release ........: (skipped)"
 	fi
 	fEcho_Clean "Packages .......: $( ((PACKAGE_ENABLE)) && echo '.deb/.rpm + NSIS setup (per built binary)' || echo '(skipped)')"
-	fEcho_Clean "Dogfood ........: $( if ((${#DOGFOOD_FIXED_DESTS[@]})); then _dfd=""; for d in "${DOGFOOD_FIXED_DESTS[@]}"; do [[ -d "$d" && -w "$d" ]] && { _dfd="$d"; break; }; done; [[ -n "$_dfd" ]] && echo "${_dfd}/${EXE_NAME}" || echo '(no writable dest; will skip)'; else echo '(skipped)'; fi )"
+	fEcho_Clean "Dogfood ........: $( if ((${#DOGFOOD_FIXED_DESTS[@]})); then _dfd="$(fFirstWritableDir "${DOGFOOD_FIXED_DESTS[@]}")"; [[ -n "$_dfd" ]] && echo "${_dfd}/${EXE_NAME}" || echo '(no writable dest; will skip)'; else echo '(skipped)'; fi )"
 	fEcho_Clean "Demo gif .......: $( ((GIF_ENABLE)) && echo "${GIF_OUT}" || echo '(skipped)')"
 	if ((${#GIT_PUBLISH[@]})); then
 		fEcho_Clean "Publish (last) .: ${GIT_PUBLISH[*]}$( [[ -n "$publish_msg" ]] && echo " (hands-off: \"${publish_msg}\")" || echo ' (will prompt for message; blank = editor)')"
@@ -388,6 +404,7 @@ fi
 ## a sha256 checksums file, ready to attach to a release as plain uploads.
 ## Naming (stable; download links depend on it): <exe>-<version>-<os-arch>[.exe]
 fSection "6/9  Release builds"
+built_arts=()   ## <os-arch>|<path> per built binary; stage 7 dogfoods off it too
 if ((${#RELEASE_NATIVE_CMD[@]})); then
 	"${RELEASE_NATIVE_CMD[@]}"
 	[[ -f "${RELEASE_NATIVE_BIN}" ]] || fDie "native release binary missing: ${RELEASE_NATIVE_BIN}"
@@ -445,43 +462,40 @@ fi
 
 ## Stage 7: dogfood - drop the freshly built optimized native binary into the first
 ## existing+writable fixed dest, under EXE_NAME, so the copy launched by hand stays
-## current. The bash wrapper rides along as <EXE_NAME>.bash once it exists. Skipped
-## when no release binary was built (e.g. --ci) or the dest list is empty. No sudo:
-## a non-writable dest is passed over with a warning, never force-installed.
+## current. The bash wrapper rides along as <EXE_NAME>.bash once it exists, and each
+## cross-built binary goes to its own per-os-arch dest where one is configured.
+## Skipped when no release binary was built (e.g. --ci) or the dest list is empty.
+## No sudo: a non-writable dest is passed over with a warning, never force-installed.
 fSection "7/9  Dogfood"
 if ((${#DOGFOOD_FIXED_DESTS[@]})) && [[ -f "${RELEASE_NATIVE_BIN:-/nonexist}" ]]; then
-	dogfood_dest=""
-	for d in "${DOGFOOD_FIXED_DESTS[@]}"; do [[ -d "$d" && -w "$d" ]] && { dogfood_dest="$d"; break; }; done
+	dogfood_dest="$(fFirstWritableDir "${DOGFOOD_FIXED_DESTS[@]}")"
 	if [[ -n "$dogfood_dest" ]]; then
-		## Atomic install: copy to a temp name in the SAME dir, then rename over the
-		## target - so a copy launched by hand never sees a half-written binary, and
-		## the synced dest can't propagate a torn file.
-		tmp_bin="${dogfood_dest}/.${EXE_NAME}.$$.tmp"
-		if cp -f "${RELEASE_NATIVE_BIN}" "$tmp_bin" && chmod +x "$tmp_bin" && mv -f "$tmp_bin" "${dogfood_dest}/${EXE_NAME}"; then
-			fEcho "OK: installed ${EXE_NAME} -> ${dogfood_dest}/${EXE_NAME}"
-		else
-			rm -f "$tmp_bin"
-			fEcho "WARNING: failed to install ${EXE_NAME} -> ${dogfood_dest}/${EXE_NAME}"
-		fi
+		fInstallAtomic "${RELEASE_NATIVE_BIN}" "$dogfood_dest" "${EXE_NAME}"
 		for wrapper in "${DOGFOOD_WRAPPERS[@]:-}"; do
 			[[ -n "$wrapper" && -f "$wrapper" ]] || continue
 			ext="${wrapper##*.}"                                       ## .bash / .ps1 -> dest name + dest-list key
 			declare -n wrapper_dests="DOGFOOD_WRAPPER_DESTS_${ext}"
-			wrapper_dest=""
-			for d in "${wrapper_dests[@]:-}"; do [[ -d "$d" && -w "$d" ]] && { wrapper_dest="$d"; break; }; done
+			wrapper_dest="$(fFirstWritableDir "${wrapper_dests[@]:-}")"
 			unset -n wrapper_dests
 			[[ -z "$wrapper_dest" ]] && wrapper_dest="$dogfood_dest"   ## fall back beside the binary
-			tmp_w="${wrapper_dest}/.${EXE_NAME}.${ext}.$$.tmp"
-			if cp -f "$wrapper" "$tmp_w" && chmod +x "$tmp_w" && mv -f "$tmp_w" "${wrapper_dest}/${EXE_NAME}.${ext}"; then
-				fEcho "OK: installed wrapper -> ${wrapper_dest}/${EXE_NAME}.${ext}"
-			else
-				rm -f "$tmp_w"
-				fEcho "WARNING: failed to install wrapper -> ${wrapper_dest}/${EXE_NAME}.${ext}"
-			fi
+			fInstallAtomic "$wrapper" "$wrapper_dest" "${EXE_NAME}.${ext}"
 		done
 	else
 		fEcho "WARNING: no dogfood dest exists+writable (${DOGFOOD_FIXED_DESTS[*]}); skipping"
 	fi
+	## The cross builds, each to the dest list named for its os-arch. An os-arch with
+	## no list configured is silently not installed - that is the normal case.
+	for pair in "${built_arts[@]:1}"; do
+		x_osarch="${pair%%|*}"; x_src="${pair#*|}"
+		x_key="DOGFOOD_CROSS_DESTS_${x_osarch//-/_}"
+		declare -p "$x_key" &>/dev/null || continue
+		declare -n x_dests="$x_key"
+		x_dest="$(fFirstWritableDir "${x_dests[@]:-}")"
+		unset -n x_dests
+		[[ -n "$x_dest" ]] || { fEcho "WARNING: no ${x_osarch} dogfood dest exists+writable; skipping"; continue; }
+		x_ext=""; [[ "$x_src" == *.exe ]] && x_ext=".exe"
+		fInstallAtomic "$x_src" "$x_dest" "${EXE_NAME}${x_ext}"
+	done
 else
 	fEcho_Clean "dogfood skipped"
 fi
@@ -546,3 +560,4 @@ fEcho_Clean
 ##		- 2026-07-13 JC: Dogfood stage (7/9) between release and demo gif: installs the native release binary + bash wrapper (when present) to a fixed local dir; --no-dogfood, off under --ci.
 ##		- 2026-07-22 JC: Installer packages in stage 6 (utility/package.bash: nfpm .deb/.rpm + NSIS setup), before the sums write; --no-package, off under --ci/--quick.
 ##		- 2026-08-19 JC: Stage 0 remote sync ahead of the format stage: fast-forwards when only behind (stash-wrapped), stops on a diverged branch, warns and continues when offline or untracked; --no-sync, off under --ci.
+##		- 2026-08-26 JC: Dogfood extended to the cross builds via per-os-arch dest lists; the atomic install and dest pick are helpers now.
