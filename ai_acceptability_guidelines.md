@@ -19,6 +19,8 @@ Where AI is allowed near this project, where it isn't, and who is accountable ei
 	- [Environmental](#environmental)
 	- [Economic](#economic)
 	- [Ethical](#ethical)
+	- [Cost to the FLOSS commons](#cost-to-the-floss-commons)
+	- [License laundering](#license-laundering)
 	- [Code quality](#code-quality)
 	- [Security risks](#security-risks)
 	- [Bad PR](#bad-pr)
@@ -54,7 +56,7 @@ This document is a first pass at documenting what, when, and how AI is allowed i
 
 ## Problems with AI
 
-Feel free to skip this section. It's here mostly for the record: an acknowledgment of the main society-level problems most people are well aware of.
+Feel free to skip this section. It's here mostly for the record: an acknowledgment of the main society-level problems most people are well aware of, plus a couple that hit FLOSS specifically and get talked about less.
 
 ### Environmental
 
@@ -96,6 +98,26 @@ That isn't AI's fault. It's decisions made by employers with AI used as a ration
 
 This project can't fix that. What it can do is not pretend the problem is imaginary.
 
+### Cost to the FLOSS commons
+
+The three above are society-wide. This one is aimed straight at the infrastructure a project like this one sits on.
+
+Codeberg, the nonprofit forge, [wrote it up in July 2026](https://blog.codeberg.org/protecting-our-floss-commons-from-llms.html). Their first complaint isn't about generated code at all. It's about scrapers. AI crawlers walk every page of every repository, and those "needless accesses create expensive database queries that diminish the service quality for all of us", on top of real hours out of a volunteer sysadmin team. Storage got more expensive at the same time: a drive they bought for EUR 700 a few years ago now costs EUR 3,700.
+
+Nobody sends that bill to the companies running the crawlers. A big forge eats it. A small one, an NGO, or a self-hoster might not be able to, and that narrows who can afford to host anything at all.
+
+Their second complaint is closer to home. "People submitting (often well-meaning) low-effort, LLM-generated contributions that require substantial amounts of time to review." That cost isn't shared either. It falls entirely on whoever maintains the project, usually for free, and it scales with how cheap the tooling makes the submission. A model writes a plausible thousand-line pull request faster than anyone can read one.
+
+That asymmetry is most of the reason the rules further down put the burden where they do.
+
+### License laundering
+
+A model trained on copyleft code can emit something very close to it with none of the license attached. Codeberg again: "copyleft code is stripped of its reciprocity requirements by 'generating' it out of the training data".
+
+Whether that holds up in court is unsettled, and probably will be for years. The question for a maintainer is narrower and more immediate. If a generated block is close enough to some GPL original that a person copying it by hand would have been obligated, then merging it puts the project somewhere it never agreed to go, and nobody in the review chain saw it happen.
+
+There's no tooling answer to this yet. What there is: treat a large, suspiciously complete generated block the way you'd treat a snippet pasted out of a search result, and prefer the version written against the problem over the one that arrived fully formed.
+
 ### Code quality
 
 Code quality was a serious and universal problem until recently, even on small projects. On current frontier models it still has to be managed.
@@ -121,6 +143,10 @@ Any project accepting AI-generated contributions carries this risk, including th
 AI is becoming a public enemy. The cause is probably mostly greed-driven hype, the economics, and the tactics used to foist data centers onto communities whose citizens pay the externalities.
 
 That perception may shift once desktop-class open models are good enough to work offline, which looks like a short wait rather than a long one.
+
+None of this is just sentiment anymore. Codeberg's membership voted 358 to 144, on about 50% turnout, to revise the terms of use against "vibe-coded projects", plus a separate pledge never to train on user or project data. Their follow-up guidance is graded rather than absolute: a project with an active community, or with real history predating LLMs, isn't the target. A repository producing more than the people behind it plausibly could is.
+
+This project is on GitHub, so those terms don't apply to it. That isn't the point. A forge run by and for FLOSS developers put it to a vote and it wasn't close, which is a better read on where this is heading than any amount of comment-section noise.
 
 Either way, hiding the involvement of AI is not the way out of its growing PR problem. Being transparent about its use, managing it as a tool, and accepting whatever criticism follows is the path taken here.
 
@@ -254,6 +280,8 @@ Everything that reaches the repository. Specifically:
 
 - Any change described as a refactor. This is where duplication gets introduced.
 
+- Any large block that reads as lifted rather than written. Provenance can't be recovered after the fact, and a copyleft original doesn't announce itself.
+
 ### What AI does not decide
 
 - Architecture, and anything that will be expensive to reverse. AI can suggest options, and be asked for them. It doesn't pick.
@@ -274,13 +302,17 @@ Contributions that used AI will not be automatically rejected. Two conditions:
 
 Commit messages describe the change, not the tooling used to make it. The same convention that applies to editors, formatters, and everything else.
 
+A pull request that takes longer to review than it took to generate is the exact thing maintainers everywhere are complaining about. Don't send one.
+
 ## Where this could change
 
 The position stated here is conditional. Things that would tighten it:
 
 - Evidence that these review uses cost more in defects than they catch.
 
-- Contribution volume that makes the review load unsustainable.
+- Contribution volume that makes the review load unsustainable. Codeberg names this as one of their reasons, so it isn't a hypothetical.
+
+- Hosting terms that stop allowing it. A forge's rules are not something a project on it gets to negotiate.
 
 Things that would relax it:
 
