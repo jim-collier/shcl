@@ -2,6 +2,100 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v2.0.0 - 2026-08-26
+
+The first major since 1.0.0. Two things change incompatibly, both listed under Changed: escapes now resolve in field names, so `"a\"b"` and `'a"b'` are one field where they used to be two; and the C++ veneer's `read_datetime` returns the structured value every other binding's does, with the textual form moving to `read_datetime_str`. Canonical output also moves for several shapes - in each case one where the old output lost something or would not settle - so a file reformatted by 2.0 can differ from the same file reformatted by 1.2. Go consumers update the import path to `github.com/jim-collier/shcl/source/go/v2`, and anyone who installed the Go CLI switches to the Rust binary, which is the only one distributed now - see Removed. Rust and Python consumers change a version constraint and nothing else.
+
+### Added
+
+- A file tier in every binding and the C++ veneer: `LoadFile`/`SaveFile` beside the existing text entry points, with a load status (`Clean`, `HadErrors`, `NotFound`, `Unreadable`) telling a caller why a load came back thin. The atomic temp-file-and-rename write moved out of the CLIs and into the libraries, so a consumer no longer has to reimplement it to avoid truncating a config on a full disk. The C binding compiles the whole tier out under `SHCL_NO_FILE_IO` for freestanding builds. A save that **creates** a file gives it the mode an ordinary create would - `0666` narrowed by the umask, the same bits an editor or a shell redirect would have produced - while a save that rewrites an existing file keeps the permission bits it already had.
+
+- `LostCount()`, and a save gate built on it: `SaveFile` refuses to write a document that lost content on load, rather than quietly persisting the loss. `SaveFileLossy` is the explicit override, and the refusal is a value the caller can act on - `SaveError::Refused` in Rust, a `*SaveRefused` error type in Go, `SaveRefused`/`SaveFailed` raised from a `SaveError` base in Python, `SHCL_SAVE_REFUSED`/`SHCL_SAVE_FAILED` in C. The gate answers before any I/O, so a lost document saved to an unwritable path still reports the refusal rather than the write failure.
+
+- `AuthoredName(path)`: a name as it was spelled in the source, escapes and all. It is the one accessor that hands back source text - everywhere else a name is stored, compared, emitted and enumerated with its escapes resolved - which is exactly why round-tripping a document that cares about the original spelling needs it.
+
+- A convenience tier spelled `_or` in every binding (`GetIntOr`, `get_int_or`, `shcl_get_int_or`, `get_or<T>`): the value on `Good`, the caller's fallback otherwise. Rust and Python gained eleven each, C three, so a routine ported between two bindings can no longer keep the call name while silently changing tier.
+
+- `reopen: true` as a schema key, plus `SuppressDeclaredReopens`: a section a config is expected to re-open in several places declares it once, instead of every consumer learning to ignore `H002`.
+
+- Rust gained `Clone`, `FromStr` (with `Infallible` as the error, since a Standard parse cannot fail), and `Display` on `Document` and `Status`, so `println!("{doc}")` prints the canonical form. `format_f64` is public, and is what the float setters use.
+
+- The C++ veneer gained the rest of the surface it was missing: the file tier, per-slot array statuses, a datetime array read, `exists`, `quoted`, and status-to-text. Go gained a `String` on its load status and the five array status reductions; Go and C gained an `ok()` predicate, which the other two already had.
+
+- `shcl --lossy` on `set --write`, the CLI half of the save gate, and `-v` beside `-V`. Read failures now explain themselves on stderr in every mode rather than only under `--on-bad=error`, with stdout byte-identical; `--on-bad=default` and an empty value outside error mode stay quiet on purpose.
+
+- `shcl set --write` creates FILE when nothing is at the path yet, so a first write no longer has to be preceded by a `touch`. `fmt --write` has nothing to format and still reports the file missing, and a file that exists but cannot be read stays an error in both - the alternative is writing over something unread.
+
+- A man page and shell completions. `man shcl` covers every subcommand, option, write op and exit code, with the per-subcommand option ownership the help only hints at, and the bash and zsh completions offer each subcommand exactly the options it accepts - an option a subcommand does not take is a usage error, so offering it would be a lie. The `.deb` and `.rpm` put all three where each shell already looks; the installer symlinks the man page into the target's own `man1` directory and leaves the completions with the line to enable them.
+
+- The installer gained `--uninstall`/`-Uninstall`, a sudo pre-check, a working no-terminal guard, and a pastable `export PATH=` line when the install directory is not on the path.
+
+- Windows executables carry the program icon and the metadata the properties panel expects - product name, description, version, company and copyright - on both the x86_64 and ARM64 builds and on the setup. The version is read from the build, so it cannot drift from what `shcl version` reports.
+
+- Release builds are reproducible. On the pinned toolchain, building a given commit produces a byte-identical binary on any machine and from any directory, for all four shipped targets, so the published checksum can be reproduced rather than trusted. README says so beside the checksum instructions.
+
+- `-Help` on the Windows installer, listing the same options the Linux installer's `--help` does. The documented one-liner pipes the script straight into the shell, so there was no file left for `Get-Help` to describe.
+
+### Changed
+
+- **Field names resolve their escapes.** `"a\"b"` and `'a"b'` name one field, where each used to be a separate field keyed by its own spelling - which meant two spellings of one name were two names, while the same two spellings as *values* were one string. Names are compared, emitted and enumerated resolved; `AuthoredName` is how the source spelling is still reachable. A line break in a name is writable as a result, since names emit through an escaper that spells it `\n`; in a `[value]` selector it is still refused, because that text is stored raw.
+
+- **The C++ veneer's datetime reads swap names.** `read_datetime` returns `Read<Datetime>`, the structured value every other binding's `read_datetime` returns; the textual form it used to return is now `read_datetime_str`. The old pair had the names backwards relative to the rest of the project, and a veneer consumer calling `read_datetime` will get a compile error rather than a silent change of meaning.
+
+- Author quoting on a plain string survives the formatter. `ver: "8"` still normalizes to `ver: 8` - a reader types that value the same either way, so the quotes say nothing - but a quoted plain string keeps its quotes through `fmt` and `init`, because stripping them un-escaped values a downstream language treats as special (`"@null"`, a quoted function reference), which is the case the `quoted` read flag exists for.
+
+- A quoted by-value selector matches a scalar only. `x["a, b"]` selects a single-element value whose logical string is `a, b`, rather than matching against the whole display form; a bare selector is unchanged.
+
+- Parsing costs far less memory in every binding, and less time. A 100 MiB document used to hold 39x to 72x its size in memory (3.8 GB in Rust up to 7.0 GB in C); it now holds 21x to 47x (2.1 GB in Rust, 3.0 in C, 3.3 in Go, 4.7 in Python), with C moving from the heaviest binding to among the lightest, and load time down as much as 40%. Output is byte-identical - this is the same parse, keeping less.
+
+- A line that is malformed in content but positionally sound is retained as inert trivia and written back, instead of vanishing. Lines whose position cannot be recovered still drop and still count toward `LostCount`, which is what the save gate reads. A BOM-led line is deliberately excluded - re-emitting it produces content the parser reads back as live.
+
+- `shcl set --write` consults the save gate. It previously deleted unreadable lines at exit 0 with nothing on stderr; the justification on record - that a human sees the diagnostics anyway - was false at the default strictness, where they see nothing at all.
+
+- `shcl set -` follows stdin: the piped document when the edits come from options, an empty base when the ops script has stdin. The two meanings never compete, so nothing that worked before changed.
+
+- The unknown-field sweep runs through a key-level schema fault instead of skipping wholesale, and skips only where the fault costs the entry its path (`V093`, `V095`).
+
+- `H002` reports at every merged level, not just the first: a re-entered map carries the re-open line down to its children.
+
+- A bare `shcl` prints the help and exits 0, the same as `shcl help` - one convention, "asking for help succeeds" - where it used to print the same text and exit 1.
+
+- Every setter in the reference is `#[must_use]`, so a discarded write is a compile warning rather than a silent no-op. The other bindings have no equivalent annotation; the behavior is unchanged in all four.
+
+- Performance, all measured: the quoted-emit gate costs 0.09s where it cost 0.24s on 400k bindings; the setters share one path scan and one tree walk (80k writes, 1.31s to 1.14s); the C binding parses the same corpus in 751 MB and 0.80s where it took 1332 MB and 1.19s, and retains one copy of its output during emit rather than four; Go went from 660 MB to 593 MB and 1.42s to 1.11s.
+
+### Fixed
+
+- Go, Python and C disagreed with the reference on a quoted selector whose lookup needed the rare fallback scan: they created a node where the reference selects one. The accelerator is meant to be a pure speed-up, so a miss must never change the answer - the three ports now rescan on an outright miss as well as on a wrong-shape hit.
+
+- The C binding's number parsing and formatting followed the host program's locale. Under a comma-decimal locale the canonical output diverged from the other three bindings, every float read came back `BadType`, and the float formatter truncated `1.5` to `1`. Both sites now translate the decimal point themselves - pinning the locale would have been a process-wide side effect a library has no business causing, and is not thread-safe.
+
+- A setter accepted a path segment or a by-value selector containing a line break, and wrote a document that reparsed to nothing. Both are refused now (a name spells the break instead; see Changed).
+
+- A value with leading or trailing whitespace outside space and tab was truncated on write. The edge-whitespace quoting rule now covers the whole set all four bindings already agreed on.
+
+- `fmt` emptied a whitespace-only line inside a raw block, and then, once it stopped, grew a raw block whose body has *no* non-blank line by one indent level on every pass, without bound. The common indent is taken from non-blank lines, so such a body has none to strip - and the formatter now adds none back, leaving it byte-for-byte. Normalizing it away would also have ended the growth, but a raw block promising verbatim content is the wrong place to discard a line of non-breaking or ideographic space.
+
+- Merged output was not always a formatter fixpoint: an empty binding in the base and a same-named block in the overlay both survived a merge, where parsing the two run together folds them. Merge adopts the parser's own empty-fill rule now, so the two agree. That also removes the emitter's workaround for the resulting pair, which spelled the fence on the name's line and lost an info string containing `#` outright.
+
+- A raw block body line ending in more than one carriage return was not a fixpoint: the load stripped one, the write turned the survivor into a line ending, and the reload dropped it. The whole trailing run comes off at load now. A carriage return inside a line is content and still round-trips.
+
+- Python's integer setters range-check against `i64`, so a value no other binding could store is refused rather than written and read back wrong.
+
+- Python's merge and clone walks are explicit stacks. A document at the documented depth cap, merged from a caller 900 frames deep, used to exhaust the interpreter's stack past about 485 levels and leave the base document half-mutated.
+
+- The C++ veneer's `Datetime` move operations left the moved-from value holding a view of digits it had handed away, so it formatted a fraction it no longer held. The invariant now lives in the rebind, which cannot be bypassed.
+
+- On Windows an in-place write left the file's ACLs, attributes and alternate data streams behind. A rename publishes a new file, and everything the old one carried outside its contents went with it; the write goes through `ReplaceFile` now, which carries them onto the replacement, and falls back to the old replacing move when the file is being created or the merge cannot be done. On POSIX the containing directory is synced after the rename as well as the file before it, so a power cut can no longer lose the publish itself and leave the old content. What a write still cannot carry - other hard links, POSIX ACLs, extended attributes and the SELinux label among them - is now stated in the spec rather than left to be discovered.
+
+- The PowerShell wrapper needed PowerShell 7. It used one operator that older versions do not have, on the line that forwards the binary's exit code, so it failed outright on the Windows PowerShell 5.1 that ships with the OS. Spelled the long way now, and it runs on both.
+
+### Removed
+
+- The C++ veneer's `read_datetime_raw`. Its job is `read_datetime`'s now; see Changed.
+
+- `go install github.com/jim-collier/shcl/source/go/cmd/shcl@latest`. The Go module is the library alone now - its CLI sits in a module of its own and no longer ships inside the published one. That CLI was only ever a test fixture for the cross-binding check, byte-identical to the reference by construction and with nothing of its own to offer; the Rust binary is the CLI this project distributes, and it is what the packages, the installers and `cargo install shcl` all deliver.
+
 ## v1.2.0 - 2026-08-04
 
 ### Added

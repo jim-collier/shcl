@@ -6,11 +6,15 @@
 // The replace is what makes it unpublishable as well as unshipped - `go install
 // <path>@<version>` refuses a module that needs a replace directive - and it is
 // how a local build resolves the library next door rather than the proxy.
+//
+// The version on the require line is nominal - the replace decides what gets
+// built - but a /vN path will not parse without a matching vN, so this moves
+// with the major and only with the major.
 
 module github.com/jim-collier/shcl/source/go/cmd
 
 go 1.20
 
-require github.com/jim-collier/shcl/source/go v0.0.0
+require github.com/jim-collier/shcl/source/go/v2 v2.0.0
 
-replace github.com/jim-collier/shcl/source/go => ../
+replace github.com/jim-collier/shcl/source/go/v2 => ../
