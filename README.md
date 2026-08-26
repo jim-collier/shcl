@@ -256,12 +256,14 @@ SHCL is in use today - and made further bulletproof - by these projects:
 | [Nano-Git DB OSS Edition](https://github.com/jim-collier/nano-git-db)                      |  Y   | beta           | Config & DDL
 | [Nano-Git DB Enterprise Edition](https://www.yottacore.com/product/nano-git-db-enterprise) |  Y   | beta           | Config
 | [convert-base-v2](https://github.com/jim-collier/convert-base-v2)                          |  Y   | **stable**     | Config
+| [TradeClanker](https://www.yottacore.com/product/tradeclanker)                             |  n   | beta           | Config & User's rules
+
+<!--
 | [Rapid Photo Downloader Pro](https://github.com/jim-collier/rapid-photo-downloader-pro)    |  Y   | alpha          | Config
 | [Nemo Anywhere](https://www.yottacore.com/product/nemo-anywhere)                           |  Y   | beta           | Config
-| [Captain Nemo](https://github.com/t00mietum/captain-nemo)                                  |  Y   | in development | Config
-| [TradeClanker](https://www.yottacore.com/product/tradeclanker)                             |  n   | beta           | Config & User's rules
 | SlodWorld                                                                                  |  n   | beta           | Config
 | [SlodWorld2](https://www.yottacore.com/product/slodworld2)                                 |  n   | beta           | Config
+-->
 
 (Most of these are by the same author.)
 
