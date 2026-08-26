@@ -102,11 +102,13 @@ This project can't fix that. What it can do is not pretend the problem is imagin
 
 The three above are society-wide. This one is aimed straight at the infrastructure a project like this one sits on.
 
-Codeberg, the nonprofit forge, [wrote it up in July 2026](https://blog.codeberg.org/protecting-our-floss-commons-from-llms.html). Their first complaint isn't about generated code at all. It's about scrapers. AI crawlers walk every page of every repository, and those "needless accesses create expensive database queries that diminish the service quality for all of us", on top of real hours out of a volunteer sysadmin team. Storage got more expensive at the same time: a drive they bought for EUR 700 a few years ago now costs EUR 3,700.
+Codeberg, the nonprofit git host, made the case in [Protecting our FLOSS commons from LLMs](https://blog.codeberg.org/protecting-our-floss-commons-from-llms.html) (July 2026). It's short, and worth reading in full whether or not the conclusion they reached is one you'd reach. The argument in brief: AI crawlers are expensive to serve, the hardware to serve them on got expensive too, generated contributions cost a maintainer more to review than they cost anyone to produce, and copyleft quietly loses its teeth when code gets regenerated instead of copied. Their membership then voted to do something about it.
 
-Nobody sends that bill to the companies running the crawlers. A big forge eats it. A small one, an NGO, or a self-hoster might not be able to, and that narrows who can afford to host anything at all.
+Start with the crawlers, since that's the part nobody outside of hosting ever mentions. Bots walk every page of every repository, and those "needless accesses create expensive database queries that diminish the service quality for all of us", on top of real hours out of a volunteer sysadmin team. Storage got more expensive over the same stretch: a drive they bought for EUR 700 a few years ago now costs EUR 3,700.
 
-Their second complaint is closer to home. "People submitting (often well-meaning) low-effort, LLM-generated contributions that require substantial amounts of time to review." That cost isn't shared either. It falls entirely on whoever maintains the project, usually for free, and it scales with how cheap the tooling makes the submission. A model writes a plausible thousand-line pull request faster than anyone can read one.
+Nobody sends that bill to the companies running the crawlers. A large host absorbs it. A small one, an NGO, or a self-hoster might not be able to, and that narrows who can afford to host anything at all.
+
+The next complaint is closer to home. "People submitting (often well-meaning) low-effort, LLM-generated contributions that require substantial amounts of time to review." That cost isn't shared either. It falls entirely on whoever maintains the project, usually for free, and it scales with how cheap the tooling makes the submission. A model writes a plausible thousand-line pull request faster than anyone can read one.
 
 That asymmetry is most of the reason the rules further down put the burden where they do.
 
@@ -146,7 +148,7 @@ That perception may shift once desktop-class open models are good enough to work
 
 None of this is just sentiment anymore. Codeberg's membership voted 358 to 144, on about 50% turnout, to revise the terms of use against "vibe-coded projects", plus a separate pledge never to train on user or project data. Their follow-up guidance is graded rather than absolute: a project with an active community, or with real history predating LLMs, isn't the target. A repository producing more than the people behind it plausibly could is.
 
-This project is on GitHub, so those terms don't apply to it. That isn't the point. A forge run by and for FLOSS developers put it to a vote and it wasn't close, which is a better read on where this is heading than any amount of comment-section noise.
+This project is on GitHub, so those terms don't apply to it. That isn't the point. A git host run by and for FLOSS developers put it to a vote and it wasn't close, which is a better read on where this is heading than any amount of comment-section noise.
 
 Either way, hiding the involvement of AI is not the way out of its growing PR problem. Being transparent about its use, managing it as a tool, and accepting whatever criticism follows is the path taken here.
 
@@ -312,7 +314,7 @@ The position stated here is conditional. Things that would tighten it:
 
 - Contribution volume that makes the review load unsustainable. Codeberg names this as one of their reasons, so it isn't a hypothetical.
 
-- Hosting terms that stop allowing it. A forge's rules are not something a project on it gets to negotiate.
+- Hosting terms that stop allowing it. A git host's rules are not something a project on it gets to negotiate.
 
 Things that would relax it:
 
