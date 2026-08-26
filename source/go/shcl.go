@@ -4266,6 +4266,8 @@ func parseU32(s string) (int, bool) {
 	return int(v), true
 }
 
+// The Atoi error discards through this date cluster are safe: every input is
+// length-bounded and allDigits-checked first, so Atoi cannot fail on it.
 func parseYear4(s string) (int, bool) {
 	if len(s) != 4 || !allDigits(s) {
 		return 0, false

@@ -54,7 +54,7 @@
 	- [DDL languages - Pkl, CUE, Dhall](#ddl-languages---pkl-cue-dhall)
 	- [When SHCL is the wrong choice](#when-shcl-is-the-wrong-choice)
 - [Features](#features)
-- [Shcl is used by multiple projects](#shcl-is-used-by-multiple-projects)
+- [SHCL is used by multiple projects](#shcl-is-used-by-multiple-projects)
 - [What a .shcl file looks like](#what-a-shcl-file-looks-like)
 - [Installation](#installation)
 	- [Language packages](#language-packages)
@@ -105,7 +105,7 @@ You have probably lived some version of this:
 
 - Remember that one project where a complex nested config was stored in XML - that you have PTSD over to this day?
 
-Every mainstream format makes the human do the careful work, and punishes the whole file for one mistake.
+Every mainstream format makes you do the careful work, and punishes the whole file for one mistake.
 
 ## What SHCL does about it
 
@@ -144,7 +144,7 @@ When you do want zero-tolerance rigor: schema validation, plus a strict mode tha
 
 ### Performance comparison benchmarks
 
-SHCL writes the smallest file of the five. But it's the slightly (trivially) slower to read - that's due to two conscious tradeoffs - one of them advertised as *the* key differentiating feature:
+SHCL writes the smallest file of the five. But it's slightly (trivially) slower to read - that's due to two conscious tradeoffs - one of them advertised as *the* key differentiating feature:
 
 1. SHCL offloads much of the burden of parsing and datatype-correct formatting from the user and programmer, to the library itself.
 
@@ -246,9 +246,9 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 - One conformance corpus pins every binding to identical behavior. The Rust reference plus independent Go, C, and Python parsers agree byte-for-byte. A binding is not released until it does.
 
-## Shcl is used by multiple projects
+## SHCL is used by multiple projects
 
-Shcl is in use today - and made further bullet-proof - by these projects:
+SHCL is in use today - and made further bulletproof - by these projects:
 
 | Project                                                                                    | OSS? | Release status | Used for
 | :--                                                                                        | :--: | :--            | :--

@@ -149,6 +149,6 @@ Release builds are tuned for size and speed together. The Rust release profile u
 
 - Short sentences. Nested bullets over comma-chained clauses. Minimal bold/italics/caps, no drama, no unicode beyond what the content needs.
 
-- Filenames are lowercase, except `README.md`.
+- Filenames are lowercase, except where a tool or convention fixes the casing: `README.md`, `Cargo.toml`/`Cargo.lock`, `CODEOWNERS`, `FUNDING.yml`, `PSScriptAnalyzerSettings.psd1`.
 
 - Docs update in the same change as the code they describe, not after.

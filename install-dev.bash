@@ -122,6 +122,7 @@ if have pwsh; then
 fi
 
 ## The plan.
+echo
 if (( in_clone )); then
 	printf 'using the existing clone at %s\n' "${clone_dir}"
 else
@@ -139,18 +140,27 @@ if (( ! ${#todo[@]} && ! ${#hints[@]} )) && (( in_clone )); then
 	echo "everything is already in place"
 fi
 if (( ! assume_yes )); then
-	[[ -r /dev/tty ]] || die "no tty to confirm on - pass --yes"
-	read -r -p "Proceed? [y/N] " reply </dev/tty
-	[[ "${reply}" == y || "${reply}" == Y ]] || { echo "aborted"; exit 1; }
+	## Ask on the terminal, and treat "cannot ask" as the abort it is. Testing
+	## /dev/tty for readability was not the same question: it passes in plenty of
+	## unattended contexts where the read then dies on a raw shell error.
+	reply=""
+	if ! read -r -p "Proceed? [y/N] " reply </dev/tty 2>/dev/null; then
+		die "no terminal to confirm on - pass --yes"
+	fi
+	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
 fi
 
-## Clone.
+## Clone. Resolve the dir to an absolute path afterwards - later steps refer to
+## it from inside the clone, where a relative --dir no longer points here.
 if (( ! in_clone )); then
+	echo
 	[[ -e "${clone_dir}/.git" ]] || git clone "${REPO_URL}" "${clone_dir}"
 	cd "${clone_dir}"
+	clone_dir="$(pwd)"
 fi
 
 ## Install the user-space pieces.
+echo
 if ! have cargo && [[ ! -x "${HOME}/.cargo/bin/cargo" ]]; then
 	echo "installing rustup..."
 	curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 https://sh.rustup.rs | sh -s -- -y --no-modify-path
@@ -177,4 +187,5 @@ echo
 echo "done. The gate is:  cicd/cicd.bash --ci"
 echo "(rust-toolchain.toml pins the toolchain; the first cargo run fetches it.)"
 (( ${#hints[@]} )) && echo "note: the hinted packages above are still missing."
+echo
 exit 0
