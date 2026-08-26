@@ -48,17 +48,17 @@ This project's original author has decades of programming experience. Hobby, the
 
 When AI started becoming a "thing" in programming, I (the original author) was against it. Which was convenient, because it sucked at it.
 
-That view has softened with the emergence of frontier models like Claude Fable. I've been running AI-led experiments under an alt GitHub account, mostly to find where these tools break and where they hold up. One result is that this nearly decade-old main account no longer has a blanket "no-AI" policy.
+That view has softened with the emergence of frontier models like Claude Fable. (Again convenient now that it's much better.) I've been running AI-led experiments under an alt GitHub account, mostly to find where these tools break and where they hold up. One result is that this nearly decade-old main account no longer has a blanket "no-AI" policy.
 
 This document is a first pass at documenting what, when, and how AI is allowed into this and other projects.
 
 ## Problems with AI
 
-Feel free to skip this section. It's here mostly for the record: an acknowledgment of the main problems.
+Feel free to skip this section. It's here mostly for the record: an acknowledgment of the main society-level problems most people are well aware of.
 
 ### Environmental
 
-This is the hardest one to justify. Using these tools while believing the current cost is indefensible is hypocrisy.
+This is the hardest one to justify.
 
 The scale is not in dispute. US data centers used about 4.4% of the country's electricity in 2023, and [Berkeley Lab](https://newscenter.lbl.gov/2025/01/15/berkeley-lab-report-evaluates-increase-in-electricity-demand-from-data-centers/) puts 2028 somewhere between 6.7% and 12%.
 
@@ -74,17 +74,17 @@ The part that matters here: open-weight coding models that fit in 24 to 32 GB on
 
 On capability, the number usually quoted is [METR's](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/): the length of task a model finishes with 50% reliability has doubled about every seven months over the six years to 2025. Fitting only the 2024-2025 data gives a steeper curve. METR puts no single number on that, but on SWE-bench Verified alone they measured a doubling time under three months.
 
-At seven months, 3.3 years is about 50x. At four months it is nearer 1000x. That is a direction, not a prediction.
+At a seven-month doubling interval, 3 years is about 35x compounded. At a four-month interval, 3 years is over 500x. That's a trend, not a "prediction".
 
-So the position is narrower than "AI is worth it". It is that the useful capability is on track to run on a desktop with no cloud data center behind it, and sooner is better.
+So the position is narrower than "AI is worth it". It is that the useful capability is on track to run on a desktop with no cloud data center behind it (e.g. in a solar-powered home office), sooner than later.
 
 ### Economic
 
 The companies leading this are among the largest ever to exist, and may be steering the global economy toward a cliff. If that happens, the cost will fall mostly on people who never opted in.
 
-Time will tell whether this is the largest bubble in history or whether the anticipated returns arrive first.
+Time will tell whether this is the largest bubble in history or whether the anticipated returns arrive first. Either way, one thing seems reasonably likely: As with the railroad and dotcom booms before it, there are arguably "four clocks" we're working with - as a simplified model: 1) The tech clock - the reference clock. How fast the tech progresses. 2) The investment clock - the fastest clock of all in any exuberance boom. 3) The actual adoption clock. 4) The profitability clock - the slowest of the four. Regular people eventually benefited after the railroad and dotcom busts [once all the incredibly excessive rail and fiber buildout eventually started getting used at rock-bottom prices]. The delta between clocks #2 and #4 makes a few people insanely rich, but most late-boom investors lose it all. [In part because it's statistically unlikely to pick the ultimate winners, and in part because they can't stay solvent for a decade or so for the winning returns to catch back up after the bust and finally make them rich.] Their loss is usually the world's eventual gain. Most early innovators that seem like the sure bets don't actually survive the boom/bust/growth cycle. (This played out in both the railroad and dotcom eras. For example, Google entered search years after the presumed winners, and stayed private through the whole boom. Nobody's 1999 sure-bet list in that space survived intact.)
 
-If guidelines like the ones below were adopted broadly (narrow scope, human accountability, no AI making the decisions that matter) and especially limited to near-future desktop models, global demand might look less like a gold rush. That may be cope. It may also be true.
+Either way, if guidelines like the ones below were adopted broadly (narrow scope, human accountability, no AI making the decisions that matter) and especially limited to near-future desktop models - then global demand might look less like a gold rush. That could be cope. It may also be true.
 
 ### Ethical
 
@@ -130,9 +130,9 @@ The common objection "LLMs don't understand context" is confused at best. Contex
 
 The objection usually means something narrower: *situational* context. Who you are, what you ate this morning, what's really at stake. That's a fair criticism, just poorly worded. Where LLMs exceed us is textual context: conditioning on a hundred thousand things at once, across more domains than any one person could read, let alone remember.
 
-And "understand" belongs in quotes, because nobody can specify what understanding *is* beyond what it *does*. We grant it to other humans on inference alone, for free.
+And "understand" belongs in quotes, because nobody can specify what understanding *is* beyond what it *does*. We grant it to other humans on inference alone, for free. (But in the end, can we really be sure *any* intelligence - yours, mine, the pilot of your next flight - is anything more than next-word-prediction machines, running on wetware, that got good enough at not dying to mistake itself for something else?)
 
-Whether an eventual AGI is LLM-based is an open question. But LLMs have two advantages now: they can communicate with us, and we can watch them think in our own native language. A third applies specifically to coding. The inventors of computer languages borrowed the machinery of linguistics, which is what LLMs happen to be built for, and that is a large part of why these models got good at code before most other technical work.
+Whether an eventual AGI is LLM-based is an open question. But LLMs have two advantages now: they can "communicate" with us, and we can literally watch them "think" in our own native language. As for coding, the inventors of computer languages borrowed the machinery of linguistics, which is what LLMs happen to be built for, and that is a large part of why these models got good at code before most other technical work. Even if AI advances beyond LLMs, there may still be a role for LLMs in A) the human interface, and/or B) coding agents.
 
 ## Good uses of AI
 
@@ -142,13 +142,13 @@ What current LLMs demonstrably do well:
 
 - Combine ideas across fields that no single reviewer has read, or could in a lifetime.
 
-- Produce solutions that do not appear in their training data. (Contrary to popular belief.)
+- Produce solutions that do not appear in their training data. (Contrary to popular misunderstanding.)
 
 - Look up information they were never trained on.
 
 What they cannot do:
 
-- Retain anything between sessions (without memory files),
+- Retain anything between sessions. (Without memory files and even then imperfectly.)
 
 - Exist as one continuous mind.
 
@@ -184,7 +184,7 @@ A model that reports a defect can usually write the fix too. Those patches are a
 
 ### Porting to other languages
 
-Porting a well-defined, documented codebase with comprehensive existing test harnesses to another language is something current frontier models do with high fidelity, including converting to target-language idioms.
+Porting a well-defined, documented codebase with comprehensive existing test harnesses to another language is something current frontier models do with high fidelity, including refactoring to target-language idioms.
 
 It is then a fully human responsibility to:
 
@@ -198,7 +198,7 @@ It is then a fully human responsibility to:
 
 Similar to the previous point. For some languages (Go, Rust, Zig, and non-compiled cross-platform scripting languages) this is a trivial non-AI task that should just be part of the CI pipeline.
 
-But depending on what the program does, there is often OS-specific branching for functionality the language's own standard library doesn't cover. Models are usually good at knowing the idiomatic way to handle those cases.
+But depending on what the program does, there is often OS-specific branching for functionality the language's own standard library doesn't cover. Models are usually good at "knowing" the idiomatic way to handle those cases.
 
 Human responsibility picks back up at the end, same as with the previous section.
 
@@ -206,13 +206,13 @@ Human responsibility picks back up at the end, same as with the previous section
 
 Examples:
 
-- Demo gif and video generation, including fully anonymized synthetic scenarios. Tedious for humans, and not fun for either technical or creative types.
+- Demo gif and video generation, including fully anonymized synthetic scenarios. Tedious for humans, and generally "not fun" for either technical or creative types.
 
 - Benchmarking and measurements for competitive comparison charts.
 
-- Asset generation. A tougher call, since creatives need work too and are being replaced by AI at heartbreaking levels. But on a FLOSS project with no pay and nobody stepping up to volunteer, what are you going to do? I'm artistic enough, and experienced enough with the tools, to generate image, audio, and video assets by hand. It's just time I'd rather spend on product design, problem-solving, and coding. For assets I usually know exactly what I want and can describe it precisely.
+- Asset generation. A tougher call, since creatives need work too and are being replaced by AI at heartbreaking levels. But on a FLOSS project with no pay and nobody stepping up to volunteer, what are you going to do? For example, this author is "artistic enough" - and experienced enough with the tools - to generate image, audio, and video assets by hand. It's just time I'd rather spend on product design, problem-solving, and coding. For assets I usually know exactly what I want and can describe it precisely.
 
-- Boring "required" website setup and generation. Not the site that *is* the product, where designers and engineers and stakeholders come together to make something good. I mean the bare-minimum web presence even basic FLOSS products need, that nobody wants to build unpaid.
+- Boring "required" website setup and generation. Not for the site that *is* the product, where designers and engineers and stakeholders come together to make something good. I mean the bare-minimum commodity web presence even basic FLOSS products need, that nobody wants to slog through unpaid.
 
 ## Rules for AI use in this project
 
