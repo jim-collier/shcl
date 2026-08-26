@@ -82,7 +82,7 @@ So the position is narrower than "AI is worth it". It is that the useful capabil
 
 The companies leading this are among the largest ever to exist, and may be steering the global economy toward a cliff. If that happens, the cost will fall mostly on people who never opted in.
 
-Time will tell whether this is the largest bubble in history or whether the anticipated returns arrive first. The railroad and dotcom booms both overbuilt badly, and both left infrastructure that got used at rock-bottom prices long after the bust. Late investors ate the loss and the public got the buildout. The presumed winners rarely survived either: Google entered search years after them, stayed private through the whole boom, and outlasted all of them.
+Time will tell whether this is the largest bubble in history or whether the anticipated returns arrive first. The railroad and dotcom booms both overbuilt badly, and both left infrastructure that got used at rock-bottom prices long after the bust. Late investors ate the loss and the public got the buildout. The presumed winners rarely survived either. For example, Google entered search years after them, stayed private through the whole boom, and came out on top.
 
 Either way, if guidelines like the ones below were adopted broadly (narrow scope, human accountability, no AI making the decisions that matter) and especially limited to near-future desktop models - then global demand might look less like a gold rush. That could be cope. It may also be true.
 
