@@ -1,0 +1,39 @@
+# Dev tooling only, never published and never part of a shipped build. It is the
+# one place in this repo that pulls third-party crates, which is the whole point:
+# the comparison is only worth anything if the other four formats are parsed by
+# the libraries their own ecosystems actually reach for.
+[package]
+name = "shcl-comparison"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Measures SHCL against JSON, YAML, TOML, and XML on identical documents."
+publish = false
+
+[[bin]]
+name = "shcl-comparison"
+path = "src/main.rs"
+
+[dependencies]
+shcl = { path = "../../../source/rust" }
+
+# One library per format, each the mainstream choice in its ecosystem, each
+# parsing to that ecosystem's own in-memory document model so no harness code
+# sits inside a measurement. Versions are pinned by Cargo.lock, which is
+# committed, so a rerun measures the same libraries.
+#   preserve_order: a config tool cannot ship a loader that silently sorts the
+#   file's keys, so JSON gets the feature it would really be built with.
+serde_json   = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+toml         = "1"
+toml_edit    = "0.25"
+roxmltree    = "0.21"
+xmltree      = "0.12"
+
+# Measurements are meaningless against an unoptimized build, and the release
+# profile here mirrors the one the shipped CLI uses so the SHCL numbers are the
+# numbers a real consumer gets.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

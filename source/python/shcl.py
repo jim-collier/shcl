@@ -11,9 +11,49 @@ Structure deliberately mirrors the reference over Python idiom, so a fix there
 ports here by mechanical diff (parity over idiom - see style-guide.md).
 """
 
+# The type gate, turned on here rather than left at its default: without this the
+# checker skips every unannotated body, which in a module with no annotations is
+# the whole file - a gate that cannot fail. `assignment` stays off because the
+# structures mirrored from the reference are tagged tuples and index-or-None
+# locals, which read as type changes to a checker and are not; everything that
+# catches a real misuse (a None reaching an operator, a wrong argument, a bad
+# return) is live.
+# mypy: check-untyped-defs, disable-error-code="assignment"
+
 import math
+import os
+import stat
+import sys
 from decimal import Decimal
 from enum import Enum
+
+# The public surface, stated rather than inferred: without this `from shcl
+# import *` hands out this module's own imports (math, os, stat, Decimal, Enum)
+# and its internal ROOT constant alongside the real API.
+__all__ = [
+	"Diagnostic",
+	"Document",
+	"FileStatus",
+	"LoadError",
+	"MAX_DEPTH",
+	"Read",
+	"SaveError",
+	"SaveFailed",
+	"SaveRefused",
+	"Severity",
+	"ShclDateTime",
+	"Status",
+	"StatusError",
+	"Strictness",
+	"WriteReason",
+	"format_float",
+	"generate",
+	"parse_datetime",
+	"quote_segment",
+	"suppress_declared_reopens",
+	"suppress_declared_repeats",
+	"write_file_atomic",
+]
 
 # ---------------------------------------------------------------------------
 # Public surface
@@ -55,7 +95,7 @@ class WriteReason(Enum):
 	setter's bare False. Writable = the path passes the writer's validation;
 	the rest name the five ways it cannot."""
 	Writable = 0
-	BadPath = 1       # empty path, or the scanner rejected it
+	BadPath = 1       # empty path, the scanner rejected it, or a segment carries a line break
 	ValueInPath = 2   # the path carries a `: value` part; writes take values separately
 	Wildcard = 3      # wildcard selectors are query-only
 	NoSuchIndex = 4   # a `[#k]` instance that does not (and can never) exist
@@ -140,6 +180,11 @@ class Read:
 		return self
 
 	def ok(self):
+		"""Whether the author addressed this field at all: Good or Empty. Note
+		this deliberately answers differently from the convenience tier, which
+		falls back on Empty like any other non-Good read - ok() asks "is this
+		field spoken for", get_*_or() asks "do I have a usable value", and an
+		explicitly emptied field is the case where those two diverge."""
 		return self.status in (Status.Good, Status.Empty)
 
 
@@ -153,12 +198,31 @@ class LoadError(Exception):
 		# Name the first few failures right in the message; the bare count made
 		# callers dig for information the error was already holding.
 		errs = [d for d in diagnostics if d.severity == Severity.Error]
-		msg = "strict load failed: {} error diagnostic(s)".format(len(errs))
+		msg = f"strict load failed: {len(errs)} error diagnostic(s)"
 		for d in errs[:3]:
-			msg += "; line {}: {} {}".format(d.line, d.code, d.message)
+			msg += f"; line {d.line}: {d.code} {d.message}"
 		if len(errs) > 3:
-			msg += "; +{} more".format(len(errs) - 3)
+			msg += f"; +{len(errs) - 3} more"
 		super().__init__(msg)
+
+
+class SaveError(Exception):
+	"""Base for the two ways a save does not happen. They are separate classes
+	so a caller can tell them apart with `except` rather than by matching on the
+	message: a refusal is theirs to reverse, a write failure is not."""
+
+
+class SaveRefused(SaveError):
+	"""The lost-content gate fired: the load dropped content this save would
+	delete (see lost_count). save_file_lossy is the override."""
+	def __init__(self, path, lost):
+		self.path = path
+		self.lost = lost
+		super().__init__(f"{path}: refusing to save: load dropped {lost} line(s)/value(s) this write would delete (see diagnostics; save_file_lossy overrides)")
+
+
+class SaveFailed(SaveError):
+	"""The write itself failed; the message is what the system reported."""
 
 
 class ShclDateTime:
@@ -176,14 +240,14 @@ class ShclDateTime:
 		out = []
 		if self.date is not None:
 			y, m, d = self.date
-			out.append("{:04d}-{:02d}-{:02d}".format(y, m, d))
+			out.append(f"{y:04d}-{m:02d}-{d:02d}")
 			if self.time is not None:
 				out.append("T")
 		if self.time is not None:
 			h, mi, s = self.time
-			out.append("{:02d}:{:02d}".format(h, mi))
+			out.append(f"{h:02d}:{mi:02d}")
 			if s is not None:
-				out.append(":{:02d}".format(s))
+				out.append(f":{s:02d}")
 			if self.frac is not None:
 				out.append("." + self.frac)
 		if self.zone is not None:
@@ -193,7 +257,7 @@ class ShclDateTime:
 				off = self.zone[1]
 				sign = "-" if off < 0 else "+"
 				a = abs(off)
-				out.append("{}{:02d}:{:02d}".format(sign, a // 60, a % 60))
+				out.append(f"{sign}{a // 60:02d}:{a % 60:02d}")
 		return "".join(out)
 
 
@@ -217,7 +281,12 @@ def format_float(v):
 
 
 class _Element:
-	__slots__ = ("text", "quoted")   # text: quote-stripped, escapes NOT applied
+	__slots__ = ("text", "quoted")   # text: quote-stripped, escapes NOT applied (names differ - see _scan_path_ex)
+	# Declared, not assigned - __slots__ forbids class attributes. The point is
+	# the type gate: without a type here every field is Any and the checker has
+	# nothing to check.
+	text: str
+	quoted: bool
 
 	def __init__(self, text, quoted):
 		self.text = text
@@ -246,20 +315,47 @@ class _Pend:
 		self.blank_before = blank_before
 
 
+# Shared empty element list for the kinds that have none: only "cell" ever
+# mutates els (the stacked-list append checks kind first), so "empty" and
+# "raw" values all point at this one tuple instead of a list each.
+_EMPTY_ELS: tuple = ()
+
+
 class _Value:
 	# kind: "empty" | "cell" (els) | "raw" (content/info/fence_char/fence_len)
 	__slots__ = ("kind", "els", "content", "info", "fence_char", "fence_len")
+	kind: str
+	els: list     # _EMPTY_ELS when the kind has no elements; list only for "cell"
+	content: str
+	info: str
+	fence_char: str
+	fence_len: int
 
 	def __init__(self, kind):
+		# Empty rather than None for the three the kind decides: the fields a kind
+		# does not use are never read, and starting them at their own empty value
+		# keeps every reader's type honest without a guard at each use.
 		self.kind = kind
-		self.els = None
-		self.content = None
-		self.info = None
+		self.els = _EMPTY_ELS
+		self.content = ""
+		self.info = ""
 		self.fence_char = None
 		self.fence_len = None
 
 	def is_empty(self):
 		return self.kind == "empty"
+
+	def copy(self):
+		"""Independent copy, element list included - a clone or a merged-in value
+		has to survive the document it came from being released."""
+		v = _Value(self.kind)
+		if self.kind == "cell":
+			v.els = [_Element(e.text, e.quoted) for e in self.els]
+		v.content = self.content
+		v.info = self.info
+		v.fence_char = self.fence_char
+		v.fence_len = self.fence_len
+		return v
 
 	def key(self):
 		"""Merge key: nodes with equal (name, key) collapse into one."""
@@ -321,6 +417,14 @@ def _literal_value(text):
 	return _parse_cell(v)
 
 
+def _fits_i64(v):
+	# Python's int is unbounded, the other three bindings' are 64-bit. Text for a
+	# value outside that range reads back bad-type in every binding, python
+	# included, so a setter refuses it rather than writing a value nothing can
+	# read. Same range-check the CLI already does on its side.
+	return -(1 << 63) <= v <= (1 << 63) - 1
+
+
 def _cell_of(text):
 	return _cell([_Element(text, False)])
 
@@ -359,23 +463,15 @@ def _choose_fence(content):
 	return ("`", max(3, maxrun + 1))
 
 
-class _Node:
-	__slots__ = (
-		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
-		"leading", "trailing", "after", "inside", "blank_before", "src",
-	)
+class _Trivia:
+	"""Comment trivia, boxed off to the side: most nodes carry none, and the
+	four empty containers were a third of every node. Verbatim from `#` to end
+	of line. Never part of identity or reads; merged instances concatenate
+	leading, first trailing wins (later ones demote to leading - a canonical
+	line has room for one)."""
+	__slots__ = ("leading", "trailing", "after", "inside")
 
-	def __init__(self, name, value, parent, line):
-		self.name = name          # ASCII-folded to lower; non-ASCII never folds
-		self.value = value
-		self.children = []
-		self.parent = parent
-		self.line = line
-		self.star_list = False    # value built from stacked "* " lines
-		self.star_mixed = False   # mix of "* " and field children already diagnosed
-		# Comment trivia, verbatim from `#` to end of line. Never part of identity
-		# or reads; merged instances concatenate leading, first trailing wins
-		# (later ones demote to leading - a canonical line has room for one).
+	def __init__(self):
 		self.leading = []
 		self.trailing = ""        # empty = none
 		# Whole-line comments that followed this node's subtree at a deeper
@@ -388,14 +484,69 @@ class _Node:
 		# still owns those lines. Emitted after the subtree one level deeper
 		# than this node.
 		self.inside = []
+
+
+class _Node:
+	__slots__ = (
+		"name", "value", "children", "parent", "line", "star_list", "star_mixed",
+		"trivia", "blank_before", "src_set", "src", "name_src",
+	)
+
+	def __init__(self, name, value, parent, line, name_src=""):
+		# ASCII-folded to lower; non-ASCII never folds. Interned: siblings and
+		# repeated sections share one string object instead of one per node.
+		self.name = sys.intern(name)
+		# The name as the author spelled it (case unfolded, quotes and escapes
+		# resolved) - what authored_name() hands back. Merged instances keep the
+		# first binding's spelling, like line() and comments. The same object as
+		# `name` when the spellings match (the overwhelmingly common case), so
+		# the duplicate per-node string never allocates.
+		self.name_src = self.name if name_src == name else sys.intern(name_src)
+		self.value = value
+		self.children = []
+		self.parent = parent
+		self.line = line
+		self.star_list = False    # value built from stacked "* " lines
+		self.star_mixed = False   # mix of "* " and field children already diagnosed
+		# Comment trivia sidecar (_Trivia): None until the first write, so the
+		# common comment-free node never allocates the four containers.
+		self.trivia = None
 		# Blank-line grouping is the other half of hand-authored layout: set
 		# when a blank line preceded this node's binding line (runs collapse).
 		self.blank_before = False
+		# This node has decided its `src` - set by the first source line whose
+		# value the node holds, whether or not a string was worth keeping.
+		self.src_set = False
 		# Verbatim value text from the source line (after the colon, comment
 		# stripped, trimmed) - what a read's `raw` hands back. None when the
-		# value was synthesized (writer, stacked list, fence), where raw falls
-		# back to the display form.
+		# value was synthesized (writer, stacked list, fence) OR when the
+		# spelling is exactly the display form; raw falls back to the display
+		# form either way.
 		self.src = None
+
+	# Trivia reads hand back the empty shape when no sidecar exists; _triv()
+	# allocates one on first write.
+	def leading(self):
+		t = self.trivia
+		return t.leading if t is not None else ()
+
+	def trailing(self):
+		t = self.trivia
+		return t.trailing if t is not None else ""
+
+	def after(self):
+		t = self.trivia
+		return t.after if t is not None else ()
+
+	def inside(self):
+		t = self.trivia
+		return t.inside if t is not None else ()
+
+	def _triv(self):
+		t = self.trivia
+		if t is None:
+			t = self.trivia = _Trivia()
+		return t
 
 
 ROOT = 0
@@ -413,19 +564,18 @@ def _fold_node_into(arena, survivor, loser):
 	for k in kids:
 		arena[k].parent = survivor
 	arena[survivor].children.extend(kids)
-	arena[survivor].leading.extend(arena[loser].leading)
-	arena[loser].leading = []
-	trail = arena[loser].trailing
-	arena[loser].trailing = ""
-	if trail:
-		if not arena[survivor].trailing:
-			arena[survivor].trailing = trail
-		else:
-			arena[survivor].leading.append(_Lead(trail, False))
-	arena[survivor].after.extend(arena[loser].after)
-	arena[loser].after = []
-	arena[survivor].inside.extend(arena[loser].inside)
-	arena[loser].inside = []
+	lt = arena[loser].trivia
+	if lt is not None:
+		arena[loser].trivia = None
+		st = arena[survivor]._triv()
+		st.leading.extend(lt.leading)
+		if lt.trailing:
+			if not st.trailing:
+				st.trailing = lt.trailing
+			else:
+				st.leading.append(_Lead(lt.trailing, False))
+		st.after.extend(lt.after)
+		st.inside.extend(lt.inside)
 
 
 # Maximum nesting depth (levels below the document root), enforced at load and
@@ -442,10 +592,15 @@ MAX_DEPTH = 512
 
 # White_Space set, matching Rust char::is_whitespace exactly (so trims agree on
 # exotic input - e.g. U+001C-1F are NOT whitespace here, unlike Python's default).
+#
+# The characters are written out rather than escaped, which is why the noqa is
+# here: a linter reads them as typos for a plain space. Do not "fix" them, and do
+# not add or drop one without changing the C, Go and Rust sets in the same pass -
+# the four have to agree or the bindings stop trimming alike.
 _WS = (
-	"\t\n\x0b\x0c\r\x20\x85\xa0 "
-	"           "
-	"    　"
+	"\t\n\x0b\x0c\r\x20\x85\xa0 "  # noqa: RUF001
+	"           "  # noqa: RUF001
+	"    　"  # noqa: RUF001
 )
 _WS_SET = set(_WS)
 
@@ -468,7 +623,7 @@ def _trim_end(s):
 def _split_ws(s):
 	# Like Rust split_whitespace: split on White_Space runs, no empty tokens.
 	out = []
-	cur = []
+	cur: list = []
 	for c in s:
 		if c in _WS_SET:
 			if cur:
@@ -489,8 +644,16 @@ def _fold_name(s):
 	return _ascii_lower(s)
 
 
+# A closed 64-character set, so membership is one C-level lookup rather than
+# two method calls and two comparisons per character. The scanner and the name
+# emitter both run this over every character they touch.
+_BARE_NAME_CHARS = frozenset(
+	"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+)
+
+
 def _is_bare_name_char(c):
-	return (c.isascii() and c.isalnum()) or c == "-" or c == "_"
+	return c in _BARE_NAME_CHARS
 
 
 def _split_comment(s):
@@ -651,11 +814,46 @@ def _apply_escapes(s):
 	return "".join(out)
 
 
+def _single_scalar(v):
+	"""The restriction a QUOTED [value] selector adds on top of the display
+	match: quoting selects the scalar spelling only, so the scalar "a, b" and
+	the list a, b stop meeting the same selector."""
+	return v.kind == "cell" and v.els is not None and len(v.els) == 1
+
+
 def _disp_key(v):
 	"""The predicate a `[value]` selector matches with: display form with escapes
 	applied on both sides, so `["q\\"uote"]` finds `'q"uote'` - a logical-string
 	match, not spelling against spelling."""
 	return _apply_escapes(v.display())
+
+
+def _merge_key(name, v):
+	"""The (name, merge-key) accelerator key, as an exact tuple reusing the
+	value's own strings: injective exactly like name plus _Value.key(), with no
+	key text built or copied. Where the reference streams these fields through
+	an FNV hash and verifies hits, tuples keep the lookup exact - dict and
+	tuple machinery here is C-speed, a hand-rolled hash loop is not."""
+	k = v.kind
+	if k == "cell":
+		return (name, "c", tuple(e.text for e in v.els))
+	if k == "empty":
+		return (name, "e")
+	return (name, "r", v.info, v.content)
+
+
+def _value_key(v):
+	"""The value's merge key alone (no name part) - the src-attach guard's
+	compare."""
+	return _merge_key("", v)
+
+
+def _src_matches_display(v, s):
+	"""True when a source value spelling is exactly the display form - the case
+	where `src` need not be stored, since raw's fallback reproduces it. The
+	single-scalar display() is the element text itself, so the common compare
+	builds nothing."""
+	return s == v.display()
 
 
 def _fence_open(rest):
@@ -681,19 +879,38 @@ def _is_fence_close(line, ch, min_len):
 	return len(t) >= min_len and len(t) > 0 and all(c == ch for c in t)
 
 
+def _strip_common(line, common):
+	"""Remove a raw block's common indent from one content line.
+
+	A whitespace-only line took no part in computing that indent, so it can be
+	shorter than it - strip only what it actually shares, rather than blanking
+	it. Blanking drops author spacing on a line the spec calls verbatim.
+	"""
+	k = 0
+	while k < len(common) and k < len(line) and common[k] == line[k]:
+		k += 1
+	return line[k:]
+
+
 # ---------------------------------------------------------------------------
 # Path scanner (shared by file lines and accessor queries)
 # ---------------------------------------------------------------------------
-# Selector is a tuple: ("val", str) | ("idx", int) | ("wild", None).
+# Selector is a tuple: ("val", str, quoted) | ("idx", int) | ("wild", None).
+# quoted: the selector text was quoted in the path. A quoted selector is
+# scalar-only - it matches a single-element value whose logical string equals
+# the text - so quoting distinguishes the scalar "a, b" from the two-element
+# list a, b, the same way quoting escapes elsewhere.
 
 
 class _Segment:
-	# name folded; selector None or tuple; star = bare `*` name wildcard
+	# name folded, name_src as authored (unfolded, quotes stripped, escapes
+	# applied); selector None or tuple; star = bare `*` name wildcard
 	# (quoted "*" stays a literal name).
-	__slots__ = ("name", "selector", "star")
+	__slots__ = ("name", "name_src", "selector", "star")
 
-	def __init__(self, name, selector, star=False):
+	def __init__(self, name, name_src, selector, star=False):
 		self.name = name
+		self.name_src = name_src
 		self.selector = selector
 		self.star = star
 
@@ -779,10 +996,10 @@ def _scan_path_ex(inp, stars):
 			name = "*"
 		else:
 			start = pos
-			while pos < n and _is_bare_name_char(chars[pos]):
+			while pos < n and chars[pos] in _BARE_NAME_CHARS:
 				pos += 1
 			if pos == start:
-				raise _PathError("expected field name, found '{}'".format(chars[pos]))
+				raise _PathError(f"expected field name, found '{chars[pos]}'")
 			name = chars[start:pos]
 		selector = None
 		pos = skip_ws(pos)
@@ -799,7 +1016,7 @@ def _scan_path_ex(inp, stars):
 			pos = skip_ws(bracket_at + 1)
 			if pos < n and (chars[pos] == '"' or chars[pos] == "'"):
 				v, pos = read_quoted(pos)
-				selector = ("val", v)   # quotes force a value match, even numeric
+				selector = ("val", v, True)   # quotes force a value match, even numeric - and scalar-only
 			else:
 				start = pos
 				while pos < n and chars[pos] != "]":
@@ -814,14 +1031,17 @@ def _scan_path_ex(inp, stars):
 				elif body == "":
 					raise _PathError("empty selector")
 				else:
-					selector = ("val", _normalize_dangling_backslash(body))
+					selector = ("val", _normalize_dangling_backslash(body), False)
 			pos = skip_ws(pos)
 			if pos >= n or chars[pos] != "]":
 				raise _PathError("unterminated selector")
 			pos = skip_ws(pos + 1)
 		if star and selector is not None:
 			raise _PathError("selector on a name wildcard")
-		segments.append(_Segment(_fold_name(name), selector, star))
+		# Names resolve escapes, the same rule values follow when they are
+		# compared: two spellings of one name are one name. name_src keeps the
+		# source spelling, which is what authored_name hands back.
+		segments.append(_Segment(_fold_name(_apply_escapes(name)), name, selector, star))
 		if pos >= n:
 			return segments, None
 		c = chars[pos]
@@ -831,7 +1051,7 @@ def _scan_path_ex(inp, stars):
 			pos += 1
 			return segments, _trim(chars[pos:])
 		else:
-			raise _PathError("unexpected '{}' after field".format(c))
+			raise _PathError(f"unexpected '{c}' after field")
 
 
 # ---------------------------------------------------------------------------
@@ -845,41 +1065,59 @@ class _Parser:
 		self.diags = []
 		# (indent string, node) for each open level; [0] is the virtual root.
 		self.stack = [("", ROOT)]
-		# Per-node (name, value-key) -> first matching child, parallel to arena.
-		# Pure lookup accelerator for _select_or_create; children keeps the order.
-		self.child_map = [{}]
+		# Per-node (name, value-key) -> first matching child, parallel to arena
+		# and None until a parent's first insert, so leaves never allocate one.
+		# Pure lookup accelerator for _select_or_create; children keeps the
+		# order. Keys are _merge_key tuples, so no key text is built or stored.
+		self.child_map: list = [None]
 		# Per-node (name, display) -> first matching child: the `[value]` selector
 		# accelerator (its predicate is display(), a different and non-injective
-		# key from child_map's). Same first-wins discipline, same mutation sites.
-		self.disp_map = [{}]
+		# key from child_map's). Same first-wins discipline, same mutation sites,
+		# same lazy allocation.
+		self.disp_map: list = [None]
 		# Whole-line comments waiting for the next line that binds a node. The
 		# source indent is kept only to decide after-attachment (a comment
 		# deeper than the next binding hangs on the block it sits in).
 		self.pending = []
 		self.saw_blank = False  # a blank line waits to become the next bound node's blank_before
 		# An open stacked list defers its merge-key remap (rebuilding the key per
-		# element is O(list^2) time); (node, key, display) at deferral start,
-		# flushed before any map lookup and at end of parse.
+		# element is O(list^2) time); (node, map key, display key) at deferral
+		# start, flushed before any map lookup and at end of parse.
 		self.star_open = None
+		# Node -> line of the re-open that H002-hinted it. A merge under a hinted
+		# container combines the same two textual regions, so it hints too even
+		# when it lands on the newest child at its own scope - that is how every
+		# merged level reports, not just the outermost. The stored line splits old
+		# children (hint) from ones the re-opened region itself created (silent).
+		self.reentered = {}
+		# Dropped lines/values canonical output cannot re-emit.
+		self.lost = 0
 
 	def _err(self, line, msg):
 		self.diags.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
 
-	def _select_or_create(self, parent, name, value, line):
+	def _select_or_create(self, parent, name, name_src, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
 		self._star_flush()
-		map_key = (name, value.key())
-		found = self.child_map[parent].get(map_key)
-		if found is not None:
-			return found
+		map_key = _merge_key(name, value)
+		cmap = self.child_map[parent]
+		if cmap is not None:
+			found = cmap.get(map_key)
+			if found is not None:
+				return found
 		idx = len(self.arena)
-		node = _Node(name, value, parent, line)
+		node = _Node(name, value, parent, line, name_src)
 		self.arena.append(node)
 		self.arena[parent].children.append(idx)
-		self.child_map.append({})
-		self.child_map[parent][map_key] = idx
-		self.disp_map.append({})
-		self.disp_map[parent].setdefault((name, _disp_key(node.value)), idx)
+		self.child_map.append(None)
+		self.disp_map.append(None)
+		if cmap is None:
+			cmap = self.child_map[parent] = {}
+		cmap[map_key] = idx
+		dmap = self.disp_map[parent]
+		if dmap is None:
+			dmap = self.disp_map[parent] = {}
+		dmap.setdefault((name, _disp_key(node.value)), idx)
 		return idx
 
 	def _star_flush(self):
@@ -897,12 +1135,16 @@ class _Parser:
 		parent = self.arena[node].parent
 		name = self.arena[node].name
 		cmap = self.child_map[parent]
-		if cmap.get((name, old_key)) == node:
-			del cmap[(name, old_key)]
-		cmap.setdefault((name, self.arena[node].value.key()), node)
+		if cmap is None:
+			cmap = self.child_map[parent] = {}
+		if cmap.get(old_key) == node:
+			del cmap[old_key]
+		cmap.setdefault(_merge_key(name, self.arena[node].value), node)
 		dmap = self.disp_map[parent]
-		if dmap.get((name, old_disp)) == node:
-			del dmap[(name, old_disp)]
+		if dmap is None:
+			dmap = self.disp_map[parent] = {}
+		if dmap.get(old_disp) == node:
+			del dmap[old_disp]
 		dmap.setdefault((name, _disp_key(self.arena[node].value)), node)
 
 	def _fold_late_dups(self):
@@ -917,10 +1159,10 @@ class _Parser:
 		while stack:
 			parent = stack.pop()
 			kids = self.arena[parent].children
-			first = {}
+			first: dict = {}
 			keep = []
 			for c in kids:
-				key = (self.arena[c].name, self.arena[c].value.key())
+				key = _merge_key(self.arena[c].name, self.arena[c].value)
 				survivor = first.get(key)
 				if survivor is not None:
 					_fold_node_into(self.arena, survivor, c)
@@ -933,16 +1175,17 @@ class _Parser:
 	def _attach_trivia(self, node, trailing):
 		"""Hand pending leading comments (and this line's trailing one) to a node.
 		First trailing wins; a later one demotes to leading so nothing is lost."""
-		n = self.arena[node]
 		if self.pending:
+			t = self.arena[node]._triv()
 			for p in self.pending:
-				n.leading.append(_Lead(p.text, p.blank_before))
+				t.leading.append(_Lead(p.text, p.blank_before))
 			self.pending = []
 		if trailing:
-			if not n.trailing:
-				n.trailing = trailing
+			t = self.arena[node]._triv()
+			if not t.trailing:
+				t.trailing = trailing
 			else:
-				n.leading.append(_Lead(trailing, False))
+				t.leading.append(_Lead(trailing, False))
 
 	def _hang_deeper_pending(self, new_indent):
 		"""Comments written deeper than the incoming line belong to the block
@@ -972,9 +1215,9 @@ class _Parser:
 				if target is not None:
 					lead = _Lead(p.text, p.blank_before)
 					if at_own_level:
-						self.arena[target].after.append(lead)
+						self.arena[target]._triv().after.append(lead)
 					else:
-						self.arena[target].inside.append(lead)
+						self.arena[target]._triv().inside.append(lead)
 					continue
 			self.pending.append(p)
 
@@ -1012,7 +1255,8 @@ class _Parser:
 			parent_depth += 1
 			up = self.arena[up].parent
 		if parent_depth + len(segs) > MAX_DEPTH:
-			self._err(line, "nesting deeper than {} levels; line skipped".format(MAX_DEPTH))
+			self._err(line, f"nesting deeper than {MAX_DEPTH} levels; line skipped")
+			self.lost += 1
 			return None
 		cur = parent
 		last = len(segs) - 1
@@ -1025,45 +1269,69 @@ class _Parser:
 				# creating a spurious second one - via the disp_map accelerator
 				# (the inline spelling was quadratic in siblings without it).
 				# Create only when nothing matches.
-				found = self.disp_map[cur].get((seg.name, _apply_escapes(sel[1])))
+				# A quoted selector is scalar-only, and the accelerator keeps
+				# just the first same-display child - a later remap can drop an
+				# entry a different sibling still satisfies - so a non-scalar hit
+				# and an outright miss both fall to the (rare) fallback scan.
+				want = _apply_escapes(sel[1])
+				dmap = self.disp_map[cur]
+				found = dmap.get((seg.name, want)) if dmap is not None else None
+				if found is not None and sel[2] and not _single_scalar(self.arena[found].value):
+					found = None
+				if found is None and sel[2]:
+					for c in self.arena[cur].children:
+						nd = self.arena[c]
+						if nd.name == seg.name and _single_scalar(nd.value) and _disp_key(nd.value) == want:
+							found = c
+							break
 				if found is not None:
 					cur = found
 				else:
 					disc = _cell([_Element(sel[1], False)])
-					cur = self._select_or_create(cur, seg.name, disc, line)
+					cur = self._select_or_create(cur, seg.name, seg.name_src, disc, line)
 				if is_last and not value.is_empty():
 					# `a.b[X]: v` - the discriminator is the value; a second
 					# value has nowhere unambiguous to go.
-					self._err(line, "value after selector on '{}' ignored".format(seg.name))
+					self._err(line, f"value after selector on '{seg.name}' ignored")
+					self.lost += 1
 			elif sel is not None and sel[0] == "idx":
 				matches = [c for c in self.arena[cur].children if self.arena[c].name == seg.name]
 				k = sel[1]
 				if k < len(matches):
 					cur = matches[k]
 				else:
-					self._err(line, "no instance {} of '{}'".format(k, seg.name))
+					self._err(line, f"no instance {k} of '{seg.name}'")
+					self.lost += 1
 					return None
 			elif sel is not None and sel[0] == "wild":
 				self._err(line, "wildcard selector is query-only")
+				self.lost += 1
 				return None
 			elif not is_last:
-				cur = self._select_or_create(cur, seg.name, _empty(), line)
+				cur = self._select_or_create(cur, seg.name, seg.name_src, _empty(), line)
 			else:
+				parent = cur
 				before = len(self.arena)
-				cur = self._select_or_create(cur, seg.name, value, line)
+				cur = self._select_or_create(cur, seg.name, seg.name_src, value, line)
 				# Two separately-written bindings just combined: legal (the
 				# merge rule), but only the parser can see it happened, so
 				# say so. Adjacent re-mentions (still the newest binding at
 				# this scope) and selector/path-intermediate merges stay
 				# silent - those are the deliberate redundant-path idiom.
-				if (cur < before
-						and self.arena[cur].line != line
-						and self.arena[self.arena[cur].parent].children[-1] != cur):
-					at = self.arena[cur].line
-					self.diags.append(Diagnostic(
-						line, Severity.Hint,
-						"merged with '{}' at line {} (same name and value combine)".format(seg.name, at),
-						"H002"))
+				# Under a hinted container the newest-child pass does not
+				# apply to children the earlier region wrote: those merges
+				# combine the same two regions, so every level reports.
+				if cur < before and self.arena[cur].line != line:
+					non_last = self.arena[parent].children[-1] != cur
+					reopen_line = self.reentered.get(parent)
+					cross_region = reopen_line is not None and self.arena[cur].line < reopen_line
+					if non_last or cross_region:
+						at = self.arena[cur].line
+						self.diags.append(Diagnostic(
+							line, Severity.Hint,
+							f"{_h002_head(seg.name)}line {at} (same name and value combine)",
+							"H002"))
+						self.reentered[cur] = line
 		return cur
 
 	def _consume_raw(self, lines, i, open_line, ch, length, info):
@@ -1086,13 +1354,13 @@ class _Parser:
 		for ln in content:
 			if not _trim(ln):
 				continue
-			lead = []
+			lead_chars: list = []
 			for c in ln:
 				if c == " " or c == "\t":
-					lead.append(c)
+					lead_chars.append(c)
 				else:
 					break
-			lead = "".join(lead)
+			lead = "".join(lead_chars)
 			if common is None:
 				common = lead
 			else:
@@ -1105,14 +1373,7 @@ class _Parser:
 				common = "".join(p)
 		if common is None:
 			common = ""
-		stripped = []
-		for ln in content:
-			if not _trim(ln):
-				stripped.append("")
-			elif ln.startswith(common):
-				stripped.append(ln[len(common):])
-			else:
-				stripped.append(ln)
+		stripped = [_strip_common(ln, common) for ln in content]
 		return _raw("\n".join(stripped), info, ch, length), i
 
 	def _bind_block(self, parent, value, line):
@@ -1121,44 +1382,52 @@ class _Parser:
 		Returns the node the block landed on (None = no parent, diagnosed)."""
 		if parent == ROOT:
 			self._err(line, "raw block with no parent field")
+			self.lost += 1
 			return None
 		if self.arena[parent].value.is_empty():
-			old_key = self.arena[parent].value.key()
-			old_disp = _disp_key(self.arena[parent].value)
-			self.arena[parent].value = value
+			pnode = self.arena[parent]
+			old_key = _merge_key(pnode.name, pnode.value)
+			old_disp = (pnode.name, _disp_key(pnode.value))
+			pnode.value = value
 			self._remap_child(parent, old_key, old_disp)
 			return parent
 		name = self.arena[parent].name
+		name_src = self.arena[parent].name_src
 		grandparent = self.arena[parent].parent
-		return self._select_or_create(grandparent, name, value, line)
+		return self._select_or_create(grandparent, name, name_src, value, line)
 
 	def _add_star_element(self, parent, body, line):
 		"""One stacked-list element (`* scalar`) appends to the parent's array."""
 		if parent == ROOT:
 			self._err(line, "list element with no parent field")
+			self.lost += 1
 			return
 		# Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if self.arena[parent].children:
 			self._err(line, "list element mixed with field children; ignored")
+			self.lost += 1
 			return
 		trimmed = _trim(body)
 		if not trimmed:
 			self._err(line, "empty list element")
+			self.lost += 1
 			return
 		# One scalar per line; a bare comma is an error, not a second element.
 		if len(_split_unquoted_commas(trimmed)) > 1:
 			self._err(line, "bare comma in list element (one element per line)")
+			self.lost += 1
 			return
 		if _unterminated_quote(trimmed):
 			self._err(line, "unterminated quote in value")
 		el = _parse_element(trimmed)
 		if el is None:
 			self._err(line, "empty list element")
+			self.lost += 1
 			return
 		node = self.arena[parent]
 		if node.value.kind == "empty":
-			old_key = node.value.key()
-			old_disp = _disp_key(node.value)
+			old_key = _merge_key(node.name, node.value)
+			old_disp = (node.name, _disp_key(node.value))
 			node.value = _cell([el])
 			node.star_list = True
 			# First element: remap now (Empty -> cell changes both keys), then
@@ -1166,18 +1435,19 @@ class _Parser:
 			# keys per appended element was O(list^2) time; the maps only need
 			# to be fresh when queried, and every query flushes first.
 			self._remap_child(parent, old_key, old_disp)
-			k = node.value.key()
-			d = _disp_key(node.value)
+			k = _merge_key(node.name, node.value)
+			d = (node.name, _disp_key(node.value))
 			self.star_open = (parent, k, d)
 		elif node.value.kind == "cell" and node.star_list:
 			if self.star_open is None or self.star_open[0] != parent:
 				self._star_flush()
-				old_key = node.value.key()
-				old_disp = _disp_key(node.value)
+				old_key = _merge_key(node.name, node.value)
+				old_disp = (node.name, _disp_key(node.value))
 				self.star_open = (parent, old_key, old_disp)
 			node.value.els.append(el)
 		else:
 			self._err(line, "field already has a value; list element ignored")
+			self.lost += 1
 
 	def _emit_repeated_leaf_hints(self):
 		"""Legal input that looks like a common mistake: a field repeating as a bare
@@ -1186,8 +1456,8 @@ class _Parser:
 		for parent in range(len(self.arena)):
 			# Group by name in first-appearance order: hint order must be
 			# deterministic or the cross-binding check can't compare `check` output.
-			by_name = []
-			group_of = {}
+			by_name: list = []
+			group_of: dict = {}
 			for c in self.arena[parent].children:
 				name = self.arena[c].name
 				g = group_of.get(name)
@@ -1208,7 +1478,7 @@ class _Parser:
 				if all_scalar_leaves:
 					line = max(self.arena[c].line for c in group)
 					joined = ", ".join(self.arena[c].value.display() for c in group)
-					hints.append((line, "{}{}'?".format(_h001_head(name), joined)))
+					hints.append((line, f"{_h001_head(name)}{joined}'?"))
 		for line, message in hints:
 			self.diags.append(Diagnostic(line, Severity.Hint, message, "H001"))
 
@@ -1216,7 +1486,10 @@ class _Parser:
 		# UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
 		if text.startswith("﻿"):
 			text = text[1:]
-		lines = [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
+		# The whole trailing CR run goes, not just one: a raw block keeps its
+		# content untrimmed, so a line left ending in CR would be written back as
+		# CRLF and read as neither - the one shape where the count is visible.
+		lines = [ln.rstrip("\r") for ln in text.split("\n")]
 		i = 0
 		nlines = len(lines)
 		while i < nlines:
@@ -1253,6 +1526,7 @@ class _Parser:
 				parent = self._resolve_parent(indent)
 				if parent is None:
 					self._err(lineno, "indentation matches no open level")
+					self.lost += 1
 					i += 1
 					continue
 				value, nxt = self._consume_raw(lines, i + 1, lineno, ch, length, info)
@@ -1268,6 +1542,7 @@ class _Parser:
 					parent = self._resolve_parent(indent)
 					if parent is None:
 						self._err(lineno, "indentation matches no open level")
+						self.lost += 1
 						i += 1
 						continue
 					body, comment = _split_comment(after)
@@ -1278,6 +1553,13 @@ class _Parser:
 					i += 1
 					continue
 				self._err(lineno, "malformed line: '*' must be followed by a space")
+				# Content-malformed at any position, so it is safe to retain
+				# verbatim as trivia: re-emitted, it re-diagnoses identically
+				# and can never read as a live binding. A hand-typo no longer
+				# vanishes on the consumer's next save. The BOM exception the
+				# sibling site below carries cannot apply here: this line
+				# starts with the '*' that brought us in.
+				self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
 				i += 1
 				continue
 			# Field line.
@@ -1292,12 +1574,19 @@ class _Parser:
 			parent = self._resolve_parent(indent)
 			if parent is None:
 				self._err(lineno, "indentation matches no open level")
+				self.lost += 1
 				i += 1
 				continue
 			try:
 				segments, value_text = _scan_path(content)
 			except _PathError as e:
-				self._err(lineno, "malformed line skipped: {}".format(e.args[0]))
+				self._err(lineno, f"malformed line skipped: {e.args[0]}")
+				# Content-malformed at any position - retained as trivia, same
+				# rationale (and same BOM exception) as the bad '*' line above.
+				if rest.startswith("\ufeff"):
+					self.lost += 1
+				else:
+					self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
 				i += 1
 				continue
 			nxt = i + 1
@@ -1325,11 +1614,13 @@ class _Parser:
 			# Record only when the bound node holds exactly this line's value
 			# (a merge into an equal-valued node keeps the first line's span;
 			# a value dropped after a last-segment selector records nothing).
-			vkey = value.key() if src_text is not None else None
+			vkey = _value_key(value) if src_text is not None else None
 			node = self._attach_path(parent, segments, value, lineno)
 			if node is not None:
-				if src_text is not None and self.arena[node].src is None and self.arena[node].value.key() == vkey:
-					self.arena[node].src = src_text
+				if src_text is not None and not self.arena[node].src_set and _value_key(self.arena[node].value) == vkey:
+					self.arena[node].src_set = True
+					if not _src_matches_display(self.arena[node].value, src_text):
+						self.arena[node].src = src_text
 				if had_blank:
 					self.arena[node].blank_before = True
 				self._attach_trivia(node, comment)
@@ -1342,7 +1633,7 @@ class _Parser:
 		self._hang_deeper_pending("")
 		orphans = [_Lead(p.text, p.blank_before) for p in self.pending]
 		self.pending = []
-		return Document(self.arena, self.diags, strictness, orphans)
+		return Document(self.arena, self.diags, strictness, orphans, self.lost)
 
 
 # ---------------------------------------------------------------------------
@@ -1354,13 +1645,18 @@ _NO_DEFAULT = object()  # get_* sentinel: no call-site default -> must-exist (ra
 
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
-	__slots__ = ("arena", "diags", "_strictness", "orphans")
+	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost")
 
-	def __init__(self, arena, diags, strictness, orphans=None):
+	def __init__(self, arena, diags, strictness, orphans=None, lost=0):
 		self.arena = arena
 		self.diags = diags
 		self._strictness = strictness
 		self.orphans = orphans if orphans is not None else []
+		# Lines or values parsing dropped that canonical output cannot re-emit
+		# (bad indentation, an unusable selector, past the depth cap, ...).
+		# Content-malformed lines are NOT counted - they are retained as trivia
+		# and survive a save. lost_count() serves it; save_file() gates on it.
+		self._lost = lost
 
 	@staticmethod
 	def parse(text):
@@ -1378,8 +1674,66 @@ class Document:
 			raise LoadError(doc.diags, doc)
 		return doc
 
+	@staticmethod
+	def load_file(path):
+		"""File tier, load half: read and parse path at Standard. Never fails -
+		the document always comes back usable (empty when the file could not be
+		read), and the returned (document, FileStatus) pair separates the four
+		cases consumers otherwise confuse: absent, present-but-unreadable,
+		parsed with errors, clean."""
+		return Document.load_file_with(path, Strictness.Standard)
+
+	@staticmethod
+	def load_file_with(path, strictness):
+		"""load_file at a chosen strictness. A strict-failing file reports
+		HadErrors; the recover-and-continue document still comes back."""
+		try:
+			with open(path, encoding="utf-8", newline="") as f:
+				text = f.read()
+		except FileNotFoundError:
+			return _Parser().parse("", strictness), FileStatus.NotFound
+		except (OSError, UnicodeDecodeError, ValueError):
+			# ValueError is not decorative: a NUL in the path raises it rather
+			# than an OSError, and this call promises a status, never a throw.
+			return _Parser().parse("", strictness), FileStatus.Unreadable
+		doc = _Parser().parse(text, strictness)
+		if any(d.severity == Severity.Error for d in doc.diags):
+			return doc, FileStatus.HadErrors
+		return doc, FileStatus.Clean
+
+	def save_file(self, path):
+		"""File tier, save half: write this document's canonical text to path
+		through a temp file in the same directory plus a rename, so an
+		interrupted save can never truncate the config it rewrites - the same
+		mechanics the CLI's --write uses. Refuses when parsing lost content that
+		a save would silently delete (see lost_count); save_file_lossy writes
+		anyway. Raises SaveRefused for the gate and SaveFailed for a failed
+		write: returning the message instead would let the obvious spelling -
+		the call on a line of its own - report success while doing nothing."""
+		if self._lost > 0:
+			raise SaveRefused(path, self._lost)
+		err = write_file_atomic(path, self.to_canonical())
+		if err is not None:
+			raise SaveFailed(err)
+
+	def save_file_lossy(self, path):
+		"""save_file without the lost-content gate: writes even when parsing
+		dropped lines this save deletes. The caller owns that choice. Never
+		raises SaveRefused - the gate is the one thing it skips."""
+		err = write_file_atomic(path, self.to_canonical())
+		if err is not None:
+			raise SaveFailed(err)
+
 	def diagnostics(self):
 		return self.diags
+
+	def lost_count(self):
+		"""How many lines or values parsing dropped that canonical output cannot
+		re-emit - bad indentation, an unusable selector, a line past the depth
+		cap. Content-malformed lines do NOT count: those are retained as trivia
+		and survive a save. Nonzero means a save_file would delete hand-written
+		content, so save_file refuses then (save_file_lossy overrides)."""
+		return self._lost
 
 	def error_count(self):
 		"""How many error-severity diagnostics the document carries - the "did
@@ -1411,12 +1765,13 @@ class Document:
 			vdiags = doc.validate(schema)
 			doc.diags.extend(vdiags)
 			suppress_declared_repeats(schema, doc.diags)
+			suppress_declared_reopens(schema, doc.diags)
 		return doc
 
 	def strictness(self):
 		return self._strictness
 
-	# ----- formatter -----
+	# Formatter
 
 	def to_canonical(self):
 		"""Canonical form: block layout, tabs, insertion order, minimal quoting,
@@ -1424,8 +1779,8 @@ class Document:
 		text is never rewritten."""
 		# Explicit stack, children pushed in reverse: the reference handles depths
 		# far past Python's recursion limit, so emit must not recurse.
-		out = []
-		stack = []
+		out: list = []
+		stack: list = []
 		self._emit_children(self.arena[ROOT].children, 0, stack)
 		while stack:
 			idx, depth, would_merge = stack.pop()
@@ -1433,7 +1788,7 @@ class Document:
 				# Post-children marker. Comments this block owns with no child
 				# to carry them re-emit one deeper.
 				ipad = "\t" * (depth + 1)
-				for c in self.arena[idx].inside:
+				for c in self.arena[idx].inside():
 					if c.blank_before and out:
 						out.append("\n")
 					out.append(ipad)
@@ -1442,7 +1797,7 @@ class Document:
 				# Comments that hung on this block after its last child re-emit
 				# at the block's own depth.
 				pad = "\t" * depth
-				for c in self.arena[idx].after:
+				for c in self.arena[idx].after():
 					if c.blank_before and out:
 						out.append("\n")
 					out.append(pad)
@@ -1450,7 +1805,7 @@ class Document:
 					out.append("\n")
 				continue
 			self._emit_node(idx, depth, would_merge, out)
-			if self.arena[idx].after or self.arena[idx].inside:
+			if self.arena[idx].after() or self.arena[idx].inside():
 				# The marker sits under the children, so it pops after them.
 				stack.append((idx, depth, None))
 			self._emit_children(self.arena[idx].children, depth + 1, stack)
@@ -1486,7 +1841,8 @@ class Document:
 		# trailing comment joins the leading lines instead; the flag comes from
 		# the parent's walk. Each blank rides its own comment (or the binding
 		# line), never as the first output line.
-		for c in node.leading:
+		trailing = node.trailing()
+		for c in node.leading():
 			if c.blank_before and out:
 				out.append("\n")
 			out.append(pad)
@@ -1494,24 +1850,24 @@ class Document:
 			out.append("\n")
 		if node.blank_before and out:
 			out.append("\n")
-		if would_merge and node.trailing:
+		if would_merge and trailing:
 			out.append(pad)
-			out.append(node.trailing)
+			out.append(trailing)
 			out.append("\n")
 		out.append(pad)
 		out.append(_emit_name(node.name))
 		out.append(":")
 		if v.kind == "empty":
-			if node.trailing:
+			if trailing:
 				out.append("  ")
-				out.append(node.trailing)
+				out.append(trailing)
 			out.append("\n")
 		elif v.kind == "cell":
 			out.append(" ")
 			out.append(", ".join(_emit_element(e) for e in v.els))
-			if node.trailing:
+			if trailing:
 				out.append("  ")
-				out.append(node.trailing)
+				out.append(trailing)
 			out.append("\n")
 		else:
 			# Child-indent spelling is canonical: bare name line, fenced block one
@@ -1522,9 +1878,9 @@ class Document:
 			if would_merge:
 				out.append(" ")
 			else:
-				if node.trailing:
+				if trailing:
 					out.append("  ")
-					out.append(node.trailing)
+					out.append(trailing)
 				out.append("\n")
 			body_pad = "\t" * (depth + 1)
 			fence = v.fence_char * v.fence_len
@@ -1539,8 +1895,12 @@ class Document:
 				out.append(v.info)
 			out.append("\n")
 			if v.content:
+				# A body with no non-blank line has no common indent for the
+				# reload to strip back off, so indenting it here would add a
+				# level on every pass, without bound. Leave it as it stands.
+				all_blank = all(not _trim(ln) for ln in v.content.split("\n"))
 				for ln in v.content.split("\n"):
-					if ln:
+					if ln and not all_blank:
 						out.append(body_pad)
 					out.append(ln)
 					out.append("\n")
@@ -1548,7 +1908,7 @@ class Document:
 			out.append(fence)
 			out.append("\n")
 
-	# ----- accessor: path resolution -----
+	# Accessor: path resolution
 
 	def _children_named(self, parent, name):
 		return [c for c in self.arena[parent].children if self.arena[c].name == name]
@@ -1586,7 +1946,7 @@ class Document:
 				cur = nxt
 			elif sel[0] == "val":
 				want = _apply_escapes(sel[1])
-				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want]
+				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
 			elif sel[0] == "idx":
 				k = sel[1]
 				cur = [nxt[k]] if k < len(nxt) else []
@@ -1662,6 +2022,21 @@ class Document:
 			return self.arena[r[1]].line
 		return 0
 
+	def authored_name(self, path):
+		"""The field name at a path exactly as the author spelled it (case
+		unfolded, outer quotes stripped), so a message can echo `SYMBOLS` when
+		the file said SYMBOLS. Escape sequences stay as written too: a name is
+		stored, compared and emitted with its escapes RESOLVED, so this is the
+		one call that hands the source spelling back - which is what an
+		as-authored accessor is for. Resolution mirrors line(): empty when the path
+		does not resolve to exactly one node. Merged instances keep the first
+		binding's spelling; a writer-built node keeps the spelling the setter's
+		path used."""
+		r = self._resolve(path)
+		if r[0] == "one":
+			return self.arena[r[1]].name_src
+		return ""
+
 	def lines(self, path):
 		"""The plural line(): 1-based source lines at a path, in file order, so
 		a repeated field - the case that most wants a citable line - yields
@@ -1706,7 +2081,7 @@ class Document:
 				for n in r[1]]
 		return []
 
-	# ----- writer: typed emit, defaults, comments, structural edits -----
+	# Writer: typed emit, defaults, comments, structural edits
 	# The reverse of the Accessor. A setter builds the canonical stored text for a
 	# typed value (the inverse of the matching read) and places it at a path,
 	# creating intermediate nodes on the way. Reads and to_canonical walk the
@@ -1718,21 +2093,15 @@ class Document:
 		generation. Set values, then to_canonical()."""
 		return Document.parse("")
 
-	def _new_child(self, parent, name, value):
+	def _new_child(self, parent, name, name_src, value):
 		idx = len(self.arena)
-		node = _Node(name, value, parent, 0)
+		node = _Node(name, value, parent, 0, name_src)
 		# Hand-written files separate top-level sections with a blank line;
 		# writer-built ones do the same (the emitter never blanks line 1).
 		node.blank_before = parent == ROOT
 		self.arena.append(node)
 		self.arena[parent].children.append(idx)
 		return idx
-
-	def _child_or_create(self, parent, name):
-		for c in self.arena[parent].children:
-			if self.arena[c].name == name:
-				return c
-		return self._new_child(parent, name, _empty())
 
 	def write_reason(self, path):
 		"""Why a write at this path would fail - the reason behind a setter's
@@ -1742,36 +2111,53 @@ class Document:
 			segments, value_text = _scan_lookup(path)
 		except _PathError:
 			return WriteReason.BadPath
+		return self._probe_write(segments, value_text)[0]
+
+	def _probe_write(self, segments, value_text, trail=None):
+		"""The validation walk write_reason and _place share. `trail`, when a
+		list is passed, collects where each segment landed - None from the point
+		the path falls off the existing tree - so _place can create from exactly
+		there instead of scanning the path and walking the tree a second time."""
 		if value_text is not None:
-			return WriteReason.ValueInPath
+			return (WriteReason.ValueInPath, None)
 		if not segments:
-			return WriteReason.BadPath
+			return (WriteReason.BadPath, None)
 		# Writer side of the load-time nesting cap: never create deeper.
 		if len(segments) > MAX_DEPTH:
-			return WriteReason.TooDeep
+			return (WriteReason.TooDeep, None)
 		# The probe walk _place() validates with: once it falls off the existing
 		# tree, a later `[#k]` can never match (fresh intermediates are created
 		# childless), so an index segment past that point is unresolvable.
 		probe = ROOT
 		for seg in segments:
 			if seg.star:
-				return WriteReason.Wildcard
+				return (WriteReason.Wildcard, None)
 			sel = seg.selector
+			# A newline in a SELECTOR has no one-line spelling, so the emitted
+			# binding would split across two lines and reparse as neither. The
+			# selector stores its path text raw and the value emitter never
+			# escapes a line break, so nothing downstream can rescue it - and the
+			# reload loses nothing it can count, so the save gate would not catch
+			# it. A newline in a NAME is fine: names are stored escape-resolved
+			# and emitted through the name escaper, which spells a line break \n
+			# and reads it back as one.
+			if sel is not None and sel[0] == "val" and "\n" in sel[1]:
+				return (WriteReason.BadPath, None)
 			if sel is not None and sel[0] == "wild":
-				return WriteReason.Wildcard
+				return (WriteReason.Wildcard, None)
 			if sel is not None and sel[0] == "idx":
 				if probe is None:
-					return WriteReason.NoSuchIndex
+					return (WriteReason.NoSuchIndex, None)
 				matches = [c for c in self.arena[probe].children if self.arena[c].name == seg.name]
 				if sel[1] >= len(matches):
-					return WriteReason.NoSuchIndex
+					return (WriteReason.NoSuchIndex, None)
 				probe = matches[sel[1]]
 			elif sel is not None and sel[0] == "val":
 				if probe is not None:
 					want = _apply_escapes(sel[1])
 					found = None
 					for c in self.arena[probe].children:
-						if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want:
+						if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value)):
 							found = c
 							break
 					probe = found
@@ -1783,7 +2169,9 @@ class Document:
 							found = c
 							break
 					probe = found
-		return WriteReason.Writable
+			if trail is not None:
+				trail.append(probe)
+		return (WriteReason.Writable, trail)
 
 	def _place(self, path):
 		"""Walk (creating as needed) to the node a write targets. A trailing
@@ -1792,34 +2180,29 @@ class Document:
 		must already exist. None = path unusable for a write (write_reason()
 		says why). Validation runs first, so a doomed path leaves no
 		half-created intermediates behind."""
-		if self.write_reason(path) != WriteReason.Writable:
-			return None
 		try:
-			segments, _ = _scan_lookup(path)
+			segments, value_text = _scan_lookup(path)
 		except _PathError:
 			return None
+		trail: list = []
+		if self._probe_write(segments, value_text, trail)[0] != WriteReason.Writable:
+			return None
 		cur = ROOT
-		for seg in segments:
-			if seg.star:
-				return None   # write_reason gates this; belt only
+		for i, seg in enumerate(segments):
+			# The probe already resolved every segment that exists; only the
+			# tail it fell off has anything to create.
+			if trail[i] is not None:
+				cur = trail[i]
+				continue
 			sel = seg.selector
 			if sel is None:
-				cur = self._child_or_create(cur, seg.name)
+				cur = self._new_child(cur, seg.name, seg.name_src, _empty())
 			elif sel[0] == "val":
-				want = _apply_escapes(sel[1])
-				found = None
-				for c in self.arena[cur].children:
-					if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want:
-						found = c
-						break
-				cur = found if found is not None else self._new_child(cur, seg.name, _cell_of(sel[1]))
-			elif sel[0] == "idx":
-				matches = [c for c in self.arena[cur].children if self.arena[c].name == seg.name]
-				if sel[1] >= len(matches):
-					return None
-				cur = matches[sel[1]]
+				cur = self._new_child(cur, seg.name, seg.name_src, _cell_of(sel[1]))
 			else:
-				return None   # wildcard is query-only
+				# Unreachable: _probe_write refuses a wildcard outright and an
+				# unresolvable index, so neither reaches an empty trail slot.
+				return None
 		return cur
 
 	def _set_value(self, path, value):
@@ -1890,10 +2273,16 @@ class Document:
 		line = text.split("\n", 1)[0]
 		if not line.startswith("#"):
 			line = "# " + line
-		self.arena[idx].leading.append(_Lead(line, False))
+		self.arena[idx]._triv().leading.append(_Lead(line, False))
 		return True
 
 	def set_int(self, path, v):
+		"""Bind an integer at path, creating the path as needed; False = path not
+		writable (write_reason says why - same for every setter). Worth checking
+		rather than assuming: an ignored False means the save that follows writes
+		a document missing the edit, and reports success doing it."""
+		if not _fits_i64(v):
+			return False
 		return self._set_value(path, _cell_of(str(v)))
 
 	def set_float(self, path, v):
@@ -1916,6 +2305,8 @@ class Document:
 		return self._set_value(path, _empty())
 
 	def set_int_array(self, path, v):
+		if not all(_fits_i64(x) for x in v):
+			return False
 		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	def set_float_array(self, path, v):
@@ -2004,7 +2395,7 @@ class Document:
 			return self.set_datetime_array(path, v)
 		return True
 
-	# ----- layered loading: overlay a higher-priority document -----
+	# Layered loading: overlay a higher-priority document
 
 	def merge(self, over):
 		"""Overlay `over` (a higher-priority layer) onto self (the lower one).
@@ -2015,6 +2406,7 @@ class Document:
 		instead of wiping. over-only nodes are appended. Comment trivia rides
 		with each node. Load(defaults, site, user) is a left fold of this: each
 		later file overlaid on the earlier ones."""
+		self._lost += over._lost
 		self._overlay(ROOT, over, ROOT)
 		# Layers commonly share a footer; keeping one copy of each keeps a
 		# stack of files from repeating it once per layer.
@@ -2032,21 +2424,35 @@ class Document:
 		concatenates in layer order, first trailing wins."""
 		# Per-element copies: the merged document must not share list objects
 		# with `over`, which the caller may still use.
-		src = over.arena[ok]
-		self.arena[base].leading.extend(_Lead(c.text, c.blank_before) for c in src.leading)
-		if src.trailing:
-			if not self.arena[base].trailing:
-				self.arena[base].trailing = src.trailing
+		st = over.arena[ok].trivia
+		if st is None:
+			return
+		bt = self.arena[base]._triv()
+		bt.leading.extend(_Lead(c.text, c.blank_before) for c in st.leading)
+		if st.trailing:
+			if not bt.trailing:
+				bt.trailing = st.trailing
 			else:
-				self.arena[base].leading.append(_Lead(src.trailing, False))
-		self.arena[base].after.extend(_Lead(c.text, c.blank_before) for c in src.after)
-		self.arena[base].inside.extend(_Lead(c.text, c.blank_before) for c in src.inside)
+				bt.leading.append(_Lead(st.trailing, False))
+		bt.after.extend(_Lead(c.text, c.blank_before) for c in st.after)
+		bt.inside.extend(_Lead(c.text, c.blank_before) for c in st.inside)
 
 	def _overlay(self, base_parent, over, over_parent):
+		"""Explicit stack rather than recursion, for the same reason _clone_subtree
+		uses one. Each level's rebuild depends on nothing the deeper levels do, so
+		deferring them changes no result; the walk stays depth-first and in order."""
+		stack = [(base_parent, over_parent)]
+		while stack:
+			bp, op = stack.pop()
+			stack.extend(reversed(self._overlay_level(bp, over, op)))
+
+	def _overlay_level(self, base_parent, over, over_parent):
+		"""One level of the overlay. Returns the (base, over) pairs whose subtrees
+		still have to be merged, in order."""
 		over_kids = list(over.arena[over_parent].children)
 		# Over side: name -> node bucket, in first-appearance order.
 		order = []
-		groups = {}
+		groups: dict = {}
 		for k in over_kids:
 			n = over.arena[k].name
 			g = groups.get(n)
@@ -2058,8 +2464,8 @@ class Document:
 		# Base side, one pass: does the name have a container instance, and
 		# which child carries each (name, key) - every key computed once.
 		base_kids = list(self.arena[base_parent].children)
-		has_container = {}
-		by_key = {}
+		has_container: dict = {}
+		by_key: dict = {}
 		for b in base_kids:
 			name = self.arena[b].name
 			has_container[name] = has_container.get(name, False) or bool(self.arena[b].children)
@@ -2073,6 +2479,8 @@ class Document:
 		# instances, and replaced names base never had) keeps processing order.
 		replace = {}
 		appended = []
+		pending = []
+		empty_key = _Value("empty").key()
 		for name in order:
 			group = groups[name]
 			over_leafy = all(not over.arena[k].children for k in group)
@@ -2088,13 +2496,27 @@ class Document:
 				for ok in group:
 					okey = over.arena[ok].value.key()
 					b = by_key.get((name, okey))
+					# A raw block in the higher layer fills a same-named empty
+					# binding below, exactly as a fence line fills one inside a
+					# single file. Without it, merging two documents and parsing
+					# them run together disagree: both bindings survive here and
+					# fold there, so merged output is not a formatter fixpoint.
+					if b is None and over.arena[ok].value.kind == "raw":
+						hit = by_key.get((name, empty_key))
+						if hit is not None:
+							self.arena[hit].value = over.arena[ok].value.copy()
+							del by_key[(name, empty_key)]
+							by_key.setdefault((name, okey), hit)
+							b = hit
 					if b is not None:
 						self._adopt_trivia(b, over, ok)
-						self._overlay(b, over, ok)
+						# A name that reaches here is never in `replace`, so `b`
+						# survives the rebuild below and can wait for it.
+						pending.append((b, ok))
 					else:
 						appended.append(self._clone_subtree(over, ok, base_parent))
 		if not replace and not appended:
-			return
+			return pending
 		# Rebuild once: each replaced group lands at its name's first original
 		# position (dropped nodes stay in the arena, unreferenced - reads and
 		# emit walk children from the root), appends go at the end.
@@ -2110,35 +2532,52 @@ class Document:
 				new_kids.extend(clones)
 		new_kids.extend(appended)
 		self.arena[base_parent].children = new_kids
+		return pending
 
 	def _clone_subtree(self, over, oi, parent):
-		"""Deep-copy `over`'s subtree at `oi` into self's arena under `parent`."""
+		"""Deep-copy `over`'s subtree at `oi` into self's arena under `parent`.
+		Explicit stack rather than recursion, for the same reason the parse and
+		emit walks are iterative: python's frame budget is small enough that a
+		document at the documented depth cap can exhaust it from an already-deep
+		caller, and a raise part-way through leaves the base document mutated."""
+		root = self._clone_node(over, oi, parent)
+		stack = [(oi, root)]
+		while stack:
+			si, di = stack.pop()
+			# Children are pushed reversed so they pop in source order; each
+			# appends to its own parent, so sibling order is preserved.
+			kids = []
+			for ok in over.arena[si].children:
+				ci = self._clone_node(over, ok, di)
+				self.arena[di].children.append(ci)
+				kids.append((ok, ci))
+			stack.extend(reversed(kids))
+		return root
+
+	def _clone_node(self, over, oi, parent):
+		"""One node of _clone_subtree: everything but the children."""
 		src = over.arena[oi]
 		# Copy the value too - sharing the object (and its element list) with
 		# `over` would break the promise that the clone survives its release.
-		cv = _Value(src.value.kind)
-		cv.els = None if src.value.els is None else [_Element(e.text, e.quoted) for e in src.value.els]
-		cv.content = src.value.content
-		cv.info = src.value.info
-		cv.fence_char = src.value.fence_char
-		cv.fence_len = src.value.fence_len
-		node = _Node(src.name, cv, parent, src.line)
+		cv = src.value.copy()
+		node = _Node(src.name, cv, parent, src.line, src.name_src)
 		node.star_list = src.star_list
 		node.star_mixed = src.star_mixed
-		node.leading = [_Lead(c.text, c.blank_before) for c in src.leading]
-		node.trailing = src.trailing
-		node.after = [_Lead(c.text, c.blank_before) for c in src.after]
-		node.inside = [_Lead(c.text, c.blank_before) for c in src.inside]
+		st = src.trivia
+		if st is not None:
+			t = node._triv()
+			t.leading = [_Lead(c.text, c.blank_before) for c in st.leading]
+			t.trailing = st.trailing
+			t.after = [_Lead(c.text, c.blank_before) for c in st.after]
+			t.inside = [_Lead(c.text, c.blank_before) for c in st.inside]
 		node.blank_before = src.blank_before
+		node.src_set = src.src_set
 		node.src = src.src
 		idx = len(self.arena)
 		self.arena.append(node)
-		for ok in list(over.arena[oi].children):
-			c = self._clone_subtree(over, ok, idx)
-			self.arena[idx].children.append(c)
 		return idx
 
-	# ----- accessor: typed reads -----
+	# Accessor: typed reads
 
 	def _node_at(self, path):
 		# Returns ("ok", node index) or ("err", Status).
@@ -2364,29 +2803,72 @@ class Document:
 	def get_datetime_array(self, path, default=_NO_DEFAULT):
 		return self._get(self.read_datetime_array(path), default)
 
+	# The same convenience reads with the fallback required rather than optional.
+	# get_*(path, default) says the same thing and still works; these exist so
+	# the spelling that means "with a fallback" is `_or` in every binding, and a
+	# routine ported between two of them cannot keep the call name while changing
+	# which tier it lands on.
+
+	def get_int_or(self, path, default):
+		return self._get(self.read_int(path), default)
+
+	def get_float_or(self, path, default):
+		return self._get(self.read_float(path), default)
+
+	def get_bool_or(self, path, default):
+		return self._get(self.read_bool(path), default)
+
+	def get_string_or(self, path, default):
+		return self._get(self.read_string(path), default)
+
+	def get_raw_or(self, path, default):
+		return self._get(self.read_raw(path), default)
+
+	def get_datetime_or(self, path, default):
+		return self._get(self.read_datetime(path), default)
+
+	def get_int_array_or(self, path, default):
+		return self._get(self.read_int_array(path), default)
+
+	def get_float_array_or(self, path, default):
+		return self._get(self.read_float_array(path), default)
+
+	def get_bool_array_or(self, path, default):
+		return self._get(self.read_bool_array(path), default)
+
+	def get_string_array_or(self, path, default):
+		return self._get(self.read_string_array(path), default)
+
+	def get_datetime_array_or(self, path, default):
+		return self._get(self.read_datetime_array(path), default)
+
 	# --- Validator: schema-as-SHCL (see spec.md "Schema validation") ---------
 	# The schema is an ordinary parsed document: a flat list of `field: <path>`
 	# instances whose children are the constraints (closed vocabulary).
 	# Validation reuses the accessor's path scan and the typed coercions, so
 	# document strictness composes for free. Schema faults (V09x) come first
-	# and the surviving constraints still check the document; only the
-	# unknown-field sweep needs a fault-free schema. One line-number space
-	# per result.
+	# and the surviving constraints still check the document; the unknown-field
+	# sweep skips only when a fault cost a path spelling. One line-number space
+	# per result. The H001/H002 hints a schema disavows are NOT dropped here:
+	# they live on the parse's diagnostics, which validation does not touch.
+	# Parse then validate and they are still there - call
+	# suppress_declared_repeats/suppress_declared_reopens yourself, or use
+	# load_and_validate, which runs both for you.
 
 	def validate(self, schema):
 		"""Validate against a schema document (itself plain SHCL). Empty result
 		= the document conforms. Diagnostic lines are document lines (0 =
 		document scope); schema faults (V09x, schema-file lines) come first,
-		and the surviving constraints still check the document. Only the
-		unknown-field sweep needs a fault-free schema: a dropped constraint
-		would turn the fields it declared into false unknowns, so that check
-		skips rather than misfire."""
+		and the surviving constraints still check the document. The
+		unknown-field sweep runs too, unless a fault cost the schema a path
+		spelling (an unreadable `field:` path, or a mount naming no declared
+		fragment) - only those can turn declared fields into false unknowns;
+		a key-level fault keeps its entry's chain."""
 		sdef, faults = _build_schema(schema)
-		schema_ok = not faults
 		out = faults
 		for c in sdef.cons:
 			self._v_check(c, sdef, out)
-		if schema_ok:
+		if sdef.paths_complete:
 			self._v_unknown(sdef, out)
 		return out
 
@@ -2418,7 +2900,7 @@ class Document:
 				cur = nxt
 			elif sel[0] == "val":
 				want = _apply_escapes(sel[1])
-				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want]
+				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
 			elif sel[0] == "idx":
 				cur = [nxt[sel[1]]] if sel[1] < len(nxt) else []
 			else:
@@ -2439,16 +2921,16 @@ class Document:
 	# stays derivable. Termination is structural: every mount descends at
 	# least one document level, and the document is finite.
 	def _v_check_from(self, c, sdef, start, anchor0, out, mounted):
-		ctxs = []
+		ctxs: list = []
 		self._v_contexts([start], c.segs, anchor0, ctxs)
 		for anchor, found in ctxs:
 			if c.required and not found:
-				_vdiag(out, anchor, "required path missing: {}".format(c.path))
+				_vdiag(out, anchor, f"required path missing: {c.path}")
 			if c.repeat is not None:
 				lo, hi = c.repeat
 				n = len(found)
 				if n < lo or n > hi:
-					_vdiag(out, anchor, "instance count out of bounds at '{}': {} not in {}..{}".format(c.path, n, lo, hi))
+					_vdiag(out, anchor, f"instance count out of bounds at '{c.path}': {n} not in {lo}..{hi}")
 			for n in found:
 				self._v_node(c, n, out)
 				if c.inherits is not None:
@@ -2471,7 +2953,7 @@ class Document:
 		is_array = c.ty is not None and c.ty.endswith("-array")
 
 		def wrong():
-			_vdiag(out, line, "wrong type at '{}': value is not a valid {}".format(c.path, c.ty))
+			_vdiag(out, line, f"wrong type at '{c.path}': value is not a valid {c.ty}")
 
 		if node.value.kind == "empty":
 			# Empty passes everything; required already counted it as present.
@@ -2484,7 +2966,7 @@ class Document:
 				return
 			if c.allowed is not None and c.allowed[0] == "strings":
 				if node.value.content not in c.allowed[1]:
-					_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, node.value.content))
+					_vdiag(out, line, f"value not allowed at '{c.path}': {node.value.content}")
 			return
 		els = node.value.els
 		if base == "raw":
@@ -2506,12 +2988,12 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "ints":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
 						break
 			if c.min_i is not None and any(v < c.min_i for v in vals):
-				_vdiag(out, line, "value below min at '{}'".format(c.path))
+				_vdiag(out, line, f"value below min at '{c.path}'")
 			if c.max_i is not None and any(v > c.max_i for v in vals):
-				_vdiag(out, line, "value above max at '{}'".format(c.path))
+				_vdiag(out, line, f"value above max at '{c.path}'")
 		elif base == "float":
 			vals = []
 			for e in els:
@@ -2523,12 +3005,12 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "floats":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
 						break
 			if c.min_f is not None and any(v < c.min_f for v in vals):
-				_vdiag(out, line, "value below min at '{}'".format(c.path))
+				_vdiag(out, line, f"value below min at '{c.path}'")
 			if c.max_f is not None and any(v > c.max_f for v in vals):
-				_vdiag(out, line, "value above max at '{}'".format(c.path))
+				_vdiag(out, line, f"value above max at '{c.path}'")
 		elif base == "bool":
 			vals = []
 			for e in els:
@@ -2540,7 +3022,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "bools":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
 						break
 		elif base == "datetime":
 			vals = []
@@ -2553,7 +3035,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "dates":
 				for i, v in enumerate(vals):
 					if not any(_dt_equal(v, a) for a in c.allowed[1]):
-						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, els[i].text))
+						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
 						break
 		else:
 			# string kind or untyped: every element coerces; only the allowed
@@ -2562,7 +3044,7 @@ class Document:
 				for e in els:
 					s = _apply_escapes(e.text)
 					if s not in c.allowed[1]:
-						_vdiag(out, line, "value not allowed at '{}': {}".format(c.path, s))
+						_vdiag(out, line, f"value not allowed at '{c.path}': {s}")
 						break
 
 	def _v_unknown(self, sdef, out):
@@ -2576,7 +3058,7 @@ class Document:
 		# Sibling names per parent chain, built once (schema order): _v_suggest
 		# used to rebuild every chain per unknown field, which bit hardest on
 		# the wholesale-unmatched documents the feature exists for.
-		siblings = {}
+		siblings: dict = {}
 		# Paths with a `*` segment can't live in the exact-chain hash; they
 		# match element-wise (a star matches any one name, prefixes included).
 		star_pats = []
@@ -2602,7 +3084,7 @@ class Document:
 				and not (has_mounts and _chain_legal(cons, sdef.frags, chain))
 			):
 				hint = _v_suggest(siblings, pchain, node.name)
-				_vdiag(out, node.line, "unknown field '{}'{}".format(shown, hint))
+				_vdiag(out, node.line, f"unknown field '{shown}'{hint}")
 				continue
 			for k in reversed(node.children):
 				stack.append((k, chain, shown))
@@ -2617,10 +3099,35 @@ class StatusError(Exception):
 		super().__init__(status.name)
 
 
-def _emit_name(name):
-	if name and all(_is_bare_name_char(c) for c in name):
+def _escape_name(name):
+	"""Emit a stored (escape-resolved) name in a spelling that reads back as the
+	same name: bare when it can be, else quoted with the escapes _apply_escapes
+	undoes. This is a true inverse of the name parse, which _quote_text is not -
+	that one picks a quote style to AVOID escaping and never escapes a
+	backslash, which is right for a value (stored in its escaped spelling) and
+	wrong for a name (stored resolved)."""
+	# set(name) and the difference are both C-level; the generator this replaced
+	# made one Python call per character of every name emitted.
+	if name and not set(name) - _BARE_NAME_CHARS:
 		return name
-	return _quote_text(name)
+	out = ['"']
+	for c in name:
+		if c == "\\":
+			out.append("\\\\")
+		elif c == '"':
+			out.append('\\"')
+		elif c == "\t":
+			out.append("\\t")
+		elif c == "\n":
+			out.append("\\n")
+		else:
+			out.append(c)
+	out.append('"')
+	return "".join(out)
+
+
+def _emit_name(name):
+	return _escape_name(name)
 
 
 def quote_segment(name):
@@ -2638,7 +3145,7 @@ def _h001_head(name):
 	emitted - never a re-parse of free prose. (The leaf name cannot ride on
 	Diagnostic itself: consumers build Diagnostic literals, so its field set
 	is frozen.)"""
-	return "'{}' repeats as a bare leaf - did you mean '{}: ".format(name, name)
+	return f"'{name}' repeats as a bare leaf - did you mean '{name}: "
 
 
 def suppress_declared_repeats(schema, diags):
@@ -2653,14 +3160,14 @@ def suppress_declared_repeats(schema, diags):
 	# a mounted shape disavows the hint the same way.
 	groups = [("field", schema.instances("field"))]
 	for k in range(schema.count("fragment")):
-		base = "fragment[#{}].field".format(k)
+		base = f"fragment[#{k}].field"
 		groups.append((base, schema.instances(base)))
 	names = []
 	for base, paths in groups:
 		for i, p in enumerate(paths):
 			# repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
 			# that matters here is the last one.
-			rep = schema.read_int_array("{}[#{}].repeat".format(base, i))
+			rep = schema.read_int_array(f"{base}[#{i}].repeat")
 			if rep.status != Status.Good:
 				continue
 			if not rep.value or rep.value[-1] <= 1:
@@ -2689,14 +3196,242 @@ def suppress_declared_repeats(schema, diags):
 	diags[:] = kept
 
 
-_RESERVED = set(" \t,:#\"'[]")
+class FileStatus(Enum):
+	"""What load_file found: the four cases a consumer's own load path
+	otherwise confuses. Clean and HadErrors both carry a usable document;
+	NotFound and Unreadable come back with an empty one."""
+	Clean = 0        # read and parsed, no error diagnostics (hints allowed)
+	HadErrors = 1    # read and parsed, but error diagnostics are present
+	NotFound = 2     # no file at the path
+	Unreadable = 3   # exists but could not be read (permissions, a directory, bad encoding)
+
+
+def _publish_file(tmp, target):
+	# Move the finished temp file over the target. On windows that means
+	# ReplaceFile rather than a rename: a rename publishes a brand-new file and
+	# leaves the destination's ACLs, attributes and named streams behind, which
+	# ReplaceFile carries onto the replacement instead. It needs the destination
+	# to exist, and it fails rather than skip a merge it cannot do (no WRITE_DAC,
+	# say), so a create and any failure fall back to os.replace.
+	if os.name == "nt" and os.path.exists(target):
+		import ctypes
+
+		REPLACEFILE_WRITE_THROUGH = 0x1
+		# WinDLL exists only on windows, and mypy checks this file against the
+		# POSIX stubs, where the name is simply absent.
+		k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+		k32.ReplaceFileW.restype = ctypes.c_int
+		k32.ReplaceFileW.argtypes = [
+			ctypes.c_wchar_p,
+			ctypes.c_wchar_p,
+			ctypes.c_wchar_p,
+			ctypes.c_ulong,
+			ctypes.c_void_p,
+			ctypes.c_void_p,
+		]
+		if k32.ReplaceFileW(target, tmp, None, REPLACEFILE_WRITE_THROUGH, None, None):
+			return
+	os.replace(tmp, target)
+
+
+def _sync_dir(d):
+	# The rename is a directory change, and the fsync on the file only covered
+	# the file: without this a power cut right after a save can lose the publish
+	# and leave the old content. Best effort - windows has no directory fsync,
+	# and a filesystem that refuses one is not a reason to fail a write that
+	# already succeeded.
+	try:
+		fd = os.open(d, os.O_RDONLY)
+	except OSError:
+		return
+	try:
+		os.fsync(fd)
+	except OSError:
+		pass
+	finally:
+		os.close(fd)
+
+
+def write_file_atomic(file, data):
+	# The file tier's write mechanism (also what the CLI's --write uses): a
+	# temp file in the same dir, then a rename over the target,
+	# so an interrupted write can never truncate the config it rewrites. The data
+	# is synced before the rename so a crash cannot publish an empty file.
+	# Returns None on success, or the error message to report.
+	#
+	# A rename publishes a new inode, so the target is resolved through symlinks
+	# first (otherwise a linked-in config gets replaced by a regular file and the
+	# real one is left stale) and the original's mode is copied onto the temp file
+	# (otherwise a 600 config comes back at whatever the umask allows). Other hard
+	# links to the old inode cannot survive a rename and keep the old content.
+	# A NUL in the path raises ValueError rather than OSError, and this call
+	# promises a returned message, never a throw. POSIX raises it here, at the
+	# resolve; windows resolves such a path happily and raises at the first call
+	# that touches the filesystem instead, so every one of them below has to
+	# carry the same guard.
+	try:
+		target = os.path.realpath(file)
+	except ValueError as e:
+		return f"{file}: {e}"
+	d = os.path.dirname(target)
+	if d == "":
+		d = "."
+	base = os.path.basename(target)
+	if base == "":
+		base = target
+	# Exclusive create: the name is predictable, so anything already sitting
+	# there - including a symlink someone else planted - must make this fail
+	# rather than be written through. Retry past a stale collision, then give
+	# up; refusing to write beats writing somewhere unintended.
+	# A file that already exists keeps its own mode, so its temp is born private
+	# and the real mode goes on below - the copy is never briefly readable to
+	# anyone the original was not. A file that does not exist yet has no mode to
+	# preserve, so it takes the one an ordinary create would: 0666 narrowed by
+	# the umask, like every other file the user's tools produce.
+	try:
+		existing = os.stat(target)
+	except (OSError, ValueError):
+		existing = None
+	born = 0o600 if existing is not None else 0o666
+	f = None
+	tmp = ""
+	last = ""
+	for attempt in range(8):
+		tmp = os.path.join(d, f".{base}.tmp{os.getpid()}.{attempt}")
+		try:
+			fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, born)
+			f = os.fdopen(fd, "w", encoding="utf-8", newline="")
+			break
+		except (OSError, ValueError) as e:
+			last = str(e)
+	if f is None:
+		return f"{file}: cannot create temporary file: {last}"
+	try:
+		try:
+			# On the handle, so umask cannot narrow it the way it narrows a
+			# create mode. Best effort: a filesystem that cannot carry the mode
+			# is not a reason to fail a write that otherwise succeeded. fchmod
+			# is POSIX-only, and so is the mode concept it copies - on windows
+			# the destination's attributes come across in the publish step
+			# instead, and calling it there would raise past this contract.
+			if existing is not None and hasattr(os, "fchmod"):
+				try:
+					os.fchmod(f.fileno(), stat.S_IMODE(existing.st_mode))
+				except OSError:
+					pass
+			f.write(data)
+			f.flush()
+			os.fsync(f.fileno())
+		finally:
+			f.close()
+	except OSError as e:
+		try:
+			os.remove(tmp)
+		except OSError:
+			pass
+		return f"{file}: {e}"
+	try:
+		_publish_file(tmp, target)
+	except OSError as e:
+		try:
+			os.remove(tmp)
+		except OSError:
+			pass
+		return f"{file}: {e}"
+	_sync_dir(d)
+	return None
+
+
+def _h002_head(name):
+	"""The single H002 wording site: the merge hint and the schema suppressor
+	both come here, same discipline as _h001_head."""
+	return f"merged with '{name}' at "
+
+
+def suppress_declared_reopens(schema, diags):
+	"""Drop the H002 hints a schema disavows: a section whose entry declares
+	`reopen: true` is MEANT to be written in parts, so the merge hint is
+	structurally a false positive there. Matching is by leaf name, same as the
+	H001 suppressor, and it errs toward quiet, for a hint. Used by
+	`check --schema` and load_and_validate; call it wherever doc diagnostics
+	and a schema meet. Mutates diags in place."""
+	groups = [("field", schema.instances("field"))]
+	for k in range(schema.count("fragment")):
+		base = f"fragment[#{k}].field"
+		groups.append((base, schema.instances(base)))
+	names = []
+	for base, paths in groups:
+		for i, p in enumerate(paths):
+			re = schema.read_bool(f"{base}[#{i}].reopen")
+			if re.status != Status.Good or not re.value:
+				continue
+			try:
+				segments, _ = _scan_lookup(p)
+			except _PathError:
+				continue
+			if not segments:
+				continue
+			seg = segments[-1]
+			if seg.star:
+				continue   # name wildcard: no single leaf name to disavow
+			names.append(seg.name)
+	if not names:
+		return
+	heads = [_h002_head(n) for n in names]
+	kept = []
+	for d in diags:
+		if d.code == "H002" and any(d.message.startswith(h) for h in heads):
+			continue
+		kept.append(d)
+	diags[:] = kept
+
+
+_RESERVED = frozenset(" \t,:#\"'[]")
 
 
 def _emit_element(e):
-	"""Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it."""
+	"""Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
+
+	One addition: an author-quoted element keeps its quotes unless the text reads as
+	one of SHCL's own data formats - quoting those is just spelling (readers type the
+	value either way), but quoting a plain string is the escape and must survive
+	canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
+	"""
 	t = e.text
-	needs = (not t) or any(c in _RESERVED for c in t) or (_fence_open(t) is not None)
+	# isdisjoint iterates the text in C and stops at the first hit; the generator
+	# it replaced made one Python call per character of every element emitted.
+	needs = (not t) or not _RESERVED.isdisjoint(t) or (_fence_open(t) is not None)
+	# Edge whitespace beyond the space/tab in _RESERVED still has to force quotes:
+	# the parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
+	# ideographic space) at either end would not survive the reload. Edges only -
+	# interior whitespace is never trimmed and quoting it would move bytes.
+	if not needs and t and (t[0] in _WS_SET or t[-1] in _WS_SET):
+		needs = True
+	if not needs and e.quoted and not _is_data_format(e):
+		needs = True
 	return _quote_text(t) if needs else t
+
+
+def _is_data_format(e):
+	"""True when the text reads as an int, float, bool, or datetime at standard
+	strictness - fixed there deliberately, so canonical form cannot vary with
+	the load strictness.
+
+	One pass over the text before any coercion: at Standard the int, float and
+	datetime forms all require at least one ASCII digit, and the only formats
+	that do not are the boolean words, the longest of which is "false". An
+	ordinary quoted string fails both tests, so emit stops running four full
+	coercions on every quoted element it writes."""
+	if not any("0" <= c <= "9" for c in e.text):
+		t = _trim(e.text)
+		return len(t) <= 5 and _parse_bool_text(t, Strictness.Standard) is not None
+	if _parse_int_text(e, Strictness.Standard) is not None:
+		return True
+	if _parse_float_text(e, Strictness.Standard) is not None:
+		return True
+	if _parse_bool_text(e.text, Strictness.Standard) is not None:
+		return True
+	return parse_datetime(e.text) is not None
 
 
 def _bare_quote_counts(t):
@@ -3220,12 +3955,17 @@ class _Constraint:
 
 class _SchemaDef:
 	# An interpreted schema: the top-level constraints plus the named fragments
-	# their `inherits` keys can mount.
-	__slots__ = ("cons", "frags")
+	# their `inherits` keys can mount. paths_complete is False when a fault
+	# cost the schema a path spelling (unreadable `field:` path, or a mount
+	# naming no declared fragment); key-level faults keep their entry's chain,
+	# so only those two classes can turn declared fields into false unknowns -
+	# the sweep runs unless one of them happened.
+	__slots__ = ("cons", "frags", "paths_complete")
 
-	def __init__(self, cons, frags):
+	def __init__(self, cons, frags, paths_complete):
 		self.cons = cons
 		self.frags = frags        # name -> list of _Constraint
+		self.paths_complete = paths_complete
 
 
 def _vdiag(out, line, msg):
@@ -3250,22 +3990,25 @@ def _build_schema(schema):
 	kept even when faults are present - a broken key drops that key, a broken
 	field drops that field - so a caller can still check the document against
 	the surviving constraints."""
-	faults = []
+	faults: list = []
 	cons = []
 	frags = {}
+	paths_complete = True
 	for f in schema.arena[ROOT].children:
 		node = schema.arena[f]
 		if node.name == "field":
 			c = _parse_field(schema, f, faults)
 			if c is not None:
 				cons.append(c)
+			else:
+				paths_complete = False
 		elif node.name == "fragment":
 			name = _single_text(node.value)
 			if not name:
 				_vdiag(faults, node.line, "bad schema fragment")
 				continue
 			if name in frags:
-				_vdiag(faults, node.line, "bad schema fragment '{}': duplicate".format(name))
+				_vdiag(faults, node.line, f"bad schema fragment '{name}': duplicate")
 				continue
 			fcs = []
 			for k in schema.arena[f].children:
@@ -3274,19 +4017,22 @@ def _build_schema(schema):
 					c = _parse_field(schema, k, faults)
 					if c is not None:
 						fcs.append(c)
+					else:
+						paths_complete = False
 				else:
-					_vdiag(faults, kid.line, "bad schema fragment '{}': unknown key '{}'".format(name, kid.name))
+					_vdiag(faults, kid.line, f"bad schema fragment '{name}': unknown key '{kid.name}'")
 			frags[name] = fcs
 		else:
-			_vdiag(faults, node.line, "unknown schema key '{}'".format(node.name))
+			_vdiag(faults, node.line, f"unknown schema key '{node.name}'")
 	# Every mount must name a declared fragment; cycles (self or mutual) are
 	# legal - expansion is demand-driven against a finite document.
 	for c in cons + [fc for fcs in frags.values() for fc in fcs]:
 		if c.inherits is not None and c.inherits not in frags:
-			_vdiag(faults, c.inherits_line, "unknown schema fragment '{}'".format(c.inherits))
+			_vdiag(faults, c.inherits_line, f"unknown schema fragment '{c.inherits}'")
+			paths_complete = False
 	# One constraint per line in practice, so line order = file order.
 	faults.sort(key=lambda d: d.line)
-	return _SchemaDef(cons, frags), faults
+	return _SchemaDef(cons, frags, paths_complete), faults
 
 
 def _parse_field(schema, f, faults):
@@ -3302,11 +4048,12 @@ def _parse_field(schema, f, faults):
 	except _PathError:
 		segs, value_text = None, None
 	if segs is None or value_text is not None:
-		_vdiag(faults, node.line, "bad schema path: {}".format(path))
+		_vdiag(faults, node.line, f"bad schema path: {path}")
 		return None
 	c = _Constraint(path, segs)
 	# Deferred so `min: 1` may precede `type: int` in the file.
 	required = None
+	reopen_seen = False
 	allowed_at = None
 	min_at = None
 	max_at = None
@@ -3324,7 +4071,7 @@ def _parse_field(schema, f, faults):
 				else:
 					c.ty = t
 			elif t is not None:
-				_vdiag(faults, kid.line, "unknown schema type '{}'".format(t))
+				_vdiag(faults, kid.line, f"unknown schema type '{t}'")
 			else:
 				_vdiag(faults, kid.line, "bad schema constraint 'type'")
 		elif kid.name == "required":
@@ -3334,6 +4081,16 @@ def _parse_field(schema, f, faults):
 				required = b
 			else:
 				_vdiag(faults, kid.line, "bad schema constraint 'required'")
+		elif kid.name == "reopen":
+			# Consumed by the H002 suppressor (which reads the schema document
+			# directly); validation itself ignores it, but a bad value still
+			# faults so a typo cannot silently disavow nothing.
+			t = _single_text(kid.value)
+			b = _parse_bool_text(t, Strictness.Standard) if t is not None else None
+			if b is not None and not reopen_seen:
+				reopen_seen = True
+			else:
+				_vdiag(faults, kid.line, "bad schema constraint 'reopen'")
 		elif kid.name == "allowed":
 			if kid.value.kind == "cell" and allowed_at is None:
 				allowed_at = k
@@ -3374,7 +4131,7 @@ def _parse_field(schema, f, faults):
 			if c.default_text is None:
 				c.default_text = _emit_value_inline(kid.value)
 		else:
-			_vdiag(faults, kid.line, "unknown schema key '{}'".format(kid.name))
+			_vdiag(faults, kid.line, f"unknown schema key '{kid.name}'")
 	if required is not None:
 		c.required = required
 	base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
@@ -3420,7 +4177,7 @@ def _parse_field(schema, f, faults):
 		if base == "int":
 			v = _parse_int_text(el, Strictness.Standard)
 			if v is None:
-				_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+				_vdiag(faults, kid.line, f"bad schema constraint '{key}'")
 			elif is_min:
 				c.min_i = v
 			else:
@@ -3428,13 +4185,13 @@ def _parse_field(schema, f, faults):
 		elif base == "float":
 			v = _parse_float_text(el, Strictness.Standard)
 			if v is None:
-				_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+				_vdiag(faults, kid.line, f"bad schema constraint '{key}'")
 			elif is_min:
 				c.min_f = v
 			else:
 				c.max_f = v
 		else:
-			_vdiag(faults, kid.line, "bad schema constraint '{}'".format(key))
+			_vdiag(faults, kid.line, f"bad schema constraint '{key}'")
 	return c
 
 
@@ -3467,11 +4224,11 @@ def _gen_annotation(c, tyname):
 		parts.append("one of: " + _allowed_join(c.allowed))
 	elif c.min_i is not None or c.max_i is not None:
 		if c.min_i is not None and c.max_i is not None:
-			parts.append("{}-{}".format(c.min_i, c.max_i))
+			parts.append(f"{c.min_i}-{c.max_i}")
 		elif c.min_i is not None:
-			parts.append(">= {}".format(c.min_i))
+			parts.append(f">= {c.min_i}")
 		else:
-			parts.append("<= {}".format(c.max_i))
+			parts.append(f"<= {c.max_i}")
 	elif c.min_f is not None or c.max_f is not None:
 		if c.min_f is not None and c.max_f is not None:
 			parts.append(format_float(c.min_f) + "-" + format_float(c.max_f))
@@ -3481,7 +4238,7 @@ def _gen_annotation(c, tyname):
 			parts.append("<= " + format_float(c.max_f))
 	if c.repeat is not None:
 		lo, hi = c.repeat
-		parts.append("repeat {}".format(lo) if lo == hi else "repeat {}-{}".format(lo, hi))
+		parts.append(f"repeat {lo}" if lo == hi else f"repeat {lo}-{hi}")
 	if c.required:
 		parts.append("required")
 	return ", ".join(parts)
@@ -3531,7 +4288,7 @@ def generate(schema, no_banner=False):
 	cons, cuts = _expand_mounts(sdef)
 	if len(cons) >= _GEN_MAX_FIELDS:
 		faults = []
-		_vdiag(faults, 0, "schema expands past {} fields; fragments mounted at more than one path multiply".format(_GEN_MAX_FIELDS))
+		_vdiag(faults, 0, f"schema expands past {_GEN_MAX_FIELDS} fields; fragments mounted at more than one path multiply")
 		return "", faults
 
 	def must_exist(c):
@@ -3593,9 +4350,9 @@ def generate(schema, no_banner=False):
 		path = _gen_path_text(c.segs) if fill[i] else c.path
 		prefix = "" if must_exist(c) else "#"
 		if c.default_text is not None:
-			out.append("{}{}: {}\n".format(prefix, path, _gen_default_text(c.default_text)))
+			out.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
 		else:
-			out.append("{}{}:\n".format(prefix, path))
+			out.append(f"{prefix}{path}:\n")
 	# Cycle-cut mounts last: their "type" column names the fragment that
 	# belongs at the path.
 	wild.extend(cuts)
@@ -3604,7 +4361,7 @@ def generate(schema, no_banner=False):
 			out.append("\n")
 		out.append("# Paths needing an instance name (not generated):\n")
 		for path, tyname in wild:
-			out.append("#   {}   {}\n".format(path, tyname))
+			out.append(f"#   {path}   {tyname}\n")
 	text = "".join(out)
 	if not no_banner:
 		if text:
@@ -3648,9 +4405,9 @@ def _gen_path_text(segs):
 			out.append(_emit_name(s.name))
 		if s.selector is not None:
 			if s.selector[0] == "val":
-				out.append("[{}]".format(s.selector[1]))
+				out.append(f"[{_quote_text(s.selector[1]) if s.selector[2] else s.selector[1]}]")
 			elif s.selector[0] == "idx":
-				out.append("[#{}]".format(s.selector[1]))
+				out.append(f"[#{s.selector[1]}]")
 			# a wildcard selector is dropped
 	return "".join(out)
 
@@ -3660,16 +4417,16 @@ def _expand_mounts(sdef):
 	schema order, each field's path and segments prefixed by its mount's. A
 	mount whose fragment is already expanding (a cycle) stops there and is
 	returned as (path, fragment name) for the trailing not-generated block."""
-	out = []
+	out: list = []
 	cuts = []
-	stack = []
+	stack: list = []
 
 	def go(lst, at):
 		for c in lst:
 			cc = c.clone()
 			if at is not None:
 				p, s = at
-				cc.path = "{}.{}".format(p, c.path)
+				cc.path = f"{p}.{c.path}"
 				cc.segs = list(s) + list(c.segs)
 			path = cc.path
 			segs = cc.segs
@@ -3779,4 +4536,4 @@ def _v_suggest(siblings, parent_chain, name):
 			best = (dist, s)
 	if best is None:
 		return ""
-	return "; did you mean '{}'?".format(best[1])
+	return f"; did you mean '{best[1]}'?"

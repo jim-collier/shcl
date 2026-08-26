@@ -7,19 +7,19 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
-	shcl "github.com/jim-collier/shcl/source/go"
+	shcl "github.com/jim-collier/shcl/source/go/v2"
 )
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
-const version = "1.2.0"
+const version = "2.0.0"
 
 const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 
@@ -37,15 +37,17 @@ Usage:
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
-  shcl help | version                    this help, or the version (also -h/--help, -V/--version)
+  shcl help | version                    this help, or the version (also -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
-set edits FILE, the base document ('-' = empty base). Values go in as
-repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
-arrays work) options, which persist with --write; given either, no ops are read
-from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
-script on stdin, one op per line, tab-separated. Ops:
+set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE
+(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which
+persist with --write; given either, no ops are read from stdin. Raw blocks,
+set-only-if-absent and removal go in as a write-ops script on stdin, one op per
+line, tab-separated. FILE '-' follows stdin: the document when an option holds
+the edits, an empty base when the ops script has stdin instead. With --write,
+a FILE that does not exist yet is created. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -54,23 +56,29 @@ script on stdin, one op per line, tab-separated. Ops:
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \n \t \\; a line starting with # is a script comment.
 
-Types (default --string):
+Types (get only; default --string):
   --int --float --bool --datetime --string --raw --rawinfo
   --array                                read the value as an array of the type
   --rawinfo reads a raw block's info-string (the fence tag), not its content
 
-Options:
-  --default=VALUE                        value to print when the read is not Good
-                                         (implies --on-bad=default; for arrays,
-                                         substituted per bad slot)
-  --on-bad=error|default|flag            error: fail loudly; default: print the
-                                         default; flag: print the value anyway and
-                                         report via exit code (the default mode)
-  --slots                                prefix each line with its slot status and
-                                         a tab (per element, or per wildcard slot)
+Options (the subcommands each belongs to are in parentheses):
+  --default=VALUE                        (get) value to print when the read is
+                                         not Good (implies --on-bad=default; for
+                                         arrays, substituted per bad slot)
+  --on-bad=error|default|flag            (get) error: fail loudly; default: print
+                                         the default; flag: print the value anyway
+                                         and report via exit code (the default)
+  --slots                                (get) prefix each line with its slot
+                                         status and a tab (per element, or per
+                                         wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
-  --strictness=loose|standard|strict     or 1|2|3 (default standard)
+  --lossy                                (fmt/set) with --write, rewrite even
+                                         when the load dropped lines this write
+                                         would delete; without it the write
+                                         refuses and nothing is changed
+  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
+                                         standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
   --layer=FILE                           (get/fmt/count/instances/set) merge a
@@ -95,6 +103,8 @@ the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
+An in-place write prints the load's diagnostics to stderr, and refuses when the
+load dropped content the rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
@@ -174,6 +184,7 @@ type opts struct {
 	onBad      string // error|default|flag
 	strictness shcl.Strictness
 	write      bool
+	lossy      bool
 	noBanner   bool
 	schema     string
 	layers     []string // lower-priority layers, in listed order
@@ -192,7 +203,7 @@ func askedFor(argv []string) string {
 		switch {
 		case a == "-h" || a == "--help":
 			return "help"
-		case a == "-V" || a == "--version":
+		case a == "-v" || a == "-V" || a == "--version":
 			return "version"
 		case a == "--about":
 			return "about"
@@ -271,6 +282,9 @@ func parseOpts(argv []string) (*opts, error) {
 		case a == "--write" || a == "-w":
 			o.write = true
 			o.seen = append(o.seen, "--write")
+		case a == "--lossy":
+			o.lossy = true
+			o.seen = append(o.seen, "--lossy")
 		case a == "--no-banner":
 			o.noBanner = true
 			o.seen = append(o.seen, "--no-banner")
@@ -328,9 +342,9 @@ func checkOpts(cmd string, o *opts) int {
 	case "get":
 		allowed = []string{"--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal"}
 	case "set":
-		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--write"}
+		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy"}
 	case "fmt":
-		allowed = []string{"--write", "--strictness", "--layer", "--set", "--set-literal"}
+		allowed = []string{"--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal"}
 	case "check":
 		allowed = []string{"--strictness", "--schema"}
 	case "init":
@@ -349,6 +363,17 @@ func checkOpts(cmd string, o *opts) int {
 		if !ok {
 			if s == "--<type>" {
 				fmt.Fprintf(os.Stderr, "type options are not valid for %s (see --help)\n", cmd)
+			} else if cmd == "init" && s == "--strictness" {
+				// Deliberate, not an oversight: the schema is a program artifact,
+				// so it always loads at Standard - the same rule `check --schema`
+				// follows for the schema half.
+				fmt.Fprintln(os.Stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data")
+			} else if cmd == "check" && (s == "--layer" || s == "--set" || s == "--set-literal") {
+				// The one refusal a user is likely to want anyway: check reports
+				// line numbers, and a merged document has no single file to
+				// number against. Naming the pipeline turns a dead end into a
+				// one-liner.
+				fmt.Fprintf(os.Stderr, "option %s not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt %s ... FILE | shcl check --schema=SCHEMA -\n", s, s)
 			} else {
 				fmt.Fprintf(os.Stderr, "option %s not valid for %s (see --help)\n", s, cmd)
 			}
@@ -367,11 +392,17 @@ func checkOpts(cmd string, o *opts) int {
 		fmt.Fprintln(os.Stderr, "--write cannot be combined with --set (see --help)")
 		return 1
 	}
+	// --lossy only overrides the in-place write's refusal, so on its own it says
+	// nothing and would read as protection the command never had.
+	if o.lossy && !o.write {
+		fmt.Fprintln(os.Stderr, "--lossy is only meaningful with --write (see --help)")
+		return 1
+	}
 	// The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" {
 		for _, l := range o.layers {
 			if l == "-" {
-				fmt.Fprintln(os.Stderr, "--layer=- is not valid for set (stdin carries the ops script)")
+				fmt.Fprintln(os.Stderr, "--layer=- is not valid for set (stdin carries the ops script or the document)")
 				return 1
 			}
 		}
@@ -403,14 +434,46 @@ func readInput(file string) (string, error) {
 func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
 	doc, err := shcl.ParseWith(text, strictness)
 	if err != nil {
-		le := err.(*shcl.LoadError)
-		for _, d := range le.Diagnostics {
-			fmt.Fprintf(os.Stderr, "line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+		// Checked form: this is the top-level error path, so a future error type
+		// here has to report rather than panic.
+		if le, ok := err.(*shcl.LoadError); ok {
+			for _, d := range le.Diagnostics {
+				fmt.Fprintf(os.Stderr, "line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+			}
 		}
-		fmt.Fprintln(os.Stderr, le.Error())
+		fmt.Fprintln(os.Stderr, err)
 		return nil, 6
 	}
 	return doc, 0
+}
+
+// writeBack is the in-place half of fmt/set. Overwriting the source is the one
+// place a recovered load turns destructive, so the diagnostics go out even
+// though the command succeeded, and the save runs through the library's own
+// gate rather than a second copy of the rule - the CLI and a consumer program
+// cannot then disagree about which rewrites are safe.
+func writeBack(doc *shcl.Document, file string, o *opts) int {
+	for _, d := range doc.Diagnostics() {
+		fmt.Fprintf(os.Stderr, "line %d: %s: %s %s\n", d.Line, d.Severity, d.Code, d.Message)
+	}
+	var werr error
+	if o.lossy {
+		werr = doc.SaveFileLossy(file)
+	} else {
+		werr = doc.SaveFile(file)
+	}
+	if werr == nil {
+		return 0
+	}
+	// The rule stays in the library; only the wording is the CLI's, because the
+	// override a user has here is a flag, not a function.
+	var refused *shcl.SaveRefused
+	if errors.As(werr, &refused) {
+		fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the load dropped %d line(s)/value(s) this write would delete (--lossy overrides)\n", file, refused.Lost)
+	} else {
+		fmt.Fprintln(os.Stderr, werr)
+	}
+	return 1
 }
 
 // loadLayered loads file with o's lower-priority --layer files underneath and
@@ -451,69 +514,6 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 		}
 	}
 	return doc, 0
-}
-
-// writeAtomic writes via a temp file in the same dir, then renames over the
-// target, so an interrupted write can never truncate the config it rewrites.
-// The data is synced before the rename so a crash cannot publish an empty file.
-//
-// A rename publishes a new inode, so the target is resolved through symlinks
-// first (otherwise a linked-in config gets replaced by a regular file and the
-// real one is left stale) and the original's mode is copied onto the temp file
-// (otherwise a 600 config comes back at whatever the umask allows). Other hard
-// links to the old inode cannot survive a rename and keep the old content.
-func writeAtomic(file, data string) error {
-	// EvalSymlinks fails when the target does not exist yet; that is a plain
-	// create, so the path as given is already the right one.
-	target := file
-	if resolved, rerr := filepath.EvalSymlinks(file); rerr == nil {
-		target = resolved
-	}
-	dir := filepath.Dir(target)
-	base := filepath.Base(target)
-	// Exclusive create: the name is predictable, so anything already sitting
-	// there - including a symlink someone else planted - must make this fail
-	// rather than be written through. Retry past a stale collision, then give
-	// up; refusing to write beats writing somewhere unintended.
-	var f *os.File
-	var tmp string
-	var last error
-	for attempt := 0; attempt < 8; attempt++ {
-		tmp = filepath.Join(dir, "."+base+".tmp"+strconv.Itoa(os.Getpid())+"."+strconv.Itoa(attempt))
-		// Born private, so the copy is never briefly readable to anyone the
-		// original was not. The real mode goes on below, before any data.
-		h, oerr := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if oerr == nil {
-			f = h
-			break
-		}
-		last = oerr
-	}
-	if f == nil {
-		return fmt.Errorf("%s: cannot create temporary file: %s", file, last)
-	}
-	// On the handle, so umask cannot narrow it the way it narrows a create
-	// mode. Best effort: a filesystem that cannot carry the mode is not a
-	// reason to fail a write that otherwise succeeded.
-	if st, serr := os.Stat(target); serr == nil {
-		_ = f.Chmod(st.Mode().Perm())
-	}
-	var err error
-	if _, werr := f.WriteString(data); werr != nil {
-		err = werr
-	} else {
-		err = f.Sync()
-	}
-	f.Close()
-	if err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("%s: %s", file, err)
-	}
-	if rerr := os.Rename(tmp, target); rerr != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("%s: %s", file, rerr)
-	}
-	return nil
 }
 
 // doGet: one value read, formatted for the shell: scalars print as one line,
@@ -618,6 +618,35 @@ func doGet(o *opts) int {
 			}
 		}
 	}
+	// Why the read failed is worth saying even when the exit code already
+	// carries it: at the default mode the user otherwise gets an empty line, a
+	// nonzero code, and nothing to go on. Stdout is untouched - this only ever
+	// goes to stderr. Two silences are deliberate: default mode, because a
+	// caller who supplied a fallback has already said the miss is expected, and
+	// Empty outside error mode, because an empty value is a legitimate answer
+	// here rather than a failure - the same reason Ok counts it as fine.
+	if status != shcl.Good && o.onBad != "default" && (status != shcl.Empty || o.onBad == "error") {
+		typeName := o.kind
+		if o.array {
+			typeName = o.kind + " array"
+		}
+		var reason string
+		switch status {
+		case shcl.BadType:
+			if raw := doc.ReadString(path).Raw; raw != nil {
+				reason = fmt.Sprintf("value %q is not a valid %s", *raw, typeName)
+			} else {
+				reason = fmt.Sprintf("value is not a valid %s", typeName)
+			}
+		case shcl.NotFound:
+			reason = "no value at that path"
+		case shcl.Empty:
+			reason = "the value is empty"
+		case shcl.Multiple:
+			reason = "the path matches multiple instances"
+		}
+		fmt.Fprintf(os.Stderr, "shcl: cannot read %s as %s: %s (in %s)\n", path, typeName, reason, file)
+	}
 	switch {
 	case status == shcl.Good || (status == shcl.Empty && o.onBad == "flag"):
 		emit(lines)
@@ -641,26 +670,8 @@ func doGet(o *opts) int {
 		}
 		return 0
 	case o.onBad == "error":
-		typeName := o.kind
-		if o.array {
-			typeName = o.kind + " array"
-		}
-		var reason string
-		switch status {
-		case shcl.BadType:
-			if raw := doc.ReadString(path).Raw; raw != nil {
-				reason = fmt.Sprintf("value %q is not a valid %s", *raw, typeName)
-			} else {
-				reason = fmt.Sprintf("value is not a valid %s", typeName)
-			}
-		case shcl.NotFound:
-			reason = "no value at that path"
-		case shcl.Empty:
-			reason = "the value is empty"
-		case shcl.Multiple:
-			reason = "the path matches multiple instances"
-		}
-		fmt.Fprintf(os.Stderr, "shcl: cannot read %s as %s: %s (in %s)\n", path, typeName, reason, file)
+		// The message already went to stderr above; error mode differs only in
+		// printing nothing on stdout.
 		return statusCode(status)
 	default:
 		// flag: print the zero/empty value anyway; the exit code carries the status
@@ -683,15 +694,10 @@ func doFmt(o *opts) int {
 	if doc == nil {
 		return code
 	}
-	canonical := doc.ToCanonical()
 	if o.write {
-		if werr := writeAtomic(file, canonical); werr != nil {
-			fmt.Fprintln(os.Stderr, werr)
-			return 1
-		}
-	} else {
-		fmt.Print(canonical)
+		return writeBack(doc, file, o)
 	}
+	fmt.Print(doc.ToCanonical())
 	return 0
 }
 
@@ -1005,7 +1011,10 @@ func doSet(o *opts) int {
 		fmt.Fprintln(os.Stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
-	// Base doc: '-' means an empty base, since stdin carries the ops script.
+	// Base doc: with the edits given as options no ops script is read, so a '-'
+	// file is the document on stdin the way it is everywhere else; only when
+	// stdin is the ops script does '-' mean an empty base. Reading neither threw
+	// a piped document away at exit 0.
 	// Any --layer files sit under it and --set overrides sit on top, before ops.
 	layerTexts := make([]string, 0, len(o.layers)+1)
 	for _, lf := range o.layers {
@@ -1016,8 +1025,19 @@ func doSet(o *opts) int {
 		}
 		layerTexts = append(layerTexts, t)
 	}
+	// --write names the file this command produces, so a FILE that is not there
+	// yet is a create and the edits land in a new document. Only under --write,
+	// and only when nothing is at the path at all: without --write there is
+	// nothing to create, and a file that exists but cannot be read is still an
+	// error rather than something to quietly write over.
+	creating := false
+	if o.write && file != "-" {
+		if _, serr := os.Stat(file); os.IsNotExist(serr) {
+			creating = true
+		}
+	}
 	base := ""
-	if file != "-" {
+	if !creating && (file != "-" || len(o.sets) > 0) {
 		t, err := readInput(file)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -1048,6 +1068,10 @@ func doSet(o *opts) int {
 	var ops []byte
 	if len(o.sets) == 0 {
 		var err error
+		// Say so before blocking. With nothing on stdin this used to sit there
+		// silently, which reads as a hang rather than as a prompt; the note is
+		// unconditional so a pipeline and a terminal behave identically.
+		fmt.Fprintln(os.Stderr, "shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)")
 		ops, err = io.ReadAll(os.Stdin)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
@@ -1069,15 +1093,10 @@ func doSet(o *opts) int {
 			return 1
 		}
 	}
-	canonical := doc.ToCanonical()
 	if o.write {
-		if werr := writeAtomic(file, canonical); werr != nil {
-			fmt.Fprintln(os.Stderr, werr)
-			return 1
-		}
-	} else {
-		fmt.Print(canonical)
+		return writeBack(doc, file, o)
 	}
+	fmt.Print(doc.ToCanonical())
 	return 0
 }
 
@@ -1094,7 +1113,9 @@ func doCheck(o *opts) int {
 	var diags []shcl.Diagnostic
 	strictFailed := false
 	if doc, perr := shcl.ParseWith(text, o.strictness); perr != nil {
-		diags = perr.(*shcl.LoadError).Diagnostics
+		if le, ok := perr.(*shcl.LoadError); ok {
+			diags = le.Diagnostics
+		}
 		strictFailed = true
 	} else {
 		diags = doc.Diagnostics()
@@ -1122,6 +1143,7 @@ func doCheck(o *opts) int {
 			} else {
 				diags = append(diags, doc.Validate(sdoc)...)
 				diags = shcl.SuppressDeclaredRepeats(sdoc, diags)
+				diags = shcl.SuppressDeclaredReopens(sdoc, diags)
 			}
 		}
 	}
@@ -1227,12 +1249,13 @@ func run() int {
 		}
 	}
 	asked := askedFor(argv)
-	// Bare invocation is a usage error, so it prints the help unpadded. The
-	// blank lines below are for a person who asked, to separate the block from
-	// the surrounding prompts.
+	// One convention: asking for the help - by name, by flag, or by asking for
+	// nothing at all - prints it and succeeds. The blank lines separate the
+	// block from the surrounding prompts. A bare run used to print the same
+	// text unpadded and exit 1, which read as neither a help nor an error.
 	if len(argv) == 0 {
-		fmt.Print(help)
-		return 1
+		fmt.Printf("\n%s\n", help)
+		return 0
 	}
 	if asked == "help" || argv[0] == "help" {
 		fmt.Printf("\n%s\n", help)

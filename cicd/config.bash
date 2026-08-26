@@ -52,15 +52,25 @@ TOOL_PINS=(
 	## Gating, and its findings move between releases, so CI installs this exact
 	## version rather than using whatever the runner image ships.
 	"shellcheck|0.11.0|shellcheck --version"
+	## Builds the python artifacts so check-wheel.bash can read what is in them.
+	"build|1.5.0|pyproject-build --version"
+	## Supply-chain trio. Findings move as advisory databases update, so pin them
+	## the same way and let the drift warning say when a result changed because
+	## the tool did.
+	"staticcheck|2026.1|staticcheck -version"
+	"govulncheck|v1.5.0|govulncheck -version"
+	"cargo-deny|0.19.9|cargo deny --version"
 )
 
-## Stage 2: debug build (what the tests exercise). Capped at half the cores.
+## Stage 2: debug build (what the tests exercise). Capped at half the cores -
+## cargo via -j, the Go toolchain (and the Go-built lint tools below) via
+## GOMAXPROCS, which they all honor.
 ## The Go and C binding CLIs build here too - crosscheck needs them in stage 4.
 ## C has no separate fmt/lint stage (no committed zero-dep formatter); the
 ## -Wall -Wextra -Werror compile is its quality gate, same spirit as clippy.
 BUILD_CMD=(cargo build -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 BUILD_EXTRA=(
-	'go -C source/go build -o shcl ./cmd/shcl'
+	'GOMAXPROCS="${CPU_CAP}" go -C source/go/cmd build -o ../shcl ./shcl'
 	'python3 -m py_compile source/python/shcl.py source/python/cmd/shcl/main.py source/python/tests/conformance.py'
 	'cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/cmd/shcl/main.c -o source/c/shcl -lm -s'
 )
@@ -71,15 +81,35 @@ BUILD_EXTRA=(
 ## over all tracked .md (config in .markdownlint-cli2.jsonc at repo root), and
 ## PSScriptAnalyzer on the ps1 wrapper. shfmt is deliberately NOT here - its
 ## output fights the hand-formatted shell style, so it stays interactive-only.
+##
+## The last three are the supply-chain half: staticcheck alongside go vet,
+## govulncheck against the Go standard library and module graph, and cargo-deny
+## over the rust lockfile (config in source/rust/deny.toml). All four libraries
+## are dependency-free, so what these actually watch is the toolchain and the
+## feature-gated profiler chain - small, and not nothing.
 LINT_CMD=(cargo clippy -j "${CPU_CAP}" --manifest-path "${MANIFEST}" --all-targets -- -D warnings)
 LINT_EXTRA=(
-	'go -C source/go vet ./...'
-	'ruff check source/python'
-	'env MYPYPATH=source/python mypy source/python/shcl.py source/python/cmd/shcl/main.py source/python/tests/conformance.py'
+	'GOMAXPROCS="${CPU_CAP}" go -C source/go vet ./...'
+	'GOMAXPROCS="${CPU_CAP}" go -C source/go/cmd vet ./...'
+	'( cd source/go && GOMAXPROCS="${CPU_CAP}" staticcheck ./... )'
+	'( cd source/go/cmd && GOMAXPROCS="${CPU_CAP}" staticcheck ./... )'
+	'( cd source/python && ruff check . )'
+	'( cd source/python && MYPYPATH=. mypy )'
+	## The comparison tool's rust half stays out of the gate - it is the one thing
+	## here with third-party crates, and the gate must not need crates.io. Its
+	## python half has no such problem: ruff never imports what it checks, so this
+	## costs nothing and the file is covered.
+	'ruff check cicd/utility/comparison/pyworker.py'
 	'cppcheck --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
 	'markdownlint-cli2'
-	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Severity Warning,Error -EnableExit"'
-	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
+	'cicd/utility/check-completions.bash'
+	'cicd/utility/check-wheel.bash'
+	'GOMAXPROCS="${CPU_CAP}" govulncheck -C source/go ./...'
+	'GOMAXPROCS="${CPU_CAP}" govulncheck -C source/go/cmd ./...'
+	'cargo deny --manifest-path source/rust/Cargo.toml --all-features check'
 )
 ## n8git_backup-and-publish is excluded: SC1083 false-hits its legitimate git
 ## @{u} upstream refs, and the script is a proven drop-in kept byte-close to its
@@ -87,13 +117,20 @@ LINT_EXTRA=(
 SHELLCHECK_TARGETS=(
 	cicd/cicd.bash
 	cicd/config.bash
+	cicd/utility/check-completions.bash
+	cicd/utility/check-wheel.bash
+	cicd/utility/comparison/compare.bash
 	cicd/utility/crosscheck.bash
+	cicd/utility/largedoc.bash
 	cicd/utility/lint-report.bash
 	cicd/utility/package.bash
 	cicd/utility/sign-release.bash
 	cicd/utility/git-auto-msg.bash
+	cicd/utility/win-runners.bash
+	cicd/hooks/pre-push
 	cicd/utility/include/gfs-rotate.bash
 	source/bash/shcl.bash
+	source/completions/shcl.bash
 	install.bash
 	install-dev.bash
 )
@@ -101,9 +138,19 @@ SHELLCHECK_TARGETS=(
 ## Stage 4: tests. cargo test runs the conformance corpus (project/conformance/)
 ## plus the deterministic fuzz smoke; the env var raises the fuzz iteration count
 ## well past the quick in-editor default.
-TEST_CMD=(env SHCL_FUZZ_ITERS=20000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
+##
+## 200k, raised from 20k: the two fixpoint defects that sat past the old gate are
+## fixed, and both needed this depth to surface at all. Costs about a minute.
+## Deeper still is worth a run before a release cut:
+##     SHCL_FUZZ_ITERS=1000000 cargo test --manifest-path source/rust/Cargo.toml \
+##         --test fuzz_smoke
+TEST_CMD=(env SHCL_FUZZ_ITERS=200000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
+## --quick swaps in this test command: same suites, fuzz at the old 20k gate
+## depth - the minute-scale 200k soak is what the fast loop sheds.
+TEST_QUICK_CMD=(env SHCL_FUZZ_ITERS=20000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 TEST_EXTRA=(
-	'go -C source/go test ./...'
+	'GOMAXPROCS="${CPU_CAP}" go -C source/go test ./...'
+	'GOMAXPROCS="${CPU_CAP}" go -C source/go/cmd test ./...'
 	'python3 source/python/tests/conformance.py'
 	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
 	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
@@ -121,6 +168,18 @@ BINDING_CLIS=(
 	"c|source/c/shcl"
 )
 XCHECK_GEN='env SHCL_FUZZ_DUMP="${XCHECK_DUMP_DIR}" SHCL_FUZZ_ITERS=2000 SHCL_FUZZ_DUMP_MAX=500 cargo test -j "${CPU_CAP}" --manifest-path '"${MANIFEST}"' --test fuzz_smoke --quiet'
+
+
+## Stage 4c: large document. The corpus cases are a few hundred bytes each and
+## the fuzz inputs are smaller, so nothing else here would see a parser going
+## quadratic or a buffer that only misbehaves past a few megabytes. One generated
+## document goes through every binding in BINDING_CLIS; they must agree on it
+## byte for byte, and each stays inside the wall-clock and peak-RSS ceilings
+## largedoc.bash carries. Set 0 to skip (--no-largedoc does the same).
+##
+## 100 MiB is the floor worth testing: the memory multiplier is 40-70x input, so
+## this is also the only place the pipeline notices a document costing gigabytes.
+LARGEDOC_MIB=100
 
 ## Stage 5: profiler. Optimized-with-symbols build (cargo profile "profiling",
 ## feature-gated pprof sampler - never in a normal build), run over a workload big
@@ -159,6 +218,19 @@ CROSS_TARGETS=(
 	"Linux ARM64 (zig)|linux-arm64|source/rust/target/aarch64-unknown-linux-gnu/release/${EXE_NAME}|cargo zigbuild --release -j \${CPU_CAP} --manifest-path ${MANIFEST} --target aarch64-unknown-linux-gnu"
 	"Windows ARM64 (zig)|windows-arm64|source/rust/target/aarch64-pc-windows-gnullvm/release/${EXE_NAME}.exe|cargo zigbuild --release -j \${CPU_CAP} --manifest-path ${MANIFEST} --target aarch64-pc-windows-gnullvm"
 )
+## Cross-compile checks that ship nothing: they exist so the non-Rust bindings'
+## platform branches are compiled somewhere. The C header's Windows path had
+## never been built here, which is how a regression in it reached dev. Same
+## "label|command" shape as CROSS_TARGETS, minus the artifact.
+CROSS_CHECKS=(
+	"C library + CLI for Windows x86_64 (mingw)|wbin=\"\$(mktemp -u)\".exe; x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/cmd/shcl/main.c -o \"\${wbin}\"; wrc=\$?; rm -f \"\${wbin}\"; ((wrc==0))"
+	"C library with file I/O compiled out|printf '#define SHCL_NO_FILE_IO\\n#define SHCL_IMPLEMENTATION\\n#include \"shcl.h\"\\n' | cc -x c -std=c11 -O2 -Wall -Wextra -Werror -Isource/c -c - -o /dev/null"
+	## Go's windows publish path lives in its own build-tagged file, so the lint
+	## stage's vet and staticcheck - which only ever see the host's GOOS - walk
+	## straight past it. These are the only thing that compiles it at all.
+	"Go library for Windows (build + vet + staticcheck)|( cd source/go && export GOMAXPROCS=\${CPU_CAP}; GOOS=windows go build ./... && GOOS=windows go vet ./... && GOOS=windows staticcheck ./... )"
+)
+
 RELEASE_ARTIFACT_DIR="cicd/artifacts/release"   ## relative to repo root; gitignored
 
 ## Stage 6b: installer packages over the artifact dir (utility/package.bash):
@@ -175,7 +247,7 @@ PACKAGE_ENABLE=1
 ## to skip. No sudo: a non-writable dest is passed over, not force-installed.
 DOGFOOD_FIXED_DESTS=(
 	"${HOME}/synced/0-0/common/exec/util/linux/bin"
-	"/usr/local/sbin"
+	"${HOME}/.local/bin"
 )
 ## Shell wrappers ride along, each renamed to <EXE_NAME>.<ext>. A missing source is
 ## skipped silently. Each has its own preferred dest list (first existing+writable

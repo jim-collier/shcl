@@ -35,7 +35,7 @@
 #endif
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
-#define VERSION "1.2.0"
+#define VERSION "2.0.0"
 
 static const char *HELP =
 	"shcl - Simple Hierarchical Config Language (reference CLI)\n"
@@ -54,15 +54,17 @@ static const char *HELP =
 	"                                         commented, wildcards noted)\n"
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
-	"  shcl help | version                    this help, or the version (also -h/--help, -V/--version)\n"
+	"  shcl help | version                    this help, or the version (also -h/--help, -v/-V/--version)\n"
 	"  shcl about | donate                    what shcl is, or how to support it\n"
 	"                                         (also --about, --donate)\n"
 	"\n"
-	"set edits FILE, the base document ('-' = empty base). Values go in as\n"
-	"repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so\n"
-	"arrays work) options, which persist with --write; given either, no ops are read\n"
-	"from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops\n"
-	"script on stdin, one op per line, tab-separated. Ops:\n"
+	"set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE\n"
+	"(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which\n"
+	"persist with --write; given either, no ops are read from stdin. Raw blocks,\n"
+	"set-only-if-absent and removal go in as a write-ops script on stdin, one op per\n"
+	"line, tab-separated. FILE '-' follows stdin: the document when an option holds\n"
+	"the edits, an empty base when the ops script has stdin instead. With --write,\n"
+	"a FILE that does not exist yet is created. Ops:\n"
 	"  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar\n"
 	"  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array\n"
 	"  <type>[-array]-default<TAB>...                          set only if absent\n"
@@ -71,23 +73,29 @@ static const char *HELP =
 	"  empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH\n"
 	"string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.\n"
 	"\n"
-	"Types (default --string):\n"
+	"Types (get only; default --string):\n"
 	"  --int --float --bool --datetime --string --raw --rawinfo\n"
 	"  --array                                read the value as an array of the type\n"
 	"  --rawinfo reads a raw block's info-string (the fence tag), not its content\n"
 	"\n"
-	"Options:\n"
-	"  --default=VALUE                        value to print when the read is not Good\n"
-	"                                         (implies --on-bad=default; for arrays,\n"
-	"                                         substituted per bad slot)\n"
-	"  --on-bad=error|default|flag            error: fail loudly; default: print the\n"
-	"                                         default; flag: print the value anyway and\n"
-	"                                         report via exit code (the default mode)\n"
-	"  --slots                                prefix each line with its slot status and\n"
-	"                                         a tab (per element, or per wildcard slot)\n"
+	"Options (the subcommands each belongs to are in parentheses):\n"
+	"  --default=VALUE                        (get) value to print when the read is\n"
+	"                                         not Good (implies --on-bad=default; for\n"
+	"                                         arrays, substituted per bad slot)\n"
+	"  --on-bad=error|default|flag            (get) error: fail loudly; default: print\n"
+	"                                         the default; flag: print the value anyway\n"
+	"                                         and report via exit code (the default)\n"
+	"  --slots                                (get) prefix each line with its slot\n"
+	"                                         status and a tab (per element, or per\n"
+	"                                         wildcard slot)\n"
 	"  --no-banner                            (init) leave out the footer naming the\n"
 	"                                         format and pointing at its spec\n"
-	"  --strictness=loose|standard|strict     or 1|2|3 (default standard)\n"
+	"  --lossy                                (fmt/set) with --write, rewrite even\n"
+	"                                         when the load dropped lines this write\n"
+	"                                         would delete; without it the write\n"
+	"                                         refuses and nothing is changed\n"
+	"  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default\n"
+	"                                         standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
 	"                                         schema; adds V### diagnostics\n"
 	"  --layer=FILE                           (get/fmt/count/instances/set) merge a\n"
@@ -112,6 +120,8 @@ static const char *HELP =
 	"so --default --int reads --int as the default. Use -- to end the options when a\n"
 	"FILE or PATH begins with a dash.\n"
 	"An option a subcommand does not use is a usage error, not ignored.\n"
+	"An in-place write prints the load's diagnostics to stderr, and refuses when the\n"
+	"load dropped content the rewrite would delete (--lossy overrides).\n"
 	"FILE may be '-' for stdin. With --layer, FILE is the highest file layer and\n"
 	"each --layer is merged under it in order; --set applies last. 'fmt' with\n"
 	"layers prints the merged canonical document.\n"
@@ -151,6 +161,7 @@ typedef struct {
 	const char *on_bad;       // error|default|flag
 	shcl_strictness strictness;
 	int write;
+	int lossy;
 	int no_banner;
 	const char *schema;       // NULL if unset
 	const char **layers; int nlayers; // lower-priority layers, in listed order (unbounded)
@@ -191,6 +202,15 @@ static void *xrealloc(void *p, size_t n) {
 
 // Reads FILE (or stdin for "-") fully. Returns malloc'd buffer + len, or NULL on
 // error (message printed to stderr). Rejects invalid UTF-8 like the reference.
+// Nothing at the path at all, as opposed to something there that will not open.
+// fopen rather than stat/access so the check needs no platform header: a
+// directory opens here and a protected file sets EACCES, so both stay errors.
+static int path_absent(const char *file) {
+	FILE *p = fopen(file, "rb");
+	if (p) { fclose(p); return 0; }
+	return errno == ENOENT;
+}
+
 static char *read_input(const char *file, size_t *len) {
 	char *buf = NULL; size_t cap = 0, n = 0;
 	FILE *f = strcmp(file, "-") == 0 ? stdin : fopen(file, "rb");
@@ -316,6 +336,31 @@ static int do_get(Opts *o) {
 	// Per-line slot status: falls back to the aggregate for scalar reads.
 	#define SLOT_AT(I) (slotSts && (I) < nSlots ? slotSts[I] : status)
 	#define EMITLINE(I, P, N) do { if (o->slots) printf("%s\t", shcl_status_name(SLOT_AT(I))); outln((P), (N)); } while (0)
+	// Why the read failed is worth saying even when the exit code already
+	// carries it: at the default mode the user otherwise gets an empty line, a
+	// nonzero code, and nothing to go on. Stdout is untouched - this only ever
+	// goes to stderr. Two silences are deliberate: default mode, because a
+	// caller who supplied a fallback has already said the miss is expected, and
+	// Empty outside error mode, because an empty value is a legitimate answer
+	// here rather than a failure - the same reason shcl_status_ok counts it so.
+	if (status != SHCL_GOOD && strcmp(o->on_bad, "default") != 0
+	    && (status != SHCL_EMPTY || !strcmp(o->on_bad, "error"))) {
+		char tbuf[32];
+		snprintf(tbuf, sizeof tbuf, o->array ? "%s array" : "%s", o->kind);
+		if (status == SHCL_BAD_TYPE) {
+			shcl_read_str rs = shcl_read_string(d, path, plen);
+			if (rs.status == SHCL_GOOD)
+				fprintf(stderr, "shcl: cannot read %s as %s: value \"%.*s\" is not a valid %s (in %s)\n", path, tbuf, (int)rs.value.n, rs.value.p, tbuf, file);
+			else
+				fprintf(stderr, "shcl: cannot read %s as %s: value is not a valid %s (in %s)\n", path, tbuf, tbuf, file);
+		} else if (status == SHCL_NOT_FOUND) {
+			fprintf(stderr, "shcl: cannot read %s as %s: no value at that path (in %s)\n", path, tbuf, file);
+		} else if (status == SHCL_EMPTY) {
+			fprintf(stderr, "shcl: cannot read %s as %s: the value is empty (in %s)\n", path, tbuf, file);
+		} else {
+			fprintf(stderr, "shcl: cannot read %s as %s: the path matches multiple instances (in %s)\n", path, tbuf, file);
+		}
+	}
 	int rc;
 	int flag_ok = (status == SHCL_GOOD) || (status == SHCL_EMPTY && !strcmp(o->on_bad, "flag"));
 	if (flag_ok) {
@@ -335,21 +380,8 @@ static int do_get(Opts *o) {
 		}
 		rc = 0;
 	} else if (!strcmp(o->on_bad, "error")) {
-		char tbuf[32];
-		snprintf(tbuf, sizeof tbuf, o->array ? "%s array" : "%s", o->kind);
-		if (status == SHCL_BAD_TYPE) {
-			shcl_read_str rs = shcl_read_string(d, path, plen);
-			if (rs.status == SHCL_GOOD)
-				fprintf(stderr, "shcl: cannot read %s as %s: value \"%.*s\" is not a valid %s (in %s)\n", path, tbuf, (int)rs.value.n, rs.value.p, tbuf, file);
-			else
-				fprintf(stderr, "shcl: cannot read %s as %s: value is not a valid %s (in %s)\n", path, tbuf, tbuf, file);
-		} else if (status == SHCL_NOT_FOUND) {
-			fprintf(stderr, "shcl: cannot read %s as %s: no value at that path (in %s)\n", path, tbuf, file);
-		} else if (status == SHCL_EMPTY) {
-			fprintf(stderr, "shcl: cannot read %s as %s: the value is empty (in %s)\n", path, tbuf, file);
-		} else {
-			fprintf(stderr, "shcl: cannot read %s as %s: the path matches multiple instances (in %s)\n", path, tbuf, file);
-		}
+		// The message already went to stderr above; error mode differs only in
+		// printing nothing on stdout.
 		rc = shcl_status_code(status);
 	} else {
 		for (size_t i = 0; i < nlines; i++) EMITLINE(i, LINEPTR(i), lines[i].n);
@@ -358,96 +390,28 @@ static int do_get(Opts *o) {
 	free(lines); layered_free(&L); return rc;
 }
 
-// Write atomically: temp file in the same dir, then rename over the target, so
-// an interrupted write can never truncate the config it rewrites. Every stdio
-// call is checked (a failed write must not report success) and the data is
-// synced before the rename so a crash cannot publish an empty file.
-// A rename publishes a new inode, so the target is resolved through symlinks
-// first (otherwise a linked-in config gets replaced by a regular file and the
-// real one is left stale) and the original's mode is copied onto the temp file
-// (otherwise a 600 config comes back at whatever the umask allows). Other hard
-// links to the old inode cannot survive a rename and keep the old content.
-static int write_atomic(const char *file, const char *data, size_t n) {
-	const char *target = file;
-#ifndef _WIN32
-	// realpath returns NULL when the target does not exist yet; that is a plain
-	// create, so the path as given is already the right one.
-	char *real = realpath(file, NULL);
-	if (real) target = real;
-#endif
-	const char *slash = strrchr(target, '/');
-	char *tmp = (char *)xrealloc(NULL, strlen(target) + 48);
-	// Exclusive create: the name is predictable, so anything already sitting
-	// there - including a symlink someone else planted - must make this fail
-	// rather than be written through. Retry past a stale collision, then give
-	// up; refusing to write beats writing somewhere unintended. Born 0600 so
-	// the copy is never briefly readable to anyone the original was not; the
-	// real mode goes on below, before any data.
-	int fd = -1, lasterr = 0;
-	for (int attempt = 0; attempt < 8; attempt++) {
-		if (slash) sprintf(tmp, "%.*s.%s.tmp%ld.%d", (int)(slash - target + 1), target, slash + 1, (long)getpid(), attempt);
-		else sprintf(tmp, ".%s.tmp%ld.%d", target, (long)getpid(), attempt);
-#ifdef _WIN32
-		fd = _open(tmp, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
-#else
-		fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
-#endif
-		if (fd >= 0) break;
-		lasterr = errno;
+// The in-place half of fmt/set. Overwriting the source is the one place a
+// recovered load turns destructive, so the diagnostics go out even though the
+// command succeeded, and the save runs through the library's own gate rather
+// than a second copy of the rule - the CLI and a consumer program cannot then
+// disagree about which rewrites are safe.
+static int write_back(shcl_doc *d, const char *file, Opts *o) {
+	size_t n = shcl_diag_count(d);
+	for (size_t i = 0; i < n; i++) {
+		const char *sev = shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+		shcl_str m = shcl_diag_message(d, i);
+		fprintf(stderr, "line %zu: %s: %s ", shcl_diag_line(d, i), sev, shcl_diag_code(d, i));
+		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 	}
-	if (fd < 0) {
-		fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(lasterr));
-		free(tmp);
-#ifndef _WIN32
-		free(real);
-#endif
-		return 1;
-	}
-	FILE *f = fdopen(fd, "wb");
-	if (!f) {
+	shcl_save_result r = o->lossy ? shcl_save_file_lossy(d, file) : shcl_save_file(d, file);
+	if (r == SHCL_SAVE_OK) return 0;
+	// The rule stays in the library; only the wording is the CLI's, because the
+	// override a user has here is a flag, not a function.
+	if (r == SHCL_SAVE_REFUSED)
+		fprintf(stderr, "%s: refusing to rewrite: the load dropped %zu line(s)/value(s) this write would delete (--lossy overrides)\n", file, shcl_lost_count(d));
+	else
 		fprintf(stderr, "%s: %s\n", file, strerror(errno));
-		close(fd);
-		remove(tmp);
-		free(tmp);
-#ifndef _WIN32
-		free(real);
-#endif
-		return 1;
-	}
-#ifndef _WIN32
-	// On the descriptor before any data, so umask cannot narrow it the way it
-	// narrows a create mode. Best effort: a filesystem that cannot carry the
-	// mode is not a reason to fail a write that otherwise succeeded.
-	struct stat st;
-	if (stat(target, &st) == 0) (void)fchmod(fileno(f), st.st_mode & 07777);
-#endif
-	int ok = fwrite(data, 1, n, f) == n && fflush(f) == 0;
-#ifdef _WIN32
-	ok = ok && _commit(_fileno(f)) == 0;
-#else
-	ok = ok && fsync(fileno(f)) == 0;
-#endif
-	ok = (fclose(f) == 0) && ok;
-#ifdef _WIN32
-	// C rename() will not replace an existing file on Windows.
-	ok = ok && MoveFileExA(tmp, target, MOVEFILE_REPLACE_EXISTING);
-#else
-	ok = ok && rename(tmp, target) == 0;
-#endif
-	if (!ok) {
-		fprintf(stderr, "%s: %s\n", file, strerror(errno));
-		remove(tmp);
-		free(tmp);
-#ifndef _WIN32
-		free(real);
-#endif
-		return 1;
-	}
-	free(tmp);
-#ifndef _WIN32
-	free(real);
-#endif
-	return 0;
+	return 1;
 }
 
 static int do_fmt(Opts *o) {
@@ -459,12 +423,13 @@ static int do_fmt(Opts *o) {
 	}
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
-	shcl_str c = shcl_to_canonical(L.doc);
-	int rc = 0;
+	int rc;
 	if (o->write) {
-		rc = write_atomic(file, c.p, c.n);
+		rc = write_back(L.doc, file, o);
 	} else {
+		shcl_str c = shcl_to_canonical(L.doc);
 		fwrite(c.p, 1, c.n, stdout);
+		rc = 0;
 	}
 	layered_free(&L); return rc;
 }
@@ -605,9 +570,13 @@ static int do_set(Opts *o) {
 		fprintf(stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
-	// Base doc: '-' means an empty base, since stdin carries the ops script. Any
-	// --layer files sit under it and --set overrides sit on top, before ops. The
-	// base layer's node strings are not dup'd off its text, so keep all buffers.
+	// Base doc: with the edits given as options no ops script is read, so a '-'
+	// file is the document on stdin the way it is everywhere else; only when
+	// stdin is the ops script does '-' mean an empty base. Reading neither threw
+	// a piped document away at exit 0.
+	// Any --layer files sit under it and --set overrides sit on top, before ops.
+	// The base layer's node strings are not dup'd off its text, so keep all
+	// buffers.
 	LayeredDoc L; L.doc = NULL; L.texts = NULL; L.ntexts = 0;
 	for (int i = 0; i < o->nlayers; i++) {
 		size_t llen; char *lt = read_input(o->layers[i], &llen);
@@ -618,8 +587,16 @@ static int do_set(Opts *o) {
 		if (g) { shcl_free(dd); layered_free(&L); return g; }
 		if (!L.doc) L.doc = dd; else { shcl_merge(L.doc, dd); shcl_free(dd); }
 	}
+	// --write names the file this command produces, so a FILE that is not there
+	// yet is a create and the edits land in a new document. Only under --write,
+	// and only when nothing is at the path at all: without --write there is
+	// nothing to create, and a file that exists but cannot be read is still an
+	// error rather than something to quietly write over. Checked before the
+	// read, not after: read_input prints its own diagnostic, and a create has
+	// nothing to report.
+	int creating = o->write && strcmp(file, "-") != 0 && path_absent(file);
 	char *text; size_t len;
-	if (!strcmp(file, "-")) { text = (char *)xrealloc(NULL, 1); len = 0; }
+	if (creating || (!strcmp(file, "-") && o->nsets == 0)) { text = (char *)xrealloc(NULL, 1); len = 0; }
 	else { text = read_input(file, &len); if (!text) { layered_free(&L); return 1; } }
 	layered_push_text(&L, text);
 	{
@@ -636,6 +613,10 @@ static int do_set(Opts *o) {
 	// block on the console for anyone who passed edits as options.
 	size_t opslen = 0; char *ops = NULL;
 	if (o->nsets == 0) {
+		// Say so before blocking. With nothing on stdin this used to sit there
+		// silently, which reads as a hang rather than as a prompt; the note is
+		// unconditional so a pipeline and a terminal behave identically.
+		fprintf(stderr, "shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)\n");
 		ops = read_all_fp(stdin, &opslen);
 		// The ops script gets the same UTF-8 gate as any file input (exit 1).
 		if (!utf8_valid(ops, opslen)) {
@@ -655,9 +636,8 @@ static int do_set(Opts *o) {
 		}
 	}
 	if (rc == 0) {
-		shcl_str c = shcl_to_canonical(d);
-		if (o->write) rc = write_atomic(file, c.p, c.n);
-		else fwrite(c.p, 1, c.n, stdout);
+		if (o->write) rc = write_back(d, file, o);
+		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
 	}
 	free(ops); layered_free(&L); return rc;
 }
@@ -690,6 +670,7 @@ static int do_check(Opts *o) {
 		} else {
 			val = shcl_validate(d, sd);
 			shcl_suppress_declared_repeats(sd, d);
+			shcl_suppress_declared_reopens(sd, d);
 		}
 	}
 	size_t n = shcl_diag_count(d), nerr = 0;
@@ -833,7 +814,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
-	o->strictness = SHCL_STANDARD; o->write = 0; o->no_banner = 0; o->schema = NULL;
+	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->no_banner = 0; o->schema = NULL;
 	o->layers = o->sets = o->set_opts = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
@@ -848,6 +829,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strcmp(a, "--array")) { o->array = 1; opt_seen(o, "--array"); }
 		else if (!strcmp(a, "--slots")) { o->slots = 1; opt_seen(o, "--slots"); }
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) { o->write = 1; opt_seen(o, "--write"); }
+		else if (!strcmp(a, "--lossy")) { o->lossy = 1; opt_seen(o, "--lossy"); }
 		else if (!strcmp(a, "--no-banner")) { o->no_banner = 1; opt_seen(o, "--no-banner"); }
 		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) {
 			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
@@ -871,8 +853,8 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 // usage error instead.
 static int check_opts(const char *cmd, Opts *o) {
 	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", NULL };
-	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--write", NULL };
-	static const char *fmt_ok[] = { "--write", "--strictness", "--layer", "--set", "--set-literal", NULL };
+	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy", NULL };
+	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", NULL };
 	static const char *check_ok[] = { "--strictness", "--schema", NULL };
 	static const char *init_ok[] = { "--schema", "--no-banner", NULL };
 	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", NULL };
@@ -889,6 +871,16 @@ static int check_opts(const char *cmd, Opts *o) {
 		for (int k = 0; allowed[k]; k++) if (!strcmp(o->seen[i], allowed[k])) { ok = 1; break; }
 		if (!ok) {
 			if (!strcmp(o->seen[i], "--<type>")) fprintf(stderr, "type options are not valid for %s (see --help)\n", cmd);
+			// The one refusal a user is likely to want anyway: check reports
+			// line numbers, and a merged document has no single file to number
+			// against. Naming the pipeline turns a dead end into a one-liner.
+			// Deliberate, not an oversight: the schema is a program artifact, so
+			// it always loads at Standard - the same rule `check --schema`
+			// follows for the schema half.
+			else if (!strcmp(cmd, "init") && !strcmp(o->seen[i], "--strictness"))
+				fprintf(stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data\n");
+			else if (!strcmp(cmd, "check") && (!strcmp(o->seen[i], "--layer") || !strcmp(o->seen[i], "--set") || !strcmp(o->seen[i], "--set-literal")))
+				fprintf(stderr, "option %s not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt %s ... FILE | shcl check --schema=SCHEMA -\n", o->seen[i], o->seen[i]);
 			else fprintf(stderr, "option %s not valid for %s (see --help)\n", o->seen[i], cmd);
 			return 1;
 		}
@@ -905,11 +897,17 @@ static int check_opts(const char *cmd, Opts *o) {
 		fprintf(stderr, "--write cannot be combined with --set (see --help)\n");
 		return 1;
 	}
+	// --lossy only overrides the in-place write's refusal, so on its own it says
+	// nothing and would read as protection the command never had.
+	if (o->lossy && !o->write) {
+		fprintf(stderr, "--lossy is only meaningful with --write (see --help)\n");
+		return 1;
+	}
 	// The ops script already has stdin, so a layer cannot read it too.
 	if (!strcmp(cmd, "set")) {
 		for (int i = 0; i < o->nlayers; i++) {
 			if (!strcmp(o->layers[i], "-")) {
-				fprintf(stderr, "--layer=- is not valid for set (stdin carries the ops script)\n");
+				fprintf(stderr, "--layer=- is not valid for set (stdin carries the ops script or the document)\n");
 				return 1;
 			}
 		}
@@ -925,7 +923,7 @@ static const char *asked_for(int argc, char **argv) {
 	for (int i = 1; i < argc; i++) {
 		const char *a = argv[i];
 		if (!strcmp(a, "-h") || !strcmp(a, "--help")) return "help";
-		if (!strcmp(a, "-V") || !strcmp(a, "--version")) return "version";
+		if (!strcmp(a, "-v") || !strcmp(a, "-V") || !strcmp(a, "--version")) return "version";
 		if (!strcmp(a, "--about")) return "about";
 		if (!strcmp(a, "--donate")) return "donate";
 		if (!strcmp(a, "--")) return NULL;
@@ -948,10 +946,11 @@ int main(int argc, char **argv) {
 		}
 	}
 	const char *asked = asked_for(argc, argv);
-	// Bare invocation is a usage error, so it prints the help unpadded. The
-	// blank lines below are for a person who asked, to separate the block from
-	// the surrounding prompts.
-	if (argc <= 1) { fputs(HELP, stdout); return 1; }
+	// One convention: asking for the help - by name, by flag, or by asking for
+	// nothing at all - prints it and succeeds. The blank lines separate the
+	// block from the surrounding prompts. A bare run used to print the same
+	// text unpadded and exit 1, which read as neither a help nor an error.
+	if (argc <= 1) { printf("\n%s\n", HELP); return 0; }
 	if ((asked && !strcmp(asked, "help")) || !strcmp(argv[1], "help")) { printf("\n%s\n", HELP); return 0; }
 	if ((asked && !strcmp(asked, "version")) || !strcmp(argv[1], "version")) { printf("shcl %s\n", VERSION); return 0; }
 	if ((asked && !strcmp(asked, "about")) || !strcmp(argv[1], "about")) { printf("\n%s\n", ABOUT); return 0; }

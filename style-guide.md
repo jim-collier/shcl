@@ -33,7 +33,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Formatters win. Where a canonical formatter exists (rustfmt, gofmt), its output is the law - run it, don't hand-format against it. Intentional data tables get the formatter's skip pragma rather than a fight.
 
-- Tabs for indentation, spaces for alignment, in every language that allows it. This repo pins rustfmt to `hard_tabs`; gofmt is tabs natively; Python and shell follow suit. Yes, PEP 8 prefers spaces - one indentation style across a multi-language repo is worth more than per-language purity here.
+- Tabs for indentation, spaces for alignment. The test is whether the language prevents it or strongly pushes the other way; none of the six here do, so all six use tabs. This repo pins rustfmt to `hard_tabs`; gofmt is tabs natively; Python, C and both shells follow suit. PEP 8 does prefer spaces, but it also says to stay consistent with code already indented with tabs, and one indentation style across a multi-language repo is worth more than per-language purity. The Python linter's tab rule (`W191`) is switched off for exactly this reason, not overlooked.
 
 - Names are meaningful and human-searchable: `upperBound`, not `ub`. Short conventional names are fine where they are idiomatic - loop indices (`i`), a local `err`, a receiver letter in Go, and few-line locals in the compact parser cores (`t` for a just-trimmed line, `q` for the current quote char) where the same short name means the same thing at the same site in every binding. The test is "can a reader find and search-replace what you mean", not maximal length.
 
@@ -47,6 +47,12 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Small standalone utility scripts are MIT regardless of anything else, and carry their license in the header.
 
+- What analysis runs, and what deliberately does not. Gating: rustfmt and clippy, gofmt, go vet, staticcheck, govulncheck, cargo-deny, ruff, mypy, cppcheck, PSScriptAnalyzer, shellcheck, markdownlint. Declined, each for a reason that is not going to change:
+	- `clang-format` and `clang-tidy`. Reformatting the C drop-in rewrites roughly nine lines in ten, which throws away the hand-aligned tables and the structural match with the other bindings.
+	- `golangci-lint`. It wraps checks that already gate individually, so it would add a dependency and no signal.
+	- `shfmt`. Its output fights the shell style the pipeline scripts are written in.
+	- Pedantic clippy. Satisfying it means restructuring away from the reference's shape, which is the one thing parity forbids.
+
 ## Per-language
 
 ### Rust (reference)
@@ -58,6 +64,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - No `thiserror`/`anyhow`, no error-crate ergonomics: the zero-dependency rule outranks them, and `Status` + structured diagnostics already cover the domain.
 
 - Derive (`Debug`, `Clone`, `PartialEq`) rather than hand-roll. Public items get `///` docs. Early returns and `let .. else` over nesting.
+
+- The setters are `#[must_use]`. Surface-only, so parity is untouched - the other three have no equivalent and say the same thing in prose. A dropped `false` means the save that follows writes a config missing the edit and reports success, which is the one failure here that leaves no trace anywhere; the compiler catches it for free in the one language that can.
 
 ### Go
 
@@ -79,19 +87,23 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Control flow mirrors the reference, so it leans more LBYL than idiomatic EAFP. That is the parity rule at work.
 
+- Deliberate deviation: the parser's child/display accelerator maps key on exact tuples of the strings already in hand, where the other three bindings stream an FNV hash and verify hits against the arena. CPython's dict and tuple machinery runs at C speed while a hand-rolled per-byte hash loop does not, and the tuple keys are exactly as injective - same first-wins semantics, same behavior.
+
 - Type hints exist where they pay; the public surface is not yet fully hinted and mypy strict is not a gate.
 
 ### C (and the C++ veneer)
 
 - C11, single header, STB-style (`#define SHCL_IMPLEMENTATION` in one TU). The gate is `-Wall -Wextra -Werror` plus cppcheck.
 
-- Memory model: one bump arena per document, `shcl_free` frees everything, no per-object ownership. Raw pointers are fine here - this is C working as designed, not a RAII gap.
+- Memory model: one bump arena per document, `shcl_free` frees everything, no per-object ownership. Raw pointers are fine here - this is C working as designed, not a RAII gap. The one exception is the node vector, which lives in malloc/realloc storage: a bump arena cannot reclaim the abandoned half of each doubling, and the node array is the biggest thing that doubles.
 
 - Strings are length-delimited byte spans with explicit UTF-8 iteration helpers, because the reference iterates `char`s and byte-wise shortcuts mis-handle multibyte input.
 
 - The C++ veneer (`shcl.hpp`) is a thin typed wrapper over the C core - not a second parser, and kept intentionally small. C++17 (the gate's pin, for broad compiler reach), no exceptions: it returns the same `Status` values the core does.
 
-- Deliberate deviation: the convenience read tier covers only the value types (`shcl_get_int`/`_float`/`_bool`; `get_or<T>` for the veneer's four `get<T>` types). String, raw, datetime, and array reads hand back borrowed memory or lengths that a value-or-default signature cannot express, so those stay on the full `shcl_read_*` tier. The spec's ergonomic-tier section says the same.
+- Deliberate deviation: the convenience read tier covers only the value types (`shcl_get_int`/`_float`/`_bool` and the `_or` spelling of each; `get_or<T>` for the veneer's four `get<T>` types). String, raw, datetime, and array reads hand back borrowed memory or lengths that a value-or-default signature cannot express, so those stay on the full `shcl_read_*` tier. The spec's ergonomic-tier section says the same.
+
+- The read structs stay value+status, where the other three carry `raw`, `line` and `quoted` on the read result. Those two of the three that a C consumer can still ask for are separate accessors - `shcl_line`, `shcl_quoted` - because widening a by-value struct to carry a borrowed span costs every read that never looks at it.
 
 ### Bash and PowerShell (wrappers)
 
@@ -113,7 +125,7 @@ The wins that matter were locked in by the architecture, before any code was hot
 
 - C owns memory with a bump arena per document, plus a scratch arena that resets on every read call. No per-object ownership, no free list - `shcl_free` drops the whole thing.
 
-- The parser builds its `(name, value)` child index as it goes, so lookups and merges never rescan siblings. That index is discarded after parse; the Writer mutates the tree directly instead of maintaining it.
+- The parser builds its `(name, value)` child index as it goes, so lookups and merges never rescan siblings. The index holds hashes and node indices only - key strings are never built; a hit is verified against the arena. It is discarded after parse; the Writer mutates the tree directly instead of maintaining it.
 
 Then there are the habits, which cost nothing to write and are not premature:
 
@@ -137,6 +149,6 @@ Release builds are tuned for size and speed together. The Rust release profile u
 
 - Short sentences. Nested bullets over comma-chained clauses. Minimal bold/italics/caps, no drama, no unicode beyond what the content needs.
 
-- Filenames are lowercase, except `README.md`.
+- Filenames are lowercase, except where a tool or convention fixes the casing: `README.md`, `Cargo.toml`/`Cargo.lock`, `CODEOWNERS`, `FUNDING.yml`, `PSScriptAnalyzerSettings.psd1`.
 
 - Docs update in the same change as the code they describe, not after.

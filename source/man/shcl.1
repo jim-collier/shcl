@@ -1,0 +1,424 @@
+.\" SPDX-License-Identifier: MIT
+.\" Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
+.\"
+.\" Carries no version string on purpose: the release bump touches eight files
+.\" and this is not one of them. Keep it in step with HELP in the four CLIs.
+.TH SHCL 1 2026-08-18 shcl "User Commands"
+.SH NAME
+shcl \- read, edit, validate and format Simple Hierarchical Config Language files
+.SH SYNOPSIS
+.SY shcl
+.RI get \ [ type ]
+.RI [ options ]
+.I FILE PATH
+.YS
+.SY shcl
+.B set
+.RB [ \-\-write ]
+.RI [ options ]
+.I FILE
+.YS
+.SY shcl
+.B fmt
+.RB [ \-\-write ]
+.I FILE
+.YS
+.SY shcl
+.B check
+.RI [ options ]
+.I FILE
+.YS
+.SY shcl
+.B init
+.BI \-\-schema= SCHEMA
+.RB [ \-\-no\-banner ]
+.YS
+.SY shcl
+.BR count | instances
+.RI [ options ]
+.I FILE PATH
+.YS
+.SY shcl
+.BR help | version | about | donate
+.YS
+.SH DESCRIPTION
+.B shcl
+is the reference command for SHCL, the Simple Hierarchical Config Language.
+Everything the language bindings do, it does from a shell: typed reads, edits,
+schema validation, formatting, and starter-config generation. It is one
+dependency-free executable, so it doubles as a config probe for shell scripts,
+makefiles and CI jobs.
+.PP
+Values are stored as plain text and coerced only when the reading side asks for
+a type, so a file can never silently decide that
+.B NO
+means false. A malformed line is skipped or repaired with a diagnostic rather
+than taking down the whole file, which is why a read of an unrelated path still
+answers after a typo three lines up.
+.PP
+Stable diagnostic codes go to stdout and the English prose to stderr, so a
+script can match on
+.B E014
+without parsing a sentence.
+.SH SUBCOMMANDS
+.TP
+.B get
+Read one value, or an array of them, at
+.IR PATH .
+The type is chosen at the call site with a type option; the default is
+.BR \-\-string .
+A trailing
+.RB [ * ]
+in a path segment fans the read across every instance of that segment.
+.TP
+.B set
+Apply edits to
+.IR FILE ,
+the base document, and print the canonical result \- or rewrite
+.I FILE
+in place with
+.BR \-\-write ,
+which creates
+.I FILE
+when nothing is there yet.
+Simple values go in as repeatable
+.B \-\-set
+or
+.B \-\-set\-literal
+options; raw blocks, set-only-if-absent and removal go in as a write-ops script
+on stdin. See
+.B WRITE OPS
+below.
+.TP
+.B fmt
+Print the canonical form of
+.IR FILE ,
+or rewrite it in place with
+.BR \-\-write .
+Comments and their placement survive. With
+.B \-\-layer
+it prints the merged document.
+.TP
+.B check
+Load
+.I FILE
+and print its diagnostics. With
+.BI \-\-schema= SCHEMA
+it also validates the file against a schema, which is itself an ordinary
+.B .shcl
+file. Exits 6 when anything was found at error severity.
+.TP
+.B init
+Print a commented starter config generated from a schema: required fields live,
+optional ones commented out, wildcard paths noted. The footer naming the format
+and pointing at its spec is left out by
+.BR \-\-no\-banner .
+.TP
+.B count
+Print the number of instances at
+.IR PATH .
+.TP
+.B instances
+Print the instance values at
+.IR PATH ,
+one per line.
+.TP
+.BR help ", " version ", " about ", " donate
+Print this command's help, its version, what SHCL is, or where to support it.
+The first two are also
+.BR \-h / \-\-help
+and
+.BR \-v / \-V / \-\-version ;
+the last two are also
+.B \-\-about
+and
+.BR \-\-donate .
+A bare
+.B shcl
+with no arguments prints the help and exits 0.
+.SH TYPE OPTIONS
+Valid on
+.B get
+only. The default is
+.BR \-\-string .
+.TP
+.BR \-\-int ", " \-\-float ", " \-\-bool ", " \-\-datetime ", " \-\-string ", " \-\-raw ", " \-\-rawinfo
+Read the value as that type.
+.B \-\-rawinfo
+reads a raw block's info-string \- the tag on its fence line \- rather than its
+content.
+.TP
+.B \-\-array
+Read the value as an array of the chosen type.
+.SH OPTIONS
+The subcommands each option belongs to are named in parentheses. An option a
+subcommand does not use is a usage error, not something quietly ignored.
+.TP
+.BI \-\-default= VALUE
+.RB ( get )
+Value to print when the read comes back anything but Good. Implies
+.BR \-\-on\-bad=default ;
+for arrays it is substituted per bad slot.
+.TP
+.BR \-\-on\-bad= error | default | flag
+.RB ( get )
+What a failed read does.
+.B error
+fails loudly;
+.B default
+prints the default;
+.B flag
+prints the value anyway and reports through the exit code. The last is the
+default.
+.TP
+.B \-\-slots
+.RB ( get )
+Prefix each output line with its slot status and a tab \- per element for an
+array, per matched instance for a wildcard.
+.TP
+.B \-\-no\-banner
+.RB ( init )
+Leave out the footer naming the format and pointing at its spec.
+.TP
+.BR \-\-write ", " \-w
+.RB ( fmt ", " set )
+Rewrite
+.I FILE
+in place instead of printing to stdout. The write goes through a temp file and
+a rename, so an interrupted run cannot truncate the config. On
+.B set
+a
+.I FILE
+that does not exist yet is created;
+.B fmt
+has nothing to format and reports it missing.
+.TP
+.B \-\-lossy
+.RB ( fmt ", " set )
+With
+.BR \-\-write ,
+rewrite even when the load dropped lines this write would delete. Without it
+the write refuses and nothing is changed.
+.TP
+.BR \-\-strictness= loose | standard | strict
+.RB "(all but " init )
+How much the loader tolerates; also spelled
+.BR 1 ,
+.B 2
+and
+.BR 3 .
+Default
+.BR standard .
+.B init
+takes no strictness because a schema is a program artifact and always loads at
+standard.
+.TP
+.BI \-\-schema= SCHEMA
+.RB ( check ", " init )
+The schema file. On
+.B check
+it adds
+.BR V ###
+diagnostics; on
+.B init
+it is what the starter config is generated from.
+.TP
+.BI \-\-layer= FILE
+.RB ( get ", " fmt ", " count ", " instances ", " set )
+Merge a lower-priority layer under
+.IR FILE .
+Repeatable; earlier means lower priority.
+.B check
+takes no layers, because diagnostics cite line numbers and a merged document
+has no single file to number against \- pipe
+.B shcl fmt
+into
+.B shcl check
+instead.
+.TP
+.BI \-\-set= PATH = VALUE
+.RB ( get ", " fmt ", " count ", " instances ", " set )
+Override one path as the topmost layer, after every file. Repeatable. On
+.B set
+it is an edit to the document itself, so it persists with
+.BR \-\-write .
+.I VALUE
+goes in as data: its type still follows the text, so
+.B 8
+is an int, but a comma or a quote in it is content rather than syntax.
+.TP
+.BI \-\-set\-literal= PATH = TEXT
+.RB ( get ", " fmt ", " count ", " instances ", " set )
+As
+.BR \-\-set ,
+except
+.I TEXT
+goes in as value syntax the way a file spells it \- so
+.B ports=80, 443
+writes a two-element array. An unquoted
+.B #
+ends the value, and text spanning lines is rejected.
+.PP
+Value options accept either spelling:
+.BI \-\-default= VALUE
+or
+.BR "\-\-default " VALUE .
+In the space form the next argument is taken as the value whatever it looks
+like, so
+.B \-\-default \-\-int
+reads
+.B \-\-int
+as the default. Use
+.B \-\-
+to end the options when a
+.I FILE
+or
+.I PATH
+begins with a dash.
+.PP
+.I FILE
+may be
+.B \-
+for stdin. With
+.BR \-\-layer ,
+.I FILE
+is the highest file layer and each
+.B \-\-layer
+is merged under it in order;
+.B \-\-set
+applies last.
+.SH WRITE OPS
+.B set
+reads a write-ops script on stdin when no
+.B \-\-set
+or
+.B \-\-set\-literal
+option carries the edits. One op per line, fields separated by tabs:
+.PP
+.RS
+.nf
+int|float|bool|string|datetime<TAB>PATH<TAB>VALUE
+<type>\-array<TAB>PATH<TAB>V1<TAB>V2...
+<type>[\-array]\-default<TAB>...
+literal[\-default]<TAB>PATH<TAB>TEXT
+raw<TAB>PATH<TAB>INFO<TAB>CONTENT
+empty<TAB>PATH
+comment<TAB>PATH<TAB>TEXT
+remove<TAB>PATH
+.fi
+.RE
+.PP
+The
+.B \-default
+forms write only if the path is absent. String and raw values decode
+.BR \en ,
+.B \et
+and
+.BR \e\e ,
+and a line starting with
+.B #
+is a script comment.
+.PP
+.I FILE
+given as
+.B \-
+follows stdin: it is the piped document when an option holds the edits, and an
+empty base when the ops script has stdin instead.
+.SH WRITING IN PLACE
+An in-place write prints whatever the load found to stderr, and refuses
+outright when the load dropped content the rewrite would delete \- a typo does
+not cost the line above it.
+.B \-\-lossy
+is how to say it was meant.
+.SH EXIT STATUS
+.TP
+.B 0
+Good.
+.TP
+.B 1
+Usage or I/O error.
+.TP
+.B 2
+The value is empty.
+.TP
+.B 3
+The path was not found.
+.TP
+.B 4
+The value is not readable as the requested type.
+.TP
+.B 5
+Multiple instances matched where one was wanted.
+.TP
+.B 6
+.B check
+found errors, or a strict load failed.
+.SH EXAMPLES
+Read an int, with a fallback when the field is absent:
+.PP
+.RS
+.nf
+shcl get \-\-int server.shcl workers
+shcl get \-\-int \-\-default=8 server.shcl thread\-pool
+.fi
+.RE
+.PP
+Count repeated fields, then fan one read across every instance:
+.PP
+.RS
+.nf
+shcl count server.shcl site
+shcl get \-\-array \-\-slots server.shcl 'site[*].tls.hsts'
+.fi
+.RE
+.PP
+Validate against a schema and gate a build on the exit code:
+.PP
+.RS
+.nf
+shcl check \-\-schema=app\-schema.shcl app.shcl
+.fi
+.RE
+.PP
+Generate a starter config for your own users:
+.PP
+.RS
+.nf
+shcl init \-\-schema=app\-schema.shcl > app.shcl
+.fi
+.RE
+.PP
+Normalize and edit a file in place:
+.PP
+.RS
+.nf
+shcl fmt \-\-write server.shcl
+shcl set \-\-write server.shcl \-\-set 'workers=8'
+.fi
+.RE
+.PP
+Validate a merged document, which
+.B check
+will not do directly:
+.PP
+.RS
+.nf
+shcl fmt \-\-layer=base.shcl site.shcl | shcl check \-\-schema=s.shcl \-
+.fi
+.RE
+.SH SEE ALSO
+The language spec, the formal grammar and the Rust, Go, Python and C bindings:
+.UR https://github.com/jim\-collier/shcl
+.UE
+.PP
+Bash and PowerShell wrappers ship alongside this command and give the same
+reads as shell functions.
+.SH BUGS
+Report them at
+.UR https://github.com/jim\-collier/shcl/issues
+.UE
+.SH AUTHOR
+Jim Collier
+.SH COPYRIGHT
+Copyright \(co 2026 Jim Collier. Licensed under the MIT License. No warranty.
+SHCL is a trademark of Jim Collier.

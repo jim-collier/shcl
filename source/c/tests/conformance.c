@@ -16,6 +16,21 @@
 #include <locale.h>
 #include <errno.h>
 #include <dirent.h>
+#ifdef _WIN32
+#include <direct.h>   // _mkdir - windows' mkdir takes no mode argument
+#else
+#include <sys/stat.h>   // the file-mode fixture stats and chmods for itself
+#endif
+
+// Temp root for the file-tier fixture. TMPDIR is the POSIX spelling; windows
+// sets TEMP/TMP and has no /tmp to fall back on.
+static const char *tmp_root(void) {
+	const char *v;
+	if ((v = getenv("TMPDIR")) && *v) return v;
+	if ((v = getenv("TEMP")) && *v) return v;
+	if ((v = getenv("TMP")) && *v) return v;
+	return "/tmp";
+}
 
 static int nfail = 0;
 static void fail(const char *at, const char *msg) { fprintf(stderr, "FAIL %s: %s\n", at, msg); nfail++; }
@@ -391,7 +406,7 @@ int main(int argc, char **argv) {
 				int v99 = 0;
 				for (size_t i = 0; i < shcl_diag_count(sd); i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) v99 = 1;
 				shcl_validation *vv = v99 ? NULL : shcl_validate(vd, sd);
-				if (vv) shcl_suppress_declared_repeats(sd, vd);
+				if (vv) { shcl_suppress_declared_repeats(sd, vd); shcl_suppress_declared_reopens(sd, vd); }
 				size_t nd = shcl_diag_count(vd), nv = vv ? shcl_validation_count(vv) : 0, nerr = 0;
 				size_t total = nd + nv + (v99 ? 1 : 0);
 				char *vj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
@@ -445,7 +460,9 @@ int main(int argc, char **argv) {
 			char *ltexts[65]; size_t llens[65]; int nt = 0;
 			shcl_doc *md = NULL;
 			for (int li = 0; li < nlayer; li++) {
-				snprintf(path, sizeof path, "%s/%s/%s", corpus, names[ci], layerNames[li]);
+				// The precision is the same 256 the store above enforces: without it the
+				// compiler bounds layerNames[li] by the whole array, not by one row.
+				snprintf(path, sizeof path, "%s/%s/%.255s", corpus, names[ci], layerNames[li]);
 				ltexts[nt] = read_file(path, &llens[nt]);
 				shcl_doc *dd = shcl_parse(ltexts[nt], llens[nt]); nt++;
 				if (!md) md = dd; else { shcl_merge(md, dd); shcl_free(dd); }
@@ -531,11 +548,33 @@ int main(int argc, char **argv) {
 		if (qr.value != 3 || qr.status != SHCL_GOOD) fail("paths", "quoted segment read failed");
 		shcl_free(pd);
 	}
-	// line()/children(): read-surface accessors. Same fixture in every runner
-	// (the read structs stay value+status here by design).
+	// A raw body is the only content kept untrimmed, so it is the only place a
+	// trailing CR survives the load - and one written back becomes CRLF, which
+	// reads as neither. The whole trailing run comes off instead; a CR inside a
+	// line is content and stays. Same fixture in every runner: a golden would be
+	// rewritten by any platform's line-ending translation.
+	{
+		const char *rt = "r:\n\t~~~\n\tone\r\r\n\ta\rb\n\t~~~\n";
+		shcl_doc *rd = shcl_parse(rt, strlen(rt));
+		shcl_read_str rr = shcl_read_raw(rd, "r", 1);
+		if (rr.value.n != 7 || memcmp(rr.value.p, "one\na\rb", 7) != 0) fail("raw", "trailing CR run not normalized");
+		shcl_str rc = shcl_to_canonical(rd);
+		shcl_doc *rd2 = shcl_parse(rc.p, rc.n);
+		shcl_str rc2 = shcl_to_canonical(rd2);
+		if (rc.n != rc2.n || memcmp(rc.p, rc2.p, rc.n) != 0) fail("raw", "raw block with CR is not a formatter fixpoint");
+		shcl_free(rd2);
+		shcl_free(rd);
+	}
+	// line()/quoted()/children(): read-surface accessors. Same fixture in every
+	// runner - the other three carry line and quoted on the read result, C
+	// keeps its read structs value+status and answers with these instead.
 	{
 		const char *lt = "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n";
 		shcl_doc *ld = shcl_parse(lt, strlen(lt));
+		if (shcl_quoted(ld, "a", 1)) fail("quoted", "unquoted read reports quoted");
+		if (!shcl_quoted(ld, "b", 1)) fail("quoted", "quoted read not flagged");
+		if (shcl_quoted(ld, "code", 4)) fail("quoted", "a block reports quoted");
+		if (shcl_quoted(ld, "missing", 7)) fail("quoted", "missing path reports quoted");
 		if (shcl_line(ld, "code.done", 9) != 6) fail("line", "code.done not line 6");
 		if (shcl_line(ld, "code", 4) != 3) fail("line", "code not line 3");
 		if (shcl_line(ld, "missing", 7) != 0) fail("line", "missing path not 0");
@@ -564,6 +603,179 @@ int main(int argc, char **argv) {
 		if (shcl_children(ld, "missing", 7, &cv) != 0) fail("children", "missing path not empty");
 		shcl_free(ld);
 	}
+	// authored_name: the author's spelling, unfolded; merged instances keep the
+	// first binding's; unresolved or Multiple is empty; writer-built keeps the
+	// setter path's spelling. Same fixture in every runner.
+	{
+		const char *nt = "SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n";
+		shcl_doc *nd = shcl_parse(nt, strlen(nt));
+		shcl_str sn = shcl_authored_name(nd, "symbols", 7);
+		if (sn.n != 7 || memcmp(sn.p, "SYMBOLS", 7) != 0) fail("authored_name", "symbols spelling mismatch");
+		sn = shcl_authored_name(nd, "code", 4);
+		if (sn.n != 4 || memcmp(sn.p, "Code", 4) != 0) fail("authored_name", "code spelling mismatch");
+		if (shcl_authored_name(nd, "missing", 7).n != 0) fail("authored_name", "missing path not empty");
+		if (!shcl_set_int(nd, "NewTop.n", 8, 1)) fail("authored_name", "set_int NewTop.n failed");
+		sn = shcl_authored_name(nd, "newtop", 6);
+		if (sn.n != 6 || memcmp(sn.p, "NewTop", 6) != 0) fail("authored_name", "newtop spelling mismatch");
+		shcl_free(nd);
+		// Escapes ARE resolved on a name, so both spellings of the path find the
+		// same node - while shcl_authored_name still hands back the source
+		// spelling, which is the one thing it is for. Same fixture everywhere.
+		const char *et = "\"Ab\\tCd\": 2\n";
+		shcl_doc *ed = shcl_parse(et, strlen(et));
+		sn = shcl_authored_name(ed, "\"ab\\tcd\"", 8);
+		if (sn.n != 6 || memcmp(sn.p, "Ab\\tCd", 6) != 0) fail("authored_name", "escaped spelling mismatch");
+		sn = shcl_authored_name(ed, "\"ab\tcd\"", 7); // a real tab: one byte shorter than the escaped spelling
+		if (sn.n != 6 || memcmp(sn.p, "Ab\\tCd", 6) != 0) fail("authored_name", "literal spelling mismatch");
+		if (shcl_read_int(ed, "\"ab\tcd\"", 7).value != 2) fail("authored_name", "read via the literal spelling failed");
+		{
+			// Canonical output folds the case, as it always has, and escapes the tab.
+			const char *ec = "\"ab\\tcd\": 2\n";
+			shcl_str cn = shcl_to_canonical(ed);
+			if (cn.n != strlen(ec) || memcmp(cn.p, ec, cn.n) != 0) fail("authored_name", "canonical name spelling moved");
+		}
+		shcl_free(ed);
+	}
+	// The get-tier value survives only on Good; Empty/BadType/NotFound all fall
+	// back to the call-site default, so a real zero can't be faked. `_or` is the
+	// cross-binding spelling for it, so a routine ported between two bindings
+	// cannot keep the call name while changing which tier it lands on. Same
+	// fixture in every runner (C's convenience tier is the value types only).
+	{
+		const char *ct = "a: 42\nb: not-a-number\ne:\n";
+		shcl_doc *cd = shcl_parse(ct, strlen(ct));
+		if (shcl_get_int_or(cd, "a", 1, 9) != 42) fail("get_or", "Good did not read through");
+		if (shcl_get_int_or(cd, "b", 1, 9) != 9) fail("get_or", "BadType did not fall back");
+		if (shcl_get_int_or(cd, "e", 1, 9) != 9) fail("get_or", "Empty did not fall back");
+		if (shcl_get_int_or(cd, "missing", 7, 9) != 9) fail("get_or", "NotFound did not fall back");
+		if (shcl_get_float_or(cd, "missing", 7, 1.5) != 1.5) fail("get_or", "float did not fall back");
+		if (shcl_get_bool_or(cd, "missing", 7, 1) != 1) fail("get_or", "bool did not fall back");
+		// The ok predicate and the convenience tier deliberately disagree on an
+		// explicitly emptied field: one asks whether the author spoke for it, the
+		// other whether there is a usable value.
+		if (!shcl_status_ok(shcl_read_int(cd, "e", 1).status)) fail("status_ok", "an emptied field is not ok");
+		if (shcl_status_ok(shcl_read_int(cd, "missing", 7).status)) fail("status_ok", "a missing field is ok");
+		shcl_free(cd);
+	}
+	// load_file/save_file: the status separates absent / unreadable / parsed
+	// with errors / clean, and a save round-trips through the atomic write.
+	// Same fixture in every runner.
+	{
+		char tdir[256], tfile[288];
+		snprintf(tdir, sizeof tdir, "%s/shcl-filetier-%ld", tmp_root(), (long)getpid());
+#ifdef _WIN32
+		if (_mkdir(tdir) != 0) fail("file_tier", "mkdir failed");
+#else
+		if (mkdir(tdir, 0700) != 0) fail("file_tier", "mkdir failed");
+#endif
+		snprintf(tfile, sizeof tfile, "%s/t.shcl", tdir);
+		shcl_file_status fst;
+		shcl_doc *fd = shcl_load_file(tfile, &fst);
+		if (fst != SHCL_FILE_NOT_FOUND) fail("file_tier", "missing file status");
+		shcl_free(fd);
+		fd = shcl_load_file(tdir, &fst); // a directory is not readable
+		if (fst != SHCL_FILE_UNREADABLE) fail("file_tier", "directory status");
+		shcl_free(fd);
+		// Bad encoding is unreadable too: the parser assumes well-formed text, so a
+		// binary file loading clean would read back mangled and a later save would
+		// write the mangled version over the original.
+		{
+			FILE *bf = fopen(tfile, "wb");
+			if (!bf || fputs("a: 1\nb: \xff\xfe bad\n", bf) == EOF || fclose(bf) != 0) fail("file_tier", "seed write failed");
+			fd = shcl_load_file(tfile, &fst);
+			if (fst != SHCL_FILE_UNREADABLE) fail("file_tier", "bad encoding status");
+			if (shcl_to_canonical(fd).n != 0) fail("file_tier", "bad encoding document");
+			shcl_free(fd);
+		}
+		FILE *tf = fopen(tfile, "wb");
+		if (!tf || fputs("a: 1\n: broken\n", tf) == EOF || fclose(tf) != 0) fail("file_tier", "seed write failed");
+		fd = shcl_load_file(tfile, &fst);
+		if (fst != SHCL_FILE_HAD_ERRORS) fail("file_tier", "broken file status");
+		if (shcl_get_int(fd, "a", 1, 0) != 1) fail("file_tier", "broken file read");
+		shcl_free(fd);
+		tf = fopen(tfile, "wb");
+		if (!tf || fputs("a: 1\nb: x\n", tf) == EOF || fclose(tf) != 0) fail("file_tier", "seed rewrite failed");
+		fd = shcl_load_file(tfile, &fst);
+		if (fst != SHCL_FILE_CLEAN) fail("file_tier", "clean file status");
+		if (!shcl_set_int(fd, "c", 1, 3)) fail("file_tier", "set_int failed");
+		if (shcl_save_file(fd, tfile) != SHCL_SAVE_OK) fail("file_tier", "save failed");
+		shcl_doc *fb = shcl_load_file(tfile, &fst);
+		shcl_str c1 = shcl_to_canonical(fd), c2 = shcl_to_canonical(fb);
+		if (fst != SHCL_FILE_CLEAN || c1.n != c2.n || memcmp(c1.p, c2.p, c1.n) != 0) fail("file_tier", "save round-trip mismatch");
+		shcl_free(fb); shcl_free(fd);
+		// Creating a file and overwriting one are two different code paths in
+		// the write - the create picks its own mode, the overwrite copies the
+		// target's, and the publish step differs by platform (windows goes
+		// through ReplaceFile, with a rename fallback). Both run everywhere: an
+		// overwrite used to throw outright on windows in the python binding,
+		// which no POSIX-only fixture could ever have caught. Same fixture in
+		// every runner.
+		{
+			char fresh[320];
+			snprintf(fresh, sizeof fresh, "%s/fresh.shcl", tdir);
+			shcl_doc *nd = shcl_parse("a: 1\n", 5);
+			for (int pass = 0; pass < 2; pass++) {
+				if (shcl_save_file(nd, fresh) != SHCL_SAVE_OK) fail("file_tier", pass ? "overwrite save failed" : "new file save failed");
+				shcl_doc *nb = shcl_load_file(fresh, &fst);
+				shcl_str nc = shcl_to_canonical(nb);
+				if (fst != SHCL_FILE_CLEAN || nc.n != 5 || memcmp(nc.p, "a: 1\n", 5) != 0) fail("file_tier", pass ? "overwritten file round-trip" : "new file round-trip");
+				shcl_free(nb);
+			}
+			// A new file lands where an ordinary create lands - 0666 narrowed
+			// by the umask - and an existing one keeps the mode it had. Neither
+			// is visible on stdout, so no corpus case can see either, and
+			// neither is a windows concept, so the mode half is POSIX-only.
+#ifndef _WIN32
+			{
+				char probe[320], born[320];
+				snprintf(probe, sizeof probe, "%s/probe", tdir);
+				snprintf(born, sizeof born, "%s/born.shcl", tdir);
+				FILE *pf = fopen(probe, "wb");
+				if (!pf || fclose(pf) != 0) fail("file_tier", "probe create failed");
+				struct stat ps, ns;
+				if (stat(probe, &ps) != 0) fail("file_tier", "probe stat failed");
+				if (shcl_save_file(nd, born) != SHCL_SAVE_OK) fail("file_tier", "new file save failed");
+				if (stat(born, &ns) != 0) fail("file_tier", "new file stat failed");
+				if ((ns.st_mode & 0777) != (ps.st_mode & 0777)) fail("file_tier", "new file mode");
+				if (chmod(born, 0640) != 0) fail("file_tier", "chmod failed");
+				if (shcl_save_file(nd, born) != SHCL_SAVE_OK) fail("file_tier", "existing file save failed");
+				if (stat(born, &ns) != 0) fail("file_tier", "existing file stat failed");
+				if ((ns.st_mode & 0777) != 0640) fail("file_tier", "existing file mode");
+				remove(probe); remove(born);
+			}
+#endif
+			shcl_free(nd);
+			remove(fresh);
+		}
+		// Content-malformed lines are retained as trivia (lost 0, the line
+		// survives a save); position-dependent drops count as lost and make
+		// shcl_save_file refuse until the caller opts into the lossy save.
+		// Same fixture in every runner.
+		const char *kt = "a: 1\nsquare-miles 300\nb: 2\n";
+		shcl_doc *kd = shcl_parse(kt, strlen(kt));
+		if (shcl_lost_count(kd) != 0) fail("lost", "kept lost_count not 0");
+		shcl_str kc = shcl_to_canonical(kd);
+		if (!contains(kc.p, kc.n, "square-miles 300\n")) fail("lost", "retained line missing");
+		const char *lt2 = "a:\n\tb: 1\n  c: 2\n"; // indent matches no level
+		shcl_doc *lo = shcl_parse(lt2, strlen(lt2));
+		if (shcl_lost_count(lo) != 1) fail("lost", "lost_count not 1");
+		if (shcl_save_file(kd, tfile) != SHCL_SAVE_OK) fail("lost", "kept save failed");
+		shcl_doc *kb = shcl_load_file(tfile, &fst);
+		shcl_str kbc = shcl_to_canonical(kb);
+		if (!contains(kbc.p, kbc.n, "square-miles 300\n")) fail("lost", "retained line lost through save");
+		shcl_free(kb);
+		if (shcl_save_file(lo, tfile) != SHCL_SAVE_REFUSED) fail("lost", "save did not refuse a lossy save");
+		if (shcl_save_file_lossy(lo, tfile) != SHCL_SAVE_OK) fail("lost", "lossy save failed");
+		// A refusal and a failed write are separate values, not two spellings of
+		// one message, and the gate answers before any i/o - so an unwritable path
+		// still reports the refusal. Same fixture in every runner.
+		char bad[320];
+		snprintf(bad, sizeof bad, "%s/nope/t.shcl", tdir);
+		if (shcl_save_file(kd, bad) != SHCL_SAVE_FAILED) fail("lost", "a failed write did not report as one");
+		if (shcl_save_file(lo, bad) != SHCL_SAVE_REFUSED) fail("lost", "refusal did not survive an unwritable path");
+		shcl_free(lo); shcl_free(kd);
+		remove(tfile); rmdir(tdir);
+	}
 	// write_reason: the reason behind a setter's bare 0. Same fixture in every
 	// runner.
 	{
@@ -582,6 +794,14 @@ int main(int argc, char **argv) {
 			for (size_t i = 0; i < 513; i++) { if (i) deep[dn++] = '.'; deep[dn++] = 'd'; }
 			if (shcl_write_reason_(wd, deep, dn) != SHCL_W_TOO_DEEP) fail("write_reason", "513 segments not too deep");
 		}
+		// A literal line break in a SELECTOR: the binding would emit across two
+		// lines and reparse as neither, and the value emitter never escapes one.
+		// In a NAME it is writable - names emit through the name escaper, which
+		// spells a line break \n, so the escaped and literal spellings are one
+		// path now. Not corpus-pinnable - an ops line cannot carry a raw newline.
+		if (shcl_write_reason_(wd, "a[\"p\nq\"].b", 10) != SHCL_W_BAD_PATH) fail("write_reason", "newline in selector not flagged");
+		if (shcl_write_reason_(wd, "\"x\ny\".b", 7) != SHCL_W_WRITABLE) fail("write_reason", "newline in name not writable");
+		if (shcl_write_reason_(wd, "\"x\\ny\".b", 8) != SHCL_W_WRITABLE) fail("write_reason", "escaped newline not writable");
 		// The probe never creates: the doc is unchanged after all of the above.
 		if (shcl_count(wd, "a", 1) != 1) fail("write_reason", "probe created nodes");
 		shcl_free(wd);

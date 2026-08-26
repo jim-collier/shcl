@@ -15,7 +15,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shcl"
-version = "1.2.0"
+version = "2.0.0"
 description = "SHCL - Simple Hierarchical Config Language. Parser, accessor, writer, and formatter."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -43,3 +43,46 @@ Changelog = "https://github.com/jim-collier/shcl/blob/main/changelog.md"
 
 [tool.setuptools]
 py-modules = ["shcl"]
+
+## Lint and type settings live here rather than on the command line, so running
+## `ruff`/`mypy` by hand gives the same answer the pipeline gets.
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+## Curated on purpose. A full selection reports well over a hundred findings,
+## nearly all of them shapes this binding is required to keep: it mirrors the
+## Rust reference function for function so the two stay byte-identical, and
+## "more Pythonic" here means "diverged". These are the groups whose findings
+## are real.
+select = ["E", "W", "F", "UP", "B", "SIM", "C4", "RET", "RUF"]
+ignore = [
+	## Tabs indent this project, by decision. W191 is that decision restated as
+	## an error, and IndentWithSpaces is not on offer.
+	"W191",
+	"E501",     ## long lines are readable here; wrapping the tables hurts more
+	"B905",     ## zip(strict=) is 3.10, and this package supports 3.9
+	"SIM102",   ## nested ifs mirror the reference's branch structure
+	"SIM105",   ## contextlib.suppress reads better but diverges from the ports
+	"SIM108",   ## the if/else spells out what the reference spells out
+	"RUF005",   ## plain concatenation is clearer than unpacking here
+	## Both of these want alphabetical order. Field and export order mirror the
+	## reference instead, which is what keeps a diff between bindings readable.
+	"RUF022",
+	"RUF023",
+]
+
+[tool.mypy]
+## mypy 2.x dropped 3.9 as a target; ruff still holds the syntax to 3.9, which is
+## the floor the package actually claims.
+python_version = "3.10"
+files = ["shcl.py", "cmd/shcl/main.py", "tests/conformance.py"]
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+strict_equality = true
+## The parser assigns a narrower type back over a wider one in a few places
+## where the reference uses an enum the Python version spells as a union.
+disable_error_code = ["assignment"]

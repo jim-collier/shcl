@@ -11,6 +11,7 @@
 
 ##	- Purpose: Local CI/CD pipeline. Generic engine, per-project settings live in config.bash.
 ##	- Stages (fail-fast, any error aborts before the next stage):
+##	   0. remote sync (fast-forward from upstream before anything is built)
 ##	   1. format (in place locally; check-only under --ci)
 ##	   2. build (debug - what the tests run against)
 ##	   3. lint (project lint + shellcheck of the cicd scripts themselves)
@@ -27,14 +28,18 @@
 ##	   --ci                correctness gate only: format check (no rewrite), build,
 ##	                       lint, tests; non-interactive, no cross/publish. This is
 ##	                       what the GitHub workflow runs - one definition of "passing".
-##	   --quick             skip the slow stages: cross-compile, profiler, demo gif
+##	   --quick             skip the slow stages: large-document gate, cross-compile,
+##	                       profiler, demo gif; tests run at the shorter fuzz depth
+##	                       when the config carries TEST_QUICK_CMD
 ##	   -q, --quiet         quiet + unattended (no prompt)
 ##	   -y, --yes           unattended (no prompt) but not quiet
 ##	   -m, --message MSG   publish hands-off with this commit message (no editor)
+##	   --no-sync           skip the remote sync stage
 ##	   --no-fmt            skip the formatter stage
 ##	   --no-lint           skip the lint stage
 ##	   --no-cross          skip the cross-compile targets (native release still builds)
 ##	   --no-package        skip building installer packages (.deb/.rpm/NSIS setup)
+##	   --no-largedoc       skip the large-document gate in the tests stage
 ##	   --no-profile        skip the profiler stage
 ##	   --no-dogfood        skip installing the native release build locally
 ##	   --no-gif            skip the demo gif refresh
@@ -70,7 +75,7 @@ export CPU_CAP
 ## Per-stage extras: eval'd strings run after the stage's primary command, so a
 ## second binding (Go, C, ...) adds its fmt/build/lint/test commands in config
 ## without touching engine code. All default empty.
-FMT_EXTRA=(); FMT_CHECK_EXTRA=(); BUILD_EXTRA=(); LINT_EXTRA=(); TEST_EXTRA=()
+FMT_EXTRA=(); FMT_CHECK_EXTRA=(); BUILD_EXTRA=(); LINT_EXTRA=(); TEST_EXTRA=(); TEST_QUICK_CMD=()
 PACKAGE_ENABLE=0   ## config opts in; installer packages built off the release artifacts
 fRunExtras(){ local c; for c in "$@"; do fEcho_Clean "extra: ${c}"; eval "${c}"; done; }
 
@@ -81,16 +86,18 @@ cd "${root}"
 stamp="$(date +%Y%m%d-%H%M%S)"
 
 ## Parse options.
-assume_yes=0; quiet=0; ci_mode=0; quick=0; cli_message=""
+assume_yes=0; quiet=0; ci_mode=0; quick=0; cli_message=""; sync_enable=1
 while (($#)); do case "$1" in
 	--ci)                     ci_mode=1; assume_yes=1; shift ;;
 	--quick)                  quick=1; shift ;;
 	-q|--quiet)               quiet=1; assume_yes=1; shift ;;
 	-y|--yes)                 assume_yes=1; shift ;;
+	--no-sync)                sync_enable=0; shift ;;
 	--no-fmt)                 FMT_CMD=(); FMT_CHECK_CMD=(); FMT_EXTRA=(); FMT_CHECK_EXTRA=(); shift ;;
 	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); LINT_EXTRA=(); shift ;;
 	--no-cross)               CROSS_TARGETS=(); shift ;;
 	--no-package)             PACKAGE_ENABLE=0; shift ;;
+	--no-largedoc)            LARGEDOC_MIB=0; shift ;;
 	--no-profile)             PROFILE_ENABLE=0; shift ;;
 	--no-dogfood)             DOGFOOD_FIXED_DESTS=(); shift ;;
 	--no-gif)                 GIF_ENABLE=0; shift ;;
@@ -103,6 +110,7 @@ esac; done
 
 ## --ci: correctness only, deterministic, side-effect free.
 if ((ci_mode)); then
+	sync_enable=0       ## the runner already checked out the exact commit under test
 	FMT_CMD=()          ## check-only via FMT_CHECK_CMD; never rewrite in CI
 	CROSS_TARGETS=()
 	RELEASE_NATIVE_CMD=()
@@ -115,10 +123,12 @@ else
 	FMT_CHECK_CMD=()    ## locally the formatter rewrites in place instead
 fi
 if ((quick)); then
+	LARGEDOC_MIB=0     ## minutes of parsing; the fast loop is for the small cases
 	CROSS_TARGETS=()
 	PACKAGE_ENABLE=0   ## artifact set is partial without cross targets
 	PROFILE_ENABLE=0
 	GIF_ENABLE=0
+	((${#TEST_QUICK_CMD[@]})) && TEST_CMD=("${TEST_QUICK_CMD[@]}")
 fi
 
 ## Publish commit message: -m wins, then config, then a default when unattended.
@@ -157,13 +167,14 @@ if ((! quiet)); then
 	fEcho_Clean "${APP_NAME} $( ((ci_mode)) && echo 'CI gate' || echo 'local CI/CD')"
 	fEcho_Clean
 	fEcho_Clean "Repo root ......: ${root}"
+	fEcho_Clean "Remote sync ....: $( ((sync_enable)) && echo 'fast-forward when behind; abort when diverged' || echo '(skipped)')"
 	fEcho_Clean "Format .........: $( ((ci_mode)) && echo "${FMT_CHECK_CMD[*]:-(none configured)}" || echo "${FMT_CMD[*]:-(skipped)}")$( ((${#FMT_EXTRA[@]} + ${#FMT_CHECK_EXTRA[@]})) && echo "  (+ extras)" )"
 	fEcho_Clean "Build (debug) ..: ${BUILD_CMD[*]:-(none configured)}$( ((${#BUILD_EXTRA[@]})) && echo "  (+ ${#BUILD_EXTRA[@]} extra)" )"
 	fEcho_Clean "Lint ...........: ${LINT_CMD[*]:-(none configured)}$( ((${#LINT_EXTRA[@]})) && echo "  (+ ${#LINT_EXTRA[@]} extra)" )  + shellcheck: ${#SHELLCHECK_TARGETS[@]} file(s)"
-	fEcho_Clean "Tests ..........: ${TEST_CMD[*]:-(none configured)}$( ((${#TEST_EXTRA[@]})) && echo "  (+ ${#TEST_EXTRA[@]} extra)" )  + crosscheck: ${#BINDING_CLIS[@]} binding(s)"
+	fEcho_Clean "Tests ..........: ${TEST_CMD[*]:-(none configured)}$( ((${#TEST_EXTRA[@]})) && echo "  (+ ${#TEST_EXTRA[@]} extra)" )  + crosscheck: ${#BINDING_CLIS[@]} binding(s)$( ((LARGEDOC_MIB)) && echo "  + large doc: ${LARGEDOC_MIB} MiB" )"
 	fEcho_Clean "Profiler .......: $( ((PROFILE_ENABLE)) && echo "${PROFILE_SECS}s run -> flamegraph SVG -> ${PROFILE_OUT_DIR}/" || echo '(skipped)')"
 	if ((${#RELEASE_NATIVE_CMD[@]})); then
-		fEcho_Clean "Release ........: native + ${#CROSS_TARGETS[@]} cross target(s) -> ${RELEASE_ARTIFACT_DIR}/"
+		fEcho_Clean "Release ........: native + ${#CROSS_TARGETS[@]} cross target(s) + ${#CROSS_CHECKS[@]} cross check(s) -> ${RELEASE_ARTIFACT_DIR}/"
 	else
 		fEcho_Clean "Release ........: (skipped)"
 	fi
@@ -206,6 +217,45 @@ if declare -p TOOL_PINS &>/dev/null; then
 			fEcho "WARNING: ${pin_name} drifted from pin ${pin_ver}: ${have}"
 		fi
 	done
+fi
+
+## Stage 0: take the remote's work before anything is built, so the pipeline
+## validates the tree that will be pushed. The publish stage pulls too, but that
+## happens after the tests - a change merged upstream meanwhile would go out
+## having never been built here.
+if ((sync_enable)); then
+	fSection "0/9  Remote sync"
+	branch="$(git -C "${root}" symbolic-ref --quiet --short HEAD || true)"
+	upstream="$(git -C "${root}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+	if [[ -z "$branch" ]]; then
+		fEcho "WARNING: detached HEAD; nothing to sync"
+	elif [[ -z "$upstream" ]]; then
+		fEcho "WARNING: ${branch} tracks no upstream; nothing to sync"
+	elif ! git -C "${root}" fetch --quiet 2>/dev/null; then
+		fEcho "WARNING: fetch failed (offline?); continuing against the local tree"
+	else
+		## Counts either side of the merge base, so "diverged" is distinguishable
+		## from "behind" - only the latter can fast-forward.
+		read -r ahead behind < <(git -C "${root}" rev-list --left-right --count "HEAD...${upstream}")
+		if   ((ahead && behind)); then fDie "${branch} and ${upstream} have diverged (${ahead} local, ${behind} remote); reconcile by hand"
+		elif ((behind)); then
+			## Stash-wrapped: the working tree is routinely dirty here, and a
+			## fast-forward can refuse rather than touch a modified file.
+			dirty=0; git -C "${root}" diff --quiet && git -C "${root}" diff --cached --quiet || dirty=1
+			((dirty)) && git -C "${root}" stash push --quiet --include-untracked --message "cicd sync ${stamp}"
+			ff=0; git -C "${root}" merge --ff-only --quiet "${upstream}" && ff=1
+			## A pop that conflicts writes conflict markers into the tree, so it
+			## has to stop the run - building those bytes proves nothing. Git
+			## keeps the entry on a failed pop, so the work is still recoverable.
+			if ((dirty)) && ! git -C "${root}" stash pop --quiet; then
+				fDie "the local changes conflict with ${upstream}; they are safe in the stash - resolve, then 'git stash drop'"
+			fi
+			((ff)) || fDie "fast-forward from ${upstream} failed"
+			fEcho "OK: fast-forwarded ${behind} commit(s) from ${upstream}"
+		elif ((ahead)); then fEcho "OK: ${ahead} commit(s) ahead of ${upstream}, nothing to take"
+		else                 fEcho "OK: level with ${upstream}"
+		fi
+	fi
 fi
 
 ## Stage 1: format. In place locally; check-only (fail on diff) under --ci.
@@ -260,6 +310,8 @@ fi
 ## then the cross-binding differential check: every binding CLI must agree with
 ## every other, byte for byte, on the corpus AND on a freshly fuzz-dumped input set.
 ## With one binding it is a no-op note; it gets teeth the day a second binding lands.
+## Last comes the large-document gate - the same agreement plus time and memory
+## ceilings, at a size no corpus case can reach.
 fSection "4/9  Tests"
 if ((${#TEST_CMD[@]})); then
 	"${TEST_CMD[@]}"
@@ -277,6 +329,9 @@ if ((${#BINDING_CLIS[@]})); then
 		xcheck_extra=(--extra "${XCHECK_DUMP_DIR}")
 	fi
 	"${here}/utility/crosscheck.bash" --corpus "${root}/project/conformance" "${xcheck_extra[@]}" "${BINDING_CLIS[@]}"
+	if ((LARGEDOC_MIB)); then
+		"${here}/utility/largedoc.bash" --mib "${LARGEDOC_MIB}" "${BINDING_CLIS[@]}"
+	fi
 fi
 
 ## Stage 5: profiler. Non-gating artifact, not a pass/fail test: an optimized
@@ -346,6 +401,16 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 		fEcho "OK: ${t_label}: ${t_art} ($(du -h "${t_art}" | cut -f1))"
 		built_arts+=("${t_osarch}|${t_art}")
 	done
+	## Cross-compile checks that produce no artifact: the other bindings' own
+	## platform branches. Without these the C header's Windows path is never
+	## compiled here at all, which is exactly how a build-breaking regression in
+	## it reached dev unnoticed.
+	for c in "${CROSS_CHECKS[@]}"; do
+		c_label="${c%%|*}"; c_cmd="${c#*|}"
+		fEcho "cross check: ${c_label}"
+		eval "${c_cmd}" || fDie "cross check failed: ${c_label}"
+		fEcho "OK: ${c_label}"
+	done
 	if [[ -n "${RELEASE_ARTIFACT_DIR:-}" ]]; then
 		ver="$(fVersion)"
 		[[ -n "$ver" ]] || fDie "no version found in ${VERSION_MANIFEST}"
@@ -360,6 +425,16 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 		## Installer packages (.deb/.rpm via nfpm, NSIS setup per Windows exe) join
 		## the artifact family before the sums are written, so they ship verified too.
 		((PACKAGE_ENABLE)) && "${here}/utility/package.bash" "${root}" "${art_dir}" "${ver}"
+		## The drop-in sources, wrappers, man page and completions the installer
+		## lays down, as one
+		## asset in the same family - so they are covered by the signed sums like
+		## everything else. The installer used to take them from GitHub's generated
+		## source tarball, which carries no signature and no checksum.
+		( cd "${root}" && tar -czf "${art_dir}/${EXE_NAME}-${ver}-dropins.tar.gz" \
+			source/rust/src/lib.rs source/go/shcl.go source/python/shcl.py \
+			source/c/shcl.h source/c/shcl.hpp \
+			source/bash/shcl.bash source/powershell/shcl.ps1 \
+			source/man/shcl.1 source/completions/shcl.bash source/completions/_shcl )
 		fWriteSums
 		fEcho "OK: ${#built_arts[@]} release artifact(s) + ${sums} -> ${RELEASE_ARTIFACT_DIR}/"
 		((${#CROSS_TARGETS[@]})) || fEcho_Clean "note: cross targets skipped - artifact set is partial (native only)"
@@ -470,3 +545,4 @@ fEcho_Clean
 ##		- 2026-07-12 JC: Per-stage extras (FMT/BUILD/LINT/TEST_EXTRA eval lists) so additional bindings wire in via config only; first consumer is the Go binding.
 ##		- 2026-07-13 JC: Dogfood stage (7/9) between release and demo gif: installs the native release binary + bash wrapper (when present) to a fixed local dir; --no-dogfood, off under --ci.
 ##		- 2026-07-22 JC: Installer packages in stage 6 (utility/package.bash: nfpm .deb/.rpm + NSIS setup), before the sums write; --no-package, off under --ci/--quick.
+##		- 2026-08-19 JC: Stage 0 remote sync ahead of the format stage: fast-forwards when only behind (stash-wrapped), stops on a diverged branch, warns and continues when offline or untracked; --no-sync, off under --ci.

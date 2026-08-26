@@ -8,9 +8,11 @@
 package shcl
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -529,6 +531,7 @@ func TestValidationMatchesExpected(t *testing.T) {
 		} else {
 			diags = append(diags, doc.Validate(sdoc)...)
 			diags = SuppressDeclaredRepeats(sdoc, diags)
+			diags = SuppressDeclaredReopens(sdoc, diags)
 		}
 		var got strings.Builder
 		errors := 0
@@ -662,6 +665,20 @@ func TestWriteReasonNamesTheFailure(t *testing.T) {
 	if got := doc.WriteReason(deep); got != TooDeep {
 		t.Errorf("deep path: got %v, want TooDeep", got)
 	}
+	// A literal line break in a SELECTOR: the binding would emit across two lines
+	// and reparse as neither, and the value emitter never escapes one. In a NAME
+	// it is writable - names emit through the name escaper, which spells a line
+	// break \n, so the escaped and literal spellings are one path now. Not
+	// corpus-pinnable - an ops line cannot carry a raw newline.
+	if got := doc.WriteReason("a[\"p\nq\"].b"); got != BadPath {
+		t.Errorf("newline in selector: got %v, want BadPath", got)
+	}
+	if got := doc.WriteReason("\"x\ny\".b"); got != Writable {
+		t.Errorf("newline in name: got %v, want Writable", got)
+	}
+	if got := doc.WriteReason("\"x\\ny\".b"); got != Writable {
+		t.Errorf("escaped newline in name: got %v, want Writable", got)
+	}
 	// The probe never creates: the doc is unchanged after all of the above.
 	if n := doc.Count("a"); n != 1 {
 		t.Errorf("count a: got %d, want 1", n)
@@ -671,10 +688,26 @@ func TestWriteReasonNamesTheFailure(t *testing.T) {
 	}
 }
 
+func TestRawBlockLineEndingsNormalizeAndRoundTrip(t *testing.T) {
+	// A raw body is the only content kept untrimmed, so it is the only place a
+	// trailing CR survives the load - and one written back becomes CRLF, which
+	// reads as neither. The whole trailing run comes off instead; a CR inside a
+	// line is content and stays. Same fixture in every runner: a golden would be
+	// rewritten by any platform's line-ending translation.
+	doc := Parse("r:\n\t~~~\n\tone\r\r\n\ta\rb\n\t~~~\n")
+	if got := doc.ReadRaw("r").Value; got != "one\na\rb" {
+		t.Errorf("raw content: got %q", got)
+	}
+	canon := doc.ToCanonical()
+	if again := Parse(canon).ToCanonical(); again != canon {
+		t.Errorf("not a fixpoint: %q vs %q", again, canon)
+	}
+}
+
 func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	// Line/Quoted on the read result, Line(path), Children(path). Same
-	// fixture in every runner (C pins the accessors; its read structs stay
-	// value+status).
+	// fixture in every runner (C pins the same answers on shcl_quoted and
+	// shcl_line; its read structs stay value+status).
 	text := "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n"
 	doc := Parse(text)
 	if doc.ReadString("a").Quoted {
@@ -682,6 +715,12 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	}
 	if !doc.ReadString("b").Quoted {
 		t.Error("b reads unquoted")
+	}
+	if doc.ReadString("code").Quoted {
+		t.Error("a block reads quoted")
+	}
+	if doc.ReadString("missing").Quoted {
+		t.Error("a missing path reads quoted")
 	}
 	if got := doc.ReadString("b").Line; got != 2 {
 		t.Errorf("b line: got %d, want 2", got)
@@ -726,6 +765,195 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	}
 	if got := doc.Children("missing"); len(got) != 0 {
 		t.Errorf("missing children: got %v", got)
+	}
+	// AuthoredName(): the author's spelling, unfolded; merged instances keep
+	// the first binding's; unresolved or Multiple is empty; writer-built
+	// keeps the setter path's spelling.
+	d2 := Parse("SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n")
+	if got := d2.AuthoredName("symbols"); got != "SYMBOLS" {
+		t.Errorf("AuthoredName(symbols): got %q", got)
+	}
+	if got := d2.AuthoredName("code"); got != "Code" {
+		t.Errorf("AuthoredName(code): got %q", got)
+	}
+	if got := d2.AuthoredName("missing"); got != "" {
+		t.Errorf("AuthoredName(missing): got %q", got)
+	}
+	if !d2.SetInt("NewTop.n", 1) {
+		t.Errorf("SetInt NewTop.n failed")
+	}
+	if got := d2.AuthoredName("newtop"); got != "NewTop" {
+		t.Errorf("AuthoredName(newtop): got %q", got)
+	}
+	// Escapes ARE resolved on a name, so both spellings of the path find the
+	// same node - while AuthoredName still hands back the source spelling,
+	// which is the one thing it is for. Same fixture in every runner.
+	d3 := Parse("\"Ab\\tCd\": 2\n")
+	if got := d3.AuthoredName("\"ab\tcd\""); got != "Ab\\tCd" {
+		t.Errorf("AuthoredName via the literal spelling: got %q", got)
+	}
+	if got := d3.ReadInt("\"ab\tcd\"").Value; got != 2 {
+		t.Errorf("read via the literal spelling: got %d", got)
+	}
+	// Canonical output folds the case, as it always has, and escapes the tab.
+	if got := d3.ToCanonical(); got != "\"ab\\tcd\": 2\n" {
+		t.Errorf("canonical name spelling: got %q", got)
+	}
+	if got := d3.AuthoredName("\"ab\\tcd\""); got != "Ab\\tCd" {
+		t.Errorf("AuthoredName escaped: got %q", got)
+	}
+}
+
+func TestFileTierLoadSave(t *testing.T) {
+	// LoadFile/SaveFile: the status separates absent / unreadable / parsed
+	// with errors / clean, and a save round-trips through the atomic write.
+	// Same fixture in every runner.
+	dir := t.TempDir()
+	f := dir + "/t.shcl"
+
+	if _, st := LoadFile(f); st != FileNotFound {
+		t.Errorf("missing file: got status %v", st)
+	}
+	if _, st := LoadFile(dir); st != FileUnreadable { // a directory is not readable
+		t.Errorf("directory: got status %v", st)
+	}
+	// Bad encoding is unreadable too: the parser assumes well-formed text, so a
+	// binary file loading clean would read back mangled and a later save would
+	// write the mangled version over the original.
+	if err := os.WriteFile(f, []byte("a: 1\nb: \xff\xfe bad\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d, st := LoadFile(f); st != FileUnreadable || d.ToCanonical() != "" {
+		t.Errorf("bad encoding: got status %v canonical %q", st, d.ToCanonical())
+	}
+
+	if err := os.WriteFile(f, []byte("a: 1\n: broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, st := LoadFile(f)
+	if st != FileHadErrors {
+		t.Errorf("broken file: got status %v", st)
+	}
+	if v, vst := doc.GetInt("a"); vst != Good || v != 1 {
+		t.Errorf("broken file read: got %v %v", v, vst)
+	}
+
+	if err := os.WriteFile(f, []byte("a: 1\nb: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, st = LoadFile(f)
+	if st != FileClean {
+		t.Errorf("clean file: got status %v", st)
+	}
+	if !doc.SetInt("c", 3) {
+		t.Fatal("SetInt failed")
+	}
+	if err := doc.SaveFile(f); err != nil {
+		t.Fatal(err)
+	}
+	back, st := LoadFile(f)
+	if st != FileClean {
+		t.Errorf("saved file: got status %v", st)
+	}
+	if back.ToCanonical() != doc.ToCanonical() {
+		t.Errorf("save round-trip mismatch")
+	}
+
+	// Creating a file and overwriting one are two different code paths in the
+	// write - the create picks its own mode, the overwrite copies the target's,
+	// and the publish step differs by platform (windows goes through
+	// ReplaceFile, with a rename fallback). Both run everywhere: an overwrite
+	// used to throw outright on windows in the python binding, which no
+	// POSIX-only fixture could ever have caught. Same fixture in every runner.
+	fresh := dir + "/fresh.shcl"
+	fdoc := Parse("a: 1\n")
+	for _, pass := range []string{"new", "overwritten"} {
+		if serr := fdoc.SaveFile(fresh); serr != nil {
+			t.Fatalf("%s file: %v", pass, serr)
+		}
+		fback, fst := LoadFile(fresh)
+		if fst != FileClean || fback.ToCanonical() != "a: 1\n" {
+			t.Errorf("%s file did not round-trip: status %v", pass, fst)
+		}
+	}
+
+	// A new file lands where an ordinary create lands - 0666 narrowed by the
+	// umask - and an existing one keeps the mode it had. Neither is visible on
+	// stdout, so no corpus case can see either, and neither is a windows
+	// concept, so the mode half is POSIX-only.
+	if runtime.GOOS != "windows" {
+		modeOf := func(p string) os.FileMode {
+			st, serr := os.Stat(p)
+			if serr != nil {
+				t.Fatal(serr)
+			}
+			return st.Mode().Perm()
+		}
+		probe := dir + "/probe"
+		h, cerr := os.Create(probe)
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		h.Close()
+		born := dir + "/born.shcl"
+		if serr := fdoc.SaveFile(born); serr != nil {
+			t.Fatal(serr)
+		}
+		if modeOf(born) != modeOf(probe) {
+			t.Errorf("new file: got mode %v, want %v", modeOf(born), modeOf(probe))
+		}
+		if cerr := os.Chmod(born, 0o640); cerr != nil {
+			t.Fatal(cerr)
+		}
+		if serr := fdoc.SaveFile(born); serr != nil {
+			t.Fatal(serr)
+		}
+		if modeOf(born) != 0o640 {
+			t.Errorf("existing file: got mode %v, want -rw-r-----", modeOf(born))
+		}
+	}
+}
+
+func TestLostAndSaveGate(t *testing.T) {
+	// Content-malformed lines are retained as trivia (LostCount 0, the line
+	// survives a save); position-dependent drops count as lost and make
+	// SaveFile refuse until the caller opts into SaveFileLossy. Same fixture
+	// in every runner.
+	kept := Parse("a: 1\nsquare-miles 300\nb: 2\n")
+	if kept.LostCount() != 0 {
+		t.Errorf("kept LostCount: got %d", kept.LostCount())
+	}
+	if !strings.Contains(kept.ToCanonical(), "square-miles 300\n") {
+		t.Errorf("retained line missing from canonical output")
+	}
+	lost := Parse("a:\n\tb: 1\n  c: 2\n") // indent matches no level
+	if lost.LostCount() != 1 {
+		t.Errorf("lost LostCount: got %d", lost.LostCount())
+	}
+	f := t.TempDir() + "/t.shcl"
+	if err := kept.SaveFile(f); err != nil {
+		t.Fatal(err)
+	}
+	back, _ := LoadFile(f)
+	if !strings.Contains(back.ToCanonical(), "square-miles 300\n") {
+		t.Errorf("retained line lost through save round-trip")
+	}
+	if err := lost.SaveFile(f); err == nil {
+		t.Errorf("SaveFile did not refuse a lossy save")
+	}
+	if err := lost.SaveFileLossy(f); err != nil {
+		t.Fatal(err)
+	}
+	// A refusal and a failed write are separate values, not two spellings of one
+	// message, and the gate answers before any i/o - so an unwritable path still
+	// reports the refusal. Same fixture in every runner.
+	bad := t.TempDir() + "/nope/t.shcl"
+	var refused *SaveRefused
+	if err := kept.SaveFile(bad); err == nil || errors.As(err, &refused) {
+		t.Errorf("a failed write reported as a refusal: %v", err)
+	}
+	if err := lost.SaveFile(bad); !errors.As(err, &refused) || refused.Lost != 1 {
+		t.Errorf("refusal did not survive an unwritable path: %v", err)
 	}
 }
 
@@ -873,6 +1101,23 @@ func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {
 	}
 	if got := d.GetIntArrayOr("missing", []int64{7}); len(got) != 1 || got[0] != 7 {
 		t.Fatalf("GetIntArrayOr missing = %v, want fallback [7]", got)
+	}
+	// The array status tier, the reduction the scalars already had: the whole
+	// read's status beside the resolved values.
+	if got, st := d.GetIntArray("arr"); st != Good || len(got) != 3 {
+		t.Fatalf("GetIntArray(arr) = %v, %v", got, st)
+	}
+	if _, st := d.GetIntArray("missing"); st != NotFound {
+		t.Fatalf("GetIntArray(missing) status = %v, want NotFound", st)
+	}
+	// Ok and the convenience tier deliberately disagree on an explicitly
+	// emptied field: one asks whether the author spoke for it, the other whether
+	// there is a usable value.
+	if !d.ReadInt("e").Ok() {
+		t.Error("an emptied field is not Ok")
+	}
+	if d.ReadInt("missing").Ok() {
+		t.Error("a missing field is Ok")
 	}
 }
 

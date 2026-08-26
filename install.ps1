@@ -19,7 +19,10 @@
 ##		                        to the machine PATH (needs an elevated shell).
 ##		                        user: %LOCALAPPDATA%\Programs\Shcl, added to
 ##		                        the user PATH. No elevation.
+##		-Uninstall              remove what an install of the same -Target laid
+##		                        down (binary, code\, scripts\, PATH entry).
 ##		-Yes                    skip the confirmation prompt.
+##		-Help                   print the options and exit.
 ##
 ##	Layout under the install dir:
 ##		shcl.exe    the CLI binary
@@ -36,11 +39,41 @@
 param(
 	[ValidateSet('dev', 'development', 'stable')] [string]$Release = 'dev',
 	[ValidateSet('user', 'system')] [string]$Target = 'system',
-	[switch]$Yes
+	[switch]$Yes,
+	[switch]$Uninstall,
+	[switch]$Help
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+## Spelled out here rather than left to Get-Help: the documented one-liner pipes
+## this script straight into the shell, so there is no file left to ask about.
+if ($Help) {
+	@'
+shcl installer
+
+Usage:
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1))) -Target user
+
+Options:
+    -Release <dev|stable>   dev = newest release including pre-releases
+                            (default); stable = newest full release.
+    -Target <user|system>   system (default): C:\Program Files\Shcl, added to
+                            the machine PATH (needs an elevated shell).
+                            user: %LOCALAPPDATA%\Programs\Shcl, added to the
+                            user PATH. No elevation needed.
+    -Uninstall              remove what an install of the same -Target laid
+                            down, and nothing else.
+    -Yes                    skip the confirmation prompt.
+    -Help                   this text.
+
+The release signature is checked before any checksum is read out of the sums
+file. Nothing unverified is installed.
+'@ | Write-Output
+	exit 0
+}
+
 if ($Release -eq 'development') { $Release = 'dev' }
 
 $repo = 'jim-collier/shcl'
@@ -85,10 +118,12 @@ if (($PSVersionTable.PSVersion.Major -ge 6) -and -not $IsWindows) {
 	Fail 'this installer is for Windows - on Linux use install.bash, elsewhere build from source (see README.md)'
 }
 
-$arch = switch ($env:PROCESSOR_ARCHITECTURE) {
+## A 32-bit shell on a 64-bit OS reports x86; ARCHITEW6432 carries the real arch.
+$archRaw = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$arch = switch ($archRaw) {
 	'AMD64' { 'x86_64' }
 	'ARM64' { 'arm64' }
-	default { Fail "no prebuilt binary for $($env:PROCESSOR_ARCHITECTURE)" }
+	default { Fail "no prebuilt binary for $archRaw" }
 }
 
 ## Transport floor for every download: TLS 1.2+ (1.3 where the runtime knows it).
@@ -97,13 +132,25 @@ try {
 } catch {
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 }
+## Windows PowerShell repaints the progress bar per chunk, which slows a download
+## by an order of magnitude. Scoped to this script; nothing here needs the bar.
+$ProgressPreference = 'SilentlyContinue'
 
 ## Resolve the tag. GitHub's /releases/latest is exactly "newest non-prerelease";
-## dev takes the newest of everything.
+## dev lists everything and takes the highest version. The list endpoint orders by
+## publish date, so a maintenance release cut on an older line would otherwise
+## win. Within one version a final outranks its own pre-releases (v2.0.0-rc1 <
+## v2.0.0); pre-release suffixes compare as plain text, enough for rc-style tags.
 $api = if ($Release -eq 'stable') { "https://api.github.com/repos/$repo/releases/latest" }
-	else { "https://api.github.com/repos/$repo/releases?per_page=1" }
+	else { "https://api.github.com/repos/$repo/releases?per_page=100" }
 try { $rel = Invoke-RestMethod -Uri $api } catch { Fail "cannot fetch the $Release release (none published yet, or network down)" }
-if ($rel -is [array]) { $rel = $rel[0] }
+if ($rel -is [array]) {
+	$rel = @($rel) | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+' } | Sort-Object `
+		@{ Expression = { [version](($_.tag_name.TrimStart('v') -split '-', 2)[0]) } }, `
+		@{ Expression = { $_.tag_name -notmatch '-' } }, `
+		@{ Expression = { if ($_.tag_name -match '-') { ($_.tag_name -split '-', 2)[1] } else { '' } } } |
+		Select-Object -Last 1
+}
 if (-not $rel -or -not $rel.tag_name) { Fail "no $Release release found" }
 $tag = $rel.tag_name
 $version = $tag.TrimStart('v')
@@ -126,7 +173,33 @@ if ($Target -eq 'system') {
 	$pathDir = $dest
 }
 
+## Uninstall: the reverse of what the install lays down, and nothing else - the
+## binary, the two payload dirs, the install dir if it empties, and the PATH
+## entry. Never a recursive delete of a path the user may have pointed elsewhere.
+if ($Uninstall) {
+	Write-Output ''
+	Write-Output "removing shcl: $dest (and the $pathScope PATH entry)"
+	if (-not $Yes) {
+		$reply = Read-Host 'Proceed? [y/N]'
+		if ($reply -notin @('y', 'Y', 'yes', 'Yes', 'YES')) { Write-Output 'aborted'; exit 1 }
+	}
+	Remove-Item -Force (Join-Path $dest 'shcl.exe') -ErrorAction SilentlyContinue
+	Remove-Item -Recurse -Force (Join-Path $dest 'code'), (Join-Path $dest 'scripts') -ErrorAction SilentlyContinue
+	Remove-Item -Force $dest -ErrorAction SilentlyContinue
+	$hive = if ($pathScope -eq 'Machine') { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
+	$subkey = if ($pathScope -eq 'Machine') { 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment' } else { 'Environment' }
+	$envKey = $hive.OpenSubKey($subkey, $true)
+	$current = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+	$parts = @($current -split ';' | Where-Object { $_ -and $_ -ne $pathDir })
+	$envKey.SetValue('Path', ($parts -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+	$envKey.Close()
+	Write-Output 'removed'
+	Write-Output ''
+	exit 0
+}
+
 ## State the plan, then confirm.
+Write-Output ''
 $existing = if (Test-Path (Join-Path $dest 'shcl.exe')) { 'updates the existing install' } else { 'new install' }
 Write-Output "shcl $version ($Release, windows-$arch) -> $dest ($existing)"
 Write-Output "  binary   $dest\shcl.exe"
@@ -134,13 +207,14 @@ Write-Output "  drop-ins $dest\code\, wrappers $dest\scripts\"
 Write-Output "  adds $pathDir to the $pathScope PATH if missing"
 if (-not $Yes) {
 	$reply = Read-Host 'Proceed? [y/N]'
-	if ($reply -notin @('y', 'Y')) { Write-Output 'aborted'; exit 1 }
+	if ($reply -notin @('y', 'Y', 'yes', 'Yes', 'YES')) { Write-Output 'aborted'; exit 1 }
 }
 
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("shcl-install-" + [IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
 	## Download and verify the binary.
+	Write-Output ''
 	$asset = "shcl-$version-windows-$arch.exe"
 	$base = "https://github.com/$repo/releases/download/$tag"
 	Write-Output "downloading $asset..."
@@ -158,21 +232,38 @@ try {
 	$got = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp 'shcl.exe')).Hash.ToLower()
 	if (-not $want -or $got -ne $want.ToLower()) { Fail "sha256 mismatch on $asset" }
 
-	## Drop-in code files and wrappers come from the tag's source zipball.
-	Write-Output "downloading source payload ($tag)..."
-	Invoke-WebRequest -Uri "https://github.com/$repo/archive/refs/tags/$tag.zip" -OutFile (Join-Path $tmp 'src.zip')
-	Expand-Archive -Path (Join-Path $tmp 'src.zip') -DestinationPath $tmp
-	$srcroot = Get-ChildItem -Directory -Path $tmp -Filter 'shcl-*' | Select-Object -First 1
-	if (-not $srcroot) { Fail 'unexpected source zipball layout' }
+	## Drop-in code files and wrappers come from a release asset covered by the
+	## same signed sums file as the binary. They used to come from GitHub's
+	## generated source zipball, which carries neither a signature nor a
+	## checksum. Releases predating the asset install the binary alone.
+	$dropins = "shcl-$version-dropins.tar.gz"
+	$wantSrc = (Get-Content (Join-Path $tmp 'sums.txt') | Where-Object { $_ -match [regex]::Escape($dropins) } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
+	$haveDropins = $false
+	$srcroot = $null
+	if ($wantSrc) {
+		Write-Output "downloading $dropins..."
+		Invoke-WebRequest -Uri "$base/$dropins" -OutFile (Join-Path $tmp 'dropins.tgz')
+		$gotSrc = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp 'dropins.tgz')).Hash.ToLower()
+		if ($gotSrc -ne $wantSrc.ToLower()) { Fail "sha256 mismatch on $dropins" }
+		$x = Join-Path $tmp 'x'
+		New-Item -ItemType Directory -Path $x | Out-Null
+		tar -xzf (Join-Path $tmp 'dropins.tgz') -C $x
+		if ($LASTEXITCODE -ne 0) { Fail "cannot unpack $dropins" }
+		$srcroot = Get-Item $x
+		$haveDropins = $true
+	}
 
 	## Install. The binary goes in via a temp name + Move-Item in the same dir,
 	## so a running copy only ever sees the complete old or new file.
-	New-Item -ItemType Directory -Force -Path $dest, (Join-Path $dest 'code'), (Join-Path $dest 'scripts') | Out-Null
+	New-Item -ItemType Directory -Force -Path $dest | Out-Null
 	Copy-Item (Join-Path $tmp 'shcl.exe') (Join-Path $dest '.shcl.exe.new')
 	Move-Item -Force (Join-Path $dest '.shcl.exe.new') (Join-Path $dest 'shcl.exe')
-	$s = $srcroot.FullName
-	Copy-Item "$s\source\rust\src\lib.rs", "$s\source\go\shcl.go", "$s\source\python\shcl.py", "$s\source\c\shcl.h", "$s\source\c\shcl.hpp" (Join-Path $dest 'code')
-	Copy-Item "$s\source\powershell\shcl.ps1", "$s\source\bash\shcl.bash" (Join-Path $dest 'scripts')
+	if ($haveDropins) {
+		New-Item -ItemType Directory -Force -Path (Join-Path $dest 'code'), (Join-Path $dest 'scripts') | Out-Null
+		$s = $srcroot.FullName
+		Copy-Item "$s\source\rust\src\lib.rs", "$s\source\go\shcl.go", "$s\source\python\shcl.py", "$s\source\c\shcl.h", "$s\source\c\shcl.hpp" (Join-Path $dest 'code')
+		Copy-Item "$s\source\powershell\shcl.ps1", "$s\source\bash\shcl.bash" (Join-Path $dest 'scripts')
+	}
 
 	## PATH, idempotently - straight at the registry. [Environment]::Get expands
 	## %VAR% references before returning and Set writes the result back REG_SZ,
@@ -199,8 +290,12 @@ try {
 	}
 	$envKey.Close()
 
+	Write-Output ''
 	Write-Output "installed shcl $version -> $dest\shcl.exe"
+	if (-not $haveDropins) { Write-Output "note: this release ships no signed drop-in payload, so $dest\code and $dest\scripts were skipped - take them from the repo if you want them" }
+	Write-Output "to remove it again: install.ps1 -Uninstall -Target $Target"
 	& (Join-Path $dest 'shcl.exe') version
+	Write-Output ''
 } finally {
 	Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

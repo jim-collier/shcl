@@ -288,6 +288,7 @@ fn validation_matches_expected() {
 		} else {
 			diags.extend(doc.validate(&sdoc));
 			shcl::suppress_declared_repeats(&sdoc, &mut diags);
+			shcl::suppress_declared_reopens(&sdoc, &mut diags);
 		}
 		let mut got = String::new();
 		for d in &diags {
@@ -326,6 +327,21 @@ fn convenience_tier_falls_back_only_on_good() {
 	assert_eq!(doc.get_int("missing").unwrap_or(9), 9); // NotFound
 	assert_eq!(doc.get_int_array("arr").unwrap_or(vec![7]), vec![1, 2, 3]);
 	assert_eq!(doc.get_int_array("missing").unwrap_or(vec![7]), vec![7]);
+	// Same reads under the cross-binding spelling: `_or` means "with a
+	// fallback" everywhere, so a routine ported between two bindings cannot
+	// keep the call name while changing which tier it lands on.
+	assert_eq!(doc.get_int_or("a", 9), 42);
+	assert_eq!(doc.get_int_or("b", 9), 9);
+	assert_eq!(doc.get_int_or("e", 9), 9);
+	assert_eq!(doc.get_int_or("missing", 9), 9);
+	assert_eq!(doc.get_int_array_or("arr", vec![7]), vec![1, 2, 3]);
+	assert_eq!(doc.get_int_array_or("missing", vec![7]), vec![7]);
+	assert_eq!(doc.get_string_or("missing", "fb".to_string()), "fb");
+	// ok() and the convenience tier deliberately disagree on an explicitly
+	// emptied field: one asks whether the author spoke for it, the other whether
+	// there is a usable value.
+	assert!(doc.read_int("e").ok());
+	assert!(!doc.read_int("missing").ok());
 }
 
 #[test]
@@ -549,7 +565,12 @@ fn layered_merge_matches_expected() {
 				let (p, v) = line
 					.split_once('=')
 					.unwrap_or_else(|| panic!("{}: bad merge.sets line: {}", case.name, line));
-				doc.set_string(p, v);
+				assert!(
+					doc.set_string(p, v),
+					"{}: merge.set did not apply: {}",
+					case.name,
+					line
+				);
 			}
 		}
 		let got = doc.to_canonical();
@@ -643,12 +664,12 @@ fn depth_cap_boundary_and_writer() {
 	// The Writer refuses to create past the cap and stays a no-op.
 	let mut w = Document::new();
 	let deep_path = format!("a.{}", segs.join("."));
-	w.set_int(&deep_path, 1);
+	assert!(!w.set_int(&deep_path, 1), "a too-deep path is not writable");
 	assert!(
 		!w.exists("a"),
 		"writer must not half-create a too-deep path"
 	);
-	w.set_int(&segs.join("."), 2);
+	assert!(w.set_int(&segs.join("."), 2));
 	assert!(w.exists("a0"), "writer must still create an at-cap path");
 }
 
@@ -721,20 +742,60 @@ fn write_reason_names_the_failure() {
 	assert_eq!(doc.write_reason("nope[#0].b"), NoSuchIndex);
 	let deep = vec!["d"; 513].join(".");
 	assert_eq!(doc.write_reason(&deep), TooDeep);
+	// A literal line break in a SELECTOR: the binding would emit across two lines
+	// and reparse as neither, and the value emitter never escapes one. In a NAME
+	// it is writable - names emit through the name escaper, which spells a line
+	// break `\n`, so the escaped and literal spellings are one path now. Not
+	// corpus-pinnable - an ops line cannot carry a raw newline.
+	assert_eq!(doc.write_reason("a[\"p\nq\"].b"), BadPath);
+	assert_eq!(doc.write_reason("\"x\ny\".b"), Writable);
+	assert_eq!(doc.write_reason("\"x\\ny\".b"), Writable);
 	// The probe never creates: the doc is unchanged after all of the above.
 	assert_eq!(doc.count("a"), 1);
 	assert_eq!(doc.paths(), vec!["a", "a.b"]);
 }
 
 #[test]
+fn setter_refuses_a_path_it_could_not_write_back() {
+	// The refusal has to bite the setters too, not just the probe: a created
+	// node here would leave a document that no longer parses, and the reload
+	// counts nothing lost, so the save gate would not catch it.
+	let mut doc = Document::parse("z: 0\n");
+	assert!(!doc.set_int("x[\"p\nq\"].c", 1));
+	assert_eq!(doc.to_canonical(), "z: 0\n");
+	// A line break in a NAME writes and reads back: the two spellings are one
+	// path, and the emitter escapes it rather than splitting the line.
+	assert!(doc.set_int("\"a\nb\".c", 1));
+	let back = Document::parse(&doc.to_canonical());
+	assert_eq!(back.error_count(), 0);
+	assert_eq!(back.read_int("\"a\\nb\".c").value, 1);
+	assert_eq!(back.read_int("\"a\nb\".c").value, 1);
+}
+
+#[test]
+fn raw_block_line_endings_normalize_and_round_trip() {
+	// A raw body is the only content kept untrimmed, so it is the only place a
+	// trailing CR survives the load - and one written back becomes CRLF, which
+	// reads as neither. The whole trailing run comes off instead; a CR inside a
+	// line is content and stays. Same fixture in every runner: a golden would be
+	// rewritten by any platform's line-ending translation.
+	let doc = Document::parse("r:\n\t~~~\n\tone\r\r\n\ta\rb\n\t~~~\n");
+	assert_eq!(doc.read_raw("r").value, "one\na\rb");
+	let canon = doc.to_canonical();
+	assert_eq!(Document::parse(&canon).to_canonical(), canon);
+}
+
+#[test]
 fn read_surface_line_quoted_children() {
 	// line/quoted on the read result, line(path), children(path). Same
-	// fixture in every runner (C pins the accessors; its read structs stay
-	// value+status).
+	// fixture in every runner (C pins the same answers on shcl_quoted and
+	// shcl_line; its read structs stay value+status).
 	let text = "a: @null\nb: \"@null\"\ncode:\n\thook: 1\n\thook: 2\n\tdone: 3\n";
 	let doc = Document::parse(text);
 	assert!(!doc.read_string("a").quoted);
 	assert!(doc.read_string("b").quoted);
+	assert!(!doc.read_string("code").quoted);
+	assert!(!doc.read_string("missing").quoted);
 	assert_eq!(doc.read_string("b").line, 2);
 	assert_eq!(doc.line("code.done"), 6);
 	assert_eq!(doc.line("code"), 3);
@@ -751,6 +812,164 @@ fn read_surface_line_quoted_children() {
 	assert_eq!(doc.children("code"), vec!["hook", "hook", "done"]);
 	assert_eq!(doc.children(""), vec!["a", "b", "code"]);
 	assert!(doc.children("missing").is_empty());
+	// authored_name(): the author's spelling, unfolded; merged instances keep
+	// the first binding's; unresolved or Multiple is empty; writer-built
+	// keeps the setter path's spelling.
+	let text2 = "SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n";
+	let mut d2 = Document::parse(text2);
+	assert_eq!(d2.authored_name("symbols"), "SYMBOLS");
+	assert_eq!(d2.authored_name("SYMBOLS"), "SYMBOLS");
+	assert_eq!(d2.authored_name("code"), "Code");
+	assert_eq!(d2.authored_name("missing"), "");
+	assert!(d2.set_int("NewTop.n", 1));
+	assert_eq!(d2.authored_name("newtop"), "NewTop");
+	// Escapes ARE resolved on a name, so both spellings of the path find the
+	// same node - while authored_name still hands back the source spelling,
+	// which is the one thing it is for. Same fixture in every runner.
+	let d3 = Document::parse("\"Ab\\tCd\": 2\n");
+	assert_eq!(d3.authored_name("\"ab\\tcd\""), "Ab\\tCd");
+	assert_eq!(d3.authored_name("\"ab\tcd\""), "Ab\\tCd");
+	assert_eq!(d3.read_int("\"ab\tcd\"").value, 2);
+	// Canonical output folds the case, as it always has, and escapes the tab.
+	assert_eq!(d3.to_canonical(), "\"ab\\tcd\": 2\n");
+}
+
+#[test]
+fn file_tier_load_save() {
+	// load_file/save_file: the status separates absent / unreadable / parsed
+	// with errors / clean, and a save round-trips through the atomic write.
+	// Same fixture in every runner.
+	use shcl::FileStatus;
+	let dir = std::env::temp_dir().join(format!("shcl-filetier-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let f = dir.join("t.shcl");
+	let fs = f.to_str().unwrap();
+
+	let (_, st) = Document::load_file(fs);
+	assert_eq!(st, FileStatus::NotFound);
+	let (_, st) = Document::load_file(dir.to_str().unwrap()); // a directory is not readable
+	assert_eq!(st, FileStatus::Unreadable);
+	// Bad encoding is unreadable too: the parser assumes well-formed text, so a
+	// binary file loading clean would read back mangled and a later save would
+	// write the mangled version over the original.
+	std::fs::write(&f, b"a: 1\nb: \xff\xfe bad\n").unwrap();
+	let (doc, st) = Document::load_file(fs);
+	assert_eq!(st, FileStatus::Unreadable);
+	assert_eq!(doc.to_canonical(), "");
+
+	std::fs::write(&f, "a: 1\n: broken\n").unwrap();
+	let (doc, st) = Document::load_file(fs);
+	assert_eq!(st, FileStatus::HadErrors);
+	assert_eq!(doc.get_int("a"), Ok(1));
+
+	std::fs::write(&f, "a: 1\nb: x\n").unwrap();
+	let (mut doc, st) = Document::load_file(fs);
+	assert_eq!(st, FileStatus::Clean);
+	assert!(doc.set_int("c", 3));
+	doc.save_file(fs).unwrap();
+	let (back, st) = Document::load_file(fs);
+	assert_eq!(st, FileStatus::Clean);
+	assert_eq!(back.to_canonical(), doc.to_canonical());
+
+	// Creating a file and overwriting one are two different code paths in the
+	// write - the create picks its own mode, the overwrite copies the target's,
+	// and the publish step differs by platform (windows goes through
+	// ReplaceFile, with a rename fallback). Both run everywhere: an overwrite
+	// used to throw outright on windows in the python binding, which no
+	// POSIX-only fixture could ever have caught. Same fixture in every runner.
+	let fresh = dir.join("fresh.shcl");
+	let fresh_s = fresh.to_str().unwrap().to_string();
+	let fdoc = Document::parse("a: 1\n");
+	fdoc.save_file(&fresh_s).unwrap();
+	let (back, st) = Document::load_file(&fresh_s);
+	assert_eq!(st, FileStatus::Clean);
+	assert_eq!(back.to_canonical(), "a: 1\n");
+	fdoc.save_file(&fresh_s).unwrap();
+	let (back, st) = Document::load_file(&fresh_s);
+	assert_eq!(st, FileStatus::Clean);
+	assert_eq!(back.to_canonical(), "a: 1\n");
+
+	// A new file lands where an ordinary create lands - 0666 narrowed by the
+	// umask - and an existing one keeps the mode it had. Neither is visible on
+	// stdout, so no corpus case can see either, and neither is a windows
+	// concept, so the mode half is POSIX-only.
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		let mode_of =
+			|p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+		let probe = dir.join("probe");
+		std::fs::File::create(&probe).unwrap();
+		let born = dir.join("born.shcl");
+		fdoc.save_file(born.to_str().unwrap()).unwrap();
+		assert_eq!(mode_of(&born), mode_of(&probe));
+		std::fs::set_permissions(&born, std::fs::Permissions::from_mode(0o640)).unwrap();
+		fdoc.save_file(born.to_str().unwrap()).unwrap();
+		assert_eq!(mode_of(&born), 0o640);
+		let _ = std::fs::remove_file(&probe);
+		let _ = std::fs::remove_file(&born);
+	}
+	let _ = std::fs::remove_file(&fresh);
+
+	let _ = std::fs::remove_file(&f);
+	let _ = std::fs::remove_dir(&dir);
+}
+
+#[test]
+fn standard_trait_surface() {
+	// Rust-only: the traits a rust user reaches for before reading any docs.
+	// Nothing here is new behavior, so there is no cross-binding fixture - the
+	// other three already export the same capabilities under their own names.
+	use std::str::FromStr;
+	let doc = Document::from_str("a: 1\nb: 2\n").unwrap();
+	assert_eq!(doc.to_string(), doc.to_canonical());
+	assert_eq!(
+		"a: 1\n".parse::<Document>().unwrap().to_canonical(),
+		"a: 1\n"
+	);
+	// Clone is a deep copy: editing the copy must not reach the original.
+	let mut copy = doc.clone();
+	assert!(copy.set_int("a", 9));
+	assert_eq!(doc.get_int("a"), Ok(1));
+	assert_eq!(copy.get_int("a"), Ok(9));
+	assert_eq!(shcl::Status::BadType.to_string(), "BadType");
+	assert_eq!(shcl::format_f64(1.5), "1.5");
+	assert_eq!(shcl::format_f64(f64::INFINITY), "inf");
+	assert_eq!(shcl::format_f64(f64::NAN), "NaN");
+}
+
+#[test]
+fn lost_and_save_gate() {
+	// Content-malformed lines are retained as trivia (lost_count 0, the line
+	// survives a save); position-dependent drops count as lost and make
+	// save_file refuse until the caller opts into save_file_lossy. Same
+	// fixture in every runner.
+	let kept = Document::parse("a: 1\nsquare-miles 300\nb: 2\n");
+	assert_eq!(kept.lost_count(), 0);
+	assert!(kept.to_canonical().contains("square-miles 300\n"));
+	let lost = Document::parse("a:\n\tb: 1\n  c: 2\n"); // indent matches no level
+	assert_eq!(lost.lost_count(), 1);
+	let dir = std::env::temp_dir().join(format!("shcl-lostgate-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let f = dir.join("t.shcl");
+	let fs = f.to_str().unwrap();
+	assert!(kept.save_file(fs).is_ok());
+	let (back, _) = Document::load_file(fs);
+	assert!(back.to_canonical().contains("square-miles 300\n"));
+	assert!(lost.save_file(fs).is_err());
+	assert!(lost.save_file_lossy(fs).is_ok());
+	// A refusal and a failed write are separate values, not two spellings of one
+	// message, and the gate answers before any i/o - so an unwritable path still
+	// reports the refusal. Same fixture in every runner.
+	let bad = dir.join("nope").join("t.shcl");
+	let bads = bad.to_str().unwrap();
+	assert!(matches!(kept.save_file(bads), Err(shcl::SaveError::Io(_))));
+	assert!(matches!(
+		lost.save_file(bads),
+		Err(shcl::SaveError::Refused { lost: 1, .. })
+	));
+	let _ = std::fs::remove_file(&f);
+	let _ = std::fs::remove_dir(&dir);
 }
 
 #[test]

@@ -25,9 +25,21 @@ impl Rng {
 	}
 }
 
+// The characters the mutator splices in. The whitespace tail past space and tab
+// is why it is worth listing them out: the parser trims the whole Unicode
+// White_Space set while the emitter quotes from a much shorter list, and a value
+// whose edge lands in that gap used to be truncated on reload. With none of
+// these in the set, the fuzzer could not reach it - a corpus case had to.
 const INTERESTING: &[char] = &[
 	':', '[', ']', ',', '#', '"', '\'', '*', '~', '`', '\t', '\n', ' ', '.', '-', '\\', '%', '$',
 	'0', '9', 'a', 'Z', '_', 'é', '\u{feff}',
+	'\r',       // carriage return: round-trips, but only if nothing eats it
+	'\u{0b}',   // vertical tab
+	'\u{0c}',   // form feed
+	'\u{85}',   // next line
+	'\u{a0}',   // no-break space
+	'\u{2028}', // line separator
+	'\u{3000}', // ideographic space
 ];
 
 fn mutate(rng: &mut Rng, base: &str) -> String {
@@ -183,7 +195,7 @@ fn writer_roundtrips_and_stays_fixpoint() {
 	for i in 0..iters {
 		let s = rand_str(&mut rng);
 		let mut d = Document::new();
-		d.set_string("k", &s);
+		assert!(d.set_string("k", &s));
 		// In-memory: encode is the exact inverse of the scalar string read.
 		let mem = d.read_string("k");
 		assert_eq!(mem.value, s, "in-memory set/read #{} for {:?}", i, s);
@@ -201,7 +213,7 @@ fn writer_roundtrips_and_stays_fixpoint() {
 		// Array form: each element unquotes/unescapes back to itself.
 		let b = rand_str(&mut rng);
 		let mut da = Document::new();
-		da.set_string_array("k", &[s.as_str(), b.as_str()]);
+		assert!(da.set_string_array("k", &[s.as_str(), b.as_str()]));
 		let ra = Document::parse(&da.to_canonical()).read_string_array("k");
 		assert_eq!(
 			ra.value,

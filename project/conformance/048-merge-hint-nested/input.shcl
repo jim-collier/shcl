@@ -1,0 +1,10 @@
+table: users
+	col: id
+	meta:
+		note: a
+table: sessions
+	col: sid
+table: users
+	col: email
+	meta:
+		note: a

@@ -124,6 +124,16 @@ Enhancement suggestions are tracked as [GitHub issues](https://github.com/jim-co
 
 Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/cicd.bash --ci` run locally is the same gate GitHub CI runs, so if it passes on your box it passes upstream.
 
+The pipeline fast-forwards from the remote before it builds anything, so what it tests is what you would push. It stops and says so if your branch and its upstream have both moved. `--no-sync` skips that.
+
+There is also a `pre-push` hook that runs the gate for you, but only when the push would move `main` or `dev` - feature branches push straight through. `install-dev.bash` turns it on; to do it by hand:
+
+```sh
+git config core.hooksPath cicd/hooks
+```
+
+`git push --no-verify` gets past it when you need to.
+
 ### Toolchains
 
 - Rust via rustup - `rust-toolchain.toml` pins the version and cross targets; `rustfmt` and `clippy` come with it.
@@ -191,7 +201,8 @@ Behavior the corpus cannot see, because it is not stdout, belongs in `cicd/utili
 	- `rustfmt` + `clippy` - rustup components.
 	- `gofmt` + `go vet` - come with Go.
 	- `shellcheck` - the pipeline's own scripts and the bash wrapper.
-	- `ruff` + `mypy` - Python: `pipx install ruff` and `pipx install mypy`.
+	- `ruff` + `mypy` - Python: `pipx install ruff` and `pipx install mypy`; both read their settings from `source/python/pyproject.toml`.
+	- `build` - Python: `pipx install build`. The lint stage builds the wheel and sdist and checks they carry the library alone, since the CLI and the tests must never ship.
 	- `cppcheck` - C: `pipx install cppcheck` (PyPI wheel bundles the real binary).
 	- `markdownlint-cli2` - docs: `npm install -g markdownlint-cli2`; repo config in `.markdownlint-cli2.jsonc`.
 	- `PSScriptAnalyzer` - ps1 wrapper: `pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser'`.

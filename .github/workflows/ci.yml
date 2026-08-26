@@ -18,7 +18,9 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    ## 25 was enough until the large-document gate; that adds several minutes of
+    ## single-threaded parsing per binding, and a hosted runner is slower again.
+    timeout-minutes: 45
     steps:
       ## Actions by commit SHA (tag in the comment), so a moved tag cannot
       ## silently change what runs.
@@ -26,12 +28,16 @@ jobs:
       ## rustup on the runner reads rust-toolchain.toml and fetches the pinned
       ## toolchain on first cargo call; keep "what passing means" in the engine.
       ## The go.mod directive is the CONSUMER floor (1.20), not the pipeline's
-      ## toolchain: cicd's own `go -C` needs a current release, so install
-      ## stable and let the directive gate language features. (No go.sum - the
-      ## binding is zero-dep, so the module cache is off.)
+      ## toolchain: cicd's own `go -C` needs a current release. Pinned to a
+      ## series rather than stable, because staticcheck carries its own copy of
+      ## the type checker and cannot read export data from a Go newer than the
+      ## release it was cut against - stable rolling to 1.27 broke the lint
+      ## stage here while the local gate, on 1.26, stayed green. Move this when
+      ## the staticcheck pin in TOOL_PINS moves. (No go.sum - the binding is
+      ## zero-dep, so the module cache is off.)
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: stable
+          go-version: "1.26"
           cache: false
       ## Python binding is a zero-dep single file; pin the interpreter so a runner
       ## image bump can't silently shift float/coercion formatting under it.
@@ -52,7 +58,7 @@ jobs:
       ## releases stopped flagging, so a script can pass locally and fail here.
       ## Install the pinned version ahead of the image's copy on PATH.
       - run: |
-          pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1
+          pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1 build==1.5.0
           npm install -g markdownlint-cli2@0.23.1
           pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -Force -Scope CurrentUser'
           curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/shellcheck.tar.xz \
@@ -64,6 +70,22 @@ jobs:
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
           sudo install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
           shellcheck --version
+      ## The supply-chain trio gates the lint stage and none of it ships on the
+      ## image. Versions match TOOL_PINS, same as everything above. cargo-deny
+      ## comes as a prebuilt binary rather than a cargo install: building it
+      ## from source costs minutes here and pulls a dependency tree the gate has
+      ## no reason to compile.
+      - run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2026.1
+          go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/cargo-deny.tar.gz \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.9/cargo-deny-0.19.9-x86_64-unknown-linux-musl.tar.gz"
+          # Same integrity pin the shellcheck tarball gets: a gating tool
+          # fetched over the wire must fail here if the bytes ever change.
+          echo "f1f8eedc2a3ac297c540873f93785d4104b102c0079506b2a6b3221b7ec956af  /tmp/cargo-deny.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/cargo-deny.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/cargo-deny-0.19.9-x86_64-unknown-linux-musl/cargo-deny /usr/local/bin/cargo-deny
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
@@ -71,3 +93,39 @@ jobs:
             source/rust/target
           key: ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'source/rust/Cargo.lock') }}
       - run: cicd/cicd.bash --ci
+
+  ## The file tier is the only part of the library carrying real per-platform
+  ## code - the publish step is a different path in all four bindings - and the
+  ## job above runs none of it on windows. The python binding threw on every
+  ## windows overwrite through a whole release without anything here noticing.
+  ## So: the runners and the veneer smoke, on windows, and nothing else. The
+  ## corpus goldens, crosscheck, large document and every lint gate stay above,
+  ## where they are defined; this is not a second definition of passing.
+  ##
+  ## Nothing is installed beyond the toolchains. mingw's gcc ships on the image
+  ## and MSVC has no <dirent.h> for the C runner to walk the corpus with, so gcc
+  ## is the compiler; win-runners.bash names the tool if the image ever drops it.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    ## Git Bash. The runner script is the same one a person runs by hand there.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      ## rustup is preinstalled and reads rust-toolchain.toml, same as above.
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.26"
+          cache: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            source/rust/target
+          key: ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'source/rust/Cargo.lock') }}
+      - run: bash cicd/utility/win-runners.bash

@@ -18,6 +18,8 @@ logs:
 	~~~text
 	# not a comment, content
 	~~~
+
+this is ! not parseable
 # after a skipped line
 flag: on
 app:

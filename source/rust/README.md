@@ -21,10 +21,15 @@ cargo install shcl
 ## Use
 
 ```rust
-use shcl::Document;
+use shcl::{Document, FileStatus};
 
-let text = std::fs::read_to_string("server.shcl").unwrap();
-let doc = Document::parse(&text);
+// Reads and parses in one call, and never fails: the document is usable
+// either way, and the status separates missing from unreadable from
+// parsed-with-errors.
+let (mut doc, file_status) = Document::load_file("server.shcl");
+if file_status == FileStatus::NotFound {
+	eprintln!("no config yet - using defaults");
+}
 
 // One call, a typed value, a visible fallback at the call site.
 let limit = doc.get_int("site[example.com].max-upload-mb").unwrap_or(10);
@@ -37,15 +42,26 @@ if !r.ok() {
 
 // Wildcards read across instances, with a status per slot.
 let roots = doc.read_string_array("site[*].root");
+
+// Writes through a temp file and a rename, so an interrupted save cannot
+// truncate the config - and refuses if the load dropped a line this write
+// would delete (save_file_lossy is the override).
+// Setters are #[must_use]: a path that cannot be written writes nothing at
+// all, and write_reason names which of the five reasons it hit.
+let path = "site[example.com].max-upload-mb";
+if !doc.set_int(path, limit * 2) {
+	eprintln!("not written: {:?}", doc.write_reason(path));
+}
+doc.save_file("server.shcl").unwrap();
 ```
 
-`Document::parse` never fails. When you want a hard error instead, use `Document::parse_with(&text, Strictness::Strict)`.
+`Document::parse` never fails, and neither does `load_file`. When you want a hard error instead, use `Document::parse_with(&text, Strictness::Strict)`.
 
 Also here: `merge` for layered config (defaults, site, user), `validate` against a schema that is itself a SHCL file, a full writer, and a canonical formatter that preserves comments.
 
 ## Compatibility
 
-Bindings are versioned in lockstep, so `1.x` is the same behavior in every language. `shcl = "1"` picks up minor and patch releases on its own and never crosses a major version.
+Bindings are versioned in lockstep, so `2.x` is the same behavior in every language. `shcl = "2"` picks up minor and patch releases on its own and never crosses a major version.
 
 ## Docs
 

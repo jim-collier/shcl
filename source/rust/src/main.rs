@@ -5,8 +5,8 @@
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
 use shcl::{
-	Diagnostic, Document, Severity, Status, Strictness, generate, parse_datetime,
-	suppress_declared_repeats,
+	Diagnostic, Document, SaveError, Severity, Status, Strictness, generate, parse_datetime,
+	suppress_declared_reopens, suppress_declared_repeats,
 };
 use std::process::ExitCode;
 
@@ -27,15 +27,17 @@ Usage:
                                          commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
-  shcl help | version                    this help, or the version (also -h/--help, -V/--version)
+  shcl help | version                    this help, or the version (also -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
-set edits FILE, the base document ('-' = empty base). Values go in as
-repeatable --set PATH=VALUE (data) or --set-literal PATH=TEXT (value syntax, so
-arrays work) options, which persist with --write; given either, no ops are read
-from stdin. Raw blocks, set-only-if-absent and removal go in as a write-ops
-script on stdin, one op per line, tab-separated. Ops:
+set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE
+(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which
+persist with --write; given either, no ops are read from stdin. Raw blocks,
+set-only-if-absent and removal go in as a write-ops script on stdin, one op per
+line, tab-separated. FILE '-' follows stdin: the document when an option holds
+the edits, an empty base when the ops script has stdin instead. With --write,
+a FILE that does not exist yet is created. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -44,23 +46,29 @@ script on stdin, one op per line, tab-separated. Ops:
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 
-Types (default --string):
+Types (get only; default --string):
   --int --float --bool --datetime --string --raw --rawinfo
   --array                                read the value as an array of the type
   --rawinfo reads a raw block's info-string (the fence tag), not its content
 
-Options:
-  --default=VALUE                        value to print when the read is not Good
-                                         (implies --on-bad=default; for arrays,
-                                         substituted per bad slot)
-  --on-bad=error|default|flag            error: fail loudly; default: print the
-                                         default; flag: print the value anyway and
-                                         report via exit code (the default mode)
-  --slots                                prefix each line with its slot status and
-                                         a tab (per element, or per wildcard slot)
+Options (the subcommands each belongs to are in parentheses):
+  --default=VALUE                        (get) value to print when the read is
+                                         not Good (implies --on-bad=default; for
+                                         arrays, substituted per bad slot)
+  --on-bad=error|default|flag            (get) error: fail loudly; default: print
+                                         the default; flag: print the value anyway
+                                         and report via exit code (the default)
+  --slots                                (get) prefix each line with its slot
+                                         status and a tab (per element, or per
+                                         wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
-  --strictness=loose|standard|strict     or 1|2|3 (default standard)
+  --lossy                                (fmt/set) with --write, rewrite even
+                                         when the load dropped lines this write
+                                         would delete; without it the write
+                                         refuses and nothing is changed
+  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
+                                         standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
   --layer=FILE                           (get/fmt/count/instances/set) merge a
@@ -85,6 +93,8 @@ the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored.
+An in-place write prints the load's diagnostics to stderr, and refuses when the
+load dropped content the rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
@@ -166,6 +176,7 @@ struct Opts {
 	on_bad: String, // error|default|flag
 	strictness: Strictness,
 	write: bool,
+	lossy: bool,
 	no_banner: bool,
 	schema: Option<String>,
 	layers: Vec<String>,     // lower-priority layers, in listed order
@@ -184,7 +195,7 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 		let a = argv[i].as_str();
 		match a {
 			"-h" | "--help" => return Some("help"),
-			"-V" | "--version" => return Some("version"),
+			"-v" | "-V" | "--version" => return Some("version"),
 			"--about" => return Some("about"),
 			"--donate" => return Some("donate"),
 			"--" => return None,
@@ -209,6 +220,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		on_bad: "flag".into(),
 		strictness: Strictness::Standard,
 		write: false,
+		lossy: false,
 		no_banner: false,
 		schema: None,
 		layers: Vec::new(),
@@ -242,6 +254,10 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			"--write" | "-w" => {
 				o.write = true;
 				o.seen.push("--write");
+			}
+			"--lossy" => {
+				o.lossy = true;
+				o.seen.push("--lossy");
 			}
 			"--no-banner" => {
 				o.no_banner = true;
@@ -343,9 +359,11 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			"--set",
 			"--set-literal",
 			"--write",
+			"--lossy",
 		],
 		"fmt" => &[
 			"--write",
+			"--lossy",
 			"--strictness",
 			"--layer",
 			"--set",
@@ -360,6 +378,22 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		if !allowed.contains(s) {
 			if *s == "--<type>" {
 				eprintln!("type options are not valid for {} (see --help)", cmd);
+			} else if cmd == "init" && *s == "--strictness" {
+				// Deliberate, not an oversight: the schema is a program artifact,
+				// so it always loads at Standard - the same rule `check --schema`
+				// follows for the schema half.
+				eprintln!(
+					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data"
+				);
+			} else if cmd == "check" && matches!(*s, "--layer" | "--set" | "--set-literal") {
+				// The one refusal a user is likely to want anyway: check reports
+				// line numbers, and a merged document has no single file to
+				// number against. Naming the pipeline turns a dead end into a
+				// one-liner.
+				eprintln!(
+					"option {} not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt {} ... FILE | shcl check --schema=SCHEMA -",
+					s, s
+				);
 			} else {
 				eprintln!("option {} not valid for {} (see --help)", s, cmd);
 			}
@@ -378,9 +412,15 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		eprintln!("--write cannot be combined with --set (see --help)");
 		return Err(1);
 	}
+	// --lossy only overrides the in-place write's refusal, so on its own it says
+	// nothing and would read as protection the command never had.
+	if o.lossy && !o.write {
+		eprintln!("--lossy is only meaningful with --write (see --help)");
+		return Err(1);
+	}
 	// The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" && o.layers.iter().any(|l| l == "-") {
-		eprintln!("--layer=- is not valid for set (stdin carries the ops script)");
+		eprintln!("--layer=- is not valid for set (stdin carries the ops script or the document)");
 		return Err(1);
 	}
 	Ok(())
@@ -418,76 +458,39 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 	Ok(doc)
 }
 
-/// Write atomically: temp file in the same dir, then rename over the target,
-/// so an interrupted write can never truncate the config it rewrites. The data
-/// is synced before the rename so a crash cannot publish an empty file.
-///
-/// A rename publishes a new inode, so the target is resolved through symlinks
-/// first (otherwise a linked-in config gets replaced by a regular file and the
-/// real one is left stale) and the original's mode is copied onto the temp file
-/// (otherwise a 600 config comes back at whatever the umask allows). Other hard
-/// links to the old inode cannot survive a rename and keep the old content.
-fn write_atomic(file: &str, data: &str) -> Result<(), String> {
-	use std::io::Write;
-	// canonicalize fails when the target does not exist yet; that is a plain
-	// create, so the path as given is already the right one.
-	let target = std::fs::canonicalize(file).unwrap_or_else(|_| std::path::PathBuf::from(file));
-	let dir = match target.parent() {
-		Some(d) if !d.as_os_str().is_empty() => d,
-		_ => std::path::Path::new("."),
+/// The in-place half of `fmt`/`set`. Overwriting the source is the one place a
+/// recovered load turns destructive, so the diagnostics go out even though the
+/// command succeeded, and the save runs through the library's own gate rather
+/// than a second copy of the rule - the CLI and a consumer program cannot then
+/// disagree about which rewrites are safe.
+fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
+	for d in doc.diagnostics() {
+		eprintln!(
+			"line {}: {:?}: {} {}",
+			d.line, d.severity, d.code, d.message
+		);
+	}
+	let r = if o.lossy {
+		doc.save_file_lossy(file)
+	} else {
+		doc.save_file(file)
 	};
-	let base = target
-		.file_name()
-		.map(|b| b.to_string_lossy().into_owned())
-		.unwrap_or_else(|| file.to_string());
-	// Exclusive create: the name is predictable, so anything already sitting
-	// there - including a symlink someone else planted - must make this fail
-	// rather than be written through. Retry past a stale collision, then give
-	// up; refusing to write beats writing somewhere unintended.
-	let mut file_handle = None;
-	let mut tmp = std::path::PathBuf::new();
-	let mut last = String::new();
-	for attempt in 0..8 {
-		tmp = dir.join(format!(".{}.tmp{}.{}", base, std::process::id(), attempt));
-		let mut opts = std::fs::OpenOptions::new();
-		opts.write(true).create_new(true);
-		// Born private, so the copy is never briefly readable to anyone the
-		// original was not. The real mode goes on below, before any data.
-		#[cfg(unix)]
-		{
-			use std::os::unix::fs::OpenOptionsExt;
-			opts.mode(0o600);
+	match r {
+		Ok(()) => 0,
+		Err(SaveError::Refused { lost, .. }) => {
+			// The rule stays in the library; only the wording is the CLI's,
+			// because the override a user has here is a flag, not a function.
+			eprintln!(
+				"{}: refusing to rewrite: the load dropped {} line(s)/value(s) this write would delete (--lossy overrides)",
+				file, lost
+			);
+			1
 		}
-		match opts.open(&tmp) {
-			Ok(f) => {
-				file_handle = Some(f);
-				break;
-			}
-			Err(e) => last = e.to_string(),
+		Err(e) => {
+			eprintln!("{}", e);
+			1
 		}
 	}
-	let Some(mut f) = file_handle else {
-		return Err(format!("{}: cannot create temporary file: {}", file, last));
-	};
-	let res = (|| -> std::io::Result<()> {
-		// On the handle, so umask cannot narrow it the way it narrows a create
-		// mode. Best effort: a filesystem that cannot carry the mode is not a
-		// reason to fail a write that otherwise succeeded.
-		if let Ok(m) = std::fs::metadata(&target) {
-			let _ = f.set_permissions(m.permissions());
-		}
-		f.write_all(data.as_bytes())?;
-		f.sync_all()
-	})();
-	if let Err(e) = res {
-		let _ = std::fs::remove_file(&tmp);
-		return Err(format!("{}: {}", file, e));
-	}
-	drop(f);
-	std::fs::rename(&tmp, &target).map_err(|e| {
-		let _ = std::fs::remove_file(&tmp);
-		format!("{}: {}", file, e)
-	})
 }
 
 fn read_input(file: &str) -> Result<String, String> {
@@ -616,6 +619,37 @@ fn do_get(o: &Opts) -> u8 {
 			}
 		}
 	};
+	// Why the read failed is worth saying even when the exit code already
+	// carries it: at the default mode the user otherwise gets an empty line, a
+	// nonzero code, and nothing to go on. Stdout is untouched - this only ever
+	// goes to stderr. Two silences are deliberate: `default` mode, because a
+	// caller who supplied a fallback has already said the miss is expected, and
+	// Empty outside `error` mode, because an empty value is a legitimate answer
+	// here rather than a failure - the same reason `ok()` counts it as fine.
+	let say = status != Status::Good
+		&& o.on_bad != "default"
+		&& (status != Status::Empty || o.on_bad == "error");
+	if say {
+		let type_name = if o.array {
+			format!("{} array", o.kind)
+		} else {
+			o.kind.clone()
+		};
+		let reason = match status {
+			Status::BadType => match doc.read_string(path).raw {
+				Some(raw) => format!("value {:?} is not a valid {}", raw, type_name),
+				None => format!("value is not a valid {}", type_name),
+			},
+			Status::NotFound => "no value at that path".to_string(),
+			Status::Empty => "the value is empty".to_string(),
+			Status::Multiple => "the path matches multiple instances".to_string(),
+			Status::Good => String::new(), // handled above; keep the match total
+		};
+		eprintln!(
+			"shcl: cannot read {} as {}: {} (in {})",
+			path, type_name, reason, file
+		);
+	}
 	match (status, o.on_bad.as_str()) {
 		(Status::Good, _) | (Status::Empty, "flag") => {
 			emit(&lines);
@@ -647,28 +681,9 @@ fn do_get(o: &Opts) -> u8 {
 			}
 			0
 		}
-		(_, "error") => {
-			let type_name = if o.array {
-				format!("{} array", o.kind)
-			} else {
-				o.kind.clone()
-			};
-			let reason = match status {
-				Status::BadType => match doc.read_string(path).raw {
-					Some(raw) => format!("value {:?} is not a valid {}", raw, type_name),
-					None => format!("value is not a valid {}", type_name),
-				},
-				Status::NotFound => "no value at that path".to_string(),
-				Status::Empty => "the value is empty".to_string(),
-				Status::Multiple => "the path matches multiple instances".to_string(),
-				Status::Good => String::new(), // handled above; keep the match total
-			};
-			eprintln!(
-				"shcl: cannot read {} as {}: {} (in {})",
-				path, type_name, reason, file
-			);
-			status_code(status)
-		}
+		// The message already went to stderr above; error mode differs only in
+		// printing nothing on stdout.
+		(_, "error") => status_code(status),
 		(_, _) => {
 			// flag: print the zero/empty value anyway; the exit code carries the status
 			emit(&lines);
@@ -689,18 +704,14 @@ fn do_fmt(o: &Opts) -> u8 {
 		eprintln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	let canonical = match load_layered(o, file) {
-		Ok(d) => d.to_canonical(),
+	let doc = match load_layered(o, file) {
+		Ok(d) => d,
 		Err(code) => return code,
 	};
 	if o.write {
-		if let Err(e) = write_atomic(file, &canonical) {
-			eprintln!("{}", e);
-			return 1;
-		}
-	} else {
-		print!("{}", canonical);
+		return write_back(&doc, file, o);
 	}
+	print!("{}", doc.to_canonical());
 	0
 }
 
@@ -831,7 +842,10 @@ fn do_set(o: &Opts) -> u8 {
 		eprintln!("set --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	// Base doc: '-' means an empty base, since stdin carries the ops script.
+	// Base doc: with the edits given as options no ops script is read, so a '-'
+	// file is the document on stdin the way it is everywhere else; only when
+	// stdin is the ops script does '-' mean an empty base. Reading neither threw
+	// a piped document away at exit 0.
 	// Any --layer files sit under it and --set overrides sit on top, before ops.
 	let mut layer_texts: Vec<String> = Vec::new();
 	for lf in &o.layers {
@@ -843,7 +857,13 @@ fn do_set(o: &Opts) -> u8 {
 			}
 		}
 	}
-	let base_text = if file == "-" {
+	// --write names the file this command produces, so a FILE that is not there
+	// yet is a create and the edits land in a new document. Only under --write,
+	// and only when nothing is at the path at all: without --write there is
+	// nothing to create, and a file that exists but cannot be read is still an
+	// error rather than something to quietly write over.
+	let creating = o.write && file != "-" && !std::path::Path::new(file).exists();
+	let base_text = if creating || (file == "-" && o.sets.is_empty()) {
 		String::new()
 	} else {
 		match read_input(file) {
@@ -876,6 +896,12 @@ fn do_set(o: &Opts) -> u8 {
 	let mut ops = String::new();
 	if o.sets.is_empty() {
 		use std::io::Read;
+		// Say so before blocking. With nothing on stdin this used to sit there
+		// silently, which reads as a hang rather than as a prompt; the note is
+		// unconditional so a pipeline and a terminal behave identically.
+		eprintln!(
+			"shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)"
+		);
 		if let Err(e) = std::io::stdin().read_to_string(&mut ops) {
 			eprintln!("stdin: {}", e);
 			return 1;
@@ -890,15 +916,10 @@ fn do_set(o: &Opts) -> u8 {
 			return 1;
 		}
 	}
-	let canonical = doc.to_canonical();
 	if o.write {
-		if let Err(e) = write_atomic(file, &canonical) {
-			eprintln!("{}", e);
-			return 1;
-		}
-	} else {
-		print!("{}", canonical);
+		return write_back(&doc, file, o);
 	}
+	print!("{}", doc.to_canonical());
 	0
 }
 
@@ -949,6 +970,7 @@ fn do_check(o: &Opts) -> u8 {
 				} else {
 					diags.extend(doc.validate(&sdoc));
 					suppress_declared_repeats(&sdoc, &mut diags);
+					suppress_declared_reopens(&sdoc, &mut diags);
 				}
 			}
 			(diags, false)
@@ -1139,14 +1161,11 @@ fn main() -> ExitCode {
 	};
 	let first = argv.first().map(|s| s.as_str());
 	let asked = asked_for(&argv);
-	// Bare invocation is a usage error, so it prints the help unpadded. The
-	// blank lines below are for a person who asked, to separate the block from
-	// the surrounding prompts.
-	if argv.is_empty() {
-		print!("{}", HELP);
-		return ExitCode::from(1);
-	}
-	if asked == Some("help") || first == Some("help") {
+	// One convention: asking for the help - by name, by flag, or by asking for
+	// nothing at all - prints it and succeeds. The blank lines separate the
+	// block from the surrounding prompts. A bare run used to print the same
+	// text unpadded and exit 1, which read as neither a help nor an error.
+	if asked == Some("help") || first == Some("help") || argv.is_empty() {
 		print!("\n{}\n", HELP);
 		return ExitCode::from(0);
 	}

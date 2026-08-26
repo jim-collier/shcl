@@ -11,6 +11,8 @@
 
 #include "shcl.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,6 +27,16 @@ enum class WriteReason { Writable = SHCL_W_WRITABLE, BadPath = SHCL_W_BAD_PATH, 
 template <class T> struct Read {
 	T value{};
 	Status status{};
+	// Per-slot statuses, array reads only: one entry per slot the path
+	// resolved, aligned with value, so a partially-resolved array says which
+	// slots failed and why rather than only that the whole read did. Empty for
+	// a scalar read.
+	std::vector<Status> slots{};
+	// Whether the author addressed this field at all: Good or Empty. Note this
+	// deliberately answers differently from get_or, which falls back on Empty
+	// like any other non-Good read - ok() asks "is this field spoken for",
+	// get_or() asks "do I have a usable value", and an explicitly emptied field
+	// is the case where those two diverge.
 	bool ok() const { return status == Status::Good || status == Status::Empty; }
 };
 
@@ -32,19 +44,23 @@ struct Diagnostic { std::size_t line; bool is_error; std::string message; std::s
 
 // Owning structured datetime. The core's shcl_datetime borrows its frac digits
 // from the document's arena; this copies them so the value keeps the veneer's
-// RAII promise and may outlive the Document. Copies/moves re-point the C view
-// at their own storage.
+// RAII promise and may outlive the Document. Copies and moves re-point the C
+// view at their own storage - a move re-points the source's too, or the
+// moved-from object keeps a view into storage it just handed away.
 class Datetime {
 	shcl_datetime v_{};
 	std::string frac_;
-	void rebind() { v_.frac.p = frac_.data(); v_.frac.n = frac_.size(); }
+	// The view always describes this object's own storage, has_frac included -
+	// so a moved-from Datetime, whose string is emptied, cannot go on formatting
+	// a fraction it no longer holds.
+	void rebind() { v_.frac.p = frac_.data(); v_.frac.n = frac_.size(); v_.has_frac = !frac_.empty(); }
 public:
 	Datetime() { v_.zone = SHCL_ZONE_NONE; }
 	explicit Datetime(const shcl_datetime &v) : v_(v), frac_(v.frac.p ? std::string(v.frac.p, v.frac.n) : std::string()) { rebind(); }
 	Datetime(const Datetime &o) : v_(o.v_), frac_(o.frac_) { rebind(); }
 	Datetime &operator=(const Datetime &o) { v_ = o.v_; frac_ = o.frac_; rebind(); return *this; }
-	Datetime(Datetime &&o) noexcept : v_(o.v_), frac_(std::move(o.frac_)) { rebind(); }
-	Datetime &operator=(Datetime &&o) noexcept { v_ = o.v_; frac_ = std::move(o.frac_); rebind(); return *this; }
+	Datetime(Datetime &&o) noexcept : v_(o.v_), frac_(std::move(o.frac_)) { rebind(); o.rebind(); }
+	Datetime &operator=(Datetime &&o) noexcept { v_ = o.v_; frac_ = std::move(o.frac_); rebind(); o.rebind(); return *this; }
 	// The C view, for shcl_datetime_str and friends: valid as long as *this.
 	const shcl_datetime &c() const noexcept { return v_; }
 	// The reference's textual form.
@@ -52,6 +68,15 @@ public:
 };
 
 inline std::string to_str(shcl_str s) { return std::string(s.p, s.n); }
+
+inline std::vector<Status> to_slots(const shcl_status *s, std::size_t n) {
+	std::vector<Status> v; v.reserve(n);
+	for (std::size_t i = 0; i < n; i++) v.push_back(static_cast<Status>(s[i]));
+	return v;
+}
+
+// Status as text, for a log line or a message. Borrowed from static storage.
+inline const char *to_string(Status s) { return shcl_status_name(static_cast<shcl_status>(s)); }
 
 class Document {
 	shcl_doc *d_ = nullptr;
@@ -67,6 +92,36 @@ public:
 
 	static Document parse(std::string_view t) { return Document(shcl_parse(t.data(), t.size())); }
 	static Document parse_with(std::string_view t, Strictness s) { return Document(shcl_parse_with(t.data(), t.size(), static_cast<shcl_strictness>(s))); }
+
+#ifndef SHCL_NO_FILE_IO
+	// File tier: load never fails (the document always comes back usable,
+	// empty when the file could not be read; the status separates absent /
+	// unreadable / parsed-with-errors / clean), and save writes canonical
+	// text atomically - the CLI --write mechanics.
+	enum class FileStatus { Clean = SHCL_FILE_CLEAN, HadErrors = SHCL_FILE_HAD_ERRORS, NotFound = SHCL_FILE_NOT_FOUND, Unreadable = SHCL_FILE_UNREADABLE };
+	static Document load_file(const std::string &path, FileStatus *status = nullptr) {
+		// Initialized: an out-parameter the caller reads unconditionally should
+		// never depend on the callee having written it.
+		shcl_file_status cs = SHCL_FILE_UNREADABLE;
+		Document d(shcl_load_file(path.c_str(), &cs));
+		if (status) *status = static_cast<FileStatus>(cs);
+		return d;
+	}
+	// Textual name of a file status, for a log line. Borrowed, static.
+	static const char *to_string(FileStatus s) { return shcl_file_status_name(static_cast<shcl_file_status>(s)); }
+	static Document load_file_with(const std::string &path, Strictness s, FileStatus *status = nullptr) {
+		shcl_file_status cs = SHCL_FILE_UNREADABLE;
+		Document d(shcl_load_file_with(path.c_str(), static_cast<shcl_strictness>(s), &cs));
+		if (status) *status = static_cast<FileStatus>(cs);
+		return d;
+	}
+	enum class SaveResult { Ok = SHCL_SAVE_OK, Refused = SHCL_SAVE_REFUSED, Failed = SHCL_SAVE_FAILED };
+	// Not a bool: Refused is the lost-content gate, which save_file_lossy
+	// overrides, and folding it into a failed write leaves the caller with an
+	// override they cannot tell they need.
+	SaveResult save_file(const std::string &path) const { return static_cast<SaveResult>(shcl_save_file(d_, path.c_str())); }
+	SaveResult save_file_lossy(const std::string &path) const { return static_cast<SaveResult>(shcl_save_file_lossy(d_, path.c_str())); }
+#endif
 
 	// One-shot load-and-validate: parse at a strictness, validate against a
 	// schema, and hand back a document whose diagnostics() serve ONE combined
@@ -94,10 +149,18 @@ public:
 	// includes validation errors.
 	std::size_t error_count() const { return shcl_error_count(d_); }
 
+	// How many lines or values parsing dropped that canonical output cannot
+	// re-emit. Content-malformed lines do NOT count - those survive a save.
+	// Nonzero is why save_file refuses; save_file_lossy is the override.
+	std::size_t lost_count() const { return shcl_lost_count(d_); }
+
 	// Schema validation (spec.md "Schema validation"): empty result = conforms.
 	// Schema faults (V09x, schema-file lines) come first; the surviving
-	// constraints still check the document, and only the unknown-field sweep
-	// needs a fault-free schema.
+	// constraints still check the document, and the unknown-field sweep skips
+	// only when a fault cost a path spelling. The H001/H002 hints a schema
+	// disavows are NOT dropped here - they live on the parse's diagnostics,
+	// which validation does not touch; load_and_validate is the call that
+	// drops them.
 	std::vector<Diagnostic> validate(const Document &schema) const {
 		std::vector<Diagnostic> v;
 		shcl_validation *r = shcl_validate(d_, schema.d_);
@@ -147,6 +210,20 @@ public:
 	// to exactly one node or the node was writer-built.
 	std::size_t line(std::string_view p) const { return shcl_line(d_, p.data(), p.size()); }
 
+	// Whether the single scalar value at a path was quoted in the source, so a
+	// quoted plain string is distinguishable from a bare word that happens to
+	// spell a reserved one. False for anything that is not one scalar element.
+	bool quoted(std::string_view p) const { return shcl_quoted(d_, p.data(), p.size()) != 0; }
+
+	// Whether a path resolves to at least one node.
+	bool exists(std::string_view p) const { return shcl_exists(d_, p.data(), p.size()) != 0; }
+
+	// The field name at a path exactly as the author spelled it (case
+	// unfolded, outer quotes stripped - escape sequences stay as written too,
+	// where every other name operation sees them resolved); empty when the path
+	// does not resolve to exactly one node.
+	std::string authored_name(std::string_view p) const { return to_str(shcl_authored_name(d_, p.data(), p.size())); }
+
 	// The plural line(): 1-based source lines at a path, in file order, so a
 	// repeated field - the case that most wants a citable line - yields every
 	// binding's. Unresolved wildcard slots stay in the list as 0; a miss is
@@ -179,26 +256,39 @@ public:
 	Read<std::string> read_raw_info(std::string_view p) const { auto r = shcl_read_raw_info(d_, p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
 
 	// Datetime as the reference's textual form (the common need).
-	Read<std::string> read_datetime(std::string_view p) const {
+	Read<std::string> read_datetime_str(std::string_view p) const {
 		auto r = shcl_read_datetime(d_, p.data(), p.size());
 		char buf[64]; std::size_t k = shcl_datetime_str(&r.value, buf);
 		return {std::string(buf, k), st(r.status)};
 	}
-	// Structured datetime, if the caller wants the parsed fields. Owning
+	// Structured datetime, matching read_datetime in every other binding. Owning
 	// (unlike the core's shcl_read_datetime), so it may outlive the Document.
-	Read<Datetime> read_datetime_raw(std::string_view p) const { auto r = shcl_read_datetime(d_, p.data(), p.size()); return {Datetime(r.value), st(r.status)}; }
+	// This used to be spelled read_datetime_raw, with read_datetime returning
+	// the text - backwards twice over, since "raw" means the text exactly as
+	// written everywhere else. Both old spellings are gone as of this major.
+	Read<Datetime> read_datetime(std::string_view p) const { auto r = shcl_read_datetime(d_, p.data(), p.size()); return {Datetime(r.value), st(r.status)}; }
 
-	Read<std::vector<int64_t>> read_int_array(std::string_view p) const { auto r = shcl_read_int_array(d_, p.data(), p.size()); return {std::vector<int64_t>(r.values, r.values + r.n), st(r.status)}; }
-	Read<std::vector<double>> read_float_array(std::string_view p) const { auto r = shcl_read_float_array(d_, p.data(), p.size()); return {std::vector<double>(r.values, r.values + r.n), st(r.status)}; }
+	// Array reads carry the per-slot statuses in .slots, so a partly-resolved
+	// array says which slots failed rather than only that the read did.
+	Read<std::vector<int64_t>> read_int_array(std::string_view p) const { auto r = shcl_read_int_array(d_, p.data(), p.size()); return {std::vector<int64_t>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
+	Read<std::vector<double>> read_float_array(std::string_view p) const { auto r = shcl_read_float_array(d_, p.data(), p.size()); return {std::vector<double>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
 	Read<std::vector<bool>> read_bool_array(std::string_view p) const {
 		auto r = shcl_read_bool_array(d_, p.data(), p.size());
 		std::vector<bool> v; v.reserve(r.n); for (std::size_t i = 0; i < r.n; i++) v.push_back(r.values[i] != 0);
-		return {std::move(v), st(r.status)};
+		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
 	}
 	Read<std::vector<std::string>> read_string_array(std::string_view p) const {
 		auto r = shcl_read_string_array(d_, p.data(), p.size());
 		std::vector<std::string> v; v.reserve(r.n); for (std::size_t i = 0; i < r.n; i++) v.push_back(to_str(r.values[i]));
-		return {std::move(v), st(r.status)};
+		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
+	}
+	// Datetimes as their textual form, matching read_datetime_str; the owning
+	// Datetime form is per-element and stays on the scalar read.
+	Read<std::vector<std::string>> read_datetime_array(std::string_view p) const {
+		auto r = shcl_read_datetime_array(d_, p.data(), p.size());
+		std::vector<std::string> v; v.reserve(r.n);
+		for (std::size_t i = 0; i < r.n; i++) { char buf[64]; std::size_t k = shcl_datetime_str(&r.values[i], buf); v.push_back(std::string(buf, k)); }
+		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
 	}
 
 	// Compile-time-typed read: get<int64_t>/get<double>/get<bool>/get<std::string>.

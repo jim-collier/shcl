@@ -21,7 +21,7 @@
 ##		$hosts = shcl_array --string app.shcl cluster.hosts
 ##
 ##	Functions defined when dot-sourced (each mirrors the CLI, sets $LASTEXITCODE):
-##		shcl                 the whole CLI: get|set|fmt|check|count|instances ...
+##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances ...
 ##		                     (pipeline input is forwarded, so `set` can be piped)
 ##		shcl_get             read a string (the default type)
 ##		shcl_int shcl_float shcl_bool shcl_datetime shcl_raw
@@ -155,5 +155,9 @@ function shcl_instances { shcl instances @args }
 ## InvocationName is '.' only when dot-sourced.
 if ($MyInvocation.InvocationName -ne '.') {
 	shcl @args
-	exit ($LASTEXITCODE ?? 1)      ## null only if nothing ran; treat as usage/IO
+	## Spelled the long way rather than with ??, so this runs on the Windows
+	## PowerShell 5.1 that ships with the OS as well as on 7.
+	$rc = $LASTEXITCODE
+	if ($null -eq $rc) { $rc = 1 }   ## null only if nothing ran; treat as usage/IO
+	exit $rc
 }
