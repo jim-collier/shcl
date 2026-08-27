@@ -39,6 +39,9 @@ Where AI is allowed near this project, where it isn't, and who is accountable ei
 	- [What AI may do with light review](#what-ai-may-do-with-light-review)
 	- [What always needs full human review](#what-always-needs-full-human-review)
 	- [What AI does not decide](#what-ai-does-not-decide)
+	- [Making it follow the house style](#making-it-follow-the-house-style)
+	- [Machines check first](#machines-check-first)
+	- [The test suite](#the-test-suite)
 	- [Contributing](#contributing)
 - [Where this could change](#where-this-could-change)
 - [The use of AI in writing this document](#the-use-of-ai-in-writing-this-document)
@@ -51,7 +54,9 @@ This project's original author has decades of programming experience. Hobby, the
 
 When AI started becoming a "thing" in programming, I (the original author) was against it. Which was convenient, because it sucked at it.
 
-That view has softened with the emergence of frontier models like Claude Fable. (Again convenient now that it's much better.) I've been running AI-led experiments under an alt GitHub account, mostly to find where these tools break and where they hold up. One result is that this nearly decade-old main account no longer has a blanket "no-AI" policy, but allowed only under strict, human-driven constraints.
+That view has softened with the emergence of frontier models like Claude Fable. (Again convenient now that it's pretty cabable.) I've been running large AI-led experiments under an alt GitHub account, mostly to find where these tools break and where they hold up.
+
+One outcome is that this nearly decade-old main account no longer has a blanket "no-AI" policy; but allowed only under strict, human-driven constraints.
 
 This document is a ~~first~~ second pass at documenting what, when, and how AI is allowed into this and other projects.
 
@@ -79,11 +84,11 @@ That asymmetry is most of the reason the rules further down put the burden where
 
 ### License laundering
 
-A model trained on copyleft code can emit something very close to it with none of the license attached. Codeberg again: "copyleft code is stripped of its reciprocity requirements by 'generating' it out of the training data".
+A model trained on copyleft code can emit something very close to it with none of the license attached. Codeberg: "copyleft code is stripped of its reciprocity requirements by 'generating' it out of the training data".
 
-Whether that holds up in court is unsettled, and probably will be for years. The question for a maintainer is narrower and more immediate. If a generated block is close enough to some GPL original that a person copying it by hand would have been obligated, then merging it puts the project somewhere it never agreed to go, and nobody in the review chain saw it happen.
+Whether that holds up in court is unsettled, and probably will be for years. The question for a maintainer is more immediate. If a generated block is close enough to some GPL original that a person copying it by hand would have been obligated, then merging it puts the project somewhere it never agreed to go, and nobody in the review chain saw it happen.
 
-There's no tooling answer to this. What there is: if a generated block looks reproduced rather than written, stop and find out where it came from. And never have a model strip a license header or attribution to make something easier to paste in.
+Unfortunately there's currently no tooling answer to this, and the even human-driven solutions may inadequately address this risk.
 
 ### Code quality
 
@@ -107,13 +112,11 @@ Used the other way around, for adversarial review, security review, and fuzz and
 
 Any project accepting AI-generated contributions carries this risk.
 
-AI is becoming a public enemy. The cause is probably mostly greed-driven hype, the economics, and the tactics used to foist data centers onto communities whose citizens pay the externalities.
+AI is becoming a public enemy. The cause is probably mostly greed-driven and too much hype, the economics, and the sometimes shady public/private tactics used to foist data centers onto communities whose citizens pay the externalities.
 
-(That perception may shift once desktop-class open models are good enough to work offline, which looks like a short wait rather than a long one.)
+(That perception may shift once desktop-class open models are good enough to work offline, which looks like a short wait rather than a long one, but perceptions can take years or decades to evolve.)
 
-None of this is just sentiment anymore. Codeberg's membership voted 358 to 144, on about 50% turnout, to revise the terms of use against "vibe-coded projects", plus a separate pledge never to train on user or project data. Their follow-up guidance is graded rather than absolute: a project with an active community, or with real history predating LLMs, isn't the target. A repository producing more than the people behind it plausibly could is.
-
-Either way, hiding the involvement of AI is not the way out of its growing PR problem. Being transparent about its use, managing it as a tool, and accepting whatever criticism follows is the path taken here.
+Either way, hiding the involvement of AI is not the way through any of these problems. Being transparent about its use, managing it as a tool, and accepting whatever criticism follows is the path taken here.
 
 ### Environmental
 
@@ -129,21 +132,21 @@ The argument is not that this is fine. It is that cost per unit of useful work i
 
 - Open-weight models have nearly caught up. The benchmark gap against closed models narrowed from 8% to 1.7% in a single year.
 
-The part that matters here: open-weight coding models that fit in 24 to 32 GB on a consumer GPU now score around 80% on SWE-bench Verified, against roughly 90 to 95% for the best hosted models. That is already enough for the review and testing work described below.
+The part that matters most: open-weight coding models that fit in 24 to 32 GB on a consumer GPU now score around 80% on SWE-bench Verified, against roughly 90 to 95% for the best hosted models. That is already enough for the review and testing work described below.
 
 On capability, the number usually quoted is [METR's](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/): the length of task a model finishes with 50% reliability has doubled about every seven months over the six years to 2025. Fitting only the 2024-2025 data gives a steeper curve. METR puts no single number on that, but on SWE-bench Verified alone they measured a doubling time under three months.
 
-At a seven-month doubling interval, 3 years is about 35x compounded. At a four-month interval, 3 years is over 500x. That's a trend, not a "prediction".
+At a seven-month doubling interval, 3 years is about 35x compounded. At a four-month interval, 3 years is over 500x. (This is a trend, not a "prediction".)
 
 So the position is narrower than "AI is worth it". It is that the useful capability is on track to run on a desktop with no cloud data center behind it (e.g. in a solar-powered home office), sooner than later.
 
 ### Economic
 
-The companies leading this are among the largest ever to exist, and may be steering the global economy toward a cliff. If that happens, the cost will fall mostly on people who never opted in.
+The companies leading this are among the largest to ever exist, and may be steering the global economy toward a cliff. If that happens, the cost will fall mostly on people who never opted in.
 
-Time will tell whether this is the largest bubble in history or whether the anticipated returns arrive first. The railroad and dotcom booms both overbuilt badly, and both left infrastructure that got used at rock-bottom prices long after the bust. Late investors ate the loss and the public got the buildout. The presumed winners rarely survived either. For example, Google entered search years after them, stayed private through the whole boom, and came out on top.
+Time will tell whether this is the largest bubble in history or whether the anticipated returns arrive first. The railroad and dotcom booms both overbuilt too early, badly; and both left infrastructure that eventually got used at rock-bottom prices long after the bust. Late boom investors ate the loss and the public got the buildout. The presumed winners rarely survived either. For example, Google entered search years after Lycos and Alta Vista, stayed private through the whole boom, and came out on top while the former are historical footnotes.
 
-Either way, if guidelines like the ones below were adopted broadly (narrow scope, human accountability, no AI making the decisions that matter) and especially limited to near-future desktop models - then global demand might look less like a gold rush. That could be cope. It may also be true.
+Either way, if guidelines like the ones below were adopted broadly (narrow scope, human accountability, no AI making the decisions that matter) and especially limited to near-future desktop models - then global demand might look less like a gold rush. Maybe that's cope. Or maybe it's true.
 
 ### Ethical
 
@@ -163,7 +166,7 @@ The objection usually means something narrower: *situational* context. Who you a
 
 And "understand" belongs in quotes, because nobody can specify what understanding *is* beyond what it *does*. We grant it to other humans on inference alone, for free. (But in the end, can we really be sure *any* intelligence - yours, mine, the pilot of your next flight - is anything more than a next-word-prediction machine, running on wetware, that got good enough at not dying to mistake itself for something else?)
 
-Whether an eventual AGI is LLM-based is an open question. But LLMs have two advantages now: they can "communicate" with us, and we can literally watch them "think" in our own native language. As for coding, the inventors of computer languages borrowed the machinery of linguistics, which is what LLMs happen to be built for, and that is a large part of why these models got good at code before most other technical work. Even if AI advances beyond LLMs, there may still be a role for LLMs in A) the human interface, and/or B) coding agents.
+Whether some future hypothetical AGI is LLM-based is an open question. But LLMs have two advantages now: they can "communicate" with us, and we can literally watch them "think" in our own native language. As for coding, the inventors of computer languages borrowed the machinery of linguistics, which is what LLMs happen to be built for, and that is a large part of why these models got good at code before most other technical work. Even if AI advances far beyond LLMs, there may still be a role for LLMs in A) the human interface portion, and/or B) coding agents.
 
 ## Good uses of AI
 
@@ -179,7 +182,7 @@ What current LLMs demonstrably do well:
 
 What they cannot do:
 
-- Retain anything between sessions. (Without memory files and even then imperfectly.)
+- Retain anything between sessions. (Without memory files and even then pretty flawed, for now.)
 
 - Exist as one continuous mind.
 
@@ -205,17 +208,17 @@ A model that reports a defect can usually write the fix too. Those patches are a
 
 - Fuzz harnesses. Tedious to write, and easy to check.
 
-- CI/CD and build pipelines. Tedious and error-prone, with immediate feedback and verifiable by running.
+- CI/CD and build pipelines. Tedious and error-prone (arguably even with cutting-edge dedicated products), with immediate feedback and verifiable by running.
 
 ### Hard problems
 
 - Bugs needing more context than one person can hold at once, where the cause is spread across several files and a dozen interacting conditions. That is a genuine human/AI delta, not just a speed increase.
 
-- Math, algorithms, and logic that have published academic literature behind them. The model knows the papers exist, including obscure historical ones, has read them, and can say whether they apply to the problem at hand. Not necessarily better than a human, just much faster at the research.
+- Math, algorithms, and logic that have published academic literature behind them. The model knows the papers exist, including obscure historical ones, has already read them, and can say whether they apply to the problem at hand with reasonable accuracy. Not necessarily better than a human, but much faster at the research.
 
 ### Porting to other languages
 
-Porting a well-defined, documented codebase with comprehensive existing test harnesses to another language is something current frontier models do with high fidelity, including refactoring to target-language idioms.
+Porting a well-defined, documented codebase with comprehensive existing test harnesses to another language is something current frontier models can do with high fidelity, including refactoring to target-language idioms.
 
 It is then a fully human responsibility to:
 
@@ -229,7 +232,7 @@ It is then a fully human responsibility to:
 
 Similar to the previous point. For some languages (Go, Rust, Zig, and non-compiled cross-platform scripting languages) this is a trivial non-AI task that should just be part of the CI pipeline.
 
-But depending on what the program does, there is often OS-specific branching for functionality the language's own standard library doesn't cover. Models are usually good at "knowing" the idiomatic way to handle those cases.
+But depending on what the program does, there is often OS-specific branching for functionality the language's own standard library doesn't cover. Models are usually good at "knowing" the idiomatic way to handle those cases. And wherever they tend to fall into suboptimal idioms, they can be instructed not to - and like "Prompt Engineering", even that will eventually become unnecessary.
 
 Human responsibility picks back up at the end, same as with the previous section.
 
@@ -265,7 +268,7 @@ That gap is the important part. Perceived productivity is not measurable by the 
 
 That trial ran on early-2025 tools, and METR now flags it as out of date. Their [February 2026 follow-up](https://metr.org/blog/2026-02-24-uplift-update/) on late-2025 tools estimates a speedup instead: about 18% for returning participants and 4% for new ones. The confidence intervals straddle zero in both cases, and the authors warn of heavy selection bias, since developers increasingly refused to participate without AI.
 
-So the direction has moved. The lesson about self-report has not.
+The numbers have moved since, but self-report still isn't evidence.
 
 ### What the agent is allowed to reach
 
@@ -301,21 +304,69 @@ Everything that reaches the repository, at the same standard as code a person wr
 
 - Any change described as a refactor. This is where duplication gets introduced.
 
-- Any large block that reads as lifted rather than written. Provenance can't be recovered after the fact, and a copyleft original doesn't announce itself.
+- Any large block that reads as lifted rather than written.
 
-- Anything public. README, release notes, replies on issues. A model can draft those. A person reads them before they go out.
+- Public documentation. README, release notes, etc. A model can draft those. A person reads them before they go out. Replies to humans (e.g. human-created issues) must always be from a human.
 
 ### What AI does not decide
 
 - Architecture, and anything that will be expensive to reverse. Public APIs, file formats, compatibility promises, major dependencies. AI can suggest options, and be asked for them. It doesn't pick.
 
-- What gets released and what gets held back. It doesn't publish anything.
+- What gets released and what gets held back.
 
 - Anything requiring judgment about users rather than about code.
 
 - Anything said to a person on behalf of the project. Issue replies, and above all anyone reporting a security problem. AI can help find and fix a vulnerability. It doesn't talk to the reporter and it doesn't disclose.
 
 Explaining a tradeoff is useful. Choosing it is not delegated.
+
+### Making it follow the house style
+
+Every project has rules that no general "best practice" would predict. A naming convention, a library nobody is allowed to use, a structure kept non-idiomatic on purpose for a reason the code can't show. (A model that has read a million idiomatic files will quietly "fix" the latter.)
+
+What works:
+
+- Keep the rules in the repo, next to the code, in a style guide written for people. An agent reads the same file. A second rulebook just for AI drifts out of sync with the first. The Linux kernel's [coding assistant policy](https://docs.kernel.org/process/coding-assistants.html) does the same thing. It sends agents to the existing process and style documents rather than writing new ones.
+
+- Write down the deviations, and the reason for each. A rule with no reason gets argued with, by people and models alike. Every declined tool and non-idiomatic rule in the style guide has a sentence saying why. That stops the next pass from undoing the previous one.
+
+- Say which rule wins when two collide. For example, the project's own conventions beat the language's idiom, and the formatter beats both.
+
+- Repeat the most important rules in whatever file the agent reads at startup. A style guide read an hour ago is easy to forget.
+
+None of that is enforcement. A model can read a style guide, agree with all of it, and do something else four files later without noticing.
+
+### Machines check first
+
+The order that works: formatter, then linter, then static analyzer and type checker, then the tests, then a person. Everything ahead of the person is cheap and never gets tired.
+
+- Formatters are not advisory. The formatter's output is immutable law, so formatting never comes up in review. Hand-formatted data tables require the formatter's skip pragma.
+
+- Linters and analyzers should run in CI, not just on the machine the work happened on. This is the part that actually constrains an agent.
+
+- Watch for the gate being weakened instead of satisfied. A suppression comment, a disabled rule, or a loosened config is a change to the project's standards and gets reviewed as one. This is the most common way an agent "passes" when the direct route is hard.
+
+The curl project frames it bluntly: Code written with AI help "must still follow coding standards, be written clearly, be documented, feature test cases and adhere to all the normal requirements", and "if someone can spot that the contribution was made with the help of AI, you have more work to do." The Linux kernel's version is nearly as short: the change "must not add build warnings and must pass the checkpatch.pl checks".
+
+### The test suite
+
+A test suite is with AI-written is crucial. As in, never do it without a rigorous test suite. Luckily, writing tests (as an independent effort) is also the work LLM models are very good at, such as:
+
+- Regression tests of the pinning kind, written after a bug is understood, so the fix cannot silently come undone later. Easy to check, too: revert the fix and watch the test fail.
+
+- Differential testing wherever more than one implementation of the same thing exists. Run them all over the same inputs and compare the output byte for byte. It has a limit. Agreement between implementations proves they match, not that they are right. (A defect they all share is invisible to it.)
+
+- Fuzzing. Tedious to write by hand, and it finds the input nobody thought of. NIST's secure development framework ([SP 800-218](https://csrc.nist.gov/pubs/sp/800/218/final)) lists it under testing executable code: "use fuzz testing tools to find issues with input handling". And Google's [OSS-Fuzz](https://google.github.io/oss-fuzz/) has found "over 10,000 vulnerabilities and 36,000 bugs across 1,000 projects" doing nothing else.
+
+- Performance benchmarks that run on a schedule, with a threshold that fails the build. The METR result above applies here too. A model's guess about which version is faster is worth less than a person's.
+
+- Security analysis on the boundary: input handling, path handling, deserialization, anything that spawns a process or opens a URL. Plus a dependency audit that runs on every build, given the hallucinated-package numbers earlier in this document.
+
+Two things that are not tests but look like them:
+
+- Coverage percentage. It measures which lines ran, not whether anything was checked. A generated test that asserts current behavior raises coverage and proves nothing, which is why those need real review.
+
+- A model's report of a test run. Run the tests.
 
 ### Contributing
 
@@ -325,15 +376,17 @@ Contributions that used AI will not be automatically rejected. Two conditions:
 
 - Submit it as work that is understood, tested, and stood behind. The description says what changed and what was actually run. It doesn't claim tests that weren't run, and it doesn't ask the reviewer to trust the model instead of reading the diff.
 
-Keep it small. An agent makes a thousand-line diff cheap, and a reviewer's afternoon isn't. Split mechanical changes from behavior changes, leave unrelated refactoring out, and if the agent hands back more than expected, break it up before sending it.
+Keep it small. An agent makes a thousand-line diff cheap, and a reviewer's afternoon isn't.
 
-A pull request that takes longer to review than it took to generate is the exact thing maintainers everywhere are complaining about. Don't send one. Same for activity generated because it's cheap: bulk issue comments, cosmetic refactors with no purpose, a run of trivial pull requests. None of that is contribution.
+Split mechanical changes from behavior changes, leave unrelated refactoring out, and if the agent hands back more than expected, break it up before sending it.
+
+A pull request that takes longer to review than it took to generate is the thing maintainers everywhere are complaining about. Don't send one. Same for activity generated because it's cheap: bulk issue comments, cosmetic refactors with no purpose, a run of trivial pull requests. None of that is contribution.
 
 ## Where this could change
 
 The position stated here is conditional. Things that would tighten it:
 
-- Evidence that these review uses cost more in defects than they catch.
+- Evidence that AI cost more in defects than they catch.
 
 - Contribution volume that makes the review load unsustainable. Codeberg names this as one of their reasons, so it isn't a hypothetical.
 
@@ -365,6 +418,14 @@ What AI was *not* used for:
 
 - **Content generation**. Every questionable and/or redundant argument made here, every odd injection of unsolicited opinion and narration into what should be a straightforward "guidelines" document, is from a human. This human.
 
-- **Grammar-checking**. I prefer the organic feel of my own tedious phrasing, run-on sentences, and abruptly ending such run-on sentences where I've run out of examples but want it to *seem* like there's more, with ", etc.". If it's not tedious for me to read my own writing, it just doesn't *feel* right.
+- ~~**Grammar-checking**. I prefer the organic feel of my own tedious phrasing, run-on sentences, and abruptly ending such run-on sentences where I've run out of examples but want it to *seem* like there's more, with ", etc.". If it's not tedious for me to read my own writing, it just doesn't *feel* right~~.
+
+	- This second edition was grammar-checked with AI.
 
 - **Tone and appropriateness policing**. Again: probably would have been a good idea.
+
+---
+
+Copyright © 2026 Jim Collier
+
+> *This document is licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Copy it, change it, use it in a commercial project. Attribution required, and say if you changed it. None of this is not legal advice, and any software this sits next to is licensed separately.*

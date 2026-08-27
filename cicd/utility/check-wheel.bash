@@ -39,9 +39,22 @@ trap 'rm -rf "${outDir}" "${pyDir}/build" "${pyDir}/shcl.egg-info"' EXIT
 ## environment and can fail for reasons that have nothing to do with the
 ## package - a network blip fetching the backend, most of them transient - and
 ## a bare "build failed" leaves nothing to tell those apart from a real one.
+## Same reason for the retries: the isolated environment pulls the build backend
+## from PyPI every time, so an unreachable registry refuses a push over a package
+## that is fine. Partial output is cleared between tries so a half-written wheel
+## can never be the one that gets read.
 buildLog="${outDir}/build.log"
-( cd "${pyDir}" && pyproject-build --outdir "${outDir}" ) >"${buildLog}" 2>&1 \
-	|| { echo "check-wheel: build failed" >&2; tail -n 25 "${buildLog}" >&2; exit 1; }
+for attempt in 1 2 3; do
+	( cd "${pyDir}" && pyproject-build --outdir "${outDir}" ) >"${buildLog}" 2>&1 && break
+	if ((attempt == 3)); then
+		echo "check-wheel: build failed, ${attempt} tries" >&2
+		tail -n 25 "${buildLog}" >&2
+		exit 1
+	fi
+	echo "check-wheel: build attempt ${attempt} failed, retrying" >&2
+	rm -rf "${outDir:?}"/* "${pyDir}/build" "${pyDir}/shcl.egg-info"
+	sleep $((attempt * 5))
+done
 
 ## Indent a multi-line block for the error output. Parameter expansion rather
 ## than a sed pipe: one less fork, and shellcheck prefers it.
@@ -90,3 +103,4 @@ exit "${rc}"
 
 ##	History:
 ##		- 2026-08-20 JC: Created. Builds the wheel and sdist and reads what is in them, rather than trusting the one pyproject line that keeps the CLI out.
+##		- 2026-08-27 JC: Build is retried twice before it counts as a failure; an unreachable PyPI was refusing pushes.
