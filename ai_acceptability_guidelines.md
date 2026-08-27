@@ -41,7 +41,7 @@ Where AI is allowed near this project, where it isn't, and who is accountable ei
 	- [What AI does not decide](#what-ai-does-not-decide)
 	- [Making it follow the house style](#making-it-follow-the-house-style)
 	- [Machines check first](#machines-check-first)
-	- [Tests are the leash](#tests-are-the-leash)
+	- [The test suite](#the-test-suite)
 	- [Contributing](#contributing)
 - [Where this could change](#where-this-could-change)
 - [The use of AI in writing this document](#the-use-of-ai-in-writing-this-document)
@@ -86,7 +86,7 @@ A model trained on copyleft code can emit something very close to it with none o
 
 Whether that holds up in court is unsettled, and probably will be for years. The question for a maintainer is narrower and more immediate. If a generated block is close enough to some GPL original that a person copying it by hand would have been obligated, then merging it puts the project somewhere it never agreed to go, and nobody in the review chain saw it happen.
 
-There's no tooling answer to this. What there is: if a generated block looks reproduced rather than written, stop and find out where it came from. And never have a model strip a license header or attribution to make something easier to paste in.
+There's no tooling answer to this. If a generated block looks reproduced rather than written, stop and find out where it came from. And never have a model strip a license header or attribution to make something easier to paste in.
 
 ### Code quality
 
@@ -268,7 +268,7 @@ That gap is the important part. Perceived productivity is not measurable by the 
 
 That trial ran on early-2025 tools, and METR now flags it as out of date. Their [February 2026 follow-up](https://metr.org/blog/2026-02-24-uplift-update/) on late-2025 tools estimates a speedup instead: about 18% for returning participants and 4% for new ones. The confidence intervals straddle zero in both cases, and the authors warn of heavy selection bias, since developers increasingly refused to participate without AI.
 
-So the direction has moved. The lesson about self-report has not.
+The numbers have moved since, but self-report still isn't evidence.
 
 ### What the agent is allowed to reach
 
@@ -322,45 +322,45 @@ Explaining a tradeoff is useful. Choosing it is not delegated.
 
 ### Making it follow the house style
 
-Every project has rules that no general "best practice" would predict. This one has a large one: each language binding mirrors the reference implementation's structure instead of its own language's idiom, because byte-for-byte identical output is the product. A model that has read a million idiomatic Go files will quietly "fix" that on the way past, and be pleased with itself.
+Every project has rules that no general "best practice" would predict. This one has a large one: each language binding mirrors the reference implementation's structure instead of its own language's idiom, because byte-for-byte identical output is the product. A model that has read a million idiomatic Go files will quietly "fix" that on the way past.
 
 What works:
 
-- Keep the rules in the repo, versioned alongside the code. Here that is [`style-guide.md`](style-guide.md), written for people first. An agent reads the same file. Pointing it at documentation the project already maintains beats keeping a second AI-only rulebook that drifts out of sync with the first. The Linux kernel went the same way: its [coding assistant policy](https://docs.kernel.org/process/coding-assistants.html) sends agents to the existing process, style, and patch-submission documents rather than inventing parallel ones.
+- Keep the rules in the repo, next to the code. Here that is [`style-guide.md`](style-guide.md), written for people. An agent reads the same file. A second rulebook just for AI drifts out of sync with the first. The Linux kernel's [coding assistant policy](https://docs.kernel.org/process/coding-assistants.html) does the same thing. It sends agents to the existing process and style documents rather than writing new ones.
 
-- Write down the deviations, and the reason for each. A rule with no reason attached gets argued with, by people and by models alike. Every declined tool and every non-idiomatic construct in the style guide carries the sentence that explains it. That is not decoration. It is the thing that stops the next pass from undoing the last one.
+- Write down the deviations, and the reason for each. A rule with no reason gets argued with, by people and models alike. Every declined tool and non-idiomatic construct in the style guide has a sentence saying why. That sentence is what stops the next pass from undoing the last one.
 
 - Say which rule wins when two collide. Here, parity beats idiom and the formatter beats both.
 
-- Repeat the load-bearing rules in whatever file the agent reads at startup. Instructions work better close to the work, and a style guide read an hour ago is not close.
+- Repeat the most important rules in whatever file the agent reads at startup. A style guide read an hour ago is easy to forget.
 
-None of that is enforcement. Documentation is a request. A model can read a style guide, agree with it in detail, and produce something else four files later, with no intent to and no awareness that it did.
+None of that is enforcement. Documentation is a request. A model can read a style guide, agree with all of it, and do something else four files later without noticing.
 
 ### Machines check first
 
-The order that works: formatter, then linter, then static analyzer and type checker, then the tests, then a person. Everything ahead of the person is cheap, repeatable, and never gets tired or bored.
+The order that works: formatter, then linter, then static analyzer and type checker, then the tests, then a person. Everything ahead of the person is cheap and never gets tired.
 
-- Formatters are not advisory. Here `rustfmt` and `gofmt` output is the law, so formatting never arrives at review as an opinion. Intentional data tables get the formatter's skip pragma instead of a fight.
+- Formatters are not advisory. Here `rustfmt` and `gofmt` output is the law, so formatting never comes up in review. Hand-formatted data tables get the formatter's skip pragma.
 
-- Linters and analyzers gate in CI, not just on whatever machine the work happened on. This is the part that actually constrains an agent. A red build is not something it can talk its way past, and unlike a document, it cannot be forgotten halfway through a long session.
+- Linters and analyzers run in CI, not just on the machine the work happened on. This is the part that actually constrains an agent. It can't talk its way past a red build, and a build can't be forgotten halfway through a long session the way a document can.
 
-- Run the same checks inside the agent's own loop, not only at the end. Handed its own linter output, a model fixes the violation in the same session for nothing. Handed it a day later in review, it costs a person a round trip.
+- Run the same checks inside the agent's own loop, not only at the end. Given its own linter output, a model fixes the problem in the same session. The same finding a day later in review costs a person a round trip.
 
-- Watch for the gate being weakened rather than satisfied. A suppression comment, a disabled rule, a loosened config, a widened exclude path: each of those is a change to the project's standards and gets reviewed as one. This is the most common way an agent "passes" when the direct route is hard.
+- Watch for the gate being weakened instead of satisfied. A suppression comment, a disabled rule, or a loosened config is a change to the project's standards and gets reviewed as one. This is the most common way an agent "passes" when the direct route is hard.
 
-curl's version of this is the shortest anyone has written. Code written with AI help "must still follow coding standards, be written clearly, be documented, feature test cases and adhere to all the normal requirements", and "if someone can spot that the contribution was made with the help of AI, you have more work to do." The kernel's is nearly as short: the change "must not add build warnings and must pass the checkpatch.pl checks".
+curl puts it shortest. Code written with AI help "must still follow coding standards, be written clearly, be documented, feature test cases and adhere to all the normal requirements", and "if someone can spot that the contribution was made with the help of AI, you have more work to do." The kernel's version is nearly as short: the change "must not add build warnings and must pass the checkpatch.pl checks".
 
-### Tests are the leash
+### The test suite
 
-A test suite is what makes AI-written code affordable to accept. Without one, every change is a promise. With one, most changes are a measurement. This is also the work models are best at, so the two facts compound.
+A test suite is what makes AI-written code affordable to accept. Without one, every change has to be taken on trust. With one, most changes can be checked by running something. Writing tests is also the work models are best at.
 
 - Regression tests of the pinning kind, written after a bug is understood, so the fix cannot silently come undone later. Easy to check, too: revert the fix and watch the test fail.
 
-- Differential testing wherever more than one implementation of the same thing exists. This project runs all four bindings over the same corpus and compares output byte for byte. It is worth being clear about the limit, though: agreement between four implementations proves they match, not that they are right. A defect all four share is invisible to it.
+- Differential testing wherever more than one implementation of the same thing exists. This project runs all four bindings over the same corpus and compares output byte for byte. It has a limit. Agreement between four implementations proves they match, not that they are right. A defect all four share is invisible to it.
 
-- Fuzzing. Tedious to write by hand, easy to verify, and it finds the input nobody thought of. NIST's secure development framework ([SP 800-218](https://csrc.nist.gov/pubs/sp/800/218/final)) lists it under testing executable code: "use fuzz testing tools to find issues with input handling". And Google's [OSS-Fuzz](https://google.github.io/oss-fuzz/) has found "over 10,000 vulnerabilities and 36,000 bugs across 1,000 projects" doing nothing else.
+- Fuzzing. Tedious to write by hand, and it finds the input nobody thought of. NIST's secure development framework ([SP 800-218](https://csrc.nist.gov/pubs/sp/800/218/final)) lists it under testing executable code: "use fuzz testing tools to find issues with input handling". And Google's [OSS-Fuzz](https://google.github.io/oss-fuzz/) has found "over 10,000 vulnerabilities and 36,000 bugs across 1,000 projects" doing nothing else.
 
-- Performance benchmarks that run on a schedule, with a threshold that fails the build. Perception is not measurement, as the METR result above says plainly, and a model's guess about which version is faster is worth even less than a person's.
+- Performance benchmarks that run on a schedule, with a threshold that fails the build. The METR result above applies here too. A model's guess about which version is faster is worth even less than a person's.
 
 - Security analysis on the boundary: input handling, path handling, deserialization, anything that spawns a process or opens a URL. Plus a dependency audit that runs on every build, given the hallucinated-package numbers earlier in this document.
 
