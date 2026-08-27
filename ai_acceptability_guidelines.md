@@ -16,12 +16,14 @@ Where AI is allowed near this project, where it isn't, and who is accountable ei
 
 - [Introduction](#introduction)
 - [Problems with AI](#problems-with-ai)
-	- [Environmental](#environmental)
-	- [Economic](#economic)
-	- [Ethical](#ethical)
+	- [Cost to the FLOSS commons](#cost-to-the-floss-commons)
+	- [License laundering](#license-laundering)
 	- [Code quality](#code-quality)
 	- [Security risks](#security-risks)
 	- [Bad PR](#bad-pr)
+	- [Environmental](#environmental)
+	- [Economic](#economic)
+	- [Ethical](#ethical)
 - [Non-problems with AI](#non-problems-with-ai)
 - [Good uses of AI](#good-uses-of-ai)
 	- [Review and analysis](#review-and-analysis)
@@ -33,6 +35,7 @@ Where AI is allowed near this project, where it isn't, and who is accountable ei
 - [Rules for AI use in this project](#rules-for-ai-use-in-this-project)
 	- [A person is accountable for every merged line](#a-person-is-accountable-for-every-merged-line)
 	- [Self-assessment of AI speedup is not evidence](#self-assessment-of-ai-speedup-is-not-evidence)
+	- [What the agent is allowed to reach](#what-the-agent-is-allowed-to-reach)
 	- [What AI may do with light review](#what-ai-may-do-with-light-review)
 	- [What always needs full human review](#what-always-needs-full-human-review)
 	- [What AI does not decide](#what-ai-does-not-decide)
@@ -48,13 +51,69 @@ This project's original author has decades of programming experience. Hobby, the
 
 When AI started becoming a "thing" in programming, I (the original author) was against it. Which was convenient, because it sucked at it.
 
-That view has softened with the emergence of frontier models like Claude Fable. (Again convenient now that it's much better.) I've been running AI-led experiments under an alt GitHub account, mostly to find where these tools break and where they hold up. One result is that this nearly decade-old main account no longer has a blanket "no-AI" policy.
+That view has softened with the emergence of frontier models like Claude Fable. (Again convenient now that it's much better.) I've been running AI-led experiments under an alt GitHub account, mostly to find where these tools break and where they hold up. One result is that this nearly decade-old main account no longer has a blanket "no-AI" policy, but allowed only under strict, human-driven constraints.
 
-This document is a first pass at documenting what, when, and how AI is allowed into this and other projects.
+This document is a ~~first~~ second pass at documenting what, when, and how AI is allowed into this and other projects.
 
 ## Problems with AI
 
-Feel free to skip this section. It's here mostly for the record: an acknowledgment of the main society-level problems most people are well aware of.
+The problems that bear directly on a software project are listed first.
+
+The three listed last may arguably be the most significant over time and space, but are generally well understood - if inconsistently acted upon at political policy levels. They are included here mostly for completeness and acknowledgment.
+
+### Cost to the FLOSS commons
+
+This one is aimed straight at the infrastructure a project like this one sits on.
+
+Codeberg, the nonprofit git host, made the case in [Protecting our FLOSS commons from LLMs](https://blog.codeberg.org/protecting-our-floss-commons-from-llms.html) (July 2026). It's short, and worth reading in full whether or not their conclusions are ones you'd agree with. The argument in brief: AI crawlers are expensive to serve, the hardware to serve them on got expensive too, generated contributions cost a maintainer more to review than they cost anyone to produce, and copyleft quietly loses its teeth when code gets regenerated instead of copied.
+
+Let's start with the crawlers: Bots walk every page of every repository, and the "needless accesses create[s] expensive database queries that diminish the service quality for all of us", on top of real hours out of a volunteer sysadmin team.
+
+Storage got more expensive over the same stretch: a drive they bought for EUR 700 a few years ago now costs EUR 3,700.
+
+Nobody sends that bill to the companies running the crawlers. A large host absorbs it. A small one, an NGO, or a self-hoster might not be able to, and that narrows who can afford to host anything at all.
+
+Then there's the PRs: "People submitting (often well-meaning) low-effort, LLM-generated contributions that require substantial amounts of time to review." That cost isn't shared either. It falls on whoever maintains the project, usually for free, and it scales with how cheap the tooling makes the submission. A model writes a plausible thousand-line pull request faster than anyone can read one.
+
+That asymmetry is most of the reason the rules further down put the burden where they do.
+
+### License laundering
+
+A model trained on copyleft code can emit something very close to it with none of the license attached. Codeberg again: "copyleft code is stripped of its reciprocity requirements by 'generating' it out of the training data".
+
+Whether that holds up in court is unsettled, and probably will be for years. The question for a maintainer is narrower and more immediate. If a generated block is close enough to some GPL original that a person copying it by hand would have been obligated, then merging it puts the project somewhere it never agreed to go, and nobody in the review chain saw it happen.
+
+There's no tooling answer to this. What there is: if a generated block looks reproduced rather than written, stop and find out where it came from. And never have a model strip a license header or attribution to make something easier to paste in.
+
+### Code quality
+
+Code quality was a serious and universal problem until recently, even on small projects. On current frontier models it still has to be managed.
+
+The main risk is not that the code fails to work. It's that it works and quietly rots. [GitClear's analysis](https://www.gitclear.com/ai_assistant_code_quality_2025_research) of 211 million changed lines found 2024 was the first year on record where copy-pasted code exceeded moved code, with code clones up roughly fourfold. Refactoring went from about a quarter of changed lines in 2021 to under a tenth in 2024.
+
+That is the failure mode to watch: a model asked for a fix writes a new version rather than finding the existing one. Nothing breaks. The codebase just gets worse in a way no test catches.
+
+### Security risks
+
+Running an agentic tool on a development machine is a risk to the developer. It reads local files, runs commands, and reaches the network. Know the risks and act accordingly.
+
+The generated code is another risk. Veracode's [2025 report](https://www.veracode.com/resources/analyst-reports/2025-genai-code-security-report/) found that across 80 tasks and 100+ models, 45% of samples introduced an OWASP Top 10 vulnerability. Java was worst at over 70%. Cross-site scripting was missed in 86% of the cases where it applied.
+
+Hallucinated dependencies are worse. A [study of 576,000 generated samples](https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-742-spracklen.pdf) found package names that do not exist in about 5% of commercial-model output and about 22% of open-model output. Attackers register the common ones and wait. Every dependency an AI suggests must be human-verified.
+
+Used the other way around, for adversarial review, security review, and fuzz and regression suites, the same tools measurably improve a project. That asymmetry is a driving factor behind these guidelines.
+
+### Bad PR
+
+Any project accepting AI-generated contributions carries this risk.
+
+AI is becoming a public enemy. The cause is probably mostly greed-driven hype, the economics, and the tactics used to foist data centers onto communities whose citizens pay the externalities.
+
+(That perception may shift once desktop-class open models are good enough to work offline, which looks like a short wait rather than a long one.)
+
+None of this is just sentiment anymore. Codeberg's membership voted 358 to 144, on about 50% turnout, to revise the terms of use against "vibe-coded projects", plus a separate pledge never to train on user or project data. Their follow-up guidance is graded rather than absolute: a project with an active community, or with real history predating LLMs, isn't the target. A repository producing more than the people behind it plausibly could is.
+
+Either way, hiding the involvement of AI is not the way out of its growing PR problem. Being transparent about its use, managing it as a tool, and accepting whatever criticism follows is the path taken here.
 
 ### Environmental
 
@@ -95,34 +154,6 @@ The clearest measured harm so far is to entry-level work. Stanford's [Canaries i
 That isn't AI's fault. It's decisions made by employers with AI used as a rationale, possibly against their own long-term interests. A profession that stops training juniors runs out of seniors.
 
 This project can't fix that. What it can do is not pretend the problem is imaginary.
-
-### Code quality
-
-Code quality was a serious and universal problem until recently, even on small projects. On current frontier models it still has to be managed.
-
-The main risk is not that the code fails to work. It's that it works and quietly rots. [GitClear's analysis](https://www.gitclear.com/ai_assistant_code_quality_2025_research) of 211 million changed lines found 2024 was the first year on record where copy-pasted code exceeded moved code, with code clones up roughly fourfold. Refactoring went from about a quarter of changed lines in 2021 to under a tenth in 2024.
-
-That is the failure mode to watch: a model asked for a fix writes a new version rather than finding the existing one. Nothing breaks. The codebase just gets worse in a way no test catches.
-
-### Security risks
-
-Running an agentic tool on a development machine is a risk to the developer. It reads local files, runs commands, and reaches the network. Know the risks and act accordingly.
-
-The generated code is another risk. Veracode's [2025 report](https://www.veracode.com/resources/analyst-reports/2025-genai-code-security-report/) found that across 80 tasks and 100+ models, 45% of samples introduced an OWASP Top 10 vulnerability. Java was worst at over 70%. Cross-site scripting was missed in 86% of the cases where it applied.
-
-Hallucinated dependencies are worse. A [study of 576,000 generated samples](https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-742-spracklen.pdf) found package names that do not exist in about 5% of commercial-model output and about 22% of open-model output. Attackers register the common ones and wait. Every dependency an AI suggests must be human-verified.
-
-Used the other way around, for adversarial review, security review, and fuzz and regression suites, the same tools measurably improve a project. That asymmetry is a driving factor behind these guidelines.
-
-### Bad PR
-
-Any project accepting AI-generated contributions carries this risk, including this one.
-
-AI is becoming a public enemy. The cause is probably mostly greed-driven hype, the economics, and the tactics used to foist data centers onto communities whose citizens pay the externalities.
-
-That perception may shift once desktop-class open models are good enough to work offline, which looks like a short wait rather than a long one.
-
-Either way, hiding the involvement of AI is not the way out of its growing PR problem. Being transparent about its use, managing it as a tool, and accepting whatever criticism follows is the path taken here.
 
 ## Non-problems with AI
 
@@ -190,7 +221,7 @@ It is then a fully human responsibility to:
 
 - Read and understand the generated code.
 
-- Insure the code conforms to house style. (Which should be at the linting and autoformatting stage but still needs eyeballs.)
+- Ensure the code conforms to house style. (Which should be at the linting and autoformatting stage but still needs eyeballs.)
 
 - Make sure it passes all automated *and* manual unit, integration, usability, UAT, regression, performance, and security tests.
 
@@ -216,11 +247,15 @@ Examples:
 
 ## Rules for AI use in this project
 
+The short version: AI can do the work. People own the decisions, the review, and the result.
+
 ### A person is accountable for every merged line
 
 AI is not an author and not a defense. Whoever merges a change owns it, answers questions about it, and fixes it when it breaks. "The model wrote it" is not something anyone gets to say.
 
-The practical test: anyone who cannot explain a change does not merge it.
+The practical test: anyone who cannot explain a change does not merge it. For anything bigger than a bug fix, that means being able to say what changed, why this design and not another, what it assumes, what could go wrong, and which tests show it working.
+
+A model's own report is a claim, not evidence. "All tests pass" gets checked by running the tests. "This is original" and "this is secure" get checked the way anything else does. The contributor makes the project's authorship and license representations, not the tool.
 
 ### Self-assessment of AI speedup is not evidence
 
@@ -231,6 +266,18 @@ That gap is the important part. Perceived productivity is not measurable by the 
 That trial ran on early-2025 tools, and METR now flags it as out of date. Their [February 2026 follow-up](https://metr.org/blog/2026-02-24-uplift-update/) on late-2025 tools estimates a speedup instead: about 18% for returning participants and 4% for new ones. The confidence intervals straddle zero in both cases, and the authors warn of heavy selection bias, since developers increasingly refused to participate without AI.
 
 So the direction has moved. The lesson about self-report has not.
+
+### What the agent is allowed to reach
+
+An agent that can run commands can do anything the account running it can. So it gets the least it needs.
+
+- It works on a branch. Nothing it does reaches main without a person merging it.
+
+- Signing keys, registry tokens, and anything else that publishes stay off the machine it runs on. Every release step that can't be undone is done by hand.
+
+- It doesn't see private vulnerability reports, credentials, or anyone's personal information. Whatever goes to a hosted model goes to a third party. The provider's terms have to allow contributing the result back under this project's license, and checking that is the contributor's job.
+
+- History rewrites, force pushes, mass deletes, and anything outside the repository need a person to say so first. When it isn't clear whether something is allowed, the right move is to stop and ask, not guess.
 
 ### What AI may do with light review
 
@@ -244,7 +291,7 @@ So the direction has moved. The lesson about self-report has not.
 
 ### What always needs full human review
 
-Everything that reaches the repository. Specifically:
+Everything that reaches the repository, at the same standard as code a person wrote. The bar doesn't drop because the tests pass, the model says it tested it, another model reviewed it, the analyzer is quiet, or the change is small. Specifically:
 
 - Any change to the security boundary. Scheme allowlists, path handling, deserialization, anything spawning a process.
 
@@ -254,13 +301,19 @@ Everything that reaches the repository. Specifically:
 
 - Any change described as a refactor. This is where duplication gets introduced.
 
+- Any large block that reads as lifted rather than written. Provenance can't be recovered after the fact, and a copyleft original doesn't announce itself.
+
+- Anything public. README, release notes, replies on issues. A model can draft those. A person reads them before they go out.
+
 ### What AI does not decide
 
-- Architecture, and anything that will be expensive to reverse. AI can suggest options, and be asked for them. It doesn't pick.
+- Architecture, and anything that will be expensive to reverse. Public APIs, file formats, compatibility promises, major dependencies. AI can suggest options, and be asked for them. It doesn't pick.
 
-- What gets released and what gets held back.
+- What gets released and what gets held back. It doesn't publish anything.
 
 - Anything requiring judgment about users rather than about code.
+
+- Anything said to a person on behalf of the project. Issue replies, and above all anyone reporting a security problem. AI can help find and fix a vulnerability. It doesn't talk to the reporter and it doesn't disclose.
 
 Explaining a tradeoff is useful. Choosing it is not delegated.
 
@@ -268,11 +321,13 @@ Explaining a tradeoff is useful. Choosing it is not delegated.
 
 Contributions that used AI will not be automatically rejected. Two conditions:
 
-- Say so in the pull request, along with roughly what it was used for. No process detail needed, no apology expected.
+- Say so in the pull request, along with roughly what it was used for. No process detail needed, no apology expected. Some projects want a trailer on every commit (libusb requires one, and the Apache guidance suggests it). Here it goes in the pull request, once. Commit messages describe the change, not the tooling used to make it. The same convention that applies to editors, formatters, and everything else.
 
-- Submit it as work that is understood, tested, and stood behind.
+- Submit it as work that is understood, tested, and stood behind. The description says what changed and what was actually run. It doesn't claim tests that weren't run, and it doesn't ask the reviewer to trust the model instead of reading the diff.
 
-Commit messages describe the change, not the tooling used to make it. The same convention that applies to editors, formatters, and everything else.
+Keep it small. An agent makes a thousand-line diff cheap, and a reviewer's afternoon isn't. Split mechanical changes from behavior changes, leave unrelated refactoring out, and if the agent hands back more than expected, break it up before sending it.
+
+A pull request that takes longer to review than it took to generate is the exact thing maintainers everywhere are complaining about. Don't send one. Same for activity generated because it's cheap: bulk issue comments, cosmetic refactors with no purpose, a run of trivial pull requests. None of that is contribution.
 
 ## Where this could change
 
@@ -280,7 +335,9 @@ The position stated here is conditional. Things that would tighten it:
 
 - Evidence that these review uses cost more in defects than they catch.
 
-- Contribution volume that makes the review load unsustainable.
+- Contribution volume that makes the review load unsustainable. Codeberg names this as one of their reasons, so it isn't a hypothetical.
+
+- Hosting terms that stop allowing it. A git host's rules are not something a project on it gets to negotiate.
 
 Things that would relax it:
 
@@ -299,6 +356,8 @@ AI was used on this document for:
 - **Spell-checking**. I normally use LibreOffice Writer, but it complains about every part of every URL and Markdown link, and my exceptions library is enormous by now. AI knows what to skip.
 
 - **Fact-checking**. Several claims here were overstated at best, or flat-out wrong at worst, and got backed off or removed. And sometimes I learn new things along the way.
+
+- **Comparing against other projects' policies**. The rules section was checked against the [Apache Software Foundation's generative tooling guidance](https://www.apache.org/legal/generative-tooling.html), GitHub's guidance on coding agents, and libusb's contribution rules for agents, and a few gaps got filled.
 
 - **Reducing "conclusion shopping" and confirmation bias**. We all shop for studies and links that support a preconceived argument. I'm no different. This is a good check on that habit, and probably the single best thing a solo writer can use AI for.
 
