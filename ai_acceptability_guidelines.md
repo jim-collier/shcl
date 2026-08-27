@@ -54,7 +54,9 @@ This project's original author has decades of programming experience. Hobby, the
 
 When AI started becoming a "thing" in programming, I (the original author) was against it. Which was convenient, because it sucked at it.
 
-That view has softened with the emergence of frontier models like Claude Fable. (Again convenient now that it's much better.) I've been running AI-led experiments under an alt GitHub account, mostly to find where these tools break and where they hold up. One result is that this nearly decade-old main account no longer has a blanket "no-AI" policy, but allowed only under strict, human-driven constraints.
+That view has softened with the emergence of frontier models like Claude Fable. (Again convenient now that it's pretty cabable.) I've been running large AI-led experiments under an alt GitHub account, mostly to find where these tools break and where they hold up.
+
+One outcome is that this nearly decade-old main account no longer has a blanket "no-AI" policy; but allowed only under strict, human-driven constraints.
 
 This document is a ~~first~~ second pass at documenting what, when, and how AI is allowed into this and other projects.
 
@@ -322,15 +324,15 @@ Explaining a tradeoff is useful. Choosing it is not delegated.
 
 ### Making it follow the house style
 
-Every project has rules that no general "best practice" would predict. This one has a large one: each language binding mirrors the reference implementation's structure instead of its own language's idiom, because byte-for-byte identical output is the product. A model that has read a million idiomatic Go files will quietly "fix" that on the way past.
+Every project has rules that no general "best practice" would predict. A naming convention, a library nobody is allowed to use, a structure kept non-idiomatic on purpose for a reason the code can't show. A model that has read a million idiomatic files will quietly "fix" that on the way past.
 
 What works:
 
-- Keep the rules in the repo, next to the code. Here that is [`style-guide.md`](style-guide.md), written for people. An agent reads the same file. A second rulebook just for AI drifts out of sync with the first. The Linux kernel's [coding assistant policy](https://docs.kernel.org/process/coding-assistants.html) does the same thing. It sends agents to the existing process and style documents rather than writing new ones.
+- Keep the rules in the repo, next to the code, in a style guide written for people. An agent reads the same file. A second rulebook just for AI drifts out of sync with the first. The Linux kernel's [coding assistant policy](https://docs.kernel.org/process/coding-assistants.html) does the same thing. It sends agents to the existing process and style documents rather than writing new ones.
 
 - Write down the deviations, and the reason for each. A rule with no reason gets argued with, by people and models alike. Every declined tool and non-idiomatic construct in the style guide has a sentence saying why. That sentence is what stops the next pass from undoing the last one.
 
-- Say which rule wins when two collide. Here, parity beats idiom and the formatter beats both.
+- Say which rule wins when two collide. For example, the project's own conventions beat the language's idiom, and the formatter beats both.
 
 - Repeat the most important rules in whatever file the agent reads at startup. A style guide read an hour ago is easy to forget.
 
@@ -340,7 +342,7 @@ None of that is enforcement. Documentation is a request. A model can read a styl
 
 The order that works: formatter, then linter, then static analyzer and type checker, then the tests, then a person. Everything ahead of the person is cheap and never gets tired.
 
-- Formatters are not advisory. Here `rustfmt` and `gofmt` output is the law, so formatting never comes up in review. Hand-formatted data tables get the formatter's skip pragma.
+- Formatters are not advisory. The formatter's output is the law, so formatting never comes up in review. Hand-formatted data tables get the formatter's skip pragma.
 
 - Linters and analyzers run in CI, not just on the machine the work happened on. This is the part that actually constrains an agent. It can't talk its way past a red build, and a build can't be forgotten halfway through a long session the way a document can.
 
@@ -356,7 +358,7 @@ A test suite is what makes AI-written code affordable to accept. Without one, ev
 
 - Regression tests of the pinning kind, written after a bug is understood, so the fix cannot silently come undone later. Easy to check, too: revert the fix and watch the test fail.
 
-- Differential testing wherever more than one implementation of the same thing exists. This project runs all four bindings over the same corpus and compares output byte for byte. It has a limit. Agreement between four implementations proves they match, not that they are right. A defect all four share is invisible to it.
+- Differential testing wherever more than one implementation of the same thing exists. Run them all over the same inputs and compare the output byte for byte. It has a limit. Agreement between implementations proves they match, not that they are right. A defect they all share is invisible to it.
 
 - Fuzzing. Tedious to write by hand, and it finds the input nobody thought of. NIST's secure development framework ([SP 800-218](https://csrc.nist.gov/pubs/sp/800/218/final)) lists it under testing executable code: "use fuzz testing tools to find issues with input handling". And Google's [OSS-Fuzz](https://google.github.io/oss-fuzz/) has found "over 10,000 vulnerabilities and 36,000 bugs across 1,000 projects" doing nothing else.
 
@@ -426,4 +428,4 @@ What AI was *not* used for:
 
 Copyright © 2026 Jim Collier
 
-> *This document is licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Copy it, change it, use it in a commercial project. Attribution required, and say if you changed it. It is not legal advice, and the project's software is licensed separately under [MIT](license.md).*
+> *This document is licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Copy it, change it, use it in a commercial project. Attribution required, and say if you changed it. It is not legal advice, and any software it sits next to is licensed separately.*
