@@ -31,6 +31,7 @@ In each section, items are listed approximately from newest to oldest. (Tip: use
 | :--: | :--
 | 🔘   | Not started
 | 🛠️   | Started, and/or partially complete
+| 🔬   | Testing not started or finished
 | ✋   | Defer
 | ✅   | Complete
 | 🚫   | Canceled
