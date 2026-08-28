@@ -845,6 +845,21 @@ func TestFileTierLoadSave(t *testing.T) {
 	if st != FileClean {
 		t.Errorf("clean file: got status %v", st)
 	}
+	// ReadFile is the load's read half on its own: the exact bytes, or the
+	// status. The cap counts bytes, and a file exactly at it passes. Same
+	// fixture in every runner.
+	if text, rst := ReadFile(f, 0); rst != FileClean || text != "a: 1\nb: x\n" {
+		t.Errorf("ReadFile: got %v %q", rst, text)
+	}
+	if text, rst := ReadFile(f, 10); rst != FileClean || text != "a: 1\nb: x\n" {
+		t.Errorf("ReadFile at the cap: got %v %q", rst, text)
+	}
+	if text, rst := ReadFile(f, 9); rst != FileUnreadable || text != "" {
+		t.Errorf("ReadFile past the cap: got %v %q", rst, text)
+	}
+	if _, rst := ReadFile(dir+"/none.shcl", 0); rst != FileNotFound {
+		t.Errorf("ReadFile missing: got %v", rst)
+	}
 	if !doc.SetInt("c", 3) {
 		t.Fatal("SetInt failed")
 	}

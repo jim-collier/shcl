@@ -13,6 +13,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -114,6 +116,19 @@ public:
 		Document d(shcl_load_file_with(path.c_str(), static_cast<shcl_strictness>(s), &cs));
 		if (status) *status = static_cast<FileStatus>(cs);
 		return d;
+	}
+	// The read half on its own: the file's text, or nullopt with the status
+	// saying why (a file past max_bytes is Unreadable; 0 is no cap). load_file
+	// is this plus a parse.
+	static std::optional<std::string> read_file(const std::string &path, size_t max_bytes = 0, FileStatus *status = nullptr) {
+		shcl_file_status cs = SHCL_FILE_UNREADABLE;
+		size_t n = 0;
+		char *p = shcl_read_file(path.c_str(), max_bytes, &n, &cs);
+		if (status) *status = static_cast<FileStatus>(cs);
+		if (!p) return std::nullopt;
+		std::string text(p, n);
+		std::free(p);
+		return text;
 	}
 	enum class SaveResult { Ok = SHCL_SAVE_OK, Refused = SHCL_SAVE_REFUSED, Failed = SHCL_SAVE_FAILED };
 	// Not a bool: Refused is the lost-content gate, which save_file_lossy

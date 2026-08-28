@@ -716,6 +716,17 @@ def main():
 		fdoc, fst = shcl.Document.load_file(fpath)
 		if fst != shcl.FileStatus.Clean:
 			raise SystemExit(f"load_file clean got {fst}")
+		# read_file is the load's read half on its own: the exact bytes, or
+		# the status. The cap counts bytes, and a file exactly at it passes.
+		# Same fixture in every runner.
+		if shcl.read_file(fpath, 0) != ("a: 1\nb: x\n", shcl.FileStatus.Clean):
+			raise SystemExit("read_file")
+		if shcl.read_file(fpath, 10) != ("a: 1\nb: x\n", shcl.FileStatus.Clean):
+			raise SystemExit("read_file at the cap")
+		if shcl.read_file(fpath, 9) != (None, shcl.FileStatus.Unreadable):
+			raise SystemExit("read_file past the cap")
+		if shcl.read_file(os.path.join(td, "none.shcl"), 0) != (None, shcl.FileStatus.NotFound):
+			raise SystemExit("read_file missing")
 		if not fdoc.set_int("c", 3):
 			raise SystemExit("set_int c failed")
 		fdoc.save_file(fpath)

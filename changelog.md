@@ -2,6 +2,20 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `ReadFile(path, maxBytes)` in every binding and the C++ veneer: the file tier's read half on its own - the file's text, or the load status saying why not, with a cap on how much is read (past it is `Unreadable`; 0 is no cap). `LoadFile` is now this plus a parse. It is for a consumer that needs the exact bytes it last saw, to tell its own save coming back as a change notification from somebody else's edit, or a bound on what it will read before parsing - both of which meant keeping a hand-rolled read beside the library.
+
+- `SHCL_OOM()` in the C binding: what an allocation the library cannot recover from does. The default is still the CLI's print-and-exit-70; a consumer whose process is not the library's to end defines its own before the implementation and takes it from there.
+
+### Fixed
+
+- C: a save to a path spelled with backslashes failed on Windows, so a consumer that built its config path with the platform separator could never save. The temp name now splits on either separator, and a drive-relative `C:x` target splits after the colon.
+
+- C: the file tier reached Windows through the code-page file calls, so a path with a character outside the active code page could not be opened or, worse, was written under a mojibake name. Every file call is the wide one now, and a path that is not valid UTF-8 fails with `EINVAL` rather than opening something else.
+
 ## v2.0.0 - 2026-08-26
 
 The first major since 1.0.0. Two things change incompatibly, both listed under Changed: escapes now resolve in field names, so `"a\"b"` and `'a"b'` are one field where they used to be two; and the C++ veneer's `read_datetime` returns the structured value every other binding's does, with the textual form moving to `read_datetime_str`. Canonical output also moves for several shapes - in each case one where the old output lost something or would not settle - so a file reformatted by 2.0 can differ from the same file reformatted by 1.2. Go consumers update the import path to `github.com/jim-collier/shcl/source/go/v2`, and anyone who installed the Go CLI switches to the Rust binary, which is the only one distributed now - see Removed. Rust and Python consumers change a version constraint and nothing else.

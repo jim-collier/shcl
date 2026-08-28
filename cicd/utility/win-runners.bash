@@ -73,6 +73,11 @@ fRunCxx() {
 		source/c/tests/veneer_smoke.cpp -o "${work}/veneer${exe}" -lm \
 		&& "${work}/veneer${exe}"
 }
+fRunOom() {
+	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
+		source/c/tests/oom_hook.c -o "${work}/oom_hook${exe}" -lm \
+		&& "${work}/oom_hook${exe}"
+}
 
 ## Fuzz iterations stay at the in-test default: the long soak is the Linux gate's
 ## job, and nothing about it is platform-dependent.
@@ -82,6 +87,7 @@ fRun "go cli"      go -C source/go/cmd test ./...
 fRun "python"      "${py}" source/python/tests/conformance.py
 fRun "c"           fRunC
 fRun "c++ veneer"  fRunCxx
+fRun "c oom hook"  fRunOom
 
 echo
 if ((${#failed[@]} == 0)); then

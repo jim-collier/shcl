@@ -158,7 +158,7 @@ pub enum FileStatus {
 	Clean,      // read and parsed, no error diagnostics (hints allowed)
 	HadErrors,  // read and parsed, but error diagnostics are present
 	NotFound,   // no file at the path
-	Unreadable, // exists but could not be read (permissions, a directory, bad encoding)
+	Unreadable, // exists but could not be read (permissions, a directory, bad encoding, past a read_file cap)
 }
 
 /// Why a save did not happen. The two cases need different handling, so they
@@ -2173,16 +2173,9 @@ impl Document {
 	/// load_file at a chosen strictness. A strict-failing file reports
 	/// HadErrors; the recover-and-continue document still comes back.
 	pub fn load_file_with(path: &str, level: Strictness) -> (Document, FileStatus) {
-		let text = match std::fs::read_to_string(path) {
+		let text = match read_file(path, 0) {
 			Ok(t) => t,
-			Err(e) => {
-				let st = if e.kind() == std::io::ErrorKind::NotFound {
-					FileStatus::NotFound
-				} else {
-					FileStatus::Unreadable
-				};
-				return (Parser::new().parse("", level), st);
-			}
+			Err(st) => return (Parser::new().parse("", level), st),
 		};
 		let doc = Parser::new().parse(&text, level);
 		let st = if doc.diags.iter().any(|d| d.severity == Severity::Error) {
@@ -2412,6 +2405,39 @@ pub fn format_f64(v: f64) -> String {
 /// `paths()` and the canonical emitter produce.
 pub fn quote_segment(name: &str) -> String {
 	emit_name(name)
+}
+
+/// The file tier's read half on its own: the text of PATH, or the status that
+/// says why not - `NotFound`, or `Unreadable` for everything else (permissions,
+/// a directory, bad encoding, or a file past MAX_BYTES; 0 is no cap).
+/// `load_file` is this plus a parse. A consumer that needs the exact bytes it
+/// last saw - to tell its own save coming back as a change notification from
+/// somebody else's edit - or a bound on how much it will read before a parse,
+/// calls this and parses the text itself.
+pub fn read_file(path: &str, max_bytes: usize) -> Result<String, FileStatus> {
+	use std::io::Read;
+	let f = std::fs::File::open(path).map_err(|e| {
+		if e.kind() == std::io::ErrorKind::NotFound {
+			FileStatus::NotFound
+		} else {
+			FileStatus::Unreadable
+		}
+	})?;
+	// One byte past the cap is read, so a file exactly at it passes and one
+	// over is caught without trusting a length from metadata.
+	let limit = if max_bytes == 0 {
+		u64::MAX
+	} else {
+		max_bytes as u64 + 1
+	};
+	let mut bytes = Vec::new();
+	f.take(limit)
+		.read_to_end(&mut bytes)
+		.map_err(|_| FileStatus::Unreadable)?;
+	if max_bytes != 0 && bytes.len() > max_bytes {
+		return Err(FileStatus::Unreadable);
+	}
+	String::from_utf8(bytes).map_err(|_| FileStatus::Unreadable)
 }
 
 /// The file tier's write mechanism (also what the CLI's `--write` uses): a

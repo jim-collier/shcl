@@ -42,6 +42,7 @@ package shcl
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -2560,6 +2561,42 @@ func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic 
 	return kept
 }
 
+// ReadFile is the file tier's read half on its own: the text of path with
+// FileClean, or "" with the status that says why not - FileNotFound, or
+// FileUnreadable for everything else (permissions, a directory, bad encoding,
+// or a file past maxBytes; 0 is no cap). LoadFile is this plus a parse. A
+// consumer that needs the exact bytes it last saw - to tell its own save coming
+// back as a change notification from somebody else's edit - or a bound on how
+// much it will read before a parse, calls this and parses the text itself.
+func ReadFile(path string, maxBytes int) (string, FileStatus) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", FileNotFound
+		}
+		return "", FileUnreadable
+	}
+	defer f.Close()
+	// One byte past the cap is read, so a file exactly at it passes and one
+	// over is caught without trusting a length from Stat.
+	var r io.Reader = f
+	if maxBytes > 0 {
+		r = io.LimitReader(f, int64(maxBytes)+1)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil || (maxBytes > 0 && len(data) > maxBytes) {
+		return "", FileUnreadable
+	}
+	// Reading succeeds on any bytes here, unlike the reference's read-to-string
+	// and python's decoding open - so bad encoding needs its own test, or a
+	// binary file loads Clean, reads back mangled, and a later save writes the
+	// mangled version over the original.
+	if !utf8.Valid(data) {
+		return "", FileUnreadable
+	}
+	return string(data), FileClean
+}
+
 // WriteFileAtomic is the file tier's write mechanism (also what the CLI's
 // `--write` uses): a temp file in the same dir, then a rename over the
 // target, so an interrupted write can never truncate the config it rewrites.
@@ -2667,7 +2704,7 @@ const (
 	FileClean      FileStatus = iota // read and parsed, no error diagnostics (hints allowed)
 	FileHadErrors                    // read and parsed, but error diagnostics are present
 	FileNotFound                     // no file at the path
-	FileUnreadable                   // exists but could not be read (permissions, a directory, bad encoding)
+	FileUnreadable                   // exists but could not be read (permissions, a directory, bad encoding, past a ReadFile cap)
 )
 
 // String names the file status, so logging one reads as a case rather than a
@@ -2698,22 +2735,11 @@ func LoadFile(path string) (*Document, FileStatus) {
 // LoadFileWith is LoadFile at a chosen strictness. A strict-failing file
 // reports FileHadErrors; the recover-and-continue document still comes back.
 func LoadFileWith(path string, level Strictness) (*Document, FileStatus) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		st := FileUnreadable
-		if os.IsNotExist(err) {
-			st = FileNotFound
-		}
+	text, st := ReadFile(path, 0)
+	if st != FileClean {
 		return newParser().parse("", level), st
 	}
-	// Reading succeeds on any bytes here, unlike the reference's read-to-string
-	// and python's decoding open - so bad encoding needs its own test, or a
-	// binary file loads Clean, reads back mangled, and a later save writes the
-	// mangled version over the original.
-	if !utf8.Valid(data) {
-		return newParser().parse("", level), FileUnreadable
-	}
-	doc := newParser().parse(string(data), level)
+	doc := newParser().parse(text, level)
 	for _, d := range doc.diags {
 		if d.Severity == SeverityError {
 			return doc, FileHadErrors

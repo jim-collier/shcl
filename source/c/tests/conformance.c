@@ -697,6 +697,26 @@ int main(int argc, char **argv) {
 		if (!tf || fputs("a: 1\nb: x\n", tf) == EOF || fclose(tf) != 0) fail("file_tier", "seed rewrite failed");
 		fd = shcl_load_file(tfile, &fst);
 		if (fst != SHCL_FILE_CLEAN) fail("file_tier", "clean file status");
+		// shcl_read_file is the load's read half on its own: the exact bytes,
+		// or the status. The cap counts bytes, and a file exactly at it passes.
+		// Same fixture in every runner.
+		{
+			size_t rn = 0; shcl_file_status rst;
+			char *rt = shcl_read_file(tfile, 0, &rn, &rst);
+			if (!rt || rst != SHCL_FILE_CLEAN || rn != 10 || memcmp(rt, "a: 1\nb: x\n", 11) != 0) fail("file_tier", "read_file");
+			free(rt);
+			rt = shcl_read_file(tfile, 10, &rn, &rst);
+			if (!rt || rst != SHCL_FILE_CLEAN || rn != 10) fail("file_tier", "read_file at the cap");
+			free(rt);
+			rt = shcl_read_file(tfile, 9, &rn, &rst);
+			if (rt || rst != SHCL_FILE_UNREADABLE) fail("file_tier", "read_file past the cap");
+			free(rt);
+			char none[320];
+			snprintf(none, sizeof none, "%s/none.shcl", tdir);
+			rt = shcl_read_file(none, 0, &rn, &rst);
+			if (rt || rst != SHCL_FILE_NOT_FOUND) fail("file_tier", "read_file missing");
+			free(rt);
+		}
 		if (!shcl_set_int(fd, "c", 1, 3)) fail("file_tier", "set_int failed");
 		if (shcl_save_file(fd, tfile) != SHCL_SAVE_OK) fail("file_tier", "save failed");
 		shcl_doc *fb = shcl_load_file(tfile, &fst);
@@ -742,6 +762,46 @@ int main(int argc, char **argv) {
 				if (stat(born, &ns) != 0) fail("file_tier", "existing file stat failed");
 				if ((ns.st_mode & 0777) != 0640) fail("file_tier", "existing file mode");
 				remove(probe); remove(born);
+			}
+#endif
+			// Windows-only, and C-only in effect: a path spelled with the platform
+			// separator, a name outside the active code page, and a drive-relative
+			// target. The fixture above joins with '/', which is why none of these
+			// ever failed here - the writer split on '/' alone, and every file call
+			// was the code-page one, so a backslash path failed outright and a
+			// non-ANSI name went to disk under a mojibake spelling. The other
+			// bindings split and open through their runtimes and never had it.
+#ifdef _WIN32
+			{
+				char bsfile[320], u8file[320], drfile[320], cwd[320];
+				snprintf(bsfile, sizeof bsfile, "%s\\bs.shcl", tdir);
+				for (char *p = bsfile; *p; p++) if (*p == '/') *p = '\\';
+				if (shcl_save_file(nd, bsfile) != SHCL_SAVE_OK) fail("file_tier", "backslash path save failed");
+				shcl_doc *bb = shcl_load_file(bsfile, &fst);
+				if (fst != SHCL_FILE_CLEAN) fail("file_tier", "backslash path load");
+				shcl_free(bb); remove(bsfile);
+				// Checked through the wide API on purpose: the narrow calls would
+				// write and read back the same wrong name, so a round trip through
+				// them proves nothing.
+				snprintf(u8file, sizeof u8file, "%s/\xe6\x97\xa5.shcl", tdir);
+				if (shcl_save_file(nd, u8file) != SHCL_SAVE_OK) fail("file_tier", "utf-8 name save failed");
+				wchar_t wname[320];
+				if (MultiByteToWideChar(CP_UTF8, 0, u8file, -1, wname, 320) == 0) fail("file_tier", "widen failed");
+				if (GetFileAttributesW(wname) == INVALID_FILE_ATTRIBUTES) fail("file_tier", "utf-8 name not on disk under its own spelling");
+				bb = shcl_load_file(u8file, &fst);
+				if (fst != SHCL_FILE_CLEAN) fail("file_tier", "utf-8 name load");
+				shcl_free(bb); _wremove(wname);
+				// `C:x` names x in C:'s current directory, so the save has to land
+				// beside the fixture's other files once that directory is tdir.
+				if (tdir[1] == ':' && _getcwd(cwd, sizeof cwd) && _chdir(tdir) == 0) {
+					snprintf(drfile, sizeof drfile, "%c:dr.shcl", tdir[0]);
+					if (shcl_save_file(nd, drfile) != SHCL_SAVE_OK) fail("file_tier", "drive-relative save failed");
+					if (_chdir(cwd) != 0) fail("file_tier", "chdir back failed");
+					snprintf(drfile, sizeof drfile, "%s/dr.shcl", tdir);
+					bb = shcl_load_file(drfile, &fst);
+					if (fst != SHCL_FILE_CLEAN) fail("file_tier", "drive-relative save landed elsewhere");
+					shcl_free(bb); remove(drfile);
+				}
 			}
 #endif
 			shcl_free(nd);

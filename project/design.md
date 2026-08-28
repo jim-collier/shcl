@@ -298,6 +298,8 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - **Windows goes through `ReplaceFile` instead**, because it does not have the same constraint. `ReplaceFile` exists for exactly this publish step and carries the destination's ACLs, attributes and named streams onto the replacement, which is the gap a plain move leaves. It needs a destination to replace, and it fails outright rather than skip a merge it cannot perform, so a create and any failure fall back to the replacing move - the behavior that was there before, never worse.
 
+- **The C file tier reaches Windows through the wide API, and splits a path on either slash.** Both came out of the first consumer to embed the C header on Windows. The narrow file calls read a path in the process's active code page, so a path with a character outside it either failed to open or, worse, was written under a mojibake name that the same narrow read found again; every call is the wide one now, and a path that is not valid UTF-8 is refused rather than folded to a different name. The temp name was derived from the last `/`, and a path built with the platform separator has none, so every save through one failed; a drive-relative `C:x` splits after the colon, where the reference's `Path::parent` splits it. The other three bindings' runtimes already did all of this.
+
 - **The Go binding reaches it through a hook rather than a build-tagged pair.** Go has no way to name a windows-only symbol from a file that also compiles elsewhere, and `shcl.go` promises to work when copied into a tree on its own.
 	- So the publish step is a package-level variable holding the plain rename, and a small windows-only file swaps in the `ReplaceFile` version. Dropping the one file still works everywhere; taking the whole module gets the better windows publish.
 	- The consequence to remember is that the lint stage only ever sees the host's `GOOS`, so the windows file is compiled and vetted in the cross stage instead - it is the only thing that looks at it at all.
@@ -453,6 +455,8 @@ The responsibility is split rather than duplicate the pipeline:
 - Conformance runs natively (a C port of the runner over the same corpus), so the C binding is corpus-green on its own, and the cicd crosscheck holds it byte-for-byte to the reference besides.
 
 - Memory is a per-document bump arena, so teardown is a single free with no per-object bookkeeping. A short-lived-tool trade that keeps the port readable.
+
+- Allocation failure is a hook, `SHCL_OOM()`, and the default is still the CLI's print-and-exit-70. The reference aborts on allocation failure too, since that is the language's contract, so making a C parse fail instead would invert parity for a case none of the other three can report. What a library must not do is end a process that is not its own: an embedder defines the hook before the implementation and takes it from there (longjmp out, log, abort). Nothing is unwound first, so a hook that returns leaks the document being built.
 
 - Two portability details the reference gets for free but C makes explicit: UTF-8 is iterated by codepoint (plain byte scanning would mishandle multibyte text), and float output reproduces the reference's shortest-decimal, never-scientific rule.
 

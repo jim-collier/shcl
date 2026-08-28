@@ -13,6 +13,11 @@
 //
 // A companion C++ typed veneer (get<int64_t>() etc.) sits in shcl.hpp; it wraps
 // this core, it is not a second parser.
+//
+// Compile-time knobs, each defined before the implementation include:
+//   SHCL_NO_FILE_IO  leave the file tier out (no file I/O in the library)
+//   SHCL_OOM()       what an unrecoverable allocation failure does; the default
+//                    prints and exits 70, which suits the CLI and nothing else
 
 // The file tier calls POSIX (fdopen, fileno, fchmod, open, fsync, getpid). Those
 // prototypes are feature-gated, and a feature request only counts before the
@@ -180,7 +185,7 @@ typedef enum {
 	SHCL_FILE_CLEAN,      /* read and parsed, no error diagnostics (hints allowed) */
 	SHCL_FILE_HAD_ERRORS, /* read and parsed, but error diagnostics are present */
 	SHCL_FILE_NOT_FOUND,  /* no file at the path */
-	SHCL_FILE_UNREADABLE  /* exists but could not be read (permissions, a directory, bad encoding) */
+	SHCL_FILE_UNREADABLE  /* exists but could not be read (permissions, a directory, bad encoding, past a shcl_read_file cap) */
 } shcl_file_status;
 /* Save refuses while the load dropped content the write would silently delete
    (shcl_lost_count); shcl_save_file_lossy is the override, and is the only way
@@ -197,6 +202,10 @@ typedef enum {
 const char *shcl_file_status_name(shcl_file_status s);
 shcl_doc *shcl_load_file(const char *path, shcl_file_status *status);
 shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status);
+// The read half on its own: the file's text, malloc'd and NUL-terminated (the
+// caller frees it), with *len set; or NULL with the status saying why. A file
+// past max_bytes is unreadable; 0 is no cap.
+char *shcl_read_file(const char *path, size_t max_bytes, size_t *len, shcl_file_status *status);
 shcl_save_result shcl_save_file(shcl_doc *d, const char *path);
 shcl_save_result shcl_save_file_lossy(shcl_doc *d, const char *path);
 int shcl_write_file_atomic(const char *path, const char *data, size_t n);
@@ -416,6 +425,15 @@ static const char *dec_point(void) {
 
 // --- arena (bump allocator; growable vectors grow by copy, bulk-freed) -------
 
+// Every allocation the library cannot recover from ends here. The default is
+// the CLI's contract (exit 70), which is wrong for a process that is not the
+// library's to end: an embedder defines SHCL_OOM before the implementation to
+// longjmp out, log, or abort on its own terms. Nothing is unwound first, so a
+// hook that returns leaks whatever was being built.
+#ifndef SHCL_OOM
+	#define SHCL_OOM() do { fprintf(stderr, "shcl: out of memory\n"); exit(70); } while (0)
+#endif
+
 typedef struct ShclBlock { struct ShclBlock *next; size_t used, cap; } ShclBlock;
 /* last/last_n: the most recent allocation, so a vector or string builder that
    grows with nothing allocated after it extends in place. A bump arena cannot
@@ -433,7 +451,7 @@ static void *arena_alloc(Arena *a, size_t n) {
 		   spent about 2N getting there, and none of it is reclaimable. */
 		size_t cap = n > (size_t)65536 ? (a->growing ? n * 2 : n) : (size_t)65536;
 		ShclBlock *b = (ShclBlock *)malloc(sizeof(ShclBlock) + cap);
-		if (!b) { fprintf(stderr, "shcl: out of memory\n"); exit(70); }
+		if (!b) SHCL_OOM();
 		b->next = a->head; b->used = 0; b->cap = cap; a->head = b;
 	}
 	void *p = (char *)(a->head + 1) + a->head->used;
@@ -723,7 +741,7 @@ static void nodes_push(shcl_doc *d, Node x) {
 	if (v->len == v->cap) {
 		size_t nc = v->cap ? v->cap * 2 : 8;
 		Node *nd = (Node *)realloc(v->data, nc * sizeof(Node));
-		if (!nd) { fprintf(stderr, "shcl: out of memory\n"); exit(70); }
+		if (!nd) SHCL_OOM();
 		v->data = nd; v->cap = nc;
 	}
 	v->data[v->len++] = x;
@@ -1677,7 +1695,7 @@ static void maps_push(VecMapPtr *v, CMap *x) {
 	if (v->len == v->cap) {
 		size_t nc = v->cap ? v->cap * 2 : 8;
 		CMap **nd = (CMap **)realloc(v->data, nc * sizeof(CMap *));
-		if (!nd) { fprintf(stderr, "shcl: out of memory\n"); exit(70); }
+		if (!nd) SHCL_OOM();
 		v->data = nd; v->cap = nc;
 	}
 	v->data[v->len++] = x;
@@ -2244,7 +2262,7 @@ static void emit_repeated_leaf_hints(Parser *P) {
 
 static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) {
 	shcl_doc *d = (shcl_doc *)calloc(1, sizeof *d);
-	if (!d) { fprintf(stderr, "shcl: out of memory\n"); exit(70); }
+	if (!d) SHCL_OOM();
 	d->strictness = strict;
 	Arena *a = &d->arena;
 	Node root; memset(&root, 0, sizeof root); root.value = v_empty(); root.parent = 0; root.line = 0;
@@ -4455,7 +4473,7 @@ static void v_unknown(Arena *a, shcl_doc *d, const VSchemaDef *def, VecDiag *out
 
 shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	shcl_validation *v = (shcl_validation *)malloc(sizeof *v);
-	if (!v) { fprintf(stderr, "shcl: out of memory\n"); exit(70); }
+	if (!v) SHCL_OOM();
 	memset(v, 0, sizeof *v);
 	Arena *a = &v->arena;
 	VSchemaDef def; memset(&def, 0, sizeof def);
@@ -4638,6 +4656,7 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 	#include <io.h>
 	#include <process.h>
 	#include <sys/stat.h>
+	#include <wchar.h>
 #else
 	#include <unistd.h>
 	#include <sys/stat.h>
@@ -4646,6 +4665,58 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 	// libc even when the prototype is feature-gated away).
 	extern char *realpath(const char *, char *);
 #endif
+
+#ifdef _WIN32
+// The narrow file calls read a path in the active code page, so a UTF-8 path
+// with anything outside it cannot be opened - or worse, opens a mojibake name
+// that round-trips through the same mistake. Convert once and use the wide
+// forms. Bad UTF-8 fails (EINVAL) rather than folding to U+FFFD, which would
+// quietly name a different file.
+static wchar_t *shcl_widen(const char *s) {
+	int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, NULL, 0);
+	wchar_t *w = n > 0 ? (wchar_t *)malloc((size_t)n * sizeof(wchar_t)) : NULL;
+	if (w) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, w, n);
+	else errno = n > 0 ? ENOMEM : EINVAL;
+	return w;
+}
+
+// ReplaceFile carries the destination's ACLs, attributes and named streams
+// onto the replacement; a move publishes a brand-new file and leaves all of it
+// behind. It needs the destination to exist, and it fails rather than skip a
+// merge it cannot do (no WRITE_DAC, say), so a create and any failure fall back
+// to MoveFileEx - which is there regardless because C rename() will not
+// replace an existing file on Windows at all.
+static int shcl_publish_file(const wchar_t *tmp, const wchar_t *target) {
+	return (GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES
+			&& ReplaceFileW(target, tmp, NULL, REPLACEFILE_WRITE_THROUGH, NULL, NULL))
+		|| MoveFileExW(tmp, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+}
+#endif
+
+static FILE *shcl_fopen_rb(const char *path) {
+#ifdef _WIN32
+	wchar_t *w = shcl_widen(path);
+	FILE *f = w ? _wfopen(w, L"rb") : NULL;
+	int e = errno; free(w); errno = e;
+	return f;
+#else
+	return fopen(path, "rb");
+#endif
+}
+
+// Where the directory part of TARGET ends: the last separator, or NULL for a
+// bare name. Windows takes either slash, and a path built with the platform
+// separator is all backslashes; a drive-relative `C:x` has no separator at all
+// and splits after the colon, where the reference's Path::parent splits it.
+static const char *shcl_last_sep(const char *target) {
+	const char *sep = strrchr(target, '/');
+#ifdef _WIN32
+	const char *bs = strrchr(target, '\\');
+	if (bs && (!sep || bs > sep)) sep = bs;
+	if (!sep && target[0] && target[1] == ':') sep = target + 1;
+#endif
+	return sep;
+}
 
 #ifndef _WIN32
 // fsync the directory a save published into. The fsync on the file only covered
@@ -4683,10 +4754,14 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	char *real = realpath(path, NULL);
 	if (real) target = real;
 	#define SHCL_FILE_CLEANUP() do { free(real); } while (0)
+	#define SHCL_FILE_UNLINK() remove(tmp)
 #else
-	#define SHCL_FILE_CLEANUP() do { } while (0)
+	wchar_t *wtarget = shcl_widen(target), *wtmp = NULL;
+	if (!wtarget) return 0;
+	#define SHCL_FILE_CLEANUP() do { free(wtarget); free(wtmp); } while (0)
+	#define SHCL_FILE_UNLINK() _wremove(wtmp)
 #endif
-	const char *slash = strrchr(target, '/');
+	const char *slash = shcl_last_sep(target);
 	char *tmp = (char *)malloc(strlen(target) + 48);
 	if (!tmp) { SHCL_FILE_CLEANUP(); return 0; }
 	// Exclusive create: anything already sitting at the predictable name -
@@ -4705,7 +4780,9 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 		if (slash) sprintf(tmp, "%.*s.%s.tmp%ld.%d", (int)(slash - target + 1), target, slash + 1, (long)getpid(), attempt);
 		else sprintf(tmp, ".%s.tmp%ld.%d", target, (long)getpid(), attempt);
 #ifdef _WIN32
-		fd = _open(tmp, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+		free(wtmp);
+		if (!(wtmp = shcl_widen(tmp))) break;
+		fd = _wopen(wtmp, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
 #else
 		fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, have_st ? 0600 : 0666);
 #endif
@@ -4713,7 +4790,7 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	}
 	if (fd < 0) { free(tmp); SHCL_FILE_CLEANUP(); return 0; }
 	FILE *f = fdopen(fd, "wb");
-	if (!f) { close(fd); remove(tmp); free(tmp); SHCL_FILE_CLEANUP(); return 0; }
+	if (!f) { close(fd); SHCL_FILE_UNLINK(); free(tmp); SHCL_FILE_CLEANUP(); return 0; }
 #ifndef _WIN32
 	// On the descriptor before any data, so umask cannot narrow it. Best
 	// effort: a filesystem that cannot carry the mode is not a failure.
@@ -4727,23 +4804,16 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #endif
 	ok = (fclose(f) == 0) && ok;
 #ifdef _WIN32
-	// ReplaceFile carries the destination's ACLs, attributes and named streams
-	// onto the replacement; a move publishes a brand-new file and leaves all of
-	// it behind. It needs the destination to exist, and it fails rather than
-	// skip a merge it cannot do (no WRITE_DAC, say), so a create and any failure
-	// fall back to MoveFileEx - which is there regardless because C rename()
-	// will not replace an existing file on Windows at all.
-	ok = ok && ((GetFileAttributesA(target) != INVALID_FILE_ATTRIBUTES
-			&& ReplaceFileA(target, tmp, NULL, REPLACEFILE_WRITE_THROUGH, NULL, NULL))
-		|| MoveFileExA(tmp, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH));
+	ok = ok && shcl_publish_file(wtmp, wtarget);
 #else
 	ok = ok && rename(tmp, target) == 0;
 	if (ok) shcl_sync_dir(target);
 #endif
-	if (!ok) remove(tmp);
+	if (!ok) SHCL_FILE_UNLINK();
 	free(tmp);
 	SHCL_FILE_CLEANUP();
 #undef SHCL_FILE_CLEANUP
+#undef SHCL_FILE_UNLINK
 	return ok ? 1 : 0;
 }
 
@@ -4768,46 +4838,71 @@ static int shcl_utf8_valid(const char *p, size_t n) {
 	return 1;
 }
 
-// File tier, load half: read and parse PATH. Never fails - the document
-// always comes back usable (empty when the file could not be read), and the
-// status out-param separates the four cases consumers otherwise confuse:
-// absent, present-but-unreadable, parsed with errors, clean.
-shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status) {
-	FILE *f = fopen(path, "rb");
+// File tier, read half on its own: the text of PATH, malloc'd and
+// NUL-terminated (the caller frees it), with *LEN set and *STATUS CLEAN; or
+// NULL with the status saying why not - NOT_FOUND, or UNREADABLE for
+// everything else (permissions, a directory, bad encoding, or a file past
+// MAX_BYTES; 0 is no cap). shcl_load_file is this plus a parse. A consumer
+// that needs the exact bytes it last saw - to tell its own save coming back as
+// a change notification from somebody else's edit - or a bound on how much it
+// will read before a parse, calls this and parses the text itself.
+char *shcl_read_file(const char *path, size_t max_bytes, size_t *len, shcl_file_status *status) {
+	FILE *f = shcl_fopen_rb(path);
 	if (!f) {
 		if (status) *status = (errno == ENOENT) ? SHCL_FILE_NOT_FOUND : SHCL_FILE_UNREADABLE;
-		return shcl_parse_with("", 0, s);
+		return NULL;
 	}
-	size_t cap = 1 << 16, len = 0;
-	char *buf = (char *)malloc(cap);
+	// One byte past the cap is read, so a file exactly at it passes and one
+	// over is caught without trusting a length from stat.
+	size_t limit = (max_bytes && max_bytes < (size_t)-1) ? max_bytes + 1 : (size_t)-1;
+	size_t cap = (size_t)1 << 16, n = 0;
+	if (cap > limit) cap = limit;
+	char *buf = (char *)malloc(cap + 1);
 	int rerr = buf == NULL;
 	while (!rerr) {
-		if (len == cap) {
-			char *nb = (char *)realloc(buf, cap *= 2);
+		if (n == cap) {
+			if (cap >= limit) break;
+			size_t ncap = cap > limit / 2 ? limit : cap * 2;
+			char *nb = (char *)realloc(buf, ncap + 1);
 			if (!nb) { rerr = 1; break; }
-			buf = nb;
+			buf = nb; cap = ncap;
 		}
-		size_t got = fread(buf + len, 1, cap - len, f);
-		len += got;
-		if (got < cap - len + got) {
+		size_t got = fread(buf + n, 1, cap - n, f);
+		n += got;
+		if (got < cap - n + got) {
 			if (ferror(f)) rerr = 1; // a directory reads this way on POSIX
 			break;
 		}
 	}
 	fclose(f);
-	if (rerr) {
-		free(buf);
-		if (status) *status = SHCL_FILE_UNREADABLE;
-		return shcl_parse_with("", 0, s);
-	}
+	if (!rerr && max_bytes && n > max_bytes) rerr = 1;
 	// The read succeeds on any bytes, unlike the reference's read-to-string and
 	// python's decoding open - so bad encoding needs its own test, or a binary
 	// file loads clean, reads back mangled, and a later save writes the mangled
 	// version over the original. Its own copy rather than the CLI's: that one
 	// also gates argv and stdin, which exist with the file tier compiled out.
-	if (!shcl_utf8_valid(buf, len)) {
+	if (!rerr && !shcl_utf8_valid(buf, n)) rerr = 1;
+	if (rerr) {
 		free(buf);
 		if (status) *status = SHCL_FILE_UNREADABLE;
+		return NULL;
+	}
+	buf[n] = '\0';
+	if (len) *len = n;
+	if (status) *status = SHCL_FILE_CLEAN;
+	return buf;
+}
+
+// File tier, load half: read and parse PATH. Never fails - the document
+// always comes back usable (empty when the file could not be read), and the
+// status out-param separates the four cases consumers otherwise confuse:
+// absent, present-but-unreadable, parsed with errors, clean.
+shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status) {
+	size_t len = 0;
+	shcl_file_status st = SHCL_FILE_UNREADABLE;
+	char *buf = shcl_read_file(path, 0, &len, &st);
+	if (!buf) {
+		if (status) *status = st;
 		return shcl_parse_with("", 0, s);
 	}
 	shcl_doc *d = shcl_parse_with(buf, len, s);

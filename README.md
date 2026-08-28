@@ -238,7 +238,7 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 - Full read *and* write. Setters build any missing structure along the path, and saving canonicalizes the file while keeping your comments attached to what they documented.
 
-- A file tier that carries the whole load/save lifecycle, since that is where a config program's bugs actually live: one call to read and parse, a status that separates missing from unreadable from parsed-with-errors, and a save through a temp file and a rename that refuses when writing back would delete a line the load could not keep.
+- A file tier that carries the whole load/save lifecycle, since that is where a config program's bugs actually live: one call to read and parse, a status that separates missing from unreadable from parsed-with-errors, a save through a temp file and a rename that refuses when writing back would delete a line the load could not keep, and a bounded read that hands back the bytes for the program that watches its own file.
 
 - Schema validation, layered loading (defaults, site, user), and commented starter-config generation, all as library features.
 
