@@ -106,6 +106,10 @@ The generated code is another risk. Veracode's [2025 report](https://www.veracod
 
 Hallucinated dependencies are worse. A [study of 576,000 generated samples](https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-742-spracklen.pdf) found package names that do not exist in about 5% of commercial-model output and about 22% of open-model output. Attackers register the common ones and wait. Every dependency an AI suggests must be human-verified.
 
+And the model doesn't even have to invent the name. In August 2026, [researchers scanned](https://arstechnica.com/security/2026/08/claude-codex-and-hermes-installed-unowned-code-inside-corporate-networks/) 6,214 corporate domains for `llms.txt` files, the emerging convention for handing AI agents a machine-readable summary of a site. 120 of them pointed at package names or domains nobody had ever registered. The researchers registered a few and put beacons behind them. Within an hour a Fortune 500 network phoned home, with dozens more to follow, and the process chains traced the installs back to coding agents (Claude, Codex, and Hermes among them) that had read the files and installed whatever they named. A stale reference in somebody else's docs became code execution inside a corporate network, and nothing was hallucinated anywhere along the way.
+
+The general lesson: an agent treats whatever it fetches as instructions, and it has a shell. So the verification rule above isn't just about dependencies the model dreams up. It covers everything the agent pulls from the network on its own, which is part of why the access rules further down give an agent the least it needs.
+
 Used the other way around, for adversarial review, security review, and fuzz and regression suites, the same tools measurably improve a project. That asymmetry is a driving factor behind these guidelines.
 
 ### Bad PR
