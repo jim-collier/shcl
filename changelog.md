@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `ReadFile(path, maxBytes)` in every binding and the C++ veneer: the file tier's read half on its own - the file's text, or the load status saying why not, with a cap on how much is read (past it is `Unreadable`; 0 is no cap). `LoadFile` is now this plus a parse. It is for a consumer that needs the exact bytes it last saw, to tell its own save coming back as a change notification from somebody else's edit, or a bound on what it will read before parsing - both of which meant keeping a hand-rolled read beside the library.
+
 - `SHCL_OOM()` in the C binding: what an allocation the library cannot recover from does. The default is still the CLI's print-and-exit-70; a consumer whose process is not the library's to end defines its own before the implementation and takes it from there.
 
 ### Fixed

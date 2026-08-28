@@ -50,7 +50,8 @@ Every item carries the date it was opened and, once settled, the date it closed.
 			- The five `exit(70)` sites go through one `SHCL_OOM()` macro an embedder can define. The default is unchanged.
 		- ✅ File tier is code-page bound, not UTF-8
 			- Every file call on Windows is the wide one now. A path that is not valid UTF-8 is refused rather than opened under another name.
-		- 🔘 Reader has no size limit and returns no bytes
+		- ✅ Reader has no size limit and returns no bytes
+			- `ReadFile(path, maxBytes)` in all four bindings and the veneer, and `LoadFile` is built on it. Past the cap is `Unreadable`, so the status enum did not change.
 	- Much more detail including recommended fixes: /home/collierjr/synced/0-0/user/data/prs/dev/shcl/20260828-124959_SHCL-Defect-Report.html
 	- Check to see if other versions have the same problems.
 		- Checked. The first three are C-only: Rust, Go and Python split paths and open files through their runtimes, and allocation failure there is the language's own contract. The fourth is a gap in all four.

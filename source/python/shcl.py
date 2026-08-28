@@ -50,6 +50,7 @@ __all__ = [
 	"generate",
 	"parse_datetime",
 	"quote_segment",
+	"read_file",
 	"suppress_declared_reopens",
 	"suppress_declared_repeats",
 	"write_file_atomic",
@@ -1687,15 +1688,9 @@ class Document:
 	def load_file_with(path, strictness):
 		"""load_file at a chosen strictness. A strict-failing file reports
 		HadErrors; the recover-and-continue document still comes back."""
-		try:
-			with open(path, encoding="utf-8", newline="") as f:
-				text = f.read()
-		except FileNotFoundError:
-			return _Parser().parse("", strictness), FileStatus.NotFound
-		except (OSError, UnicodeDecodeError, ValueError):
-			# ValueError is not decorative: a NUL in the path raises it rather
-			# than an OSError, and this call promises a status, never a throw.
-			return _Parser().parse("", strictness), FileStatus.Unreadable
+		text, st = read_file(path, 0)
+		if text is None:
+			return _Parser().parse("", strictness), st
 		doc = _Parser().parse(text, strictness)
 		if any(d.severity == Severity.Error for d in doc.diags):
 			return doc, FileStatus.HadErrors
@@ -3203,7 +3198,7 @@ class FileStatus(Enum):
 	Clean = 0        # read and parsed, no error diagnostics (hints allowed)
 	HadErrors = 1    # read and parsed, but error diagnostics are present
 	NotFound = 2     # no file at the path
-	Unreadable = 3   # exists but could not be read (permissions, a directory, bad encoding)
+	Unreadable = 3   # exists but could not be read (permissions, a directory, bad encoding, past a read_file cap)
 
 
 def _publish_file(tmp, target):
@@ -3250,6 +3245,33 @@ def _sync_dir(d):
 		pass
 	finally:
 		os.close(fd)
+
+
+def read_file(path, max_bytes=0):
+	"""The file tier's read half on its own: (text, FileStatus.Clean), or
+	(None, status) saying why not - NotFound, or Unreadable for everything
+	else (permissions, a directory, bad encoding, or a file past max_bytes;
+	0 is no cap). load_file is this plus a parse. A consumer that needs the
+	exact bytes it last saw - to tell its own save coming back as a change
+	notification from somebody else's edit - or a bound on how much it will
+	read before a parse, calls this and parses the text itself."""
+	try:
+		with open(path, "rb") as f:
+			# One byte past the cap is read, so a file exactly at it passes and
+			# one over is caught without trusting a length from stat.
+			data = f.read(max_bytes + 1) if max_bytes > 0 else f.read()
+	except FileNotFoundError:
+		return None, FileStatus.NotFound
+	except (OSError, ValueError):
+		# ValueError is not decorative: a NUL in the path raises it rather
+		# than an OSError, and this call promises a status, never a throw.
+		return None, FileStatus.Unreadable
+	if max_bytes > 0 and len(data) > max_bytes:
+		return None, FileStatus.Unreadable
+	try:
+		return data.decode("utf-8"), FileStatus.Clean
+	except UnicodeDecodeError:
+		return None, FileStatus.Unreadable
 
 
 def write_file_atomic(file, data):

@@ -697,6 +697,26 @@ int main(int argc, char **argv) {
 		if (!tf || fputs("a: 1\nb: x\n", tf) == EOF || fclose(tf) != 0) fail("file_tier", "seed rewrite failed");
 		fd = shcl_load_file(tfile, &fst);
 		if (fst != SHCL_FILE_CLEAN) fail("file_tier", "clean file status");
+		// shcl_read_file is the load's read half on its own: the exact bytes,
+		// or the status. The cap counts bytes, and a file exactly at it passes.
+		// Same fixture in every runner.
+		{
+			size_t rn = 0; shcl_file_status rst;
+			char *rt = shcl_read_file(tfile, 0, &rn, &rst);
+			if (!rt || rst != SHCL_FILE_CLEAN || rn != 10 || memcmp(rt, "a: 1\nb: x\n", 11) != 0) fail("file_tier", "read_file");
+			free(rt);
+			rt = shcl_read_file(tfile, 10, &rn, &rst);
+			if (!rt || rst != SHCL_FILE_CLEAN || rn != 10) fail("file_tier", "read_file at the cap");
+			free(rt);
+			rt = shcl_read_file(tfile, 9, &rn, &rst);
+			if (rt || rst != SHCL_FILE_UNREADABLE) fail("file_tier", "read_file past the cap");
+			free(rt);
+			char none[320];
+			snprintf(none, sizeof none, "%s/none.shcl", tdir);
+			rt = shcl_read_file(none, 0, &rn, &rst);
+			if (rt || rst != SHCL_FILE_NOT_FOUND) fail("file_tier", "read_file missing");
+			free(rt);
+		}
 		if (!shcl_set_int(fd, "c", 1, 3)) fail("file_tier", "set_int failed");
 		if (shcl_save_file(fd, tfile) != SHCL_SAVE_OK) fail("file_tier", "save failed");
 		shcl_doc *fb = shcl_load_file(tfile, &fst);

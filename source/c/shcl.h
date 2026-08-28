@@ -185,7 +185,7 @@ typedef enum {
 	SHCL_FILE_CLEAN,      /* read and parsed, no error diagnostics (hints allowed) */
 	SHCL_FILE_HAD_ERRORS, /* read and parsed, but error diagnostics are present */
 	SHCL_FILE_NOT_FOUND,  /* no file at the path */
-	SHCL_FILE_UNREADABLE  /* exists but could not be read (permissions, a directory, bad encoding) */
+	SHCL_FILE_UNREADABLE  /* exists but could not be read (permissions, a directory, bad encoding, past a shcl_read_file cap) */
 } shcl_file_status;
 /* Save refuses while the load dropped content the write would silently delete
    (shcl_lost_count); shcl_save_file_lossy is the override, and is the only way
@@ -202,6 +202,10 @@ typedef enum {
 const char *shcl_file_status_name(shcl_file_status s);
 shcl_doc *shcl_load_file(const char *path, shcl_file_status *status);
 shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status);
+// The read half on its own: the file's text, malloc'd and NUL-terminated (the
+// caller frees it), with *len set; or NULL with the status saying why. A file
+// past max_bytes is unreadable; 0 is no cap.
+char *shcl_read_file(const char *path, size_t max_bytes, size_t *len, shcl_file_status *status);
 shcl_save_result shcl_save_file(shcl_doc *d, const char *path);
 shcl_save_result shcl_save_file_lossy(shcl_doc *d, const char *path);
 int shcl_write_file_atomic(const char *path, const char *data, size_t n);
@@ -4834,46 +4838,71 @@ static int shcl_utf8_valid(const char *p, size_t n) {
 	return 1;
 }
 
-// File tier, load half: read and parse PATH. Never fails - the document
-// always comes back usable (empty when the file could not be read), and the
-// status out-param separates the four cases consumers otherwise confuse:
-// absent, present-but-unreadable, parsed with errors, clean.
-shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status) {
+// File tier, read half on its own: the text of PATH, malloc'd and
+// NUL-terminated (the caller frees it), with *LEN set and *STATUS CLEAN; or
+// NULL with the status saying why not - NOT_FOUND, or UNREADABLE for
+// everything else (permissions, a directory, bad encoding, or a file past
+// MAX_BYTES; 0 is no cap). shcl_load_file is this plus a parse. A consumer
+// that needs the exact bytes it last saw - to tell its own save coming back as
+// a change notification from somebody else's edit - or a bound on how much it
+// will read before a parse, calls this and parses the text itself.
+char *shcl_read_file(const char *path, size_t max_bytes, size_t *len, shcl_file_status *status) {
 	FILE *f = shcl_fopen_rb(path);
 	if (!f) {
 		if (status) *status = (errno == ENOENT) ? SHCL_FILE_NOT_FOUND : SHCL_FILE_UNREADABLE;
-		return shcl_parse_with("", 0, s);
+		return NULL;
 	}
-	size_t cap = 1 << 16, len = 0;
-	char *buf = (char *)malloc(cap);
+	// One byte past the cap is read, so a file exactly at it passes and one
+	// over is caught without trusting a length from stat.
+	size_t limit = (max_bytes && max_bytes < (size_t)-1) ? max_bytes + 1 : (size_t)-1;
+	size_t cap = (size_t)1 << 16, n = 0;
+	if (cap > limit) cap = limit;
+	char *buf = (char *)malloc(cap + 1);
 	int rerr = buf == NULL;
 	while (!rerr) {
-		if (len == cap) {
-			char *nb = (char *)realloc(buf, cap *= 2);
+		if (n == cap) {
+			if (cap >= limit) break;
+			size_t ncap = cap > limit / 2 ? limit : cap * 2;
+			char *nb = (char *)realloc(buf, ncap + 1);
 			if (!nb) { rerr = 1; break; }
-			buf = nb;
+			buf = nb; cap = ncap;
 		}
-		size_t got = fread(buf + len, 1, cap - len, f);
-		len += got;
-		if (got < cap - len + got) {
+		size_t got = fread(buf + n, 1, cap - n, f);
+		n += got;
+		if (got < cap - n + got) {
 			if (ferror(f)) rerr = 1; // a directory reads this way on POSIX
 			break;
 		}
 	}
 	fclose(f);
-	if (rerr) {
-		free(buf);
-		if (status) *status = SHCL_FILE_UNREADABLE;
-		return shcl_parse_with("", 0, s);
-	}
+	if (!rerr && max_bytes && n > max_bytes) rerr = 1;
 	// The read succeeds on any bytes, unlike the reference's read-to-string and
 	// python's decoding open - so bad encoding needs its own test, or a binary
 	// file loads clean, reads back mangled, and a later save writes the mangled
 	// version over the original. Its own copy rather than the CLI's: that one
 	// also gates argv and stdin, which exist with the file tier compiled out.
-	if (!shcl_utf8_valid(buf, len)) {
+	if (!rerr && !shcl_utf8_valid(buf, n)) rerr = 1;
+	if (rerr) {
 		free(buf);
 		if (status) *status = SHCL_FILE_UNREADABLE;
+		return NULL;
+	}
+	buf[n] = '\0';
+	if (len) *len = n;
+	if (status) *status = SHCL_FILE_CLEAN;
+	return buf;
+}
+
+// File tier, load half: read and parse PATH. Never fails - the document
+// always comes back usable (empty when the file could not be read), and the
+// status out-param separates the four cases consumers otherwise confuse:
+// absent, present-but-unreadable, parsed with errors, clean.
+shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_status *status) {
+	size_t len = 0;
+	shcl_file_status st = SHCL_FILE_UNREADABLE;
+	char *buf = shcl_read_file(path, 0, &len, &st);
+	if (!buf) {
+		if (status) *status = st;
 		return shcl_parse_with("", 0, s);
 	}
 	shcl_doc *d = shcl_parse_with(buf, len, s);

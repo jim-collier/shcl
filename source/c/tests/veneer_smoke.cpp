@@ -188,6 +188,8 @@ int main() {
 		{ FILE *fh = std::fopen(f.c_str(), "wb"); CHECK(fh && std::fputs("pct: 50%\n", fh) != EOF && std::fclose(fh) == 0); }
 		auto strict = shcl::Document::load_file_with(f, shcl::Strictness::Loose, &st);
 		CHECK(st == shcl::Document::FileStatus::Clean && strict.read_float("pct").value == 0.5);
+		CHECK(shcl::Document::read_file(f, 0, &st) == std::string("pct: 50%\n") && st == shcl::Document::FileStatus::Clean);
+		CHECK(!shcl::Document::read_file(f, 8, &st) && st == shcl::Document::FileStatus::Unreadable);
 		CHECK(strict.lost_count() == 0);
 		CHECK(strict.save_file(f) == shcl::Document::SaveResult::Ok);
 		auto lost = shcl::Document::parse("a:\n\tb: 1\n  c: 2\n"); // indent matches no level

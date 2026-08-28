@@ -865,6 +865,16 @@ fn file_tier_load_save() {
 	std::fs::write(&f, "a: 1\nb: x\n").unwrap();
 	let (mut doc, st) = Document::load_file(fs);
 	assert_eq!(st, FileStatus::Clean);
+	// read_file is the load's read half on its own: the exact bytes, or the
+	// status. The cap counts bytes, and a file exactly at it passes. Same
+	// fixture in every runner.
+	assert_eq!(shcl::read_file(fs, 0), Ok("a: 1\nb: x\n".to_string()));
+	assert_eq!(shcl::read_file(fs, 10), Ok("a: 1\nb: x\n".to_string()));
+	assert_eq!(shcl::read_file(fs, 9), Err(FileStatus::Unreadable));
+	assert_eq!(
+		shcl::read_file(dir.join("none.shcl").to_str().unwrap(), 0),
+		Err(FileStatus::NotFound)
+	);
 	assert!(doc.set_int("c", 3));
 	doc.save_file(fs).unwrap();
 	let (back, st) = Document::load_file(fs);
