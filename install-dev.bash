@@ -85,11 +85,21 @@ done
 case "$(uname -s)" in Linux|Darwin) ;; *) die "Linux/macOS only (on Windows, run this under WSL)" ;; esac
 have git || die "git is required first"
 
-## Already inside a clone? Then set up here instead of cloning again.
+## curl or wget, whichever is present, the same way install.bash does it; only
+## the rustup step needs one. https is pinned through redirects and TLS floored
+## at 1.2, so a bounced download can't silently downgrade.
+if have curl; then
+	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1"; }
+elif have wget; then
+	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"; }
+fi
+
+## Already inside a clone? Then set up here instead of cloning again. Known by
+## shape, not by remote URL, so a fork's clone counts too.
 in_clone=0
-if git rev-parse --show-toplevel >/dev/null 2>&1; then
-	origin="$(git remote get-url origin 2>/dev/null || true)"
-	[[ "${origin}" == *jim-collier/shcl* ]] && { in_clone=1; clone_dir="$(git rev-parse --show-toplevel)"; }
+if top="$(git rev-parse --show-toplevel 2>/dev/null)" \
+	&& [[ -f "${top}/cicd/cicd.bash" ]] && grep -q '^name = "shcl"' "${top}/source/rust/Cargo.toml" 2>/dev/null; then
+	in_clone=1; clone_dir="${top}"
 fi
 
 ## Take stock: what gets installed (no sudo), what only gets a hint.
@@ -100,7 +110,12 @@ elif have pacman; then pkg_hint="sudo pacman -S"
 elif have brew; then pkg_hint="brew install"
 fi
 todo=() hints=()
-if ! have cargo && [[ ! -x "${HOME}/.cargo/bin/cargo" ]]; then todo+=("rustup (official installer, user-space)"); fi
+need_rustup=0
+if ! have cargo && [[ ! -x "${HOME}/.cargo/bin/cargo" ]]; then
+	if have curl || have wget; then need_rustup=1; todo+=("rustup (official installer, user-space)")
+	else hints+=("curl/wget   - ${pkg_hint} curl  (then re-run for rustup)")
+	fi
+fi
 have go         || hints+=("go          - ${pkg_hint} golang (or https://go.dev/dl)")
 have python3    || hints+=("python3     - ${pkg_hint} python3")
 have cc         || hints+=("gcc/g++     - ${pkg_hint} build-essential (or gcc gcc-c++)")
@@ -144,7 +159,7 @@ if (( ! assume_yes )); then
 	## /dev/tty for readability was not the same question: it passes in plenty of
 	## unattended contexts where the read then dies on a raw shell error.
 	reply=""
-	if ! read -r -p "Proceed? [y/N] " reply </dev/tty 2>/dev/null; then
+	if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
 		die "no terminal to confirm on - pass --yes"
 	fi
 	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
@@ -161,9 +176,9 @@ fi
 
 ## Install the user-space pieces.
 echo
-if ! have cargo && [[ ! -x "${HOME}/.cargo/bin/cargo" ]]; then
+if (( need_rustup )); then
 	echo "installing rustup..."
-	curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 https://sh.rustup.rs | sh -s -- -y --no-modify-path
+	fetch https://sh.rustup.rs - | sh -s -- -y --no-modify-path
 fi
 if have pipx; then
 	for t in ruff mypy cppcheck; do have "$t" || pipx install "$t"; done

@@ -36,6 +36,7 @@
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
 
+[CmdletBinding()]
 param(
 	[ValidateSet('dev', 'development', 'stable')] [string]$Release = 'dev',
 	[ValidateSet('user', 'system')] [string]$Target = 'system',
@@ -46,6 +47,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+## Under either documented one-liner there is no script file, and `exit` there
+## ends the shell that ran it. Only a file invocation may exit; everything else
+## returns or throws.
+$invokedAsFile = $MyInvocation.MyCommand -is [Management.Automation.ExternalScriptInfo]
 
 ## Spelled out here rather than left to Get-Help: the documented one-liner pipes
 ## this script straight into the shell, so there is no file left to ask about.
@@ -71,16 +77,19 @@ Options:
 The release signature is checked before any checksum is read out of the sums
 file. Nothing unverified is installed.
 '@ | Write-Output
-	exit 0
+	return
 }
 
 if ($Release -eq 'development') { $Release = 'dev' }
 
 $repo = 'jim-collier/shcl'
 
-function Fail([string]$msg) {
-	[Console]::Error.WriteLine("install.ps1: $msg")
-	exit 1
+function Exit-Install([string]$Message) {
+	if ($invokedAsFile) {
+		[Console]::Error.WriteLine("install.ps1: $Message")
+		exit 1
+	}
+	throw "install.ps1: $Message"
 }
 
 ## Release signing key, carried as raw RSA parameters rather than PEM on purpose:
@@ -99,10 +108,10 @@ $signingExponent = 'AQAB'
 function Test-ReleaseSignature([string]$file, [string]$sigFile) {
 	try {
 		$rsa = [System.Security.Cryptography.RSA]::Create()
-		$p = New-Object System.Security.Cryptography.RSAParameters
-		$p.Modulus  = [Convert]::FromBase64String($signingModulus)
-		$p.Exponent = [Convert]::FromBase64String($signingExponent)
-		$rsa.ImportParameters($p)
+		$rsaParams = New-Object System.Security.Cryptography.RSAParameters
+		$rsaParams.Modulus  = [Convert]::FromBase64String($signingModulus)
+		$rsaParams.Exponent = [Convert]::FromBase64String($signingExponent)
+		$rsa.ImportParameters($rsaParams)
 		return $rsa.VerifyData(
 			[System.IO.File]::ReadAllBytes($file),
 			[System.IO.File]::ReadAllBytes($sigFile),
@@ -115,7 +124,7 @@ function Test-ReleaseSignature([string]$file, [string]$sigFile) {
 
 ## Windows only; elsewhere install.bash (Linux) or build from source.
 if (($PSVersionTable.PSVersion.Major -ge 6) -and -not $IsWindows) {
-	Fail 'this installer is for Windows - on Linux use install.bash, elsewhere build from source (see README.md)'
+	Exit-Install 'this installer is for Windows - on Linux use install.bash, elsewhere build from source (see README.md)'
 }
 
 ## A 32-bit shell on a 64-bit OS reports x86; ARCHITEW6432 carries the real arch.
@@ -123,7 +132,7 @@ $archRaw = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else
 $arch = switch ($archRaw) {
 	'AMD64' { 'x86_64' }
 	'ARM64' { 'arm64' }
-	default { Fail "no prebuilt binary for $archRaw" }
+	default { Exit-Install "no prebuilt binary for $archRaw" }
 }
 
 ## Transport floor for every download: TLS 1.2+ (1.3 where the runtime knows it).
@@ -140,18 +149,19 @@ $ProgressPreference = 'SilentlyContinue'
 ## dev lists everything and takes the highest version. The list endpoint orders by
 ## publish date, so a maintenance release cut on an older line would otherwise
 ## win. Within one version a final outranks its own pre-releases (v2.0.0-rc1 <
-## v2.0.0); pre-release suffixes compare as plain text, enough for rc-style tags.
+## v2.0.0); a pre-release suffix compares with its digit runs zero-padded, so
+## rc2 < rc10 - the same order install.bash gets from sort -V.
 $api = if ($Release -eq 'stable') { "https://api.github.com/repos/$repo/releases/latest" }
 	else { "https://api.github.com/repos/$repo/releases?per_page=100" }
-try { $rel = Invoke-RestMethod -Uri $api } catch { Fail "cannot fetch the $Release release (none published yet, or network down)" }
+try { $rel = Invoke-RestMethod -Uri $api -UseBasicParsing } catch { Exit-Install "cannot fetch the $Release release (none published yet, or network down)" }
 if ($rel -is [array]) {
 	$rel = @($rel) | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+' } | Sort-Object `
 		@{ Expression = { [version](($_.tag_name.TrimStart('v') -split '-', 2)[0]) } }, `
 		@{ Expression = { $_.tag_name -notmatch '-' } }, `
-		@{ Expression = { if ($_.tag_name -match '-') { ($_.tag_name -split '-', 2)[1] } else { '' } } } |
+		@{ Expression = { [regex]::Replace((($_.tag_name -split '-', 2) + '')[1], '\d+', [Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value.PadLeft(10, '0') }) } } |
 		Select-Object -Last 1
 }
-if (-not $rel -or -not $rel.tag_name) { Fail "no $Release release found" }
+if (-not $rel -or -not $rel.tag_name) { Exit-Install "no $Release release found" }
 $tag = $rel.tag_name
 $version = $tag.TrimStart('v')
 
@@ -160,7 +170,7 @@ $version = $tag.TrimStart('v')
 if ($Target -eq 'system') {
 	$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 	if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-		Fail 'a system install needs an elevated shell (or pass -Target user)'
+		Exit-Install 'a system install needs an elevated shell (or pass -Target user)'
 	}
 	$dest = Join-Path $env:ProgramFiles 'Shcl'
 	$pathScope = 'Machine'
@@ -181,11 +191,23 @@ if ($Uninstall) {
 	Write-Output "removing shcl: $dest (and the $pathScope PATH entry)"
 	if (-not $Yes) {
 		$reply = Read-Host 'Proceed? [y/N]'
-		if ($reply -notin @('y', 'Y', 'yes', 'Yes', 'YES')) { Write-Output 'aborted'; exit 1 }
+		if ($reply -notin @('y', 'Y', 'yes', 'Yes', 'YES')) {
+			Write-Output 'aborted'
+			if ($invokedAsFile) { exit 1 }
+			return
+		}
 	}
-	Remove-Item -Force (Join-Path $dest 'shcl.exe') -ErrorAction SilentlyContinue
-	Remove-Item -Recurse -Force (Join-Path $dest 'code'), (Join-Path $dest 'scripts') -ErrorAction SilentlyContinue
-	Remove-Item -Force $dest -ErrorAction SilentlyContinue
+	Remove-Item -Force -LiteralPath (Join-Path $dest 'shcl.exe') -ErrorAction SilentlyContinue
+	Remove-Item -Recurse -Force -LiteralPath (Join-Path $dest 'code'), (Join-Path $dest 'scripts') -ErrorAction SilentlyContinue
+	## Only an empty dir goes: the setup .exe installs here too, and a Remove-Item
+	## on a populated dir would offer to take everything in it.
+	if (Test-Path -LiteralPath $dest) {
+		if (@(Get-ChildItem -Force -LiteralPath $dest).Count -eq 0) {
+			Remove-Item -Force -LiteralPath $dest -ErrorAction SilentlyContinue
+		} else {
+			Write-Output "left $dest in place: it holds files this installer did not put there"
+		}
+	}
 	$hive = if ($pathScope -eq 'Machine') { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
 	$subkey = if ($pathScope -eq 'Machine') { 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment' } else { 'Environment' }
 	$envKey = $hive.OpenSubKey($subkey, $true)
@@ -195,19 +217,29 @@ if ($Uninstall) {
 	$envKey.Close()
 	Write-Output 'removed'
 	Write-Output ''
-	exit 0
+	return
+}
+
+## The drop-in payload is a tar.gz. Windows 10 1803 and Server 2019 ship tar;
+## anything older finds out here, before a download, not after.
+if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
+	Exit-Install 'needs tar to unpack the drop-in payload (Windows 10 1803, Server 2019 and later ship it) - on an older Windows use the setup .exe from the releases page'
 }
 
 ## State the plan, then confirm.
 Write-Output ''
-$existing = if (Test-Path (Join-Path $dest 'shcl.exe')) { 'updates the existing install' } else { 'new install' }
+$existing = if (Test-Path -LiteralPath (Join-Path $dest 'shcl.exe')) { 'updates the existing install' } else { 'new install' }
 Write-Output "shcl $version ($Release, windows-$arch) -> $dest ($existing)"
 Write-Output "  binary   $dest\shcl.exe"
 Write-Output "  drop-ins $dest\code\, wrappers $dest\scripts\"
 Write-Output "  adds $pathDir to the $pathScope PATH if missing"
 if (-not $Yes) {
 	$reply = Read-Host 'Proceed? [y/N]'
-	if ($reply -notin @('y', 'Y', 'yes', 'Yes', 'YES')) { Write-Output 'aborted'; exit 1 }
+	if ($reply -notin @('y', 'Y', 'yes', 'Yes', 'YES')) {
+		Write-Output 'aborted'
+		if ($invokedAsFile) { exit 1 }
+		return
+	}
 }
 
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("shcl-install-" + [IO.Path]::GetRandomFileName())
@@ -218,51 +250,51 @@ try {
 	$asset = "shcl-$version-windows-$arch.exe"
 	$base = "https://github.com/$repo/releases/download/$tag"
 	Write-Output "downloading $asset..."
-	Invoke-WebRequest -Uri "$base/$asset" -OutFile (Join-Path $tmp 'shcl.exe')
-	Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt" -OutFile (Join-Path $tmp 'sums.txt')
-	Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt.sig" -OutFile (Join-Path $tmp 'sums.txt.sig')
+	Invoke-WebRequest -Uri "$base/$asset" -OutFile (Join-Path $tmp 'shcl.exe') -UseBasicParsing
+	Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt" -OutFile (Join-Path $tmp 'sums.txt') -UseBasicParsing
+	Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt.sig" -OutFile (Join-Path $tmp 'sums.txt.sig') -UseBasicParsing
 
 	## Check the signature before trusting anything the sums file says. Order is
 	## the whole point: a checksum read out of an unverified file proves nothing.
 	if (-not (Test-ReleaseSignature (Join-Path $tmp 'sums.txt') (Join-Path $tmp 'sums.txt.sig'))) {
-		Fail 'signature check failed on sha256sums - refusing to install'
+		Exit-Install 'signature check failed on sha256sums - refusing to install'
 	}
 
-	$want = (Get-Content (Join-Path $tmp 'sums.txt') | Where-Object { $_ -match [regex]::Escape($asset) } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
-	$got = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp 'shcl.exe')).Hash.ToLower()
-	if (-not $want -or $got -ne $want.ToLower()) { Fail "sha256 mismatch on $asset" }
+	$want = (Get-Content -LiteralPath (Join-Path $tmp 'sums.txt') | Where-Object { $_ -match [regex]::Escape($asset) } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
+	$got = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $tmp 'shcl.exe')).Hash.ToLower()
+	if (-not $want -or $got -ne $want.ToLower()) { Exit-Install "sha256 mismatch on $asset" }
 
 	## Drop-in code files and wrappers come from a release asset covered by the
 	## same signed sums file as the binary. They used to come from GitHub's
 	## generated source zipball, which carries neither a signature nor a
 	## checksum. Releases predating the asset install the binary alone.
 	$dropins = "shcl-$version-dropins.tar.gz"
-	$wantSrc = (Get-Content (Join-Path $tmp 'sums.txt') | Where-Object { $_ -match [regex]::Escape($dropins) } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
+	$wantSrc = (Get-Content -LiteralPath (Join-Path $tmp 'sums.txt') | Where-Object { $_ -match [regex]::Escape($dropins) } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
 	$haveDropins = $false
 	$srcroot = $null
 	if ($wantSrc) {
 		Write-Output "downloading $dropins..."
-		Invoke-WebRequest -Uri "$base/$dropins" -OutFile (Join-Path $tmp 'dropins.tgz')
-		$gotSrc = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp 'dropins.tgz')).Hash.ToLower()
-		if ($gotSrc -ne $wantSrc.ToLower()) { Fail "sha256 mismatch on $dropins" }
-		$x = Join-Path $tmp 'x'
-		New-Item -ItemType Directory -Path $x | Out-Null
-		tar -xzf (Join-Path $tmp 'dropins.tgz') -C $x
-		if ($LASTEXITCODE -ne 0) { Fail "cannot unpack $dropins" }
-		$srcroot = Get-Item $x
+		Invoke-WebRequest -Uri "$base/$dropins" -OutFile (Join-Path $tmp 'dropins.tgz') -UseBasicParsing
+		$gotSrc = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $tmp 'dropins.tgz')).Hash.ToLower()
+		if ($gotSrc -ne $wantSrc.ToLower()) { Exit-Install "sha256 mismatch on $dropins" }
+		$unpackDir = Join-Path $tmp 'x'
+		New-Item -ItemType Directory -Path $unpackDir | Out-Null
+		tar -xzf (Join-Path $tmp 'dropins.tgz') -C $unpackDir
+		if ($LASTEXITCODE -ne 0) { Exit-Install "cannot unpack $dropins" }
+		$srcroot = Get-Item -LiteralPath $unpackDir
 		$haveDropins = $true
 	}
 
 	## Install. The binary goes in via a temp name + Move-Item in the same dir,
 	## so a running copy only ever sees the complete old or new file.
 	New-Item -ItemType Directory -Force -Path $dest | Out-Null
-	Copy-Item (Join-Path $tmp 'shcl.exe') (Join-Path $dest '.shcl.exe.new')
-	Move-Item -Force (Join-Path $dest '.shcl.exe.new') (Join-Path $dest 'shcl.exe')
+	Copy-Item -LiteralPath (Join-Path $tmp 'shcl.exe') -Destination (Join-Path $dest '.shcl.exe.new')
+	Move-Item -Force -LiteralPath (Join-Path $dest '.shcl.exe.new') -Destination (Join-Path $dest 'shcl.exe')
 	if ($haveDropins) {
 		New-Item -ItemType Directory -Force -Path (Join-Path $dest 'code'), (Join-Path $dest 'scripts') | Out-Null
-		$s = $srcroot.FullName
-		Copy-Item "$s\source\rust\src\lib.rs", "$s\source\go\shcl.go", "$s\source\python\shcl.py", "$s\source\c\shcl.h", "$s\source\c\shcl.hpp" (Join-Path $dest 'code')
-		Copy-Item "$s\source\powershell\shcl.ps1", "$s\source\bash\shcl.bash" (Join-Path $dest 'scripts')
+		$payloadRoot = $srcroot.FullName
+		Copy-Item -LiteralPath "$payloadRoot\source\rust\src\lib.rs", "$payloadRoot\source\go\shcl.go", "$payloadRoot\source\python\shcl.py", "$payloadRoot\source\c\shcl.h", "$payloadRoot\source\c\shcl.hpp" -Destination (Join-Path $dest 'code')
+		Copy-Item -LiteralPath "$payloadRoot\source\powershell\shcl.ps1", "$payloadRoot\source\bash\shcl.bash" -Destination (Join-Path $dest 'scripts')
 	}
 
 	## PATH, idempotently - straight at the registry. [Environment]::Get expands
@@ -293,9 +325,10 @@ try {
 	Write-Output ''
 	Write-Output "installed shcl $version -> $dest\shcl.exe"
 	if (-not $haveDropins) { Write-Output "note: this release ships no signed drop-in payload, so $dest\code and $dest\scripts were skipped - take them from the repo if you want them" }
-	Write-Output "to remove it again: install.ps1 -Uninstall -Target $Target"
+	$rerun = if ($invokedAsFile) { "& '$($MyInvocation.MyCommand.Path)'" } else { '& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1)))' }
+	Write-Output "to remove it again: $rerun -Uninstall -Target $Target"
 	& (Join-Path $dest 'shcl.exe') version
 	Write-Output ''
 } finally {
-	Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+	Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
 }
