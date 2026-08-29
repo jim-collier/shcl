@@ -42,9 +42,318 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Bugs
 
-None open.
+- Code review 20260829:
+
+	- Standards pass over the whole repo (code style, performance, the pipeline, docs, the front page, the installers) plus an adversarial read of all four bindings and the installers. Unlike the 20260819 round this one did turn up correctness defects, most of them shared by all four bindings, which is exactly the class the cross-binding check cannot see.
+
+	- 🔘 Item 1: a skipped binding line drops out of the indent stack, so its children re-parent and its next sibling is lost.
+		- Reproduced: `a:` / `\tb[#5]: x` / `\t\tc: 1` / `\td[9]: q` / `\t\te: 2`. Line 2 is skipped (E014), then `c: 1` and `e: 2` attach to `a`, and line 4 gets E012 instead of the E003 it should get.
+		- Cause: only a successful bind pushes its indent level. A skipped line leaves nothing for its children to hang from.
+		- Shared by all four bindings, so the crosscheck agrees on the wrong answer. Needs a corpus case with the fix.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 2: `set_raw` loses a body's shared indent on the next reload.
+		- Reproduced: set a raw body of `  a` / `  b`, save, load, read it back: `a` / `b`. Interior relative indent survives; a leading indent every line shares does not.
+		- Cause: emit adds the block indent, load strips the common indent of all body lines rather than just the fence's own indent.
+		- An indented SQL or YAML snippet is the headline raw-block use, so this is not a corner. All four bindings agree.
+		- Fix is a spec decision: strip only up to the fence line's indent (the CommonMark rule), or have `set_raw` refuse a body it cannot spell.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 3: `set_raw` writes the info string unchecked.
+		- A line break in the info splits the block on reload with no diagnostic; leading or trailing whitespace and a trailing CR vanish.
+		- `set_literal` already refuses a line break; `set_raw` should do the same for the info, and trim it so write and read agree. All four bindings.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 4: `read_file` with the largest possible cap reads nothing.
+		- The over-cap check adds one to the cap. At the type's maximum that overflows: the reference panics in a debug build and reads zero bytes in release, Go returns an empty document reported Clean.
+		- A consumer who spells "no cap" as the type maximum gets an empty document and no status. Saturate, or treat the maximum as no cap. Check Python and C too.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 5: the `bool` write op accepts any text and writes `false`.
+		- `bool\tp\tyes` writes `p: false` at exit 0 in every CLI. The int, float and datetime ops reject bad text; bool compares against the single word `true`.
+		- Accept the standard boolean token set and reject the rest; add a `write-bad.ops` row.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 6: `--set` splits at the first `=`, so a selector holding one cannot be addressed.
+		- `--set 'x[a=b].c=1'` fails with `cannot write x[a`. Values holding `=` are fine.
+		- Split at the first `=` outside quotes and brackets, and say so in the help text.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 7: a dangling symlink is replaced by a regular file, except in Python, which writes through it.
+		- Rust, Go and C fall back to the given path when the link cannot be resolved, so the link becomes a file. Python resolves the link anyway and creates the target.
+		- Two defects: the spec promises a link is written through, and the four bindings do not leave the same file tree behind.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 8: the save contract differs by platform and by binding around read-only files, mode bits and ownership.
+		- On Windows a read-only target cannot be rewritten (the reference copies the target's mode onto the temp file before publishing, and ReplaceFile refuses a read-only destination). On POSIX the same file is rewritten at exit 0.
+		- The reference likely leaves its read-only temp file behind on Windows, because the delete does not clear the attribute first. Go's does.
+		- The reference copies the full mode (setuid, setgid, sticky included); Go copies the permission bits only.
+		- The spec's list of what a save cannot preserve names hard links, ACLs, xattrs and labels, but not ownership, sticky directories or read-only files.
+		- Pick one rule for each, document it, and pin the Windows case in the hosted windows job.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 9: Python `save_file` on a document holding a lone surrogate raises and leaves the temp file behind.
+		- The write raises a `UnicodeEncodeError`, which is a `ValueError`, and the cleanup only catches `OSError`. Same shape as the fix applied elsewhere in the file tier last round; this site was missed.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 10: Python still recurses one frame per level in three places.
+		- Validate through mounts, generate through mount expansion, and resolve through wildcard segments each need about 520 frames for a 512-deep document. From a caller already 600 frames deep they raise `RecursionError`.
+		- The 20260817 close-out said validate and resolve survive from 900 frames deep; that holds for the plain forms only.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 11: on Windows the C and Python CLIs write CRLF, so their stdout is not byte-identical to Rust and Go.
+		- Neither switches stdout or stdin to binary mode. Invisible today because the windows job only runs the test runners, never the CLIs.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 12: C `shcl_write_file_atomic` passes a null buffer to `fwrite` when given no data.
+		- Undefined behavior on the public call; unreachable through `shcl_save_file`. Skip the write when the length is zero.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 13: the C++ veneer leaks two C resources on throw, and a default-constructed `Document` is a null handle.
+		- `validate()` and `read_file()` free the C buffer after code that can throw. Wrap both in `unique_ptr` with the C free as deleter.
+		- Every accessor on a default-constructed `Document` hands a null pointer to the C core. Delete the constructor or back it with an empty document.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 14: Python typed setters accept the wrong type.
+		- `set_int("a", 3.5)` returns True and writes `a: 3.5`, which every binding then reads back as BadType. `set_float("b", True)` raises an unrelated decimal error.
+		- Gate on `isinstance` and return False, or raise `TypeError`.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 15: Python `read_file` and `load_file` take an int as a file descriptor and close it.
+		- `read_file(0)` reads and closes stdin. Run the argument through `os.fspath` first, which rejects an int.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 16: `install.ps1` closes the caller's shell on every early exit under both documented one-liners.
+		- `-Help`, a refused prompt, and every failure path call `exit`. Under `irm | iex` or the scriptblock form there is no script file, so `exit` ends the session. The default `-Target system` in an unelevated shell closes the window on the error message.
+		- Use `throw` or `return`, and only `exit` when invoked as a file.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 17: the Linux binary needs glibc 2.34 or newer, and the installer only finds out after installing.
+		- The published binary is dynamically linked. On Alpine, Ubuntu 20.04, RHEL 8 the install completes and then the final version check fails with a raw shell error, leaving the install in place. Nothing documents the floor.
+		- Smoke-run the binary before touching the destination and fail with a message naming the floor and the `cargo install` route; state the floor in the README. A static musl build would remove the class.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 18: `install.ps1 -Uninstall` can offer a recursive delete of the install directory, default Yes.
+		- The directory removal has no `-Recurse`, so when anything else is in there PowerShell prompts to delete all children. The NSIS setup installs to the same directory with its own uninstaller, so that case is real.
+		- Remove the directory only when empty, as the bash installer does.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 19: both installers print an uninstall hint that does not work under the one-liner.
+		- Bash prints `$0`, which is `bash` or a file-descriptor number there; PowerShell prints a filename the one-liner user never has. Print the documented one-liner with the options appended.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 20: the no-terminal abort prints a raw shell error before the intended message.
+		- The `read` opens `/dev/tty` before stderr is redirected, so the open failure prints first. Three sites across the two bash installers. Swap the redirection order.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 21: the PowerShell installer orders pre-releases as text.
+		- `rc10` sorts below `rc2`, so with ten or more pre-releases on one version it picks the wrong one. The bash side sorts the number as a number. Only matters past nine, but the two installers should agree.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 22: `install.ps1` fails on two older Windows shapes.
+		- `tar` is called unguarded; Windows before 10 1803 (Server 2016 is still in support) has none, and the failure is a raw CommandNotFound after the download.
+		- `Invoke-WebRequest` runs without `-UseBasicParsing`, which on PowerShell 5.1 needs the IE engine and fails on Server Core.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 23: the bin symlink overwrites a real file; the man symlink refuses to.
+		- A hand-placed `~/.local/bin/shcl` (the DIY route the README describes) is silently replaced, and uninstall then removes it. Give the bin link the same guard the man link has.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 24: `sign-release.bash` exits silently when `xxd` is missing.
+		- Only `openssl` is probed; the fingerprint step pipes through `xxd` and `base64 -w0` under strict mode with no error trap. Probe both, or drop the pair.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 25: `install-dev.bash` assumes curl and only recognizes the upstream remote.
+		- A wget-only box fails after the plan; a contributor inside a fork's clone gets a second nested clone of upstream. Probe curl or wget like the release installer; match the repo by directory shape, not remote URL.
+		- Opened: 20260829-071126
 
 ### Features and enhancements
+
+- Code review 20260829:
+
+	- The enhancement half of the round. Items 1 to 25 are under Bugs.
+
+	- 🔘 Item 26: packages and the drop-ins tarball are not reproducible.
+		- Two builds seconds apart give different `.deb`, `.rpm` and setup checksums: the staged payload carries the build-time mtime, and the rpm stamps build time and the build host's name.
+		- The drop-ins tarball records the local user and group and the checkout mtimes, so a fresh clone or another box gives a different sum, and the sums file signs it.
+		- The README claim is scoped to binaries and is still true. Set `SOURCE_DATE_EPOCH` from the commit, touch the payload to it, and build the tarball sorted with numeric owner zero.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 27: tool pins are copied by hand into the hosted CI file, with nothing checking the two lists agree.
+		- They match today. The last time they did not, hosted CI stayed red for days. A lint-stage check that greps each pin out of the workflow file would catch the next one.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 28: the dev setup script and contributing.md omit three tools the gate requires, and install the rest unpinned.
+		- staticcheck, govulncheck and cargo-deny gate under `--ci`, and neither the script nor the doc names them; a fresh box following the doc fails the documented gate. The four tools that are installed come at latest, so the first run warns about pin drift.
+		- contributing.md also says hosted CI uses the current Go; it pins the 1.26 series, for a reason the workflow file explains.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 29: two steps still run past the half-the-cores cap.
+		- The Rust test harness threads are uncapped (the fuzz tests are the heavy ones), and ruff uses every core. Two environment variables.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 30: every run flags advisory noise, so the session-start lint check never reads clean.
+		- cargo-deny warns about three duplicate crates inside the profiling chain that never ships, and the lint report's grep also catches govulncheck's "your code does not appear to call" lines. Allow the duplicates with a reason, and exclude the informational block.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 31: the pre-push hook gates the working tree, not the commit being pushed.
+		- An uncommitted fix can pass a broken commit; an uncommitted breakage can block a good one. At least warn on a dirty tree; better, run the gate in a detached worktree at the pushed commit.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 32: the Windows setup does not handle a running or older install, and stages files it never installs.
+		- No check for a running `shcl.exe` (NSIS pops its own retry dialog), no "upgrading from X" line. The payload stages the man page and completions that the setup never copies.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 33: `-q` does not flow through to the stage commands.
+		- It only suppresses the preflight block; cargo, go, ruff and the packagers run at normal verbosity either way. Either pass each tool's quiet flag or document `-q` as "no prompt".
+		- Opened: 20260829-071126
+
+	- 🔘 Item 34: nothing asserts the release tag matches the crate version at signing.
+		- Cargo.toml is the version source and the three CLI mirrors are gated, but a mistyped tag would ship assets whose names disagree with it. The signing script can refuse when `git describe --exact-match` and the crate version differ.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 35: the demo gif runs 33 seconds while the scenario file says 20 to 30.
+		- Known and accepted at 33 last round; the comment overstates. Trim a pause or fix the comment.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 36: the profiler workload is forty copies of the corpus, so the flamegraph measures merging, not parsing.
+		- Four lines in five merge into an existing node, and a fifth of the samples go to formatting the merge hint. The large-document generator already produces a shaped, merge-free document; feed the profiler that.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 37: the comparison tool's lock file is stale and rewrites itself.
+		- It pins the path dependency at 1.2.0 while the crate is 2.0.0, so any cargo run there dirties the tree. Update it at each cut; add it to the cut recipe.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 38: three lint gaps in the pipeline's own tooling.
+		- The flamegraph report and the gif generator are never linted, and fail ruff. The benchmark worker is linted but at ruff's defaults, because the project rule set is not discoverable from that directory.
+		- The publish helper is kept out of shellcheck for a reason that no longer applies (it disables the rule itself and passes clean).
+		- The PowerShell analyzer settings exclude a rule nothing trips, with a comment describing a choice that was never made.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 39: nine load-time diagnostic codes are pinned by no corpus case or unit test.
+		- E003 to E007 and E009 to E012 appear nowhere in the corpus or the test files. Item 1 lived in that gap. One case per code.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 40: no sanitizer build anywhere in the pipeline.
+		- An address-and-undefined-behavior build of the C test programs found item 12 in one run. It is one extra compile line in the C test stage.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 41: the reference clones every line's value on attach.
+		- The value is owned by the attach call and cloned once more in the last-segment arm, where nothing reads it afterwards. It is the top leaf in the newest flamegraph. Reference only; no output change.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 42: the reference still decodes each element to a code-point array, twice per value line.
+		- Go and C dropped this in the 20260817 round; the reference was not touched. Quotes are ASCII, so a byte check of the two ends is exact.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 43: three repeated-work habits on the value-line path.
+		- The comment and comma splitters walk every character with no "contains" fast path (Rust and Go; Python has one).
+		- Every value line is comma-split twice, once for the unterminated-quote check and once to parse (all four).
+		- Every value line's source text is cloned and then dropped in the common case (Rust and Go).
+		- Opened: 20260829-071126
+
+	- 🔘 Item 44: C string reads and saves grow the document arena on every call.
+		- A string read copies the value into the never-freed arena even with no escape to resolve: a million reads of one field grew a document to 32 MB. A save retains a full copy of the output each time.
+		- Return the element slice when there is no backslash, as Python does; emit from scratch for a save.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 45: every path read scans the parent's children, so reading every key is quadratic.
+		- Measured with a flat document read key by key: 5000 keys 0.5 s, 20000 keys 8 s, 40000 keys 35 s. design.md recommends exactly that loader shape. The parse-time index is thrown away after the parse.
+		- Keep a per-parent name index (built lazily, invalidated by the writer), or document the cost per read.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 46: the writer's duplicate fold builds a key string per same-named sibling.
+		- Quadratic in sets under one parent, with a string allocation per compare. The parser already has an allocation-free hash-and-equal pair; the writer should use it.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 47: smaller allocation habits worth a pass.
+		- Emit builds up to three pad strings per node and a joined vector per element list (Rust and Go); validation builds two full-path strings per node; the repeated-leaf hint pass allocates a vector per child; `[#i]` collects every sibling to pick one; Go's quoted-name reader grows a rune slice; Python has a dozen per-character loops that a `str` builtin replaces exactly.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 48: pipeline scripts fork inside loops.
+		- The crosscheck wraps each of its 8000 launches in an extra subshell for an exit-code sentinel, probes for NUL with `tr | wc` per case, and calls `basename` per label. The large-document gate samples memory with an awk fork twenty times a second for the whole run. The rotation helper runs `date -d` five times per file. The flamegraph report builds regexes per frame.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 49: clones in the reference that need a borrow or a reason.
+		- One per parsed line in the parent resolver, where a borrow compiles; two before iterating another document's children, where no borrow conflict exists (Go mirrors both as copies); five more that are needed but say nothing about why.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 50: the build script and the comparison tool are off house style.
+		- No license header on `build.rs` (it is in the published crate) or the three comparison sources; the comparison tool uses the shell bullet rule as a Rust banner, and has two unexplained unwraps.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 51: small Rust and Go shape fixes.
+		- Twelve extract-or-bail matches where the file already uses `let .. else`; one catch-all arm standing in for a single named variant; CLI kind and on-bad state carried as strings and matched by string; a handful of trailing comments past the wrap width; one exported Go method without a doc comment.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 52: three functions nest nine tabs deep with repeated bail blocks.
+		- The attach path, the array reader and the schema node check. A per-slot helper flattens each. Cross-binding, so it costs more than the rest of this list.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 53: the datetime type is `ShclDateTime` in Rust and Python and `DateTime` in Go, and the style guide records neither as the deviation.
+		- Renaming the Rust type is a breaking change; recording the Go name and adding an alias is not.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 54: Python tidy.
+		- The conformance runner formats with `.format()` ten times; the library's public surface is mostly unhinted (a known gap with no item tracking it); three files opened without `with`; one dead helper; one broad `except` with no reason; the cicd utilities use `os.path` where `pathlib` fits.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 55: C tidy.
+		- gcc 15 at a stricter level reports one sign conversion, one cast that drops const, and three shadowed locals in the test runner; cppcheck lists 22 pointers that could be const. The 64-byte datetime buffer is a bare literal in five places. The one-letter string typedef cannot be searched for.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 56: C++ veneer shape.
+		- `generate` takes an out-parameter where every other binding returns a pair; the diagnostic struct has no member initializers; two lines spell bare `size_t`.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 57: PowerShell tidy.
+		- The installer is not an advanced script, passes paths positionally, has a helper with no verb, and three one-letter names. The runner script has no comment-based help, so `Get-Help` shows nothing for its parameters.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 58: the rotation helper's bucket maps have one-letter names.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 59: strict-failure lines on stderr omit the diagnostic code that every other stderr line carries.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 60: two stale claims on the front page.
+		- "Two of them carry the CLI as well as the library": only the crate does since 2.0, and the same section says so two paragraphs down.
+		- "Bindings are byte-for-byte identical": their output is; the sources are not.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 61: design.md and the two tables of contents.
+		- design.md sends readers to a notes file that is not in the repo; its lockstep example uses the 1.x version constraints; both its TOC and the README's have drifted from the headings (anchors still resolve).
+		- Opened: 20260829-071126
+
+	- 🔘 Item 62: CODEOWNERS guards a file that does not exist.
+		- The donation page entry came from a sibling project. Drop it or point it at the support section.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 63: spelling and word-choice pass.
+		- Six British spellings in prose and comments; "honest" eleven times, "crucial" once, "key" as an adjective twice, "human" nine times outside the policy doc; the trademark contact is obfuscated with a non-ASCII glyph unlike the other two files; three typos in the guidelines doc; "Github" once in the backlog.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 64: README grammar and the ten worst run-on sentences.
+		- Five README sentences read wrong (a dangling relative clause, two parenthetical-dash constructions, a non sequitur, a badge alt text with the shebang backwards). Four README and six design.md sentences run past 45 words on dashes and semicolons.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 65: performance prose versus the numbers under it.
+		- "Slightly (trivially) slower to read" sits above a stress-read row that is eight times JSON; "columns are ordered fastest to slowest" is false for the schema table; the unit labels mix KiB, KB and MiB over decimal values. Numbers-only edits by rule; the prose needs a look from its author.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 66: the file-tier story is told five times in the README.
+		- The same three-line comment heads four code examples, and the temp-file-and-rename explanation appears in full three times. One home for each.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 67: the front-page pitch.
+		- The tagline is a boast; the "You get" block lists deliverables, not benefits; the provable claims (never deletes a line you typed, signed and reproducible releases, comments survive) first appear far down. Sponsorship is one line near the end and the badge row has no sponsors badge while five badges are decoration.
+		- The About panel's homepage points at the spec; the topic list names the competing formats.
+		- Opened: 20260829-071126
+
+	- 🔘 Item 68: backlog upkeep.
+		- Most Done sub-bullets lack the Cause / Fixed / Verified prefix; one closed item quotes a crosscheck total that is not comparable across corpus changes.
+		- Done: the defect-report line under Done - Bugs carried a private absolute path; replaced with a plain pointer.
+		- Opened: 20260829-071126
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
@@ -87,7 +396,7 @@ None open.
 			- Every file call on Windows is the wide one now. A path that is not valid UTF-8 is refused rather than opened under another name.
 		- ✅ Reader has no size limit and returns no bytes
 			- `ReadFile(path, maxBytes)` in all four bindings and the veneer, and `LoadFile` is built on it. Past the cap is `Unreadable`, so the status enum did not change.
-	- Much more detail including recommended fixes: /home/collierjr/synced/0-0/user/data/prs/dev/shcl/20260828-124959_SHCL-Defect-Report.html
+	- Much more detail, including recommended fixes, is in the defect report on file.
 	- Check to see if other versions have the same problems.
 		- Checked. The first three are C-only: Rust, Go and Python split paths and open files through their runtimes, and allocation failure there is the language's own contract. The fourth is a gap in all four.
 	- Opened: 20260828
