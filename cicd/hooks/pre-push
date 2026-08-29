@@ -15,6 +15,11 @@
 ##	- Escape hatch: `git push --no-verify`, or SHCL_SKIP_HOOK=1.
 ##	- Installed by pointing git at this directory:
 ##		git config core.hooksPath cicd/hooks
+##	- git opens the ssh session before this hook runs and sends only after it
+##	  returns. The gate takes minutes, GitHub drops an idle session, and the
+##	  push then dies of SIGPIPE (exit 141) right after a green gate. Keepalives
+##	  keep the session up; install-dev.bash sets them when nothing is set:
+##		git config core.sshCommand "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=30"
 
 ##	Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
 ##	Licensed under The MIT License (MIT). Full text at:

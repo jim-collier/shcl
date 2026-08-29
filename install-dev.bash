@@ -249,6 +249,13 @@ fi
 if [[ -d "${clone_dir}/.git" ]]; then
 	git -C "${clone_dir}" config core.hooksPath cicd/hooks
 	echo "git hooks: core.hooksPath -> cicd/hooks (pre-push gates main and dev)"
+	## The gate runs for minutes while git already holds the ssh session open;
+	## without keepalives GitHub drops it and the push dies of SIGPIPE after a
+	## green gate. Only set when nothing is configured, so a chosen key stays.
+	if ! git -C "${clone_dir}" config core.sshCommand >/dev/null; then
+		git -C "${clone_dir}" config core.sshCommand "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=30"
+		echo "git ssh: keepalives on, so the pre-push gate cannot outlive the connection"
+	fi
 fi
 
 echo
