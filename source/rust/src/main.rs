@@ -37,7 +37,8 @@ persist with --write; given either, no ops are read from stdin. Raw blocks,
 set-only-if-absent and removal go in as a write-ops script on stdin, one op per
 line, tab-separated. FILE '-' follows stdin: the document when an option holds
 the edits, an empty base when the ops script has stdin instead. With --write,
-a FILE that does not exist yet is created. Ops:
+a FILE that does not exist yet is created. PATH ends at the first '=' outside
+quotes and brackets, so a selector may hold one. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -168,12 +169,44 @@ impl Set {
 	}
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+	Int,
+	Float,
+	Bool,
+	Datetime,
+	String,
+	Raw,
+	RawInfo,
+}
+
+impl Kind {
+	fn name(self) -> &'static str {
+		match self {
+			Kind::Int => "int",
+			Kind::Float => "float",
+			Kind::Bool => "bool",
+			Kind::Datetime => "datetime",
+			Kind::String => "string",
+			Kind::Raw => "raw",
+			Kind::RawInfo => "rawinfo",
+		}
+	}
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum OnBad {
+	Error,
+	Default,
+	Flag,
+}
+
 struct Opts {
-	kind: String, // int|float|bool|datetime|string|raw
+	kind: Kind,
 	array: bool,
 	slots: bool,
 	default: Option<String>,
-	on_bad: String, // error|default|flag
+	on_bad: OnBad,
 	strictness: Strictness,
 	write: bool,
 	lossy: bool,
@@ -211,13 +244,42 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 	None
 }
 
+/// PATH=VALUE at the first `=` outside quotes and brackets, so a selector
+/// holding one (`x[a=b].c=1`) still addresses its instance.
+fn split_set(arg: &str) -> Option<(&str, &str)> {
+	let bytes = arg.as_bytes();
+	let mut in_quote: Option<u8> = None;
+	let mut depth = 0usize;
+	let mut i = 0;
+	while i < bytes.len() {
+		let b = bytes[i];
+		if b == b'\\' {
+			i += 2;
+			continue;
+		}
+		match in_quote {
+			Some(q) if b == q => in_quote = None,
+			Some(_) => {}
+			None => match b {
+				b'"' | b'\'' => in_quote = Some(b),
+				b'[' => depth += 1,
+				b']' => depth = depth.saturating_sub(1),
+				b'=' if depth == 0 => return Some((&arg[..i], &arg[i + 1..])),
+				_ => {}
+			},
+		}
+		i += 1;
+	}
+	None
+}
+
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	let mut o = Opts {
-		kind: "string".into(),
+		kind: Kind::String,
 		array: false,
 		slots: false,
 		default: None,
-		on_bad: "flag".into(),
+		on_bad: OnBad::Flag,
 		strictness: Strictness::Standard,
 		write: false,
 		lossy: false,
@@ -240,7 +302,15 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		}
 		match a {
 			"--int" | "--float" | "--bool" | "--datetime" | "--string" | "--raw" | "--rawinfo" => {
-				o.kind = a[2..].to_string();
+				o.kind = match a {
+					"--int" => Kind::Int,
+					"--float" => Kind::Float,
+					"--bool" => Kind::Bool,
+					"--datetime" => Kind::Datetime,
+					"--raw" => Kind::Raw,
+					"--rawinfo" => Kind::RawInfo,
+					_ => Kind::String,
+				};
 				o.seen.push("--<type>");
 			}
 			"--array" => {
@@ -294,14 +364,16 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 	match name {
 		"--default" => {
 			o.default = Some(v.to_string());
-			o.on_bad = "default".into();
+			o.on_bad = OnBad::Default;
 			o.seen.push("--default");
 		}
 		"--on-bad" => {
-			if !matches!(v, "error" | "default" | "flag") {
-				return Err(format!("bad --on-bad value: {}", v));
-			}
-			o.on_bad = v.to_string();
+			o.on_bad = match v {
+				"error" => OnBad::Error,
+				"default" => OnBad::Default,
+				"flag" => OnBad::Flag,
+				_ => return Err(format!("bad --on-bad value: {}", v)),
+			};
 			o.seen.push("--on-bad");
 		}
 		"--strictness" => {
@@ -318,8 +390,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			o.seen.push("--layer");
 		}
 		"--set" | "--set-literal" => {
-			let (p, val) = v
-				.split_once('=')
+			let (p, val) = split_set(v)
 				.ok_or_else(|| format!("bad {} value (want PATH=VALUE): {}", name, v))?;
 			o.sets.push(Set {
 				path: p.to_string(),
@@ -511,7 +582,10 @@ fn load(text: &str, strictness: Strictness) -> Result<Document, u8> {
 		Ok(d) => Ok(d),
 		Err(e) => {
 			for d in &e.diagnostics {
-				eprintln!("line {}: {:?}: {}", d.line, d.severity, d.message);
+				eprintln!(
+					"line {}: {:?}: {} {}",
+					d.line, d.severity, d.code, d.message
+				);
 			}
 			eprintln!("{}", e);
 			Err(6)
@@ -534,8 +608,8 @@ fn do_get(o: &Opts) -> u8 {
 		Err(code) => return code,
 	};
 	let (lines, status, slots): (Vec<String>, Status, Vec<Status>) = if o.array {
-		match o.kind.as_str() {
-			"int" => {
+		match o.kind {
+			Kind::Int => {
 				let r = doc.read_int_array(path);
 				(
 					r.value.iter().map(|v| v.to_string()).collect(),
@@ -543,7 +617,7 @@ fn do_get(o: &Opts) -> u8 {
 					r.slots,
 				)
 			}
-			"float" => {
+			Kind::Float => {
 				let r = doc.read_float_array(path);
 				(
 					r.value.iter().map(|v| v.to_string()).collect(),
@@ -551,7 +625,7 @@ fn do_get(o: &Opts) -> u8 {
 					r.slots,
 				)
 			}
-			"bool" => {
+			Kind::Bool => {
 				let r = doc.read_bool_array(path);
 				(
 					r.value.iter().map(|v| v.to_string()).collect(),
@@ -559,7 +633,7 @@ fn do_get(o: &Opts) -> u8 {
 					r.slots,
 				)
 			}
-			"datetime" => {
+			Kind::Datetime => {
 				let r = doc.read_datetime_array(path);
 				(
 					r.value.iter().map(|v| v.to_string()).collect(),
@@ -567,42 +641,42 @@ fn do_get(o: &Opts) -> u8 {
 					r.slots,
 				)
 			}
-			"raw" | "rawinfo" => {
-				eprintln!("--{} has no --array form", o.kind);
+			Kind::Raw | Kind::RawInfo => {
+				eprintln!("--{} has no --array form", o.kind.name());
 				return 1;
 			}
-			_ => {
+			Kind::String => {
 				let r = doc.read_string_array(path);
 				(r.value, r.status, r.slots)
 			}
 		}
 	} else {
-		match o.kind.as_str() {
-			"int" => {
+		match o.kind {
+			Kind::Int => {
 				let r = doc.read_int(path);
 				(vec![r.value.to_string()], r.status, Vec::new())
 			}
-			"float" => {
+			Kind::Float => {
 				let r = doc.read_float(path);
 				(vec![r.value.to_string()], r.status, Vec::new())
 			}
-			"bool" => {
+			Kind::Bool => {
 				let r = doc.read_bool(path);
 				(vec![r.value.to_string()], r.status, Vec::new())
 			}
-			"datetime" => {
+			Kind::Datetime => {
 				let r = doc.read_datetime(path);
 				(vec![r.value.to_string()], r.status, Vec::new())
 			}
-			"raw" => {
+			Kind::Raw => {
 				let r = doc.read_raw(path);
 				(vec![r.value], r.status, Vec::new())
 			}
-			"rawinfo" => {
+			Kind::RawInfo => {
 				let r = doc.read_raw_info(path);
 				(vec![r.value], r.status, Vec::new())
 			}
-			_ => {
+			Kind::String => {
 				let r = doc.read_string(path);
 				(vec![r.value], r.status, Vec::new())
 			}
@@ -627,13 +701,13 @@ fn do_get(o: &Opts) -> u8 {
 	// Empty outside `error` mode, because an empty value is a legitimate answer
 	// here rather than a failure - the same reason `ok()` counts it as fine.
 	let say = status != Status::Good
-		&& o.on_bad != "default"
-		&& (status != Status::Empty || o.on_bad == "error");
+		&& o.on_bad != OnBad::Default
+		&& (status != Status::Empty || o.on_bad == OnBad::Error);
 	if say {
 		let type_name = if o.array {
-			format!("{} array", o.kind)
+			format!("{} array", o.kind.name())
 		} else {
-			o.kind.clone()
+			o.kind.name().to_string()
 		};
 		let reason = match status {
 			Status::BadType => match doc.read_string(path).raw {
@@ -650,12 +724,12 @@ fn do_get(o: &Opts) -> u8 {
 			path, type_name, reason, file
 		);
 	}
-	match (status, o.on_bad.as_str()) {
-		(Status::Good, _) | (Status::Empty, "flag") => {
+	match (status, o.on_bad) {
+		(Status::Good, _) | (Status::Empty, OnBad::Flag) => {
 			emit(&lines);
 			status_code(status)
 		}
-		(_, "default") => {
+		(_, OnBad::Default) => {
 			if !slots.is_empty() {
 				// Array read: the default substitutes per bad slot; alignment holds.
 				let dv = o.default.clone().unwrap_or_default();
@@ -683,9 +757,9 @@ fn do_get(o: &Opts) -> u8 {
 		}
 		// The message already went to stderr above; error mode differs only in
 		// printing nothing on stdout.
-		(_, "error") => status_code(status),
-		(_, _) => {
-			// flag: print the zero/empty value anyway; the exit code carries the status
+		(_, OnBad::Error) => status_code(status),
+		(_, OnBad::Flag) => {
+			// print the zero/empty value anyway; the exit code carries the status
 			emit(&lines);
 			status_code(status)
 		}
@@ -693,12 +767,9 @@ fn do_get(o: &Opts) -> u8 {
 }
 
 fn do_fmt(o: &Opts) -> u8 {
-	let file = match o.args.as_slice() {
-		[f] => f,
-		_ => {
-			eprintln!("fmt needs FILE (see --help)");
-			return 1;
-		}
+	let [file] = o.args.as_slice() else {
+		eprintln!("fmt needs FILE (see --help)");
+		return 1;
 	};
 	if o.write && file == "-" {
 		eprintln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
@@ -745,11 +816,16 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	let val = || f.get(2).copied().unwrap_or("");
 	let pint = |s: &str| s.parse::<i64>().map_err(|_| format!("bad int: {}", s));
 	let pflt = |s: &str| s.parse::<f64>().map_err(|_| format!("bad float: {}", s));
+	let pbool = |s: &str| match s {
+		"true" => Ok(true),
+		"false" => Ok(false),
+		_ => Err(format!("bad bool: {}", s)),
+	};
 	let arr = &f[2.min(f.len())..];
 	let wrote = match f.first().copied().unwrap_or("") {
 		"int" => doc.set_int(path, pint(val())?),
 		"float" => doc.set_float(path, pflt(val())?),
-		"bool" => doc.set_bool(path, val() == "true"),
+		"bool" => doc.set_bool(path, pbool(val())?),
 		"string" => doc.set_string(path, &unescape_ops(val())),
 		"datetime" => {
 			let dt = parse_datetime(val()).ok_or_else(|| format!("bad datetime: {}", val()))?;
@@ -759,7 +835,7 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		"literal-default" => doc.set_literal_default(path, val()),
 		"int-default" => doc.set_int_default(path, pint(val())?),
 		"float-default" => doc.set_float_default(path, pflt(val())?),
-		"bool-default" => doc.set_bool_default(path, val() == "true"),
+		"bool-default" => doc.set_bool_default(path, pbool(val())?),
 		"string-default" => doc.set_string_default(path, &unescape_ops(val())),
 		"datetime-default" => {
 			let dt = parse_datetime(val()).ok_or_else(|| format!("bad datetime: {}", val()))?;
@@ -773,9 +849,12 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			path,
 			&arr.iter().map(|s| pflt(s)).collect::<Result<Vec<_>, _>>()?,
 		),
-		"bool-array" => {
-			doc.set_bool_array(path, &arr.iter().map(|s| *s == "true").collect::<Vec<_>>())
-		}
+		"bool-array" => doc.set_bool_array(
+			path,
+			&arr.iter()
+				.map(|s| pbool(s))
+				.collect::<Result<Vec<_>, _>>()?,
+		),
 		"string-array" => {
 			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
 			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>())
@@ -795,9 +874,12 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			path,
 			&arr.iter().map(|s| pflt(s)).collect::<Result<Vec<_>, _>>()?,
 		),
-		"bool-array-default" => {
-			doc.set_bool_array_default(path, &arr.iter().map(|s| *s == "true").collect::<Vec<_>>())
-		}
+		"bool-array-default" => doc.set_bool_array_default(
+			path,
+			&arr.iter()
+				.map(|s| pbool(s))
+				.collect::<Result<Vec<_>, _>>()?,
+		),
 		"string-array-default" => {
 			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
 			doc.set_string_array_default(
@@ -1012,12 +1094,9 @@ fn do_init(o: &Opts) -> u8 {
 		eprintln!("init takes no file argument (see --help)");
 		return 1;
 	}
-	let schema_file = match &o.schema {
-		Some(s) => s,
-		None => {
-			eprintln!("init needs --schema=FILE (see --help)");
-			return 1;
-		}
+	let Some(schema_file) = &o.schema else {
+		eprintln!("init needs --schema=FILE (see --help)");
+		return 1;
 	};
 	let stext = match read_input(schema_file) {
 		Ok(t) => t,

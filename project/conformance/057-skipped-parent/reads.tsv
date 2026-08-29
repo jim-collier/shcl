@@ -1,0 +1,8 @@
+query	type	expected	status
+-	load	ok	-
+-	load	fail	-	strict
+a.d	int	2	Good
+a.d.e	int	3	Good
+a.f	count	0	Good
+a.g	count	0	Good
+a.m	count	1	Good

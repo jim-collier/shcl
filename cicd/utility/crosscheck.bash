@@ -204,6 +204,9 @@ fComparePlant(){
 fFixMode(){    printf 'a:  1\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
 fFixSymlink(){ mkdir -p "$1/real"; printf 'a:  1\n' >"$1/real/c.shcl"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.shcl"; }
 fFixHardlink(){ printf 'a:  1\n' >"$1/c.shcl"; ln "$1/c.shcl" "$1/other.shcl"; echo "$1/c.shcl"; }
+##	A link to a file that is not there yet: the write must create the target
+##	behind the link, not turn the link into a file.
+fFixDangling(){ mkdir -p "$1/real"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.shcl"; }
 ##	Nothing at the path at all - the create case. The tree it leaves behind is
 ##	the whole point, so the fixture deliberately builds nothing.
 fFixAbsent(){  echo "$1/c.shcl"; }
@@ -343,6 +346,7 @@ fCompare "usage donate flag" --donate
 # case pins the documented limitation: rename cannot preserve the other name.
 fCompareWrite "write keeps mode" fFixMode fmt --write
 fCompareWrite "write follows symlink" fFixSymlink fmt --write
+fCompareWrite "write creates behind a dangling symlink" fFixDangling set --write --set=a=1
 fCompareWrite "write breaks hard link" fFixHardlink fmt --write
 fComparePlant "write refuses a planted temp" fmt --write
 
