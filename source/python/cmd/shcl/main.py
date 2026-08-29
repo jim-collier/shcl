@@ -44,7 +44,8 @@ persist with --write; given either, no ops are read from stdin. Raw blocks,
 set-only-if-absent and removal go in as a write-ops script on stdin, one op per
 line, tab-separated. FILE '-' follows stdin: the document when an option holds
 the edits, an empty base when the ops script has stdin instead. With --write,
-a FILE that does not exist yet is created. Ops:
+a FILE that does not exist yet is created. PATH ends at the first '=' outside
+quotes and brackets, so a selector may hold one. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -202,11 +203,38 @@ def _set_value_opt(o, name, v):
 		o.layers.append(v)
 		o.seen.append("--layer")
 	elif name in ("--set", "--set-literal"):
-		eq = v.find("=")
-		if eq < 0:
+		ps = split_set(v)
+		if ps is None:
 			raise ValueError(f"bad {name} value (want PATH=VALUE): {v}")
-		o.sets.append(_SetOpt(v[:eq], v[eq + 1:], name == "--set-literal"))
+		o.sets.append(_SetOpt(ps[0], ps[1], name == "--set-literal"))
 		o.seen.append(name)
+
+
+def split_set(arg):
+	# PATH=VALUE at the first `=` outside quotes and brackets, so a selector
+	# holding one (`x[a=b].c=1`) still addresses its instance.
+	in_quote = None
+	depth = 0
+	i = 0
+	n = len(arg)
+	while i < n:
+		c = arg[i]
+		if c == "\\":
+			i += 2
+			continue
+		if in_quote is not None:
+			if c == in_quote:
+				in_quote = None
+		elif c == '"' or c == "'":
+			in_quote = c
+		elif c == "[":
+			depth += 1
+		elif c == "]":
+			depth = max(depth - 1, 0)
+		elif c == "=" and depth == 0:
+			return arg[:i], arg[i + 1:]
+		i += 1
+	return None
 
 
 def asked_for(argv):
@@ -314,7 +342,7 @@ def load_doc(text, strictness):
 		return shcl.Document.parse_with(text, strictness), None
 	except shcl.LoadError as le:
 		for d in le.diagnostics:
-			sys.stderr.write(f"line {d.line}: {d.severity.name}: {d.message}\n")
+			sys.stderr.write(f"line {d.line}: {d.severity.name}: {d.code} {d.message}\n")
 		sys.stderr.write(str(le) + "\n")
 		return None, 6
 
@@ -608,6 +636,14 @@ def _op_dt(s):
 	return dt
 
 
+def _op_bool(s):
+	if s == "true":
+		return True
+	if s == "false":
+		return False
+	raise ValueError(f"bad bool: {s}")
+
+
 def _op_int(s):
 	# Rust i64 FromStr grammar by hand: int() alone is too lax (it accepts
 	# underscores, surrounding whitespace, and non-ASCII digits).
@@ -682,7 +718,7 @@ def apply_op(doc, line):
 	elif op == "float":
 		wrote = doc.set_float(path, _op_flt(v))
 	elif op == "bool":
-		wrote = doc.set_bool(path, v == "true")
+		wrote = doc.set_bool(path, _op_bool(v))
 	elif op == "string":
 		wrote = doc.set_string(path, _unescape_ops(v))
 	elif op == "datetime":
@@ -696,7 +732,7 @@ def apply_op(doc, line):
 	elif op == "float-default":
 		wrote = doc.set_float_default(path, _op_flt(v))
 	elif op == "bool-default":
-		wrote = doc.set_bool_default(path, v == "true")
+		wrote = doc.set_bool_default(path, _op_bool(v))
 	elif op == "string-default":
 		wrote = doc.set_string_default(path, _unescape_ops(v))
 	elif op == "datetime-default":
@@ -706,7 +742,7 @@ def apply_op(doc, line):
 	elif op == "float-array":
 		wrote = doc.set_float_array(path, [_op_flt(x) for x in arr])
 	elif op == "bool-array":
-		wrote = doc.set_bool_array(path, [x == "true" for x in arr])
+		wrote = doc.set_bool_array(path, [_op_bool(x) for x in arr])
 	elif op == "string-array":
 		wrote = doc.set_string_array(path, [_unescape_ops(x) for x in arr])
 	elif op == "datetime-array":
@@ -716,7 +752,7 @@ def apply_op(doc, line):
 	elif op == "float-array-default":
 		wrote = doc.set_float_array_default(path, [_op_flt(x) for x in arr])
 	elif op == "bool-array-default":
-		wrote = doc.set_bool_array_default(path, [x == "true" for x in arr])
+		wrote = doc.set_bool_array_default(path, [_op_bool(x) for x in arr])
 	elif op == "string-array-default":
 		wrote = doc.set_string_array_default(path, [_unescape_ops(x) for x in arr])
 	elif op == "datetime-array-default":
@@ -978,6 +1014,17 @@ def main():
 	# the other bindings; no BrokenPipeError to catch.
 	if hasattr(signal, "SIGPIPE"):
 		signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+	# Output is LF on every platform, as the reference writes it: the text
+	# streams translate \n to \r\n on windows unless told not to. stdin is
+	# read through .buffer everywhere, so it never translates. A stream that
+	# cannot be reconfigured (replaced, or not a text stream) is left alone.
+	for stream in (sys.stdout, sys.stderr):
+		reconfigure = getattr(stream, "reconfigure", None)
+		if reconfigure is not None:
+			try:
+				reconfigure(newline="\n")
+			except (ValueError, OSError):
+				pass
 	return run(sys.argv[1:])
 
 
