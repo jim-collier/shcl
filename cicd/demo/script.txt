@@ -3,7 +3,7 @@
 @ Gif: 960x540 px, 50 fps, rendered against the fresh release binary.
 @ Everything anonymized - generic user@host prompt, no real paths.
 @ Typing looks like a person: variable speed, the odd fixed typo.
-@ Clear the screen between steps. Whole loop about 30 seconds,
+@ Clear the screen between steps. Whole loop about 33 seconds,
 @ ending on 3 seconds of black to mark the seam.
 
 # A messy config

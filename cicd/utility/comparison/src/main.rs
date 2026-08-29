@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
+
 //! Measures SHCL against JSON, YAML, TOML and XML on documents that hold the
 //! same data in each format.
 //!
@@ -166,9 +169,7 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
 	Ok(o)
 }
 
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 // Generation
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 fn emit_unit(g: &mut Gen, o: &mut String, shape: Shape, i: usize) {
 	match shape {
@@ -186,6 +187,7 @@ fn emit_unit(g: &mut Gen, o: &mut String, shape: Shape, i: usize) {
 		}
 		Shape::Records => {
 			let (name, f) = model::record_unit(i);
+			// Records and Ddl are the two shapes list_key names; the unwrap cannot fail.
 			g.record(o, Shape::Records.list_key().unwrap(), &name, &f);
 		}
 		Shape::Config => {
@@ -194,6 +196,7 @@ fn emit_unit(g: &mut Gen, o: &mut String, shape: Shape, i: usize) {
 		}
 		Shape::Ddl => {
 			let (name, f) = model::ddl_unit(i);
+			// Same as Records: list_key is Some for exactly these two shapes.
 			g.record(o, Shape::Ddl.list_key().unwrap(), &name, &f);
 		}
 	}
@@ -232,9 +235,7 @@ fn scale_iters(iters: usize, bytes: usize) -> usize {
 	iters * ((1 << 20) / bytes.max(1)).clamp(1, 200)
 }
 
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 // Libraries under test
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Tier {
@@ -336,9 +337,7 @@ fn discover_libs(o: &Opts) -> (Vec<Lib>, Vec<String>) {
 	(libs, skipped)
 }
 
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 // Orchestration
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 struct Row {
 	shape: Shape,
@@ -631,9 +630,7 @@ fn worker(key: &str, path: &str, iters: usize) {
 	println!("base-rss-bytes={}", m.base_rss_bytes);
 }
 
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 // Reporting
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 fn mib(bytes: u64) -> f64 {
 	bytes as f64 / (1024.0 * 1024.0)
@@ -717,9 +714,7 @@ fn print_tables(rows: &[Row], libs: &[Lib]) {
 	}
 }
 
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 // Recording, through this repo's own library
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 fn record(
 	o: &Opts,
@@ -857,9 +852,7 @@ fn round6(v: f64) -> f64 {
 	(v * 1_000_000.0).round() / 1_000_000.0
 }
 
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 // Environment odds and ends
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 fn shell(cmd: &str, args: &[&str]) -> String {
 	Command::new(cmd)

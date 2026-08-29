@@ -9,13 +9,6 @@
 @{
 	Severity = @('Error', 'Warning')
 
-	ExcludeRules = @(
-		## The wrapper deliberately writes plain text to the console: it is a
-		## front end to a binary whose output is the product, and decorating it
-		## with Write-Error's multi-line block would corrupt what callers parse.
-		'PSAvoidUsingWriteHost'
-	)
-
 	Rules = @{
 		PSUseCompatibleSyntax = @{
 			Enable         = $true

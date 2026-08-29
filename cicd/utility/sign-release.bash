@@ -16,9 +16,11 @@
 ##		the wrong key verifies perfectly on its own and fails for every user, so
 ##		that last check is the one that matters.
 ##	Syntax:
-##		sign-release.bash --key FILE [--dir DIR]
-##		  --key FILE  private signing key (PEM). Prompts if passphrase-protected.
-##		  --dir DIR   release artifact dir (default cicd/artifacts/release)
+##		sign-release.bash --key FILE [--dir DIR] [--no-tag-check]
+##		  --key FILE      private signing key (PEM). Prompts if passphrase-protected.
+##		  --dir DIR       release artifact dir (default cicd/artifacts/release)
+##		  --no-tag-check  sign even when HEAD does not carry the v<version> tag
+##		                  (rehearsals only; a real cut is signed at the tag)
 ##	Exit: 0 signed and verified, 1 failure, 2 usage/missing input.
 ##	History: At bottom of script.
 
@@ -51,9 +53,11 @@ fUsage(){
 ##		the wrong key verifies perfectly on its own and fails for every user, so
 ##		that last check is the one that matters.
 ##	Syntax:
-##		sign-release.bash --key FILE [--dir DIR]
-##		  --key FILE  private signing key (PEM). Prompts if passphrase-protected.
-##		  --dir DIR   release artifact dir (default cicd/artifacts/release)
+##		sign-release.bash --key FILE [--dir DIR] [--no-tag-check]
+##		  --key FILE      private signing key (PEM). Prompts if passphrase-protected.
+##		  --dir DIR       release artifact dir (default cicd/artifacts/release)
+##		  --no-tag-check  sign even when HEAD does not carry the v<version> tag
+##		                  (rehearsals only; a real cut is signed at the tag)
 ##	Exit: 0 signed and verified, 1 failure, 2 usage/missing input.
 ##	History: At bottom of script.
 
@@ -65,6 +69,7 @@ EOF
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
 key=""
 dir="${root}/cicd/artifacts/release"
+tagCheck=1
 
 while (( $# )); do
 	case "$1" in
@@ -72,6 +77,7 @@ while (( $# )); do
 		--key)   (( $# >= 2 )) || fDie "missing value for --key (try --key=VALUE)" 2; shift; key="$1" ;;
 		--dir=*) dir="${1#*=}" ;;
 		--dir)   (( $# >= 2 )) || fDie "missing value for --dir (try --dir=VALUE)" 2; shift; dir="$1" ;;
+		--no-tag-check) tagCheck=0 ;;
 		-h|--help) fUsage; exit 0 ;;
 		*) fDie "unknown option: $1" 2 ;;
 	esac
@@ -82,6 +88,20 @@ done
 [[ -r "${key}" ]]  || fDie "cannot read key: ${key}" 2
 [[ -d "${dir}" ]]  || fDie "no such dir: ${dir}" 2
 command -v openssl >/dev/null || fDie "need openssl"
+
+## The tag is what the installers and the release page name the assets by, and
+## Cargo.toml is the version they were built from. A mistyped tag would sign a
+## sums file whose entries no download URL can reach, so refuse unless HEAD
+## carries exactly v<version>. `git tag --points-at` rather than `describe`:
+## the cut puts two tags on the commit (v2.0.0 and source/go/v2.0.0).
+if (( tagCheck )); then
+	ver="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "${root}/source/rust/Cargo.toml" | head -1)"
+	[[ -n "${ver}" ]] || fDie "cannot read the version from source/rust/Cargo.toml"
+	headTags="$(git -C "${root}" tag --points-at HEAD 2>/dev/null || true)"
+	if ! grep -qxF "v${ver}" <<<"${headTags}"; then
+		fDie "HEAD is not tagged v${ver} (Cargo.toml says ${ver}); tag the cut first, or --no-tag-check for a rehearsal"
+	fi
+fi
 
 ## Exactly one sums file, or we would be signing an ambiguous trust root.
 mapfile -t sums < <(find "${dir}" -maxdepth 1 -type f -name '*-sha256sums.txt' | sort)
@@ -124,9 +144,13 @@ if [[ -r "${root}/install.bash" ]]; then
 fi
 
 ## install.ps1 carries the bare modulus, not a PEM - compare that directly.
+## openssl gives the modulus as hex; printf turns each pair into its byte and
+## openssl base64s the result, so no other tool is needed for the round trip.
 if [[ -r "${root}/install.ps1" ]]; then
 	psmod="$(sed -n "s/^\$signingModulus = '\(.*\)'.*/\1/p" "${root}/install.ps1")"
-	keymod="$(openssl rsa -pubin -in "${pub}" -modulus -noout 2>/dev/null | sed 's/^Modulus=//' | xxd -r -p | base64 -w0)"
+	modhex="$(openssl rsa -pubin -in "${pub}" -modulus -noout 2>/dev/null | sed 's/^Modulus=//; s/../\\x&/g')"
+	[[ -n "${modhex}" ]] || fDie "cannot read the key's modulus"
+	keymod="$(printf '%b' "${modhex}" | openssl enc -base64 -A)"
 	[[ -n "${psmod}" && "${psmod}" == "${keymod}" ]] || fDie "install.ps1 carries a different key"
 fi
 
@@ -138,3 +162,5 @@ printf 'attach both the sums file and its .sig to the release.\n'
 ##	History:
 ##		- 2026-07-28 JC: Written for the 1.0.0 cut, when the sums file became a
 ##		  signed trust root rather than something trusted for being on https.
+##		- 2026-08-29 JC: Refuse to sign off the v<version> tag (--no-tag-check
+##		  for rehearsals); the modulus round trip needs only openssl now.

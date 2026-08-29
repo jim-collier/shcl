@@ -150,7 +150,7 @@ def run(key, path, iters):
 	base = vmhwm()
 	try:
 		doc = parse(src)
-	except Exception as e:                                    # noqa: BLE001 - any parse failure is a result
+	except Exception as e:                                    # any parse failure is a result
 		print(f"failed={type(e).__name__}: {e}".replace("\n", " "))
 		return
 	rss = vmhwm()

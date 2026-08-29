@@ -2,6 +2,8 @@
 ;   makensis -DVERSION=... -DSRCEXE=... -DPAYLOAD=... -DOUTFILE=... shcl.nsi
 ; Layout matches the system-install spec: $PROGRAMFILES64\Shcl with the binary,
 ; code\ (drop-in files), scripts\ (ps1 wrapper), added to the machine PATH.
+; The payload's man\ and completions\ are Linux-only and are not staged for
+; this setup: Windows has no man and the completions are bash/zsh.
 
 !ifndef VERSION
 	!error "pass /DVERSION="
@@ -64,6 +66,27 @@ VIAddVersionKey "LegalCopyright"  "Copyright (C) 2026 Jim Collier. MIT License."
 !macroend
 
 Section "Install"
+	; A running shcl.exe cannot be overwritten, and NSIS would only find out
+	; mid-copy with its own generic retry box. Probe first: opening the file
+	; for write fails while any process holds the image. Silent installs take
+	; Cancel, so a scripted upgrade fails cleanly instead of hanging on a box.
+	IfFileExists "$INSTDIR\shcl.exe" 0 notRunning
+	retryRunning:
+	FileOpen $0 "$INSTDIR\shcl.exe" a
+	StrCmp $0 "" 0 notInUse
+	MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
+		"shcl.exe is in use. Close every program that is running it, then Retry." \
+		/SD IDCANCEL IDRETRY retryRunning
+	Abort "shcl.exe is in use; setup cannot continue"
+	notInUse:
+	FileClose $0
+	notRunning:
+
+	; Say what an upgrade replaces; a fresh install has no key to read.
+	ReadRegStr $1 HKLM "${REG_UNINST}" "DisplayVersion"
+	StrCmp $1 "" +2
+	DetailPrint "Upgrading from $1 to ${VERSION}"
+
 	SetOutPath "$INSTDIR"
 	File "/oname=shcl.exe" "${SRCEXE}"
 	SetOutPath "$INSTDIR\code"
