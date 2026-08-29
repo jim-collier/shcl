@@ -47,7 +47,8 @@ persist with --write; given either, no ops are read from stdin. Raw blocks,
 set-only-if-absent and removal go in as a write-ops script on stdin, one op per
 line, tab-separated. FILE '-' follows stdin: the document when an option holds
 the edits, an empty base when the ops script has stdin instead. With --write,
-a FILE that does not exist yet is created. Ops:
+a FILE that does not exist yet is created. PATH ends at the first '=' outside
+quotes and brackets, so a selector may hold one. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -176,12 +177,50 @@ func (s setOpt) opt() string {
 	return "--set"
 }
 
+type kind int
+
+const (
+	kindInt kind = iota
+	kindFloat
+	kindBool
+	kindDatetime
+	kindString
+	kindRaw
+	kindRawInfo
+)
+
+func (k kind) name() string {
+	switch k {
+	case kindInt:
+		return "int"
+	case kindFloat:
+		return "float"
+	case kindBool:
+		return "bool"
+	case kindDatetime:
+		return "datetime"
+	case kindRaw:
+		return "raw"
+	case kindRawInfo:
+		return "rawinfo"
+	}
+	return "string"
+}
+
+type onBad int
+
+const (
+	onBadError onBad = iota
+	onBadDefault
+	onBadFlag
+)
+
 type opts struct {
-	kind       string // int|float|bool|datetime|string|raw
+	kind       kind
 	array      bool
 	slots      bool
 	def        string
-	onBad      string // error|default|flag
+	onBad      onBad
 	strictness shcl.Strictness
 	write      bool
 	lossy      bool
@@ -211,7 +250,8 @@ func askedFor(argv []string) string {
 			return "donate"
 		case a == "--":
 			return ""
-		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" || a == "--layer" || a == "--set" || a == "--set-literal":
+		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" ||
+			a == "--layer" || a == "--set" || a == "--set-literal":
 			i++
 		case strings.HasPrefix(a, "-") && len(a) > 1:
 		case i > 0:
@@ -222,17 +262,53 @@ func askedFor(argv []string) string {
 	return ""
 }
 
+// splitSet: PATH=VALUE at the first `=` outside quotes and brackets, so a
+// selector holding one (`x[a=b].c=1`) still addresses its instance.
+func splitSet(arg string) (string, string, bool) {
+	var inQuote byte
+	depth := 0
+	for i := 0; i < len(arg); i++ {
+		b := arg[i]
+		if b == '\\' {
+			i++
+			continue
+		}
+		switch {
+		case inQuote != 0 && b == inQuote:
+			inQuote = 0
+		case inQuote != 0:
+		case b == '"' || b == '\'':
+			inQuote = b
+		case b == '[':
+			depth++
+		case b == ']':
+			if depth > 0 {
+				depth--
+			}
+		case b == '=' && depth == 0:
+			return arg[:i], arg[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
 func setValueOpt(o *opts, name, v string) error {
 	switch name {
 	case "--default":
 		o.def = v
-		o.onBad = "default"
+		o.onBad = onBadDefault
 		o.seen = append(o.seen, "--default")
 	case "--on-bad":
-		if v != "error" && v != "default" && v != "flag" {
+		switch v {
+		case "error":
+			o.onBad = onBadError
+		case "default":
+			o.onBad = onBadDefault
+		case "flag":
+			o.onBad = onBadFlag
+		default:
 			return fmt.Errorf("bad --on-bad value: %s", v)
 		}
-		o.onBad = v
 		o.seen = append(o.seen, "--on-bad")
 	case "--strictness":
 		s, ok := shcl.StrictnessFromArg(v)
@@ -248,18 +324,18 @@ func setValueOpt(o *opts, name, v string) error {
 		o.layers = append(o.layers, v)
 		o.seen = append(o.seen, "--layer")
 	case "--set", "--set-literal":
-		eq := strings.IndexByte(v, '=')
-		if eq < 0 {
+		p, val, ok := splitSet(v)
+		if !ok {
 			return fmt.Errorf("bad %s value (want PATH=VALUE): %s", name, v)
 		}
-		o.sets = append(o.sets, setOpt{path: v[:eq], value: v[eq+1:], literal: name == "--set-literal"})
+		o.sets = append(o.sets, setOpt{path: p, value: val, literal: name == "--set-literal"})
 		o.seen = append(o.seen, name)
 	}
 	return nil
 }
 
 func parseOpts(argv []string) (*opts, error) {
-	o := &opts{kind: "string", onBad: "flag", strictness: shcl.Standard}
+	o := &opts{kind: kindString, onBad: onBadFlag, strictness: shcl.Standard}
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
@@ -271,7 +347,22 @@ func parseOpts(argv []string) (*opts, error) {
 		}
 		switch {
 		case a == "--int" || a == "--float" || a == "--bool" || a == "--datetime" || a == "--string" || a == "--raw" || a == "--rawinfo":
-			o.kind = a[2:]
+			switch a {
+			case "--int":
+				o.kind = kindInt
+			case "--float":
+				o.kind = kindFloat
+			case "--bool":
+				o.kind = kindBool
+			case "--datetime":
+				o.kind = kindDatetime
+			case "--raw":
+				o.kind = kindRaw
+			case "--rawinfo":
+				o.kind = kindRawInfo
+			default:
+				o.kind = kindString
+			}
 			o.seen = append(o.seen, "--<type>")
 		case a == "--array":
 			o.array = true
@@ -288,7 +379,8 @@ func parseOpts(argv []string) (*opts, error) {
 		case a == "--no-banner":
 			o.noBanner = true
 			o.seen = append(o.seen, "--no-banner")
-		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" || a == "--layer" || a == "--set" || a == "--set-literal":
+		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" ||
+			a == "--layer" || a == "--set" || a == "--set-literal":
 			i++
 			if i >= len(argv) {
 				return nil, fmt.Errorf("missing value for %s (try %s=VALUE)", a, a)
@@ -438,7 +530,7 @@ func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
 		// here has to report rather than panic.
 		if le, ok := err.(*shcl.LoadError); ok {
 			for _, d := range le.Diagnostics {
-				fmt.Fprintf(os.Stderr, "line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+				fmt.Fprintf(os.Stderr, "line %d: %s: %s %s\n", d.Line, d.Severity, d.Code, d.Message)
 			}
 		}
 		fmt.Fprintln(os.Stderr, err)
@@ -533,36 +625,36 @@ func doGet(o *opts) int {
 	var slots []shcl.Status
 	if o.array {
 		switch o.kind {
-		case "int":
+		case kindInt:
 			r := doc.ReadIntArray(path)
 			for _, v := range r.Value {
 				lines = append(lines, fmt.Sprintf("%d", v))
 			}
 			status = r.Status
 			slots = r.Slots
-		case "float":
+		case kindFloat:
 			r := doc.ReadFloatArray(path)
 			for _, v := range r.Value {
 				lines = append(lines, shcl.FormatFloat(v))
 			}
 			status = r.Status
 			slots = r.Slots
-		case "bool":
+		case kindBool:
 			r := doc.ReadBoolArray(path)
 			for _, v := range r.Value {
 				lines = append(lines, fmt.Sprintf("%t", v))
 			}
 			status = r.Status
 			slots = r.Slots
-		case "datetime":
+		case kindDatetime:
 			r := doc.ReadDateTimeArray(path)
 			for _, v := range r.Value {
 				lines = append(lines, v.String())
 			}
 			status = r.Status
 			slots = r.Slots
-		case "raw", "rawinfo":
-			fmt.Fprintf(os.Stderr, "--%s has no --array form\n", o.kind)
+		case kindRaw, kindRawInfo:
+			fmt.Fprintf(os.Stderr, "--%s has no --array form\n", o.kind.name())
 			return 1
 		default:
 			r := doc.ReadStringArray(path)
@@ -572,27 +664,27 @@ func doGet(o *opts) int {
 		}
 	} else {
 		switch o.kind {
-		case "int":
+		case kindInt:
 			r := doc.ReadInt(path)
 			lines = []string{fmt.Sprintf("%d", r.Value)}
 			status = r.Status
-		case "float":
+		case kindFloat:
 			r := doc.ReadFloat(path)
 			lines = []string{shcl.FormatFloat(r.Value)}
 			status = r.Status
-		case "bool":
+		case kindBool:
 			r := doc.ReadBool(path)
 			lines = []string{fmt.Sprintf("%t", r.Value)}
 			status = r.Status
-		case "datetime":
+		case kindDatetime:
 			r := doc.ReadDateTime(path)
 			lines = []string{r.Value.String()}
 			status = r.Status
-		case "raw":
+		case kindRaw:
 			r := doc.ReadRaw(path)
 			lines = []string{r.Value}
 			status = r.Status
-		case "rawinfo":
+		case kindRawInfo:
 			r := doc.ReadRawInfo(path)
 			lines = []string{r.Value}
 			status = r.Status
@@ -625,10 +717,10 @@ func doGet(o *opts) int {
 	// caller who supplied a fallback has already said the miss is expected, and
 	// Empty outside error mode, because an empty value is a legitimate answer
 	// here rather than a failure - the same reason Ok counts it as fine.
-	if status != shcl.Good && o.onBad != "default" && (status != shcl.Empty || o.onBad == "error") {
-		typeName := o.kind
+	if status != shcl.Good && o.onBad != onBadDefault && (status != shcl.Empty || o.onBad == onBadError) {
+		typeName := o.kind.name()
 		if o.array {
-			typeName = o.kind + " array"
+			typeName = o.kind.name() + " array"
 		}
 		var reason string
 		switch status {
@@ -648,10 +740,10 @@ func doGet(o *opts) int {
 		fmt.Fprintf(os.Stderr, "shcl: cannot read %s as %s: %s (in %s)\n", path, typeName, reason, file)
 	}
 	switch {
-	case status == shcl.Good || (status == shcl.Empty && o.onBad == "flag"):
+	case status == shcl.Good || (status == shcl.Empty && o.onBad == onBadFlag):
 		emit(lines)
 		return statusCode(status)
-	case o.onBad == "default":
+	case o.onBad == onBadDefault:
 		if len(slots) > 0 {
 			// Array read: the default substitutes per bad slot; alignment holds.
 			subbed := make([]string, len(lines))
@@ -669,12 +761,12 @@ func doGet(o *opts) int {
 			fmt.Println(o.def)
 		}
 		return 0
-	case o.onBad == "error":
+	case o.onBad == onBadError:
 		// The message already went to stderr above; error mode differs only in
 		// printing nothing on stdout.
 		return statusCode(status)
 	default:
-		// flag: print the zero/empty value anyway; the exit code carries the status
+		// print the zero/empty value anyway; the exit code carries the status
 		emit(lines)
 		return statusCode(status)
 	}
@@ -833,6 +925,15 @@ func applyOp(doc *shcl.Document, line string) error {
 	}
 	pint := parseOpInt
 	pflt := parseOpFloat
+	pbool := func(s string) (bool, error) {
+		switch s {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+		return false, fmt.Errorf("bad bool: %s", s)
+	}
 	ints := func(xs []string) ([]int64, error) {
 		out := make([]int64, len(xs))
 		for i, s := range xs {
@@ -855,12 +956,16 @@ func applyOp(doc *shcl.Document, line string) error {
 		}
 		return out, nil
 	}
-	bools := func(xs []string) []bool {
+	bools := func(xs []string) ([]bool, error) {
 		out := make([]bool, len(xs))
 		for i, s := range xs {
-			out[i] = s == "true"
+			b, err := pbool(s)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = b
 		}
-		return out
+		return out, nil
 	}
 	strs := func(xs []string) []string {
 		out := make([]string, len(xs))
@@ -902,7 +1007,11 @@ func applyOp(doc *shcl.Document, line string) error {
 		}
 		wrote = doc.SetFloat(path, n)
 	case "bool":
-		wrote = doc.SetBool(path, v == "true")
+		b, err := pbool(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetBool(path, b)
 	case "string":
 		wrote = doc.SetString(path, unescapeOps(v))
 	case "datetime":
@@ -928,7 +1037,11 @@ func applyOp(doc *shcl.Document, line string) error {
 		}
 		wrote = doc.SetFloatDefault(path, n)
 	case "bool-default":
-		wrote = doc.SetBoolDefault(path, v == "true")
+		b, err := pbool(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetBoolDefault(path, b)
 	case "string-default":
 		wrote = doc.SetStringDefault(path, unescapeOps(v))
 	case "datetime-default":
@@ -950,7 +1063,11 @@ func applyOp(doc *shcl.Document, line string) error {
 		}
 		wrote = doc.SetFloatArray(path, xs)
 	case "bool-array":
-		wrote = doc.SetBoolArray(path, bools(arr))
+		xs, err := bools(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetBoolArray(path, xs)
 	case "string-array":
 		wrote = doc.SetStringArray(path, strs(arr))
 	case "datetime-array":
@@ -972,7 +1089,11 @@ func applyOp(doc *shcl.Document, line string) error {
 		}
 		wrote = doc.SetFloatArrayDefault(path, xs)
 	case "bool-array-default":
-		wrote = doc.SetBoolArrayDefault(path, bools(arr))
+		xs, err := bools(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetBoolArrayDefault(path, xs)
 	case "string-array-default":
 		wrote = doc.SetStringArrayDefault(path, strs(arr))
 	case "datetime-array-default":

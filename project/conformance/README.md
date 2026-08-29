@@ -115,9 +115,19 @@ Note when reading comparison counts: the fuzz seed set includes the corpus input
 
 Case `046` pins partial validation under a schema fault: a bad `min` is a `V092` at its schema line, the surviving constraints still flag a wrong type and a missing required field, and the unknown field draws no `V001` (the sweep needs a fault-free schema).
 
-Case `055` pins a raw block whose body has no non-blank line: there is no common indent to derive, so the body is neither stripped on load nor indented on emit and survives byte-for-byte. Without that pairing the emitter added a level per pass and the block grew without bound. The second block pins the same for a body whose only line is a non-space whitespace character.
+Case `055` pins a raw block whose body is whitespace only: each line loses just what it shares with the closing fence's indent and keeps the rest, so the spacing survives a round trip and the block cannot gain a level per pass.
 
 Case `056` pins the merge rule for an empty binding: a raw block in the higher layer fills a same-named empty binding below (`blk`), exactly as a fence line fills one inside a single file, while a valued binding still appends beside it (`two`). The merged golden is what parsing the two layers run together produces, which is what makes it a formatter fixpoint.
+
+Case `057` pins that a skipped binding line keeps its indent level (`E018`): the lines written under it are skipped with it instead of attaching one level up, the next line at its own indent still binds where it should, and a malformed line that is retained as trivia loses its block the same way. The strict load fails.
+
+Case `058` pins raw-block nesting: the closing fence's indent is what comes off each body line, so a body whose lines all sit past the fence keeps that shared indent, a line flush left keeps nothing, and the write op stores an info-string trimmed the way a fence line reads it.
+
+Case `059` pins the two raw-block errors: a fence with no parent field (`E006`, the block is dropped) and a block that never closes (`E005`, the content runs to the end of the file and the block still binds).
+
+Case `060` pins the stacked-list errors: an element with no parent field (`E007`), an empty element (`E009`, a `*` followed only by a comment), a bare comma in an element (`E010`), and an element under a field that already holds a value (`E011`). The survivors still read as the list.
+
+Case `061` pins `E012`: a dedent to a column that matches no open level is skipped, and the next line at a real level binds where it belongs.
 
 Case `045` pins comment depth under childless headers: a header whose children are all commented keeps them indented under it (top-level, nested, and at end of file), while a commented line trailing a live child keeps the existing trails-the-binding placement.
 

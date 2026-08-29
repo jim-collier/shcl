@@ -86,10 +86,10 @@ gfs_rotate(){
 	((${#cands[@]})) || return 0
 
 	## "epoch<TAB>canon<TAB>path", oldest first.
-	local -a items=(); local f e ct
-	for f in "${cands[@]}"; do
-		read -r e ct < <(_gfs_ts "$f")
-		[[ -n "$e" ]] && items+=("${e}"$'\t'"${ct}"$'\t'"${f}")
+	local -a items=(); local file epoch canon
+	for file in "${cands[@]}"; do
+		read -r epoch canon < <(_gfs_ts "$file")
+		[[ -n "$epoch" ]] && items+=("${epoch}"$'\t'"${canon}"$'\t'"${file}")
 	done
 	((${#items[@]})) || return 0
 	mapfile -t items < <(printf '%s\n' "${items[@]}" | sort -n)
@@ -99,17 +99,20 @@ gfs_rotate(){
 	local curH curD curW curM curY
 	curH="$(date -d "@$now" +%Y%m%d%H)"; curD="$(date -d "@$now" +%Y%m%d)"
 	curW="$(date -d "@$now" +%G%V)";     curM="$(date -d "@$now" +%Y%m)"; curY="$(date -d "@$now" +%Y)"
-	local -A pH pD pW pM pY; local it kH kD kW kM kY
-	# shellcheck disable=SC2034  # pH..pY are populated here, read later through the namerefs
+	local -A perHour perDay perWeek perMonth perYear
+	local it periodKeys keyHour keyDay keyWeek keyMonth keyYear
+	# shellcheck disable=SC2034  # perHour..perYear are populated here, read later through the namerefs
 	for it in "${items[@]}"; do
-		e="${it%%$'\t'*}"
-		kH="$(date -d "@$e" +%Y%m%d%H)"; kD="$(date -d "@$e" +%Y%m%d)"
-		kW="$(date -d "@$e" +%G%V)";     kM="$(date -d "@$e" +%Y%m)"; kY="$(date -d "@$e" +%Y)"
-		[[ "$kH" != "$curH" ]] && pH["$kH"]="$it"
-		[[ "$kD" != "$curD" ]] && pD["$kD"]="$it"
-		[[ "$kW" != "$curW" ]] && pW["$kW"]="$it"
-		[[ "$kM" != "$curM" ]] && pM["$kM"]="$it"
-		[[ "$kY" != "$curY" ]] && pY["$kY"]="$it"
+		epoch="${it%%$'\t'*}"
+		## One builtin strftime for all five period keys; a date fork per key
+		## per file was most of the rotation's cost.
+		printf -v periodKeys '%(%Y%m%d%H %Y%m%d %G%V %Y%m %Y)T' "$epoch"
+		read -r keyHour keyDay keyWeek keyMonth keyYear <<< "$periodKeys"
+		[[ "$keyHour"  != "$curH" ]] && perHour["$keyHour"]="$it"
+		[[ "$keyDay"   != "$curD" ]] && perDay["$keyDay"]="$it"
+		[[ "$keyWeek"  != "$curW" ]] && perWeek["$keyWeek"]="$it"
+		[[ "$keyMonth" != "$curM" ]] && perMonth["$keyMonth"]="$it"
+		[[ "$keyYear"  != "$curY" ]] && perYear["$keyYear"]="$it"
 	done
 
 	## Assign the coarsest role to each kept file:
@@ -117,7 +120,7 @@ gfs_rotate(){
 	## First-set wins, so process coarsest first.
 	local -A role; role["${items[0]}"]="first"
 	local spec rn cnt nk i
-	for spec in "year pY $kYear" "month pM $kMonth" "week pW $kWeek" "day pD $kDay" "hour pH $kHour"; do
+	for spec in "year perYear $kYear" "month perMonth $kMonth" "week perWeek $kWeek" "day perDay $kDay" "hour perHour $kHour"; do
 		# shellcheck disable=SC2086
 		set -- $spec; rn="$1"; cnt="$3"; local -n arr="$2"
 		local -a keys=("${!arr[@]}")
@@ -132,26 +135,26 @@ gfs_rotate(){
 	done
 
 	## Frequent: most recent kFreq not already claimed by a coarser role. The
-	## single newest file is labelled "latest" instead - a stable, naturally-
+	## single newest file is labeled "latest" instead - a stable, naturally-
 	## sorting pointer to the most recent file (no separate "<prefix>-latest" copy).
-	local ni=${#items[@]}
-	for ((i = ni>kFreq ? ni-kFreq : 0; i<ni; i++)); do
+	local nItems=${#items[@]}
+	for ((i = nItems>kFreq ? nItems-kFreq : 0; i<nItems; i++)); do
 		[[ -z "${role[${items[i]}]:-}" ]] && role["${items[i]}"]="frequent"
 	done
-	[[ "${role[${items[ni-1]}]:-}" == "first" ]] || role["${items[ni-1]}"]="latest"
+	[[ "${role[${items[nItems-1]}]:-}" == "first" ]] || role["${items[nItems-1]}"]="latest"
 
 	## Prune the unrole'd; rename the kept to canonical (no-op if already canonical).
 	local rest r want
 	for it in "${items[@]}"; do
-		rest="${it#*$'\t'}"; ct="${rest%%$'\t'*}"; f="${rest#*$'\t'}"
+		rest="${it#*$'\t'}"; canon="${rest%%$'\t'*}"; file="${rest#*$'\t'}"
 		r="${role[$it]:-}"
 		if [[ -z "$r" ]]; then
-			rm -f "$f"; printf '  rotate: pruned %s\n' "$(basename "$f")"
+			rm -f "$file"; printf '  rotate: pruned %s\n' "$(basename "$file")"
 		else
-			want="$dir/${prefix}_${ct}_${r}.${ext}"
-			if [[ "$f" != "$want" ]]; then
+			want="$dir/${prefix}_${canon}_${r}.${ext}"
+			if [[ "$file" != "$want" ]]; then
 				[[ -e "$want" ]] && continue   # never clobber a same-name collision
-				mv -f "$f" "$want"; printf '  rotate: %s -> %s\n' "$(basename "$f")" "$(basename "$want")"
+				mv -f "$file" "$want"; printf '  rotate: %s -> %s\n' "$(basename "$file")" "$(basename "$want")"
 			fi
 		fi
 	done
@@ -165,3 +168,5 @@ declare -i isSourced_t6wq5=0; [[ "${BASH_SOURCE[0]}" == "${0}" ]] || isSourced_t
 ##	History:
 ##		- 2026-06-05: Created.
 ##		- 2026-07-25: Harmonized every copy of this file to one identical file.
+##		- 2026-08-29: Period keys through one builtin strftime instead of five
+##		  date forks per file; the bucket maps and loop locals got real names.

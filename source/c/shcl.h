@@ -375,10 +375,11 @@ int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out);
 // out must be at least SHCL_F64_BUF bytes; returns the byte length written.
 #define SHCL_F64_BUF 512
 size_t shcl_format_f64(double v, char *out);
-// Renders a datetime into out (>= 64 bytes); returns byte length. A frac
-// longer than 30 bytes is truncated, and the whole rendering is clamped to 64
-// bytes, so a hand-built value cannot overrun the documented buffer (parsed
-// input never gets near either limit).
+// Renders a datetime into out (>= SHCL_DT_BUF bytes); returns byte length. A
+// frac longer than 30 bytes is truncated, and the whole rendering is clamped to
+// SHCL_DT_BUF bytes, so a hand-built value cannot overrun the documented buffer
+// (parsed input never gets near either limit).
+#define SHCL_DT_BUF 64
 size_t shcl_datetime_str(const shcl_datetime *dt, char *out);
 // Status <-> the CLI exit code / textual name.
 int shcl_status_code(shcl_status s);
@@ -502,25 +503,25 @@ static void arena_reset(Arena *a) {
 
 // --- byte-string helpers -----------------------------------------------------
 
-typedef shcl_str S;
-static S s_lit(const char *z) { S s; s.p = z; s.n = strlen(z); return s; }
-static S s_empty(void) { S s; s.p = ""; s.n = 0; return s; }
-static int s_eq(S a, S b) { return a.n == b.n && (a.n == 0 || memcmp(a.p, b.p, a.n) == 0); }
-static int s_has_nl(S s) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == '\n') return 1; return 0; }
-static S s_dup(Arena *a, S x) {
+typedef shcl_str Str;
+static Str s_lit(const char *z) { Str s; s.p = z; s.n = strlen(z); return s; }
+static Str s_empty(void) { Str s; s.p = ""; s.n = 0; return s; }
+static int s_eq(Str a, Str b) { return a.n == b.n && (a.n == 0 || memcmp(a.p, b.p, a.n) == 0); }
+static int s_has_nl(Str s) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == '\n') return 1; return 0; }
+static Str s_dup(Arena *a, Str x) {
 	if (x.n == 0) return s_empty();
 	char *m = (char *)arena_alloc(a, x.n); memcpy(m, x.p, x.n);
-	S r; r.p = m; r.n = x.n; return r;
+	Str r; r.p = m; r.n = x.n; return r;
 }
 /* Keep s as-is when it already slices the retained input copy (src), else dup
    it into the arena. The parse dups the whole input once and stores slices of
    that copy; this is the store-site gate that makes mixed provenance safe. */
-static S s_keep(Arena *a, S src, S s) {
+static Str s_keep(Arena *a, Str src, Str s) {
 	if (s.n && (uintptr_t)s.p >= (uintptr_t)src.p && (uintptr_t)s.p + s.n <= (uintptr_t)src.p + src.n) return s;
 	return s_dup(a, s);
 }
-static S s_slice(S s, size_t from, size_t to) { S r; r.p = s.p + from; r.n = to - from; return r; }
-static int s_starts(S s, const char *pre) {
+static Str s_slice(Str s, size_t from, size_t to) { Str r; r.p = s.p + from; r.n = to - from; return r; }
+static int s_starts(Str s, const char *pre) {
 	size_t n = strlen(pre); return s.n >= n && memcmp(s.p, pre, n) == 0;
 }
 
@@ -534,8 +535,8 @@ static void sb_put(Arena *a, SB *s, const char *p, size_t n) {
 }
 static void sb_putc(Arena *a, SB *s, char c) { sb_put(a, s, &c, 1); }
 static void sb_puts(Arena *a, SB *s, const char *z) { sb_put(a, s, z, strlen(z)); }
-static void sb_putS(Arena *a, SB *s, S x) { sb_put(a, s, x.p, x.n); }
-static S sb_S(SB *s) { S r; r.p = s->data ? s->data : ""; r.n = s->len; return r; }
+static void sb_putS(Arena *a, SB *s, Str x) { sb_put(a, s, x.p, x.n); }
+static Str sb_S(SB *s) { Str r; r.p = s->data ? s->data : ""; r.n = s->len; return r; }
 
 // --- UTF-8 (input is validated at the CLI; here we assume it is well formed) --
 
@@ -565,7 +566,7 @@ static size_t utf8_encode(uint32_t cp, char out[4]) {
 	out[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[3] = (char)(0x80 | (cp & 0x3F)); return 4;
 }
 // Byte length of the last codepoint in s (0 if empty); *cp gets its value.
-static size_t utf8_last(S s, uint32_t *cp) {
+static size_t utf8_last(Str s, uint32_t *cp) {
 	if (s.n == 0) { *cp = 0; return 0; }
 	size_t i = s.n - 1;
 	while (i > 0 && ((unsigned char)s.p[i] & 0xC0) == 0x80) i--;
@@ -578,7 +579,7 @@ static void sb_put_cp(Arena *a, SB *s, uint32_t cp) {
 
 // Decode s into a codepoint array with byte offsets (off has n+1 entries).
 typedef struct { uint32_t *cp; size_t *off; size_t n; } CPs;
-static CPs decode_cps(Arena *a, S s) {
+static CPs decode_cps(Arena *a, Str s) {
 	size_t m = 0;
 	for (size_t i = 0; i < s.n;) { uint32_t c; i += utf8_decode(s.p, s.n, i, &c); m++; }
 	CPs r; r.n = m;
@@ -603,16 +604,16 @@ static int is_ws(uint32_t c) {
 	default: return 0;
 	}
 }
-static S trim_start(S s) {
+static Str trim_start(Str s) {
 	size_t i = 0;
 	while (i < s.n) { uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c); if (!is_ws(c)) break; i += l; }
 	return s_slice(s, i, s.n);
 }
-static S trim_end(S s) {
+static Str trim_end(Str s) {
 	while (s.n) { uint32_t c; size_t l = utf8_last(s, &c); if (!is_ws(c)) break; s.n -= l; }
 	return s;
 }
-static S s_trim(S s) { return trim_end(trim_start(s)); }
+static Str s_trim(Str s) { return trim_end(trim_start(s)); }
 
 static int is_adigit(uint32_t c) { return c >= '0' && c <= '9'; }
 static int is_ahex(uint32_t c) { return is_adigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
@@ -622,19 +623,19 @@ static int is_aalnum(uint32_t c) {
 static int is_bare_name_char(uint32_t c) {
 	return (c < 128 && is_aalnum(c)) || c == '-' || c == '_';
 }
-static int all_adigit0(S s) { for (size_t i = 0; i < s.n; i++) if (!is_adigit((unsigned char)s.p[i])) return 0; return 1; }
-static int all_ahex(S s) { for (size_t i = 0; i < s.n; i++) if (!is_ahex((unsigned char)s.p[i])) return 0; return s.n > 0; }
-static S ascii_lower(Arena *a, S s) {
+static int all_adigit0(Str s) { for (size_t i = 0; i < s.n; i++) if (!is_adigit((unsigned char)s.p[i])) return 0; return 1; }
+static int all_ahex(Str s) { for (size_t i = 0; i < s.n; i++) if (!is_ahex((unsigned char)s.p[i])) return 0; return s.n > 0; }
+static Str ascii_lower(Arena *a, Str s) {
 	char *m = (char *)arena_alloc(a, s.n ? s.n : 1);
 	for (size_t i = 0; i < s.n; i++) { unsigned char c = (unsigned char)s.p[i]; m[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c; }
-	S r; r.p = m; r.n = s.n; return r;
+	Str r; r.p = m; r.n = s.n; return r;
 }
-static S fold_name(Arena *a, S s) { return ascii_lower(a, s); }
+static Str fold_name(Arena *a, Str s) { return ascii_lower(a, s); }
 /* True when folding and escape resolution cannot change a name's spelling:
    all ASCII (the permissive decoder normalizes ill-formed bytes, so only
    ASCII is guaranteed identity), no A-Z (fold identity), no backslash
    (escape identity). Then the stored name can be the source slice itself. */
-static int name_plain(S s) {
+static int name_plain(Str s) {
 	for (size_t i = 0; i < s.n; i++) {
 		unsigned char c = (unsigned char)s.p[i];
 		if (c >= 0x80 || (c >= 'A' && c <= 'Z') || c == '\\') return 0;
@@ -644,11 +645,11 @@ static int name_plain(S s) {
 
 // --- in-memory model ---------------------------------------------------------
 
-typedef struct { S text; int quoted; } Element;
+typedef struct { Str text; int quoted; } Element;
 DEFINE_VEC(VecEl, Element)
 
 typedef enum { V_EMPTY, V_CELL, V_RAW } vkind;
-typedef struct { S content; S info; unsigned char fence_char; size_t fence_len; } RawVal;
+typedef struct { Str content; Str info; unsigned char fence_char; size_t fence_len; } RawVal;
 typedef struct {
 	vkind kind;
 	Element *els; size_t nels;                 // V_CELL
@@ -657,22 +658,22 @@ typedef struct {
 } Value;
 
 DEFINE_VEC(VecSize, size_t)
-DEFINE_VEC(VecS, S)
+DEFINE_VEC(VecS, Str)
 
 /* One whole-line comment held as trivia, plus whether a blank line preceded
    it - so a blank between comment-only regions survives the round-trip
    (blank runs collapse to one, same as nodes). */
-typedef struct { S text; int blank_before; } Lead;
+typedef struct { Str text; int blank_before; } Lead;
 DEFINE_VEC(VecLead, Lead)
-static Lead lead_make(S text, int blank_before) { Lead l; l.text = text; l.blank_before = blank_before; return l; }
-static Lead lead_plain(S text) { return lead_make(text, 0); }
+static Lead lead_make(Str text, int blank_before) { Lead l; l.text = text; l.blank_before = blank_before; return l; }
+static Lead lead_plain(Str text) { return lead_make(text, 0); }
 
 /* Comment trivia, verbatim from `#` to end of line. Never part of identity
    or reads; merged instances concatenate leading, first trailing wins
    (later ones demote to leading - a canonical line has room for one). */
 typedef struct {
 	VecLead leading;
-	S trailing; /* n == 0 = none */
+	Str trailing; /* n == 0 = none */
 	/* Whole-line comments that followed this node's subtree at a deeper indent
 	   than the next binding - they belong to this block, not the next node, so
 	   a run trailing a block's last child stays put instead of re-attaching
@@ -685,13 +686,13 @@ typedef struct {
 } Trivia;
 
 typedef struct {
-	S name;
+	Str name;
 	/* The name as the author spelled it (case unfolded, quotes and escapes
 	   resolved) - what shcl_authored_name hands back, via node_authored.
 	   Merged instances keep the first binding's spelling, like shcl_line and
 	   comments. Empty = spelled exactly like `name` (the overwhelmingly
 	   common case). */
-	S name_src;
+	Str name_src;
 	Value value;
 	VecSize children;
 	size_t parent;
@@ -707,8 +708,13 @@ typedef struct {
 } Node;
 typedef struct { Node *data; size_t len, cap; } VecNode;
 
-typedef struct { size_t line; shcl_severity sev; S message; const char *code; } Diag;
+typedef struct { size_t line; shcl_severity sev; Str message; const char *code; } Diag;
 DEFINE_VEC(VecDiag, Diag)
+
+/* Hash-keyed child map (the parser's accelerator and the read index); the
+   operations sit with the parser below. */
+typedef struct CMapEnt { struct CMapEnt *next; uint64_t hash; size_t val; } CMapEnt;
+typedef struct { CMapEnt **buckets; size_t cap, len; } CMap;
 
 struct shcl_doc {
 	Arena arena;
@@ -727,9 +733,25 @@ struct shcl_doc {
 	   and survive a save. shcl_lost_count serves it; shcl_save_file gates on
 	   it. */
 	size_t lost;
+	/* Read accelerator: the first child of each (parent, name), chained on to
+	   the next same-named sibling. A hash collision chains a stranger in; the
+	   lookup checks the name, so the chain is only ever a superset. Built on
+	   the first path read, dropped by every write entry point. Without it a
+	   read scans the parent's children, so reading a flat document key by
+	   key was quadratic (35 s at 40k keys). Its own arena, freed on drop:
+	   the document arena cannot give it back. */
+	Arena index_arena;
+	int index_built;
+	CMap index_first;    /* name_key -> first child */
+	size_t *index_next;  /* per node; NIL ends the chain */
 };
 #define ROOT ((size_t)0)
 #define NODE(d, i) ((d)->nodes.data[i])
+#define NIL ((size_t)-1)
+/* Stack entry for a binding line that was skipped: it still owns its indent
+   level, so the lines written under it are skipped with it instead of
+   re-parenting one level up. */
+#define DEAD ((size_t)-1)
 
 /* The node vector lives in malloc storage, not the bump arena: the arena
    cannot reclaim the abandoned copy at each doubling, which held about one
@@ -750,7 +772,7 @@ static void nodes_push(shcl_doc *d, Node x) {
 /* Nil-safe trivia reads (empty defaults) and the get-or-create for writes;
    the sidecar is allocated in the document arena on the first write. */
 static VecLead triv_leading(const Node *n) { if (n->trivia) return n->trivia->leading; VecLead v; memset(&v, 0, sizeof v); return v; }
-static S triv_trailing(const Node *n) { return n->trivia ? n->trivia->trailing : s_empty(); }
+static Str triv_trailing(const Node *n) { return n->trivia ? n->trivia->trailing : s_empty(); }
 static VecLead triv_after(const Node *n) { if (n->trivia) return n->trivia->after; VecLead v; memset(&v, 0, sizeof v); return v; }
 static VecLead triv_inside(const Node *n) { if (n->trivia) return n->trivia->inside; VecLead v; memset(&v, 0, sizeof v); return v; }
 static Trivia *triv_mut(Arena *a, Node *n) {
@@ -759,10 +781,10 @@ static Trivia *triv_mut(Arena *a, Node *n) {
 }
 
 /* The as-authored name spelling; empty name_src means "same as name". */
-static S node_authored(const Node *n) { return n->name_src.n ? n->name_src : n->name; }
+static Str node_authored(const Node *n) { return n->name_src.n ? n->name_src : n->name; }
 /* Store a name's authored spelling: the empty sentinel when it matches the
    folded name, so the duplicate string never gets allocated. */
-static S spelled(Arena *a, S name, S name_src) {
+static Str spelled(Arena *a, Str name, Str name_src) {
 	return s_eq(name_src, name) ? s_empty() : s_dup(a, name_src);
 }
 
@@ -778,7 +800,7 @@ static void fold_node_into(shcl_doc *d, size_t survivor, size_t loser) {
 		VecSize_push(a, &NODE(d, survivor).children, kids.data[k]);
 	}
 	NODE(d, loser).children.len = 0;
-	Trivia *lt = NODE(d, loser).trivia;
+	const Trivia *lt = NODE(d, loser).trivia;
 	if (lt) {
 		NODE(d, loser).trivia = NULL;
 		Trivia *st = triv_mut(a, &NODE(d, survivor));
@@ -798,7 +820,7 @@ static void fold_node_into(shcl_doc *d, size_t survivor, size_t loser) {
 static Value v_empty(void) { Value v; memset(&v, 0, sizeof v); v.kind = V_EMPTY; return v; }
 static int v_is_empty(const Value *v) { return v->kind == V_EMPTY; }
 
-static S value_display(Arena *a, const Value *v) {
+static Str value_display(Arena *a, const Value *v) {
 	if (v->kind == V_EMPTY) return s_empty();
 	if (v->kind == V_RAW) return v->raw->content;
 	SB s = {0};
@@ -811,10 +833,11 @@ static S value_display(Arena *a, const Value *v) {
 // Split off an unquoted trailing comment: returns the content, *comment gets
 // the tail from `#` on (n == 0 = none). A backslash shields the next char.
 // Comments are kept as trivia.
-static S split_comment(S s, S *comment) {
+static Str split_comment(Str s, Str *comment) {
 	uint32_t inq = 0; // 0 = none, else the open quote codepoint
 	size_t i = 0;
 	*comment = s_empty();
+	if (!memchr(s.p, '#', s.n)) return s;
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
 		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
@@ -826,8 +849,9 @@ static S split_comment(S s, S *comment) {
 	return s;
 }
 // Split on unquoted commas; backslash shields the next char. Emits byte offsets.
-static void split_unquoted_commas(Arena *a, S s, VecSize *offs_start, VecSize *offs_end) {
+static void split_unquoted_commas(Arena *a, Str s, VecSize *offs_start, VecSize *offs_end) {
 	uint32_t inq = 0; size_t i = 0, start = 0;
+	if (!memchr(s.p, ',', s.n)) { VecSize_push(a, offs_start, 0); VecSize_push(a, offs_end, s.n); return; }
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
 		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
@@ -839,8 +863,9 @@ static void split_unquoted_commas(Arena *a, S s, VecSize *offs_start, VecSize *o
 	VecSize_push(a, offs_start, start); VecSize_push(a, offs_end, s.n);
 }
 // Count of comma-split pieces (used where the reference only needs .len()).
-static size_t count_unquoted_pieces(S s) {
+static size_t count_unquoted_pieces(Str s) {
 	uint32_t inq = 0; size_t i = 0, n = 1;
+	if (!memchr(s.p, ',', s.n)) return 1;
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
 		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
@@ -855,13 +880,13 @@ static size_t count_unquoted_pieces(S s) {
 // A dangling trailing backslash would swallow its separator on re-emit; double
 // it. Text that needs no doubling passes through as the slice it came in as -
 // the store sites own the copy question (s_keep, or an explicit dup).
-static S norm_dangling(Arena *a, S t) {
+static Str norm_dangling(Arena *a, Str t) {
 	size_t run = 0;
 	while (run < t.n && t.p[t.n - 1 - run] == '\\') run++;
 	if (run % 2 == 1) {
 		char *m = (char *)arena_alloc(a, t.n + 1);
 		memcpy(m, t.p, t.n); m[t.n] = '\\';
-		S r; r.p = m; r.n = t.n + 1; return r;
+		Str r; r.p = m; r.n = t.n + 1; return r;
 	}
 	return t;
 }
@@ -871,58 +896,55 @@ static S norm_dangling(Arena *a, S t) {
    already swallowed any trailing # comment into it - so the parser calls it
    out instead of letting the typo look deliberate. Mid-text apostrophes
    (it's fine) are legal prose and stay silent. */
-static int unterminated_quote(Arena *a, S text) {
+static int quoted_shape(Str t);
+static int unterminated_quote(Arena *a, Str text) {
+	if (!memchr(text.p, '"', text.n) && !memchr(text.p, '\'', text.n)) return 0;
 	VecSize starts = {0}, ends = {0};
 	split_unquoted_commas(a, text, &starts, &ends);
 	for (size_t i = 0; i < starts.len; i++) {
-		S piece; piece.p = text.p + starts.data[i]; piece.n = ends.data[i] - starts.data[i];
-		S t = s_trim(piece);
-		if (t.n == 0) continue;
-		/* Bytes, not code points: both quotes and the backslash are ASCII, and
-		   UTF-8 never puts an ASCII byte inside a multibyte sequence, so the
-		   first byte, the last byte and the escape parity are the same answers
-		   the decoded form gives. Decoding here allocated a u32 array per
-		   element of every line parsed. */
-		unsigned char first = (unsigned char)t.p[0];
-		if (first != '"' && first != '\'') continue;
-		int closed = 0;
-		if (t.n >= 2 && (unsigned char)t.p[t.n - 1] == first) {
-			int esc = 0;
-			for (size_t k = 1; k + 1 < t.n; k++) esc = (t.p[k] == '\\' && !esc);
-			closed = !esc;
+		Str piece; piece.p = text.p + starts.data[i]; piece.n = ends.data[i] - starts.data[i];
+		Str t = s_trim(piece);
+		if (!quoted_shape(t)) {
+			if (t.n == 0) continue;
+			unsigned char first = (unsigned char)t.p[0];
+			if (first == '"' || first == '\'') return 1;
 		}
-		if (!closed) return 1;
 	}
 	return 0;
+}
+
+/* True when the text is one quote pair: a quote char at both ends, the last
+   one not escaped. Quotes and the backslash are ASCII (and UTF-8 never puts an
+   ASCII byte inside a multibyte sequence), so bytes suffice. */
+static int quoted_shape(Str t) {
+	if (t.n == 0) return 0;
+	unsigned char first = (unsigned char)t.p[0];
+	if ((first != '"' && first != '\'') || t.n < 2 || (unsigned char)t.p[t.n - 1] != first) return 0;
+	int esc = 0;
+	for (size_t i = 1; i + 1 < t.n; i++) esc = (t.p[i] == '\\' && !esc);
+	return !esc;
 }
 
 // Trim, then strip one matching outer quote pair if present. present=0 -> dropped.
 // The text is stored raw (escapes NOT applied), so both shapes are exact source
 // slices - only a dangling-backslash bare element builds a new string.
-static int parse_element(Arena *a, S piece, Element *out) {
-	S t = s_trim(piece);
+static int parse_element(Arena *a, Str piece, Element *out) {
+	Str t = s_trim(piece);
 	if (t.n == 0) return 0;
-	/* Bytes, not code points - see unterminated_quote for why the answers are
-	   identical, and why this used to allocate per element of every line. */
-	unsigned char first = (unsigned char)t.p[0];
-	if ((first == '"' || first == '\'') && t.n >= 2 && (unsigned char)t.p[t.n - 1] == first) {
-		int esc = 0;
-		for (size_t i = 1; i + 1 < t.n; i++) esc = (t.p[i] == '\\' && !esc);
-		if (!esc) {
-			out->text = s_slice(t, 1, t.n - 1);
-			out->quoted = 1; return 1;
-		}
+	if (quoted_shape(t)) {
+		out->text = s_slice(t, 1, t.n - 1);
+		out->quoted = 1; return 1;
 	}
 	out->text = norm_dangling(a, t);
 	out->quoted = 0; return 1;
 }
 // Reads text as the value half of a line - see shcl_set_literal.
-static int literal_value(Arena *a, Arena *tmp, S text, Value *out);
+static int literal_value(Arena *a, Arena *tmp, Str text, Value *out);
 
 // Element texts land in `a` (only when built - see parse_element); the comma
 // offsets and the growing element vector are per-call temporaries and go to
 // `tmp`, so only the exact-size final array reaches the document arena.
-static Value parse_cell(Arena *a, Arena *tmp, S text) {
+static Value parse_cell(Arena *a, Arena *tmp, Str text) {
 	VecSize starts = {0}, ends = {0};
 	split_unquoted_commas(tmp, text, &starts, &ends);
 	VecEl els = {0};
@@ -939,7 +961,11 @@ static Value parse_cell(Arena *a, Arena *tmp, S text) {
 }
 
 // Escape processing (string reads): \t \n \\ \" \'; unknown escapes stay literal.
-static S apply_escapes(Arena *a, S s) {
+// Text with no backslash comes back as the slice it came in as - a read of a
+// plain field must not build a copy in the arena (a million reads of one
+// field grew a document by 32 MB).
+static Str apply_escapes(Arena *a, Str s) {
+	if (!memchr(s.p, '\\', s.n)) return s;
 	SB out = {0};
 	size_t i = 0;
 	while (i < s.n) {
@@ -967,7 +993,7 @@ static S apply_escapes(Arena *a, S s) {
    the list a, b stop meeting the same selector. */
 static int single_scalar(const Value *v) { return v->kind == V_CELL && v->nels == 1; }
 
-static S disp_key(Arena *a, const Value *v) {
+static Str disp_key(Arena *a, const Value *v) {
 	return apply_escapes(a, value_display(a, v));
 }
 
@@ -976,7 +1002,7 @@ static S disp_key(Arena *a, const Value *v) {
 // strings themselves never get built. The hash only has to be stable within
 // one parse, not injective; a collision just chains in the slot.
 static uint64_t fnv_byte(uint64_t h, unsigned char b) { return (h ^ b) * 1099511628211ull; }
-static uint64_t fnv_str(uint64_t h, S s) {
+static uint64_t fnv_str(uint64_t h, Str s) {
 	for (size_t i = 0; i < s.n; i++) h = fnv_byte(h, (unsigned char)s.p[i]);
 	return h;
 }
@@ -988,17 +1014,23 @@ static uint64_t fnv_dec(uint64_t h, size_t n) {
 	while (i < sizeof buf) h = fnv_byte(h, (unsigned char)buf[i++]);
 	return h;
 }
-static uint64_t cmap_hash(S name, S key) {
+static uint64_t cmap_hash(Str name, Str key) {
 	uint64_t h = 1469598103934665603ull;
 	h = fnv_str(h, name);
 	h = fnv_byte(h, 0xFFu); /* separator; equality still verifies both parts */
 	return fnv_str(h, key);
 }
+static uint64_t name_key(size_t parent, Str name) {
+	uint64_t h = 1469598103934665603ull;
+	h = fnv_dec(h, parent);
+	h = fnv_byte(h, 0xFFu);
+	return fnv_str(h, name);
+}
 
 /* Hash of the (name, merge-key) pair, spelling the merge-key byte sequence -
    'e', or each cell element (and the raw info-string) length-prefixed so the
    sequence is injective - without building it as a string. */
-static uint64_t merge_hash(S name, const Value *v) {
+static uint64_t merge_hash(Str name, const Value *v) {
 	uint64_t h = 1469598103934665603ull;
 	h = fnv_str(h, name);
 	h = fnv_byte(h, 0xFFu);
@@ -1035,7 +1067,7 @@ static int value_eq(const Value *a, const Value *b) {
 	}
 	return s_eq(a->raw->info, b->raw->info) && s_eq(a->raw->content, b->raw->content);
 }
-static int merge_eq(S name_a, const Value *va, S name_b, const Value *vb) {
+static int merge_eq(Str name_a, const Value *va, Str name_b, const Value *vb) {
 	return s_eq(name_a, name_b) && value_eq(va, vb);
 }
 
@@ -1062,7 +1094,7 @@ static void esc_push(EscHash *e, unsigned char b) {
 		e->h = fnv_byte(e->h, b);
 	}
 }
-static void esc_str(EscHash *e, S s) {
+static void esc_str(EscHash *e, Str s) {
 	for (size_t i = 0; i < s.n; i++) esc_push(e, (unsigned char)s.p[i]);
 }
 static uint64_t esc_finish(EscHash *e) {
@@ -1072,7 +1104,7 @@ static uint64_t esc_finish(EscHash *e) {
 
 /* Hash of the (name, display-with-escapes-applied) pair a `[value]` selector
    matches with - what disp_key spells, streamed instead of built. */
-static uint64_t disp_hash(S name, const Value *v) {
+static uint64_t disp_hash(Str name, const Value *v) {
 	EscHash e;
 	e.h = 1469598103934665603ull;
 	e.h = fnv_str(e.h, name);
@@ -1090,13 +1122,13 @@ static uint64_t disp_hash(S name, const Value *v) {
 }
 /* The query-side twin of disp_hash: the selector's text already has its
    escapes applied, so its bytes feed straight in. */
-static uint64_t disp_hash_text(S name, S want) { return cmap_hash(name, want); }
+static uint64_t disp_hash_text(Str name, Str want) { return cmap_hash(name, want); }
 
 // Opening fence: a run of >=3 backticks or tildes, then an optional info string.
 // The info is a slice of rest; the parse stores it as a slice of the retained
 // input copy.
-typedef struct { int ok; unsigned char ch; size_t len; S info; } Fence;
-static Fence fence_open(S rest) {
+typedef struct { int ok; unsigned char ch; size_t len; Str info; } Fence;
+static Fence fence_open(Str rest) {
 	Fence f; f.ok = 0; f.ch = 0; f.len = 0; f.info = s_empty();
 	if (rest.n == 0) return f;
 	unsigned char first = (unsigned char)rest.p[0];
@@ -1108,18 +1140,24 @@ static Fence fence_open(S rest) {
 	f.info = s_trim(s_slice(rest, run, rest.n));
 	return f;
 }
-static int is_fence_close(S line, unsigned char ch, size_t min_len) {
-	S t = s_trim(line);
+static int is_fence_close(Str line, unsigned char ch, size_t min_len) {
+	Str t = s_trim(line);
 	if (t.n < min_len || t.n == 0) return 0;
 	for (size_t i = 0; i < t.n; i++) if ((unsigned char)t.p[i] != ch) return 0;
 	return 1;
 }
 
-/* Remove a raw block's common indent from one content line. A whitespace-only
-   line took no part in computing that indent, so it can be shorter than it -
-   strip only what it actually shares, rather than blanking it. Blanking drops
-   author spacing on a line the spec calls verbatim. */
-static S strip_common(S line, S common) {
+/* The leading space/tab run of a line (the indent). */
+static Str leading_ws(Str line) {
+	size_t n = 0;
+	while (n < line.n && (line.p[n] == ' ' || line.p[n] == '\t')) n++;
+	return s_slice(line, 0, n);
+}
+
+/* Remove a raw block's nesting indent from one content line: only what the
+   line actually shares with it, so a shallower line (whitespace-only, or
+   written flush left) keeps its own spacing rather than being blanked. */
+static Str strip_common(Str line, Str common) {
 	size_t k = 0;
 	while (k < common.n && k < line.n && common.p[k] == line.p[k]) k++;
 	return s_slice(line, k, line.n);
@@ -1132,13 +1170,13 @@ typedef enum { SEL_NONE, SEL_VALUE, SEL_INDEX, SEL_WILDCARD } seltag;
    scalar-only - it matches a single-element value whose logical string equals
    the text - so quoting distinguishes the scalar "a, b" from the two-element
    list a, b, the same way quoting escapes elsewhere. */
-typedef struct { seltag tag; S value; uint64_t index; int quoted; } Selector; // u64: width must not vary with target pointer size
-typedef struct { S name; S name_src; Selector sel; int star; } Segment; // name_src: as authored (unfolded); star: bare `*` name wildcard; quoted "*" stays a literal name
+typedef struct { seltag tag; Str value; uint64_t index; int quoted; } Selector; // u64: width must not vary with target pointer size
+typedef struct { Str name; Str name_src; Selector sel; int star; } Segment; // name_src: as authored (unfolded); star: bare `*` name wildcard; quoted "*" stays a literal name
 DEFINE_VEC(VecSeg, Segment)
-typedef struct { int ok; VecSeg segs; int has_value; S value_text; S err; } PathScan;
+typedef struct { int ok; VecSeg segs; int has_value; Str value_text; Str err; } PathScan;
 
 // usize parse: optional single leading '+', >=1 digit, no overflow.
-static int parse_u64(S s, uint64_t *out) {
+static int parse_u64(Str s, uint64_t *out) {
 	size_t i = 0;
 	if (i < s.n && s.p[i] == '+') i++;
 	if (i >= s.n) return 0;
@@ -1156,7 +1194,7 @@ static int parse_u64(S s, uint64_t *out) {
 // was a parse hot spot). Positions advance by whole codepoints via the same
 // utf8_decode, so the codepoint sequence - and every slice boundary - is
 // identical to the old array walk, permissive decoding included.
-static void skip_ws_path(S s, size_t *pos) {
+static void skip_ws_path(Str s, size_t *pos) {
 	while (*pos < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, *pos, &c);
 		if (c != ' ' && c != '\t') break;
@@ -1164,7 +1202,7 @@ static void skip_ws_path(S s, size_t *pos) {
 	}
 }
 // Read a quoted name/value in a path (escape pairs preserved literally).
-static int read_quoted_path(Arena *a, S src, size_t *pos, S *out, S *err) {
+static int read_quoted_path(Arena *a, Str src, size_t *pos, Str *out, Str *err) {
 	uint32_t q; *pos += utf8_decode(src.p, src.n, *pos, &q);
 	SB sb = {0};
 	for (;;) {
@@ -1181,7 +1219,7 @@ static int read_quoted_path(Arena *a, S src, size_t *pos, S *out, S *err) {
 	}
 }
 
-static PathScan scan_path_ex(Arena *a, S input, int stars) {
+static PathScan scan_path_ex(Arena *a, Str input, int stars) {
 	PathScan ps; ps.ok = 0; memset(&ps.segs, 0, sizeof ps.segs); ps.has_value = 0; ps.value_text = s_empty(); ps.err = s_empty();
 	size_t pos = 0;
 	for (;;) {
@@ -1189,7 +1227,7 @@ static PathScan scan_path_ex(Arena *a, S input, int stars) {
 		if (pos >= input.n) { ps.err = s_lit("empty path"); return ps; }
 		// Field name: quoted, bare, or (lookups only) the `*` name wildcard.
 		int star = 0;
-		S name;
+		Str name;
 		uint32_t cur; size_t curl = utf8_decode(input.p, input.n, pos, &cur);
 		if (cur == '"' || cur == '\'') {
 			if (!read_quoted_path(a, input, &pos, &name, &ps.err)) return ps;
@@ -1231,7 +1269,7 @@ static PathScan scan_path_ex(Arena *a, S input, int stars) {
 			if (pos < input.n) ocl = utf8_decode(input.p, input.n, pos, &oc);
 			(void)ocl;
 			if (pos < input.n && (oc == '"' || oc == '\'')) {
-				S v; if (!read_quoted_path(a, input, &pos, &v, &ps.err)) return ps;
+				Str v; if (!read_quoted_path(a, input, &pos, &v, &ps.err)) return ps;
 				sel.tag = SEL_VALUE; sel.value = v; sel.quoted = 1; // quotes force a value match, even numeric - and scalar-only
 			} else {
 				size_t start = pos;
@@ -1240,7 +1278,7 @@ static PathScan scan_path_ex(Arena *a, S input, int stars) {
 					if (bc == ']') break;
 					pos += bl;
 				}
-				S body = s_trim(s_slice(input, start, pos));
+				Str body = s_trim(s_slice(input, start, pos));
 				uint64_t idx;
 				if (body.n == 1 && body.p[0] == '*') {
 					sel.tag = SEL_WILDCARD;
@@ -1282,11 +1320,11 @@ static PathScan scan_path_ex(Arena *a, S input, int stars) {
 	}
 }
 
-static PathScan scan_path(Arena *a, S input) { return scan_path_ex(a, input, 0); }
+static PathScan scan_path(Arena *a, Str input) { return scan_path_ex(a, input, 0); }
 // Query spelling of scan_path: also accepts a bare `*` segment (the name
 // wildcard - any child name). Document lines never take it; only lookups
 // (reads, the writer probe, schema paths) do.
-static PathScan scan_lookup(Arena *a, S input) { return scan_path_ex(a, input, 1); }
+static PathScan scan_lookup(Arena *a, Str input) { return scan_path_ex(a, input, 1); }
 
 // --- small integer/string helpers used below --------------------------------
 
@@ -1298,9 +1336,9 @@ static void sb_put_u64(Arena *a, SB *s, uint64_t v) {
 	// cppcheck-suppress uninitvar  ## j >= 1 always (v==0 writes '0'), so o[0..j-1] is filled
 	sb_put(a, s, o, (size_t)j);
 }
-static int s_contains_char(S s, char c) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == c) return 1; return 0; }
+static int s_contains_char(Str s, char c) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == c) return 1; return 0; }
 
-typedef struct { S indent; size_t node; } StackEnt;
+typedef struct { Str indent; size_t node; } StackEnt;
 DEFINE_VEC(VecStack, StackEnt)
 typedef struct { int present; size_t idx; shcl_status miss; } Slot;
 DEFINE_VEC(VecSlot, Slot)
@@ -1311,7 +1349,7 @@ static const uint32_t SHCL_CURRENCY[] = {
 	'$', 0xA2, 0xA3, 0xA4, 0xA5, 0x20A9, 0x20AA, 0x20AB, 0x20AC, 0x20AD,
 	0x20AE, 0x20B1, 0x20B2, 0x20B4, 0x20B9, 0x20BA, 0x20BC, 0x20BD, 0x20BE, 0x20BF,
 };
-static S strip_currency(S t) {
+static Str strip_currency(Str t) {
 	if (t.n == 0) return t;
 	uint32_t c; size_t l = utf8_decode(t.p, t.n, 0, &c);
 	for (size_t i = 0; i < sizeof(SHCL_CURRENCY) / sizeof(SHCL_CURRENCY[0]); i++)
@@ -1320,7 +1358,7 @@ static S strip_currency(S t) {
 }
 
 // [+/-]digits, fully consumed, no overflow.
-static int parse_i64_s(S t, int64_t *out) {
+static int parse_i64_s(Str t, int64_t *out) {
 	size_t i = 0; int neg = 0;
 	if (i < t.n && (t.p[i] == '+' || t.p[i] == '-')) { neg = (t.p[i] == '-'); i++; }
 	if (i >= t.n) return 0;
@@ -1338,7 +1376,7 @@ static int parse_i64_s(S t, int64_t *out) {
 // magnitude hex in [0, INT64_MAX]; overflow -> fail.
 // The magnitude, as u64 (guarded against u64 overflow). The sign range-check is
 // the caller's, so the negative i64_min magnitude (0x8000000000000000) reads.
-static int parse_hex_u64(S h, uint64_t *out) {
+static int parse_hex_u64(Str h, uint64_t *out) {
 	uint64_t v = 0;
 	for (size_t i = 0; i < h.n; i++) {
 		unsigned char c = (unsigned char)h.p[i]; int d;
@@ -1351,7 +1389,7 @@ static int parse_hex_u64(S h, uint64_t *out) {
 	}
 	*out = v; return 1;
 }
-static void split_byte(Arena *a, S s, char sep, VecS *out) {
+static void split_byte(Arena *a, Str s, char sep, VecS *out) {
 	size_t start = 0;
 	for (size_t i = 0; i <= s.n; i++)
 		if (i == s.n || s.p[i] == sep) { VecS_push(a, out, s_slice(s, start, i)); start = i + 1; }
@@ -1360,26 +1398,26 @@ static void split_byte(Arena *a, S s, char sep, VecS *out) {
 static int parse_int_text(Arena *a, const Element *e, shcl_strictness level, int64_t *out);
 static int parse_float_text(Arena *a, const Element *e, shcl_strictness level, double *out);
 
-static int float_shape_ok(S t) {
-	S body = t;
+static int float_shape_ok(Str t) {
+	Str body = t;
 	if (body.n > 0 && (body.p[0] == '+' || body.p[0] == '-')) body = s_slice(body, 1, body.n);
 	if (body.n == 0) return 0;
-	S mant = body, exp = s_empty(); int has_exp = 0;
+	Str mant = body, exp = s_empty(); int has_exp = 0;
 	for (size_t i = 0; i < body.n; i++)
 		if (body.p[i] == 'e' || body.p[i] == 'E') { mant = s_slice(body, 0, i); exp = s_slice(body, i + 1, body.n); has_exp = 1; break; }
 	if (has_exp) {
-		S xb = exp;
+		Str xb = exp;
 		if (xb.n > 0 && (xb.p[0] == '+' || xb.p[0] == '-')) xb = s_slice(xb, 1, xb.n);
 		if (xb.n == 0 || !all_adigit0(xb)) return 0;
 	}
-	S ip = mant, fp = s_empty(); int has_dot = 0;
+	Str ip = mant, fp = s_empty(); int has_dot = 0;
 	for (size_t i = 0; i < mant.n; i++)
 		if (mant.p[i] == '.') { ip = s_slice(mant, 0, i); fp = s_slice(mant, i + 1, mant.n); has_dot = 1; break; }
 	(void)has_dot;
 	if (ip.n == 0 && fp.n == 0) return 0;
 	return all_adigit0(ip) && all_adigit0(fp);
 }
-static int strtod_full(Arena *a, S t, double *out) {
+static int strtod_full(Arena *a, Str t, double *out) {
 	const char *dp = dec_point(); size_t dn = strlen(dp);
 	char *buf = (char *)arena_alloc(a, t.n * dn + 1);
 	size_t j = 0;
@@ -1393,7 +1431,7 @@ static int strtod_full(Arena *a, S t, double *out) {
 	*out = v; return 1;
 }
 static int parse_float_text(Arena *a, const Element *e, shcl_strictness level, double *out) {
-	S t = s_trim(e->text); int percent = 0;
+	Str t = s_trim(e->text); int percent = 0;
 	if (level == SHCL_LOOSE) {
 		t = strip_currency(t);
 		if (t.n > 0 && t.p[t.n - 1] == '%') { t = trim_end(s_slice(t, 0, t.n - 1)); percent = 1; }
@@ -1410,16 +1448,16 @@ static int parse_float_text(Arena *a, const Element *e, shcl_strictness level, d
 	*out = percent ? v / 100.0 : v; return 1;
 }
 static int parse_int_text(Arena *a, const Element *e, shcl_strictness level, int64_t *out) {
-	S t = s_trim(e->text);
+	Str t = s_trim(e->text);
 	if (level == SHCL_LOOSE) t = strip_currency(t);
-	S body = t;
+	Str body = t;
 	if (body.n > 0 && (body.p[0] == '+' || body.p[0] == '-')) body = s_slice(body, 1, body.n);
 	if (body.n > 0 && all_adigit0(body)) return parse_i64_s(t, out);
-	int neg = 0; S hex = t;
+	int neg = 0; Str hex = t;
 	if (t.n > 0 && t.p[0] == '-') { neg = 1; hex = s_slice(t, 1, t.n); }
 	else if (t.n > 0 && t.p[0] == '+') { hex = s_slice(t, 1, t.n); }
 	if (s_starts(hex, "0x") || s_starts(hex, "0X")) {
-		S h = s_slice(hex, 2, hex.n);
+		Str h = s_slice(hex, 2, hex.n);
 		if (all_ahex(h)) {
 			uint64_t m; if (!parse_hex_u64(h, &m)) return 0;
 			if (neg) {
@@ -1434,7 +1472,7 @@ static int parse_int_text(Arena *a, const Element *e, shcl_strictness level, int
 		}
 	}
 	if (e->quoted && s_contains_char(t, ',')) {
-		S sign_body = t;
+		Str sign_body = t;
 		if (sign_body.n > 0 && (sign_body.p[0] == '+' || sign_body.p[0] == '-')) sign_body = s_slice(sign_body, 1, sign_body.n);
 		VecS groups = {0}; split_byte(a, sign_body, ',', &groups);
 		int wf = groups.len > 1 && groups.data[0].n > 0 && groups.data[0].n <= 3 && all_adigit0(groups.data[0]);
@@ -1457,8 +1495,8 @@ static int parse_int_text(Arena *a, const Element *e, shcl_strictness level, int
 	}
 	return 0;
 }
-static int parse_bool_text(Arena *a, S t, shcl_strictness level, int *out) {
-	S s = ascii_lower(a, s_trim(t));
+static int parse_bool_text(Arena *a, Str t, shcl_strictness level, int *out) {
+	Str s = ascii_lower(a, s_trim(t));
 	#define SHCL_EQ(z) (s.n == strlen(z) && memcmp(s.p, z, s.n) == 0)
 	if (SHCL_EQ("true")) { *out = 1; return 1; }
 	if (SHCL_EQ("false")) { *out = 0; return 1; }
@@ -1475,14 +1513,14 @@ static int parse_bool_text(Arena *a, S t, shcl_strictness level, int *out) {
 
 // --- date/time (closed whitelist; shape match, then calendar validation) -----
 
-static uint32_t month_from_name(Arena *a, S s) {
+static uint32_t month_from_name(Arena *a, Str s) {
 	static const char *names[] = {
 		"jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec",
 		"january","february","march","april","june","july","august","september",
 		"october","november","december"
 	};
 	static const uint32_t vals[] = { 1,2,3,4,5,6,7,8,9,10,11,12, 1,2,3,4,6,7,8,9,10,11,12 };
-	S l = ascii_lower(a, s);
+	Str l = ascii_lower(a, s);
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
 		if (l.n == strlen(names[i]) && memcmp(l.p, names[i], l.n) == 0) return vals[i];
 	return 0;
@@ -1498,24 +1536,24 @@ static uint32_t days_in_month(int32_t y, uint32_t m) {
 static int valid_date(int32_t y, uint32_t m, uint32_t d) {
 	return m >= 1 && m <= 12 && d >= 1 && d <= days_in_month(y, m);
 }
-static int parse_num2(S s, uint32_t *out) {
+static int parse_num2(Str s, uint32_t *out) {
 	if (!(s.n == 1 || s.n == 2) || !all_adigit0(s)) return 0;
-	uint32_t v = 0; for (size_t i = 0; i < s.n; i++) v = v * 10 + (s.p[i] - '0');
+	uint32_t v = 0; for (size_t i = 0; i < s.n; i++) v = v * 10 + (uint32_t)(s.p[i] - '0');
 	*out = v; return 1;
 }
-static int parse_year4(S s, int32_t *out) {
+static int parse_year4(Str s, int32_t *out) {
 	if (s.n != 4 || !all_adigit0(s)) return 0;
 	int32_t v = 0; for (size_t i = 0; i < s.n; i++) v = v * 10 + (s.p[i] - '0');
 	*out = v; return 1;
 }
-static int parse_u32_lenient(S s, uint32_t *out) {
+static int parse_u32_lenient(Str s, uint32_t *out) {
 	size_t i = 0; if (i < s.n && s.p[i] == '+') i++;
 	if (i >= s.n) return 0;
 	uint64_t v = 0;
 	for (; i < s.n; i++) { unsigned char c = (unsigned char)s.p[i]; if (!is_adigit(c)) return 0; v = v * 10 + (c - '0'); if (v > 0xFFFFFFFFull) return 0; }
 	*out = (uint32_t)v; return 1;
 }
-static void split_ws(Arena *a, S s, VecS *out) {
+static void split_ws(Arena *a, Str s, VecS *out) {
 	size_t i = 0;
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
@@ -1526,7 +1564,7 @@ static void split_ws(Arena *a, S s, VecS *out) {
 	}
 }
 typedef struct { int ok; int32_t y; uint32_t m, d; } DatePart;
-static DatePart parse_date_part(Arena *a, S s) {
+static DatePart parse_date_part(Arena *a, Str s) {
 	DatePart r; r.ok = 0; r.y = 0; r.m = 0; r.d = 0;
 	s = s_trim(s);
 	if (s.n == 8 && all_adigit0(s)) {
@@ -1538,7 +1576,7 @@ static DatePart parse_date_part(Arena *a, S s) {
 	if (toks.len == 3) {
 		uint32_t mm;
 		if ((mm = month_from_name(a, toks.data[0]))) {
-			S day_tok = toks.data[1];
+			Str day_tok = toks.data[1];
 			if (day_tok.n > 0 && day_tok.p[day_tok.n - 1] == ',') day_tok = s_slice(day_tok, 0, day_tok.n - 1);
 			uint32_t d; int32_t y;
 			if (parse_u32_lenient(day_tok, &d) && parse_year4(toks.data[2], &y) && valid_date(y, mm, d)) { r.ok = 1; r.y = y; r.m = mm; r.d = d; }
@@ -1580,16 +1618,16 @@ static DatePart parse_date_part(Arena *a, S s) {
 }
 typedef struct {
 	int ok; uint32_t h, mi; int has_sec; uint32_t sec;
-	int has_frac; S frac; shcl_zone_kind zone; int32_t off;
+	int has_frac; Str frac; shcl_zone_kind zone; int32_t off;
 } TimePart;
 static uint32_t low_a(unsigned char c) { return (c >= 'A' && c <= 'Z') ? (uint32_t)(c + 32) : c; }
-static TimePart parse_time_part(Arena *a, S s) {
+static TimePart parse_time_part(Arena *a, Str s) {
 	TimePart r; memset(&r, 0, sizeof r); r.zone = SHCL_ZONE_NONE;
-	S t = s_trim(s);
+	Str t = s_trim(s);
 	if (t.n > 0 && (t.p[t.n - 1] == 'Z' || t.p[t.n - 1] == 'z')) {
 		r.zone = SHCL_ZONE_UTC; t = trim_end(s_slice(t, 0, t.n - 1));
 	} else if (t.n >= 6 && ((unsigned char)t.p[t.n - 6] & 0xC0) != 0x80) {
-		S tail = s_slice(t, t.n - 6, t.n);
+		Str tail = s_slice(t, t.n - 6, t.n);
 		unsigned char sign = (unsigned char)tail.p[0];
 		if ((sign == '+' || sign == '-') && is_adigit((unsigned char)tail.p[1]) && is_adigit((unsigned char)tail.p[2])
 			&& tail.p[3] == ':' && is_adigit((unsigned char)tail.p[4]) && is_adigit((unsigned char)tail.p[5])) {
@@ -1606,9 +1644,9 @@ static TimePart parse_time_part(Arena *a, S s) {
 	if (t.n >= 2 && low_a((unsigned char)t.p[t.n - 1]) == 'm' && low_a((unsigned char)t.p[t.n - 2]) == 'a') { meridiem = 0; t = s_slice(t, 0, t.n - 2); }
 	else if (t.n >= 2 && low_a((unsigned char)t.p[t.n - 1]) == 'm' && low_a((unsigned char)t.p[t.n - 2]) == 'p') { meridiem = 1; t = s_slice(t, 0, t.n - 2); }
 	t = trim_end(t);
-	S hms = t; S frac = s_empty(); int has_frac = 0;
+	Str hms = t; Str frac = s_empty(); int has_frac = 0;
 	for (size_t i = 0; i < t.n; i++) if (t.p[i] == '.') {
-		hms = s_slice(t, 0, i); S f = s_slice(t, i + 1, t.n);
+		hms = s_slice(t, 0, i); Str f = s_slice(t, i + 1, t.n);
 		if (f.n == 0 || f.n > 9 || !all_adigit0(f)) return r;
 		frac = f; has_frac = 1; break;
 	}
@@ -1632,9 +1670,9 @@ static TimePart parse_time_part(Arena *a, S s) {
 	r.has_frac = has_frac; r.frac = frac;
 	return r;
 }
-static int parse_datetime(Arena *a, S text, shcl_datetime *out) {
+static int parse_datetime(Arena *a, Str text, shcl_datetime *out) {
 	memset(out, 0, sizeof *out); out->zone = SHCL_ZONE_NONE;
-	S t = s_trim(text);
+	Str t = s_trim(text);
 	if (t.n == 0) return 0;
 	size_t colon = (size_t)-1;
 	for (size_t i = 0; i < t.n; i++) if (t.p[i] == ':') { colon = i; break; }
@@ -1680,8 +1718,6 @@ static int parse_datetime(Arena *a, S text, shcl_datetime *out) {
    insertion order (append, and the rehash preserves it) and first-inserted
    keeps winning like the scan did. A value that mutates in place (empty
    field filled, star element added) moves its entry via remap_child. */
-typedef struct CMapEnt { struct CMapEnt *next; uint64_t hash; size_t val; } CMapEnt;
-typedef struct { CMapEnt **buckets; size_t cap, len; } CMap;
 
 /* The per-node accelerator slots, the reference's lazy child_map/disp_map
    shape: 8 bytes per node, NULL until the node's first entry, the map struct
@@ -1754,7 +1790,7 @@ static void cmap_del(CMap *m, uint64_t h, size_t val) {
 /* A pending whole-line comment during parse: text, source indent (used only
    to decide whether it hangs on a deeper block), and the blank it consumed.
    Both strings slice the retained input copy. */
-typedef struct { S text; S indent; int blank_before; } Pend;
+typedef struct { Str text; Str indent; int blank_before; } Pend;
 DEFINE_VEC(VecPend, Pend)
 
 /* pending: whole-line comments waiting for the next line that binds a node.
@@ -1782,10 +1818,10 @@ DEFINE_VEC(VecPend, Pend)
    per node. Everything a node keeps (name, value, trivia text) is still dup'd
    into the document arena. Nothing resets scratch during a parse; the first
    read after it does. */
-typedef struct { shcl_doc *d; Arena *tmp; Arena *line; S src; VecStack stack; VecMapPtr cmaps; VecMapPtr dmaps; VecPend pending; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; VecSize reent_node; VecSize reent_line; } Parser;
+typedef struct { shcl_doc *d; Arena *tmp; Arena *line; Str src; VecStack stack; VecMapPtr cmaps; VecMapPtr dmaps; VecPend pending; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; VecSize reent_node; VecSize reent_line; } Parser;
 
 // The one place prose couples to a code, so the wording stays free everywhere else.
-static const char *diag_code(shcl_severity sev, S msg) {
+static const char *diag_code(shcl_severity sev, Str msg) {
 	if (s_starts(msg, "merged with ")) return "H002";
 	if (sev == SHCL_SEV_HINT) return "H001"; // repeated bare leaf
 	if (s_starts(msg, "field mixed with list elements")) return "E001";
@@ -1805,6 +1841,7 @@ static const char *diag_code(shcl_severity sev, S msg) {
 	if (s_starts(msg, "missing colon")) return "E015";
 	if (s_starts(msg, "nesting deeper than")) return "E016";
 	if (s_starts(msg, "unterminated quote in value")) return "E017";
+	if (s_starts(msg, "parent line was skipped")) return "E018";
 	if (s_starts(msg, "unknown field ")) return "V001";
 	if (s_starts(msg, "required path missing")) return "V002";
 	if (s_starts(msg, "wrong type at ")) return "V003";
@@ -1822,13 +1859,14 @@ static const char *diag_code(shcl_severity sev, S msg) {
 	if (s_starts(msg, "schema failed to load")) return "V099";
 	return "E000";
 }
-static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, S msg) {
+static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, Str msg) {
 	Diag dg; dg.line = line; dg.sev = sev; dg.message = msg; dg.code = diag_code(sev, msg);
 	VecDiag_push(&d->arena, &d->diags, dg);
 }
-static void p_err(Parser *P, size_t line, S msg) { push_diag(P->d, line, SHCL_SEV_ERROR, msg); }
+static void p_err(Parser *P, size_t line, Str msg) { push_diag(P->d, line, SHCL_SEV_ERROR, msg); }
 
 static void remap_child(Parser *P, size_t node, uint64_t old_key, uint64_t old_disp);
+static size_t find_by_value(Parser *P, size_t cur, Str name, Str text, int quoted);
 
 /* Apply a stacked list's deferred merge-key remap. Runs before any map lookup
    (and at end of parse), so the map is always fresh when queried. */
@@ -1838,7 +1876,7 @@ static void star_flush(Parser *P) {
 	remap_child(P, P->star_node, P->star_key, P->star_disp);
 }
 
-static size_t select_or_create(Parser *P, size_t parent, S name, S name_src, Value value, size_t line) {
+static size_t select_or_create(Parser *P, size_t parent, Str name, Str name_src, Value value, size_t line) {
 	Arena *a = &P->d->arena;
 	star_flush(P);
 	uint64_t h = merge_hash(name, &value);
@@ -1865,7 +1903,7 @@ static size_t select_or_create(Parser *P, size_t parent, S name, S name_src, Val
    sibling, like the scan did. */
 static void remap_child(Parser *P, size_t node, uint64_t old_key, uint64_t old_disp) {
 	size_t parent = NODE(P->d, node).parent;
-	S name = NODE(P->d, node).name;
+	Str name = NODE(P->d, node).name;
 	cmap_del(P->cmaps.data[parent], old_key, node);
 	uint64_t h = merge_hash(name, &NODE(P->d, node).value);
 	int already = 0;
@@ -1914,12 +1952,12 @@ static void fold_late_dups(Parser *P) {
    First trailing wins; a later one demotes to leading so nothing is lost.
    Comment text is stored verbatim, so pending and trailing alike are slices
    of the retained input copy - nothing to duplicate. */
-static void attach_trivia(Parser *P, size_t node, S trailing) {
+static void attach_trivia(Parser *P, size_t node, Str trailing) {
 	Arena *a = &P->d->arena;
 	if (P->pending.len) {
 		Trivia *t = triv_mut(a, &NODE(P->d, node));
 		for (size_t k = 0; k < P->pending.len; k++) {
-			Pend *p = &P->pending.data[k];
+			const Pend *p = &P->pending.data[k];
 			VecLead_push(a, &t->leading, lead_make(p->text, p->blank_before));
 		}
 		P->pending.len = 0;
@@ -1939,7 +1977,7 @@ static void attach_trivia(Parser *P, size_t node, S trailing) {
    whose children are all commented still owns them at their depth. Runs
    before the incoming line resolves (and at end of parse with the empty
    indent, so tail comments keep their block). */
-static void hang_deeper_pending(Parser *P, S new_indent) {
+static void hang_deeper_pending(Parser *P, Str new_indent) {
 	if (P->pending.len == 0) return;
 	Arena *a = &P->d->arena;
 	size_t w = 0;
@@ -1951,8 +1989,8 @@ static void hang_deeper_pending(Parser *P, S new_indent) {
 			   would emit below the child; keep it pending instead. */
 			size_t target = (size_t)-1; int at_own_level = 0;
 			for (size_t ii = P->stack.len; ii-- > 0;) {
-				S ind = P->stack.data[ii].indent; size_t n = P->stack.data[ii].node;
-				if (n != ROOT && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; at_own_level = ind.n == p.indent.n; break; }
+				Str ind = P->stack.data[ii].indent; size_t n = P->stack.data[ii].node;
+				if (n != ROOT && n != DEAD && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; at_own_level = ind.n == p.indent.n; break; }
 			}
 			if (target != (size_t)-1) {
 				Lead lead = lead_make(p.text, p.blank_before);
@@ -1967,9 +2005,9 @@ static void hang_deeper_pending(Parser *P, S new_indent) {
 	P->pending.len = w;
 }
 
-static int resolve_parent(Parser *P, S indent, size_t *out) {
+static int resolve_parent(Parser *P, Str indent, size_t *out) {
 	size_t top = P->stack.len - 1;
-	S ti = P->stack.data[top].indent; size_t tn = P->stack.data[top].node;
+	Str ti = P->stack.data[top].indent; size_t tn = P->stack.data[top].node;
 	if (indent.n > ti.n && (ti.n == 0 || memcmp(indent.p, ti.p, ti.n) == 0)) { *out = tn; return 1; }
 	for (size_t ii = P->stack.len; ii-- > 0;) {
 		if (s_eq(P->stack.data[ii].indent, indent)) {
@@ -1981,9 +2019,17 @@ static int resolve_parent(Parser *P, S indent, size_t *out) {
 	return 0;
 }
 
+/* Diagnose a line written under a skipped line, and skip it too. Its own
+   level stays dead so deeper lines go the same way. */
+static void skip_under_dead(Parser *P, size_t line, Str indent) {
+	p_err(P, line, s_lit("parent line was skipped; line skipped"));
+	P->d->lost++;
+	StackEnt se; se.indent = indent; se.node = DEAD; VecStack_push(P->tmp, &P->stack, se);
+}
+
 /* The single H002 wording site: the merge hint and the schema suppressor
    both come here, same discipline as h001_head. */
-static S h002_head(Arena *a, S name) {
+static Str h002_head(Arena *a, Str name) {
 	SB s = {0};
 	sb_puts(a, &s, "merged with '"); sb_putS(a, &s, name); sb_puts(a, &s, "' at ");
 	return sb_S(&s);
@@ -2018,7 +2064,7 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 	}
 	size_t cur = parent;
 	for (size_t i = 0; i < nsegs; i++) {
-		Segment *seg = &segs[i];
+		const Segment *seg = &segs[i];
 		int is_last = (i + 1 == nsegs);
 		switch (seg->sel.tag) {
 		case SEL_VALUE: {
@@ -2027,31 +2073,7 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 			   creating a spurious second one - via the dmaps accelerator (the
 			   inline spelling was quadratic in siblings without it). Create
 			   only when nothing matches. */
-			S want = apply_escapes(P->line, seg->sel.value);
-			uint64_t hd = disp_hash_text(seg->name, want);
-			size_t found = (size_t)-1;
-			/* Ownership in dmaps is by hash alone, so the one candidate is
-			   verified exactly against the arena; a failed verify is a miss. */
-			{
-				CMapEnt *e = cmap_first(P->dmaps.data[cur], hd);
-				if (e && s_eq(NODE(P->d, e->val).name, seg->name)
-					&& s_eq(disp_key(P->line, &NODE(P->d, e->val).value), want))
-					found = e->val;
-			}
-			/* A quoted selector is scalar-only, and the accelerator keeps just
-			   the first same-display child - a later remap can drop an entry a
-			   different sibling still satisfies - so a non-scalar hit and an
-			   outright miss both fall to the (rare) fallback scan. */
-			if (found != (size_t)-1 && seg->sel.quoted && !single_scalar(&NODE(P->d, found).value)) {
-				found = (size_t)-1;
-			}
-			if (found == (size_t)-1 && seg->sel.quoted) {
-				VecSize ch = NODE(P->d, cur).children;
-				for (size_t k = 0; k < ch.len; k++) {
-					size_t c = ch.data[k];
-					if (s_eq(NODE(P->d, c).name, seg->name) && single_scalar(&NODE(P->d, c).value) && s_eq(disp_key(a, &NODE(P->d, c).value), want)) { found = c; break; }
-				}
-			}
+			size_t found = find_by_value(P, cur, seg->name, seg->sel.value, seg->sel.quoted);
 			if (found != (size_t)-1) {
 				cur = found;
 			} else {
@@ -2069,9 +2091,14 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 			break;
 		}
 		case SEL_INDEX: {
-			VecSize matches = {0}; VecSize ch = NODE(P->d, cur).children;
-			for (size_t k = 0; k < ch.len; k++) { size_t c = ch.data[k]; if (s_eq(NODE(P->d, c).name, seg->name)) VecSize_push(P->line, &matches, c); }
-			if (seg->sel.index < matches.len) cur = matches.data[seg->sel.index];
+			size_t found = (size_t)-1, nth = 0; VecSize ch = NODE(P->d, cur).children;
+			for (size_t k = 0; k < ch.len; k++) {
+				size_t c = ch.data[k];
+				if (!s_eq(NODE(P->d, c).name, seg->name)) continue;
+				if (nth == seg->sel.index) { found = c; break; }
+				nth++;
+			}
+			if (found != (size_t)-1) cur = found;
 			else {
 				SB m = {0}; sb_puts(a, &m, "no instance "); sb_put_u64(a, &m, seg->sel.index); sb_puts(a, &m, " of '"); sb_putS(a, &m, seg->name); sb_putc(a, &m, '\'');
 				p_err(P, line, sb_S(&m)); P->d->lost++; return 0;
@@ -2113,28 +2140,62 @@ static int attach_path(Parser *P, size_t parent, Segment *segs, size_t nsegs, Va
 	*out = cur; return 1;
 }
 
-static Value consume_raw(Parser *P, S *lines, size_t nlines, size_t i, size_t open_line, unsigned char ch, size_t len, S info, size_t *next) {
+/* The child of `cur` named `name` whose display form is the selector text
+   (escapes applied), or (size_t)-1. Quoted selectors only match a single
+   scalar. */
+static size_t find_by_value(Parser *P, size_t cur, Str name, Str text, int quoted) {
+	Str want = apply_escapes(P->line, text);
+	uint64_t hd = disp_hash_text(name, want);
+	size_t found = (size_t)-1;
+	/* Ownership in dmaps is by hash alone, so the one candidate is verified
+	   exactly against the arena; a failed verify is a miss. */
+	{
+		CMapEnt *e = cmap_first(P->dmaps.data[cur], hd);
+		if (e && s_eq(NODE(P->d, e->val).name, name)
+			&& s_eq(disp_key(P->line, &NODE(P->d, e->val).value), want))
+			found = e->val;
+	}
+	/* A quoted selector is scalar-only, and the accelerator keeps just the
+	   first same-display child - a later remap can drop an entry a different
+	   sibling still satisfies - so a non-scalar hit and an outright miss both
+	   fall to the (rare) fallback scan. */
+	if (found != (size_t)-1 && quoted && !single_scalar(&NODE(P->d, found).value)) {
+		found = (size_t)-1;
+	}
+	if (found == (size_t)-1 && quoted) {
+		VecSize ch = NODE(P->d, cur).children;
+		for (size_t k = 0; k < ch.len; k++) {
+			size_t c = ch.data[k];
+			if (s_eq(NODE(P->d, c).name, name) && single_scalar(&NODE(P->d, c).value) && s_eq(disp_key(P->line, &NODE(P->d, c).value), want)) { found = c; break; }
+		}
+	}
+	return found;
+}
+
+/* Consume raw-block content after an opening fence. Returns the value; *next
+   gets the next line index. The closing fence's indent is stripped from each
+   content line (the opening line's when the block never closes); the rest is
+   content. */
+static Value consume_raw(Parser *P, const Str *lines, size_t nlines, size_t i, size_t open_line, Str open_indent, Fence fence, size_t *next) {
 	Arena *a = &P->d->arena;
+	unsigned char ch = fence.ch; size_t len = fence.len; Str info = fence.info;
 	VecS content = {0}; int closed = 0; /* line list: parse-lifetime temporary */
+	Str nest = open_indent;
 	while (i < nlines) {
-		if (is_fence_close(lines[i], ch, len)) { closed = 1; i++; break; }
+		if (is_fence_close(lines[i], ch, len)) {
+			/* The closing fence's indent is the nesting; everything a content
+			   line carries past it is content, so a body whose lines all
+			   share an indent keeps it (a writer-built block depends on that). */
+			nest = leading_ws(lines[i]);
+			closed = 1; i++; break;
+		}
 		VecS_push(P->tmp, &content, lines[i]); i++;
 	}
 	if (!closed) p_err(P, open_line, s_lit("unterminated raw block"));
-	int have_common = 0; S common = s_empty();
-	for (size_t k = 0; k < content.len; k++) {
-		S l = content.data[k];
-		if (s_trim(l).n == 0) continue;
-		size_t j = 0; while (j < l.n && (l.p[j] == ' ' || l.p[j] == '\t')) j++;
-		S lead = s_slice(l, 0, j);
-		if (!have_common) { common = lead; have_common = 1; }
-		else { size_t m = 0; while (m < common.n && m < lead.n && common.p[m] == lead.p[m]) m++; common = s_slice(common, 0, m); }
-	}
 	SB out = {0};
 	for (size_t k = 0; k < content.len; k++) {
 		if (k) sb_putc(a, &out, '\n');
-		S l = content.data[k];
-		sb_putS(a, &out, strip_common(l, common));
+		sb_putS(a, &out, strip_common(content.data[k], nest));
 	}
 	Value v; memset(&v, 0, sizeof v);
 	v.kind = V_RAW;
@@ -2154,16 +2215,16 @@ static size_t bind_block(Parser *P, size_t parent, Value value, size_t line) {
 		remap_child(P, parent, old_key, old_disp);
 		return parent;
 	}
-	S name = NODE(P->d, parent).name; S name_src = node_authored(&NODE(P->d, parent)); size_t gp = NODE(P->d, parent).parent;
+	Str name = NODE(P->d, parent).name; Str name_src = node_authored(&NODE(P->d, parent)); size_t gp = NODE(P->d, parent).parent;
 	return select_or_create(P, gp, name, name_src, value, line);
 }
 
-static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
+static void add_star_element(Parser *P, size_t parent, Str body, size_t line) {
 	Arena *a = &P->d->arena;
 	if (parent == ROOT) { p_err(P, line, s_lit("list element with no parent field")); P->d->lost++; return; }
 	/* Uniform-or-nothing (spec): a mix with field children is not a block array. */
 	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, s_lit("list element mixed with field children; ignored")); P->d->lost++; return; }
-	S trimmed = s_trim(body);
+	Str trimmed = s_trim(body);
 	if (trimmed.n == 0) { p_err(P, line, s_lit("empty list element")); P->d->lost++; return; }
 	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, s_lit("bare comma in list element (one element per line)")); P->d->lost++; return; }
 	if (unterminated_quote(P->line, trimmed)) p_err(P, line, s_lit("unterminated quote in value"));
@@ -2206,7 +2267,7 @@ static void add_star_element(Parser *P, size_t parent, S body, size_t line) {
    emitted - never a re-parse of free prose. (The leaf name cannot ride on
    the diagnostic itself: consumers build diagnostics literally, so the field
    set is frozen.) */
-static S h001_head(Arena *a, S name) {
+static Str h001_head(Arena *a, Str name) {
 	SB s = {0};
 	sb_putc(a, &s, '\'');
 	sb_putS(a, &s, name);
@@ -2228,7 +2289,7 @@ static void emit_repeated_leaf_hints(Parser *P) {
 		CMap group_of; memset(&group_of, 0, sizeof group_of);
 		VecSize ch = NODE(P->d, parent).children;
 		for (size_t k = 0; k < ch.len; k++) {
-			size_t c = ch.data[k]; S nm = NODE(P->d, c).name;
+			size_t c = ch.data[k]; Str nm = NODE(P->d, c).name;
 			uint64_t h = cmap_hash(nm, s_empty());
 			size_t g = (size_t)-1;
 			for (CMapEnt *e = cmap_first(&group_of, h); e; e = cmap_next(e, h))
@@ -2280,7 +2341,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	maps_push(&P.cmaps, NULL);
 	maps_push(&P.dmaps, NULL);
 
-	S full; full.p = text ? text : ""; full.n = len;
+	Str full; full.p = text ? text : ""; full.n = len;
 	if (full.n >= 3 && (unsigned char)full.p[0] == 0xEF && (unsigned char)full.p[1] == 0xBB && (unsigned char)full.p[2] == 0xBF) full = s_slice(full, 3, full.n);
 	/* The whole input, retained once in the document arena. Every stored
 	   string below is either a slice of this copy (names, element texts,
@@ -2293,7 +2354,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		size_t start = 0;
 		for (size_t i = 0; i <= full.n; i++) {
 			if (i == full.n || full.p[i] == '\n') {
-				S l = s_slice(full, start, i);
+				Str l = s_slice(full, start, i);
 				/* The whole trailing CR run goes, not just one: a raw block keeps its
 				   content untrimmed, so a line left ending in CR would be written back
 				   as CRLF and read as neither - the one shape where the count shows. */
@@ -2307,10 +2368,10 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	while (i < lines.len) {
 		arena_reset(&line_arena);
 		size_t lineno = i + 1;
-		S line = trim_end(lines.data[i]);
+		Str line = trim_end(lines.data[i]);
 		size_t ind = 0; while (ind < line.n && (line.p[ind] == ' ' || line.p[ind] == '\t')) ind++;
-		S indent = s_slice(line, 0, ind);
-		S rest = s_slice(line, ind, line.n);
+		Str indent = s_slice(line, 0, ind);
+		Str rest = s_slice(line, ind, line.n);
 		if (rest.n == 0) { P.saw_blank = 1; i++; continue; }
 		/* Whole-line comment: hold it for the next line that binds a node. It
 		   consumes a pending blank into its own flag, so a blank between
@@ -2331,17 +2392,21 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		if (f.ok) {
 			size_t parent;
 			if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
-			size_t next; Value val = consume_raw(&P, lines.data, lines.len, i + 1, lineno, f.ch, f.len, f.info, &next);
-			size_t bnode = bind_block(&P, parent, val, lineno);
-			if (bnode != (size_t)-1) attach_trivia(&P, bnode, s_empty());
+			size_t next; Value val = consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, f, &next);
+			if (parent == DEAD) skip_under_dead(&P, lineno, indent);
+			else {
+				size_t bnode = bind_block(&P, parent, val, lineno);
+				if (bnode != (size_t)-1) attach_trivia(&P, bnode, s_empty());
+			}
 			i = next; continue;
 		}
 		if (rest.n >= 1 && rest.p[0] == '*') {
-			S after = s_slice(rest, 1, rest.n);
+			Str after = s_slice(rest, 1, rest.n);
 			if (after.n >= 1 && (after.p[0] == ' ' || after.p[0] == '\t')) {
 				size_t parent;
 				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
-				S ecomment; S body = split_comment(after, &ecomment);
+				if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
+				Str ecomment; Str body = split_comment(after, &ecomment);
 				/* Elements have no node of their own; trivia rides the field. */
 				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
 				add_star_element(&P, parent, body, lineno); i++; continue;
@@ -2359,8 +2424,8 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			}
 			i++; continue;
 		}
-		S comment; S before = split_comment(rest, &comment);
-		S content = trim_end(before);
+		Str comment; Str before = split_comment(rest, &comment);
+		Str content = trim_end(before);
 		if (content.n == 0) {
 			/* Only a comment survived (e.g. an escaped lead-in); keep it. */
 			if (comment.n) {
@@ -2371,6 +2436,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		}
 		size_t parent;
 		if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
+		if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
 		PathScan scan = scan_path(&line_arena, content);
 		if (!scan.ok) {
 			SB m = {0}; sb_puts(a, &m, "malformed line skipped: "); sb_putS(a, &m, scan.err); p_err(&P, lineno, sb_S(&m));
@@ -2381,6 +2447,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 				Pend pd; pd.text = trim_end(rest); pd.indent = indent; pd.blank_before = had_blank;
 				VecPend_push(P.tmp, &P.pending, pd);
 			}
+			StackEnt se; se.indent = indent; se.node = DEAD; VecStack_push(P.tmp, &P.stack, se);
 			i++; continue;
 		}
 		size_t next = i + 1;
@@ -2389,7 +2456,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		else if (scan.value_text.n == 0) value = v_empty();
 		else {
 			Fence vf = fence_open(scan.value_text);
-			if (vf.ok) value = consume_raw(&P, lines.data, lines.len, i + 1, lineno, vf.ch, vf.len, vf.info, &next);
+			if (vf.ok) value = consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, vf, &next);
 			else {
 				if (unterminated_quote(&line_arena, scan.value_text)) p_err(&P, lineno, s_lit("unterminated quote in value"));
 				value = parse_cell(a, &line_arena, scan.value_text);
@@ -2400,6 +2467,8 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			if (had_blank) NODE(d, node).blank_before = 1;
 			attach_trivia(&P, node, comment);
 			StackEnt se; se.indent = indent; se.node = node; VecStack_push(P.tmp, &P.stack, se);
+		} else {
+			StackEnt se; se.indent = indent; se.node = DEAD; VecStack_push(P.tmp, &P.stack, se);
 		}
 		i = next;
 	}
@@ -2420,20 +2489,58 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 typedef enum { R_NONE, R_ONE, R_MANY, R_SLOTS } rkind;
 typedef struct { rkind kind; size_t one; VecSize many; VecSlot slots; } Resolved;
 
-static Resolved resolve_from(shcl_doc *d, size_t *start, size_t nstart, Segment *segs, size_t nsegs) {
+static void name_index(shcl_doc *d) {
+	if (d->index_built) return;
+	Arena *a = &d->index_arena;
+	/* `last` is build-time only; the scratch arena is where the caller's
+	   temporaries already live. */
+	CMap last; memset(&last, 0, sizeof last);
+	d->index_next = (size_t *)arena_alloc(a, (d->nodes.len ? d->nodes.len : 1) * sizeof(size_t));
+	for (size_t i = 0; i < d->nodes.len; i++) d->index_next[i] = NIL;
+	for (size_t p = 0; p < d->nodes.len; p++) {
+		VecSize ch = NODE(d, p).children;
+		for (size_t k = 0; k < ch.len; k++) {
+			size_t c = ch.data[k];
+			uint64_t key = name_key(p, NODE(d, c).name);
+			CMapEnt *prev = cmap_first(&last, key);
+			if (prev) { d->index_next[prev->val] = c; prev->val = c; }
+			else { cmap_put(a, &d->index_first, key, c); cmap_put(&d->scratch, &last, key, c); }
+		}
+	}
+	d->index_built = 1;
+}
+/* Every write entry point drops the index; the next read rebuilds it. */
+static void index_drop(shcl_doc *d) {
+	arena_free(&d->index_arena);
+	memset(&d->index_first, 0, sizeof d->index_first);
+	d->index_next = NULL;
+	d->index_built = 0;
+}
+
+static void children_named(shcl_doc *d, Arena *a, size_t parent, Str name, VecSize *out) {
+	name_index(d);
+	CMapEnt *e = cmap_first(&d->index_first, name_key(parent, name));
+	size_t c = e ? e->val : NIL;
+	while (c != NIL) {
+		if (s_eq(NODE(d, c).name, name) && NODE(d, c).parent == parent) VecSize_push(a, out, c);
+		c = d->index_next[c];
+	}
+}
+
+static Resolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart, Segment *segs, size_t nsegs) {
 	Arena *a = &d->scratch; // candidates, slots, compare strings: dead after the call
 	VecSize cur = {0};
 	// cppcheck-suppress objectIndex  ## single-element callers pass nstart == 1, so start[i] stays at 0
 	for (size_t i = 0; i < nstart; i++) VecSize_push(a, &cur, start[i]);
 	for (size_t si = 0; si < nsegs; si++) {
-		Segment *seg = &segs[si];
+		const Segment *seg = &segs[si];
 		VecSize next = {0};
 		for (size_t k = 0; k < cur.len; k++) {
 			VecSize ch = NODE(d, cur.data[k]).children;
 			if (seg->star) {
 				for (size_t j = 0; j < ch.len; j++) VecSize_push(a, &next, ch.data[j]);
 			} else {
-				for (size_t j = 0; j < ch.len; j++) { size_t c = ch.data[j]; if (s_eq(NODE(d, c).name, seg->name)) VecSize_push(a, &next, c); }
+				children_named(d, a, cur.data[k], seg->name, &next);
 			}
 		}
 		if (seg->star) {
@@ -2457,7 +2564,7 @@ static Resolved resolve_from(shcl_doc *d, size_t *start, size_t nstart, Segment 
 		case SEL_NONE: cur = next; break;
 		case SEL_VALUE: {
 			VecSize f = {0};
-			S want = apply_escapes(a, seg->sel.value);
+			Str want = apply_escapes(a, seg->sel.value);
 			for (size_t k = 0; k < next.len; k++) if (s_eq(disp_key(a, &NODE(d, next.data[k]).value), want) && (!seg->sel.quoted || single_scalar(&NODE(d, next.data[k]).value))) VecSize_push(a, &f, next.data[k]);
 			cur = f; break;
 		}
@@ -2490,7 +2597,7 @@ static Resolved resolve_from(shcl_doc *d, size_t *start, size_t nstart, Segment 
 	else { R.kind = R_MANY; R.many = cur; }
 	return R;
 }
-static int resolve(shcl_doc *d, S path, Resolved *out) {
+static int resolve(shcl_doc *d, Str path, Resolved *out) {
 	// Every public read/query funnels through here, so this reset is the
 	// scratch lifetime: the previous resolve's temporaries die now, and the
 	// Resolved this call fills stays usable until the next resolve.
@@ -2501,14 +2608,14 @@ static int resolve(shcl_doc *d, S path, Resolved *out) {
 	*out = resolve_from(d, &root, 1, ps.segs.data, ps.segs.len);
 	return 1;
 }
-static shcl_status value_at(shcl_doc *d, S path, Value **out) {
+static shcl_status value_at(shcl_doc *d, Str path, Value **out) {
 	Resolved r;
 	if (!resolve(d, path, &r)) return SHCL_NOT_FOUND;
 	if (r.kind == R_NONE) return SHCL_NOT_FOUND;
 	if (r.kind == R_MANY || r.kind == R_SLOTS) return SHCL_MULTIPLE;
 	*out = &NODE(d, r.one).value; return SHCL_GOOD;
 }
-static shcl_status scalar_at(shcl_doc *d, S path, Element **el) {
+static shcl_status scalar_at(shcl_doc *d, Str path, Element **el) {
 	Value *v; shcl_status st = value_at(d, path, &v);
 	if (st != SHCL_GOOD) { *el = NULL; return st; }
 	if (v->kind == V_EMPTY) { *el = NULL; return SHCL_EMPTY; }
@@ -2523,7 +2630,7 @@ static shcl_status scalar_at(shcl_doc *d, S path, Element **el) {
 // spec never drops one silently. The lists land in `a`: public reads pass the
 // doc arena (results live until shcl_free); internal queries pass a private
 // arena so probing a caller-owned doc leaves nothing behind.
-static shcl_status array_elements(shcl_doc *d, Arena *a, S path, Element ***els, shcl_status **sts, size_t *n) {
+static shcl_status array_elements(shcl_doc *d, Arena *a, Str path, Element ***els, shcl_status **sts, size_t *n) {
 	Resolved r;
 	*els = NULL; *sts = NULL; *n = 0;
 	if (!resolve(d, path, &r)) return SHCL_NOT_FOUND;
@@ -2560,17 +2667,17 @@ static shcl_status worst_slot(const shcl_status *sts, size_t n, shcl_status floo
 }
 
 size_t shcl_count(shcl_doc *d, const char *path, size_t plen) {
-	S p; p.p = path; p.n = plen;
+	Str p; p.p = path; p.n = plen;
 	Resolved r; if (!resolve(d, p, &r)) return 0;
 	switch (r.kind) { case R_NONE: return 0; case R_ONE: return 1; case R_MANY: return r.many.len; case R_SLOTS: return r.slots.len; }
 	return 0;
 }
-static S emit_name(Arena *a, S name);
+static Str emit_name(Arena *a, Str name);
 
 size_t shcl_paths(shcl_doc *d, shcl_str **out) {
 	Arena *a = &d->arena;
 	Arena *t = &d->scratch; // walk stack + dedup set: dead after the call
-	typedef struct { size_t node; S prefix; } PEnt;
+	typedef struct { size_t node; Str prefix; } PEnt;
 	PEnt *stack = NULL; size_t sn = 0, sc = 0;
 	shcl_str *arr = NULL; size_t n = 0, cap = 0;
 	CMap seen; memset(&seen, 0, sizeof seen);
@@ -2579,14 +2686,14 @@ size_t shcl_paths(shcl_doc *d, shcl_str **out) {
 	for (size_t i = top.len; i > 0; i--) PPUSH(top.data[i - 1], s_empty());
 	while (sn) {
 		PEnt e = stack[--sn];
-		S seg = emit_name(a, NODE(d, e.node).name);
-		S path;
+		Str seg = emit_name(a, NODE(d, e.node).name);
+		Str path;
 		if (e.prefix.n == 0) path = seg;
 		else { SB b = {0}; sb_putS(a, &b, e.prefix); sb_putc(a, &b, '.'); sb_putS(a, &b, seg); path = sb_S(&b); }
 		uint64_t h = cmap_hash(path, s_empty());
 		int dup = 0;
 		for (CMapEnt *en = cmap_first(&seen, h); en; en = cmap_next(en, h)) {
-			S sp; sp.p = arr[en->val].p; sp.n = arr[en->val].n;
+			Str sp; sp.p = arr[en->val].p; sp.n = arr[en->val].n;
 			if (s_eq(sp, path)) { dup = 1; break; }
 		}
 		if (!dup) {
@@ -2603,14 +2710,14 @@ size_t shcl_paths(shcl_doc *d, shcl_str **out) {
 }
 
 shcl_str shcl_quote_segment(shcl_doc *d, const char *name, size_t len) {
-	S in; in.p = name; in.n = len;
-	S q = emit_name(&d->arena, in);
+	Str in; in.p = name; in.n = len;
+	Str q = emit_name(&d->arena, in);
 	if (q.p == in.p) q = s_dup(&d->arena, in); // bare passthrough: copy so the result outlives the caller's buffer
 	shcl_str out; out.p = q.p; out.n = q.n;
 	return out;
 }
 
-static size_t instances_in(shcl_doc *d, Arena *a, S p, shcl_str **out) {
+static size_t instances_in(shcl_doc *d, Arena *a, Str p, shcl_str **out) {
 	// Wildcard slots that did not resolve stay in the list as "" so indices
 	// keep matching shcl_count.
 	Resolved r;
@@ -2630,25 +2737,25 @@ static size_t instances_in(shcl_doc *d, Arena *a, S p, shcl_str **out) {
 	*out = arr; return nodes.len;
 }
 size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {
-	S p; p.p = path; p.n = plen;
+	Str p; p.p = path; p.n = plen;
 	return instances_in(d, &d->arena, p, out);
 }
 
 size_t shcl_line(shcl_doc *d, const char *path, size_t plen) {
-	S p; p.p = path; p.n = plen;
+	Str p; p.p = path; p.n = plen;
 	Resolved r; if (!resolve(d, p, &r)) return 0;
 	if (r.kind != R_ONE) return 0;
 	return NODE(d, r.one).line; // writer-built nodes carry 0
 }
 
 int shcl_quoted(shcl_doc *d, const char *path, size_t plen) {
-	S p; p.p = path; p.n = plen; Element *el;
+	Str p; p.p = path; p.n = plen; Element *el;
 	if (scalar_at(d, p, &el) != SHCL_GOOD) return 0;
 	return el->quoted;
 }
 
 shcl_str shcl_authored_name(shcl_doc *d, const char *path, size_t plen) {
-	S p; p.p = path; p.n = plen;
+	Str p; p.p = path; p.n = plen;
 	Resolved r; if (!resolve(d, p, &r)) return s_empty();
 	if (r.kind != R_ONE) return s_empty();
 	return node_authored(&NODE(d, r.one));
@@ -2657,7 +2764,7 @@ shcl_str shcl_authored_name(shcl_doc *d, const char *path, size_t plen) {
 size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out) {
 	// Wildcard slots that did not resolve stay in the list as 0 so indices
 	// keep matching shcl_count.
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen;
 	Resolved r;
 	if (!resolve(d, p, &r)) { *out = (size_t *)arena_alloc(a, sizeof(size_t)); return 0; }
 	if (r.kind == R_SLOTS) {
@@ -2677,7 +2784,7 @@ size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out) {
 
 size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {
 	// Names come back as stored (already arena-owned); only the array is new.
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen;
 	size_t node = ROOT;
 	if (s_trim(p).n != 0) {
 		Resolved r;
@@ -2695,15 +2802,15 @@ size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out)
 // so mutating the arena directly is enough - the parser's child map is gone by
 // now. New value text is dup'd into the arena; the caller's buffers may go away.
 
-static S w_dupz(Arena *a, const char *p, size_t n) { S s; s.p = p; s.n = n; return s_dup(a, s); }
-static S w_int_text(Arena *a, int64_t v) { char b[32]; int n = snprintf(b, sizeof b, "%lld", (long long)v); return w_dupz(a, b, (size_t)n); }
-static S w_float_text(Arena *a, double v) { char b[SHCL_F64_BUF]; size_t n = shcl_format_f64(v, b); return w_dupz(a, b, n); }
-static S w_bool_text(int v) { return v ? s_lit("true") : s_lit("false"); }
-static S w_dt_text(Arena *a, const shcl_datetime *dt) { char b[64]; size_t n = shcl_datetime_str(dt, b); return w_dupz(a, b, n); }
+static Str w_dupz(Arena *a, const char *p, size_t n) { Str s; s.p = p; s.n = n; return s_dup(a, s); }
+static Str w_int_text(Arena *a, int64_t v) { char b[32]; int n = snprintf(b, sizeof b, "%lld", (long long)v); return w_dupz(a, b, (size_t)n); }
+static Str w_float_text(Arena *a, double v) { char b[SHCL_F64_BUF]; size_t n = shcl_format_f64(v, b); return w_dupz(a, b, n); }
+static Str w_bool_text(int v) { return v ? s_lit("true") : s_lit("false"); }
+static Str w_dt_text(Arena *a, const shcl_datetime *dt) { char b[SHCL_DT_BUF]; size_t n = shcl_datetime_str(dt, b); return w_dupz(a, b, n); }
 
 // Inverse of a scalar string read (apply_escapes): only backslash, newline, and
 // tab need encoding; emit_element wraps quote/reserved chars, reparse strips it.
-static S w_encode_string(Arena *a, S s) {
+static Str w_encode_string(Arena *a, Str s) {
 	SB b = {0};
 	for (size_t i = 0; i < s.n; i++) {
 		char c = s.p[i];
@@ -2716,11 +2823,11 @@ static S w_encode_string(Arena *a, S s) {
 }
 
 // Pick a backtick fence long enough that no content line closes it early.
-static void w_choose_fence(S content, unsigned char *fc, size_t *fl) {
+static void w_choose_fence(Str content, unsigned char *fc, size_t *fl) {
 	size_t maxrun = 0, start = 0;
 	for (size_t i = 0;; i++) {
 		if (i == content.n || content.p[i] == '\n') {
-			S t = s_trim(s_slice(content, start, i));
+			Str t = s_trim(s_slice(content, start, i));
 			if (t.n > 0) {
 				int all = 1;
 				for (size_t k = 0; k < t.n; k++) if (t.p[k] != '`') { all = 0; break; }
@@ -2733,13 +2840,13 @@ static void w_choose_fence(S content, unsigned char *fc, size_t *fl) {
 	*fc = '`'; *fl = maxrun + 1 < 3 ? 3 : maxrun + 1;
 }
 
-static Value w_cell1(Arena *a, S text) {
+static Value w_cell1(Arena *a, Str text) {
 	Value v; memset(&v, 0, sizeof v); v.kind = V_CELL;
 	Element *e = (Element *)arena_alloc(a, sizeof(Element)); e->text = text; e->quoted = 0;
 	v.els = e; v.nels = 1; return v;
 }
 // Inline-array value; the empty array is an empty value (reads back Empty).
-static Value w_array(Arena *a, S *texts, size_t n) {
+static Value w_array(Arena *a, const Str *texts, size_t n) {
 	if (n == 0) return v_empty();
 	Value v; memset(&v, 0, sizeof v); v.kind = V_CELL;
 	Element *els = (Element *)arena_alloc(a, n * sizeof(Element));
@@ -2747,7 +2854,7 @@ static Value w_array(Arena *a, S *texts, size_t n) {
 	v.els = els; v.nels = n; return v;
 }
 
-static size_t w_new_child(shcl_doc *d, size_t parent, S name, S name_src, Value value) {
+static size_t w_new_child(shcl_doc *d, size_t parent, Str name, Str name_src, Value value) {
 	Arena *a = &d->arena;
 	size_t idx = d->nodes.len;
 	Node n; memset(&n, 0, sizeof n);
@@ -2801,7 +2908,7 @@ static shcl_write_reason w_probe_write(shcl_doc *d, Arena *a, const PathScan *ps
 			pr = match;
 		} else if (!off) {
 			size_t found = (size_t)-1;
-			S want = (seg->sel.tag == SEL_VALUE) ? apply_escapes(a, seg->sel.value) : s_empty();
+			Str want = (seg->sel.tag == SEL_VALUE) ? apply_escapes(a, seg->sel.value) : s_empty();
 			VecSize ch = NODE(d, pr).children;
 			for (size_t k = 0; k < ch.len; k++) {
 				size_t c = ch.data[k];
@@ -2816,7 +2923,7 @@ static shcl_write_reason w_probe_write(shcl_doc *d, Arena *a, const PathScan *ps
 	return SHCL_W_WRITABLE;
 }
 
-static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
+static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, Str path) {
 	PathScan ps = scan_lookup(a, path);
 	return w_probe_write(d, a, &ps, NULL);
 }
@@ -2824,20 +2931,21 @@ static shcl_write_reason w_write_reason(shcl_doc *d, Arena *a, S path) {
 // Walk (creating as needed) to the node a write targets. Returns 1 + *out, or 0
 // if the path is unusable for a write (w_write_reason says why). Validation
 // runs first, so a doomed path leaves no half-created intermediates behind.
-static int w_place(shcl_doc *d, S path, size_t *out) {
+static int w_place(shcl_doc *d, Str path, size_t *out) {
 	Arena *a = &d->arena;
 	// The probe, the scan, and the compare strings are dead once this returns,
 	// so they go through scratch (reset like resolve's; no resolve runs in
 	// here) - repeated setters must not grow the doc. Only what w_new_child
 	// dups persists.
 	Arena *t = &d->scratch;
+	index_drop(d);
 	arena_reset(t);
 	PathScan ps = scan_lookup(t, path);
 	size_t *trail = (size_t *)arena_alloc(t, (ps.segs.len ? ps.segs.len : 1) * sizeof(size_t));
 	if (w_probe_write(d, t, &ps, trail) != SHCL_W_WRITABLE) return 0;
 	size_t cur = ROOT;
 	for (size_t i = 0; i < ps.segs.len; i++) {
-		Segment *seg = &ps.segs.data[i];
+		const Segment *seg = &ps.segs.data[i];
 		/* The probe already resolved every segment that exists; only the tail
 		   it fell off has anything to create. */
 		if (trail[i] != (size_t)-1) { cur = trail[i]; continue; }
@@ -2856,13 +2964,15 @@ static int w_place(shcl_doc *d, S path, size_t *out) {
    fixpoint. */
 static void w_collapse_dup(shcl_doc *d, size_t node) {
 	size_t parent = NODE(d, node).parent;
-	S name = NODE(d, node).name;
+	const Node *me = &NODE(d, node);
+	uint64_t key = merge_hash(me->name, &me->value);
 	VecSize ch = NODE(d, parent).children;
 	size_t other = (size_t)-1, pos_node = (size_t)-1, pos_other = (size_t)-1;
 	for (size_t k = 0; k < ch.len; k++) {
 		size_t c = ch.data[k];
 		if (c == node) { pos_node = k; continue; }
-		if (other == (size_t)-1 && merge_eq(NODE(d, c).name, &NODE(d, c).value, name, &NODE(d, node).value)) { other = c; pos_other = k; }
+		const Node *o = &NODE(d, c);
+		if (other == (size_t)-1 && merge_hash(o->name, &o->value) == key && merge_eq(o->name, &o->value, me->name, &me->value)) { other = c; pos_other = k; }
 	}
 	if (other == (size_t)-1) return;
 	size_t survivor = (pos_other < pos_node) ? other : node;
@@ -2874,7 +2984,7 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
 	pk->len = w;
 }
 
-static int w_set(shcl_doc *d, S path, Value v) {
+static int w_set(shcl_doc *d, Str path, Value v) {
 	size_t idx;
 	if (!w_place(d, path, &idx)) return 0;
 	NODE(d, idx).value = v;
@@ -2885,7 +2995,7 @@ static int w_set(shcl_doc *d, S path, Value v) {
 shcl_doc *shcl_new(void) { return shcl_parse("", 0); }
 
 int shcl_exists(shcl_doc *d, const char *path, size_t plen) {
-	S p; p.p = path; p.n = plen; Resolved r;
+	Str p; p.p = path; p.n = plen; Resolved r;
 	if (!resolve(d, p, &r)) return 0;
 	if (r.kind == R_ONE || r.kind == R_MANY) return 1;
 	if (r.kind == R_SLOTS) for (size_t i = 0; i < r.slots.len; i++) if (r.slots.data[i].present) return 1;
@@ -2893,7 +3003,8 @@ int shcl_exists(shcl_doc *d, const char *path, size_t plen) {
 }
 
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen; Resolved r;
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen; Resolved r;
+	index_drop(d);
 	if (!resolve(d, p, &r)) return 0;
 	VecSize targets = {0};
 	if (r.kind == R_ONE) VecSize_push(a, &targets, r.one);
@@ -2909,7 +3020,7 @@ size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
 }
 
 shcl_write_reason shcl_write_reason_(shcl_doc *d, const char *path, size_t plen) {
-	S p; p.p = path; p.n = plen;
+	Str p; p.p = path; p.n = plen;
 	// A probe, not a write: temporaries go into scratch (reset like resolve's -
 	// the previous query's die now), never permanently into the doc arena.
 	arena_reset(&d->scratch);
@@ -2917,26 +3028,26 @@ shcl_write_reason shcl_write_reason_(shcl_doc *d, const char *path, size_t plen)
 }
 
 int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen; size_t idx;
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen; size_t idx;
 	if (!w_place(d, p, &idx)) return 0;
-	S line; line.p = text; line.n = tlen;
+	Str line; line.p = text; line.n = tlen;
 	for (size_t i = 0; i < line.n; i++) if (line.p[i] == '\n') { line.n = i; break; }
-	S out;
+	Str out;
 	if (line.n == 0 || line.p[0] != '#') { SB b = {0}; sb_puts(a, &b, "# "); sb_putS(a, &b, line); out = sb_S(&b); }
 	else out = s_dup(a, line);
 	VecLead_push(a, &triv_mut(a, &NODE(d, idx))->leading, lead_plain(out));
 	return 1;
 }
 
-int shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { S p; p.p = path; p.n = plen; return w_set(d, p, v_empty()); }
-int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_int_text(a, v))); }
-int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_float_text(a, v))); }
-int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_bool_text(v))); }
-int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; S in; in.p = s; in.n = slen; return w_set(d, p, w_cell1(a, w_encode_string(a, in))); }
+int shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { Str p; p.p = path; p.n = plen; return w_set(d, p, v_empty()); }
+int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { Arena *a = &d->arena; Str p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_int_text(a, v))); }
+int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { Arena *a = &d->arena; Str p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_float_text(a, v))); }
+int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { Arena *a = &d->arena; Str p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_bool_text(v))); }
+int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { Arena *a = &d->arena; Str p; p.p = path; p.n = plen; Str in; in.p = s; in.n = slen; return w_set(d, p, w_cell1(a, w_encode_string(a, in))); }
 
-static int literal_value(Arena *a, Arena *tmp, S text, Value *out) {
+static int literal_value(Arena *a, Arena *tmp, Str text, Value *out) {
 	for (size_t i = 0; i < text.n; i++) { if (text.p[i] == '\n' || text.p[i] == '\r') return 0; }
-	S comment; S v = s_trim(split_comment(text, &comment));
+	Str comment; Str v = s_trim(split_comment(text, &comment));
 	if (unterminated_quote(tmp, v)) return 0;
 	/* One copy of the value text up front: parse_cell stores slices, and the
 	   caller's buffer need not outlive the call (the setter contract). */
@@ -2945,15 +3056,20 @@ static int literal_value(Arena *a, Arena *tmp, S text, Value *out) {
 }
 
 int shcl_set_literal(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S in; in.p = text; in.n = tlen;
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen; Str in; in.p = text; in.n = tlen;
 	Value v;
 	if (!literal_value(a, &d->scratch, in, &v)) return 0;
 	return w_set(d, p, v);
 }
-int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { Arena *a = &d->arena; S p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
+int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { Arena *a = &d->arena; Str p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
+// Bind a raw block at a path, picking a fence longer than any content line.
+// The info-string is stored as a fence line would read it back (trimmed); one
+// holding a line break has no fence-line spelling and fails the write.
 int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) {
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen;
-	S c = w_dupz(a, content, clen), inf = w_dupz(a, info, ilen);
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen;
+	if (memchr(info, '\n', ilen) || memchr(info, '\r', ilen)) return 0;
+	Str it; it.p = info; it.n = ilen; it = s_trim(it);
+	Str c = w_dupz(a, content, clen), inf = s_dup(a, it);
 	unsigned char fc; size_t fl; w_choose_fence(c, &fc, &fl);
 	Value v; memset(&v, 0, sizeof v); v.kind = V_RAW;
 	v.raw = (RawVal *)arena_alloc(a, sizeof(RawVal));
@@ -2962,27 +3078,27 @@ int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content
 }
 
 int shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) {
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen; Str *t = (Str *)arena_alloc(a, (n ? n : 1) * sizeof(Str));
 	for (size_t i = 0; i < n; i++) t[i] = w_int_text(a, v[i]);
 	return w_set(d, p, w_array(a, t, n));
 }
 int shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) {
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen; Str *t = (Str *)arena_alloc(a, (n ? n : 1) * sizeof(Str));
 	for (size_t i = 0; i < n; i++) t[i] = w_float_text(a, v[i]);
 	return w_set(d, p, w_array(a, t, n));
 }
 int shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) {
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen; Str *t = (Str *)arena_alloc(a, (n ? n : 1) * sizeof(Str));
 	for (size_t i = 0; i < n; i++) t[i] = w_bool_text(v[i]);
 	return w_set(d, p, w_array(a, t, n));
 }
 int shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) {
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
-	for (size_t i = 0; i < n; i++) { S in; in.p = v[i]; in.n = lens[i]; t[i] = w_encode_string(a, in); }
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen; Str *t = (Str *)arena_alloc(a, (n ? n : 1) * sizeof(Str));
+	for (size_t i = 0; i < n; i++) { Str in; in.p = v[i]; in.n = lens[i]; t[i] = w_encode_string(a, in); }
 	return w_set(d, p, w_array(a, t, n));
 }
 int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) {
-	Arena *a = &d->arena; S p; p.p = path; p.n = plen; S *t = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+	Arena *a = &d->arena; Str p; p.p = path; p.n = plen; Str *t = (Str *)arena_alloc(a, (n ? n : 1) * sizeof(Str));
 	for (size_t i = 0; i < n; i++) t[i] = w_dt_text(a, &v[i]);
 	return w_set(d, p, w_array(a, t, n));
 }
@@ -3088,7 +3204,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 	VecS order = {0}; VecSize *buckets = NULL; size_t nb = 0, cb = 0;
 	CMap group_of; memset(&group_of, 0, sizeof group_of);
 	for (size_t i = 0; i < okids.len; i++) {
-		size_t k = okids.data[i]; S nm = over->nodes.data[k].name;
+		size_t k = okids.data[i]; Str nm = over->nodes.data[k].name;
 		uint64_t h = cmap_hash(nm, s_empty());
 		size_t g = (size_t)-1;
 		for (CMapEnt *e = cmap_first(&group_of, h); e; e = cmap_next(e, h))
@@ -3110,7 +3226,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 	CMap in_base, has_cont, by_key;
 	memset(&in_base, 0, sizeof in_base); memset(&has_cont, 0, sizeof has_cont); memset(&by_key, 0, sizeof by_key);
 	for (size_t i = 0; i < base.len; i++) {
-		size_t b = base.data[i]; S nm = NODE(d, b).name;
+		size_t b = base.data[i]; Str nm = NODE(d, b).name;
 		uint64_t hn = cmap_hash(nm, s_empty());
 		int seen = 0;
 		for (CMapEnt *e = cmap_first(&in_base, hn); e; e = cmap_next(e, hn))
@@ -3141,7 +3257,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 	int any_rep = 0;
 	Value ev; memset(&ev, 0, sizeof ev); ev.kind = V_EMPTY;
 	for (size_t gi = 0; gi < nb; gi++) {
-		S name = order.data[gi];
+		Str name = order.data[gi];
 		VecSize grp = buckets[gi];
 		memset(&rep[gi], 0, sizeof rep[gi]); is_rep[gi] = 0;
 		int over_leafy = 1;
@@ -3199,7 +3315,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 	for (size_t gi = 0; gi < nb; gi++) spliced[gi] = 0;
 	VecSize nw = {0};
 	for (size_t i = 0; i < base.len; i++) {
-		size_t b = base.data[i]; S nm = NODE(d, b).name;
+		size_t b = base.data[i]; Str nm = NODE(d, b).name;
 		uint64_t hn = cmap_hash(nm, s_empty());
 		size_t g = (size_t)-1;
 		for (CMapEnt *e = cmap_first(&group_of, hn); e; e = cmap_next(e, hn))
@@ -3218,6 +3334,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 }
 
 void shcl_merge(shcl_doc *d, const shcl_doc *over) {
+	index_drop(d);
 	d->lost += over->lost;
 	Arena *a = &d->arena;
 	arena_reset(&d->scratch); // merge temporaries (compare keys, clone lists) die here
@@ -3225,7 +3342,7 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	// Layers commonly share a footer; keeping one copy of each keeps a stack
 	// of files from repeating it once per layer.
 	for (size_t i = 0; i < over->orphans.len; i++) {
-		S ot = over->orphans.data[i].text;
+		Str ot = over->orphans.data[i].text;
 		int dup = 0;
 		for (size_t k = 0; k < d->orphans.len; k++) if (s_eq(d->orphans.data[k].text, ot)) { dup = 1; break; }
 		if (!dup) VecLead_push(a, &d->orphans, lead_make(s_dup(a, ot), over->orphans.data[i].blank_before));
@@ -3252,28 +3369,28 @@ int shcl_get_bool_or(shcl_doc *d, const char *path, size_t plen, int def) {
 }
 
 shcl_read_i64 shcl_read_int(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_i64 R; S p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);
+	shcl_read_i64 R; Str p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);
 	if (st != SHCL_GOOD) { R.value = 0; R.status = st; return R; }
 	int64_t v; if (parse_int_text(&d->scratch, el, d->strictness, &v)) { R.value = v; R.status = SHCL_GOOD; }
 	else { R.value = 0; R.status = SHCL_BAD_TYPE; }
 	return R;
 }
 shcl_read_f64 shcl_read_float(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_f64 R; S p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);
+	shcl_read_f64 R; Str p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);
 	if (st != SHCL_GOOD) { R.value = 0; R.status = st; return R; }
 	double v; if (parse_float_text(&d->scratch, el, d->strictness, &v)) { R.value = v; R.status = SHCL_GOOD; }
 	else { R.value = 0; R.status = SHCL_BAD_TYPE; }
 	return R;
 }
 shcl_read_bool shcl_read_bool_(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_bool R; S p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);
+	shcl_read_bool R; Str p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);
 	if (st != SHCL_GOOD) { R.value = 0; R.status = st; return R; }
 	int v; if (parse_bool_text(&d->scratch, el->text, d->strictness, &v)) { R.value = v; R.status = SHCL_GOOD; }
 	else { R.value = 0; R.status = SHCL_BAD_TYPE; }
 	return R;
 }
 shcl_read_dt shcl_read_datetime(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_dt R; S p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);
+	shcl_read_dt R; Str p; p.p = path; p.n = plen; Element *el; shcl_status st = scalar_at(d, p, &el);
 	memset(&R.value, 0, sizeof R.value); R.value.zone = SHCL_ZONE_NONE;
 	if (st != SHCL_GOOD) { R.status = st; return R; }
 	// scratch, not the doc arena: parse_datetime only allocates split temporaries
@@ -3282,10 +3399,10 @@ shcl_read_dt shcl_read_datetime(shcl_doc *d, const char *path, size_t plen) {
 	else { memset(&R.value, 0, sizeof R.value); R.value.zone = SHCL_ZONE_NONE; R.status = SHCL_BAD_TYPE; }
 	return R;
 }
-static S emit_element(Arena *a, const Element *e);
+static Str emit_element(Arena *a, const Element *e);
 
 shcl_read_str shcl_read_string(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_str R; S p; p.p = path; p.n = plen; Value *v; shcl_status st = value_at(d, p, &v);
+	shcl_read_str R; Str p; p.p = path; p.n = plen; Value *v; shcl_status st = value_at(d, p, &v);
 	if (st != SHCL_GOOD) { R.value = s_empty(); R.status = st; return R; }
 	if (v->kind == V_EMPTY) { R.value = s_empty(); R.status = SHCL_EMPTY; }
 	else if (v->kind == V_RAW) { R.value = v->raw->content; R.status = SHCL_GOOD; }
@@ -3300,22 +3417,25 @@ shcl_read_str shcl_read_string(shcl_doc *d, const char *path, size_t plen) {
 	return R;
 }
 shcl_read_str shcl_read_raw(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_str R; S p; p.p = path; p.n = plen; Value *v; shcl_status st = value_at(d, p, &v);
-	if (st != SHCL_GOOD) { R.value = s_empty(); R.status = st; return R; }
-	if (v->kind == V_RAW) { R.value = v->raw->content; R.status = SHCL_GOOD; }
-	else if (v->kind == V_EMPTY) { R.value = s_empty(); R.status = SHCL_EMPTY; }
-	else { R.value = s_empty(); R.status = SHCL_BAD_TYPE; }
+	shcl_read_str R; Str p; p.p = path; p.n = plen; Value *v; shcl_status st = value_at(d, p, &v);
+	R.value = s_empty(); R.status = st;
+	if (st != SHCL_GOOD) return R;
+	switch (v->kind) {
+	case V_RAW: R.value = v->raw->content; break;
+	case V_EMPTY: R.status = SHCL_EMPTY; break;
+	case V_CELL: R.status = SHCL_BAD_TYPE; break;
+	}
 	return R;
 }
 shcl_read_str shcl_read_raw_info(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_str R; S p; p.p = path; p.n = plen; Value *v; shcl_status st = value_at(d, p, &v);
+	shcl_read_str R; Str p; p.p = path; p.n = plen; Value *v; shcl_status st = value_at(d, p, &v);
 	if (st != SHCL_GOOD) { R.value = s_empty(); R.status = st; return R; }
 	if (v->kind == V_RAW) { R.value = v->raw->info; R.status = SHCL_GOOD; }
 	else { R.value = s_empty(); R.status = SHCL_BAD_TYPE; }
 	return R;
 }
 
-static shcl_read_i64_arr read_int_array_in(shcl_doc *d, Arena *a, S p) {
+static shcl_read_i64_arr read_int_array_in(shcl_doc *d, Arena *a, Str p) {
 	shcl_read_i64_arr R; Element **els; shcl_status *sts; size_t n;
 	shcl_status st = array_elements(d, a, p, &els, &sts, &n);
 	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
@@ -3324,11 +3444,11 @@ static shcl_read_i64_arr read_int_array_in(shcl_doc *d, Arena *a, S p) {
 	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_i64_arr shcl_read_int_array(shcl_doc *d, const char *path, size_t plen) {
-	S p; p.p = path; p.n = plen;
+	Str p; p.p = path; p.n = plen;
 	return read_int_array_in(d, &d->arena, p);
 }
 shcl_read_f64_arr shcl_read_float_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_f64_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_read_f64_arr R; Str p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
 	shcl_status st = array_elements(d, &d->arena, p, &els, &sts, &n);
 	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
 	double *out = (double *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(double));
@@ -3336,7 +3456,7 @@ shcl_read_f64_arr shcl_read_float_array(shcl_doc *d, const char *path, size_t pl
 	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_bool_arr shcl_read_bool_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_bool_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_read_bool_arr R; Str p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
 	shcl_status st = array_elements(d, &d->arena, p, &els, &sts, &n);
 	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
 	int *out = (int *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(int));
@@ -3344,7 +3464,7 @@ shcl_read_bool_arr shcl_read_bool_array(shcl_doc *d, const char *path, size_t pl
 	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_dt_arr shcl_read_datetime_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_dt_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_read_dt_arr R; Str p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
 	shcl_status st = array_elements(d, &d->arena, p, &els, &sts, &n);
 	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
 	shcl_datetime *out = (shcl_datetime *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_datetime));
@@ -3355,7 +3475,7 @@ shcl_read_dt_arr shcl_read_datetime_array(shcl_doc *d, const char *path, size_t 
 	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_str_arr shcl_read_string_array(shcl_doc *d, const char *path, size_t plen) {
-	shcl_read_str_arr R; S p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
+	shcl_read_str_arr R; Str p; p.p = path; p.n = plen; Element **els; shcl_status *sts; size_t n;
 	shcl_status st = array_elements(d, &d->arena, p, &els, &sts, &n);
 	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
 	shcl_str *out = (shcl_str *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_str));
@@ -3365,7 +3485,7 @@ shcl_read_str_arr shcl_read_string_array(shcl_doc *d, const char *path, size_t p
 
 // --- formatter (canonical output) -------------------------------------------
 
-static void bare_quote_counts(S t, size_t *dq, size_t *sq) {
+static void bare_quote_counts(Str t, size_t *dq, size_t *sq) {
 	*dq = 0; *sq = 0; size_t i = 0;
 	while (i < t.n) {
 		uint32_t c; size_t l = utf8_decode(t.p, t.n, i, &c); i += l;
@@ -3373,7 +3493,7 @@ static void bare_quote_counts(S t, size_t *dq, size_t *sq) {
 		if (c == '"') (*dq)++; else if (c == '\'') (*sq)++;
 	}
 }
-static S quote_text(Arena *a, S t) {
+static Str quote_text(Arena *a, Str t) {
 	/* A dangling trailing backslash would turn the closing quote into an
 	   escape pair - the scanner reads the path back wrong, or not at all.
 	   Store the doubled spelling (identical on string read), the same rule
@@ -3408,7 +3528,7 @@ static int is_data_format(Arena *a, const Element *e) {
 	int has_digit = 0;
 	for (size_t i = 0; i < e->text.n; i++) if (e->text.p[i] >= '0' && e->text.p[i] <= '9') { has_digit = 1; break; }
 	if (!has_digit) {
-		S t = s_trim(e->text);
+		Str t = s_trim(e->text);
 		return t.n <= 5 && parse_bool_text(a, t, SHCL_STANDARD, &bv);
 	}
 	if (parse_int_text(a, e, SHCL_STANDARD, &iv)) return 1;
@@ -3422,8 +3542,8 @@ static int is_data_format(Arena *a, const Element *e) {
 // one of SHCL's own data formats - quoting those is just spelling (readers type the
 // value either way), but quoting a plain string is the escape and must survive
 // canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
-static S emit_element(Arena *a, const Element *e) {
-	S t = e->text;
+static Str emit_element(Arena *a, const Element *e) {
+	Str t = e->text;
 	int needs = (t.n == 0);
 	if (!needs) {
 		size_t i = 0;
@@ -3448,7 +3568,7 @@ static S emit_element(Arena *a, const Element *e) {
    that one picks a quote style to AVOID escaping and never escapes a backslash,
    which is right for a value (stored in its escaped spelling) and wrong for a
    name (stored resolved). */
-static S escape_name(Arena *a, S name) {
+static Str escape_name(Arena *a, Str name) {
 	if (name.n > 0) {
 		int allbare = 1; size_t i = 0;
 		while (i < name.n) { uint32_t c; size_t l = utf8_decode(name.p, name.n, i, &c); i += l; if (!is_bare_name_char(c)) { allbare = 0; break; } }
@@ -3467,9 +3587,9 @@ static S escape_name(Arena *a, S name) {
 	sb_putc(a, &b, '"');
 	return sb_S(&b);
 }
-static S emit_name(Arena *a, S name) { return escape_name(a, name); }
+static Str emit_name(Arena *a, Str name) { return escape_name(a, name); }
 /* Inline comment, canonically two spaces before the `#`. */
-static void emit_trailing(Arena *a, SB *out, S trailing) {
+static void emit_trailing(Arena *a, SB *out, Str trailing) {
 	if (trailing.n) { sb_puts(a, out, "  "); sb_putS(a, out, trailing); }
 }
 // Emit a sibling run. The parent walk already knows whether an earlier
@@ -3501,7 +3621,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 	Node *node = &NODE(d, idx);
 	Value *v = &node->value;
 	VecLead lead = triv_leading(node);
-	S trailing = triv_trailing(node);
+	Str trailing = triv_trailing(node);
 	/* Same-line fence spelling can't carry an inline comment (an unbalanced
 	   quote in the info-string could hide the `#` on reparse), so its trailing
 	   comment joins the leading lines instead; the flag comes from the
@@ -3527,7 +3647,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 		emit_trailing(a, out, trailing);
 		sb_putc(a, out, '\n');
 	} else {
-		RawVal *r = v->raw;
+		const RawVal *r = v->raw;
 		if (would_merge) sb_putc(a, out, ' ');
 		else { emit_trailing(a, out, trailing); sb_putc(a, out, '\n'); }
 		if (!would_merge) for (size_t k = 0; k < depth + 1; k++) sb_putc(a, out, '\t');
@@ -3535,18 +3655,10 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 		if (r->info.n > 0) { if ((unsigned char)r->info.p[0] == r->fence_char) sb_putc(a, out, ' '); sb_putS(a, out, r->info); }
 		sb_putc(a, out, '\n');
 		if (r->content.n > 0) {
-			/* A body with no non-blank line has no common indent for the reload to
-			   strip back off, so indenting it here would add a level on every pass,
-			   without bound. Leave it as it stands. */
-			int all_blank = 1;
-			for (size_t i = 0, start = 0; i <= r->content.n; i++) if (i == r->content.n || r->content.p[i] == '\n') {
-				if (s_trim(s_slice(r->content, start, i)).n > 0) { all_blank = 0; break; }
-				start = i + 1;
-			}
 			size_t start = 0;
 			for (size_t i = 0; i <= r->content.n; i++) if (i == r->content.n || r->content.p[i] == '\n') {
-				S l = s_slice(r->content, start, i);
-				if (l.n > 0 && !all_blank) for (size_t z = 0; z < depth + 1; z++) sb_putc(a, out, '\t');
+				Str l = s_slice(r->content, start, i);
+				if (l.n > 0) for (size_t z = 0; z < depth + 1; z++) sb_putc(a, out, '\t');
 				sb_putS(a, out, l); sb_putc(a, out, '\n');
 				start = i + 1;
 			}
@@ -3560,7 +3672,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 	/* Comments this block owns with no child to carry them, one deeper. */
 	VecLead ins = triv_inside(&NODE(d, idx));
 	for (size_t k = 0; k < ins.len; k++) {
-		Lead *c = &ins.data[k];
+		const Lead *c = &ins.data[k];
 		if (c->blank_before && out->len) sb_putc(a, out, '\n');
 		for (size_t z = 0; z < depth + 1; z++) sb_putc(a, out, '\t');
 		sb_putS(a, out, c->text); sb_putc(a, out, '\n');
@@ -3568,18 +3680,21 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, SB
 	/* Comments that hung on this block after its last child. */
 	VecLead aft = triv_after(&NODE(d, idx));
 	for (size_t k = 0; k < aft.len; k++) {
-		Lead *c = &aft.data[k];
+		const Lead *c = &aft.data[k];
 		if (c->blank_before && out->len) sb_putc(a, out, '\n');
 		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
 		sb_putS(a, out, c->text); sb_putc(a, out, '\n');
 	}
 }
-shcl_str shcl_to_canonical(shcl_doc *d) {
-	/* Emit's own temporaries go in scratch, so a program that saves periodically
-	   does not grow by several times the output on every save. The returned bytes
-	   still live in the document arena - that is the documented contract. */
+/* The canonical text, built in scratch (valid until the next resolve). Emit's
+   own temporaries go there too, so a program that saves periodically does not
+   grow by several times the output on every save. */
+static Str emit_canonical(shcl_doc *d) {
 	arena_reset(&d->scratch);
 	SB out = {0};
+	/* Pre-sized by node count, so the builder does not double its way up. */
+	out.cap = d->nodes.len * 24;
+	out.data = (char *)arena_alloc(&d->scratch, out.cap);
 	VecSize rc = NODE(d, ROOT).children;
 	emit_children(d, &rc, 0, &out);
 	/* Comments that never found a following line re-emit at the end. */
@@ -3587,7 +3702,13 @@ shcl_str shcl_to_canonical(shcl_doc *d) {
 		if (d->orphans.data[k].blank_before && out.len) sb_putc(&d->scratch, &out, '\n');
 		sb_putS(&d->scratch, &out, d->orphans.data[k].text); sb_putc(&d->scratch, &out, '\n');
 	}
-	return s_dup(&d->arena, sb_S(&out));
+	return sb_S(&out);
+}
+shcl_str shcl_to_canonical(shcl_doc *d) {
+	/* The returned bytes live in the document arena - that is the documented
+	   contract. A save goes through emit_canonical directly, so it retains
+	   nothing (200 saves of 79 KB grew a document by 17 MB). */
+	return s_dup(&d->arena, emit_canonical(d));
 }
 
 // --- format helpers + remaining public API ----------------------------------
@@ -3625,8 +3746,8 @@ size_t shcl_datetime_str(const shcl_datetime *dt, char *out) {
 	// Every field is public, so a hand-built struct can carry values parsing
 	// never yields (a -1 sentinel, epoch seconds in sec): render whole into a
 	// worst-case local buffer (~109 bytes), then clamp the copy to the
-	// documented 64. Parsed values stay under the clamp (<= 56 with the frac
-	// cap), so their output is unchanged.
+	// documented SHCL_DT_BUF. Parsed values stay under the clamp (<= 56 with
+	// the frac cap), so their output is unchanged.
 	char b[128];
 	char *o = b;
 	if (dt->has_date) { o += sprintf(o, "%04d-%02u-%02u", dt->year, dt->month, dt->day); if (dt->has_time) *o++ = 'T'; }
@@ -3647,7 +3768,7 @@ size_t shcl_datetime_str(const shcl_datetime *dt, char *out) {
 		o += sprintf(o, "%c%02lld:%02lld", sign, ao / 60, ao % 60);
 	}
 	size_t n = (size_t)(o - b);
-	if (n > 64) n = 64;
+	if (n > SHCL_DT_BUF) n = SHCL_DT_BUF;
 	memcpy(out, b, n);
 	return n;
 }
@@ -3672,7 +3793,7 @@ int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out) {
 
 shcl_doc *shcl_parse(const char *text, size_t len) { return do_parse(text, len, SHCL_STANDARD); }
 shcl_doc *shcl_parse_with(const char *text, size_t len, shcl_strictness s) { return do_parse(text, len, s); }
-void shcl_free(shcl_doc *d) { if (!d) return; free(d->nodes.data); arena_free(&d->arena); arena_free(&d->scratch); free(d); }
+void shcl_free(shcl_doc *d) { if (!d) return; free(d->nodes.data); arena_free(&d->arena); arena_free(&d->scratch); arena_free(&d->index_arena); free(d); }
 int shcl_strict_failed(const shcl_doc *d) {
 	if (d->strictness != SHCL_STRICT) return 0;
 	for (size_t i = 0; i < d->diags.len; i++) if (d->diags.data[i].sev == SHCL_SEV_ERROR) return 1;
@@ -3706,26 +3827,26 @@ static const char *v_schema_types[] = {
 typedef enum { ALLOW_INTS, ALLOW_FLOATS, ALLOW_BOOLS, ALLOW_DATES, ALLOW_STRINGS } allowkind;
 
 typedef struct {
-	S path; // as written in the schema; message text only
+	Str path; // as written in the schema; message text only
 	VecSeg segs;
 	const char *ty; // member of v_schema_types; NULL = untyped
 	int required;
 	int has_allowed; allowkind akind; size_t a_n;
-	int64_t *a_ints; double *a_floats; int *a_bools; shcl_datetime *a_dates; S *a_strs;
+	int64_t *a_ints; double *a_floats; int *a_bools; shcl_datetime *a_dates; Str *a_strs;
 	int has_min_i, has_max_i, has_min_f, has_max_f;
 	int64_t min_i, max_i; double min_f, max_f;
 	int has_repeat; uint64_t rep_lo, rep_hi;
-	S inherits;           // fragment mounted at this path (subtree shape); .n == 0 = none
+	Str inherits;           // fragment mounted at this path (subtree shape); .n == 0 = none
 	size_t inherits_line; // schema line of the `inherits` key, for V095
 	// Generator-only (`shcl init`): validation ignores both. has_* gates them.
-	int has_desc; S desc;
-	int has_default; S default_text;
+	int has_desc; Str desc;
+	int has_default; Str default_text;
 } VCons;
 DEFINE_VEC(VecVCons, VCons)
 
 // An interpreted schema: the top-level constraints plus the named fragments
 // their `inherits` keys can mount.
-typedef struct { S name; VecVCons fields; } VFrag;
+typedef struct { Str name; VecVCons fields; } VFrag;
 DEFINE_VEC(VecVFrag, VFrag)
 // paths_complete: 0 when a fault cost the schema a path spelling (unreadable
 // `field:` path, or a mount naming no declared fragment). Key-level faults
@@ -3733,30 +3854,30 @@ DEFINE_VEC(VecVFrag, VFrag)
 // fields into false unknowns - the sweep runs unless one of them happened.
 typedef struct { VecVCons cons; VecVFrag frags; int paths_complete; } VSchemaDef;
 
-static const VecVCons *v_frag_get(const VSchemaDef *def, S name) {
+static const VecVCons *v_frag_get(const VSchemaDef *def, Str name) {
 	for (size_t i = 0; i < def->frags.len; i++)
 		if (s_eq(def->frags.data[i].name, name)) return &def->frags.data[i].fields;
 	return NULL;
 }
 
-static void v_diag(Arena *a, VecDiag *out, size_t line, S msg) {
+static void v_diag(Arena *a, VecDiag *out, size_t line, Str msg) {
 	Diag dg; dg.line = line; dg.sev = SHCL_SEV_ERROR; dg.message = msg; dg.code = diag_code(SHCL_SEV_ERROR, msg);
 	VecDiag_push(a, out, dg);
 }
-static S v_msgz(Arena *a, const char *z) { S s; s.p = z; s.n = strlen(z); return s_dup(a, s); }
-static S v_msg3(Arena *a, const char *pre, S mid, const char *post) {
+static Str v_msgz(Arena *a, const char *z) { Str s; s.p = z; s.n = strlen(z); return s_dup(a, s); }
+static Str v_msg3(Arena *a, const char *pre, Str mid, const char *post) {
 	SB s = {0, 0, 0};
 	sb_puts(a, &s, pre); sb_putS(a, &s, mid); sb_puts(a, &s, post);
 	return sb_S(&s);
 }
-static S v_msg_key(Arena *a, const char *key) {
+static Str v_msg_key(Arena *a, const char *key) {
 	SB s = {0, 0, 0};
 	sb_puts(a, &s, "bad schema constraint '"); sb_puts(a, &s, key); sb_puts(a, &s, "'");
 	return sb_S(&s);
 }
 
 // One scalar constraint value (escapes applied), or 0.
-static int v_single_text(Arena *a, const Value *v, S *out) {
+static int v_single_text(Arena *a, const Value *v, Str *out) {
 	if (v->kind != V_CELL || v->nels != 1) return 0;
 	*out = apply_escapes(a, v->els[0].text);
 	return 1;
@@ -3772,8 +3893,8 @@ static int v_dt_equal(const shcl_datetime *x, const shcl_datetime *y) {
 	}
 	if (x->has_frac != y->has_frac) return 0;
 	if (x->has_frac) {
-		S a; a.p = x->frac.p; a.n = x->frac.n;
-		S b; b.p = y->frac.p; b.n = y->frac.n;
+		Str a; a.p = x->frac.p; a.n = x->frac.n;
+		Str b; b.p = y->frac.p; b.n = y->frac.n;
 		if (!s_eq(a, b)) return 0;
 	}
 	if (x->zone != y->zone) return 0;
@@ -3785,7 +3906,7 @@ static int v_dt_equal(const shcl_datetime *x, const shcl_datetime *y) {
 // *out. Zero return = faults were reported and the constraint is dropped.
 static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, VCons *out) {
 	Node *node = &NODE(schema, f);
-	S path;
+	Str path;
 	if (!v_single_text(a, &node->value, &path)) {
 		v_diag(a, faults, node->line, v_msgz(a, "bad schema path"));
 		return 0;
@@ -3806,11 +3927,11 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 		Node *kid = &NODE(schema, kids.data[ki]);
 		if (v_is_empty(&kid->value)) continue; // dangling key: treated as absent
 		if (s_eq(kid->name, s_lit("type"))) {
-			S t;
+			Str t;
 			int ok = v_single_text(a, &kid->value, &t);
 			const char *canon = NULL;
 			if (ok) {
-				S low = ascii_lower(a, t);
+				Str low = ascii_lower(a, t);
 				for (size_t x = 0; x < sizeof v_schema_types / sizeof v_schema_types[0]; x++)
 					if (s_eq(low, s_lit(v_schema_types[x]))) { canon = v_schema_types[x]; break; }
 				if (canon) {
@@ -3823,7 +3944,7 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 				v_diag(a, faults, kid->line, v_msg_key(a, "type"));
 			}
 		} else if (s_eq(kid->name, s_lit("required"))) {
-			S t; int b = 0;
+			Str t; int b = 0;
 			int ok = v_single_text(a, &kid->value, &t) && parse_bool_text(a, t, SHCL_STANDARD, &b);
 			if (ok && required < 0) required = b;
 			else v_diag(a, faults, kid->line, v_msg_key(a, "required"));
@@ -3831,7 +3952,7 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 			/* Consumed by the H002 suppressor (which reads the schema document
 			   directly); validation itself ignores it, but a bad value still
 			   faults so a typo cannot silently disavow nothing. */
-			S t; int b = 0;
+			Str t; int b = 0;
 			int ok = v_single_text(a, &kid->value, &t) && parse_bool_text(a, t, SHCL_STANDARD, &b);
 			if (ok && !reopen_seen) reopen_seen = 1;
 			else v_diag(a, faults, kid->line, v_msg_key(a, "reopen"));
@@ -3856,7 +3977,7 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 				v_diag(a, faults, kid->line, v_msg_key(a, "repeat"));
 			}
 		} else if (s_eq(kid->name, s_lit("inherits"))) {
-			S t;
+			Str t;
 			if (v_single_text(a, &kid->value, &t) && t.n && c.inherits.n == 0) {
 				c.inherits = t; c.inherits_line = kid->line;
 			} else {
@@ -3864,7 +3985,7 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 			}
 		} else if (s_eq(kid->name, s_lit("desc"))) {
 			// Generator-only (`shcl init`); validation ignores it. First wins.
-			S t;
+			Str t;
 			if (!c.has_desc && v_single_text(a, &kid->value, &t)) { c.has_desc = 1; c.desc = t; }
 		} else if (s_eq(kid->name, s_lit("default"))) {
 			if (!c.has_default && kid->value.kind == V_CELL) {
@@ -3911,7 +4032,7 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 			ok = 0; // a raw body has no element space to enumerate
 		} else {
 			c.akind = ALLOW_STRINGS;
-			c.a_strs = (S *)arena_alloc(a, (n ? n : 1) * sizeof(S));
+			c.a_strs = (Str *)arena_alloc(a, (n ? n : 1) * sizeof(Str));
 			for (size_t x = 0; x < n; x++) c.a_strs[x] = apply_escapes(a, els[x].text);
 		}
 		if (ok) c.has_allowed = 1;
@@ -3922,7 +4043,7 @@ static int v_parse_field(Arena *a, shcl_doc *schema, size_t f, VecDiag *faults, 
 		size_t at = is_min ? min_at : max_at;
 		if (at == (size_t)-1) continue;
 		Node *kid = &NODE(schema, at);
-		Element *el = &kid->value.els[0];
+		const Element *el = &kid->value.els[0];
 		const char *key = is_min ? "min" : "max";
 		if (strcmp(base, "int") == 0) {
 			int64_t v;
@@ -3959,7 +4080,7 @@ static void v_build_schema(Arena *a, shcl_doc *schema, VSchemaDef *def, VecDiag 
 			if (v_parse_field(a, schema, top.data[fi], faults, &c)) VecVCons_push(a, &def->cons, c);
 			else def->paths_complete = 0;
 		} else if (s_eq(node->name, s_lit("fragment"))) {
-			S name;
+			Str name;
 			if (!v_single_text(a, &node->value, &name) || name.n == 0) {
 				v_diag(a, faults, node->line, v_msgz(a, "bad schema fragment"));
 				continue;
@@ -3971,7 +4092,7 @@ static void v_build_schema(Arena *a, shcl_doc *schema, VSchemaDef *def, VecDiag 
 			VFrag fr; fr.name = name; memset(&fr.fields, 0, sizeof fr.fields);
 			VecSize kids = NODE(schema, top.data[fi]).children;
 			for (size_t ki = 0; ki < kids.len; ki++) {
-				Node *kid = &NODE(schema, kids.data[ki]);
+				const Node *kid = &NODE(schema, kids.data[ki]);
 				if (s_eq(kid->name, s_lit("field"))) {
 					VCons c;
 					if (v_parse_field(a, schema, kids.data[ki], faults, &c)) VecVCons_push(a, &fr.fields, c);
@@ -4012,7 +4133,7 @@ static void v_build_schema(Arena *a, shcl_doc *schema, VSchemaDef *def, VecDiag 
 
 // Two-row Levenshtein over codepoints; powers the "did you mean" prose (never
 // the code).
-static size_t v_edit_distance(Arena *a, S sa, S sb) {
+static size_t v_edit_distance(Arena *a, Str sa, Str sb) {
 	CPs ca = decode_cps(a, sa);
 	CPs cb = decode_cps(a, sb);
 	size_t *prev = (size_t *)arena_alloc(a, (cb.n + 1) * sizeof(size_t));
@@ -4034,14 +4155,14 @@ static size_t v_edit_distance(Arena *a, S sa, S sb) {
 
 // Closest legal sibling name (same parent chain, schema order, edit distance
 // <= 2) appended as "; did you mean 'x'?" - or nothing. Prose only.
-static void v_suggest(Arena *a, Arena *tmp, const VecS *names, S name, SB *msg) {
+static void v_suggest(Arena *a, Arena *tmp, const VecS *names, Str name, SB *msg) {
 	/* tmp holds the DP rows and codepoint decodes - dead after this call.
 	   Resetting per unknown field keeps a wholesale unmatched document (the
 	   case this feature exists for) at one sweep's peak. The sibling lists
 	   are prebuilt once per validate by v_unknown. */
 	arena_reset(tmp);
 	if (!names) return;
-	int have = 0; size_t best_dist = 0; S best_name = s_empty();
+	int have = 0; size_t best_dist = 0; Str best_name = s_empty();
 	for (size_t i = 0; i < names->len; i++) {
 		size_t dist = v_edit_distance(tmp, name, names->data[i]);
 		if (dist <= 2 && (!have || dist < best_dist)) { have = 1; best_dist = dist; best_name = names->data[i]; }
@@ -4062,16 +4183,17 @@ DEFINE_VEC(VecVCtx, VCtx)
 
 static void v_contexts(Arena *a, shcl_doc *d, const size_t *start, size_t nstart, Segment *segs, size_t nsegs, size_t anchor, VecVCtx *out) {
 	VecSize cur = {0};
+	// cppcheck-suppress objectIndex  ## single-element callers pass nstart == 1, so start[i] stays at 0
 	for (size_t i = 0; i < nstart; i++) VecSize_push(a, &cur, start[i]);
 	for (size_t si = 0; si < nsegs; si++) {
-		Segment *seg = &segs[si];
+		const Segment *seg = &segs[si];
 		VecSize next = {0};
 		for (size_t k = 0; k < cur.len; k++) {
 			VecSize ch = NODE(d, cur.data[k]).children;
 			if (seg->star) {
 				for (size_t j = 0; j < ch.len; j++) VecSize_push(a, &next, ch.data[j]);
 			} else {
-				for (size_t j = 0; j < ch.len; j++) { size_t c = ch.data[j]; if (s_eq(NODE(d, c).name, seg->name)) VecSize_push(a, &next, c); }
+				children_named(d, a, cur.data[k], seg->name, &next);
 			}
 		}
 		if (seg->star) {
@@ -4091,7 +4213,7 @@ static void v_contexts(Arena *a, shcl_doc *d, const size_t *start, size_t nstart
 		case SEL_NONE: cur = next; break;
 		case SEL_VALUE: {
 			VecSize f = {0};
-			S want = apply_escapes(a, seg->sel.value);
+			Str want = apply_escapes(a, seg->sel.value);
 			for (size_t k = 0; k < next.len; k++) if (s_eq(disp_key(a, &NODE(d, next.data[k]).value), want) && (!seg->sel.quoted || single_scalar(&NODE(d, next.data[k]).value))) VecSize_push(a, &f, next.data[k]);
 			cur = f; break;
 		}
@@ -4123,7 +4245,7 @@ static void v_wrong_type(Arena *a, VecDiag *out, size_t line, const VCons *c) {
 	sb_puts(a, &s, "': value is not a valid "); sb_puts(a, &s, c->ty ? c->ty : "string");
 	v_diag(a, out, line, sb_S(&s));
 }
-static void v_not_allowed(Arena *a, VecDiag *out, size_t line, const VCons *c, S text) {
+static void v_not_allowed(Arena *a, VecDiag *out, size_t line, const VCons *c, Str text) {
 	SB s = {0, 0, 0};
 	sb_puts(a, &s, "value not allowed at '"); sb_putS(a, &s, c->path);
 	sb_puts(a, &s, "': "); sb_putS(a, &s, text);
@@ -4214,7 +4336,7 @@ static void v_node(Arena *a, Arena *lv, shcl_doc *d, const VCons *c, size_t n, V
 		// can fail, in logical-string space.
 		if (c->has_allowed && c->akind == ALLOW_STRINGS) {
 			for (size_t x = 0; x < nels; x++) {
-				S s = apply_escapes(lv, els[x].text);
+				Str s = apply_escapes(lv, els[x].text);
 				int found = 0;
 				for (size_t y = 0; y < c->a_n; y++) if (s_eq(c->a_strs[y], s)) { found = 1; break; }
 				if (!found) { v_not_allowed(a, out, line, c, s); break; }
@@ -4269,7 +4391,7 @@ static void v_check_from(Arena *a, Arena *lv, shcl_doc *d, const VCons *c, const
 					// level is what makes a recursive schema cost double per
 					// document level, so each pair is done once.
 					char kb[sizeof n]; memcpy(kb, &n, sizeof n);
-					S nkey; nkey.p = kb; nkey.n = sizeof n;
+					Str nkey; nkey.p = kb; nkey.n = sizeof n;
 					uint64_t h = cmap_hash(c->inherits, nkey);
 					int seen = 0;
 					for (CMapEnt *e = cmap_first(&mounted->map, h); e; e = cmap_next(e, h))
@@ -4301,7 +4423,7 @@ static void v_check(Arena *a, Arena *lvls, shcl_doc *d, const VCons *c, const VS
 // injectivity reasoning as the merge key's cell encoding - and like it, the
 // length unit is each binding's native one (bytes here), because only
 // injectivity matters.
-static void chain_push(Arena *a, SB *chain, S name) {
+static void chain_push(Arena *a, SB *chain, Str name) {
 	char buf[32];
 	snprintf(buf, sizeof buf, "%zu:", name.n);
 	sb_puts(a, chain, buf);
@@ -4310,7 +4432,7 @@ static void chain_push(Arena *a, SB *chain, S name) {
 
 // Decode the next length-prefixed segment of a chain key at *i. Total: bails
 // at the first shape the encoder can't have produced.
-static int chain_next(S chain, size_t *i, S *nm) {
+static int chain_next(Str chain, size_t *i, Str *nm) {
 	size_t k = *i, n = 0;
 	if (k >= chain.n) return 0;
 	while (k < chain.n && chain.p[k] >= '0' && chain.p[k] <= '9') { n = n * 10 + (size_t)(chain.p[k] - '0'); k++; }
@@ -4323,12 +4445,12 @@ static int chain_next(S chain, size_t *i, S *nm) {
 
 // Element-wise chain match against the star-bearing schema paths: a `*`
 // segment matches any one name, and every prefix of a path is legal.
-static int star_legal(const VecSeg *pats, size_t npats, S chain) {
+static int star_legal(const VecSeg *pats, size_t npats, Str chain) {
 	if (npats == 0) return 0;
 	for (size_t pi = 0; pi < npats; pi++) {
 		const VecSeg *p = &pats[pi];
 		size_t part = 0, i = 0; int match = 1;
-		S nm;
+		Str nm;
 		while (match && chain_next(chain, &i, &nm)) {
 			if (part >= p->len || (!p->data[part].star && !s_eq(p->data[part].name, nm))) match = 0;
 			part++;
@@ -4342,13 +4464,13 @@ static int star_legal(const VecSeg *pats, size_t npats, S chain) {
 // like star_legal (stars wild, prefixes legal), and when a mount's whole path
 // matched with chain left over, the remainder is retried against the mounted
 // fragment's fields. Terminates: every descent consumes >= 1 part.
-static int chain_parts_legal(const VecVCons *cons, const VSchemaDef *def, S chain, size_t from) {
+static int chain_parts_legal(const VecVCons *cons, const VSchemaDef *def, Str chain, size_t from) {
 	for (size_t ci = 0; ci < cons->len; ci++) {
 		const VCons *c = &cons->data[ci];
 		size_t n = c->segs.len;
 		size_t part = 0, i = from, rem = from;
 		int match = 1;
-		S nm;
+		Str nm;
 		while (match && chain_next(chain, &i, &nm)) {
 			if (part < n) {
 				if (!c->segs.data[part].star && !s_eq(c->segs.data[part].name, nm)) match = 0;
@@ -4365,7 +4487,7 @@ static int chain_parts_legal(const VecVCons *cons, const VSchemaDef *def, S chai
 	}
 	return 0;
 }
-static int chain_legal(const VSchemaDef *def, S chain) {
+static int chain_legal(const VSchemaDef *def, Str chain) {
 	return chain_parts_legal(&def->cons, def, chain, 0);
 }
 
@@ -4400,8 +4522,8 @@ static void v_unknown(Arena *a, shcl_doc *d, const VSchemaDef *def, VecDiag *out
 		SB chain = {0, 0, 0};
 		for (size_t si = 0; si < cons->data[i].segs.len; si++) {
 			if (cons->data[i].segs.data[si].star) break; // no sibling entry for '*'; deeper chains are pattern-only
-			S nm = cons->data[i].segs.data[si].name;
-			S pc = s_dup(a, sb_S(&chain));
+			Str nm = cons->data[i].segs.data[si].name;
+			Str pc = s_dup(a, sb_S(&chain));
 			uint64_t hp = cmap_hash(pc, s_empty());
 			size_t g = (size_t)-1;
 			for (CMapEnt *e = cmap_first(&sib_of, hp); e; e = cmap_next(e, hp))
@@ -4415,7 +4537,7 @@ static void v_unknown(Arena *a, shcl_doc *d, const VSchemaDef *def, VecDiag *out
 			}
 			VecS_push(a, &sibs[g], nm);
 			chain_push(a, &chain, nm);
-			S full = s_dup(a, sb_S(&chain));
+			Str full = s_dup(a, sb_S(&chain));
 			uint64_t hf = cmap_hash(full, s_empty());
 			int have = 0;
 			for (CMapEnt *e = cmap_first(&legal, hf); e; e = cmap_next(e, hf))
@@ -4432,18 +4554,18 @@ static void v_unknown(Arena *a, shcl_doc *d, const VSchemaDef *def, VecDiag *out
 	}
 	while (snode.len) {
 		size_t n = snode.data[snode.len - 1];
-		S pchain = schain.data[snode.len - 1];
-		S pshown = sshown.data[snode.len - 1];
+		Str pchain = schain.data[snode.len - 1];
+		Str pshown = sshown.data[snode.len - 1];
 		snode.len--; schain.len--; sshown.len--;
-		Node *node = &NODE(d, n);
+		const Node *node = &NODE(d, n);
 		SB cb = {0, 0, 0};
 		sb_putS(a, &cb, pchain);
 		chain_push(a, &cb, node->name);
-		S chain = sb_S(&cb);
+		Str chain = sb_S(&cb);
 		SB sb2 = {0, 0, 0};
 		if (pshown.n) { sb_putS(a, &sb2, pshown); sb_putc(a, &sb2, '.'); }
 		sb_putS(a, &sb2, node->name);
-		S shown = sb_S(&sb2);
+		Str shown = sb_S(&sb2);
 		int found = 0;
 		{
 			uint64_t hc = cmap_hash(chain, s_empty());
@@ -4516,23 +4638,23 @@ void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 		int bn = g == 0 ? snprintf(base, sizeof base, "field")
 		                : snprintf(base, sizeof base, "fragment[#%zu].field", g - 1);
 		shcl_str *paths;
-		S bp; bp.p = base; bp.n = (size_t)bn;
+		Str bp; bp.p = base; bp.n = (size_t)bn;
 		size_t np = instances_in(schema, &tmp, bp, &paths);
 		for (size_t i = 0; i < np; i++) {
 			char q[80];
 			int qn = snprintf(q, sizeof q, "%s[#%zu].repeat", base, i);
 			/* repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
 			   that matters here is the last one. */
-			S qp; qp.p = q; qp.n = (size_t)qn;
+			Str qp; qp.p = q; qp.n = (size_t)qn;
 			shcl_read_i64_arr rep = read_int_array_in(schema, &tmp, qp);
 			if (rep.status != SHCL_GOOD || rep.n == 0 || rep.values[rep.n - 1] <= 1) continue;
-			S p; p.p = paths[i].p; p.n = paths[i].n;
+			Str p; p.p = paths[i].p; p.n = paths[i].n;
 			/* Leaf name from the parsed path, not a re-split of its text: a
 			   quoted last segment may contain dots (`a."b.c"`). The scanner
 			   folds the name; the doc side stores names folded too. */
 			PathScan ps = scan_lookup(&tmp, p);
 			if (!ps.ok || ps.segs.len == 0) continue;
-			Segment *last = &ps.segs.data[ps.segs.len - 1];
+			const Segment *last = &ps.segs.data[ps.segs.len - 1];
 			if (last->star) continue; /* name wildcard: no single leaf name to disavow */
 			if (last->name.n) VecS_push(&tmp, &names, last->name);
 		}
@@ -4545,9 +4667,9 @@ void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 		Diag dg = doc->diags.data[i];
 		int drop = 0;
 		if (strcmp(dg.code, "H001") == 0) {
-			S m = dg.message;
+			Str m = dg.message;
 			for (size_t k = 0; k < heads.len; k++) {
-				S h = heads.data[k];
+				Str h = heads.data[k];
 				if (m.n >= h.n && memcmp(m.p, h.p, h.n) == 0) { drop = 1; break; }
 			}
 		}
@@ -4567,17 +4689,17 @@ void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc) {
 		int bn = g == 0 ? snprintf(base, sizeof base, "field")
 		                : snprintf(base, sizeof base, "fragment[#%zu].field", g - 1);
 		shcl_str *paths;
-		S bp; bp.p = base; bp.n = (size_t)bn;
+		Str bp; bp.p = base; bp.n = (size_t)bn;
 		size_t np = instances_in(schema, &tmp, bp, &paths);
 		for (size_t i = 0; i < np; i++) {
 			char q[80];
 			int qn = snprintf(q, sizeof q, "%s[#%zu].reopen", base, i);
 			shcl_read_bool re = shcl_read_bool_(schema, q, (size_t)qn);
 			if (re.status != SHCL_GOOD || !re.value) continue;
-			S p; p.p = paths[i].p; p.n = paths[i].n;
+			Str p; p.p = paths[i].p; p.n = paths[i].n;
 			PathScan ps = scan_lookup(&tmp, p);
 			if (!ps.ok || ps.segs.len == 0) continue;
-			Segment *last = &ps.segs.data[ps.segs.len - 1];
+			const Segment *last = &ps.segs.data[ps.segs.len - 1];
 			if (last->star) continue; /* name wildcard: no single leaf name to disavow */
 			if (last->name.n) VecS_push(&tmp, &names, last->name);
 		}
@@ -4590,9 +4712,9 @@ void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc) {
 		Diag dg = doc->diags.data[i];
 		int drop = 0;
 		if (strcmp(dg.code, "H002") == 0) {
-			S m = dg.message;
+			Str m = dg.message;
 			for (size_t k = 0; k < heads.len; k++) {
-				S h = heads.data[k];
+				Str h = heads.data[k];
 				if (m.n >= h.n && memcmp(m.p, h.p, h.n) == 0) { drop = 1; break; }
 			}
 		}
@@ -4617,7 +4739,7 @@ size_t shcl_error_count(const shcl_doc *d) {
 
 shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schema, size_t slen, shcl_strictness s) {
 	shcl_doc *d = shcl_parse_with(text, len, s);
-	S st; st.p = schema ? schema : ""; st.n = schema ? slen : 0;
+	Str st; st.p = schema ? schema : ""; st.n = schema ? slen : 0;
 	if (s_trim(st).n != 0) {
 		shcl_doc *sd = shcl_parse(schema, slen);
 		// A schema that did not load would silently drop the constraints on
@@ -4719,6 +4841,58 @@ static const char *shcl_last_sep(const char *target) {
 }
 
 #ifndef _WIN32
+// The path a save actually rewrites. A symlink is followed so the write goes
+// through it; realpath does that but needs the target to exist, so a dangling
+// link is walked by hand and the file is created where it points. A path that
+// is no link at all is a plain create at the path as given. malloc'd; NULL
+// only when memory ran out.
+static char *shcl_resolve_target(const char *file) {
+	char *p = realpath(file, NULL);
+	if (p) return p;
+	size_t pn = strlen(file);
+	if (!(p = (char *)malloc(pn + 1))) return NULL;
+	memcpy(p, file, pn + 1);
+	for (int hop = 0; hop < 40; hop++) {
+		// bounded: a link cycle would otherwise never resolve
+		size_t cap = 256; char *link = NULL; ssize_t got;
+		for (;;) {
+			char *grown = (char *)realloc(link, cap);
+			if (!grown) { free(link); free(p); return NULL; }
+			link = grown;
+			got = readlink(p, link, cap);
+			if (got < 0 || (size_t)got < cap) break;
+			cap *= 2;
+		}
+		if (got < 0) { free(link); break; }
+		link[got] = '\0';
+		if (link[0] == '/') { free(p); p = link; continue; }
+		// Relative to the link's own directory; a bare name sits in ".".
+		const char *slash = strrchr(p, '/');
+		size_t dn = slash ? (size_t)(slash - p) : 0;
+		char *joined = (char *)malloc(dn + (size_t)got + 3);
+		if (!joined) { free(link); free(p); return NULL; }
+		if (!slash) { memcpy(joined, "./", 2); memcpy(joined + 2, link, (size_t)got + 1); }
+		else if (dn == 0) { joined[0] = '/'; memcpy(joined + 1, link, (size_t)got + 1); }
+		else { memcpy(joined, p, dn); joined[dn] = '/'; memcpy(joined + dn + 1, link, (size_t)got + 1); }
+		free(link); free(p); p = joined;
+	}
+	const char *slash = strrchr(p, '/');
+	if (!slash) return p;
+	size_t dn = (size_t)(slash - p);
+	char *dir = (char *)malloc(dn ? dn + 1 : 2);
+	if (!dir) return p;
+	if (dn) { memcpy(dir, p, dn); dir[dn] = '\0'; } else { dir[0] = '/'; dir[1] = '\0'; }
+	char *rd = realpath(dir, NULL);
+	free(dir);
+	if (!rd) return p;
+	size_t rn = strlen(rd), nn = strlen(slash + 1);
+	if (rn == 1 && rd[0] == '/') rn = 0; // the root already ends in the separator
+	char *out = (char *)malloc(rn + nn + 2);
+	if (out) { memcpy(out, rd, rn); out[rn] = '/'; memcpy(out + rn + 1, slash + 1, nn + 1); free(p); p = out; }
+	free(rd);
+	return p;
+}
+
 // fsync the directory a save published into. The fsync on the file only covered
 // the file; the rename is a directory change, so without this a power cut right
 // after a save can lose the publish and leave the old content. Best effort - a
@@ -4743,21 +4917,28 @@ static void shcl_sync_dir(const char *target) {
 // file in the same dir, then a rename over the target, so an interrupted write
 // can never truncate the config it rewrites. The data is synced before the
 // rename so a crash cannot publish an empty file. The target is resolved
-// through symlinks first and the original's mode is copied onto the temp file;
-// other hard links to the old inode keep the old content (inherent to rename).
+// through symlinks first (a dangling link gets its file created where it
+// points) and the original's whole mode - setuid, setgid and sticky included,
+// as an editor's rewrite would carry it - is copied onto the temp file; other
+// hard links to the old inode keep the old content (inherent to rename).
 // Returns 1 on success, 0 on failure with errno left describing it.
 int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	const char *target = path;
 #ifndef _WIN32
-	// realpath returns NULL when the target does not exist yet; that is a
-	// plain create, so the path as given is already the right one.
-	char *real = realpath(path, NULL);
-	if (real) target = real;
+	char *real = shcl_resolve_target(path);
+	if (!real) return 0;
+	target = real;
 	#define SHCL_FILE_CLEANUP() do { free(real); } while (0)
 	#define SHCL_FILE_UNLINK() remove(tmp)
 #else
 	wchar_t *wtarget = shcl_widen(target), *wtmp = NULL;
 	if (!wtarget) return 0;
+	// A read-only file cannot be replaced, and a read-only temp cannot be
+	// removed after a failure, so the attribute comes off the target for the
+	// publish and goes back on the new file after it - the same outcome as
+	// POSIX, where the rename never needed the file writable.
+	DWORD attrs = GetFileAttributesW(wtarget);
+	int read_only = attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY) != 0;
 	#define SHCL_FILE_CLEANUP() do { free(wtarget); free(wtmp); } while (0)
 	#define SHCL_FILE_UNLINK() _wremove(wtmp)
 #endif
@@ -4796,7 +4977,7 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	// effort: a filesystem that cannot carry the mode is not a failure.
 	if (have_st) (void)fchmod(fileno(f), st.st_mode & 07777);
 #endif
-	int ok = fwrite(data, 1, n, f) == n && fflush(f) == 0;
+	int ok = (n == 0 || fwrite(data, 1, n, f) == n) && fflush(f) == 0;
 #ifdef _WIN32
 	ok = ok && _commit(_fileno(f)) == 0;
 #else
@@ -4804,7 +4985,12 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #endif
 	ok = (fclose(f) == 0) && ok;
 #ifdef _WIN32
+	if (read_only) SetFileAttributesW(wtarget, attrs & ~(DWORD)FILE_ATTRIBUTE_READONLY);
 	ok = ok && shcl_publish_file(wtmp, wtarget);
+	if (read_only) {
+		DWORD now = GetFileAttributesW(wtarget);
+		if (now != INVALID_FILE_ATTRIBUTES) SetFileAttributesW(wtarget, now | FILE_ATTRIBUTE_READONLY);
+	}
 #else
 	ok = ok && rename(tmp, target) == 0;
 	if (ok) shcl_sync_dir(target);
@@ -4931,7 +5117,7 @@ shcl_doc *shcl_load_file(const char *path, shcl_file_status *status) {
 // guess which happened; shcl_save_file_lossy writes anyway.
 shcl_save_result shcl_save_file(shcl_doc *d, const char *path) {
 	if (d->lost > 0) return SHCL_SAVE_REFUSED;
-	shcl_str c = shcl_to_canonical(d);
+	Str c = emit_canonical(d);
 	return shcl_write_file_atomic(path, c.p, c.n) ? SHCL_SAVE_OK : SHCL_SAVE_FAILED;
 }
 
@@ -4939,23 +5125,23 @@ shcl_save_result shcl_save_file(shcl_doc *d, const char *path) {
 // dropped lines this save deletes. The caller owns that choice. Never returns
 // SHCL_SAVE_REFUSED - the gate is the one thing it skips.
 shcl_save_result shcl_save_file_lossy(shcl_doc *d, const char *path) {
-	shcl_str c = shcl_to_canonical(d);
+	Str c = emit_canonical(d);
 	return shcl_write_file_atomic(path, c.p, c.n) ? SHCL_SAVE_OK : SHCL_SAVE_FAILED;
 }
 #endif /* SHCL_NO_FILE_IO */
 
 // --- Schema-driven generation (`shcl init --schema`) ------------------------
 
-static S v_allowed_join(Arena *a, const VCons *c) {
+static Str v_allowed_join(Arena *a, const VCons *c) {
 	SB s = {0, 0, 0};
 	char nb[64];
 	for (size_t i = 0; i < c->a_n; i++) {
 		if (i) sb_puts(a, &s, ", ");
 		switch (c->akind) {
 			case ALLOW_INTS: { snprintf(nb, sizeof nb, "%" PRId64, c->a_ints[i]); sb_puts(a, &s, nb); break; }
-			case ALLOW_FLOATS: { char fb[SHCL_F64_BUF]; S f; f.p = fb; f.n = shcl_format_f64(c->a_floats[i], fb); sb_putS(a, &s, f); break; }
+			case ALLOW_FLOATS: { char fb[SHCL_F64_BUF]; Str f; f.p = fb; f.n = shcl_format_f64(c->a_floats[i], fb); sb_putS(a, &s, f); break; }
 			case ALLOW_BOOLS: sb_puts(a, &s, c->a_bools[i] ? "true" : "false"); break;
-			case ALLOW_DATES: { char db[64]; S d; d.p = db; d.n = shcl_datetime_str(&c->a_dates[i], db); sb_putS(a, &s, d); break; }
+			case ALLOW_DATES: { char db[SHCL_DT_BUF]; Str d; d.p = db; d.n = shcl_datetime_str(&c->a_dates[i], db); sb_putS(a, &s, d); break; }
 			case ALLOW_STRINGS: sb_putS(a, &s, c->a_strs[i]); break;
 		}
 	}
@@ -4963,7 +5149,7 @@ static S v_allowed_join(Arena *a, const VCons *c) {
 }
 
 // The `# type, ...` annotation line summarizing a constraint, ASCII only.
-static S v_gen_annotation(Arena *a, const VCons *c, S tyname) {
+static Str v_gen_annotation(Arena *a, const VCons *c, Str tyname) {
 	SB s = {0, 0, 0};
 	char nb[80];
 	sb_putS(a, &s, tyname);
@@ -4978,13 +5164,13 @@ static S v_gen_annotation(Arena *a, const VCons *c, S tyname) {
 		char fb[SHCL_F64_BUF];
 		sb_puts(a, &s, ", ");
 		if (c->has_min_f && c->has_max_f) {
-			S f; f.p = fb; f.n = shcl_format_f64(c->min_f, fb); sb_putS(a, &s, f);
+			Str f; f.p = fb; f.n = shcl_format_f64(c->min_f, fb); sb_putS(a, &s, f);
 			sb_putc(a, &s, '-');
-			S g; g.p = fb; g.n = shcl_format_f64(c->max_f, fb); sb_putS(a, &s, g);
+			Str g; g.p = fb; g.n = shcl_format_f64(c->max_f, fb); sb_putS(a, &s, g);
 		} else if (c->has_min_f) {
-			sb_puts(a, &s, ">= "); S f; f.p = fb; f.n = shcl_format_f64(c->min_f, fb); sb_putS(a, &s, f);
+			sb_puts(a, &s, ">= "); Str f; f.p = fb; f.n = shcl_format_f64(c->min_f, fb); sb_putS(a, &s, f);
 		} else {
-			sb_puts(a, &s, "<= "); S f; f.p = fb; f.n = shcl_format_f64(c->max_f, fb); sb_putS(a, &s, f);
+			sb_puts(a, &s, "<= "); Str f; f.p = fb; f.n = shcl_format_f64(c->max_f, fb); sb_putS(a, &s, f);
 		}
 	}
 	if (c->has_repeat) {
@@ -5015,7 +5201,7 @@ static int g_unwritable(const VCons *c) {
 }
 // s with every '\n' escaped to backslash-n (comments and annotations must stay
 // one line no matter what an allowed value smuggles in).
-static S g_escape_nl(Arena *a, S s) {
+static Str g_escape_nl(Arena *a, Str s) {
 	int has = 0;
 	for (size_t k = 0; k < s.n; k++) if (s.p[k] == '\n') { has = 1; break; }
 	if (!has) return s;
@@ -5028,7 +5214,7 @@ static S g_escape_nl(Arena *a, S s) {
 }
 // A default carrying a literal newline cannot sit on a value line; the quoted
 // escaped spelling reads back to the same string.
-static S g_default_text(Arena *a, S v) {
+static Str g_default_text(Arena *a, Str v) {
 	int has = 0;
 	for (size_t k = 0; k < v.n; k++) if (v.p[k] == '\n') { has = 1; break; }
 	if (!has) return v;
@@ -5068,7 +5254,7 @@ static S g_default_text(Arena *a, S v) {
 // Render parsed segments back as a dotted path, dropping wildcard selectors
 // (a generated line targets the one instance it materializes) and quoting a
 // name that needs it, so the result is a path the scanner reads back the same.
-static S gen_path_text(Arena *a, const VecSeg *segs) {
+static Str gen_path_text(Arena *a, const VecSeg *segs) {
 	SB out = {0, 0, 0};
 	char nb[32];
 	for (size_t i = 0; i < segs->len; i++) {
@@ -5093,7 +5279,7 @@ static S gen_path_text(Arena *a, const VecSeg *segs) {
 // schema order, each field's path and segments prefixed by its mount's. A
 // mount whose fragment is already expanding (a cycle) stops there and is
 // recorded as (path, fragment name) for the trailing not-generated block.
-static void g_expand_go(Arena *a, const VecVCons *list, const VSchemaDef *def, const S *at_path, const VecSeg *at_segs, VecS *stack, VecVCons *out, VecS *cut_path, VecS *cut_frag) {
+static void g_expand_go(Arena *a, const VecVCons *list, const VSchemaDef *def, const Str *at_path, const VecSeg *at_segs, VecS *stack, VecVCons *out, VecS *cut_path, VecS *cut_frag) {
 	for (size_t i = 0; i < list->len; i++) {
 		const VCons *c = &list->data[i];
 		VCons cc = *c;
@@ -5106,7 +5292,7 @@ static void g_expand_go(Arena *a, const VecVCons *list, const VSchemaDef *def, c
 			for (size_t k = 0; k < c->segs.len; k++) VecSeg_push(a, &segs, c->segs.data[k]);
 			cc.segs = segs;
 		}
-		S path = cc.path; VecSeg segs = cc.segs;
+		Str path = cc.path; VecSeg segs = cc.segs;
 		if (out->len >= GEN_MAX_FIELDS) return;
 		VecVCons_push(a, out, cc);
 		if (c->inherits.n) {
@@ -5146,7 +5332,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	// safe partial mode: any fault fails it.
 	v_build_schema(a, schema, &def, &faults);
 	shcl_str r;
-	if (faults.len) { if (ok) *ok = 0; S e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r; }
+	if (faults.len) { if (ok) *ok = 0; Str e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r; }
 	if (ok) *ok = 1;
 	VecVCons cons = {0, 0, 0};
 	VecS cut_path = {0, 0, 0}, cut_frag = {0, 0, 0};
@@ -5160,7 +5346,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		// the diag outlives this call: its text must leave the private arena
 		push_diag(schema, 0, SHCL_SEV_ERROR, s_dup(&schema->arena, sb_S(&m)));
 		if (ok) *ok = 0;
-		S e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
+		Str e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
 	}
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -5172,13 +5358,13 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	for (size_t i = 0; i < cons.len; i++) fill[i] = 0;
 	#define LIVE_PUSH(SEGS) do { if (nlive == clive) { clive = clive ? clive * 2 : 8; VecSeg *nl = (VecSeg *)arena_alloc(a, clive * sizeof *nl); for (size_t t = 0; t < nlive; t++) nl[t] = live[t]; live = nl; } live[nlive++] = (SEGS); } while (0)
 	for (size_t i = 0; i < cons.len; i++) {
-		VCons *c = &cons.data[i];
+		const VCons *c = &cons.data[i];
 		if (!g_has_wild(c) && !g_unwritable(c) && g_must_exist(c)) LIVE_PUSH(c->segs);
 	}
 	for (;;) {
 		int changed = 0;
 		for (size_t i = 0; i < cons.len; i++) {
-			VCons *c = &cons.data[i];
+			const VCons *c = &cons.data[i];
 			if (fill[i] || !g_has_wild(c) || g_unwritable(c) || !g_must_exist(c)) continue;
 			size_t k = 0;
 			while (c->segs.data[k].sel.tag != SEL_WILDCARD) k++;
@@ -5200,7 +5386,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	int first = 1;
 	for (size_t i = 0; i < cons.len; i++) {
 		VCons *c = &cons.data[i];
-		S tyname;
+		Str tyname;
 		if (c->ty) { tyname.p = c->ty; tyname.n = strlen(c->ty); } else tyname = s_lit("any");
 		if (g_unwritable(c) || (g_has_wild(c) && !fill[i])) {
 			VecS_push(a, &wild_path, g_escape_nl(a, c->path)); VecS_push(a, &wild_type, tyname);
@@ -5213,7 +5399,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			for (size_t k = 0; k <= c->desc.n; k++) {
 				if (k == c->desc.n || c->desc.p[k] == '\n') {
 					sb_puts(a, &out, "# ");
-					S ln; ln.p = c->desc.p + start; ln.n = k - start; sb_putS(a, &out, ln);
+					Str ln; ln.p = c->desc.p + start; ln.n = k - start; sb_putS(a, &out, ln);
 					sb_putc(a, &out, '\n');
 					start = k + 1;
 				}
@@ -5252,7 +5438,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		if (out.len) sb_putc(a, &out, '\n');
 		sb_puts(a, &out, GEN_BANNER);
 	}
-	S s = s_dup(&schema->arena, sb_S(&out)); r.p = s.p; r.n = s.n;
+	Str s = s_dup(&schema->arena, sb_S(&out)); r.p = s.p; r.n = s.n;
 	arena_free(&tmp);
 	return r;
 }
@@ -5266,6 +5452,8 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 #undef DEFINE_VEC
 #undef ROOT
 #undef NODE
+#undef NIL
+#undef DEAD
 #undef GEN_MAX_FIELDS
 #undef GEN_BANNER
 

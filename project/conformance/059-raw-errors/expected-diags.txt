@@ -1,0 +1,3 @@
+line 1: Error: E006
+line 5: Error: E005
+failed: 2 diagnostic(s), 2 error(s)

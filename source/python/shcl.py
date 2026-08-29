@@ -20,17 +20,21 @@ ports here by mechanical diff (parity over idiom - see style-guide.md).
 # return) is live.
 # mypy: check-untyped-defs, disable-error-code="assignment"
 
+from __future__ import annotations
+
 import math
 import os
 import stat
 import sys
 from decimal import Decimal
 from enum import Enum
+from typing import Any
 
 # The public surface, stated rather than inferred: without this `from shcl
 # import *` hands out this module's own imports (math, os, stat, Decimal, Enum)
 # and its internal ROOT constant alongside the real API.
 __all__ = [
+	"DateTime",
 	"Diagnostic",
 	"Document",
 	"FileStatus",
@@ -67,7 +71,7 @@ class Strictness(Enum):
 	Strict = 3
 
 	@staticmethod
-	def from_arg(s):
+	def from_arg(s: str) -> Strictness | None:
 		"""Accepts the CLI spellings: loose|standard|strict or 1|2|3."""
 		return {
 			"loose": Strictness.Loose, "1": Strictness.Loose,
@@ -105,8 +109,12 @@ class WriteReason(Enum):
 
 class Diagnostic:
 	__slots__ = ("line", "severity", "message", "code")
+	line: int
+	severity: Severity
+	message: str
+	code: str
 
-	def __init__(self, line, severity, message, code):
+	def __init__(self, line: int, severity: Severity, message: str, code: str):
 		self.line = line          # 1-based
 		self.severity = severity
 		self.message = message
@@ -133,6 +141,7 @@ def _diag_code(msg):
 		("missing colon", "E015"),
 		("nesting deeper than", "E016"),
 		("unterminated quote in value", "E017"),
+		("parent line was skipped", "E018"),
 		("merged with ", "H002"),
 		("unknown field ", "V001"),
 		("required path missing", "V002"),
@@ -166,8 +175,14 @@ class Read:
 	hatch that lets a downstream language reserve @null while "@null" stays a
 	plain string. Arrays, raw blocks, and empties leave it False."""
 	__slots__ = ("value", "status", "raw", "slots", "line", "quoted")
+	value: Any
+	status: Status
+	raw: str | None
+	slots: list[Status]
+	line: int
+	quoted: bool
 
-	def __init__(self, value, status, raw, slots=None):
+	def __init__(self, value: Any, status: Status, raw: str | None, slots: list[Status] | None = None):
 		self.value = value
 		self.status = status
 		self.raw = raw
@@ -180,7 +195,7 @@ class Read:
 		self.quoted = quoted
 		return self
 
-	def ok(self):
+	def ok(self) -> bool:
 		"""Whether the author addressed this field at all: Good or Empty. Note
 		this deliberately answers differently from the convenience tier, which
 		falls back on Empty like any other non-Good read - ok() asks "is this
@@ -193,7 +208,10 @@ class LoadError(Exception):
 	"""A failed strict load. Carries the full diagnostics list AND the document
 	the parse produced anyway - recover-and-continue means the diagnostics are
 	the point, and the tree is what a Standard load would have kept."""
-	def __init__(self, diagnostics, document=None):
+	diagnostics: list[Diagnostic]
+	document: Document | None
+
+	def __init__(self, diagnostics: list[Diagnostic], document: Document | None = None):
 		self.diagnostics = diagnostics
 		self.document = document
 		# Name the first few failures right in the message; the bare count made
@@ -216,7 +234,10 @@ class SaveError(Exception):
 class SaveRefused(SaveError):
 	"""The lost-content gate fired: the load dropped content this save would
 	delete (see lost_count). save_file_lossy is the override."""
-	def __init__(self, path, lost):
+	path: str | os.PathLike[str]
+	lost: int
+
+	def __init__(self, path: str | os.PathLike[str], lost: int):
 		self.path = path
 		self.lost = lost
 		super().__init__(f"{path}: refusing to save: load dropped {lost} line(s)/value(s) this write would delete (see diagnostics; save_file_lossy overrides)")
@@ -230,14 +251,24 @@ class ShclDateTime:
 	"""Local (floating) date/time unless a zone suffix was present. Fields mirror
 	what was written: a date-only value has no time, and vice versa."""
 	__slots__ = ("date", "time", "frac", "zone")
+	date: tuple[int, int, int] | None            # (year, month, day)
+	time: tuple[int, int, int | None] | None     # (hour, minute, seconds-if-written)
+	frac: str | None                             # fractional-second digits as typed
+	zone: tuple[str, int | None] | None          # ("utc", None) | ("offset", minutes)
 
-	def __init__(self, date=None, time=None, frac=None, zone=None):
-		self.date = date          # None | (year, month, day)
-		self.time = time          # None | (hour, minute, seconds-if-written)
-		self.frac = frac          # None | fractional-second digits as typed
-		self.zone = zone          # None | ("utc", None) | ("offset", minutes)
+	def __init__(
+		self,
+		date: tuple[int, int, int] | None = None,
+		time: tuple[int, int, int | None] | None = None,
+		frac: str | None = None,
+		zone: tuple[str, int | None] | None = None,
+	):
+		self.date = date
+		self.time = time
+		self.frac = frac
+		self.zone = zone
 
-	def __str__(self):
+	def __str__(self) -> str:
 		out = []
 		if self.date is not None:
 			y, m, d = self.date
@@ -255,14 +286,18 @@ class ShclDateTime:
 			if self.zone[0] == "utc":
 				out.append("Z")
 			else:
-				off = self.zone[1]
+				off = self.zone[1] or 0   # ("offset", minutes); the None slot is utc's
 				sign = "-" if off < 0 else "+"
 				a = abs(off)
 				out.append(f"{sign}{a // 60:02d}:{a % 60:02d}")
 		return "".join(out)
 
 
-def format_float(v):
+# The name the Go binding uses for the same type; either spelling works.
+DateTime = ShclDateTime
+
+
+def format_float(v: float) -> str:
 	"""Float -> string, matching the reference: positional, shortest round-trip,
 	never scientific. inf/NaN spelled as the reference spells them."""
 	if v != v:
@@ -430,6 +465,30 @@ def _cell_of(text):
 	return _cell([_Element(text, False)])
 
 
+def _want(setter, v, kind):
+	# A typed setter takes exactly the type its name says; anything else is a
+	# programming error and raises, rather than writing text every reader of
+	# that type would call bad-type (set_int of 3.5 wrote `3.5`). bool is a
+	# subclass of int in Python, so it is carved out of int and float by hand.
+	if kind == "int":
+		ok = isinstance(v, int) and not isinstance(v, bool)
+	elif kind == "float":
+		ok = isinstance(v, (int, float)) and not isinstance(v, bool)
+	elif kind == "bool":
+		ok = isinstance(v, bool)
+	elif kind == "str":
+		ok = isinstance(v, str)
+	else:
+		ok = isinstance(v, ShclDateTime)
+	if not ok:
+		raise TypeError(f"{setter}: want {kind}, got {type(v).__name__}")
+
+
+def _want_all(setter, v, kind):
+	for x in v:
+		_want(setter, x, kind)
+
+
 def _array_cell(texts):
 	# Inline-array value; the empty array is an empty value (reads back Empty).
 	if not texts:
@@ -551,6 +610,13 @@ class _Node:
 
 
 ROOT = 0
+# Stack entry for a binding line that was skipped: it still owns its indent
+# level, so the lines written under it are skipped with it instead of
+# re-parenting one level up. sys.maxsize so an arena index through it fails
+# loudly rather than reading a real node.
+DEAD = sys.maxsize
+# Ends a name-index chain (see _NameIndex).
+NIL = sys.maxsize
 
 
 def _fold_node_into(arena, survivor, loser):
@@ -641,6 +707,16 @@ def _is_ascii_digit(c):
 	return "0" <= c <= "9"
 
 
+def _all_ascii_digits(s):
+	# Every char is 0-9; the empty string passes, as an all() over it would.
+	# isdigit alone admits every Unicode Nd digit, so the ASCII test rides on it.
+	return not s or (s.isascii() and s.isdigit())
+
+
+_ASCII_DIGITS = frozenset("0123456789")
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
 def _fold_name(s):
 	return _ascii_lower(s)
 
@@ -651,10 +727,6 @@ def _fold_name(s):
 _BARE_NAME_CHARS = frozenset(
 	"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
 )
-
-
-def _is_bare_name_char(c):
-	return c in _BARE_NAME_CHARS
 
 
 def _split_comment(s):
@@ -722,12 +794,7 @@ def _split_unquoted_commas(s):
 def _normalize_dangling_backslash(t):
 	"""A dangling trailing backslash would swallow the following separator on
 	re-emit; store the doubled spelling instead (identical on string read)."""
-	run = 0
-	for c in reversed(t):
-		if c == "\\":
-			run += 1
-		else:
-			break
+	run = len(t) - len(t.rstrip("\\"))
 	if run % 2 == 1:
 		t += "\\"
 	return t
@@ -739,22 +806,29 @@ def _unterminated_quote(text):
 	already swallowed any trailing # comment into it - so the parser calls it
 	out instead of letting the typo look deliberate. Mid-text apostrophes
 	(it's fine) are legal prose and stay silent."""
+	if '"' not in text and "'" not in text:
+		return False
 	for piece in _split_unquoted_commas(text):
 		t = _trim(piece)
-		if not t:
-			continue
-		first = t[0]
-		if first != '"' and first != "'":
-			continue
-		closed = False
-		if len(t) >= 2 and t[-1] == first:
-			esc = False
-			for c in t[1:-1]:
-				esc = (c == "\\") and not esc
-			closed = not esc
-		if not closed:
-			return True
+		if not _quoted_shape(t):
+			if not t:
+				continue
+			first = t[0]
+			if first == '"' or first == "'":
+				return True
 	return False
+
+
+def _quoted_shape(t):
+	"""True when the text is one quote pair: a quote char at both ends, the last
+	one not escaped (a trailing backslash run of odd length escapes it)."""
+	if not t:
+		return False
+	first = t[0]
+	if (first != '"' and first != "'") or len(t) < 2 or t[-1] != first:
+		return False
+	inner = t[1:-1]
+	return (len(inner) - len(inner.rstrip("\\"))) % 2 == 0
 
 
 def _parse_element(piece):
@@ -763,14 +837,8 @@ def _parse_element(piece):
 	t = _trim(piece)
 	if not t:
 		return None
-	first = t[0]
-	if (first == '"' or first == "'") and len(t) >= 2 and t[-1] == first:
-		# The closing quote must not itself be escaped (`"a\"` is not closed).
-		esc = False
-		for c in t[1:-1]:
-			esc = (c == "\\") and not esc
-		if not esc:
-			return _Element(t[1:-1], True)
+	if _quoted_shape(t):
+		return _Element(t[1:-1], True)
 	return _Element(_normalize_dangling_backslash(t), False)
 
 
@@ -880,13 +948,15 @@ def _is_fence_close(line, ch, min_len):
 	return len(t) >= min_len and len(t) > 0 and all(c == ch for c in t)
 
 
-def _strip_common(line, common):
-	"""Remove a raw block's common indent from one content line.
+def _leading_ws(line):
+	"""The leading space/tab run of a line (the indent)."""
+	return line[:len(line) - len(line.lstrip(" \t"))]
 
-	A whitespace-only line took no part in computing that indent, so it can be
-	shorter than it - strip only what it actually shares, rather than blanking
-	it. Blanking drops author spacing on a line the spec calls verbatim.
-	"""
+
+def _strip_common(line, common):
+	"""Remove a raw block's nesting indent from one content line: only what the
+	line actually shares with it, so a shallower line (whitespace-only, or
+	written flush left) keeps its own spacing rather than being blanked."""
 	k = 0
 	while k < len(common) and k < len(line) and common[k] == line[k]:
 		k += 1
@@ -925,7 +995,7 @@ def _parse_uint(s):
 	if not s:
 		return None
 	body = s[1:] if s[0] == "+" else s
-	if not body or not all(_is_ascii_digit(c) for c in body):
+	if not body or not _all_ascii_digits(body):
 		return None
 	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
 	# reference just overflows. Leading zeros are legal and don't count toward range.
@@ -1209,7 +1279,7 @@ class _Parser:
 				target = None
 				at_own_level = False
 				for ind, node in reversed(self.stack):
-					if node != ROOT and len(ind) >= len(new_indent) and p.indent.startswith(ind):
+					if node != ROOT and node != DEAD and len(ind) >= len(new_indent) and p.indent.startswith(ind):
 						target = node
 						at_own_level = len(ind) == len(p.indent)
 						break
@@ -1238,6 +1308,13 @@ class _Parser:
 					self.stack = self.stack[:1]
 				return parent
 		return None
+
+	def _skip_under_dead(self, line, indent):
+		"""Diagnose a line written under a skipped line, and skip it too. Its own
+		level stays dead so deeper lines go the same way."""
+		self._err(line, "parent line was skipped; line skipped")
+		self.lost += 1
+		self.stack.append((indent, DEAD))
 
 	def _attach_path(self, parent, segs, value, line):
 		"""Walk path segments under `parent`, select-or-creating; returns the node
@@ -1274,17 +1351,7 @@ class _Parser:
 				# just the first same-display child - a later remap can drop an
 				# entry a different sibling still satisfies - so a non-scalar hit
 				# and an outright miss both fall to the (rare) fallback scan.
-				want = _apply_escapes(sel[1])
-				dmap = self.disp_map[cur]
-				found = dmap.get((seg.name, want)) if dmap is not None else None
-				if found is not None and sel[2] and not _single_scalar(self.arena[found].value):
-					found = None
-				if found is None and sel[2]:
-					for c in self.arena[cur].children:
-						nd = self.arena[c]
-						if nd.name == seg.name and _single_scalar(nd.value) and _disp_key(nd.value) == want:
-							found = c
-							break
+				found = self._find_by_value(cur, seg.name, sel[1], sel[2])
 				if found is not None:
 					cur = found
 				else:
@@ -1296,10 +1363,17 @@ class _Parser:
 					self._err(line, f"value after selector on '{seg.name}' ignored")
 					self.lost += 1
 			elif sel is not None and sel[0] == "idx":
-				matches = [c for c in self.arena[cur].children if self.arena[c].name == seg.name]
 				k = sel[1]
-				if k < len(matches):
-					cur = matches[k]
+				found = None
+				seen = 0
+				for c in self.arena[cur].children:
+					if self.arena[c].name == seg.name:
+						if seen == k:
+							found = c
+							break
+						seen += 1
+				if found is not None:
+					cur = found
 				else:
 					self._err(line, f"no instance {k} of '{seg.name}'")
 					self.lost += 1
@@ -1335,14 +1409,36 @@ class _Parser:
 						self.reentered[cur] = line
 		return cur
 
-	def _consume_raw(self, lines, i, open_line, ch, length, info):
+	def _find_by_value(self, cur, name, text, quoted):
+		"""The child of `cur` named `name` whose display form is the selector text
+		(escapes applied), or None. Quoted selectors only match a single scalar."""
+		want = _apply_escapes(text)
+		dmap = self.disp_map[cur]
+		found = dmap.get((name, want)) if dmap is not None else None
+		if found is not None and quoted and not _single_scalar(self.arena[found].value):
+			found = None
+		if found is None and quoted:
+			for c in self.arena[cur].children:
+				nd = self.arena[c]
+				if nd.name == name and _single_scalar(nd.value) and _disp_key(nd.value) == want:
+					return c
+		return found
+
+	def _consume_raw(self, lines, i, open_line, open_indent, fence):
 		"""Consume raw-block content after an opening fence. Returns (value, next
-		line index). Content keeps relative indentation; the common leading run
-		is stripped."""
+		line index). The closing fence's indent is stripped from each content
+		line (the opening line's when the block never closes); the rest is
+		content."""
+		ch, length, info = fence
 		content = []
+		nest = open_indent
 		closed = False
 		while i < len(lines):
 			if _is_fence_close(lines[i], ch, length):
+				# The closing fence's indent is the nesting; everything a content
+				# line carries past it is content, so a body whose lines all
+				# share an indent keeps it (a writer-built block depends on that).
+				nest = _leading_ws(lines[i])
 				closed = True
 				i += 1
 				break
@@ -1350,31 +1446,7 @@ class _Parser:
 			i += 1
 		if not closed:
 			self._err(open_line, "unterminated raw block")
-		# Strip the common leading whitespace (the visual nesting); keep the rest.
-		common = None
-		for ln in content:
-			if not _trim(ln):
-				continue
-			lead_chars: list = []
-			for c in ln:
-				if c == " " or c == "\t":
-					lead_chars.append(c)
-				else:
-					break
-			lead = "".join(lead_chars)
-			if common is None:
-				common = lead
-			else:
-				p = []
-				for a, b in zip(common, lead):
-					if a == b:
-						p.append(a)
-					else:
-						break
-				common = "".join(p)
-		if common is None:
-			common = ""
-		stripped = [_strip_common(ln, common) for ln in content]
+		stripped = [_strip_common(ln, nest) for ln in content]
 		return _raw("\n".join(stripped), info, ch, length), i
 
 	def _bind_block(self, parent, value, line):
@@ -1496,11 +1568,8 @@ class _Parser:
 		while i < nlines:
 			lineno = i + 1
 			line = _trim_end(lines[i])
-			j = 0
-			while j < len(line) and (line[j] == " " or line[j] == "\t"):
-				j += 1
-			indent = line[:j]
-			rest = line[j:]
+			rest = line.lstrip(" \t")
+			indent = line[:len(line) - len(rest)]
 			if not rest:
 				self.saw_blank = True
 				i += 1
@@ -1521,19 +1590,21 @@ class _Parser:
 			# ones hang on their own block first.
 			self._hang_deeper_pending(indent)
 			# Child-indent fence: a value line for its parent field.
-			fo = _fence_open(rest)
-			if fo is not None:
-				ch, length, info = fo
+			fence = _fence_open(rest)
+			if fence is not None:
 				parent = self._resolve_parent(indent)
 				if parent is None:
 					self._err(lineno, "indentation matches no open level")
 					self.lost += 1
 					i += 1
 					continue
-				value, nxt = self._consume_raw(lines, i + 1, lineno, ch, length, info)
-				node = self._bind_block(parent, value, lineno)
-				if node is not None:
-					self._attach_trivia(node, "")
+				value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
+				if parent == DEAD:
+					self._skip_under_dead(lineno, indent)
+				else:
+					node = self._bind_block(parent, value, lineno)
+					if node is not None:
+						self._attach_trivia(node, "")
 				i = nxt
 				continue
 			# Stacked-list element: colon-less by construction ('*' can't begin a name).
@@ -1544,6 +1615,10 @@ class _Parser:
 					if parent is None:
 						self._err(lineno, "indentation matches no open level")
 						self.lost += 1
+						i += 1
+						continue
+					if parent == DEAD:
+						self._skip_under_dead(lineno, indent)
 						i += 1
 						continue
 					body, comment = _split_comment(after)
@@ -1578,6 +1653,10 @@ class _Parser:
 				self.lost += 1
 				i += 1
 				continue
+			if parent == DEAD:
+				self._skip_under_dead(lineno, indent)
+				i += 1
+				continue
 			try:
 				segments, value_text = _scan_path(content)
 			except _PathError as e:
@@ -1588,6 +1667,7 @@ class _Parser:
 					self.lost += 1
 				else:
 					self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
+				self.stack.append((indent, DEAD))
 				i += 1
 				continue
 			nxt = i + 1
@@ -1602,11 +1682,10 @@ class _Parser:
 			elif value_text == "":
 				value = _empty()
 			else:
-				fo = _fence_open(value_text)
-				if fo is not None:
+				fence = _fence_open(value_text)
+				if fence is not None:
 					# Same-line fence spelling.
-					ch, length, info = fo
-					value, nxt = self._consume_raw(lines, i + 1, lineno, ch, length, info)
+					value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				else:
 					if _unterminated_quote(value_text):
 						self._err(lineno, "unterminated quote in value")
@@ -1626,6 +1705,8 @@ class _Parser:
 					self.arena[node].blank_before = True
 				self._attach_trivia(node, comment)
 				self.stack.append((indent, node))
+			else:
+				self.stack.append((indent, DEAD))
 			i = nxt
 		self._star_flush()
 		self._fold_late_dups()
@@ -1644,9 +1725,26 @@ class _Parser:
 _NO_DEFAULT = object()  # get_* sentinel: no call-site default -> must-exist (raises)
 
 
+class _NameIndex:
+	"""Read accelerator: the first child of each (parent, name), chained on to
+	the next same-named sibling. The key is the exact (parent, name) tuple, the
+	same deviation the parser's maps take (see _merge_key), so nothing but a
+	same-named sibling can ever be on a chain; the lookup still checks the
+	name, as the reference does over its hash."""
+	__slots__ = ("first", "next_same")
+
+	def __init__(self, first, next_same):
+		self.first = first            # (parent, name) -> first child
+		self.next_same = next_same    # per node; NIL ends the chain
+
+
+def _name_key(parent, name):
+	return (parent, name)
+
+
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
-	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost")
+	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index")
 
 	def __init__(self, arena, diags, strictness, orphans=None, lost=0):
 		self.arena = arena
@@ -1658,15 +1756,19 @@ class Document:
 		# Content-malformed lines are NOT counted - they are retained as trivia
 		# and survive a save. lost_count() serves it; save_file() gates on it.
 		self._lost = lost
+		# Built on the first path read, dropped by every write entry point.
+		# Without it a read scans the parent's children, so reading a flat
+		# document key by key was quadratic (35 s at 40k keys).
+		self._index = None
 
 	@staticmethod
-	def parse(text):
+	def parse(text: str) -> Document:
 		"""Parse at Standard strictness. Never fails: bad lines are skipped and
 		diagnosed, good values stay readable."""
 		return _Parser().parse(text, Strictness.Standard)
 
 	@staticmethod
-	def parse_with(text, strictness):
+	def parse_with(text: str, strictness: Strictness) -> Document:
 		"""Parse at a chosen strictness. Only Strict can fail (any error
 		diagnostic); the raised LoadError still carries the parsed document
 		alongside the diagnostics."""
@@ -1676,7 +1778,7 @@ class Document:
 		return doc
 
 	@staticmethod
-	def load_file(path):
+	def load_file(path: str | os.PathLike[str]) -> tuple[Document, FileStatus]:
 		"""File tier, load half: read and parse path at Standard. Never fails -
 		the document always comes back usable (empty when the file could not be
 		read), and the returned (document, FileStatus) pair separates the four
@@ -1685,7 +1787,7 @@ class Document:
 		return Document.load_file_with(path, Strictness.Standard)
 
 	@staticmethod
-	def load_file_with(path, strictness):
+	def load_file_with(path: str | os.PathLike[str], strictness: Strictness) -> tuple[Document, FileStatus]:
 		"""load_file at a chosen strictness. A strict-failing file reports
 		HadErrors; the recover-and-continue document still comes back."""
 		text, st = read_file(path, 0)
@@ -1696,7 +1798,7 @@ class Document:
 			return doc, FileStatus.HadErrors
 		return doc, FileStatus.Clean
 
-	def save_file(self, path):
+	def save_file(self, path: str | os.PathLike[str]) -> None:
 		"""File tier, save half: write this document's canonical text to path
 		through a temp file in the same directory plus a rename, so an
 		interrupted save can never truncate the config it rewrites - the same
@@ -1711,7 +1813,7 @@ class Document:
 		if err is not None:
 			raise SaveFailed(err)
 
-	def save_file_lossy(self, path):
+	def save_file_lossy(self, path: str | os.PathLike[str]) -> None:
 		"""save_file without the lost-content gate: writes even when parsing
 		dropped lines this save deletes. The caller owns that choice. Never
 		raises SaveRefused - the gate is the one thing it skips."""
@@ -1719,10 +1821,10 @@ class Document:
 		if err is not None:
 			raise SaveFailed(err)
 
-	def diagnostics(self):
+	def diagnostics(self) -> list[Diagnostic]:
 		return self.diags
 
-	def lost_count(self):
+	def lost_count(self) -> int:
 		"""How many lines or values parsing dropped that canonical output cannot
 		re-emit - bad indentation, an unusable selector, a line past the depth
 		cap. Content-malformed lines do NOT count: those are retained as trivia
@@ -1730,7 +1832,7 @@ class Document:
 		content, so save_file refuses then (save_file_lossy overrides)."""
 		return self._lost
 
-	def error_count(self):
+	def error_count(self) -> int:
 		"""How many error-severity diagnostics the document carries - the "did
 		this file have errors?" predicate, so recover-and-continue can't read
 		as success by accident. Counts whatever diagnostics() holds (after
@@ -1738,7 +1840,7 @@ class Document:
 		return sum(1 for d in self.diags if d.severity == Severity.Error)
 
 	@staticmethod
-	def load_and_validate(text, schema_text, strictness):
+	def load_and_validate(text: str, schema_text: str, strictness: Strictness) -> Document:
 		"""One-shot load-and-validate: parse at a strictness, validate against a
 		schema, and hand back the document carrying ONE combined diagnostics
 		list (parse first, then validation - the order `check --schema`
@@ -1763,12 +1865,12 @@ class Document:
 			suppress_declared_reopens(schema, doc.diags)
 		return doc
 
-	def strictness(self):
+	def strictness(self) -> Strictness:
 		return self._strictness
 
 	# Formatter
 
-	def to_canonical(self):
+	def to_canonical(self) -> str:
 		"""Canonical form: block layout, tabs, insertion order, minimal quoting,
 		redundancy collapsed, comments re-emitted as attached trivia. Scalar
 		text is never rewritten."""
@@ -1859,7 +1961,10 @@ class Document:
 			out.append("\n")
 		elif v.kind == "cell":
 			out.append(" ")
-			out.append(", ".join(_emit_element(e) for e in v.els))
+			for k, e in enumerate(v.els):
+				if k > 0:
+					out.append(", ")
+				out.append(_emit_element(e))
 			if trailing:
 				out.append("  ")
 				out.append(trailing)
@@ -1890,12 +1995,8 @@ class Document:
 				out.append(v.info)
 			out.append("\n")
 			if v.content:
-				# A body with no non-blank line has no common indent for the
-				# reload to strip back off, so indenting it here would add a
-				# level on every pass, without bound. Leave it as it stands.
-				all_blank = all(not _trim(ln) for ln in v.content.split("\n"))
 				for ln in v.content.split("\n"):
-					if ln and not all_blank:
+					if ln:
 						out.append(body_pad)
 					out.append(ln)
 					out.append("\n")
@@ -1905,13 +2006,44 @@ class Document:
 
 	# Accessor: path resolution
 
+	def _name_index(self):
+		idx = self._index
+		if idx is None:
+			first: dict = {}
+			last: dict = {}
+			next_same = [NIL] * len(self.arena)
+			for p, node in enumerate(self.arena):
+				for c in node.children:
+					k = _name_key(p, self.arena[c].name)
+					prev = last.get(k)
+					last[k] = c
+					if prev is not None:
+						next_same[prev] = c
+					else:
+						first[k] = c
+			idx = self._index = _NameIndex(first, next_same)
+		return idx
+
 	def _children_named(self, parent, name):
-		return [c for c in self.arena[parent].children if self.arena[c].name == name]
+		idx = self._name_index()
+		out = []
+		c = idx.first.get(_name_key(parent, name), NIL)
+		while c != NIL:
+			if self.arena[c].name == name and self.arena[c].parent == parent:
+				out.append(c)
+			c = idx.next_same[c]
+		return out
 
 	def _resolve_from(self, start, segs):
 		# Returns ("none",) | ("one", idx) | ("many", [idx]) | ("slots", [entry]).
 		# A slots entry is a node idx, or the Status saying why the sub-path did
 		# not land on one node (NotFound missing, Multiple ambiguous).
+		# The per-instance sub-resolution behind a wildcard is the same walk
+		# over the remaining segments, run flat (_resolve_slot) rather than one
+		# frame per wildcard: a path can carry a wildcard per document level,
+		# and the frame budget is small. The sub-walk's answer collapses to one
+		# slot, and a wildcard inside it can only ever answer Multiple, so the
+		# flat walk ends there.
 		cur = list(start)
 		for i, seg in enumerate(segs):
 			nxt = []
@@ -1928,13 +2060,7 @@ class Document:
 					if not rest:
 						slots.append(inst)
 					else:
-						r = self._resolve_from([inst], rest)
-						if r[0] == "one":
-							slots.append(r[1])
-						elif r[0] == "none":
-							slots.append(Status.NotFound)
-						else:
-							slots.append(Status.Multiple)
+						slots.append(self._resolve_slot(inst, rest))
 				return ("slots", slots)
 			sel = seg.selector
 			if sel is None:
@@ -1953,19 +2079,39 @@ class Document:
 					if not rest:
 						slots.append(inst)
 					else:
-						r = self._resolve_from([inst], rest)
-						if r[0] == "one":
-							slots.append(r[1])
-						elif r[0] == "none":
-							slots.append(Status.NotFound)
-						else:
-							slots.append(Status.Multiple)
+						slots.append(self._resolve_slot(inst, rest))
 				return ("slots", slots)
 		if len(cur) == 0:
 			return ("none",)
 		if len(cur) == 1:
 			return ("one", cur[0])
 		return ("many", cur)
+
+	def _resolve_slot(self, inst, rest):
+		# One wildcard slot: _resolve_from's walk from `inst` over `rest`,
+		# collapsed to a node index, NotFound (nothing) or Multiple (several, or
+		# a further wildcard - whose per-instance answer is itself a list).
+		cur = [inst]
+		for seg in rest:
+			sel = seg.selector
+			if seg.star or (sel is not None and sel[0] == "wild"):
+				return Status.Multiple
+			nxt = []
+			for node in cur:
+				nxt.extend(self._children_named(node, seg.name))
+			if sel is None:
+				cur = nxt
+			elif sel[0] == "val":
+				want = _apply_escapes(sel[1])
+				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
+			else:
+				k = sel[1]
+				cur = [nxt[k]] if k < len(nxt) else []
+		if len(cur) == 0:
+			return Status.NotFound
+		if len(cur) == 1:
+			return cur[0]
+		return Status.Multiple
 
 	def _resolve(self, path):
 		# Returns a _resolve_from result, or ("err", Status).
@@ -1977,7 +2123,7 @@ class Document:
 			return ("err", Status.NotFound)   # a query has no value part
 		return self._resolve_from([ROOT], segments)
 
-	def count(self, path):
+	def count(self, path: str) -> int:
 		"""Instance count at a path (0 when nothing matches)."""
 		r = self._resolve(path)
 		tag = r[0]
@@ -1987,7 +2133,7 @@ class Document:
 			return len(r[1])
 		return 0
 
-	def paths(self):
+	def paths(self) -> list[str]:
 		"""Every field path in the document, in file order, deduplicated - a
 		query recipe for tooling. A segment that is not bare-name-safe is
 		emitted quoted and escaped - the form the path scanner accepts - so
@@ -2007,7 +2153,7 @@ class Document:
 				stack.append((c, path))
 		return out
 
-	def line(self, path):
+	def line(self, path: str) -> int:
 		"""1-based source line of the binding at a path, for consumer checks the
 		schema cannot express. 0 when the path does not resolve to exactly one
 		node, or the node was writer-built. Merged instances cite the first
@@ -2017,7 +2163,7 @@ class Document:
 			return self.arena[r[1]].line
 		return 0
 
-	def authored_name(self, path):
+	def authored_name(self, path: str) -> str:
 		"""The field name at a path exactly as the author spelled it (case
 		unfolded, outer quotes stripped), so a message can echo `SYMBOLS` when
 		the file said SYMBOLS. Escape sequences stay as written too: a name is
@@ -2032,7 +2178,7 @@ class Document:
 			return self.arena[r[1]].name_src
 		return ""
 
-	def lines(self, path):
+	def lines(self, path: str) -> list[int]:
 		"""The plural line(): 1-based source lines at a path, in file order, so
 		a repeated field - the case that most wants a citable line - yields
 		every binding's. Wildcard slots that did not resolve stay in the list
@@ -2048,7 +2194,7 @@ class Document:
 				for n in r[1]]
 		return []
 
-	def children(self, path):
+	def children(self, path: str) -> list[str]:
 		"""Child field names under a path, in file order, duplicates included -
 		the "what keys are in this section?" question paths() (deduplicated,
 		path-shaped) cannot answer. "" enumerates the top level. Names come
@@ -2062,7 +2208,7 @@ class Document:
 			node = r[1]
 		return [self.arena[c].name for c in self.arena[node].children]
 
-	def instances(self, path):
+	def instances(self, path: str) -> list[str]:
 		"""Instance values at a path, in file order. Wildcard slots that did not
 		resolve stay in the list as "" so indices keep matching count()."""
 		r = self._resolve(path)
@@ -2083,7 +2229,7 @@ class Document:
 	# children lists, so mutating the arena directly is enough.
 
 	@staticmethod
-	def new():
+	def new() -> Document:
 		"""A fresh document with no bindings - the start point for schema-driven
 		generation. Set values, then to_canonical()."""
 		return Document.parse("")
@@ -2098,7 +2244,7 @@ class Document:
 		self.arena[parent].children.append(idx)
 		return idx
 
-	def write_reason(self, path):
+	def write_reason(self, path: str) -> WriteReason:
 		"""Why a write at this path would fail - the reason behind a setter's
 		bare False, so a consumer's error message need not guess. Writable means
 		the same validation _place() runs would pass; nothing is created."""
@@ -2175,6 +2321,7 @@ class Document:
 		must already exist. None = path unusable for a write (write_reason()
 		says why). Validation runs first, so a doomed path leaves no
 		half-created intermediates behind."""
+		self._index = None
 		try:
 			segments, value_text = _scan_lookup(path)
 		except _PathError:
@@ -2215,11 +2362,12 @@ class Document:
 		# sibling survives, later one folds children and trivia in) so Writer
 		# output stays a formatter fixpoint.
 		parent = self.arena[node].parent
-		name = self.arena[node].name
-		key = self.arena[node].value.key()
+		me = self.arena[node]
+		key = _merge_key(me.name, me.value)
 		other = None
 		for c in self.arena[parent].children:
-			if c != node and self.arena[c].name == name and self.arena[c].value.key() == key:
+			o = self.arena[c]
+			if c != node and _merge_key(o.name, o.value) == key:
 				other = c
 				break
 		if other is None:
@@ -2232,7 +2380,7 @@ class Document:
 		_fold_node_into(self.arena, survivor, loser)
 		self.arena[parent].children = [c for c in self.arena[parent].children if c != loser]
 
-	def exists(self, path):
+	def exists(self, path: str) -> bool:
 		"""True when the path resolves to at least one real node."""
 		r = self._resolve(path)
 		tag = r[0]
@@ -2242,8 +2390,9 @@ class Document:
 			return any(isinstance(n, int) for n in r[1])
 		return False
 
-	def remove(self, path):
+	def remove(self, path: str) -> int:
 		"""Delete the node(s) at a path (with their subtrees); returns how many."""
+		self._index = None
 		r = self._resolve(path)
 		tag = r[0]
 		if tag == "one":
@@ -2259,7 +2408,7 @@ class Document:
 			self.arena[p].children = [c for c in self.arena[p].children if c != t]
 		return len(targets)
 
-	def set_comment(self, path, text):
+	def set_comment(self, path: str, text: str) -> bool:
 		"""Attach a leading comment line to the node at a path (creating an empty
 		node if absent). A missing '#' is added; only the first line is kept."""
 		idx = self._place(path)
@@ -2271,68 +2420,97 @@ class Document:
 		self.arena[idx]._triv().leading.append(_Lead(line, False))
 		return True
 
-	def set_int(self, path, v):
+	def set_int(self, path: str, v: int) -> bool:
 		"""Bind an integer at path, creating the path as needed; False = path not
 		writable (write_reason says why - same for every setter). Worth checking
 		rather than assuming: an ignored False means the save that follows writes
-		a document missing the edit, and reports success doing it."""
+		a document missing the edit, and reports success doing it. A value of
+		the wrong type is a TypeError (same for every typed setter): int here,
+		and a bool is not one."""
+		_want("set_int", v, "int")
 		if not _fits_i64(v):
 			return False
 		return self._set_value(path, _cell_of(str(v)))
 
-	def set_float(self, path, v):
+	def set_float(self, path: str, v: float) -> bool:
+		"""Bind a float; an int is accepted, a bool is a TypeError."""
+		_want("set_float", v, "float")
 		return self._set_value(path, _cell_of(format_float(v)))
 
-	def set_bool(self, path, v):
+	def set_bool(self, path: str, v: bool) -> bool:
+		"""Bind a bool; anything else, 0/1 included, is a TypeError."""
+		_want("set_bool", v, "bool")
 		return self._set_value(path, _cell_of("true" if v else "false"))
 
-	def set_string(self, path, v):
+	def set_string(self, path: str, v: str) -> bool:
+		"""Bind a string; a non-str is a TypeError."""
+		_want("set_string", v, "str")
 		return self._set_value(path, _cell_of(_encode_string(v)))
 
-	def set_datetime(self, path, v):
+	def set_datetime(self, path: str, v: ShclDateTime) -> bool:
+		"""Bind a ShclDateTime; anything else is a TypeError."""
+		_want("set_datetime", v, "datetime")
 		return self._set_value(path, _cell_of(str(v)))
 
-	def set_raw(self, path, content, info):
+	def set_raw(self, path: str, content: str, info: str) -> bool:
+		"""Bind a raw block at a path, picking a fence longer than any content
+		line. The info-string is stored as a fence line would read it back
+		(trimmed); one holding a line break has no fence-line spelling and fails
+		the write."""
+		if "\n" in info or "\r" in info:
+			return False
+		info = _trim(info)
 		fc, fl = _choose_fence(content)
 		return self._set_value(path, _raw(content, info, fc, fl))
 
-	def set_empty(self, path):
+	def set_empty(self, path: str) -> bool:
 		return self._set_value(path, _empty())
 
-	def set_int_array(self, path, v):
+	def set_int_array(self, path: str, v: list[int]) -> bool:
+		"""Bind an inline int array; every element is checked as set_int does."""
+		_want_all("set_int_array", v, "int")
 		if not all(_fits_i64(x) for x in v):
 			return False
 		return self._set_value(path, _array_cell([str(x) for x in v]))
 
-	def set_float_array(self, path, v):
+	def set_float_array(self, path: str, v: list[float]) -> bool:
+		_want_all("set_float_array", v, "float")
 		return self._set_value(path, _array_cell([format_float(x) for x in v]))
 
-	def set_bool_array(self, path, v):
+	def set_bool_array(self, path: str, v: list[bool]) -> bool:
+		_want_all("set_bool_array", v, "bool")
 		return self._set_value(path, _array_cell(["true" if x else "false" for x in v]))
 
-	def set_string_array(self, path, v):
+	def set_string_array(self, path: str, v: list[str]) -> bool:
+		_want_all("set_string_array", v, "str")
 		return self._set_value(path, _array_cell([_encode_string(x) for x in v]))
 
-	def set_datetime_array(self, path, v):
+	def set_datetime_array(self, path: str, v: list[ShclDateTime]) -> bool:
+		_want_all("set_datetime_array", v, "datetime")
 		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	# Default (only-if-absent) forms - the "emit defaults" half of the Writer.
-	def set_int_default(self, path, v):
+	# The type gate runs whether or not the path exists, so a wrong-typed call
+	# fails the same way on every document.
+	def set_int_default(self, path: str, v: int) -> bool:
+		_want("set_int_default", v, "int")
 		if not self.exists(path):
 			return self.set_int(path, v)
 		return True
 
-	def set_float_default(self, path, v):
+	def set_float_default(self, path: str, v: float) -> bool:
+		_want("set_float_default", v, "float")
 		if not self.exists(path):
 			return self.set_float(path, v)
 		return True
 
-	def set_bool_default(self, path, v):
+	def set_bool_default(self, path: str, v: bool) -> bool:
+		_want("set_bool_default", v, "bool")
 		if not self.exists(path):
 			return self.set_bool(path, v)
 		return True
 
-	def set_literal(self, path, text):
+	def set_literal(self, path: str, text: str) -> bool:
 		"""Bind text at path as value syntax rather than as data.
 
 		"80, 443" becomes a two-element array where set_string would store one
@@ -2345,54 +2523,61 @@ class Document:
 			return False
 		return self._set_value(path, v)
 
-	def set_literal_default(self, path, text):
+	def set_literal_default(self, path: str, text: str) -> bool:
 		if not self.exists(path):
 			return self.set_literal(path, text)
 		return True
 
-	def set_string_default(self, path, v):
+	def set_string_default(self, path: str, v: str) -> bool:
+		_want("set_string_default", v, "str")
 		if not self.exists(path):
 			return self.set_string(path, v)
 		return True
 
-	def set_datetime_default(self, path, v):
+	def set_datetime_default(self, path: str, v: ShclDateTime) -> bool:
+		_want("set_datetime_default", v, "datetime")
 		if not self.exists(path):
 			return self.set_datetime(path, v)
 		return True
 
-	def set_raw_default(self, path, content, info):
+	def set_raw_default(self, path: str, content: str, info: str) -> bool:
 		if not self.exists(path):
 			return self.set_raw(path, content, info)
 		return True
 
-	def set_int_array_default(self, path, v):
+	def set_int_array_default(self, path: str, v: list[int]) -> bool:
+		_want_all("set_int_array_default", v, "int")
 		if not self.exists(path):
 			return self.set_int_array(path, v)
 		return True
 
-	def set_float_array_default(self, path, v):
+	def set_float_array_default(self, path: str, v: list[float]) -> bool:
+		_want_all("set_float_array_default", v, "float")
 		if not self.exists(path):
 			return self.set_float_array(path, v)
 		return True
 
-	def set_bool_array_default(self, path, v):
+	def set_bool_array_default(self, path: str, v: list[bool]) -> bool:
+		_want_all("set_bool_array_default", v, "bool")
 		if not self.exists(path):
 			return self.set_bool_array(path, v)
 		return True
 
-	def set_string_array_default(self, path, v):
+	def set_string_array_default(self, path: str, v: list[str]) -> bool:
+		_want_all("set_string_array_default", v, "str")
 		if not self.exists(path):
 			return self.set_string_array(path, v)
 		return True
 
-	def set_datetime_array_default(self, path, v):
+	def set_datetime_array_default(self, path: str, v: list[ShclDateTime]) -> bool:
+		_want_all("set_datetime_array_default", v, "datetime")
 		if not self.exists(path):
 			return self.set_datetime_array(path, v)
 		return True
 
 	# Layered loading: overlay a higher-priority document
 
-	def merge(self, over):
+	def merge(self, over: Document) -> None:
 		"""Overlay `over` (a higher-priority layer) onto self (the lower one).
 		Container instances merge by (name, value) exactly like the in-file rule;
 		a leaf name present in `over` replaces self's same-named children at that
@@ -2401,6 +2586,7 @@ class Document:
 		instead of wiping. over-only nodes are appended. Comment trivia rides
 		with each node. Load(defaults, site, user) is a left fold of this: each
 		later file overlaid on the earlier ones."""
+		self._index = None
 		self._lost += over._lost
 		self._overlay(ROOT, over, ROOT)
 		# Layers commonly share a footer; keeping one copy of each keeps a
@@ -2444,7 +2630,7 @@ class Document:
 	def _overlay_level(self, base_parent, over, over_parent):
 		"""One level of the overlay. Returns the (base, over) pairs whose subtrees
 		still have to be merged, in order."""
-		over_kids = list(over.arena[over_parent].children)
+		over_kids = over.arena[over_parent].children
 		# Over side: name -> node bucket, in first-appearance order.
 		order = []
 		groups: dict = {}
@@ -2457,7 +2643,8 @@ class Document:
 				groups[n] = g
 			g.append(k)
 		# Base side, one pass: does the name have a container instance, and
-		# which child carries each (name, key) - every key computed once.
+		# which child carries each (name, key) - every key computed once. The
+		# list is copied because the splices below rewrite it as they go.
 		base_kids = list(self.arena[base_parent].children)
 		has_container: dict = {}
 		by_key: dict = {}
@@ -2618,22 +2805,22 @@ class Document:
 			return Read(default, Status.BadType, raw)._at(line, se[1].quoted)
 		return Read(v, Status.Good, raw)._at(line, se[1].quoted)
 
-	def read_int(self, path):
+	def read_int(self, path: str) -> Read:
 		lvl = self._strictness
 		return self._read_scalar(path, lambda e: _parse_int_text(e, lvl), 0)
 
-	def read_float(self, path):
+	def read_float(self, path: str) -> Read:
 		lvl = self._strictness
 		return self._read_scalar(path, lambda e: _parse_float_text(e, lvl), 0.0)
 
-	def read_bool(self, path):
+	def read_bool(self, path: str) -> Read:
 		lvl = self._strictness
 		return self._read_scalar(path, lambda e: _parse_bool_text(e.text, lvl), False)
 
-	def read_datetime(self, path):
+	def read_datetime(self, path: str) -> Read:
 		return self._read_scalar(path, lambda e: parse_datetime(e.text), ShclDateTime())
 
-	def read_string(self, path):
+	def read_string(self, path: str) -> Read:
 		"""Any value reads as a string: a raw block yields its content, an array its
 		canonical inline text. Escapes are applied."""
 		na = self._node_at(path)
@@ -2652,7 +2839,7 @@ class Document:
 		# re-parses to the same array - not the bare display join.
 		return Read(", ".join(_emit_element(e) for e in value.els), Status.Good, raw)._at(line, False)
 
-	def read_raw(self, path):
+	def read_raw(self, path: str) -> Read:
 		"""Raw-block content (verbatim). Non-block values are BadType."""
 		na = self._node_at(path)
 		if na[0] == "err":
@@ -2666,7 +2853,7 @@ class Document:
 			return Read("", Status.Empty, raw)._at(line, False)
 		return Read("", Status.BadType, raw)._at(line, False)
 
-	def read_raw_info(self, path):
+	def read_raw_info(self, path: str) -> Read:
 		"""The advisory info-string of a raw block ("" when absent)."""
 		na = self._node_at(path)
 		if na[0] == "err":
@@ -2698,13 +2885,9 @@ class Document:
 					out.append(default)
 					sts.append(se[1])
 					continue
-				v = coerce(se[1])
-				if v is None:
-					out.append(default)
-					sts.append(Status.BadType)
-				else:
-					out.append(v)
-					sts.append(Status.Good)
+				v, st = _coerced(coerce, se[1], default)
+				out.append(v)
+				sts.append(st)
 			status = max(sts, key=lambda s: s.value) if sts else Status.Empty
 			return Read(out, status, None, sts)
 		if tag == "none":
@@ -2721,34 +2904,29 @@ class Document:
 			return Read([], Status.BadType, raw)._at(line, False)
 		out = []
 		sts = []
-		status = Status.Good
 		for el in value.els:
-			v = coerce(el)
-			if v is None:
-				out.append(default)
-				sts.append(Status.BadType)
-				status = Status.BadType
-			else:
-				out.append(v)
-				sts.append(Status.Good)
+			v, st = _coerced(coerce, el, default)
+			out.append(v)
+			sts.append(st)
+		status = max(sts, key=lambda s: s.value) if sts else Status.Good
 		return Read(out, status, raw, sts)._at(line, False)
 
-	def read_int_array(self, path):
+	def read_int_array(self, path: str) -> Read:
 		lvl = self._strictness
 		return self._read_array(path, lambda e: _parse_int_text(e, lvl), 0)
 
-	def read_float_array(self, path):
+	def read_float_array(self, path: str) -> Read:
 		lvl = self._strictness
 		return self._read_array(path, lambda e: _parse_float_text(e, lvl), 0.0)
 
-	def read_bool_array(self, path):
+	def read_bool_array(self, path: str) -> Read:
 		lvl = self._strictness
 		return self._read_array(path, lambda e: _parse_bool_text(e.text, lvl), False)
 
-	def read_datetime_array(self, path):
+	def read_datetime_array(self, path: str) -> Read:
 		return self._read_array(path, lambda e: parse_datetime(e.text), ShclDateTime())
 
-	def read_string_array(self, path):
+	def read_string_array(self, path: str) -> Read:
 		return self._read_array(path, lambda e: _apply_escapes(e.text), "")
 
 	# Convenience/get tier: value on Good, else the call-site default. Pass a
@@ -2765,37 +2943,37 @@ class Document:
 			raise StatusError(r.status)
 		return default
 
-	def get_int(self, path, default=_NO_DEFAULT):
+	def get_int(self, path: str, default: Any = _NO_DEFAULT) -> int:
 		return self._get(self.read_int(path), default)
 
-	def get_float(self, path, default=_NO_DEFAULT):
+	def get_float(self, path: str, default: Any = _NO_DEFAULT) -> float:
 		return self._get(self.read_float(path), default)
 
-	def get_bool(self, path, default=_NO_DEFAULT):
+	def get_bool(self, path: str, default: Any = _NO_DEFAULT) -> bool:
 		return self._get(self.read_bool(path), default)
 
-	def get_string(self, path, default=_NO_DEFAULT):
+	def get_string(self, path: str, default: Any = _NO_DEFAULT) -> str:
 		return self._get(self.read_string(path), default)
 
-	def get_raw(self, path, default=_NO_DEFAULT):
+	def get_raw(self, path: str, default: Any = _NO_DEFAULT) -> str:
 		return self._get(self.read_raw(path), default)
 
-	def get_datetime(self, path, default=_NO_DEFAULT):
+	def get_datetime(self, path: str, default: Any = _NO_DEFAULT) -> ShclDateTime:
 		return self._get(self.read_datetime(path), default)
 
-	def get_int_array(self, path, default=_NO_DEFAULT):
+	def get_int_array(self, path: str, default: Any = _NO_DEFAULT) -> list[int]:
 		return self._get(self.read_int_array(path), default)
 
-	def get_float_array(self, path, default=_NO_DEFAULT):
+	def get_float_array(self, path: str, default: Any = _NO_DEFAULT) -> list[float]:
 		return self._get(self.read_float_array(path), default)
 
-	def get_bool_array(self, path, default=_NO_DEFAULT):
+	def get_bool_array(self, path: str, default: Any = _NO_DEFAULT) -> list[bool]:
 		return self._get(self.read_bool_array(path), default)
 
-	def get_string_array(self, path, default=_NO_DEFAULT):
+	def get_string_array(self, path: str, default: Any = _NO_DEFAULT) -> list[str]:
 		return self._get(self.read_string_array(path), default)
 
-	def get_datetime_array(self, path, default=_NO_DEFAULT):
+	def get_datetime_array(self, path: str, default: Any = _NO_DEFAULT) -> list[ShclDateTime]:
 		return self._get(self.read_datetime_array(path), default)
 
 	# The same convenience reads with the fallback required rather than optional.
@@ -2804,37 +2982,37 @@ class Document:
 	# routine ported between two of them cannot keep the call name while changing
 	# which tier it lands on.
 
-	def get_int_or(self, path, default):
+	def get_int_or(self, path: str, default: int) -> int:
 		return self._get(self.read_int(path), default)
 
-	def get_float_or(self, path, default):
+	def get_float_or(self, path: str, default: float) -> float:
 		return self._get(self.read_float(path), default)
 
-	def get_bool_or(self, path, default):
+	def get_bool_or(self, path: str, default: bool) -> bool:
 		return self._get(self.read_bool(path), default)
 
-	def get_string_or(self, path, default):
+	def get_string_or(self, path: str, default: str) -> str:
 		return self._get(self.read_string(path), default)
 
-	def get_raw_or(self, path, default):
+	def get_raw_or(self, path: str, default: str) -> str:
 		return self._get(self.read_raw(path), default)
 
-	def get_datetime_or(self, path, default):
+	def get_datetime_or(self, path: str, default: ShclDateTime) -> ShclDateTime:
 		return self._get(self.read_datetime(path), default)
 
-	def get_int_array_or(self, path, default):
+	def get_int_array_or(self, path: str, default: list[int]) -> list[int]:
 		return self._get(self.read_int_array(path), default)
 
-	def get_float_array_or(self, path, default):
+	def get_float_array_or(self, path: str, default: list[float]) -> list[float]:
 		return self._get(self.read_float_array(path), default)
 
-	def get_bool_array_or(self, path, default):
+	def get_bool_array_or(self, path: str, default: list[bool]) -> list[bool]:
 		return self._get(self.read_bool_array(path), default)
 
-	def get_string_array_or(self, path, default):
+	def get_string_array_or(self, path: str, default: list[str]) -> list[str]:
 		return self._get(self.read_string_array(path), default)
 
-	def get_datetime_array_or(self, path, default):
+	def get_datetime_array_or(self, path: str, default: list[ShclDateTime]) -> list[ShclDateTime]:
 		return self._get(self.read_datetime_array(path), default)
 
 	# --- Validator: schema-as-SHCL (see spec.md "Schema validation") ---------
@@ -2850,7 +3028,7 @@ class Document:
 	# suppress_declared_repeats/suppress_declared_reopens yourself, or use
 	# load_and_validate, which runs both for you.
 
-	def validate(self, schema):
+	def validate(self, schema: Document) -> list[Diagnostic]:
 		"""Validate against a schema document (itself plain SHCL). Empty result
 		= the document conforms. Diagnostic lines are document lines (0 =
 		document scope); schema faults (V09x, schema-file lines) come first,
@@ -2873,40 +3051,42 @@ class Document:
 		# repeat evaluate per context (anchor line 0 = document scope), so
 		# `server[*].port` + required means a port under EACH server -
 		# vacuously true with no servers.
-		cur = list(start)
-		for i, seg in enumerate(segs):
-			nxt = []
-			for n in cur:
-				if seg.star:
-					nxt.extend(self.arena[n].children)
+		# Explicit stack of (start, segment offset, anchor), children pushed in
+		# reverse so contexts come out in the recursive order: one frame per
+		# wildcard let a path with one per document level outrun the frame
+		# budget.
+		stack = [(list(start), 0, anchor)]
+		while stack:
+			cur, at, anchor = stack.pop()
+			done = False
+			for i in range(at, len(segs)):
+				seg = segs[i]
+				nxt = []
+				for n in cur:
+					if seg.star:
+						nxt.extend(self.arena[n].children)
+					else:
+						nxt.extend(self._children_named(n, seg.name))
+				sel = seg.selector
+				if seg.star or (sel is not None and sel[0] == "wild"):
+					# Wildcard, or the name wildcard (the same per-instance
+					# split, over any child name): the rest resolves per instance.
+					if i + 1 == len(segs):
+						out.append((anchor, nxt))
+					else:
+						for inst in reversed(nxt):
+							stack.append(([inst], i + 1, self.arena[inst].line))
+					done = True
+					break
+				if sel is None:
+					cur = nxt
+				elif sel[0] == "val":
+					want = _apply_escapes(sel[1])
+					cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
 				else:
-					nxt.extend(self._children_named(n, seg.name))
-			if seg.star:
-				# Name wildcard: same per-instance split as `[*]`, any child name.
-				rest = segs[i + 1:]
-				if not rest:
-					out.append((anchor, nxt))
-				else:
-					for inst in nxt:
-						self._v_contexts([inst], rest, self.arena[inst].line, out)
-				return
-			sel = seg.selector
-			if sel is None:
-				cur = nxt
-			elif sel[0] == "val":
-				want = _apply_escapes(sel[1])
-				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
-			elif sel[0] == "idx":
-				cur = [nxt[sel[1]]] if sel[1] < len(nxt) else []
-			else:
-				rest = segs[i + 1:]
-				if not rest:
-					out.append((anchor, nxt))
-				else:
-					for inst in nxt:
-						self._v_contexts([inst], rest, self.arena[inst].line, out)
-				return
-		out.append((anchor, cur))
+					cur = [nxt[sel[1]]] if sel[1] < len(nxt) else []
+			if not done:
+				out.append((anchor, cur))
 
 	def _v_check(self, c, sdef, out):
 		self._v_check_from(c, sdef, ROOT, 0, out, set())
@@ -2915,18 +3095,35 @@ class Document:
 	# node's own checks, in fragment order - depth-first, so diagnostic order
 	# stays derivable. Termination is structural: every mount descends at
 	# least one document level, and the document is finite.
+	# Explicit stack rather than recursion through the mounts: a fragment
+	# mounting itself descends one frame per document level, past the frame
+	# budget from a deep caller. Three job kinds keep the diagnostics in the
+	# recursive order - a constraint resolves to contexts, a context checks
+	# its count and then each node, a node runs its own check and then the
+	# mounted fragment's fields; each pushes its followers reversed.
 	def _v_check_from(self, c, sdef, start, anchor0, out, mounted):
-		ctxs: list = []
-		self._v_contexts([start], c.segs, anchor0, ctxs)
-		for anchor, found in ctxs:
-			if c.required and not found:
-				_vdiag(out, anchor, f"required path missing: {c.path}")
-			if c.repeat is not None:
-				lo, hi = c.repeat
-				n = len(found)
-				if n < lo or n > hi:
-					_vdiag(out, anchor, f"instance count out of bounds at '{c.path}': {n} not in {lo}..{hi}")
-			for n in found:
+		stack: list = [("check", c, start, anchor0)]
+		while stack:
+			job = stack.pop()
+			if job[0] == "check":
+				_, c, start, anchor0 = job
+				ctxs: list = []
+				self._v_contexts([start], c.segs, anchor0, ctxs)
+				for anchor, found in reversed(ctxs):
+					stack.append(("ctx", c, anchor, found))
+			elif job[0] == "ctx":
+				_, c, anchor, found = job
+				if c.required and not found:
+					_vdiag(out, anchor, f"required path missing: {c.path}")
+				if c.repeat is not None:
+					lo, hi = c.repeat
+					n = len(found)
+					if n < lo or n > hi:
+						_vdiag(out, anchor, f"instance count out of bounds at '{c.path}': {n} not in {lo}..{hi}")
+				for n in reversed(found):
+					stack.append(("node", c, n))
+			else:
+				_, c, n = job
 				self._v_node(c, n, out)
 				if c.inherits is not None:
 					fcs = sdef.frags.get(c.inherits)
@@ -2938,8 +3135,8 @@ class Document:
 						# document level, so each pair is done once.
 						if (c.inherits, n) not in mounted:
 							mounted.add((c.inherits, n))
-							for fc in fcs:
-								self._v_check_from(fc, sdef, n, self.arena[n].line, out, mounted)
+							for fc in reversed(fcs):
+								stack.append(("check", fc, n, self.arena[n].line))
 
 	def _v_node(self, c, n, out):
 		node = self.arena[n]
@@ -2972,14 +3169,12 @@ class Document:
 		if c.ty is not None and not is_array and base != "string" and len(els) > 1:
 			wrong()
 			return
+		# Each typed kind parses every element and bails on the first miss.
 		if base == "int":
-			vals = []
-			for e in els:
-				v = _parse_int_text(e, self._strictness)
-				if v is None:
-					wrong()
-					return
-				vals.append(v)
+			vals = [_parse_int_text(e, self._strictness) for e in els]
+			if any(v is None for v in vals):
+				wrong()
+				return
 			if c.allowed is not None and c.allowed[0] == "ints":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
@@ -2990,13 +3185,10 @@ class Document:
 			if c.max_i is not None and any(v > c.max_i for v in vals):
 				_vdiag(out, line, f"value above max at '{c.path}'")
 		elif base == "float":
-			vals = []
-			for e in els:
-				v = _parse_float_text(e, self._strictness)
-				if v is None:
-					wrong()
-					return
-				vals.append(v)
+			vals = [_parse_float_text(e, self._strictness) for e in els]
+			if any(v is None for v in vals):
+				wrong()
+				return
 			if c.allowed is not None and c.allowed[0] == "floats":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
@@ -3007,26 +3199,20 @@ class Document:
 			if c.max_f is not None and any(v > c.max_f for v in vals):
 				_vdiag(out, line, f"value above max at '{c.path}'")
 		elif base == "bool":
-			vals = []
-			for e in els:
-				v = _parse_bool_text(e.text, self._strictness)
-				if v is None:
-					wrong()
-					return
-				vals.append(v)
+			vals = [_parse_bool_text(e.text, self._strictness) for e in els]
+			if any(v is None for v in vals):
+				wrong()
+				return
 			if c.allowed is not None and c.allowed[0] == "bools":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
 						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
 						break
 		elif base == "datetime":
-			vals = []
-			for e in els:
-				v = parse_datetime(e.text)
-				if v is None:
-					wrong()
-					return
-				vals.append(v)
+			vals = [parse_datetime(e.text) for e in els]
+			if any(v is None for v in vals):
+				wrong()
+				return
 			if c.allowed is not None and c.allowed[0] == "dates":
 				for i, v in enumerate(vals):
 					if not any(_dt_equal(v, a) for a in c.allowed[1]):
@@ -3088,8 +3274,9 @@ class Document:
 class StatusError(Exception):
 	"""Raised by the must-exist convenience reads (get_* with no default): a
 	public name a caller can actually catch. Carries the Status in .status."""
+	status: Status
 
-	def __init__(self, status):
+	def __init__(self, status: Status):
 		self.status = status
 		super().__init__(status.name)
 
@@ -3101,9 +3288,9 @@ def _escape_name(name):
 	that one picks a quote style to AVOID escaping and never escapes a
 	backslash, which is right for a value (stored in its escaped spelling) and
 	wrong for a name (stored resolved)."""
-	# set(name) and the difference are both C-level; the generator this replaced
-	# made one Python call per character of every name emitted.
-	if name and not set(name) - _BARE_NAME_CHARS:
+	# issuperset iterates the name in C; the generator this replaced made one
+	# Python call per character of every name emitted.
+	if name and _BARE_NAME_CHARS.issuperset(name):
 		return name
 	out = ['"']
 	for c in name:
@@ -3125,7 +3312,7 @@ def _emit_name(name):
 	return _escape_name(name)
 
 
-def quote_segment(name):
+def quote_segment(name: str) -> str:
 	"""Quote one path segment so it can be spliced into a lookup path: a bare
 	name passes through, anything else comes back quoted and escaped in the
 	form the path scanner accepts. Splicing user-typed text into a path
@@ -3143,7 +3330,7 @@ def _h001_head(name):
 	return f"'{name}' repeats as a bare leaf - did you mean '{name}: "
 
 
-def suppress_declared_repeats(schema, diags):
+def suppress_declared_repeats(schema: Document, diags: list[Diagnostic]) -> None:
 	"""Drop the H001 hints a schema disavows: a field whose declared repeat upper
 	bound is above 1 repeats BY DESIGN (repetition is its instance mechanism),
 	so the repeated-bare-leaf hint is structurally a false positive there and
@@ -3247,7 +3434,22 @@ def _sync_dir(d):
 		os.close(fd)
 
 
-def read_file(path, max_bytes=0):
+def _read_capped(f, limit):
+	# At most `limit` bytes, in bounded pieces: f.read(n) allocates n bytes up
+	# front, so a cap spelled as the type maximum failed on the allocation
+	# instead of reading.
+	chunks = []
+	got = 0
+	while got < limit:
+		piece = f.read(min(limit - got, 1 << 20))
+		if not piece:
+			break
+		chunks.append(piece)
+		got += len(piece)
+	return b"".join(chunks)
+
+
+def read_file(path: str | os.PathLike[str], max_bytes: int = 0) -> tuple[str | None, FileStatus]:
 	"""The file tier's read half on its own: (text, FileStatus.Clean), or
 	(None, status) saying why not - NotFound, or Unreadable for everything
 	else (permissions, a directory, bad encoding, or a file past max_bytes;
@@ -3255,11 +3457,15 @@ def read_file(path, max_bytes=0):
 	exact bytes it last saw - to tell its own save coming back as a change
 	notification from somebody else's edit - or a bound on how much it will
 	read before a parse, calls this and parses the text itself."""
+	# A path is a str or a PathLike, and fspath says so with a TypeError: open()
+	# takes an int as a file descriptor, so read_file(0) read stdin and closed
+	# it.
+	path = os.fspath(path)
 	try:
 		with open(path, "rb") as f:
 			# One byte past the cap is read, so a file exactly at it passes and
 			# one over is caught without trusting a length from stat.
-			data = f.read(max_bytes + 1) if max_bytes > 0 else f.read()
+			data = _read_capped(f, max_bytes + 1) if max_bytes > 0 else f.read()
 	except FileNotFoundError:
 		return None, FileStatus.NotFound
 	except (OSError, ValueError):
@@ -3274,7 +3480,7 @@ def read_file(path, max_bytes=0):
 		return None, FileStatus.Unreadable
 
 
-def write_file_atomic(file, data):
+def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	# The file tier's write mechanism (also what the CLI's --write uses): a
 	# temp file in the same dir, then a rename over the target,
 	# so an interrupted write can never truncate the config it rewrites. The data
@@ -3291,8 +3497,9 @@ def write_file_atomic(file, data):
 	# resolve; windows resolves such a path happily and raises at the first call
 	# that touches the filesystem instead, so every one of them below has to
 	# carry the same guard.
+	file = os.fspath(file)   # an int is a TypeError here, not a descriptor (see read_file)
 	try:
-		target = os.path.realpath(file)
+		target = _resolve_target(file)
 	except ValueError as e:
 		return f"{file}: {e}"
 	d = os.path.dirname(target)
@@ -3314,6 +3521,11 @@ def write_file_atomic(file, data):
 		existing = os.stat(target)
 	except (OSError, ValueError):
 		existing = None
+	# Windows: a read-only file cannot be replaced, and a read-only temp cannot
+	# be removed after a failure, so the attribute comes off the target for the
+	# publish and goes back on the new file after it - the same outcome as
+	# POSIX, where the rename never needed the file writable.
+	read_only = os.name == "nt" and existing is not None and not existing.st_mode & stat.S_IWRITE
 	born = 0o600 if existing is not None else 0o666
 	f = None
 	tmp = ""
@@ -3332,11 +3544,13 @@ def write_file_atomic(file, data):
 		try:
 			# On the handle, so umask cannot narrow it the way it narrows a
 			# create mode. Best effort: a filesystem that cannot carry the mode
-			# is not a reason to fail a write that otherwise succeeded. fchmod
-			# is POSIX-only, and so is the mode concept it copies - on windows
+			# is not a reason to fail a write that otherwise succeeded. The
+			# whole mode goes, setuid/setgid/sticky included, as an editor's
+			# rewrite would carry it. The mode is a POSIX concept - on windows
 			# the destination's attributes come across in the publish step
-			# instead, and calling it there would raise past this contract.
-			if existing is not None and hasattr(os, "fchmod"):
+			# instead, and a 3.13 fchmod there would only touch the read-only
+			# bit the publish handles itself.
+			if existing is not None and os.name != "nt" and hasattr(os, "fchmod"):
 				try:
 					os.fchmod(f.fileno(), stat.S_IMODE(existing.st_mode))
 				except OSError:
@@ -3346,22 +3560,49 @@ def write_file_atomic(file, data):
 			os.fsync(f.fileno())
 		finally:
 			f.close()
-	except OSError as e:
+	# ValueError alongside: text the encoder refuses (a lone surrogate) raises
+	# one from write(), and it is a failed save like any other - the same
+	# message shape, and no temp file left behind.
+	except (OSError, ValueError) as e:
 		try:
 			os.remove(tmp)
 		except OSError:
 			pass
 		return f"{file}: {e}"
+	if read_only:
+		_set_read_only(target, False)
 	try:
 		_publish_file(tmp, target)
 	except OSError as e:
+		if read_only:
+			_set_read_only(target, True)
 		try:
 			os.remove(tmp)
 		except OSError:
 			pass
 		return f"{file}: {e}"
+	if read_only:
+		_set_read_only(target, True)
 	_sync_dir(d)
 	return None
+
+
+def _resolve_target(file):
+	"""The path a save actually rewrites. A symlink is followed so the write goes
+	through it, a dangling one included - realpath walks the chain whether or
+	not the target exists, so the file is created where the link points, and a
+	link cycle is left where it stands. A path that is no link at all is a
+	plain create at the path as given."""
+	return os.path.realpath(file)
+
+
+def _set_read_only(path, on):
+	# Windows only: the read-only attribute is the one mode bit chmod sees.
+	try:
+		mode = os.stat(path).st_mode
+		os.chmod(path, (mode & ~stat.S_IWRITE) if on else (mode | stat.S_IWRITE))
+	except OSError:
+		pass
 
 
 def _h002_head(name):
@@ -3370,7 +3611,7 @@ def _h002_head(name):
 	return f"merged with '{name}' at "
 
 
-def suppress_declared_reopens(schema, diags):
+def suppress_declared_reopens(schema: Document, diags: list[Diagnostic]) -> None:
 	"""Drop the H002 hints a schema disavows: a section whose entry declares
 	`reopen: true` is MEANT to be written in parts, so the merge hint is
 	structurally a false positive there. Matching is by leaf name, same as the
@@ -3444,7 +3685,7 @@ def _is_data_format(e):
 	that do not are the boolean words, the longest of which is "false". An
 	ordinary quoted string fails both tests, so emit stops running four full
 	coercions on every quoted element it writes."""
-	if not any("0" <= c <= "9" for c in e.text):
+	if _ASCII_DIGITS.isdisjoint(e.text):
 		t = _trim(e.text)
 		return len(t) <= 5 and _parse_bool_text(t, Strictness.Standard) is not None
 	if _parse_int_text(e, Strictness.Standard) is not None:
@@ -3519,7 +3760,7 @@ def _strip_currency(t):
 def _parse_i64(t):
 	# Rust t.parse::<i64>(): optional +/- then ASCII digits, range-checked.
 	body = t[1:] if t[:1] in ("+", "-") else t
-	if not body or not all(_is_ascii_digit(c) for c in body):
+	if not body or not _all_ascii_digits(body):
 		return None
 	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
 	# reference just overflows. Leading zeros are legal and don't count toward range.
@@ -3549,7 +3790,7 @@ def _parse_int_text(e, level):
 		t = _strip_currency(t)
 	# Plain decimal.
 	body = t[1:] if t[:1] in ("+", "-") else t
-	if body and all(_is_ascii_digit(c) for c in body):
+	if body and _all_ascii_digits(body):
 		return _parse_i64(t)
 	# Hex.
 	if t[:1] == "-":
@@ -3560,7 +3801,7 @@ def _parse_int_text(e, level):
 		hexs = t[1:] if t[:1] == "+" else t
 	if hexs[:2] in ("0x", "0X"):
 		h = hexs[2:]
-		if h and all(c in "0123456789abcdefABCDEF" for c in h):
+		if h and _HEX_DIGITS.issuperset(h):
 			# Range-check the magnitude against the sign, so the negative i64-min
 			# magnitude (0x8000000000000000) reads like its decimal spelling.
 			mag = int(h, 16)
@@ -3575,8 +3816,8 @@ def _parse_int_text(e, level):
 			len(groups) > 1
 			and groups[0] != ""
 			and len(groups[0]) <= 3
-			and all(_is_ascii_digit(c) for c in groups[0])
-			and all(len(g) == 3 and all(_is_ascii_digit(c) for c in g) for g in groups[1:])
+			and _all_ascii_digits(groups[0])
+			and all(len(g) == 3 and _all_ascii_digits(g) for g in groups[1:])
 		)
 		if well_formed:
 			return _parse_i64(t.replace(",", ""))
@@ -3611,7 +3852,7 @@ def _float_shape_ok(t):
 		exp = None
 	if exp is not None:
 		xb = exp[1:] if exp[:1] in ("+", "-") else exp
-		if not xb or not all(_is_ascii_digit(c) for c in xb):
+		if not xb or not _all_ascii_digits(xb):
 			return False
 	dot = mantissa.find(".")
 	if dot >= 0:
@@ -3622,7 +3863,7 @@ def _float_shape_ok(t):
 		frac_part = ""
 	if int_part == "" and frac_part == "":
 		return False
-	return all(_is_ascii_digit(c) for c in int_part) and all(_is_ascii_digit(c) for c in frac_part)
+	return _all_ascii_digits(int_part) and _all_ascii_digits(frac_part)
 
 
 def _parse_float_text(e, level):
@@ -3708,7 +3949,7 @@ def _parse_u32(s):
 	if not s:
 		return None
 	body = s[1:] if s[0] == "+" else s
-	if not body or not all(_is_ascii_digit(c) for c in body):
+	if not body or not _all_ascii_digits(body):
 		return None
 	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
 	# reference just overflows. Leading zeros are legal and don't count toward range.
@@ -3722,13 +3963,13 @@ def _parse_u32(s):
 
 
 def _parse_year4(s):
-	if len(s) == 4 and all(_is_ascii_digit(c) for c in s):
+	if len(s) == 4 and _all_ascii_digits(s):
 		return int(s)
 	return None
 
 
 def _parse_num2(s):
-	if (len(s) == 1 or len(s) == 2) and all(_is_ascii_digit(c) for c in s):
+	if (len(s) == 1 or len(s) == 2) and _all_ascii_digits(s):
 		return int(s)
 	return None
 
@@ -3736,7 +3977,7 @@ def _parse_num2(s):
 def _parse_date_part(s):
 	s = _trim(s)
 	# Compact 8-digit YYYYMMDD.
-	if len(s) == 8 and all(_is_ascii_digit(c) for c in s):
+	if len(s) == 8 and _all_ascii_digits(s):
 		y = int(s[:4])
 		m = int(s[4:6])
 		d = int(s[6:8])
@@ -3776,7 +4017,7 @@ def _parse_date_part(s):
 	# The delimiter must be uniform: no other delimiter chars anywhere.
 	if sum(1 for c in s if c == "-" or c == "/" or c == ".") != 2:
 		return None
-	if len(parts[0]) == 4 and all(_is_ascii_digit(c) for c in parts[0]):
+	if len(parts[0]) == 4 and _all_ascii_digits(parts[0]):
 		y = int(parts[0])
 		m = _parse_num2(parts[1])
 		d = _parse_num2(parts[2])
@@ -3837,7 +4078,7 @@ def _parse_time_part(s):
 	if dot >= 0:
 		hms = t[:dot]
 		f = t[dot + 1:]
-		if f == "" or len(f) > 9 or not all(_is_ascii_digit(c) for c in f):
+		if f == "" or len(f) > 9 or not _all_ascii_digits(f):
 			return None
 		frac = f
 	else:
@@ -3884,7 +4125,7 @@ def _parse_time_part(s):
 	return ((h, mi, sec), frac, zone)
 
 
-def parse_datetime(text):
+def parse_datetime(text: str) -> ShclDateTime | None:
 	"""Whole-value date/time parse per the whitelist. None = BadType."""
 	t = _trim(text)
 	if not t:
@@ -3988,6 +4229,15 @@ class _SchemaDef:
 		self.cons = cons
 		self.frags = frags        # name -> list of _Constraint
 		self.paths_complete = paths_complete
+
+
+def _coerced(coerce, el, default):
+	"""One slot of an array read: the coerced value, or the type's default with
+	BadType."""
+	v = coerce(el)
+	if v is None:
+		return default, Status.BadType
+	return v, Status.Good
 
 
 def _vdiag(out, line, msg):
@@ -4287,7 +4537,7 @@ def _gen_default_text(v):
 	return "".join(s)
 
 
-def generate(schema, no_banner=False):
+def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagnostic]]:
 	"""Emit a commented, typed starter config from a schema (`shcl init
 	--schema`). Paths that must exist (required, or a repeat lower bound of 1+)
 	are live (their `default`, or an empty value); optional paths are commented
@@ -4441,33 +4691,35 @@ def _expand_mounts(sdef):
 	returned as (path, fragment name) for the trailing not-generated block."""
 	out: list = []
 	cuts = []
-	stack: list = []
-
-	def go(lst, at):
-		for c in lst:
-			cc = c.clone()
-			if at is not None:
-				p, s = at
-				cc.path = f"{p}.{c.path}"
-				cc.segs = list(s) + list(c.segs)
-			path = cc.path
-			segs = cc.segs
-			if len(out) >= _GEN_MAX_FIELDS:
-				return
-			out.append(cc)
-			if c.inherits is not None:
-				# A chain long enough to outrun the stack, or a mount that
-				# re-enters, stops here and is noted instead of expanded.
-				if c.inherits in stack or len(stack) >= MAX_DEPTH:
-					cuts.append((path.replace("\n", "\\n"), c.inherits))
-				else:
-					fcs = sdef.frags.get(c.inherits)
-					if fcs is not None:
-						stack.append(c.inherits)
-						go(fcs, (path, segs))
-						stack.pop()
-
-	go(sdef.cons, None)
+	# Work stack of (constraint, mount prefix or None, chain of fragment names
+	# being expanded), fields pushed in reverse so they pop in schema order.
+	# One frame per mount level recursed to the depth cap, past the frame
+	# budget from a deep caller; the chain each job carries is what the
+	# recursion kept on the call stack.
+	work: list = [(c, None, ()) for c in reversed(sdef.cons)]
+	while work:
+		c, at, chain = work.pop()
+		cc = c.clone()
+		if at is not None:
+			p, s = at
+			cc.path = f"{p}.{c.path}"
+			cc.segs = list(s) + list(c.segs)
+		path = cc.path
+		segs = cc.segs
+		if len(out) >= _GEN_MAX_FIELDS:
+			break
+		out.append(cc)
+		if c.inherits is not None:
+			# A chain long enough to outrun the stack, or a mount that
+			# re-enters, stops here and is noted instead of expanded.
+			if c.inherits in chain or len(chain) >= MAX_DEPTH:
+				cuts.append((path.replace("\n", "\\n"), c.inherits))
+			else:
+				fcs = sdef.frags.get(c.inherits)
+				if fcs is not None:
+					below = chain + (c.inherits,)
+					for fc in reversed(fcs):
+						work.append((fc, (path, segs), below))
 	return out, cuts
 
 
@@ -4534,16 +4786,21 @@ def _chain_legal(cons, frags, chain):
 
 
 def _chain_parts_legal(cons, frags, parts):
-	for c in cons:
-		n = len(c.segs)
-		k = min(len(parts), n)
-		if all(c.segs[i].star or c.segs[i].name == parts[i] for i in range(k)):
-			if len(parts) <= n:
-				return True
-			if c.inherits is not None:
-				fcs = frags.get(c.inherits)
-				if fcs is not None and _chain_parts_legal(fcs, frags, parts[n:]):
+	# Explicit stack of (constraints, remaining parts) rather than one frame
+	# per mount: a chain at the depth cap descends that many mounts.
+	stack = [(cons, parts)]
+	while stack:
+		cons, parts = stack.pop()
+		for c in cons:
+			n = len(c.segs)
+			k = min(len(parts), n)
+			if all(c.segs[i].star or c.segs[i].name == parts[i] for i in range(k)):
+				if len(parts) <= n:
 					return True
+				if c.inherits is not None:
+					fcs = frags.get(c.inherits)
+					if fcs is not None:
+						stack.append((fcs, parts[n:]))
 	return False
 
 

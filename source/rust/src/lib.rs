@@ -90,6 +90,8 @@ fn diag_code(msg: &str) -> &'static str {
 		"E016"
 	} else if msg.starts_with("unterminated quote in value") {
 		"E017"
+	} else if msg.starts_with("parent line was skipped") {
+		"E018"
 	} else if msg.starts_with("merged with ") {
 		"H002"
 	} else if msg.starts_with("unknown field ") {
@@ -298,6 +300,9 @@ pub struct ShclDateTime {
 	pub frac: Option<String>,                  // fractional-second digits as typed
 	pub zone: Option<ZoneSpec>,
 }
+
+/// The name the Go binding uses for the same type; either spelling works.
+pub type DateTime = ShclDateTime;
 
 /// A datetime's zone suffix as written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,9 +557,36 @@ pub struct Document {
 	// Content-malformed lines are NOT counted - they are retained as trivia
 	// and survive a save. lost_count() serves it; save_file() gates on it.
 	lost: usize,
+	// Built on the first path read, dropped by every write entry point. Without
+	// it a read scans the parent's children, so reading a flat document key by
+	// key was quadratic (35 s at 40k keys).
+	index: std::sync::OnceLock<Box<NameIndex>>,
+}
+
+/// Read accelerator: the first child of each (parent, name), chained on to
+/// the next same-named sibling. A hash collision chains a stranger in; the
+/// lookup checks the name, so the chain is only ever a superset.
+#[derive(Debug, Clone)]
+struct NameIndex {
+	first: HashMap<u64, usize>,
+	next_same: Vec<usize>, // per node; NIL ends the chain
+}
+
+const NIL: usize = usize::MAX;
+
+fn name_key(parent: usize, name: &str) -> u64 {
+	let mut h = Fnv::new();
+	h.dec(parent);
+	h.byte(0xFF);
+	h.bytes(name.as_bytes());
+	h.0
 }
 
 const ROOT: usize = 0;
+// Stack entry for a binding line that was skipped: it still owns its indent
+// level, so the lines written under it are skipped with it instead of
+// re-parenting one level up.
+const DEAD: usize = usize::MAX;
 
 /// Merge a later instance into an earlier one under the in-file merge rule:
 /// children and trivia move over, first trailing wins (a second demotes to a
@@ -604,6 +636,9 @@ fn is_bare_name_char(c: char) -> bool {
 /// Split off an unquoted trailing comment: (content, comment from `#` on).
 /// A `\` shields the next char throughout. Comments are kept as trivia.
 fn split_comment(s: &str) -> (&str, Option<&str>) {
+	if !s.contains('#') {
+		return (s, None);
+	}
 	let mut in_quote: Option<char> = None;
 	let mut it = s.char_indices();
 	while let Some((byte, c)) = it.next() {
@@ -623,6 +658,9 @@ fn split_comment(s: &str) -> (&str, Option<&str>) {
 
 /// Split on unquoted commas; `\` shields the next char.
 fn split_unquoted_commas(s: &str) -> Vec<&str> {
+	if !s.contains(',') {
+		return vec![s];
+	}
 	let mut parts = Vec::new();
 	let mut in_quote: Option<char> = None;
 	let mut start = 0usize;
@@ -662,26 +700,38 @@ fn normalize_dangling_backslash(mut t: String) -> String {
 /// the parser calls it out instead of letting the typo look deliberate.
 /// Mid-text apostrophes (`it's fine`) are legal prose and stay silent.
 fn unterminated_quote(text: &str) -> bool {
+	if !text.contains('"') && !text.contains('\'') {
+		return false;
+	}
 	for piece in split_unquoted_commas(text) {
-		let chars: Vec<char> = piece.trim().chars().collect();
-		let Some(&first) = chars.first() else {
-			continue;
-		};
-		if first != '"' && first != '\'' {
-			continue;
-		}
-		let closed = chars.len() >= 2 && chars[chars.len() - 1] == first && {
-			let mut esc = false;
-			for &c in &chars[1..chars.len() - 1] {
-				esc = c == '\\' && !esc;
+		let t = piece.trim();
+		if !quoted_shape(t) {
+			let Some(&first) = t.as_bytes().first() else {
+				continue;
+			};
+			if first == b'"' || first == b'\'' {
+				return true;
 			}
-			!esc
-		};
-		if !closed {
-			return true;
 		}
 	}
 	false
+}
+
+/// True when the text is one quote pair: a quote char at both ends, the last
+/// one not escaped. Quotes and the backslash are ASCII, so bytes suffice.
+fn quoted_shape(t: &str) -> bool {
+	let b = t.as_bytes();
+	let Some(&first) = b.first() else {
+		return false;
+	};
+	if (first != b'"' && first != b'\'') || b.len() < 2 || b[b.len() - 1] != first {
+		return false;
+	}
+	let mut esc = false;
+	for &c in &b[1..b.len() - 1] {
+		esc = c == b'\\' && !esc;
+	}
+	!esc
 }
 
 /// Trim, then strip one matching outer quote pair if present. Unquoted empty
@@ -691,21 +741,11 @@ fn parse_element(piece: &str) -> Option<Element> {
 	if t.is_empty() {
 		return None;
 	}
-	let chars: Vec<char> = t.chars().collect();
-	let first = chars[0];
-	if (first == '"' || first == '\'') && chars.len() >= 2 && chars[chars.len() - 1] == first {
-		// The closing quote must not itself be escaped (`"a\"` is not closed).
-		let mut esc = false;
-		for &c in &chars[1..chars.len() - 1] {
-			esc = c == '\\' && !esc;
-		}
-		if !esc {
-			let inner: String = chars[1..chars.len() - 1].iter().collect();
-			return Some(Element {
-				text: inner,
-				quoted: true,
-			});
-		}
+	if quoted_shape(t) {
+		return Some(Element {
+			text: t[1..t.len() - 1].to_string(),
+			quoted: true,
+		});
 	}
 	Some(Element {
 		text: normalize_dangling_backslash(t.to_string()),
@@ -984,10 +1024,18 @@ fn is_fence_close(line: &str, ch: u8, min_len: usize) -> bool {
 	t.len() >= min_len && !t.is_empty() && t.bytes().all(|b| b == ch)
 }
 
-/// Remove a raw block's common indent from one content line. A whitespace-only
-/// line took no part in computing that indent, so it can be shorter than it -
-/// strip only what it actually shares, rather than blanking it. Blanking drops
-/// author spacing on a line the spec calls verbatim.
+/// The leading space/tab run of a line (the indent).
+fn leading_ws(line: &str) -> &str {
+	let n = line
+		.bytes()
+		.take_while(|&b| b == b' ' || b == b'\t')
+		.count();
+	&line[..n]
+}
+
+/// Remove a raw block's nesting indent from one content line: only what the
+/// line actually shares with it, so a shallower line (whitespace-only, or
+/// written flush left) keeps its own spacing rather than being blanked.
 fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
 	let mut k = 0;
 	for (a, b) in common.chars().zip(line.chars()) {
@@ -1469,7 +1517,7 @@ impl Parser {
 					.rev()
 					.find(|(ind, node)| {
 						*node != ROOT
-							&& ind.len() >= new_indent.len()
+							&& *node != DEAD && ind.len() >= new_indent.len()
 							&& p.indent.starts_with(ind.as_str())
 					})
 					.map(|(ind, n)| (*n, ind.len() == p.indent.len()));
@@ -1494,12 +1542,11 @@ impl Parser {
 	/// current top's indent is a proper prefix; otherwise the indent must equal
 	/// an open level exactly (dedent), else it is a recoverable error.
 	fn resolve_parent(&mut self, indent: &str) -> Option<usize> {
-		let (top_indent, top_node) = match self.stack.last() {
-			Some(t) => t.clone(),
-			None => return None, // sentinel invariant; degrade, never abort
+		let Some((top_indent, top_node)) = self.stack.last() else {
+			return None; // sentinel invariant; degrade, never abort
 		};
-		if indent.len() > top_indent.len() && indent.starts_with(&top_indent) {
-			return Some(top_node);
+		if indent.len() > top_indent.len() && indent.starts_with(top_indent.as_str()) {
+			return Some(*top_node);
 		}
 		for i in (0..self.stack.len()).rev() {
 			if self.stack[i].0 == indent {
@@ -1516,6 +1563,14 @@ impl Parser {
 		None
 	}
 
+	/// Diagnose a line written under a skipped line, and skip it too. Its own
+	/// level stays dead so deeper lines go the same way.
+	fn skip_under_dead(&mut self, line: usize, indent: &str) {
+		self.err(line, "parent line was skipped; line skipped");
+		self.lost += 1;
+		self.stack.push((indent.to_string(), DEAD));
+	}
+
 	/// Walk path segments under `parent`, select-or-creating; returns the node
 	/// for the last segment carrying `value`. None aborts the line (diagnosed).
 	fn attach_path(
@@ -1525,6 +1580,9 @@ impl Parser {
 		value: Value,
 		line: usize,
 	) -> Option<usize> {
+		// Owned here and handed to the last segment once; Option so the loop
+		// can move it out without a clone.
+		let mut value = Some(value);
 		self.star_flush();
 		// Field child under a stacked list: diagnose the mix once, keep the field.
 		if self.arena[parent].star_list && !self.arena[parent].star_mixed {
@@ -1561,25 +1619,7 @@ impl Parser {
 					// same-display child - a later remap can drop an entry a
 					// different sibling still satisfies - so a non-scalar hit and
 					// an outright miss both fall to the (rare) fallback scan.
-					let want = apply_escapes(text);
-					let found = self.disp_map[cur]
-						.as_deref()
-						.and_then(|m| m.get(&disp_hash_text(&seg.name, &want)))
-						.copied()
-						.filter(|&c| {
-							self.arena[c].name == seg.name && disp_key(&self.arena[c].value) == want
-						})
-						.filter(|&c| !*quoted || single_scalar(&self.arena[c].value))
-						.or_else(|| {
-							if !*quoted {
-								return None;
-							}
-							self.arena[cur].children.iter().copied().find(|&c| {
-								self.arena[c].name == seg.name
-									&& single_scalar(&self.arena[c].value)
-									&& disp_key(&self.arena[c].value) == want
-							})
-						});
+					let found = self.find_by_value(cur, &seg.name, text, *quoted);
 					cur = match found {
 						Some(c) => c,
 						None => {
@@ -1590,7 +1630,7 @@ impl Parser {
 							self.select_or_create(cur, &seg.name, &seg.name_src, disc, line)
 						}
 					};
-					if is_last && !value.is_empty() {
+					if is_last && value.as_ref().is_some_and(|v| !v.is_empty()) {
 						// `a.b[X]: v` - the discriminator is the value; a second
 						// value has nowhere unambiguous to go.
 						self.err(
@@ -1601,13 +1641,15 @@ impl Parser {
 					}
 				}
 				(Some(Selector::ByIndex(n)), _) => {
-					let matches: Vec<usize> = self.arena[cur]
-						.children
-						.iter()
-						.copied()
-						.filter(|&c| self.arena[c].name == seg.name)
-						.collect();
-					if let Some(&found) = index_usize(*n).and_then(|i| matches.get(i)) {
+					let found = index_usize(*n).and_then(|i| {
+						self.arena[cur]
+							.children
+							.iter()
+							.copied()
+							.filter(|&c| self.arena[c].name == seg.name)
+							.nth(i)
+					});
+					if let Some(found) = found {
 						cur = found;
 					} else {
 						self.err(line, format!("no instance {} of '{}'", n, seg.name));
@@ -1626,7 +1668,8 @@ impl Parser {
 				(None, true) => {
 					let parent = cur;
 					let before = self.arena.len();
-					cur = self.select_or_create(cur, &seg.name, &seg.name_src, value.clone(), line);
+					let v = value.take().unwrap_or(Value::Empty);
+					cur = self.select_or_create(cur, &seg.name, &seg.name_src, v, line);
 					// Two separately-written bindings just combined: legal (the
 					// merge rule), but only the parser can see it happened, so
 					// say so. Adjacent re-mentions (still the newest binding at
@@ -1663,21 +1706,49 @@ impl Parser {
 		Some(cur)
 	}
 
+	/// The child of `cur` named `name` whose display form is the selector text
+	/// (escapes applied), or None. Quoted selectors only match a single scalar.
+	fn find_by_value(&self, cur: usize, name: &str, text: &str, quoted: bool) -> Option<usize> {
+		let want = apply_escapes(text);
+		self.disp_map[cur]
+			.as_deref()
+			.and_then(|m| m.get(&disp_hash_text(name, &want)))
+			.copied()
+			.filter(|&c| self.arena[c].name == name && disp_key(&self.arena[c].value) == want)
+			.filter(|&c| !quoted || single_scalar(&self.arena[c].value))
+			.or_else(|| {
+				if !quoted {
+					return None;
+				}
+				self.arena[cur].children.iter().copied().find(|&c| {
+					self.arena[c].name == name
+						&& single_scalar(&self.arena[c].value)
+						&& disp_key(&self.arena[c].value) == want
+				})
+			})
+	}
+
 	/// Consume raw-block content after an opening fence. Returns (value, next line
-	/// index). Content keeps relative indentation; the common leading run is stripped.
+	/// index). The closing fence's indent is stripped from each content line
+	/// (the opening line's when the block never closes); the rest is content.
 	fn consume_raw(
 		&mut self,
 		lines: &[&str],
 		mut i: usize,
 		open_line: usize,
-		ch: u8,
-		len: usize,
-		info: String,
+		open_indent: &str,
+		fence: (u8, usize, String),
 	) -> (Value, usize) {
+		let (ch, len, info) = fence;
 		let mut content: Vec<&str> = Vec::new();
+		let mut nest = open_indent;
 		let mut closed = false;
 		while i < lines.len() {
 			if is_fence_close(lines[i], ch, len) {
+				// The closing fence's indent is the nesting; everything a content
+				// line carries past it is content, so a body whose lines all
+				// share an indent keeps it (a writer-built block depends on that).
+				nest = leading_ws(lines[i]);
 				closed = true;
 				i += 1;
 				break;
@@ -1688,27 +1759,7 @@ impl Parser {
 		if !closed {
 			self.err(open_line, "unterminated raw block");
 		}
-		// Strip the common leading whitespace (the visual nesting); keep the rest.
-		let mut common: Option<String> = None;
-		for l in content.iter().filter(|l| !l.trim().is_empty()) {
-			let lead: String = l.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-			common = Some(match common {
-				None => lead,
-				Some(prev) => {
-					let mut p = String::new();
-					for (a, b) in prev.chars().zip(lead.chars()) {
-						if a == b {
-							p.push(a);
-						} else {
-							break;
-						}
-					}
-					p
-				}
-			});
-		}
-		let common = common.unwrap_or_default();
-		let stripped: Vec<&str> = content.iter().map(|l| strip_common(l, &common)).collect();
+		let stripped: Vec<&str> = content.iter().map(|l| strip_common(l, nest)).collect();
 		(
 			Value::Raw(Box::new(RawVal {
 				content: stripped.join("\n"),
@@ -1736,6 +1787,7 @@ impl Parser {
 			self.remap_child(parent, old_key, old_disp);
 			Some(parent)
 		} else {
+			// Copied out: select_or_create takes the arena mutably.
 			let (name, name_src, grandparent) = (
 				self.arena[parent].name.clone(),
 				self.arena[parent].authored().to_string(),
@@ -1773,13 +1825,10 @@ impl Parser {
 		if unterminated_quote(trimmed) {
 			self.err(line, "unterminated quote in value");
 		}
-		let el = match parse_element(trimmed) {
-			Some(e) => e,
-			None => {
-				self.err(line, "empty list element");
-				self.lost += 1;
-				return;
-			}
+		let Some(el) = parse_element(trimmed) else {
+			self.err(line, "empty list element");
+			self.lost += 1;
+			return;
 		};
 		if self.arena[parent].value.is_empty() {
 			let old_key = merge_hash(&self.arena[parent].name, &self.arena[parent].value);
@@ -1903,7 +1952,7 @@ impl Parser {
 			// ones hang on their own block first.
 			self.hang_deeper_pending(indent);
 			// Child-indent fence: a value line for its parent field.
-			if let Some((ch, len, info)) = fence_open(rest) {
+			if let Some(fence) = fence_open(rest) {
 				let parent = match self.resolve_parent(indent) {
 					Some(p) => p,
 					None => {
@@ -1913,8 +1962,10 @@ impl Parser {
 						continue;
 					}
 				};
-				let (value, next) = self.consume_raw(&lines, i + 1, lineno, ch, len, info);
-				if let Some(node) = self.bind_block(parent, value, lineno) {
+				let (value, next) = self.consume_raw(&lines, i + 1, lineno, indent, fence);
+				if parent == DEAD {
+					self.skip_under_dead(lineno, indent);
+				} else if let Some(node) = self.bind_block(parent, value, lineno) {
 					self.attach_trivia(node, None);
 				}
 				i = next;
@@ -1932,6 +1983,11 @@ impl Parser {
 							continue;
 						}
 					};
+					if parent == DEAD {
+						self.skip_under_dead(lineno, indent);
+						i += 1;
+						continue;
+					}
 					let (body, comment) = split_comment(after);
 					// Elements have no node of their own; trivia rides the field.
 					if parent != ROOT {
@@ -1980,6 +2036,11 @@ impl Parser {
 					continue;
 				}
 			};
+			if parent == DEAD {
+				self.skip_under_dead(lineno, indent);
+				i += 1;
+				continue;
+			}
 			let scan = match scan_path(content) {
 				Ok(s) => s,
 				Err(reason) => {
@@ -1996,6 +2057,7 @@ impl Parser {
 							blank_before: had_blank,
 						});
 					}
+					self.stack.push((indent.to_string(), DEAD));
 					i += 1;
 					continue;
 				}
@@ -2003,7 +2065,7 @@ impl Parser {
 			let mut next = i + 1;
 			// The verbatim value span, kept for reads' `raw` (only the plain
 			// scalar/inline-array case has a one-line source spelling).
-			let mut src_text: Option<String> = None;
+			let mut src_text: Option<&str> = None;
 			let value = match &scan.value_text {
 				None => {
 					// A clean path with no colon is the one defined repair:
@@ -2013,16 +2075,16 @@ impl Parser {
 				}
 				Some(v) if v.is_empty() => Value::Empty,
 				Some(v) => {
-					if let Some((ch, len, info)) = fence_open(v) {
+					if let Some(fence) = fence_open(v) {
 						// Same-line fence spelling.
-						let (val, n) = self.consume_raw(&lines, i + 1, lineno, ch, len, info);
+						let (val, n) = self.consume_raw(&lines, i + 1, lineno, indent, fence);
 						next = n;
 						val
 					} else {
 						if unterminated_quote(v) {
 							self.err(lineno, "unterminated quote in value");
 						}
-						src_text = Some(v.clone());
+						src_text = Some(v);
 						parse_cell(v)
 					}
 				}
@@ -2037,8 +2099,8 @@ impl Parser {
 					&& value_hash(&self.arena[node].value) == k
 				{
 					self.arena[node].src_set = true;
-					if !src_matches_display(&self.arena[node].value, &s) {
-						self.arena[node].src = Some(s);
+					if !src_matches_display(&self.arena[node].value, s) {
+						self.arena[node].src = Some(s.to_string());
 					}
 				}
 				if had_blank {
@@ -2046,6 +2108,8 @@ impl Parser {
 				}
 				self.attach_trivia(node, comment);
 				self.stack.push((indent.to_string(), node));
+			} else {
+				self.stack.push((indent.to_string(), DEAD));
 			}
 			i = next;
 		}
@@ -2068,6 +2132,7 @@ impl Parser {
 			strictness,
 			orphans,
 			lost: self.lost,
+			index: std::sync::OnceLock::new(),
 		}
 	}
 }
@@ -2085,6 +2150,9 @@ impl Document {
 
 	/// Parse at a chosen strictness. Only Strict can fail (any error diagnostic);
 	/// the error still carries the parsed document alongside the diagnostics.
+	// The Err carries the whole document by design (recover-and-continue);
+	// boxing it would change the public shape for a value built once per load.
+	#[allow(clippy::result_large_err)]
 	pub fn parse_with(text: &str, strictness: Strictness) -> Result<Document, LoadError> {
 		let doc = Parser::new().parse(text, strictness);
 		if strictness == Strictness::Strict
@@ -2214,7 +2282,7 @@ impl Document {
 	/// redundancy collapsed, comments re-emitted as attached trivia. Scalar
 	/// text is never rewritten.
 	pub fn to_canonical(&self) -> String {
-		let mut out = String::new();
+		let mut out = String::with_capacity(self.arena.len() * 24);
 		self.emit_children(&self.arena[ROOT].children, 0, &mut out);
 		// Comments that never found a following line re-emit at the end.
 		for c in &self.orphans {
@@ -2276,8 +2344,12 @@ impl Document {
 			}
 			Value::Cell(els) => {
 				out.push(' ');
-				let joined = els.iter().map(emit_element).collect::<Vec<_>>().join(", ");
-				out.push_str(&joined);
+				for (i, e) in els.iter().enumerate() {
+					if i > 0 {
+						out.push_str(", ");
+					}
+					out.push_str(&emit_element(e));
+				}
 				push_trailing(out, node.trailing());
 				out.push('\n');
 			}
@@ -2311,12 +2383,8 @@ impl Document {
 				}
 				out.push('\n');
 				if !content.is_empty() {
-					// A body with no non-blank line has no common indent for the
-					// reload to strip back off, so indenting it here would add a
-					// level on every pass, without bound. Leave it as it stands.
-					let all_blank = content.split('\n').all(|l| l.trim().is_empty());
 					for l in content.split('\n') {
-						if !l.is_empty() && !all_blank {
+						if !l.is_empty() {
 							out.push_str(&pad);
 						}
 						out.push_str(l);
@@ -2428,7 +2496,7 @@ pub fn read_file(path: &str, max_bytes: usize) -> Result<String, FileStatus> {
 	let limit = if max_bytes == 0 {
 		u64::MAX
 	} else {
-		max_bytes as u64 + 1
+		(max_bytes as u64).saturating_add(1)
 	};
 	let mut bytes = Vec::new();
 	f.take(limit)
@@ -2452,9 +2520,7 @@ pub fn read_file(path: &str, max_bytes: usize) -> Result<String, FileStatus> {
 /// links to the old inode cannot survive a rename and keep the old content.
 pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	use std::io::Write;
-	// canonicalize fails when the target does not exist yet; that is a plain
-	// create, so the path as given is already the right one.
-	let target = std::fs::canonicalize(file).unwrap_or_else(|_| std::path::PathBuf::from(file));
+	let target = resolve_target(file);
 	let dir = match target.parent() {
 		Some(d) if !d.as_os_str().is_empty() => d,
 		_ => std::path::Path::new("."),
@@ -2473,6 +2539,14 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	// preserve, so it takes the one an ordinary create would: 0666 narrowed by
 	// the umask, like every other file the user's tools produce.
 	let existing = std::fs::metadata(&target).ok();
+	// Windows: a read-only file cannot be replaced, and a read-only temp cannot
+	// be removed after a failure, so the attribute comes off the target for the
+	// publish and goes back on the new file after it - the same outcome as
+	// POSIX, where the rename never needed the file writable.
+	#[cfg(windows)]
+	let read_only = existing
+		.as_ref()
+		.is_some_and(|m| m.permissions().readonly());
 	let mut file_handle = None;
 	let mut tmp = std::path::PathBuf::new();
 	let mut last = String::new();
@@ -2499,7 +2573,9 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	let res = (|| -> std::io::Result<()> {
 		// On the handle, so umask cannot narrow it the way it narrows a create
 		// mode. Best effort: a filesystem that cannot carry the mode is not a
-		// reason to fail a write that otherwise succeeded.
+		// reason to fail a write that otherwise succeeded. The whole mode goes,
+		// setuid/setgid/sticky included, as an editor's rewrite would carry it.
+		#[cfg(unix)]
 		if let Some(m) = &existing {
 			let _ = f.set_permissions(m.permissions());
 		}
@@ -2511,12 +2587,61 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 		return Err(format!("{}: {}", file, e));
 	}
 	drop(f);
-	publish_file(&tmp, &target).map_err(|e| {
+	#[cfg(windows)]
+	if read_only {
+		set_read_only(&target, false);
+	}
+	let published = publish_file(&tmp, &target);
+	#[cfg(windows)]
+	if read_only {
+		set_read_only(&target, true); // whether or not the publish went through
+	}
+	published.map_err(|e| {
 		let _ = std::fs::remove_file(&tmp);
 		format!("{}: {}", file, e)
 	})?;
 	sync_dir(dir);
 	Ok(())
+}
+
+/// The path a save actually rewrites. A symlink is followed so the write goes
+/// through it; canonicalize does that but needs the target to exist, so a
+/// dangling link is walked by hand and the file is created where it points.
+/// A path that is no link at all is a plain create at the path as given.
+fn resolve_target(file: &str) -> std::path::PathBuf {
+	if let Ok(p) = std::fs::canonicalize(file) {
+		return p;
+	}
+	let mut p = std::path::PathBuf::from(file);
+	for _ in 0..40 {
+		// bounded: a link cycle would otherwise never resolve
+		let Ok(next) = std::fs::read_link(&p) else {
+			break;
+		};
+		p = if next.is_absolute() {
+			next
+		} else {
+			p.parent()
+				.filter(|d| !d.as_os_str().is_empty())
+				.unwrap_or(std::path::Path::new("."))
+				.join(next)
+		};
+	}
+	match (p.parent(), p.file_name()) {
+		(Some(d), Some(n)) if !d.as_os_str().is_empty() => {
+			std::fs::canonicalize(d).map(|d| d.join(n)).unwrap_or(p)
+		}
+		_ => p,
+	}
+}
+
+#[cfg(windows)]
+fn set_read_only(path: &std::path::Path, on: bool) {
+	if let Ok(m) = std::fs::metadata(path) {
+		let mut perms = m.permissions();
+		perms.set_readonly(on);
+		let _ = std::fs::set_permissions(path, perms);
+	}
 }
 
 /// Move the finished temp file over the target. On windows that means
@@ -2803,13 +2928,43 @@ enum Resolved {
 }
 
 impl Document {
+	fn name_index(&self) -> &NameIndex {
+		self.index.get_or_init(|| {
+			// Boxed so the document stays small on the stack (it rides inside
+			// LoadError by value).
+			let mut first: HashMap<u64, usize> = HashMap::new();
+			let mut last: HashMap<u64, usize> = HashMap::new();
+			let mut next_same = vec![NIL; self.arena.len()];
+			for (p, node) in self.arena.iter().enumerate() {
+				for &c in &node.children {
+					let k = name_key(p, &self.arena[c].name);
+					match last.insert(k, c) {
+						Some(prev) => next_same[prev] = c,
+						None => {
+							first.insert(k, c);
+						}
+					}
+				}
+			}
+			Box::new(NameIndex { first, next_same })
+		})
+	}
+
 	fn children_named(&self, parent: usize, name: &str) -> Vec<usize> {
-		self.arena[parent]
-			.children
-			.iter()
+		let idx = self.name_index();
+		let mut out = Vec::new();
+		let mut c = idx
+			.first
+			.get(&name_key(parent, name))
 			.copied()
-			.filter(|&c| self.arena[c].name == name)
-			.collect()
+			.unwrap_or(NIL);
+		while c != NIL {
+			if self.arena[c].name == name && self.arena[c].parent == parent {
+				out.push(c);
+			}
+			c = idx.next_same[c];
+		}
+		out
 	}
 
 	fn resolve_from(&self, start: &[usize], segs: &[Segment]) -> Resolved {
@@ -3220,6 +3375,7 @@ impl Document {
 	/// says why). Validation runs first, so a doomed path leaves no
 	/// half-created intermediates behind.
 	fn place(&mut self, path: &str) -> Option<usize> {
+		self.index.take();
 		let scan = scan_lookup(path).ok()?;
 		let mut trail: Vec<Option<usize>> = Vec::new();
 		if self.probe_write(&scan, &mut trail) != WriteReason::Writable {
@@ -3265,14 +3421,15 @@ impl Document {
 	/// output stays a formatter fixpoint.
 	fn collapse_dup(&mut self, node: usize) {
 		let parent = self.arena[node].parent;
-		let name = self.arena[node].name.clone();
-		let key = self.arena[node].value.key();
+		let me = &self.arena[node];
+		let key = merge_hash(&me.name, &me.value);
 		let siblings = &self.arena[parent].children;
-		let Some(other) = siblings
-			.iter()
-			.copied()
-			.find(|&c| c != node && self.arena[c].name == name && self.arena[c].value.key() == key)
-		else {
+		let Some(other) = siblings.iter().copied().find(|&c| {
+			let o = &self.arena[c];
+			c != node
+				&& merge_hash(&o.name, &o.value) == key
+				&& merge_eq(&o.name, &o.value, &me.name, &me.value)
+		}) else {
 			return;
 		};
 		let pos = |n: usize| {
@@ -3302,6 +3459,7 @@ impl Document {
 
 	/// Delete the node(s) at a path (with their subtrees); returns how many.
 	pub fn remove(&mut self, path: &str) -> usize {
+		self.index.take();
 		let targets: Vec<usize> = match self.resolve(path) {
 			Ok(Resolved::One(n)) => vec![n],
 			Ok(Resolved::Many(v)) => v,
@@ -3364,8 +3522,14 @@ impl Document {
 		self.set_value(path, cell_of(v.to_string()))
 	}
 	/// Bind a raw block at a path, picking a fence longer than any content line.
+	/// The info-string is stored as a fence line would read it back (trimmed);
+	/// one holding a line break has no fence-line spelling and fails the write.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
+		if info.contains('\n') || info.contains('\r') {
+			return false;
+		}
+		let info = info.trim();
 		let (fence_char, fence_len) = choose_fence(content);
 		self.set_value(
 			path,
@@ -3545,6 +3709,7 @@ impl Document {
 	/// `Load(defaults, site, user)` is a left fold of this: each later file
 	/// overlaid on the accumulation of the earlier ones.
 	pub fn merge(&mut self, over: &Document) {
+		self.index.take();
 		self.lost += over.lost;
 		self.overlay(ROOT, over, ROOT);
 		// Layers commonly share a footer; keeping one copy of each keeps a
@@ -3581,11 +3746,11 @@ impl Document {
 	}
 
 	fn overlay(&mut self, base_parent: usize, over: &Document, over_parent: usize) {
-		let over_kids = over.arena[over_parent].children.clone();
+		let over_kids = &over.arena[over_parent].children;
 		// Over side: name -> node bucket, in first-appearance order.
 		let mut order: Vec<String> = Vec::new();
 		let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
-		for &k in &over_kids {
+		for &k in over_kids {
 			let n = &over.arena[k].name;
 			groups
 				.entry(n.clone())
@@ -3596,7 +3761,8 @@ impl Document {
 				.push(k);
 		}
 		// Base side, one pass: does the name have a container instance, and
-		// which child carries each (name, key) - every key computed once.
+		// which child carries each (name, key) - every key computed once. The
+		// list is cloned because the splices below rewrite it as they go.
 		let base_kids = self.arena[base_parent].children.clone();
 		let mut has_container: HashMap<String, bool> = HashMap::new();
 		let mut by_key: HashMap<(String, String), usize> = HashMap::new();
@@ -3705,8 +3871,7 @@ impl Document {
 		};
 		let idx = self.arena.len();
 		self.arena.push(node);
-		let okids = over.arena[oi].children.clone();
-		for ok in okids {
+		for &ok in &over.arena[oi].children {
 			let c = self.clone_subtree(over, ok, idx);
 			self.arena[idx].children.push(c);
 		}
@@ -4279,7 +4444,7 @@ impl Document {
 		match value {
 			Value::Raw(r) => Read::new(r.content.clone(), Status::Good, raw).at(line, false),
 			Value::Empty => Read::new(String::new(), Status::Empty, raw).at(line, false),
-			_ => Read::new(String::new(), Status::BadType, raw).at(line, false),
+			Value::Cell(_) => Read::new(String::new(), Status::BadType, raw).at(line, false),
 		}
 	}
 
@@ -4317,16 +4482,11 @@ impl Document {
 							sts.push(*st);
 						}
 						Ok(n) => match self.scalar_element(&self.arena[*n].value) {
-							Ok(el) => match coerce(el) {
-								Some(v) => {
-									out.push(v);
-									sts.push(Status::Good);
-								}
-								None => {
-									out.push(T::default());
-									sts.push(Status::BadType);
-								}
-							},
+							Ok(el) => {
+								let (v, st) = coerced(&coerce, el);
+								out.push(v);
+								sts.push(st);
+							}
 							Err(st) => {
 								out.push(T::default());
 								sts.push(st);
@@ -4356,16 +4516,9 @@ impl Document {
 						let mut out = Vec::with_capacity(els.len());
 						let mut sts = Vec::with_capacity(els.len());
 						for el in els {
-							match coerce(el) {
-								Some(v) => {
-									out.push(v);
-									sts.push(Status::Good);
-								}
-								None => {
-									out.push(T::default());
-									sts.push(Status::BadType);
-								}
-							}
+							let (v, st) = coerced(&coerce, el);
+							out.push(v);
+							sts.push(st);
 						}
 						let status = sts.iter().copied().max().unwrap_or(Status::Good);
 						Read::with_slots(out, status, raw, sts).at(line, false)
@@ -4647,6 +4800,15 @@ struct SchemaDef {
 	// their entry's chain, so only these two classes can turn declared fields
 	// into false unknowns - the sweep runs unless one of them happened.
 	paths_complete: bool,
+}
+
+/// One slot of an array read: the coerced value, or the type's default with
+/// BadType.
+fn coerced<T: Default>(coerce: &impl Fn(&Element) -> Option<T>, el: &Element) -> (T, Status) {
+	match coerce(el) {
+		Some(v) => (v, Status::Good),
+		None => (T::default(), Status::BadType),
+	}
 }
 
 fn vdiag(out: &mut Vec<Diagnostic>, line: usize, msg: String) {
@@ -5543,16 +5705,14 @@ impl Document {
 				}
 				match base {
 					"int" => {
-						let mut vals: Vec<i64> = Vec::with_capacity(els.len());
-						for e in els {
-							match parse_int_text(e, self.strictness) {
-								Some(v) => vals.push(v),
-								None => {
-									wrong(out);
-									return;
-								}
-							}
-						}
+						let parsed: Option<Vec<i64>> = els
+							.iter()
+							.map(|e| parse_int_text(e, self.strictness))
+							.collect();
+						let Some(vals) = parsed else {
+							wrong(out);
+							return;
+						};
 						if let Some(AllowedSet::Ints(set)) = &c.allowed
 							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
 						{
@@ -5574,16 +5734,14 @@ impl Document {
 						}
 					}
 					"float" => {
-						let mut vals: Vec<f64> = Vec::with_capacity(els.len());
-						for e in els {
-							match parse_float_text(e, self.strictness) {
-								Some(v) => vals.push(v),
-								None => {
-									wrong(out);
-									return;
-								}
-							}
-						}
+						let parsed: Option<Vec<f64>> = els
+							.iter()
+							.map(|e| parse_float_text(e, self.strictness))
+							.collect();
+						let Some(vals) = parsed else {
+							wrong(out);
+							return;
+						};
 						if let Some(AllowedSet::Floats(set)) = &c.allowed
 							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
 						{
@@ -5605,16 +5763,14 @@ impl Document {
 						}
 					}
 					"bool" => {
-						let mut vals: Vec<bool> = Vec::with_capacity(els.len());
-						for e in els {
-							match parse_bool_text(&e.text, self.strictness) {
-								Some(v) => vals.push(v),
-								None => {
-									wrong(out);
-									return;
-								}
-							}
-						}
+						let parsed: Option<Vec<bool>> = els
+							.iter()
+							.map(|e| parse_bool_text(&e.text, self.strictness))
+							.collect();
+						let Some(vals) = parsed else {
+							wrong(out);
+							return;
+						};
 						if let Some(AllowedSet::Bools(set)) = &c.allowed
 							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
 						{
@@ -5626,16 +5782,12 @@ impl Document {
 						}
 					}
 					"datetime" => {
-						let mut vals: Vec<ShclDateTime> = Vec::with_capacity(els.len());
-						for e in els {
-							match parse_datetime(&e.text) {
-								Some(v) => vals.push(v),
-								None => {
-									wrong(out);
-									return;
-								}
-							}
-						}
+						let parsed: Option<Vec<ShclDateTime>> =
+							els.iter().map(|e| parse_datetime(&e.text)).collect();
+						let Some(vals) = parsed else {
+							wrong(out);
+							return;
+						};
 						if let Some(AllowedSet::Dates(set)) = &c.allowed
 							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
 						{

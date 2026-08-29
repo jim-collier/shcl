@@ -15,7 +15,12 @@
 ##	SPDX-License-Identifier: MIT
 
 
-import argparse, html, os, re, sys
+import argparse
+import bisect
+import html
+import os
+import re
+import sys
 
 STEP      = 16              # flamegraph row height in the SVG, px (a child sits at parent_y - STEP)
 SELF_TOP  = 22             	# self-time leaders to list
@@ -25,6 +30,8 @@ SEEN_FILE = ".flame-seen"  	# marker basename, kept in the profiling dir - outsi
 
 NAME_RE   = re.compile(r"flame_(\d{8}-\d{6})_\w+\.svg$")
 FRAME_RE  = re.compile(r"<title>(.*?)</title><rect ([^>]*?)/>", re.S)
+ATTR_RES  = {key: re.compile(re.escape(key) + r'="([\d.]+)"') for key in ("y", "fg:x", "fg:w")}
+SAMPLES_RE = re.compile(r"\s*\(\d[\d,]* samples.*$")
 
 
 def fSkip(msg):
@@ -46,20 +53,23 @@ def fNewest(pdir):
 	return best
 
 
+def fAttr(attrs, key):
+	vm = ATTR_RES[key].search(attrs)
+	return float(vm.group(1)) if vm else None
+
+
 def fParse(path):
-	text = open(path, encoding="utf-8").read()
+	with open(path, encoding="utf-8") as fh:
+		text = fh.read()
 	m = re.search(r'total_samples="(\d+)"', text)
 	total = int(m.group(1)) if m else 0
 	frames = []                                      # each: (name, x, y, w) in raw samples
 	for fm in FRAME_RE.finditer(text):
 		attrs = fm.group(2)
-		def val(key):
-			vm = re.search(re.escape(key) + r'="([\d.]+)"', attrs)
-			return float(vm.group(1)) if vm else None
-		y, x, w = val("y"), val("fg:x"), val("fg:w")
+		y, x, w = fAttr(attrs, "y"), fAttr(attrs, "fg:x"), fAttr(attrs, "fg:w")
 		if None in (y, x, w):
 			continue
-		name = re.sub(r"\s*\(\d[\d,]* samples.*$", "", html.unescape(fm.group(1)))
+		name = SAMPLES_RE.sub("", html.unescape(fm.group(1)))
 		frames.append((name, x, y, w))
 	if not total or not frames:
 		fSkip(f"could not parse a flamegraph out of {path}")
@@ -67,24 +77,41 @@ def fParse(path):
 
 
 def fAnalyze(total, frames, top):
-	byY = {}
+	##	Rows keyed by y and sorted by x, with the x list beside each, so a
+	##	frame's parent or children are a bisect and a short walk rather than a
+	##	scan of the whole row for every frame.
+	rows = {}
 	for fr in frames:
-		byY.setdefault(fr[2], []).append(fr)
+		rows.setdefault(fr[2], []).append(fr)
+	rowXs = {}
+	for y, row in rows.items():
+		row.sort(key=lambda fr: fr[1])
+		rowXs[y] = [fr[1] for fr in row]
 	eps = 1e-6
 
 	def kids(fr):
 		_, x, y, w = fr
-		return [c for c in byY.get(y - STEP, []) if c[1] >= x - eps and c[1] + c[3] <= x + w + eps]
+		row = rows.get(y - STEP)
+		if not row:
+			return []
+		out = []
+		for c in row[bisect.bisect_left(rowXs[y - STEP], x - eps):]:
+			if c[1] + c[3] > x + w + eps:
+				break
+			out.append(c)
+		return out
 
 	def parent(fr):
 		_, x, y, w = fr
-		for p in byY.get(y + STEP, []):
-			if p[1] <= x + eps and p[1] + p[3] >= x + w - eps:
-				return p
+		row = rows.get(y + STEP)
+		if not row:
+			return None
+		i = bisect.bisect_right(rowXs[y + STEP], x + eps) - 1
+		if i >= 0 and row[i][1] + row[i][3] >= x + w - eps:
+			return row[i]
 		return None
 
-	def selfW(fr):
-		return fr[3] - sum(c[3] for c in kids(fr))
+	selfOf = {fr: fr[3] - sum(c[3] for c in kids(fr)) for fr in frames}
 
 	selfBy, inclBy, byName = {}, {}, {}
 	parse = emit = reads = other = 0.0
@@ -92,13 +119,14 @@ def fAnalyze(total, frames, top):
 		name = fr[0]
 		byName.setdefault(name, []).append(fr)
 		inclBy[name] = inclBy.get(name, 0.0) + fr[3]
-		s = selfW(fr)
+		s = selfOf[fr]
 		selfBy[name] = selfBy.get(name, 0.0) + s
 		if s <= 0:
 			continue
 		anc, cur = [], fr                            # ancestor names (self up to root)
 		while cur:
-			anc.append(cur[0]); cur = parent(cur)
+			anc.append(cur[0])
+			cur = parent(cur)
 		##	Buckets keyed to shcl's hot subsystems (the cicd workload is `fmt`, so
 		##	parse + emit dominate; reads shows up if the workload ever adds gets).
 		if any("Parser::parse" in a or "Document::parse" in a for a in anc):
@@ -134,7 +162,7 @@ def fAnalyze(total, frames, top):
 
 	print(f"caller chains of the top {CHAIN} leaves:")
 	for name, v in sorted(selfBy.items(), key=lambda kv: -kv[1])[:CHAIN]:
-		fr = max(byName[name], key=selfW)
+		fr = max(byName[name], key=selfOf.__getitem__)
 		print(f"  {name}  ({pct(v)} self)")
 		cur, depth = parent(fr), 0
 		while cur and depth < 12:
@@ -178,7 +206,8 @@ def main():
 	if a.check and not a.force:
 		seen = ""
 		try:
-			seen = open(marker).read().strip()
+			with open(marker) as fh:
+				seen = fh.read().strip()
 		except OSError:
 			pass
 		if ts and seen and ts <= seen:
@@ -192,7 +221,8 @@ def main():
 
 	if a.check and not a.no_mark and ts:
 		try:
-			open(marker, "w").write(ts + "\n")
+			with open(marker, "w") as fh:
+				fh.write(ts + "\n")
 		except OSError as e:
 			sys.stderr.write(f"flame-report: could not write marker: {e}\n")
 
@@ -203,3 +233,4 @@ if __name__ == "__main__":
 
 ##	History:
 ##		- 20260712: Created from the SilkTerm sibling; attribution buckets redone for shcl (parse / emit / reads).
+##		- 20260829: Regexes compiled once; rows indexed and bisected instead of scanned per frame.

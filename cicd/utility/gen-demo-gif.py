@@ -3,7 +3,7 @@
 ##	Purpose: Render an animated demo GIF of a CLI program, without recording a
 ##		real terminal (no ttyd, no asciinema, no ffmpeg - just Pillow). A TOML
 ##		scenario file scripts the session; each command is "typed" into a fake
-##		terminal window with human timing (slower digits, a beat before flags,
+##		terminal window with natural timing (slower digits, a beat before flags,
 ##		the occasional corrected typo), then actually executed so the captured
 ##		output can never go stale. Motion runs at exactly 50 fps: the cursor
 ##		glides between cells at sub-pixel resolution rather than teleporting,
@@ -34,16 +34,27 @@
 ##	SPDX-License-Identifier: MIT
 
 
-import argparse, math, os, random, re, shlex, subprocess, sys, unicodedata
+import argparse
+import math
+import os
+import random
+import re
+import shlex
+import subprocess
+import sys
+import unicodedata
+from typing import NoReturn
 
 try:
 	import tomllib
 except ImportError:
-	sys.stderr.write("gen-demo-gif: needs python 3.11+ (tomllib)\n"); sys.exit(2)
+	sys.stderr.write("gen-demo-gif: needs python 3.11+ (tomllib)\n")
+	sys.exit(2)
 try:
 	from PIL import Image, ImageDraw, ImageFont
 except ImportError:
-	sys.stderr.write("gen-demo-gif: Pillow not installed\n"); sys.exit(2)
+	sys.stderr.write("gen-demo-gif: Pillow not installed\n")
+	sys.exit(2)
 
 
 ##	Canvas and window chrome. 960x540 total; the "window" fills the frame, left
@@ -104,7 +115,8 @@ def fEmojiInit():
 	##	if any piece is missing the chars just draw through the monochrome
 	##	fallback like before.
 	try:
-		import gi, cairo
+		import cairo
+		import gi
 		gi.require_version("Pango", "1.0")
 		gi.require_version("PangoCairo", "1.0")
 		from gi.repository import Pango, PangoCairo
@@ -127,7 +139,7 @@ def fEmojiInit():
 EMOJI = fEmojiInit()
 
 
-def fSkip(msg):
+def fSkip(msg) -> NoReturn:
 	##	2 = non-fatal skip, same convention as the other cicd utilities: the
 	##	stage warns and the pipeline continues.
 	sys.stderr.write(f"gen-demo-gif: {msg}\n")
@@ -556,7 +568,7 @@ class Movie:
 		self._lastBytes = None
 
 	def add(self, img, ms):
-		dur = max(20, int(round(ms / 10.0)) * 10)
+		dur = max(20, round(ms / 10.0) * 10)
 		raw = img.tobytes()                  # kept: the held frame is re-compared every add
 		if raw == self._lastBytes:
 			self.durs[-1] += dur
@@ -616,7 +628,7 @@ def fMain():
 		##	every frame is exactly 2cs. Where it does not actually move (a
 		##	thinking pause), the frames are identical and Movie.add folds them up.
 		tx, ty = scr.fCursorTarget()
-		steps = max(1, int(round(ms / FRAME_MS)))
+		steps = max(1, round(ms / FRAME_MS))
 		x0, y0 = shown
 		for s in range(1, steps + 1):
 			shown[0] = x0 + (tx - x0) * s / steps

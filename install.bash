@@ -190,14 +190,14 @@ if (( uninstall )); then
 	printf 'removing shcl: %s, %s and %s\n' "${dest}" "${link}" "${manlink}"
 	if (( ! assume_yes )); then
 		reply=""
-		if ! read -r -p "Proceed? [y/N] " reply </dev/tty 2>/dev/null; then
+		if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
 			die "no terminal to confirm on - pass --yes"
 		fi
 		case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
 	fi
-	[[ -L "${link}" || -e "${link}" ]] && ${asroot} rm -f "${link}"
-	## Only ours: a man1/shcl.1 that is not a symlink into dest belongs to a
-	## package manager, and removing it would break a perfectly good install.
+	## Only ours: a bin/shcl or man1/shcl.1 that is not a symlink into dest was
+	## put there by hand or by a package, and removing it would break that install.
+	[[ -L "${link}" && "$(readlink -- "${link}")" == "${dest}/"* ]] && ${asroot} rm -f "${link}"
 	[[ -L "${manlink}" && "$(readlink -- "${manlink}")" == "${dest}/"* ]] && ${asroot} rm -f "${manlink}"
 	${asroot} rm -f "${dest}/shcl"
 	${asroot} rm -f "${dest}/code"/* "${dest}/scripts"/* "${dest}/man"/* "${dest}/completions"/* 2>/dev/null || true
@@ -205,6 +205,13 @@ if (( uninstall )); then
 	echo "removed"
 	echo
 	exit 0
+fi
+
+## Never over a real file: a bin/shcl that is not a symlink is a hand-placed
+## install (the DIY route), and replacing it would throw that work away. Checked
+## before any download so the refusal costs nothing.
+if [[ -e "${link}" && ! -L "${link}" ]]; then
+	die "${link} exists and is not a symlink - move it aside first, then re-run"
 fi
 
 ## Resolve the tag. GitHub's /releases/latest is exactly "newest non-prerelease";
@@ -243,7 +250,7 @@ if (( ! assume_yes )); then
 	## /dev/tty for readability was not the same question: it passes in plenty of
 	## unattended contexts where the read then dies on a raw shell error.
 	reply=""
-	if ! read -r -p "Proceed? [y/N] " reply </dev/tty 2>/dev/null; then
+	if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
 		die "no terminal to confirm on - pass --yes"
 	fi
 	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
@@ -274,6 +281,22 @@ got="$(sha256sum "${tmp}/shcl" | cut -d' ' -f1)"
 ## payload we made executable was the one nothing had verified. Releases before
 ## the asset existed simply install the binary and say what was skipped.
 chmod 755 "${tmp}/shcl"
+
+## Run the verified binary where it sits before anything is written: it is
+## linked against glibc 2.34, and on an older libc (or musl) the failure would
+## otherwise surface as a raw loader error after the install, with the broken
+## install left in place. Exit 126 is the temp dir refusing to execute at all
+## (a noexec mount), which is not the binary's fault.
+smoke_status=0
+"${tmp}/shcl" version >/dev/null 2>"${tmp}/smoke.err" || smoke_status=$?
+if [[ "${smoke_status}" != 0 ]]; then
+	if [[ "${smoke_status}" == 126 ]]; then
+		die "cannot execute from ${tmp} (noexec mount?) - set TMPDIR to a directory that allows execution and re-run"
+	fi
+	head -n1 "${tmp}/smoke.err" >&2
+	die "the prebuilt linux-${arch} binary does not run here: it needs glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9, or later) and does not run on musl. Install from source instead: cargo install shcl"
+fi
+
 dropins="shcl-${version}-dropins.tar.gz"
 want_src="$(grep " ${dropins}\$" "${tmp}/sums" | cut -d' ' -f1)"
 have_dropins=0
@@ -336,7 +359,11 @@ if (( have_docs )); then
 elif (( have_dropins )); then
 	printf 'note: this release ships no man page or completions - they arrived after it was cut\n'
 fi
-printf 'to remove it again: %s --uninstall --target %s\n' "${0##*/}" "${target}"
+## Under the documented pipe $0 is "bash" (or a /dev/fd path), so the hint
+## names the one-liner unless this really is a file on disk.
+rerun="curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash -s --"
+[[ -f "$0" ]] && rerun="$0"
+printf 'to remove it again: %s --uninstall --target=%s\n' "${rerun}" "${target}"
 ## Both targets: an install nobody can invoke by name looks fine to the version
 ## check below, so say something when the symlink dir is off the PATH. It costs
 ## the man page too - man derives its search dirs from the bin dirs on PATH.

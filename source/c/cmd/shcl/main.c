@@ -64,7 +64,8 @@ static const char *HELP =
 	"set-only-if-absent and removal go in as a write-ops script on stdin, one op per\n"
 	"line, tab-separated. FILE '-' follows stdin: the document when an option holds\n"
 	"the edits, an empty base when the ops script has stdin instead. With --write,\n"
-	"a FILE that does not exist yet is created. Ops:\n"
+	"a FILE that does not exist yet is created. PATH ends at the first '=' outside\n"
+	"quotes and brackets, so a selector may hold one. Ops:\n"
 	"  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar\n"
 	"  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array\n"
 	"  <type>[-array]-default<TAB>...                          set only if absent\n"
@@ -229,12 +230,12 @@ static char *read_input(const char *file, size_t *len) {
 }
 
 // Prints diagnostics to stderr and returns 6 on strict load failure, else 0.
-static int strict_gate(shcl_doc *d) {
+static int strict_gate(const shcl_doc *d) {
 	if (!shcl_strict_failed(d)) return 0;
 	size_t n = shcl_diag_count(d);
 	for (size_t i = 0; i < n; i++) {
 		shcl_str m = shcl_diag_message(d, i);
-		fprintf(stderr, "line %zu: %s: ", shcl_diag_line(d, i), shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint");
+		fprintf(stderr, "line %zu: %s: %s ", shcl_diag_line(d, i), shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint", shcl_diag_code(d, i));
 		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 	}
 	size_t nerr = 0; for (size_t i = 0; i < n; i++) if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
@@ -263,12 +264,29 @@ static void layered_free(LayeredDoc *L) {
 // overrides on top - the layered-load fold. Every layer parses at the requested
 // strictness; a strict-load failure on any aborts (exit 6). Returns 0 and fills
 // *out on success, else an exit code (nothing to free on failure).
+// PATH=VALUE at the first `=` outside quotes and brackets, so a selector
+// holding one (`x[a=b].c=1`) still addresses its instance. Returns 0 when
+// there is no such `=`.
+static int split_set(const char *arg, size_t *plen, const char **val) {
+	char in_quote = 0; size_t depth = 0;
+	for (size_t i = 0; arg[i]; i++) {
+		char b = arg[i];
+		if (b == '\\') { if (arg[i + 1]) i++; continue; }
+		if (in_quote) { if (b == in_quote) in_quote = 0; continue; }
+		if (b == '"' || b == '\'') in_quote = b;
+		else if (b == '[') depth++;
+		else if (b == ']') { if (depth) depth--; }
+		else if (b == '=' && depth == 0) { *plen = i; *val = arg + i + 1; return 1; }
+	}
+	return 0;
+}
+
 // Apply one --set/--set-literal override. Both spellings share a list so they
 // apply in the order given, which decides the winner when two target one path.
 static int set_apply(shcl_doc *d, const char *spec, const char *opt) {
-	const char *eq = strchr(spec, '=');
-	size_t plen = (size_t)(eq - spec);
-	const char *val = eq + 1; size_t vlen = strlen(val);
+	size_t plen = 0; const char *val = spec;
+	split_set(spec, &plen, &val); // parse_opts already refused a spec with no '='
+	size_t vlen = strlen(val);
 	int ok = !strcmp(opt, "--set-literal") ? shcl_set_literal(d, spec, plen, val, vlen)
 	                                       : shcl_set_string(d, spec, plen, val, vlen);
 	if (!ok) fprintf(stderr, "shcl: cannot write %.*s (from %s)\n", (int)plen, spec, opt);
@@ -504,7 +522,12 @@ static int g_f64(const char *p, size_t n, double *out) {
 	free(b);
 	return 1;
 }
-static int p_bool(const char *p, size_t n) { return n == 4 && memcmp(p, "true", 4) == 0; }
+// Exactly `true` or `false`; anything else is a bad value, like a bad int.
+static int g_bool(const char *p, size_t n, int *out) {
+	if (n == 4 && memcmp(p, "true", 4) == 0) { *out = 1; return 1; }
+	if (n == 5 && memcmp(p, "false", 5) == 0) { *out = 0; return 1; }
+	return 0;
+}
 
 // Apply one write-ops line. A "-default" suffix means "only if absent": values
 // are gated FIRST (a malformed value fails even when the path already exists,
@@ -529,13 +552,13 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
 	size_t an = nf > 2 ? nf - 2 : 0; // array element count (fields from index 2)
 	if (OP("int")) { int64_t x; if (!g_i64(v, vn, &x)) { fprintf(stderr, "bad int: %.*s\n", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
 	else if (OP("float")) { double x; if (!g_f64(v, vn, &x)) { fprintf(stderr, "bad float: %.*s\n", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
-	else if (OP("bool")) { if (!PRESENT) wrote = shcl_set_bool(d, path, plen, p_bool(v, vn)); }
+	else if (OP("bool")) { int x; if (!g_bool(v, vn, &x)) { fprintf(stderr, "bad bool: %.*s\n", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_bool(d, path, plen, x); }
 	else if (OP("string")) { if (!PRESENT) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = unescape_ops(v, vn, b); wrote = shcl_set_string(d, path, plen, b, m); free(b); } }
-	else if (OP("datetime")) { shcl_datetime dt; S sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) { fprintf(stderr, "bad datetime: %.*s\n", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
+	else if (OP("datetime")) { shcl_datetime dt; Str sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) { fprintf(stderr, "bad datetime: %.*s\n", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
 	else if (OP("literal")) { if (!PRESENT) wrote = shcl_set_literal(d, path, plen, v, vn); }
 	else if (OP("int-array")) { int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_i64(fp[2 + i], fn[2 + i], &a[i])) { fprintf(stderr, "bad int: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_int_array(d, path, plen, a, an); free(a); }
 	else if (OP("float-array")) { double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_f64(fp[2 + i], fn[2 + i], &a[i])) { fprintf(stderr, "bad float: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_float_array(d, path, plen, a, an); free(a); }
-	else if (OP("bool-array")) { int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an; i++) a[i] = p_bool(fp[2 + i], fn[2 + i]); if (!PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an); free(a); }
+	else if (OP("bool-array")) { int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_bool(fp[2 + i], fn[2 + i], &a[i])) { fprintf(stderr, "bad bool: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an); free(a); }
 	else if (OP("string-array")) {
 		if (!PRESENT) {
 			char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
@@ -547,7 +570,7 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
 	}
 	else if (OP("datetime-array")) {
 		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
-		for (size_t i = 0; i < an && !rc; i++) { S sv; sv.p = fp[2 + i]; sv.n = fn[2 + i]; if (!parse_datetime(&d->arena, sv, &a[i])) { fprintf(stderr, "bad datetime: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } }
+		for (size_t i = 0; i < an && !rc; i++) { Str sv; sv.p = fp[2 + i]; sv.n = fn[2 + i]; if (!parse_datetime(&d->arena, sv, &a[i])) { fprintf(stderr, "bad datetime: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } }
 		if (!rc && !PRESENT) wrote = shcl_set_datetime_array(d, path, plen, a, an);
 		free(a);
 	}
@@ -642,7 +665,7 @@ static int do_set(Opts *o) {
 	free(ops); layered_free(&L); return rc;
 }
 
-static int do_check(Opts *o) {
+static int do_check(const Opts *o) {
 	if (o->nargs != 1) { fprintf(stderr, "check needs FILE (see --help)\n"); return 1; }
 	size_t len; char *text = read_input(o->args[0], &len);
 	if (!text) return 1;
@@ -718,7 +741,7 @@ static int do_check(Opts *o) {
 	shcl_free(d); free(text); return rc;
 }
 
-static int do_init(Opts *o) {
+static int do_init(const Opts *o) {
 	if (o->nargs > 0) { fprintf(stderr, "init takes no file argument (see --help)\n"); return 1; }
 	if (!o->schema) { fprintf(stderr, "init needs --schema=FILE (see --help)\n"); return 1; }
 	size_t slen; char *stext = read_input(o->schema, &slen);
@@ -803,7 +826,8 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 	} else if (!strcmp(name, "--layer")) {
 		opt_push(&o->layers, &o->nlayers, v); opt_seen(o, "--layer");
 	} else if (!strcmp(name, "--set") || !strcmp(name, "--set-literal")) {
-		if (!strchr(v, '=')) { fprintf(stderr, "bad %s value (want PATH=VALUE): %s\n", name, v); return 1; }
+		size_t plen; const char *val;
+		if (!split_set(v, &plen, &val)) { fprintf(stderr, "bad %s value (want PATH=VALUE): %s\n", name, v); return 1; }
 		// set_opts grows in lockstep with sets, so the local count is discarded.
 		int nopt = o->nsets;
 		opt_push(&o->set_opts, &nopt, name);
@@ -851,7 +875,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 // Every option must be meaningful for its subcommand; an option that would be
 // silently ignored (`set --write` before it existed, `--schema` on `get`) is a
 // usage error instead.
-static int check_opts(const char *cmd, Opts *o) {
+static int check_opts(const char *cmd, const Opts *o) {
 	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", NULL };
 	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy", NULL };
 	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", NULL };
@@ -937,6 +961,12 @@ static const char *asked_for(int argc, char **argv) {
 
 int main(int argc, char **argv) {
 	setlocale(LC_ALL, "C"); // strtod/printf must use '.' regardless of environment
+#ifdef _WIN32
+	// Byte-for-byte with the reference: no CRLF translation on any stream.
+	_setmode(_fileno(stdin), _O_BINARY);
+	_setmode(_fileno(stdout), _O_BINARY);
+	_setmode(_fileno(stderr), _O_BINARY);
+#endif
 	// Reject non-UTF-8 argv up front (exit 1), matching the reference; the parser
 	// assumes valid UTF-8, and a garbled arg is a usage error, not a real miss.
 	for (int i = 1; i < argc; i++) {

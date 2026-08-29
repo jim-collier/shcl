@@ -18,7 +18,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Configuration model](#configuration-model)
 	- [Consumer API](#consumer-api)
 	- [Integration modes](#integration-modes)
-	- [Power layer library-level, grammar untouched](#power-layer-library-level-grammar-untouched)
+	- [Power layer (library-level, grammar untouched)](#power-layer-library-level-grammar-untouched)
 	- [Schema validation](#schema-validation)
 	- [Formatter](#formatter)
 	- [Saving a file](#saving-a-file)
@@ -26,8 +26,8 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Format comparison](#format-comparison)
 	- [CI/CD](#cicd)
 	- [Reference implementation](#reference-implementation)
-	- [Go binding Tier 2](#go-binding-tier-2)
-	- [C binding Tier 2](#c-binding-tier-2)
+	- [Go binding (Tier 2)](#go-binding-tier-2)
+	- [C binding (Tier 2)](#c-binding-tier-2)
 	- [Shell wrappers](#shell-wrappers)
 	- [Man page and completions](#man-page-and-completions)
 
@@ -53,7 +53,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 
 The inescapable core tradeoff (for any config language) is to acknowledge and optimally balance "simplest possible" versus "expressive enough for anything" - including a simple DDL language. Ultimately it comes down to two factors:
 
-1. Ideologically-driven human opinion on where the balance should be - informed by technical experience, related PTSD gained along the way, childhood trauma - all of it.
+1. Ideologically-driven opinion on where the balance should be - informed by technical experience, related PTSD gained along the way, childhood trauma - all of it.
 
 1. The observation that processing power is now dirt-cheap even on the smallest embedded systems, validation and "correctness" tools are now incredibly powerful - and the subsequent decision to move as much of the heavy-lifting of the language on to this code, and away from end users and programmers.
 
@@ -91,15 +91,15 @@ Other points
 
 - The CLI's informational commands (`help`, `version`, `about`, `donate`) each take both spellings - the bare word and the dashed flag. Among the options it was decided that one rule for the whole class beats deciding per command whether it reads better as a command or as a modifier.
 
-- Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Two neighbours stay unpadded on purpose: bare `shcl`, which prints the same help text but as a usage error, and `version`, which stays a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
+- Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Two neighbors stay unpadded on purpose: bare `shcl`, which prints the same help text but as a usage error, and `version`, which stays a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
 
-Full, itemized decisions live in project memory (`shcl-spec-decisions`); `spec.md` is their normative form.
+The itemized decisions are recorded in this file as they are made; `spec.md` is their normative form.
 
 ## Architecture
 
 ### Software stack
 
-Many bindings with a shared conformance corpus (`conformance/`) as the contract between them. A key portability constraint shapes the Accessor: the requested value type is expressed by a typed entry point or a compile-time generic, never a runtime `type` field, because static languages (Go, Rust, C, C++, C#) cannot let a runtime value drive a return type. Prebuilt binaries cover Linux and Windows, on x86_64 and ARM64. macOS and the BSDs are buildable from source but have no published binary yet, since the pipeline runs on Linux.
+Many bindings with a shared conformance corpus (`conformance/`) as the contract between them. One portability constraint shapes the Accessor: the requested value type is expressed by a typed entry point or a compile-time generic, never a runtime `type` field, because static languages (Go, Rust, C, C++, C#) cannot let a runtime value drive a return type. Prebuilt binaries cover Linux and Windows, on x86_64 and ARM64. macOS and the BSDs are buildable from source but have no published binary yet, since the pipeline runs on Linux.
 
 ### Configuration model
 
@@ -128,7 +128,7 @@ The consuming programmer is assumed to be a junior in *every* binding, not just 
 	- It was considered and turned down, because the reference cannot implement it: a derive-based decoder needs a proc-macro, which is a second crate, and one file per binding with no dependencies is what the product *is*.
 	- Hand-writing the reflection instead would give each binding its own machinery with nothing in the reference to mirror - the parity rule inverted, and the thing that keeps a fix portable by mechanical diff.
 	- A binding-local decoder in the two languages that could do it cheaply would be worse than none, since the same config would then load two different ways depending on the language.
-	- The honest answer is that the forty call sites are one loader function a consumer writes once, and `Children`/`Paths` plus the typed reads are the material for it.
+	- The plain answer is that the forty call sites are one loader function a consumer writes once, and `Children`/`Paths` plus the typed reads are the material for it.
 
 ### Integration modes
 
@@ -221,7 +221,7 @@ The "did you mean `enabled`?" suggestion rides in the prose message, not the cod
 **A broken schema is reported against the schema.** Codes `V090+` cover schema faults (unknown constraint key, unusable type name), and their line numbers refer to the schema file.
 
 - Originally any fault suppressed data validation entirely; after consumer feedback we decided a fault must not mask real violations - the schema builder already drops a broken key or field individually, so the surviving constraints now check the document too, with the faults listed first.
-- The unknown-field sweep needs the complete declared vocabulary of names, but a key-level fault keeps its entry's path - so after a second round of the same feedback we decided the sweep runs through key-level faults and skips only when a fault cost a path spelling outright (an unreadable `field:` path, or a mount naming no declared fragment), the two classes that would make declared fields read as unknown.
+- The unknown-field sweep needs the complete declared vocabulary of names, but a key-level fault keeps its entry's path. So after a second round of the same feedback we decided the sweep runs through key-level faults. It skips only when a fault cost a path spelling outright (an unreadable `field:` path, or a mount naming no declared fragment), the two classes that would make declared fields read as unknown.
 - Generation keeps the all-or-nothing rule - a partial starter file would be worse than an error.
 
 **CLI surface: `shcl check --schema SCHEMA FILE`**, rather than a new subcommand. Loading and validating are the same question ("is this file good?"), the output shape and exit codes are already defined by `check`, and folding it in avoids a second nearly identical command.
@@ -232,7 +232,7 @@ Both open points are settled:
 
 - No string/array length bounds. They would reopen the byte-versus-code-point metric already settled for merge keys, for modest benefit; an `allowed` enum or the consuming program covers the need.
 
-**Fragments close the recursion gap with one construct: `fragment:` declares, `inherits:` mounts.** The data language nests freely, but a flat path list cannot describe a tree whose nodes contain their own kind - consumers were generating schema entries to a fixed depth, past which correct keys reported as unknown (validation returning false errors on valid files, in the tool CI gates on).
+**Fragments close the recursion gap with one construct: `fragment:` declares, `inherits:` mounts.** The data language nests freely, but a flat path list cannot describe a tree whose nodes contain their own kind. Consumers were generating schema entries to a fixed depth, past which correct keys reported as unknown: validation returning false errors on valid files, in the tool CI gates on.
 
 - Every mature schema language grew a named-shape reference for this reason; declining it would mean telling tree-shaped configs to flatten into instances with parent pointers, which makes the file serve the schema tool instead of the reader.
 - Naming: `use` was rejected as overloaded English (verb-directive or "purpose"); `parent` collides with the parent/child vocabulary of a nesting language; `inherits` reads as a single plain word beside `type`/`required`/`allowed` and is accurate - the mount inherits the fragment's fields and can add its own.
@@ -242,7 +242,7 @@ Both open points are settled:
 **Open sections use a name-position wildcard, and it lives in the lookup grammar, not just the schema.** A map-shaped section ("any child name under `indicators`, each shaped like this") had no schema spelling at all - wildcards selected instances, never names.
 
 - Among the candidates (a `*` name segment, an `open:` constraint key, glob patterns), the bare `*` segment won: it reads exactly like the `[*]` story one level up, needs no new vocabulary word, and composes with deeper paths (`indicators.*.period`) without a second construct.
-- We decided it also belongs in reads, not only schemas - `Get("*.port")` slots across children of any name the way `[*]` slots across instances - so the query language stays one language; the Writer refuses it like any wildcard (paths must name their target to be writable), and a field literally named `*` stays addressable quoted (`"*"`), which is never a wildcard.
+- We decided it also belongs in reads, not only schemas, so the query language stays one language: `Get("*.port")` slots across children of any name the way `[*]` slots across instances. The Writer refuses it like any wildcard (paths must name their target to be writable). A field literally named `*` stays addressable quoted (`"*"`), which is never a wildcard.
 - Suggestions ("did you mean") do not reach below a `*` - there is no fixed sibling list to suggest from - and a `repeat` on a `*` leaf disavows no `H001`.
 
 **A quoted by-value selector is scalar-only.** By-value matching is against the display form, and an inline array's display joins elements with `, ` - so the scalar `"a, b"` and the list `a, b` met the same selector and a read could only answer Multiple.
@@ -252,7 +252,7 @@ Both open points are settled:
 
 **Hand-edited configs are structurally safe across a round trip: retain what can be retained, gate the save on the rest.** A malformed line used to be diagnosed and dropped, so a stray typo plus one settings change equaled a silently vanished hand-written line.
 
-- The full fix splits by what is provably safe: a content-malformed line (unreadable at any position) is retained as inert trivia and re-emitted in place - it re-diagnoses identically and can never read as a live binding - while a line the parser could read but not apply (bad indent, unusable selector, depth cap) cannot be made inert: re-emitted, it might parse as live content and invent data, which the fuzzer confirmed for BOM-led lines.
+- The full fix splits by what is provably safe. A content-malformed line (unreadable at any position) is retained as inert trivia and re-emitted in place; it re-diagnoses identically and can never read as a live binding. A line the parser could read but not apply (bad indent, unusable selector, depth cap) cannot be made inert: re-emitted, it might parse as live content and invent data, which the fuzzer confirmed for BOM-led lines.
 - Those instead count into `LostCount`, and the file tier's save refuses while it is nonzero, with an explicit lossy variant as the override - so deleting a user's line is always a stated choice. We considered retaining everything verbatim and rejected it on the invented-content risk.
 - The CLI's in-place write goes through the same gate: it was first left alone on the grounds that a person sees the diagnostics on stderr, which turned out to be false - at the default strictness the load recovers and prints nothing, so `--write` deleted the line at exit 0 in silence. It now prints the load's diagnostics and refuses while `LostCount` is nonzero, with `--lossy` as the stated override.
 - The CLIs call `SaveFile` rather than carrying their own copy of the rule, so the command line and a consumer program cannot disagree about which rewrites are safe.
@@ -260,7 +260,7 @@ Both open points are settled:
 
 **The library carries an optional file tier; file lifecycle is where consumer bugs live.** Consumer feedback showed every program that persists a config re-implementing the same load/save dance and making the same mistakes independently - confusing absent with unreadable, fumbling buffer lengths, tearing a config with a plain overwrite.
 
-- We decided on a small companion tier: a load that never fails and returns a four-way status (clean / had-errors / not-found / unreadable) beside an always-usable document, and a save that writes canonical text through the same atomic temp-and-rename the CLI's `--write` already used - moved into the library so the CLIs call it and the two cannot drift.
+- We decided on a small companion tier. The load never fails and returns a four-way status (clean / had-errors / not-found / unreadable) beside an always-usable document. The save writes canonical text through the same atomic temp-and-rename the CLI's `--write` already used, moved into the library so the CLIs call it and the two cannot drift.
 - It stays a companion, not core: C guards it behind `SHCL_NO_FILE_IO` so embedded consumers keep a file-I/O-free build.
 
 **H002 reports every merged level, and a schema can disavow it per section with `reopen:`.** The first cut hinted only the outermost re-open: inner merges looked adjacent at their own scope, because the newest-child test cannot see that the whole region arrived by re-opening. That made consumer-side filtering unsound - allowing one section's hint silently waved through everything nested under it.
@@ -294,11 +294,11 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - **What is carried, and what is not.** The permission bits are copied deliberately, and on POSIX that is the whole of what gets copied: ACLs, extended attributes, the SELinux label and any other xattr are lost, as are other hard links to the old file.
 	- None of that is fixable at this layer - a rename cannot preserve what a rename replaces - so it is documented in the spec rather than papered over.
-	- A relabelled config on an SELinux host is the case worth knowing about: the new file takes the label its parent directory and the writing process imply, which is the same label in the ordinary case and not the same one after a `chcon`.
+	- A relabeled config on an SELinux host is the case worth knowing about: the new file takes the label its parent directory and the writing process imply, which is the same label in the ordinary case and not the same one after a `chcon`.
 
 - **Windows goes through `ReplaceFile` instead**, because it does not have the same constraint. `ReplaceFile` exists for exactly this publish step and carries the destination's ACLs, attributes and named streams onto the replacement, which is the gap a plain move leaves. It needs a destination to replace, and it fails outright rather than skip a merge it cannot perform, so a create and any failure fall back to the replacing move - the behavior that was there before, never worse.
 
-- **The C file tier reaches Windows through the wide API, and splits a path on either slash.** Both came out of the first consumer to embed the C header on Windows. The narrow file calls read a path in the process's active code page, so a path with a character outside it either failed to open or, worse, was written under a mojibake name that the same narrow read found again; every call is the wide one now, and a path that is not valid UTF-8 is refused rather than folded to a different name. The temp name was derived from the last `/`, and a path built with the platform separator has none, so every save through one failed; a drive-relative `C:x` splits after the colon, where the reference's `Path::parent` splits it. The other three bindings' runtimes already did all of this.
+- **The C file tier reaches Windows through the wide API, and splits a path on either slash.** Both came out of the first consumer to embed the C header on Windows. The narrow file calls read a path in the process's active code page, so a path with a character outside it either failed to open or, worse, was written under a mojibake name that the same narrow read found again. Every call is the wide one now, and a path that is not valid UTF-8 is refused rather than folded to a different name. The temp name was derived from the last `/`, and a path built with the platform separator has none, so every save through one failed. A drive-relative `C:x` splits after the colon, where the reference's `Path::parent` splits it. The other three bindings' runtimes already did all of this.
 
 - **The Go binding reaches it through a hook rather than a build-tagged pair.** Go has no way to name a windows-only symbol from a file that also compiles elsewhere, and `shcl.go` promises to work when copied into a tree on its own.
 	- So the publish step is a package-level variable holding the plain rename, and a small windows-only file swaps in the `ReplaceFile` version. Dropping the one file still works everywhere; taking the whole module gets the better windows publish.
@@ -377,7 +377,7 @@ Several choices deliberately cut against SHCL, so that a favorable result stays 
 
 - **The generated SHCL is canonical** - a `fmt` fixpoint - so the round-trip column reports what the format does rather than how the generator chose to space things.
 
-Rows are ordered by the geometric mean of each library's parse time across every shape, fastest first - one order used for every printed table and for the results file, so a row keeps its place from shape to shape. The geometric mean rather than the arithmetic one, so a single large shape cannot decide the whole order; the number it sorts on is recorded beside each library, so the ordering can be re-derived rather than trusted. SHCL sorts last in both tiers, which is the honest result and the reason the order is stated rather than chosen.
+Rows are ordered by the geometric mean of each library's parse time across every shape, fastest first - one order used for every printed table and for the results file, so a row keeps its place from shape to shape. The geometric mean rather than the arithmetic one, so a single large shape cannot decide the whole order; the number it sorts on is recorded beside each library, so the ordering can be re-derived rather than trusted. SHCL sorts last in both tiers; that is the measured result, and the reason the order is stated rather than chosen.
 
 Reading a value by path is deliberately not measured. The five lookup APIs differ enough that the harness would have to write the walk itself for most of them, and the result would be a measurement of harness code.
 
@@ -412,7 +412,7 @@ The responsibility is split rather than duplicate the pipeline:
 	- Two tags per cut, not one: `vX.Y.Z` for the release, and `source/go/vX.Y.Z` for the Go module. Go resolves a module in a subdirectory only through a path-prefixed tag, so skipping the second one silently strands every Go consumer on a pseudo-version.
 	- Release assets are signed before the release is published: both installers refuse a release whose sums file has no valid signature, so publishing first would offer an install nothing can verify.
 	- A registry publish cannot be taken back. Neither crates.io nor PyPI allows reuploading a version, and each bakes in the README it was given at that moment - so the per-binding READMEs (`source/rust/README.md`, `source/python/README.md`) get their example code compiled and run against the packaged artifact before the upload, not after. Those files exist separately from the front-page README because relative links and images break on a package page, and Cargo cannot reach above the crate root anyway.
-	- Binding versions move in lockstep with the product version, deliberately. The bindings are byte-for-byte equivalent by design, so a single number across all of them means a consumer reading `1.4` in any language knows exactly what behavior they have. It also lets each ecosystem's ordinary compatible-version operator (`shcl = "1"`, `shcl~=1.0`, Go's major-version import rule) do the tracking, with no scheme of our own to explain or maintain.
+	- Binding versions move in lockstep with the product version, deliberately. The bindings are byte-for-byte equivalent by design, so a single number across all of them means a consumer reading `2.1` in any language knows exactly what behavior they have. It also lets each ecosystem's ordinary compatible-version operator (`shcl = "2"`, `shcl~=2.0`, Go's major-version import rule) do the tracking, with no scheme of our own to explain or maintain.
 
 - Installer packages ride the release stage, not a separate pipeline: `cicd/utility/package.bash` builds .deb/.rpm (nfpm, one sed-rendered template) per Linux binary and an NSIS setup per Windows binary, into the same versioned artifact family before the checksums are written. Package layout follows distro convention (/usr/bin + /usr/share/shcl) rather than the /opt layout the standalone install.bash uses - packages answer to distro policy, the script answers to the spec. Payload matches install.bash: binary + code/ drop-ins + scripts/ wrappers.
 
@@ -434,7 +434,7 @@ The responsibility is split rather than duplicate the pipeline:
 
 ### Reference implementation
 
-- Rust crate at `source/rust/`, zero dependencies, single-file library (`src/lib.rs`) so the drop-in integration mode stays honest; the `shcl` CLI builds from the same crate. Later bindings get sibling folders (`source/go/`, ...).
+- Rust crate at `source/rust/`, zero dependencies, single-file library (`src/lib.rs`) so the drop-in integration mode stays real; the `shcl` CLI builds from the same crate. Later bindings get sibling folders (`source/go/`, ...).
 
 - The conformance runner and fuzz smoke are plain `cargo test` targets, so "the corpus passes" and "the build passes" are the same command everywhere.
 
@@ -450,7 +450,7 @@ The responsibility is split rather than duplicate the pipeline:
 
 - Sources at `source/c/`: a single-header drop-in library (`shcl.h`, C11, zero dependencies) plus the CLI under `cmd/shcl/` - same flags, output, and exit codes as the reference. The single-header story is the C analog of the other bindings' single-file libraries: copy `shcl.h` into a tree and, in one translation unit, `#define SHCL_IMPLEMENTATION` before including it.
 
-- The C++ typed surface (`shcl.hpp`) is a veneer, not a second parser: a header of `Read<T>` / `get<T>()` templates over the same C functions, so it inherits the core's conformance and only needs a compile-plus-behavior smoke to keep it honest.
+- The C++ typed surface (`shcl.hpp`) is a veneer, not a second parser: a header of `Read<T>` / `get<T>()` templates over the same C functions, so it inherits the core's conformance and only needs a compile-plus-behavior smoke to keep it correct.
 
 - Conformance runs natively (a C port of the runner over the same corpus), so the C binding is corpus-green on its own, and the cicd crosscheck holds it byte-for-byte to the reference besides.
 
@@ -496,6 +496,6 @@ The responsibility is split rather than duplicate the pipeline:
 
 	- The installer symlinks the man page into the target's `man1` directory, mirroring the binary symlink exactly - the same trick, and it makes `man shcl` work as soon as the install directory is on `PATH`, since man derives its search path from the `bin` directories there.
 
-	- The installer leaves the completions under the install directory and prints the line to paste for each shell. There is no one directory that works: bash's autoload directory varies with the bash-completion version, zsh needs a directory already on `$fpath`, and writing into the distribution's own would collide with the packaged copy. Printing the line is the same bargain the `PATH` note already strikes - honest about what was not done, with the fix one paste away.
+	- The installer leaves the completions under the install directory and prints the line to paste for each shell. There is no one directory that works: bash's autoload directory varies with the bash-completion version, zsh needs a directory already on `$fpath`, and writing into the distribution's own would collide with the packaged copy. Printing the line is the same bargain the `PATH` note already strikes - plain about what was not done, with the fix one paste away.
 
 	- Uninstall removes only what a matching install laid down, and the man symlink only when it points back into the install directory. One that does not came from a package, and removing it would break a working install.

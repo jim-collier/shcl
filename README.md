@@ -6,26 +6,20 @@
 <!-- markdownlint-disable MD026 -- Trailing punctuation in heading; the "compares to..." ellipsis is deliberate -->
 <div align="center">
 
-[![made-with-rust](https://img.shields.io/badge/Made%20with-Rust-1f425f.svg)](https://www.rust-lang.org/)
-[![made-with-go](https://img.shields.io/badge/Made%20with-Go-1f425f.svg?logo=go&logoColor=white)](https://go.dev/)
-[![made-with-python](https://img.shields.io/badge/Made%20with-Python-1f425f.svg)](https://www.python.org/)
-[![made-with-c](https://img.shields.io/badge/Made%20with-C%2FC%2B%2B-1f425f.svg)](https://en.cppreference.com/w/c)
-[![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
-![Lifecycle: Stable](https://img.shields.io/badge/Lifecycle-Stable-brightgreen)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-![Support](https://img.shields.io/badge/Support-Maintained-brightgreen)
 [![CI](https://github.com/jim-collier/shcl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jim-collier/shcl/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/jim-collier/shcl?sort=semver)](https://github.com/jim-collier/shcl/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![crates.io](https://img.shields.io/crates/v/shcl?logo=rust&label=crates.io)](https://crates.io/crates/shcl)
 [![PyPI](https://img.shields.io/pypi/v/shcl?logo=python&logoColor=white&label=PyPI)](https://pypi.org/project/shcl/)
 [![Go module](https://pkg.go.dev/badge/github.com/jim-collier/shcl/source/go/v2.svg)](https://pkg.go.dev/github.com/jim-collier/shcl/source/go/v2)
+[![Sponsor](https://img.shields.io/badge/GitHub-Sponsor-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/jim-collier)
 
 <!-- TOC ignore:true -->
 # SHCL
 
 **S**imple **H**ierarchical **C**onfig **L**anguage
 
-*Forgiving to write. Predictable to read. The friendliest config API around.*
+*A config file format for files people edit by hand. Forgiving to write, predictable to read.*
 
 <!-- width = the gif's own pixel width, so it never renders larger than 1:1; no height attr, so a narrow column can still shrink it without squashing -->
 <img src="assets/demo.gif" alt="SHCL demo" width="960"/>
@@ -36,7 +30,21 @@
 
 </div>
 
-> *You get: a complete specification and grammar; one drop-in source file per language; Rust (reference), Go, Python, and C/C++ bindings plus a binary CLI. Bindings are byte-for-byte identical. Thin Bash and PowerShell wrappers sit over the CLI. MIT License.*
+- A save never deletes a line you typed. If the load could not keep a line, the save refuses rather than dropping it.
+
+- Comments and blank lines survive a rewrite, attached to what they documented.
+
+- One bad line costs you that line, not the file.
+
+- Your code decides a value's type when it reads it. Nothing is guessed at parse time.
+
+- The same file reads the same in every language. The Rust reference and the Go, Python, and C/C++ bindings produce byte-for-byte identical output, held to one conformance corpus.
+
+- Each binding is one drop-in source file with no dependencies. The CLI is a single binary, with thin Bash and PowerShell wrappers over it.
+
+- Releases are signed, and the binaries are reproducible from the tag.
+
+- A complete specification and grammar. MIT License.
 
 <!-- TOC ignore:true -->
 ## Table of contents
@@ -69,7 +77,7 @@
 			- [Windows](#windows)
 		- [Scripted installation direct from web - dev or stable](#scripted-installation-direct-from-web---dev-or-stable)
 			- [Linux and WSL](#linux-and-wsl)
-			- [Windows PowerShell](#windows-powershell)
+			- [Windows (PowerShell)](#windows-powershell)
 		- [DIY install](#diy-install)
 - [Using the CLI](#using-the-cli)
 - [Example use-cases in your code](#example-use-cases-in-your-code)
@@ -103,7 +111,7 @@ You have probably lived some version of this:
 
 - You wanted an integer. You got a string, or an exception, or a silent zero you did not notice until production.
 
-- Remember that one project where a complex nested config was stored in XML - that you have PTSD over to this day?
+- That one project that stored a complex nested config in XML. You still have PTSD from it.
 
 Every mainstream format makes you do the careful work, and punishes the whole file for one mistake.
 
@@ -144,13 +152,13 @@ When you do want zero-tolerance rigor: schema validation, plus a strict mode tha
 
 ### Performance comparison benchmarks
 
-SHCL writes the smallest file of the five. But it's slightly (trivially) slower to read - that's due to two conscious tradeoffs - one of them advertised as *the* key differentiating feature:
+SHCL writes the smallest file of the five. But it is several times slower to read than JSON, the fastest of the five, at every size (see the tables). That is due to two conscious tradeoffs, one of them advertised as *the* differentiating feature:
 
 1. SHCL offloads much of the burden of parsing and datatype-correct formatting from the user and programmer, to the library itself.
 
 2. SHCL is the only one of the five that gives your file back the same way you wrote it.
 
-These test results cover three scenarios, each with the same data in all five config formats, each read by a native Rust library for each format. Columns are ordered fastest to slowest.
+These test results cover three scenarios, each with the same data in all five config formats, each read by a native Rust library for each format. Columns keep one order across the three tables: fastest to slowest on the application config.
 
 #### Application config
 
@@ -158,10 +166,10 @@ This test covers the kind of config a person hand-edits. The test data contains 
 
 | Config file       | JSON      | XML   | TOML  | YAML  | SHCL
 | :--               | :--       | :--   | :--   | :--   | :--
-| File size (KiB)   | 2.2       | 3.0   | 1.7   | 1.7   | **1.6**
+| File size (KB)    | 2.2       | 3.0   | 1.7   | 1.7   | **1.6**
 | Read time (ms)    | **0.009** | 0.015 | 0.024 | 0.066 | 0.066
 
-Practically nobody chooses a format based on read times that low, except maybe embedded executables measured below a KiB for realtime systems. (And then they wouldn't be using any statically linked libraries anyway.)
+Practically nobody chooses a format based on read times that low, except maybe a realtime embedded system whose whole executable is measured in kilobytes. (And one of those would not be linking in any library anyway.)
 
 #### Schema definition
 
@@ -180,8 +188,8 @@ Far past anything anyone edits by hand: one array of 302,230 records.
 
 | Stress test                | JSON     | XML     | TOML | YAML | SHCL
 | :--                        | :--      | :--     | :--  | :--  | :--
-| File size (MiB)            | 107      | 160     | 77   | 80   | **67**
-| Gzipped (MiB)              | 8.9      | 11.0    | 9.3  | 9.4  | 9.1
+| File size (MB)             | 107      | 160     | 77   | 80   | **67**
+| Gzipped (MB)               | 8.9      | 11.0    | 9.3  | 9.4  | 9.1
 | Read time (s)              | **0.62** | 1.02    | 1.74 | 4.20 | 4.78
 | Peak memory (GB)           | 2.1      | **1.5** | 3.0  | 3.9  | 1.8
 | Keeps your file as written | no       | no      | no   | no   | **yes**
@@ -238,7 +246,7 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 - Full read *and* write. Setters build any missing structure along the path, and saving canonicalizes the file while keeping your comments attached to what they documented.
 
-- A file tier that carries the whole load/save lifecycle, since that is where a config program's bugs actually live: one call to read and parse, a status that separates missing from unreadable from parsed-with-errors, a save through a temp file and a rename that refuses when writing back would delete a line the load could not keep, and a bounded read that hands back the bytes for the program that watches its own file.
+- A file tier that carries the whole load/save lifecycle, since that is where a config program's bugs actually live. One call reads and parses, with a status that separates missing from unreadable from parsed-with-errors. The save refuses when writing back would delete a line the load could not keep (see [What saving does](#what-saving-does)). A bounded read hands back the bytes, for the program that watches its own file.
 
 - Schema validation, layered loading (defaults, site, user), and commented starter-config generation, all as library features.
 
@@ -248,7 +256,7 @@ Your config never needs a debugger, and a non-programmer can still edit it.
 
 ## SHCL is used by multiple projects
 
-SHCL is in use today - and made further bulletproof - by these projects:
+These projects use SHCL today, and harden it in the process:
 
 | Project                                                                                    | OSS? | Release status | Used for
 | :--                                                                                        | :--: | :--            | :--
@@ -311,7 +319,7 @@ The latest release, `v2.0.0`, has packages, prebuilt CLI binaries, and a checksu
 
 Each binding is published where its own ecosystem looks for it, all under the name `shcl`: [crates.io](https://crates.io/crates/shcl) for Rust, [PyPI](https://pypi.org/project/shcl/) for Python, and the [Go module](https://pkg.go.dev/github.com/jim-collier/shcl/source/go/v2) for Go.
 
-Two of them carry the CLI as well as the library, which is the easiest way to get the binary on a platform with no prebuilt one - macOS and the BSDs included:
+Only the crate carries the CLI as well as the library, which is the easiest way to get the binary on a platform with no prebuilt one - macOS and the BSDs included:
 
 #### Cargo
 
@@ -388,6 +396,8 @@ To pass options on Linux, add them after the pipe:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash -s -- --target=user
 ```
+
+The prebuilt linux-x86_64 binary needs glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9, and later). On an older system, `cargo install shcl` builds against what is there.
 
 ##### Windows (PowerShell)
 
@@ -506,7 +516,7 @@ line 2: Error: unknown field 'log-levle'; did you mean 'log-level'?
 failed: 1 diagnostic(s), 1 error(s)
 ```
 
-A broken schema cannot mask a broken config: a fault in the schema itself is reported as its own error (`V090`+), and the constraints that did parse still check the file. The unknown-field sweep keeps running through a broken constraint, since the field is still declared by name; it turns off only when a fault costs a path spelling outright - an unreadable `field:` path, or a mount naming no declared fragment - because only those can turn a declared field into a false unknown.
+A broken schema cannot mask a broken config: a fault in the schema itself is reported as its own error (`V090`+), and the constraints that did parse still check the file. The unknown-field sweep keeps running through a broken constraint, since the field is still declared by name. It turns off only when a fault costs a path spelling outright: an unreadable `field:` path, or a mount naming no declared fragment. Only those can turn a declared field into a false unknown.
 
 The same schema, pointed the other way, writes a starting file for your own users - commented, correctly typed, required fields live and optional ones left commented out:
 
@@ -536,7 +546,7 @@ shcl fmt --write server.shcl
 shcl set --write server.shcl --set 'workers=8'
 ```
 
-An in-place write prints whatever the load found on stderr, and refuses outright when the load dropped a line the rewrite would delete - your typo does not cost you the line above it. `--lossy` is the way to say you meant it.
+An in-place write is the library's own save, with the same refusal when the rewrite would delete a line the load dropped; see [What saving does](#what-saving-does). `--lossy` is the way to say you meant it.
 
 `shcl help` covers the rest and `man shcl` says the same at more length, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. Tab completion for bash and zsh ships alongside. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
 
@@ -590,9 +600,8 @@ if !doc.set_string("site[blog.example.com].root", "/srv/www/blog") {
 	eprintln!("blog root: {:?}", doc.write_reason("site[blog.example.com].root"));
 }
 
-// Writes through a temp file and a rename, so an interrupted save cannot
-// truncate the config - and refuses outright if the load dropped a line this
-// write would delete (save_file_lossy is the override).
+// Refuses if the load dropped a line this write would delete; see "What
+// saving does" below (save_file_lossy is the override).
 doc.save_file("server.shcl")?;
 ```
 
@@ -607,9 +616,7 @@ doc.save_file("server.shcl")?;
 ```go
 import shcl "github.com/jim-collier/shcl/source/go/v2"
 
-// One call reads and parses, and never fails: the document comes back usable
-// either way, and the status tells missing apart from unreadable and from
-// parsed-with-errors - three cases a hand-written load path tends to blur.
+// One call reads and parses, and never fails (see the Rust example).
 doc, fileStatus := shcl.LoadFile("server.shcl")
 if fileStatus == shcl.FileNotFound {
 	fmt.Println("no config yet - starting from defaults")
@@ -633,9 +640,8 @@ if !doc.SetString("site[blog.example.com].root", "/srv/www/blog") {
 	fmt.Println("blog root:", doc.WriteReason("site[blog.example.com].root"))
 }
 
-// Writes through a temp file and a rename, so an interrupted save cannot
-// truncate the config - and refuses outright if the load dropped a line this
-// write would delete (SaveFileLossy is the override).
+// Refuses if the load dropped a line this write would delete; see "What
+// saving does" below (SaveFileLossy is the override).
 if err := doc.SaveFile("server.shcl"); err != nil {
 	log.Fatal(err)
 }
@@ -653,9 +659,7 @@ if err := doc.SaveFile("server.shcl"); err != nil {
 ```python
 import shcl
 
-# One call reads and parses, and never fails: the document comes back usable
-# either way, and the status tells missing apart from unreadable and from
-# parsed-with-errors - three cases a hand-written load path tends to blur.
+# One call reads and parses, and never fails (see the Rust example).
 doc, file_status = shcl.Document.load_file("server.shcl")
 if file_status is shcl.FileStatus.NotFound:
 	print("no config yet - starting from defaults")
@@ -675,9 +679,8 @@ doc.set_bool("site[example.com].tls.hsts", True)
 if not doc.set_string("site[blog.example.com].root", "/srv/www/blog"):
 	print("blog root:", doc.write_reason("site[blog.example.com].root"))
 
-# Writes through a temp file and a rename, so an interrupted save cannot
-# truncate the config - and raises SaveRefused if the load dropped a line this
-# write would delete (save_file_lossy is the override).
+# Raises SaveRefused if the load dropped a line this write would delete; see
+# "What saving does" below (save_file_lossy is the override).
 doc.save_file("server.shcl")
 ```
 
@@ -740,9 +743,8 @@ C and C++ have no registry worth targeting. `shcl.h` is a single dependency-free
 
 #define P(s) s, strlen(s)     // paths take a pointer and a length, not a NUL terminator
 
-// Reads and parses in one call, and never fails: the document comes back
-// usable either way, and the status tells missing apart from unreadable and
-// from parsed-with-errors. (shcl_parse takes text you already hold.)
+// One call reads and parses, and never fails (see the Rust example).
+// shcl_parse takes text you already hold.
 shcl_file_status st;
 shcl_doc *doc = shcl_load_file("server.shcl", &st);
 if (st == SHCL_FILE_NOT_FOUND)
@@ -763,9 +765,8 @@ shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1);
 if (!shcl_set_string(doc, P("site[blog.example.com].root"), P("/srv/www/blog")))
 	fprintf(stderr, "blog root: reason %d\n", shcl_write_reason_(doc, P("site[blog.example.com].root")));
 
-// Writes through a temp file and a rename, so an interrupted save cannot
-// truncate the config. SHCL_SAVE_REFUSED means the load dropped a line this
-// write would delete; shcl_save_file_lossy is the override.
+// SHCL_SAVE_REFUSED means the load dropped a line this write would delete;
+// see "What saving does" below (shcl_save_file_lossy is the override).
 if (shcl_save_file(doc, "server.shcl") != SHCL_SAVE_OK)
 	fprintf(stderr, "could not save\n");
 
@@ -836,7 +837,7 @@ Three behaviors of the write half are easy to miss, and they are the same in eve
 
 Setters build whatever is missing along the path, so the `tls.hsts` and `blog.example.com` lines in the examples above arrive as a nested block and a new site instance without you assembling either.
 
-And saving rewrites the file in canonical form - spacing normalized, field names lowercased, the dotted `site[blog.example.com].tls.hsts` line folded into the block form it was always spelling - while **keeping your comments** attached to whatever they documented, including the one that travels with that folded line:
+And saving rewrites the file in canonical form: spacing normalized, field names lowercased, the dotted `site[blog.example.com].tls.hsts` line folded into the block form it was always spelling. **Your comments stay attached** to whatever they documented, including the one that travels with that folded line:
 
 ```text
 # Flat, TOML-style settings
@@ -871,7 +872,7 @@ maintenance-page:
 
 That is the whole file after the edits, not an excerpt - a formatter that can survive a round trip through an editing tool is the point.
 
-And the save protects the file it is overwriting. It goes through a temp file in the same directory plus a rename, so an interrupted save cannot leave a truncated config behind, and a linked-in config is written through rather than replaced. It also refuses when the load dropped something the write would delete. A line the parser cannot read at all is kept verbatim and survives the save untouched, but a line it could read and not place - a stray indent, an impossible selector - has no safe spelling to re-emit, so it counts into `lost_count()` and the save stops rather than quietly dropping a line somebody typed. `save_file_lossy` is there for when deleting it is what you actually want, so it is always a stated choice.
+And the save protects the file it is overwriting. It goes through a temp file in the same directory plus a rename, so an interrupted save cannot leave a truncated config behind, and a linked-in config is written through rather than replaced. It also refuses when the load dropped something the write would delete. A line the parser cannot read at all is kept verbatim and survives the save untouched. A line it could read and not place (a stray indent, an impossible selector) has no safe spelling to re-emit. That one counts into `lost_count()`, and the save stops rather than quietly dropping a line somebody typed. `save_file_lossy` is there for when deleting it is what you actually want, so it is always a stated choice.
 
 A setter returns failure - `false`, or `0` in C - when a path cannot be written at all. Wildcards are the usual case, since those are query-only. Nothing is half-written, and `write_reason(path)` says which of the five reasons applied. Worth checking rather than assuming: an ignored failure means the save that follows writes a config missing the edit, and reports success doing it. In Rust the setters are `#[must_use]`, so dropping the answer is a compile warning.
 
@@ -911,7 +912,7 @@ Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, 
 
 ## Contributing and support
 
-This product has to be bulletproof, so help is welcome. Bug reports, spec edge cases, and new-language bindings all count. See [`contributing.md`](contributing.md) to get started.
+A config parser gets trusted with other people's files, so help and scrutiny are both welcome. Bug reports, spec edge cases, and new-language bindings all count. See [`contributing.md`](contributing.md) to get started.
 
 If SHCL helps but code and issue reports aren't your thing, a star or a mention still helps other people find it - and if it is saving you real time, [sponsorship](https://github.com/sponsors/jim-collier) is welcome.
 

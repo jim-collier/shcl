@@ -10,6 +10,7 @@ package shcl
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -332,12 +333,25 @@ func tryApplyOpTest(doc *Document, line string) error {
 		}
 		return o, nil
 	}
-	bools := func(xs []string) []bool {
+	pbool := func(s string) (bool, error) {
+		switch s {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+		return false, fmt.Errorf("bad bool: %s", s)
+	}
+	bools := func(xs []string) ([]bool, error) {
 		o := make([]bool, len(xs))
 		for i, s := range xs {
-			o[i] = s == "true"
+			b, err := pbool(s)
+			if err != nil {
+				return nil, err
+			}
+			o[i] = b
 		}
-		return o
+		return o, nil
 	}
 	strs := func(xs []string) []string {
 		o := make([]string, len(xs))
@@ -379,7 +393,11 @@ func tryApplyOpTest(doc *Document, line string) error {
 		}
 		wrote = doc.SetFloat(path, n)
 	case "bool":
-		wrote = doc.SetBool(path, v == "true")
+		b, err := pbool(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetBool(path, b)
 	case "string":
 		wrote = doc.SetString(path, unescapeOpsTest(v))
 	case "datetime":
@@ -405,7 +423,11 @@ func tryApplyOpTest(doc *Document, line string) error {
 		}
 		wrote = doc.SetFloatDefault(path, n)
 	case "bool-default":
-		wrote = doc.SetBoolDefault(path, v == "true")
+		b, err := pbool(v)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetBoolDefault(path, b)
 	case "string-default":
 		wrote = doc.SetStringDefault(path, unescapeOpsTest(v))
 	case "datetime-default":
@@ -427,7 +449,11 @@ func tryApplyOpTest(doc *Document, line string) error {
 		}
 		wrote = doc.SetFloatArray(path, xs)
 	case "bool-array":
-		wrote = doc.SetBoolArray(path, bools(arr))
+		xs, err := bools(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetBoolArray(path, xs)
 	case "string-array":
 		wrote = doc.SetStringArray(path, strs(arr))
 	case "datetime-array":
@@ -449,7 +475,11 @@ func tryApplyOpTest(doc *Document, line string) error {
 		}
 		wrote = doc.SetFloatArrayDefault(path, xs)
 	case "bool-array-default":
-		wrote = doc.SetBoolArrayDefault(path, bools(arr))
+		xs, err := bools(arr)
+		if err != nil {
+			return err
+		}
+		wrote = doc.SetBoolArrayDefault(path, xs)
 	case "string-array-default":
 		wrote = doc.SetStringArrayDefault(path, strs(arr))
 	case "datetime-array-default":
@@ -926,6 +956,102 @@ func TestFileTierLoadSave(t *testing.T) {
 		if modeOf(born) != 0o640 {
 			t.Errorf("existing file: got mode %v, want -rw-r-----", modeOf(born))
 		}
+	}
+}
+
+func TestReadFileAtTheLargestCap(t *testing.T) {
+	// A cap spelled as the type maximum used to overflow the over-cap probe and
+	// read nothing. Same fixture in every runner.
+	f := filepath.Join(t.TempDir(), "t.shcl")
+	if err := os.WriteFile(f, []byte("a: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if text, st := ReadFile(f, math.MaxInt); st != FileClean || text != "a: 1\n" {
+		t.Errorf("ReadFile at the largest cap: got %v %q", st, text)
+	}
+}
+
+func TestSetRawKeepsASharedIndentAndTrimsTheInfo(t *testing.T) {
+	// The body's shared indent survives a reload (the closing fence's indent is
+	// what comes off), the info-string is stored as a fence line reads it
+	// back, and an info with a line break has no spelling and fails the
+	// write. Same fixture in every runner.
+	doc := New()
+	if !doc.SetRaw("q", "  a\n  b", " sql ") {
+		t.Fatal("SetRaw failed")
+	}
+	back := Parse(doc.ToCanonical())
+	if v, st := back.GetRaw("q"); st != Good || v != "  a\n  b" {
+		t.Errorf("shared indent: got %q %v", v, st)
+	}
+	if info := back.ReadRawInfo("q").Value; info != "sql" {
+		t.Errorf("info: got %q, want sql", info)
+	}
+	if doc.SetRaw("q", "x", "a\nb") {
+		t.Error("info with a newline was accepted")
+	}
+	if doc.SetRaw("q", "x", "a\rb") {
+		t.Error("info with a carriage return was accepted")
+	}
+	if v, st := back.GetRaw("q"); st != Good || v != "  a\n  b" {
+		t.Errorf("after the refusals: got %q %v", v, st)
+	}
+}
+
+func TestSaveCreatesTheFileBehindADanglingSymlink(t *testing.T) {
+	// A link to a file that is not there yet is written through like any other
+	// link: the file appears where the link points and the link stays a link.
+	// Same fixture in every POSIX runner.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink fixture")
+	}
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "c.shcl")
+	if err := os.Symlink("real/c.shcl", link); err != nil {
+		t.Fatal(err)
+	}
+	if err := Parse("a: 1\n").SaveFile(link); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("link was replaced: %v %v", st, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "real", "c.shcl")); err != nil || string(got) != "a: 1\n" {
+		t.Errorf("file behind the link: got %q %v", got, err)
+	}
+}
+
+func TestSaveRewritesAReadOnlyFile(t *testing.T) {
+	// A read-only target is rewritten, as it is on POSIX, and comes back
+	// read-only; no temp file is left behind. Same fixture in every runner.
+	if runtime.GOOS != "windows" {
+		t.Skip("windows read-only attribute fixture")
+	}
+	dir := t.TempDir()
+	f := filepath.Join(dir, "ro.shcl")
+	if err := os.WriteFile(f, []byte("a: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(f, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := Parse("a: 2\n").SaveFile(f); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(f); err != nil || string(got) != "a: 2\n" {
+		t.Errorf("read-only file: got %q %v", got, err)
+	}
+	if st, err := os.Stat(f); err != nil || st.Mode().Perm()&0o200 != 0 {
+		t.Errorf("read-only attribute did not come back: %v %v", st, err)
+	}
+	if left, err := os.ReadDir(dir); err != nil || len(left) != 1 {
+		t.Errorf("temp file left behind: %d entries %v", len(left), err)
+	}
+	if err := os.Chmod(f, 0o666); err != nil {
+		t.Fatal(err)
 	}
 }
 

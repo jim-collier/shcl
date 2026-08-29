@@ -926,6 +926,91 @@ fn file_tier_load_save() {
 }
 
 #[test]
+fn read_file_at_the_largest_cap() {
+	// A cap spelled as the type maximum used to overflow the over-cap probe and
+	// read nothing. Same fixture in every runner.
+	let dir = std::env::temp_dir().join(format!("shcl-readcap-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let f = dir.join("t.shcl");
+	std::fs::write(&f, "a: 1\n").unwrap();
+	assert_eq!(
+		shcl::read_file(f.to_str().unwrap(), usize::MAX),
+		Ok("a: 1\n".to_string())
+	);
+	let _ = std::fs::remove_file(&f);
+	let _ = std::fs::remove_dir(&dir);
+}
+
+#[test]
+fn set_raw_keeps_a_shared_indent_and_trims_the_info() {
+	// The body's shared indent survives a reload (the closing fence's indent is
+	// what comes off), the info-string is stored as a fence line reads it
+	// back, and an info with a line break has no spelling and fails the
+	// write. Same fixture in every runner.
+	let mut doc = Document::new();
+	assert!(doc.set_raw("q", "  a\n  b", " sql "));
+	let back = Document::parse(&doc.to_canonical());
+	assert_eq!(back.get_raw("q"), Ok("  a\n  b".to_string()));
+	assert_eq!(back.read_raw_info("q").value, "sql");
+	assert!(!doc.set_raw("q", "x", "a\nb"));
+	assert!(!doc.set_raw("q", "x", "a\rb"));
+	assert_eq!(back.get_raw("q"), Ok("  a\n  b".to_string()));
+}
+
+#[cfg(unix)]
+#[test]
+fn save_creates_the_file_behind_a_dangling_symlink() {
+	// A link to a file that is not there yet is written through like any other
+	// link: the file appears where the link points and the link stays a link.
+	// Same fixture in every POSIX runner.
+	let dir = std::env::temp_dir().join(format!("shcl-dangling-{}", std::process::id()));
+	std::fs::create_dir_all(dir.join("real")).unwrap();
+	let link = dir.join("c.shcl");
+	std::os::unix::fs::symlink("real/c.shcl", &link).unwrap();
+	let doc = Document::parse("a: 1\n");
+	doc.save_file(link.to_str().unwrap()).unwrap();
+	assert!(
+		std::fs::symlink_metadata(&link)
+			.unwrap()
+			.file_type()
+			.is_symlink()
+	);
+	assert_eq!(
+		std::fs::read_to_string(dir.join("real/c.shcl")).unwrap(),
+		"a: 1\n"
+	);
+	let _ = std::fs::remove_file(&link);
+	let _ = std::fs::remove_file(dir.join("real/c.shcl"));
+	let _ = std::fs::remove_dir(dir.join("real"));
+	let _ = std::fs::remove_dir(&dir);
+}
+
+#[cfg(windows)]
+#[test]
+fn save_rewrites_a_read_only_file() {
+	// A read-only target is rewritten, as it is on POSIX, and comes back
+	// read-only; no temp file is left behind. Same fixture in every runner.
+	let dir = std::env::temp_dir().join(format!("shcl-readonly-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let f = dir.join("ro.shcl");
+	std::fs::write(&f, "a: 1\n").unwrap();
+	let mut perms = std::fs::metadata(&f).unwrap().permissions();
+	perms.set_readonly(true);
+	std::fs::set_permissions(&f, perms).unwrap();
+	let doc = Document::parse("a: 2\n");
+	doc.save_file(f.to_str().unwrap()).unwrap();
+	assert_eq!(std::fs::read_to_string(&f).unwrap(), "a: 2\n");
+	assert!(std::fs::metadata(&f).unwrap().permissions().readonly());
+	let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+	assert_eq!(left.len(), 1);
+	let mut perms = std::fs::metadata(&f).unwrap().permissions();
+	perms.set_readonly(false);
+	std::fs::set_permissions(&f, perms).unwrap();
+	let _ = std::fs::remove_file(&f);
+	let _ = std::fs::remove_dir(&dir);
+}
+
+#[test]
 fn standard_trait_surface() {
 	// Rust-only: the traits a rust user reaches for before reading any docs.
 	// Nothing here is new behavior, so there is no cross-binding fixture - the

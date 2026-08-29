@@ -31,7 +31,10 @@
 ##	   --quick             skip the slow stages: large-document gate, cross-compile,
 ##	                       profiler, demo gif; tests run at the shorter fuzz depth
 ##	                       when the config carries TEST_QUICK_CMD
-##	   -q, --quiet         quiet + unattended (no prompt)
+##	   -q, --quiet         unattended (no prompt) and quiet: no preflight block,
+##	                       and cargo, ruff and the gif renderer get their own
+##	                       quiet flags. Stage headers, results and warnings
+##	                       still print; tools with no quiet flag are unchanged
 ##	   -y, --yes           unattended (no prompt) but not quiet
 ##	   -m, --message MSG   publish hands-off with this commit message (no editor)
 ##	   --no-sync           skip the remote sync stage
@@ -77,6 +80,9 @@ export CPU_CAP
 ## without touching engine code. All default empty.
 FMT_EXTRA=(); FMT_CHECK_EXTRA=(); BUILD_EXTRA=(); LINT_EXTRA=(); TEST_EXTRA=(); TEST_QUICK_CMD=()
 PACKAGE_ENABLE=0   ## config opts in; installer packages built off the release artifacts
+## -q: "-q" for the eval'd config strings to pass to tools that take one (ruff);
+## cargo reads CARGO_TERM_QUIET from the environment instead. Empty otherwise.
+QUIET_FLAG=""
 fRunExtras(){ local c; for c in "$@"; do fEcho_Clean "extra: ${c}"; eval "${c}"; done; }
 
 ## shellcheck source=config.bash
@@ -90,7 +96,7 @@ assume_yes=0; quiet=0; ci_mode=0; quick=0; cli_message=""; sync_enable=1
 while (($#)); do case "$1" in
 	--ci)                     ci_mode=1; assume_yes=1; shift ;;
 	--quick)                  quick=1; shift ;;
-	-q|--quiet)               quiet=1; assume_yes=1; shift ;;
+	-q|--quiet)               quiet=1; assume_yes=1; QUIET_FLAG="-q"; export CARGO_TERM_QUIET=true; shift ;;
 	-y|--yes)                 assume_yes=1; shift ;;
 	--no-sync)                sync_enable=0; shift ;;
 	--no-fmt)                 FMT_CMD=(); FMT_CHECK_CMD=(); FMT_EXTRA=(); FMT_CHECK_EXTRA=(); shift ;;
@@ -439,6 +445,10 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 			p_ext=""; [[ "$p_src" == *.exe ]] && p_ext=".exe"
 			cp -f "${p_src}" "${art_dir}/${EXE_NAME}-${ver}-${p_osarch}${p_ext}"
 		done
+		## Packages and the tarball below record mtimes, uid/gid and build dates;
+		## pinning those to the commit's time is what lets two builds of one
+		## commit, on any box, give the same bytes (the sums file signs them).
+		export SOURCE_DATE_EPOCH="$(git -C "${root}" log -1 --format=%ct)"
 		## Installer packages (.deb/.rpm via nfpm, NSIS setup per Windows exe) join
 		## the artifact family before the sums are written, so they ship verified too.
 		((PACKAGE_ENABLE)) && "${here}/utility/package.bash" "${root}" "${art_dir}" "${ver}"
@@ -447,11 +457,13 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 		## asset in the same family - so they are covered by the signed sums like
 		## everything else. The installer used to take them from GitHub's generated
 		## source tarball, which carries no signature and no checksum.
-		( cd "${root}" && tar -czf "${art_dir}/${EXE_NAME}-${ver}-dropins.tar.gz" \
+		( cd "${root}" && tar --sort=name --owner=0 --group=0 --numeric-owner --mode=go-w \
+			--mtime="@${SOURCE_DATE_EPOCH}" -cf - \
 			source/rust/src/lib.rs source/go/shcl.go source/python/shcl.py \
 			source/c/shcl.h source/c/shcl.hpp \
 			source/bash/shcl.bash source/powershell/shcl.ps1 \
-			source/man/shcl.1 source/completions/shcl.bash source/completions/_shcl )
+			source/man/shcl.1 source/completions/shcl.bash source/completions/_shcl \
+			| gzip -n -9 > "${art_dir}/${EXE_NAME}-${ver}-dropins.tar.gz" )
 		fWriteSums
 		fEcho "OK: ${#built_arts[@]} release artifact(s) + ${sums} -> ${RELEASE_ARTIFACT_DIR}/"
 		((${#CROSS_TARGETS[@]})) || fEcho_Clean "note: cross targets skipped - artifact set is partial (native only)"
@@ -514,7 +526,7 @@ if ((GIF_ENABLE)); then
 		fEcho_Clean "gif store unavailable (${GIF_ROTATE_DIR}); rendering committed copy only"
 		gif_dir=""; gif_target="${root}/${GIF_OUT}"
 	fi
-	if "${here}/utility/gen-demo-gif.py" --scenario "${root}/${GIF_SCENARIO}" --out "${gif_target}" --bin "${root}/${RELEASE_NATIVE_BIN}" --quiet; then
+	if "${here}/utility/gen-demo-gif.py" --scenario "${root}/${GIF_SCENARIO}" --out "${gif_target}" --bin "${root}/${RELEASE_NATIVE_BIN}" ${QUIET_FLAG:+--quiet}; then
 		if [[ -n "${gif_dir}" ]]; then
 			gfs_rotate "${gif_dir}" demo gif
 			## Rotation renames the just-rendered file by role (first run -> "first",

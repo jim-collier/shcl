@@ -60,6 +60,13 @@ static char *read_file(const char *path, size_t *len) {
 	*len = n; return buf;
 }
 
+// Bytes the document arena holds, for the retention fixture.
+static size_t arena_bytes(const Arena *a) {
+	size_t n = 0;
+	for (const ShclBlock *b = a->head; b; b = b->next) n += b->used;
+	return n;
+}
+
 // Append s to *out with \n and \t escaped, as the corpus writes raw newlines.
 static void tsv_escape(const char *s, size_t n, char **out, size_t *olen, size_t *ocap) {
 	for (size_t i = 0; i < n; i++) {
@@ -160,6 +167,12 @@ static int cf_f64(const char *p, size_t n, double *out) {
 	free(b);
 	return 1;
 }
+// Exactly `true` or `false`; anything else is rejected, like a bad int.
+static int cf_bool(const char *p, int *out) {
+	if (!strcmp(p, "true")) { *out = 1; return 1; }
+	if (!strcmp(p, "false")) { *out = 0; return 1; }
+	return 0;
+}
 
 // Apply one write-ops line (NUL-terminated, tab-split in place) via the library
 // Writer, with the CLI's value gates. A "-default" suffix means "only if
@@ -181,10 +194,10 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 	#define PRESENT (only_absent && shcl_exists(d, path, plen))
 	if (!strcmp(op, "int")) { int64_t x; if (!cf_i64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
 	else if (!strcmp(op, "float")) { double x; if (!cf_f64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
-	else if (!strcmp(op, "bool")) { if (!PRESENT) wrote = shcl_set_bool(d, path, plen, !strcmp(v, "true")); }
+	else if (!strcmp(op, "bool")) { int x; if (!cf_bool(v, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_bool(d, path, plen, x); }
 	else if (!strcmp(op, "literal")) { if (!PRESENT) wrote = shcl_set_literal(d, path, plen, v, vn); }
 	else if (!strcmp(op, "string")) { if (!PRESENT) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = shcl_set_string(d, path, plen, b, m); free(b); } }
-	else if (!strcmp(op, "datetime")) { shcl_datetime dt; S sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) rc = 1; else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
+	else if (!strcmp(op, "datetime")) { shcl_datetime dt; Str sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) rc = 1; else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
 	else if (!strcmp(op, "int-array")) {
 		int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
 		for (size_t i = 0; i < an && !rc; i++) if (!cf_i64(f[2 + i], strlen(f[2 + i]), &a[i])) rc = 1;
@@ -199,8 +212,8 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 	}
 	else if (!strcmp(op, "bool-array")) {
 		int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
-		for (size_t i = 0; i < an; i++) a[i] = !strcmp(f[2 + i], "true");
-		if (!PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an);
+		for (size_t i = 0; i < an && !rc; i++) if (!cf_bool(f[2 + i], &a[i])) rc = 1;
+		if (!rc && !PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an);
 		free(a);
 	}
 	else if (!strcmp(op, "string-array")) {
@@ -215,7 +228,7 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 	}
 	else if (!strcmp(op, "datetime-array")) {
 		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
-		for (size_t i = 0; i < an && !rc; i++) { S sv; sv.p = f[2 + i]; sv.n = strlen(f[2 + i]); if (!parse_datetime(&d->arena, sv, &a[i])) rc = 1; }
+		for (size_t i = 0; i < an && !rc; i++) { Str sv; sv.p = f[2 + i]; sv.n = strlen(f[2 + i]); if (!parse_datetime(&d->arena, sv, &a[i])) rc = 1; }
 		if (!rc && !PRESENT) wrote = shcl_set_datetime_array(d, path, plen, a, an);
 		free(a);
 	}
@@ -235,7 +248,7 @@ static void apply_op_c(shcl_doc *d, char *line) {
 	if (try_apply_op_c(d, line)) { fprintf(stderr, "write op rejected: %s\n", line); nfail++; }
 }
 
-static int cmp_str(const void *a, const void *b) { return strcmp(*(const char **)a, *(const char **)b); }
+static int cmp_str(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
 
 // Splits raw TSV/text buffer into an array of NUL-terminated lines (in place).
 static size_t split_lines(char *buf, size_t n, char ***out) {
@@ -254,7 +267,7 @@ int main(int argc, char **argv) {
 
 	DIR *dir = opendir(corpus);
 	if (!dir) { fprintf(stderr, "no corpus dir: %s\n", corpus); return 2; }
-	char **names = NULL; size_t nn = 0, cn = 0; struct dirent *de;
+	char **names = NULL; size_t nn = 0, cn = 0; const struct dirent *de;
 	while ((de = readdir(dir))) {
 		if (de->d_name[0] == '.') continue;
 		char path[4096]; snprintf(path, sizeof path, "%s/%s/input.shcl", corpus, de->d_name);
@@ -447,11 +460,11 @@ int main(int argc, char **argv) {
 			snprintf(path, sizeof path, "%s/%s", corpus, names[ci]);
 			DIR *cd = opendir(path);
 			if (cd) {
-				struct dirent *de;
-				while ((de = readdir(cd))) {
-					size_t dn = strlen(de->d_name);
-					if (dn > 5 && !strncmp(de->d_name, "layer", 5) && !strcmp(de->d_name + dn - 5, ".shcl") && nlayer < 64)
-						snprintf(layerNames[nlayer++], 256, "%s", de->d_name);
+				const struct dirent *le;
+				while ((le = readdir(cd))) {
+					size_t dn = strlen(le->d_name);
+					if (dn > 5 && !strncmp(le->d_name, "layer", 5) && !strcmp(le->d_name + dn - 5, ".shcl") && nlayer < 64)
+						snprintf(layerNames[nlayer++], 256, "%s", le->d_name);
 				}
 				closedir(cd);
 			}
@@ -477,7 +490,7 @@ int main(int argc, char **argv) {
 				char **slines; size_t nsl = split_lines(ms, mslen, &slines);
 				for (size_t li = 0; li < nsl; li++) {
 					if (slines[li][0] == '\0' || slines[li][0] == '#') continue;
-					char *eq = strchr(slines[li], '=');
+					const char *eq = strchr(slines[li], '=');
 					if (eq) shcl_set_string(md, slines[li], (size_t)(eq - slines[li]), eq + 1, strlen(eq + 1));
 				}
 				free(slines); free(ms);
@@ -592,13 +605,13 @@ int main(int argc, char **argv) {
 		lnc = shcl_lines(ld, "code[*].nope", 12, &lv);
 		if (lnc != 1 || lv[0] != 0) fail("lines", "code[*].nope not [0]");
 		if (shcl_lines(ld, "missing", 7, &lv) != 0) fail("lines", "missing path not empty");
-		shcl_str *cv; size_t cn = shcl_children(ld, "code", 4, &cv);
+		shcl_str *cv; size_t chn = shcl_children(ld, "code", 4, &cv);
 		const char *cw[] = { "hook", "hook", "done" };
-		if (cn != 3) fail("children", "code count mismatch");
+		if (chn != 3) fail("children", "code count mismatch");
 		else for (size_t i = 0; i < 3; i++) if (cv[i].n != strlen(cw[i]) || memcmp(cv[i].p, cw[i], cv[i].n) != 0) { fail("children", "code names mismatch"); break; }
-		cn = shcl_children(ld, "", 0, &cv);
+		chn = shcl_children(ld, "", 0, &cv);
 		const char *rw[] = { "a", "b", "code" };
-		if (cn != 3) fail("children", "root count mismatch");
+		if (chn != 3) fail("children", "root count mismatch");
 		else for (size_t i = 0; i < 3; i++) if (cv[i].n != strlen(rw[i]) || memcmp(cv[i].p, rw[i], cv[i].n) != 0) { fail("children", "root names mismatch"); break; }
 		if (shcl_children(ld, "missing", 7, &cv) != 0) fail("children", "missing path not empty");
 		shcl_free(ld);
@@ -631,8 +644,8 @@ int main(int argc, char **argv) {
 		{
 			// Canonical output folds the case, as it always has, and escapes the tab.
 			const char *ec = "\"ab\\tcd\": 2\n";
-			shcl_str cn = shcl_to_canonical(ed);
-			if (cn.n != strlen(ec) || memcmp(cn.p, ec, cn.n) != 0) fail("authored_name", "canonical name spelling moved");
+			shcl_str ecn = shcl_to_canonical(ed);
+			if (ecn.n != strlen(ec) || memcmp(ecn.p, ec, ecn.n) != 0) fail("authored_name", "canonical name spelling moved");
 		}
 		shcl_free(ed);
 	}
@@ -710,6 +723,11 @@ int main(int argc, char **argv) {
 			free(rt);
 			rt = shcl_read_file(tfile, 9, &rn, &rst);
 			if (rt || rst != SHCL_FILE_UNREADABLE) fail("file_tier", "read_file past the cap");
+			free(rt);
+			// A cap spelled as the type maximum used to overflow the over-cap
+			// probe and read nothing. Same fixture in every runner.
+			rt = shcl_read_file(tfile, (size_t)-1, &rn, &rst);
+			if (!rt || rst != SHCL_FILE_CLEAN || rn != 10 || memcmp(rt, "a: 1\nb: x\n", 11) != 0) fail("file_tier", "read_file at the largest cap");
 			free(rt);
 			char none[320];
 			snprintf(none, sizeof none, "%s/none.shcl", tdir);
@@ -835,6 +853,101 @@ int main(int argc, char **argv) {
 		if (shcl_save_file(lo, bad) != SHCL_SAVE_REFUSED) fail("lost", "refusal did not survive an unwritable path");
 		shcl_free(lo); shcl_free(kd);
 		remove(tfile); rmdir(tdir);
+	}
+	// set_raw: the body's shared indent survives a reload (the closing fence's
+	// indent is what comes off), the info-string is stored as a fence line
+	// reads it back, and an info with a line break has no spelling and fails
+	// the write. Same fixture in every runner.
+	{
+		shcl_doc *sd = shcl_new();
+		if (!shcl_set_raw(sd, "q", 1, "  a\n  b", 7, " sql ", 5)) fail("set_raw", "set_raw failed");
+		shcl_str sc = shcl_to_canonical(sd);
+		shcl_doc *back = shcl_parse(sc.p, sc.n);
+		shcl_read_str br = shcl_read_raw(back, "q", 1);
+		if (br.status != SHCL_GOOD || br.value.n != 7 || memcmp(br.value.p, "  a\n  b", 7) != 0) fail("set_raw", "shared indent did not survive a reload");
+		shcl_read_str bi = shcl_read_raw_info(back, "q", 1);
+		if (bi.status != SHCL_GOOD || bi.value.n != 3 || memcmp(bi.value.p, "sql", 3) != 0) fail("set_raw", "info not trimmed");
+		if (shcl_set_raw(sd, "q", 1, "x", 1, "a\nb", 3)) fail("set_raw", "info with a newline accepted");
+		if (shcl_set_raw(sd, "q", 1, "x", 1, "a\rb", 3)) fail("set_raw", "info with a CR accepted");
+		br = shcl_read_raw(sd, "q", 1);
+		if (br.status != SHCL_GOOD || br.value.n != 7 || memcmp(br.value.p, "  a\n  b", 7) != 0) fail("set_raw", "refused write changed the document");
+		shcl_free(back); shcl_free(sd);
+	}
+	// A link to a file that is not there yet is written through like any
+	// other link: the file appears where the link points and the link stays a
+	// link. Same fixture in every POSIX runner.
+#ifndef _WIN32
+	{
+		char ddir[256], dreal[288], dlink[288], dtarget[320];
+		snprintf(ddir, sizeof ddir, "%s/shcl-dangling-%ld", tmp_root(), (long)getpid());
+		snprintf(dreal, sizeof dreal, "%s/real", ddir);
+		snprintf(dlink, sizeof dlink, "%s/c.shcl", ddir);
+		snprintf(dtarget, sizeof dtarget, "%s/real/c.shcl", ddir);
+		if (mkdir(ddir, 0700) != 0 || mkdir(dreal, 0700) != 0) fail("dangling", "mkdir failed");
+		if (symlink("real/c.shcl", dlink) != 0) fail("dangling", "symlink failed");
+		shcl_doc *dd = shcl_parse("a: 1\n", 5);
+		if (shcl_save_file(dd, dlink) != SHCL_SAVE_OK) fail("dangling", "save through a dangling link failed");
+		struct stat ls;
+		if (lstat(dlink, &ls) != 0 || !S_ISLNK(ls.st_mode)) fail("dangling", "the link is no longer a link");
+		size_t tn; char *tt = read_file(dtarget, &tn);
+		if (!tt || tn != 5 || memcmp(tt, "a: 1\n", 5) != 0) fail("dangling", "file not created behind the link");
+		free(tt); shcl_free(dd);
+		remove(dlink); remove(dtarget); rmdir(dreal); rmdir(ddir);
+	}
+#endif
+	// A read-only target is rewritten, as it is on POSIX, and comes back
+	// read-only; no temp file is left behind. Same fixture in every runner.
+#ifdef _WIN32
+	{
+		char rdir[256], rfile[288];
+		snprintf(rdir, sizeof rdir, "%s/shcl-readonly-%ld", tmp_root(), (long)getpid());
+		snprintf(rfile, sizeof rfile, "%s/ro.shcl", rdir);
+		if (_mkdir(rdir) != 0) fail("readonly", "mkdir failed");
+		FILE *rf = fopen(rfile, "wb");
+		if (!rf || fputs("a: 1\n", rf) == EOF || fclose(rf) != 0) fail("readonly", "seed write failed");
+		if (!SetFileAttributesA(rfile, GetFileAttributesA(rfile) | FILE_ATTRIBUTE_READONLY)) fail("readonly", "set read-only failed");
+		shcl_doc *rd = shcl_parse("a: 2\n", 5);
+		if (shcl_save_file(rd, rfile) != SHCL_SAVE_OK) fail("readonly", "save over a read-only file failed");
+		size_t rn; char *rt = read_file(rfile, &rn);
+		if (!rt || rn != 5 || memcmp(rt, "a: 2\n", 5) != 0) fail("readonly", "file not rewritten");
+		free(rt);
+		if (!(GetFileAttributesA(rfile) & FILE_ATTRIBUTE_READONLY)) fail("readonly", "file did not come back read-only");
+		DIR *rdd = opendir(rdir); int left = 0; const struct dirent *re;
+		while (rdd && (re = readdir(rdd))) if (re->d_name[0] != '.') left++;
+		if (rdd) closedir(rdd);
+		if (left != 1) fail("readonly", "a temp file was left behind");
+		shcl_free(rd);
+		SetFileAttributesA(rfile, FILE_ATTRIBUTE_NORMAL);
+		remove(rfile); rmdir(rdir);
+	}
+#endif
+	// Reads and saves must not retain: a read of a plain field hands back a
+	// slice of the retained input (a million reads once grew a document by
+	// 32 MB), and a save emits into scratch (200 saves of 79 KB once grew it by
+	// 17 MB). The bound is one arena block, well under either regression.
+	{
+		char gdir[256], gfile[288];
+		snprintf(gdir, sizeof gdir, "%s/shcl-retain-%ld", tmp_root(), (long)getpid());
+		snprintf(gfile, sizeof gfile, "%s/g.shcl", gdir);
+#ifdef _WIN32
+		if (_mkdir(gdir) != 0) fail("retain", "mkdir failed");
+#else
+		if (mkdir(gdir, 0700) != 0) fail("retain", "mkdir failed");
+#endif
+		// About 30 KB: 2000 keys, so an unfixed save shows up at once.
+		size_t gcap = 2000 * 16 + 1, gn = 0; char *gt = xrealloc(NULL, gcap);
+		for (int i = 0; i < 2000; i++) gn += (size_t)snprintf(gt + gn, gcap - gn, "k%04d: v%04d\n", i, i);
+		shcl_doc *gd = shcl_parse(gt, gn);
+		size_t before = arena_bytes(&gd->arena);
+		for (int i = 0; i < 100000; i++) {
+			shcl_read_str r = shcl_read_string(gd, "k0042", 5);
+			if (r.status != SHCL_GOOD || r.value.n != 5 || memcmp(r.value.p, "v0042", 5) != 0) { fail("retain", "read failed"); break; }
+		}
+		for (int i = 0; i < 200; i++) if (shcl_save_file(gd, gfile) != SHCL_SAVE_OK) { fail("retain", "save failed"); break; }
+		size_t after = arena_bytes(&gd->arena);
+		if (after > before + 65536) fail("retain", "reads and saves grew the document arena");
+		shcl_free(gd); free(gt);
+		remove(gfile); rmdir(gdir);
 	}
 	// write_reason: the reason behind a setter's bare 0. Same fixture in every
 	// runner.

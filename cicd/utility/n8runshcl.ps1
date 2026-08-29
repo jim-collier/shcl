@@ -31,6 +31,22 @@
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
 
+<#
+.SYNOPSIS
+Runs the newest release build of shcl from a private stamped copy.
+.DESCRIPTION
+Stages the last release build under cicd/artifacts/runbuilds with a date stamp, launches it with the remaining arguments, and prunes older copies that nothing is using. Never builds; never touches the dogfooded install.
+.PARAMETER Keep
+How many stamped copies to keep, newest first. Copies in use are neither counted nor removed.
+.PARAMETER ListCopies
+List the staged copies and exit.
+.PARAMETER NoLaunch
+Stage a copy and print its path instead of running it.
+.PARAMETER Rest
+Everything else, handed to the binary as-is. Put -- first if an argument would otherwise bind as a script parameter.
+.EXAMPLE
+pwsh n8runshcl.ps1 get --int app.shcl server.port
+#>
 [CmdletBinding()]
 param(
 	## How many stamped copies to keep, newest first. In-use copies are never

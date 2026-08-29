@@ -246,6 +246,10 @@ it is an edit to the document itself, so it persists with
 goes in as data: its type still follows the text, so
 .B 8
 is an int, but a comma or a quote in it is content rather than syntax.
+.I PATH
+ends at the first
+.B =
+outside quotes and brackets, so a selector may hold one.
 .TP
 .BI \-\-set\-literal= PATH = TEXT
 .RB ( get ", " fmt ", " count ", " instances ", " set )

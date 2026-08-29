@@ -82,9 +82,13 @@ fi
 
 ##	Distil warnings/advisories. rustc/clippy/cargo-deny all say "warning"; deny adds
 ##	RUSTSEC ids + vulnerable/unmaintained/yanked. Hard errors only appear in a failed
-##	run's log (a passing run aborts on the first error). Drop the "0 warnings" noise.
+##	run's log (a passing run aborts on the first error). Drop the "0 warnings" noise,
+##	govulncheck's clean-result prose (its "found N vulnerabilities in modules you
+##	require, but your code doesn't appear to call" block is informational and prints
+##	on every run), and the echoed cppcheck command line, which carries the word.
 warns="$(grep -inE 'warning|rustsec-|vulnerab|unmaintained|yanked|error\[' "$log" 2>/dev/null \
-	| grep -viE 'generated 0 warnings|: 0 warnings|no warnings|0 warnings emitted' || true)"
+	| grep -viE 'generated 0 warnings|: 0 warnings|no warnings|0 warnings emitted' \
+	| grep -viE 'no vulnerabilities found|affected by 0 vulnerabilities|this scan also found|appear to call|^[0-9]+:these vulnerabilities\.$|enable=warning' || true)"
 if [[ -n "$warns" ]]; then n=$(printf '%s\n' "$warns" | grep -c .); else n=0; fi
 
 tag="FLAG"; ((check)) && tag="NEW"

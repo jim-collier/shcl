@@ -46,9 +46,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 )
@@ -143,6 +146,8 @@ func diagCode(msg string) string {
 		return "E016"
 	case strings.HasPrefix(msg, "unterminated quote in value"):
 		return "E017"
+	case strings.HasPrefix(msg, "parent line was skipped"):
+		return "E018"
 	case strings.HasPrefix(msg, "merged with "):
 		return "H002"
 	case strings.HasPrefix(msg, "unknown field "):
@@ -621,9 +626,39 @@ type Document struct {
 	// Content-malformed lines are NOT counted - they are retained as trivia
 	// and survive a save. LostCount() serves it; SaveFile() gates on it.
 	lost int
+	// Built on the first path read, dropped by every write entry point. Without
+	// it a read scans the parent's children, so reading a flat document key by
+	// key was quadratic (35 s at 40k keys). Reads may run concurrently, so the
+	// build is guarded and the pointer is atomic; a write is exclusive anyway.
+	index   atomic.Pointer[nameIndex]
+	indexMu sync.Mutex
+}
+
+// nameIndex is the read accelerator: the first child of each (parent, name),
+// chained on to the next same-named sibling. A hash collision chains a
+// stranger in; the lookup checks the name, so the chain is only ever a
+// superset.
+type nameIndex struct {
+	first    map[uint64]int
+	nextSame []int // per node; nilNode ends the chain
+}
+
+const nilNode = -1
+
+func nameKey(parent int, name string) uint64 {
+	h := newFnv()
+	h.dec(parent)
+	h.byte(0xFF)
+	h.bytes(name)
+	return h.h
 }
 
 const root = 0
+
+// dead is the stack entry for a binding line that was skipped: it still owns
+// its indent level, so the lines written under it are skipped with it instead
+// of re-parenting one level up.
+const dead = -1
 
 // foldNodeInto merges a later instance into an earlier one under the in-file
 // merge rule: children and trivia move over, first trailing wins (a second
@@ -719,6 +754,7 @@ func trimEndWS(s string) string {
 	return strings.TrimRightFunc(s, unicode.IsSpace)
 }
 
+// leadingWS is the leading space/tab run of a line (the indent).
 func leadingWS(s string) string {
 	i := 0
 	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
@@ -731,6 +767,9 @@ func leadingWS(s string) string {
 // `#` on, "" = none). A `\` shields the next char throughout. Comments are
 // kept as trivia.
 func splitComment(s string) (string, string) {
+	if strings.IndexByte(s, '#') < 0 {
+		return s, ""
+	}
 	var inQuote rune
 	skip := false
 	for i, c := range s {
@@ -756,6 +795,9 @@ func splitComment(s string) (string, string) {
 
 // splitUnquotedCommas splits on unquoted commas; `\` shields the next char.
 func splitUnquotedCommas(s string) []string {
+	if strings.IndexByte(s, ',') < 0 {
+		return []string{s}
+	}
 	var parts []string
 	var inQuote rune
 	skip := false
@@ -802,33 +844,41 @@ func normalizeDanglingBackslash(t string) string {
 // parser calls it out instead of letting the typo look deliberate. Mid-text
 // apostrophes (it's fine) are legal prose and stay silent.
 func unterminatedQuote(text string) bool {
+	if strings.IndexByte(text, '"') < 0 && strings.IndexByte(text, '\'') < 0 {
+		return false
+	}
 	for _, piece := range splitUnquotedCommas(text) {
-		// Bytes, not runes: both quotes and the backslash are ASCII, and UTF-8
-		// never puts an ASCII byte inside a multibyte sequence, so the first
-		// byte, the last byte and the escape parity are the same answers the
-		// decoded form gives. Decoding here allocated a rune slice per element
-		// of every line parsed.
 		t := strings.TrimSpace(piece)
-		if t == "" {
-			continue
-		}
-		first := t[0]
-		if first != '"' && first != '\'' {
-			continue
-		}
-		closed := false
-		if len(t) >= 2 && t[len(t)-1] == first {
-			esc := false
-			for i := 1; i+1 < len(t); i++ {
-				esc = t[i] == '\\' && !esc
+		if !quotedShape(t) {
+			if t == "" {
+				continue
 			}
-			closed = !esc
-		}
-		if !closed {
-			return true
+			if first := t[0]; first == '"' || first == '\'' {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// quotedShape is true when the text is one quote pair: a quote char at both
+// ends, the last one not escaped. Bytes, not runes: both quotes and the
+// backslash are ASCII, and UTF-8 never puts an ASCII byte inside a multibyte
+// sequence, so the first byte, the last byte and the escape parity are the
+// same answers the decoded form gives.
+func quotedShape(t string) bool {
+	if t == "" {
+		return false
+	}
+	first := t[0]
+	if (first != '"' && first != '\'') || len(t) < 2 || t[len(t)-1] != first {
+		return false
+	}
+	esc := false
+	for i := 1; i+1 < len(t); i++ {
+		esc = t[i] == '\\' && !esc
+	}
+	return !esc
 }
 
 // parseElement trims, then strips one matching outer quote pair if present.
@@ -838,18 +888,8 @@ func parseElement(piece string) (element, bool) {
 	if t == "" {
 		return element{}, false
 	}
-	// Bytes, not runes - see unterminatedQuote for why the answers are
-	// identical, and why this used to allocate per element of every line.
-	first := t[0]
-	if (first == '"' || first == '\'') && len(t) >= 2 && t[len(t)-1] == first {
-		// The closing quote must not itself be escaped (`"a\"` is not closed).
-		esc := false
-		for i := 1; i+1 < len(t); i++ {
-			esc = t[i] == '\\' && !esc
-		}
-		if !esc {
-			return element{text: t[1 : len(t)-1], quoted: true}, true
-		}
+	if quotedShape(t) {
+		return element{text: t[1 : len(t)-1], quoted: true}, true
 	}
 	return element{text: normalizeDanglingBackslash(t)}, true
 }
@@ -1216,10 +1256,9 @@ func isFenceClose(line string, ch byte, minLen int) bool {
 	return true
 }
 
-// stripCommon removes a raw block's common indent from one content line. A
-// whitespace-only line took no part in computing that indent, so it can be
-// shorter than it - strip only what it actually shares, rather than blanking it.
-// Blanking drops author spacing on a line the spec calls verbatim.
+// stripCommon removes a raw block's nesting indent from one content line: only
+// what the line actually shares with it, so a shallower line (whitespace-only,
+// or written flush left) keeps its own spacing rather than being blanked.
 func stripCommon(line, common string) string {
 	k := 0
 	for k < len(common) && k < len(line) && common[k] == line[k] {
@@ -1323,7 +1362,7 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 	readQuoted := func() (string, error) {
 		q := rune(input[pos]) // caller checked: ASCII quote
 		pos++
-		var out []rune
+		var out strings.Builder
 		for {
 			if pos >= len(input) {
 				return "", errors.New("unterminated quote")
@@ -1331,15 +1370,16 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 			c, cw := utf8.DecodeRuneInString(input[pos:])
 			if c == '\\' && pos+1 < len(input) {
 				next, nw := utf8.DecodeRuneInString(input[pos+1:])
-				out = append(out, c, next)
+				out.WriteRune(c)
+				out.WriteRune(next)
 				pos += 1 + nw
 				continue
 			}
 			pos += cw
 			if c == q {
-				return string(out), nil
+				return out.String(), nil
 			}
-			out = append(out, c)
+			out.WriteRune(c)
 		}
 	}
 	var segments []segment
@@ -1398,7 +1438,8 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 				if err != nil {
 					return pathScan{}, err
 				}
-				sel = &selector{kind: selByValue, value: v, quoted: true} // quotes force a value match, even numeric - and scalar-only
+				// quotes force a value match, even numeric - and scalar-only
+				sel = &selector{kind: selByValue, value: v, quoted: true}
 			} else {
 				start := pos
 				for pos < len(input) && input[pos] != ']' {
@@ -1659,7 +1700,7 @@ func (p *parser) hangDeeperPending(newIndent string) {
 			atOwnLevel := false
 			for j := len(p.stack) - 1; j >= 0; j-- {
 				ent := p.stack[j]
-				if ent.node != root && len(ent.indent) >= len(newIndent) && strings.HasPrefix(pn.indent, ent.indent) {
+				if ent.node != root && ent.node != dead && len(ent.indent) >= len(newIndent) && strings.HasPrefix(pn.indent, ent.indent) {
 					target = ent.node
 					atOwnLevel = len(ent.indent) == len(pn.indent)
 					break
@@ -1707,6 +1748,14 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 	return 0, false
 }
 
+// skipUnderDead diagnoses a line written under a skipped line, and skips it
+// too. Its own level stays dead so deeper lines go the same way.
+func (p *parser) skipUnderDead(line int, indent string) {
+	p.err(line, "parent line was skipped; line skipped")
+	p.lost++
+	p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+}
+
 // attachPath walks path segments under parent, select-or-creating; returns the
 // node for the last segment carrying v. ok=false aborts the line (diagnosed).
 func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int, bool) {
@@ -1742,25 +1791,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			// the first same-display child - a later remap can drop an entry a
 			// different sibling still satisfies - so a non-scalar hit and an
 			// outright miss both fall to the (rare) fallback scan.
-			want := applyEscapes(seg.sel.value)
-			found, ok := 0, false
-			if m := p.dispMap[cur]; m != nil {
-				if c, hit := m[dispHashText(seg.name, want)]; hit && p.arena[c].name == seg.name && dispKey(&p.arena[c].value) == want {
-					found, ok = c, true
-				}
-			}
-			if ok && seg.sel.quoted && !singleScalar(&p.arena[found].value) {
-				ok = false
-			}
-			if !ok && seg.sel.quoted {
-				for _, c := range p.arena[cur].children {
-					if p.arena[c].name == seg.name && singleScalar(&p.arena[c].value) && dispKey(&p.arena[c].value) == want {
-						found, ok = c, true
-						break
-					}
-				}
-			}
-			if ok {
+			if found, ok := p.findByValue(cur, seg.name, seg.sel.value, seg.sel.quoted); ok {
 				cur = found
 			} else {
 				disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
@@ -1773,14 +1804,20 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 				p.lost++
 			}
 		case seg.sel != nil && seg.sel.kind == selByIndex:
-			var matches []int
+			found, ok := 0, false
+			var nth uint64
 			for _, c := range p.arena[cur].children {
-				if p.arena[c].name == seg.name {
-					matches = append(matches, c)
+				if p.arena[c].name != seg.name {
+					continue
 				}
+				if nth == seg.sel.index {
+					found, ok = c, true
+					break
+				}
+				nth++
 			}
-			if seg.sel.index < uint64(len(matches)) {
-				cur = matches[seg.sel.index]
+			if ok {
+				cur = found
 			} else {
 				p.err(line, fmt.Sprintf("no instance %d of '%s'", seg.sel.index, seg.name))
 				p.lost++
@@ -1824,14 +1861,45 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 	return cur, true
 }
 
+// findByValue: the child of cur named name whose display form is the selector
+// text (escapes applied), or ok=false. Quoted selectors only match a single
+// scalar.
+func (p *parser) findByValue(cur int, name, text string, quoted bool) (int, bool) {
+	want := applyEscapes(text)
+	found, ok := 0, false
+	if m := p.dispMap[cur]; m != nil {
+		if c, hit := m[dispHashText(name, want)]; hit && p.arena[c].name == name && dispKey(&p.arena[c].value) == want {
+			found, ok = c, true
+		}
+	}
+	if ok && quoted && !singleScalar(&p.arena[found].value) {
+		ok = false
+	}
+	if !ok && quoted {
+		for _, c := range p.arena[cur].children {
+			if p.arena[c].name == name && singleScalar(&p.arena[c].value) && dispKey(&p.arena[c].value) == want {
+				found, ok = c, true
+				break
+			}
+		}
+	}
+	return found, ok
+}
+
 // consumeRaw consumes raw-block content after an opening fence. Returns the
-// value and the next line index. Content keeps relative indentation; the
-// common leading run is stripped.
-func (p *parser) consumeRaw(lines []string, i, openLine int, ch byte, length int, info string) (value, int) {
+// value and the next line index. The closing fence's indent is stripped from
+// each content line (the opening line's when the block never closes); the
+// rest is content.
+func (p *parser) consumeRaw(lines []string, i, openLine int, openIndent string, ch byte, length int, info string) (value, int) {
 	var content []string
+	nest := openIndent
 	closed := false
 	for i < len(lines) {
 		if isFenceClose(lines[i], ch, length) {
+			// The closing fence's indent is the nesting; everything a content
+			// line carries past it is content, so a body whose lines all
+			// share an indent keeps it (a writer-built block depends on that).
+			nest = leadingWS(lines[i])
 			closed = true
 			i++
 			break
@@ -1842,28 +1910,9 @@ func (p *parser) consumeRaw(lines []string, i, openLine int, ch byte, length int
 	if !closed {
 		p.err(openLine, "unterminated raw block")
 	}
-	// Strip the common leading whitespace (the visual nesting); keep the rest.
-	common := ""
-	haveCommon := false
-	for _, l := range content {
-		if strings.TrimSpace(l) == "" {
-			continue
-		}
-		lead := leadingWS(l)
-		if !haveCommon {
-			common = lead
-			haveCommon = true
-			continue
-		}
-		n := 0
-		for n < len(common) && n < len(lead) && common[n] == lead[n] {
-			n++
-		}
-		common = common[:n]
-	}
 	stripped := make([]string, len(content))
 	for j, l := range content {
-		stripped[j] = stripCommon(l, common)
+		stripped[j] = stripCommon(l, nest)
 	}
 	return value{
 		kind: vRaw,
@@ -2056,8 +2105,10 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				i++
 				continue
 			}
-			v, next := p.consumeRaw(lines, i+1, lineno, ch, length, info)
-			if node := p.bindBlock(parent, v, lineno); node >= 0 {
+			v, next := p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
+			if parent == dead {
+				p.skipUnderDead(lineno, indent)
+			} else if node := p.bindBlock(parent, v, lineno); node >= 0 {
 				p.attachTrivia(node, "")
 			}
 			i = next
@@ -2071,6 +2122,11 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				if !okp {
 					p.err(lineno, "indentation matches no open level")
 					p.lost++
+					i++
+					continue
+				}
+				if parent == dead {
+					p.skipUnderDead(lineno, indent)
 					i++
 					continue
 				}
@@ -2112,6 +2168,11 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			i++
 			continue
 		}
+		if parent == dead {
+			p.skipUnderDead(lineno, indent)
+			i++
+			continue
+		}
 		scan, serr := scanPath(content)
 		if serr != nil {
 			p.err(lineno, "malformed line skipped: "+serr.Error())
@@ -2122,13 +2183,14 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			} else {
 				p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank})
 			}
+			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
 			i++
 			continue
 		}
 		next := i + 1
 		// The verbatim value span, kept for reads' Raw (only the plain
 		// scalar/inline-array case has a one-line source spelling).
-		var srcText *string
+		srcText, haveSrc := "", false
 		var v value
 		switch {
 		case scan.valueText == nil:
@@ -2141,13 +2203,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		default:
 			if ch, length, info, ok := fenceOpen(*scan.valueText); ok {
 				// Same-line fence spelling.
-				v, next = p.consumeRaw(lines, i+1, lineno, ch, length, info)
+				v, next = p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 			} else {
 				if unterminatedQuote(*scan.valueText) {
 					p.err(lineno, "unterminated quote in value")
 				}
-				s := *scan.valueText
-				srcText = &s
+				srcText, haveSrc = *scan.valueText, true
 				v = parseCell(*scan.valueText)
 			}
 		}
@@ -2155,14 +2216,15 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// (a merge into an equal-valued node keeps the first line's span;
 		// a value dropped after a last-segment selector records nothing).
 		var vkey uint64
-		if srcText != nil {
+		if haveSrc {
 			vkey = valueHash(&v)
 		}
 		if node, ok := p.attachPath(parent, scan.segments, v, lineno); ok {
-			if srcText != nil && !p.arena[node].srcSet && valueHash(&p.arena[node].value) == vkey {
+			if haveSrc && !p.arena[node].srcSet && valueHash(&p.arena[node].value) == vkey {
 				p.arena[node].srcSet = true
-				if !srcMatchesDisplay(&p.arena[node].value, *srcText) {
-					p.arena[node].src = srcText
+				if !srcMatchesDisplay(&p.arena[node].value, srcText) {
+					s := srcText
+					p.arena[node].src = &s
 				}
 			}
 			if hadBlank {
@@ -2170,6 +2232,8 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			}
 			p.attachTrivia(node, comment)
 			p.stack = append(p.stack, stackEnt{indent: indent, node: node})
+		} else {
+			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
 		}
 		i = next
 	}
@@ -2280,6 +2344,7 @@ func (d *Document) Strictness() Strictness {
 // trivia. Scalar text is never rewritten.
 func (d *Document) ToCanonical() string {
 	var out strings.Builder
+	out.Grow(len(d.arena) * 24)
 	d.emitChildren(d.arena[root].children, 0, &out)
 	// Comments that never found a following line re-emit at the end.
 	for _, c := range d.orphans {
@@ -2348,11 +2413,12 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 		out.WriteByte('\n')
 	case vCell:
 		out.WriteByte(' ')
-		parts := make([]string, len(node.value.els))
 		for k := range node.value.els {
-			parts[k] = emitElement(&node.value.els[k])
+			if k > 0 {
+				out.WriteString(", ")
+			}
+			out.WriteString(emitElement(&node.value.els[k]))
 		}
-		out.WriteString(strings.Join(parts, ", "))
 		writeTrailing(out, node.trailing())
 		out.WriteByte('\n')
 	default:
@@ -2368,7 +2434,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 			writeTrailing(out, node.trailing())
 			out.WriteByte('\n')
 		}
-		bodyPad := strings.Repeat("\t", depth+1)
+		bodyPad := pad + "\t"
 		fence := strings.Repeat(string(rune(r.fenceChar)), r.fenceLen)
 		if !wouldMerge {
 			out.WriteString(bodyPad)
@@ -2384,18 +2450,8 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 		}
 		out.WriteByte('\n')
 		if r.content != "" {
-			// A body with no non-blank line has no common indent for the reload
-			// to strip back off, so indenting it here would add a level on every
-			// pass, without bound. Leave it as it stands.
-			allBlank := true
 			for _, l := range strings.Split(r.content, "\n") {
-				if strings.TrimSpace(l) != "" {
-					allBlank = false
-					break
-				}
-			}
-			for _, l := range strings.Split(r.content, "\n") {
-				if l != "" && !allBlank {
+				if l != "" {
 					out.WriteString(bodyPad)
 				}
 				out.WriteString(l)
@@ -2408,7 +2464,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 	}
 	d.emitChildren(d.arena[idx].children, depth+1, out)
 	// Comments this block owns with no child to carry them, one deeper.
-	ipad := strings.Repeat("\t", depth+1)
+	ipad := pad + "\t"
 	for _, c := range d.arena[idx].inside() {
 		if c.blankBefore && out.Len() > 0 {
 			out.WriteByte('\n')
@@ -2581,7 +2637,13 @@ func ReadFile(path string, maxBytes int) (string, FileStatus) {
 	// over is caught without trusting a length from Stat.
 	var r io.Reader = f
 	if maxBytes > 0 {
-		r = io.LimitReader(f, int64(maxBytes)+1)
+		// Saturating: a cap spelled as the type maximum must not wrap to a
+		// negative limit and read nothing.
+		limit := int64(maxBytes)
+		if limit < math.MaxInt64 {
+			limit++
+		}
+		r = io.LimitReader(f, limit)
 	}
 	data, err := io.ReadAll(r)
 	if err != nil || (maxBytes > 0 && len(data) > maxBytes) {
@@ -2610,12 +2672,7 @@ func ReadFile(path string, maxBytes int) (string, FileStatus) {
 // The i/o failures wrap rather than flatten, so a caller can tell a permission
 // failure from a full disk with errors.Is instead of matching on prose.
 func WriteFileAtomic(file, data string) error {
-	// EvalSymlinks fails when the target does not exist yet; that is a plain
-	// create, so the path as given is already the right one.
-	target := file
-	if resolved, rerr := filepath.EvalSymlinks(file); rerr == nil {
-		target = resolved
-	}
+	target := resolveTarget(file)
 	dir := filepath.Dir(target)
 	base := filepath.Base(target)
 	// Exclusive create: the name is predictable, so anything already sitting
@@ -2632,6 +2689,11 @@ func WriteFileAtomic(file, data string) error {
 	if existErr != nil {
 		born = 0o666
 	}
+	// Windows: a read-only file cannot be replaced, and a read-only temp cannot
+	// be removed after a failure, so the attribute comes off the target for the
+	// publish and goes back on the new file after it - the same outcome as
+	// POSIX, where the rename never needed the file writable.
+	readOnly := runtime.GOOS == "windows" && existErr == nil && existing.Mode().Perm()&0o200 == 0
 	var f *os.File
 	var tmp string
 	var last error
@@ -2649,9 +2711,10 @@ func WriteFileAtomic(file, data string) error {
 	}
 	// On the handle, so umask cannot narrow it the way it narrows a create
 	// mode. Best effort: a filesystem that cannot carry the mode is not a
-	// reason to fail a write that otherwise succeeded.
-	if existErr == nil {
-		_ = f.Chmod(existing.Mode().Perm())
+	// reason to fail a write that otherwise succeeded. The whole mode goes,
+	// setuid/setgid/sticky included, as an editor's rewrite would carry it.
+	if existErr == nil && runtime.GOOS != "windows" {
+		_ = f.Chmod(existing.Mode())
 	}
 	var err error
 	if _, werr := f.WriteString(data); werr != nil {
@@ -2664,12 +2727,58 @@ func WriteFileAtomic(file, data string) error {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %w", file, err)
 	}
-	if rerr := publishFile(tmp, target); rerr != nil {
+	if readOnly {
+		setReadOnly(target, false)
+	}
+	rerr := publishFile(tmp, target)
+	if readOnly {
+		setReadOnly(target, true) // whether or not the publish went through
+	}
+	if rerr != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %w", file, rerr)
 	}
 	syncDir(dir)
 	return nil
+}
+
+// resolveTarget is the path a save actually rewrites. A symlink is followed so
+// the write goes through it; EvalSymlinks does that but needs the target to
+// exist, so a dangling link is walked by hand and the file is created where it
+// points. A path that is no link at all is a plain create at the path as given.
+func resolveTarget(file string) string {
+	if p, err := filepath.EvalSymlinks(file); err == nil {
+		return p
+	}
+	p := file
+	for hop := 0; hop < 40; hop++ {
+		// bounded: a link cycle would otherwise never resolve
+		next, err := os.Readlink(p)
+		if err != nil {
+			break
+		}
+		if filepath.IsAbs(next) {
+			p = next
+		} else {
+			p = filepath.Join(filepath.Dir(p), next)
+		}
+	}
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(dir, filepath.Base(p))
+	}
+	return p
+}
+
+// setReadOnly toggles the windows read-only attribute, which is all Chmod
+// controls there.
+func setReadOnly(path string, on bool) {
+	if m, err := os.Stat(path); err == nil {
+		mode := m.Mode().Perm() | 0o200
+		if on {
+			mode &^= 0o222
+		}
+		_ = os.Chmod(path, mode)
+	}
 }
 
 // publishFile moves the finished temp file over the target. Rename is atomic
@@ -2701,10 +2810,12 @@ func syncDir(dir string) {
 type FileStatus int
 
 const (
-	FileClean      FileStatus = iota // read and parsed, no error diagnostics (hints allowed)
-	FileHadErrors                    // read and parsed, but error diagnostics are present
-	FileNotFound                     // no file at the path
-	FileUnreadable                   // exists but could not be read (permissions, a directory, bad encoding, past a ReadFile cap)
+	FileClean     FileStatus = iota // read and parsed, no error diagnostics (hints allowed)
+	FileHadErrors                   // read and parsed, but error diagnostics are present
+	FileNotFound                    // no file at the path
+	// exists but could not be read (permissions, a directory, bad encoding,
+	// past a ReadFile cap)
+	FileUnreadable
 )
 
 // String names the file status, so logging one reads as a case rather than a
@@ -2758,8 +2869,11 @@ type SaveRefused struct {
 	Lost int // lines/values the load dropped (see LostCount)
 }
 
+// Error spells the refusal with the path and the count, so a log line says
+// which file and how much a lossy save would drop.
 func (e *SaveRefused) Error() string {
-	return fmt.Sprintf("%s: refusing to save: load dropped %d line(s)/value(s) this write would delete (see diagnostics; SaveFileLossy overrides)", e.Path, e.Lost)
+	return fmt.Sprintf("%s: refusing to save: load dropped %d line(s)/value(s) "+
+		"this write would delete (see diagnostics; SaveFileLossy overrides)", e.Path, e.Lost)
 }
 
 // SaveFile is the file tier's save half: write this document's canonical text
@@ -3009,12 +3123,49 @@ type resolved struct {
 	slots []int
 }
 
+func (d *Document) nameIndex() *nameIndex {
+	if idx := d.index.Load(); idx != nil {
+		return idx
+	}
+	d.indexMu.Lock()
+	defer d.indexMu.Unlock()
+	if idx := d.index.Load(); idx != nil {
+		return idx
+	}
+	first := map[uint64]int{}
+	last := map[uint64]int{}
+	nextSame := make([]int, len(d.arena))
+	for i := range nextSame {
+		nextSame[i] = nilNode
+	}
+	for p := range d.arena {
+		for _, c := range d.arena[p].children {
+			k := nameKey(p, d.arena[c].name)
+			if prev, seen := last[k]; seen {
+				nextSame[prev] = c
+			} else {
+				first[k] = c
+			}
+			last[k] = c
+		}
+	}
+	idx := &nameIndex{first: first, nextSame: nextSame}
+	d.index.Store(idx)
+	return idx
+}
+
 func (d *Document) childrenNamed(parent int, name string) []int {
+	idx := d.nameIndex()
 	var out []int
-	for _, c := range d.arena[parent].children {
-		if d.arena[c].name == name {
+	c, hit := idx.first[nameKey(parent, name)]
+	if !hit {
+		c = nilNode
+	}
+	for c != nilNode {
+		if d.arena[c].name == name && d.arena[c].parent == parent {
 			out = append(out, c)
 		}
+		c = idx.nextSame[c]
 	}
 	return out
 }
@@ -3476,6 +3627,7 @@ func (d *Document) probeWrite(scan pathScan) (WriteReason, []int) {
 // why). Validation runs first, so a doomed path leaves no half-created
 // intermediates behind.
 func (d *Document) place(path string) (int, bool) {
+	d.index.Store(nil)
 	scan, err := scanLookup(path)
 	if err != nil {
 		return 0, false
@@ -3524,11 +3676,12 @@ func (d *Document) setValue(path string, v value) bool {
 // stays a formatter fixpoint.
 func (d *Document) collapseDup(node int) {
 	parent := d.arena[node].parent
-	name := d.arena[node].name
-	key := d.arena[node].value.key()
+	me := &d.arena[node]
+	key := mergeHash(me.name, &me.value)
 	other := -1
 	for _, c := range d.arena[parent].children {
-		if c != node && d.arena[c].name == name && d.arena[c].value.key() == key {
+		o := &d.arena[c]
+		if c != node && mergeHash(o.name, &o.value) == key && mergeEq(o.name, &o.value, me.name, &me.value) {
 			other = c
 			break
 		}
@@ -3579,6 +3732,7 @@ func (d *Document) Exists(path string) bool {
 
 // Remove deletes the node(s) at a path (with their subtrees); returns how many.
 func (d *Document) Remove(path string) int {
+	d.index.Store(nil)
 	r, ok := d.resolve(path)
 	if !ok {
 		return 0
@@ -3663,7 +3817,13 @@ func (d *Document) SetEmpty(path string) bool {
 }
 
 // SetRaw binds a raw block at path, picking a fence longer than any content line.
+// The info-string is stored as a fence line would read it back (trimmed); one
+// holding a line break has no fence-line spelling and fails the write.
 func (d *Document) SetRaw(path, content, info string) bool {
+	if strings.ContainsAny(info, "\n\r") {
+		return false
+	}
+	info = strings.TrimSpace(info)
 	fc, fl := chooseFence(content)
 	return d.setValue(path, value{kind: vRaw, raw: &rawValue{content: content, info: info, fenceChar: fc, fenceLen: fl}})
 }
@@ -3837,6 +3997,7 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 // Load(defaults, site, user) is a left fold of this: each later file overlaid
 // on the earlier ones.
 func (d *Document) Merge(over *Document) {
+	d.index.Store(nil)
 	d.lost += over.lost
 	d.overlay(root, over, root)
 	// Layers commonly share a footer; keeping one copy of each keeps a
@@ -3884,7 +4045,7 @@ func (d *Document) adoptTrivia(base int, over *Document, ok int) {
 }
 
 func (d *Document) overlay(baseParent int, over *Document, overParent int) {
-	overKids := append([]int(nil), over.arena[overParent].children...)
+	overKids := over.arena[overParent].children
 	// Over side: name -> node bucket, in first-appearance order.
 	var order []string
 	groups := map[string][]int{}
@@ -3896,7 +4057,8 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 		groups[n] = append(groups[n], k)
 	}
 	// Base side, one pass: does the name have a container instance, and
-	// which child carries each (name, key) - every key computed once.
+	// which child carries each (name, key) - every key computed once. The
+	// list is cloned because the splices below rewrite it as they go.
 	baseKids := append([]int(nil), d.arena[baseParent].children...)
 	hasContainer := map[string]bool{}
 	byKey := map[[2]string]int{}
@@ -4043,8 +4205,7 @@ func (d *Document) cloneSubtree(over *Document, oi, parent int) int {
 	}
 	idx := len(d.arena)
 	d.arena = append(d.arena, nd)
-	okids := append([]int(nil), over.arena[oi].children...)
-	for _, ok := range okids {
+	for _, ok := range over.arena[oi].children {
 		c := d.cloneSubtree(over, ok, idx)
 		d.arena[idx].children = append(d.arena[idx].children, c)
 	}
@@ -4730,13 +4891,9 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 				sts = append(sts, est)
 				continue
 			}
-			if val, cok := coerce(el); cok {
-				out = append(out, val)
-				sts = append(sts, Good)
-			} else {
-				out = append(out, zero)
-				sts = append(sts, BadType)
-			}
+			val, cst := coerced(coerce, el)
+			out = append(out, val)
+			sts = append(sts, cst)
 		}
 		status := Empty
 		if len(sts) > 0 {
@@ -4766,13 +4923,11 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 	sts := make([]Status, 0, len(v.els))
 	status := Good
 	for i := range v.els {
-		if val, cok := coerce(&v.els[i]); cok {
-			out = append(out, val)
-			sts = append(sts, Good)
-		} else {
-			out = append(out, zero)
-			sts = append(sts, BadType)
-			status = BadType
+		val, cst := coerced(coerce, &v.els[i])
+		out = append(out, val)
+		sts = append(sts, cst)
+		if cst > status {
+			status = cst
 		}
 	}
 	return Read[[]T]{Value: out, Status: status, Raw: &raw, Slots: sts}.at(line, false)
@@ -5048,6 +5203,16 @@ type schemaDef struct {
 	// their entry's chain, so only these two classes can turn declared fields
 	// into false unknowns - the sweep runs unless one of them happened.
 	pathsComplete bool
+}
+
+// coerced is one slot of an array read: the coerced value, or the type's zero
+// with BadType.
+func coerced[T any](coerce func(*element) (T, bool), el *element) (T, Status) {
+	if v, ok := coerce(el); ok {
+		return v, Good
+	}
+	var zero T
+	return zero, BadType
 }
 
 func vdiag(out *[]Diagnostic, line int, msg string) {

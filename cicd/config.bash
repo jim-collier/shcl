@@ -93,13 +93,15 @@ LINT_EXTRA=(
 	'GOMAXPROCS="${CPU_CAP}" go -C source/go/cmd vet ./...'
 	'( cd source/go && GOMAXPROCS="${CPU_CAP}" staticcheck ./... )'
 	'( cd source/go/cmd && GOMAXPROCS="${CPU_CAP}" staticcheck ./... )'
-	'( cd source/python && ruff check . )'
+	'( cd source/python && RAYON_NUM_THREADS="${CPU_CAP}" ruff check ${QUIET_FLAG} . )'
 	'( cd source/python && MYPYPATH=. mypy )'
 	## The comparison tool's rust half stays out of the gate - it is the one thing
 	## here with third-party crates, and the gate must not need crates.io. Its
-	## python half has no such problem: ruff never imports what it checks, so this
-	## costs nothing and the file is covered.
-	'ruff check cicd/utility/comparison/pyworker.py'
+	## python half has no such problem, and neither do the pipeline's own two
+	## python utilities: ruff never imports what it checks, so this costs nothing
+	## and the files are covered. cicd/utility/ruff.toml extends the project rule
+	## set for them.
+	'RAYON_NUM_THREADS="${CPU_CAP}" ruff check ${QUIET_FLAG} cicd/utility/flame-report.py cicd/utility/gen-demo-gif.py cicd/utility/comparison/pyworker.py'
 	'cppcheck --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
 	'markdownlint-cli2'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
@@ -107,28 +109,32 @@ LINT_EXTRA=(
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'cicd/utility/check-completions.bash'
 	'cicd/utility/check-wheel.bash'
+	## TOOL_PINS above is copied by hand into ci.yml; this fails the stage when
+	## the two disagree, instead of hosted CI going red days later.
+	'cicd/utility/check-pins.bash'
 	'GOMAXPROCS="${CPU_CAP}" govulncheck -C source/go ./...'
 	'GOMAXPROCS="${CPU_CAP}" govulncheck -C source/go/cmd ./...'
 	'cargo deny --manifest-path source/rust/Cargo.toml --all-features check'
 )
-## n8git_backup-and-publish is excluded: SC1083 false-hits its legitimate git
-## @{u} upstream refs, and the script is a proven drop-in kept byte-close to its
-## sibling copies.
 SHELLCHECK_TARGETS=(
 	cicd/cicd.bash
 	cicd/config.bash
 	cicd/utility/check-completions.bash
+	cicd/utility/check-pins.bash
 	cicd/utility/check-wheel.bash
 	cicd/utility/comparison/compare.bash
 	cicd/utility/crosscheck.bash
 	cicd/utility/largedoc.bash
 	cicd/utility/lint-report.bash
+	cicd/utility/n8git_backup-and-publish
 	cicd/utility/package.bash
+	cicd/utility/sanitize-c.bash
 	cicd/utility/sign-release.bash
 	cicd/utility/git-auto-msg.bash
 	cicd/utility/win-runners.bash
 	cicd/hooks/pre-push
 	cicd/utility/include/gfs-rotate.bash
+	cicd/utility/include/largedoc-gen.bash
 	source/bash/shcl.bash
 	source/completions/shcl.bash
 	install.bash
@@ -144,10 +150,12 @@ SHELLCHECK_TARGETS=(
 ## Deeper still is worth a run before a release cut:
 ##     SHCL_FUZZ_ITERS=1000000 cargo test --manifest-path source/rust/Cargo.toml \
 ##         --test fuzz_smoke
-TEST_CMD=(env SHCL_FUZZ_ITERS=200000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
+## RUST_TEST_THREADS caps the harness the way -j caps the compile; the fuzz
+## tests are the heavy ones and would otherwise take every core.
+TEST_CMD=(env SHCL_FUZZ_ITERS=200000 RUST_TEST_THREADS="${CPU_CAP}" cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 ## --quick swaps in this test command: same suites, fuzz at the old 20k gate
 ## depth - the minute-scale 200k soak is what the fast loop sheds.
-TEST_QUICK_CMD=(env SHCL_FUZZ_ITERS=20000 cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
+TEST_QUICK_CMD=(env SHCL_FUZZ_ITERS=20000 RUST_TEST_THREADS="${CPU_CAP}" cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 TEST_EXTRA=(
 	'GOMAXPROCS="${CPU_CAP}" go -C source/go test ./...'
 	'GOMAXPROCS="${CPU_CAP}" go -C source/go/cmd test ./...'
@@ -155,6 +163,10 @@ TEST_EXTRA=(
 	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
 	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
 	'obin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/oom_hook.c -o "${obin}" -lm && "${obin}"; orc=$?; rm -f "${obin}"; ((orc==0))'
+	## The same C programs again under the address and undefined-behavior
+	## sanitizers, plus the CLI over the corpus. A read past a buffer that does
+	## not change stdout passes every gate above; this one sees it.
+	'cicd/utility/sanitize-c.bash'
 )
 
 ## Stage 4b: cross-binding differential check (crosscheck.bash). Every entry is
@@ -168,7 +180,7 @@ BINDING_CLIS=(
 	"python|source/python/cmd/shcl/main.py"
 	"c|source/c/shcl"
 )
-XCHECK_GEN='env SHCL_FUZZ_DUMP="${XCHECK_DUMP_DIR}" SHCL_FUZZ_ITERS=2000 SHCL_FUZZ_DUMP_MAX=500 cargo test -j "${CPU_CAP}" --manifest-path '"${MANIFEST}"' --test fuzz_smoke --quiet'
+XCHECK_GEN='env SHCL_FUZZ_DUMP="${XCHECK_DUMP_DIR}" SHCL_FUZZ_ITERS=2000 SHCL_FUZZ_DUMP_MAX=500 RUST_TEST_THREADS="${CPU_CAP}" cargo test -j "${CPU_CAP}" --manifest-path '"${MANIFEST}"' --test fuzz_smoke --quiet'
 
 
 ## Stage 4c: large document. The corpus cases are a few hundred bytes each and
@@ -184,7 +196,10 @@ LARGEDOC_MIB=100
 
 ## Stage 5: profiler. Optimized-with-symbols build (cargo profile "profiling",
 ## feature-gated pprof sampler - never in a normal build), run over a workload big
-## enough to sample meaningfully: the whole corpus + the demo config, repeated.
+## enough to sample meaningfully: the large-document generator at a few MiB. It
+## used to be forty copies of the corpus concatenated, which made four lines in
+## five merge into an existing node, so the graph measured merging and hint
+## formatting rather than parsing.
 ## Kernel perf is locked down on this box (perf_event_paranoid=3), hence the
 ## in-process sampler. PROFILE_WORKLOAD_GEN / PROFILE_RUN are eval'd by the engine
 ## with PROFILE_WORKLOAD / PROFILE_OUT / PROFILE_SECS exported.
@@ -193,7 +208,7 @@ PROFILE_SECS=8
 PROFILE_BUILD_CMD=(cargo build --profile profiling --features profiling -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 PROFILE_BIN="source/rust/target/profiling/${EXE_NAME}"
 PROFILE_OUT_DIR="cicd/artifacts/profiling"   ## relative to repo root; gitignored
-PROFILE_WORKLOAD_GEN='{ for i in $(seq 40); do cat project/conformance/*/input.shcl cicd/demo/app.shcl; echo; done; } > "${PROFILE_WORKLOAD}"'
+PROFILE_WORKLOAD_GEN='source cicd/utility/include/largedoc-gen.bash; largedoc_gen 4 > "${PROFILE_WORKLOAD}"'
 PROFILE_RUN='SHCL_PROFILE_OUT="${PROFILE_OUT}" SHCL_PROFILE_SECS="${PROFILE_SECS}" "${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null'
 ## Wall-clock per surface, logged after the flamegraph: the graph shows where
 ## time goes inside fmt, these catch merge/validate/generate/set/read going
@@ -202,7 +217,7 @@ PROFILE_RUN='SHCL_PROFILE_OUT="${PROFILE_OUT}" SHCL_PROFILE_SECS="${PROFILE_SECS
 PROFILE_TIMED=(
 	'fmt|"${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null'
 	'merge|"${PROFILE_BIN}" fmt --layer="${PROFILE_WORKLOAD}" "${PROFILE_WORKLOAD}" >/dev/null'
-	'reads|"${PROFILE_BIN}" instances "${PROFILE_WORKLOAD}" server >/dev/null && "${PROFILE_BIN}" count "${PROFILE_WORKLOAD}" server >/dev/null'
+	'reads|"${PROFILE_BIN}" instances "${PROFILE_WORKLOAD}" service >/dev/null && "${PROFILE_BIN}" count "${PROFILE_WORKLOAD}" service >/dev/null'
 	'validate|"${PROFILE_BIN}" check --schema=project/conformance/021-schema-valid/schema.shcl "${PROFILE_WORKLOAD}" >/dev/null 2>&1 || [ $? -eq 6 ]'
 	'generate|"${PROFILE_BIN}" init --schema=project/conformance/026-init-schema/init-schema.shcl >/dev/null'
 	'set|printf "int\tprofile.k\t1\nstring\tprofile.s\tv\nremove\tprofile.k\n" | "${PROFILE_BIN}" set "${PROFILE_WORKLOAD}" >/dev/null'

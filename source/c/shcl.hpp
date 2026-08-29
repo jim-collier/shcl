@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -42,7 +43,7 @@ template <class T> struct Read {
 	bool ok() const { return status == Status::Good || status == Status::Empty; }
 };
 
-struct Diagnostic { std::size_t line; bool is_error; std::string message; std::string code; };
+struct Diagnostic { std::size_t line{}; bool is_error{}; std::string message{}; std::string code{}; };
 
 // Owning structured datetime. The core's shcl_datetime borrows its frac digits
 // from the document's arena; this copies them so the value keeps the veneer's
@@ -66,7 +67,7 @@ public:
 	// The C view, for shcl_datetime_str and friends: valid as long as *this.
 	const shcl_datetime &c() const noexcept { return v_; }
 	// The reference's textual form.
-	std::string str() const { char b[64]; return std::string(b, shcl_datetime_str(&v_, b)); }
+	std::string str() const { char b[SHCL_DT_BUF]; return std::string(b, shcl_datetime_str(&v_, b)); }
 };
 
 inline std::string to_str(shcl_str s) { return std::string(s.p, s.n); }
@@ -84,7 +85,9 @@ class Document {
 	shcl_doc *d_ = nullptr;
 	static Status st(shcl_status s) { return static_cast<Status>(s); }
 public:
-	Document() = default;
+	// An empty document, so a default-constructed Document is usable (every
+	// accessor hands the handle to the C core, which takes no null).
+	Document() : d_(shcl_parse("", 0)) {}
 	explicit Document(shcl_doc *d) : d_(d) {}
 	Document(const Document &) = delete;
 	Document &operator=(const Document &) = delete;
@@ -120,15 +123,14 @@ public:
 	// The read half on its own: the file's text, or nullopt with the status
 	// saying why (a file past max_bytes is Unreadable; 0 is no cap). load_file
 	// is this plus a parse.
-	static std::optional<std::string> read_file(const std::string &path, size_t max_bytes = 0, FileStatus *status = nullptr) {
+	static std::optional<std::string> read_file(const std::string &path, std::size_t max_bytes = 0, FileStatus *status = nullptr) {
 		shcl_file_status cs = SHCL_FILE_UNREADABLE;
-		size_t n = 0;
-		char *p = shcl_read_file(path.c_str(), max_bytes, &n, &cs);
+		std::size_t n = 0;
+		// Owned from the call on, so a throw below cannot leak the C buffer.
+		std::unique_ptr<char, void (*)(void *)> p(shcl_read_file(path.c_str(), max_bytes, &n, &cs), &std::free);
 		if (status) *status = static_cast<FileStatus>(cs);
 		if (!p) return std::nullopt;
-		std::string text(p, n);
-		std::free(p);
-		return text;
+		return std::string(p.get(), n);
 	}
 	enum class SaveResult { Ok = SHCL_SAVE_OK, Refused = SHCL_SAVE_REFUSED, Failed = SHCL_SAVE_FAILED };
 	// Not a bool: Refused is the lost-content gate, which save_file_lossy
@@ -178,11 +180,11 @@ public:
 	// drops them.
 	std::vector<Diagnostic> validate(const Document &schema) const {
 		std::vector<Diagnostic> v;
-		shcl_validation *r = shcl_validate(d_, schema.d_);
-		std::size_t n = shcl_validation_count(r);
+		// Owned from the call on, so a throw while copying cannot leak it.
+		std::unique_ptr<shcl_validation, void (*)(shcl_validation *)> r(shcl_validate(d_, schema.d_), &shcl_validation_free);
+		std::size_t n = shcl_validation_count(r.get());
 		for (std::size_t i = 0; i < n; i++)
-			v.push_back({shcl_validation_line(r, i), shcl_validation_severity(r, i) == SHCL_SEV_ERROR, to_str(shcl_validation_message(r, i)), shcl_validation_code(r, i)});
-		shcl_validation_free(r);
+			v.push_back({shcl_validation_line(r.get(), i), shcl_validation_severity(r.get(), i) == SHCL_SEV_ERROR, to_str(shcl_validation_message(r.get(), i)), shcl_validation_code(r.get(), i)});
 		return v;
 	}
 
@@ -191,15 +193,15 @@ public:
 	void merge(const Document &over) { shcl_merge(d_, over.d_); }
 
 	// Schema-driven generation (`shcl init`): a commented, typed starter config
-	// from this document read as a schema. ok is set false on schema faults;
-	// for the fault list, validate() an empty document against this schema -
-	// it reproduces the same V09x diagnostics. A footer naming the format and
-	// pointing at the spec is written last unless no_banner.
-	std::string generate(bool &ok, bool no_banner = false) const {
-		int iok = 0;
-		std::string s = to_str(shcl_generate(d_, no_banner ? 1 : 0, &iok));
-		ok = iok != 0;
-		return s;
+	// from this document read as a schema, and whether it succeeded - false on
+	// schema faults, with the text then empty; for the fault list, validate()
+	// an empty document against this schema - it reproduces the same V09x
+	// diagnostics. A footer naming the format and pointing at the spec is
+	// written last unless no_banner.
+	std::pair<std::string, bool> generate(bool no_banner = false) const {
+		int ok = 0;
+		std::string s = to_str(shcl_generate(d_, no_banner ? 1 : 0, &ok));
+		return {std::move(s), ok != 0};
 	}
 
 	std::size_t count(std::string_view p) const { return shcl_count(d_, p.data(), p.size()); }
@@ -273,7 +275,7 @@ public:
 	// Datetime as the reference's textual form (the common need).
 	Read<std::string> read_datetime_str(std::string_view p) const {
 		auto r = shcl_read_datetime(d_, p.data(), p.size());
-		char buf[64]; std::size_t k = shcl_datetime_str(&r.value, buf);
+		char buf[SHCL_DT_BUF]; std::size_t k = shcl_datetime_str(&r.value, buf);
 		return {std::string(buf, k), st(r.status)};
 	}
 	// Structured datetime, matching read_datetime in every other binding. Owning
@@ -302,7 +304,7 @@ public:
 	Read<std::vector<std::string>> read_datetime_array(std::string_view p) const {
 		auto r = shcl_read_datetime_array(d_, p.data(), p.size());
 		std::vector<std::string> v; v.reserve(r.n);
-		for (std::size_t i = 0; i < r.n; i++) { char buf[64]; std::size_t k = shcl_datetime_str(&r.values[i], buf); v.push_back(std::string(buf, k)); }
+		for (std::size_t i = 0; i < r.n; i++) { char buf[SHCL_DT_BUF]; std::size_t k = shcl_datetime_str(&r.values[i], buf); v.push_back(std::string(buf, k)); }
 		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
 	}
 

@@ -7,7 +7,10 @@
 # stdlib (no pytest) so cicd runs it with a bare python3. Exit nonzero on any miss.
 
 import os
+import stat
 import sys
+from pathlib import Path
+from typing import Any
 
 _HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))            # source/python (the lib)
@@ -157,6 +160,14 @@ def _op_dt(s):
 	return dt
 
 
+def _op_bool(s):
+	if s == "true":
+		return True
+	if s == "false":
+		return False
+	raise ValueError(f"bad bool: {s}")
+
+
 def _op_int(s):
 	# Rust i64 FromStr grammar by hand: int() alone is too lax (it accepts
 	# underscores, surrounding whitespace, and non-ASCII digits).
@@ -230,7 +241,7 @@ def try_apply_op(doc, line):
 		elif op == "float":
 			wrote = doc.set_float(path, _op_flt(v))
 		elif op == "bool":
-			wrote = doc.set_bool(path, v == "true")
+			wrote = doc.set_bool(path, _op_bool(v))
 		elif op == "string":
 			wrote = doc.set_string(path, _unescape_ops(v))
 		elif op == "datetime":
@@ -244,7 +255,7 @@ def try_apply_op(doc, line):
 		elif op == "float-default":
 			wrote = doc.set_float_default(path, _op_flt(v))
 		elif op == "bool-default":
-			wrote = doc.set_bool_default(path, v == "true")
+			wrote = doc.set_bool_default(path, _op_bool(v))
 		elif op == "string-default":
 			wrote = doc.set_string_default(path, _unescape_ops(v))
 		elif op == "datetime-default":
@@ -254,7 +265,7 @@ def try_apply_op(doc, line):
 		elif op == "float-array":
 			wrote = doc.set_float_array(path, [_op_flt(x) for x in arr])
 		elif op == "bool-array":
-			wrote = doc.set_bool_array(path, [x == "true" for x in arr])
+			wrote = doc.set_bool_array(path, [_op_bool(x) for x in arr])
 		elif op == "string-array":
 			wrote = doc.set_string_array(path, [_unescape_ops(x) for x in arr])
 		elif op == "datetime-array":
@@ -264,7 +275,7 @@ def try_apply_op(doc, line):
 		elif op == "float-array-default":
 			wrote = doc.set_float_array_default(path, [_op_flt(x) for x in arr])
 		elif op == "bool-array-default":
-			wrote = doc.set_bool_array_default(path, [x == "true" for x in arr])
+			wrote = doc.set_bool_array_default(path, [_op_bool(x) for x in arr])
 		elif op == "string-array-default":
 			wrote = doc.set_string_array_default(path, [_unescape_ops(x) for x in arr])
 		elif op == "datetime-array-default":
@@ -310,12 +321,12 @@ def main():
 			line = line[:-1] if line.endswith("\r") else line
 			if line == "" or line.startswith("#"):
 				continue
-			apply_op(doc, line, "{}: write.ops line {}".format(case["name"], n + 1))
+			apply_op(doc, line, f"{case['name']}: write.ops line {n + 1}")
 		got = doc.to_canonical()
 		if got != case["expected_write"]:
-			fails.append("{}: writer output differs from expected-write.shcl".format(case["name"]))
+			fails.append(f"{case['name']}: writer output differs from expected-write.shcl")
 		if shcl.Document.parse(got).to_canonical() != got:
-			fails.append("{}: written output is not a fmt fixpoint".format(case["name"]))
+			fails.append(f"{case['name']}: written output is not a fmt fixpoint")
 
 	# Bad-op dimension: each write-bad.ops line, applied alone to the case
 	# input, must be rejected (bad value, bad datetime, or unusable path) and
@@ -330,9 +341,9 @@ def main():
 			doc = shcl.Document.parse(case["input"])
 			before = doc.to_canonical()
 			if try_apply_op(doc, line) is None:
-				fails.append("{}: write-bad.ops line {} was accepted: {}".format(case["name"], n + 1, line))
+				fails.append(f"{case['name']}: write-bad.ops line {n + 1} was accepted: {line}")
 			if doc.to_canonical() != before:
-				fails.append("{}: write-bad.ops line {} changed the document: {}".format(case["name"], n + 1, line))
+				fails.append(f"{case['name']}: write-bad.ops line {n + 1} changed the document: {line}")
 
 	# Layered-load dimension: fold the layer files (lowest first) and input.shcl
 	# (highest file layer) via the library merge, apply the path=value overrides
@@ -349,13 +360,13 @@ def main():
 				continue
 			eq = line.find("=")
 			if eq < 0:
-				raise SystemExit("{}: bad merge.sets line: {}".format(case["name"], line))
+				raise SystemExit(f"{case['name']}: bad merge.sets line: {line}")
 			doc.set_string(line[:eq], line[eq + 1:])
 		got = doc.to_canonical()
 		if got != case["expected_merged"]:
-			fails.append("{}: merged output differs from expected-merged.shcl".format(case["name"]))
+			fails.append(f"{case['name']}: merged output differs from expected-merged.shcl")
 		if shcl.Document.parse(got).to_canonical() != got:
-			fails.append("{}: merged output is not a fmt fixpoint".format(case["name"]))
+			fails.append(f"{case['name']}: merged output is not a fmt fixpoint")
 
 	# Generation dimension: generate on the schema must reproduce the golden
 	# starter config, and that output must itself load cleanly.
@@ -364,26 +375,26 @@ def main():
 			continue
 		text, ifaults = shcl.generate(shcl.Document.parse(case["init_schema"]))
 		if ifaults:
-			fails.append("{}: init schema has faults".format(case["name"]))
+			fails.append(f"{case['name']}: init schema has faults")
 			continue
 		if text != case["expected_init"]:
-			fails.append("{}: init output differs from expected-init.shcl".format(case["name"]))
+			fails.append(f"{case['name']}: init output differs from expected-init.shcl")
 		# The footer is the only difference the flag makes: everything before
 		# it is byte-for-byte what the default run produced.
 		bare, _ = shcl.generate(shcl.Document.parse(case["init_schema"]), True)
 		if not bare or not text.startswith(bare):
-			fails.append("{}: --no-banner output is not a prefix of the default".format(case["name"]))
+			fails.append(f"{case['name']}: --no-banner output is not a prefix of the default")
 		elif "This config file format is SHCL." not in text[len(bare):]:
-			fails.append("{}: default init output is missing the format footer".format(case["name"]))
+			fails.append(f"{case['name']}: default init output is missing the format footer")
 		gdoc = shcl.Document.parse(text)
 		if any(d.severity == shcl.Severity.Error for d in gdoc.diagnostics()):
-			fails.append("{}: generated starter does not load cleanly".format(case["name"]))
+			fails.append(f"{case['name']}: generated starter does not load cleanly")
 		# And it must satisfy the very schema that produced it - case 026's
 		# golden once failed its own schema (repeat lower bound and a
 		# materialized wildcard were ignored).
 		sdoc = shcl.Document.parse(case["init_schema"])
 		if any(d.severity == shcl.Severity.Error for d in gdoc.validate(sdoc)):
-			fails.append("{}: generated starter fails its own schema".format(case["name"]))
+			fails.append(f"{case['name']}: generated starter fails its own schema")
 
 	# Diagnostics: count, line, severity, and stable code per case - the same
 	# shape `check` prints to stdout at Standard (its cross-binding contract).
@@ -400,7 +411,7 @@ def main():
 		else:
 			got += f"ok ({len(diags)} diagnostic(s))\n"
 		if got != case["expected_diags"]:
-			fails.append("{}: diagnostics differ from expected-diags.txt".format(case["name"]))
+			fails.append(f"{case['name']}: diagnostics differ from expected-diags.txt")
 
 	# Schema dimension: golden = the exact `check --schema` stdout at Standard
 	# (doc parse diags, then validation diags, then the summary). A schema that
@@ -428,16 +439,16 @@ def main():
 		else:
 			got += f"ok ({len(diags)} diagnostic(s))\n"
 		if got != case["expected_validate"]:
-			fails.append("{}: validation output differs from expected-validate.txt".format(case["name"]))
+			fails.append(f"{case['name']}: validation output differs from expected-validate.txt")
 
 	# The canonical formatter must match expected.shcl and be a fixpoint.
 	for case in cases:
 		got = shcl.Document.parse(case["input"]).to_canonical()
 		if got != case["expected"]:
-			fails.append("{}: canonical output differs from expected.shcl".format(case["name"]))
+			fails.append(f"{case['name']}: canonical output differs from expected.shcl")
 		again = shcl.Document.parse(got).to_canonical()
 		if again != got:
-			fails.append("{}: formatter is not idempotent".format(case["name"]))
+			fails.append(f"{case['name']}: formatter is not idempotent")
 
 	# Typed reads must match expected value + status.
 	for case in cases:
@@ -446,11 +457,11 @@ def main():
 				continue
 			cols = line.split("\t")
 			if len(cols) < 4:
-				fails.append("{}: reads.tsv line {} too short".format(case["name"], n + 1))
+				fails.append(f"{case['name']}: reads.tsv line {n + 1} too short")
 				continue
 			query, kind, expected, status = cols[0], cols[1], cols[2], cols[3]
 			level = parse_level(cols[4] if len(cols) > 4 else None)
-			at = "{}: reads.tsv line {} ({} {})".format(case["name"], n + 1, query, kind)
+			at = f"{case['name']}: reads.tsv line {n + 1} ({query} {kind})"
 
 			if kind == "load":
 				try:
@@ -535,7 +546,7 @@ def main():
 	# write_reason: the reason behind a setter's bare False. Same fixture in
 	# every runner.
 	wdoc = shcl.Document.parse("a:\n\tb: 1\n")
-	for wpath, want in (
+	for wpath, wwant in (
 		("a.b", shcl.WriteReason.Writable),
 		("a.new[Boston].x", shcl.WriteReason.Writable),   # creatable
 		("", shcl.WriteReason.BadPath),
@@ -554,9 +565,9 @@ def main():
 		('"x\ny".b', shcl.WriteReason.Writable),
 		('"x\\ny".b', shcl.WriteReason.Writable),
 	):
-		got = wdoc.write_reason(wpath)
-		if got is not want:
-			raise SystemExit(f"write_reason({wpath!r}) got {got} want {want}")
+		wgot = wdoc.write_reason(wpath)
+		if wgot is not wwant:
+			raise SystemExit(f"write_reason({wpath!r}) got {wgot} want {wwant}")
 	# The probe never creates: the doc is unchanged after all of the above.
 	if wdoc.count("a") != 1:
 		raise SystemExit("write_reason probe created an instance")
@@ -569,7 +580,7 @@ def main():
 	# rewritten by any platform's line-ending translation.
 	rdoc = shcl.Document.parse("r:\n\t~~~\n\tone\r\r\n\ta\rb\n\t~~~\n")
 	if rdoc.read_raw("r").value != "one\na\rb":
-		raise SystemExit("raw content: {!r}".format(rdoc.read_raw("r").value))
+		raise SystemExit(f"raw content: {rdoc.read_raw('r').value!r}")
 	rcanon = rdoc.to_canonical()
 	if shcl.Document.parse(rcanon).to_canonical() != rcanon:
 		raise SystemExit("raw block with CR is not a formatter fixpoint")
@@ -586,33 +597,33 @@ def main():
 	if ldoc.read_string("missing").quoted:
 		raise SystemExit("missing path reports quoted")
 	if ldoc.read_string("b").line != 2:
-		raise SystemExit("read line got {}".format(ldoc.read_string("b").line))
+		raise SystemExit(f"read line got {ldoc.read_string('b').line}")
 	if ldoc.line("code.done") != 6:
-		raise SystemExit("line() got {}".format(ldoc.line("code.done")))
+		raise SystemExit(f"line() got {ldoc.line('code.done')}")
 	if ldoc.line("code") != 3:
-		raise SystemExit("line() on merged instance got {}".format(ldoc.line("code")))
+		raise SystemExit(f"line() on merged instance got {ldoc.line('code')}")
 	if ldoc.line("missing") != 0:
-		raise SystemExit("line() on missing path got {}".format(ldoc.line("missing")))
+		raise SystemExit(f"line() on missing path got {ldoc.line('missing')}")
 	# lines(): the plural - a repeated field cites every binding, wildcard
 	# slots keep their index (0 = unresolved), a miss is the empty list.
 	if ldoc.line("code.hook") != 0:  # Multiple - the singular's gap
-		raise SystemExit("line() on repeated field got {}".format(ldoc.line("code.hook")))
+		raise SystemExit(f"line() on repeated field got {ldoc.line('code.hook')}")
 	if ldoc.lines("code.hook") != [4, 5]:
-		raise SystemExit("lines() got {}".format(ldoc.lines("code.hook")))
+		raise SystemExit(f"lines() got {ldoc.lines('code.hook')}")
 	if ldoc.lines("code.done") != [6]:
-		raise SystemExit("lines() single got {}".format(ldoc.lines("code.done")))
+		raise SystemExit(f"lines() single got {ldoc.lines('code.done')}")
 	if ldoc.lines("a") != [1]:
-		raise SystemExit("lines() top-level got {}".format(ldoc.lines("a")))
+		raise SystemExit(f"lines() top-level got {ldoc.lines('a')}")
 	if ldoc.lines("code[*].done") != [6]:
-		raise SystemExit("lines() wildcard got {}".format(ldoc.lines("code[*].done")))
+		raise SystemExit(f"lines() wildcard got {ldoc.lines('code[*].done')}")
 	if ldoc.lines("code[*].nope") != [0]:
-		raise SystemExit("lines() unresolved slot got {}".format(ldoc.lines("code[*].nope")))
+		raise SystemExit(f"lines() unresolved slot got {ldoc.lines('code[*].nope')}")
 	if ldoc.lines("missing"):
 		raise SystemExit("lines() on missing path not empty")
 	if ldoc.children("code") != ["hook", "hook", "done"]:
-		raise SystemExit("children() got {}".format(ldoc.children("code")))
+		raise SystemExit(f"children() got {ldoc.children('code')}")
 	if ldoc.children("") != ["a", "b", "code"]:
-		raise SystemExit("top-level children() got {}".format(ldoc.children("")))
+		raise SystemExit(f"top-level children() got {ldoc.children('')}")
 	if ldoc.children("missing"):
 		raise SystemExit("children() on missing path not empty")
 	# authored_name(): the author's spelling, unfolded; merged instances keep
@@ -620,23 +631,25 @@ def main():
 	# keeps the setter path's spelling.
 	sdoc2 = shcl.Document.parse("SYMBOLS: 3\nCode:\n\tx: 1\ncode:\n\ty: 2\n")
 	if sdoc2.authored_name("symbols") != "SYMBOLS":
-		raise SystemExit("authored_name(symbols) got {}".format(sdoc2.authored_name("symbols")))
+		raise SystemExit(f"authored_name(symbols) got {sdoc2.authored_name('symbols')}")
 	if sdoc2.authored_name("code") != "Code":
-		raise SystemExit("authored_name(code) got {}".format(sdoc2.authored_name("code")))
+		raise SystemExit(f"authored_name(code) got {sdoc2.authored_name('code')}")
 	if sdoc2.authored_name("missing") != "":
 		raise SystemExit("authored_name(missing) not empty")
 	if not sdoc2.set_int("NewTop.n", 1):
 		raise SystemExit("set_int NewTop.n failed")
 	if sdoc2.authored_name("newtop") != "NewTop":
-		raise SystemExit("authored_name(newtop) got {}".format(sdoc2.authored_name("newtop")))
+		raise SystemExit(f"authored_name(newtop) got {sdoc2.authored_name('newtop')}")
 	# Escapes ARE resolved on a name, so both spellings of the path find the same
 	# node - while authored_name still hands back the source spelling, which is
 	# the one thing it is for. Same fixture in every runner.
 	sdoc3 = shcl.Document.parse('"Ab\\tCd": 2\n')
-	if sdoc3.authored_name('"ab\\tcd"') != "Ab\\tCd":
-		raise SystemExit("authored_name escaped got {!r}".format(sdoc3.authored_name('"ab\\tcd"')))
-	if sdoc3.authored_name('"ab\tcd"') != "Ab\\tCd":
-		raise SystemExit("authored_name via the literal spelling got {!r}".format(sdoc3.authored_name('"ab\tcd"')))
+	esc_name = sdoc3.authored_name('"ab\\tcd"')
+	if esc_name != "Ab\\tCd":
+		raise SystemExit(f"authored_name escaped got {esc_name!r}")
+	lit_name = sdoc3.authored_name('"ab\tcd"')
+	if lit_name != "Ab\\tCd":
+		raise SystemExit(f"authored_name via the literal spelling got {lit_name!r}")
 	if sdoc3.read_int('"ab\tcd"').value != 2:
 		raise SystemExit("read via the literal spelling failed")
 	# Canonical output folds the case, as it always has, and escapes the tab.
@@ -694,6 +707,29 @@ def main():
 
 		if _at_depth(900, _merge_deep) != _merge_deep():
 			raise SystemExit("deep merge from a deep caller diverged")
+		# Wildcard resolution, validation through mounts and the unknown-field
+		# sweep behind it, and generation through mounts each recursed one
+		# frame per level, so from a caller 600 frames deep a document or
+		# schema at the cap raised RecursionError. Each from that depth.
+		ddoc = shcl.Document.parse(deep)
+		stars = ".".join(["*"] * 512)
+		if _at_depth(600, lambda: ddoc.count(stars)) != 1:
+			raise SystemExit("deep wildcard resolve from a deep caller")
+		vschema = shcl.Document.parse("field: l0\n\tinherits: f\nfragment: f\n\tfield: *\n\t\tinherits: f\n")
+		if _at_depth(600, lambda: ddoc.validate(vschema)) != []:
+			raise SystemExit("deep validate through mounts from a deep caller")
+		wschema = shcl.Document.parse(f"field: {stars}\n")
+		if _at_depth(600, lambda: ddoc.validate(wschema)) != []:
+			raise SystemExit("deep wildcard validate from a deep caller")
+		# 512 distinct fragments in one chain: a re-entered name cuts at once,
+		# so only a chain that long reaches the depth cut.
+		gs = ["field: a\n\tinherits: f0\n"]
+		for k in range(512):
+			gs.append(f"fragment: f{k}\n\tfield: b\n" + (f"\t\tinherits: f{k + 1}\n" if k < 511 else ""))
+		gschema = shcl.Document.parse("".join(gs))
+		gtext, gfaults = _at_depth(600, lambda: shcl.generate(gschema))
+		if gfaults or gtext != shcl.generate(gschema)[0] or gtext.count("\n#") < 512:
+			raise SystemExit("deep generate through mounts from a deep caller")
 		# Bad encoding is unreadable too: the parser assumes well-formed text, so a
 		# binary file loading clean would read back mangled and a later save would
 		# write the mangled version over the original.
@@ -725,6 +761,10 @@ def main():
 			raise SystemExit("read_file at the cap")
 		if shcl.read_file(fpath, 9) != (None, shcl.FileStatus.Unreadable):
 			raise SystemExit("read_file past the cap")
+		# A cap spelled as the type maximum used to overflow the over-cap probe
+		# and read nothing. Same fixture in every runner.
+		if shcl.read_file(fpath, sys.maxsize) != ("a: 1\nb: x\n", shcl.FileStatus.Clean):
+			raise SystemExit("read_file at the largest cap")
 		if shcl.read_file(os.path.join(td, "none.shcl"), 0) != (None, shcl.FileStatus.NotFound):
 			raise SystemExit("read_file missing")
 		if not fdoc.set_int("c", 3):
@@ -756,18 +796,70 @@ def main():
 		# concept, so the mode half is POSIX-only.
 		if os.name == "posix":
 			probe = os.path.join(td, "probe")
-			open(probe, "w").close()
-			want = os.stat(probe).st_mode & 0o777
+			Path(probe).touch()
+			mode_want = os.stat(probe).st_mode & 0o777
 			born = os.path.join(td, "born.shcl")
 			ndoc.save_file(born)
-			got = os.stat(born).st_mode & 0o777
-			if got != want:
-				raise SystemExit(f"new file mode {got:o}, want {want:o}")
+			mode = os.stat(born).st_mode & 0o777
+			if mode != mode_want:
+				raise SystemExit(f"new file mode {mode:o}, want {mode_want:o}")
 			os.chmod(born, 0o640)
 			ndoc.save_file(born)
-			got = os.stat(born).st_mode & 0o777
-			if got != 0o640:
-				raise SystemExit(f"existing file mode {got:o}, want 640")
+			mode = os.stat(born).st_mode & 0o777
+			if mode != 0o640:
+				raise SystemExit(f"existing file mode {mode:o}, want 640")
+			# A link to a file that is not there yet is written through like any
+			# other link: the file appears where the link points and the link
+			# stays a link. Same fixture in every POSIX runner.
+			os.mkdir(os.path.join(td, "real"))
+			link = os.path.join(td, "c.shcl")
+			os.symlink("real/c.shcl", link)
+			shcl.Document.parse("a: 1\n").save_file(link)
+			if not os.path.islink(link):
+				raise SystemExit("save replaced the dangling link")
+			if _read(os.path.join(td, "real", "c.shcl")) != "a: 1\n":
+				raise SystemExit("save did not create the file behind the link")
+		if os.name == "nt":
+			# A read-only target is rewritten, as it is on POSIX, and comes back
+			# read-only; no temp file is left behind. Same fixture in every runner.
+			ro = os.path.join(td, "ro.shcl")
+			with open(ro, "w", encoding="utf-8", newline="") as fh:
+				fh.write("a: 1\n")
+			os.chmod(ro, stat.S_IREAD)
+			shcl.Document.parse("a: 2\n").save_file(ro)
+			if _read(ro) != "a: 2\n":
+				raise SystemExit("read-only file not rewritten")
+			if os.stat(ro).st_mode & stat.S_IWRITE:
+				raise SystemExit("rewritten file did not come back read-only")
+			if [n for n in os.listdir(td) if ".tmp" in n]:
+				raise SystemExit("read-only rewrite left a temp file")
+			os.chmod(ro, stat.S_IREAD | stat.S_IWRITE)
+		# A document holding a lone surrogate has no UTF-8 spelling; the save
+		# fails like any other failed write, and leaves no temp file behind.
+		surdoc = shcl.Document.parse("a: 1\n")
+		if not surdoc.set_string("s", "\udcff"):
+			raise SystemExit("set_string refused a surrogate")
+		try:
+			surdoc.save_file(fpath)
+			raise SystemExit("save_file wrote a lone surrogate")
+		except shcl.SaveFailed:
+			pass
+		if [n for n in os.listdir(td) if ".tmp" in n]:
+			raise SystemExit("failed save left a temp file")
+		# A path is a str or a PathLike, never a descriptor: read_file(0) used
+		# to read stdin and close it.
+		bad_path: Any = 0
+		for call in (
+			lambda: shcl.read_file(bad_path),
+			lambda: shcl.Document.load_file(bad_path),
+			lambda: shcl.write_file_atomic(bad_path, "a: 1\n"),
+		):
+			try:
+				call()
+				raise SystemExit("an int was taken as a path")
+			except TypeError:
+				pass
+		os.fstat(0)  # raises if the read closed stdin
 		# Content-malformed lines are retained as trivia (lost_count 0, the
 		# line survives a save); position-dependent drops count as lost and
 		# make save_file refuse until the caller opts into save_file_lossy.
@@ -822,9 +914,9 @@ def main():
 	# whose read result exposes raw (the C read structs deliberately do not).
 	rdoc = shcl.Document.parse('regex: ^\\d{2,3}$\nlist: a,  "b c"\n')
 	if rdoc.read_string("regex").raw != "^\\d{2,3}$":
-		raise SystemExit("raw fixture mismatch: {!r}".format(rdoc.read_string("regex").raw))
+		raise SystemExit(f"raw fixture mismatch: {rdoc.read_string('regex').raw!r}")
 	if rdoc.read_string_array("list").raw != 'a,  "b c"':
-		raise SystemExit("raw fixture mismatch: {!r}".format(rdoc.read_string_array("list").raw))
+		raise SystemExit(f"raw fixture mismatch: {rdoc.read_string_array('list').raw!r}")
 	# A written value has no source spelling; raw falls back to display. The
 	# selector's escaped spelling must land on the existing instance.
 	rdoc2 = shcl.Document.parse("who: 'q\"uote'\n")
@@ -844,12 +936,12 @@ def main():
 	# fixture in every runner.
 	cdoc = shcl.Document.parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\n")
 	if cdoc.get_int_or("a", 9) != 42:
-		raise SystemExit("get_int_or Good got {}".format(cdoc.get_int_or("a", 9)))
+		raise SystemExit(f"get_int_or Good got {cdoc.get_int_or('a', 9)}")
 	for p in ("b", "e", "missing"):
 		if cdoc.get_int_or(p, 9) != 9:
 			raise SystemExit(f"get_int_or({p!r}) did not fall back")
 	if cdoc.get_int_array_or("arr", [7]) != [1, 2, 3]:
-		raise SystemExit("get_int_array_or Good got {}".format(cdoc.get_int_array_or("arr", [7])))
+		raise SystemExit(f"get_int_array_or Good got {cdoc.get_int_array_or('arr', [7])}")
 	if cdoc.get_int_array_or("missing", [7]) != [7]:
 		raise SystemExit("get_int_array_or missing did not fall back")
 	if cdoc.get_string_or("missing", "fb") != "fb":
@@ -861,6 +953,64 @@ def main():
 		raise SystemExit("an emptied field is not ok()")
 	if cdoc.read_int("missing").ok():
 		raise SystemExit("a missing field is ok()")
+	# The body's shared indent survives a reload (the closing fence's indent
+	# is what comes off), the info-string is stored as a fence line reads it
+	# back, and an info with a line break has no spelling and fails the
+	# write. Same fixture in every runner.
+	rawdoc = shcl.Document.new()
+	if not rawdoc.set_raw("q", "  a\n  b", " sql "):
+		raise SystemExit("set_raw failed")
+	rawback = shcl.Document.parse(rawdoc.to_canonical())
+	if rawback.get_raw("q") != "  a\n  b":
+		raise SystemExit(f"set_raw indent got {rawback.get_raw('q')!r}")
+	if rawback.read_raw_info("q").value != "sql":
+		raise SystemExit("set_raw info not trimmed")
+	if rawdoc.set_raw("q", "x", "a\nb") or rawdoc.set_raw("q", "x", "a\rb"):
+		raise SystemExit("set_raw accepted an info with a line break")
+	if rawdoc.get_raw("q") != "  a\n  b":
+		raise SystemExit("refused set_raw changed the document")
+	# Typed setters take exactly their type and raise a TypeError naming the
+	# setter for anything else, rather than writing text the reader of that
+	# type would call bad-type (set_int of 3.5 wrote `3.5`). bool is an int
+	# in Python, so the int and float gates carve it out; an int is a float.
+	tdoc = shcl.Document.parse("a: 1\n")
+	for setter, args in (
+		("set_int", ("a", 3.5)),
+		("set_int", ("a", True)),
+		("set_int", ("a", "3")),
+		("set_float", ("a", True)),
+		("set_float", ("a", "1.5")),
+		("set_bool", ("a", 1)),
+		("set_string", ("a", 5)),
+		("set_datetime", ("a", "2026-01-01")),
+		("set_int_array", ("a", [1, 2.5])),
+		("set_float_array", ("a", [1.5, False])),
+		("set_bool_array", ("a", [True, 0])),
+		("set_string_array", ("a", ["x", None])),
+		("set_datetime_array", ("a", ["2026-01-01"])),
+		("set_int_default", ("a", 1.0)),
+		("set_float_default", ("a", "1")),
+		("set_bool_default", ("a", "true")),
+		("set_string_default", ("a", 1)),
+		("set_datetime_default", ("a", 1)),
+		("set_int_array_default", ("a", [True])),
+		("set_float_array_default", ("a", ["1"])),
+		("set_bool_array_default", ("a", [1])),
+		("set_string_array_default", ("a", [1])),
+		("set_datetime_array_default", ("a", [1])),
+	):
+		try:
+			getattr(tdoc, setter)(*args)
+			raise SystemExit(f"{setter} accepted {args[1]!r}")
+		except TypeError as e:
+			if not str(e).startswith(setter + ":"):
+				raise SystemExit(f"{setter} TypeError does not name it: {e}") from None
+	if tdoc.to_canonical() != "a: 1\n":
+		raise SystemExit("a refused setter changed the document")
+	if not tdoc.set_float("f", 3) or tdoc.read_float("f").value != 3.0:
+		raise SystemExit("set_float refused an int")
+	if not tdoc.set_float_array_default("g", [1, 2.5]) or tdoc.read_float_array("g").value != [1.0, 2.5]:
+		raise SystemExit("set_float_array_default refused an int element")
 
 	print(f"conformance: {len(cases)} case(s) pass")
 	return 0

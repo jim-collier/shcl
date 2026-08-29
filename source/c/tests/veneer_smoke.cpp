@@ -124,12 +124,16 @@ int main() {
 	// The default run appends the format footer; --no-banner is the same bytes
 	// without it.
 	auto gschema = shcl::Document::parse("field: port\n\ttype: int\n\trequired: yes\n\tdefault: 8080\n");
-	bool gok = false;
-	std::string bare = gschema.generate(gok, true);
-	CHECK(gok && bare == "# int, required\nport: 8080\n");
-	std::string starter = gschema.generate(gok);
-	CHECK(gok && starter.rfind(bare, 0) == 0);
+	auto [bare, bareOk] = gschema.generate(true);
+	CHECK(bareOk && bare == "# int, required\nport: 8080\n");
+	auto [starter, starterOk] = gschema.generate();
+	CHECK(starterOk && starter.rfind(bare, 0) == 0);
 	CHECK(starter.find("This config file format is SHCL.", bare.size()) != std::string::npos);
+	auto faulty = shcl::Document::parse("field: port\n\tfrobnicate: 1\n").generate();
+	CHECK(!faulty.second && faulty.first.empty());
+	// A default-constructed Document is an empty one, not a null handle.
+	shcl::Document blank;
+	CHECK(blank.to_canonical().empty() && blank.count("x") == 0 && blank.diagnostics().empty());
 
 	// One-shot: one combined list (parse then validation), error predicate.
 	auto combined = shcl::Document::load_and_validate(": nope\nport: x\n", "field: port\n\ttype: int\n", shcl::Strictness::Standard);

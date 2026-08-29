@@ -53,35 +53,45 @@ done
 refName="${bindings[0]%%|*}"; refCli="${bindings[0]#*|}"
 declare -i nCompared=0 nBad=0
 
-##	Run one CLI invocation, capturing stdout and exit code as "<code>\n<stdout>X".
-##	stderr is dropped: diagnostics wording is per-binding voice, not contract.
-##	Two sentinel tricks: the inner 'X<rc>' rides rc inside the capture so the
-##	substitution always exits 0 (no -e trip) and no separate rc grab is needed;
-##	the trailing 'X' on our own output means the caller's `want="$(fRun ...)"`
-##	has nothing to strip, so a dropped or doubled final newline stays visible.
+##	Run one CLI invocation, leaving "<code>\n<stdout>" in runOut. stderr is
+##	dropped: diagnostics wording is per-binding voice, not contract. stdout goes
+##	through a file and a builtin read rather than $(...): a substitution strips
+##	trailing newlines, so a dropped or doubled final one would be invisible, and
+##	it would cost two more forks per launch on top of the CLI's own - there are
+##	about eight thousand launches in a run.
+runOut=""
 fRun(){
 	local cli="$1"; shift
-	local out
-	out="$("$cli" "$@" 2>/dev/null; printf 'X%d' "$?")"
-	printf '%s\n%sX' "${out##*X}" "${out%X*}"
+	local rc=0
+	"$cli" "$@" >"${tmpDir}/run.out" 2>/dev/null || rc=$?
+	fReadOut "$rc"
 }
 
 ##	Like fRun, but feeds a file to stdin (the `set` write-ops script).
 fRunStdin(){
 	local cli="$1" stdinFile="$2"; shift 2
-	local out
-	out="$("$cli" "$@" <"$stdinFile" 2>/dev/null; printf 'X%d' "$?")"
-	printf '%s\n%sX' "${out##*X}" "${out%X*}"
+	local rc=0
+	"$cli" "$@" <"$stdinFile" >"${tmpDir}/run.out" 2>/dev/null || rc=$?
+	fReadOut "$rc"
+}
+
+##	read -d '' takes the file whole, trailing newlines included, and returns 1
+##	at EOF, which is the normal end here. A NUL in stdout ends the read early -
+##	the same limit $(...) had, since a bash string cannot hold one.
+fReadOut(){
+	local out=""
+	IFS= read -r -d '' out <"${tmpDir}/run.out" || true
+	runOut="$1"$'\n'"${out}"
 }
 
 ##	Compare every other binding against the reference for one stdin-fed call.
 fCompareStdin(){
 	local what="$1" stdinFile="$2"; shift 2
 	local want got b name cli
-	want="$(fRunStdin "$refCli" "$stdinFile" "$@")"
+	fRunStdin "$refCli" "$stdinFile" "$@"; want="${runOut}"
 	for b in "${bindings[@]:1}"; do
 		name="${b%%|*}"; cli="${b#*|}"
-		got="$(fRunStdin "$cli" "$stdinFile" "$@")"
+		fRunStdin "$cli" "$stdinFile" "$@"; got="${runOut}"
 		nCompared+=1
 		if [[ "$got" != "$want" ]]; then
 			nBad+=1
@@ -95,10 +105,10 @@ fCompareStdin(){
 fCompare(){
 	local what="$1"; shift
 	local want got b name cli
-	want="$(fRun "$refCli" "$@")"
+	fRun "$refCli" "$@"; want="${runOut}"
 	for b in "${bindings[@]:1}"; do
 		name="${b%%|*}"; cli="${b#*|}"
-		got="$(fRun "$cli" "$@")"
+		fRun "$cli" "$@"; got="${runOut}"
 		nCompared+=1
 		if [[ "$got" != "$want" ]]; then
 			nBad+=1
@@ -138,12 +148,12 @@ fCompareWrite(){
 	target="$("$fixture" "$root")"
 	# The exit code rides along: a write that refuses leaves the tree alone, so
 	# the state compare alone cannot tell a refusal from a no-op success.
-	want="$(fRun "$refCli" "$@" "$target")$(fWriteState "$root")"
+	fRun "$refCli" "$@" "$target"; want="${runOut}$(fWriteState "$root")"
 	for b in "${bindings[@]:1}"; do
 		name="${b%%|*}"; cli="${b#*|}"
 		root="${tmpDir}/write-${name}"; rm -rf "$root"; mkdir -p "$root"
 		target="$("$fixture" "$root")"
-		got="$(fRun "$cli" "$@" "$target")$(fWriteState "$root")"
+		fRun "$cli" "$@" "$target"; got="${runOut}$(fWriteState "$root")"
 		nCompared+=1
 		if [[ "$got" != "$want" ]]; then
 			nBad+=1
@@ -194,6 +204,9 @@ fComparePlant(){
 fFixMode(){    printf 'a:  1\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
 fFixSymlink(){ mkdir -p "$1/real"; printf 'a:  1\n' >"$1/real/c.shcl"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.shcl"; }
 fFixHardlink(){ printf 'a:  1\n' >"$1/c.shcl"; ln "$1/c.shcl" "$1/other.shcl"; echo "$1/c.shcl"; }
+##	A link to a file that is not there yet: the write must create the target
+##	behind the link, not turn the link into a file.
+fFixDangling(){ mkdir -p "$1/real"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.shcl"; }
 ##	Nothing at the path at all - the create case. The tree it leaves behind is
 ##	the whole point, so the fixture deliberately builds nothing.
 fFixAbsent(){  echo "$1/c.shcl"; }
@@ -225,20 +238,25 @@ fReadRow(){
 	esac
 }
 
+##	bash variables cannot hold a NUL, so a captured stdout would drop it. read
+##	-d '' stops at a NUL and returns 0 only when it found one, so this probes a
+##	file for one with no fork.
+fHasNul(){ IFS= read -r -d '' _ <"$1"; }
+
 for caseDir in "$corpus"/*/; do
 	input="${caseDir}input.shcl"
 	[[ -f "$input" ]] || continue
-	# bash variables cannot hold a NUL, so $() capture would silently drop it and
-	# warn. Such cases (e.g. the merge-key NUL case) are pinned by the native
+	caseName="${caseDir%/}"; caseName="${caseName##*/}"
+	# NUL-bearing cases (e.g. the merge-key NUL case) are pinned by the native
 	# conformance runners instead; skip them here, out loud.
-	if [[ "$(LC_ALL=C tr -dc '\000' < "$input" | wc -c)" -ne 0 ]]; then
-		echo "crosscheck: skipping $(basename "$caseDir") (NUL in input; native runners pin it)"
+	if fHasNul "$input"; then
+		echo "crosscheck: skipping ${caseName} (NUL in input; native runners pin it)"
 		continue
 	fi
-	fCompare "fmt $(basename "$caseDir")" fmt "$input"
+	fCompare "fmt ${caseName}" fmt "$input"
 	# Write dimension: apply the case's ops script and compare canonical output.
 	ops="${caseDir}write.ops"
-	[[ -f "$ops" ]] && fCompareStdin "set $(basename "$caseDir")" "$ops" set "$input"
+	[[ -f "$ops" ]] && fCompareStdin "set ${caseName}" "$ops" set "$input"
 	# Bad-op dimension: each write-bad.ops line, applied alone, must produce the
 	# same (empty) stdout and same nonzero exit in every binding.
 	badops="${caseDir}write-bad.ops"
@@ -248,7 +266,7 @@ for caseDir in "$corpus"/*/; do
 			[[ -z "$bline" || "$bline" == \#* ]] && continue
 			badN=$((badN+1))
 			printf '%s\n' "$bline" > "${tmpDir}/badop.line"
-			fCompareStdin "set-bad $(basename "$caseDir") line ${badN}" "${tmpDir}/badop.line" set "$input"
+			fCompareStdin "set-bad ${caseName} line ${badN}" "${tmpDir}/badop.line" set "$input"
 		done < "$badops"
 	fi
 	# Layered-load dimension: replay `fmt` with the case's layer*.shcl merged under
@@ -263,17 +281,17 @@ for caseDir in "$corpus"/*/; do
 				setArgs+=("--set=$sline")
 			done < "${caseDir}merge.sets"
 		fi
-		fCompare "merge $(basename "$caseDir")" fmt "${layerArgs[@]}" "${setArgs[@]}" "$input"
+		fCompare "merge ${caseName}" fmt "${layerArgs[@]}" "${setArgs[@]}" "$input"
 	fi
 	# Schema dimension: replay check --schema (codes + summary + exit are the contract).
 	schema="${caseDir}schema.shcl"
-	[[ -f "$schema" ]] && fCompare "check --schema $(basename "$caseDir")" check "--schema=${schema}" "$input"
+	[[ -f "$schema" ]] && fCompare "check --schema ${caseName}" check "--schema=${schema}" "$input"
 	# Generation dimension: replay init --schema (the generated starter is the
 	# contract), both with the format footer and with --no-banner.
 	initschema="${caseDir}init-schema.shcl"
 	if [[ -f "$initschema" ]]; then
-		fCompare "init $(basename "$caseDir")" init "--schema=${initschema}"
-		fCompare "init --no-banner $(basename "$caseDir")" init --no-banner "--schema=${initschema}"
+		fCompare "init ${caseName}" init "--schema=${initschema}"
+		fCompare "init --no-banner ${caseName}" init --no-banner "--schema=${initschema}"
 	fi
 	tsv="${caseDir}reads.tsv"
 	if [[ -f "$tsv" ]]; then
@@ -290,8 +308,8 @@ if [[ -n "$extra" && -d "$extra" ]]; then
 		[[ -e "$f" ]] || continue
 		nExtra+=1
 		# Same NUL limitation as the corpus loop; silently skip (a dump can be large).
-		[[ "$(LC_ALL=C tr -dc '\000' < "$f" | wc -c)" -ne 0 ]] && continue
-		fCompare "fmt $(basename "$f")" fmt "$f"
+		if fHasNul "$f"; then continue; fi
+		fCompare "fmt ${f##*/}" fmt "$f"
 		# Derived reads.tsv (the reference dumps one per input, paths it knows exist):
 		# replay the accessor rows too, so the fuzz set covers reads, not just fmt.
 		reads="${f%.shcl}.reads.tsv"
@@ -328,6 +346,7 @@ fCompare "usage donate flag" --donate
 # case pins the documented limitation: rename cannot preserve the other name.
 fCompareWrite "write keeps mode" fFixMode fmt --write
 fCompareWrite "write follows symlink" fFixSymlink fmt --write
+fCompareWrite "write creates behind a dangling symlink" fFixDangling set --write --set=a=1
 fCompareWrite "write breaks hard link" fFixHardlink fmt --write
 fComparePlant "write refuses a planted temp" fmt --write
 
@@ -399,3 +418,6 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 ##		               and the two gates that bound it; then `--set-literal`
 ##		               beside `--set` on the same text, so the data-vs-syntax
 ##		               split cannot drift.
+##		- 20260829: One fork per CLI launch instead of three (stdout through a
+##		               file and a builtin read), and no forks at all for the NUL
+##		               probe and the case names.

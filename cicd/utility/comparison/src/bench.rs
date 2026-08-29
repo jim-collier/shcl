@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
+
 //! One entry per library under test, plus the measurement itself.
 //!
 //! Every library parses to its own ecosystem's in-memory document model and
@@ -161,7 +164,7 @@ pub fn run(key: &str, src: &str, iters: usize, count: bool, base: u64) -> Measur
 	}
 }
 
-//•••• SHCL ••••
+// SHCL
 
 fn run_shcl(src: &str, iters: usize, count: bool, base: u64) -> Measured {
 	let probe = shcl::Document::parse(src);
@@ -231,7 +234,7 @@ fn shcl_walk(d: &shcl::Document, prefix: &str) -> u64 {
 	n
 }
 
-//•••• JSON ••••
+// JSON
 
 fn run_json(src: &str, iters: usize, count: bool, base: u64) -> Measured {
 	match serde_json::from_str::<serde_json::Value>(src) {
@@ -256,7 +259,7 @@ fn json_scalars(v: &serde_json::Value) -> u64 {
 	}
 }
 
-//•••• YAML ••••
+// YAML
 
 fn run_yaml(src: &str, iters: usize, count: bool, base: u64) -> Measured {
 	match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(src) {
@@ -281,7 +284,7 @@ fn yaml_scalars(v: &serde_yaml_ng::Value) -> u64 {
 	}
 }
 
-//•••• TOML ••••
+// TOML
 
 fn run_toml(src: &str, iters: usize, count: bool, base: u64) -> Measured {
 	match src.parse::<toml::Table>() {
@@ -341,7 +344,7 @@ fn edit_value_scalars(v: &toml_edit::Value) -> u64 {
 	}
 }
 
-//•••• XML ••••
+// XML
 
 /// roxmltree borrows the source instead of copying it, which is most of why it
 /// is fast and is a fair thing to show. It has no writer, by design, so the emit

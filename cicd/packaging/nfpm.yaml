@@ -15,6 +15,11 @@ description: |
   bindings (Rust, Go, Python, C/C++) and Bash/PowerShell wrappers.
 homepage: https://github.com/jim-collier/shcl
 license: MIT
+rpm:
+  # rpm stamps the building machine's hostname into the package; a fixed name
+  # keeps two builds of one commit byte-identical (the build date comes from
+  # SOURCE_DATE_EPOCH, which package.bash exports).
+  buildhost: localhost
 contents:
   - src: ${SHCL_BIN}
     dst: /usr/bin/shcl

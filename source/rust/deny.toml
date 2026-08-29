@@ -38,6 +38,14 @@ confidence-threshold = 0.9
 ## profiling chain is not ours to flatten.
 multiple-versions = "warn"
 wildcards = "deny"
+## The three duplicates that chain does carry today, each the older half of a
+## pair pulled in two places under pprof. Allowed by name so every run's lint
+## report is not the same three warnings; a fourth one still shows up.
+skip = [
+	{ crate = "bitflags@1.3.2", reason = "nix 0.26 under pprof; the profiler chain never ships" },
+	{ crate = "getrandom@0.3.4", reason = "ahash under inferno under pprof; the profiler chain never ships" },
+	{ crate = "r-efi@5.3.0", reason = "getrandom 0.3 under the same chain; the profiler chain never ships" },
+]
 
 [sources]
 unknown-registry = "deny"

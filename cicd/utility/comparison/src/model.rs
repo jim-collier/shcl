@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
+
 //! Document generation.
 //!
 //! Every shape is built once as a small abstract model and then encoded by five
@@ -166,9 +169,7 @@ pub enum Node {
 	Map(Vec<(String, Node)>),
 }
 
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 // The model, one unit at a time
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 /// One `flat` unit: a single top-level binding, cycling the scalar types so the
 /// measurement is not one code path in each parser repeated a million times.
@@ -292,7 +293,7 @@ pub fn text_unit(i: usize) -> (String, Node) {
 	(format!("doc-{i:06}"), Node::Leaf(Val::Text(body)))
 }
 
-//•••• The two realistic shapes ••••
+// The two realistic shapes
 
 fn s(v: &str) -> Node {
 	Node::Leaf(Val::Str(v.to_string()))
@@ -487,7 +488,7 @@ const DDL_COLUMNS: &[(&str, &str, bool, &str, &str)] = &[
 	("currency",   "char(3)",       true,  "'USD'",   "ISO 4217"),
 	("quantity",   "integer",       true,  "0",       ""),
 	("notes",      "text",          true,  "",        "Free text, sometimes long"),
-	("metadata",   "jsonb",         true,  "'{}'",    "Whatever the app has not modelled yet"),
+	("metadata",   "jsonb",         true,  "'{}'",    "Whatever the app has not modeled yet"),
 	("is_deleted", "boolean",       false, "false",   "Soft delete, filtered by every view"),
 	("version",    "integer",       false, "1",       "Optimistic locking"),
 ];
@@ -578,9 +579,7 @@ pub fn ddl_unit(i: usize) -> (String, Vec<(String, Node)>) {
 	(name, fields)
 }
 
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 // Encoders
-//••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 pub struct Gen {
 	pub fmt: Fmt,
@@ -714,7 +713,7 @@ impl Gen {
 	}
 }
 
-//•••• SHCL ••••
+// SHCL
 
 fn shcl_node(o: &mut String, key: &str, n: &Node, depth: usize) {
 	let pad = "\t".repeat(depth);
@@ -775,7 +774,7 @@ fn shcl_string(s: &str) -> String {
 	out
 }
 
-//•••• JSON ••••
+// JSON
 
 /// Pretty-printed, because the premise is a file a person edits and every JSON
 /// formatter in existence produces this. The compact size is recorded separately
@@ -833,7 +832,7 @@ fn json_string(s: &str) -> String {
 	out
 }
 
-//•••• YAML ••••
+// YAML
 
 fn yaml_node(o: &mut String, key: &str, n: &Node, depth: usize) {
 	let pad = IND.repeat(depth);
@@ -891,7 +890,7 @@ fn yaml_string(s: &str) -> String {
 	json_string(s) // double-quoted YAML takes JSON's escapes
 }
 
-//•••• TOML ••••
+// TOML
 
 /// TOML has no nesting without headers, so a map becomes a table and the path
 /// accumulates. Scalars are emitted before any subtable, which the format
@@ -939,7 +938,7 @@ fn toml_scalar(v: &Val) -> String {
 	}
 }
 
-//•••• XML ••••
+// XML
 
 /// XML has no arrays and no types, so a list becomes repeated child elements and
 /// every scalar is text. That is not a strawman - it is what XML config is.

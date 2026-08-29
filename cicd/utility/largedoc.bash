@@ -25,6 +25,9 @@
 
 set -Eeuo pipefail
 
+# shellcheck source-path=SCRIPTDIR
+source "$(dirname -- "${BASH_SOURCE[0]}")/include/largedoc-gen.bash"   ## largedoc_gen()
+
 mib=100
 keep=0
 bindings=()
@@ -74,54 +77,30 @@ need_kib=$(( mib * 1024 * 3 ))
 
 doc="${work}/large.shcl"
 
-## Generated rather than stored: a 100 MiB fixture has no business in a git repo,
-## and the shape matters more than the bytes - repeated instances of one name,
-## nesting, inline and bullet arrays, quoted values holding the separator, raw
-## blocks, comments, blank lines, non-ASCII, and one array long enough to walk
-## past any fixed element buffer. LC_ALL=C so awk's length() counts bytes.
+## The generator lives in include/largedoc-gen.bash (the profiler workload is
+## the same document at a smaller size).
 echo "largedoc: generating ${mib} MiB -> ${doc}"
-LC_ALL=C awk -v mib="${mib}" '
-BEGIN {
-	target = mib * 1048576
-	while (bytes < target) {
-		i = n++
-		s = "# service group " i "\n" \
-		    "service: svc" i "\n" \
-		    "\thost: 10." (i%250) "." (int(i/250)%250) "." ((i*7)%250) "\n" \
-		    "\tport: " (8000 + i%1000) "\n" \
-		    "\tenabled: " (i%2 ? "true" : "false") "\n" \
-		    "\tweight: " (i%100) "." (i%97) "\n" \
-		    "\tstarted: 2026-0" (1+i%9) "-1" (i%9) "T0" (i%9) ":3" (i%6) "\n" \
-		    "\tregion: \"\xe8\xa5\xbf\xe9\x83\xa8, \xe5\x8c\x97\"\n" \
-		    "\ttags: fast, \"eu, west\", cheap" (i%13) "\n" \
-		    "\tlimits:\n\t\tcpu: " (1+i%16) "\n\t\tmem: \"" (i%64) "Gi\"\n" \
-		    "\t\tburst:\n"
-		for (j = 0; j < 4; j++) s = s "\t\t\t* " ((j*i)%1000) "\n"
-		s = s "\tnotes:\n\t\t~~~\n\t\tgenerated entry " i "\n\t\tsecond line\n\t\t~~~\n" \
-		      "service: svc" i "\n\tport: " (9000 + i%1000) "\n\n"
-		printf "%s", s
-		bytes += length(s)
-	}
-	## One array long enough that a fixed per-element buffer has to have grown.
-	printf "wide:\n"
-	for (j = 0; j < 20000; j++) printf "\t* %d\n", j
-}' > "${doc}"
+largedoc_gen "${mib}" > "${doc}"
 
 actualMib=$(( $(stat -c%s "${doc}") / 1048576 ))
 echo "largedoc: ${actualMib} MiB, $(grep -c '' "${doc}") lines"
 
 ## Wall clock and peak RSS for one run. VmHWM is the kernel's own high-water
-## mark and only ever climbs, so sampling it is exact up to the last sample;
-## the poll is cheap next to the runs it watches. Sets runSecs/runRssMib/runRc.
+## mark and only ever climbs, so sampling it is exact up to the last sample.
+## The poll is builtins only - a read of /proc and a timed read on a fd that
+## never delivers, as the sleep - so twenty samples a second cost no forks.
+## Sets runSecs/runRssMib/runRc.
+exec {tickFd}<> <(:)
 fRunMeasured() {
 	local out="$1"; shift
-	local pid hwm=0 cur t0 t1
+	local pid hwm=0 key val t0 t1
 	t0="$(date +%s.%N)"
 	"$@" > "${out}" 2>"${work}/stderr" & pid=$!
 	while kill -0 "${pid}" 2>/dev/null; do
-		cur="$(awk '/^VmHWM:/{print $2}' "/proc/${pid}/status" 2>/dev/null || true)"
-		[[ -n "${cur}" ]] && ((cur > hwm)) && hwm="${cur}"
-		sleep 0.05
+		while read -r key val _; do
+			[[ "${key}" == "VmHWM:" ]] && ((val > hwm)) && hwm="${val}"
+		done < "/proc/${pid}/status" 2>/dev/null || true
+		read -rt 0.05 -u "${tickFd}" _ || true
 	done
 	runRc=0; wait "${pid}" || runRc=$?
 	t1="$(date +%s.%N)"
@@ -200,3 +179,5 @@ exit "${rc}"
 ##		- 2026-08-19 JC: Created. Nothing else in the pipeline runs a document
 ##		  bigger than a few kilobytes, so growth-rate and buffer-growth defects
 ##		  had no gate at all.
+##		- 2026-08-29 JC: Generator moved to include/largedoc-gen.bash; the memory
+##		  poll no longer forks per sample.
