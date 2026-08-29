@@ -2591,14 +2591,15 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	if read_only {
 		set_read_only(&target, false);
 	}
-	publish_file(&tmp, &target).map_err(|e| {
+	let published = publish_file(&tmp, &target);
+	#[cfg(windows)]
+	if read_only {
+		set_read_only(&target, true); // whether or not the publish went through
+	}
+	published.map_err(|e| {
 		let _ = std::fs::remove_file(&tmp);
 		format!("{}: {}", file, e)
 	})?;
-	#[cfg(windows)]
-	if read_only {
-		set_read_only(&target, true);
-	}
 	sync_dir(dir);
 	Ok(())
 }
@@ -2958,7 +2959,7 @@ impl Document {
 			.copied()
 			.unwrap_or(NIL);
 		while c != NIL {
-			if self.arena[c].name == name {
+			if self.arena[c].name == name && self.arena[c].parent == parent {
 				out.push(c);
 			}
 			c = idx.next_same[c];

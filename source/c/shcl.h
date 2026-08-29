@@ -2522,7 +2522,7 @@ static void children_named(shcl_doc *d, Arena *a, size_t parent, Str name, VecSi
 	CMapEnt *e = cmap_first(&d->index_first, name_key(parent, name));
 	size_t c = e ? e->val : NIL;
 	while (c != NIL) {
-		if (s_eq(NODE(d, c).name, name)) VecSize_push(a, out, c);
+		if (s_eq(NODE(d, c).name, name) && NODE(d, c).parent == parent) VecSize_push(a, out, c);
 		c = d->index_next[c];
 	}
 }

@@ -2730,12 +2730,13 @@ func WriteFileAtomic(file, data string) error {
 	if readOnly {
 		setReadOnly(target, false)
 	}
-	if rerr := publishFile(tmp, target); rerr != nil {
+	rerr := publishFile(tmp, target)
+	if readOnly {
+		setReadOnly(target, true) // whether or not the publish went through
+	}
+	if rerr != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %w", file, rerr)
-	}
-	if readOnly {
-		setReadOnly(target, true)
 	}
 	syncDir(dir)
 	return nil
@@ -3161,7 +3162,7 @@ func (d *Document) childrenNamed(parent int, name string) []int {
 		c = nilNode
 	}
 	for c != nilNode {
-		if d.arena[c].name == name {
+		if d.arena[c].name == name && d.arena[c].parent == parent {
 			out = append(out, c)
 		}
 		c = idx.nextSame[c]

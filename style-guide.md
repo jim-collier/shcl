@@ -35,7 +35,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Tabs for indentation, spaces for alignment. The test is whether the language prevents it or strongly pushes the other way; none of the six here do, so all six use tabs. This repo pins rustfmt to `hard_tabs`; gofmt is tabs natively; Python, C and both shells follow suit. PEP 8 does prefer spaces, but it also says to stay consistent with code already indented with tabs, and one indentation style across a multi-language repo is worth more than per-language purity. The Python linter's tab rule (`W191`) is switched off for exactly this reason, not overlooked.
 
-- Names are meaningful and human-searchable: `upperBound`, not `ub`. Short conventional names are fine where they are idiomatic - loop indices (`i`), a local `err`, a receiver letter in Go, and few-line locals in the compact parser cores (`t` for a just-trimmed line, `q` for the current quote char) where the same short name means the same thing at the same site in every binding. The test is "can a reader find and search-replace what you mean", not maximal length.
+- Names are meaningful and searchable: `upperBound`, not `ub`. Short conventional names are fine where they are idiomatic - loop indices (`i`), a local `err`, a receiver letter in Go, and few-line locals in the compact parser cores (`t` for a just-trimmed line, `q` for the current quote char) where the same short name means the same thing at the same site in every binding. The test is "can a reader find and search-replace what you mean", not maximal length.
 
 - Comments are terse and explain *why*, not *what*. No narration of the next line, ASCII only (`->` not arrows; `©` is fine). If a line needs a what-comment, rewrite the line.
 
@@ -77,6 +77,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Exported identifiers get doc comments starting with the name. Short names in small scopes, descriptive in the public API.
 
+- Deliberate deviation: the datetime type is `DateTime`, not `ShclDateTime`; the package name already carries the prefix. The reference and Python export `DateTime` as an alias so the two spellings meet.
+
 ### Python
 
 - Python 3.9+, stdlib only. ruff and mypy (default mode) gate; black does not run - the repo's tab indentation stands (see the repo-wide rule above).
@@ -89,7 +91,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Deliberate deviation: the parser's child/display accelerator maps key on exact tuples of the strings already in hand, where the other three bindings stream an FNV hash and verify hits against the arena. CPython's dict and tuple machinery runs at C speed while a hand-rolled per-byte hash loop does not, and the tuple keys are exactly as injective - same first-wins semantics, same behavior.
 
-- Type hints exist where they pay; the public surface is not yet fully hinted and mypy strict is not a gate.
+- The public surface is type-hinted (every public method, function and attribute); private helpers are hinted where it pays, and mypy strict is not a gate.
 
 ### C (and the C++ veneer)
 

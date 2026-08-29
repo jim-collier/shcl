@@ -2029,7 +2029,7 @@ class Document:
 		out = []
 		c = idx.first.get(_name_key(parent, name), NIL)
 		while c != NIL:
-			if self.arena[c].name == name:
+			if self.arena[c].name == name and self.arena[c].parent == parent:
 				out.append(c)
 			c = idx.next_same[c]
 		return out
@@ -3574,6 +3574,8 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	try:
 		_publish_file(tmp, target)
 	except OSError as e:
+		if read_only:
+			_set_read_only(target, True)
 		try:
 			os.remove(tmp)
 		except OSError:

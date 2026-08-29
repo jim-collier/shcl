@@ -5,7 +5,7 @@
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
 # Shcl backlog
 
-The product backlog: bugs, features, enhancements, and code-review findings. Day-to-day tracking is moving to Github Issues, and/or nano-git-db (which is built on shcl), so this file will thin out over time.
+The product backlog: bugs, features, enhancements, and code-review findings. Day-to-day tracking is moving to GitHub Issues, and/or nano-git-db (which is built on shcl), so this file will thin out over time.
 
 <!-- TOC ignore:true -->
 ## Table of contents
@@ -455,7 +455,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 - ✅ The Python binding threw outright when saving over an existing file on Windows.
 	- `os.fchmod` is POSIX-only, and the guard around the mode copy caught `OSError` - an `AttributeError` walks straight past it. So the whole call escaped `save_file`, which documents that it reports rather than throws. Only on the overwrite path, which is the common one.
 	- Found by reading the four write paths against each other after a question about how the file tier handles Windows and SELinux, not by a test - nothing here runs on Windows.
-	- Fixed by making the mode copy conditional on the function existing, which is the honest condition: the mode concept is POSIX's, and Windows now carries the destination's attributes across in the publish step instead.
+	- Fixed by making the mode copy conditional on the function existing, which is the right condition: the mode concept is POSIX's, and Windows now carries the destination's attributes across in the publish step instead.
 	- The runner fixture that missed it was POSIX-gated in all four bindings, because it asserts modes. Split so the create and the overwrite are exercised on **every** platform and only the mode assertions stay POSIX-only - the same fixture in all four, and it would have caught this.
 	- Opened: n/a
 	- Closed: 20260820-154417
@@ -596,7 +596,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Reproduced: a config with one unreadable line, plus one setting change, comes back a line shorter. Exit code zero, nothing on stdout, nothing on stderr, no record the line existed.
 		- All four clis. Same for formatting in place.
 		- The library grew a save gate for exactly this in the round just finished. The clis neither call it nor consult the count behind it.
-		- design.md justifies the current behavior on the grounds that a human sees the diagnostics on stderr. At the default strictness they see nothing at all, so either the code or that sentence has to change.
+		- design.md justifies the current behavior on the grounds that someone sees the diagnostics on stderr. At the default strictness they see nothing at all, so either the code or that sentence has to change.
 		- Fix: print the load's errors to stderr on an in-place write, and refuse when anything was dropped unless an override flag is passed - mirroring the library so the two cannot disagree about what is safe.
 		- Fixed exactly that way in all four clis, with `--lossy` as the override. The mirroring is literal: the write now calls the library's own save rather than the raw atomic write, so there is one copy of the rule, not five. Only the refusal's wording is the cli's, since the override a user has is a flag rather than a function name.
 		- The whole load's diagnostics go out, not just the errors, so what an in-place write reports and what `check` reports on the same file cannot drift apart.
@@ -1324,7 +1324,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- A pre-flight check makes every library parse its own file and find the same number of scalar values, so a size or speed number can never come from documents that are not the same data.
 	- Results accumulate in `results.shcl`, written and pruned through this repo's own library and read back with its own CLI. Detailed enough to re-derive any published figure, and it keeps the newest runs only.
 	- Deliberately not a pipeline gate: benchmarks are noisy and slow, and a red build caused by a busy machine teaches nothing. Reasoning and the full method are in `design.md` -> Format comparison.
-	- Done: the README carries a simplified table under "How it compares to...". It is favorable on size and unfavorable on speed, and says so - the front page already tells people not to use SHCL for high-volume machine data, so the honest table costs nothing and answers the question a reader would otherwise have to guess at.
+	- Done: the README carries a simplified table under "How it compares to...". It is favorable on size and unfavorable on speed, and says so - the front page already tells people not to use SHCL for high-volume machine data, so the plain table costs nothing and answers the question a reader would otherwise have to guess at.
 	- Found, and left for the item above: SHCL is nine to seventeen times slower to load than `serde_json` and holds 45x to 54x the input size in memory. Both are the memory-and-speed item, now with a second measurement backing it.
 	- Added after the first round: a **Python tier**, over the same documents, so the obvious objection - that this measures one implementation and calls it a format - has an answer.
 		- Most of what Python reaches for is a C extension wearing a Python name, so the row that carries the weight is `tomllib`, the one other pure-Python parser: SHCL is 3.7x behind it in Python against 3.5x behind `toml` in Rust.
@@ -1705,7 +1705,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Opened: 20260711-195150
 	- Closed: 20260721-123412
 
-- ✅ README rewrite: problem-first pitch, file and read-call examples, a format comparison table, a "wrong choice" section, and honest alpha status.
+- ✅ README rewrite: problem-first pitch, file and read-call examples, a format comparison table, a "wrong choice" section, and a plain statement of alpha status.
 	- Opened: n/a
 	- Closed: 20260713-065600
 
@@ -1908,7 +1908,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- ✅ Item 16: two run-on bullets in `spec.md`.
 		- The pair covering `--lossy` and what a bare `-` means. Both pack several clauses into one sentence with dashes doing the joining, and they are the only two top-level bullets in the file not separated by a blank line.
-		- Done: split into separate sentences and bullets, and the neighbouring bullet above them had the same problem and got the same treatment. No top-level bullet in the file is missing its blank line now.
+		- Done: split into separate sentences and bullets, and the neighboring bullet above them had the same problem and got the same treatment. No top-level bullet in the file is missing its blank line now.
 		- Opened: 20260819-111243
 		- Closed: 20260819-132623
 
@@ -2020,7 +2020,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- ✅ Item 22: the spec normatively describes a parameter no binding implements.
 		- The spec calls the three on-bad modes the canonical surface everywhere and even names python's spelling for it. It exists only as a cli flag; no library has it.
-		- The two shipped tiers already cover two of the three modes honestly. Only the spec is wrong.
+		- The two shipped tiers already cover two of the three modes as described. Only the spec is wrong.
 		- Fix: describe the tiers as shipped, and mark the per-slot substitution behavior cli-only. Do it before the cut so the published spec matches the published api.
 		- Fixed that way, in the spec's core-call section and the six other places that referred to on-bad as a per-call parameter. The mode is now stated as which tier you call: the full tier is Flag, the convenience tier is Default, and Error has no library form at all - a read that cannot reach a value is a normal outcome here, so a caller who wants a throw raises on the status themselves.
 		- Per-slot substitution is marked cli-only for the same reason it exists there: a shell caller has no slot list to inspect.
@@ -2158,7 +2158,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- ✅ Item 32: the grammar file disagrees with the parser in a few places.
 		- The parser accepts a leading plus on an index, and allows dots and other characters inside a selector; the grammar says neither.
-		- The bare-name character ranges include two characters the neighbouring comment says are excluded.
+		- The bare-name character ranges include two characters the neighboring comment says are excluded.
 		- Unknown escape pairs are kept as written rather than rejected, and a backslash shields the next character in more places than the grammar shows.
 		- Needs a call on each: tighten the parser, or widen the grammar to match it.
 		- Decided: the parser is the contract, since it is released, so the grammar and spec were widened to describe what it accepts. Quoting is now stated as a rule about what the formatter writes, not about what input is legal.
@@ -2460,6 +2460,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Every binding is path-at-a-time. A forty-key config is forty call sites and forty literal defaults.
 		- Users arrive from libraries that decode a whole document into a typed structure in one call, and that is the comparison a reviewer makes.
 		- It does not conflict with "values are typed by the reader" - a field's declared type is the reader's requested type, applied in bulk.
-		- The honest cost is parity: it is per-binding machinery with no reference structure to mirror. Decide it either way, but record the decision in design.md so it reads as a choice rather than an omission.
+		- The real cost is parity: it is per-binding machinery with no reference structure to mirror. Decide it either way, but record the decision in design.md so it reads as a choice rather than an omission.
 		- Opened: 20260817-204524
 		- Closed: 20260818-155051

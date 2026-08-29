@@ -3,7 +3,7 @@
 ##	Purpose: Render an animated demo GIF of a CLI program, without recording a
 ##		real terminal (no ttyd, no asciinema, no ffmpeg - just Pillow). A TOML
 ##		scenario file scripts the session; each command is "typed" into a fake
-##		terminal window with human timing (slower digits, a beat before flags,
+##		terminal window with natural timing (slower digits, a beat before flags,
 ##		the occasional corrected typo), then actually executed so the captured
 ##		output can never go stale. Motion runs at exactly 50 fps: the cursor
 ##		glides between cells at sub-pixel resolution rather than teleporting,
