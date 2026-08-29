@@ -26,7 +26,7 @@ A **Conformant Implementation** is one that passes the published conformance cor
 
 The corpus lives at `project/conformance/` in this repository. It is the same corpus every shipped binding is held to, on every build - there is no separate or stricter bar for outside implementations. Conformance is therefore something you can check for yourself, before you ship and without asking us.
 
-Where a claim is honestly narrower than full conformance, say so plainly and it is fine: "a read-only SHCL parser", "a SHCL parser, schema validation not yet implemented", "an in-progress SHCL implementation". What is not fine is a bare claim of SHCL support from something that does not pass, since a user has no way to tell the difference until it breaks.
+Where a claim is narrower than full conformance, say so plainly and it is fine: "a read-only SHCL parser", "a SHCL parser, schema validation not yet implemented", "an in-progress SHCL implementation". What is not fine is a bare claim of SHCL support from something that does not pass, since a user has no way to tell the difference until it breaks.
 
 ## 4. Uses that are always permitted
 
@@ -90,7 +90,7 @@ When using the Marks under Section 4:
 
 **We may revoke permission for any use that damages the Marks or misleads users**. In practice, a good-faith implementation that turns out to fail a corpus case is a bug report, not a dispute - tell us, or fix it, and nothing further is needed. Enforcement is aimed at claims that stay wrong.
 
-We may revise this policy at any time; the current version lives at <https://github.com/jim-collier/shcl/>. Requests for permission, and reports of misuse, go to silktermⒶubx9.com.
+We may revise this policy at any time; the current version lives at <https://github.com/jim-collier/shcl/>. Requests for permission, and reports of misuse, go to <shcl@ubx9.com>.
 
 ---
 

@@ -64,7 +64,7 @@ The first major since 1.0.0. Two things change incompatibly, both listed under C
 
 - A line that is malformed in content but positionally sound is retained as inert trivia and written back, instead of vanishing. Lines whose position cannot be recovered still drop and still count toward `LostCount`, which is what the save gate reads. A BOM-led line is deliberately excluded - re-emitting it produces content the parser reads back as live.
 
-- `shcl set --write` consults the save gate. It previously deleted unreadable lines at exit 0 with nothing on stderr; the justification on record - that a human sees the diagnostics anyway - was false at the default strictness, where they see nothing at all.
+- `shcl set --write` consults the save gate. It previously deleted unreadable lines at exit 0 with nothing on stderr; the justification on record - that a person sees the diagnostics anyway - was false at the default strictness, where they see nothing at all.
 
 - `shcl set -` follows stdin: the piped document when the edits come from options, an empty base when the ops script has stdin. The two meanings never compete, so nothing that worked before changed.
 
@@ -310,7 +310,7 @@ First stable release. The language, the read and write APIs, and the diagnostic 
 
 - Comments are preserved through the canonical formatter as node trivia rather than being discarded.
 
-- Stable diagnostic codes (`E###`/`H###`) on `check`, printed as `line N: severity: CODE` on stdout with human prose on stderr.
+- Stable diagnostic codes (`E###`/`H###`) on `check`, printed as `line N: severity: CODE` on stdout with the prose on stderr.
 
 - Convenience read tier with whole-value fallbacks (`get_*_or` / `default=`) across the bindings.
 
