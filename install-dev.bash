@@ -21,6 +21,7 @@
 ##	What a full dev box needs (see contributing.md "How to develop"):
 ##		gating:   rustup (rustfmt+clippy ride along), go, python3, gcc+g++,
 ##		          shellcheck, ruff, mypy, cppcheck, build, markdownlint-cli2,
+##		          staticcheck, govulncheck, cargo-deny (all at the pinned versions),
 ##		          PSScriptAnalyzer (only if pwsh is present)
 ##		the gate: cicd/cicd.bash --ci
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
@@ -65,6 +66,7 @@ usage() {
 ##	What a full dev box needs (see contributing.md "How to develop"):
 ##		gating:   rustup (rustfmt+clippy ride along), go, python3, gcc+g++,
 ##		          shellcheck, ruff, mypy, cppcheck, build, markdownlint-cli2,
+##		          staticcheck, govulncheck, cargo-deny (all at the pinned versions),
 ##		          PSScriptAnalyzer (only if pwsh is present)
 ##		the gate: cicd/cicd.bash --ci
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
@@ -102,7 +104,40 @@ if top="$(git rev-parse --show-toplevel 2>/dev/null)" \
 	in_clone=1; clone_dir="${top}"
 fi
 
-## Take stock: what gets installed (no sudo), what only gets a hint.
+## Tool versions come from TOOL_PINS in cicd/config.bash, so a dev box gets what
+## the gate expects rather than whatever is newest today (the pipeline warns on
+## every run otherwise). Outside a clone the file is fetched from main: there is
+## nothing else to read it from before the clone exists.
+if (( in_clone )); then
+	pins_file="${clone_dir}/cicd/config.bash"
+else
+	have curl || have wget || die "need curl or wget"
+	pins_file="$(mktemp)"
+	trap 'rm -f "${pins_file}"' EXIT
+	fetch "https://raw.githubusercontent.com/jim-collier/shcl/main/cicd/config.bash" "${pins_file}" || die "cannot fetch cicd/config.bash for the tool pins"
+fi
+## "name|version|command" out of TOOL_PINS -> pin_ver, pin_cmd.
+pin() {
+	local line
+	line="$(awk -v name="$1" '/^TOOL_PINS=\(/ { inpins=1; next } inpins && /^\)/ { exit } inpins && index($0, "\"" name "|") { sub(/^[ \t]*"/, ""); sub(/"[ \t]*$/, ""); print; exit }' "${pins_file}")"
+	[[ -n "${line}" ]] || die "no TOOL_PINS entry for $1 in cicd/config.bash"
+	pin_ver="${line#*|}"; pin_cmd="${pin_ver#*|}"; pin_ver="${pin_ver%%|*}"
+}
+## Installed at the pinned version? The same test the pipeline's drift warning
+## makes; missing and drifted both count as "install".
+at_pin() {
+	pin "$1"
+	# shellcheck disable=SC2086
+	[[ "$(${pin_cmd} 2>/dev/null | head -5 | tr '\n' ' ')" == *"${pin_ver}"* ]]
+}
+
+## Take stock: what gets installed (no sudo), what only gets a hint. The cargo
+## and go bin dirs join PATH for the checks below, since that is where the
+## installs land whether or not the user's profile knows it yet.
+orig_path="${PATH}"
+[[ -d "${HOME}/.cargo/bin" ]] && PATH="${HOME}/.cargo/bin:${PATH}"
+gobin=""
+have go && gobin="$(go env GOPATH)/bin" && PATH="${gobin}:${PATH}"
 pkg_hint="your package manager"
 if have apt-get; then pkg_hint="sudo apt-get install"
 elif have dnf; then pkg_hint="sudo dnf install"
@@ -121,15 +156,22 @@ have python3    || hints+=("python3     - ${pkg_hint} python3")
 have cc         || hints+=("gcc/g++     - ${pkg_hint} build-essential (or gcc gcc-c++)")
 have shellcheck || hints+=("shellcheck  - ${pkg_hint} shellcheck")
 if have pipx; then
-	for t in ruff mypy cppcheck; do have "$t" || todo+=("${t} (pipx, user-space)"); done
-	have pyproject-build || todo+=("build (pipx, user-space)")
+	for t in ruff mypy cppcheck build; do at_pin "$t" || todo+=("${t} ${pin_ver} (pipx, user-space)"); done
 else
 	hints+=("pipx        - ${pkg_hint} pipx  (then re-run for ruff/mypy/cppcheck/build)")
 fi
 if have npm; then
-	have markdownlint-cli2 || todo+=("markdownlint-cli2 (npm -g --prefix ~/.local)")
+	at_pin markdownlint-cli2 || todo+=("markdownlint-cli2 ${pin_ver} (npm -g --prefix ~/.local)")
 else
 	hints+=("npm         - ${pkg_hint} npm  (then re-run for markdownlint-cli2)")
+fi
+## The supply-chain trio the gate runs. The Go pair ride the go hint when go is
+## missing; cargo-deny builds through cargo, which may itself arrive this run.
+if have go; then
+	for t in staticcheck govulncheck; do at_pin "$t" || todo+=("${t} ${pin_ver} (go install, user-space)"); done
+fi
+if (( need_rustup )) || have cargo || [[ -x "${HOME}/.cargo/bin/cargo" ]]; then
+	at_pin cargo-deny || todo+=("cargo-deny ${pin_ver} (cargo install, user-space - builds from source, takes a while)")
 fi
 if have pwsh; then
 	pwsh -NoProfile -Command "if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { exit 1 }" >/dev/null 2>&1 \
@@ -179,13 +221,24 @@ echo
 if (( need_rustup )); then
 	echo "installing rustup..."
 	fetch https://sh.rustup.rs - | sh -s -- -y --no-modify-path
+	PATH="${HOME}/.cargo/bin:${PATH}"
 fi
 if have pipx; then
-	for t in ruff mypy cppcheck; do have "$t" || pipx install "$t"; done
-	have pyproject-build || pipx install build   ## the package is "build", the command is not
+	for t in ruff mypy build; do at_pin "$t" || pipx install --force "${t}==${pin_ver}"; done
+	## TOOL_PINS pins the cppcheck binary; the PyPI package that carries it has
+	## its own version (see the note beside the pin). The one place this is
+	## spelled besides ci.yml.
+	at_pin cppcheck || pipx install --force "cppcheck==1.5.1"
 fi
-if have npm && ! have markdownlint-cli2; then
-	npm install -g --prefix "${HOME}/.local" markdownlint-cli2
+if have npm; then
+	at_pin markdownlint-cli2 || npm install -g --prefix "${HOME}/.local" "markdownlint-cli2@${pin_ver}"
+fi
+if have go; then
+	at_pin staticcheck || go install "honnef.co/go/tools/cmd/staticcheck@${pin_ver}"
+	at_pin govulncheck || go install "golang.org/x/vuln/cmd/govulncheck@${pin_ver}"
+fi
+if have cargo; then
+	at_pin cargo-deny || cargo install cargo-deny --version "${pin_ver}" --locked
 fi
 if have pwsh; then
 	pwsh -NoProfile -Command "if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Install-Module PSScriptAnalyzer -Scope CurrentUser -Force }"
@@ -202,5 +255,8 @@ echo
 echo "done. The gate is:  cicd/cicd.bash --ci"
 echo "(rust-toolchain.toml pins the toolchain; the first cargo run fetches it.)"
 (( ${#hints[@]} )) && echo "note: the hinted packages above are still missing."
+for bindir in "${HOME}/.cargo/bin" "${gobin}"; do
+	[[ -n "${bindir}" && -d "${bindir}" && ":${orig_path}:" != *":${bindir}:"* ]] && echo "note: ${bindir} is not on your PATH - the tools installed there need it to be."
+done
 echo
 exit 0
