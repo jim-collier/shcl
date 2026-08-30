@@ -84,25 +84,30 @@ fn try_apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	let pflt = |s: &str| s.parse::<f64>().map_err(|_| format!("bad float: {}", s));
 	let ints = |xs: &[&str]| xs.iter().map(|s| pint(s)).collect::<Result<Vec<_>, _>>();
 	let flts = |xs: &[&str]| xs.iter().map(|s| pflt(s)).collect::<Result<Vec<_>, _>>();
-	let bools = |xs: &[&str]| xs.iter().map(|s| *s == "true").collect::<Vec<_>>();
+	let pbool = |s: &str| match s {
+		"true" => Ok(true),
+		"false" => Ok(false),
+		_ => Err(format!("bad bool: {}", s)),
+	};
+	let bools = |xs: &[&str]| xs.iter().map(|s| pbool(s)).collect::<Result<Vec<_>, _>>();
 	let dt = |s: &str| parse_datetime(s).ok_or_else(|| format!("bad datetime: {}", s));
 	let arr = &f[2.min(f.len())..];
 	let wrote = match f.first().copied().unwrap_or("") {
 		"int" => doc.set_int(path, pint(v)?),
 		"float" => doc.set_float(path, pflt(v)?),
-		"bool" => doc.set_bool(path, v == "true"),
+		"bool" => doc.set_bool(path, pbool(v)?),
 		"string" => doc.set_string(path, &unescape_ops(v)),
 		"datetime" => doc.set_datetime(path, &dt(v)?),
 		"literal" => doc.set_literal(path, v),
 		"literal-default" => doc.set_literal_default(path, v),
 		"int-default" => doc.set_int_default(path, pint(v)?),
 		"float-default" => doc.set_float_default(path, pflt(v)?),
-		"bool-default" => doc.set_bool_default(path, v == "true"),
+		"bool-default" => doc.set_bool_default(path, pbool(v)?),
 		"string-default" => doc.set_string_default(path, &unescape_ops(v)),
 		"datetime-default" => doc.set_datetime_default(path, &dt(v)?),
 		"int-array" => doc.set_int_array(path, &ints(arr)?),
 		"float-array" => doc.set_float_array(path, &flts(arr)?),
-		"bool-array" => doc.set_bool_array(path, &bools(arr)),
+		"bool-array" => doc.set_bool_array(path, &bools(arr)?),
 		"string-array" => {
 			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
 			doc.set_string_array(path, &owned.iter().map(|s| s.as_str()).collect::<Vec<_>>())
@@ -113,7 +118,7 @@ fn try_apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		}
 		"int-array-default" => doc.set_int_array_default(path, &ints(arr)?),
 		"float-array-default" => doc.set_float_array_default(path, &flts(arr)?),
-		"bool-array-default" => doc.set_bool_array_default(path, &bools(arr)),
+		"bool-array-default" => doc.set_bool_array_default(path, &bools(arr)?),
 		"string-array-default" => {
 			let owned: Vec<String> = arr.iter().map(|s| unescape_ops(s)).collect();
 			doc.set_string_array_default(
@@ -945,8 +950,8 @@ fn read_file_at_the_largest_cap() {
 fn set_raw_keeps_a_shared_indent_and_trims_the_info() {
 	// The body's shared indent survives a reload (the closing fence's indent is
 	// what comes off), the info-string is stored as a fence line reads it
-	// back, and an info with a line break has no spelling and fails the
-	// write. Same fixture in every runner.
+	// back, and an info with a line break or an unquoted `#` has no spelling
+	// and fails the write. Same fixture in every runner.
 	let mut doc = Document::new();
 	assert!(doc.set_raw("q", "  a\n  b", " sql "));
 	let back = Document::parse(&doc.to_canonical());
@@ -954,7 +959,11 @@ fn set_raw_keeps_a_shared_indent_and_trims_the_info() {
 	assert_eq!(back.read_raw_info("q").value, "sql");
 	assert!(!doc.set_raw("q", "x", "a\nb"));
 	assert!(!doc.set_raw("q", "x", "a\rb"));
+	assert!(!doc.set_raw("q", "x", "a # b"));
+	assert!(doc.set_raw("q", "  a\n  b", "\"a # b\""));
+	let back = Document::parse(&doc.to_canonical());
 	assert_eq!(back.get_raw("q"), Ok("  a\n  b".to_string()));
+	assert_eq!(back.read_raw_info("q").value, "\"a # b\"");
 }
 
 #[cfg(unix)]

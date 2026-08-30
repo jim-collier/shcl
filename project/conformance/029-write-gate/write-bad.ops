@@ -13,3 +13,4 @@ float	k	5..5
 datetime	k	notadate
 string	server[*].x	v
 int	server[#9].x	1
+bool	k	yes
