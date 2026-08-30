@@ -40,6 +40,11 @@ tmpDir="$(mktemp -d)"; trap 'rm -rf "${tmpDir}"' EXIT
 printf 'a: 1\n'          > "${tmpDir}/ok.shcl"
 printf 'a: 1\n  bad\nb 2\n' > "${tmpDir}/bad.shcl"
 mkdir -p "${tmpDir}/adir"
+## The deepest a document can legally go: one level under the 512 cap. Python
+## was the binding still recursing a frame per level, so this is the shape that
+## would exhaust its stack.
+awk 'BEGIN{ for (i = 0; i < 511; i++) { for (j = 0; j < i; j++) printf "\t"; printf "n%d:\n", i }
+	for (j = 0; j < 511; j++) printf "\t"; printf "leaf: 1\n" }' > "${tmpDir}/deep.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
 ##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory.
@@ -64,6 +69,8 @@ rows=(
 	'strict-load-list|fmt --strictness=strict %B%|-|6|-|strict load failed: 2 error diagnostic'
 	## 20260830 round: an unknown command is judged before its options.
 	'unknown-cmd-before-opts|bogus --nope %F%|-|1|-|unknown command: bogus'
+	## 20260829 item 10: Python recursed a frame per level in three places.
+	'deep-nesting|fmt %P%|-|0|-|^$'
 )
 
 declare -i nRun=0 nBad=0
@@ -73,6 +80,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%F%/${tmpDir}/ok.shcl}"
 	argv="${argv//%B%/${tmpDir}/bad.shcl}"
 	argv="${argv//%D%/${tmpDir}/adir}"
+	argv="${argv//%P%/${tmpDir}/deep.shcl}"
 	read -r -a args <<<"${argv}"
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
