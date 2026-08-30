@@ -6,10 +6,18 @@
 ##	  integrates, not on every intermediate commit.
 ##	- The gate runs on the commit being pushed, checked out into a throwaway
 ##	  worktree, not on the working tree: an uncommitted fix must not pass a
-##	  broken commit, and an uncommitted breakage must not block a good one. The
-##	  worktree shares the main checkout's cargo target dir, so it is not a
-##	  rebuild from nothing. If git cannot create one, the gate runs in place with
-##	  a warning, as before.
+##	  broken commit, and an uncommitted breakage must not block a good one. A
+##	  push that moves both main and dev gates each distinct commit once.
+##	- The worktree builds into its own persistent cargo target dir
+##	  (source/rust/target-gate in the checkout, gitignored), linked in as
+##	  source/rust/target so the config's relative binary paths still resolve.
+##	  cargo recompiles the crate every run regardless - the fingerprint keys on
+##	  the package path, which is a fresh mktemp dir each time - so sharing the
+##	  checkout's own target dir saved nothing and did harm: the test binaries
+##	  bake CARGO_MANIFEST_DIR and were left pointing at a worktree that no
+##	  longer existed, and the checkout's debug binary was overwritten by the
+##	  pushed commit's build.
+##	- If git cannot create a worktree, the gate runs in place with a warning.
 ##	- The large-document stage is left out here (minutes, and the hosted workflow
 ##	  runs the full gate anyway); this is the fast correctness half.
 ##	- Escape hatch: `git push --no-verify`, or SHCL_SKIP_HOOK=1.
@@ -35,50 +43,58 @@ root="$(cd "${here}/../.." && pwd)"
 
 ## stdin carries "<local ref> <local sha> <remote ref> <remote sha>" per ref.
 ## Only a push that would move main or dev is worth the wait; the sha that
-## would land there is what gets tested. All zeros means a delete: nothing to test.
-## Remember the name inside the loop: the read that ends it clears the vars.
-gatedRef=""; gatedSha=""
+## would land there is what gets tested. All zeros means a delete: nothing to
+## test. One sha pushed to both branches (a release cut) is gated once, under
+## both names. Collected inside the loop: the read that ends it clears the vars.
+gatedShas=(); gatedRefs=()
 while read -r _localRef localSha remoteRef _remoteSha; do
 	case "${remoteRef}" in
 		refs/heads/main|refs/heads/dev)
 			[[ "${localSha}" =~ ^0+$ ]] && continue
-			gatedRef="${remoteRef#refs/heads/}"; gatedSha="${localSha}" ;;
+			refName="${remoteRef#refs/heads/}"; seen=0
+			for i in "${!gatedShas[@]}"; do
+				[[ "${gatedShas[i]}" == "${localSha}" ]] || continue
+				gatedRefs[i]="${gatedRefs[i]} + ${refName}"; seen=1
+			done
+			((seen)) || { gatedShas+=("${localSha}"); gatedRefs+=("${refName}"); } ;;
 	esac
 done
-[[ -n "${gatedRef}" ]] || exit 0
+((${#gatedShas[@]})) || exit 0
 
-echo
-echo "[ pre-push: running the correctness gate on ${gatedSha:0:12} before ${gatedRef} ]"
-echo
-
-## A detached worktree at the pushed commit. The cargo target dir is linked in
-## from the main checkout rather than pointed at through CARGO_TARGET_DIR, so
-## the config's relative binary paths (the crosscheck's binding list) still
-## resolve inside the worktree.
-tmpTree="$(mktemp -d "${TMPDIR:-/tmp}/shcl-prepush.XXXXXX")"
-treeAdded=0
-# shellcheck disable=SC2329  # runs from the EXIT trap
+## A detached worktree at the pushed commit, removed once its gate is through so
+## the next sha (if any) starts clean.
+tmpTree=""; treeAdded=0
+# shellcheck disable=SC2329  # runs from the EXIT trap as well
 fCleanup(){
+	[[ -n "${tmpTree}" ]] || return 0
 	if ((treeAdded)); then git -C "${root}" worktree remove --force "${tmpTree}" >/dev/null 2>&1 || true; fi
 	rm -rf "${tmpTree}"
 	git -C "${root}" worktree prune >/dev/null 2>&1 || true
+	tmpTree=""; treeAdded=0
 }
 trap fCleanup EXIT
-if git -C "${root}" worktree add --detach "${tmpTree}" "${gatedSha}" >/dev/null 2>&1; then
-	treeAdded=1
-	gateRoot="${tmpTree}"
-	mkdir -p "${root}/source/rust/target"
-	ln -s "${root}/source/rust/target" "${tmpTree}/source/rust/target"
-else
-	echo "[ pre-push: WARNING: could not check ${gatedSha:0:12} out into a worktree; gating the working tree instead ]" >&2
-	gateRoot="${root}"
-fi
 
-if "${gateRoot}/cicd/cicd.bash" --ci --no-largedoc; then
-	exit 0
-fi
-
-echo
-echo "[ pre-push: the gate failed - push refused (--no-verify overrides) ]" >&2
-echo
-exit 1
+for i in "${!gatedShas[@]}"; do
+	sha="${gatedShas[i]}"
+	echo
+	echo "[ pre-push: running the correctness gate on ${sha:0:12} before ${gatedRefs[i]} ]"
+	echo
+	tmpTree="$(mktemp -d "${TMPDIR:-/tmp}/shcl-prepush.XXXXXX")"
+	if git -C "${root}" worktree add --detach "${tmpTree}" "${sha}" >/dev/null 2>&1; then
+		treeAdded=1
+		gateRoot="${tmpTree}"
+		mkdir -p "${root}/source/rust/target-gate"
+		ln -s "${root}/source/rust/target-gate" "${tmpTree}/source/rust/target"
+	else
+		echo "[ pre-push: WARNING: could not check ${sha:0:12} out into a worktree; gating the working tree instead ]" >&2
+		gateRoot="${root}"
+	fi
+	if ! "${gateRoot}/cicd/cicd.bash" --ci --no-largedoc; then
+		echo
+		echo "[ pre-push: the gate failed on ${sha:0:12} - push refused (--no-verify overrides) ]" >&2
+		echo
+		exit 1
+	fi
+	fCleanup
+done
+exit 0

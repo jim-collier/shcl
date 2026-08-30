@@ -453,10 +453,10 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 		## the artifact family before the sums are written, so they ship verified too.
 		((PACKAGE_ENABLE)) && "${here}/utility/package.bash" "${root}" "${art_dir}" "${ver}"
 		## The drop-in sources, wrappers, man page and completions the installer
-		## lays down, as one
-		## asset in the same family - so they are covered by the signed sums like
-		## everything else. The installer used to take them from GitHub's generated
-		## source tarball, which carries no signature and no checksum.
+		## lays down, as one asset in the same family - so they are covered by the
+		## signed sums like everything else. The installer used to take them from
+		## GitHub's generated source tarball, which carries no signature and no
+		## checksum.
 		( cd "${root}" && tar --sort=name --owner=0 --group=0 --numeric-owner --mode=go-w \
 			--mtime="@${SOURCE_DATE_EPOCH}" -cf - \
 			source/rust/src/lib.rs source/go/shcl.go source/python/shcl.py \
@@ -547,13 +547,19 @@ fi
 fSection "9/9  Backup + publish"
 if ((${#GIT_PUBLISH[@]})); then
 	command -v rar >/dev/null 2>&1 || export GIT_BACKUP_AND_PUBLISH_NOBACKUP=1
+	## The publisher's continue-prompt is skipped either way (this run already
+	## confirmed); --quiet also quiets its output and makes up a commit message
+	## when none is given, so it is passed only when this run is itself quiet.
+	## An empty publish_msg can only be an interactive run that left the message
+	## blank, and then `git commit` opens the editor as documented.
+	publish_flag="--no-prompt"; ((quiet)) && publish_flag="--quiet"
 	if [[ -n "$publish_msg" ]]; then
-		## Hands-off: quiet env skips the publisher's continue-prompt; the
-		## GIT_EDITOR helper fills the message so `git commit` won't open an editor.
-		GIT_BACKUP_AND_PUBLISH_QUIET=1 GIT_AUTO_MESSAGE="${publish_msg}" \
-			GIT_EDITOR="${here}/utility/git-auto-msg.bash" "${GIT_PUBLISH[@]}" --quiet
+		## Hands-off: the GIT_EDITOR helper fills the message so `git commit` won't
+		## open an editor.
+		GIT_AUTO_MESSAGE="${publish_msg}" GIT_EDITOR="${here}/utility/git-auto-msg.bash" \
+			"${GIT_PUBLISH[@]}" "${publish_flag}"
 	else
-		"${GIT_PUBLISH[@]}" --quiet
+		"${GIT_PUBLISH[@]}" "${publish_flag}"
 	fi
 	fEcho "OK: published"
 else
