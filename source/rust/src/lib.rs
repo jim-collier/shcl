@@ -122,6 +122,8 @@ fn diag_code(msg: &str) -> &'static str {
 		"V094"
 	} else if msg.starts_with("unknown schema fragment ") {
 		"V095"
+	} else if msg.starts_with("generated value fails the schema") {
+		"V097"
 	} else if msg.starts_with("schema failed to load") {
 		"V099"
 	} else {
@@ -5363,6 +5365,9 @@ fn gen_default_text(v: &str) -> String {
 /// listed in a trailing comment block. The output always loads clean and
 /// validates clean against its schema, except a repeat lower bound of 2+
 /// (identical generated lines would merge, so the shortfall is reported).
+/// The promise is checked against the finished text, so a schema whose own
+/// `default` breaks its field's constraints is a fault (`V097`) instead of a
+/// starter config that fails the first time it is checked.
 /// A footer naming the format and pointing at the spec is written last unless
 /// `no_banner`; the flag is negative so leaving it alone writes the footer.
 /// Err = schema faults (V09x), same as `validate`/`check --schema`.
@@ -5499,6 +5504,29 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			out.push('\n');
 		}
 		out.push_str(GEN_BANNER);
+	}
+	// The output promises to validate clean against the schema that produced
+	// it, so check that here rather than trusting each branch above. A
+	// `default` outside its own field's constraints is the schema's fault, and
+	// the author should hear about it instead of getting a starter config that
+	// fails the first time it is checked. V007 is the one sanctioned shortfall
+	// (a repeat lower bound of 2+ generates identical lines, which merge).
+	let bad: Vec<Diagnostic> = Document::parse(&out)
+		.validate(schema)
+		.into_iter()
+		.filter(|d| d.severity == Severity::Error && d.code != "V007")
+		.map(|d| Diagnostic {
+			line: 0,
+			severity: Severity::Error,
+			code: "V097",
+			message: format!(
+				"generated value fails the schema that produced it: {}",
+				d.message
+			),
+		})
+		.collect();
+	if !bad.is_empty() {
+		return Err(bad);
 	}
 	Ok(out)
 }

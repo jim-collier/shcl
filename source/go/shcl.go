@@ -180,6 +180,8 @@ func diagCode(msg string) string {
 		return "V095"
 	case strings.HasPrefix(msg, "schema expands past "):
 		return "V096"
+	case strings.HasPrefix(msg, "generated value fails the schema"):
+		return "V097"
 	case strings.HasPrefix(msg, "schema failed to load"):
 		return "V099"
 	default:
@@ -5805,7 +5807,10 @@ func genDefaultText(v string) string {
 // remaining wildcard or `[#N]` paths (which cannot be materialized) are listed
 // in a trailing comment block. The output always loads clean and validates
 // clean against its schema, except a repeat lower bound of 2+ (identical
-// generated lines would merge, so the shortfall is reported). A footer naming
+// generated lines would merge, so the shortfall is reported). The promise is
+// checked against the finished text, so a schema whose own `default` breaks its
+// field's constraints is a fault (V097) instead of a starter config that fails
+// the first time it is checked. A footer naming
 // the format and pointing at the spec is written last unless noBanner; the
 // flag is negative so leaving it alone writes the footer. faults != nil =
 // schema faults (V09x), same as Validate / check --schema.
@@ -5970,7 +5975,28 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		}
 		b.WriteString(genBanner)
 	}
-	return b.String(), nil
+	// The output promises to validate clean against the schema that produced
+	// it, so check that here rather than trusting each branch above. A
+	// `default` outside its own field's constraints is the schema's fault, and
+	// the author should hear about it instead of getting a starter config that
+	// fails the first time it is checked. V007 is the one sanctioned shortfall
+	// (a repeat lower bound of 2+ generates identical lines, which merge).
+	text := b.String()
+	var bad []Diagnostic
+	for _, d := range Parse(text).Validate(schema) {
+		if d.Severity == SeverityError && d.Code != "V007" {
+			bad = append(bad, Diagnostic{
+				Line:     0,
+				Severity: SeverityError,
+				Code:     "V097",
+				Message:  "generated value fails the schema that produced it: " + d.Message,
+			})
+		}
+	}
+	if len(bad) > 0 {
+		return "", bad
+	}
+	return text, nil
 }
 
 // genMaxFields is the ceiling on how many fields one schema may expand to.

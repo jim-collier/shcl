@@ -214,7 +214,11 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 // Schema-driven generation (`shcl init --schema`): a commented, typed starter
 // config from a schema document. Required paths are live (their `default`, or an
 // empty value); optional paths are commented out; wildcard paths are listed in a
-// trailing comment block. A footer naming the format and pointing at the spec is
+// trailing comment block. The output validates clean against the schema that
+// produced it, checked against the finished text, so a schema whose own
+// `default` breaks its field's constraints is a fault (V097) instead of a
+// starter config that fails the first time it is checked; the faults land on
+// the schema document's diagnostics. A footer naming the format and pointing at the spec is
 // written last unless no_banner; the flag is negative so passing 0 writes the
 // footer. *ok is set to 1 on success, 0 if the schema has faults (V09x) - then
 // the returned string is empty. Bytes live in the schema's arena.
@@ -1890,6 +1894,7 @@ static const char *diag_code(shcl_severity sev, ShclStr msg) {
 	if (s_starts(msg, "bad schema fragment")) return "V094";
 	if (s_starts(msg, "unknown schema fragment ")) return "V095";
 	if (s_starts(msg, "schema expands past ")) return "V096";
+	if (s_starts(msg, "generated value fails the schema")) return "V097";
 	if (s_starts(msg, "schema failed to load")) return "V099";
 	return "E000";
 }
@@ -5588,6 +5593,35 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		sb_puts(a, &out, GEN_BANNER);
 	}
 	ShclStr s = s_dup(&schema->arena, sb_S(&out)); r.p = s.p; r.n = s.n;
+	/* The output promises to validate clean against the schema that produced
+	   it, so check that here rather than trusting each branch above. A
+	   `default` outside its own field's constraints is the schema's fault, and
+	   the author should hear about it instead of getting a starter config that
+	   fails the first time it is checked. V007 is the one sanctioned shortfall
+	   (a repeat lower bound of 2+ generates identical lines, which merge). */
+	{
+		shcl_doc *self_ = shcl_parse(s.p, s.n);
+		shcl_validation *v = self_ ? shcl_validate(self_, schema) : NULL;
+		size_t nv = v ? shcl_validation_count(v) : 0, nbad = 0;
+		for (size_t i = 0; i < nv; i++) {
+			const char *code = shcl_validation_code(v, i);
+			if (shcl_validation_severity(v, i) != SHCL_SEV_ERROR) continue;
+			if (code && strcmp(code, "V007") == 0) continue;
+			ShclSB m = {0, 0, 0};
+			sb_puts(a, &m, "generated value fails the schema that produced it: ");
+			sb_putS(a, &m, shcl_validation_message(v, i));
+			/* the diag outlives this call: its text must leave the private arena */
+			push_diag(schema, 0, SHCL_SEV_ERROR, s_dup(&schema->arena, sb_S(&m)));
+			nbad++;
+		}
+		if (v) shcl_validation_free(v);
+		if (self_) shcl_free(self_);
+		if (nbad) {
+			if (ok) *ok = 0;
+			ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp);
+			return r;
+		}
+	}
 	arena_free(&tmp);
 	return r;
 }

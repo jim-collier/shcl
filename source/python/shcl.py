@@ -158,6 +158,7 @@ def _diag_code(msg):
 		("bad schema fragment", "V094"),
 		("unknown schema fragment ", "V095"),
 		("schema expands past ", "V096"),
+		("generated value fails the schema", "V097"),
 		("schema failed to load", "V099"),
 	):
 		if msg.startswith(prefix):
@@ -4679,7 +4680,10 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	it - and remaining wildcard or `[#N]` paths (which cannot be materialized)
 	are listed in a trailing comment block. The output always loads clean and
 	validates clean against its schema, except a repeat lower bound of 2+
-	(identical generated lines would merge, so the shortfall is reported). A
+	(identical generated lines would merge, so the shortfall is reported). The
+	promise is checked against the finished text, so a schema whose own `default`
+	breaks its field's constraints is a fault (V097) instead of a starter config
+	that fails the first time it is checked. A
 	footer naming the format and pointing at the spec is written last unless
 	no_banner; the flag is negative so leaving it alone writes the footer.
 	Returns (text, faults): a non-empty fault list (V09x) means the schema is
@@ -4771,6 +4775,19 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		if text:
 			text += "\n"
 		text += _GEN_BANNER
+	# The output promises to validate clean against the schema that produced it,
+	# so check that here rather than trusting each branch above. A `default`
+	# outside its own field's constraints is the schema's fault, and the author
+	# should hear about it instead of getting a starter config that fails the
+	# first time it is checked. V007 is the one sanctioned shortfall (a repeat
+	# lower bound of 2+ generates identical lines, which merge).
+	bad = [
+		Diagnostic(0, Severity.Error, "generated value fails the schema that produced it: " + d.message, "V097")
+		for d in Document.parse(text).validate(schema)
+		if d.severity == Severity.Error and d.code != "V007"
+	]
+	if bad:
+		return "", bad
 	return text, []
 
 

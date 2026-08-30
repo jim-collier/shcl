@@ -85,13 +85,18 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260830-181500
 
-	- 🔘 Item 4: `init` emits a starter config that fails the schema that produced it.
+	- ✅ Item 4: `init` emits a starter config that fails the schema that produced it.
 		- Reproduced: a field typed `int` with `min: 1`, `max: 10` and `default: 99` generates `# int, 1-10, required` and then `server.port: 99` on the next line. `check --schema` against the same schema fails with `V006`, exit 6.
 		- The generated comment names the range the generated value breaks.
 		- Nothing checks the default against the same field's own constraints; it is written straight out.
 		- The doc comment promises the output "always loads clean and validates clean against its schema", and that promise is copied into all four bindings and the man page. A starter config that fails its own schema is the worst first impression the tool can make.
 		- Either fault the schema at build time with a new V09x, or comment the offending line out and say why. The doc comment has to match whichever is chosen.
+		- Decided: fault the schema. A default outside its own field's constraints is an error in the schema, and saying so is more use to the author than quietly commenting the field out.
+		- Fixed with a new `V097`. Generation now checks its finished text against the schema that produced it rather than trusting each branch, so the doc comment's promise is enforced instead of assumed, and any future defect of the same class is caught with it. `V007` stays exempt, being the documented repeat-lower-bound shortfall.
+		- The C CLI could not report it at first: on a generation fault it rebuilt the fault list by validating an empty document, which cannot reproduce a fault the generator found. It now prints the diagnostics the generator recorded, and keeps the empty-document trick for build faults that leave none.
+		- Pinned by the `init-bad-default` row in `cli-regress.bash`, across all four bindings.
 		- Opened: 20260830-140346
+		- Closed: 20260830-191500
 
 	- 🔘 Item 5: `set_raw` accepts a CR that the load then strips, so content does not survive a round trip.
 		- Reproduced: `set_raw` with body `a\r\nb` reads back as `a\nb`; a body of one CR reads back empty.

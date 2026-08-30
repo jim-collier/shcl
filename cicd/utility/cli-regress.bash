@@ -45,6 +45,9 @@ mkdir -p "${tmpDir}/adir"
 ## would exhaust its stack.
 awk 'BEGIN{ for (i = 0; i < 511; i++) { for (j = 0; j < i; j++) printf "\t"; printf "n%d:\n", i }
 	for (j = 0; j < 511; j++) printf "\t"; printf "leaf: 1\n" }' > "${tmpDir}/deep.shcl"
+## A schema whose own default breaks the field's constraints. Generation used to
+## emit it anyway, so the starter config failed the schema that produced it.
+printf 'field: server.port\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\tdefault: 99\n' > "${tmpDir}/baddef.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
 ##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory.
@@ -71,6 +74,8 @@ rows=(
 	'unknown-cmd-before-opts|bogus --nope %F%|-|1|-|unknown command: bogus'
 	## 20260829 item 10: Python recursed a frame per level in three places.
 	'deep-nesting|fmt %P%|-|0|-|^$'
+	## 20260830b item 4: init emitted a config that fails the schema that made it.
+	'init-bad-default|init --schema=%S%|-|6||V097 generated value fails the schema'
 )
 
 declare -i nRun=0 nBad=0
@@ -81,6 +86,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%B%/${tmpDir}/bad.shcl}"
 	argv="${argv//%D%/${tmpDir}/adir}"
 	argv="${argv//%P%/${tmpDir}/deep.shcl}"
+	argv="${argv//%S%/${tmpDir}/baddef.shcl}"
 	read -r -a args <<<"${argv}"
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
