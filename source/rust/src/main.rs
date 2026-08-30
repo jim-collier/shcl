@@ -18,16 +18,18 @@ Usage:
   shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
                                          print canonical (or rewrite FILE in
                                          place with --write)
-  shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
+  shcl fmt [--write|-w] FILE             print the canonical form (or rewrite
+                                         FILE in place with --write)
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
-  shcl init [--no-banner] --schema=S     print a commented starter config from
-                                         a schema (required fields live, optional
-                                         commented, wildcards noted)
+  shcl init [--no-banner] --schema=S     print a commented starter config
+                                         from a schema (required fields live,
+                                         optional commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
-  shcl help | version                    this help, or the version (also -h/--help, -v/-V/--version)
+  shcl help | version                    this help, or the version (also
+                                         -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
@@ -56,9 +58,10 @@ Options (the subcommands each belongs to are in parentheses):
   --default=VALUE                        (get) value to print when the read is
                                          not Good (implies --on-bad=default; for
                                          arrays, substituted per bad slot)
-  --on-bad=error|default|flag            (get) error: fail loudly; default: print
-                                         the default; flag: print the value anyway
-                                         and report via exit code (the default)
+  --on-bad=error|default|flag            (get) error: fail loudly; default:
+                                         print the default; flag: print the
+                                         value anyway and report via exit code
+                                         (the default)
   --slots                                (get) prefix each line with its slot
                                          status and a tab (per element, or per
                                          wildcard slot)
@@ -75,15 +78,17 @@ Options (the subcommands each belongs to are in parentheses):
   --layer=FILE                           (get/fmt/count/instances/set) merge a
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
-  --set=PATH=VALUE                       override one path as the top layer,
-                                         after all files; repeatable. On 'set'
+  --set=PATH=VALUE                       (get/fmt/count/instances/set) override
+                                         one path as the top layer, after all
+                                         files; repeatable. On 'set'
                                          it is an edit to the document itself,
                                          so it persists with --write. VALUE
                                          goes in as data: its type still
                                          follows the text (8 is an int), but a
                                          comma or quote in it is content, not
                                          syntax
-  --set-literal=PATH=TEXT                as --set, except TEXT goes in as value
+  --set-literal=PATH=TEXT                (same subcommands) as --set, except
+                                         TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
                                          array. An unquoted # ends the value;
@@ -93,15 +98,20 @@ Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
-An option a subcommand does not use is a usage error, not ignored.
-An in-place write prints the load's diagnostics to stderr, and refuses when the
-load dropped content the rewrite would delete (--lossy overrides).
+An option a subcommand does not use is a usage error, not ignored. Also
+refused: --write with --layer; --write with --set outside 'set'; --lossy
+without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
+named more than once across FILE, --layer and --schema.
+fmt and set print the load's diagnostics to stderr along with the canonical
+document. An in-place write also refuses when the load dropped content the
+rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
-5 multiple instances, 6 check failed or strict load failure.
+5 multiple instances, 6 check failed, strict load failed, or init's schema
+has faults, 7 in-place write refused (--lossy overrides).
 ";
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
@@ -181,6 +191,18 @@ enum Kind {
 }
 
 impl Kind {
+	fn from_opt(opt: &str) -> Option<Kind> {
+		Some(match opt {
+			"--int" => Kind::Int,
+			"--float" => Kind::Float,
+			"--bool" => Kind::Bool,
+			"--datetime" => Kind::Datetime,
+			"--string" => Kind::String,
+			"--raw" => Kind::Raw,
+			"--rawinfo" => Kind::RawInfo,
+			_ => return None,
+		})
+	}
 	fn name(self) -> &'static str {
 		match self {
 			Kind::Int => "int",
@@ -219,9 +241,10 @@ struct Opts {
 }
 
 /// Did the command line ask for one of the informational outputs? Only tokens
-/// in option position count: a value that happens to read `-h`, and anything
-/// after the file, are data. Scanning the whole line for them let a read of a
-/// missing path answer with the help text and exit 0.
+/// in option position count: the value of a value-taking option and anything
+/// after `--` are data (a FILE or PATH spelled `-h` needs the `--` anyway,
+/// since the option parser would refuse it). Scanning values too once let a
+/// read of a missing path answer with the help text and exit 0.
 fn asked_for(argv: &[String]) -> Option<&'static str> {
 	let mut i = 0;
 	while i < argv.len() {
@@ -234,9 +257,6 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 			"--" => return None,
 			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
 			| "--set-literal" => i += 1,
-			_ if a.starts_with('-') && a.len() > 1 => {}
-			// The subcommand, then the file: past that everything is a path.
-			_ if i > 0 => return None,
 			_ => {}
 		}
 		i += 1;
@@ -300,19 +320,13 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			o.args.extend(argv[i + 1..].iter().cloned());
 			return Ok(o);
 		}
+		if let Some(k) = Kind::from_opt(a) {
+			o.kind = k;
+			o.seen.push("--<type>");
+			i += 1;
+			continue;
+		}
 		match a {
-			"--int" | "--float" | "--bool" | "--datetime" | "--string" | "--raw" | "--rawinfo" => {
-				o.kind = match a {
-					"--int" => Kind::Int,
-					"--float" => Kind::Float,
-					"--bool" => Kind::Bool,
-					"--datetime" => Kind::Datetime,
-					"--raw" => Kind::Raw,
-					"--rawinfo" => Kind::RawInfo,
-					_ => Kind::String,
-				};
-				o.seen.push("--<type>");
-			}
 			"--array" => {
 				o.array = true;
 				o.seen.push("--array");
@@ -368,7 +382,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			o.seen.push("--default");
 		}
 		"--on-bad" => {
-			o.on_bad = match v {
+			o.on_bad = match v.to_ascii_lowercase().as_str() {
 				"error" => OnBad::Error,
 				"default" => OnBad::Default,
 				"flag" => OnBad::Flag,
@@ -390,8 +404,12 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			o.seen.push("--layer");
 		}
 		"--set" | "--set-literal" => {
-			let (p, val) = split_set(v)
-				.ok_or_else(|| format!("bad {} value (want PATH=VALUE): {}", name, v))?;
+			let (p, val) = split_set(v).filter(|(p, _)| !p.is_empty()).ok_or_else(|| {
+				format!(
+					"bad {} value (want PATH=VALUE, quotes and brackets balanced): {}",
+					name, v
+				)
+			})?;
 			o.sets.push(Set {
 				path: p.to_string(),
 				value: val.to_string(),
@@ -494,7 +512,44 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		eprintln!("--layer=- is not valid for set (stdin carries the ops script or the document)");
 		return Err(1);
 	}
+	// Stdin reads once; a second '-' would silently get an empty document.
+	let stdin_uses = o.layers.iter().filter(|l| *l == "-").count()
+		+ usize::from(o.schema.as_deref() == Some("-"))
+		+ usize::from(o.args.first().map(|f| f == "-").unwrap_or(false));
+	if stdin_uses > 1 {
+		eprintln!("'-' (stdin) can be named only once across FILE, --layer and --schema");
+		return Err(1);
+	}
 	Ok(())
+}
+
+/// The per-binding wording behind a setter's bare `false`.
+fn describe_refusal(doc: &Document, path: &str) -> &'static str {
+	match doc.write_reason(path) {
+		// The path itself is fine, so the value text must be what failed (a
+		// literal that does not parse as one value).
+		shcl::WriteReason::Writable => "the value text is not one value",
+		shcl::WriteReason::BadPath => "not a usable path",
+		shcl::WriteReason::ValueInPath => "a path with a value part cannot be written",
+		shcl::WriteReason::Wildcard => "a wildcard path cannot be written",
+		shcl::WriteReason::NoSuchIndex => "no instance at that index",
+		shcl::WriteReason::TooDeep => "deeper than the nesting cap",
+	}
+}
+
+/// The load's diagnostics, one line each, in the shape every command uses.
+fn say_diagnostics(diags: &[Diagnostic]) {
+	for d in diags {
+		let space = if d.code.starts_with("V09") && d.code != "V099" {
+			"schema line"
+		} else {
+			"line"
+		};
+		eprintln!(
+			"{} {}: {:?}: {} {}",
+			space, d.line, d.severity, d.code, d.message
+		);
+	}
 }
 
 /// Load `file` with `o`'s lower-priority `--layer` files underneath it and its
@@ -522,7 +577,12 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 	}
 	for s in &o.sets {
 		if !s.apply(&mut doc) {
-			eprintln!("shcl: cannot write {} (from {})", s.path, s.opt());
+			eprintln!(
+				"{}: cannot write {}: {}",
+				s.opt(),
+				s.path,
+				describe_refusal(&doc, &s.path)
+			);
 			return Err(1);
 		}
 	}
@@ -535,12 +595,6 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 /// than a second copy of the rule - the CLI and a consumer program cannot then
 /// disagree about which rewrites are safe.
 fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
-	for d in doc.diagnostics() {
-		eprintln!(
-			"line {}: {:?}: {} {}",
-			d.line, d.severity, d.code, d.message
-		);
-	}
 	let r = if o.lossy {
 		doc.save_file_lossy(file)
 	} else {
@@ -555,7 +609,7 @@ fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
 				"{}: refusing to rewrite: the load dropped {} line(s)/value(s) this write would delete (--lossy overrides)",
 				file, lost
 			);
-			1
+			7
 		}
 		Err(e) => {
 			eprintln!("{}", e);
@@ -581,13 +635,13 @@ fn load(text: &str, strictness: Strictness) -> Result<Document, u8> {
 	match Document::parse_with(text, strictness) {
 		Ok(d) => Ok(d),
 		Err(e) => {
-			for d in &e.diagnostics {
-				eprintln!(
-					"line {}: {:?}: {} {}",
-					d.line, d.severity, d.code, d.message
-				);
-			}
-			eprintln!("{}", e);
+			say_diagnostics(&e.diagnostics);
+			let errors = e
+				.diagnostics
+				.iter()
+				.filter(|d| d.severity == Severity::Error)
+				.count();
+			eprintln!("strict load failed: {} error diagnostic(s)", errors);
 			Err(6)
 		}
 	}
@@ -596,12 +650,9 @@ fn load(text: &str, strictness: Strictness) -> Result<Document, u8> {
 /// One value read, formatted for the shell: scalars print as one line, arrays
 /// one element per line.
 fn do_get(o: &Opts) -> u8 {
-	let (file, path) = match o.args.as_slice() {
-		[f, p] => (f, p),
-		_ => {
-			eprintln!("get needs FILE and PATH (see --help)");
-			return 1;
-		}
+	let [file, path] = o.args.as_slice() else {
+		eprintln!("usage: shcl get [type] [options] FILE PATH (see --help)");
+		return 1;
 	};
 	let doc = match load_layered(o, file) {
 		Ok(d) => d,
@@ -711,7 +762,7 @@ fn do_get(o: &Opts) -> u8 {
 		};
 		let reason = match status {
 			Status::BadType => match doc.read_string(path).raw {
-				Some(raw) => format!("value {:?} is not a valid {}", raw, type_name),
+				Some(raw) => format!("value {} is not a valid {}", quoted(&raw), type_name),
 				None => format!("value is not a valid {}", type_name),
 			},
 			Status::NotFound => "no value at that path".to_string(),
@@ -720,7 +771,7 @@ fn do_get(o: &Opts) -> u8 {
 			Status::Good => String::new(), // handled above; keep the match total
 		};
 		eprintln!(
-			"shcl: cannot read {} as {}: {} (in {})",
+			"cannot read {} as {}: {} (in {})",
 			path, type_name, reason, file
 		);
 	}
@@ -766,9 +817,31 @@ fn do_get(o: &Opts) -> u8 {
 	}
 }
 
+/// The source text, quoted for a message: one line whatever it holds, with
+/// the same escapes in every binding.
+fn quoted(s: &str) -> String {
+	let mut out = String::with_capacity(s.len() + 2);
+	out.push('"');
+	for c in s.chars() {
+		match c {
+			'"' => out.push_str("\\\""),
+			'\\' => out.push_str("\\\\"),
+			'\n' => out.push_str("\\n"),
+			'\r' => out.push_str("\\r"),
+			'\t' => out.push_str("\\t"),
+			c if (c as u32) < 0x20 || c == '\x7f' => {
+				out.push_str(&format!("\\u{{{:x}}}", c as u32))
+			}
+			c => out.push(c),
+		}
+	}
+	out.push('"');
+	out
+}
+
 fn do_fmt(o: &Opts) -> u8 {
 	let [file] = o.args.as_slice() else {
-		eprintln!("fmt needs FILE (see --help)");
+		eprintln!("usage: shcl fmt [--write|-w] [options] FILE (see --help)");
 		return 1;
 	};
 	if o.write && file == "-" {
@@ -779,6 +852,9 @@ fn do_fmt(o: &Opts) -> u8 {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
+	// Printing the canonical form drops what the load dropped, the same as a
+	// rewrite does, so the diagnostics go out either way.
+	say_diagnostics(doc.diagnostics());
 	if o.write {
 		return write_back(&doc, file, o);
 	}
@@ -907,18 +983,19 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		other => return Err(format!("unknown op: {}", other)),
 	};
 	if !wrote {
-		return Err(format!("cannot write {}", path));
+		return Err(format!(
+			"cannot write {}: {}",
+			path,
+			describe_refusal(doc, path)
+		));
 	}
 	Ok(())
 }
 
 fn do_set(o: &Opts) -> u8 {
-	let file = match o.args.as_slice() {
-		[f] => f,
-		_ => {
-			eprintln!("set needs FILE (ops on stdin; see --help)");
-			return 1;
-		}
+	let [file] = o.args.as_slice() else {
+		eprintln!("usage: shcl set [--write|-w] [options] FILE (see --help)");
+		return 1;
 	};
 	if o.write && file == "-" {
 		eprintln!("set --write cannot rewrite stdin; drop --write to print, or pass a FILE");
@@ -969,7 +1046,12 @@ fn do_set(o: &Opts) -> u8 {
 	}
 	for s in &o.sets {
 		if !s.apply(&mut doc) {
-			eprintln!("shcl: cannot write {} (from {})", s.path, s.opt());
+			eprintln!(
+				"{}: cannot write {}: {}",
+				s.opt(),
+				s.path,
+				describe_refusal(&doc, &s.path)
+			);
 			return 1;
 		}
 	}
@@ -980,7 +1062,8 @@ fn do_set(o: &Opts) -> u8 {
 		use std::io::Read;
 		// Say so before blocking. With nothing on stdin this used to sit there
 		// silently, which reads as a hang rather than as a prompt; the note is
-		// unconditional so a pipeline and a terminal behave identically.
+		// unconditional so a pipeline and a terminal behave identically. The
+		// program-name prefix marks it as a notice; errors carry none.
 		eprintln!(
 			"shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)"
 		);
@@ -990,6 +1073,7 @@ fn do_set(o: &Opts) -> u8 {
 		}
 	}
 	for (n, line) in ops.lines().enumerate() {
+		let line = line.strip_suffix('\r').unwrap_or(line);
 		if line.is_empty() || line.starts_with('#') {
 			continue;
 		}
@@ -998,6 +1082,7 @@ fn do_set(o: &Opts) -> u8 {
 			return 1;
 		}
 	}
+	say_diagnostics(doc.diagnostics());
 	if o.write {
 		return write_back(&doc, file, o);
 	}
@@ -1006,12 +1091,9 @@ fn do_set(o: &Opts) -> u8 {
 }
 
 fn do_check(o: &Opts) -> u8 {
-	let file = match o.args.as_slice() {
-		[f] => f,
-		_ => {
-			eprintln!("check needs FILE (see --help)");
-			return 1;
-		}
+	let [file] = o.args.as_slice() else {
+		eprintln!("usage: shcl check [options] FILE (see --help)");
+		return 1;
 	};
 	let text = match read_input(file) {
 		Ok(t) => t,
@@ -1041,7 +1123,10 @@ fn do_check(o: &Opts) -> u8 {
 					.any(|d| d.severity == Severity::Error)
 				{
 					for d in sdoc.diagnostics() {
-						eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
+						eprintln!(
+							"schema line {}: {:?}: {} {}",
+							d.line, d.severity, d.code, d.message
+						);
 					}
 					diags.push(Diagnostic {
 						line: 0,
@@ -1065,13 +1150,8 @@ fn do_check(o: &Opts) -> u8 {
 	// prose names the file so the two number spaces cannot be confused.
 	for d in &diags {
 		println!("line {}: {:?}: {}", d.line, d.severity, d.code);
-		let space = if d.code.starts_with("V09") && d.code != "V099" {
-			"schema line"
-		} else {
-			"line"
-		};
-		eprintln!("{} {}: {:?}: {}", space, d.line, d.severity, d.message);
 	}
+	say_diagnostics(&diags);
 	let errors = diags
 		.iter()
 		.filter(|d| d.severity == Severity::Error)
@@ -1113,7 +1193,10 @@ fn do_init(o: &Opts) -> u8 {
 		.any(|d| d.severity == Severity::Error)
 	{
 		for d in sdoc.diagnostics() {
-			eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
+			eprintln!(
+				"schema line {}: {:?}: {} {}",
+				d.line, d.severity, d.code, d.message
+			);
 		}
 		eprintln!("init: schema failed to load");
 		// A broken schema is a config-semantics failure, not a usage error:
@@ -1127,7 +1210,10 @@ fn do_init(o: &Opts) -> u8 {
 		}
 		Err(faults) => {
 			for d in &faults {
-				eprintln!("schema line {}: {:?}: {}", d.line, d.severity, d.message);
+				eprintln!(
+					"schema line {}: {:?}: {} {}",
+					d.line, d.severity, d.code, d.message
+				);
 			}
 			eprintln!("init: schema has faults");
 			6
@@ -1136,12 +1222,10 @@ fn do_init(o: &Opts) -> u8 {
 }
 
 fn do_enum(o: &Opts, want_count: bool) -> u8 {
-	let (file, path) = match o.args.as_slice() {
-		[f, p] => (f, p),
-		_ => {
-			eprintln!("count/instances need FILE and PATH (see --help)");
-			return 1;
-		}
+	let [file, path] = o.args.as_slice() else {
+		let name = if want_count { "count" } else { "instances" };
+		eprintln!("usage: shcl {} [options] FILE PATH (see --help)", name);
+		return 1;
 	};
 	let doc = match load_layered(o, file) {
 		Ok(d) => d,
@@ -1157,6 +1241,8 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 	0
 }
 
+const COMMANDS: [&str; 7] = ["get", "set", "fmt", "check", "init", "count", "instances"];
+
 fn run(cmd: &str, o: &Opts) -> u8 {
 	if let Err(code) = check_opts(cmd, o) {
 		return code;
@@ -1168,11 +1254,7 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 		"check" => do_check(o),
 		"init" => do_init(o),
 		"count" => do_enum(o, true),
-		"instances" => do_enum(o, false),
-		other => {
-			eprintln!("unknown command: {} (see --help)", other);
-			1
-		}
+		_ => do_enum(o, false),
 	}
 }
 
@@ -1261,6 +1343,16 @@ fn main() -> ExitCode {
 		return ExitCode::from(0);
 	}
 	let cmd = argv[0].clone();
+	if !COMMANDS.contains(&cmd.as_str()) {
+		// Before the options are judged, so a typo in the command is reported
+		// as that and not as an option the wrong command cannot take.
+		if cmd.starts_with('-') && cmd != "--" {
+			eprintln!("unknown option: {} (see --help)", cmd);
+		} else {
+			eprintln!("unknown command: {} (see --help)", cmd);
+		}
+		return ExitCode::from(1);
+	}
 	let o = match parse_opts(&argv[1..]) {
 		Ok(o) => o,
 		Err(e) => {
