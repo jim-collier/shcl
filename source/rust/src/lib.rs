@@ -92,6 +92,8 @@ fn diag_code(msg: &str) -> &'static str {
 		"E017"
 	} else if msg.starts_with("parent line was skipped") {
 		"E018"
+	} else if msg.starts_with("bracket array syntax") {
+		"E019"
 	} else if msg.starts_with("merged with ") {
 		"H002"
 	} else if msg.starts_with("unknown field ") {
@@ -120,6 +122,8 @@ fn diag_code(msg: &str) -> &'static str {
 		"V094"
 	} else if msg.starts_with("unknown schema fragment ") {
 		"V095"
+	} else if msg.starts_with("generated value fails the schema") {
+		"V097"
 	} else if msg.starts_with("schema failed to load") {
 		"V099"
 	} else {
@@ -671,6 +675,19 @@ pub const MAX_DEPTH: usize = 512;
 // ---------------------------------------------------------------------------
 // Lexical helpers
 // ---------------------------------------------------------------------------
+
+/// A value spelled the way JSON, TOML and YAML spell an array. The path scanner
+/// reads the brackets as a selector, so the line arrives with no value text and
+/// the old repair blamed a colon that is plainly there.
+fn looks_like_bracket_array(content: &str) -> bool {
+	match content.find(':') {
+		Some(colon) => {
+			let rest = content[colon + 1..].trim();
+			rest.starts_with('[') && rest.ends_with(']')
+		}
+		None => false,
+	}
+}
 
 fn fold_name(s: &str) -> String {
 	s.to_ascii_lowercase() // folds A-Z only; non-ASCII passes through untouched
@@ -2103,9 +2120,21 @@ impl Parser {
 			let mut src_text: Option<&str> = None;
 			let value = match &scan.value_text {
 				None => {
-					// A clean path with no colon is the one defined repair:
-					// the obvious intent is that path with an empty value.
-					self.err(lineno, "missing colon; repaired as an empty value");
+					if looks_like_bracket_array(content) {
+						// The brackets never survive the load, so a rewrite
+						// would bake the changed value in and the file would
+						// check clean forever after. Count it lost so the save
+						// gate stops that.
+						self.err(
+							lineno,
+							"bracket array syntax; an array is comma-separated, without brackets",
+						);
+						self.lost += 1;
+					} else {
+						// A clean path with no colon is the one defined repair:
+						// the obvious intent is that path with an empty value.
+						self.err(lineno, "missing colon; repaired as an empty value");
+					}
 					Value::Empty
 				}
 				Some(v) if v.is_empty() => Value::Empty,
@@ -5336,6 +5365,9 @@ fn gen_default_text(v: &str) -> String {
 /// listed in a trailing comment block. The output always loads clean and
 /// validates clean against its schema, except a repeat lower bound of 2+
 /// (identical generated lines would merge, so the shortfall is reported).
+/// The promise is checked against the finished text, so a schema whose own
+/// `default` breaks its field's constraints is a fault (`V097`) instead of a
+/// starter config that fails the first time it is checked.
 /// A footer naming the format and pointing at the spec is written last unless
 /// `no_banner`; the flag is negative so leaving it alone writes the footer.
 /// Err = schema faults (V09x), same as `validate`/`check --schema`.
@@ -5472,6 +5504,29 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			out.push('\n');
 		}
 		out.push_str(GEN_BANNER);
+	}
+	// The output promises to validate clean against the schema that produced
+	// it, so check that here rather than trusting each branch above. A
+	// `default` outside its own field's constraints is the schema's fault, and
+	// the author should hear about it instead of getting a starter config that
+	// fails the first time it is checked. V007 is the one sanctioned shortfall
+	// (a repeat lower bound of 2+ generates identical lines, which merge).
+	let bad: Vec<Diagnostic> = Document::parse(&out)
+		.validate(schema)
+		.into_iter()
+		.filter(|d| d.severity == Severity::Error && d.code != "V007")
+		.map(|d| Diagnostic {
+			line: 0,
+			severity: Severity::Error,
+			code: "V097",
+			message: format!(
+				"generated value fails the schema that produced it: {}",
+				d.message
+			),
+		})
+		.collect();
+	if !bad.is_empty() {
+		return Err(bad);
 	}
 	Ok(out)
 }

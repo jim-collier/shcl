@@ -861,20 +861,32 @@ static int do_init(const Opts *o) {
 		shcl_free(sd); free(stext); return 6;
 	}
 	int ok = 0;
+	// Generation-only faults are recorded on the schema document as it runs;
+	// anything past this mark came from the call below.
+	size_t diagMark = shcl_diag_count(sd);
 	shcl_str text = shcl_generate(sd, o->no_banner, &ok);
 	if (!ok) {
-		// The generator's ok flag carries no fault detail; validating an empty
-		// document against the schema reproduces the same V09x fault list.
-		shcl_doc *ed = shcl_parse("", 0);
-		shcl_validation *val = shcl_validate(ed, sd);
-		size_t nv = shcl_validation_count(val);
-		for (size_t i = 0; i < nv; i++) {
-			const char *sev = shcl_validation_severity(val, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
-			shcl_str m = shcl_validation_message(val, i);
-			fprintf(stderr, "schema line %zu: %s: %s ", shcl_validation_line(val, i), sev, shcl_validation_code(val, i));
+		size_t nd = shcl_diag_count(sd);
+		for (size_t i = diagMark; i < nd; i++) {
+			const char *sev = shcl_diag_severity(sd, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+			shcl_str m = shcl_diag_message(sd, i);
+			fprintf(stderr, "schema line %zu: %s: %s ", shcl_diag_line(sd, i), sev, shcl_diag_code(sd, i));
 			fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 		}
-		shcl_validation_free(val); shcl_free(ed);
+		if (nd == diagMark) {
+			// A build fault leaves nothing on the document; validating an empty
+			// document against the schema reproduces the same V09x list.
+			shcl_doc *ed = shcl_parse("", 0);
+			shcl_validation *val = shcl_validate(ed, sd);
+			size_t nv = shcl_validation_count(val);
+			for (size_t i = 0; i < nv; i++) {
+				const char *sev = shcl_validation_severity(val, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+				shcl_str m = shcl_validation_message(val, i);
+				fprintf(stderr, "schema line %zu: %s: %s ", shcl_validation_line(val, i), sev, shcl_validation_code(val, i));
+				fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
+			}
+			shcl_validation_free(val); shcl_free(ed);
+		}
 		fprintf(stderr, "init: schema has faults\n");
 		shcl_free(sd); free(stext); return 6;
 	}

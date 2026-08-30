@@ -8,7 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `ReadFile(path, maxBytes)` in every binding and the C++ veneer: the file tier's read half on its own - the file's text, or the load status saying why not, with a cap on how much is read (past it is `Unreadable`; 0 is no cap). `LoadFile` is now this plus a parse. It is for a consumer that needs the exact bytes it last saw, to tell its own save coming back as a change notification from somebody else's edit, or a bound on what it will read before parsing - both of which meant keeping a hand-rolled read beside the library.
 
+- `shcl_reads_release()` in the C binding: gives back the memory the read calls have handed out, without touching the document. Read results live in the document's arena until it is freed, which is right for a read-once consumer and wrong for a process polling one document in a loop - 200k array reads held 15.7 MB it could not give back. Optional, so nothing changes for a caller that ignores it; the C++ veneer calls it on every read, since it copies each result out immediately.
+
 - `SHCL_OOM()` in the C binding: what an allocation the library cannot recover from does. The default is still the CLI's print-and-exit-70; a consumer whose process is not the library's to end defines its own before the implementation and takes it from there.
+
+- `V097`: `init` checks its own output against the schema that produced it before returning it. A field typed `int` with `min: 1`, `max: 10` and `default: 99` used to generate the comment `# int, 1-10, required` and then `server.port: 99` on the next line, so the starter config failed the schema it came from. The schema is faulted now, naming the field.
+
+- `E019`: a value spelled with brackets, the way JSON, TOML and YAML spell an array. It used to be reported as a missing colon on a line that plainly has one, and the brackets were dropped so silently that an in-place `fmt --write` rewrote `ports: [80, 443]` to `ports: "80, 443"` and the file checked clean from then on. The load counts it as lost content now, so an in-place rewrite refuses unless `--lossy` is passed.
 
 - `E018`: a line indented under a line that was skipped is now skipped with it, with its own diagnostic, instead of re-parenting one level up. A skipped header used to hand its children to its parent, so the document gained structure the author never wrote.
 

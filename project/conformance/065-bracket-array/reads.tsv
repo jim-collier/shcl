@@ -1,0 +1,3 @@
+query	type	expected	status
+-	load	ok	-
+ports	string	80, 443	Good

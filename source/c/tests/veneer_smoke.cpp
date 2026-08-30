@@ -234,6 +234,23 @@ int main() {
 	}
 #endif
 
+	// The veneer hands the core's read memory back on the next read, so a read
+	// loop on one long-lived Document stays flat instead of climbing until the
+	// Document is destroyed.
+	{
+		const std::string t = "ports: 80, 443, 8080\n";
+		shcl_doc *raw = shcl_parse(t.data(), t.size());
+		shcl::Document held(raw);   // takes ownership; raw stays valid alongside
+		for (int i = 0; i < 20000; i++) {
+			auto r = held.read_int_array("ports");
+			CHECK(r.status == shcl::Status::Good && r.value.size() == 3);
+			if (r.status != shcl::Status::Good) break;
+		}
+		std::size_t held_bytes = 0;
+		for (const ShclBlock *b = raw->reads.head; b; b = b->next) held_bytes += b->used;
+		CHECK(held_bytes <= 4096);
+	}
+
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
 	std::printf("veneer: ok\n");
 	return 0;

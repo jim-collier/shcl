@@ -214,14 +214,19 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 // Schema-driven generation (`shcl init --schema`): a commented, typed starter
 // config from a schema document. Required paths are live (their `default`, or an
 // empty value); optional paths are commented out; wildcard paths are listed in a
-// trailing comment block. A footer naming the format and pointing at the spec is
+// trailing comment block. The output validates clean against the schema that
+// produced it, checked against the finished text, so a schema whose own
+// `default` breaks its field's constraints is a fault (V097) instead of a
+// starter config that fails the first time it is checked; the faults land on
+// the schema document's diagnostics. A footer naming the format and pointing at the spec is
 // written last unless no_banner; the flag is negative so passing 0 writes the
 // footer. *ok is set to 1 on success, 0 if the schema has faults (V09x) - then
 // the returned string is empty. Bytes live in the schema's arena.
 shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The
-// returned bytes live in the document's arena; valid until shcl_free. The
+// returned bytes live in the document's read arena; valid until shcl_free, or
+// until shcl_reads_release. The
 // bytes may contain NUL - never hand them to a strlen-based API.
 shcl_str shcl_to_canonical(shcl_doc *d);
 
@@ -249,7 +254,8 @@ int shcl_quoted(shcl_doc *d, const char *path, size_t plen);
 // Resolution mirrors shcl_line: empty when the path does not resolve to
 // exactly one node. Merged instances keep the first binding's spelling; a
 // writer-built node keeps the spelling the setter's path used.
-// Borrowed from the document's arena; valid until shcl_free.
+// Borrowed from the document's read arena; valid until shcl_free, or until
+// shcl_reads_release.
 shcl_str shcl_authored_name(shcl_doc *d, const char *path, size_t plen);
 // The plural shcl_line: 1-based source lines at a path, in file order, so a
 // repeated field - the case that most wants a citable line - yields every
@@ -267,14 +273,14 @@ size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out)
 // recipe for tooling. A segment that is not bare-name-safe is emitted quoted
 // and escaped - the form the path scanner accepts - so each path is a
 // well-formed lookup path and nothing in the document is hidden. Returns the
-// count; *out stays valid until shcl_free.
+// count; *out stays valid until shcl_free, or until shcl_reads_release.
 size_t shcl_paths(shcl_doc *d, shcl_str **out);
 // Quote one path segment so it can be spliced into a lookup path: a bare name
 // passes through, anything else comes back quoted and escaped in the form the
 // path scanner accepts. Splicing user-typed text into a path without this is
 // path injection - a dotted name silently reads as nesting. Same spelling
 // shcl_paths and the canonical emitter produce. Result lives in the
-// document's arena; valid until shcl_free.
+// document's read arena; valid until shcl_free, or until shcl_reads_release.
 shcl_str shcl_quote_segment(shcl_doc *d, const char *name, size_t len);
 
 shcl_read_i64  shcl_read_int(shcl_doc *d, const char *path, size_t plen);
@@ -290,6 +296,15 @@ shcl_read_f64_arr  shcl_read_float_array(shcl_doc *d, const char *path, size_t p
 shcl_read_bool_arr shcl_read_bool_array(shcl_doc *d, const char *path, size_t plen);
 shcl_read_dt_arr   shcl_read_datetime_array(shcl_doc *d, const char *path, size_t plen);
 shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t plen);
+
+// Give back everything the read calls have handed out. Every result from a read
+// - shcl_read_*, shcl_children, shcl_paths, shcl_instances, shcl_lines,
+// shcl_quote_segment, shcl_to_canonical - is invalid after this; the document itself is untouched
+// and stays readable, so the next read works normally. Optional: leave it alone
+// and results live until shcl_free, which is the documented contract and what a
+// read-once consumer wants. A process polling the same document in a loop calls
+// it between passes so the memory does not climb.
+void shcl_reads_release(shcl_doc *d);
 
 // Convenience tier: the value, or the call-site fallback unless the read is Good
 // - so a missing/empty/bad/ambiguous read cannot masquerade as a real zero. The
@@ -721,8 +736,13 @@ struct shcl_doc {
 	// Per-resolve temporaries (path scans, resolver vectors, display strings
 	// built only to compare). Reset on entry to each resolve, so read-only use
 	// of a long-lived document stays flat; anything HANDED BACK to the caller
-	// lives in `arena` (valid until shcl_free, the documented contract).
+	// lives in `reads` (valid until shcl_free or shcl_reads_release).
 	ShclArena scratch;
+	// Results handed back by the read calls. Its own arena so a long-running
+	// consumer polling one document can give them back with shcl_reads_release
+	// instead of growing until shcl_free. Freed with the document either way,
+	// so a caller that never calls it sees the documented lifetime unchanged.
+	ShclArena reads;
 	ShclVecNode nodes;
 	ShclVecDiag diags;
 	shcl_strictness strictness;
@@ -1325,6 +1345,19 @@ static ShclPathScan scan_path_ex(ShclArena *a, ShclStr input, int stars) {
 }
 
 static ShclPathScan scan_path(ShclArena *a, ShclStr input) { return scan_path_ex(a, input, 0); }
+
+/* A value spelled the way JSON, TOML and YAML spell an array. The path scanner
+   reads the brackets as a selector, so the line arrives with no value text and
+   the old repair blamed a colon that is plainly there. */
+static int looks_like_bracket_array(ShclStr content) {
+	size_t colon = 0;
+	while (colon < content.n && content.p[colon] != ':') colon++;
+	if (colon == content.n) return 0;
+	size_t b = colon + 1, e = content.n;
+	while (b < e && (unsigned char)content.p[b] <= ' ') b++;
+	while (e > b && (unsigned char)content.p[e - 1] <= ' ') e--;
+	return e > b && content.p[b] == '[' && content.p[e - 1] == ']';
+}
 // Query spelling of scan_path: also accepts a bare `*` segment (the name
 // wildcard - any child name). Document lines never take it; only lookups
 // (reads, the writer probe, schema paths) do.
@@ -1846,6 +1879,7 @@ static const char *diag_code(shcl_severity sev, ShclStr msg) {
 	if (s_starts(msg, "nesting deeper than")) return "E016";
 	if (s_starts(msg, "unterminated quote in value")) return "E017";
 	if (s_starts(msg, "parent line was skipped")) return "E018";
+	if (s_starts(msg, "bracket array syntax")) return "E019";
 	if (s_starts(msg, "unknown field ")) return "V001";
 	if (s_starts(msg, "required path missing")) return "V002";
 	if (s_starts(msg, "wrong type at ")) return "V003";
@@ -1860,6 +1894,7 @@ static const char *diag_code(shcl_severity sev, ShclStr msg) {
 	if (s_starts(msg, "bad schema fragment")) return "V094";
 	if (s_starts(msg, "unknown schema fragment ")) return "V095";
 	if (s_starts(msg, "schema expands past ")) return "V096";
+	if (s_starts(msg, "generated value fails the schema")) return "V097";
 	if (s_starts(msg, "schema failed to load")) return "V099";
 	return "E000";
 }
@@ -2456,7 +2491,16 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		}
 		size_t next = i + 1;
 		ShclValue value;
-		if (!scan.has_value) { p_err(&P, lineno, s_lit("missing colon; repaired as an empty value")); value = v_empty(); }
+		if (!scan.has_value) {
+			if (looks_like_bracket_array(content)) {
+				/* The brackets never survive the load, so a rewrite would bake
+				   the changed value in and the file would check clean forever
+				   after. Count it lost so the save gate stops that. */
+				p_err(&P, lineno, s_lit("bracket array syntax; an array is comma-separated, without brackets"));
+				P.d->lost++;
+			} else p_err(&P, lineno, s_lit("missing colon; repaired as an empty value"));
+			value = v_empty();
+		}
 		else if (scan.value_text.n == 0) value = v_empty();
 		else {
 			ShclFence vf = fence_open(scan.value_text);
@@ -2668,7 +2712,7 @@ static shcl_status scalar_at(shcl_doc *d, ShclStr path, ShclElement **el) {
 // slot has no coercible scalar and sts[i] already says why (a present element
 // can still turn BadType if coercion fails). Wildcard slots stay aligned - the
 // spec never drops one silently. The lists land in `a`: public reads pass the
-// doc arena (results live until shcl_free); internal queries pass a private
+// doc read arena (results live until shcl_free or shcl_reads_release); internal queries pass a private
 // arena so probing a caller-owned doc leaves nothing behind.
 static shcl_status array_elements(shcl_doc *d, ShclArena *a, ShclStr path, ShclElement ***els, shcl_status **sts, size_t *n) {
 	ShclResolved r;
@@ -2715,7 +2759,7 @@ size_t shcl_count(shcl_doc *d, const char *path, size_t plen) {
 static ShclStr emit_name(ShclArena *a, ShclStr name);
 
 size_t shcl_paths(shcl_doc *d, shcl_str **out) {
-	ShclArena *a = &d->arena;
+	ShclArena *a = &d->reads;
 	ShclArena *t = &d->scratch; // walk stack + dedup set: dead after the call
 	typedef struct { size_t node; ShclStr prefix; } PEnt;
 	PEnt *stack = NULL; size_t sn = 0, sc = 0;
@@ -2751,8 +2795,8 @@ size_t shcl_paths(shcl_doc *d, shcl_str **out) {
 
 shcl_str shcl_quote_segment(shcl_doc *d, const char *name, size_t len) {
 	ShclStr in; in.p = name; in.n = len;
-	ShclStr q = emit_name(&d->arena, in);
-	if (q.p == in.p) q = s_dup(&d->arena, in); // bare passthrough: copy so the result outlives the caller's buffer
+	ShclStr q = emit_name(&d->reads, in);
+	if (q.p == in.p) q = s_dup(&d->reads, in); // bare passthrough: copy so the result outlives the caller's buffer
 	shcl_str out; out.p = q.p; out.n = q.n;
 	return out;
 }
@@ -2778,7 +2822,7 @@ static size_t instances_in(shcl_doc *d, ShclArena *a, ShclStr p, shcl_str **out)
 }
 size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {
 	ShclStr p; p.p = path; p.n = plen;
-	return instances_in(d, &d->arena, p, out);
+	return instances_in(d, &d->reads, p, out);
 }
 
 size_t shcl_line(shcl_doc *d, const char *path, size_t plen) {
@@ -2804,7 +2848,7 @@ shcl_str shcl_authored_name(shcl_doc *d, const char *path, size_t plen) {
 size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out) {
 	// Wildcard slots that did not resolve stay in the list as 0 so indices
 	// keep matching shcl_count.
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen;
+	ShclArena *a = &d->reads; ShclStr p; p.p = path; p.n = plen;
 	ShclResolved r;
 	if (!resolve(d, p, &r)) { *out = (size_t *)arena_alloc(a, sizeof(size_t)); return 0; }
 	if (r.kind == R_SLOTS) {
@@ -2824,7 +2868,7 @@ size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out) {
 
 size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {
 	// Names come back as stored (already arena-owned); only the array is new.
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen;
+	ShclArena *a = &d->reads; ShclStr p; p.p = path; p.n = plen;
 	size_t node = ROOT;
 	if (s_trim(p).n != 0) {
 		ShclResolved r;
@@ -3511,11 +3555,11 @@ shcl_read_str shcl_read_string(shcl_doc *d, const char *path, size_t plen) {
 	if (st != SHCL_GOOD) { R.value = s_empty(); R.status = st; return R; }
 	if (v->kind == V_EMPTY) { R.value = s_empty(); R.status = SHCL_EMPTY; }
 	else if (v->kind == V_RAW) { R.value = v->raw->content; R.status = SHCL_GOOD; }
-	else if (v->nels == 1) { R.value = apply_escapes(&d->arena, v->els[0].text); R.status = SHCL_GOOD; }
+	else if (v->nels == 1) { R.value = apply_escapes(&d->reads, v->els[0].text); R.status = SHCL_GOOD; }
 	else {
 		/* Canonical inline form (quoting + escapes intact), so the string
 		   re-parses to the same array - not the bare display join. */
-		ShclArena *a = &d->arena; ShclSB s = {0};
+		ShclArena *a = &d->reads; ShclSB s = {0};
 		for (size_t i = 0; i < v->nels; i++) { if (i) sb_puts(a, &s, ", "); sb_putS(a, &s, emit_element(a, &v->els[i])); }
 		R.value = sb_S(&s); R.status = SHCL_GOOD;
 	}
@@ -3550,29 +3594,29 @@ static shcl_read_i64_arr read_int_array_in(shcl_doc *d, ShclArena *a, ShclStr p)
 }
 shcl_read_i64_arr shcl_read_int_array(shcl_doc *d, const char *path, size_t plen) {
 	ShclStr p; p.p = path; p.n = plen;
-	return read_int_array_in(d, &d->arena, p);
+	return read_int_array_in(d, &d->reads, p);
 }
 shcl_read_f64_arr shcl_read_float_array(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_f64_arr R; ShclStr p; p.p = path; p.n = plen; ShclElement **els; shcl_status *sts; size_t n;
-	shcl_status st = array_elements(d, &d->arena, p, &els, &sts, &n);
+	shcl_status st = array_elements(d, &d->reads, p, &els, &sts, &n);
 	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
-	double *out = (double *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(double));
+	double *out = (double *)arena_alloc(&d->reads, (n ? n : 1) * sizeof(double));
 	for (size_t i = 0; i < n; i++) { double v; if (els[i] && parse_float_text(&d->scratch, els[i], d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) sts[i] = SHCL_BAD_TYPE; } }
 	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_bool_arr shcl_read_bool_array(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_bool_arr R; ShclStr p; p.p = path; p.n = plen; ShclElement **els; shcl_status *sts; size_t n;
-	shcl_status st = array_elements(d, &d->arena, p, &els, &sts, &n);
+	shcl_status st = array_elements(d, &d->reads, p, &els, &sts, &n);
 	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
-	int *out = (int *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(int));
+	int *out = (int *)arena_alloc(&d->reads, (n ? n : 1) * sizeof(int));
 	for (size_t i = 0; i < n; i++) { int v; if (els[i] && parse_bool_text(&d->scratch, els[i]->text, d->strictness, &v)) out[i] = v; else { out[i] = 0; if (els[i]) sts[i] = SHCL_BAD_TYPE; } }
 	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 shcl_read_dt_arr shcl_read_datetime_array(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_dt_arr R; ShclStr p; p.p = path; p.n = plen; ShclElement **els; shcl_status *sts; size_t n;
-	shcl_status st = array_elements(d, &d->arena, p, &els, &sts, &n);
+	shcl_status st = array_elements(d, &d->reads, p, &els, &sts, &n);
 	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
-	shcl_datetime *out = (shcl_datetime *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_datetime));
+	shcl_datetime *out = (shcl_datetime *)arena_alloc(&d->reads, (n ? n : 1) * sizeof(shcl_datetime));
 	for (size_t i = 0; i < n; i++) {
 		memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE;
 		if (els[i]) { if (!parse_datetime(&d->scratch, els[i]->text, &out[i])) { memset(&out[i], 0, sizeof out[i]); out[i].zone = SHCL_ZONE_NONE; sts[i] = SHCL_BAD_TYPE; } }
@@ -3581,10 +3625,10 @@ shcl_read_dt_arr shcl_read_datetime_array(shcl_doc *d, const char *path, size_t 
 }
 shcl_read_str_arr shcl_read_string_array(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_str_arr R; ShclStr p; p.p = path; p.n = plen; ShclElement **els; shcl_status *sts; size_t n;
-	shcl_status st = array_elements(d, &d->arena, p, &els, &sts, &n);
+	shcl_status st = array_elements(d, &d->reads, p, &els, &sts, &n);
 	if (st != SHCL_GOOD && st != SHCL_EMPTY) { R.values = NULL; R.n = 0; R.status = st; R.statuses = NULL; return R; }
-	shcl_str *out = (shcl_str *)arena_alloc(&d->arena, (n ? n : 1) * sizeof(shcl_str));
-	for (size_t i = 0; i < n; i++) out[i] = els[i] ? apply_escapes(&d->arena, els[i]->text) : s_empty();
+	shcl_str *out = (shcl_str *)arena_alloc(&d->reads, (n ? n : 1) * sizeof(shcl_str));
+	for (size_t i = 0; i < n; i++) out[i] = els[i] ? apply_escapes(&d->reads, els[i]->text) : s_empty();
 	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
 }
 
@@ -3813,7 +3857,7 @@ shcl_str shcl_to_canonical(shcl_doc *d) {
 	/* The returned bytes live in the document arena - that is the documented
 	   contract. A save goes through emit_canonical directly, so it retains
 	   nothing (200 saves of 79 KB grew a document by 17 MB). */
-	return s_dup(&d->arena, emit_canonical(d));
+	return s_dup(&d->reads, emit_canonical(d));
 }
 
 // --- format helpers + remaining public API ----------------------------------
@@ -3897,7 +3941,8 @@ int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out) {
 
 shcl_doc *shcl_parse(const char *text, size_t len) { return do_parse(text, len, SHCL_STANDARD); }
 shcl_doc *shcl_parse_with(const char *text, size_t len, shcl_strictness s) { return do_parse(text, len, s); }
-void shcl_free(shcl_doc *d) { if (!d) return; free(d->nodes.data); arena_free(&d->arena); arena_free(&d->scratch); arena_free(&d->index_arena); free(d); }
+void shcl_free(shcl_doc *d) { if (!d) return; free(d->nodes.data); arena_free(&d->arena); arena_free(&d->scratch); arena_free(&d->reads); arena_free(&d->index_arena); free(d); }
+void shcl_reads_release(shcl_doc *d) { if (d) arena_reset(&d->reads); }
 int shcl_strict_failed(const shcl_doc *d) {
 	if (d->strictness != SHCL_STRICT) return 0;
 	for (size_t i = 0; i < d->diags.len; i++) if (d->diags.data[i].sev == SHCL_SEV_ERROR) return 1;
@@ -5548,6 +5593,35 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		sb_puts(a, &out, GEN_BANNER);
 	}
 	ShclStr s = s_dup(&schema->arena, sb_S(&out)); r.p = s.p; r.n = s.n;
+	/* The output promises to validate clean against the schema that produced
+	   it, so check that here rather than trusting each branch above. A
+	   `default` outside its own field's constraints is the schema's fault, and
+	   the author should hear about it instead of getting a starter config that
+	   fails the first time it is checked. V007 is the one sanctioned shortfall
+	   (a repeat lower bound of 2+ generates identical lines, which merge). */
+	{
+		shcl_doc *self_ = shcl_parse(s.p, s.n);
+		shcl_validation *v = self_ ? shcl_validate(self_, schema) : NULL;
+		size_t nv = v ? shcl_validation_count(v) : 0, nbad = 0;
+		for (size_t i = 0; i < nv; i++) {
+			const char *code = shcl_validation_code(v, i);
+			if (shcl_validation_severity(v, i) != SHCL_SEV_ERROR) continue;
+			if (code && strcmp(code, "V007") == 0) continue;
+			ShclSB m = {0, 0, 0};
+			sb_puts(a, &m, "generated value fails the schema that produced it: ");
+			sb_putS(a, &m, shcl_validation_message(v, i));
+			/* the diag outlives this call: its text must leave the private arena */
+			push_diag(schema, 0, SHCL_SEV_ERROR, s_dup(&schema->arena, sb_S(&m)));
+			nbad++;
+		}
+		if (v) shcl_validation_free(v);
+		if (self_) shcl_free(self_);
+		if (nbad) {
+			if (ok) *ok = 0;
+			ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp);
+			return r;
+		}
+	}
 	arena_free(&tmp);
 	return r;
 }

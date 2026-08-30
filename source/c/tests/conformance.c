@@ -971,6 +971,28 @@ int main(int argc, char **argv) {
 		shcl_free(gd); free(gt);
 		remove(gfile); rmdir(gdir);
 	}
+	// Array reads must not grow the document arena, and the release call has to
+	// give back what they do allocate. C-only: the other three hand back owned
+	// collections their runtime reclaims, so there is nothing to mirror.
+	{
+		const char *at = "ports: 80, 443, 8080\n";
+		shcl_doc *ad = shcl_parse(at, strlen(at));
+		size_t docBefore = arena_bytes(&ad->arena);
+		for (int i = 0; i < 20000; i++) {
+			shcl_read_i64_arr r = shcl_read_int_array(ad, "ports", 5);
+			if (r.status != SHCL_GOOD || r.n != 3 || r.values[1] != 443) { fail("array_retain", "read failed"); break; }
+		}
+		if (arena_bytes(&ad->arena) > docBefore + 4096) fail("array_retain", "array reads grew the document arena");
+		shcl_reads_release(ad);
+		if (arena_bytes(&ad->reads) != 0) fail("array_retain", "release did not reclaim the read arena");
+		for (int i = 0; i < 20000; i++) {
+			shcl_read_i64_arr r = shcl_read_int_array(ad, "ports", 5);
+			if (r.status != SHCL_GOOD) { fail("array_retain", "read after release failed"); break; }
+			shcl_reads_release(ad);
+		}
+		if (arena_bytes(&ad->reads) > 4096) fail("array_retain", "releasing per read did not keep the arena flat");
+		shcl_free(ad);
+	}
 	// write_reason: the reason behind a setter's bare 0. Same fixture in every
 	// runner.
 	{

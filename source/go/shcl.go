@@ -148,6 +148,8 @@ func diagCode(msg string) string {
 		return "E017"
 	case strings.HasPrefix(msg, "parent line was skipped"):
 		return "E018"
+	case strings.HasPrefix(msg, "bracket array syntax"):
+		return "E019"
 	case strings.HasPrefix(msg, "merged with "):
 		return "H002"
 	case strings.HasPrefix(msg, "unknown field "):
@@ -178,6 +180,8 @@ func diagCode(msg string) string {
 		return "V095"
 	case strings.HasPrefix(msg, "schema expands past "):
 		return "V096"
+	case strings.HasPrefix(msg, "generated value fails the schema"):
+		return "V097"
 	case strings.HasPrefix(msg, "schema failed to load"):
 		return "V099"
 	default:
@@ -1369,6 +1373,18 @@ func parseIndex(s string) (uint64, bool) {
 // brackets is insignificant. A colon is a selector colon only when the next
 // non-ws char is `[`; otherwise it separates the value. An error means
 // genuinely ambiguous input, which the caller skips with a diagnostic.
+// looksLikeBracketArray: a value spelled the way JSON, TOML and YAML spell an
+// array. The path scanner reads the brackets as a selector, so the line arrives
+// with no value text and the old repair blamed a colon that is plainly there.
+func looksLikeBracketArray(content string) bool {
+	colon := strings.IndexByte(content, ':')
+	if colon < 0 {
+		return false
+	}
+	rest := strings.TrimSpace(content[colon+1:])
+	return strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]")
+}
+
 func scanPath(input string) (pathScan, error) {
 	return scanPathEx(input, false)
 }
@@ -2243,9 +2259,17 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		var v value
 		switch {
 		case scan.valueText == nil:
-			// A clean path with no colon is the one defined repair:
-			// the obvious intent is that path with an empty value.
-			p.err(lineno, "missing colon; repaired as an empty value")
+			if looksLikeBracketArray(content) {
+				// The brackets never survive the load, so a rewrite would bake
+				// the changed value in and the file would check clean forever
+				// after. Count it lost so the save gate stops that.
+				p.err(lineno, "bracket array syntax; an array is comma-separated, without brackets")
+				p.lost++
+			} else {
+				// A clean path with no colon is the one defined repair:
+				// the obvious intent is that path with an empty value.
+				p.err(lineno, "missing colon; repaired as an empty value")
+			}
 			v = value{kind: vEmpty}
 		case *scan.valueText == "":
 			v = value{kind: vEmpty}
@@ -5783,7 +5807,10 @@ func genDefaultText(v string) string {
 // remaining wildcard or `[#N]` paths (which cannot be materialized) are listed
 // in a trailing comment block. The output always loads clean and validates
 // clean against its schema, except a repeat lower bound of 2+ (identical
-// generated lines would merge, so the shortfall is reported). A footer naming
+// generated lines would merge, so the shortfall is reported). The promise is
+// checked against the finished text, so a schema whose own `default` breaks its
+// field's constraints is a fault (V097) instead of a starter config that fails
+// the first time it is checked. A footer naming
 // the format and pointing at the spec is written last unless noBanner; the
 // flag is negative so leaving it alone writes the footer. faults != nil =
 // schema faults (V09x), same as Validate / check --schema.
@@ -5948,7 +5975,28 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		}
 		b.WriteString(genBanner)
 	}
-	return b.String(), nil
+	// The output promises to validate clean against the schema that produced
+	// it, so check that here rather than trusting each branch above. A
+	// `default` outside its own field's constraints is the schema's fault, and
+	// the author should hear about it instead of getting a starter config that
+	// fails the first time it is checked. V007 is the one sanctioned shortfall
+	// (a repeat lower bound of 2+ generates identical lines, which merge).
+	text := b.String()
+	var bad []Diagnostic
+	for _, d := range Parse(text).Validate(schema) {
+		if d.Severity == SeverityError && d.Code != "V007" {
+			bad = append(bad, Diagnostic{
+				Line:     0,
+				Severity: SeverityError,
+				Code:     "V097",
+				Message:  "generated value fails the schema that produced it: " + d.Message,
+			})
+		}
+	}
+	if len(bad) > 0 {
+		return "", bad
+	}
+	return text, nil
 }
 
 // genMaxFields is the ceiling on how many fields one schema may expand to.
