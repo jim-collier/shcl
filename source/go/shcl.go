@@ -148,6 +148,8 @@ func diagCode(msg string) string {
 		return "E017"
 	case strings.HasPrefix(msg, "parent line was skipped"):
 		return "E018"
+	case strings.HasPrefix(msg, "bracket array syntax"):
+		return "E019"
 	case strings.HasPrefix(msg, "merged with "):
 		return "H002"
 	case strings.HasPrefix(msg, "unknown field "):
@@ -1369,6 +1371,18 @@ func parseIndex(s string) (uint64, bool) {
 // brackets is insignificant. A colon is a selector colon only when the next
 // non-ws char is `[`; otherwise it separates the value. An error means
 // genuinely ambiguous input, which the caller skips with a diagnostic.
+// looksLikeBracketArray: a value spelled the way JSON, TOML and YAML spell an
+// array. The path scanner reads the brackets as a selector, so the line arrives
+// with no value text and the old repair blamed a colon that is plainly there.
+func looksLikeBracketArray(content string) bool {
+	colon := strings.IndexByte(content, ':')
+	if colon < 0 {
+		return false
+	}
+	rest := strings.TrimSpace(content[colon+1:])
+	return strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]")
+}
+
 func scanPath(input string) (pathScan, error) {
 	return scanPathEx(input, false)
 }
@@ -2243,9 +2257,17 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		var v value
 		switch {
 		case scan.valueText == nil:
-			// A clean path with no colon is the one defined repair:
-			// the obvious intent is that path with an empty value.
-			p.err(lineno, "missing colon; repaired as an empty value")
+			if looksLikeBracketArray(content) {
+				// The brackets never survive the load, so a rewrite would bake
+				// the changed value in and the file would check clean forever
+				// after. Count it lost so the save gate stops that.
+				p.err(lineno, "bracket array syntax; an array is comma-separated, without brackets")
+				p.lost++
+			} else {
+				// A clean path with no colon is the one defined repair:
+				// the obvious intent is that path with an empty value.
+				p.err(lineno, "missing colon; repaired as an empty value")
+			}
 			v = value{kind: vEmpty}
 		case *scan.valueText == "":
 			v = value{kind: vEmpty}

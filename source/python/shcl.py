@@ -142,6 +142,7 @@ def _diag_code(msg):
 		("nesting deeper than", "E016"),
 		("unterminated quote in value", "E017"),
 		("parent line was skipped", "E018"),
+		("bracket array syntax", "E019"),
 		("merged with ", "H002"),
 		("unknown field ", "V001"),
 		("required path missing", "V002"),
@@ -1019,6 +1020,17 @@ def _parse_uint(s):
 	return n
 
 
+def _looks_like_bracket_array(content):
+	"""A value spelled the way JSON, TOML and YAML spell an array. The path scanner
+	reads the brackets as a selector, so the line arrives with no value text and the
+	old repair blamed a colon that is plainly there."""
+	colon = content.find(":")
+	if colon < 0:
+		return False
+	rest = content[colon + 1:].strip()
+	return rest.startswith("[") and rest.endswith("]")
+
+
 def _scan_path(inp):
 	"""Scan `a . b : [sel] . c : value`. Whitespace around dots/colons/brackets is
 	insignificant. A colon is a selector colon only when the next non-ws char is
@@ -1685,9 +1697,16 @@ class _Parser:
 			# scalar/inline-array case has a one-line source spelling).
 			src_text = None
 			if value_text is None:
-				# A clean path with no colon is the one defined repair:
-				# the obvious intent is that path with an empty value.
-				self._err(lineno, "missing colon; repaired as an empty value")
+				if _looks_like_bracket_array(content):
+					# The brackets never survive the load, so a rewrite would
+					# bake the changed value in and the file would check clean
+					# forever after. Count it lost so the save gate stops that.
+					self._err(lineno, "bracket array syntax; an array is comma-separated, without brackets")
+					self.lost += 1
+				else:
+					# A clean path with no colon is the one defined repair:
+					# the obvious intent is that path with an empty value.
+					self._err(lineno, "missing colon; repaired as an empty value")
 				value = _empty()
 			elif value_text == "":
 				value = _empty()

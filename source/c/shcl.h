@@ -1325,6 +1325,19 @@ static ShclPathScan scan_path_ex(ShclArena *a, ShclStr input, int stars) {
 }
 
 static ShclPathScan scan_path(ShclArena *a, ShclStr input) { return scan_path_ex(a, input, 0); }
+
+/* A value spelled the way JSON, TOML and YAML spell an array. The path scanner
+   reads the brackets as a selector, so the line arrives with no value text and
+   the old repair blamed a colon that is plainly there. */
+static int looks_like_bracket_array(ShclStr content) {
+	size_t colon = 0;
+	while (colon < content.n && content.p[colon] != ':') colon++;
+	if (colon == content.n) return 0;
+	size_t b = colon + 1, e = content.n;
+	while (b < e && (unsigned char)content.p[b] <= ' ') b++;
+	while (e > b && (unsigned char)content.p[e - 1] <= ' ') e--;
+	return e > b && content.p[b] == '[' && content.p[e - 1] == ']';
+}
 // Query spelling of scan_path: also accepts a bare `*` segment (the name
 // wildcard - any child name). Document lines never take it; only lookups
 // (reads, the writer probe, schema paths) do.
@@ -1846,6 +1859,7 @@ static const char *diag_code(shcl_severity sev, ShclStr msg) {
 	if (s_starts(msg, "nesting deeper than")) return "E016";
 	if (s_starts(msg, "unterminated quote in value")) return "E017";
 	if (s_starts(msg, "parent line was skipped")) return "E018";
+	if (s_starts(msg, "bracket array syntax")) return "E019";
 	if (s_starts(msg, "unknown field ")) return "V001";
 	if (s_starts(msg, "required path missing")) return "V002";
 	if (s_starts(msg, "wrong type at ")) return "V003";
@@ -2456,7 +2470,16 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		}
 		size_t next = i + 1;
 		ShclValue value;
-		if (!scan.has_value) { p_err(&P, lineno, s_lit("missing colon; repaired as an empty value")); value = v_empty(); }
+		if (!scan.has_value) {
+			if (looks_like_bracket_array(content)) {
+				/* The brackets never survive the load, so a rewrite would bake
+				   the changed value in and the file would check clean forever
+				   after. Count it lost so the save gate stops that. */
+				p_err(&P, lineno, s_lit("bracket array syntax; an array is comma-separated, without brackets"));
+				P.d->lost++;
+			} else p_err(&P, lineno, s_lit("missing colon; repaired as an empty value"));
+			value = v_empty();
+		}
 		else if (scan.value_text.n == 0) value = v_empty();
 		else {
 			ShclFence vf = fence_open(scan.value_text);

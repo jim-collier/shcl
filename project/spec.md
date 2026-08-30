@@ -433,6 +433,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 | `E016` | nesting deeper than the 512-level cap (line skipped)
 | `E017` | a value (or array element) opens a quote it never closes - the piece is kept literally, including any `#` comment the open quote swallowed
 | `E018` | line written under a line that was skipped (indented beneath it); skipped with it, so a skipped line's block never re-parents one level up
+| `E019` | a value spelled with brackets, the way JSON, TOML and YAML spell an array. The brackets do not survive the load, so this counts as lost content and an in-place rewrite refuses (`--lossy` overrides) rather than baking the changed value in
 | `H001` | repeated bare leaf (array spelled as repeated lines) - the mandatory hint
 | `H002` | a binding merged with a non-adjacent earlier one (same name and value combine); legal, but only the parser can see it happened, so it says so - the prose names the earlier line. Every merged level under a hinted re-open reports, each naming its own earlier line, so a consumer filtering the hints sees the whole combination, not just its outermost frame; a schema can disavow it per section with `reopen:` (see Schema validation)
 

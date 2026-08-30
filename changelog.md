@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `SHCL_OOM()` in the C binding: what an allocation the library cannot recover from does. The default is still the CLI's print-and-exit-70; a consumer whose process is not the library's to end defines its own before the implementation and takes it from there.
 
+- `E019`: a value spelled with brackets, the way JSON, TOML and YAML spell an array. It used to be reported as a missing colon on a line that plainly has one, and the brackets were dropped so silently that an in-place `fmt --write` rewrote `ports: [80, 443]` to `ports: "80, 443"` and the file checked clean from then on. The load counts it as lost content now, so an in-place rewrite refuses unless `--lossy` is passed.
+
 - `E018`: a line indented under a line that was skipped is now skipped with it, with its own diagnostic, instead of re-parenting one level up. A skipped header used to hand its children to its parent, so the document gained structure the author never wrote.
 
 - A `DateTime` alias beside `Datetime` in Rust and Python, so the capitalization a consumer tries first still compiles.

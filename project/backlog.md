@@ -58,13 +58,19 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260830-145320
 
-	- 🔘 Item 2: a bracket array is mis-diagnosed, read wrong, then baked into a string by `fmt --write`.
+	- ✅ Item 2: a bracket array is mis-diagnosed, read wrong, then baked into a string by `fmt --write`.
 		- Reproduced: `ports: [80, 443]` reports `E015 missing colon; repaired as an empty value`. The line has a colon.
 		- `get --array` returns one slot holding `80, 443` at exit 0, so a script gets a wrong answer and no signal.
 		- `fmt --write` rewrites the line to `ports: "80, 443"`. The quoted-plain-string rule then makes that the authored spelling, so the file reports clean forever and the one warning is gone. E015 is a repair, not a loss, so the save gate does not fire.
 		- Bracket syntax is what most authors arrive with, from JSON, TOML and YAML. A pasted YAML list gets the same treatment: `- red` reports `unexpected 'r' after field`.
 		- Cheapest fix is to name the shape in the diagnostic prose, which is per-binding voice and outside the differential contract, so no golden moves. A dedicated code is stronger and costs four bindings plus a corpus case.
+		- Decided: both, and now rather than later. A new code is additive today and expensive to add once there are consumers keying on the old one.
+		- Fixed: new code `E019` names the shape, and the load counts it as lost content, so `fmt --write` refuses at exit 7 instead of baking `"80, 443"` into the file. Spec table and changelog carry it.
+		- The wrong-answer-at-exit-0 half is closed by item 18: once the read subcommands print load diagnostics, a `get` on this file says so too.
+		- A pasted YAML list is untouched and stays `E014`. Its text is kept verbatim as trivia, so nothing is lost and the save gate has nothing to refuse.
+		- Pinned by corpus case `065-bracket-array`, which reports `E015` on all four bindings without the change.
 		- Opened: 20260830-140346
+		- Closed: 20260830-171500
 
 	- 🔘 Item 3: array reads grow the document arena on every call, without bound.
 		- Measured: 200k reads of one three-element array add 15.7 MB. The same loop over a scalar field adds nothing. Confirmed against `read_int_array`; the other four array reads allocate the same way.

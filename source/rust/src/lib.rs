@@ -92,6 +92,8 @@ fn diag_code(msg: &str) -> &'static str {
 		"E017"
 	} else if msg.starts_with("parent line was skipped") {
 		"E018"
+	} else if msg.starts_with("bracket array syntax") {
+		"E019"
 	} else if msg.starts_with("merged with ") {
 		"H002"
 	} else if msg.starts_with("unknown field ") {
@@ -671,6 +673,19 @@ pub const MAX_DEPTH: usize = 512;
 // ---------------------------------------------------------------------------
 // Lexical helpers
 // ---------------------------------------------------------------------------
+
+/// A value spelled the way JSON, TOML and YAML spell an array. The path scanner
+/// reads the brackets as a selector, so the line arrives with no value text and
+/// the old repair blamed a colon that is plainly there.
+fn looks_like_bracket_array(content: &str) -> bool {
+	match content.find(':') {
+		Some(colon) => {
+			let rest = content[colon + 1..].trim();
+			rest.starts_with('[') && rest.ends_with(']')
+		}
+		None => false,
+	}
+}
 
 fn fold_name(s: &str) -> String {
 	s.to_ascii_lowercase() // folds A-Z only; non-ASCII passes through untouched
@@ -2103,9 +2118,21 @@ impl Parser {
 			let mut src_text: Option<&str> = None;
 			let value = match &scan.value_text {
 				None => {
-					// A clean path with no colon is the one defined repair:
-					// the obvious intent is that path with an empty value.
-					self.err(lineno, "missing colon; repaired as an empty value");
+					if looks_like_bracket_array(content) {
+						// The brackets never survive the load, so a rewrite
+						// would bake the changed value in and the file would
+						// check clean forever after. Count it lost so the save
+						// gate stops that.
+						self.err(
+							lineno,
+							"bracket array syntax; an array is comma-separated, without brackets",
+						);
+						self.lost += 1;
+					} else {
+						// A clean path with no colon is the one defined repair:
+						// the obvious intent is that path with an empty value.
+						self.err(lineno, "missing colon; repaired as an empty value");
+					}
 					Value::Empty
 				}
 				Some(v) if v.is_empty() => Value::Empty,
