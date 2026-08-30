@@ -67,16 +67,16 @@ Other points
 
 - Forgiveness is a feature: never bail on a whole file for one bad line; skip/repair and diagnose; never error when a value is legitimately reachable.
 
-- Forgiveness is also a knob, not dogma. There are three strictness levels - Loose/Standard/Strict, per-document, default Standard - instead of a binary strict flag. Standard keeps the defaults clean (no currency stripping, no `%` fractions, no float->int rounding, trimmed boolean set); Loose re-admits those conversions as a closed list for those who want maximum forgiving; Strict fails the load on any error diagnostic, the StrictYAML-style answer. Defaults are what adopters judge; the party tricks survive as opt-in. The normative bundle table is in `spec.md`.
+- Forgiveness is also a knob, not dogma. There are three strictness levels (Loose/Standard/Strict, per-document, default Standard) instead of a binary strict flag. Standard keeps the defaults clean (no currency stripping, no `%` fractions, no float->int rounding, trimmed boolean set); Loose re-admits those conversions as a closed list for those who want maximum forgiving; Strict fails the load on any error diagnostic, the StrictYAML-style answer. Defaults are what adopters judge; the party tricks survive as opt-in. The normative bundle table is in `spec.md`.
 
 - The knob belongs to the consuming program, not to the end user. Strictness and bad-read handling are part of the contract an application makes about its own config handling, so they are set at the call site (or the CLI flag) and nowhere else. A per-user defaults file was considered and rejected: it would let a user silently weaken guarantees an app relies on, and would make an identical `shcl` invocation mean different things on different machines - the `GREP_OPTIONS` mistake. Nothing else the CLI exposes is presentation-only, so SHCL has no user config file at all.
 
 - Coercion earns trust by refusing to surprise: silent lossy conversion (rounding a float on an int read, `$1200` as a number) was cut from the default level for exactly that reason. Same logic killed the fehu anti-escape rune (raw blocks are the verbatim escape hatch) and restricted field-name case folding to ASCII (full Unicode folding is a locale trap and a cross-binding parity risk).
 
-- Name identity normalizes by escape resolution, as of the coming major.
+- Name identity normalizes by escape resolution, as of 2.0.
 	- A name used to be compared and emitted in its escaped spelling, so `"a\"b"` and `'a"b'` were two fields while those same two spellings as values were one string - the two halves of the language disagreed on what a quoted string means, and a consumer splicing user text into a path had to know which half it was in.
 	- Escapes now resolve on names too: they already normalized once (ASCII case folds), so this finishes a rule the language started rather than inventing one.
-	- It waited for a major because it moves canonical output for a spelling already published, and because two fields that were distinct merge - the same class of merge case folding already performs.
+	- It waited for the 2.0 major because it moves canonical output for a spelling already published, and because two fields that were distinct merge - the same class of merge case folding already performs.
 	- The as-authored accessor is deliberately the one call that still hands back the source spelling; that is what it is for.
 	- Emitting needed a real escaper rather than the value one, which picks a quote style to *avoid* escaping and never escapes a backslash - correct for a value, which is stored in its escaped spelling, and wrong for a name, which is stored resolved.
 	- One consequence fell out for free: a line break in a name is now writable, because the name escaper spells it `\n`, where before it had to be refused. A line break in a `[value]` selector is still refused, since the value emitter has no such spelling.
@@ -87,9 +87,11 @@ Other points
 
 - Parity over idiom in the bindings: each port deliberately mirrors the reference's structure - same function inventory, same call flow, same contract strings - even where the host language would idiomatically do it differently. Byte-for-byte agreement is the product's core guarantee, and structural parallelism is what makes it maintainable: a fix ports by mechanical diff instead of re-derivation. Per-language idiom keeps the surface (formatters, naming case, doc comments); it yields on structure. The full rules and each accepted deviation live in `../style-guide.md`.
 
-- Positioning: the pitch is "forgiving to write, predictable to read, with the friendliest read API in the space" - not "simplest possible", which overpromises and invites the takedown. Versus schema-bearing languages (Pkl, CUE): the file stays dumb, the library is powerful (see Power layer).
+- Positioning: the pitch is "forgiving to write, predictable to read", with a read API built junior-first - not "simplest possible", which overpromises and invites the takedown. Versus schema-bearing languages (Pkl, CUE): the file stays dumb, the library is powerful (see Power layer).
 
-- The CLI's informational commands (`help`, `version`, `about`, `donate`) each take both spellings - the bare word and the dashed flag. Among the options it was decided that one rule for the whole class beats deciding per command whether it reads better as a command or as a modifier.
+- The CLI's informational commands (`help`, `version`, `about`, `donate`) each take both spellings - the bare word and the dashed flag. Among the options it was decided that one rule for the whole class beats deciding per command whether it reads better as a command or as a modifier. The flag spellings are recognized anywhere in option position, after FILE included, since where on the line a person types `-h` says nothing about what they want; only a value slot and anything after `--` are data.
+
+- It was decided that `-` (stdin) may be named only once across FILE, `--layer` and `--schema`. There is one stream, so two names for it each read part of a document, and which name got the real content depended on read order; the second name is a usage error instead.
 
 - Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Two neighbors stay unpadded on purpose: bare `shcl`, which prints the same help text but as a usage error, and `version`, which stays a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
 
@@ -116,7 +118,7 @@ The consumer-facing surface is the **Accessor** (read) and the **Writer** (emit)
 
 The consuming programmer is assumed to be a junior in *every* binding, not just the dynamic ones, so ergonomics are a design constraint, not an afterthought. Decided:
 
-- Two tiers, junior-first. A convenience tier is the documented default: one value, one baked-in fallback, one return, no status to inspect. The full tier - the status-returning form - is there when the caller needs to know *why* a read failed. Every binding spells the convenience tier `_or`, so a routine ported between two of them cannot keep the call name while changing tier; each language's native idiom for the same thing still works where it has one (Rust `unwrap_or`, Python's default argument, the CLI's `--default=`).
+- Two tiers, junior-first. A convenience tier is the documented default: one value, one baked-in fallback, one return, no status to inspect. The full tier, the status-returning form, is there when the caller needs to know *why* a read failed. Every binding spells the convenience tier `_or`, so a routine ported between two of them cannot keep the call name while changing tier; each language's native idiom for the same thing still works where it has one (Rust `unwrap_or`, Python's default argument, the CLI's `--default=`).
 
 - A supplied default implies default-behavior. The caller never writes a fallback *and* an explicit on-bad - which is why the libraries carry no on-bad parameter at all: the tier you call *is* the mode. `Error` mode has no library form, because a read that cannot reach a value is a normal outcome rather than a fault, and a caller who wants a throw already has the status to raise on. The CLI keeps the explicit `--on-bad`, having no tiers to choose between.
 
@@ -189,7 +191,7 @@ field: "server[*].host"
 	type: string
 ```
 
-The alternative - a schema that mirrors the document's tree, with constraints as children of each leaf - was rejected: it cannot tell a constraint named `type` from a real document field named `type`, so the schema vocabulary would collide with the user's namespace. The flat form has no such ambiguity, because the document's paths appear as *values*, never as field names. It also falls straight out of the relational model the language is already built on - `field` is the column, each path is a row - and reads as an ordinary SHCL file to someone who has never seen a schema.
+The alternative (a schema that mirrors the document's tree, with constraints as children of each leaf) was rejected: it cannot tell a constraint named `type` from a real document field named `type`, so the schema vocabulary would collide with the user's namespace. The flat form has no such ambiguity, because the document's paths appear as *values*, never as field names. It also falls straight out of the relational model the language is already built on - `field` is the column, each path is a row - and reads as an ordinary SHCL file to someone who has never seen a schema.
 
 Consequences of the flat form, all verified against the current binary:
 
@@ -243,7 +245,7 @@ Both open points are settled:
 
 - Among the candidates (a `*` name segment, an `open:` constraint key, glob patterns), the bare `*` segment won: it reads exactly like the `[*]` story one level up, needs no new vocabulary word, and composes with deeper paths (`indicators.*.period`) without a second construct.
 - We decided it also belongs in reads, not only schemas, so the query language stays one language: `Get("*.port")` slots across children of any name the way `[*]` slots across instances. The Writer refuses it like any wildcard (paths must name their target to be writable). A field literally named `*` stays addressable quoted (`"*"`), which is never a wildcard.
-- Suggestions ("did you mean") do not reach below a `*` - there is no fixed sibling list to suggest from - and a `repeat` on a `*` leaf disavows no `H001`.
+- Suggestions ("did you mean") do not reach below a `*`, since there is no fixed sibling list to suggest from, and a `repeat` on a `*` leaf disavows no `H001`.
 
 **A quoted by-value selector is scalar-only.** By-value matching is against the display form, and an inline array's display joins elements with `, ` - so the scalar `"a, b"` and the list `a, b` met the same selector and a read could only answer Multiple.
 
@@ -278,10 +280,12 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 - We decided the rule splits by what the text reads as: int, float, bool, and datetime spellings normalize (`ver: "8"` -> `ver: 8` - readers type the value either way, so the quotes say nothing), while a quoted plain string keeps its quotes through `fmt` and `init`.
 - The gate uses standard strictness, fixed, so canonical form cannot vary with load strictness, and the rule only ever adds quoting over the reserved-character minimum, so no bare emit can become unsafe.
 
-**A raw block whose body has no non-blank line is left alone in both directions.** The common indent a block strips on load is derived from its non-blank lines, so a body of nothing but whitespace has none - while emit was re-indenting it anyway, adding a level per pass, without bound.
+**A raw block's nesting is the closing fence's own indent, and the rule is symmetric.** The nesting used to be the common indent of the body's non-blank lines, which made a shared body indent unrepresentable and needed an emit exception for a body with no non-blank line at all - the shape that once grew by a level per pass.
 
-- Among the options it was decided that the formatter simply adds no indent where it stripped none, rather than normalizing such a body to empty.
-- Both end the growth; only this one keeps the body, and a raw block promising verbatim content should not be the place that quietly discards it - a line of non-breaking or ideographic space is content, not layout. It moves canonical output once, for that shape alone.
+- It was decided that the fence, not the body, defines the nesting: each body line loses only what it shares with the closing fence's indent (the opening line's when the block never closes), and emit pads every non-empty body line by that same indent.
+- Strip and pad mirror each other exactly, so no special case is left: a body's shared extra indent survives as content, and a whitespace-only body keeps its spacing for the same reason as any other line - a raw block promising verbatim content should not be the place that quietly rewrites it.
+
+**`SetRaw` refuses an info-string an emitted fence line cannot carry.** A line break, or an unquoted `#` - the fence line would read the `#` as opening a trailing comment, so the block came back with a different info-string than the one written. The info-string is also trimmed the way a fence line reads it back, and the op script's `raw` op shares the gate.
 
 **A raw block in a higher layer fills a same-named empty binding below.** Merge matched instances by `(name, value)` only, so a bare `blk:` in the base and a `blk:` carrying a block in the overlay both survived a merge, where parsing the two run together folds them.
 
@@ -293,7 +297,7 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 - **A save publishes a new file in the old one's place** - write a temp file beside the target, then move it over. That is what makes an interrupted save unable to truncate a config, and it is also the source of every limitation below: the bytes are new, so anything the old file carried outside its contents has to be deliberately carried across or it is gone.
 
 - **What is carried, and what is not.** The permission bits are copied deliberately, and on POSIX that is the whole of what gets copied: ACLs, extended attributes, the SELinux label and any other xattr are lost, as are other hard links to the old file.
-	- None of that is fixable at this layer - a rename cannot preserve what a rename replaces - so it is documented in the spec rather than papered over.
+	- None of that is fixable at this layer, since a rename cannot preserve what a rename replaces, so it is documented in the spec rather than papered over.
 	- A relabeled config on an SELinux host is the case worth knowing about: the new file takes the label its parent directory and the writing process imply, which is the same label in the ordinary case and not the same one after a `chcon`.
 
 - **Windows goes through `ReplaceFile` instead**, because it does not have the same constraint. `ReplaceFile` exists for exactly this publish step and carries the destination's ACLs, attributes and named streams onto the replacement, which is the gap a plain move leaves. It needs a destination to replace, and it fails outright rather than skip a merge it cannot perform, so a create and any failure fall back to the replacing move - the behavior that was there before, never worse.
@@ -304,11 +308,19 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 	- So the publish step is a package-level variable holding the plain rename, and a small windows-only file swaps in the `ReplaceFile` version. Dropping the one file still works everywhere; taking the whole module gets the better windows publish.
 	- The consequence to remember is that the lint stage only ever sees the host's `GOOS`, so the windows file is compiled and vetted in the cross stage instead - it is the only thing that looks at it at all.
 
-- **The directory is synced after the move, not just the file before it.** The file's own `fsync` only promises the contents reached the disk; the move is a change to the directory, and without a sync there a power cut can lose the publish and leave the old content. It is best effort in every binding - a filesystem that refuses an `fsync` on a directory is not a reason to fail a save that already succeeded - and it is POSIX-only, since Windows has no equivalent and `ReplaceFile` is asked to write through instead.
+- **The directory is synced after the move, not just the file before it.** The file's own `fsync` only promises the contents reached the disk; the move is a change to the directory, and without a sync there a power cut can lose the publish and leave the old content. It is best effort in every binding (a filesystem that refuses an `fsync` on a directory is not a reason to fail a save that already succeeded) and it is POSIX-only, since Windows has no equivalent and `ReplaceFile` is asked to write through instead.
 
 - **A file the save had to create takes the mode an ordinary create would**, `0666` narrowed by the umask, rather than a private `0600`. Among the options it was decided that a library should not quietly make a decision the user cannot see: a config that must be private needs that from the umask or a `chmod`, which are the mechanisms a person already reaches for. An existing file still keeps its own mode, and that case is why the temp file is born private - the copy is never briefly readable to anyone the original was not.
 
 - **`set --write` creates a FILE that is not there yet.** `--write` names the file the command produces, so reporting it missing was an obstacle rather than a safeguard - the workaround was to `touch` it first, which is the same act with an extra step. `fmt --write` deliberately does not, having nothing to format. A file that exists but cannot be read stays an error in both, since the alternative is writing over something unread.
+
+- **A refused in-place write exits 7, its own code.** It shared 1 with usage and I/O errors, so a script could not tell "pass `--lossy` or fix the file" apart from "the command line is wrong" - and the refusal is the one failure whose remedy is a decision rather than a correction.
+
+- **`fmt` and `set` print the load's diagnostics to stderr in both modes, not only with `--write`.** The two modes share one load, and it was decided that where the canonical text goes should not decide whether a recovered-from typo is mentioned; stdout carries the same bytes either way.
+
+- **The mode is applied to the temp file again after its data is written.** The kernel clears setuid and setgid on a write by a process without the right capability, so giving the temp file the target's mode before filling it silently dropped those bits - the copied mode has to land last, after write and fsync, before the publish.
+
+- **A symlink cycle at the write target is an error.** Resolving the target is what makes a linked-in config written through rather than replaced, and a cycle used to fall out of the resolver as "no target", which quietly replaced the link with a regular file. A loop is reported as what it is - too many levels of symbolic links - and nothing is written.
 
 ### Testing
 
@@ -375,7 +387,7 @@ Several choices deliberately cut against SHCL, so that a favorable result stays 
 
 - **TOML and XML each get two libraries.** `toml_edit` is the only mainstream non-SHCL parser here that keeps the file as written, which makes it the one genuinely like-for-like comparison. XML is measured both by the fastest tree in Rust and by the tree you can write back.
 
-- **The generated SHCL is canonical** - a `fmt` fixpoint - so the round-trip column reports what the format does rather than how the generator chose to space things.
+- **The generated SHCL is canonical**, a `fmt` fixpoint, so the round-trip column reports what the format does rather than how the generator chose to space things.
 
 Rows are ordered by the geometric mean of each library's parse time across every shape, fastest first - one order used for every printed table and for the results file, so a row keeps its place from shape to shape. The geometric mean rather than the arithmetic one, so a single large shape cannot decide the whole order; the number it sorts on is recorded beside each library, so the ordering can be re-derived rather than trusted. SHCL sorts last in both tiers; that is the measured result, and the reason the order is stated rather than chosen.
 
@@ -383,13 +395,13 @@ Reading a value by path is deliberately not measured. The five lookup APIs diffe
 
 It is not a pipeline gate. Benchmarks are noisy and slow, and a red build caused by a busy machine teaches nobody anything. It runs on demand, and its results accumulate in `results.shcl` - which is the tooling's storage format as well as its subject, written, pruned and read back through this repo's own library.
 
-One thing the tool found about a library rather than a format, worth stating so nobody re-derives it: `lxml` goes quadratic on the long-and-flat shape, dropping from 59 MiB/s at 3 MiB to 5.7 at 26 - measured with and without `huge_tree`, which makes no difference, so it is not the flag that lifts libxml2's size ceilings. The likely cause is the shape's millions of *distinct* element names against libxml2's name dictionary; the shapes whose names repeat show nothing of the sort, and no other library in either tier does this. It is a good argument for measuring more than one document shape.
+One thing the tool found about a library rather than a format, recorded so nobody re-derives it: `lxml` goes quadratic on the long-and-flat shape, dropping from 59 MiB/s at 3 MiB to 5.7 at 26 - measured with and without `huge_tree`, which makes no difference, so it is not the flag that lifts libxml2's size ceilings. The likely cause is the shape's millions of *distinct* element names against libxml2's name dictionary; the shapes whose names repeat show nothing of the sort, and no other library in either tier does this. It is a good argument for measuring more than one document shape.
 
 What it found, at 64 MiB per shape (rerun after the 2.0 memory work):
 
-- SHCL writes the smallest file of the five in three shapes of four, and the gap widens with nesting - half the size of JSON and of XML on deep structure. Gzipped, the five land within a fifth of each other, so the win is a plain-text one.
+- SHCL writes the smallest file of the five in three shapes of four, and the gap widens with nesting - half the size of JSON and of XML on deep structure. Gzipped, the five sit within a fifth of each other, so the win is a plain-text one.
 - SHCL is still the slowest to load in both tiers by aggregate, six to ten times behind `serde_json`, but now sits near the light end on memory: below TOML and YAML on every shape, below JSON on two of four, and a quarter of `toml_edit`, the one other parser that keeps the file.
-- The Python tier says the load cost is the format's rather than one implementation's - against `tomllib`, the tier's one other pure-Python parser, SHCL lands 3.5x behind, against 2.1x behind `toml` in Rust. That trade is the design working as intended rather than a defect.
+- The Python tier says the load cost is the format's rather than one implementation's - against `tomllib`, the tier's one other pure-Python parser, SHCL is 3.5x behind, against 2.1x behind `toml` in Rust. That trade is the design working as intended rather than a defect.
 - At the two realistic sizes the size result holds and the speed result stops mattering: SHCL writes the smallest file of the five for both the config and the schema definition, and reads them in 0.07 ms and 13 ms.
 
 ### CI/CD

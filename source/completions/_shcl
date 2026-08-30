@@ -6,9 +6,11 @@
 ##	<datadir>/zsh/site-functions/_shcl, or dropped anywhere on $fpath.
 ##
 ##	The option table below mirrors check_opts() in the CLI, one arm per
-##	subcommand, and is kept line-for-line identical with the bash completion's.
-##	cicd/utility/check-completions.bash diffs all three, so an option added to
-##	the CLI without a line here fails the build.
+##	subcommand; the table itself (not the zsh machinery around it) is kept
+##	line-for-line identical with the bash completion's.
+##	cicd/utility/check-completions.bash diffs all three tables, and the
+##	top-level offers, so an option added to the CLI without a line here fails
+##	the build.
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 ##	Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
@@ -64,9 +66,10 @@ _shcl() {
 		'donate:how to support it'
 	)
 
-	## Word 2 is the subcommand and nothing else.
+	## Word 2 is the subcommand, or an informational flag.
 	if (( CURRENT == 2 )); then
 		_describe -t commands 'shcl subcommand' cmds
+		compadd -- -h --help -v -V --version --about --donate
 		return
 	fi
 	cmd="${words[2]}"

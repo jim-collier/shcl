@@ -54,7 +54,7 @@ _shcl() {
 
 	## Word 1 is the subcommand and nothing else.
 	if (( COMP_CWORD == 1 )); then
-		mapfile -t COMPREPLY < <(compgen -W "${_shcl_subcommands} -h --help -v -V --version" -- "${cur}")
+		mapfile -t COMPREPLY < <(compgen -W "${_shcl_subcommands} -h --help -v -V --version --about --donate" -- "${cur}")
 		return
 	fi
 	cmd="${COMP_WORDS[1]}"
