@@ -80,6 +80,7 @@ die() { printf 'install.bash: %s\n' "$*" >&2; exit 1; }
 ## `curl | bash -s -- --help` pipe, $0 is just "bash" and sed reads the wrong
 ## file (or a stray one named "bash" in the cwd).
 usage() {
+	echo
 	cat <<'EOF'
 ## install.bash
 ##
@@ -117,8 +118,8 @@ usage() {
 ##		man/         the man page, symlinked into the target's man1 dir
 ##		completions/ bash and zsh completions, enabled by hand (see the note the
 ##		             install prints - the .deb/.rpm put these in place for you)
-##
 EOF
+	echo
 }
 
 ## Value options accept --opt=VALUE and --opt VALUE, like the shcl CLI.
@@ -227,10 +228,14 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 fetch "${api}" "${tmp}/rel.json" || die "cannot fetch the ${release} release (none published yet, or network down)"
+## Every grep below may legitimately match nothing (no release, no such asset,
+## a release cut before the drop-in payload existed). Under pipefail that is a
+## failed substitution, which would end the script here instead of at the check
+## that reports it - so each one swallows its own status.
 if [[ "${release}" == "stable" ]]; then
-	tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | head -n1 | sed 's/.*"\(v[^"]*\)"/\1/')"
+	tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | head -n1 | sed 's/.*"\(v[^"]*\)"/\1/' || true)"
 else
-	tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | sed 's/.*"\(v[^"]*\)"/\1/; s/-/~/' | sort -V | tail -n1 | sed 's/~/-/')"
+	tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | sed 's/.*"\(v[^"]*\)"/\1/; s/-/~/' | sort -V | tail -n1 | sed 's/~/-/' || true)"
 fi
 [[ -n "${tag}" && "${tag}" != null ]] || die "no ${release} release found"
 version="${tag#v}"
@@ -271,7 +276,7 @@ printf '%s\n' "${SIGNING_KEY}" > "${tmp}/signing.pub"
 openssl dgst -sha256 -verify "${tmp}/signing.pub" -signature "${tmp}/sums.sig" "${tmp}/sums" >/dev/null 2>&1 \
 	|| die "signature check failed on sha256sums - refusing to install"
 
-want="$(grep " ${asset}\$" "${tmp}/sums" | cut -d' ' -f1)"
+want="$(grep " ${asset}\$" "${tmp}/sums" | cut -d' ' -f1 || true)"
 got="$(sha256sum "${tmp}/shcl" | cut -d' ' -f1)"
 [[ -n "${want}" && "${got}" == "${want}" ]] || die "sha256 mismatch on ${asset}"
 
@@ -282,11 +287,17 @@ got="$(sha256sum "${tmp}/shcl" | cut -d' ' -f1)"
 ## the asset existed simply install the binary and say what was skipped.
 chmod 755 "${tmp}/shcl"
 
-## Run the verified binary where it sits before anything is written: it is
-## linked against glibc 2.34, and on an older libc (or musl) the failure would
-## otherwise surface as a raw loader error after the install, with the broken
-## install left in place. Exit 126 is the temp dir refusing to execute at all
-## (a noexec mount), which is not the binary's fault.
+## Run the verified binary where it sits before anything is written: on an
+## older glibc (or musl) the failure would otherwise surface as a raw loader
+## error after the install, with the broken install left in place. The floor
+## differs per build: the x86_64 binary is linked against glibc 2.34 and needs
+## libgcc_s, the arm64 one against 2.30 with no libgcc_s. Exit 126 is the temp
+## dir refusing to execute at all (a noexec mount), which is not the binary's
+## fault.
+case "${arch}" in
+	x86_64) needs="glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9, or later) plus libgcc_s.so.1" ;;
+	*)      needs="glibc 2.30 or newer (Ubuntu 20.04, Debian 11, RHEL 9, or later)" ;;
+esac
 smoke_status=0
 "${tmp}/shcl" version >/dev/null 2>"${tmp}/smoke.err" || smoke_status=$?
 if [[ "${smoke_status}" != 0 ]]; then
@@ -294,11 +305,11 @@ if [[ "${smoke_status}" != 0 ]]; then
 		die "cannot execute from ${tmp} (noexec mount?) - set TMPDIR to a directory that allows execution and re-run"
 	fi
 	head -n1 "${tmp}/smoke.err" >&2
-	die "the prebuilt linux-${arch} binary does not run here: it needs glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9, or later) and does not run on musl. Install from source instead: cargo install shcl"
+	die "the prebuilt linux-${arch} binary does not run here: it needs ${needs} and does not run on musl. Install from source instead: cargo install shcl"
 fi
 
 dropins="shcl-${version}-dropins.tar.gz"
-want_src="$(grep " ${dropins}\$" "${tmp}/sums" | cut -d' ' -f1)"
+want_src="$(grep " ${dropins}\$" "${tmp}/sums" | cut -d' ' -f1 || true)"
 have_dropins=0
 have_docs=0
 if [[ -n "${want_src}" ]]; then

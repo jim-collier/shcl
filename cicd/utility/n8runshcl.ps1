@@ -16,8 +16,12 @@
 ##		pwsh n8runshcl.ps1 -ListCopies
 ##		pwsh n8runshcl.ps1 -NoLaunch          ## stage a copy, print its path
 ##
-##	Everything after the script's own options is handed to the binary as-is.
-##	Put `--` first if an argument would otherwise bind as a script parameter.
+##	Everything after the script's own options is handed to the binary as-is,
+##	`-h` and every `--option` included. The one binary argument that binds as a
+##	script parameter is `-v` (it reads as -Verbose): from PowerShell put `--`
+##	first (`& ./n8runshcl.ps1 -- -v`), or spell it `version`. `pwsh -File`
+##	cannot take `--` at all (it arrives as a parameter with no name), so there
+##	only the long spelling works.
 ##
 ##	Where things go:
 ##		copies   <repo>/cicd/artifacts/runbuilds/shcl-<yyyyMMdd-HHmmss>[.exe]
@@ -43,7 +47,7 @@ List the staged copies and exit.
 .PARAMETER NoLaunch
 Stage a copy and print its path instead of running it.
 .PARAMETER Rest
-Everything else, handed to the binary as-is. Put -- first if an argument would otherwise bind as a script parameter.
+Everything else, handed to the binary as-is, -h and every --option included. Only -v binds as a script parameter (-Verbose): from PowerShell put -- first (& ./n8runshcl.ps1 -- -v) or spell it version; pwsh -File cannot take -- at all, so there use the long spelling.
 .EXAMPLE
 pwsh n8runshcl.ps1 get --int app.shcl server.port
 #>
