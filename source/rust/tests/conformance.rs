@@ -921,6 +921,15 @@ fn file_tier_load_save() {
 		std::fs::set_permissions(&born, std::fs::Permissions::from_mode(0o640)).unwrap();
 		fdoc.save_file(born.to_str().unwrap()).unwrap();
 		assert_eq!(mode_of(&born), 0o640);
+		// setuid and setgid come over too: applying the mode before the data
+		// lets the kernel clear them on the write.
+		let id_of =
+			|p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+		std::fs::set_permissions(&born, std::fs::Permissions::from_mode(0o6750)).unwrap();
+		if id_of(&born) == 0o6750 {
+			fdoc.save_file(born.to_str().unwrap()).unwrap();
+			assert_eq!(id_of(&born), 0o6750, "save dropped a set-id bit");
+		}
 		let _ = std::fs::remove_file(&probe);
 		let _ = std::fs::remove_file(&born);
 	}

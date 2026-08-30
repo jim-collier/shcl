@@ -785,6 +785,13 @@ int main(int argc, char **argv) {
 				if (shcl_save_file(nd, born) != SHCL_SAVE_OK) fail("file_tier", "existing file save failed");
 				if (stat(born, &ns) != 0) fail("file_tier", "existing file stat failed");
 				if ((ns.st_mode & 0777) != 0640) fail("file_tier", "existing file mode");
+				// setuid and setgid come over too: applying the mode before
+				// the data lets the kernel clear them on the write.
+				if (chmod(born, 06750) == 0 && stat(born, &ns) == 0 && (ns.st_mode & 07777) == 06750) {
+					if (shcl_save_file(nd, born) != SHCL_SAVE_OK) fail("file_tier", "set-id save failed");
+					if (stat(born, &ns) != 0) fail("file_tier", "set-id stat failed");
+					if ((ns.st_mode & 07777) != 06750) fail("file_tier", "set-id bits lost");
+				}
 				remove(probe); remove(born);
 			}
 #endif
