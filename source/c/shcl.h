@@ -3001,6 +3001,45 @@ static int w_place(shcl_doc *d, ShclStr path, size_t *out) {
    merge rule; fold the pair the way a reparse would (earlier sibling survives,
    later one folds children and trivia in) so Writer output stays a formatter
    fixpoint. */
+/* Folding moves the loser's children up a level, where they can collide with
+   the survivor's own. The parser's fold is depth-first for the same reason;
+   only a node that just received children can hold a new pair. */
+static void w_fold_dups_below(shcl_doc *d, size_t start) {
+	ShclArena *t = &d->scratch;
+	ShclVecSize stack = {0};
+	ShclVecSize_push(t, &stack, start);
+	while (stack.len) {
+		size_t parent = stack.data[--stack.len];
+		ShclCMap first; memset(&first, 0, sizeof first);
+		ShclVecSize *ch = &NODE(d, parent).children;
+		size_t w = 0;
+		for (size_t k = 0; k < ch->len; k++) {
+			size_t c = ch->data[k];
+			uint64_t h = merge_hash(NODE(d, c).name, &NODE(d, c).value);
+			size_t survivor = (size_t)-1;
+			for (ShclCMapEnt *e = cmap_first(&first, h); e; e = cmap_next(e, h))
+				if (merge_eq(NODE(d, e->val).name, &NODE(d, e->val).value, NODE(d, c).name, &NODE(d, c).value)) { survivor = e->val; break; }
+			if (survivor != (size_t)-1) {
+				ShclVecSize moved = NODE(d, c).children;
+				fold_node_into(d, survivor, c);
+				if (d->index_built) {
+					index_unlink(d, name_key(parent, NODE(d, c).name), c);
+					for (size_t m = 0; m < moved.len; m++) {
+						ShclStr nm = NODE(d, moved.data[m]).name;
+						index_unlink(d, name_key(c, nm), moved.data[m]);
+						index_append(d, name_key(survivor, nm), moved.data[m]);
+					}
+				}
+				ShclVecSize_push(t, &stack, survivor);
+			} else {
+				cmap_put(t, &first, h, c);
+				ch->data[w++] = c;
+			}
+		}
+		ch->len = w;
+	}
+}
+
 static void w_collapse_dup(shcl_doc *d, size_t node) {
 	size_t parent = NODE(d, node).parent;
 	const ShclNode *me = &NODE(d, node);
@@ -3034,6 +3073,7 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
 			index_append(d, name_key(survivor, nm), moved.data[k]);
 		}
 	}
+	w_fold_dups_below(d, survivor);
 }
 
 static int w_set(shcl_doc *d, ShclStr path, ShclValue v) {

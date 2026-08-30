@@ -3769,6 +3769,44 @@ func (d *Document) collapseDup(node int) {
 			ix.append(nameKey(survivor, name), k)
 		}
 	}
+	d.foldDupsBelow(survivor)
+}
+
+// foldDupsBelow: folding moves the loser's children up a level, where they can
+// collide with the survivor's own. The parser's fold is depth-first for the
+// same reason; only a node that just received children can hold a new pair.
+func (d *Document) foldDupsBelow(start int) {
+	stack := []int{start}
+	for len(stack) > 0 {
+		parent := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		kids := d.arena[parent].children
+		d.arena[parent].children = nil
+		first := map[uint64]slot{}
+		keep := make([]int, 0, len(kids))
+		for _, c := range kids {
+			h := mergeHash(d.arena[c].name, &d.arena[c].value)
+			if survivor, ok := slotFirstMatch(first, h, func(x int) bool {
+				return mergeEq(d.arena[x].name, &d.arena[x].value, d.arena[c].name, &d.arena[c].value)
+			}); ok {
+				moved := append([]int(nil), d.arena[c].children...)
+				foldNodeInto(d.arena, survivor, c)
+				if ix := d.index.Load(); ix != nil {
+					ix.unlink(nameKey(parent, d.arena[c].name), c)
+					for _, k := range moved {
+						name := d.arena[k].name
+						ix.unlink(nameKey(c, name), k)
+						ix.append(nameKey(survivor, name), k)
+					}
+				}
+				stack = append(stack, survivor)
+			} else {
+				slotInsert(first, h, c)
+				keep = append(keep, c)
+			}
+		}
+		d.arena[parent].children = keep
+	}
 }
 
 // Exists is true when the path resolves to at least one real node.
