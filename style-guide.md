@@ -105,6 +105,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Deliberate deviation: the convenience read tier covers only the value types (`shcl_get_int`/`_float`/`_bool` and the `_or` spelling of each; `get_or<T>` for the veneer's four `get<T>` types). String, raw, datetime, and array reads hand back borrowed memory or lengths that a value-or-default signature cannot express, so those stay on the full `shcl_read_*` tier. The spec's ergonomic-tier section says the same.
 
+- Deliberate deviation: `shcl_reads_release` has no counterpart in the other three. Read results are copied into the document's read arena, which only `shcl_free` reclaims - the right default for a read-once consumer and the documented contract. A process polling one document in a loop needs a way out, and the other three bindings have one for free because they hand back owned collections their runtime reclaims. The C++ veneer calls it on every read, since it copies each result into owned std types the moment it gets it.
+
 - The read structs stay value+status, where the other three carry `raw`, `line` and `quoted` on the read result. Those two of the three that a C consumer can still ask for are separate accessors - `shcl_line`, `shcl_quoted` - because widening a by-value struct to carry a borrowed span costs every read that never looks at it.
 
 ### Bash and PowerShell (wrappers)

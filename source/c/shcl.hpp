@@ -210,9 +210,16 @@ public:
 	std::size_t count(std::string_view p) const { return shcl_count(d_.get(), p.data(), p.size()); }
 	// Every field path, file order, deduplicated (bare-name-safe segments only).
 	// Quote one path segment for splicing into a lookup path (injection-safe).
-	std::string quote_segment(std::string_view name) const { return to_str(shcl_quote_segment(d_.get(), name.data(), name.size())); }
+	// Each read below hands back the previous one's core memory first: the
+	// veneer copies every result into owned std types, so the arena behind it is
+	// dead as soon as the copy is made, and a long-lived Document stays flat
+	// instead of holding every result until it is destroyed. The one thing to
+	// know when mixing APIs: a shcl_str taken from the C core on the same handle
+	// does not survive the next veneer read.
+	std::string quote_segment(std::string_view name) const { shcl_reads_release(d_.get()); return to_str(shcl_quote_segment(d_.get(), name.data(), name.size())); }
 
 	std::vector<std::string> paths() const {
+		shcl_reads_release(d_.get());
 		shcl_str *v; std::size_t n = shcl_paths(d_.get(), &v);
 		std::vector<std::string> r; r.reserve(n);
 		for (std::size_t i = 0; i < n; i++) r.push_back(to_str(v[i]));
@@ -220,6 +227,7 @@ public:
 	}
 
 	std::vector<std::string> instances(std::string_view p) const {
+		shcl_reads_release(d_.get());
 		shcl_str *a; std::size_t n = shcl_instances(d_.get(), p.data(), p.size(), &a);
 		std::vector<std::string> v; v.reserve(n);
 		for (std::size_t i = 0; i < n; i++) v.push_back(to_str(a[i]));
@@ -249,6 +257,7 @@ public:
 	// binding's. Unresolved wildcard slots stay in the list as 0; a miss is
 	// the empty vector.
 	std::vector<std::size_t> lines(std::string_view p) const {
+		shcl_reads_release(d_.get());
 		std::size_t *a; std::size_t n = shcl_lines(d_.get(), p.data(), p.size(), &a);
 		std::vector<std::size_t> v; v.reserve(n);
 		for (std::size_t i = 0; i < n; i++) v.push_back(a[i]);
@@ -262,6 +271,7 @@ public:
 	// Child field names under a path, file order, duplicates included; "" is
 	// the top level. Names as stored - quote_segment() splices one into a path.
 	std::vector<std::string> children(std::string_view p) const {
+		shcl_reads_release(d_.get());
 		shcl_str *a; std::size_t n = shcl_children(d_.get(), p.data(), p.size(), &a);
 		std::vector<std::string> v; v.reserve(n);
 		for (std::size_t i = 0; i < n; i++) v.push_back(to_str(a[i]));
@@ -271,9 +281,9 @@ public:
 	Read<int64_t> read_int(std::string_view p) const { auto r = shcl_read_int(d_.get(), p.data(), p.size()); return {r.value, st(r.status)}; }
 	Read<double> read_float(std::string_view p) const { auto r = shcl_read_float(d_.get(), p.data(), p.size()); return {r.value, st(r.status)}; }
 	Read<bool> read_bool(std::string_view p) const { auto r = shcl_read_bool_(d_.get(), p.data(), p.size()); return {r.value != 0, st(r.status)}; }
-	Read<std::string> read_string(std::string_view p) const { auto r = shcl_read_string(d_.get(), p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
-	Read<std::string> read_raw(std::string_view p) const { auto r = shcl_read_raw(d_.get(), p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
-	Read<std::string> read_raw_info(std::string_view p) const { auto r = shcl_read_raw_info(d_.get(), p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
+	Read<std::string> read_string(std::string_view p) const { shcl_reads_release(d_.get()); auto r = shcl_read_string(d_.get(), p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
+	Read<std::string> read_raw(std::string_view p) const { shcl_reads_release(d_.get()); auto r = shcl_read_raw(d_.get(), p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
+	Read<std::string> read_raw_info(std::string_view p) const { shcl_reads_release(d_.get()); auto r = shcl_read_raw_info(d_.get(), p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
 
 	// Datetime as the reference's textual form (the common need).
 	Read<std::string> read_datetime_str(std::string_view p) const {
@@ -290,14 +300,16 @@ public:
 
 	// Array reads carry the per-slot statuses in .slots, so a partly-resolved
 	// array says which slots failed rather than only that the read did.
-	Read<std::vector<int64_t>> read_int_array(std::string_view p) const { auto r = shcl_read_int_array(d_.get(), p.data(), p.size()); return {std::vector<int64_t>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
-	Read<std::vector<double>> read_float_array(std::string_view p) const { auto r = shcl_read_float_array(d_.get(), p.data(), p.size()); return {std::vector<double>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
+	Read<std::vector<int64_t>> read_int_array(std::string_view p) const { shcl_reads_release(d_.get()); auto r = shcl_read_int_array(d_.get(), p.data(), p.size()); return {std::vector<int64_t>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
+	Read<std::vector<double>> read_float_array(std::string_view p) const { shcl_reads_release(d_.get()); auto r = shcl_read_float_array(d_.get(), p.data(), p.size()); return {std::vector<double>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
 	Read<std::vector<bool>> read_bool_array(std::string_view p) const {
+		shcl_reads_release(d_.get());
 		auto r = shcl_read_bool_array(d_.get(), p.data(), p.size());
 		std::vector<bool> v; v.reserve(r.n); for (std::size_t i = 0; i < r.n; i++) v.push_back(r.values[i] != 0);
 		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
 	}
 	Read<std::vector<std::string>> read_string_array(std::string_view p) const {
+		shcl_reads_release(d_.get());
 		auto r = shcl_read_string_array(d_.get(), p.data(), p.size());
 		std::vector<std::string> v; v.reserve(r.n); for (std::size_t i = 0; i < r.n; i++) v.push_back(to_str(r.values[i]));
 		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
@@ -305,6 +317,7 @@ public:
 	// Datetimes as their textual form, matching read_datetime_str; the owning
 	// Datetime form is per-element and stays on the scalar read.
 	Read<std::vector<std::string>> read_datetime_array(std::string_view p) const {
+		shcl_reads_release(d_.get());
 		auto r = shcl_read_datetime_array(d_.get(), p.data(), p.size());
 		std::vector<std::string> v; v.reserve(r.n);
 		for (std::size_t i = 0; i < r.n; i++) { char buf[SHCL_DT_BUF]; std::size_t k = shcl_datetime_str(&r.values[i], buf); v.push_back(std::string(buf, k)); }

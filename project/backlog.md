@@ -72,13 +72,18 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260830-171500
 
-	- 🔘 Item 3: array reads grow the document arena on every call, without bound.
+	- ✅ Item 3: array reads grow the document arena on every call, without bound.
 		- Measured: 200k reads of one three-element array add 15.7 MB. The same loop over a scalar field adds nothing. Confirmed against `read_int_array`; the other four array reads allocate the same way.
 		- Cause: the result array and its status array come out of the document arena, which is only freed at `shcl_free`.
 		- This is the defect already fixed twice in this file for the scalar path, and both fixes carry a comment saying so. The array family never got the same treatment.
 		- C only. The other three return owned collections the runtime reclaims, so the cross-binding check is blind to it. A long-running consumer polling an array field grows steadily. The veneer copies into a vector and never looks at the arena memory again, so there it is pure waste.
 		- Fix is a decision, not mechanical: a third arena reset per read call changes the documented lifetime of what a read hands back.
+		- Decided: keep the lifetime, and give consumers a way out rather than leaving them to work around it. Read results moved to their own arena inside the document, and a new `shcl_reads_release` gives that arena back without touching the document. A caller that never calls it sees exactly the old contract.
+		- The same change covers item 35's four accessors, and `shcl_to_canonical` with them, so the whole read surface follows one rule: anything handed to the caller lives in the read arena.
+		- The C++ veneer calls it on every read. It copies each result into owned std types the moment it gets it, so the arena behind it was pure waste, and C++ now reclaims like the other three.
+		- Pinned by two fixtures: the C runner asserts array reads do not touch the document arena and that a release-per-read loop stays flat, and the veneer smoke asserts a 20k-read loop stays flat. Both fail with the change backed out.
 		- Opened: 20260830-140346
+		- Closed: 20260830-181500
 
 	- 🔘 Item 4: `init` emits a starter config that fails the schema that produced it.
 		- Reproduced: a field typed `int` with `min: 1`, `max: 10` and `default: 99` generates `# int, 1-10, required` and then `server.port: 99` on the next line. `check --schema` against the same schema fails with `V006`, exit 6.
@@ -289,11 +294,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Harmless, but it is the dead-condition class the review directive asks for, and the same shape is flagged on the C side.
 		- Opened: 20260830-140346
 
-	- 🔘 Item 35: four more C accessors grow the arena the way item 3 does, but these are documented.
+	- ✅ Item 35: four more C accessors grow the arena the way item 3 does, but these are documented.
 		- Same measurement run: 200k calls add 15.9 MB, 3.2 MB, 31.3 MB and 6.4 MB respectively.
 		- Unlike the array reads, the header states the contract: the result lives in the document's arena until it is freed. So the growth is what was promised.
 		- Recorded beside item 3 so a fix for that one does not quietly change these without a decision. No change needed unless the contract is revisited.
+		- Closed by item 3's fix. The contract was revisited deliberately and kept; these accessors moved to the read arena with the rest, so `shcl_reads_release` covers them and the promise in the header still holds for anyone who never calls it.
 		- Opened: 20260830-140346
+		- Closed: 20260830-181500
 
 	- 🔘 Item 36: a latent unmatched-glob shape in the C sanitizer script.
 		- A layer-collection loop ends on a conditional, which is the shape that aborts under errexit when the glob matches nothing.
