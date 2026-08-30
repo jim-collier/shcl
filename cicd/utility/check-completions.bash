@@ -5,7 +5,8 @@
 ##		carry the same per-subcommand option table the CLI validates against in
 ##		check_opts(), so an option added to one and not the others would offer a
 ##		completion the CLI rejects as a usage error - or hide a real one. This
-##		diffs all three tables and fails on any disagreement.
+##		diffs all three tables, and the top-level offers (subcommand words plus
+##		the informational flags), and fails on any disagreement.
 ##	Syntax:
 ##		check-completions.bash [ROOT]
 ##		  ROOT   repo root (default: two levels up from this script)
@@ -54,6 +55,38 @@ fCompTable() {
 	done
 }
 
+## The CLI's top-level offer: the COMMANDS const plus everything asked_for()
+## answers to - the informational words on the right of each arm and the flag
+## spellings on the left.
+fRustTop() {
+	{
+		grep 'const COMMANDS' "${mainRs}" | grep -o '"[a-z]*"' || true
+		sed -n '/fn asked_for/,/^}/p' "${mainRs}" | grep 'return Some(' \
+		| while IFS= read -r arm; do
+			grep -o '"[^"]*"' <<<"${arm%%=>*}" || true
+			grep -o '"[a-z]*"' <<<"${arm#*=>}" || true
+		done
+	} | tr -d '"' | sort -u | paste -sd' '
+}
+
+## The bash completion's word-1 offer: the subcommand list plus the extra
+## tokens on its compgen line.
+fBashTop() {
+	local subs extra
+	subs="$(sed -n "s/^_shcl_subcommands='\([^']*\)'.*/\1/p" "$1")"
+	extra="$(sed -n 's/.*compgen -W "\${_shcl_subcommands} \([^"]*\)".*/\1/p' "$1")"
+	tr ' ' '\n' <<<"${subs} ${extra}" | sed '/^$/d' | sort -u | paste -sd' '
+}
+
+## The zsh completion's word-2 offer: the cmds array names plus its bare
+## compadd of the informational flags.
+fZshTop() {
+	local subs extra
+	subs="$(sed -n "s/^[[:space:]]*'\([a-z]*\):.*/\1/p" "$1")"
+	extra="$(sed -n 's/^[[:space:]]*compadd -- \(-h .*\)$/\1/p' "$1")"
+	tr ' ' '\n' <<<"${subs} ${extra}" | sed '/^$/d' | sort -u | paste -sd' '
+}
+
 rc=0
 rustTable="$(fRustTable)"
 [[ -n "${rustTable}" ]] || { echo "check-completions: no option table found in ${mainRs}" >&2; exit 1; }
@@ -67,9 +100,26 @@ for cf in "${compFiles[@]}"; do
 	fi
 done
 
-((rc)) || echo "check-completions: OK ($(wc -l <<<"${rustTable}") subcommands, ${#compFiles[@]} completion files)"
+rustTop="$(fRustTop)"
+[[ -n "${rustTop}" ]] || { echo "check-completions: no top-level offer found in ${mainRs}" >&2; exit 1; }
+
+for cf in "${compFiles[@]}"; do
+	case "${cf}" in
+		*/_shcl) compTop="$(fZshTop "${cf}")" ;;
+		*)       compTop="$(fBashTop "${cf}")" ;;
+	esac
+	if [[ "${rustTop}" != "${compTop}" ]]; then
+		echo "check-completions: $(basename "${cf}") top-level offer disagrees with the CLI:" >&2
+		echo "  CLI:        ${rustTop}" >&2
+		echo "  completion: ${compTop}" >&2
+		rc=1
+	fi
+done
+
+((rc)) || echo "check-completions: OK ($(wc -l <<<"${rustTable}") subcommands + top-level offer, ${#compFiles[@]} completion files)"
 exit "${rc}"
 
 
 ##	Script history:
 ##		- 20260818: Created.
+##		- 20260830: Also diff the top-level offers.

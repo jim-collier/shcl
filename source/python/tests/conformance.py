@@ -174,7 +174,12 @@ def _op_int(s):
 	t = s[1:] if s[:1] in ("+", "-") else s
 	if t == "" or any(c < "0" or c > "9" for c in t):
 		raise ValueError(f"bad int: {s}")
-	v = int(s)
+	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
+	# reference just overflows. Leading zeros are legal and don't count toward range.
+	digits = t.lstrip("0") or "0"
+	if len(digits) > 19:
+		raise ValueError(f"bad int: {s}")
+	v = -int(digits) if s[:1] == "-" else int(digits)
 	if v < -(2 ** 63) or v > 2 ** 63 - 1:
 		raise ValueError(f"bad int: {s}")
 	return v
@@ -955,8 +960,8 @@ def main():
 		raise SystemExit("a missing field is ok()")
 	# The body's shared indent survives a reload (the closing fence's indent
 	# is what comes off), the info-string is stored as a fence line reads it
-	# back, and an info with a line break has no spelling and fails the
-	# write. Same fixture in every runner.
+	# back, and an info with a line break or an unquoted `#` has no spelling
+	# and fails the write. Same fixture in every runner.
 	rawdoc = shcl.Document.new()
 	if not rawdoc.set_raw("q", "  a\n  b", " sql "):
 		raise SystemExit("set_raw failed")
@@ -967,8 +972,15 @@ def main():
 		raise SystemExit("set_raw info not trimmed")
 	if rawdoc.set_raw("q", "x", "a\nb") or rawdoc.set_raw("q", "x", "a\rb"):
 		raise SystemExit("set_raw accepted an info with a line break")
-	if rawdoc.get_raw("q") != "  a\n  b":
+	if rawdoc.set_raw("q", "x", "a # b"):
+		raise SystemExit("set_raw accepted an info with an unquoted #")
+	if not rawdoc.set_raw("q", "  a\n  b", '"a # b"'):
+		raise SystemExit("set_raw refused a quoted #")
+	rawback = shcl.Document.parse(rawdoc.to_canonical())
+	if rawback.get_raw("q") != "  a\n  b":
 		raise SystemExit("refused set_raw changed the document")
+	if rawback.read_raw_info("q").value != '"a # b"':
+		raise SystemExit(f"set_raw quoted info got {rawback.read_raw_info('q').value!r}")
 	# Typed setters take exactly their type and raise a TypeError naming the
 	# setter for anything else, rather than writing text the reader of that
 	# type would call bad-type (set_int of 3.5 wrote `3.5`). bool is an int
@@ -1011,6 +1023,13 @@ def main():
 		raise SystemExit("set_float refused an int")
 	if not tdoc.set_float_array_default("g", [1, 2.5]) or tdoc.read_float_array("g").value != [1.0, 2.5]:
 		raise SystemExit("set_float_array_default refused an int element")
+	# Python-only: an int is written as the float it converts to, the f64 a
+	# caller of the other bindings would hold - not its exact digits, and one
+	# past the float range as inf.
+	if not tdoc.set_float("h", 9007199254740993) or tdoc.read_string("h").value != "9007199254740992":
+		raise SystemExit(f"set_float of a wide int wrote {tdoc.read_string('h').value!r}")
+	if not tdoc.set_float_array("i", [10 ** 400, -(10 ** 400)]) or tdoc.read_string("i").value != "inf, -inf":
+		raise SystemExit(f"set_float_array past the float range wrote {tdoc.read_string('i').value!r}")
 
 	print(f"conformance: {len(cases)} case(s) pass")
 	return 0

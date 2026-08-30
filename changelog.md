@@ -10,11 +10,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `SHCL_OOM()` in the C binding: what an allocation the library cannot recover from does. The default is still the CLI's print-and-exit-70; a consumer whose process is not the library's to end defines its own before the implementation and takes it from there.
 
+- `E018`: a line indented under a line that was skipped is now skipped with it, with its own diagnostic, instead of re-parenting one level up. A skipped header used to hand its children to its parent, so the document gained structure the author never wrote.
+
+- A `DateTime` alias beside `Datetime` in Rust and Python, so the capitalization a consumer tries first still compiles.
+
+- The Linux installer runs the just-verified binary before anything is written, so a system whose glibc is older than the prebuilt binary's floor hears so at install time, with the build-from-source route named, instead of hitting a raw loader error at first use. README states the floor.
+
+- The Windows setup handles a running `shcl.exe` and an existing older install instead of failing partway through.
+
+### Changed
+
+- An in-place write the save gate refuses now exits 7, its own code, instead of sharing 1 with usage and I/O errors, so a script can tell "pass `--lossy` or fix the file" apart from "the command line is wrong".
+
+- A raw block's nesting is the closing fence's own indent (the opening line's when the block never closes), and each body line loses only what it shares with that indent. A body whose lines all sit past the fence keeps that shared indent, which previously could not be stored at all, and emit pads every non-empty body line by the same rule. The rule is symmetric now, so the all-blank-body special case is gone.
+
+- `fmt` and `set` print the load's diagnostics to stderr in both modes, not only with `--write`, so a recovered-from typo is just as visible when the result goes to stdout. The stdout bytes are unchanged.
+
+- The informational flags (`-h`/`--help`, `-v`/`-V`/`--version`, `--about`, `--donate`) are recognized anywhere in option position, after FILE included. `--` still ends the options, so a file or path spelled like a flag stays reachable.
+
+- `-` (stdin) may be named only once across FILE, `--layer` and `--schema`. Two names for one stream each read part of a document; the second is now a usage error.
+
+- `--set` and `--set-literal` split PATH from VALUE at the first `=` outside quotes and brackets, so a selector may hold one (`x[a=b].c=1`).
+
+- The `bool` write op accepts exactly `true` and `false`. Anything else is a bad value at exit 1, where it used to write `false` at exit 0.
+
+- An in-place write carries over the file's whole mode, setuid, setgid and sticky bits included, and a read-only file is rewritten on every platform: Windows clears the attribute for the publish and restores it after, so the platforms agree.
+
+- Python's typed setters raise `TypeError` on a value of the wrong type instead of writing its text form. `set_float` still takes an int and writes the float it names; a magnitude past the float range becomes `inf`, the value the other bindings store.
+
+- The C++ veneer's `generate` is no longer `const`: a schema fault it reports goes onto the document's diagnostics, which mutates it.
+- The stderr voice is tidier: messages dropped their `shcl:` prefix, a usage error answers with a `usage: shcl ...` line, a strict-load failure lists the diagnostics above its `strict load failed: N error diagnostic(s)` summary, and a schema-fault line carries its `V` code the way load diagnostics carry theirs. stdout and the exit codes are untouched, so nothing scripted against the contract moves.
+
 ### Fixed
 
 - C: a save to a path spelled with backslashes failed on Windows, so a consumer that built its config path with the platform separator could never save. The temp name now splits on either separator, and a drive-relative `C:x` target splits after the colon.
 
 - C: the file tier reached Windows through the code-page file calls, so a path with a character outside the active code page could not be opened or, worse, was written under a mojibake name. Every file call is the wide one now, and a path that is not valid UTF-8 fails with `EINVAL` rather than opening something else.
+
+- `set_raw` (and the `raw` op) trims the info-string the way a fence line reads it back, and refuses one holding a line break or an unquoted `#`. Either would read back as something other than what was written.
+
+- `read_file`'s byte cap saturates instead of overflowing when set near the integer ceiling.
+
+- A save through a dangling symlink creates the file where the link points, in all four bindings, instead of replacing the link with a regular file. A symlink cycle at the target is reported as the error it is, instead of the link being replaced.
+
+- Reading a path in a flat document is no longer quadratic in the sibling count: a name index replaces the per-read sibling scan, and path writes and absent-path defaults go through the same index. Forty thousand flat keys read in under half a second where it took tens of seconds.
+
+- `set_comment` puts a node's blank separator line above the comment it attaches, so the comment sits against the node it documents instead of below the gap.
+
+- A write-ops script with CRLF line endings works in all four CLIs: the trailing carriage return on an op line is stripped instead of read into the last field.
+
+- C: the string reads and the save no longer grow the document's arena, so a long-running program polling one field no longer grows without bound. A zero-length write also no longer passes `fwrite` a null buffer.
+
+- The C and Python CLIs no longer write CRLF line endings on Windows stdout.
+
+- Python: the CLI writes UTF-8 whatever the locale says, a closed stdin reads as an empty document, and a closed stdout is silent rather than a traceback.
+
+- Python: `save_file` no longer leaks its temp file when the document holds a lone surrogate; validation, generation and wildcard reads are iterative, so a document at the depth cap cannot exhaust the interpreter stack; and `read_file(0)` no longer reads stdin.
+
+- The C++ veneer's `validate` and `read_file` no longer leak, and a default-constructed `Document` is usable instead of carrying a null handle.
+
+- The Windows installer no longer ends the shell that piped it into `iex`, and its strict mode and error preference stay out of that shell too; `-Uninstall` no longer risks prompting a recursive delete of a directory it did not lay down; prereleases sort correctly when picking the newest release; and the download and extraction steps work on Windows PowerShell 5.1.
+
+- `install.bash` no longer exits silently when a release lacks an asset it looks for: the check that names the gap runs, and the binary-only fallback works. It also refuses to overwrite a `~/.local/bin/shcl` it did not create.
+
+- Both installers print the matching uninstall hint, and abort with a message when no terminal is there to answer the prompt.
+
+- The packages and the drop-ins tarball are reproducible: rebuilding a tag produces byte-identical artifacts, as the binaries already did.
 
 ## v2.0.0 - 2026-08-26
 

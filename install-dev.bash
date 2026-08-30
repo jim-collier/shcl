@@ -45,6 +45,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 ## file (or a stray one named "bash" in the cwd).
 usage() {
 	cat <<'EOF'
+
 ## install-dev.bash
 ##
 ##	Dev-environment setup for shcl on Linux and macOS (on Windows, use WSL -
@@ -70,6 +71,7 @@ usage() {
 ##		          PSScriptAnalyzer (only if pwsh is present)
 ##		the gate: cicd/cicd.bash --ci
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
 EOF
 }
 
@@ -122,6 +124,12 @@ pin() {
 	line="$(awk -v name="$1" '/^TOOL_PINS=\(/ { inpins=1; next } inpins && /^\)/ { exit } inpins && index($0, "\"" name "|") { sub(/^[ \t]*"/, ""); sub(/"[ \t]*$/, ""); print; exit }' "${pins_file}")"
 	[[ -n "${line}" ]] || die "no TOOL_PINS entry for $1 in cicd/config.bash"
 	pin_ver="${line#*|}"; pin_cmd="${pin_ver#*|}"; pin_ver="${pin_ver%%|*}"
+}
+## The cppcheck pin names the binary; the PyPI wheel that carries it has its own
+## version, kept beside TOOL_PINS as CPPCHECK_WHEEL so nothing here can drift.
+cppcheck_wheel() {
+	cppcheck_wheel="$(sed -n 's/^CPPCHECK_WHEEL="\([^"]*\)".*/\1/p' "${pins_file}")"
+	[[ -n "${cppcheck_wheel}" ]] || die "no CPPCHECK_WHEEL in cicd/config.bash"
 }
 ## Installed at the pinned version? The same test the pipeline's drift warning
 ## makes; missing and drifted both count as "install".
@@ -225,10 +233,7 @@ if (( need_rustup )); then
 fi
 if have pipx; then
 	for t in ruff mypy build; do at_pin "$t" || pipx install --force "${t}==${pin_ver}"; done
-	## TOOL_PINS pins the cppcheck binary; the PyPI package that carries it has
-	## its own version (see the note beside the pin). The one place this is
-	## spelled besides ci.yml.
-	at_pin cppcheck || pipx install --force "cppcheck==1.5.1"
+	at_pin cppcheck || { cppcheck_wheel; pipx install --force "cppcheck==${cppcheck_wheel}"; }
 fi
 if have npm; then
 	at_pin markdownlint-cli2 || npm install -g --prefix "${HOME}/.local" "markdownlint-cli2@${pin_ver}"
@@ -245,8 +250,9 @@ if have pwsh; then
 fi
 
 ## Point git at the tracked hooks rather than copying them in, so an update to
-## the hook arrives with a pull instead of needing a reinstall.
-if [[ -d "${clone_dir}/.git" ]]; then
+## the hook arrives with a pull instead of needing a reinstall. -e, not -d: in
+## a worktree .git is a file.
+if [[ -e "${clone_dir}/.git" ]]; then
 	git -C "${clone_dir}" config core.hooksPath cicd/hooks
 	echo "git hooks: core.hooksPath -> cicd/hooks (pre-push gates main and dev)"
 	## The gate runs for minutes while git already holds the ssh session open;

@@ -3,12 +3,13 @@
 .\"
 .\" Carries no version string on purpose: the release bump touches eight files
 .\" and this is not one of them. Keep it in step with HELP in the four CLIs.
-.TH SHCL 1 2026-08-18 shcl "User Commands"
+.TH SHCL 1 2026-08-30 shcl "User Commands"
 .SH NAME
 shcl \- read, edit, validate and format Simple Hierarchical Config Language files
 .SH SYNOPSIS
 .SY shcl
-.RI get \ [ type ]
+.B get
+.RI [ type ]
 .RI [ options ]
 .I FILE PATH
 .YS
@@ -133,7 +134,11 @@ the last two are also
 .B \-\-about
 and
 .BR \-\-donate .
-A bare
+The flag spellings are recognized anywhere in option position, after
+.I FILE
+included; only the value of a value-taking option and anything after
+.B \-\-
+are data. A bare
 .B shcl
 with no arguments prints the help and exits 0.
 .SH TYPE OPTIONS
@@ -291,6 +296,39 @@ is the highest file layer and each
 is merged under it in order;
 .B \-\-set
 applies last.
+.PP
+Some combinations are refused outright, each as a usage error.
+.B \-\-write
+with
+.B \-\-layer
+would fold the merged layers into the base file permanently.
+.B \-\-write
+with
+.B \-\-set
+outside
+.B set
+would persist what was given as a read-time override.
+.B \-\-lossy
+without
+.B \-\-write
+overrides nothing.
+.B \-\-layer=\-
+is not valid on
+.BR set ,
+where stdin already carries the ops script or the document.
+.B \-\-raw
+and
+.B \-\-rawinfo
+have no
+.B \-\-array
+form. And
+.B \-
+may be named only once across
+.IR FILE ,
+.B \-\-layer
+and
+.B \-\-schema
+\- there is one stdin, so two names for it would each read part of a document.
 .SH WRITE OPS
 .B set
 reads a write-ops script on stdin when no
@@ -321,7 +359,11 @@ and
 .BR \e\e ,
 and a line starting with
 .B #
-is a script comment.
+is a script comment. A
+.B raw
+op's INFO may not hold a line break or an unquoted
+.BR # ,
+which would read back as a comment on the fence line.
 .PP
 .I FILE
 given as
@@ -329,9 +371,15 @@ given as
 follows stdin: it is the piped document when an option holds the edits, and an
 empty base when the ops script has stdin instead.
 .SH WRITING IN PLACE
-An in-place write prints whatever the load found to stderr, and refuses
-outright when the load dropped content the rewrite would delete \- a typo does
-not cost the line above it.
+.B fmt
+and
+.B set
+print the load's diagnostics to stderr whether or not
+.B \-\-write
+is given, so a recovered-from typo is just as visible when the result goes to
+stdout. An in-place write also refuses outright, at exit 7, when the load
+dropped content the rewrite would delete \- a typo does not cost the line
+above it.
 .B \-\-lossy
 is how to say it was meant.
 .SH EXIT STATUS
@@ -356,7 +404,15 @@ Multiple instances matched where one was wanted.
 .TP
 .B 6
 .B check
-found errors, or a strict load failed.
+found errors, a strict load failed, or
+.BR init 's
+schema has faults.
+.TP
+.B 7
+An in-place write was refused because the load dropped content the rewrite
+would delete.
+.B \-\-lossy
+overrides.
 .SH EXAMPLES
 Read an int, with a fallback when the field is absent:
 .PP
@@ -415,8 +471,8 @@ The language spec, the formal grammar and the Rust, Go, Python and C bindings:
 .UR https://github.com/jim\-collier/shcl
 .UE
 .PP
-Bash and PowerShell wrappers ship alongside this command and give the same
-reads as shell functions.
+Bash and PowerShell wrappers are installed beside this command and give the
+same reads as shell functions.
 .SH BUGS
 Report them at
 .UR https://github.com/jim\-collier/shcl/issues

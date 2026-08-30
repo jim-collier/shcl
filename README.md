@@ -19,7 +19,7 @@
 
 **S**imple **H**ierarchical **C**onfig **L**anguage
 
-*A config file format for files people edit by hand. Forgiving to write, predictable to read.*
+*A config format for files people edit by hand. Forgiving to write, predictable to read.*
 
 <!-- width = the gif's own pixel width, so it never renders larger than 1:1; no height attr, so a narrow column can still shrink it without squashing -->
 <img src="assets/demo.gif" alt="SHCL demo" width="960"/>
@@ -152,7 +152,7 @@ When you do want zero-tolerance rigor: schema validation, plus a strict mode tha
 
 ### Performance comparison benchmarks
 
-SHCL writes the smallest file of the five. But it is several times slower to read than JSON, the fastest of the five, at every size (see the tables). That is due to two conscious tradeoffs, one of them advertised as *the* differentiating feature:
+SHCL writes the smallest file of the five. But it is several times slower to read than JSON, the fastest of the five, at every size (see the tables). That is due to two conscious tradeoffs:
 
 1. SHCL offloads much of the burden of parsing and datatype-correct formatting from the user and programmer, to the library itself.
 
@@ -196,7 +196,7 @@ Far past anything anyone edits by hand: one array of 302,230 records.
 
 `toml_edit` is the only other parser here that keeps the file contents (e.g. comments), and SHCL uses a quarter of the memory - but at twice the read time.
 
-Every number above comes from one Rust library per format. A slow library and a slow format are not the same thing, so the same files are read again in Python. Most Python parsers are C underneath - `json`, `ElementTree` and PyYAML all C - while SHCL's Python binding is pure Python. That leaves `tomllib`, also pure Python, as the only fair match. In Python, SHCL reads 3.5 times slower than `tomllib`; in Rust, 2.1 times slower than `toml`. Two languages, two separate implementations, the same few-fold gap.
+Every number above comes from one Rust library per format. A slow library and a slow format are not the same thing, so the same files are read again in Python. Most Python parsers are C underneath (`json`, `ElementTree` and PyYAML all are), while SHCL's Python binding is pure Python. That leaves `tomllib`, also pure Python, as the only fair match. In Python, SHCL reads 3.5 times slower than `tomllib`; in Rust, 2.1 times slower than `toml`. Two languages, two separate implementations, the same few-fold gap.
 
 TLDR: If you are moving a lot of machine-generated data over a high-bandwidth connection, use JSON. If you want to save developer and user time (and sanity), use SHCL.
 
@@ -323,8 +323,6 @@ Only the crate carries the CLI as well as the library, which is the easiest way 
 
 #### Cargo
 
-The crate carries the library and the CLI:
-
 ```sh
 cargo install shcl
 ```
@@ -339,7 +337,7 @@ go get github.com/jim-collier/shcl/source/go/v2
 
 #### PyPI
 
-The PyPI distribution is the library module by itself and installs no command, so `pip install shcl` is a dependency, not an installation:
+The PyPI distribution is likewise the library by itself, so `pip install shcl` is a dependency, not an installation:
 
 ```sh
 pip install shcl
@@ -480,7 +478,7 @@ Good	off
 ```console
 $ shcl check server.shcl
 line 3: Error: E014
-line 3: Error: malformed line skipped: unexpected '4' after field
+line 3: Error: E014 malformed line skipped: unexpected '4' after field
 failed: 1 diagnostic(s), 1 error(s)
 
 $ shcl get server.shcl log-level     # the rest of the file loaded fine
@@ -512,7 +510,7 @@ That catches wrong types, out-of-range numbers, and unknown fields - and for the
 ```console
 $ shcl check --schema=app-schema.shcl app.shcl
 line 2: Error: V001
-line 2: Error: unknown field 'log-levle'; did you mean 'log-level'?
+line 2: Error: V001 unknown field 'log-levle'; did you mean 'log-level'?
 failed: 1 diagnostic(s), 1 error(s)
 ```
 
@@ -546,9 +544,9 @@ shcl fmt --write server.shcl
 shcl set --write server.shcl --set 'workers=8'
 ```
 
-An in-place write is the library's own save, with the same refusal when the rewrite would delete a line the load dropped; see [What saving does](#what-saving-does). `--lossy` is the way to say you meant it.
+An in-place write is the library's own save, with the same refusal (at its own exit code, 7) when the rewrite would delete a line the load dropped; see [What saving does](#what-saving-does). `--lossy` is the way to say you meant it.
 
-`shcl help` covers the rest and `man shcl` says the same at more length, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. Tab completion for bash and zsh ships alongside. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
+`shcl help` covers the rest and `man shcl` says the same at more length, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. Tab completion for bash and zsh is included. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
 
 ## Example use-cases in your code
 
@@ -653,8 +651,7 @@ if err := doc.SaveFile("server.shcl"); err != nil {
 
 - Dependency line: `shcl~=2.0`
 
-- Note: The PyPI distribution is the library module by itself. Installing it does not put a `shcl` command on your `PATH`.
-	- If you want the CLI too, get it from a package or an installer.
+- Note: The PyPI distribution is the library module by itself; the `shcl` command comes from a package or an installer.
 
 ```python
 import shcl
@@ -727,7 +724,7 @@ _ = setString(doc, "site[blog.example.com].root", "/srv/www/blog");
 _ = c.shcl_save_file(doc, "server.shcl");
 ```
 
-Alongside it, an `impl.c` of two lines - `#define SHCL_IMPLEMENTATION`, then `#include "shcl.h"` - and build with `zig build-exe main.zig impl.c -lc -lm -I.`. Letting the C file tier do the loading and saving keeps Zig's own standard library out of it, which matters here because that library still moves between releases while this interop does not; checked on 0.16.
+Alongside it goes an `impl.c` of two lines (`#define SHCL_IMPLEMENTATION`, then `#include "shcl.h"`); build with `zig build-exe main.zig impl.c -lc -lm -I.`. Letting the C file tier do the loading and saving keeps Zig's own standard library out of it, which matters here because that library still moves between releases while this interop does not; checked on 0.16.
 
 ### C, C++
 
@@ -874,7 +871,7 @@ That is the whole file after the edits, not an excerpt - a formatter that can su
 
 And the save protects the file it is overwriting. It goes through a temp file in the same directory plus a rename, so an interrupted save cannot leave a truncated config behind, and a linked-in config is written through rather than replaced. It also refuses when the load dropped something the write would delete. A line the parser cannot read at all is kept verbatim and survives the save untouched. A line it could read and not place (a stray indent, an impossible selector) has no safe spelling to re-emit. That one counts into `lost_count()`, and the save stops rather than quietly dropping a line somebody typed. `save_file_lossy` is there for when deleting it is what you actually want, so it is always a stated choice.
 
-A setter returns failure - `false`, or `0` in C - when a path cannot be written at all. Wildcards are the usual case, since those are query-only. Nothing is half-written, and `write_reason(path)` says which of the five reasons applied. Worth checking rather than assuming: an ignored failure means the save that follows writes a config missing the edit, and reports success doing it. In Rust the setters are `#[must_use]`, so dropping the answer is a compile warning.
+A setter returns failure - `false`, or `0` in C - when a path cannot be written at all. Wildcards are the usual case, since those are query-only. Nothing is half-written, and `write_reason(path)` says which of the five reasons applied. Check that answer rather than assuming it: an ignored failure means the save that follows writes a config missing the edit, and reports success doing it. In Rust the setters are `#[must_use]`, so dropping the answer is a compile warning.
 
 One read-side companion belongs with this: canonical output lowercases field names, and `authored_name(path)` hands back the spelling the author actually used. It is what you want in a message about their file - reporting `Max-Upload-MB` as `max-upload-mb` reads like a different setting to the person who wrote it.
 
@@ -903,6 +900,8 @@ cicd/cicd.bash --ci
 - [`project/grammar.abnf`](project/grammar.abnf): the formal grammar.
 
 - [`project/design.md`](project/design.md): the why behind the decisions.
+
+- [`changelog.md`](changelog.md): what changed in each release.
 
 - [`contributing.md`](contributing.md): how to help.
 

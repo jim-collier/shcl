@@ -72,6 +72,7 @@ fSyntax(){  { ((doQuietly)) || ((wasShown_Syntax)); } && return; wasShown_Syntax
 	fEcho_Clean "Arguments:"
 	fEcho_Clean "  --message, -m <msg> [also --msg, and -m=<msg>]: Commit message; skips the editor."
 	fEcho_Clean "  --quiet, -q [optional]: Be less verbose, and don't prompt user to continue."
+	fEcho_Clean "  --no-prompt [optional]: Don't prompt user to continue; everything else as normal."
 	fEcho_Clean "  --help, --version [or -h, -v]"
 	fEcho_Clean ""
 	fEcho_Clean "Environment variables (all optional):"
@@ -99,6 +100,8 @@ fMain(){
 	## a link in most projects, and its contents are the point of the backup. Big
 	## linked-in trees are dropped by name below instead.
 	local -a baseCmdArgs=(a -r0 -ep1 -rr -m3)
+	## The cicd engines export their core cap; honor it the way every other stage does.
+	[[ -n "${CPU_CAP:-}" ]] && baseCmdArgs+=("-mt${CPU_CAP}")
 
 	## Generic variables
 	local -i wasShown_Copyright=0; local -i wasShown_About=0; wasShown_Syntax=0
@@ -135,6 +138,8 @@ fMain(){
 	## per-target cross-compile trees.
 	baseCmdArgs+=("-x*/target/debug/*" "-x*/target/*/debug/*" "-x*/target/lint/*" "-x*/target/profiling/*")
 	baseCmdArgs+=("-x*/target/*/deps/*" "-x*/target/*/build/*" "-x*/target/*/incremental/*" "-x*/target/*/.fingerprint/*" "-x*/target/*/examples/*")
+	## The pre-push hook's own target dir: debug builds only, nothing to keep.
+	baseCmdArgs+=("-x*/target-gate/*")
 	## Python and Node: fetched or regenerated wholesale. 'dist' is deliberately
 	## absent - that's where the release packages land.
 	baseCmdArgs+=("-x*/__pycache__/*" "-x*/.venv/*" "-x*/.mypy_cache/*" "-x*/.pytest_cache/*" "-x*/.ruff_cache/*" "-x*/node_modules/*")
@@ -358,6 +363,7 @@ fParseArgs(){
 
 				## ✶✶✶✶✶✶✶✶ PUT CUSTOM UNARY SWITCH TESTS AND PARENT BOOLEAN VARIABLE ASSIGNMENTS HERE
 				"q"|"quiet")  doQuietly=1  ;;
+				"no-prompt")  doPromptToContinue=0  ;;
 
 				## ✶✶✶✶✶✶✶✶ PUT TESTS FOR CUSTOM LONG-OPTION LOGIC THAT EXPECTS AN ARGUMENT TO FOLLOW, HERE
 				"m"|"msg"|"message")  if ((hasInlineOptVal)); then commitMessage="${inlineOptVal}"; else expectingSwitchParamForNextArg=1; fi  ;;
@@ -578,3 +584,7 @@ fMain  "${@}"
 ##			  rather than blocking on the editor.
 ##			- A stray positional argument now throws instead of being ignored.
 ##			- Missing include/gfs-rotate.bash warns instead of aborting.
+##		- 20260830:
+##			- '--no-prompt': skip only the continue prompt, so a driver that has
+##			  already confirmed can still leave the commit message to the editor.
+##			- rar honors CPU_CAP (-mt) when the environment carries one.

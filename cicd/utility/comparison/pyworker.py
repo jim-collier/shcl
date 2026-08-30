@@ -27,14 +27,22 @@ the orchestrator lists what it skipped.
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
 
-import os
+from __future__ import annotations
+
 import sys
 import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, Optional
 
-REPO_PY = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "source", "python"))
+REPO_PY = Path(__file__).absolute().parents[3] / "source" / "python"
+
+# What a loader hands back: (version, parse, emit) - emit None when the library
+# cannot write. Optional[] rather than | None: this alias is evaluated at import.
+Loader = tuple[str, Callable[[str], Any], Optional[Callable[[Any], str]]]
 
 
-def vmhwm():
+def vmhwm() -> int:
 	"""Kernel peak resident set for this process, in bytes."""
 	try:
 		with open("/proc/self/status", encoding="utf-8") as f:
@@ -51,20 +59,20 @@ def vmhwm():
 # library cannot write - and raises ImportError when it is not installed.
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
-def load_shcl():
-	sys.path.insert(0, REPO_PY)
+def load_shcl() -> Loader:
+	sys.path.insert(0, str(REPO_PY))
 	import shcl
 	return "working tree", shcl.Document.parse, lambda d: d.to_canonical()
 
 
-def load_json():
+def load_json() -> Loader:
 	import json
 	# ensure_ascii off, or every non-ASCII character comes back as an escape and
 	# the emitted document stops being the one that was read.
 	return getattr(json, "__version__", "stdlib"), json.loads, lambda o: json.dumps(o, indent=2, ensure_ascii=False)
 
 
-def load_yaml():
+def load_yaml() -> Loader:
 	import yaml
 	# libyaml through CSafeLoader where it is built, which is what anyone who has
 	# noticed PyYAML's speed uses; the pure-Python loader is the fallback.
@@ -77,7 +85,7 @@ def load_yaml():
 		lambda o: yaml.dump(o, Dumper=dumper, allow_unicode=True, default_flow_style=False, sort_keys=False))
 
 
-def load_toml():
+def load_toml() -> Loader:
 	import tomllib
 	try:
 		import tomli_w
@@ -86,17 +94,17 @@ def load_toml():
 		return "stdlib", tomllib.loads, None   # tomllib reads only, by design
 
 
-def load_toml_edit():
+def load_toml_edit() -> Loader:
 	import tomlkit
 	return getattr(tomlkit, "__version__", "?"), tomlkit.parse, tomlkit.dumps
 
 
-def load_xml():
+def load_xml() -> Loader:
 	import xml.etree.ElementTree as ET
 	return "stdlib", ET.fromstring, lambda e: ET.tostring(e, encoding="unicode")
 
 
-def load_xml_lxml():
+def load_xml_lxml() -> Loader:
 	from lxml import etree
 	# huge_tree lifts libxml2's built-in size ceilings, which a document of the
 	# size this tool generates walks straight into - the parse fails outright
@@ -126,7 +134,7 @@ ENTRIES = {
 }
 
 
-def emit_list():
+def emit_list() -> None:
 	"""key|format|library|retains|version|note for every entry that can be imported."""
 	for key, (loader, fmt, lib, retains, note) in ENTRIES.items():
 		try:
@@ -137,15 +145,14 @@ def emit_list():
 		print(f"available|{key}|{fmt}|{lib}|{retains}|{version}|{note}")
 
 
-def run(key, path, iters):
+def run(key: str, path: str, iters: int) -> None:
 	loader = ENTRIES[key][0]
 	try:
 		_, parse, emit = loader()
 	except ImportError as e:
 		print(f"skipped={e}")
 		return
-	with open(path, encoding="utf-8") as f:
-		src = f.read()
+	src = Path(path).read_text(encoding="utf-8")
 
 	base = vmhwm()
 	try:
@@ -160,9 +167,9 @@ def run(key, path, iters):
 	for _ in range(iters):
 		t = time.perf_counter()
 		doc = parse(src)
-		e = time.perf_counter() - t
-		if best is None or e < best:
-			best = e
+		secs = time.perf_counter() - t
+		if best is None or secs < best:
+			best = secs
 		del doc
 
 	doc = parse(src)
@@ -172,9 +179,9 @@ def run(key, path, iters):
 		for _ in range(iters):
 			t = time.perf_counter()
 			out = emit(doc)
-			e = time.perf_counter() - t
-			if emit_best is None or e < emit_best:
-				emit_best = e
+			secs = time.perf_counter() - t
+			if emit_best is None or secs < emit_best:
+				emit_best = secs
 
 	print(f"parse-secs={best:.6f}")
 	if emit_best is not None:
@@ -186,7 +193,7 @@ def run(key, path, iters):
 	print(f"base-rss-bytes={base}")
 
 
-def main():
+def main() -> int:
 	args = sys.argv[1:]
 	if args and args[0] == "--list":
 		emit_list()

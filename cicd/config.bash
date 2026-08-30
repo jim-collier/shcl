@@ -45,8 +45,8 @@ TOOL_PINS=(
 	"cargo-zigbuild|0.23.0|cargo-zigbuild --version"
 	"ruff|0.15.22|ruff --version"
 	"mypy|2.3.0|mypy --version"
-	## Version of the Cppcheck binary, which is NOT the PyPI wheel's version -
-	## package 1.5.1 carries 2.17.1. ci.yml has to install the package version.
+	## Version of the Cppcheck binary, which is NOT the PyPI wheel's version;
+	## the wheel pip installs is CPPCHECK_WHEEL below.
 	"cppcheck|2.17.1|cppcheck --version"
 	"markdownlint-cli2|0.23.1|markdownlint-cli2 --help"
 	## Gating, and its findings move between releases, so CI installs this exact
@@ -60,7 +60,16 @@ TOOL_PINS=(
 	"staticcheck|2026.1|staticcheck -version"
 	"govulncheck|v1.5.0|govulncheck -version"
 	"cargo-deny|0.19.9|cargo deny --version"
+	## The Go series ci.yml installs (go-version). One decision with the
+	## staticcheck pin: staticcheck carries its own type checker and cannot read
+	## export data from a Go newer than the release it was cut against, so the
+	## two move together.
+	"go|1.26|go version"
 )
+## The PyPI wheel that carries the pinned cppcheck binary has its own version,
+## and that is the one pip installs (ci.yml, install-dev.bash). Bump it with
+## the binary pin above; check-pins.bash holds ci.yml to both.
+CPPCHECK_WHEEL="1.5.1"
 
 ## Stage 2: debug build (what the tests exercise). Capped at half the cores -
 ## cargo via -j, the Go toolchain (and the Go-built lint tools below) via
@@ -114,7 +123,7 @@ LINT_EXTRA=(
 	'cicd/utility/check-pins.bash'
 	'GOMAXPROCS="${CPU_CAP}" govulncheck -C source/go ./...'
 	'GOMAXPROCS="${CPU_CAP}" govulncheck -C source/go/cmd ./...'
-	'cargo deny --manifest-path source/rust/Cargo.toml --all-features check'
+	'RAYON_NUM_THREADS="${CPU_CAP}" cargo deny --manifest-path source/rust/Cargo.toml --all-features check'
 )
 SHELLCHECK_TARGETS=(
 	cicd/cicd.bash

@@ -37,6 +37,7 @@ fDie(){ printf 'sign-release.bash: %s\n' "$1" >&2; exit "${2:-1}"; }
 ## odd interpreter, $0 is not this file and sed reads the wrong one.
 fUsage(){
 	cat <<'EOF'
+
 ##	Purpose:
 ##		Sign a release's sha256sums file with the offline release key, so the
 ##		installers have something to verify against. The sums file is the trust
@@ -125,7 +126,10 @@ openssl dgst -sha256 -verify "${pub}" -signature "${sigfile}" "${sumsfile}" >/de
 ## raw modulus inlined in install.ps1 - so any one of them drifting is caught
 ## here rather than by somebody's failed install.
 tmppub="$(mktemp)"; trap 'rm -f "${pub}" "${tmppub}"' EXIT
-fFp(){ openssl pkey -pubin -in "$1" -outform DER -pubout 2>/dev/null | sha256sum | cut -d' ' -f1; }
+## `|| true` inside the substitutions below: under pipefail a pipe that finds
+## nothing fails the assignment and errexit ends the script with no message, so
+## the guard after it would never run.
+fFp(){ openssl pkey -pubin -in "$1" -outform DER -pubout 2>/dev/null | sha256sum | cut -d' ' -f1 || true; }
 want="$(fFp "${pub}")"
 [[ -n "${want}" ]] || fDie "cannot fingerprint the signing key"
 
@@ -148,7 +152,7 @@ fi
 ## openssl base64s the result, so no other tool is needed for the round trip.
 if [[ -r "${root}/install.ps1" ]]; then
 	psmod="$(sed -n "s/^\$signingModulus = '\(.*\)'.*/\1/p" "${root}/install.ps1")"
-	modhex="$(openssl rsa -pubin -in "${pub}" -modulus -noout 2>/dev/null | sed 's/^Modulus=//; s/../\\x&/g')"
+	modhex="$(openssl rsa -pubin -in "${pub}" -modulus -noout 2>/dev/null | sed 's/^Modulus=//; s/../\\x&/g' || true)"
 	[[ -n "${modhex}" ]] || fDie "cannot read the key's modulus"
 	keymod="$(printf '%b' "${modhex}" | openssl enc -base64 -A)"
 	[[ -n "${psmod}" && "${psmod}" == "${keymod}" ]] || fDie "install.ps1 carries a different key"
@@ -164,3 +168,6 @@ printf 'attach both the sums file and its .sig to the release.\n'
 ##		  signed trust root rather than something trusted for being on https.
 ##		- 2026-08-29 JC: Refuse to sign off the v<version> tag (--no-tag-check
 ##		  for rehearsals); the modulus round trip needs only openssl now.
+##		- 2026-08-30 JC: The modulus and fingerprint guards are reachable again
+##		  (a failed pipe used to end the script before them); help is framed
+##		  with a blank line each side.

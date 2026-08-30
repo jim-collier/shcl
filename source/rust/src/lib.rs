@@ -557,22 +557,69 @@ pub struct Document {
 	// Content-malformed lines are NOT counted - they are retained as trivia
 	// and survive a save. lost_count() serves it; save_file() gates on it.
 	lost: usize,
-	// Built on the first path read, dropped by every write entry point. Without
-	// it a read scans the parent's children, so reading a flat document key by
-	// key was quadratic (35 s at 40k keys).
+	// Built on the first path lookup and kept current by the writer (a new
+	// child appends, a removed one unlinks); only a merge drops it. Without it
+	// every lookup scans the parent's children, so a flat document read or
+	// written key by key was quadratic.
 	index: std::sync::OnceLock<Box<NameIndex>>,
 }
 
-/// Read accelerator: the first child of each (parent, name), chained on to
-/// the next same-named sibling. A hash collision chains a stranger in; the
-/// lookup checks the name, so the chain is only ever a superset.
+/// The first child of each (parent, name), chained on to the next same-named
+/// sibling, plus the chain tail so an append is O(1). A hash collision chains
+/// a stranger in; the lookup checks the name, so the chain is only ever a
+/// superset.
 #[derive(Debug, Clone)]
 struct NameIndex {
 	first: HashMap<u64, usize>,
+	last: HashMap<u64, usize>,
 	next_same: Vec<usize>, // per node; NIL ends the chain
 }
 
 const NIL: usize = usize::MAX;
+
+impl NameIndex {
+	fn append(&mut self, key: u64, node: usize) {
+		if self.next_same.len() <= node {
+			self.next_same.resize(node + 1, NIL);
+		}
+		self.next_same[node] = NIL;
+		match self.last.insert(key, node) {
+			Some(prev) => self.next_same[prev] = node,
+			None => {
+				self.first.insert(key, node);
+			}
+		}
+	}
+
+	// Walks the chain to find the predecessor; a chain is one name's siblings.
+	fn unlink(&mut self, key: u64, node: usize) {
+		let Some(&head) = self.first.get(&key) else {
+			return;
+		};
+		let next = self.next_same[node];
+		if head == node {
+			if next == NIL {
+				self.first.remove(&key);
+				self.last.remove(&key);
+			} else {
+				self.first.insert(key, next);
+			}
+		} else {
+			let mut c = head;
+			while c != NIL && self.next_same[c] != node {
+				c = self.next_same[c];
+			}
+			if c == NIL {
+				return;
+			}
+			self.next_same[c] = next;
+			if next == NIL {
+				self.last.insert(key, c);
+			}
+		}
+		self.next_same[node] = NIL;
+	}
+}
 
 fn name_key(parent: usize, name: &str) -> u64 {
 	let mut h = Fnv::new();
@@ -1552,11 +1599,8 @@ impl Parser {
 			if self.stack[i].0 == indent {
 				// Sibling of stack[i]: its parent is the entry below it.
 				let parent = if i == 0 { ROOT } else { self.stack[i - 1].1 };
-				self.stack.truncate(i.max(1));
 				// Keep the sentinel; a top-level line resolves to ROOT.
-				if i == 0 {
-					self.stack.truncate(1);
-				}
+				self.stack.truncate(i.max(1));
 				return Some(parent);
 			}
 		}
@@ -1953,14 +1997,11 @@ impl Parser {
 			self.hang_deeper_pending(indent);
 			// Child-indent fence: a value line for its parent field.
 			if let Some(fence) = fence_open(rest) {
-				let parent = match self.resolve_parent(indent) {
-					Some(p) => p,
-					None => {
-						self.err(lineno, "indentation matches no open level");
-						self.lost += 1;
-						i += 1;
-						continue;
-					}
+				let Some(parent) = self.resolve_parent(indent) else {
+					self.err(lineno, "indentation matches no open level");
+					self.lost += 1;
+					i += 1;
+					continue;
 				};
 				let (value, next) = self.consume_raw(&lines, i + 1, lineno, indent, fence);
 				if parent == DEAD {
@@ -1974,14 +2015,11 @@ impl Parser {
 			// Stacked-list element: colon-less by construction ('*' can't begin a name).
 			if let Some(after) = rest.strip_prefix('*') {
 				if after.starts_with(' ') || after.starts_with('\t') {
-					let parent = match self.resolve_parent(indent) {
-						Some(p) => p,
-						None => {
-							self.err(lineno, "indentation matches no open level");
-							self.lost += 1;
-							i += 1;
-							continue;
-						}
+					let Some(parent) = self.resolve_parent(indent) else {
+						self.err(lineno, "indentation matches no open level");
+						self.lost += 1;
+						i += 1;
+						continue;
 					};
 					if parent == DEAD {
 						self.skip_under_dead(lineno, indent);
@@ -2027,14 +2065,11 @@ impl Parser {
 				i += 1;
 				continue;
 			}
-			let parent = match self.resolve_parent(indent) {
-				Some(p) => p,
-				None => {
-					self.err(lineno, "indentation matches no open level");
-					self.lost += 1;
-					i += 1;
-					continue;
-				}
+			let Some(parent) = self.resolve_parent(indent) else {
+				self.err(lineno, "indentation matches no open level");
+				self.lost += 1;
+				i += 1;
+				continue;
 			};
 			if parent == DEAD {
 				self.skip_under_dead(lineno, indent);
@@ -2520,7 +2555,7 @@ pub fn read_file(path: &str, max_bytes: usize) -> Result<String, FileStatus> {
 /// links to the old inode cannot survive a rename and keep the old content.
 pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	use std::io::Write;
-	let target = resolve_target(file);
+	let target = resolve_target(file).map_err(|e| format!("{}: {}", file, e))?;
 	let dir = match target.parent() {
 		Some(d) if !d.as_os_str().is_empty() => d,
 		_ => std::path::Path::new("."),
@@ -2571,16 +2606,19 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 		return Err(format!("{}: cannot create temporary file: {}", file, last));
 	};
 	let res = (|| -> std::io::Result<()> {
+		f.write_all(data.as_bytes())?;
+		f.sync_all()?;
 		// On the handle, so umask cannot narrow it the way it narrows a create
-		// mode. Best effort: a filesystem that cannot carry the mode is not a
-		// reason to fail a write that otherwise succeeded. The whole mode goes,
-		// setuid/setgid/sticky included, as an editor's rewrite would carry it.
+		// mode, and after the data, because a write by anyone but root clears
+		// setuid/setgid. Best effort: a filesystem that cannot carry the mode
+		// is not a reason to fail a write that otherwise succeeded. The whole
+		// mode goes, setuid/setgid/sticky included, as an editor's rewrite
+		// would carry it.
 		#[cfg(unix)]
 		if let Some(m) = &existing {
 			let _ = f.set_permissions(m.permissions());
 		}
-		f.write_all(data.as_bytes())?;
-		f.sync_all()
+		Ok(())
 	})();
 	if let Err(e) = res {
 		let _ = std::fs::remove_file(&tmp);
@@ -2608,13 +2646,14 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 /// through it; canonicalize does that but needs the target to exist, so a
 /// dangling link is walked by hand and the file is created where it points.
 /// A path that is no link at all is a plain create at the path as given.
-fn resolve_target(file: &str) -> std::path::PathBuf {
+/// A link cycle is an error: silently creating a regular file in its place
+/// would be the exact replacement the symlink walk exists to avoid.
+fn resolve_target(file: &str) -> Result<std::path::PathBuf, String> {
 	if let Ok(p) = std::fs::canonicalize(file) {
-		return p;
+		return Ok(p);
 	}
 	let mut p = std::path::PathBuf::from(file);
 	for _ in 0..40 {
-		// bounded: a link cycle would otherwise never resolve
 		let Ok(next) = std::fs::read_link(&p) else {
 			break;
 		};
@@ -2627,12 +2666,15 @@ fn resolve_target(file: &str) -> std::path::PathBuf {
 				.join(next)
 		};
 	}
-	match (p.parent(), p.file_name()) {
+	if std::fs::read_link(&p).is_ok() {
+		return Err("too many levels of symbolic links".to_string());
+	}
+	Ok(match (p.parent(), p.file_name()) {
 		(Some(d), Some(n)) if !d.as_os_str().is_empty() => {
 			std::fs::canonicalize(d).map(|d| d.join(n)).unwrap_or(p)
 		}
 		_ => p,
-	}
+	})
 }
 
 #[cfg(windows)]
@@ -2932,21 +2974,17 @@ impl Document {
 		self.index.get_or_init(|| {
 			// Boxed so the document stays small on the stack (it rides inside
 			// LoadError by value).
-			let mut first: HashMap<u64, usize> = HashMap::new();
-			let mut last: HashMap<u64, usize> = HashMap::new();
-			let mut next_same = vec![NIL; self.arena.len()];
+			let mut idx = NameIndex {
+				first: HashMap::new(),
+				last: HashMap::new(),
+				next_same: vec![NIL; self.arena.len()],
+			};
 			for (p, node) in self.arena.iter().enumerate() {
 				for &c in &node.children {
-					let k = name_key(p, &self.arena[c].name);
-					match last.insert(k, c) {
-						Some(prev) => next_same[prev] = c,
-						None => {
-							first.insert(k, c);
-						}
-					}
+					idx.append(name_key(p, &self.arena[c].name), c);
 				}
 			}
-			Box::new(NameIndex { first, next_same })
+			Box::new(idx)
 		})
 	}
 
@@ -3276,6 +3314,9 @@ impl Document {
 			src: None,
 		});
 		self.arena[parent].children.push(idx);
+		if let Some(ix) = self.index.get_mut() {
+			ix.append(name_key(parent, name), idx);
+		}
 		idx
 	}
 
@@ -3283,9 +3324,8 @@ impl Document {
 	/// `false`, so a consumer's error message need not guess. `Writable` means
 	/// the same validation `place()` runs would pass; nothing is created.
 	pub fn write_reason(&self, path: &str) -> WriteReason {
-		let scan = match scan_lookup(path) {
-			Ok(s) => s,
-			Err(_) => return WriteReason::BadPath,
+		let Ok(scan) = scan_lookup(path) else {
+			return WriteReason::BadPath;
 		};
 		self.probe_write(&scan, &mut Vec::new())
 	}
@@ -3332,12 +3372,7 @@ impl Document {
 					let Some(c) = probe else {
 						return WriteReason::NoSuchIndex;
 					};
-					let matches: Vec<usize> = self.arena[c]
-						.children
-						.iter()
-						.copied()
-						.filter(|&n| self.arena[n].name == seg.name)
-						.collect();
+					let matches = self.children_named(c, &seg.name);
 					match index_usize(*k).and_then(|i| matches.get(i)) {
 						Some(&m) => probe = Some(m),
 						None => return WriteReason::NoSuchIndex,
@@ -3346,21 +3381,14 @@ impl Document {
 				Some(Selector::ByValue { text, quoted }) => {
 					let want = apply_escapes(text);
 					probe = probe.and_then(|c| {
-						self.arena[c].children.iter().copied().find(|&n| {
-							self.arena[n].name == seg.name
-								&& disp_key(&self.arena[n].value) == want
+						self.children_named(c, &seg.name).into_iter().find(|&n| {
+							disp_key(&self.arena[n].value) == want
 								&& (!quoted || single_scalar(&self.arena[n].value))
 						})
 					});
 				}
 				None => {
-					probe = probe.and_then(|c| {
-						self.arena[c]
-							.children
-							.iter()
-							.copied()
-							.find(|&n| self.arena[n].name == seg.name)
-					});
+					probe = probe.and_then(|c| self.children_named(c, &seg.name).first().copied());
 				}
 			}
 			trail.push(probe);
@@ -3375,7 +3403,6 @@ impl Document {
 	/// says why). Validation runs first, so a doomed path leaves no
 	/// half-created intermediates behind.
 	fn place(&mut self, path: &str) -> Option<usize> {
-		self.index.take();
 		let scan = scan_lookup(path).ok()?;
 		let mut trail: Vec<Option<usize>> = Vec::new();
 		if self.probe_write(&scan, &mut trail) != WriteReason::Writable {
@@ -3422,14 +3449,14 @@ impl Document {
 	fn collapse_dup(&mut self, node: usize) {
 		let parent = self.arena[node].parent;
 		let me = &self.arena[node];
-		let key = merge_hash(&me.name, &me.value);
-		let siblings = &self.arena[parent].children;
-		let Some(other) = siblings.iter().copied().find(|&c| {
-			let o = &self.arena[c];
-			c != node
-				&& merge_hash(&o.name, &o.value) == key
-				&& merge_eq(&o.name, &o.value, &me.name, &me.value)
-		}) else {
+		let Some(other) = self
+			.children_named(parent, &me.name)
+			.into_iter()
+			.find(|&c| {
+				let o = &self.arena[c];
+				c != node && merge_eq(&o.name, &o.value, &me.name, &me.value)
+			})
+		else {
 			return;
 		};
 		let pos = |n: usize| {
@@ -3444,8 +3471,17 @@ impl Document {
 		} else {
 			(node, other)
 		};
+		let moved: Vec<usize> = self.arena[loser].children.clone();
 		fold_node_into(&mut self.arena, survivor, loser);
 		self.arena[parent].children.retain(|&c| c != loser);
+		if let Some(ix) = self.index.get_mut() {
+			ix.unlink(name_key(parent, &self.arena[loser].name), loser);
+			for &k in &moved {
+				let name = &self.arena[k].name;
+				ix.unlink(name_key(loser, name), k);
+				ix.append(name_key(survivor, name), k);
+			}
+		}
 	}
 
 	/// True when the path resolves to at least one real node.
@@ -3459,7 +3495,6 @@ impl Document {
 
 	/// Delete the node(s) at a path (with their subtrees); returns how many.
 	pub fn remove(&mut self, path: &str) -> usize {
-		self.index.take();
 		let targets: Vec<usize> = match self.resolve(path) {
 			Ok(Resolved::One(n)) => vec![n],
 			Ok(Resolved::Many(v)) => v,
@@ -3469,6 +3504,9 @@ impl Document {
 		for &t in &targets {
 			let p = self.arena[t].parent;
 			self.arena[p].children.retain(|&c| c != t);
+			if let Some(ix) = self.index.get_mut() {
+				ix.unlink(name_key(p, &self.arena[t].name), t);
+			}
 		}
 		targets.len()
 	}
@@ -3486,7 +3524,15 @@ impl Document {
 				} else {
 					format!("# {}", line)
 				};
-				self.arena[node].triv_mut().leading.push(Lead::plain(c));
+				// The node's own blank moves above its first comment; otherwise
+				// the blank would separate the comment from what it annotates.
+				let nd = &mut self.arena[node];
+				let mut lead = Lead::plain(c);
+				if nd.blank_before && nd.leading().is_empty() {
+					lead.blank_before = true;
+					nd.blank_before = false;
+				}
+				nd.triv_mut().leading.push(lead);
 				true
 			}
 			None => false,
@@ -3523,10 +3569,11 @@ impl Document {
 	}
 	/// Bind a raw block at a path, picking a fence longer than any content line.
 	/// The info-string is stored as a fence line would read it back (trimmed);
-	/// one holding a line break has no fence-line spelling and fails the write.
+	/// one holding a line break or an unquoted `#` has no fence-line spelling
+	/// (the `#` would read back as a comment) and fails the write.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
-		if info.contains('\n') || info.contains('\r') {
+		if info.contains('\n') || info.contains('\r') || split_comment(info).1.is_some() {
 			return false;
 		}
 		let info = info.trim();
@@ -4921,12 +4968,9 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 /// None = faults were reported and the constraint is dropped.
 fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Option<Constraint> {
 	let node = &schema.arena[f];
-	let path = match single_text(&node.value) {
-		Some(p) => p,
-		None => {
-			vdiag(faults, node.line, "bad schema path".to_string());
-			return None;
-		}
+	let Some(path) = single_text(&node.value) else {
+		vdiag(faults, node.line, "bad schema path".to_string());
+		return None;
 	};
 	let segs = match scan_lookup(&path) {
 		Ok(s) if s.value_text.is_none() => s.segments,

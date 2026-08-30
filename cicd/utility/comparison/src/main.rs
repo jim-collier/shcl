@@ -825,7 +825,7 @@ libraries ordered by geometric-mean parse time, fastest first; tiers are separat
 	}
 
 	prune(&mut doc, o.keep_runs);
-	doc.save_file(&o.out).map_err(|e| format!("{e:?}"))?;
+	doc.save_file(&o.out).map_err(|e| e.to_string())?;
 	Ok(id)
 }
 

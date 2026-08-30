@@ -67,12 +67,13 @@ fn mutate(rng: &mut Rng, base: &str) -> String {
 fn seed_texts() -> Vec<String> {
 	let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../project/conformance");
 	let mut seeds: Vec<String> = Vec::new();
-	if let Ok(entries) = std::fs::read_dir(&dir) {
-		for entry in entries.flatten() {
-			let p = entry.path().join("input.shcl");
-			if let Ok(t) = std::fs::read_to_string(&p) {
-				seeds.push(t);
-			}
+	// A missing corpus must fail loudly: three synthetic seeds are not a fuzz run.
+	let entries =
+		std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("corpus dir {}: {}", dir.display(), e));
+	for entry in entries.flatten() {
+		let p = entry.path().join("input.shcl");
+		if let Ok(t) = std::fs::read_to_string(&p) {
+			seeds.push(t);
 		}
 	}
 	// read_dir order is unspecified, and the seed order drives every mutation

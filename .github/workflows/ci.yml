@@ -50,8 +50,10 @@ jobs:
       ## TOOL_PINS, so CI and the local gate agree about what "passing" was
       ## tested against. Exception: the cppcheck wheel's own version is not the
       ## Cppcheck version it carries - package 1.5.1 bundles the 2.17.1 binary
-      ## that TOOL_PINS checks for. Pin the package version here; "2.17.1" is
-      ## not a package that exists.
+      ## that TOOL_PINS checks for. Pin the package version here (it is
+      ## CPPCHECK_WHEEL in config.bash; the binary version is not a package that
+      ## exists), and keep the binary version in this comment: check-pins.bash
+      ## reads both.
       ##
       ## shellcheck is preinstalled but at whatever version the image carries,
       ## which is not the one the local gate runs - it warns about shapes newer

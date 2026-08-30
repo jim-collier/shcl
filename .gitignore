@@ -1,4 +1,6 @@
 target/
+## The pre-push hook builds the pushed commit here, not in target/.
+source/rust/target-gate/
 cicd/artifacts/
 source/go/shcl
 source/c/shcl

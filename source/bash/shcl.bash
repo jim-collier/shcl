@@ -18,7 +18,11 @@
 ##		port="$(shcl_int app.shcl server.port)"            ## same, typed helper
 ##		host="$(shcl_get app.shcl server.host)"
 ##		[[ "$(shcl_bool app.shcl features.debug)" == true ]] && enable_debug
-##		mapfile -t hosts < <(shcl_array --string app.shcl cluster.hosts)
+##		hosts=(); while IFS= read -r h; do hosts+=("$h"); done < <(shcl_array --string app.shcl cluster.hosts)
+##
+##	A "$(...)" drops every trailing newline, so a raw block read that way loses
+##	its trailing blank lines; read it into a file, or through a loop, when the
+##	exact tail matters.
 ##
 ##	Functions defined when sourced (each mirrors the CLI and returns its code):
 ##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances ...
@@ -34,7 +38,9 @@
 ##		repo release/debug build. Set SHCL_BIN to pin an exact one.
 ##
 ##	Exit codes (straight from the binary): 0 good, 1 usage/IO, 2 empty,
-##	3 not found, 4 bad type, 5 multiple instances, 6 strict load failure.
+##	3 not found, 4 bad type, 5 multiple instances, 6 check failed, strict
+##	load failure, or a faulty init schema, 7 in-place write refused
+##	(--lossy overrides).
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 ##	Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
@@ -74,11 +80,11 @@ _SHCL_BIN=""
 ## wins; type -P (not command -v) so our own shcl() function can't shadow it.
 _shcl_resolve() {
 	if [[ -n "${SHCL_BIN:-}" ]]; then
-		[[ -x "${SHCL_BIN}" ]] && { _SHCL_BIN="${SHCL_BIN}"; return 0; }
-		printf 'shcl.bash: SHCL_BIN is set but not executable: %s\n' "${SHCL_BIN}" >&2
+		[[ -f "${SHCL_BIN}" && -x "${SHCL_BIN}" ]] && { _SHCL_BIN="${SHCL_BIN}"; return 0; }
+		printf 'shcl.bash: SHCL_BIN is set but not an executable file: %s\n' "${SHCL_BIN}" >&2
 		return 1
 	fi
-	[[ -n "${_SHCL_BIN:-}" && -x "${_SHCL_BIN}" ]] && return 0
+	[[ -n "${_SHCL_BIN:-}" && -f "${_SHCL_BIN}" && -x "${_SHCL_BIN}" ]] && return 0
 	local candidate
 	for candidate in \
 		"${_SHCL_DIR}/shcl" \
@@ -86,7 +92,7 @@ _shcl_resolve() {
 		"${_SHCL_DIR}/../rust/target/release/shcl" \
 		"${_SHCL_DIR}/../rust/target/debug/shcl"
 	do
-		if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+		if [[ -n "${candidate}" && -f "${candidate}" && -x "${candidate}" ]]; then
 			_SHCL_BIN="${candidate}"
 			return 0
 		fi

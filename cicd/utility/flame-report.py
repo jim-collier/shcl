@@ -15,12 +15,15 @@
 ##	SPDX-License-Identifier: MIT
 
 
+from __future__ import annotations
+
 import argparse
 import bisect
 import html
-import os
 import re
 import sys
+from pathlib import Path
+from typing import NoReturn
 
 STEP      = 16              # flamegraph row height in the SVG, px (a child sits at parent_y - STEP)
 SELF_TOP  = 22             	# self-time leaders to list
@@ -33,41 +36,42 @@ FRAME_RE  = re.compile(r"<title>(.*?)</title><rect ([^>]*?)/>", re.S)
 ATTR_RES  = {key: re.compile(re.escape(key) + r'="([\d.]+)"') for key in ("y", "fg:x", "fg:w")}
 SAMPLES_RE = re.compile(r"\s*\(\d[\d,]* samples.*$")
 
+Frame = tuple[str, float, float, float]   # (name, x, y, w) in raw samples
 
-def fSkip(msg):
+
+def fSkip(msg: str) -> NoReturn:
 	##	2 = environmental skip (no dir / unparseable) - non-fatal, matches the
 	##	cicd profiler stage which treats such things as a warning, not a failure.
 	sys.stderr.write(f"flame-report: {msg}\n")
 	sys.exit(2)
 
 
-def fNewest(pdir):
+def fNewest(pdir: Path) -> tuple[str, str] | None:
 	##	Sort on the timestamp, NOT the role suffix: GFS rotation retags the role
 	##	(frequent -> latest -> hour/day/...) as time passes, but the timestamp in
 	##	the name is stable.
 	best = None
-	for name in os.listdir(pdir):
-		m = NAME_RE.match(name)
+	for entry in pdir.iterdir():
+		m = NAME_RE.match(entry.name)
 		if m and (best is None or m.group(1) > best[0]):
-			best = (m.group(1), name)
+			best = (m.group(1), entry.name)
 	return best
 
 
-def fAttr(attrs, key):
+def fAttr(attrs: str, key: str) -> float | None:
 	vm = ATTR_RES[key].search(attrs)
 	return float(vm.group(1)) if vm else None
 
 
-def fParse(path):
-	with open(path, encoding="utf-8") as fh:
-		text = fh.read()
+def fParse(path: Path) -> tuple[int, list[Frame]]:
+	text = path.read_text(encoding="utf-8")
 	m = re.search(r'total_samples="(\d+)"', text)
 	total = int(m.group(1)) if m else 0
-	frames = []                                      # each: (name, x, y, w) in raw samples
+	frames: list[Frame] = []
 	for fm in FRAME_RE.finditer(text):
 		attrs = fm.group(2)
 		y, x, w = fAttr(attrs, "y"), fAttr(attrs, "fg:x"), fAttr(attrs, "fg:w")
-		if None in (y, x, w):
+		if y is None or x is None or w is None:
 			continue
 		name = SAMPLES_RE.sub("", html.unescape(fm.group(1)))
 		frames.append((name, x, y, w))
@@ -76,20 +80,20 @@ def fParse(path):
 	return total, frames
 
 
-def fAnalyze(total, frames, top):
+def fAnalyze(total: int, frames: list[Frame], top: int) -> None:
 	##	Rows keyed by y and sorted by x, with the x list beside each, so a
 	##	frame's parent or children are a bisect and a short walk rather than a
 	##	scan of the whole row for every frame.
-	rows = {}
+	rows: dict[float, list[Frame]] = {}
 	for fr in frames:
 		rows.setdefault(fr[2], []).append(fr)
-	rowXs = {}
+	rowXs: dict[float, list[float]] = {}
 	for y, row in rows.items():
 		row.sort(key=lambda fr: fr[1])
 		rowXs[y] = [fr[1] for fr in row]
 	eps = 1e-6
 
-	def kids(fr):
+	def kids(fr: Frame) -> list[Frame]:
 		_, x, y, w = fr
 		row = rows.get(y - STEP)
 		if not row:
@@ -101,7 +105,7 @@ def fAnalyze(total, frames, top):
 			out.append(c)
 		return out
 
-	def parent(fr):
+	def parent(fr: Frame) -> Frame | None:
 		_, x, y, w = fr
 		row = rows.get(y + STEP)
 		if not row:
@@ -113,7 +117,9 @@ def fAnalyze(total, frames, top):
 
 	selfOf = {fr: fr[3] - sum(c[3] for c in kids(fr)) for fr in frames}
 
-	selfBy, inclBy, byName = {}, {}, {}
+	selfBy: dict[str, float] = {}
+	inclBy: dict[str, float] = {}
+	byName: dict[str, list[Frame]] = {}
 	parse = emit = reads = other = 0.0
 	for fr in frames:
 		name = fr[0]
@@ -123,7 +129,8 @@ def fAnalyze(total, frames, top):
 		selfBy[name] = selfBy.get(name, 0.0) + s
 		if s <= 0:
 			continue
-		anc, cur = [], fr                            # ancestor names (self up to root)
+		anc: list[str] = []                          # ancestor names (self up to root)
+		cur: Frame | None = fr
 		while cur:
 			anc.append(cur[0])
 			cur = parent(cur)
@@ -138,7 +145,7 @@ def fAnalyze(total, frames, top):
 		else:
 			other += s
 
-	def pct(v):
+	def pct(v: float) -> str:
 		return f"{v / total * 100:5.1f}%"
 
 	print("attribution (self-time):")
@@ -172,12 +179,11 @@ def fAnalyze(total, frames, top):
 			cur, depth = parent(cur), depth + 1
 
 
-def main():
-	here = os.path.dirname(os.path.abspath(__file__))
-	default_dir = os.path.normpath(os.path.join(here, "..", "artifacts", "profiling"))
+def main() -> None:
+	default_dir = Path(__file__).absolute().parent.parent / "artifacts" / "profiling"
 
 	ap = argparse.ArgumentParser(description="Summarize the newest shcl profiler flamegraph.")
-	ap.add_argument("--dir", default=default_dir, help="profiling directory (default: %(default)s)")
+	ap.add_argument("--dir", default=default_dir, type=Path, help="profiling directory (default: %(default)s)")
 	ap.add_argument("--file", help="analyze this SVG instead of the newest in --dir")
 	ap.add_argument("--top", type=int, default=SELF_TOP, help="self-time leaders to list")
 	ap.add_argument("--check", action="store_true",
@@ -187,27 +193,26 @@ def main():
 	a = ap.parse_args()
 
 	if a.file:
-		path = a.file
-		if not os.path.isfile(path):
+		path = Path(a.file)
+		if not path.is_file():
 			fSkip(f"no such file: {path}")
-		name = os.path.basename(path)
+		name = path.name
 		m = NAME_RE.match(name)
 		ts = m.group(1) if m else ""
 	else:
-		if not os.path.isdir(a.dir):
+		if not a.dir.is_dir():
 			fSkip(f"no profiling dir: {a.dir}")
 		nb = fNewest(a.dir)
 		if not nb:
 			fSkip(f"no flamegraphs in {a.dir}")
 		ts, name = nb
-		path = os.path.join(a.dir, name)
+		path = a.dir / name
 
-	marker = os.path.join(a.dir, SEEN_FILE)
+	marker = a.dir / SEEN_FILE
 	if a.check and not a.force:
 		seen = ""
 		try:
-			with open(marker) as fh:
-				seen = fh.read().strip()
+			seen = marker.read_text().strip()
 		except OSError:
 			pass
 		if ts and seen and ts <= seen:
@@ -221,8 +226,7 @@ def main():
 
 	if a.check and not a.no_mark and ts:
 		try:
-			with open(marker, "w") as fh:
-				fh.write(ts + "\n")
+			marker.write_text(ts + "\n")
 		except OSError as e:
 			sys.stderr.write(f"flame-report: could not write marker: {e}\n")
 

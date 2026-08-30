@@ -21,6 +21,7 @@
 #include <locale.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #ifdef _WIN32
 	#include <windows.h>
 	#include <io.h>
@@ -45,16 +46,18 @@ static const char *HELP =
 	"  shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);\n"
 	"                                         print canonical (or rewrite FILE in\n"
 	"                                         place with --write)\n"
-	"  shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form\n"
+	"  shcl fmt [--write|-w] FILE             print the canonical form (or rewrite\n"
+	"                                         FILE in place with --write)\n"
 	"  shcl check [options] FILE              load and print diagnostics\n"
 	"                                         (--schema=SCHEMA also validates FILE\n"
 	"                                         against a schema, itself a .shcl file)\n"
-	"  shcl init [--no-banner] --schema=S     print a commented starter config from\n"
-	"                                         a schema (required fields live, optional\n"
-	"                                         commented, wildcards noted)\n"
+	"  shcl init [--no-banner] --schema=S     print a commented starter config\n"
+	"                                         from a schema (required fields live,\n"
+	"                                         optional commented, wildcards noted)\n"
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
-	"  shcl help | version                    this help, or the version (also -h/--help, -v/-V/--version)\n"
+	"  shcl help | version                    this help, or the version (also\n"
+	"                                         -h/--help, -v/-V/--version)\n"
 	"  shcl about | donate                    what shcl is, or how to support it\n"
 	"                                         (also --about, --donate)\n"
 	"\n"
@@ -83,9 +86,10 @@ static const char *HELP =
 	"  --default=VALUE                        (get) value to print when the read is\n"
 	"                                         not Good (implies --on-bad=default; for\n"
 	"                                         arrays, substituted per bad slot)\n"
-	"  --on-bad=error|default|flag            (get) error: fail loudly; default: print\n"
-	"                                         the default; flag: print the value anyway\n"
-	"                                         and report via exit code (the default)\n"
+	"  --on-bad=error|default|flag            (get) error: fail loudly; default:\n"
+	"                                         print the default; flag: print the\n"
+	"                                         value anyway and report via exit code\n"
+	"                                         (the default)\n"
 	"  --slots                                (get) prefix each line with its slot\n"
 	"                                         status and a tab (per element, or per\n"
 	"                                         wildcard slot)\n"
@@ -102,15 +106,17 @@ static const char *HELP =
 	"  --layer=FILE                           (get/fmt/count/instances/set) merge a\n"
 	"                                         lower-priority layer under FILE;\n"
 	"                                         repeatable, earlier = lower priority\n"
-	"  --set=PATH=VALUE                       override one path as the top layer,\n"
-	"                                         after all files; repeatable. On 'set'\n"
+	"  --set=PATH=VALUE                       (get/fmt/count/instances/set) override\n"
+	"                                         one path as the top layer, after all\n"
+	"                                         files; repeatable. On 'set'\n"
 	"                                         it is an edit to the document itself,\n"
 	"                                         so it persists with --write. VALUE\n"
 	"                                         goes in as data: its type still\n"
 	"                                         follows the text (8 is an int), but a\n"
 	"                                         comma or quote in it is content, not\n"
 	"                                         syntax\n"
-	"  --set-literal=PATH=TEXT                as --set, except TEXT goes in as value\n"
+	"  --set-literal=PATH=TEXT                (same subcommands) as --set, except\n"
+	"                                         TEXT goes in as value\n"
 	"                                         syntax the way a file spells it, so\n"
 	"                                         'ports=80, 443' writes a two-element\n"
 	"                                         array. An unquoted # ends the value;\n"
@@ -120,15 +126,20 @@ static const char *HELP =
 	"the space form the next argument is taken as the value whatever it looks like,\n"
 	"so --default --int reads --int as the default. Use -- to end the options when a\n"
 	"FILE or PATH begins with a dash.\n"
-	"An option a subcommand does not use is a usage error, not ignored.\n"
-	"An in-place write prints the load's diagnostics to stderr, and refuses when the\n"
-	"load dropped content the rewrite would delete (--lossy overrides).\n"
+	"An option a subcommand does not use is a usage error, not ignored. Also\n"
+	"refused: --write with --layer; --write with --set outside 'set'; --lossy\n"
+	"without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'\n"
+	"named more than once across FILE, --layer and --schema.\n"
+	"fmt and set print the load's diagnostics to stderr along with the canonical\n"
+	"document. An in-place write also refuses when the load dropped content the\n"
+	"rewrite would delete (--lossy overrides).\n"
 	"FILE may be '-' for stdin. With --layer, FILE is the highest file layer and\n"
 	"each --layer is merged under it in order; --set applies last. 'fmt' with\n"
 	"layers prints the merged canonical document.\n"
 	"\n"
 	"Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,\n"
-	"5 multiple instances, 6 check failed or strict load failure.\n";
+	"5 multiple instances, 6 check failed, strict load failed, or init's schema\n"
+	"has faults, 7 in-place write refused (--lossy overrides).\n";
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
 // bindings the same way the help text and the init banner are. The version
@@ -214,31 +225,62 @@ static int path_absent(const char *file) {
 
 static char *read_input(const char *file, size_t *len) {
 	char *buf = NULL; size_t cap = 0, n = 0;
-	FILE *f = strcmp(file, "-") == 0 ? stdin : fopen(file, "rb");
-	if (!f) { fprintf(stderr, "%s: %s\n", file, strerror(errno)); return NULL; }
+	int is_stdin = strcmp(file, "-") == 0;
+	const char *who = is_stdin ? "stdin" : file;
+	FILE *f = is_stdin ? stdin : fopen(file, "rb");
+	if (!f) { fprintf(stderr, "%s: %s\n", who, strerror(errno)); return NULL; }
 	char chunk[65536]; size_t r;
+	errno = 0;
 	while ((r = fread(chunk, 1, sizeof chunk, f)) > 0) {
 		if (n + r > cap) { cap = (n + r) * 2; buf = (char *)xrealloc(buf, cap ? cap : 1); }
 		memcpy(buf + n, chunk, r); n += r;
 	}
 	int ferr = ferror(f);
+	// A closed stdin reads as an empty document, matching the reference's
+	// stdin handle, which treats EBADF as end of input.
+	if (ferr && is_stdin && errno == EBADF) ferr = 0;
 	if (f != stdin) fclose(f);
-	if (ferr) { fprintf(stderr, "%s: read error\n", file); free(buf); return NULL; }
+	if (ferr) { fprintf(stderr, "%s: %s\n", who, strerror(errno)); free(buf); return NULL; }
 	if (!buf) { buf = (char *)xrealloc(NULL, 1); }
-	if (!utf8_valid(buf, n)) { fprintf(stderr, "%s: stream did not contain valid UTF-8\n", file); free(buf); return NULL; }
+	if (!utf8_valid(buf, n)) { fprintf(stderr, "%s: stream did not contain valid UTF-8\n", who); free(buf); return NULL; }
 	*len = n; return buf;
+}
+
+// The per-binding wording behind a setter's bare 0.
+static const char *describe_refusal(shcl_doc *d, const char *path, size_t plen) {
+	switch (shcl_write_reason_(d, path, plen)) {
+	// The path itself is fine, so the value text must be what failed (a
+	// literal that does not parse as one value).
+	case SHCL_W_WRITABLE: return "the value text is not one value";
+	case SHCL_W_BAD_PATH: return "not a usable path";
+	case SHCL_W_VALUE_IN_PATH: return "a path with a value part cannot be written";
+	case SHCL_W_WILDCARD: return "a wildcard path cannot be written";
+	case SHCL_W_NO_SUCH_INDEX: return "no instance at that index";
+	case SHCL_W_TOO_DEEP: return "deeper than the nesting cap";
+	}
+	return "not a usable path";
+}
+
+// One diagnostic line in the shape every command uses: `line N: Severity:
+// CODE message` (`schema line` for the V090-V093 schema-fault codes).
+static void say_diag(size_t line, shcl_severity sev, const char *code, shcl_str msg) {
+	const char *space = (!strncmp(code, "V09", 3) && strcmp(code, "V099")) ? "schema line" : "line";
+	fprintf(stderr, "%s %zu: %s: %s ", space, line, sev == SHCL_SEV_ERROR ? "Error" : "Hint", code);
+	fwrite(msg.p, 1, msg.n, stderr); fputc('\n', stderr);
+}
+// The load's diagnostics, one line each.
+static void say_diagnostics(const shcl_doc *d) {
+	size_t n = shcl_diag_count(d);
+	for (size_t i = 0; i < n; i++)
+		say_diag(shcl_diag_line(d, i), shcl_diag_severity(d, i), shcl_diag_code(d, i), shcl_diag_message(d, i));
 }
 
 // Prints diagnostics to stderr and returns 6 on strict load failure, else 0.
 static int strict_gate(const shcl_doc *d) {
 	if (!shcl_strict_failed(d)) return 0;
-	size_t n = shcl_diag_count(d);
-	for (size_t i = 0; i < n; i++) {
-		shcl_str m = shcl_diag_message(d, i);
-		fprintf(stderr, "line %zu: %s: %s ", shcl_diag_line(d, i), shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint", shcl_diag_code(d, i));
-		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
-	}
-	size_t nerr = 0; for (size_t i = 0; i < n; i++) if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
+	say_diagnostics(d);
+	size_t n = shcl_diag_count(d), nerr = 0;
+	for (size_t i = 0; i < n; i++) if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
 	fprintf(stderr, "strict load failed: %zu error diagnostic(s)\n", nerr);
 	return 6;
 }
@@ -289,7 +331,7 @@ static int set_apply(shcl_doc *d, const char *spec, const char *opt) {
 	size_t vlen = strlen(val);
 	int ok = !strcmp(opt, "--set-literal") ? shcl_set_literal(d, spec, plen, val, vlen)
 	                                       : shcl_set_string(d, spec, plen, val, vlen);
-	if (!ok) fprintf(stderr, "shcl: cannot write %.*s (from %s)\n", (int)plen, spec, opt);
+	if (!ok) fprintf(stderr, "%s: cannot write %.*s: %s\n", opt, (int)plen, spec, describe_refusal(d, spec, plen));
 	return ok;
 }
 
@@ -313,8 +355,30 @@ static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 	return 0;
 }
 
+// The source text, quoted for a message: one line whatever it holds, with
+// the same escapes in every binding.
+static char *quoted(const char *p, size_t n) {
+	size_t cap = n * 8 + 3;
+	char *out = (char *)xrealloc(NULL, cap);
+	size_t w = 0;
+	out[w++] = '"';
+	for (size_t i = 0; i < n; i++) {
+		unsigned char c = (unsigned char)p[i];
+		if (c == '"') { out[w++] = '\\'; out[w++] = '"'; }
+		else if (c == '\\') { out[w++] = '\\'; out[w++] = '\\'; }
+		else if (c == '\n') { out[w++] = '\\'; out[w++] = 'n'; }
+		else if (c == '\r') { out[w++] = '\\'; out[w++] = 'r'; }
+		else if (c == '\t') { out[w++] = '\\'; out[w++] = 't'; }
+		else if (c < 0x20 || c == 0x7f) w += (size_t)snprintf(out + w, cap - w, "\\u{%x}", c);
+		else out[w++] = (char)c;
+	}
+	out[w++] = '"';
+	out[w] = '\0';
+	return out;
+}
+
 static int do_get(Opts *o) {
-	if (o->nargs != 2) { fprintf(stderr, "get needs FILE and PATH (see --help)\n"); return 1; }
+	if (o->nargs != 2) { fprintf(stderr, "usage: shcl get [type] [options] FILE PATH (see --help)\n"); return 1; }
 	const char *file = o->args[0], *path = o->args[1]; size_t plen = strlen(path);
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
@@ -366,17 +430,21 @@ static int do_get(Opts *o) {
 		char tbuf[32];
 		snprintf(tbuf, sizeof tbuf, o->array ? "%s array" : "%s", o->kind);
 		if (status == SHCL_BAD_TYPE) {
+			// The reason quotes the text only when the path resolved to a node;
+			// read_string answers Good or Empty exactly then.
 			shcl_read_str rs = shcl_read_string(d, path, plen);
-			if (rs.status == SHCL_GOOD)
-				fprintf(stderr, "shcl: cannot read %s as %s: value \"%.*s\" is not a valid %s (in %s)\n", path, tbuf, (int)rs.value.n, rs.value.p, tbuf, file);
-			else
-				fprintf(stderr, "shcl: cannot read %s as %s: value is not a valid %s (in %s)\n", path, tbuf, tbuf, file);
+			if (rs.status == SHCL_GOOD || rs.status == SHCL_EMPTY) {
+				char *q = quoted(rs.value.p, rs.value.n);
+				fprintf(stderr, "cannot read %s as %s: value %s is not a valid %s (in %s)\n", path, tbuf, q, tbuf, file);
+				free(q);
+			} else
+				fprintf(stderr, "cannot read %s as %s: value is not a valid %s (in %s)\n", path, tbuf, tbuf, file);
 		} else if (status == SHCL_NOT_FOUND) {
-			fprintf(stderr, "shcl: cannot read %s as %s: no value at that path (in %s)\n", path, tbuf, file);
+			fprintf(stderr, "cannot read %s as %s: no value at that path (in %s)\n", path, tbuf, file);
 		} else if (status == SHCL_EMPTY) {
-			fprintf(stderr, "shcl: cannot read %s as %s: the value is empty (in %s)\n", path, tbuf, file);
+			fprintf(stderr, "cannot read %s as %s: the value is empty (in %s)\n", path, tbuf, file);
 		} else {
-			fprintf(stderr, "shcl: cannot read %s as %s: the path matches multiple instances (in %s)\n", path, tbuf, file);
+			fprintf(stderr, "cannot read %s as %s: the path matches multiple instances (in %s)\n", path, tbuf, file);
 		}
 	}
 	int rc;
@@ -413,27 +481,45 @@ static int do_get(Opts *o) {
 // command succeeded, and the save runs through the library's own gate rather
 // than a second copy of the rule - the CLI and a consumer program cannot then
 // disagree about which rewrites are safe.
+// Whether the directory holding `file` can take a new entry - the probe
+// behind the temp-create wording on a failed save.
+static int dir_writable(const char *file) {
+	const char *slash = strrchr(file, '/');
+#ifdef _WIN32
+	const char *bs = strrchr(file, '\\');
+	if (bs && (!slash || bs > slash)) slash = bs;
+#endif
+	char dir[4096];
+	if (!slash) snprintf(dir, sizeof dir, ".");
+	else if (slash == file) snprintf(dir, sizeof dir, "/");
+	else snprintf(dir, sizeof dir, "%.*s", (int)(slash - file), file);
+#ifdef _WIN32
+	return _access(dir, 2) == 0;
+#else
+	return access(dir, W_OK) == 0;
+#endif
+}
+
 static int write_back(shcl_doc *d, const char *file, Opts *o) {
-	size_t n = shcl_diag_count(d);
-	for (size_t i = 0; i < n; i++) {
-		const char *sev = shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
-		shcl_str m = shcl_diag_message(d, i);
-		fprintf(stderr, "line %zu: %s: %s ", shcl_diag_line(d, i), sev, shcl_diag_code(d, i));
-		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
-	}
 	shcl_save_result r = o->lossy ? shcl_save_file_lossy(d, file) : shcl_save_file(d, file);
 	if (r == SHCL_SAVE_OK) return 0;
 	// The rule stays in the library; only the wording is the CLI's, because the
 	// override a user has here is a flag, not a function.
-	if (r == SHCL_SAVE_REFUSED)
+	if (r == SHCL_SAVE_REFUSED) {
 		fprintf(stderr, "%s: refusing to rewrite: the load dropped %zu line(s)/value(s) this write would delete (--lossy overrides)\n", file, shcl_lost_count(d));
-	else
-		fprintf(stderr, "%s: %s\n", file, strerror(errno));
+		return 7;
+	}
+	// The library reports a failed save through errno alone; the phase worth
+	// naming is the temp-file create, which is what failed when the target's
+	// directory cannot take one.
+	int e = errno;
+	if (!dir_writable(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
+	else fprintf(stderr, "%s: %s\n", file, strerror(e));
 	return 1;
 }
 
 static int do_fmt(Opts *o) {
-	if (o->nargs != 1) { fprintf(stderr, "fmt needs FILE (see --help)\n"); return 1; }
+	if (o->nargs != 1) { fprintf(stderr, "usage: shcl fmt [--write|-w] [options] FILE (see --help)\n"); return 1; }
 	const char *file = o->args[0];
 	if (o->write && strcmp(file, "-") == 0) {
 		fprintf(stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
@@ -441,6 +527,9 @@ static int do_fmt(Opts *o) {
 	}
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
+	// Printing the canonical form drops what the load dropped, the same as a
+	// rewrite does, so the diagnostics go out either way.
+	say_diagnostics(L.doc);
 	int rc;
 	if (o->write) {
 		rc = write_back(L.doc, file, o);
@@ -529,11 +618,21 @@ static int g_bool(const char *p, size_t n, int *out) {
 	return 0;
 }
 
+// The `op line N:` prefix every ops-script error carries.
+static void op_err(size_t lineno, const char *fmt, ...) {
+	va_list ap;
+	fprintf(stderr, "op line %zu: ", lineno);
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
+	fputc('\n', stderr);
+}
+
 // Apply one write-ops line. A "-default" suffix means "only if absent": values
 // are gated FIRST (a malformed value fails even when the path already exists,
 // matching the reference's argument-evaluation order), then the existence probe
 // decides whether the base op runs. Returns 0 or 1 (error).
-static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
+static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno) {
 	size_t nf = 1;
 	for (size_t i = 0; i < linelen; i++) if (line[i] == '\t') nf++;
 	const char **fp = (const char **)xrealloc(NULL, nf * sizeof *fp);
@@ -542,6 +641,7 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
 	const char *path = nf > 1 ? fp[1] : ""; size_t plen = nf > 1 ? fn[1] : 0;
 	const char *v = nf > 2 ? fp[2] : ""; size_t vn = nf > 2 ? fn[2] : 0;
 	int rc = 0, wrote = 1;
+	size_t opn_full = fn[0]; // the op as written, for the unknown-op message
 	int only_absent = 0;
 	if (fn[0] >= 8 && memcmp(fp[0] + fn[0] - 8, "-default", 8) == 0) {
 		only_absent = 1;
@@ -550,15 +650,15 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
 	#define OP(s) (fn[0] == strlen(s) && memcmp(fp[0], s, fn[0]) == 0)
 	#define PRESENT (only_absent && shcl_exists(d, path, plen))
 	size_t an = nf > 2 ? nf - 2 : 0; // array element count (fields from index 2)
-	if (OP("int")) { int64_t x; if (!g_i64(v, vn, &x)) { fprintf(stderr, "bad int: %.*s\n", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
-	else if (OP("float")) { double x; if (!g_f64(v, vn, &x)) { fprintf(stderr, "bad float: %.*s\n", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
-	else if (OP("bool")) { int x; if (!g_bool(v, vn, &x)) { fprintf(stderr, "bad bool: %.*s\n", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_bool(d, path, plen, x); }
+	if (OP("int")) { int64_t x; if (!g_i64(v, vn, &x)) { op_err(lineno, "bad int: %.*s", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
+	else if (OP("float")) { double x; if (!g_f64(v, vn, &x)) { op_err(lineno, "bad float: %.*s", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
+	else if (OP("bool")) { int x; if (!g_bool(v, vn, &x)) { op_err(lineno, "bad bool: %.*s", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_bool(d, path, plen, x); }
 	else if (OP("string")) { if (!PRESENT) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = unescape_ops(v, vn, b); wrote = shcl_set_string(d, path, plen, b, m); free(b); } }
-	else if (OP("datetime")) { shcl_datetime dt; Str sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) { fprintf(stderr, "bad datetime: %.*s\n", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
+	else if (OP("datetime")) { shcl_datetime dt; ShclStr sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) { op_err(lineno, "bad datetime: %.*s", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
 	else if (OP("literal")) { if (!PRESENT) wrote = shcl_set_literal(d, path, plen, v, vn); }
-	else if (OP("int-array")) { int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_i64(fp[2 + i], fn[2 + i], &a[i])) { fprintf(stderr, "bad int: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_int_array(d, path, plen, a, an); free(a); }
-	else if (OP("float-array")) { double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_f64(fp[2 + i], fn[2 + i], &a[i])) { fprintf(stderr, "bad float: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_float_array(d, path, plen, a, an); free(a); }
-	else if (OP("bool-array")) { int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_bool(fp[2 + i], fn[2 + i], &a[i])) { fprintf(stderr, "bad bool: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an); free(a); }
+	else if (OP("int-array")) { int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_i64(fp[2 + i], fn[2 + i], &a[i])) { op_err(lineno, "bad int: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_int_array(d, path, plen, a, an); free(a); }
+	else if (OP("float-array")) { double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_f64(fp[2 + i], fn[2 + i], &a[i])) { op_err(lineno, "bad float: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_float_array(d, path, plen, a, an); free(a); }
+	else if (OP("bool-array")) { int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_bool(fp[2 + i], fn[2 + i], &a[i])) { op_err(lineno, "bad bool: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an); free(a); }
 	else if (OP("string-array")) {
 		if (!PRESENT) {
 			char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
@@ -570,7 +670,7 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
 	}
 	else if (OP("datetime-array")) {
 		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
-		for (size_t i = 0; i < an && !rc; i++) { Str sv; sv.p = fp[2 + i]; sv.n = fn[2 + i]; if (!parse_datetime(&d->arena, sv, &a[i])) { fprintf(stderr, "bad datetime: %.*s\n", (int)fn[2 + i], fp[2 + i]); rc = 1; } }
+		for (size_t i = 0; i < an && !rc; i++) { ShclStr sv; sv.p = fp[2 + i]; sv.n = fn[2 + i]; if (!parse_datetime(&d->arena, sv, &a[i])) { op_err(lineno, "bad datetime: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } }
 		if (!rc && !PRESENT) wrote = shcl_set_datetime_array(d, path, plen, a, an);
 		free(a);
 	}
@@ -578,8 +678,8 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
 	else if (OP("empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
 	else if (OP("comment") && !only_absent) wrote = shcl_set_comment(d, path, plen, v, vn);
 	else if (OP("remove") && !only_absent) shcl_remove(d, path, plen);
-	else { fprintf(stderr, "unknown op\n"); rc = 1; }
-	if (rc == 0 && !wrote) { fprintf(stderr, "cannot write %.*s\n", (int)plen, path); rc = 1; }
+	else { op_err(lineno, "unknown op: %.*s", (int)opn_full, fp[0]); rc = 1; }
+	if (rc == 0 && !wrote) { op_err(lineno, "cannot write %.*s: %s", (int)plen, path, describe_refusal(d, path, plen)); rc = 1; }
 	#undef PRESENT
 	#undef OP
 	free(fp); free(fn);
@@ -587,7 +687,7 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen) {
 }
 
 static int do_set(Opts *o) {
-	if (o->nargs != 1) { fprintf(stderr, "set needs FILE (ops on stdin; see --help)\n"); return 1; }
+	if (o->nargs != 1) { fprintf(stderr, "usage: shcl set [--write|-w] [options] FILE (see --help)\n"); return 1; }
 	const char *file = o->args[0];
 	if (o->write && strcmp(file, "-") == 0) {
 		fprintf(stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
@@ -647,18 +747,20 @@ static int do_set(Opts *o) {
 			free(ops); layered_free(&L); return 1;
 		}
 	}
-	int rc = 0; size_t start = 0;
+	int rc = 0; size_t start = 0, lineno = 0;
 	for (size_t i = 0; i <= opslen; i++) {
 		if (i == opslen || ops[i] == '\n') {
 			size_t end = i;
 			if (end > start && ops[end - 1] == '\r') end--; // match Rust lines() CRLF
 			size_t n = end - start;
-			if (n > 0 && ops[start] != '#') { if (apply_op(d, ops + start, n)) { rc = 1; break; } }
+			lineno++;
+			if (n > 0 && ops[start] != '#') { if (apply_op(d, ops + start, n, lineno)) { rc = 1; break; } }
 			if (i == opslen) break;
 			start = i + 1;
 		}
 	}
 	if (rc == 0) {
+		say_diagnostics(d);
 		if (o->write) rc = write_back(d, file, o);
 		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
 	}
@@ -666,7 +768,7 @@ static int do_set(Opts *o) {
 }
 
 static int do_check(const Opts *o) {
-	if (o->nargs != 1) { fprintf(stderr, "check needs FILE (see --help)\n"); return 1; }
+	if (o->nargs != 1) { fprintf(stderr, "usage: shcl check [options] FILE (see --help)\n"); return 1; }
 	size_t len; char *text = read_input(o->args[0], &len);
 	if (!text) return 1;
 	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
@@ -687,7 +789,7 @@ static int do_check(const Opts *o) {
 			for (size_t i = 0; i < sn; i++) {
 				const char *sev = shcl_diag_severity(sd, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
 				shcl_str m = shcl_diag_message(sd, i);
-				fprintf(stderr, "schema line %zu: %s: ", shcl_diag_line(sd, i), sev);
+				fprintf(stderr, "schema line %zu: %s: %s ", shcl_diag_line(sd, i), sev, shcl_diag_code(sd, i));
 				fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 			}
 		} else {
@@ -705,13 +807,12 @@ static int do_check(const Opts *o) {
 		const char *sev = shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
 		if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
 		printf("line %zu: %s: %s\n", shcl_diag_line(d, i), sev, shcl_diag_code(d, i));
-		shcl_str m = shcl_diag_message(d, i);
-		fprintf(stderr, "line %zu: %s: ", shcl_diag_line(d, i), sev);
-		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
+		say_diag(shcl_diag_line(d, i), shcl_diag_severity(d, i), shcl_diag_code(d, i), shcl_diag_message(d, i));
 	}
 	if (v99) {
 		printf("line 0: Error: V099\n");
-		fprintf(stderr, "line 0: Error: schema failed to load\n");
+		shcl_str v99m; v99m.p = "schema failed to load"; v99m.n = 21;
+		say_diag(0, SHCL_SEV_ERROR, "V099", v99m);
 		nerr++;
 	}
 	for (size_t i = 0; i < nval; i++) {
@@ -721,10 +822,7 @@ static int do_check(const Opts *o) {
 		printf("line %zu: %s: %s\n", shcl_validation_line(val, i), sev, code);
 		// A V090-V093 line number is a SCHEMA line (the code table says so);
 		// the prose names the file so the number spaces cannot be confused.
-		const char *space = (!strncmp(code, "V09", 3) && strcmp(code, "V099")) ? "schema line" : "line";
-		shcl_str m = shcl_validation_message(val, i);
-		fprintf(stderr, "%s %zu: %s: ", space, shcl_validation_line(val, i), sev);
-		fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
+		say_diag(shcl_validation_line(val, i), shcl_validation_severity(val, i), code, shcl_validation_message(val, i));
 	}
 	int rc;
 	if (shcl_strict_failed(d)) {
@@ -754,7 +852,7 @@ static int do_init(const Opts *o) {
 		for (size_t i = 0; i < sn; i++) {
 			const char *sev = shcl_diag_severity(sd, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
 			shcl_str m = shcl_diag_message(sd, i);
-			fprintf(stderr, "schema line %zu: %s: ", shcl_diag_line(sd, i), sev);
+			fprintf(stderr, "schema line %zu: %s: %s ", shcl_diag_line(sd, i), sev, shcl_diag_code(sd, i));
 			fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 		}
 		fprintf(stderr, "init: schema failed to load\n");
@@ -773,7 +871,7 @@ static int do_init(const Opts *o) {
 		for (size_t i = 0; i < nv; i++) {
 			const char *sev = shcl_validation_severity(val, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
 			shcl_str m = shcl_validation_message(val, i);
-			fprintf(stderr, "schema line %zu: %s: ", shcl_validation_line(val, i), sev);
+			fprintf(stderr, "schema line %zu: %s: %s ", shcl_validation_line(val, i), sev, shcl_validation_code(val, i));
 			fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 		}
 		shcl_validation_free(val); shcl_free(ed);
@@ -785,7 +883,11 @@ static int do_init(const Opts *o) {
 }
 
 static int do_enum(Opts *o, int want_count) {
-	if (o->nargs != 2) { fprintf(stderr, "count/instances need FILE and PATH (see --help)\n"); return 1; }
+	if (o->nargs != 2) {
+		const char *name = want_count ? "count" : "instances";
+		fprintf(stderr, "usage: shcl %s [options] FILE PATH (see --help)\n", name);
+		return 1;
+	}
 	const char *file = o->args[0], *path = o->args[1]; size_t plen = strlen(path);
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
@@ -793,6 +895,16 @@ static int do_enum(Opts *o, int want_count) {
 	if (want_count) printf("%zu\n", shcl_count(d, path, plen));
 	else { shcl_str *vals; size_t n = shcl_instances(d, path, plen, &vals); for (size_t i = 0; i < n; i++) outln(vals[i].p, vals[i].n); }
 	layered_free(&L); return 0;
+}
+
+// The type option's kind name (--int -> "int"), or NULL when a is no type
+// option.
+static const char *kind_from_opt(const char *a) {
+	static const char *const kinds[] = { "int", "float", "bool", "datetime", "string", "raw", "rawinfo" };
+	if (a[0] != '-' || a[1] != '-') return NULL;
+	for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++)
+		if (!strcmp(a + 2, kinds[i])) return kinds[i];
+	return NULL;
 }
 
 // Record a distinct canonical option name for per-command validation.
@@ -816,8 +928,11 @@ static void opts_free(Opts *o) {
 static int set_value_opt(Opts *o, const char *name, const char *v) {
 	if (!strcmp(name, "--default")) { o->deflt = v; o->on_bad = "default"; opt_seen(o, "--default"); }
 	else if (!strcmp(name, "--on-bad")) {
-		if (strcmp(v, "error") && strcmp(v, "default") && strcmp(v, "flag")) { fprintf(stderr, "bad --on-bad value: %s\n", v); return 1; }
-		o->on_bad = v; opt_seen(o, "--on-bad");
+		if (g_ci_eq(v, strlen(v), "error")) o->on_bad = "error";
+		else if (g_ci_eq(v, strlen(v), "default")) o->on_bad = "default";
+		else if (g_ci_eq(v, strlen(v), "flag")) o->on_bad = "flag";
+		else { fprintf(stderr, "bad --on-bad value: %s\n", v); return 1; }
+		opt_seen(o, "--on-bad");
 	} else if (!strcmp(name, "--strictness")) {
 		if (!shcl_strictness_from_arg(v, strlen(v), &o->strictness)) { fprintf(stderr, "bad --strictness value: %s\n", v); return 1; }
 		opt_seen(o, "--strictness");
@@ -827,7 +942,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 		opt_push(&o->layers, &o->nlayers, v); opt_seen(o, "--layer");
 	} else if (!strcmp(name, "--set") || !strcmp(name, "--set-literal")) {
 		size_t plen; const char *val;
-		if (!split_set(v, &plen, &val)) { fprintf(stderr, "bad %s value (want PATH=VALUE): %s\n", name, v); return 1; }
+		if (!split_set(v, &plen, &val) || plen == 0) { fprintf(stderr, "bad %s value (want PATH=VALUE, quotes and brackets balanced): %s\n", name, v); return 1; }
 		// set_opts grows in lockstep with sets, so the local count is discarded.
 		int nopt = o->nsets;
 		opt_push(&o->set_opts, &nopt, name);
@@ -849,7 +964,8 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 			for (int k = i + 1; k < argc; k++) opt_push(&o->args, &o->nargs, argv[k]);
 			return 0;
 		}
-		if (!strcmp(a, "--int") || !strcmp(a, "--float") || !strcmp(a, "--bool") || !strcmp(a, "--datetime") || !strcmp(a, "--string") || !strcmp(a, "--raw") || !strcmp(a, "--rawinfo")) { o->kind = a + 2; opt_seen(o, "--<type>"); }
+		const char *k = kind_from_opt(a);
+		if (k) { o->kind = k; opt_seen(o, "--<type>"); }
 		else if (!strcmp(a, "--array")) { o->array = 1; opt_seen(o, "--array"); }
 		else if (!strcmp(a, "--slots")) { o->slots = 1; opt_seen(o, "--slots"); }
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) { o->write = 1; opt_seen(o, "--write"); }
@@ -936,13 +1052,23 @@ static int check_opts(const char *cmd, const Opts *o) {
 			}
 		}
 	}
+	// Stdin reads once; a second '-' would silently get an empty document.
+	int stdin_uses = 0;
+	for (int i = 0; i < o->nlayers; i++) if (!strcmp(o->layers[i], "-")) stdin_uses++;
+	if (o->schema && !strcmp(o->schema, "-")) stdin_uses++;
+	if (o->nargs > 0 && !strcmp(o->args[0], "-")) stdin_uses++;
+	if (stdin_uses > 1) {
+		fprintf(stderr, "'-' (stdin) can be named only once across FILE, --layer and --schema\n");
+		return 1;
+	}
 	return 0;
 }
 
 // Did the command line ask for one of the informational outputs? Only tokens
-// in option position count: a value that happens to read `-h`, and anything
-// after the file, are data. Scanning the whole line for them let a read of a
-// missing path answer with the help text and exit 0.
+// in option position count: the value of a value-taking option and anything
+// after `--` are data (a FILE or PATH spelled `-h` needs the `--` anyway,
+// since the option parser would refuse it). Scanning values too once let a
+// read of a missing path answer with the help text and exit 0.
 static const char *asked_for(int argc, char **argv) {
 	for (int i = 1; i < argc; i++) {
 		const char *a = argv[i];
@@ -951,12 +1077,16 @@ static const char *asked_for(int argc, char **argv) {
 		if (!strcmp(a, "--about")) return "about";
 		if (!strcmp(a, "--donate")) return "donate";
 		if (!strcmp(a, "--")) return NULL;
-		if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) { i++; continue; }
-		if (a[0] == '-' && a[1] != '\0') continue;
-		// The subcommand, then the file: past that everything is a path.
-		if (i > 1) return NULL;
+		if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) i++;
 	}
 	return NULL;
+}
+
+static const char *const COMMANDS[] = { "get", "set", "fmt", "check", "init", "count", "instances" };
+static int is_command(const char *cmd) {
+	for (size_t i = 0; i < sizeof COMMANDS / sizeof COMMANDS[0]; i++)
+		if (!strcmp(cmd, COMMANDS[i])) return 1;
+	return 0;
 }
 
 int main(int argc, char **argv) {
@@ -986,6 +1116,13 @@ int main(int argc, char **argv) {
 	if ((asked && !strcmp(asked, "about")) || !strcmp(argv[1], "about")) { printf("\n%s\n", ABOUT); return 0; }
 	if ((asked && !strcmp(asked, "donate")) || !strcmp(argv[1], "donate")) { printf("\n%s\n", DONATE); return 0; }
 	const char *cmd = argv[1];
+	if (!is_command(cmd)) {
+		// Before the options are judged, so a typo in the command is reported
+		// as that and not as an option the wrong command cannot take.
+		if (cmd[0] == '-' && strcmp(cmd, "--") != 0) fprintf(stderr, "unknown option: %s (see --help)\n", cmd);
+		else fprintf(stderr, "unknown command: %s (see --help)\n", cmd);
+		return 1;
+	}
 	Opts o;
 	if (parse_opts(argc, argv, 2, &o)) { opts_free(&o); return 1; }
 	int rc;
@@ -996,8 +1133,7 @@ int main(int argc, char **argv) {
 	else if (!strcmp(cmd, "check")) rc = do_check(&o);
 	else if (!strcmp(cmd, "init")) rc = do_init(&o);
 	else if (!strcmp(cmd, "count")) rc = do_enum(&o, 1);
-	else if (!strcmp(cmd, "instances")) rc = do_enum(&o, 0);
-	else { fprintf(stderr, "unknown command: %s (see --help)\n", cmd); rc = 1; }
+	else rc = do_enum(&o, 0);
 	opts_free(&o);
 	return rc;
 }
