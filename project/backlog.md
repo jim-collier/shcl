@@ -300,11 +300,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Noticed but not chased: whether all slots are freed on every exit path was not verified.
 		- Opened: 20260830-140346
 
-	- 🔘 Item 38: the completions check rejects an option-less subcommand however the completions spell it.
+	- 🛠️ Item 38: the completions check rejects an option-less subcommand however the completions spell it.
 		- One side emits a row for every subcommand, the other drops any with an empty option list, so the two can never agree on such a subcommand.
 		- Reproduced on a copied tree: adding one makes the check fail against both completion files, and adding the matching completion arm does not clear it.
 		- Costs a confusing lint failure the day an option-less subcommand is added, blaming the completions when they are correct. None exists today.
 		- Two greps in the same function also lack the guard their siblings have; they survive only because command substitutions do not inherit errexit.
+		- Both greps are guarded now, and `shell-regress.bash` scans for the shape repo-wide. The option-less subcommand half is still open.
 		- Opened: 20260830-140346
 
 	- 🔘 Item 39: the demo's typing speeds sit under the bands the directive names.
@@ -1636,6 +1637,17 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- ✅ Regression tests for the fixes of the last three review rounds.
+	- Those rounds closed 120 items between them and left three corpus cases behind, so most fixes had nothing pinning them and a later round kept re-finding the same classes.
+	- Two corpus cases for defects a corpus can carry: a `set_int_default` after a `remove` (the stale name index), and a `set_raw` info string holding an unquoted `#`. Both fail on all four bindings with their fix backed out.
+	- The set-id bits joined the file-tier fixture in all four runners: a mode applied before the data lets the kernel clear setuid and setgid.
+	- `cli-regress.bash` pins eleven CLI behaviors the corpus structurally cannot reach - closed stdin and stdout, `-` named twice on one command line, a carriage return ending an ops line, the shape of an op-script error, whether a read failure still names its cause, and a document nested to the depth cap. Every row runs against all four bindings and is matched against a fixed expectation, not against the other bindings.
+	- `perf-gate.bash` times bulk writes and absent-path defaults against the same binding's parse-only baseline, so it carries no wall-clock constant. The two superlinear write regressions of the last fortnight came in at 15x and 160x over budget.
+	- `shell-regress.bash` covers the wrappers, the one-liner's scope hygiene, and scans every errexit script for the trap that has now bit four times: a `grep` in an assigned command substitution with no `|| true`.
+	- All three gates are in the test stage, so `--ci` and the hosted gate run them.
+	- Opened: 20260830-145320
+	- Closed: 20260830-163000
 
 - Code review 20260830:
 
