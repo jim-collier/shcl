@@ -2429,6 +2429,36 @@ class Document:
 				name = self.arena[k].name
 				ix.unlink(_name_key(loser, name), k)
 				ix.append(_name_key(survivor, name), k)
+		self._fold_dups_below(survivor)
+
+	def _fold_dups_below(self, start):
+		"""Folding moves the loser's children up a level, where they can collide
+		with the survivor's own. The parser's fold is depth-first for the same
+		reason; only a node that just received children can hold a new pair."""
+		stack = [start]
+		while stack:
+			parent = stack.pop()
+			kids = self.arena[parent].children
+			first: dict = {}
+			keep = []
+			for c in kids:
+				key = _merge_key(self.arena[c].name, self.arena[c].value)
+				survivor = first.get(key)
+				if survivor is not None:
+					moved = list(self.arena[c].children)
+					_fold_node_into(self.arena, survivor, c)
+					ix = self._index
+					if ix is not None:
+						ix.unlink(_name_key(parent, self.arena[c].name), c)
+						for k in moved:
+							name = self.arena[k].name
+							ix.unlink(_name_key(c, name), k)
+							ix.append(_name_key(survivor, name), k)
+					stack.append(survivor)
+				else:
+					first[key] = c
+					keep.append(c)
+			self.arena[parent].children = keep
 
 	def exists(self, path: str) -> bool:
 		"""True when the path resolves to at least one real node."""

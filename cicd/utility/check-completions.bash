@@ -39,8 +39,8 @@ fRustTable() {
 	| tr '\n' ' ' | tr -s ' ' | sed 's/\], /]\n/g' \
 	| while read -r arm; do
 		[[ "${arm}" == *'=>'* && "${arm}" == *'"'* ]] || continue   ## skips the _ => &[] catch-all
-		names="$(grep -o '"[a-z]*"' <<<"${arm%%=>*}" | tr -d '"' | paste -sd'|')"
-		opts="$(grep -o -- '--[a-z<>-]*' <<<"${arm#*=>}" | sort -u | paste -sd' ')"
+		names="$(grep -o '"[a-z]*"' <<<"${arm%%=>*}" | tr -d '"' | paste -sd'|' || true)"
+		opts="$(grep -o -- '--[a-z<>-]*' <<<"${arm#*=>}" | sort -u | paste -sd' ' || true)"
 		printf '%s\t%s\n' "${names}" "${opts}"
 	done
 }

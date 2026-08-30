@@ -3482,6 +3482,55 @@ impl Document {
 				ix.append(name_key(survivor, name), k);
 			}
 		}
+		self.fold_dups_below(survivor);
+	}
+
+	/// Folding moves the loser's children up a level, where they can collide
+	/// with the survivor's own. The parser's fold is depth-first for the same
+	/// reason; only a node that just received children can hold a new pair.
+	fn fold_dups_below(&mut self, start: usize) {
+		let mut stack = vec![start];
+		while let Some(parent) = stack.pop() {
+			let kids = std::mem::take(&mut self.arena[parent].children);
+			let mut first: HashMap<u64, Slot> = HashMap::new();
+			let mut keep: Vec<usize> = Vec::with_capacity(kids.len());
+			for c in kids {
+				let h = merge_hash(&self.arena[c].name, &self.arena[c].value);
+				let survivor = first.get(&h).and_then(|s| {
+					s.first_match(|x| {
+						merge_eq(
+							&self.arena[x].name,
+							&self.arena[x].value,
+							&self.arena[c].name,
+							&self.arena[c].value,
+						)
+					})
+				});
+				match survivor {
+					Some(s) => {
+						let moved: Vec<usize> = self.arena[c].children.clone();
+						fold_node_into(&mut self.arena, s, c);
+						if let Some(ix) = self.index.get_mut() {
+							ix.unlink(name_key(parent, &self.arena[c].name), c);
+							for &k in &moved {
+								let name = &self.arena[k].name;
+								ix.unlink(name_key(c, name), k);
+								ix.append(name_key(s, name), k);
+							}
+						}
+						stack.push(s);
+					}
+					None => {
+						first
+							.entry(h)
+							.and_modify(|s| s.push(c))
+							.or_insert(Slot::One(c));
+						keep.push(c);
+					}
+				}
+			}
+			self.arena[parent].children = keep;
+		}
 	}
 
 	/// True when the path resolves to at least one real node.

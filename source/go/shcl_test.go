@@ -956,6 +956,27 @@ func TestFileTierLoadSave(t *testing.T) {
 		if modeOf(born) != 0o640 {
 			t.Errorf("existing file: got mode %v, want -rw-r-----", modeOf(born))
 		}
+		// setuid and setgid come over too: applying the mode before the data
+		// lets the kernel clear them on the write.
+		idOf := func(p string) os.FileMode {
+			st, serr := os.Stat(p)
+			if serr != nil {
+				t.Fatal(serr)
+			}
+			return st.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid)
+		}
+		wantID := os.FileMode(0o750) | os.ModeSetuid | os.ModeSetgid
+		if cerr := os.Chmod(born, wantID); cerr != nil {
+			t.Fatal(cerr)
+		}
+		if idOf(born) == wantID {
+			if serr := fdoc.SaveFile(born); serr != nil {
+				t.Fatal(serr)
+			}
+			if idOf(born) != wantID {
+				t.Errorf("save dropped a set-id bit: got %v, want %v", idOf(born), wantID)
+			}
+		}
 	}
 }
 

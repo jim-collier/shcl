@@ -131,10 +131,13 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/check-completions.bash
 	cicd/utility/check-pins.bash
 	cicd/utility/check-wheel.bash
+	cicd/utility/cli-regress.bash
 	cicd/utility/comparison/compare.bash
 	cicd/utility/crosscheck.bash
 	cicd/utility/largedoc.bash
 	cicd/utility/lint-report.bash
+	cicd/utility/perf-gate.bash
+	cicd/utility/shell-regress.bash
 	cicd/utility/n8git_backup-and-publish
 	cicd/utility/package.bash
 	cicd/utility/sanitize-c.bash
@@ -172,6 +175,14 @@ TEST_EXTRA=(
 	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
 	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
 	'obin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/oom_hook.c -o "${obin}" -lm && "${obin}"; orc=$?; rm -f "${obin}"; ((orc==0))'
+	## CLI behavior the corpus cannot reach: closed streams, '-' twice on one
+	## command line, a carriage return ending an ops line, error-message shape.
+	'cicd/utility/cli-regress.bash "${BINDING_CLIS[@]}"'
+	## The write path must stay small beside the parse. Two superlinear write
+	## regressions reached dev in consecutive rounds with no number to fail on.
+	'cicd/utility/perf-gate.bash "${BINDING_CLIS[@]}"'
+	## The wrappers, the one-liner's scope hygiene, and the errexit grep trap.
+	'cicd/utility/shell-regress.bash'
 	## The same C programs again under the address and undefined-behavior
 	## sanitizers, plus the CLI over the corpus. A read past a buffer that does
 	## not change stdout passes every gate above; this one sees it.

@@ -1,4 +1,11 @@
-# Shcl backlog
+<!-- markdownlint-disable MD007 -- Indent count -->
+<!-- markdownlint-disable MD010 -- No hard tabs -->
+<!-- markdownlint-disable MD033 -- No inline html -->
+<!-- markdownlint-disable MD055 -- Table pipe style [Expected: leading_and_trailing; Actual: leading_only; Missing trailing pipe] -->
+<!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
+
+<!-- TOC ignore:true -->
+# SHCL backlog
 
 The product backlog: bugs, features, enhancements, and code-review findings. Outside reports come in through GitHub Issues (see `contributing.md`); the work itself is tracked here.
 
@@ -26,6 +33,7 @@ In each section, items are listed approximately from newest to oldest. Inside ea
 | :--: | :--
 | 🔘   | Not started
 | 🛠️   | Started, and/or partially complete
+| 🔬   | Testing not started or finished
 | ✋   | Defer
 | ✅   | Complete
 | 🚫   | Canceled
@@ -40,12 +48,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- A third directive pass, run the same day as the 20260830 round and after it merged. Nine parallel audits over the four bindings, the pipeline, the installers, the docs and the backlog. Items 1 to 17 are here; 18 to 57 are under Features and enhancements. The two prior rounds this week were exhaustive on the code, so most of what is left sits in the writer's fixpoint guarantee, the C read tier, and the documents.
 
-	- 🔘 Item 1: a written duplicate folds one level but not the next, so `set` output is not a `fmt` fixpoint.
+	- ✅ Item 1: a written duplicate folds one level but not the next, so `set` output is not a `fmt` fixpoint.
 		- Reproduced: file `b: 1, 2` over a block `b:` with `a: 2` under it, ops `int b.a 2` then `empty b`. The write emits `a: 2` twice; `fmt` on that output collapses it back to one.
 		- Cause: the fold moves the loser's children onto the survivor and stops. The parser's own late-duplicate fold is depth-first for exactly this reason; the writer's path is not.
 		- No value is lost, since a reload merges the pair. What breaks is the promise that a write leaves a canonical file, so a "fmt changes nothing" gate fails right after a legitimate edit.
 		- All four bindings, and the cross-binding check cannot see it. Fold the moved children after the merge, the shape the parser already uses.
+		- Fixed: the writer folds depth-first now, the shape the parser already used. Only a node that just received children is rechecked, so the cost stays with the fold.
+		- Pinned by corpus case `062-write-fold-deep`, which fails on all four bindings without the change.
 		- Opened: 20260830-140346
+		- Closed: 20260830-145320
 
 	- 🔘 Item 2: a bracket array is mis-diagnosed, read wrong, then baked into a string by `fmt --write`.
 		- Reproduced: `ports: [80, 443]` reports `E015 missing colon; repaired as an empty value`. The line has a colon.
@@ -289,11 +300,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Noticed but not chased: whether all slots are freed on every exit path was not verified.
 		- Opened: 20260830-140346
 
-	- 🔘 Item 38: the completions check rejects an option-less subcommand however the completions spell it.
+	- 🛠️ Item 38: the completions check rejects an option-less subcommand however the completions spell it.
 		- One side emits a row for every subcommand, the other drops any with an empty option list, so the two can never agree on such a subcommand.
 		- Reproduced on a copied tree: adding one makes the check fail against both completion files, and adding the matching completion arm does not clear it.
 		- Costs a confusing lint failure the day an option-less subcommand is added, blaming the completions when they are correct. None exists today.
 		- Two greps in the same function also lack the guard their siblings have; they survive only because command substitutions do not inherit errexit.
+		- Both greps are guarded now, and `shell-regress.bash` scans for the shape repo-wide. The option-less subcommand half is still open.
 		- Opened: 20260830-140346
 
 	- 🔘 Item 39: the demo's typing speeds sit under the bands the directive names.
@@ -1625,6 +1637,17 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- ✅ Regression tests for the fixes of the last three review rounds.
+	- Those rounds closed 120 items between them and left three corpus cases behind, so most fixes had nothing pinning them and a later round kept re-finding the same classes.
+	- Two corpus cases for defects a corpus can carry: a `set_int_default` after a `remove` (the stale name index), and a `set_raw` info string holding an unquoted `#`. Both fail on all four bindings with their fix backed out.
+	- The set-id bits joined the file-tier fixture in all four runners: a mode applied before the data lets the kernel clear setuid and setgid.
+	- `cli-regress.bash` pins eleven CLI behaviors the corpus structurally cannot reach - closed stdin and stdout, `-` named twice on one command line, a carriage return ending an ops line, the shape of an op-script error, whether a read failure still names its cause, and a document nested to the depth cap. Every row runs against all four bindings and is matched against a fixed expectation, not against the other bindings.
+	- `perf-gate.bash` times bulk writes and absent-path defaults against the same binding's parse-only baseline, so it carries no wall-clock constant. The two superlinear write regressions of the last fortnight came in at 15x and 160x over budget.
+	- `shell-regress.bash` covers the wrappers, the one-liner's scope hygiene, and scans every errexit script for the trap that has now bit four times: a `grep` in an assigned command substitution with no `|| true`.
+	- All three gates are in the test stage, so `--ci` and the hosted gate run them.
+	- Opened: 20260830-145320
+	- Closed: 20260830-163000
 
 - Code review 20260830:
 

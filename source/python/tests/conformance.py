@@ -813,6 +813,13 @@ def main():
 			mode = os.stat(born).st_mode & 0o777
 			if mode != 0o640:
 				raise SystemExit(f"existing file mode {mode:o}, want 640")
+			# setuid and setgid come over too: applying the mode before the
+			# data lets the kernel clear them on the write.
+			os.chmod(born, 0o6750)
+			if os.stat(born).st_mode & 0o7777 == 0o6750:
+				ndoc.save_file(born)
+				if os.stat(born).st_mode & 0o7777 != 0o6750:
+					raise SystemExit("save dropped a set-id bit")
 			# A link to a file that is not there yet is written through like any
 			# other link: the file appears where the link points and the link
 			# stays a link. Same fixture in every POSIX runner.
