@@ -42,9 +42,276 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Bugs
 
-None open.
+- Code review 20260830:
+
+	- A second pass over the same directives one day after the last round, aimed first at the code that round changed and then at the whole repo. Items 1 to 23 are here; 24 to 52 are under Features and enhancements. Most of the defects are shared by all four bindings, which is the class the cross-binding check cannot see.
+
+	- 🔘 Item 1: `remove` leaves the name index stale, so a removed node keeps answering reads.
+		- Reproduced: `a: 1` / `b: 2`, then `remove a`: `exists("a")` is still true and `read_int("a")` still gives 1. A `set_int_default("a", 3)` after the remove writes nothing.
+		- Cause: the index is dropped before the resolve that finds the targets, that resolve rebuilds it, and the removal then only unlinks the node from its parent.
+		- All four bindings. Drop the index after the removal, and add a remove-then-read fixture to every runner.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 2: an in-place write drops the setuid and setgid bits, which the spec says it keeps.
+		- Reproduced: `chmod 6750` a file, `fmt --write` it, the bits are gone. All four bindings.
+		- Cause: the mode is applied to the temp file before the data is written, and the kernel clears those bits on the write.
+		- Apply the mode after the data and the fsync, or take the promise out of the spec.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 3: the duplicate-fold on write hashes every sibling before comparing names, and bulk writes got 4.5x slower.
+		- Measured: 40k writes into a flat 40k-key document went from 13.5 s to 61 s with the 20260829 round. Comparing the name first brings it back.
+		- All four bindings.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 4: every `set_*_default` on a path that does not exist rebuilds the whole name index and throws it away.
+		- Measured: 1000 absent defaults on a 40k-node document went from 0.04 s to 5.7 s; 5000 defaults on a 20k-key document take 13 to 30 s across the bindings.
+		- Cause: the setter checks existence through the index, and the write that follows drops it.
+		- The writer itself is still O(siblings) per op. Either check existence with the writer's own probe walk, or keep the index alive across writes and use it in the writer too.
+		- All four bindings.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 5: the pre-push hook links the checkout's cargo target dir into its worktree, and the next `cargo test` in the checkout fails.
+		- Reproduced: after a push, 8 of 30 conformance tests fail with the corpus dir under the hook's temp path, because the test build baked that path in and cargo thinks it is fresh. The fuzz test does not fail; it silently drops its corpus seeds and fuzzes three strings.
+		- Give the gate its own target dir, and make the seed loader fail loudly when the corpus dir is missing.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 6: the pre-push hook gates only the last protected ref in a multi-ref push.
+		- `git push origin dev main` tests main's commit and never dev's.
+		- Collect every ref and gate each distinct commit.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 7: `install.bash` exits with no message on three lookups that can come up empty.
+		- A `grep` inside a command substitution fails under `pipefail`, and the script dies before the check that would have printed the reason: no dev release, a sums file without the drop-ins entry, or the asset name missing from the sums.
+		- The documented binary-only fallback for a release with no drop-ins can never run. Every stable release before 2.0.0 would have hit it.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 8: `install.ps1` under the `irm | iex` one-liner leaves strict mode, `$ErrorActionPreference = 'Stop'` and its functions in the caller's shell.
+		- Before 20260829 item 16 the script ended the shell, which hid this. Now the shell survives with the changed state.
+		- The scriptblock form runs in a child scope and is clean. Make it the documented one-liner, or wrap the script body in a scriptblock.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 9: `set_raw` accepts an info string with an unquoted `#`, and the same-line spelling loses it on reload with no diagnostic.
+		- Reproduced: an empty `k:` followed by a raw `k[#1]` with info `a # b` saves as `k: ```a # b`; reading it back gives info `a` and `check` says ok.
+		- Only reachable when an empty same-named sibling precedes the raw node. Refuse it in `set_raw`, as the line-break check does. All four bindings.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 10: an ops script whose last line ends in a bare carriage return is read differently by the reference and the three ports.
+		- The reference keeps the CR (so `int a 1<CR>` is a bad int), the ports strip it. The crosscheck never feeds one.
+		- Spec decision: strip one trailing CR per line everywhere, or keep the reference's rule and make the ports match. Then add a fixture.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 11: Python's `set_float` accepts an int and writes it digit for digit, so a value above 2^53 becomes text the reference cannot produce.
+		- `set_float("x", 9007199254740993)` writes exactly that; the reference writes `9007199254740992`. A huge int writes hundreds of digits where the reference writes `inf`.
+		- Convert to float first, and decide what an int too large for a float should do.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 12: the Python CLI writes stdout in the locale encoding, so a Windows pipe or file raises `UnicodeEncodeError` on non-ASCII content.
+		- The newline fix from 20260829 item 11 set the newline only. The reference writes bytes. Set the encoding to UTF-8 in the same call.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 13: C passes a null pointer with length zero to `memchr` on the new fast paths.
+		- Reached from `shcl_set_raw` and `shcl_set_literal` with a `(NULL, 0)` span, which is the usual C spelling of "no text". UBSan flags it; glibc declares the argument nonnull.
+		- Six sites; guard on the length first.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 14: the Python CLI crashes with a traceback on a closed stdin or stdout, and the C CLI's exit code differs from the reference on a closed stdin.
+		- Rust and Go print nothing and exit 0. Python raises on `sys.stdin.buffer`. C prints `read error` and exits 1.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 15: two `-` inputs on one command line read stdin once, and the second one gets an empty document that looks like a real answer.
+		- `check --schema=- -` validates the schema against nothing; `get --layer=- -` reads the layer as the base. `set` already refuses this; the other commands do not. All four.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 16: the C CLI's op-script errors drop the `op line N:` prefix and the offending op.
+		- The other three print `op line 2: unknown op: bogus`; C prints `unknown op`. Same for every op error.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 17: the C CLI's strict-load failure prints a bare count where the spec and the other three name the diagnostics.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 18: the C CLI loses the reason on a read failure and on a temp-file failure.
+		- A directory gives `dir: read error` (the reference names the error); a missing parent dir loses the "cannot create temporary file" context.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 19: a writer-created top-level node with a comment emits the section blank line between the comment and the node.
+		- `int x 5` then `comment x note` emits the comment, a blank line, then `x: 5`, so the comment reads as belonging to the field above. It is a fmt fixpoint, so it never self-corrects. All four.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 20: a blank answer at the pipeline's commit-message prompt never opens the editor; the publisher makes up `shcl <stamp>`.
+		- The help, the prompt and a comment all say "blank = editor". The publisher is always passed `--quiet`, which is what makes it auto-generate. This is the half of 20260829 item 33 that was not done.
+		- Separate "no continue prompt" from "auto-message" in the publisher, or fix the three strings.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 21: the bash wrapper accepts a directory as `SHCL_BIN` and fails with a shell error.
+		- `-x` is true for a directory. Test `-f` too. The PowerShell wrapper already refuses it.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 22: `design.md` still records the raw-block indent rule that the 20260829 round replaced.
+		- The Formatter section says the stripped indent comes from the non-blank body lines and that a whitespace-only body is left alone. The spec and the corpus now say the closing fence's own indent, with no special case.
+		- Also stale: the name-escape decision is dated "the coming major" (2.0.0 has been out since 2026-08-27), and the positioning line still quotes the "friendliest API" boast the README dropped.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 23: `n8runshcl.ps1`'s advice to put `--` first fails under `pwsh -File`.
+		- It works from inside a pwsh session, which is the only place it is needed. Reword or drop the sentence.
+		- Opened: 20260830-093632
 
 ### Features and enhancements
+
+- Code review 20260830:
+
+	- The enhancement half of the round. Items 1 to 23 are under Bugs.
+
+	- 🔘 Item 24: the changelog's Unreleased section has none of the 20260829 round.
+		- It carries only the C file-tier fixes from 20260828. Needed before the 2.1.0 cut: `E018`, the `DateTime` alias, the raw-block nesting change, the `--set` split rule, the `bool` op gate, the whole-mode copy, the installer smoke run, and the round's user-visible fixes. Internal tooling stays out.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 25: the `bool` op gate from 20260829 item 5 is not in the four conformance runners, so no corpus row can pin it.
+		- The runners still write `false` for `yes`. Port the gate and add a bad-bool row to a `write-bad.ops`.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 26: stderr diagnostics still come in three shapes, and 20260829 item 59 was only half applied.
+		- `check` and `init` print schema faults without the code, so a script cannot key on `V091`. A strict-load failure prints each diagnostic twice (once as a line, again in the summary). Four messages carry a `shcl:` prefix and the rest do not.
+		- One line shape everywhere, and one prefix rule.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 27: 20260829 item 51 was only half applied.
+		- The three identical `resolve_parent` match blocks in the parser and four argument matches in the CLI still use `match` where `let-else` reads better. The three copies plus the dead-parent check that follows each could be one helper.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 28: a `set_raw` test asserts on a document parsed before the refused writes, so the assertion cannot fail.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 29: a symlink cycle is silently replaced by a regular file on write.
+		- The 40-hop walk gives up and the rename lands on whichever link it stopped at. Refuse it as every other tool does.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 30: small reference tidy.
+		- The type-flag parser matches the same string twice with a catch-all standing in for `--string`.
+		- The name index builds two hash maps keyed identically where one would do.
+		- The comparison tool prints a save error with the debug formatter.
+		- A dead `if i == 0` branch after `truncate(max(i, 1))` in `resolve_parent`, mirrored into Python.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 31: Go tidy.
+		- `Read[T]` exports `Ok()` and `OK()`, same body; nothing calls the second. Deprecate it now, remove at the next major.
+		- `doCheck` shadows the `errors` package with a counter.
+		- Nine lines over 120 columns, two of them from the last round.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 32: Python tidy.
+		- The runner's `_op_int` lost the digit-length gate the CLI has, so its comment is wrong about how a long value is rejected.
+		- `Document.__init__` and its attributes are unhinted; `_Value.fence_char` is typed `str` but starts as `None`.
+		- The pipeline's three Python utilities are still unhinted and on `os.path`, as 20260829 item 54 listed.
+		- `_resolve_target` differs from the reference on an empty name (creates the temp file in the parent of the cwd) and on a lexical `..` through a missing directory.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 33: C tidy.
+		- The veneer smoke test never calls ten of the veneer's public methods.
+		- The sanitizer run covers `fmt`, `check` and `set` only; `get`, `init`, `--layer`, `--write` and the veneer never run under ASan.
+		- A dead `prec` clamp in the float formatter.
+		- Fifty-odd internal typedefs are unprefixed and land in the consumer's implementation TU; either document "one TU of its own" or prefix them.
+		- The veneer's `generate()` is `const` but can push a diagnostic onto the schema; the hand-written rule of five could be a `unique_ptr` deleter.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 34: the "value X is not a valid int" line renders the value four ways across the four CLIs, and C's can span lines.
+		- Rust prints the source spelling escaped, Go escapes differently, Python and C print the resolved text raw, so a raw block or a tab breaks C's message across lines. C also gates the rawinfo case differently.
+		- Decision: parity on this line, or at least keep it on one line.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 35: `-h` and `--help` after the FILE argument are an unknown option, although every other option is accepted there.
+		- The guard's stated reason never applies. Drop it in all four.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 36: CLI message wording.
+		- A rejected `--set-literal` text is reported as an unwritable path.
+		- An extra argument gets "get needs FILE and PATH".
+		- Option validation runs before the command name is checked, so `shcl foo --int` complains about `--int`.
+		- `--strictness` values are case-insensitive, `--on-bad` values are not.
+		- `--set==5` and `--set "it's=1"` get messages that do not name the problem.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 37: exit code 1 covers both "add `--lossy`" and "file missing", and `init`'s exit 6 is in no table.
+		- A script gating a rewrite cannot tell the refusal apart. Decision: a code of its own, and a table entry for `init`.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 38: five help lines run past 80 columns; one wraps mid-word on a default terminal.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 39: man page and help drift.
+		- The `.TH` date is 2026-08-18 and the page changed twice since.
+		- `get` in the synopsis is set with `.RI`, so it renders roman with italic brackets while every other subcommand is bold.
+		- The help header promises a subcommand list per option and `--set` and `--set-literal` have none.
+		- Neither names the four refusals the CLI enforces, or that `--raw` has no array form.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 40: completion drift the checker cannot see.
+		- Neither file offers `--about` or `--donate`; the zsh file offers no top-level options at all and claims to be line for line the bash one.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 41: wrapper docs.
+		- The bash wrapper's header example uses `mapfile` on a wrapper whose target is bash 3.2.
+		- Both headers describe exit 6 as strict load failure only.
+		- The PowerShell wrapper needs pwsh 7.3 on Linux and macOS and nothing says so.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 42: the installer's glibc message names 2.34 for every arch; the arm64 binary needs 2.30.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 43: dev setup and pin checks.
+		- `install-dev.bash` skips the hooks setup in a git worktree, where `.git` is a file.
+		- The cppcheck wheel version is now spelled in three places and only two are compared.
+		- `check-pins.bash` matches by substring; a pin named `build` matches five workflow lines.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 44: two steps still run past the half-the-cores cap: the backup archive in the publish stage and `cargo deny`.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 45: pipeline comment accuracy.
+		- The pre-push header says sharing the target dir avoids a rebuild; cargo keys on the package path, so it rebuilds anyway. The real reason for the link is the relative binary paths.
+		- A ragged four-line comment in `cicd.bash`.
+		- The utility scripts print `tool: message` lines rather than the `fEcho` family. Record the convention either way.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 46: one silent-exit assignment left in `sign-release.bash`, and the four `--help` outputs start and end without a blank line.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 47: `fmt` and `get` without `--write` say nothing about an error-severity line they skipped.
+		- `fmt --write` prints it and `check` exits 6, but `fmt file > new` never learns a line was dropped. Decision.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 48: doc wording.
+		- Avoid-list words that survived 20260829 item 63: "land" in design.md and the spec, "ships" in README, the changelog and the man page, "worth checking" in README, "honest" and "human form" in two binding comments.
+		- README: the tagline repeats "file"; the crate paragraph says the same thing in two adjacent lines and the "installs no command" note three times; "one of them advertised as the differentiating feature" does not say which.
+		- Two spec bullets are single paragraphs of 971 and 526 words.
+		- The README's Docs list omits the changelog.
+		- The `dsl` topic on the repo cuts against the pitch.
+		- Comments added last round carry timings that will go stale.
+		- Dash-as-parentheses is still dense in design.md and the spec.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 49: backlog accuracy.
+		- 20260727 item 2 was done by the 2026-08-21 memory pass; the remap clones nothing now. Move it to Done.
+		- One closed item still says `--write` is deliberately unchanged, the opposite of the standing decision.
+		- Several closed sub-bullets are overtaken: "as of the coming major", "the rest of the veneer list is still open", "worth a look post-1.0", the raw-block fixes that 20260829 item 2 superseded, and the deferred size limit that `read_file` now covers.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 50: backlog structure.
+		- One item in a Done round has no number; one Opened stamp has no time.
+		- Rounds split across sections do not say where their other items are, so numbering gaps look like lost items.
+		- Loose items and rounds are two separate newest-first runs inside each Done section, which the conventions line does not say.
+		- The unused testing icon row; five file-level lint disables that the repo config already covers; six "Code Review" against 21 "Code review".
+		- Opened: 20260830-093632
+
+	- 🔘 Item 51: backlog prose.
+		- About sixty sub-bullets over forty words, a dozen of them lists that only need bullets; 34 bullets with paired dashes as parentheses.
+		- "shape" as a category word about forty times, a handful of "surfaces", "worth", all-caps and bold emphasis, and a few dramatic adjectives.
+		- Opened: 20260830-093632
+
+	- 🔘 Item 52: backlog detail that belongs in private notes.
+		- Environment and method clauses ("on this box", "under wine", "fault-injected", "converted mechanically", "staged on its own branch").
+		- About fifty lines of timings, byte counts and per-binding multipliers; keep one headline number per item.
+		- The header's claim that tracking is moving to GitHub Issues.
+		- Opened: 20260830-093632
 
 - 🔘 Ports: Tier 3 after v1.0.
 	- Each drop-in where possible, corpus-green before shipping.
