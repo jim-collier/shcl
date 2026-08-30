@@ -38,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Python's typed setters raise `TypeError` on a value of the wrong type instead of writing its text form. `set_float` still takes an int and writes the float it names; a magnitude past the float range becomes `inf`, the value the other bindings store.
 
+- The C++ veneer's `generate` is no longer `const`: a schema fault it reports goes onto the document's diagnostics, which mutates it.
 - The stderr voice is tidier: messages dropped their `shcl:` prefix, a usage error answers with a `usage: shcl ...` line, a strict-load failure lists the diagnostics above its `strict load failed: N error diagnostic(s)` summary, and a schema-fault line carries its `V` code the way load diagnostics carry theirs. stdout and the exit codes are untouched, so nothing scripted against the contract moves.
 
 ### Fixed

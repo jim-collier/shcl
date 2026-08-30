@@ -8,7 +8,7 @@ Simple Hierarchical Config Language. This is the canonical language spec: termin
 
 ## Design goals (the north star)
 
-SHCL aims to be forgiving to write, predictable to read, and expressive enough for any flat or hierarchical data - with the friendliest read API in the space. (Not "the simplest possible language": the grammar has real features, and pretending otherwise just invites the comparison. The simplicity claim lives where it is true - in what the two audiences below actually experience.) It is optimized for those two audiences and nobody else:
+SHCL aims to be forgiving to write, predictable to read, and expressive enough for any flat or hierarchical data, with a read API that stays small and predictable. (Not "the simplest possible language": the grammar has real features, and pretending otherwise just invites the comparison. The simplicity claim lives where it is true - in what the two audiences below actually experience.) It is optimized for those two audiences and nobody else:
 
 - **The person writing config by hand.** It must be forgiving and obvious enough that a non-programmer can hand-author a whole file from scratch - even something as rich as a declarative DDL - without memorizing rules. If a modern parser can figure out what was meant, it must; the user is never asked to satisfy the machine.
 
