@@ -368,15 +368,15 @@ class _Value:
 	fence_len: int
 
 	def __init__(self, kind):
-		# Empty rather than None for the three the kind decides: the fields a kind
-		# does not use are never read, and starting them at their own empty value
-		# keeps every reader's type honest without a guard at each use.
+		# Empty rather than None for the fields the kind decides: a kind never
+		# reads the fields it does not use, and an empty value of the declared
+		# type means no guard at each use.
 		self.kind = kind
 		self.els = _EMPTY_ELS
 		self.content = ""
 		self.info = ""
-		self.fence_char = None
-		self.fence_len = None
+		self.fence_char = ""
+		self.fence_len = 0
 
 	def is_empty(self):
 		return self.kind == "empty"
@@ -487,6 +487,17 @@ def _want(setter, v, kind):
 def _want_all(setter, v, kind):
 	for x in v:
 		_want(setter, x, kind)
+
+
+def _as_float(v):
+	# An int is written as the f64 the other bindings would hold, so
+	# 9007199254740993 lands as 9007199254740992 and not its exact digits. One
+	# past the float range has no f64 but inf, which is what a caller of the
+	# reference would have been holding.
+	try:
+		return float(v)
+	except OverflowError:
+		return math.inf if v > 0 else -math.inf
 
 
 def _array_cell(texts):
@@ -1303,9 +1314,8 @@ class _Parser:
 			if self.stack[i][0] == indent:
 				# Sibling of stack[i]: its parent is the entry below it.
 				parent = ROOT if i == 0 else self.stack[i - 1][1]
+				# Keep the sentinel; a top-level line resolves to ROOT.
 				self.stack = self.stack[:max(i, 1)]
-				if i == 0:
-					self.stack = self.stack[:1]
 				return parent
 		return None
 
@@ -1726,16 +1736,51 @@ _NO_DEFAULT = object()  # get_* sentinel: no call-site default -> must-exist (ra
 
 
 class _NameIndex:
-	"""Read accelerator: the first child of each (parent, name), chained on to
-	the next same-named sibling. The key is the exact (parent, name) tuple, the
-	same deviation the parser's maps take (see _merge_key), so nothing but a
-	same-named sibling can ever be on a chain; the lookup still checks the
-	name, as the reference does over its hash."""
-	__slots__ = ("first", "next_same")
+	"""The first child of each (parent, name), chained on to the next same-named
+	sibling, plus the chain tail so an append is O(1). The key is the exact
+	(parent, name) tuple, the same deviation the parser's maps take (see
+	_merge_key), so nothing but a same-named sibling can ever be on a chain;
+	the lookup still checks the name, as the reference does over its hash."""
+	__slots__ = ("first", "last", "next_same")
 
-	def __init__(self, first, next_same):
+	def __init__(self, first, last, next_same):
 		self.first = first            # (parent, name) -> first child
+		self.last = last              # (parent, name) -> last child
 		self.next_same = next_same    # per node; NIL ends the chain
+
+	def append(self, key, node):
+		if len(self.next_same) <= node:
+			self.next_same.extend([NIL] * (node + 1 - len(self.next_same)))
+		self.next_same[node] = NIL
+		prev = self.last.get(key)
+		self.last[key] = node
+		if prev is not None:
+			self.next_same[prev] = node
+		else:
+			self.first[key] = node
+
+	# Walks the chain to find the predecessor; a chain is one name's siblings.
+	def unlink(self, key, node):
+		head = self.first.get(key)
+		if head is None:
+			return
+		nxt = self.next_same[node]
+		if head == node:
+			if nxt == NIL:
+				del self.first[key]
+				del self.last[key]
+			else:
+				self.first[key] = nxt
+		else:
+			c = head
+			while c != NIL and self.next_same[c] != node:
+				c = self.next_same[c]
+			if c == NIL:
+				return
+			self.next_same[c] = nxt
+			if nxt == NIL:
+				self.last[key] = c
+		self.next_same[node] = NIL
 
 
 def _name_key(parent, name):
@@ -1746,7 +1791,14 @@ class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
 	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index")
 
-	def __init__(self, arena, diags, strictness, orphans=None, lost=0):
+	def __init__(
+		self,
+		arena: list[_Node],
+		diags: list[Diagnostic],
+		strictness: Strictness,
+		orphans: list[_Lead] | None = None,
+		lost: int = 0,
+	) -> None:
 		self.arena = arena
 		self.diags = diags
 		self._strictness = strictness
@@ -1756,10 +1808,11 @@ class Document:
 		# Content-malformed lines are NOT counted - they are retained as trivia
 		# and survive a save. lost_count() serves it; save_file() gates on it.
 		self._lost = lost
-		# Built on the first path read, dropped by every write entry point.
-		# Without it a read scans the parent's children, so reading a flat
-		# document key by key was quadratic (35 s at 40k keys).
-		self._index = None
+		# Built on the first path lookup and kept current by the writer (a new
+		# child appends, a removed one unlinks); only a merge drops it. Without
+		# it every lookup scans the parent's children, so a flat document read
+		# or written key by key was quadratic.
+		self._index: _NameIndex | None = None
 
 	@staticmethod
 	def parse(text: str) -> Document:
@@ -2009,19 +2062,11 @@ class Document:
 	def _name_index(self):
 		idx = self._index
 		if idx is None:
-			first: dict = {}
-			last: dict = {}
-			next_same = [NIL] * len(self.arena)
+			idx = _NameIndex({}, {}, [NIL] * len(self.arena))
 			for p, node in enumerate(self.arena):
 				for c in node.children:
-					k = _name_key(p, self.arena[c].name)
-					prev = last.get(k)
-					last[k] = c
-					if prev is not None:
-						next_same[prev] = c
-					else:
-						first[k] = c
-			idx = self._index = _NameIndex(first, next_same)
+					idx.append(_name_key(p, self.arena[c].name), c)
+			self._index = idx
 		return idx
 
 	def _children_named(self, parent, name):
@@ -2242,6 +2287,8 @@ class Document:
 		node.blank_before = parent == ROOT
 		self.arena.append(node)
 		self.arena[parent].children.append(idx)
+		if self._index is not None:
+			self._index.append(_name_key(parent, name), idx)
 		return idx
 
 	def write_reason(self, path: str) -> WriteReason:
@@ -2289,7 +2336,7 @@ class Document:
 			if sel is not None and sel[0] == "idx":
 				if probe is None:
 					return (WriteReason.NoSuchIndex, None)
-				matches = [c for c in self.arena[probe].children if self.arena[c].name == seg.name]
+				matches = self._children_named(probe, seg.name)
 				if sel[1] >= len(matches):
 					return (WriteReason.NoSuchIndex, None)
 				probe = matches[sel[1]]
@@ -2297,19 +2344,15 @@ class Document:
 				if probe is not None:
 					want = _apply_escapes(sel[1])
 					found = None
-					for c in self.arena[probe].children:
-						if self.arena[c].name == seg.name and _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value)):
+					for c in self._children_named(probe, seg.name):
+						if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value)):
 							found = c
 							break
 					probe = found
 			else:
 				if probe is not None:
-					found = None
-					for c in self.arena[probe].children:
-						if self.arena[c].name == seg.name:
-							found = c
-							break
-					probe = found
+					matches = self._children_named(probe, seg.name)
+					probe = matches[0] if matches else None
 			if trail is not None:
 				trail.append(probe)
 		return (WriteReason.Writable, trail)
@@ -2321,7 +2364,6 @@ class Document:
 		must already exist. None = path unusable for a write (write_reason()
 		says why). Validation runs first, so a doomed path leaves no
 		half-created intermediates behind."""
-		self._index = None
 		try:
 			segments, value_text = _scan_lookup(path)
 		except _PathError:
@@ -2365,7 +2407,7 @@ class Document:
 		me = self.arena[node]
 		key = _merge_key(me.name, me.value)
 		other = None
-		for c in self.arena[parent].children:
+		for c in self._children_named(parent, me.name):
 			o = self.arena[c]
 			if c != node and _merge_key(o.name, o.value) == key:
 				other = c
@@ -2377,8 +2419,16 @@ class Document:
 			survivor, loser = other, node
 		else:
 			survivor, loser = node, other
+		moved = list(self.arena[loser].children)
 		_fold_node_into(self.arena, survivor, loser)
 		self.arena[parent].children = [c for c in self.arena[parent].children if c != loser]
+		ix = self._index
+		if ix is not None:
+			ix.unlink(_name_key(parent, self.arena[loser].name), loser)
+			for k in moved:
+				name = self.arena[k].name
+				ix.unlink(_name_key(loser, name), k)
+				ix.append(_name_key(survivor, name), k)
 
 	def exists(self, path: str) -> bool:
 		"""True when the path resolves to at least one real node."""
@@ -2392,7 +2442,6 @@ class Document:
 
 	def remove(self, path: str) -> int:
 		"""Delete the node(s) at a path (with their subtrees); returns how many."""
-		self._index = None
 		r = self._resolve(path)
 		tag = r[0]
 		if tag == "one":
@@ -2406,6 +2455,8 @@ class Document:
 		for t in targets:
 			p = self.arena[t].parent
 			self.arena[p].children = [c for c in self.arena[p].children if c != t]
+			if self._index is not None:
+				self._index.unlink(_name_key(p, self.arena[t].name), t)
 		return len(targets)
 
 	def set_comment(self, path: str, text: str) -> bool:
@@ -2417,7 +2468,14 @@ class Document:
 		line = text.split("\n", 1)[0]
 		if not line.startswith("#"):
 			line = "# " + line
-		self.arena[idx]._triv().leading.append(_Lead(line, False))
+		# The node's own blank moves above its first comment; otherwise the
+		# blank would separate the comment from what it annotates.
+		nd = self.arena[idx]
+		lead = _Lead(line, False)
+		if nd.blank_before and not nd.leading():
+			lead.blank_before = True
+			nd.blank_before = False
+		nd._triv().leading.append(lead)
 		return True
 
 	def set_int(self, path: str, v: int) -> bool:
@@ -2433,9 +2491,10 @@ class Document:
 		return self._set_value(path, _cell_of(str(v)))
 
 	def set_float(self, path: str, v: float) -> bool:
-		"""Bind a float; an int is accepted, a bool is a TypeError."""
+		"""Bind a float; an int is accepted and written as the float it converts
+		to (one past the float range writes inf), a bool is a TypeError."""
 		_want("set_float", v, "float")
-		return self._set_value(path, _cell_of(format_float(v)))
+		return self._set_value(path, _cell_of(format_float(_as_float(v))))
 
 	def set_bool(self, path: str, v: bool) -> bool:
 		"""Bind a bool; anything else, 0/1 included, is a TypeError."""
@@ -2455,9 +2514,9 @@ class Document:
 	def set_raw(self, path: str, content: str, info: str) -> bool:
 		"""Bind a raw block at a path, picking a fence longer than any content
 		line. The info-string is stored as a fence line would read it back
-		(trimmed); one holding a line break has no fence-line spelling and fails
-		the write."""
-		if "\n" in info or "\r" in info:
+		(trimmed); one holding a line break or an unquoted `#` has no fence-line
+		spelling (the `#` would read back as a comment) and fails the write."""
+		if "\n" in info or "\r" in info or _split_comment(info)[1] != "":
 			return False
 		info = _trim(info)
 		fc, fl = _choose_fence(content)
@@ -2474,8 +2533,9 @@ class Document:
 		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	def set_float_array(self, path: str, v: list[float]) -> bool:
+		"""Bind an inline float array; every element is converted as set_float does."""
 		_want_all("set_float_array", v, "float")
-		return self._set_value(path, _array_cell([format_float(x) for x in v]))
+		return self._set_value(path, _array_cell([format_float(_as_float(x)) for x in v]))
 
 	def set_bool_array(self, path: str, v: list[bool]) -> bool:
 		_want_all("set_bool_array", v, "bool")
@@ -3500,7 +3560,7 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	file = os.fspath(file)   # an int is a TypeError here, not a descriptor (see read_file)
 	try:
 		target = _resolve_target(file)
-	except ValueError as e:
+	except (OSError, ValueError) as e:
 		return f"{file}: {e}"
 	d = os.path.dirname(target)
 	if d == "":
@@ -3542,22 +3602,23 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 		return f"{file}: cannot create temporary file: {last}"
 	try:
 		try:
+			f.write(data)
+			f.flush()
+			os.fsync(f.fileno())
 			# On the handle, so umask cannot narrow it the way it narrows a
-			# create mode. Best effort: a filesystem that cannot carry the mode
-			# is not a reason to fail a write that otherwise succeeded. The
-			# whole mode goes, setuid/setgid/sticky included, as an editor's
-			# rewrite would carry it. The mode is a POSIX concept - on windows
-			# the destination's attributes come across in the publish step
-			# instead, and a 3.13 fchmod there would only touch the read-only
-			# bit the publish handles itself.
+			# create mode, and after the data, because a write by anyone but
+			# root clears setuid/setgid. Best effort: a filesystem that cannot
+			# carry the mode is not a reason to fail a write that otherwise
+			# succeeded. The whole mode goes, setuid/setgid/sticky included, as
+			# an editor's rewrite would carry it. The mode is a POSIX concept -
+			# on windows the destination's attributes come across in the publish
+			# step instead, and a 3.13 fchmod there would only touch the
+			# read-only bit the publish handles itself.
 			if existing is not None and os.name != "nt" and hasattr(os, "fchmod"):
 				try:
 					os.fchmod(f.fileno(), stat.S_IMODE(existing.st_mode))
 				except OSError:
 					pass
-			f.write(data)
-			f.flush()
-			os.fsync(f.fileno())
 		finally:
 			f.close()
 	# ValueError alongside: text the encoder refuses (a lone surrogate) raises
@@ -3589,11 +3650,33 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 
 def _resolve_target(file):
 	"""The path a save actually rewrites. A symlink is followed so the write goes
-	through it, a dangling one included - realpath walks the chain whether or
-	not the target exists, so the file is created where the link points, and a
-	link cycle is left where it stands. A path that is no link at all is a
-	plain create at the path as given."""
-	return os.path.realpath(file)
+	through it; realpath does that but only a path that exists resolves whole,
+	so a dangling link is walked by hand and the file is created where it
+	points. A path that is no link at all is a plain create at the path as
+	given. A link cycle is an error (raised as OSError, the caller reports it):
+	silently creating a regular file in its place would be the exact
+	replacement the symlink walk exists to avoid."""
+	# exists() is False on a NUL, a dangling link and a cycle alike; the calls
+	# below raise on the NUL, so the caller sees the same ValueError as before.
+	if os.path.exists(file):
+		return os.path.realpath(file)
+	p = file
+	for _ in range(40):
+		try:
+			nxt = os.readlink(p)
+		except OSError:
+			break
+		if os.path.isabs(nxt):
+			p = nxt
+		else:
+			p = os.path.join(os.path.dirname(p) or ".", nxt)
+	if os.path.islink(p):
+		raise OSError("too many levels of symbolic links")
+	d = os.path.dirname(p)
+	n = os.path.basename(p)
+	if d != "" and n != "" and os.path.exists(d):
+		return os.path.join(os.path.realpath(d), n)
+	return p
 
 
 def _set_read_only(path, on):
