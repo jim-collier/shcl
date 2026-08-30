@@ -136,6 +136,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/crosscheck.bash
 	cicd/utility/largedoc.bash
 	cicd/utility/lint-report.bash
+	cicd/utility/perf-gate.bash
 	cicd/utility/n8git_backup-and-publish
 	cicd/utility/package.bash
 	cicd/utility/sanitize-c.bash
@@ -176,6 +177,9 @@ TEST_EXTRA=(
 	## CLI behavior the corpus cannot reach: closed streams, '-' twice on one
 	## command line, a carriage return ending an ops line, error-message shape.
 	'cicd/utility/cli-regress.bash "${BINDING_CLIS[@]}"'
+	## The write path must stay small beside the parse. Two superlinear write
+	## regressions reached dev in consecutive rounds with no number to fail on.
+	'cicd/utility/perf-gate.bash "${BINDING_CLIS[@]}"'
 	## The same C programs again under the address and undefined-behavior
 	## sanitizers, plus the CLI over the corpus. A read past a buffer that does
 	## not change stdout passes every gate above; this one sees it.
