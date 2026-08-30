@@ -974,8 +974,8 @@ func TestReadFileAtTheLargestCap(t *testing.T) {
 func TestSetRawKeepsASharedIndentAndTrimsTheInfo(t *testing.T) {
 	// The body's shared indent survives a reload (the closing fence's indent is
 	// what comes off), the info-string is stored as a fence line reads it
-	// back, and an info with a line break has no spelling and fails the
-	// write. Same fixture in every runner.
+	// back, and an info with a line break or an unquoted `#` has no spelling
+	// and fails the write. Same fixture in every runner.
 	doc := New()
 	if !doc.SetRaw("q", "  a\n  b", " sql ") {
 		t.Fatal("SetRaw failed")
@@ -993,8 +993,18 @@ func TestSetRawKeepsASharedIndentAndTrimsTheInfo(t *testing.T) {
 	if doc.SetRaw("q", "x", "a\rb") {
 		t.Error("info with a carriage return was accepted")
 	}
+	if doc.SetRaw("q", "x", "a # b") {
+		t.Error("info with an unquoted # was accepted")
+	}
+	if !doc.SetRaw("q", "  a\n  b", "\"a # b\"") {
+		t.Fatal("SetRaw with a quoted # failed")
+	}
+	back = Parse(doc.ToCanonical())
 	if v, st := back.GetRaw("q"); st != Good || v != "  a\n  b" {
 		t.Errorf("after the refusals: got %q %v", v, st)
+	}
+	if info := back.ReadRawInfo("q").Value; info != "\"a # b\"" {
+		t.Errorf("quoted info: got %q", info)
 	}
 }
 

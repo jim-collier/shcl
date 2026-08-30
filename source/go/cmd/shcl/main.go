@@ -28,16 +28,18 @@ Usage:
   shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
                                          print canonical (or rewrite FILE in
                                          place with --write)
-  shcl fmt [--write|-w] FILE             print (or rewrite in place) the canonical form
+  shcl fmt [--write|-w] FILE             print the canonical form (or rewrite
+                                         FILE in place with --write)
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
                                          against a schema, itself a .shcl file)
-  shcl init [--no-banner] --schema=S     print a commented starter config from
-                                         a schema (required fields live, optional
-                                         commented, wildcards noted)
+  shcl init [--no-banner] --schema=S     print a commented starter config
+                                         from a schema (required fields live,
+                                         optional commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
-  shcl help | version                    this help, or the version (also -h/--help, -v/-V/--version)
+  shcl help | version                    this help, or the version (also
+                                         -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
@@ -66,9 +68,10 @@ Options (the subcommands each belongs to are in parentheses):
   --default=VALUE                        (get) value to print when the read is
                                          not Good (implies --on-bad=default; for
                                          arrays, substituted per bad slot)
-  --on-bad=error|default|flag            (get) error: fail loudly; default: print
-                                         the default; flag: print the value anyway
-                                         and report via exit code (the default)
+  --on-bad=error|default|flag            (get) error: fail loudly; default:
+                                         print the default; flag: print the
+                                         value anyway and report via exit code
+                                         (the default)
   --slots                                (get) prefix each line with its slot
                                          status and a tab (per element, or per
                                          wildcard slot)
@@ -85,15 +88,17 @@ Options (the subcommands each belongs to are in parentheses):
   --layer=FILE                           (get/fmt/count/instances/set) merge a
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
-  --set=PATH=VALUE                       override one path as the top layer,
-                                         after all files; repeatable. On 'set'
+  --set=PATH=VALUE                       (get/fmt/count/instances/set) override
+                                         one path as the top layer, after all
+                                         files; repeatable. On 'set'
                                          it is an edit to the document itself,
                                          so it persists with --write. VALUE
                                          goes in as data: its type still
                                          follows the text (8 is an int), but a
                                          comma or quote in it is content, not
                                          syntax
-  --set-literal=PATH=TEXT                as --set, except TEXT goes in as value
+  --set-literal=PATH=TEXT                (same subcommands) as --set, except
+                                         TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
                                          array. An unquoted # ends the value;
@@ -103,15 +108,20 @@ Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
-An option a subcommand does not use is a usage error, not ignored.
-An in-place write prints the load's diagnostics to stderr, and refuses when the
-load dropped content the rewrite would delete (--lossy overrides).
+An option a subcommand does not use is a usage error, not ignored. Also
+refused: --write with --layer; --write with --set outside 'set'; --lossy
+without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
+named more than once across FILE, --layer and --schema.
+fmt and set print the load's diagnostics to stderr along with the canonical
+document. An in-place write also refuses when the load dropped content the
+rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
-5 multiple instances, 6 check failed or strict load failure.
+5 multiple instances, 6 check failed, strict load failed, or init's schema
+has faults, 7 in-place write refused (--lossy overrides).
 `
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
@@ -189,6 +199,26 @@ const (
 	kindRawInfo
 )
 
+func kindFromOpt(opt string) (kind, bool) {
+	switch opt {
+	case "--int":
+		return kindInt, true
+	case "--float":
+		return kindFloat, true
+	case "--bool":
+		return kindBool, true
+	case "--datetime":
+		return kindDatetime, true
+	case "--string":
+		return kindString, true
+	case "--raw":
+		return kindRaw, true
+	case "--rawinfo":
+		return kindRawInfo, true
+	}
+	return kindString, false
+}
+
 func (k kind) name() string {
 	switch k {
 	case kindInt:
@@ -233,9 +263,10 @@ type opts struct {
 }
 
 // askedFor: did the command line ask for one of the informational outputs? Only
-// tokens in option position count: a value that happens to read `-h`, and
-// anything after the file, are data. Scanning the whole line for them let a read
-// of a missing path answer with the help text and exit 0.
+// tokens in option position count: the value of a value-taking option and
+// anything after `--` are data (a FILE or PATH spelled `-h` needs the `--`
+// anyway, since the option parser would refuse it). Scanning values too once
+// let a read of a missing path answer with the help text and exit 0.
 func askedFor(argv []string) string {
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
@@ -253,10 +284,6 @@ func askedFor(argv []string) string {
 		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" ||
 			a == "--layer" || a == "--set" || a == "--set-literal":
 			i++
-		case strings.HasPrefix(a, "-") && len(a) > 1:
-		case i > 0:
-			// The subcommand, then the file: past that everything is a path.
-			return ""
 		}
 	}
 	return ""
@@ -299,7 +326,7 @@ func setValueOpt(o *opts, name, v string) error {
 		o.onBad = onBadDefault
 		o.seen = append(o.seen, "--default")
 	case "--on-bad":
-		switch v {
+		switch strings.ToLower(v) {
 		case "error":
 			o.onBad = onBadError
 		case "default":
@@ -325,8 +352,8 @@ func setValueOpt(o *opts, name, v string) error {
 		o.seen = append(o.seen, "--layer")
 	case "--set", "--set-literal":
 		p, val, ok := splitSet(v)
-		if !ok {
-			return fmt.Errorf("bad %s value (want PATH=VALUE): %s", name, v)
+		if !ok || p == "" {
+			return fmt.Errorf("bad %s value (want PATH=VALUE, quotes and brackets balanced): %s", name, v)
 		}
 		o.sets = append(o.sets, setOpt{path: p, value: val, literal: name == "--set-literal"})
 		o.seen = append(o.seen, name)
@@ -345,25 +372,12 @@ func parseOpts(argv []string) (*opts, error) {
 			o.args = append(o.args, argv[i+1:]...)
 			return o, nil
 		}
-		switch {
-		case a == "--int" || a == "--float" || a == "--bool" || a == "--datetime" || a == "--string" || a == "--raw" || a == "--rawinfo":
-			switch a {
-			case "--int":
-				o.kind = kindInt
-			case "--float":
-				o.kind = kindFloat
-			case "--bool":
-				o.kind = kindBool
-			case "--datetime":
-				o.kind = kindDatetime
-			case "--raw":
-				o.kind = kindRaw
-			case "--rawinfo":
-				o.kind = kindRawInfo
-			default:
-				o.kind = kindString
-			}
+		if k, ok := kindFromOpt(a); ok {
+			o.kind = k
 			o.seen = append(o.seen, "--<type>")
+			continue
+		}
+		switch {
 		case a == "--array":
 			o.array = true
 			o.seen = append(o.seen, "--array")
@@ -432,7 +446,8 @@ func checkOpts(cmd string, o *opts) int {
 	var allowed []string
 	switch cmd {
 	case "get":
-		allowed = []string{"--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal"}
+		allowed = []string{"--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness",
+			"--layer", "--set", "--set-literal"}
 	case "set":
 		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy"}
 	case "fmt":
@@ -459,13 +474,16 @@ func checkOpts(cmd string, o *opts) int {
 				// Deliberate, not an oversight: the schema is a program artifact,
 				// so it always loads at Standard - the same rule `check --schema`
 				// follows for the schema half.
-				fmt.Fprintln(os.Stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data")
+				fmt.Fprintln(os.Stderr, "option --strictness not valid for init: a schema always loads at "+
+					"standard strictness, being a program artifact rather than user data")
 			} else if cmd == "check" && (s == "--layer" || s == "--set" || s == "--set-literal") {
 				// The one refusal a user is likely to want anyway: check reports
 				// line numbers, and a merged document has no single file to
 				// number against. Naming the pipeline turns a dead end into a
 				// one-liner.
-				fmt.Fprintf(os.Stderr, "option %s not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt %s ... FILE | shcl check --schema=SCHEMA -\n", s, s)
+				fmt.Fprintf(os.Stderr, "option %s not valid for check: diagnostics cite line numbers, "+
+					"which a merged document has none of. Pipe instead: "+
+					"shcl fmt %s ... FILE | shcl check --schema=SCHEMA -\n", s, s)
 			} else {
 				fmt.Fprintf(os.Stderr, "option %s not valid for %s (see --help)\n", s, cmd)
 			}
@@ -499,7 +517,55 @@ func checkOpts(cmd string, o *opts) int {
 			}
 		}
 	}
+	// Stdin reads once; a second '-' would silently get an empty document.
+	stdinUses := 0
+	for _, l := range o.layers {
+		if l == "-" {
+			stdinUses++
+		}
+	}
+	if o.schema == "-" {
+		stdinUses++
+	}
+	if len(o.args) > 0 && o.args[0] == "-" {
+		stdinUses++
+	}
+	if stdinUses > 1 {
+		fmt.Fprintln(os.Stderr, "'-' (stdin) can be named only once across FILE, --layer and --schema")
+		return 1
+	}
 	return 0
+}
+
+// describeRefusal is the per-binding wording behind a setter's bare false.
+func describeRefusal(doc *shcl.Document, path string) string {
+	switch doc.WriteReason(path) {
+	case shcl.Writable:
+		// The path itself is fine, so the value text must be what failed (a
+		// literal that does not parse as one value).
+		return "the value text is not one value"
+	case shcl.ValueInPath:
+		return "a path with a value part cannot be written"
+	case shcl.Wildcard:
+		return "a wildcard path cannot be written"
+	case shcl.NoSuchIndex:
+		return "no instance at that index"
+	case shcl.TooDeep:
+		return "deeper than the nesting cap"
+	}
+	return "not a usable path" // BadPath
+}
+
+// sayDiagnostics prints the load's diagnostics, one line each, in the shape
+// every command uses.
+func sayDiagnostics(diags []shcl.Diagnostic) {
+	for _, d := range diags {
+		space := "line"
+		if strings.HasPrefix(d.Code, "V09") && d.Code != "V099" {
+			space = "schema line"
+		}
+		fmt.Fprintf(os.Stderr, "%s %d: %s: %s %s\n", space, d.Line, d.Severity, d.Code, d.Message)
+	}
 }
 
 func readInput(file string) (string, error) {
@@ -529,11 +595,17 @@ func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
 		// Checked form: this is the top-level error path, so a future error type
 		// here has to report rather than panic.
 		if le, ok := err.(*shcl.LoadError); ok {
+			sayDiagnostics(le.Diagnostics)
+			errorCount := 0
 			for _, d := range le.Diagnostics {
-				fmt.Fprintf(os.Stderr, "line %d: %s: %s %s\n", d.Line, d.Severity, d.Code, d.Message)
+				if d.Severity == shcl.SeverityError {
+					errorCount++
+				}
 			}
+			fmt.Fprintf(os.Stderr, "strict load failed: %d error diagnostic(s)\n", errorCount)
+		} else {
+			fmt.Fprintln(os.Stderr, err)
 		}
-		fmt.Fprintln(os.Stderr, err)
 		return nil, 6
 	}
 	return doc, 0
@@ -545,9 +617,6 @@ func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
 // gate rather than a second copy of the rule - the CLI and a consumer program
 // cannot then disagree about which rewrites are safe.
 func writeBack(doc *shcl.Document, file string, o *opts) int {
-	for _, d := range doc.Diagnostics() {
-		fmt.Fprintf(os.Stderr, "line %d: %s: %s %s\n", d.Line, d.Severity, d.Code, d.Message)
-	}
 	var werr error
 	if o.lossy {
 		werr = doc.SaveFileLossy(file)
@@ -561,10 +630,11 @@ func writeBack(doc *shcl.Document, file string, o *opts) int {
 	// override a user has here is a flag, not a function.
 	var refused *shcl.SaveRefused
 	if errors.As(werr, &refused) {
-		fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the load dropped %d line(s)/value(s) this write would delete (--lossy overrides)\n", file, refused.Lost)
-	} else {
-		fmt.Fprintln(os.Stderr, werr)
+		fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the load dropped %d line(s)/value(s) "+
+			"this write would delete (--lossy overrides)\n", file, refused.Lost)
+		return 7
 	}
+	fmt.Fprintln(os.Stderr, werr)
 	return 1
 }
 
@@ -601,7 +671,7 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 	}
 	for _, s := range o.sets {
 		if !s.apply(doc) {
-			fmt.Fprintf(os.Stderr, "shcl: cannot write %s (from %s)\n", s.path, s.opt())
+			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path))
 			return nil, 1
 		}
 	}
@@ -612,7 +682,7 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 // arrays one element per line.
 func doGet(o *opts) int {
 	if len(o.args) != 2 {
-		fmt.Fprintln(os.Stderr, "get needs FILE and PATH (see --help)")
+		fmt.Fprintln(os.Stderr, "usage: shcl get [type] [options] FILE PATH (see --help)")
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
@@ -726,7 +796,7 @@ func doGet(o *opts) int {
 		switch status {
 		case shcl.BadType:
 			if raw := doc.ReadString(path).Raw; raw != nil {
-				reason = fmt.Sprintf("value %q is not a valid %s", *raw, typeName)
+				reason = fmt.Sprintf("value %s is not a valid %s", quoted(*raw), typeName)
 			} else {
 				reason = fmt.Sprintf("value is not a valid %s", typeName)
 			}
@@ -737,7 +807,7 @@ func doGet(o *opts) int {
 		case shcl.Multiple:
 			reason = "the path matches multiple instances"
 		}
-		fmt.Fprintf(os.Stderr, "shcl: cannot read %s as %s: %s (in %s)\n", path, typeName, reason, file)
+		fmt.Fprintf(os.Stderr, "cannot read %s as %s: %s (in %s)\n", path, typeName, reason, file)
 	}
 	switch {
 	case status == shcl.Good || (status == shcl.Empty && o.onBad == onBadFlag):
@@ -772,9 +842,37 @@ func doGet(o *opts) int {
 	}
 }
 
+// quoted is the source text, quoted for a message: one line whatever it holds,
+// with the same escapes in every binding.
+func quoted(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for _, c := range s {
+		switch {
+		case c == '"':
+			b.WriteString("\\\"")
+		case c == '\\':
+			b.WriteString("\\\\")
+		case c == '\n':
+			b.WriteString("\\n")
+		case c == '\r':
+			b.WriteString("\\r")
+		case c == '\t':
+			b.WriteString("\\t")
+		case c < 0x20 || c == 0x7f:
+			fmt.Fprintf(&b, "\\u{%x}", c)
+		default:
+			b.WriteRune(c)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 func doFmt(o *opts) int {
 	if len(o.args) != 1 {
-		fmt.Fprintln(os.Stderr, "fmt needs FILE (see --help)")
+		fmt.Fprintln(os.Stderr, "usage: shcl fmt [--write|-w] [options] FILE (see --help)")
 		return 1
 	}
 	file := o.args[0]
@@ -786,6 +884,9 @@ func doFmt(o *opts) int {
 	if doc == nil {
 		return code
 	}
+	// Printing the canonical form drops what the load dropped, the same as a
+	// rewrite does, so the diagnostics go out either way.
+	sayDiagnostics(doc.Diagnostics())
 	if o.write {
 		return writeBack(doc, file, o)
 	}
@@ -1117,14 +1218,14 @@ func applyOp(doc *shcl.Document, line string) error {
 		return fmt.Errorf("unknown op: %s", f[0])
 	}
 	if !wrote {
-		return fmt.Errorf("cannot write %s", path)
+		return fmt.Errorf("cannot write %s: %s", path, describeRefusal(doc, path))
 	}
 	return nil
 }
 
 func doSet(o *opts) int {
 	if len(o.args) != 1 {
-		fmt.Fprintln(os.Stderr, "set needs FILE (ops on stdin; see --help)")
+		fmt.Fprintln(os.Stderr, "usage: shcl set [--write|-w] [options] FILE (see --help)")
 		return 1
 	}
 	file := o.args[0]
@@ -1153,7 +1254,7 @@ func doSet(o *opts) int {
 	// error rather than something to quietly write over.
 	creating := false
 	if o.write && file != "-" {
-		if _, serr := os.Stat(file); os.IsNotExist(serr) {
+		if _, serr := os.Stat(file); serr != nil {
 			creating = true
 		}
 	}
@@ -1180,7 +1281,7 @@ func doSet(o *opts) int {
 	}
 	for _, s := range o.sets {
 		if !s.apply(doc) {
-			fmt.Fprintf(os.Stderr, "shcl: cannot write %s (from %s)\n", s.path, s.opt())
+			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path))
 			return 1
 		}
 	}
@@ -1191,7 +1292,8 @@ func doSet(o *opts) int {
 		var err error
 		// Say so before blocking. With nothing on stdin this used to sit there
 		// silently, which reads as a hang rather than as a prompt; the note is
-		// unconditional so a pipeline and a terminal behave identically.
+		// unconditional so a pipeline and a terminal behave identically. The
+		// program-name prefix marks it as a notice; errors carry none.
 		fmt.Fprintln(os.Stderr, "shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)")
 		ops, err = io.ReadAll(os.Stdin)
 		if err != nil {
@@ -1214,6 +1316,7 @@ func doSet(o *opts) int {
 			return 1
 		}
 	}
+	sayDiagnostics(doc.Diagnostics())
 	if o.write {
 		return writeBack(doc, file, o)
 	}
@@ -1223,7 +1326,7 @@ func doSet(o *opts) int {
 
 func doCheck(o *opts) int {
 	if len(o.args) != 1 {
-		fmt.Fprintln(os.Stderr, "check needs FILE (see --help)")
+		fmt.Fprintln(os.Stderr, "usage: shcl check [options] FILE (see --help)")
 		return 1
 	}
 	text, err := readInput(o.args[0])
@@ -1258,9 +1361,11 @@ func doCheck(o *opts) int {
 			}
 			if bad {
 				for _, sd := range sdoc.Diagnostics() {
-					fmt.Fprintf(os.Stderr, "schema line %d: %s: %s\n", sd.Line, sd.Severity, sd.Message)
+					fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", sd.Line, sd.Severity, sd.Code, sd.Message)
 				}
-				diags = append(diags, shcl.Diagnostic{Line: 0, Severity: shcl.SeverityError, Message: "schema failed to load", Code: "V099"})
+				diags = append(diags, shcl.Diagnostic{
+					Line: 0, Severity: shcl.SeverityError, Message: "schema failed to load", Code: "V099",
+				})
 			} else {
 				diags = append(diags, doc.Validate(sdoc)...)
 				diags = shcl.SuppressDeclaredRepeats(sdoc, diags)
@@ -1272,25 +1377,21 @@ func doCheck(o *opts) int {
 	// per-binding voice and goes to stderr (which the differential check drops).
 	// A V090-V093 line number is a SCHEMA line (the code table says so); the
 	// prose names the file so the two number spaces cannot be confused.
-	errors := 0
+	errorCount := 0
 	for _, d := range diags {
 		fmt.Printf("line %d: %s: %s\n", d.Line, d.Severity, d.Code)
-		space := "line"
-		if strings.HasPrefix(d.Code, "V09") && d.Code != "V099" {
-			space = "schema line"
-		}
-		fmt.Fprintf(os.Stderr, "%s %d: %s: %s\n", space, d.Line, d.Severity, d.Message)
 		if d.Severity == shcl.SeverityError {
-			errors++
+			errorCount++
 		}
 	}
+	sayDiagnostics(diags)
 	switch {
 	case strictFailed:
 		fmt.Printf("strict load failed: %d diagnostic(s)\n", len(diags))
 		return 6
-	case errors > 0:
+	case errorCount > 0:
 		// Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
-		fmt.Printf("failed: %d diagnostic(s), %d error(s)\n", len(diags), errors)
+		fmt.Printf("failed: %d diagnostic(s), %d error(s)\n", len(diags), errorCount)
 		return 6
 	default:
 		fmt.Printf("ok (%d diagnostic(s))\n", len(diags))
@@ -1322,7 +1423,7 @@ func doInit(o *opts) int {
 	}
 	if bad {
 		for _, d := range sdoc.Diagnostics() {
-			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", d.Line, d.Severity, d.Code, d.Message)
 		}
 		fmt.Fprintln(os.Stderr, "init: schema failed to load")
 		// A broken schema is a config-semantics failure, not a usage error:
@@ -1332,7 +1433,7 @@ func doInit(o *opts) int {
 	text, faults := shcl.Generate(sdoc, o.noBanner)
 	if faults != nil {
 		for _, d := range faults {
-			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s\n", d.Line, d.Severity, d.Message)
+			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", d.Line, d.Severity, d.Code, d.Message)
 		}
 		fmt.Fprintln(os.Stderr, "init: schema has faults")
 		return 6
@@ -1343,7 +1444,11 @@ func doInit(o *opts) int {
 
 func doEnum(o *opts, wantCount bool) int {
 	if len(o.args) != 2 {
-		fmt.Fprintln(os.Stderr, "count/instances need FILE and PATH (see --help)")
+		name := "instances"
+		if wantCount {
+			name = "count"
+		}
+		fmt.Fprintf(os.Stderr, "usage: shcl %s [options] FILE PATH (see --help)\n", name)
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
@@ -1360,6 +1465,8 @@ func doEnum(o *opts, wantCount bool) int {
 	}
 	return 0
 }
+
+var commands = [...]string{"get", "set", "fmt", "check", "init", "count", "instances"}
 
 func run() int {
 	argv := os.Args[1:]
@@ -1394,6 +1501,24 @@ func run() int {
 		fmt.Printf("\n%s\n", donate)
 		return 0
 	}
+	cmd := argv[0]
+	known := false
+	for _, c := range commands {
+		if c == cmd {
+			known = true
+			break
+		}
+	}
+	if !known {
+		// Before the options are judged, so a typo in the command is reported
+		// as that and not as an option the wrong command cannot take.
+		if strings.HasPrefix(cmd, "-") && cmd != "--" {
+			fmt.Fprintf(os.Stderr, "unknown option: %s (see --help)\n", cmd)
+		} else {
+			fmt.Fprintf(os.Stderr, "unknown command: %s (see --help)\n", cmd)
+		}
+		return 1
+	}
 	o, err := parseOpts(argv[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -1415,11 +1540,8 @@ func run() int {
 		return doInit(o)
 	case "count":
 		return doEnum(o, true)
-	case "instances":
-		return doEnum(o, false)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s (see --help)\n", argv[0])
-		return 1
+		return doEnum(o, false)
 	}
 }
 

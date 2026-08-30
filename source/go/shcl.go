@@ -280,10 +280,10 @@ func (r Read[T]) at(line int, quoted bool) Read[T] {
 	return r
 }
 
-// OK is true when the read is Good or Empty - the value is usable.
-func (r Read[T]) OK() bool {
-	return r.Status == Good || r.Status == Empty
-}
+// OK is the same test as Ok.
+//
+// Deprecated: use Ok; OK goes away at the next major.
+func (r Read[T]) OK() bool { return r.Ok() }
 
 // LoadError is a failed Strict load: the diagnostics that failed it, plus the
 // recovered tree.
@@ -470,7 +470,7 @@ func (v *value) key() string {
 	return "r:" + strconv.Itoa(len(v.raw.info)) + ":" + v.raw.info + v.raw.content
 }
 
-// display is the human form; also what selectors match against (case-sensitive).
+// display is the spelled-out form; also what selectors match against (case-sensitive).
 func (v *value) display() string {
 	switch v.kind {
 	case vEmpty:
@@ -626,24 +626,70 @@ type Document struct {
 	// Content-malformed lines are NOT counted - they are retained as trivia
 	// and survive a save. LostCount() serves it; SaveFile() gates on it.
 	lost int
-	// Built on the first path read, dropped by every write entry point. Without
-	// it a read scans the parent's children, so reading a flat document key by
-	// key was quadratic (35 s at 40k keys). Reads may run concurrently, so the
+	// Built on the first path lookup and kept current by the writer (a new
+	// child appends, a removed one unlinks); only a merge drops it. Without it
+	// every lookup scans the parent's children, so a flat document read or
+	// written key by key was quadratic. Reads may run concurrently, so the
 	// build is guarded and the pointer is atomic; a write is exclusive anyway.
 	index   atomic.Pointer[nameIndex]
 	indexMu sync.Mutex
 }
 
-// nameIndex is the read accelerator: the first child of each (parent, name),
-// chained on to the next same-named sibling. A hash collision chains a
-// stranger in; the lookup checks the name, so the chain is only ever a
-// superset.
+// nameIndex is the first child of each (parent, name), chained on to the next
+// same-named sibling, plus the chain tail so an append is O(1). A hash
+// collision chains a stranger in; the lookup checks the name, so the chain is
+// only ever a superset.
 type nameIndex struct {
 	first    map[uint64]int
+	last     map[uint64]int
 	nextSame []int // per node; nilNode ends the chain
 }
 
 const nilNode = -1
+
+func (ix *nameIndex) append(key uint64, node int) {
+	for len(ix.nextSame) <= node {
+		ix.nextSame = append(ix.nextSame, nilNode)
+	}
+	ix.nextSame[node] = nilNode
+	if prev, seen := ix.last[key]; seen {
+		ix.nextSame[prev] = node
+	} else {
+		ix.first[key] = node
+	}
+	ix.last[key] = node
+}
+
+// unlink walks the chain to find the predecessor; a chain is one name's
+// siblings.
+func (ix *nameIndex) unlink(key uint64, node int) {
+	head, hit := ix.first[key]
+	if !hit {
+		return
+	}
+	next := ix.nextSame[node]
+	if head == node {
+		if next == nilNode {
+			delete(ix.first, key)
+			delete(ix.last, key)
+		} else {
+			ix.first[key] = next
+		}
+	} else {
+		c := head
+		for c != nilNode && ix.nextSame[c] != node {
+			c = ix.nextSame[c]
+		}
+		if c == nilNode {
+			return
+		}
+		ix.nextSame[c] = next
+		if next == nilNode {
+			ix.last[key] = c
+		}
+	}
+	ix.nextSame[node] = nilNode
+}
 
 func nameKey(parent int, name string) uint64 {
 	h := newFnv()
@@ -1700,7 +1746,8 @@ func (p *parser) hangDeeperPending(newIndent string) {
 			atOwnLevel := false
 			for j := len(p.stack) - 1; j >= 0; j-- {
 				ent := p.stack[j]
-				if ent.node != root && ent.node != dead && len(ent.indent) >= len(newIndent) && strings.HasPrefix(pn.indent, ent.indent) {
+				if ent.node != root && ent.node != dead && len(ent.indent) >= len(newIndent) &&
+					strings.HasPrefix(pn.indent, ent.indent) {
 					target = ent.node
 					atOwnLevel = len(ent.indent) == len(pn.indent)
 					break
@@ -1890,7 +1937,9 @@ func (p *parser) findByValue(cur int, name, text string, quoted bool) (int, bool
 // value and the next line index. The closing fence's indent is stripped from
 // each content line (the opening line's when the block never closes); the
 // rest is content.
-func (p *parser) consumeRaw(lines []string, i, openLine int, openIndent string, ch byte, length int, info string) (value, int) {
+func (p *parser) consumeRaw(
+	lines []string, i, openLine int, openIndent string, ch byte, length int, info string,
+) (value, int) {
 	var content []string
 	nest := openIndent
 	closed := false
@@ -2323,7 +2372,9 @@ func LoadAndValidate(text, schemaText string, strictness Strictness) *Document {
 		// does, and validate nothing.
 		for _, sd := range schema.diags {
 			if sd.Severity == SeverityError {
-				doc.diags = append(doc.diags, Diagnostic{Line: 0, Severity: SeverityError, Message: "schema failed to load", Code: "V099"})
+				doc.diags = append(doc.diags, Diagnostic{
+					Line: 0, Severity: SeverityError, Message: "schema failed to load", Code: "V099",
+				})
 				return doc
 			}
 		}
@@ -2672,7 +2723,10 @@ func ReadFile(path string, maxBytes int) (string, FileStatus) {
 // The i/o failures wrap rather than flatten, so a caller can tell a permission
 // failure from a full disk with errors.Is instead of matching on prose.
 func WriteFileAtomic(file, data string) error {
-	target := resolveTarget(file)
+	target, terr := resolveTarget(file)
+	if terr != nil {
+		return fmt.Errorf("%s: %w", file, terr)
+	}
 	dir := filepath.Dir(target)
 	base := filepath.Base(target)
 	// Exclusive create: the name is predictable, so anything already sitting
@@ -2709,18 +2763,20 @@ func WriteFileAtomic(file, data string) error {
 	if f == nil {
 		return fmt.Errorf("%s: cannot create temporary file: %w", file, last)
 	}
-	// On the handle, so umask cannot narrow it the way it narrows a create
-	// mode. Best effort: a filesystem that cannot carry the mode is not a
-	// reason to fail a write that otherwise succeeded. The whole mode goes,
-	// setuid/setgid/sticky included, as an editor's rewrite would carry it.
-	if existErr == nil && runtime.GOOS != "windows" {
-		_ = f.Chmod(existing.Mode())
-	}
 	var err error
 	if _, werr := f.WriteString(data); werr != nil {
 		err = werr
 	} else {
 		err = f.Sync()
+	}
+	// On the handle, so umask cannot narrow it the way it narrows a create
+	// mode, and after the data, because a write by anyone but root clears
+	// setuid/setgid. Best effort: a filesystem that cannot carry the mode is
+	// not a reason to fail a write that otherwise succeeded. The whole mode
+	// goes, setuid/setgid/sticky included, as an editor's rewrite would carry
+	// it.
+	if err == nil && existErr == nil && runtime.GOOS != "windows" {
+		_ = f.Chmod(existing.Mode())
 	}
 	f.Close()
 	if err != nil {
@@ -2746,13 +2802,14 @@ func WriteFileAtomic(file, data string) error {
 // the write goes through it; EvalSymlinks does that but needs the target to
 // exist, so a dangling link is walked by hand and the file is created where it
 // points. A path that is no link at all is a plain create at the path as given.
-func resolveTarget(file string) string {
+// A link cycle is an error: silently creating a regular file in its place
+// would be the exact replacement the symlink walk exists to avoid.
+func resolveTarget(file string) (string, error) {
 	if p, err := filepath.EvalSymlinks(file); err == nil {
-		return p
+		return p, nil
 	}
 	p := file
 	for hop := 0; hop < 40; hop++ {
-		// bounded: a link cycle would otherwise never resolve
 		next, err := os.Readlink(p)
 		if err != nil {
 			break
@@ -2763,10 +2820,13 @@ func resolveTarget(file string) string {
 			p = filepath.Join(filepath.Dir(p), next)
 		}
 	}
-	if dir, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
-		return filepath.Join(dir, filepath.Base(p))
+	if _, err := os.Readlink(p); err == nil {
+		return "", errors.New("too many levels of symbolic links")
 	}
-	return p
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(dir, filepath.Base(p)), nil
+	}
+	return p, nil
 }
 
 // setReadOnly toggles the windows read-only attribute, which is all Chmod
@@ -3132,24 +3192,19 @@ func (d *Document) nameIndex() *nameIndex {
 	if idx := d.index.Load(); idx != nil {
 		return idx
 	}
-	first := map[uint64]int{}
-	last := map[uint64]int{}
-	nextSame := make([]int, len(d.arena))
-	for i := range nextSame {
-		nextSame[i] = nilNode
+	idx := &nameIndex{
+		first:    map[uint64]int{},
+		last:     map[uint64]int{},
+		nextSame: make([]int, len(d.arena)),
+	}
+	for i := range idx.nextSame {
+		idx.nextSame[i] = nilNode
 	}
 	for p := range d.arena {
 		for _, c := range d.arena[p].children {
-			k := nameKey(p, d.arena[c].name)
-			if prev, seen := last[k]; seen {
-				nextSame[prev] = c
-			} else {
-				first[k] = c
-			}
-			last[k] = c
+			idx.append(nameKey(p, d.arena[c].name), c)
 		}
 	}
-	idx := &nameIndex{first: first, nextSame: nextSame}
 	d.index.Store(idx)
 	return idx
 }
@@ -3518,8 +3573,14 @@ func (d *Document) newChild(parent int, name, nameSrc string, v value) int {
 	idx := len(d.arena)
 	// Hand-written files separate top-level sections with a blank line;
 	// writer-built ones do the same (the emitter never blanks line 1).
-	d.arena = append(d.arena, nodeData{name: name, nameSrc: spelled(name, nameSrc), value: v, parent: parent, blankBefore: parent == root})
+	d.arena = append(d.arena, nodeData{
+		name: name, nameSrc: spelled(name, nameSrc), value: v, parent: parent,
+		blankBefore: parent == root,
+	})
 	d.arena[parent].children = append(d.arena[parent].children, idx)
+	if ix := d.index.Load(); ix != nil {
+		ix.append(nameKey(parent, name), idx)
+	}
 	return idx
 }
 
@@ -3576,19 +3637,16 @@ func (d *Document) probeWrite(scan pathScan) (WriteReason, []int) {
 		case seg.sel == nil:
 			if alive {
 				alive = false
-				for _, c := range d.arena[probe].children {
-					if d.arena[c].name == seg.name {
-						probe, alive = c, true
-						break
-					}
+				if m := d.childrenNamed(probe, seg.name); len(m) > 0 {
+					probe, alive = m[0], true
 				}
 			}
 		case seg.sel.kind == selByValue:
 			if alive {
 				want := applyEscapes(seg.sel.value)
 				alive = false
-				for _, c := range d.arena[probe].children {
-					if d.arena[c].name == seg.name && dispKey(&d.arena[c].value) == want && (!seg.sel.quoted || singleScalar(&d.arena[c].value)) {
+				for _, c := range d.childrenNamed(probe, seg.name) {
+					if dispKey(&d.arena[c].value) == want && (!seg.sel.quoted || singleScalar(&d.arena[c].value)) {
 						probe, alive = c, true
 						break
 					}
@@ -3598,12 +3656,7 @@ func (d *Document) probeWrite(scan pathScan) (WriteReason, []int) {
 			if !alive {
 				return NoSuchIndex, nil
 			}
-			var matches []int
-			for _, c := range d.arena[probe].children {
-				if d.arena[c].name == seg.name {
-					matches = append(matches, c)
-				}
-			}
+			matches := d.childrenNamed(probe, seg.name)
 			if seg.sel.index >= uint64(len(matches)) {
 				return NoSuchIndex, nil
 			}
@@ -3627,7 +3680,6 @@ func (d *Document) probeWrite(scan pathScan) (WriteReason, []int) {
 // why). Validation runs first, so a doomed path leaves no half-created
 // intermediates behind.
 func (d *Document) place(path string) (int, bool) {
-	d.index.Store(nil)
 	scan, err := scanLookup(path)
 	if err != nil {
 		return 0, false
@@ -3677,11 +3729,10 @@ func (d *Document) setValue(path string, v value) bool {
 func (d *Document) collapseDup(node int) {
 	parent := d.arena[node].parent
 	me := &d.arena[node]
-	key := mergeHash(me.name, &me.value)
 	other := -1
-	for _, c := range d.arena[parent].children {
+	for _, c := range d.childrenNamed(parent, me.name) {
 		o := &d.arena[c]
-		if c != node && mergeHash(o.name, &o.value) == key && mergeEq(o.name, &o.value, me.name, &me.value) {
+		if c != node && mergeEq(o.name, &o.value, me.name, &me.value) {
 			other = c
 			break
 		}
@@ -3701,6 +3752,7 @@ func (d *Document) collapseDup(node int) {
 	if pos(node) < pos(other) {
 		survivor, loser = node, other
 	}
+	moved := append([]int(nil), d.arena[loser].children...)
 	foldNodeInto(d.arena, survivor, loser)
 	keep := d.arena[parent].children[:0]
 	for _, c := range d.arena[parent].children {
@@ -3709,6 +3761,14 @@ func (d *Document) collapseDup(node int) {
 		}
 	}
 	d.arena[parent].children = keep
+	if ix := d.index.Load(); ix != nil {
+		ix.unlink(nameKey(parent, d.arena[loser].name), loser)
+		for _, k := range moved {
+			name := d.arena[k].name
+			ix.unlink(nameKey(loser, name), k)
+			ix.append(nameKey(survivor, name), k)
+		}
+	}
 }
 
 // Exists is true when the path resolves to at least one real node.
@@ -3732,7 +3792,6 @@ func (d *Document) Exists(path string) bool {
 
 // Remove deletes the node(s) at a path (with their subtrees); returns how many.
 func (d *Document) Remove(path string) int {
-	d.index.Store(nil)
 	r, ok := d.resolve(path)
 	if !ok {
 		return 0
@@ -3759,6 +3818,9 @@ func (d *Document) Remove(path string) int {
 			}
 		}
 		d.arena[p].children = kids
+		if ix := d.index.Load(); ix != nil {
+			ix.unlink(nameKey(p, d.arena[t].name), t)
+		}
 	}
 	return len(targets)
 }
@@ -3778,8 +3840,16 @@ func (d *Document) SetComment(path, text string) bool {
 	if !strings.HasPrefix(line, "#") {
 		line = "# " + line
 	}
-	t := d.arena[idx].trivMut()
-	t.leading = append(t.leading, plainLead(line))
+	// The node's own blank moves above its first comment; otherwise the blank
+	// would separate the comment from what it annotates.
+	nd := &d.arena[idx]
+	l := plainLead(line)
+	if nd.blankBefore && len(nd.leading()) == 0 {
+		l.blankBefore = true
+		nd.blankBefore = false
+	}
+	t := nd.trivMut()
+	t.leading = append(t.leading, l)
 	return true
 }
 
@@ -3818,9 +3888,10 @@ func (d *Document) SetEmpty(path string) bool {
 
 // SetRaw binds a raw block at path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed); one
-// holding a line break has no fence-line spelling and fails the write.
+// holding a line break or an unquoted `#` has no fence-line spelling (the `#`
+// would read back as a comment) and fails the write.
 func (d *Document) SetRaw(path, content, info string) bool {
-	if strings.ContainsAny(info, "\n\r") {
+	if _, c := splitComment(info); strings.ContainsAny(info, "\n\r") || c != "" {
 		return false
 	}
 	info = strings.TrimSpace(info)
@@ -6091,7 +6162,9 @@ func (d *Document) vCheck(c *constraint, def *schemaDef, out *[]Diagnostic) {
 // own checks, in fragment order - depth-first, so diagnostic order stays
 // derivable. Termination is structural: every mount descends at least one
 // document level, and the document is finite.
-func (d *Document) vCheckFrom(c *constraint, def *schemaDef, start, anchor0 int, out *[]Diagnostic, mounted map[fragMount]bool) {
+func (d *Document) vCheckFrom(
+	c *constraint, def *schemaDef, start, anchor0 int, out *[]Diagnostic, mounted map[fragMount]bool,
+) {
 	var ctxs []vContext
 	d.vContexts([]int{start}, c.segs, anchor0, &ctxs)
 	for _, ctx := range ctxs {
@@ -6101,7 +6174,8 @@ func (d *Document) vCheckFrom(c *constraint, def *schemaDef, start, anchor0 int,
 		if c.repeat != nil {
 			n := uint64(len(ctx.found))
 			if n < c.repeat[0] || n > c.repeat[1] {
-				vdiag(out, ctx.anchor, fmt.Sprintf("instance count out of bounds at '%s': %d not in %d..%d", c.path, n, c.repeat[0], c.repeat[1]))
+				vdiag(out, ctx.anchor, fmt.Sprintf("instance count out of bounds at '%s': %d not in %d..%d",
+					c.path, n, c.repeat[0], c.repeat[1]))
 			}
 		}
 		for _, n := range ctx.found {
