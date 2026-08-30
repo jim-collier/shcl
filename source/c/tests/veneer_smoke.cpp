@@ -100,6 +100,34 @@ int main() {
 	CHECK(when.value.size() == 2 && when.value[0] == "2026-08-02" && when.slots[1] == shcl::Status::BadType);
 	CHECK(std::string(shcl::to_string(shcl::Status::BadType)) == "BadType");
 
+	// The rest of the surface, item by item: strictness, strict_failed, paths,
+	// authored_name, the raw pair, the float/bool arrays, and the typed get
+	// over double and bool.
+	CHECK(doc.strictness() == shcl::Strictness::Standard);
+	CHECK(!doc.strict_failed());
+	auto strictDoc = shcl::Document::parse_with("x 1\n", shcl::Strictness::Strict);
+	CHECK(strictDoc.strict_failed());
+	auto allPaths = doc.paths();
+	CHECK(allPaths.size() == 6 && allPaths[0] == "name" && allPaths[5] == "city");
+	auto spelled = shcl::Document::parse("SYMBOLS: 3\n");
+	CHECK(spelled.authored_name("symbols") == "SYMBOLS");
+	CHECK(spelled.authored_name("missing").empty());
+	auto rawDoc = shcl::Document::parse("blk:\n\t```sql\n\tselect 1\n\t```\n");
+	auto rb = rawDoc.read_raw("blk");
+	CHECK(rb.ok() && rb.value == "select 1");
+	CHECK(rawDoc.read_raw_info("blk").value == "sql");
+	CHECK(rawDoc.read_raw("missing").status == shcl::Status::NotFound);
+	auto fa = qd.read_float_array("nums");
+	CHECK(fa.slots.size() == 3 && fa.slots[1] == shcl::Status::BadType && fa.value[2] == 3.0);
+	auto ba = shcl::Document::parse("flags: true, false, x\n").read_bool_array("flags");
+	CHECK(ba.value.size() == 3 && ba.value[0] && !ba.value[1] && ba.slots[2] == shcl::Status::BadType);
+	CHECK(doc.get<double>("ratio").value == 3.5);
+	CHECK(doc.get<bool>("on").value == true);
+	CHECK(doc.get_or<double>("ratio", 0.0) == 3.5);
+	CHECK(doc.get_or<double>("nope", 1.25) == 1.25);
+	CHECK(doc.get_or<bool>("on", false) == true);
+	CHECK(doc.get_or<bool>("nope", true) == true);
+
 	// Schema validation rides through the veneer: a conforming doc is clean, a
 	// violation carries its stable V-code, and a key-level schema fault still
 	// lets the unknown-field sweep run (the faulted entry keeps its path).

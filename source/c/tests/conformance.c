@@ -7,6 +7,12 @@
 // repo root as cicd does).
 
 #define _POSIX_C_SOURCE 200809L // strdup, opendir/readdir under -std=c11
+
+// A consumer's own type names must survive the header: its internal typedefs
+// are Shcl-prefixed, so these deliberately common names prove no collision
+// remains (the public shcl_* surface is separate and unchanged).
+typedef int Arena, Node, Value, Element, Str, Parser, Diag, Segment, Selector, Slot;
+
 #define SHCL_IMPLEMENTATION
 #include "shcl.h"
 
@@ -61,7 +67,7 @@ static char *read_file(const char *path, size_t *len) {
 }
 
 // Bytes the document arena holds, for the retention fixture.
-static size_t arena_bytes(const Arena *a) {
+static size_t arena_bytes(const ShclArena *a) {
 	size_t n = 0;
 	for (const ShclBlock *b = a->head; b; b = b->next) n += b->used;
 	return n;
@@ -197,7 +203,7 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 	else if (!strcmp(op, "bool")) { int x; if (!cf_bool(v, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_bool(d, path, plen, x); }
 	else if (!strcmp(op, "literal")) { if (!PRESENT) wrote = shcl_set_literal(d, path, plen, v, vn); }
 	else if (!strcmp(op, "string")) { if (!PRESENT) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = shcl_set_string(d, path, plen, b, m); free(b); } }
-	else if (!strcmp(op, "datetime")) { shcl_datetime dt; Str sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) rc = 1; else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
+	else if (!strcmp(op, "datetime")) { shcl_datetime dt; ShclStr sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) rc = 1; else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
 	else if (!strcmp(op, "int-array")) {
 		int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
 		for (size_t i = 0; i < an && !rc; i++) if (!cf_i64(f[2 + i], strlen(f[2 + i]), &a[i])) rc = 1;
@@ -228,7 +234,7 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 	}
 	else if (!strcmp(op, "datetime-array")) {
 		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
-		for (size_t i = 0; i < an && !rc; i++) { Str sv; sv.p = f[2 + i]; sv.n = strlen(f[2 + i]); if (!parse_datetime(&d->arena, sv, &a[i])) rc = 1; }
+		for (size_t i = 0; i < an && !rc; i++) { ShclStr sv; sv.p = f[2 + i]; sv.n = strlen(f[2 + i]); if (!parse_datetime(&d->arena, sv, &a[i])) rc = 1; }
 		if (!rc && !PRESENT) wrote = shcl_set_datetime_array(d, path, plen, a, an);
 		free(a);
 	}
@@ -856,8 +862,8 @@ int main(int argc, char **argv) {
 	}
 	// set_raw: the body's shared indent survives a reload (the closing fence's
 	// indent is what comes off), the info-string is stored as a fence line
-	// reads it back, and an info with a line break has no spelling and fails
-	// the write. Same fixture in every runner.
+	// reads it back, and an info with a line break or an unquoted `#` has no
+	// spelling and fails the write. Same fixture in every runner.
 	{
 		shcl_doc *sd = shcl_new();
 		if (!shcl_set_raw(sd, "q", 1, "  a\n  b", 7, " sql ", 5)) fail("set_raw", "set_raw failed");
@@ -871,6 +877,15 @@ int main(int argc, char **argv) {
 		if (shcl_set_raw(sd, "q", 1, "x", 1, "a\rb", 3)) fail("set_raw", "info with a CR accepted");
 		br = shcl_read_raw(sd, "q", 1);
 		if (br.status != SHCL_GOOD || br.value.n != 7 || memcmp(br.value.p, "  a\n  b", 7) != 0) fail("set_raw", "refused write changed the document");
+		if (shcl_set_raw(sd, "q", 1, "x", 1, "a # b", 5)) fail("set_raw", "info with an unquoted # accepted");
+		if (!shcl_set_raw(sd, "q", 1, "  a\n  b", 7, "\"a # b\"", 7)) fail("set_raw", "quoted # info refused");
+		shcl_free(back);
+		sc = shcl_to_canonical(sd);
+		back = shcl_parse(sc.p, sc.n);
+		br = shcl_read_raw(back, "q", 1);
+		if (br.status != SHCL_GOOD || br.value.n != 7 || memcmp(br.value.p, "  a\n  b", 7) != 0) fail("set_raw", "content did not survive the reload");
+		bi = shcl_read_raw_info(back, "q", 1);
+		if (bi.status != SHCL_GOOD || bi.value.n != 7 || memcmp(bi.value.p, "\"a # b\"", 7) != 0) fail("set_raw", "quoted # info did not round-trip");
 		shcl_free(back); shcl_free(sd);
 	}
 	// A link to a file that is not there yet is written through like any

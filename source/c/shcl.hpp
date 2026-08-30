@@ -82,7 +82,10 @@ inline std::vector<Status> to_slots(const shcl_status *s, std::size_t n) {
 inline const char *to_string(Status s) { return shcl_status_name(static_cast<shcl_status>(s)); }
 
 class Document {
-	shcl_doc *d_ = nullptr;
+	// unique_ptr owns the C handle: moves transfer it, copies stay deleted,
+	// and destruction frees it - no hand-written rule of five to get wrong.
+	struct Free { void operator()(shcl_doc *d) const noexcept { shcl_free(d); } };
+	std::unique_ptr<shcl_doc, Free> d_;
 	static Status st(shcl_status s) { return static_cast<Status>(s); }
 public:
 	// An empty document, so a default-constructed Document is usable (every
@@ -91,9 +94,8 @@ public:
 	explicit Document(shcl_doc *d) : d_(d) {}
 	Document(const Document &) = delete;
 	Document &operator=(const Document &) = delete;
-	Document(Document &&o) noexcept : d_(o.d_) { o.d_ = nullptr; }
-	Document &operator=(Document &&o) noexcept { if (this != &o) { if (d_) shcl_free(d_); d_ = o.d_; o.d_ = nullptr; } return *this; }
-	~Document() { if (d_) shcl_free(d_); }
+	Document(Document &&) noexcept = default;
+	Document &operator=(Document &&) noexcept = default;
 
 	static Document parse(std::string_view t) { return Document(shcl_parse(t.data(), t.size())); }
 	static Document parse_with(std::string_view t, Strictness s) { return Document(shcl_parse_with(t.data(), t.size(), static_cast<shcl_strictness>(s))); }
@@ -136,8 +138,8 @@ public:
 	// Not a bool: Refused is the lost-content gate, which save_file_lossy
 	// overrides, and folding it into a failed write leaves the caller with an
 	// override they cannot tell they need.
-	SaveResult save_file(const std::string &path) const { return static_cast<SaveResult>(shcl_save_file(d_, path.c_str())); }
-	SaveResult save_file_lossy(const std::string &path) const { return static_cast<SaveResult>(shcl_save_file_lossy(d_, path.c_str())); }
+	SaveResult save_file(const std::string &path) const { return static_cast<SaveResult>(shcl_save_file(d_.get(), path.c_str())); }
+	SaveResult save_file_lossy(const std::string &path) const { return static_cast<SaveResult>(shcl_save_file_lossy(d_.get(), path.c_str())); }
 #endif
 
 	// One-shot load-and-validate: parse at a strictness, validate against a
@@ -150,26 +152,26 @@ public:
 		return Document(shcl_load_and_validate(text.data(), text.size(), schema.data(), schema.size(), static_cast<shcl_strictness>(s)));
 	}
 
-	bool strict_failed() const { return shcl_strict_failed(d_) != 0; }
-	Strictness strictness() const { return static_cast<Strictness>(shcl_strictness_of(d_)); }
-	std::string to_canonical() const { return to_str(shcl_to_canonical(d_)); }
+	bool strict_failed() const { return shcl_strict_failed(d_.get()) != 0; }
+	Strictness strictness() const { return static_cast<Strictness>(shcl_strictness_of(d_.get())); }
+	std::string to_canonical() const { return to_str(shcl_to_canonical(d_.get())); }
 
 	std::vector<Diagnostic> diagnostics() const {
-		std::vector<Diagnostic> v; std::size_t n = shcl_diag_count(d_);
+		std::vector<Diagnostic> v; std::size_t n = shcl_diag_count(d_.get());
 		for (std::size_t i = 0; i < n; i++)
-			v.push_back({shcl_diag_line(d_, i), shcl_diag_severity(d_, i) == SHCL_SEV_ERROR, to_str(shcl_diag_message(d_, i)), shcl_diag_code(d_, i)});
+			v.push_back({shcl_diag_line(d_.get(), i), shcl_diag_severity(d_.get(), i) == SHCL_SEV_ERROR, to_str(shcl_diag_message(d_.get(), i)), shcl_diag_code(d_.get(), i)});
 		return v;
 	}
 
 	// How many error-severity diagnostics the document carries - the "did
 	// this file have errors?" predicate. After load_and_validate, that
 	// includes validation errors.
-	std::size_t error_count() const { return shcl_error_count(d_); }
+	std::size_t error_count() const { return shcl_error_count(d_.get()); }
 
 	// How many lines or values parsing dropped that canonical output cannot
 	// re-emit. Content-malformed lines do NOT count - those survive a save.
 	// Nonzero is why save_file refuses; save_file_lossy is the override.
-	std::size_t lost_count() const { return shcl_lost_count(d_); }
+	std::size_t lost_count() const { return shcl_lost_count(d_.get()); }
 
 	// Schema validation (spec.md "Schema validation"): empty result = conforms.
 	// Schema faults (V09x, schema-file lines) come first; the surviving
@@ -181,7 +183,7 @@ public:
 	std::vector<Diagnostic> validate(const Document &schema) const {
 		std::vector<Diagnostic> v;
 		// Owned from the call on, so a throw while copying cannot leak it.
-		std::unique_ptr<shcl_validation, void (*)(shcl_validation *)> r(shcl_validate(d_, schema.d_), &shcl_validation_free);
+		std::unique_ptr<shcl_validation, void (*)(shcl_validation *)> r(shcl_validate(d_.get(), schema.d_.get()), &shcl_validation_free);
 		std::size_t n = shcl_validation_count(r.get());
 		for (std::size_t i = 0; i < n; i++)
 			v.push_back({shcl_validation_line(r.get(), i), shcl_validation_severity(r.get(), i) == SHCL_SEV_ERROR, to_str(shcl_validation_message(r.get(), i)), shcl_validation_code(r.get(), i)});
@@ -190,34 +192,35 @@ public:
 
 	// Layered loading: overlay `over` (a higher-priority layer) onto this doc.
 	// Leaf names in `over` override; container instances merge by (name, value).
-	void merge(const Document &over) { shcl_merge(d_, over.d_); }
+	void merge(const Document &over) { shcl_merge(d_.get(), over.d_.get()); }
 
 	// Schema-driven generation (`shcl init`): a commented, typed starter config
 	// from this document read as a schema, and whether it succeeded - false on
 	// schema faults, with the text then empty; for the fault list, validate()
 	// an empty document against this schema - it reproduces the same V09x
 	// diagnostics. A footer naming the format and pointing at the spec is
-	// written last unless no_banner.
-	std::pair<std::string, bool> generate(bool no_banner = false) const {
+	// written last unless no_banner. Not const: a schema that expands past the
+	// generator's field cap records the fault as a diagnostic on this document.
+	std::pair<std::string, bool> generate(bool no_banner = false) {
 		int ok = 0;
-		std::string s = to_str(shcl_generate(d_, no_banner ? 1 : 0, &ok));
+		std::string s = to_str(shcl_generate(d_.get(), no_banner ? 1 : 0, &ok));
 		return {std::move(s), ok != 0};
 	}
 
-	std::size_t count(std::string_view p) const { return shcl_count(d_, p.data(), p.size()); }
+	std::size_t count(std::string_view p) const { return shcl_count(d_.get(), p.data(), p.size()); }
 	// Every field path, file order, deduplicated (bare-name-safe segments only).
 	// Quote one path segment for splicing into a lookup path (injection-safe).
-	std::string quote_segment(std::string_view name) const { return to_str(shcl_quote_segment(d_, name.data(), name.size())); }
+	std::string quote_segment(std::string_view name) const { return to_str(shcl_quote_segment(d_.get(), name.data(), name.size())); }
 
 	std::vector<std::string> paths() const {
-		shcl_str *v; std::size_t n = shcl_paths(d_, &v);
+		shcl_str *v; std::size_t n = shcl_paths(d_.get(), &v);
 		std::vector<std::string> r; r.reserve(n);
 		for (std::size_t i = 0; i < n; i++) r.push_back(to_str(v[i]));
 		return r;
 	}
 
 	std::vector<std::string> instances(std::string_view p) const {
-		shcl_str *a; std::size_t n = shcl_instances(d_, p.data(), p.size(), &a);
+		shcl_str *a; std::size_t n = shcl_instances(d_.get(), p.data(), p.size(), &a);
 		std::vector<std::string> v; v.reserve(n);
 		for (std::size_t i = 0; i < n; i++) v.push_back(to_str(a[i]));
 		return v;
@@ -225,28 +228,28 @@ public:
 
 	// 1-based source line of the binding at a path; 0 when it does not resolve
 	// to exactly one node or the node was writer-built.
-	std::size_t line(std::string_view p) const { return shcl_line(d_, p.data(), p.size()); }
+	std::size_t line(std::string_view p) const { return shcl_line(d_.get(), p.data(), p.size()); }
 
 	// Whether the single scalar value at a path was quoted in the source, so a
 	// quoted plain string is distinguishable from a bare word that happens to
 	// spell a reserved one. False for anything that is not one scalar element.
-	bool quoted(std::string_view p) const { return shcl_quoted(d_, p.data(), p.size()) != 0; }
+	bool quoted(std::string_view p) const { return shcl_quoted(d_.get(), p.data(), p.size()) != 0; }
 
 	// Whether a path resolves to at least one node.
-	bool exists(std::string_view p) const { return shcl_exists(d_, p.data(), p.size()) != 0; }
+	bool exists(std::string_view p) const { return shcl_exists(d_.get(), p.data(), p.size()) != 0; }
 
 	// The field name at a path exactly as the author spelled it (case
 	// unfolded, outer quotes stripped - escape sequences stay as written too,
 	// where every other name operation sees them resolved); empty when the path
 	// does not resolve to exactly one node.
-	std::string authored_name(std::string_view p) const { return to_str(shcl_authored_name(d_, p.data(), p.size())); }
+	std::string authored_name(std::string_view p) const { return to_str(shcl_authored_name(d_.get(), p.data(), p.size())); }
 
 	// The plural line(): 1-based source lines at a path, in file order, so a
 	// repeated field - the case that most wants a citable line - yields every
 	// binding's. Unresolved wildcard slots stay in the list as 0; a miss is
 	// the empty vector.
 	std::vector<std::size_t> lines(std::string_view p) const {
-		std::size_t *a; std::size_t n = shcl_lines(d_, p.data(), p.size(), &a);
+		std::size_t *a; std::size_t n = shcl_lines(d_.get(), p.data(), p.size(), &a);
 		std::vector<std::size_t> v; v.reserve(n);
 		for (std::size_t i = 0; i < n; i++) v.push_back(a[i]);
 		return v;
@@ -254,27 +257,27 @@ public:
 
 	// Why a write at a path would fail - the reason behind a setter's bare
 	// failure. Probes only; never creates.
-	WriteReason write_reason(std::string_view p) const { return static_cast<WriteReason>(shcl_write_reason_(d_, p.data(), p.size())); }
+	WriteReason write_reason(std::string_view p) const { return static_cast<WriteReason>(shcl_write_reason_(d_.get(), p.data(), p.size())); }
 
 	// Child field names under a path, file order, duplicates included; "" is
 	// the top level. Names as stored - quote_segment() splices one into a path.
 	std::vector<std::string> children(std::string_view p) const {
-		shcl_str *a; std::size_t n = shcl_children(d_, p.data(), p.size(), &a);
+		shcl_str *a; std::size_t n = shcl_children(d_.get(), p.data(), p.size(), &a);
 		std::vector<std::string> v; v.reserve(n);
 		for (std::size_t i = 0; i < n; i++) v.push_back(to_str(a[i]));
 		return v;
 	}
 
-	Read<int64_t> read_int(std::string_view p) const { auto r = shcl_read_int(d_, p.data(), p.size()); return {r.value, st(r.status)}; }
-	Read<double> read_float(std::string_view p) const { auto r = shcl_read_float(d_, p.data(), p.size()); return {r.value, st(r.status)}; }
-	Read<bool> read_bool(std::string_view p) const { auto r = shcl_read_bool_(d_, p.data(), p.size()); return {r.value != 0, st(r.status)}; }
-	Read<std::string> read_string(std::string_view p) const { auto r = shcl_read_string(d_, p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
-	Read<std::string> read_raw(std::string_view p) const { auto r = shcl_read_raw(d_, p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
-	Read<std::string> read_raw_info(std::string_view p) const { auto r = shcl_read_raw_info(d_, p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
+	Read<int64_t> read_int(std::string_view p) const { auto r = shcl_read_int(d_.get(), p.data(), p.size()); return {r.value, st(r.status)}; }
+	Read<double> read_float(std::string_view p) const { auto r = shcl_read_float(d_.get(), p.data(), p.size()); return {r.value, st(r.status)}; }
+	Read<bool> read_bool(std::string_view p) const { auto r = shcl_read_bool_(d_.get(), p.data(), p.size()); return {r.value != 0, st(r.status)}; }
+	Read<std::string> read_string(std::string_view p) const { auto r = shcl_read_string(d_.get(), p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
+	Read<std::string> read_raw(std::string_view p) const { auto r = shcl_read_raw(d_.get(), p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
+	Read<std::string> read_raw_info(std::string_view p) const { auto r = shcl_read_raw_info(d_.get(), p.data(), p.size()); return {to_str(r.value), st(r.status)}; }
 
 	// Datetime as the reference's textual form (the common need).
 	Read<std::string> read_datetime_str(std::string_view p) const {
-		auto r = shcl_read_datetime(d_, p.data(), p.size());
+		auto r = shcl_read_datetime(d_.get(), p.data(), p.size());
 		char buf[SHCL_DT_BUF]; std::size_t k = shcl_datetime_str(&r.value, buf);
 		return {std::string(buf, k), st(r.status)};
 	}
@@ -283,26 +286,26 @@ public:
 	// This used to be spelled read_datetime_raw, with read_datetime returning
 	// the text - backwards twice over, since "raw" means the text exactly as
 	// written everywhere else. Both old spellings are gone as of this major.
-	Read<Datetime> read_datetime(std::string_view p) const { auto r = shcl_read_datetime(d_, p.data(), p.size()); return {Datetime(r.value), st(r.status)}; }
+	Read<Datetime> read_datetime(std::string_view p) const { auto r = shcl_read_datetime(d_.get(), p.data(), p.size()); return {Datetime(r.value), st(r.status)}; }
 
 	// Array reads carry the per-slot statuses in .slots, so a partly-resolved
 	// array says which slots failed rather than only that the read did.
-	Read<std::vector<int64_t>> read_int_array(std::string_view p) const { auto r = shcl_read_int_array(d_, p.data(), p.size()); return {std::vector<int64_t>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
-	Read<std::vector<double>> read_float_array(std::string_view p) const { auto r = shcl_read_float_array(d_, p.data(), p.size()); return {std::vector<double>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
+	Read<std::vector<int64_t>> read_int_array(std::string_view p) const { auto r = shcl_read_int_array(d_.get(), p.data(), p.size()); return {std::vector<int64_t>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
+	Read<std::vector<double>> read_float_array(std::string_view p) const { auto r = shcl_read_float_array(d_.get(), p.data(), p.size()); return {std::vector<double>(r.values, r.values + r.n), st(r.status), to_slots(r.statuses, r.n)}; }
 	Read<std::vector<bool>> read_bool_array(std::string_view p) const {
-		auto r = shcl_read_bool_array(d_, p.data(), p.size());
+		auto r = shcl_read_bool_array(d_.get(), p.data(), p.size());
 		std::vector<bool> v; v.reserve(r.n); for (std::size_t i = 0; i < r.n; i++) v.push_back(r.values[i] != 0);
 		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
 	}
 	Read<std::vector<std::string>> read_string_array(std::string_view p) const {
-		auto r = shcl_read_string_array(d_, p.data(), p.size());
+		auto r = shcl_read_string_array(d_.get(), p.data(), p.size());
 		std::vector<std::string> v; v.reserve(r.n); for (std::size_t i = 0; i < r.n; i++) v.push_back(to_str(r.values[i]));
 		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
 	}
 	// Datetimes as their textual form, matching read_datetime_str; the owning
 	// Datetime form is per-element and stays on the scalar read.
 	Read<std::vector<std::string>> read_datetime_array(std::string_view p) const {
-		auto r = shcl_read_datetime_array(d_, p.data(), p.size());
+		auto r = shcl_read_datetime_array(d_.get(), p.data(), p.size());
 		std::vector<std::string> v; v.reserve(r.n);
 		for (std::size_t i = 0; i < r.n; i++) { char buf[SHCL_DT_BUF]; std::size_t k = shcl_datetime_str(&r.values[i], buf); v.push_back(std::string(buf, k)); }
 		return {std::move(v), st(r.status), to_slots(r.statuses, r.n)};
