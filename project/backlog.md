@@ -36,9 +36,366 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Bugs
 
-None open.
+- Code review 20260830b:
+
+	- A third directive pass, run the same day as the 20260830 round and after it merged. Nine parallel audits over the four bindings, the pipeline, the installers, the docs and the backlog. Items 1 to 17 are here; 18 to 57 are under Features and enhancements. The two prior rounds this week were exhaustive on the code, so most of what is left sits in the writer's fixpoint guarantee, the C read tier, and the documents.
+
+	- 🔘 Item 1: a written duplicate folds one level but not the next, so `set` output is not a `fmt` fixpoint.
+		- Reproduced: file `b: 1, 2` over a block `b:` with `a: 2` under it, ops `int b.a 2` then `empty b`. The write emits `a: 2` twice; `fmt` on that output collapses it back to one.
+		- Cause: the fold moves the loser's children onto the survivor and stops. The parser's own late-duplicate fold is depth-first for exactly this reason; the writer's path is not.
+		- No value is lost, since a reload merges the pair. What breaks is the promise that a write leaves a canonical file, so a "fmt changes nothing" gate fails right after a legitimate edit.
+		- All four bindings, and the cross-binding check cannot see it. Fold the moved children after the merge, the shape the parser already uses.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 2: a bracket array is mis-diagnosed, read wrong, then baked into a string by `fmt --write`.
+		- Reproduced: `ports: [80, 443]` reports `E015 missing colon; repaired as an empty value`. The line has a colon.
+		- `get --array` returns one slot holding `80, 443` at exit 0, so a script gets a wrong answer and no signal.
+		- `fmt --write` rewrites the line to `ports: "80, 443"`. The quoted-plain-string rule then makes that the authored spelling, so the file reports clean forever and the one warning is gone. E015 is a repair, not a loss, so the save gate does not fire.
+		- Bracket syntax is what most authors arrive with, from JSON, TOML and YAML. A pasted YAML list gets the same treatment: `- red` reports `unexpected 'r' after field`.
+		- Cheapest fix is to name the shape in the diagnostic prose, which is per-binding voice and outside the differential contract, so no golden moves. A dedicated code is stronger and costs four bindings plus a corpus case.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 3: array reads grow the document arena on every call, without bound.
+		- Measured: 200k reads of one three-element array add 15.7 MB. The same loop over a scalar field adds nothing. Confirmed against `read_int_array`; the other four array reads allocate the same way.
+		- Cause: the result array and its status array come out of the document arena, which is only freed at `shcl_free`.
+		- This is the defect already fixed twice in this file for the scalar path, and both fixes carry a comment saying so. The array family never got the same treatment.
+		- C only. The other three return owned collections the runtime reclaims, so the cross-binding check is blind to it. A long-running consumer polling an array field grows steadily. The veneer copies into a vector and never looks at the arena memory again, so there it is pure waste.
+		- Fix is a decision, not mechanical: a third arena reset per read call changes the documented lifetime of what a read hands back.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 4: `init` emits a starter config that fails the schema that produced it.
+		- Reproduced: a field typed `int` with `min: 1`, `max: 10` and `default: 99` generates `# int, 1-10, required` and then `server.port: 99` on the next line. `check --schema` against the same schema fails with `V006`, exit 6.
+		- The generated comment names the range the generated value breaks.
+		- Nothing checks the default against the same field's own constraints; it is written straight out.
+		- The doc comment promises the output "always loads clean and validates clean against its schema", and that promise is copied into all four bindings and the man page. A starter config that fails its own schema is the worst first impression the tool can make.
+		- Either fault the schema at build time with a new V09x, or comment the offending line out and say why. The doc comment has to match whichever is chosen.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 5: `set_raw` accepts a CR that the load then strips, so content does not survive a round trip.
+		- Reproduced: `set_raw` with body `a\r\nb` reads back as `a\nb`; a body of one CR reads back empty.
+		- Cause: the call refuses CR and LF in the info string but does not check the body. The load strips the whole trailing CR run per line, and a raw block is the one place content is not trimmed.
+		- Two things break at once: silent loss between what a consumer wrote and what it reads back, and the writer's output stops being a fixpoint. A CR mid-line is fine and still round-trips, so only end-of-line CR is affected.
+		- All four bindings. Refuse a body whose lines end in CR, the way the info string is already refused, and add a runner fixture beside the existing one.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 6: `set_comment` does not trim its text, and the load does.
+		- Reproduced: writing comment text `x ` stores `# x `, which reparses as `# x`. Writer output is not a fixpoint.
+		- Empty text stores `# `, a single space stores `#  `. Non-ASCII trailing whitespace does the same, because the parser trims the full whitespace set and the setter trims nothing.
+		- All four bindings. Trim with the parser's own trim before the prefix, and drop the write when nothing is left.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 7: the loose int range check is off by one at the top end.
+		- Reproduced: `9223372036854775808.0` read as int at loose strictness returns `9223372036854775807`. The plain decimal spelling of the same number correctly refuses. Two spellings of one value disagree.
+		- Cause: the bound is compared against `i64::MAX as f64`, which rounds up to 2^63, so the value passes and the cast then saturates.
+		- Rust saturates, so here it is only a wrong answer. The same shape in C is an out-of-range float-to-int conversion, which is undefined behavior, and this is the file the other three mirror.
+		- The low end is already exact. Compare against the exact bound.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 8: the Windows setup build fails outright on any prerelease version.
+		- The installer script writes a four-integer version field straight from the package version. A version like `2.1.0-alpha.1` produces something the tool rejects, and it exits nonzero.
+		- The packaging script runs under `errexit`, so that failure kills the whole release stage. A prerelease cut cannot get past it.
+		- Never exercised: the version field went in after the last prerelease, so no prerelease has been cut since. The installers still offer a dev channel, so this is live workflow.
+		- Fix: reuse the digit-splitting the Rust build script already does for the same field, pass the quad separately, and leave the display strings on the full version.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 9: the installers' stable channel is not version-sorted, so a back-ported patch outranks a newer release.
+		- Both scripts point stable at the "latest release" endpoint and take its tag verbatim. That endpoint is newest by publication date, not by version.
+		- Cut a `1.2.1` fix after `2.0.0` and every stable install is handed `1.2.1`.
+		- The comment directly above the code states this exact hazard as the reason the dev channel sorts, then leaves the stable channel on the date-ordered endpoint. Both scripts and the README promise "newest full release", which date order does not give.
+		- Fix: list releases for both channels, drop prereleases and drafts for stable, and run the comparator that already exists.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 10: the PowerShell wrapper calls a .NET 6 method on the PowerShell 5.1 it claims to support.
+		- The symlink resolver calls a method that arrived in .NET 6. Windows PowerShell 5.1 runs on .NET Framework and does not have it. The header says the file runs on 5.1.
+		- The helper runs unconditionally at load, so every dot-source and every run hits it. The error suppression on the line above covers the lookup, not the method call.
+		- Confirmed failure shape on 7.6.5 against a same-named missing method: at default preferences it writes a red error and continues, under strict mode it halts, under stop-on-error it exits 1. All three are inherited from whatever sources the file.
+		- Fix: test for the member before calling it and fall through to the unresolved-path branch already there.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 11: the same wrapper reads a PowerShell 6+ variable before the test meant to guard it.
+		- The platform test puts the variable first and the null check second, so on 5.1 the first operand is evaluated and throws under a caller's strict mode.
+		- The installer guards the identical read with a version test that short-circuits first. The wrapper never got that treatment, though the comment above it shows the 5.1 case was considered.
+		- Fix: put the version test first.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 12: a system install under a non-default umask lands mode 0700 and only root can run it.
+		- Reproduced under `umask 077`: the install directory, the payload directory and the binary all came out mode 0700. The same lines write the system paths, leaving the launcher resolvable only by root, and the man page and completions unreadable.
+		- Cause: the script sets no umask, and `sudo` keeps the caller's unless sudoers overrides it.
+		- The packages set explicit modes, so the two install routes disagree on the same box.
+		- Fix: set a umask before the install block, or set the modes explicitly.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 13: the README's C example does not build as written.
+		- The snippet calls into the standard library but shows no system includes, so a reader adds them, and the natural place is above the library header.
+		- That order fails: the library asks for a POSIX level, and a feature request only counts before the first system header. Reproduced with the README's own compile line: five implicit declarations and a pointer-from-integer error.
+		- With the library header first, the same example compiles clean and produces a file matching the other three examples.
+		- The constraint is written in the header, but nowhere a README reader looks.
+		- Fix: show the system includes below the library header, or say the header goes first.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 14: the style guide describes a name index the code has not had for two rounds.
+		- It says the index is built during the parse, keyed on name and value, and discarded afterward, with the writer mutating the tree directly instead of maintaining it.
+		- The code says the opposite three ways: built on the first path lookup, keyed on parent and name, and kept current by the writer, with only a merge dropping it.
+		- Nothing else repeats the stale claim, and the changelog has it right.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 15: a double negative in the guidelines license footer reverses its meaning.
+		- It reads "None of this is not legal advice". The same disclaimer in the trademark document is written correctly.
+		- That document is CC BY 4.0 and invites verbatim reuse, so the error travels into anyone's copy.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 16: the spec says an info string is never interpreted, and on the same-line fence it is.
+		- Spelled on the same line as the field, an info string of `html # note` reads back as `html`, with the rest moved onto the field line. Spelled under a child indent, the same text stays whole and is a fixpoint.
+		- The grammar has the same gap: the same-line alternative allows no comment, and the info-string rule admits a `#`.
+		- The emit side of this is documented. The parse side, which is where the two spellings diverge, is not.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 17: both Done sections break the two-run layout the conventions now promise.
+		- The conventions say loose items and code-review rounds form two runs per Done section, each newest first. Both sections run rounds, then loose items, then rounds again.
+		- The two newest rounds are the ones stranded above the loose run.
+		- The 20260830 round filed exactly this and closed it, but only the conventions sentence was added and the file was never reordered, so the stated convention is now false.
+		- Canceled puts its loose item first and rounds after, so one order has to be picked and written down.
+		- Opened: 20260830-140346
 
 ### Features and enhancements
+
+- Code review 20260830b:
+
+	- The enhancement half of the round. Items 18 to 57; bugs 1 to 17 are under Bugs. Several of these are design questions rather than defects, and a few are recorded so they are not re-derived next round.
+
+	- 🔘 Item 18: the read subcommands print no load diagnostics at all.
+		- `fmt` and `set` print them on stderr in both modes, settled last round. `get`, `count` and `instances` print nothing at any strictness below strict.
+		- Reproduced: a file whose line 3 is dropped reads clean through all three, empty stderr, exit 0.
+		- This is what makes item 2 bite. It is also the asymmetry that matters most, since the read subcommands are the ones a script actually runs.
+		- The only escapes are a separate `check` pass, or strict, which fails the read instead of mentioning anything. There is no "read the value and tell me the file is damaged".
+		- Against it: a read in a loop would start emitting per-call noise, which the write subcommands do not have. A quiet flag, or emitting once per process, covers that.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 19: there is no CLI traversal command, so a script can read an open section's values but never learn its keys.
+		- The README leads with "everything the library does, the binary does from a shell". Children and Paths have no CLI or wrapper spelling.
+		- Both the design and the spec name traversal as one of the accessor's two modes. The CLI carries the lookup half plus count and instances and stops there.
+		- Reproduced on a three-key open section: a wildcard read returns the three values correctly, and nothing returns the three names. `instances` on the wrapper prints three blank lines, because those instances have no value.
+		- The only workaround is parsing `fmt` output in shell, which is the thing the project exists to prevent.
+		- Additive: two subcommands, four CLIs, help, man page, both completion files, a corpus case. No parity risk, minor version.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 20: two of the five advertised integration modes have no artifact and no build.
+		- The design lists five and calls the fourth "link the prebuilt shared library". The spec repeats shared and bundled as part of the goal.
+		- Nothing builds one. The manifest declares a library and a binary only, no C ABI surface is exported, and the release stage produces binaries, packages, setups and the drop-in tarball, nothing else.
+		- The C header declares its API with plain externs and no export macro, so a shared object is buildable on ELF by default visibility and a Windows DLL is not.
+		- Worth deciding rather than drifting. A real shared library means an ABI commitment, a soname, symbol versioning and a headers package, all of which pull against the one-file zero-dependency premise.
+		- Narrowing the documents is the cheap answer and probably the right one: drop "prebuilt", and say those two modes mean compiling the drop-in.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 21: `remove` and the set-if-absent family have no option form, only the stdin ops script.
+		- The design records why scalar sets got a command-line option: a tab-separated script on stdin is something no shell writes comfortably and no editor preserves.
+		- That reasoning was applied to sets and then left standing for `remove`, which is at least as common an edit, and for the defaults family, which is the whole write-out-defaults half of the writer.
+		- Reproduced: removing one key needs a printf with a literal tab piped into `set --write`. Getting the tab wrong fails loudly, so this is friction, not a correctness hazard.
+		- Raw blocks belong on stdin, so this is not an argument to retire the ops script.
+		- Additive: repeatable options joining the ordered edit list the set option already uses.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 22: exit 1 is still the catch-all for usage, I/O and an unwritable path, a week after 7 was carved out.
+		- Exit 7 was created on the argument that a script could not tell "pass the lossy flag or fix the file" from "the command line is wrong". The same argument applies to a setter that cannot write, and was not applied.
+		- Reproduced, all exit 1: an unknown flag, a missing file, a wildcard path, and an index selector naming no instance. Three different remedies, one code.
+		- The prose already distinguishes them, so the information exists and only the code throws it away. The write-reason vocabulary names six causes in every binding for exactly this purpose.
+		- Convention is against the current split: usage errors sharing a code with I/O is unusual.
+		- Honest counter: the message already tells you, so this is coherence rather than capability.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 23: the raw info read is the one typed entry point with no convenience tier, and the deviation is recorded nowhere.
+		- The spec promises each typed entry point comes in two tiers. Every read type has the short form except this one, in all four bindings and the veneer.
+		- The CLI does have the convenience form, so the two surfaces disagree about whether this read has a fallback spelling.
+		- The C tier restriction is a sanctioned deviation and is written down. This one is in no document.
+		- Either add the companion in the four, or record it as deliberate. Adding it changes no output.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 24: the Python value display and merge key pay a join and a generator on every single-element cell.
+		- Measured on an 8.5 MiB document: display is called 799k times and the merge key 1.4M times, for 363k source lines. The join is the largest non-parse entry in a profile.
+		- A length-one fast path in both took parse-plus-emit from 8.52 s to 7.94 s, about 7%, with byte-identical output.
+		- Python-only spelling. Rust and Go stream these through a hash and build nothing, so this narrows the gap rather than widening a structural difference.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 25: the Python source-attach guard builds two merge keys per line, usually to compare a value with itself.
+		- The key is computed eagerly, then compared against the key of the value just passed in, which in the common case is the same object.
+		- An identity check first took another 2% off, and skips the work entirely when the flag is already set. With item 24 the pair is about 10%, output unchanged.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 26: the Python path scanner rebuilds two closures on every call.
+		- They are defined in the function body, so they are recreated once per document line, each carrying a cell.
+		- Module-level helpers taking the same arguments keep the call flow and the names, so the mirror of the reference's inner functions survives.
+		- Not measured in isolation, so the size of the win is unknown.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 27: a comment on the value-lookup fallback does not match the code, in all four bindings.
+		- It says a non-scalar hit and an outright miss both fall to the fallback scan. The fallback is gated on the selector being quoted, so an unquoted miss returns nothing with no scan.
+		- All four agree with each other, so this is a comment defect, not a behavior defect.
+		- An attempt to build the input the comment worries about did not succeed, and did not get far enough to call the case unreachable.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 28: four small robustness gaps in the comparison worker.
+		- A non-numeric iteration count is a traceback rather than the usage line printed two lines above it.
+		- A zero iteration count formats a value that is still unset, and raises.
+		- The listing catches only import errors, so a loader failing any other way takes the whole listing down instead of reporting one entry unavailable.
+		- The loader inserts a path on every call and the listing calls every loader, so the search path grows a duplicate each time.
+		- Internal tooling, not shipped code.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 29: the Go ASCII lower-case helper copies before deciding nothing changed.
+		- Scanning first and copying only on a hit took the read benchmark from 9.27 ms to 7.59 ms, about 18%, with identical behavior.
+		- Go-only, no cross-binding effect. Recorded as a measured win, not a defect.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 30: the Go on-bad option folds with Unicode case where the other three fold ASCII.
+		- Two different folds sit in one file for two adjacent options, and the binding already carries the ASCII helper the strictness option uses.
+		- No code point folds into the accepted words, so this is drift rather than a live divergence.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 31: an uncommented error discard in the Go corpus runner.
+		- The directive bans discarding an error without a reason. Low risk, since the same directory was just read, so a failure would drop a case's layer files rather than fail the case.
+		- The prior sweep of discards covered the library and the CLI, not the test file.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 32: the Go atomic write does not check the close.
+		- The sync runs first and its error is checked, so a deferred write error reaching only the close is unlikely.
+		- The reference drops the handle the same way, so checking it is a per-binding deviation rather than a parity fix. Read only, not reproduced.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 33: the Rust command dispatch ends in a catch-all that silently aliases any new subcommand.
+		- Adding a seventh entry to the command table without adding a dispatch arm runs `instances` instead, with no compile error and no message. It is only safe today because the caller gates on the table first.
+		- The style directive asks for exhaustive matches and no catch-all unless needed. Here two lists have to be kept in step by hand and nothing enforces it.
+		- Spell the last arm out and keep an explicit unreachable, or derive both from one table.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 34: a redundant condition in the closing-fence test.
+		- The length test is already implied by the minimum the opening fence enforces, so the emptiness check can never decide anything.
+		- Harmless, but it is the dead-condition class the review directive asks for, and the same shape is flagged on the C side.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 35: four more C accessors grow the arena the way item 3 does, but these are documented.
+		- Same measurement run: 200k calls add 15.9 MB, 3.2 MB, 31.3 MB and 6.4 MB respectively.
+		- Unlike the array reads, the header states the contract: the result lives in the document's arena until it is freed. So the growth is what was promised.
+		- Recorded beside item 3 so a fix for that one does not quietly change these without a decision. No change needed unless the contract is revisited.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 36: a latent unmatched-glob shape in the C sanitizer script.
+		- A layer-collection loop ends on a conditional, which is the shape that aborts under errexit when the glob matches nothing.
+		- Guarded in practice, and all four corpus cases that reach it do have layer files. An attempt to reproduce the abort on this box's bash did not abort, so the trap may not apply to this version.
+		- Latent shape only, not a live defect. If touched anyway, use a null glob or continue on the miss.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 37: the C validator puts a 16 KB array on the stack per call.
+		- One slot per depth level, sized to the depth cap. Fine on a main thread, possibly not on a small-stack thread.
+		- Noticed but not chased: whether all slots are freed on every exit path was not verified.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 38: the completions check rejects an option-less subcommand however the completions spell it.
+		- One side emits a row for every subcommand, the other drops any with an empty option list, so the two can never agree on such a subcommand.
+		- Reproduced on a copied tree: adding one makes the check fail against both completion files, and adding the matching completion arm does not clear it.
+		- Costs a confusing lint failure the day an option-less subcommand is added, blaming the completions when they are correct. None exists today.
+		- Two greps in the same function also lack the guard their siblings have; they survive only because command substitutions do not inherit errexit.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 39: the demo's typing speeds sit under the bands the directive names.
+		- Letters are drawn from a range whose mean lands in band once jitter is applied; digits do not.
+		- The demo has been tuned with feedback twice, so this may be deliberate. It is not recorded anywhere.
+		- Either raise the constants or note the tuning in the demo script.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 40: the profiler stage swallows the reason a hotspot report is missing.
+		- Stderr is discarded, and the report's only diagnostics go there, so the log records the failure with no cause. A missing directory, no flamegraphs and an unparseable file all read alike.
+		- The fallback already treats the exit code as non-fatal, so keeping stderr costs nothing.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 41: both bash installers print comment markup in their help.
+		- The help text is the source header heredoc'd verbatim, comment prefixes and hard tabs included, so it opens with the file name as a comment and every wrapped line carries the prefix.
+		- The PowerShell installer prints clean prose, so the two documented installers print help in visibly different registers.
+		- Tab-indented help renders raggedly wherever tab width is not 8.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 42: the bash uninstall says "removed" while leaving a directory full of files it did not install.
+		- Reproduced: a stray file in the install directory survives, the directory removal fails silently, and the script reports removal anyway with no mention of what is left.
+		- The PowerShell installer handles the same case properly and says so.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 43: the README does not name the Windows installer's archive-tool requirement.
+		- The script refuses outright without it and names the Windows versions that carry it. The README's prerequisites cover only the Linux side.
+		- The script's own message is clear, so this costs a failed run rather than a bad install. One clause fixes it.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 44: the PowerShell installer runs the binary only after writing it into place.
+		- The bash installer runs the version check from the temp directory first, precisely so a binary that will not start never becomes an install.
+		- On PowerShell 7.4 and later a nonzero exit from that line throws under the script's own error preference, giving a success message followed by an exception, with the install left in place.
+		- Read, not reproduced, since no failing binary was available.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 45: the analyzer settings gate syntax only, and the comment reads as more.
+		- Syntax compatibility says nothing about which framework members exist, which is what items 10 and 11 are. The type-compatibility rule was tried and reports nothing, because it matches type names and not instance members.
+		- So no lint rule covers that class. The practical guard is a member test in the code, not a settings change.
+		- Worth saying so in the settings comment rather than leaving it reading as full coverage.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 46: the design and changelog break the blank-line-between-top-level-bullets rule.
+		- 25 tight pairs in the design document outside its table of contents, and one in the changelog where the other 174 top-level bullets are spaced.
+		- The spec, style guide, trademark and both package READMEs have none. The README's only hits are inside generated table-of-contents blocks, where the tool strips blank lines.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 47: the spec tables a load-time code no file can produce.
+		- The block is introduced as the load-time codes so a gate can key on them. The selector code cannot fire from a file, because the marker opens a comment before the selector is read.
+		- Both spellings that should produce it report the empty-selector code instead. No corpus case pins it, and the backlog reached the same conclusion earlier.
+		- A gate keyed on it can never fire. Note it as unreachable from a file, or drop the row.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 48: two documents describe a stdout and stderr split that this week changed.
+		- Both say the stable code goes to stdout and the prose to stderr. The stderr line now carries the code as well.
+		- The transcript directly above one of those sentences shows the code on both lines.
+		- Say the code is on both and that only stdout is the contract.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 49: three of the four language examples ignore the setter returns the surrounding prose says to check.
+		- Each calls the first two setters bare and checks only the third, while the comment above each block and the prose below both say an ignored failure means the save writes a config missing the edit and reports success.
+		- The Rust example checks all three, because the type system forces it, so the one example a reader can compare against is the odd one out.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 50: one bold-lead bullet in the design document uses a trailing dash where every other closes the bold with punctuation.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 51: the 20260830 round's sentence-length item is marked complete, and that half was not done.
+		- The item names roughly sixty sub-bullets over forty words. The file currently has 263 over forty words and 62 over sixty; at the round's starting commit it was 272 and 67.
+		- The other halves were done properly, so the item was worked, just not on this part.
+		- Either split the long ones, or reopen the item with the remaining half stated.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 52: twelve outcome bullets sit below the opened and closed stamps.
+		- Every other item closes with the stamps. Twelve in the 20260830 round append a result after them, so the stamps stop being a reliable item terminator, and the trailing bullets are the ones a reader most wants next to the finding.
+		- Eight of the twelve also carry no classification prefix.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 53: deferred items carry no closed stamp and canceled items do.
+		- Three deferred items have an opened date only. Every canceled item has both, so the two settled-but-not-done states are stamped differently with nothing saying why.
+		- Either stamp the deferral date, or say in the conventions that a deferred item keeps only an opened date.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 54: classification prefixes are applied unevenly across rounds.
+		- Coverage on item sub-bullets ranges from 97% down to 39% by round, and the two newest rounds are among the weaker ones, so the pattern is not just age.
+		- Loose items in the Done sections are near zero.
+		- Classify what is there; do not add content.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 55: two measurement-dense lines survived the number sweep.
+		- Each carries three or more timings, in the same round that filed the one-headline-number rule.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 56: seven bullets say how a defect was found rather than what changed.
+		- The clearest reads "found by reading the four write paths against each other, not by a test".
+		- The 20260830 round removed method clauses but left the discovery-mechanism ones.
+		- Drop them, or fold into the cause line where the gate that caught it is the point.
+		- Opened: 20260830-140346
+
+	- 🔘 Item 57: the loose runs in both Done sections are ordered only loosely.
+		- 17 backwards steps by closed date. Most are same-week and read as topic grouping.
+		- The conventions say "approximately", so this only matters if that word is meant to go.
+		- Opened: 20260830-140346
 
 - 🔘 Ports: Tier 3.
 	- Each a drop-in where possible, and corpus-green before release.
