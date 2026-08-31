@@ -362,6 +362,28 @@ func splitSet(arg string) (string, string, bool) {
 	return "", "", false
 }
 
+// asciiLower folds A-Z only, mirroring the library helper the strictness option
+// already goes through. strings.ToLower folds by Unicode, which is a different
+// question from "is this one of three ASCII words".
+func asciiLower(s string) string {
+	i := 0
+	for ; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			break
+		}
+	}
+	if i == len(s) {
+		return s
+	}
+	b := []byte(s)
+	for ; i < len(b); i++ {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
 func setValueOpt(o *opts, name, v string) error {
 	switch name {
 	case "--default":
@@ -369,7 +391,7 @@ func setValueOpt(o *opts, name, v string) error {
 		o.onBad = onBadDefault
 		o.seen = append(o.seen, "--default")
 	case "--on-bad":
-		switch strings.ToLower(v) {
+		switch asciiLower(v) {
 		case "error":
 			o.onBad = onBadError
 		case "default":
@@ -1010,7 +1032,7 @@ func floatGrammar(s string) bool {
 	if s == "" {
 		return false
 	}
-	low := strings.ToLower(s)
+	low := asciiLower(s)
 	if low == "inf" || low == "infinity" || low == "nan" {
 		return true
 	}

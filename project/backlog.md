@@ -193,10 +193,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-130000
 
-	- 🔘 Item 30: the Go on-bad option folds with Unicode case where the other three fold ASCII.
+	- ✅ Item 30: the Go on-bad option folds with Unicode case where the other three fold ASCII.
 		- Two different folds sit in one file for two adjacent options, and the binding already carries the ASCII helper the strictness option uses.
 		- No code point folds into the accepted words, so this is drift rather than a live divergence.
+		- Fixed: the Go CLI carries its own ASCII fold now, mirroring the library helper the strictness option already goes through and C's own equality check.
+		- Found a second site in the same file with the same divergence: the float-grammar check that accepts inf/infinity/nan folded by Unicode too, where Python and C fold ASCII there. Both use the new helper.
+		- Pinned by the existing crosscheck, which replays every option spelling through all four CLIs; the fold is only observable as agreement, since no code point folds into the accepted words.
 		- Opened: 20260830-140346
+		- Closed: 20260831-130500
 
 	- 🔘 Item 31: an uncommented error discard in the Go corpus runner.
 		- The directive bans discarding an error without a reason. Low risk, since the same directory was just read, so a failure would drop a case's layer files rather than fail the case.
