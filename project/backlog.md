@@ -202,10 +202,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-130500
 
-	- 🔘 Item 31: an uncommented error discard in the Go corpus runner.
+	- ✅ Item 31: an uncommented error discard in the Go corpus runner.
 		- The directive bans discarding an error without a reason. Low risk, since the same directory was just read, so a failure would drop a case's layer files rather than fail the case.
 		- The prior sweep of discards covered the library and the CLI, not the test file.
+		- The discard stands; what it lacked was the reason. The directory was read moments earlier for the case files, so a failure here means it vanished mid-run - the case then has no layers and the merge assertion below reports it.
+		- Nothing new proves this one: a comment has nothing to fail. The behavior it describes is already covered by the merge assertion it points at.
 		- Opened: 20260830-140346
+		- Closed: 20260831-131000
 
 	- 🔘 Item 32: the Go atomic write does not check the close.
 		- The sync runs first and its error is checked, so a deferred write error reaching only the close is unlikely.

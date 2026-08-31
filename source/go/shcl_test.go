@@ -127,6 +127,9 @@ func loadCases(t *testing.T) []corpusCase {
 		}
 		if em, err := os.ReadFile(filepath.Join(caseDir, "expected-merged.shcl")); err == nil {
 			// Layer files: every layer*.shcl, in filename (= priority) order.
+			// The directory was just read for the case files, so a failure here
+			// would mean it vanished mid-run; the case then has no layers and
+			// the merge assertion below reports it.
 			dirEntries, _ := os.ReadDir(caseDir)
 			var layerNames []string
 			for _, de := range dirEntries {
