@@ -121,6 +121,8 @@ LINT_EXTRA=(
 	## The README's C example is the first thing a C consumer copies, and it is
 	## the one example nothing else here builds.
 	'cicd/utility/check-readme-c.bash'
+	## Claims the documents make about themselves, that no linter checks.
+	'cicd/utility/check-docs.bash'
 	## TOOL_PINS above is copied by hand into ci.yml; this fails the stage when
 	## the two disagree, instead of hosted CI going red days later.
 	'cicd/utility/check-pins.bash'
@@ -132,6 +134,7 @@ SHELLCHECK_TARGETS=(
 	cicd/cicd.bash
 	cicd/config.bash
 	cicd/utility/check-completions.bash
+	cicd/utility/check-docs.bash
 	cicd/utility/check-pins.bash
 	cicd/utility/check-readme-c.bash
 	cicd/utility/check-wheel.bash
