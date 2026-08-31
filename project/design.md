@@ -316,6 +316,8 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - **A refused in-place write exits 7, its own code.** It shared 1 with usage and I/O errors, so a script could not tell "pass `--lossy` or fix the file" apart from "the command line is wrong" - and the refusal is the one failure whose remedy is a decision rather than a correction.
 
+- **A file or stream that cannot be read or written exits 8, and 1 is now the usage code alone.** The same reasoning as exit 7, applied to what was left in the catch-all. The two remedies have nothing in common: one is fixing the command line, the other is fixing a path, a permission or a disk. A path a write option refuses (a wildcard, an index naming no instance) stays at 1, because what has to change there is the option's value.
+
 - **Every subcommand that loads a document prints the load's diagnostics to stderr, once per run.** It was decided that neither where the canonical text goes nor which subcommand asked for the load should decide whether a recovered-from typo is mentioned. This started as `fmt` and `set` in both modes, with the read subcommands left quiet; that half was reversed, because a read below strict returns the value and says nothing at all, which is the case where silence costs most. stdout carries the same bytes either way.
 
 - **The mode is applied to the temp file again after its data is written.** The kernel clears setuid and setgid on a write by a process without the right capability, so giving the temp file the target's mode before filling it silently dropped those bits - the copied mode has to land last, after write and fsync, before the publish.

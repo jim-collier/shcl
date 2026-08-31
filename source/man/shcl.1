@@ -428,7 +428,7 @@ is how to say it was meant.
 Good.
 .TP
 .B 1
-Usage or I/O error.
+Usage error.
 .TP
 .B 2
 The value is empty.
@@ -453,6 +453,10 @@ An in-place write was refused because the load dropped content the rewrite
 would delete.
 .B \-\-lossy
 overrides.
+.TP
+.B 8
+A file or stream could not be read or written \- it is missing, unreadable,
+not a file, or the target cannot be written.
 .SH EXAMPLES
 Read an int, with a fallback when the field is absent:
 .PP

@@ -36,10 +36,10 @@
 ##		the repo release/debug build. Set SHCL_BIN to pin an exact one. On Windows
 ##		a bare name also matches its `.exe`.
 ##
-##	Exit codes (straight from the binary): 0 good, 1 usage/IO, 2 empty,
+##	Exit codes (straight from the binary): 0 good, 1 usage error, 2 empty,
 ##	3 not found, 4 bad type, 5 multiple instances, 6 check failed, strict
 ##	load failure, or a faulty init schema, 7 in-place write refused
-##	(--lossy overrides). A nonzero code is not an error to PowerShell - unless
+##	(--lossy overrides), 8 a file or stream could not be read or written. A nonzero code is not an error to PowerShell - unless
 ##	$PSNativeCommandUseErrorActionPreference is on under an ErrorActionPreference
 ##	of Stop, where a not-found read throws instead of returning 3.
 ##
@@ -133,7 +133,7 @@ function _shcl_resolve {
 }
 
 ## The whole CLI. Everything else is sugar over this. On a resolve failure we
-## mimic the binary's own usage/IO code so callers still see a nonzero.
+## mimic the binary's own usage code so callers still see a nonzero.
 ## Pipeline input only reaches a function through $input, and only forward it
 ## when there is some: an empty $input would hand the binary a closed stdin, so
 ## `set` would read zero ops instead of falling through to the console.
@@ -172,6 +172,6 @@ if ($MyInvocation.InvocationName -ne '.') {
 	## Spelled the long way rather than with ??, so this runs on the Windows
 	## PowerShell 5.1 that ships with the OS as well as on 7.
 	$rc = $LASTEXITCODE
-	if ($null -eq $rc) { $rc = 1 }   ## null only if nothing ran; treat as usage/IO
+	if ($null -eq $rc) { $rc = 1 }   ## null only if nothing ran; treat as usage
 	exit $rc
 }

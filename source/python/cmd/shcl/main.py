@@ -128,9 +128,10 @@ FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
-Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
+Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides).
+has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream
+could not be read or written.
 """
 
 # About and donate are stdout, so they are byte-for-byte contracts across the
@@ -377,6 +378,12 @@ def parse_opts(argv):
 	return o
 
 
+# A file or stream that could not be read or written. Its own code since a
+# script's remedy - fix the path, the permissions, the disk - has nothing to do
+# with the remedy for a usage error, which keeps 1.
+EXIT_IO = 8
+
+
 def read_input(file):
 	if file == "-":
 		data = sys.stdin.buffer.read()
@@ -420,7 +427,7 @@ def write_back(doc, file, o):
 		return 7
 	except shcl.SaveError as e:
 		sys.stderr.write(str(e) + "\n")
-	return 1
+	return EXIT_IO
 
 
 def load_layered(o, file):
@@ -564,7 +571,7 @@ def do_get(o):
 		doc, diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	if doc is None:
 		return code
 	# A read reports what the load dropped, the same as fmt and set: below
@@ -711,7 +718,7 @@ def do_fmt(o):
 		doc, diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	if doc is None:
 		return code
 	# Printing the canonical form drops what the load dropped, the same as a
@@ -916,7 +923,7 @@ def do_set(o):
 		base = "" if creating or (file == "-" and not o.sets) else read_input(file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	layer_texts.append(base)
 	doc, code = load_doc(layer_texts[0], o.strictness)
 	if doc is None:
@@ -949,7 +956,7 @@ def do_set(o):
 			ops = sys.stdin.buffer.read().decode("utf-8")
 		except UnicodeDecodeError:
 			sys.stderr.write("stdin: invalid UTF-8\n")
-			return 1
+			return EXIT_IO
 	pieces = ops.split("\n")
 	for n, line in enumerate(pieces):
 		# The CR of a CRLF comes off with the LF, as the reference's line split
@@ -980,7 +987,7 @@ def do_check(o):
 		text = read_input(o.args[0])
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	strict_failed = False
 	try:
 		doc = shcl.Document.parse_with(text, o.strictness)
@@ -993,7 +1000,7 @@ def do_check(o):
 				stext = read_input(o.schema)
 			except (OSError, ValueError) as e:
 				sys.stderr.write(str(e) + "\n")
-				return 1
+				return EXIT_IO
 			sdoc = shcl.Document.parse(stext)
 			if any(sd.severity == shcl.Severity.Error for sd in sdoc.diagnostics()):
 				for sd in sdoc.diagnostics():
@@ -1036,7 +1043,7 @@ def do_init(o):
 		stext = read_input(o.schema)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	# The schema always loads at Standard - a program artifact, not user data.
 	sdoc = shcl.Document.parse(stext)
 	if any(d.severity == shcl.Severity.Error for d in sdoc.diagnostics()):
@@ -1066,7 +1073,7 @@ def do_enum(o, want_count):
 		doc, diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	if doc is None:
 		return code
 	# A read reports what the load dropped, the same as fmt and set: below
@@ -1097,7 +1104,7 @@ def do_children(o):
 		doc, diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	if doc is None:
 		return code
 	say_diagnostics(diags)
@@ -1116,7 +1123,7 @@ def do_paths(o):
 		doc, diags, code = load_layered(o, o.args[0])
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	if doc is None:
 		return code
 	say_diagnostics(diags)

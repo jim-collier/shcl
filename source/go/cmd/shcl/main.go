@@ -131,9 +131,10 @@ FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
-Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
+Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides).
+has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream
+could not be read or written.
 `
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
@@ -641,6 +642,11 @@ func sayDiagnostics(diags []shcl.Diagnostic) {
 	}
 }
 
+// exitIO is a file or stream that could not be read or written. Its own code
+// since a script's remedy - fix the path, the permissions, the disk - has
+// nothing to do with the remedy for a usage error, which keeps 1.
+const exitIO = 8
+
 func readInput(file string) (string, error) {
 	var b []byte
 	var err error
@@ -708,7 +714,7 @@ func writeBack(doc *shcl.Document, file string, o *opts) int {
 		return 7
 	}
 	fmt.Fprintln(os.Stderr, werr)
-	return 1
+	return exitIO
 }
 
 // loadLayered loads file with o's lower-priority --layer files underneath and
@@ -725,14 +731,14 @@ func loadLayered(o *opts, file string) (*shcl.Document, []shcl.Diagnostic, int) 
 		t, err := readInput(lf)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return nil, nil, 1
+			return nil, nil, exitIO
 		}
 		texts = append(texts, t)
 	}
 	base, err := readInput(file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return nil, nil, 1
+		return nil, nil, exitIO
 	}
 	texts = append(texts, base)
 	doc, code := loadDoc(texts[0], o.strictness)
@@ -1326,7 +1332,7 @@ func doSet(o *opts) int {
 		t, err := readInput(lf)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return exitIO
 		}
 		layerTexts = append(layerTexts, t)
 	}
@@ -1346,7 +1352,7 @@ func doSet(o *opts) int {
 		t, err := readInput(file)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return exitIO
 		}
 		base = t
 	}
@@ -1383,7 +1389,7 @@ func doSet(o *opts) int {
 		ops, err = io.ReadAll(os.Stdin)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
-			return 1
+			return exitIO
 		}
 		// The reference reads ops via read_to_string; mirror its UTF-8 failure.
 		if !utf8.Valid(ops) {
@@ -1417,7 +1423,7 @@ func doCheck(o *opts) int {
 	text, err := readInput(o.args[0])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return exitIO
 	}
 	var diags []shcl.Diagnostic
 	strictFailed := false
@@ -1435,7 +1441,7 @@ func doCheck(o *opts) int {
 			stext, serr := readInput(o.schema)
 			if serr != nil {
 				fmt.Fprintln(os.Stderr, serr)
-				return 1
+				return exitIO
 			}
 			sdoc := shcl.Parse(stext)
 			bad := false
@@ -1496,7 +1502,7 @@ func doInit(o *opts) int {
 	stext, err := readInput(o.schema)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return exitIO
 	}
 	// The schema always loads at Standard - a program artifact, not user data.
 	sdoc := shcl.Parse(stext)

@@ -62,7 +62,8 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
-##	needs quoting in a path, %F2% a two-key file for the edit options.
+##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
+##	path with no file at it.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that stream.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	Each row names the round and item it pins.
@@ -78,8 +79,9 @@ rows=(
 	'closed-stdout|fmt %F%|@closedout|0|-|^$'
 	## 20260830 item 16: C dropped the line number and the offending op.
 	'bad-op-unknown|set %F%|bogus\ta\t1\n|1|-|op line 1: unknown op: bogus'
-	## 20260830 item 18: C answered a directory with a bare "read error".
-	'read-dir-names-error|fmt %D%|-|1|-|[Ii]s a directory'
+	## 20260830 item 18: C answered a directory with a bare "read error". Exit 8
+	## since 20260830b item 22 split I/O out of the usage code.
+	'read-dir-names-error|fmt %D%|-|8|-|[Ii]s a directory'
 	## 20260830 item 17: C printed a bare count instead of naming the diagnostics.
 	'strict-load-list|fmt --strictness=strict %B%|-|6|-|strict load failed: 2 error diagnostic'
 	## 20260830 round: an unknown command is judged before its options.
@@ -105,6 +107,14 @@ rows=(
 	'get-diags|get %B% a|-|0|1|E015 missing colon'
 	'count-diags|count %B% a|-|0|1|E015 missing colon'
 	'instances-diags|instances %B% a|-|0|1|E015 missing colon'
+	## 20260830b item 22: usage and I/O shared exit 1, so a script could not
+	## tell "the command line is wrong" from "that file is not there".
+	'io-missing-file|get %M% a|-|8|-|-'
+	'io-missing-layer|fmt --layer=%M% %F%|-|8|-|-'
+	'io-missing-check|check %M%|-|8|-|-'
+	'io-missing-schema|init --schema=%M%|-|8|-|-'
+	'usage-unknown-option|get --nope %F% a|-|1|-|unknown option'
+	'usage-bad-write-path|set --set=a[*]=1 %F%|-|1|-|wildcard path cannot be written'
 	## 20260830b item 21: removal and the set-if-absent family had no option
 	## form, so a one-key edit meant a printf with a literal tab piped into set.
 	## The five spellings share one ordered list, so the last one on a path wins.
@@ -142,6 +152,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
+	argv="${argv//%M%/${tmpDir}/not-there.shcl}"
 	read -r -a args <<<"${argv}"
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"

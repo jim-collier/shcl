@@ -121,9 +121,10 @@ FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
-Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
+Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides).
+has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream
+could not be read or written.
 ";
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
@@ -655,12 +656,12 @@ fn load_layered(o: &Opts, file: &str) -> Result<(Document, Vec<Diagnostic>), u8>
 	for lf in &o.layers {
 		texts.push(read_input(lf).map_err(|e| {
 			eprintln!("{}", e);
-			1u8
+			EXIT_IO
 		})?);
 	}
 	let base_text = read_input(file).map_err(|e| {
 		eprintln!("{}", e);
-		1u8
+		EXIT_IO
 	})?;
 	texts.push(base_text);
 	let mut doc = load(&texts[0], o.strictness)?;
@@ -708,10 +709,15 @@ fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
 		}
 		Err(e) => {
 			eprintln!("{}", e);
-			1
+			EXIT_IO
 		}
 	}
 }
+
+/// A file or stream that could not be read or written. Its own code since a
+/// script's remedy - fix the path, the permissions, the disk - has nothing to
+/// do with the remedy for a usage error, which keeps 1.
+const EXIT_IO: u8 = 8;
 
 fn read_input(file: &str) -> Result<String, String> {
 	if file == "-" {
@@ -1111,7 +1117,7 @@ fn do_set(o: &Opts) -> u8 {
 			Ok(t) => layer_texts.push(t),
 			Err(e) => {
 				eprintln!("{}", e);
-				return 1;
+				return EXIT_IO;
 			}
 		}
 	}
@@ -1128,7 +1134,7 @@ fn do_set(o: &Opts) -> u8 {
 			Ok(t) => t,
 			Err(e) => {
 				eprintln!("{}", e);
-				return 1;
+				return EXIT_IO;
 			}
 		}
 	};
@@ -1172,7 +1178,7 @@ fn do_set(o: &Opts) -> u8 {
 		);
 		if let Err(e) = std::io::stdin().read_to_string(&mut ops) {
 			eprintln!("stdin: {}", e);
-			return 1;
+			return EXIT_IO;
 		}
 	}
 	for (n, line) in ops.lines().enumerate() {
@@ -1202,7 +1208,7 @@ fn do_check(o: &Opts) -> u8 {
 		Ok(t) => t,
 		Err(e) => {
 			eprintln!("{}", e);
-			return 1;
+			return EXIT_IO;
 		}
 	};
 	let (diags, strict_failed) = match Document::parse_with(&text, o.strictness) {
@@ -1216,7 +1222,7 @@ fn do_check(o: &Opts) -> u8 {
 					Ok(t) => t,
 					Err(e) => {
 						eprintln!("{}", e);
-						return 1;
+						return EXIT_IO;
 					}
 				};
 				let sdoc = Document::parse(&stext);
@@ -1285,7 +1291,7 @@ fn do_init(o: &Opts) -> u8 {
 		Ok(t) => t,
 		Err(e) => {
 			eprintln!("{}", e);
-			return 1;
+			return EXIT_IO;
 		}
 	};
 	// The schema always loads at Standard - a program artifact, not user data.

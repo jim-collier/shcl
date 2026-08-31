@@ -38,10 +38,10 @@
 ##		$SHCL_BIN, else a `shcl` beside this file, else `shcl` on PATH, else the
 ##		repo release/debug build. Set SHCL_BIN to pin an exact one.
 ##
-##	Exit codes (straight from the binary): 0 good, 1 usage/IO, 2 empty,
+##	Exit codes (straight from the binary): 0 good, 1 usage error, 2 empty,
 ##	3 not found, 4 bad type, 5 multiple instances, 6 check failed, strict
 ##	load failure, or a faulty init schema, 7 in-place write refused
-##	(--lossy overrides).
+##	(--lossy overrides), 8 a file or stream could not be read or written.
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 ##	Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)

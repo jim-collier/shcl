@@ -149,9 +149,10 @@ static const char *HELP =
 	"each --layer is merged under it in order; --set applies last. 'fmt' with\n"
 	"layers prints the merged canonical document.\n"
 	"\n"
-	"Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,\n"
+	"Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,\n"
 	"5 multiple instances, 6 check failed, strict load failed, or init's schema\n"
-	"has faults, 7 in-place write refused (--lossy overrides).\n";
+	"has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream\n"
+	"could not be read or written.\n";
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
 // bindings the same way the help text and the init banner are. The version
@@ -198,6 +199,11 @@ typedef struct {
 	const char **args; int nargs;     // positional: FILE [PATH]
 	const char *seen[16]; int nseen;  // distinct canonical option names, for per-command validation
 } Opts;
+
+// A file or stream that could not be read or written. Its own code since a
+// script's remedy - fix the path, the permissions, the disk - has nothing to do
+// with the remedy for a usage error, which keeps 1.
+#define EXIT_IO 8
 
 static void outln(const char *p, size_t n) { fwrite(p, 1, n, stdout); fputc('\n', stdout); }
 
@@ -382,7 +388,7 @@ static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 	for (int i = 0; i <= o->nlayers; i++) {
 		const char *fname = i < o->nlayers ? o->layers[i] : file;
 		size_t len; char *t = read_input(fname, &len);
-		if (!t) { layered_free(out); return 1; }
+		if (!t) { layered_free(out); return EXIT_IO; }
 		layered_push_text(out, t);
 		shcl_doc *dd = shcl_parse_with(t, len, o->strictness);
 		int g = strict_gate(dd);
@@ -559,7 +565,7 @@ static int write_back(shcl_doc *d, const char *file, Opts *o) {
 	int e = errno;
 	if (!dir_writable(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
 	else fprintf(stderr, "%s: %s\n", file, strerror(e));
-	return 1;
+	return EXIT_IO;
 }
 
 static int do_fmt(Opts *o) {
@@ -747,7 +753,7 @@ static int do_set(Opts *o) {
 	LayeredDoc L; L.doc = NULL; L.overs = NULL; L.novers = 0; L.texts = NULL; L.ntexts = 0;
 	for (int i = 0; i < o->nlayers; i++) {
 		size_t llen; char *lt = read_input(o->layers[i], &llen);
-		if (!lt) { layered_free(&L); return 1; }
+		if (!lt) { layered_free(&L); return EXIT_IO; }
 		layered_push_text(&L, lt);
 		shcl_doc *dd = shcl_parse_with(lt, llen, o->strictness);
 		int g = strict_gate(dd);
@@ -764,7 +770,7 @@ static int do_set(Opts *o) {
 	int creating = o->write && strcmp(file, "-") != 0 && path_absent(file);
 	char *text; size_t len;
 	if (creating || (!strcmp(file, "-") && o->nsets == 0)) { text = (char *)xrealloc(NULL, 1); len = 0; }
-	else { text = read_input(file, &len); if (!text) { layered_free(&L); return 1; } }
+	else { text = read_input(file, &len); if (!text) { layered_free(&L); return EXIT_IO; } }
 	layered_push_text(&L, text);
 	{
 		shcl_doc *dd = shcl_parse_with(text, len, o->strictness);
@@ -788,7 +794,7 @@ static int do_set(Opts *o) {
 		// The ops script gets the same UTF-8 gate as any file input (exit 1).
 		if (!utf8_valid(ops, opslen)) {
 			fprintf(stderr, "stdin: stream did not contain valid UTF-8\n");
-			free(ops); layered_free(&L); return 1;
+			free(ops); layered_free(&L); return EXIT_IO;
 		}
 	}
 	int rc = 0; size_t start = 0, lineno = 0;
@@ -814,7 +820,7 @@ static int do_set(Opts *o) {
 static int do_check(const Opts *o) {
 	if (o->nargs != 1) { fprintf(stderr, "usage: shcl check [options] FILE (see --help)\n"); return 1; }
 	size_t len; char *text = read_input(o->args[0], &len);
-	if (!text) return 1;
+	if (!text) return EXIT_IO;
 	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
 	// --schema: append validation diagnostics under the same contract. The
 	// schema itself always loads at Standard (a program artifact); one that
@@ -825,7 +831,7 @@ static int do_check(const Opts *o) {
 	int v99 = 0;
 	if (!shcl_strict_failed(d) && o->schema) {
 		size_t slen; stext = read_input(o->schema, &slen);
-		if (!stext) { shcl_free(d); free(text); return 1; }
+		if (!stext) { shcl_free(d); free(text); return EXIT_IO; }
 		sd = shcl_parse(stext, slen);
 		size_t sn = shcl_diag_count(sd);
 		for (size_t i = 0; i < sn; i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) v99 = 1;
@@ -887,7 +893,7 @@ static int do_init(const Opts *o) {
 	if (o->nargs > 0) { fprintf(stderr, "init takes no file argument (see --help)\n"); return 1; }
 	if (!o->schema) { fprintf(stderr, "init needs --schema=FILE (see --help)\n"); return 1; }
 	size_t slen; char *stext = read_input(o->schema, &slen);
-	if (!stext) return 1;
+	if (!stext) return EXIT_IO;
 	// The schema always loads at Standard - a program artifact, not user data.
 	shcl_doc *sd = shcl_parse(stext, slen);
 	int bad = 0; size_t sn = shcl_diag_count(sd);

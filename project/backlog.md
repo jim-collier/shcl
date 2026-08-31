@@ -111,13 +111,18 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-093000
 
-	- 🔘 Item 22: exit 1 is still the catch-all for usage, I/O and an unwritable path, a week after 7 was carved out.
+	- ✅ Item 22: exit 1 is still the catch-all for usage, I/O and an unwritable path, a week after 7 was carved out.
 		- Exit 7 was created on the argument that a script could not tell "pass the lossy flag or fix the file" from "the command line is wrong". The same argument applies to a setter that cannot write, and was not applied.
 		- Reproduced, all exit 1: an unknown flag, a missing file, a wildcard path, and an index selector naming no instance. Three different remedies, one code.
 		- The prose already distinguishes them, so the information exists and only the code throws it away. The write-reason vocabulary names six causes in every binding for exactly this purpose.
 		- Convention is against the current split: usage errors sharing a code with I/O is unusual.
 		- Honest counter: the message already tells you, so this is coherence rather than capability.
+		- Decided: new exit 8 for a file or stream that could not be read or written, and 1 becomes the usage code alone. Same reasoning as exit 7, applied to what was left in the catch-all: fixing a command line and fixing a path, a permission or a disk are unrelated remedies.
+		- A path a write option refuses (a wildcard, an index naming no instance) stays at 1 rather than taking a third code, because what has to change there is the option's value. Two codes, not three.
+		- Done in all four bindings: every file, schema, layer and stdin read, and the save's generic failure. Help, man page, spec, both wrappers and design updated.
+		- Pinned by six `cli-regress.bash` rows, four I/O and two usage, plus the existing directory-read row moved from 1 to 8. 20 of 160 checks fail without the code.
 		- Opened: 20260830-140346
+		- Closed: 20260831-101500
 
 	- 🔘 Item 23: the raw info read is the one typed entry point with no convenience tier, and the deviation is recorded nowhere.
 		- The spec promises each typed entry point comes in two tiers. Every read type has the short form except this one, in all four bindings and the veneer.
