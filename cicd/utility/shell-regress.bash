@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 ##	Purpose:
-##		Pin the shell surface: the two wrappers, the one-liner's scope hygiene,
-##		and the packaging script's version handling. None of it is reachable
-##		from the corpus or the CLI gate, and every row here is a defect a review
-##		round found in a shipped script.
+##		Pin the tooling surface: the two wrappers, the one-liner's scope hygiene,
+##		the packaging script's version handling, and the comparison worker's
+##		argument handling. None of it is reachable from the corpus or the CLI
+##		gate, and every row here is a defect a review round found.
 ##
 ##		Also scans the repo's own errexit scripts for the trap that has now bit
 ##		four times: a `grep` inside a command substitution whose result is
@@ -206,6 +206,33 @@ while IFS= read -r h; do
 done < <(grep -n 'IsWindows' "${repoDir}/source/powershell/shcl.ps1" \
 	| grep -vE '^[0-9]+:##' | grep -vE 'PSVersion\.Major -lt 6 -or' || true)
 
+##	The comparison worker: a bad ITERS used to be a traceback, and a zero one
+##	raised while formatting a time that was never taken. The listing must also
+##	survive a loader failing some way other than a missing import, and must not
+##	grow a duplicate search-path entry per call.
+worker="${repoDir}/cicd/utility/comparison/pyworker.py"
+if [[ -f "${worker}" ]]; then
+	: > "${tmpDir}/w.shcl"
+	printf 'a: 1\n' > "${tmpDir}/w.shcl"
+	for bad in abc 0 -1; do
+		out="$(python3 "${worker}" shcl "${tmpDir}/w.shcl" "${bad}" 2>&1)" && rc=0 || rc=$?
+		((rc == 2)) || fBad "pyworker.py ITERS=${bad}: exit ${rc}, expected 2"
+		[[ "${out}" == usage:* ]] || fBad "pyworker.py ITERS=${bad} did not print the usage line: ${out}"
+	done
+	## Its own loader is called once per listed entry, so a path pushed per call
+	## shows up as a duplicate after two.
+	dups="$(python3 - "${worker}" <<'PYEOF'
+import runpy, sys
+path = sys.argv[1]
+mod = runpy.run_path(path)
+before = list(sys.path)
+mod["load_shcl"](); mod["load_shcl"]()
+print(len(sys.path) - len(before))
+PYEOF
+)"
+	[[ "${dups}" == "1" ]] || fBad "pyworker.py load_shcl added ${dups} path entries over two calls, expected 1"
+fi
+
 ##	The static half. Line continuations are joined first, so a substitution that
 ##	ends in `|| true` several lines down is read as guarded.
 while IFS= read -r f; do
@@ -222,7 +249,7 @@ if ((nBad)); then
 	echo "shell-regress: ${nBad} check(s) failed" >&2
 	exit 1
 fi
-echo "shell-regress: OK: wrappers, one-liner scope, packaging, and no unguarded grep substitutions"
+echo "shell-regress: OK: wrappers, one-liner scope, packaging, comparison worker, and no unguarded grep substitutions"
 
 ##	History:
 ##		2026-08-30  Created, pinning the wrapper and installer defects from the

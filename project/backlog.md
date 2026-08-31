@@ -173,13 +173,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-120000
 
-	- 🔘 Item 28: four small robustness gaps in the comparison worker.
+	- ✅ Item 28: four small robustness gaps in the comparison worker.
 		- A non-numeric iteration count is a traceback rather than the usage line printed two lines above it.
 		- A zero iteration count formats a value that is still unset, and raises.
 		- The listing catches only import errors, so a loader failing any other way takes the whole listing down instead of reporting one entry unavailable.
 		- The loader inserts a path on every call and the listing calls every loader, so the search path grows a duplicate each time.
 		- Internal tooling, not shipped code.
+		- All four fixed. A non-numeric or non-positive ITERS is the usage line at exit 2, the listing catches any loader failure rather than only a missing import, and the shcl loader only pushes its path when it is not already there.
+		- Pinned in `shell-regress.bash`, whose purpose already covers the tooling the corpus cannot reach: three bad ITERS spellings and a duplicate-path check. Seven checks fail without the fix.
 		- Opened: 20260830-140346
+		- Closed: 20260831-123000
 
 	- 🔘 Item 29: the Go ASCII lower-case helper copies before deciding nothing changed.
 		- Scanning first and copying only on a hit took the read benchmark from 9.27 ms to 7.59 ms, about 18%, with identical behavior.
