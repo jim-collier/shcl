@@ -66,6 +66,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The C validator put one scratch arena per level of the nesting cap on the stack - 16 KB, fine on a main thread and past the whole stack of a small worker, where it crashed. They are heap-allocated now.
+
+- Go's atomic write ignored the result of closing the temp file, so a write error that surfaced only at close would publish a truncated file over the target. The other three bindings already reported it.
+
+- The Linux installer runs the downloaded binary before writing anything, and so does the Windows one now - a binary that will not start never becomes an install. The Windows installer used to run it only after publishing, where a failure arrived as an exception after the success message.
+
+- `install.bash --uninstall` said "removed" while leaving a directory full of files it had not installed. It now removes the directory only when empty and names what it left, matching the Windows installer.
+
+- Both bash installers print their help as prose. It used to be the source header verbatim, comment markers and hard tabs included.
+
 - `fmt` and `set` with `--layer` reported only the lowest layer's diagnostics, so damage in FILE itself - the file named on the command line - went unmentioned. Every layer's diagnostics are printed now, lowest first.
 
 - C: a save to a path spelled with backslashes failed on Windows, so a consumer that built its config path with the platform separator could never save. The temp name now splits on either separator, and a drive-relative `C:x` target splits after the colon.
