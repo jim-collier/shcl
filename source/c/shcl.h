@@ -3172,6 +3172,9 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	ShclStr out;
 	if (line.n == 0 || line.p[0] != '#') { ShclSB b = {0}; sb_puts(a, &b, "# "); sb_putS(a, &b, line); out = sb_S(&b); }
 	else out = s_dup(a, line);
+	/* Without this the load trims what was written and the writer's output
+	   stops being a fmt fixpoint. Blank text leaves a bare `#`. */
+	out = trim_end(out);
 	/* The node's own blank moves above its first comment; otherwise the blank
 	   would separate the comment from what it annotates. */
 	ShclNode *nd = &NODE(d, idx);

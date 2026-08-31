@@ -2511,13 +2511,18 @@ class Document:
 
 	def set_comment(self, path: str, text: str) -> bool:
 		"""Attach a leading comment line to the node at a path (creating an empty
-		node if absent). A missing '#' is added; only the first line is kept."""
+		node if absent). A missing '#' is added; only the first line is kept, and
+		trailing whitespace comes off the way the load takes it, so text that is
+		blank leaves a bare '#'."""
 		idx = self._place(path)
 		if idx is None:
 			return False
 		line = text.split("\n", 1)[0]
 		if not line.startswith("#"):
 			line = "# " + line
+		# Without this the load trims what was written and the writer's output
+		# stops being a fmt fixpoint.
+		line = _trim_end(line)
 		# The node's own blank moves above its first comment; otherwise the
 		# blank would separate the comment from what it annotates.
 		nd = self.arena[idx]

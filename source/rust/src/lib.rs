@@ -3591,7 +3591,9 @@ impl Document {
 
 	/// Attach a leading comment line to the node at a path (creating an empty
 	/// node if it does not exist yet, so a section can be annotated). A missing
-	/// `#` is added; only the first line is kept (a comment is one line).
+	/// `#` is added; only the first line is kept (a comment is one line), and
+	/// trailing whitespace comes off the way the load takes it, so text that is
+	/// blank leaves a bare `#`.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_comment(&mut self, path: &str, text: &str) -> bool {
 		match self.place(path) {
@@ -3602,6 +3604,9 @@ impl Document {
 				} else {
 					format!("# {}", line)
 				};
+				// Without this the load trims what was written and the writer's
+				// output stops being a fmt fixpoint.
+				let c = c.trim_end().to_string();
 				// The node's own blank moves above its first comment; otherwise
 				// the blank would separate the comment from what it annotates.
 				let nd = &mut self.arena[node];
