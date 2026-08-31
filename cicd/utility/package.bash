@@ -33,6 +33,20 @@ meDir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 fEcho(){ echo "[ $* ]"; }
 fWarn(){ fEcho "WARNING: $*"; }
 
+##	NSIS wants four dot-separated integers where the project version can carry a
+##	prerelease tail. Same rule the Rust build script uses for the executable's
+##	own version field: the digit-only pieces in order, padded to four.
+fVersionQuad(){
+	local -a parts=() quad=()
+	local piece
+	IFS='.+-' read -r -a parts <<<"${1}"
+	for piece in "${parts[@]}"; do
+		[[ "${piece}" =~ ^[0-9]+$ ]] && quad+=("${piece}")
+	done
+	while ((${#quad[@]} < 4)); do quad+=("0"); done
+	printf '%s.%s.%s.%s\n' "${quad[0]}" "${quad[1]}" "${quad[2]}" "${quad[3]}"
+}
+
 ## Stage the shared payload (same file set install.bash pulls from a tag).
 payload="$(mktemp -d)"
 trap 'rm -rf "${payload}"' EXIT
@@ -98,7 +112,8 @@ if command -v makensis >/dev/null 2>&1; then
 		[[ -f "${exe}" ]] || continue
 		fPinMtime "${exe}"
 		out="${artDir}/shcl-${ver}-windows-${osarch}-setup.exe"
-		makensis -V2 -DVERSION="${ver}" -DSRCEXE="${exe}" -DPAYLOAD="${payload}" -DOUTFILE="${out}" \
+		makensis -V2 -DVERSION="${ver}" -DVERQUAD="$(fVersionQuad "${ver}")" \
+			-DSRCEXE="${exe}" -DPAYLOAD="${payload}" -DOUTFILE="${out}" \
 			${icoArg:+-DICON="${icoArg}"} "${meDir}/../packaging/shcl.nsi" >/dev/null
 		fEcho "OK: package: $(basename "${out}") ($(du -h --apparent-size "${out}" | cut -f1))"
 		built=$((built + 1))

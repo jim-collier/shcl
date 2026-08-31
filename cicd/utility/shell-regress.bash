@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 
 ##	Purpose:
-##		Pin the shell surface: the two wrappers, and the one-liner's scope
-##		hygiene. None of it is reachable from the corpus or the CLI gate, and
-##		every row here is a defect a review round found in a shipped script.
+##		Pin the shell surface: the two wrappers, the one-liner's scope hygiene,
+##		and the packaging script's version handling. None of it is reachable
+##		from the corpus or the CLI gate, and every row here is a defect a review
+##		round found in a shipped script.
 ##
 ##		Also scans the repo's own errexit scripts for the trap that has now bit
 ##		four times: a `grep` inside a command substitution whose result is
@@ -79,6 +80,23 @@ else
 	echo "shell-regress: pwsh not installed - PowerShell rows skipped"
 fi
 
+##	20260830b item 8: a prerelease version reached NSIS's four-integer version
+##	field verbatim, and makensis rejected it under errexit, so the release stage
+##	died on the first prerelease cut. A fake .exe is enough - the setup never
+##	runs, it only has to build.
+if command -v makensis > /dev/null 2>&1; then
+	pkgDir="${tmpDir}/pkg"; mkdir -p "${pkgDir}"
+	: > "${pkgDir}/shcl-2.1.0-alpha.1-windows-x86_64.exe"
+	if "${repoDir}/cicd/utility/package.bash" "${repoDir}" "${pkgDir}" "2.1.0-alpha.1" > "${tmpDir}/pkg.log" 2>&1; then
+		[[ -f "${pkgDir}/shcl-2.1.0-alpha.1-windows-x86_64-setup.exe" ]] \
+			|| fBad "packaging a prerelease built no setup: $(cat "${tmpDir}/pkg.log")"
+	else
+		fBad "packaging a prerelease failed: $(cat "${tmpDir}/pkg.log")"
+	fi
+else
+	echo "shell-regress: makensis not installed - packaging row skipped"
+fi
+
 ##	The static half. Line continuations are joined first, so a substitution that
 ##	ends in `|| true` several lines down is read as guarded.
 while IFS= read -r f; do
@@ -95,7 +113,7 @@ if ((nBad)); then
 	echo "shell-regress: ${nBad} check(s) failed" >&2
 	exit 1
 fi
-echo "shell-regress: OK: wrappers, one-liner scope, and no unguarded grep substitutions"
+echo "shell-regress: OK: wrappers, one-liner scope, packaging, and no unguarded grep substitutions"
 
 ##	History:
 ##		2026-08-30  Created, pinning the wrapper and installer defects from the
