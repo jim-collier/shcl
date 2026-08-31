@@ -112,6 +112,17 @@ file. Nothing unverified is installed.
 	## Detached PKCS#1 v1.5 / SHA-256 signature over a file. Any failure - malformed
 	## key, unreadable signature, bad maths - comes back false, never an exception
 	## that a caller might mistake for a pass.
+	function Select-ReleaseTag([string]$Channel, $Releases) {
+		$all = @($Releases) | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+' }
+		$all = @($all) | Where-Object { -not $_.draft }
+		if ($Channel -eq 'stable') { $all = @($all) | Where-Object { -not $_.prerelease } }
+		@($all) | Sort-Object `
+			@{ Expression = { [version](($_.tag_name.TrimStart('v') -split '-', 2)[0]) } }, `
+			@{ Expression = { $_.tag_name -notmatch '-' } }, `
+			@{ Expression = { [regex]::Replace((($_.tag_name -split '-', 2) + '')[1], '\d+', [Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value.PadLeft(10, '0') }) } } |
+			Select-Object -Last 1
+	}
+
 	function Test-ReleaseSignature([string]$file, [string]$sigFile) {
 		try {
 			$rsa = [System.Security.Cryptography.RSA]::Create()
@@ -152,22 +163,17 @@ file. Nothing unverified is installed.
 	## by an order of magnitude. Scoped to this script; nothing here needs the bar.
 	$ProgressPreference = 'SilentlyContinue'
 
-	## Resolve the tag. GitHub's /releases/latest is exactly "newest non-prerelease";
-	## dev lists everything and takes the highest version. The list endpoint orders by
-	## publish date, so a maintenance release cut on an older line would otherwise
-	## win. Within one version a final outranks its own pre-releases (v2.0.0-rc1 <
-	## v2.0.0); a pre-release suffix compares with its digit runs zero-padded, so
-	## rc2 < rc10 - the same order install.bash gets from sort -V.
-	$api = if ($Release -eq 'stable') { "https://api.github.com/repos/$repo/releases/latest" }
-		else { "https://api.github.com/repos/$repo/releases?per_page=100" }
+	## Resolve the tag. Highest version wins, never newest by date: GitHub's
+	## /releases/latest is date-ordered, so a patch back-ported to an older line
+	## after a newer one shipped would be handed out as "stable". A draft has no
+	## published assets, so neither channel can install one; stable drops
+	## pre-releases on top of that. Within one version a
+	## final outranks its own pre-releases (v2.0.0-rc1 < v2.0.0); a pre-release
+	## suffix compares with its digit runs zero-padded, so rc2 < rc10 - the same
+	## order install.bash gets from sort -V.
+	$api = "https://api.github.com/repos/$repo/releases?per_page=100"
 	try { $rel = Invoke-RestMethod -Uri $api -UseBasicParsing } catch { Exit-Install "cannot fetch the $Release release (none published yet, or network down)" }
-	if ($rel -is [array]) {
-		$rel = @($rel) | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+' } | Sort-Object `
-			@{ Expression = { [version](($_.tag_name.TrimStart('v') -split '-', 2)[0]) } }, `
-			@{ Expression = { $_.tag_name -notmatch '-' } }, `
-			@{ Expression = { [regex]::Replace((($_.tag_name -split '-', 2) + '')[1], '\d+', [Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value.PadLeft(10, '0') }) } } |
-			Select-Object -Last 1
-	}
+	$rel = Select-ReleaseTag $Release $rel
 	if (-not $rel -or -not $rel.tag_name) { Exit-Install "no $Release release found" }
 	$tag = $rel.tag_name
 	$version = $tag.TrimStart('v')

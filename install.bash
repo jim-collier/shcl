@@ -215,16 +215,27 @@ if [[ -e "${link}" && ! -L "${link}" ]]; then
 	die "${link} exists and is not a symlink - move it aside first, then re-run"
 fi
 
-## Resolve the tag. GitHub's /releases/latest is exactly "newest non-prerelease";
-## dev lists everything and takes the highest version. The list endpoint orders by
-## publish date, so a maintenance release cut on an older line would otherwise win.
-## sort -V with '-' mapped to '~' ranks a pre-release below its own final
-## (v2.0.0-rc1 < v2.0.0); mapped back afterwards.
-if [[ "${release}" == "stable" ]]; then
-	api="https://api.github.com/repos/${REPO}/releases/latest"
-else
-	api="https://api.github.com/repos/${REPO}/releases?per_page=100"
-fi
+## Pick the tag out of a /releases listing: highest version wins, never newest
+## by date. GitHub's /releases/latest is date-ordered, so a patch back-ported to
+## an older line after a newer one shipped would be handed out as "stable" - the
+## same hazard the list endpoint has, and the reason both channels sort here.
+## A draft has no published assets, so neither channel can install one; stable
+## drops pre-releases on top of that. tag_name, draft and prerelease arrive in
+## that order within one release object, so the flags that follow a tag belong
+## to it. sort -V with the first '-' mapped to '~' ranks a pre-release below its
+## own final (v2.0.0-rc1 < v2.0.0); mapped back afterwards.
+fPickTag(){
+	local channel="$1" json="$2" tags
+	tags="$(awk -v channel="${channel}" '
+		/"tag_name":/          { t = $0; sub(/.*"tag_name": *"/, "", t); sub(/".*/, "", t) }
+		/"draft": *true/       { t = "" }
+		/"prerelease": *true/  { if (channel != "stable" && t != "") print t; t = "" }
+		/"prerelease": *false/ { if (t != "") print t; t = "" }
+	' "${json}")"
+	printf '%s\n' "${tags}" | sed 's/-/~/' | sort -V | tail -n1 | sed 's/~/-/'
+}
+
+api="https://api.github.com/repos/${REPO}/releases?per_page=100"
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 fetch "${api}" "${tmp}/rel.json" || die "cannot fetch the ${release} release (none published yet, or network down)"
@@ -232,11 +243,7 @@ fetch "${api}" "${tmp}/rel.json" || die "cannot fetch the ${release} release (no
 ## a release cut before the drop-in payload existed). Under pipefail that is a
 ## failed substitution, which would end the script here instead of at the check
 ## that reports it - so each one swallows its own status.
-if [[ "${release}" == "stable" ]]; then
-	tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | head -n1 | sed 's/.*"\(v[^"]*\)"/\1/' || true)"
-else
-	tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | sed 's/.*"\(v[^"]*\)"/\1/; s/-/~/' | sort -V | tail -n1 | sed 's/~/-/' || true)"
-fi
+tag="$(fPickTag "${release}" "${tmp}/rel.json")"
 [[ -n "${tag}" && "${tag}" != null ]] || die "no ${release} release found"
 version="${tag#v}"
 

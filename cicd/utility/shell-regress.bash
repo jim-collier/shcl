@@ -80,6 +80,55 @@ else
 	echo "shell-regress: pwsh not installed - PowerShell rows skipped"
 fi
 
+##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
+##	release" verbatim, so a patch back-ported to an older line after a newer one
+##	shipped was handed out as stable. The fixture is in publish order, newest
+##	first, and the answer must not be the first row.
+cat > "${tmpDir}/rel.json" <<'JSON'
+[
+  {
+    "tag_name": "v1.2.1",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v2.1.0-alpha.1",
+    "draft": false,
+    "prerelease": true
+  },
+  {
+    "tag_name": "v2.2.0",
+    "draft": true,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v2.0.0",
+    "draft": false,
+    "prerelease": false
+  }
+]
+JSON
+##	The function comes out of the shipped installer by name, so the gate runs
+##	the real text rather than a copy that can drift.
+eval "$(sed -n '/^fPickTag()/,/^}/p' "${repoDir}/install.bash")"
+out="$(fPickTag stable "${tmpDir}/rel.json")"
+[[ "${out}" == "v2.0.0" ]] || fBad "install.bash stable channel picked ${out@Q}, want v2.0.0"
+out="$(fPickTag dev "${tmpDir}/rel.json")"
+[[ "${out}" == "v2.1.0-alpha.1" ]] || fBad "install.bash dev channel picked ${out@Q}, want v2.1.0-alpha.1"
+
+if command -v pwsh > /dev/null 2>&1; then
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		sed -n '/^\tfunction Select-ReleaseTag/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "\$rel = Get-Content '${tmpDir}/rel.json' -Raw | ConvertFrom-Json"
+		echo 'Write-Output ("stable=" + (Select-ReleaseTag stable $rel).tag_name)'
+		echo 'Write-Output ("dev=" + (Select-ReleaseTag dev $rel).tag_name)'
+	} > "${tmpDir}/pick.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/pick.ps1" 2>&1 || true)"
+	[[ "${out}" == *"stable=v2.0.0"* ]]        || fBad "install.ps1 stable channel: ${out@Q}"
+	[[ "${out}" == *"dev=v2.1.0-alpha.1"* ]]   || fBad "install.ps1 dev channel: ${out@Q}"
+fi
+
 ##	20260830b item 8: a prerelease version reached NSIS's four-integer version
 ##	field verbatim, and makensis rejected it under errexit, so the release stage
 ##	died on the first prerelease cut. A fake .exe is enough - the setup never
