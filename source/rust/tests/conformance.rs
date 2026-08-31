@@ -973,6 +973,14 @@ fn set_raw_keeps_a_shared_indent_and_trims_the_info() {
 	let back = Document::parse(&doc.to_canonical());
 	assert_eq!(back.get_raw("q"), Ok("  a\n  b".to_string()));
 	assert_eq!(back.read_raw_info("q").value, "\"a # b\"");
+	// A body line ending in CR has no fence spelling: the load takes the whole
+	// trailing CR run off every line, so it is refused rather than lost. A CR
+	// mid-line is content and still round-trips.
+	assert!(!doc.set_raw("q", "a\r\nb", ""));
+	assert!(!doc.set_raw("q", "\r", ""));
+	assert!(doc.set_raw("q", "a\rb", ""));
+	let back = Document::parse(&doc.to_canonical());
+	assert_eq!(back.get_raw("q"), Ok("a\rb".to_string()));
 }
 
 #[cfg(unix)]

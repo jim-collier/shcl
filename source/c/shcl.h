@@ -3210,13 +3210,16 @@ int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_dat
 // Bind a raw block at a path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed); one
 // holding a line break or an unquoted `#` has no fence-line spelling (the `#`
-// would read back as a comment) and fails the write.
+// would read back as a comment) and fails the write. A body line ending in CR
+// fails for the same reason: the load takes the whole trailing CR run off every
+// line, so it would not read back.
 int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) {
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen;
 	ShclStr it; it.p = info; it.n = ilen;
 	if (it.n && (memchr(it.p, '\n', it.n) || memchr(it.p, '\r', it.n))) return 0;
 	ShclStr icomment; split_comment(it, &icomment);
 	if (icomment.n) return 0;
+	for (size_t i = 0; i < clen; i++) if (content[i] == '\r' && (i + 1 == clen || content[i + 1] == '\n')) return 0;
 	it = s_trim(it);
 	ShclStr c = w_dupz(a, content, clen), inf = s_dup(a, it);
 	unsigned char fc; size_t fl; w_choose_fence(c, &fc, &fl);

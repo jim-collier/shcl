@@ -2565,8 +2565,12 @@ class Document:
 		"""Bind a raw block at a path, picking a fence longer than any content
 		line. The info-string is stored as a fence line would read it back
 		(trimmed); one holding a line break or an unquoted `#` has no fence-line
-		spelling (the `#` would read back as a comment) and fails the write."""
+		spelling (the `#` would read back as a comment) and fails the write. A
+		body line ending in CR fails for the same reason: the load takes the
+		whole trailing CR run off every line, so it would not read back."""
 		if "\n" in info or "\r" in info or _split_comment(info)[1] != "":
+			return False
+		if any(l.endswith("\r") for l in content.split("\n")):
 			return False
 		info = _trim(info)
 		fc, fl = _choose_fence(content)

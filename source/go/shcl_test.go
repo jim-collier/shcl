@@ -1027,6 +1027,22 @@ func TestSetRawKeepsASharedIndentAndTrimsTheInfo(t *testing.T) {
 	if info := back.ReadRawInfo("q").Value; info != "\"a # b\"" {
 		t.Errorf("quoted info: got %q", info)
 	}
+	// A body line ending in CR has no fence spelling: the load takes the whole
+	// trailing CR run off every line, so it is refused rather than lost. A CR
+	// mid-line is content and still round-trips.
+	if doc.SetRaw("q", "a\r\nb", "") {
+		t.Error("body with a line-ending carriage return was accepted")
+	}
+	if doc.SetRaw("q", "\r", "") {
+		t.Error("body of one carriage return was accepted")
+	}
+	if !doc.SetRaw("q", "a\rb", "") {
+		t.Fatal("body with a mid-line carriage return was refused")
+	}
+	back = Parse(doc.ToCanonical())
+	if v, st := back.GetRaw("q"); st != Good || v != "a\rb" {
+		t.Errorf("mid-line CR: got %q %v", v, st)
+	}
 }
 
 func TestSaveCreatesTheFileBehindADanglingSymlink(t *testing.T) {

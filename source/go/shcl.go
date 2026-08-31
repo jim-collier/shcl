@@ -3951,10 +3951,17 @@ func (d *Document) SetEmpty(path string) bool {
 // SetRaw binds a raw block at path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed); one
 // holding a line break or an unquoted `#` has no fence-line spelling (the `#`
-// would read back as a comment) and fails the write.
+// would read back as a comment) and fails the write. A body line ending in CR
+// fails for the same reason: the load takes the whole trailing CR run off every
+// line, so it would not read back.
 func (d *Document) SetRaw(path, content, info string) bool {
 	if _, c := splitComment(info); strings.ContainsAny(info, "\n\r") || c != "" {
 		return false
+	}
+	for _, l := range strings.Split(content, "\n") {
+		if strings.HasSuffix(l, "\r") {
+			return false
+		}
 	}
 	info = strings.TrimSpace(info)
 	fc, fl := chooseFence(content)

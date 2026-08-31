@@ -893,6 +893,17 @@ int main(int argc, char **argv) {
 		if (br.status != SHCL_GOOD || br.value.n != 7 || memcmp(br.value.p, "  a\n  b", 7) != 0) fail("set_raw", "content did not survive the reload");
 		bi = shcl_read_raw_info(back, "q", 1);
 		if (bi.status != SHCL_GOOD || bi.value.n != 7 || memcmp(bi.value.p, "\"a # b\"", 7) != 0) fail("set_raw", "quoted # info did not round-trip");
+		shcl_free(back);
+		// A body line ending in CR has no fence spelling: the load takes the
+		// whole trailing CR run off every line, so it is refused rather than
+		// lost. A CR mid-line is content and still round-trips.
+		if (shcl_set_raw(sd, "q", 1, "a\r\nb", 4, "", 0)) fail("set_raw", "body with a line-ending CR accepted");
+		if (shcl_set_raw(sd, "q", 1, "\r", 1, "", 0)) fail("set_raw", "body of one CR accepted");
+		if (!shcl_set_raw(sd, "q", 1, "a\rb", 3, "", 0)) fail("set_raw", "body with a mid-line CR refused");
+		sc = shcl_to_canonical(sd);
+		back = shcl_parse(sc.p, sc.n);
+		br = shcl_read_raw(back, "q", 1);
+		if (br.status != SHCL_GOOD || br.value.n != 3 || memcmp(br.value.p, "a\rb", 3) != 0) fail("set_raw", "mid-line CR did not survive the reload");
 		shcl_free(back); shcl_free(sd);
 	}
 	// A link to a file that is not there yet is written through like any

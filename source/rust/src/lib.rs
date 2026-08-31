@@ -3648,10 +3648,15 @@ impl Document {
 	/// Bind a raw block at a path, picking a fence longer than any content line.
 	/// The info-string is stored as a fence line would read it back (trimmed);
 	/// one holding a line break or an unquoted `#` has no fence-line spelling
-	/// (the `#` would read back as a comment) and fails the write.
+	/// (the `#` would read back as a comment) and fails the write. A body line
+	/// ending in CR fails for the same reason: the load takes the whole
+	/// trailing CR run off every line, so it would not read back.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
 		if info.contains('\n') || info.contains('\r') || split_comment(info).1.is_some() {
+			return false;
+		}
+		if content.split('\n').any(|l| l.ends_with('\r')) {
 			return false;
 		}
 		let info = info.trim();
