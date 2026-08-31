@@ -61,6 +61,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 #### Done - Bugs
 
+- ✅ The round went out green locally and red on the hosted runner: gcc 13 rejected what gcc 14 and 15 accept.
+	- Reproduced: `apply_op`'s array branches allocate a slot array and fill only the first `an`, and at `an` of zero the setter is handed slots nothing wrote. The callee reads none of them, but a compiler that inlines the allocator cannot see that and calls them uninitialized. gcc 13 says so under `-Werror`; 12, 14, 15 and clang do not.
+	- Cause: nothing in the array branches changed this round. Inlining did, because the round added a function beside them, and the warning is inlining-dependent.
+	- Fixed: all four array branches zero their slots. Every compiler on this box now builds the C surface clean.
+	- Pinned by a new gate, `check-c-compilers.bash`, which builds `main.c` and the runner with every gcc and clang present rather than only the default. The old gate used one compiler, which is why the local run could be green while the hosted one was not.
+	- Opened: 20260831-160500
+	- Closed: 20260831-161500
+
 - ✅ With `--layer`, the diagnostics for FILE itself were dropped and only the lowest layer's were printed.
 	- In the same fold as item 18 of the 20260830b round.
 	- Reproduced in all four bindings: `fmt --layer=good.shcl broken.shcl` reported nothing, while swapping the two files reported the same damage correctly. `set` had its own copy of the fold and the same hole.

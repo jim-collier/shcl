@@ -133,6 +133,7 @@ LINT_EXTRA=(
 SHELLCHECK_TARGETS=(
 	cicd/cicd.bash
 	cicd/config.bash
+	cicd/utility/check-c-compilers.bash
 	cicd/utility/check-completions.bash
 	cicd/utility/check-docs.bash
 	cicd/utility/check-pins.bash
@@ -191,6 +192,10 @@ TEST_EXTRA=(
 	'cicd/utility/perf-gate.bash "${BINDING_CLIS[@]}"'
 	## The wrappers, the one-liner's scope hygiene, and the errexit grep trap.
 	'cicd/utility/shell-regress.bash'
+	## Every C compiler on the box, not just the default one: the hosted runner's
+	## gcc is a different version, and the two disagree about what -Werror
+	## rejects. A round went out green here and red there over exactly that.
+	'cicd/utility/check-c-compilers.bash'
 	## The same C programs again under the address and undefined-behavior
 	## sanitizers, plus the CLI over the corpus. A read past a buffer that does
 	## not change stdout passes every gate above; this one sees it.
