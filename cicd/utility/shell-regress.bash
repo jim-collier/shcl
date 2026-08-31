@@ -233,6 +233,44 @@ PYEOF
 	[[ "${dups}" == "1" ]] || fBad "pyworker.py load_shcl added ${dups} path entries over two calls, expected 1"
 fi
 
+##	The completions check against a subcommand that takes no options. One side
+##	emitted a row for it and the other dropped any row with an empty option
+##	list, so the two could never agree however the completions spelled it - a
+##	lint failure blaming the completions on the day such a subcommand is added.
+##	The fixture is the real files with one added, so the check runs against the
+##	extractors as shipped rather than a hand-written stand-in.
+gate="${repoDir}/cicd/utility/check-completions.bash"
+if [[ -x "${gate}" ]]; then
+	fix="${tmpDir}/optless"
+	mkdir -p "${fix}/source/rust/src" "${fix}/source/completions"
+	python3 - "${repoDir}" "${fix}" <<'PYEOF'
+import sys
+repo, fix = sys.argv[1], sys.argv[2]
+TAB = chr(9)
+NL = chr(10)
+s = open(repo + "/source/rust/src/main.rs").read()
+arm = TAB * 2 + '"count" | "instances" | "children" | "paths" => &['
+s = s.replace(arm, TAB * 2 + '"ping" => &[],' + NL + arm, 1)
+s = s.replace(TAB + '"paths",' + NL + "];", TAB + '"paths",' + NL + TAB + '"ping",' + NL + "];", 1)
+disp = TAB * 2 + '"paths" => do_paths(o),'
+s = s.replace(disp, disp + NL + TAB * 2 + '"ping" => 0,', 1)
+open(fix + "/source/rust/src/main.rs", "w").write(s)
+for name in ("shcl.bash", "_shcl"):
+    c = open(repo + "/source/completions/" + name).read()
+    row = TAB * 2 + "count|instances|children|paths) echo '--strictness"
+    c = c.replace(row, TAB * 2 + "ping)            echo '' ;;" + NL + row, 1)
+    if name == "shcl.bash":
+        c = c.replace("instances children paths help", "instances children paths ping help", 1)
+    else:
+        pl = TAB * 2 + "'paths:every field path in the document'"
+        c = c.replace(pl, pl + NL + TAB * 2 + "'ping:say nothing'", 1)
+    open(fix + "/source/completions/" + name, "w").write(c)
+PYEOF
+	if ! out="$("${gate}" "${fix}" 2>&1)"; then
+		fBad "check-completions rejects an option-less subcommand the completions spell correctly: ${out}"
+	fi
+fi
+
 ##	A one-line loop body that is a `[[ ... ]] && ...` list. When the test fails
 ##	on the last iteration the loop returns 1, which is harmless at statement
 ##	level on this bash but kills the caller the moment the loop becomes the last

@@ -265,13 +265,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-150000
 
-	- 🛠️ Item 38: the completions check rejects an option-less subcommand however the completions spell it.
+	- ✅ Item 38: the completions check rejects an option-less subcommand however the completions spell it.
 		- One side emits a row for every subcommand, the other drops any with an empty option list, so the two can never agree on such a subcommand.
 		- Reproduced on a copied tree: adding one makes the check fail against both completion files, and adding the matching completion arm does not clear it.
 		- Costs a confusing lint failure the day an option-less subcommand is added, blaming the completions when they are correct. None exists today.
 		- Two greps in the same function also lack the guard their siblings have; they survive only because command substitutions do not inherit errexit.
 		- Both greps are guarded now, and `shell-regress.bash` scans for the shape repo-wide. The option-less subcommand half is still open.
+		- Fixed: the completion side keeps a row with an empty option list, the way the CLI side always did. Its `*)` default arm is still excluded, since the pattern only matches subcommand words.
+		- Pinned in `shell-regress.bash` by a fixture built from the real files with an option-less subcommand added to all three, so the check runs against the extractors as shipped. It fails without the fix even though the completions are correct, and still catches a genuinely missing completion arm.
 		- Opened: 20260830-140346
+		- Closed: 20260831-153000
 
 	- 🔘 Item 39: the demo's typing speeds sit under the bands the directive names.
 		- Letters are drawn from a range whose mean lands in band once jitter is applied; digits do not.

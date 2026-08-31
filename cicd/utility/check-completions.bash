@@ -50,7 +50,11 @@ fRustTable() {
 fCompTable() {
 	sed -n "s/^[[:space:]]*\([a-z|]\+\))[[:space:]]*echo '\([^']*\)'.*/\1\t\2/p" "$1" \
 	| while IFS=$'\t' read -r names opts; do
-		[[ -n "${opts}" ]] || continue
+		## An empty option list is a row, not a row to drop: the CLI side keeps
+		## its arm either way, so dropping it here made an option-less
+		## subcommand impossible for the two sides to ever agree on. The
+		## completion's `*)` default arm is excluded by the pattern above, which
+		## only matches subcommand words.
 		printf '%s\t%s\n' "${names}" "$(tr ' ' '\n' <<<"${opts}" | sort -u | paste -sd' ')"
 	done
 }
