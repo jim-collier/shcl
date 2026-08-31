@@ -641,41 +641,47 @@ func writeBack(doc *shcl.Document, file string, o *opts) int {
 // loadLayered loads file with o's lower-priority --layer files underneath and
 // its --set overrides on top - the layered-load fold. Every layer parses at the
 // requested strictness; a strict-load failure on any layer aborts like a
-// single-file strict failure (exit 6). Returns (doc, 0) or (nil, code).
-func loadLayered(o *opts, file string) (*shcl.Document, int) {
+// single-file strict failure (exit 6). Returns (doc, diags, 0) or (nil, nil, code).
+//
+// The diagnostics come back per layer, lowest first: a merge does not carry
+// them over, so reading them off the merged document drops the ones for FILE
+// itself, which is the one the caller named.
+func loadLayered(o *opts, file string) (*shcl.Document, []shcl.Diagnostic, int) {
 	texts := make([]string, 0, len(o.layers)+1)
 	for _, lf := range o.layers {
 		t, err := readInput(lf)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return nil, 1
+			return nil, nil, 1
 		}
 		texts = append(texts, t)
 	}
 	base, err := readInput(file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return nil, 1
+		return nil, nil, 1
 	}
 	texts = append(texts, base)
 	doc, code := loadDoc(texts[0], o.strictness)
 	if code != 0 {
-		return nil, code
+		return nil, nil, code
 	}
+	diags := append([]shcl.Diagnostic(nil), doc.Diagnostics()...)
 	for _, t := range texts[1:] {
 		over, c := loadDoc(t, o.strictness)
 		if c != 0 {
-			return nil, c
+			return nil, nil, c
 		}
+		diags = append(diags, over.Diagnostics()...)
 		doc.Merge(over)
 	}
 	for _, s := range o.sets {
 		if !s.apply(doc) {
 			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path))
-			return nil, 1
+			return nil, nil, 1
 		}
 	}
-	return doc, 0
+	return doc, diags, 0
 }
 
 // doGet: one value read, formatted for the shell: scalars print as one line,
@@ -686,7 +692,7 @@ func doGet(o *opts) int {
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
-	doc, code := loadLayered(o, file)
+	doc, _, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
@@ -880,13 +886,13 @@ func doFmt(o *opts) int {
 		fmt.Fprintln(os.Stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
-	doc, code := loadLayered(o, file)
+	doc, diags, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
 	// Printing the canonical form drops what the load dropped, the same as a
 	// rewrite does, so the diagnostics go out either way.
-	sayDiagnostics(doc.Diagnostics())
+	sayDiagnostics(diags)
 	if o.write {
 		return writeBack(doc, file, o)
 	}
@@ -1272,11 +1278,13 @@ func doSet(o *opts) int {
 	if doc == nil {
 		return code
 	}
+	diags := append([]shcl.Diagnostic(nil), doc.Diagnostics()...)
 	for _, t := range layerTexts[1:] {
 		over, c := loadDoc(t, o.strictness)
 		if over == nil {
 			return c
 		}
+		diags = append(diags, over.Diagnostics()...)
 		doc.Merge(over)
 	}
 	for _, s := range o.sets {
@@ -1316,7 +1324,7 @@ func doSet(o *opts) int {
 			return 1
 		}
 	}
-	sayDiagnostics(doc.Diagnostics())
+	sayDiagnostics(diags)
 	if o.write {
 		return writeBack(doc, file, o)
 	}
@@ -1452,7 +1460,7 @@ func doEnum(o *opts, wantCount bool) int {
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
-	doc, code := loadLayered(o, file)
+	doc, _, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}

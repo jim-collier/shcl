@@ -556,7 +556,12 @@ fn say_diagnostics(diags: &[Diagnostic]) {
 /// `--set` overrides on top - the layered-load fold. Every layer parses at the
 /// requested strictness; a strict-load failure on any layer aborts like a
 /// single-file strict failure (exit 6, nothing printed).
-fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
+///
+/// Returns every layer's diagnostics alongside the merged document, lowest
+/// layer first. A merge does not carry them over, so the merged document only
+/// holds the lowest layer's - reading them off it drops the diagnostics for
+/// FILE itself, which is the one the caller named.
+fn load_layered(o: &Opts, file: &str) -> Result<(Document, Vec<Diagnostic>), u8> {
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	let mut texts: Vec<String> = Vec::with_capacity(o.layers.len() + 1);
 	for lf in &o.layers {
@@ -571,8 +576,10 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 	})?;
 	texts.push(base_text);
 	let mut doc = load(&texts[0], o.strictness)?;
+	let mut diags = doc.diagnostics().to_vec();
 	for t in &texts[1..] {
 		let over = load(t, o.strictness)?;
+		diags.extend_from_slice(over.diagnostics());
 		doc.merge(&over);
 	}
 	for s in &o.sets {
@@ -586,7 +593,7 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 			return Err(1);
 		}
 	}
-	Ok(doc)
+	Ok((doc, diags))
 }
 
 /// The in-place half of `fmt`/`set`. Overwriting the source is the one place a
@@ -654,7 +661,7 @@ fn do_get(o: &Opts) -> u8 {
 		eprintln!("usage: shcl get [type] [options] FILE PATH (see --help)");
 		return 1;
 	};
-	let doc = match load_layered(o, file) {
+	let (doc, _diags) = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
@@ -848,13 +855,13 @@ fn do_fmt(o: &Opts) -> u8 {
 		eprintln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	let doc = match load_layered(o, file) {
+	let (doc, diags) = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
 	// Printing the canonical form drops what the load dropped, the same as a
 	// rewrite does, so the diagnostics go out either way.
-	say_diagnostics(doc.diagnostics());
+	say_diagnostics(&diags);
 	if o.write {
 		return write_back(&doc, file, o);
 	}
@@ -1038,9 +1045,13 @@ fn do_set(o: &Opts) -> u8 {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
+	let mut diags = doc.diagnostics().to_vec();
 	for t in &layer_texts[1..] {
 		match load(t, o.strictness) {
-			Ok(over) => doc.merge(&over),
+			Ok(over) => {
+				diags.extend_from_slice(over.diagnostics());
+				doc.merge(&over);
+			}
 			Err(code) => return code,
 		}
 	}
@@ -1082,7 +1093,7 @@ fn do_set(o: &Opts) -> u8 {
 			return 1;
 		}
 	}
-	say_diagnostics(doc.diagnostics());
+	say_diagnostics(&diags);
 	if o.write {
 		return write_back(&doc, file, o);
 	}
@@ -1227,7 +1238,7 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 		eprintln!("usage: shcl {} [options] FILE PATH (see --help)", name);
 		return 1;
 	};
-	let doc = match load_layered(o, file) {
+	let (doc, _diags) = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};

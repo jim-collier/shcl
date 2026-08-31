@@ -395,24 +395,29 @@ def load_layered(o, file):
 	# Load file with o's lower-priority --layer files underneath and its --set
 	# overrides on top - the layered-load fold. Every layer parses at the
 	# requested strictness; a strict-load failure on any layer aborts like a
-	# single-file strict failure. Returns (doc, None) or (None, code).
+	# single-file strict failure. Returns (doc, diags, None) or (None, None, code).
+	# The diagnostics come back per layer, lowest first: a merge does not carry
+	# them over, so reading them off the merged document drops the ones for FILE
+	# itself, which is the one the caller named.
 	texts = []
 	for lf in o.layers:
 		texts.append(read_input(lf))
 	texts.append(read_input(file))
 	doc, code = load_doc(texts[0], o.strictness)
 	if doc is None:
-		return None, code
+		return None, None, code
+	diags = list(doc.diagnostics())
 	for t in texts[1:]:
 		over, c = load_doc(t, o.strictness)
 		if over is None:
-			return None, c
+			return None, None, c
+		diags.extend(over.diagnostics())
 		doc.merge(over)
 	for st in o.sets:
 		if not st.apply(doc):
 			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {describe_refusal(doc, st.path)}\n")
-			return None, 1
-	return doc, None
+			return None, None, 1
+	return doc, diags, None
 
 
 def check_opts(cmd, o):
@@ -524,7 +529,7 @@ def do_get(o):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		doc, code = load_layered(o, file)
+		doc, _diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
@@ -667,7 +672,7 @@ def do_fmt(o):
 		sys.stderr.write("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
 	try:
-		doc, code = load_layered(o, file)
+		doc, diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
@@ -675,7 +680,7 @@ def do_fmt(o):
 		return code
 	# Printing the canonical form drops what the load dropped, the same as a
 	# rewrite does, so the diagnostics go out either way.
-	say_diagnostics(doc.diagnostics())
+	say_diagnostics(diags)
 	if o.write:
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
@@ -880,10 +885,12 @@ def do_set(o):
 	doc, code = load_doc(layer_texts[0], o.strictness)
 	if doc is None:
 		return code
+	diags = list(doc.diagnostics())
 	for t in layer_texts[1:]:
 		over, c = load_doc(t, o.strictness)
 		if over is None:
 			return c
+		diags.extend(over.diagnostics())
 		doc.merge(over)
 	for st in o.sets:
 		if not st.apply(doc):
@@ -922,7 +929,7 @@ def do_set(o):
 		except ValueError as e:
 			sys.stderr.write(f"op line {n + 1}: {e}\n")
 			return 1
-	say_diagnostics(doc.diagnostics())
+	say_diagnostics(diags)
 	if o.write:
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
@@ -1020,7 +1027,7 @@ def do_enum(o, want_count):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		doc, code = load_layered(o, file)
+		doc, _diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1

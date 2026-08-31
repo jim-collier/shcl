@@ -93,6 +93,11 @@ rows=(
 	## 20260829 item 6: --set split PATH from VALUE at the first '=' anywhere, so
 	## a selector holding one could not be addressed at all.
 	'set-eq-in-selector|set --set=x[a=b].c=1 %X%|-|0|x: a=b\n\tc: 1\n|-'
+	## Found working 20260830b item 18: a merge does not carry diagnostics, so
+	## reading them off the merged doc reported the lowest layer and stayed
+	## silent about FILE - the one file the caller actually named.
+	'layer-base-diags|fmt --layer=%F% %B%|-|0|-|E015 missing colon'
+	'layer-base-diags-set|set --set=q=1 --layer=%F% %B%|-|0|-|E015 missing colon'
 )
 
 declare -i nRun=0 nBad=0

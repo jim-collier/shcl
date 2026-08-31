@@ -55,6 +55,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `fmt` and `set` with `--layer` reported only the lowest layer's diagnostics, so damage in FILE itself - the file named on the command line - went unmentioned. Every layer's diagnostics are printed now, lowest first.
+
 - C: a save to a path spelled with backslashes failed on Windows, so a consumer that built its config path with the platform separator could never save. The temp name now splits on either separator, and a drive-relative `C:x` target splits after the colon.
 
 - C: the file tier reached Windows through the code-page file calls, so a path with a character outside the active code page could not be opened or, worse, was written under a mojibake name. Every file call is the wide one now, and a path that is not valid UTF-8 fails with `EINVAL` rather than opening something else.

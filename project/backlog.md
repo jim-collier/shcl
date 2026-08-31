@@ -44,6 +44,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Bugs
 
+- ✅ With `--layer`, the diagnostics for FILE itself were dropped and only the lowest layer's were printed.
+	- Found while reproducing item 18 of the 20260830b round, in the same fold.
+	- Reproduced in all four bindings: `fmt --layer=good.shcl broken.shcl` reported nothing, while swapping the two files reported the same damage correctly. `set` had its own copy of the fold and the same hole.
+	- Cause: a merge does not carry diagnostics over, so the merged document only holds the lowest layer's. Both folds read them off it.
+	- Fixed: the fold now collects each layer's diagnostics as it loads and hands them back with the document, lowest first. C keeps the over-layer documents alive for the same reason it keeps their text.
+	- Pinned by `cli-regress.bash` rows `layer-base-diags` and `layer-base-diags-set`, which fail in all four bindings without the fix.
+	- Left alone: the lines are still unlabeled, so a multi-layer report does not say which file a line number belongs to. Labeling would change single-file output too, which every corpus case pins.
+	- Opened: 20260831-070237
+	- Closed: 20260831-070237
+
 ### Features and enhancements
 
 - Code review 20260830b:

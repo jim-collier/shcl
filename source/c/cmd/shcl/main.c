@@ -286,20 +286,38 @@ static int strict_gate(const shcl_doc *d) {
 }
 
 // Holds a merged doc and the input buffers its nodes still reference (the base
-// layer's node strings are not dup'd off its text). Free everything with
-// layered_free once the doc is done.
-typedef struct { shcl_doc *doc; char **texts; int ntexts; } LayeredDoc;
+// layer's node strings are not dup'd off its text). The over-layers are kept
+// too: a merge does not carry diagnostics over, so their docs are the only
+// place the layers' own diagnostics live. Free everything with layered_free.
+typedef struct { shcl_doc *doc; shcl_doc **overs; int novers; char **texts; int ntexts; } LayeredDoc;
 
 static void layered_push_text(LayeredDoc *L, char *t) {
 	L->texts = (char **)xrealloc(L->texts, ((size_t)L->ntexts + 1) * sizeof *L->texts);
 	L->texts[L->ntexts++] = t;
 }
 
+// Merge dd under/over the doc built so far, keeping it alive for its diagnostics.
+static void layered_push_doc(LayeredDoc *L, shcl_doc *dd) {
+	if (!L->doc) { L->doc = dd; return; }
+	shcl_merge(L->doc, dd);
+	L->overs = (shcl_doc **)xrealloc(L->overs, ((size_t)L->novers + 1) * sizeof *L->overs);
+	L->overs[L->novers++] = dd;
+}
+
 static void layered_free(LayeredDoc *L) {
 	if (L->doc) shcl_free(L->doc);
+	for (int i = 0; i < L->novers; i++) shcl_free(L->overs[i]);
+	free(L->overs);
 	for (int i = 0; i < L->ntexts; i++) free(L->texts[i]);
 	free(L->texts);
-	L->doc = NULL; L->texts = NULL; L->ntexts = 0;
+	L->doc = NULL; L->overs = NULL; L->novers = 0; L->texts = NULL; L->ntexts = 0;
+}
+
+// Every layer's diagnostics, lowest first. Reading them off the merged doc
+// alone would drop the ones for FILE itself, which is the one the caller named.
+static void say_layered_diagnostics(const LayeredDoc *L) {
+	say_diagnostics(L->doc);
+	for (int i = 0; i < L->novers; i++) say_diagnostics(L->overs[i]);
 }
 
 // Load `file` with o's lower-priority --layer files underneath it and its --set
@@ -336,7 +354,7 @@ static int set_apply(shcl_doc *d, const char *spec, const char *opt) {
 }
 
 static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
-	out->doc = NULL; out->texts = NULL; out->ntexts = 0;
+	out->doc = NULL; out->overs = NULL; out->novers = 0; out->texts = NULL; out->ntexts = 0;
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	for (int i = 0; i <= o->nlayers; i++) {
 		const char *fname = i < o->nlayers ? o->layers[i] : file;
@@ -346,8 +364,7 @@ static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 		shcl_doc *dd = shcl_parse_with(t, len, o->strictness);
 		int g = strict_gate(dd);
 		if (g) { shcl_free(dd); layered_free(out); return g; }
-		if (!out->doc) out->doc = dd;
-		else { shcl_merge(out->doc, dd); shcl_free(dd); }
+		layered_push_doc(out, dd);
 	}
 	for (int i = 0; i < o->nsets; i++) {
 		if (!set_apply(out->doc, o->sets[i], o->set_opts[i])) { layered_free(out); return 1; }
@@ -529,7 +546,7 @@ static int do_fmt(Opts *o) {
 	if (gate) return gate;
 	// Printing the canonical form drops what the load dropped, the same as a
 	// rewrite does, so the diagnostics go out either way.
-	say_diagnostics(L.doc);
+	say_layered_diagnostics(&L);
 	int rc;
 	if (o->write) {
 		rc = write_back(L.doc, file, o);
@@ -700,7 +717,7 @@ static int do_set(Opts *o) {
 	// Any --layer files sit under it and --set overrides sit on top, before ops.
 	// The base layer's node strings are not dup'd off its text, so keep all
 	// buffers.
-	LayeredDoc L; L.doc = NULL; L.texts = NULL; L.ntexts = 0;
+	LayeredDoc L; L.doc = NULL; L.overs = NULL; L.novers = 0; L.texts = NULL; L.ntexts = 0;
 	for (int i = 0; i < o->nlayers; i++) {
 		size_t llen; char *lt = read_input(o->layers[i], &llen);
 		if (!lt) { layered_free(&L); return 1; }
@@ -708,7 +725,7 @@ static int do_set(Opts *o) {
 		shcl_doc *dd = shcl_parse_with(lt, llen, o->strictness);
 		int g = strict_gate(dd);
 		if (g) { shcl_free(dd); layered_free(&L); return g; }
-		if (!L.doc) L.doc = dd; else { shcl_merge(L.doc, dd); shcl_free(dd); }
+		layered_push_doc(&L, dd);
 	}
 	// --write names the file this command produces, so a FILE that is not there
 	// yet is a create and the edits land in a new document. Only under --write,
@@ -726,7 +743,7 @@ static int do_set(Opts *o) {
 		shcl_doc *dd = shcl_parse_with(text, len, o->strictness);
 		int gate = strict_gate(dd);
 		if (gate) { shcl_free(dd); layered_free(&L); return gate; }
-		if (!L.doc) L.doc = dd; else { shcl_merge(L.doc, dd); shcl_free(dd); }
+		layered_push_doc(&L, dd);
 	}
 	shcl_doc *d = L.doc;
 	for (int i = 0; i < o->nsets; i++) {
@@ -760,7 +777,7 @@ static int do_set(Opts *o) {
 		}
 	}
 	if (rc == 0) {
-		say_diagnostics(d);
+		say_layered_diagnostics(&L);
 		if (o->write) rc = write_back(d, file, o);
 		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
 	}
