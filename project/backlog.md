@@ -354,11 +354,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-181000
 
-	- 🔘 Item 48: two documents describe a stdout and stderr split that this week changed.
+	- ✅ Item 48: two documents describe a stdout and stderr split that this week changed.
 		- Both say the stable code goes to stdout and the prose to stderr. The stderr line now carries the code as well.
 		- The transcript directly above one of those sentences shows the code on both lines.
 		- Say the code is on both and that only stdout is the contract.
+		- Both say it the way it works now: both streams carry the code, only stdout is the contract, and the stderr line adds the prose. Checked against real output rather than rewritten from the item text.
+		- Pinned in `check-docs.bash`: no document may say the prose alone goes to stderr. Restoring the README sentence makes it fail.
 		- Opened: 20260830-140346
+		- Closed: 20260831-182000
 
 	- 🔘 Item 49: three of the four language examples ignore the setter returns the surrounding prose says to check.
 		- Each calls the first two setters bare and checks only the third, while the comment above each block and the prose below both say an ignored failure means the save writes a config missing the edit and reports success.

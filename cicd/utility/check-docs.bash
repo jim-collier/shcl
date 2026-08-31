@@ -118,6 +118,13 @@ while IFS= read -r f; do
 		}' "${f}" || true)
 done < <(find "${repoDir}" -name '*.md' -not -path '*/target/*' -not -path '*/.git/*' -not -path '*/node_modules/*' | sort)
 
+##	The claim that the code goes to stdout and the prose to stderr. The stderr
+##	line carries the code too, and has since the round that changed the CLI's
+##	voice - so a document saying otherwise describes a split that is not there.
+while IFS= read -r hit; do
+	fBad "says the prose alone goes to stderr, but the stderr line carries the code: ${hit}"
+done < <(grep -rn "prose to stderr" --include='*.md' "${repoDir}" | grep -v '/backlog\.md:' || true)
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1
