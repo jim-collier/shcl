@@ -4782,10 +4782,14 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	// not every level of every walk. The parser caps depth at SHCL_MAX_DEPTH
 	// and every mount starts at least one level deeper, so the pool cannot be
 	// outrun; untouched slots never allocate.
-	ShclArena lvls[SHCL_MAX_DEPTH + 1];
-	memset(lvls, 0, sizeof lvls);
+	// On the heap, not the stack: one slot per level of the depth cap is 16 KB,
+	// which is fine on a main thread and not on a small-stack one.
+	ShclArena *lvls = (ShclArena *)calloc(SHCL_MAX_DEPTH + 1, sizeof *lvls);
+	if (!lvls) SHCL_OOM();
 	for (size_t i = 0; i < def.cons.len; i++) v_check(a, lvls, d, &def.cons.data[i], &def, &v->diags);
+	// Nothing returns between the alloc and here, so every slot is reached.
 	for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_free(&lvls[i]);
+	free(lvls);
 	if (def.paths_complete) v_unknown(a, d, &def, &v->diags);
 	return v;
 }

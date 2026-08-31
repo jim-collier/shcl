@@ -26,6 +26,8 @@ typedef int Arena, Node, Value, Element, Str, Parser, Diag, Segment, Selector, S
 #include <direct.h>   // _mkdir - windows' mkdir takes no mode argument
 #else
 #include <sys/stat.h>   // the file-mode fixture stats and chmods for itself
+#include <pthread.h>    // the small-stack validate fixture
+#include <unistd.h>     // sysconf, for the smallest stack this platform allows
 #endif
 
 // Temp root for the file-tier fixture. TMPDIR is the POSIX spelling; windows
@@ -279,6 +281,24 @@ static size_t split_lines(char *buf, size_t n, char ***out) {
 	}
 	*out = lines; return cnt;
 }
+
+#ifndef _WIN32
+// Runs one validation and reports back through the return value, so a stack
+// overflow inside it is a crashed run rather than a quiet pass.
+static void *validate_on_small_stack(void *unused) {
+	(void)unused;
+	const char *doc = "port: 8080\n";
+	const char *sch = "field: port\n\ttype: int\n\trequired: yes\n";
+	shcl_doc *d = shcl_parse(doc, strlen(doc));
+	shcl_doc *s = shcl_parse(sch, strlen(sch));
+	shcl_validation *v = shcl_validate(d, s);
+	size_t n = shcl_validation_count(v);
+	shcl_validation_free(v);
+	shcl_free(s);
+	shcl_free(d);
+	return n == 0 ? (void *)1 : NULL;
+}
+#endif
 
 int main(int argc, char **argv) {
 	setlocale(LC_ALL, "C");
@@ -1103,6 +1123,28 @@ int main(int argc, char **argv) {
 		if (shcl_error_count(pd) != 0 || shcl_diag_count(pd) != 0) fail("oneshot", "plain doc not clean");
 		shcl_free(pd);
 	}
+#ifndef _WIN32
+	// Validation used to put one scratch arena per level of the depth cap on the
+	// stack - 16 KB, which is nothing on a main thread and past the whole stack
+	// of a small worker. The platform's smallest allowed thread stack is the
+	// assertion: it is under the array the old code wanted on it.
+	{
+		pthread_attr_t at;
+		pthread_t th;
+		long floorBytes = sysconf(_SC_THREAD_STACK_MIN);
+		size_t small = floorBytes > 0 ? (size_t)floorBytes : (size_t)16384;
+		if (pthread_attr_init(&at) != 0 || pthread_attr_setstacksize(&at, small) != 0) {
+			fail("small-stack", "cannot make a 32 KB thread attribute");
+		} else if (pthread_create(&th, &at, validate_on_small_stack, NULL) != 0) {
+			fail("small-stack", "cannot start a 32 KB thread");
+		} else {
+			void *res = NULL;
+			pthread_join(th, &res);
+			if (res == NULL) fail("small-stack", "validate did not finish on a 32 KB stack");
+		}
+		pthread_attr_destroy(&at);
+	}
+#endif
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }
 	printf("conformance: %zu case(s) pass\n", nn);
 	return 0;

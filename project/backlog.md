@@ -256,10 +256,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-143000
 
-	- 🔘 Item 37: the C validator puts a 16 KB array on the stack per call.
+	- ✅ Item 37: the C validator puts a 16 KB array on the stack per call.
 		- One slot per depth level, sized to the depth cap. Fine on a main thread, possibly not on a small-stack thread.
 		- Noticed but not chased: whether all slots are freed on every exit path was not verified.
+		- Fixed: the level arenas are heap-allocated and freed with the rest.
+		- The unchased half is answered: nothing returns between the allocation and the free loop, so every slot is reached on every path. Said in a comment beside it.
+		- Pinned by a POSIX-only fixture in the C runner that validates on a thread with the smallest stack the platform allows. It segfaults with the array back on the stack and passes without it. The runner and the sanitizer build now link pthread.
 		- Opened: 20260830-140346
+		- Closed: 20260831-150000
 
 	- 🛠️ Item 38: the completions check rejects an option-less subcommand however the completions spell it.
 		- One side emits a row for every subcommand, the other drops any with an empty option list, so the two can never agree on such a subcommand.

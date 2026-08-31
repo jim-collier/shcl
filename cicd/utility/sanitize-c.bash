@@ -38,7 +38,7 @@ export ASAN_OPTIONS="exitcode=77:${ASAN_OPTIONS:-}" UBSAN_OPTIONS="exitcode=77:p
 
 work="$(mktemp -d)"; trap 'rm -rf "${work}"' EXIT
 ## compiler, language standard, source, output.
-fBuild(){ "$1" "-std=$2" "${flags[@]}" "$3" -o "$4" -lm || { echo "sanitize-c: build failed: $3" >&2; exit 2; }; }
+fBuild(){ "$1" "-std=$2" "${flags[@]}" "$3" -o "$4" -lm -lpthread || { echo "sanitize-c: build failed: $3" >&2; exit 2; }; }
 
 rc=0
 fBuild cc c11 source/c/tests/conformance.c "${work}/conformance"
