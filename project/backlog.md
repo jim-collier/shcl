@@ -163,11 +163,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-113000
 
-	- 🔘 Item 27: a comment on the value-lookup fallback does not match the code, in all four bindings.
+	- ✅ Item 27: a comment on the value-lookup fallback does not match the code, in all four bindings.
 		- It says a non-scalar hit and an outright miss both fall to the fallback scan. The fallback is gated on the selector being quoted, so an unquoted miss returns nothing with no scan.
 		- All four agree with each other, so this is a comment defect, not a behavior defect.
 		- An attempt to build the input the comment worries about did not succeed, and did not get far enough to call the case unreachable.
+		- Fixed in all four: the comment now says the quoted selector is the one that needs the fallback scan, and that an unquoted one takes whatever the accelerator holds and does not scan.
+		- The behavior the corrected comment describes is corpus-visible, so it is pinned rather than just described: case `070-selector-fallback` has a raw block and a scalar sibling with the same display, and `x[hi]` binds the raw while `x["hi"]` binds the scalar. The read path fans out to both, which the same case pins.
+		- Left open on purpose: the unquoted path would create a spurious instance if the accelerator entry were ever dropped while a sibling still satisfied it. A second attempt to build that input failed too, so it stays recorded rather than fixed. Making the unquoted path scan on a miss is not the answer - a miss is the ordinary create path, so scanning there is quadratic in siblings, which is the regression class the perf gate exists for.
 		- Opened: 20260830-140346
+		- Closed: 20260831-120000
 
 	- 🔘 Item 28: four small robustness gaps in the comparison worker.
 		- A non-numeric iteration count is a traceback rather than the usage line printed two lines above it.

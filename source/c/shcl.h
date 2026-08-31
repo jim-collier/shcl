@@ -2201,10 +2201,11 @@ static size_t find_by_value(ShclParser *P, size_t cur, ShclStr name, ShclStr tex
 			&& s_eq(disp_key(P->line, &NODE(P->d, e->val).value), want))
 			found = e->val;
 	}
-	/* A quoted selector is scalar-only, and the accelerator keeps just the
-	   first same-display child - a later remap can drop an entry a different
-	   sibling still satisfies - so a non-scalar hit and an outright miss both
-	   fall to the (rare) fallback scan. */
+	/* A quoted selector is scalar-only, so it is the one that needs the
+	   fallback scan: the accelerator keeps just the first same-display
+	   child, which may be the non-scalar one. An unquoted selector takes
+	   whatever the accelerator holds and does not scan, so it can bind a raw
+	   block where a quoted selector picks the scalar sibling. */
 	if (found != (size_t)-1 && quoted && !single_scalar(&NODE(P->d, found).value)) {
 		found = (size_t)-1;
 	}

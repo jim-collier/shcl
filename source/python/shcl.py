@@ -1382,10 +1382,12 @@ class _Parser:
 				# creating a spurious second one - via the disp_map accelerator
 				# (the inline spelling was quadratic in siblings without it).
 				# Create only when nothing matches.
-				# A quoted selector is scalar-only, and the accelerator keeps
-				# just the first same-display child - a later remap can drop an
-				# entry a different sibling still satisfies - so a non-scalar hit
-				# and an outright miss both fall to the (rare) fallback scan.
+				# A quoted selector is scalar-only, so it is the one that needs
+				# the fallback scan: the accelerator keeps just the first same-
+				# display child, which may be the non-scalar one. An unquoted
+				# selector takes whatever the accelerator holds and does not scan,
+				# so it can bind a raw block where a quoted selector picks the
+				# scalar sibling.
 				found = self._find_by_value(cur, seg.name, sel[1], sel[2])
 				if found is not None:
 					cur = found
