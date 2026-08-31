@@ -118,6 +118,9 @@ LINT_EXTRA=(
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'cicd/utility/check-completions.bash'
 	'cicd/utility/check-wheel.bash'
+	## The README's C example is the first thing a C consumer copies, and it is
+	## the one example nothing else here builds.
+	'cicd/utility/check-readme-c.bash'
 	## TOOL_PINS above is copied by hand into ci.yml; this fails the stage when
 	## the two disagree, instead of hosted CI going red days later.
 	'cicd/utility/check-pins.bash'
@@ -130,6 +133,7 @@ SHELLCHECK_TARGETS=(
 	cicd/config.bash
 	cicd/utility/check-completions.bash
 	cicd/utility/check-pins.bash
+	cicd/utility/check-readme-c.bash
 	cicd/utility/check-wheel.bash
 	cicd/utility/cli-regress.bash
 	cicd/utility/comparison/compare.bash
