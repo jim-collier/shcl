@@ -1247,9 +1247,14 @@ int main(int argc, char **argv) {
 	else if (!strcmp(cmd, "check")) rc = do_check(&o);
 	else if (!strcmp(cmd, "init")) rc = do_init(&o);
 	else if (!strcmp(cmd, "count")) rc = do_enum(&o, 1);
+	else if (!strcmp(cmd, "instances")) rc = do_enum(&o, 0);
 	else if (!strcmp(cmd, "children")) rc = do_children(&o);
 	else if (!strcmp(cmd, "paths")) rc = do_paths(&o);
-	else rc = do_enum(&o, 0);
+	// A refusal rather than a fall-through: with one, adding a name to COMMANDS
+	// without adding a branch here quietly ran whichever command the last line
+	// named, with no message. main gates on COMMANDS first, so this is only
+	// reachable through that mistake.
+	else { fprintf(stderr, "%s: no dispatch arm (see --help)\n", cmd); rc = 1; }
 	opts_free(&o);
 	return rc;
 }

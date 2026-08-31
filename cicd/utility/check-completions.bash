@@ -71,6 +71,14 @@ fRustTop() {
 	} | tr -d '"' | sort -u | paste -sd' '
 }
 
+## The reference's dispatch arms, one name per line. Matched on the arm arrow
+## rather than on indentation: `\t` is not an escape in POSIX ERE, so a pattern
+## carrying one matches nothing under the grep a script gets.
+fRustDispatch() {
+	sed -n '/^fn run(cmd: &str, o: &Opts) -> u8 {/,/^}$/p' "${mainRs}" \
+	| grep -oE '"[a-z]+" =>' | tr -d '">= ' | sort -u
+}
+
 ## The bash completion's word-1 offer: the subcommand list plus the extra
 ## tokens on its compgen line.
 fBashTop() {
@@ -118,7 +126,19 @@ for cf in "${compFiles[@]}"; do
 	fi
 done
 
-((rc)) || echo "check-completions: OK ($(wc -l <<<"${rustTable}") subcommands + top-level offer, ${#compFiles[@]} completion files)"
+## Every command the CLI accepts must have a dispatch arm of its own. One
+## without used to fall through to whichever command the catch-all named - no
+## compile error, no message.
+rustCmds="$(sed -n '/const COMMANDS/,/];/p' "${mainRs}" | grep -o '"[a-z]*"' | tr -d '"' | sort -u)"
+rustArms="$(fRustDispatch)"
+if [[ "${rustCmds}" != "${rustArms}" ]]; then
+	echo "check-completions: COMMANDS and the dispatch disagree:" >&2
+	echo "  COMMANDS: $(paste -sd' ' <<<"${rustCmds}")" >&2
+	echo "  dispatch: $(paste -sd' ' <<<"${rustArms}")" >&2
+	rc=1
+fi
+
+((rc)) || echo "check-completions: OK ($(wc -l <<<"${rustTable}") subcommands + top-level offer + dispatch, ${#compFiles[@]} completion files)"
 exit "${rc}"
 
 

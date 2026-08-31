@@ -1193,11 +1193,18 @@ def run(argv):
 		return do_init(o)
 	if cmd == "count":
 		return do_enum(o, True)
+	if cmd == "instances":
+		return do_enum(o, False)
 	if cmd == "children":
 		return do_children(o)
 	if cmd == "paths":
 		return do_paths(o)
-	return do_enum(o, False)
+	# A refusal rather than a fall-through: with one, adding a name to COMMANDS
+	# without adding a branch here quietly ran whichever command the last line
+	# named, with no message. run() gates on COMMANDS first, so this is only
+	# reachable through that mistake.
+	sys.stderr.write(f"{cmd}: no dispatch arm (see --help)\n")
+	return 1
 
 
 def main():

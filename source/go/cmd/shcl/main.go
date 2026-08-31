@@ -1688,6 +1688,11 @@ func run() int {
 	if code := checkOpts(argv[0], o); code != 0 {
 		return code
 	}
+	// Every command spelled out, and the last arm a refusal rather than a
+	// fall-through: with a default arm, adding a name to commands without
+	// adding one here quietly ran whichever command the default named, with no
+	// compile error and no message. run() gates on commands first, so the arm
+	// below is only reachable through that mistake.
 	switch argv[0] {
 	case "get":
 		return doGet(o)
@@ -1701,12 +1706,15 @@ func run() int {
 		return doInit(o)
 	case "count":
 		return doEnum(o, true)
+	case "instances":
+		return doEnum(o, false)
 	case "children":
 		return doChildren(o)
 	case "paths":
 		return doPaths(o)
 	default:
-		return doEnum(o, false)
+		fmt.Fprintf(os.Stderr, "%s: no dispatch arm (see --help)\n", argv[0])
+		return 1
 	}
 }
 

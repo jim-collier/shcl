@@ -219,11 +219,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-131500
 
-	- 🔘 Item 33: the Rust command dispatch ends in a catch-all that silently aliases any new subcommand.
+	- ✅ Item 33: the Rust command dispatch ends in a catch-all that silently aliases any new subcommand.
 		- Adding a seventh entry to the command table without adding a dispatch arm runs `instances` instead, with no compile error and no message. It is only safe today because the caller gates on the table first.
 		- The style directive asks for exhaustive matches and no catch-all unless needed. Here two lists have to be kept in step by hand and nothing enforces it.
 		- Spell the last arm out and keep an explicit unreachable, or derive both from one table.
+		- Fixed in all four, not just the reference: every one had the same fall-through, so leaving three would be the same finding again next round. Each command has its own arm and the last one is a refusal.
+		- Pinned by `check-completions.bash`, which already parses the command table out of the reference: it now also parses the dispatch arms and diffs the two. Removing one arm makes it fail, naming the command that lost it.
+		- The extractor matches the arm arrow rather than the indentation. `\t` is not an escape in POSIX ERE, so a pattern carrying one matches under the interactive grep on this box and nothing at all under the grep a script gets - it looked like a working check while asserting nothing.
 		- Opened: 20260830-140346
+		- Closed: 20260831-134000
 
 	- 🔘 Item 34: a redundant condition in the closing-fence test.
 		- The length test is already implied by the minimum the opening fence enforces, so the emptiness check can never decide anything.

@@ -1412,6 +1412,11 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 	if let Err(code) = check_opts(cmd, o) {
 		return code;
 	}
+	// Every command spelled out, and the last arm a refusal rather than a
+	// fall-through: with a catch-all, adding a name to COMMANDS without adding
+	// an arm here quietly ran whichever command the catch-all named, with no
+	// compile error and no message. main() gates on COMMANDS first, so the arm
+	// below is only reachable through that mistake.
 	match cmd {
 		"get" => do_get(o),
 		"set" => do_set(o),
@@ -1419,9 +1424,13 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 		"check" => do_check(o),
 		"init" => do_init(o),
 		"count" => do_enum(o, true),
+		"instances" => do_enum(o, false),
 		"children" => do_children(o),
 		"paths" => do_paths(o),
-		_ => do_enum(o, false),
+		other => {
+			eprintln!("{}: no dispatch arm (see --help)", other);
+			1
+		}
 	}
 }
 
