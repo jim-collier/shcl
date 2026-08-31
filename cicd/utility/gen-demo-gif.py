@@ -90,6 +90,12 @@ IDENT_USERS = ["mika", "joss", "arlo", "remy", "kai", "nova", "wren", "finn"]
 IDENT_HOSTS = ["basalt", "kestrel", "onyx", "lyra", "quartz", "mesa", "flint", "juno"]
 
 ##	Typing model. WPM -> ms/char at the usual 5 chars/word.
+##	The numbers below are tuned by watching the result, not derived, and they sit
+##	under a plain typing-speed band on purpose: what reads as natural on screen is
+##	slower than what a person actually types, because the viewer is reading the
+##	command rather than recalling it. Digits are slower again, since a reader
+##	takes them in one at a time. Raise them and the demo reads as a replay of a
+##	script instead of someone at a terminal.
 WPM_LETTERS   = (135, 183)   # per-command draw, then per-char jitter
 WPM_DIGITS    = 63           # default; scenario wpm_digits overrides
 WPM_NOTES     = (233, 263)   # "# comment" lines fly by

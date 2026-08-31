@@ -276,11 +276,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-153000
 
-	- 🔘 Item 39: the demo's typing speeds sit under the bands the directive names.
+	- ✅ Item 39: the demo's typing speeds sit under the bands the directive names.
 		- Letters are drawn from a range whose mean lands in band once jitter is applied; digits do not.
 		- The demo has been tuned with feedback twice, so this may be deliberate. It is not recorded anywhere.
 		- Either raise the constants or note the tuning in the demo script.
+		- Taken as the second option: the tuning is recorded beside the constants rather than raised. They were set by watching the result twice, and what reads as natural on screen is slower than what a person actually types, because the viewer is reading the command rather than recalling it. Digits are slower again.
+		- Nothing new proves this one: a note has nothing to fail, and the numbers it explains are a matter of taste rather than a contract.
 		- Opened: 20260830-140346
+		- Closed: 20260831-160000
 
 	- 🔘 Item 40: the profiler stage swallows the reason a hotspot report is missing.
 		- Stderr is discarded, and the report's only diagnostics go there, so the log records the failure with no cause. A missing directory, no flamegraphs and an unparseable file all read alike.
