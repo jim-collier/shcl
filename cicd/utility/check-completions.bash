@@ -76,7 +76,7 @@ fRustTop() {
 ## carrying one matches nothing under the grep a script gets.
 fRustDispatch() {
 	sed -n '/^fn run(cmd: &str, o: &Opts) -> u8 {/,/^}$/p' "${mainRs}" \
-	| grep -oE '"[a-z]+" =>' | tr -d '">= ' | sort -u
+	| { grep -oE '"[a-z]+" =>' || true ;} | tr -d '">= ' | sort -u
 }
 
 ## The bash completion's word-1 offer: the subcommand list plus the extra
@@ -129,7 +129,7 @@ done
 ## Every command the CLI accepts must have a dispatch arm of its own. One
 ## without used to fall through to whichever command the catch-all named - no
 ## compile error, no message.
-rustCmds="$(sed -n '/const COMMANDS/,/];/p' "${mainRs}" | grep -o '"[a-z]*"' | tr -d '"' | sort -u)"
+rustCmds="$(sed -n '/const COMMANDS/,/];/p' "${mainRs}" | { grep -o '"[a-z]*"' || true ;} | tr -d '"' | sort -u)"
 rustArms="$(fRustDispatch)"
 if [[ "${rustCmds}" != "${rustArms}" ]]; then
 	echo "check-completions: COMMANDS and the dispatch disagree:" >&2

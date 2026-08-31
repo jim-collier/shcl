@@ -233,6 +233,19 @@ PYEOF
 	[[ "${dups}" == "1" ]] || fBad "pyworker.py load_shcl added ${dups} path entries over two calls, expected 1"
 fi
 
+##	A one-line loop body that is a `[[ ... ]] && ...` list. When the test fails
+##	on the last iteration the loop returns 1, which is harmless at statement
+##	level on this bash but kills the caller the moment the loop becomes the last
+##	command in a function. Unmatched globs are the usual way in. `|| continue`
+##	or an `if` is the fix.
+while IFS= read -r f; do
+	grep -qE '^set -[A-Za-z]*e' "${f}" || continue
+	hits="$(grep -nE 'do[[:space:]]+\[\[[^]]*\]\][[:space:]]*&&[^;]*;[[:space:]]*done' "${f}" || true)"
+	if [[ -n "${hits}" ]]; then
+		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: loop body ends on a failed-test && list: ${h}"; done <<<"${hits}"
+	fi
+done < <(find "${repoDir}" -name '*.bash' -not -path '*/target/*' -not -path '*/.git/*' | sort)
+
 ##	The static half. Line continuations are joined first, so a substitution that
 ##	ends in `|| true` several lines down is read as guarded.
 while IFS= read -r f; do
@@ -249,7 +262,7 @@ if ((nBad)); then
 	echo "shell-regress: ${nBad} check(s) failed" >&2
 	exit 1
 fi
-echo "shell-regress: OK: wrappers, one-liner scope, packaging, comparison worker, and no unguarded grep substitutions"
+echo "shell-regress: OK: wrappers, one-liner scope, packaging, comparison worker, and no unguarded grep substitutions or failed-test loop bodies"
 
 ##	History:
 ##		2026-08-30  Created, pinning the wrapper and installer defects from the

@@ -275,7 +275,10 @@ for caseDir in "$corpus"/*/; do
 	# input.shcl (filename order = priority) plus any merge.sets --set overrides.
 	if [[ -f "${caseDir}expected-merged.shcl" ]]; then
 		layerArgs=()
-		for lf in "${caseDir}"layer*.shcl; do [[ -f "$lf" ]] && layerArgs+=("--layer=$lf"); done
+		for lf in "${caseDir}"layer*.shcl; do
+			[[ -f "$lf" ]] || continue
+			layerArgs+=("--layer=$lf")
+		done
 		setArgs=()
 		if [[ -f "${caseDir}merge.sets" ]]; then
 			while IFS= read -r sline || [[ -n "$sline" ]]; do

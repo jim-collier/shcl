@@ -245,11 +245,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260830-181500
 
-	- 🔘 Item 36: a latent unmatched-glob shape in the C sanitizer script.
+	- ✅ Item 36: a latent unmatched-glob shape in the C sanitizer script.
 		- A layer-collection loop ends on a conditional, which is the shape that aborts under errexit when the glob matches nothing.
 		- Guarded in practice, and all four corpus cases that reach it do have layer files. An attempt to reproduce the abort on this box's bash did not abort, so the trap may not apply to this version.
 		- Latent shape only, not a live defect. If touched anyway, use a null glob or continue on the miss.
+		- Reproduced, once the right shape was tried: on this bash the loop is harmless at statement level, which is why the first attempt saw nothing, but the same loop as the last command in a function returns 1 and kills the caller. So it is latent in the sense that where it sits today is safe, not in the sense that the trap has gone.
+		- Fixed with `|| continue` on the miss. The same shape was in `crosscheck.bash` and, in a non-glob form, in `check-pins.bash`; both are fixed too.
+		- Pinned by a repo-wide scan in `shell-regress.bash`, beside the grep-substitution one. Restoring any of the three makes it fail, naming the file and line.
+		- That scan also caught a line added earlier in this round, in `check-completions.bash`, which is the argument for having it.
 		- Opened: 20260830-140346
+		- Closed: 20260831-143000
 
 	- 🔘 Item 37: the C validator puts a 16 KB array on the stack per call.
 		- One slot per depth level, sized to the depth cap. Fine on a main thread, possibly not on a small-stack thread.
