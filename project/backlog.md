@@ -210,10 +210,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-131000
 
-	- 🔘 Item 32: the Go atomic write does not check the close.
+	- ✅ Item 32: the Go atomic write does not check the close.
 		- The sync runs first and its error is checked, so a deferred write error reaching only the close is unlikely.
 		- The reference drops the handle the same way, so checking it is a per-binding deviation rather than a parity fix. Read only, not reproduced.
+		- The item's premise was wrong, and checking the other three settled it: C tests `fclose`, Python's close sits inside the try whose handler turns a failure into a failed save, and Rust checks the `sync_all` that is the only thing it can check on a `File`. Go alone dropped it, so this is a parity fix rather than the per-binding deviation the item assumed.
+		- Fixed: the close's error becomes the save's error when nothing earlier failed. Without it a write error surfacing only at close would publish a truncated temp file over the target.
+		- Nothing new proves this one, and that is worth saying plainly: a close that fails after a successful fsync needs a filesystem this box cannot produce, and faking one would test the fake. What it rests on is the other three bindings already behaving this way.
 		- Opened: 20260830-140346
+		- Closed: 20260831-131500
 
 	- 🔘 Item 33: the Rust command dispatch ends in a catch-all that silently aliases any new subcommand.
 		- Adding a seventh entry to the command table without adding a dispatch arm runs `instances` instead, with no compile error and no message. It is only safe today because the caller gates on the table first.

@@ -2821,7 +2821,12 @@ func WriteFileAtomic(file, data string) error {
 	if err == nil && existErr == nil && runtime.GOOS != "windows" {
 		_ = f.Chmod(existing.Mode())
 	}
-	f.Close()
+	// The sync above is what forces the data out, so a close error here is the
+	// unlikely tail of it - but a write error that only surfaces on close would
+	// otherwise publish a truncated temp file over the target.
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
 	if err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %w", file, err)
