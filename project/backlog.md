@@ -184,10 +184,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-123000
 
-	- 🔘 Item 29: the Go ASCII lower-case helper copies before deciding nothing changed.
+	- ✅ Item 29: the Go ASCII lower-case helper copies before deciding nothing changed.
 		- Scanning first and copying only on a hit took the read benchmark from 9.27 ms to 7.59 ms, about 18%, with identical behavior.
 		- Go-only, no cross-binding effect. Recorded as a measured win, not a defect.
+		- Fixed: scan for an upper-case byte first, and copy only from where one was found.
+		- Measured here on a 5000-key document: the read path 2.56 ms to 2.36 ms, parse 7.14 ms to 6.86 ms. The mixed-case call got slightly slower, which is the right trade - nearly every name is already folded.
+		- Pinned by a Go test asserting an already-folded name allocates nothing. It allocated once before. An allocation count is exact where a wall-clock threshold on a constant-factor win would flake.
 		- Opened: 20260830-140346
+		- Closed: 20260831-130000
 
 	- 🔘 Item 30: the Go on-bad option folds with Unicode case where the other three fold ASCII.
 		- Two different folds sit in one file for two adjacent options, and the binding already carries the ASCII helper the strictness option uses.

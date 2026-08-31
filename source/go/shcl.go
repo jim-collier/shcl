@@ -748,18 +748,24 @@ const MaxDepth = 512
 // Lexical helpers
 // ---------------------------------------------------------------------------
 
-// asciiLower folds A-Z only; non-ASCII passes through untouched.
+// asciiLower folds A-Z only; non-ASCII passes through untouched. Nearly every
+// name is already folded, so the scan comes first: copying and then finding
+// nothing to change was the whole cost on the common path.
 func asciiLower(s string) string {
-	b := []byte(s)
-	changed := false
-	for i := 0; i < len(b); i++ {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 'a' - 'A'
-			changed = true
+	i := 0
+	for ; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			break
 		}
 	}
-	if !changed {
+	if i == len(s) {
 		return s
+	}
+	b := []byte(s)
+	for ; i < len(b); i++ {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
 	}
 	return string(b)
 }

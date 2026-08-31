@@ -1297,6 +1297,25 @@ func TestInitGenerationMatchesExpected(t *testing.T) {
 	}
 }
 
+// Go-only: nearly every name is already folded, and the helper used to copy the
+// whole string into a byte slice before discovering it had nothing to change.
+// Asserted as an allocation count rather than a time, since a constant-factor
+// win has no wall-clock threshold that both fires and does not flake.
+func TestAsciiLowerDoesNotCopyAFoldedName(t *testing.T) {
+	var sink string
+	folded := strings.Repeat("server-config-name-", 40)
+	if n := testing.AllocsPerRun(200, func() { sink = asciiLower(folded) }); n != 0 {
+		t.Errorf("asciiLower allocated %v time(s) on an already-folded name, want 0", n)
+	}
+	if sink != folded {
+		t.Errorf("asciiLower changed an already-folded name")
+	}
+	mixed := strings.Repeat("Server-Config-Name-", 40)
+	if got := asciiLower(mixed); got != folded {
+		t.Errorf("asciiLower(mixed) = %q", got[:40])
+	}
+}
+
 func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {
 	// Mirror of the reference: the *Or value survives only on Good; Empty,
 	// BadType, and NotFound all yield the call-site fallback.
