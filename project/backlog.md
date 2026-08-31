@@ -285,10 +285,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-160000
 
-	- 🔘 Item 40: the profiler stage swallows the reason a hotspot report is missing.
+	- ✅ Item 40: the profiler stage swallows the reason a hotspot report is missing.
 		- Stderr is discarded, and the report's only diagnostics go there, so the log records the failure with no cause. A missing directory, no flamegraphs and an unparseable file all read alike.
 		- The fallback already treats the exit code as non-fatal, so keeping stderr costs nothing.
+		- Fixed: stderr is kept, and the fallback line now points at the reason above it rather than standing alone.
+		- Pinned in `shell-regress.bash` two ways: the report must still say something usable about a missing directory, and the stage must not redirect its stderr away. Restoring the redirect makes it fail.
 		- Opened: 20260830-140346
+		- Closed: 20260831-161000
 
 	- 🔘 Item 41: both bash installers print comment markup in their help.
 		- The help text is the source header heredoc'd verbatim, comment prefixes and hard tabs included, so it opens with the file name as a comment and every wrapped line carries the prefix.

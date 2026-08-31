@@ -398,7 +398,11 @@ if ((PROFILE_ENABLE)); then
 	## the per-session --check gate, not the pipeline).
 	if command -v python3 >/dev/null 2>&1; then
 		fEcho_Clean ""
-		python3 "${here}/utility/flame-report.py" --dir "${profile_dir}" 2>/dev/null || fEcho_Clean "hot spots: (report unavailable)"
+		## stderr kept: the report's only diagnostics go there, and discarding
+		## them left the log saying "unavailable" with no cause - a missing
+		## directory, no flamegraphs and an unparseable file all read alike.
+		## The exit code is already non-fatal, so keeping it costs nothing.
+		python3 "${here}/utility/flame-report.py" --dir "${profile_dir}" || fEcho_Clean "hot spots: (report unavailable - see the reason above)"
 	else
 		fEcho "WARNING: python3 not found; hot-spot report skipped"
 	fi

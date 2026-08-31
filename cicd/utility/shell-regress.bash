@@ -271,6 +271,17 @@ PYEOF
 	fi
 fi
 
+##	The profiler stage's hot-spot report. Its only diagnostics go to stderr, and
+##	the stage used to discard them, so the log recorded the failure with no cause.
+report="${repoDir}/cicd/utility/flame-report.py"
+if [[ -f "${report}" ]]; then
+	out="$(python3 "${report}" --dir "${tmpDir}/no-such-profile-dir" 2>&1 || true)"
+	[[ "${out}" == *"no profiling dir"* ]] || fBad "flame-report.py says nothing usable about a missing directory: ${out}"
+	if grep -qE 'flame-report\.py[^|]*2>/dev/null' "${repoDir}/cicd/cicd.bash"; then
+		fBad "cicd.bash discards the hot-spot report's stderr, which is its only diagnostic"
+	fi
+fi
+
 ##	A one-line loop body that is a `[[ ... ]] && ...` list. When the test fails
 ##	on the last iteration the loop returns 1, which is harmless at statement
 ##	level on this bash but kills the caller the moment the loop becomes the last
