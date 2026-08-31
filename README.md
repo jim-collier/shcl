@@ -652,8 +652,12 @@ if mb, st := doc.GetInt("site[example.com].max-upload-mb"); st == shcl.Good {
 // A setter reports whether the write applied: a path that cannot be written
 // writes nothing at all rather than half of it, and WriteReason names which of
 // the five reasons it hit.
-doc.SetInt("workers", workers*2)
-doc.SetBool("site[example.com].tls.hsts", true)
+if !doc.SetInt("workers", workers*2) {
+	fmt.Println("workers:", doc.WriteReason("workers"))
+}
+if !doc.SetBool("site[example.com].tls.hsts", true) {
+	fmt.Println("hsts:", doc.WriteReason("site[example.com].tls.hsts"))
+}
 if !doc.SetString("site[blog.example.com].root", "/srv/www/blog") {
 	fmt.Println("blog root:", doc.WriteReason("site[blog.example.com].root"))
 }
@@ -691,8 +695,10 @@ if read.status is not shcl.Status.Good:
 # A setter reports whether the write applied: a path that cannot be written
 # writes nothing at all rather than half of it, and write_reason names which of
 # the five reasons it hit.
-doc.set_int("workers", workers * 2)
-doc.set_bool("site[example.com].tls.hsts", True)
+if not doc.set_int("workers", workers * 2):
+	print("workers:", doc.write_reason("workers"))
+if not doc.set_bool("site[example.com].tls.hsts", True):
+	print("hsts:", doc.write_reason("site[example.com].tls.hsts"))
 if not doc.set_string("site[blog.example.com].root", "/srv/www/blog"):
 	print("blog root:", doc.write_reason("site[blog.example.com].root"))
 
@@ -781,8 +787,10 @@ if (root.status == SHCL_GOOD)
 // A setter reports whether the write applied: a path that cannot be written
 // writes nothing at all rather than half of it, and shcl_write_reason_ names
 // which of the five reasons it hit (SHCL_W_WILDCARD here, say).
-shcl_set_int(doc, P("workers"), workers * 2);
-shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1);
+if (!shcl_set_int(doc, P("workers"), workers * 2))
+	printf("workers: %d\n", shcl_write_reason_(doc, P("workers")));
+if (!shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1))
+	printf("hsts: %d\n", shcl_write_reason_(doc, P("site[example.com].tls.hsts")));
 if (!shcl_set_string(doc, P("site[blog.example.com].root"), P("/srv/www/blog")))
 	fprintf(stderr, "blog root: reason %d\n", shcl_write_reason_(doc, P("site[blog.example.com].root")));
 

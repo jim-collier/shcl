@@ -363,10 +363,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-182000
 
-	- 🔘 Item 49: three of the four language examples ignore the setter returns the surrounding prose says to check.
+	- ✅ Item 49: three of the four language examples ignore the setter returns the surrounding prose says to check.
 		- Each calls the first two setters bare and checks only the third, while the comment above each block and the prose below both say an ignored failure means the save writes a config missing the edit and reports success.
 		- The Rust example checks all three, because the type system forces it, so the one example a reader can compare against is the odd one out.
+		- Go, Python and C now check all three setters and name the write reason, the way the Rust example does.
+		- The C example still builds, which `check-readme-c.bash` proves; the Python block parses and the Go block is well-formed Go using the accessor it already called once.
+		- Pinned in `check-docs.bash`: in each language block the number of setter calls and the number of checked calls have to match. Restoring the README makes it name all three blocks.
 		- Opened: 20260830-140346
+		- Closed: 20260831-184000
 
 	- 🔘 Item 50: one bold-lead bullet in the design document uses a trailing dash where every other closes the bold with punctuation.
 		- Opened: 20260830-140346

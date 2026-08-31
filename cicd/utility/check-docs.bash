@@ -125,6 +125,21 @@ while IFS= read -r hit; do
 	fBad "says the prose alone goes to stderr, but the stderr line carries the code: ${hit}"
 done < <(grep -rn "prose to stderr" --include='*.md' "${repoDir}" | grep -v '/backlog\.md:' || true)
 
+##	Each language example says a setter reports whether the write applied, then
+##	three of the four called the first two bare. The Rust one checks all three,
+##	because the type system makes it, so it is the comparison a reader has.
+readme="${repoDir}/README.md"
+if [[ -f "${readme}" ]]; then
+	for fence in rust go python c; do
+		block="$(awk -v f="^\`\`\`${fence}\$" '$0 ~ f, /^```$/' "${readme}")"
+		[[ -n "${block}" ]] || continue
+		calls="$(grep -cE '(doc\.[Ss]et[A-Za-z_]+\(|shcl_set_[a-z]+\(doc)' <<<"${block}" || true)"
+		checked="$(grep -cE '(if !doc\.[Ss]et|if not doc\.set_|if \(!shcl_set_)' <<<"${block}" || true)"
+		((calls == 0)) && continue
+		((checked >= calls)) || fBad "README ${fence} example calls ${calls} setter(s) and checks ${checked}"
+	done
+fi
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1
