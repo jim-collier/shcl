@@ -58,6 +58,26 @@ if command -v pwsh > /dev/null 2>&1; then
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${tmpDir}'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 	[[ "${out}" == *"not executable"* ]] || fBad "PowerShell wrapper took a directory as SHCL_BIN: ${out@Q}"
 
+	##	20260830b item 10: the symlink resolver called a .NET 6 method that
+	##	Windows PowerShell 5.1 does not have, unguarded and at load, so every
+	##	dot-source on 5.1 hit it. An Env: item stands in for 5.1's method-less
+	##	FileInfo. The link row is the other half: resolution still works where
+	##	the method does exist.
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^function _shcl_scriptdir/,/^}/p' "${repoDir}/source/powershell/shcl.ps1"
+		echo 'try { $null = _shcl_scriptdir "Env:HOME"; Write-Output "resolved" } catch { Write-Output "threw" }'
+	} > "${tmpDir}/scriptdir.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/scriptdir.ps1" 2>&1 || true)"
+	[[ "${out}" == "resolved" ]] || fBad "PowerShell wrapper called a missing link resolver: ${out@Q}"
+	mkdir -p "${tmpDir}/real" "${tmpDir}/lnk"
+	cp "${repoDir}/source/powershell/shcl.ps1" "${tmpDir}/real/"
+	ln -sf "${tmpDir}/real/shcl.ps1" "${tmpDir}/lnk/shcl.ps1"
+	out="$(pwsh -NoProfile -Command ". '${tmpDir}/lnk/shcl.ps1'; Write-Output \"root=\$script:_SHCL_ROOT\"" 2>&1 || true)"
+	[[ "${out}" == "root=${tmpDir}/real" ]] || fBad "PowerShell wrapper did not resolve its own symlink: ${out@Q}"
+
 	##	20260829 item 16 and 20260830 item 8: the script used to end the caller's
 	##	shell, and then to leave strict mode and its functions behind in it.
 	##	Through a file rather than -Command, so the PowerShell keeps its own
@@ -145,6 +165,15 @@ if command -v makensis > /dev/null 2>&1; then
 else
 	echo "shell-regress: makensis not installed - packaging row skipped"
 fi
+
+##	20260830b item 11: $IsWindows does not exist on Windows PowerShell 5.1, and
+##	reading it there throws under a caller's strict mode. Every read has to sit
+##	behind a version test that short-circuits first, which cannot be exercised
+##	from a 7.x session because $PSVersionTable is read-only.
+while IFS= read -r h; do
+	fBad "source/powershell/shcl.ps1: unguarded \$IsWindows read: ${h}"
+done < <(grep -n 'IsWindows' "${repoDir}/source/powershell/shcl.ps1" \
+	| grep -vE '^[0-9]+:##' | grep -vE 'PSVersion\.Major -lt 6 -or' || true)
 
 ##	The static half. Line continuations are joined first, so a substitution that
 ##	ends in `|| true` several lines down is read as guarded.
