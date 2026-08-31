@@ -108,24 +108,31 @@ static const char *HELP =
 	"                                         standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
 	"                                         schema; adds V### diagnostics\n"
-	"  --layer=FILE                           (get/fmt/count/instances/set) merge a\n"
+	"  --layer=FILE                           (all but check/init) merge a\n"
 	"                                         lower-priority layer under FILE;\n"
 	"                                         repeatable, earlier = lower priority\n"
-	"  --set=PATH=VALUE                       (get/fmt/count/instances/set) override\n"
-	"                                         one path as the top layer, after all\n"
-	"                                         files; repeatable. On 'set'\n"
-	"                                         it is an edit to the document itself,\n"
-	"                                         so it persists with --write. VALUE\n"
-	"                                         goes in as data: its type still\n"
-	"                                         follows the text (8 is an int), but a\n"
-	"                                         comma or quote in it is content, not\n"
-	"                                         syntax\n"
+	"  --set=PATH=VALUE                       (all but check/init) override one path\n"
+	"                                         as the top layer, after all files;\n"
+	"                                         repeatable. On 'set' it is an edit to\n"
+	"                                         the document itself, so it persists\n"
+	"                                         with --write. VALUE goes in as data:\n"
+	"                                         its type still follows the text (8 is\n"
+	"                                         an int), but a comma or quote in it is\n"
+	"                                         content, not syntax\n"
 	"  --set-literal=PATH=TEXT                (same subcommands) as --set, except\n"
 	"                                         TEXT goes in as value\n"
 	"                                         syntax the way a file spells it, so\n"
 	"                                         'ports=80, 443' writes a two-element\n"
 	"                                         array. An unquoted # ends the value;\n"
 	"                                         text spanning lines is rejected\n"
+	"  --set-default=PATH=VALUE               (same) as --set, but only when nothing\n"
+	"  --set-literal-default=PATH=TEXT        is at the path yet - the write-out-\n"
+	"                                         defaults half of the writer\n"
+	"  --remove=PATH                          (same) delete what is at the path,\n"
+	"                                         with its subtree. Removing nothing is\n"
+	"                                         not an error\n"
+	"The five above share one ordered list, so two of them touching the same path\n"
+	"resolve in the order given. Raw blocks still go in through the ops script.\n"
 	"\n"
 	"Value options accept either spelling: --default=VALUE or --default VALUE. In\n"
 	"the space form the next argument is taken as the value whatever it looks like,\n"
@@ -170,6 +177,11 @@ static const char *DONATE =
 	"A star on the project, a clear bug report, or a mention to someone who needs it\n"
 	"are worth just as much.\n";
 
+// One edit from the --set family: the path, its length, the value, and which
+// spelling produced it. The five spellings share one ordered list, so two of
+// them touching the same path resolve in the order given.
+typedef struct { const char *path; size_t plen; const char *value; const char *opt; } SetOpt;
+
 typedef struct {
 	const char *kind;         // int|float|bool|datetime|string|raw
 	int array;
@@ -182,8 +194,7 @@ typedef struct {
 	int no_banner;
 	const char *schema;       // NULL if unset
 	const char **layers; int nlayers; // lower-priority layers, in listed order (unbounded)
-	const char **sets; int nsets;     // final override layer: "path=value" (unbounded)
-	const char **set_opts;            // parallel to sets: which spelling produced each
+	SetOpt *sets; int nsets;          // final override layer, in the order given (unbounded)
 	const char **args; int nargs;     // positional: FILE [PATH]
 	const char *seen[16]; int nseen;  // distinct canonical option names, for per-command validation
 } Opts;
@@ -348,13 +359,11 @@ static int split_set(const char *arg, size_t *plen, const char **val) {
 
 // Apply one --set/--set-literal override. Both spellings share a list so they
 // apply in the order given, which decides the winner when two target one path.
-static int set_apply(shcl_doc *d, const char *spec, const char *opt) {
-	size_t plen = 0; const char *val = spec;
-	split_set(spec, &plen, &val); // parse_opts already refused a spec with no '='
-	size_t vlen = strlen(val);
-	int ok = !strcmp(opt, "--set-literal") ? shcl_set_literal(d, spec, plen, val, vlen)
-	                                       : shcl_set_string(d, spec, plen, val, vlen);
-	if (!ok) fprintf(stderr, "%s: cannot write %.*s: %s\n", opt, (int)plen, spec, describe_refusal(d, spec, plen));
+static int set_apply(shcl_doc *d, const SetOpt *s) {
+	size_t vlen = strlen(s->value);
+	int ok = !strcmp(s->opt, "--set-literal") ? shcl_set_literal(d, s->path, s->plen, s->value, vlen)
+	                                          : shcl_set_string(d, s->path, s->plen, s->value, vlen);
+	if (!ok) fprintf(stderr, "%s: cannot write %.*s: %s\n", s->opt, (int)s->plen, s->path, describe_refusal(d, s->path, s->plen));
 	return ok;
 }
 
@@ -372,7 +381,7 @@ static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 		layered_push_doc(out, dd);
 	}
 	for (int i = 0; i < o->nsets; i++) {
-		if (!set_apply(out->doc, o->sets[i], o->set_opts[i])) { layered_free(out); return 1; }
+		if (!set_apply(out->doc, &o->sets[i])) { layered_free(out); return 1; }
 	}
 	return 0;
 }
@@ -756,7 +765,7 @@ static int do_set(Opts *o) {
 	}
 	shcl_doc *d = L.doc;
 	for (int i = 0; i < o->nsets; i++) {
-		if (!set_apply(d, o->sets[i], o->set_opts[i])) { layered_free(&L); return 1; }
+		if (!set_apply(d, &o->sets[i])) { layered_free(&L); return 1; }
 	}
 	// --set carries the edits, so stdin is left alone: reading it here would
 	// block on the console for anyone who passed edits as options.
@@ -960,9 +969,16 @@ static void opt_push(const char ***arr, int *n, const char *v) {
 	(*arr)[(*n)++] = v;
 }
 
+static void set_push(Opts *o, const char *path, size_t plen, const char *value, const char *opt) {
+	o->sets = (SetOpt *)xrealloc(o->sets, ((size_t)o->nsets + 1) * sizeof *o->sets);
+	o->sets[o->nsets].path = path; o->sets[o->nsets].plen = plen;
+	o->sets[o->nsets].value = value; o->sets[o->nsets].opt = opt;
+	o->nsets++;
+}
+
 static void opts_free(Opts *o) {
-	free((void *)o->layers); free((void *)o->sets); free((void *)o->set_opts); free((void *)o->args);
-	o->layers = o->sets = o->set_opts = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0;
+	free((void *)o->layers); free(o->sets); free((void *)o->args);
+	o->layers = o->args = NULL; o->sets = NULL; o->nlayers = o->nsets = o->nargs = 0;
 }
 
 
@@ -985,10 +1001,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 	} else if (!strcmp(name, "--set") || !strcmp(name, "--set-literal")) {
 		size_t plen; const char *val;
 		if (!split_set(v, &plen, &val) || plen == 0) { fprintf(stderr, "bad %s value (want PATH=VALUE, quotes and brackets balanced): %s\n", name, v); return 1; }
-		// set_opts grows in lockstep with sets, so the local count is discarded.
-		int nopt = o->nsets;
-		opt_push(&o->set_opts, &nopt, name);
-		opt_push(&o->sets, &o->nsets, v); opt_seen(o, name);
+		set_push(o, v, plen, val, name); opt_seen(o, name);
 	}
 	return 0;
 }
@@ -996,7 +1009,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
 	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->no_banner = 0; o->schema = NULL;
-	o->layers = o->sets = o->set_opts = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
+	o->layers = o->args = NULL; o->sets = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
 		const char *a = argv[i];
