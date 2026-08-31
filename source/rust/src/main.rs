@@ -80,24 +80,31 @@ Options (the subcommands each belongs to are in parentheses):
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
-  --layer=FILE                           (get/fmt/count/instances/set) merge a
+  --layer=FILE                           (all but check/init) merge a
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
-  --set=PATH=VALUE                       (get/fmt/count/instances/set) override
-                                         one path as the top layer, after all
-                                         files; repeatable. On 'set'
-                                         it is an edit to the document itself,
-                                         so it persists with --write. VALUE
-                                         goes in as data: its type still
-                                         follows the text (8 is an int), but a
-                                         comma or quote in it is content, not
-                                         syntax
+  --set=PATH=VALUE                       (all but check/init) override one path
+                                         as the top layer, after all files;
+                                         repeatable. On 'set' it is an edit to
+                                         the document itself, so it persists
+                                         with --write. VALUE goes in as data:
+                                         its type still follows the text (8 is
+                                         an int), but a comma or quote in it is
+                                         content, not syntax
   --set-literal=PATH=TEXT                (same subcommands) as --set, except
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
                                          array. An unquoted # ends the value;
                                          text spanning lines is rejected
+  --set-default=PATH=VALUE               (same) as --set, but only when nothing
+  --set-literal-default=PATH=TEXT        is at the path yet - the write-out-
+                                         defaults half of the writer
+  --remove=PATH                          (same) delete what is at the path,
+                                         with its subtree. Removing nothing is
+                                         not an error
+The five above share one ordered list, so two of them touching the same path
+resolve in the order given. Raw blocks still go in through the ops script.
 
 Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
@@ -161,25 +168,45 @@ fn status_code(st: Status) -> u8 {
 /// One `--set`/`--set-literal` override. Both spellings share a list so they
 /// apply in the order given, which is what decides the winner when two target
 /// the same path.
+/// Which spelling produced one edit. They share a single ordered list, so two
+/// options touching the same path resolve in the order given.
+#[derive(Clone, Copy, PartialEq)]
+enum SetKind {
+	Data,
+	Literal,
+	DataDefault,
+	LiteralDefault,
+	Remove,
+}
+
 struct Set {
 	path: String,
 	value: String,
-	literal: bool,
+	kind: SetKind,
 }
 
 impl Set {
 	fn apply(&self, doc: &mut Document) -> bool {
-		if self.literal {
-			doc.set_literal(&self.path, &self.value)
-		} else {
-			doc.set_string(&self.path, &self.value)
+		match self.kind {
+			SetKind::Data => doc.set_string(&self.path, &self.value),
+			SetKind::Literal => doc.set_literal(&self.path, &self.value),
+			SetKind::DataDefault => doc.set_string_default(&self.path, &self.value),
+			SetKind::LiteralDefault => doc.set_literal_default(&self.path, &self.value),
+			// Removing nothing is not a failure, the same as the ops script's
+			// `remove`: the point of the option is the path's absence after.
+			SetKind::Remove => {
+				doc.remove(&self.path);
+				true
+			}
 		}
 	}
 	fn opt(&self) -> &'static str {
-		if self.literal {
-			"--set-literal"
-		} else {
-			"--set"
+		match self.kind {
+			SetKind::Data => "--set",
+			SetKind::Literal => "--set-literal",
+			SetKind::DataDefault => "--set-default",
+			SetKind::LiteralDefault => "--set-literal-default",
+			SetKind::Remove => "--remove",
 		}
 	}
 }
@@ -260,8 +287,16 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 			"--about" => return Some("about"),
 			"--donate" => return Some("donate"),
 			"--" => return None,
-			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
-			| "--set-literal" => i += 1,
+			"--default"
+			| "--on-bad"
+			| "--strictness"
+			| "--schema"
+			| "--layer"
+			| "--set"
+			| "--set-literal"
+			| "--set-default"
+			| "--set-literal-default"
+			| "--remove" => i += 1,
 			_ => {}
 		}
 		i += 1;
@@ -352,8 +387,16 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 				o.no_banner = true;
 				o.seen.push("--no-banner");
 			}
-			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
-			| "--set-literal" => {
+			"--default"
+			| "--on-bad"
+			| "--strictness"
+			| "--schema"
+			| "--layer"
+			| "--set"
+			| "--set-literal"
+			| "--set-default"
+			| "--set-literal-default"
+			| "--remove" => {
 				i += 1;
 				let v = argv
 					.get(i)
@@ -366,9 +409,16 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			_ if a.starts_with("--schema=") => set_value_opt(&mut o, "--schema", &a[9..])?,
 			_ if a.starts_with("--layer=") => set_value_opt(&mut o, "--layer", &a[8..])?,
 			_ if a.starts_with("--set=") => set_value_opt(&mut o, "--set", &a[6..])?,
+			_ if a.starts_with("--set-literal-default=") => {
+				set_value_opt(&mut o, "--set-literal-default", &a[22..])?
+			}
 			_ if a.starts_with("--set-literal=") => {
 				set_value_opt(&mut o, "--set-literal", &a[14..])?
 			}
+			_ if a.starts_with("--set-default=") => {
+				set_value_opt(&mut o, "--set-default", &a[14..])?
+			}
+			_ if a.starts_with("--remove=") => set_value_opt(&mut o, "--remove", &a[9..])?,
 			_ if a.starts_with('-') && a.len() > 1 => {
 				return Err(format!("unknown option: {}", a));
 			}
@@ -408,23 +458,36 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			o.layers.push(v.to_string());
 			o.seen.push("--layer");
 		}
-		"--set" | "--set-literal" => {
+		"--remove" => {
+			if v.is_empty() {
+				return Err("bad --remove value (want PATH)".to_string());
+			}
+			o.sets.push(Set {
+				path: v.to_string(),
+				value: String::new(),
+				kind: SetKind::Remove,
+			});
+			o.seen.push("--remove");
+		}
+		"--set" | "--set-literal" | "--set-default" | "--set-literal-default" => {
 			let (p, val) = split_set(v).filter(|(p, _)| !p.is_empty()).ok_or_else(|| {
 				format!(
 					"bad {} value (want PATH=VALUE, quotes and brackets balanced): {}",
 					name, v
 				)
 			})?;
+			let (kind, canon) = match name {
+				"--set-literal" => (SetKind::Literal, "--set-literal"),
+				"--set-default" => (SetKind::DataDefault, "--set-default"),
+				"--set-literal-default" => (SetKind::LiteralDefault, "--set-literal-default"),
+				_ => (SetKind::Data, "--set"),
+			};
 			o.sets.push(Set {
 				path: p.to_string(),
 				value: val.to_string(),
-				literal: name == "--set-literal",
+				kind,
 			});
-			o.seen.push(if name == "--set-literal" {
-				"--set-literal"
-			} else {
-				"--set"
-			});
+			o.seen.push(canon);
 		}
 		_ => return Err(format!("unknown option: {}", name)),
 	}
@@ -446,12 +509,18 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			"--layer",
 			"--set",
 			"--set-literal",
+			"--set-default",
+			"--set-literal-default",
+			"--remove",
 		],
 		"set" => &[
 			"--strictness",
 			"--layer",
 			"--set",
 			"--set-literal",
+			"--set-default",
+			"--set-literal-default",
+			"--remove",
 			"--write",
 			"--lossy",
 		],
@@ -462,12 +531,21 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			"--layer",
 			"--set",
 			"--set-literal",
+			"--set-default",
+			"--set-literal-default",
+			"--remove",
 		],
 		"check" => &["--strictness", "--schema"],
 		"init" => &["--schema", "--no-banner"],
-		"count" | "instances" | "children" | "paths" => {
-			&["--strictness", "--layer", "--set", "--set-literal"]
-		}
+		"count" | "instances" | "children" | "paths" => &[
+			"--strictness",
+			"--layer",
+			"--set",
+			"--set-literal",
+			"--set-default",
+			"--set-literal-default",
+			"--remove",
+		],
 		_ => &[],
 	};
 	for s in &o.seen {
@@ -505,7 +583,10 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		return Err(1);
 	}
 	if o.write && !o.sets.is_empty() && cmd != "set" {
-		eprintln!("--write cannot be combined with --set (see --help)");
+		eprintln!(
+			"--write cannot be combined with {} (see --help)",
+			o.sets[0].opt()
+		);
 		return Err(1);
 	}
 	// --lossy only overrides the in-place write's refusal, so on its own it says

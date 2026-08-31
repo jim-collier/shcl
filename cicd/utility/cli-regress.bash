@@ -54,12 +54,15 @@ printf 'x[a=b]:\n\tc: 0\n' > "${tmpDir}/sel.shcl"
 ## A name a path cannot hold bare, for the traversal commands: enumerating keys
 ## is only useful if what comes back can be read straight back.
 printf 'db:\n\thost: h\n\t"odd.key": 2\nweb:\n\tport: 1\n' > "${tmpDir}/tree.shcl"
+## Two plain keys, for the edit options: what each one leaves behind is the
+## whole assertion, so the document has to be small enough to spell out.
+printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
 ##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
-##	needs quoting in a path.
+##	needs quoting in a path, %F2% a two-key file for the edit options.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that stream.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	Each row names the round and item it pins.
@@ -102,6 +105,17 @@ rows=(
 	'get-diags|get %B% a|-|0|1|E015 missing colon'
 	'count-diags|count %B% a|-|0|1|E015 missing colon'
 	'instances-diags|instances %B% a|-|0|1|E015 missing colon'
+	## 20260830b item 21: removal and the set-if-absent family had no option
+	## form, so a one-key edit meant a printf with a literal tab piped into set.
+	## The five spellings share one ordered list, so the last one on a path wins.
+	'remove-option|set --remove=b %F2%|-|0|a: 1\n|-'
+	'set-default-absent|set --set-default=c=3 %F2%|-|0|a: 1\nb: 2\n\nc: 3\n|-'
+	'set-default-present|set --set-default=a=9 %F2%|-|0|a: 1\nb: 2\n|-'
+	'set-literal-default|set --set-literal-default=p=1,2 %F2%|-|0|a: 1\nb: 2\n\np: 1, 2\n|-'
+	'set-family-order|set --set=a=5 --remove=a %F2%|-|0|b: 2\n|-'
+	'remove-ephemeral|get --remove=a %F2% a|-|3|-|-'
+	'remove-write-refused|fmt --write --remove=a %F2%|-|1|-|cannot be combined with --remove'
+	'remove-empty-path|set --remove= %F2%|-|1|-|bad --remove value'
 	## 20260830b item 19: a script could read an open section's values but never
 	## learn its keys, so the only route was parsing fmt output in shell. A name
 	## needing quotes comes back path-ready, or enumerating it buys nothing.
@@ -127,6 +141,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S%/${tmpDir}/baddef.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
+	argv="${argv//%F2%/${tmpDir}/two.shcl}"
 	read -r -a args <<<"${argv}"
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"

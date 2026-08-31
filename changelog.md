@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `shcl children FILE [PATH]` and `shcl paths FILE`: the traversal half of the accessor, which the CLI did not carry. A script could read an open section's values but never learn its keys, so the only route was parsing `fmt` output in a shell. Names print in the form a path accepts, quoted where a bare name will not do, so one holding a dot or a quote goes straight back into the next read. The wrappers gain `shcl_children` and `shcl_paths`.
 
+- `--remove=PATH`, `--set-default=PATH=VALUE` and `--set-literal-default=PATH=TEXT` on the CLI. Removal and the set-if-absent family were reachable only through a tab-separated ops script on stdin, which is awkward to write in a shell and easy to get wrong; scalar sets had been given an option form for exactly that reason. All five spellings share one ordered list, so two touching the same path resolve in the order given. Raw blocks still go in through the ops script.
+
 - A `DateTime` alias beside `Datetime` in Rust and Python, so the capitalization a consumer tries first still compiles.
 
 - The Linux installer runs the just-verified binary before anything is written, so a system whose glibc is older than the prebuilt binary's floor hears so at install time, with the build-from-source route named, instead of hitting a raw loader error at first use. README states the floor.

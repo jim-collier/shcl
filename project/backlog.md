@@ -98,13 +98,18 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-083000
 
-	- 🔘 Item 21: `remove` and the set-if-absent family have no option form, only the stdin ops script.
+	- ✅ Item 21: `remove` and the set-if-absent family have no option form, only the stdin ops script.
 		- The design records why scalar sets got a command-line option: a tab-separated script on stdin is something no shell writes comfortably and no editor preserves.
 		- That reasoning was applied to sets and then left standing for `remove`, which is at least as common an edit, and for the defaults family, which is the whole write-out-defaults half of the writer.
 		- Reproduced: removing one key needs a printf with a literal tab piped into `set --write`. Getting the tab wrong fails loudly, so this is friction, not a correctness hazard.
 		- Raw blocks belong on stdin, so this is not an argument to retire the ops script.
 		- Additive: repeatable options joining the ordered edit list the set option already uses.
+		- Added `--remove=PATH`, `--set-default=PATH=VALUE` and `--set-literal-default=PATH=TEXT` to all four CLIs. All five spellings share one ordered list, so two touching the same path resolve in the order given, and they are valid on the same subcommands `--set` already was.
+		- Removing nothing is not an error, matching the ops script's `remove`.
+		- Also: the `--write cannot be combined with` refusal names the option actually given rather than always saying `--set`, and the help's subcommand lists for `--layer` and `--set` read "all but check/init" - they had gone stale when item 19 added two subcommands.
+		- Pinned by eight `cli-regress.bash` rows covering each spelling, a default that must not clobber, ordering within the list, the ephemeral form on a read, the `--write` refusal and an empty path. 32 of 136 checks fail without the code.
 		- Opened: 20260830-140346
+		- Closed: 20260831-093000
 
 	- 🔘 Item 22: exit 1 is still the catch-all for usage, I/O and an unwritable path, a week after 7 was carved out.
 		- Exit 7 was created on the argument that a script could not tell "pass the lossy flag or fix the file" from "the command line is wrong". The same argument applies to a setter that cannot write, and was not applied.

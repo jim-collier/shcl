@@ -361,8 +361,17 @@ static int split_set(const char *arg, size_t *plen, const char **val) {
 // apply in the order given, which decides the winner when two target one path.
 static int set_apply(shcl_doc *d, const SetOpt *s) {
 	size_t vlen = strlen(s->value);
-	int ok = !strcmp(s->opt, "--set-literal") ? shcl_set_literal(d, s->path, s->plen, s->value, vlen)
-	                                          : shcl_set_string(d, s->path, s->plen, s->value, vlen);
+	int ok;
+	if (!strcmp(s->opt, "--remove")) {
+		// Removing nothing is not a failure, the same as the ops script's
+		// `remove`: the point of the option is the path's absence after.
+		shcl_remove(d, s->path, s->plen);
+		return 1;
+	}
+	if (!strcmp(s->opt, "--set-literal")) ok = shcl_set_literal(d, s->path, s->plen, s->value, vlen);
+	else if (!strcmp(s->opt, "--set-default")) ok = shcl_set_string_default(d, s->path, s->plen, s->value, vlen);
+	else if (!strcmp(s->opt, "--set-literal-default")) ok = shcl_set_literal_default(d, s->path, s->plen, s->value, vlen);
+	else ok = shcl_set_string(d, s->path, s->plen, s->value, vlen);
 	if (!ok) fprintf(stderr, "%s: cannot write %.*s: %s\n", s->opt, (int)s->plen, s->path, describe_refusal(d, s->path, s->plen));
 	return ok;
 }
@@ -998,7 +1007,11 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 		o->schema = v; opt_seen(o, "--schema");
 	} else if (!strcmp(name, "--layer")) {
 		opt_push(&o->layers, &o->nlayers, v); opt_seen(o, "--layer");
-	} else if (!strcmp(name, "--set") || !strcmp(name, "--set-literal")) {
+	} else if (!strcmp(name, "--remove")) {
+		if (!*v) { fprintf(stderr, "bad --remove value (want PATH)\n"); return 1; }
+		set_push(o, v, strlen(v), "", "--remove"); opt_seen(o, "--remove");
+	} else if (!strcmp(name, "--set") || !strcmp(name, "--set-literal")
+	           || !strcmp(name, "--set-default") || !strcmp(name, "--set-literal-default")) {
 		size_t plen; const char *val;
 		if (!split_set(v, &plen, &val) || plen == 0) { fprintf(stderr, "bad %s value (want PATH=VALUE, quotes and brackets balanced): %s\n", name, v); return 1; }
 		set_push(o, v, plen, val, name); opt_seen(o, name);
@@ -1026,7 +1039,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) { o->write = 1; opt_seen(o, "--write"); }
 		else if (!strcmp(a, "--lossy")) { o->lossy = 1; opt_seen(o, "--lossy"); }
 		else if (!strcmp(a, "--no-banner")) { o->no_banner = 1; opt_seen(o, "--no-banner"); }
-		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) {
+		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal") || !strcmp(a, "--set-default") || !strcmp(a, "--set-literal-default") || !strcmp(a, "--remove")) {
 			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
 			if (set_value_opt(o, a, argv[++i])) return 1;
 		}
@@ -1036,6 +1049,9 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strncmp(a, "--schema=", 9)) { if (set_value_opt(o, "--schema", a + 9)) return 1; }
 		else if (!strncmp(a, "--layer=", 8)) { if (set_value_opt(o, "--layer", a + 8)) return 1; }
 		else if (!strncmp(a, "--set-literal=", 14)) { if (set_value_opt(o, "--set-literal", a + 14)) return 1; }
+		else if (!strncmp(a, "--set-literal-default=", 22)) { if (set_value_opt(o, "--set-literal-default", a + 22)) return 1; }
+		else if (!strncmp(a, "--set-default=", 14)) { if (set_value_opt(o, "--set-default", a + 14)) return 1; }
+		else if (!strncmp(a, "--remove=", 9)) { if (set_value_opt(o, "--remove", a + 9)) return 1; }
 		else if (!strncmp(a, "--set=", 6)) { if (set_value_opt(o, "--set", a + 6)) return 1; }
 		else if (a[0] == '-' && a[1] != '\0') { fprintf(stderr, "unknown option: %s\n", a); return 1; }
 		else opt_push(&o->args, &o->nargs, a);
@@ -1083,12 +1099,12 @@ static int do_paths(Opts *o) {
 }
 
 static int check_opts(const char *cmd, const Opts *o) {
-	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", NULL };
-	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy", NULL };
-	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", NULL };
+	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
+	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy", NULL };
+	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *check_ok[] = { "--strictness", "--schema", NULL };
 	static const char *init_ok[] = { "--schema", "--no-banner", NULL };
-	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", NULL };
+	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *none_ok[] = { NULL };
 	const char **allowed = none_ok;
 	if (!strcmp(cmd, "get")) allowed = get_ok;
@@ -1126,7 +1142,7 @@ static int check_opts(const char *cmd, const Opts *o) {
 		return 1;
 	}
 	if (o->write && o->nsets > 0 && strcmp(cmd, "set")) {
-		fprintf(stderr, "--write cannot be combined with --set (see --help)\n");
+		fprintf(stderr, "--write cannot be combined with %s (see --help)\n", o->sets[0].opt);
 		return 1;
 	}
 	// --lossy only overrides the in-place write's refusal, so on its own it says
@@ -1169,7 +1185,7 @@ static const char *asked_for(int argc, char **argv) {
 		if (!strcmp(a, "--about")) return "about";
 		if (!strcmp(a, "--donate")) return "donate";
 		if (!strcmp(a, "--")) return NULL;
-		if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) i++;
+		if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal") || !strcmp(a, "--set-default") || !strcmp(a, "--set-literal-default") || !strcmp(a, "--remove")) i++;
 	}
 	return NULL;
 }

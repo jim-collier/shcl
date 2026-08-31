@@ -291,6 +291,26 @@ goes in as value syntax the way a file spells it \- so
 writes a two-element array. An unquoted
 .B #
 ends the value, and text spanning lines is rejected.
+.TP
+.BI \-\-set\-default= PATH = VALUE
+.TQ
+.BI \-\-set\-literal\-default= PATH = TEXT
+.RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
+As
+.B \-\-set
+and
+.BR \-\-set\-literal ,
+except the write happens only when nothing is at the path yet \- the
+write-out-defaults half of the writer.
+.TP
+.BI \-\-remove= PATH
+.RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
+Delete whatever is at
+.IR PATH ,
+with its subtree. Repeatable. Removing nothing is not an error.
+.PP
+The five options above share one ordered list, so two of them touching the same
+path resolve in the order given. Raw blocks still go in through the ops script.
 .PP
 Value options accept either spelling:
 .BI \-\-default= VALUE

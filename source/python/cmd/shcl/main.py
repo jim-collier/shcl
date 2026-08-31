@@ -87,24 +87,31 @@ Options (the subcommands each belongs to are in parentheses):
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
-  --layer=FILE                           (get/fmt/count/instances/set) merge a
+  --layer=FILE                           (all but check/init) merge a
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
-  --set=PATH=VALUE                       (get/fmt/count/instances/set) override
-                                         one path as the top layer, after all
-                                         files; repeatable. On 'set'
-                                         it is an edit to the document itself,
-                                         so it persists with --write. VALUE
-                                         goes in as data: its type still
-                                         follows the text (8 is an int), but a
-                                         comma or quote in it is content, not
-                                         syntax
+  --set=PATH=VALUE                       (all but check/init) override one path
+                                         as the top layer, after all files;
+                                         repeatable. On 'set' it is an edit to
+                                         the document itself, so it persists
+                                         with --write. VALUE goes in as data:
+                                         its type still follows the text (8 is
+                                         an int), but a comma or quote in it is
+                                         content, not syntax
   --set-literal=PATH=TEXT                (same subcommands) as --set, except
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
                                          array. An unquoted # ends the value;
                                          text spanning lines is rejected
+  --set-default=PATH=VALUE               (same) as --set, but only when nothing
+  --set-literal-default=PATH=TEXT        is at the path yet - the write-out-
+                                         defaults half of the writer
+  --remove=PATH                          (same) delete what is at the path,
+                                         with its subtree. Removing nothing is
+                                         not an error
+The five above share one ordered list, so two of them touching the same path
+resolve in the order given. Raw blocks still go in through the ops script.
 
 Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
@@ -156,23 +163,32 @@ def status_code(st):
 
 
 class _SetOpt:
-	# One --set/--set-literal override. Both spellings share a list so they apply
-	# in the order given, which is what decides the winner when two target the
-	# same path.
-	__slots__ = ("path", "value", "literal")
+	# One edit from the --set family. All five spellings share a list so they
+	# apply in the order given, which is what decides the winner when two target
+	# the same path.
+	__slots__ = ("path", "value", "kind")
 
-	def __init__(self, path, value, literal):
+	def __init__(self, path, value, kind):
 		self.path = path
 		self.value = value
-		self.literal = literal
+		self.kind = kind
 
 	def apply(self, doc):
-		if self.literal:
+		if self.kind == "--set-literal":
 			return doc.set_literal(self.path, self.value)
+		if self.kind == "--set-default":
+			return doc.set_string_default(self.path, self.value)
+		if self.kind == "--set-literal-default":
+			return doc.set_literal_default(self.path, self.value)
+		if self.kind == "--remove":
+			# Removing nothing is not a failure, the same as the ops script's
+			# `remove`: the point of the option is the path's absence after.
+			doc.remove(self.path)
+			return True
 		return doc.set_string(self.path, self.value)
 
 	def opt(self):
-		return "--set-literal" if self.literal else "--set"
+		return self.kind
 
 
 class _Opts:
@@ -224,11 +240,16 @@ def _set_value_opt(o, name, v):
 	elif name == "--layer":
 		o.layers.append(v)
 		o.seen.append("--layer")
-	elif name in ("--set", "--set-literal"):
+	elif name == "--remove":
+		if v == "":
+			raise ValueError("bad --remove value (want PATH)")
+		o.sets.append(_SetOpt(v, "", "--remove"))
+		o.seen.append("--remove")
+	elif name in ("--set", "--set-literal", "--set-default", "--set-literal-default"):
 		ps = split_set(v)
 		if ps is None or ps[0] == "":
 			raise ValueError(f"bad {name} value (want PATH=VALUE, quotes and brackets balanced): {v}")
-		o.sets.append(_SetOpt(ps[0], ps[1], name == "--set-literal"))
+		o.sets.append(_SetOpt(ps[0], ps[1], name))
 		o.seen.append(name)
 
 
@@ -278,7 +299,7 @@ def asked_for(argv):
 			return "donate"
 		if a == "--":
 			return None
-		if a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal"):
+		if a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove"):
 			i += 1
 		i += 1
 	return None
@@ -323,7 +344,7 @@ def parse_opts(argv):
 		elif a == "--lossy":
 			o.lossy = True
 			o.seen.append("--lossy")
-		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal"):
+		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove"):
 			i += 1
 			if i >= len(argv):
 				raise ValueError(f"missing value for {a} (try {a}=VALUE)")
@@ -338,8 +359,14 @@ def parse_opts(argv):
 			_set_value_opt(o, "--schema", a[len("--schema="):])
 		elif a.startswith("--layer="):
 			_set_value_opt(o, "--layer", a[len("--layer="):])
+		elif a.startswith("--set-literal-default="):
+			_set_value_opt(o, "--set-literal-default", a[len("--set-literal-default="):])
 		elif a.startswith("--set-literal="):
 			_set_value_opt(o, "--set-literal", a[len("--set-literal="):])
+		elif a.startswith("--set-default="):
+			_set_value_opt(o, "--set-default", a[len("--set-default="):])
+		elif a.startswith("--remove="):
+			_set_value_opt(o, "--remove", a[len("--remove="):])
 		elif a.startswith("--set="):
 			_set_value_opt(o, "--set", a[len("--set="):])
 		elif a.startswith("-") and len(a) > 1:
@@ -430,17 +457,17 @@ def check_opts(cmd, o):
 	# silently ignored (`set --write` before it existed, `--schema` on `get`) is a
 	# usage error instead. Returns an exit code, or None to proceed.
 	if cmd == "get":
-		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal")
+		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	elif cmd == "set":
-		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy")
+		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy")
 	elif cmd == "fmt":
-		allowed = ("--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal")
+		allowed = ("--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	elif cmd == "check":
 		allowed = ("--strictness", "--schema")
 	elif cmd == "init":
 		allowed = ("--schema", "--no-banner")
 	elif cmd in ("count", "instances", "children", "paths"):
-		allowed = ("--strictness", "--layer", "--set", "--set-literal")
+		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	else:
 		allowed = ()
 	for s in o.seen:
@@ -473,7 +500,7 @@ def check_opts(cmd, o):
 		sys.stderr.write("--write cannot be combined with --layer (see --help)\n")
 		return 1
 	if o.write and o.sets and cmd != "set":
-		sys.stderr.write("--write cannot be combined with --set (see --help)\n")
+		sys.stderr.write(f"--write cannot be combined with {o.sets[0].opt()} (see --help)\n")
 		return 1
 	# --lossy only overrides the in-place write's refusal, so on its own it says
 	# nothing and would read as protection the command never had.
