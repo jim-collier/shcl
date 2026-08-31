@@ -417,7 +417,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 | :--: | :--
 | `E001` | field line under a parent already holding stacked `*` list elements (field kept)
 | `E002` | value after a last-segment selector (`a.b[X]: v`) - the value is ignored
-| `E003` | `[#N]` selector names an instance that does not exist
+| `E003` | `[#N]` selector names an instance that does not exist. Unreachable in practice, and listed so nobody keys a gate on it: in a file the `#` opens a comment before the selector is read, so `b[#5].c: x` reports `E014` (empty selector) instead, and quoting the `#` makes it an ordinary discriminator; on a write path the same situation comes back as the `NoSuchIndex` write reason rather than as a diagnostic
 | `E004` | wildcard selector on a binding line (wildcards are query-only)
 | `E005` | unterminated raw block (closing fence never found)
 | `E006` | raw-block fence with no parent field to bind to

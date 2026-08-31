@@ -344,11 +344,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-175000
 
-	- 🔘 Item 47: the spec tables a load-time code no file can produce.
+	- ✅ Item 47: the spec tables a load-time code no file can produce.
 		- The block is introduced as the load-time codes so a gate can key on them. The selector code cannot fire from a file, because the marker opens a comment before the selector is read.
 		- Both spellings that should produce it report the empty-selector code instead. No corpus case pins it, and the backlog reached the same conclusion earlier.
 		- A gate keyed on it can never fire. Note it as unreachable from a file, or drop the row.
+		- Noted rather than dropped: the row stays, since the code is real in the source's message-to-code mapping, but it now says it is unreachable and why, so nobody keys a gate on it.
+		- Reproduced both halves, and one was wrong in the earlier note: a file reports `E014` (empty selector), not `E012`, and quoting the `#` makes it an ordinary discriminator. On a write path the same situation comes back as the `NoSuchIndex` write reason rather than as a diagnostic, which is what makes the code unreachable rather than merely hard to reach.
+		- Nothing new proves this one: the whole finding is that no input reaches the code, so there is nothing to assert. What the note prevents is a gate being written against it.
 		- Opened: 20260830-140346
+		- Closed: 20260831-181000
 
 	- 🔘 Item 48: two documents describe a stdout and stderr split that this week changed.
 		- Both say the stable code goes to stdout and the prose to stderr. The stderr line now carries the code as well.
