@@ -5149,6 +5149,12 @@ func (d *Document) GetRaw(path string) (string, Status) {
 	return r.Value, r.Status
 }
 
+// GetRawInfo is ReadRawInfo reduced to (value, status).
+func (d *Document) GetRawInfo(path string) (string, Status) {
+	r := d.ReadRawInfo(path)
+	return r.Value, r.Status
+}
+
 // GetDateTime is ReadDateTime reduced to (value, status).
 func (d *Document) GetDateTime(path string) (DateTime, Status) {
 	r := d.ReadDateTime(path)
@@ -5230,6 +5236,15 @@ func (d *Document) GetStringOr(path string, def string) string {
 // GetRawOr is the raw-block content at path, or def when the read is not Good.
 func (d *Document) GetRawOr(path string, def string) string {
 	if r := d.ReadRaw(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+// GetRawInfoOr is the raw block's info-string at path, or def when the read is
+// not Good.
+func (d *Document) GetRawInfoOr(path string, def string) string {
+	if r := d.ReadRawInfo(path); r.Status == Good {
 		return r.Value
 	}
 	return def

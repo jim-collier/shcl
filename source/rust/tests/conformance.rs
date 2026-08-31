@@ -325,7 +325,8 @@ fn convenience_tier_falls_back_only_on_good() {
 	// The get-tier value survives only on Good; Empty/BadType/NotFound all fall
 	// back to the call-site default, so a real zero can't be faked. This pins the
 	// semantic every port's *Or/get_*(default=) mirrors.
-	let doc = Document::parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\n");
+	let doc =
+		Document::parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\nblk:\n\t```html\n\thi\n\t```\n");
 	assert_eq!(doc.get_int("a").unwrap_or(9), 42); // Good
 	assert_eq!(doc.get_int("b").unwrap_or(9), 9); // BadType
 	assert_eq!(doc.get_int("e").unwrap_or(9), 9); // Empty still falls back
@@ -342,6 +343,11 @@ fn convenience_tier_falls_back_only_on_good() {
 	assert_eq!(doc.get_int_array_or("arr", vec![7]), vec![1, 2, 3]);
 	assert_eq!(doc.get_int_array_or("missing", vec![7]), vec![7]);
 	assert_eq!(doc.get_string_or("missing", "fb".to_string()), "fb");
+	// The raw block's info-string was the one typed read with no convenience
+	// tier, so it alone forced a caller down to the status tier.
+	assert_eq!(doc.get_raw_info("blk").unwrap(), "html");
+	assert_eq!(doc.get_raw_info_or("blk", "fb".to_string()), "html");
+	assert_eq!(doc.get_raw_info_or("missing", "fb".to_string()), "fb");
 	// ok() and the convenience tier deliberately disagree on an explicitly
 	// emptied field: one asks whether the author spoke for it, the other whether
 	// there is a usable value.

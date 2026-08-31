@@ -124,12 +124,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-101500
 
-	- 🔘 Item 23: the raw info read is the one typed entry point with no convenience tier, and the deviation is recorded nowhere.
+	- ✅ Item 23: the raw info read is the one typed entry point with no convenience tier, and the deviation is recorded nowhere.
 		- The spec promises each typed entry point comes in two tiers. Every read type has the short form except this one, in all four bindings and the veneer.
 		- The CLI does have the convenience form, so the two surfaces disagree about whether this read has a fallback spelling.
 		- The C tier restriction is a sanctioned deviation and is written down. This one is in no document.
 		- Either add the companion in the four, or record it as deliberate. Adding it changes no output.
+		- Decided: both. Rust, Go and Python gained `get_raw_info` and `get_raw_info_or`, so the CLI's convenience form now has a library counterpart. C and the veneer keep the status tier alone, which is the existing recorded deviation for every read handing back borrowed memory - the spec and style guide now name raw-info in it rather than leaving it to be read into "raw".
+		- Pinned in each binding's convenience-tier fixture, which gained a raw block: the three assert the new calls read through and fall back, C asserts the status-tier route. Verified by removing the methods and watching each runner fail.
+		- No output changed, so the corpus and crosscheck are untouched.
 		- Opened: 20260830-140346
+		- Closed: 20260831-110000
 
 	- 🔘 Item 24: the Python value display and merge key pay a join and a generator on every single-element cell.
 		- Measured on an 8.5 MiB document: display is called 799k times and the merge key 1.4M times, for 363k source lines. The join is the largest non-parse entry in a profile.

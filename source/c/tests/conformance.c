@@ -685,12 +685,17 @@ int main(int argc, char **argv) {
 	// cannot keep the call name while changing which tier it lands on. Same
 	// fixture in every runner (C's convenience tier is the value types only).
 	{
-		const char *ct = "a: 42\nb: not-a-number\ne:\n";
+		const char *ct = "a: 42\nb: not-a-number\ne:\nblk:\n\t```html\n\thi\n\t```\n";
 		shcl_doc *cd = shcl_parse(ct, strlen(ct));
 		if (shcl_get_int_or(cd, "a", 1, 9) != 42) fail("get_or", "Good did not read through");
 		if (shcl_get_int_or(cd, "b", 1, 9) != 9) fail("get_or", "BadType did not fall back");
 		if (shcl_get_int_or(cd, "e", 1, 9) != 9) fail("get_or", "Empty did not fall back");
 		if (shcl_get_int_or(cd, "missing", 7, 9) != 9) fail("get_or", "NotFound did not fall back");
+		// C's convenience tier deliberately stops at the value types, so the
+		// info-string read is only reachable on the status tier here.
+		{ shcl_read_str ri = shcl_read_raw_info(cd, "blk", 3);
+		  if (ri.status != SHCL_GOOD || ri.value.n != 4 || memcmp(ri.value.p, "html", 4))
+			  fail("get_or", "read_raw_info did not read the info-string"); }
 		if (shcl_get_float_or(cd, "missing", 7, 1.5) != 1.5) fail("get_or", "float did not fall back");
 		if (shcl_get_bool_or(cd, "missing", 7, 1) != 1) fail("get_or", "bool did not fall back");
 		// The ok predicate and the convenience tier deliberately disagree on an

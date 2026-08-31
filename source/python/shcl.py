@@ -3090,6 +3090,9 @@ class Document:
 	def get_raw(self, path: str, default: Any = _NO_DEFAULT) -> str:
 		return self._get(self.read_raw(path), default)
 
+	def get_raw_info(self, path: str, default: Any = _NO_DEFAULT) -> str:
+		return self._get(self.read_raw_info(path), default)
+
 	def get_datetime(self, path: str, default: Any = _NO_DEFAULT) -> ShclDateTime:
 		return self._get(self.read_datetime(path), default)
 
@@ -3128,6 +3131,9 @@ class Document:
 
 	def get_raw_or(self, path: str, default: str) -> str:
 		return self._get(self.read_raw(path), default)
+
+	def get_raw_info_or(self, path: str, default: str) -> str:
+		return self._get(self.read_raw_info(path), default)
 
 	def get_datetime_or(self, path: str, default: ShclDateTime) -> ShclDateTime:
 		return self._get(self.read_datetime(path), default)

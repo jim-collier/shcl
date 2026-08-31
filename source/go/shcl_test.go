@@ -1300,7 +1300,7 @@ func TestInitGenerationMatchesExpected(t *testing.T) {
 func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {
 	// Mirror of the reference: the *Or value survives only on Good; Empty,
 	// BadType, and NotFound all yield the call-site fallback.
-	d := Parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\n")
+	d := Parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\nblk:\n\t```html\n\thi\n\t```\n")
 	if got := d.GetIntOr("a", 9); got != 42 {
 		t.Fatalf("GetIntOr Good = %d, want 42", got)
 	}
@@ -1322,6 +1322,17 @@ func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {
 	}
 	if _, st := d.GetIntArray("missing"); st != NotFound {
 		t.Fatalf("GetIntArray(missing) status = %v, want NotFound", st)
+	}
+	// The raw block's info-string was the one typed read with no convenience
+	// tier, so it alone forced a caller down to the status tier.
+	if got, st := d.GetRawInfo("blk"); st != Good || got != "html" {
+		t.Fatalf("GetRawInfo(blk) = %q, %v", got, st)
+	}
+	if got := d.GetRawInfoOr("blk", "fb"); got != "html" {
+		t.Fatalf("GetRawInfoOr Good = %q, want html", got)
+	}
+	if got := d.GetRawInfoOr("missing", "fb"); got != "fb" {
+		t.Fatalf("GetRawInfoOr missing = %q, want fallback", got)
 	}
 	// Ok and the convenience tier deliberately disagree on an explicitly
 	// emptied field: one asks whether the author spoke for it, the other whether

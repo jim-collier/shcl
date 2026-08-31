@@ -4762,6 +4762,16 @@ impl Document {
 		}
 	}
 
+	/// `read_raw_info` reduced to a `Result`.
+	pub fn get_raw_info(&self, path: &str) -> Result<String, Status> {
+		let r = self.read_raw_info(path);
+		if r.status == Status::Good {
+			Ok(r.value)
+		} else {
+			Err(r.status)
+		}
+	}
+
 	/// `read_datetime` reduced to a `Result`.
 	pub fn get_datetime(&self, path: &str) -> Result<ShclDateTime, Status> {
 		let r = self.read_datetime(path);
@@ -4855,6 +4865,11 @@ impl Document {
 	/// The raw-block content at a path, or `def` when the read is not Good.
 	pub fn get_raw_or(&self, path: &str, def: String) -> String {
 		self.get_raw(path).unwrap_or(def)
+	}
+
+	/// The raw block's info-string at a path, or `def` when the read is not Good.
+	pub fn get_raw_info_or(&self, path: &str, def: String) -> String {
+		self.get_raw_info(path).unwrap_or(def)
 	}
 
 	/// The datetime at a path, or `def` when the read is not Good.

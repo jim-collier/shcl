@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `--remove=PATH`, `--set-default=PATH=VALUE` and `--set-literal-default=PATH=TEXT` on the CLI. Removal and the set-if-absent family were reachable only through a tab-separated ops script on stdin, which is awkward to write in a shell and easy to get wrong; scalar sets had been given an option form for exactly that reason. All five spellings share one ordered list, so two touching the same path resolve in the order given. Raw blocks still go in through the ops script.
 
+- `get_raw_info` and `get_raw_info_or` in Rust, Go and Python (`GetRawInfo`/`GetRawInfoOr` in Go). A raw block's info-string was the one typed read with no convenience tier, so reading it meant dropping to the status tier while every other type had the short form - and the CLI had carried `--rawinfo` all along. C and the C++ veneer keep the status tier alone, as they do for every read handing back borrowed memory.
+
 - A `DateTime` alias beside `Datetime` in Rust and Python, so the capitalization a consumer tries first still compiles.
 
 - The Linux installer runs the just-verified binary before anything is written, so a system whose glibc is older than the prebuilt binary's floor hears so at install time, with the build-from-source route named, instead of hitting a raw loader error at first use. README states the floor.

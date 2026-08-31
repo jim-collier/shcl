@@ -973,7 +973,7 @@ def main():
 	# cross-binding spelling for it, so a routine ported between two bindings
 	# cannot keep the call name while changing which tier it lands on. Same
 	# fixture in every runner.
-	cdoc = shcl.Document.parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\n")
+	cdoc = shcl.Document.parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\nblk:\n\t```html\n\thi\n\t```\n")
 	if cdoc.get_int_or("a", 9) != 42:
 		raise SystemExit(f"get_int_or Good got {cdoc.get_int_or('a', 9)}")
 	for p in ("b", "e", "missing"):
@@ -985,6 +985,14 @@ def main():
 		raise SystemExit("get_int_array_or missing did not fall back")
 	if cdoc.get_string_or("missing", "fb") != "fb":
 		raise SystemExit("get_string_or missing did not fall back")
+	# The raw block's info-string was the one typed read with no convenience
+	# tier, so it alone forced a caller down to the status tier.
+	if cdoc.get_raw_info("blk") != "html":
+		raise SystemExit("get_raw_info did not read the info-string")
+	if cdoc.get_raw_info_or("blk", "fb") != "html":
+		raise SystemExit("get_raw_info_or Good did not read through")
+	if cdoc.get_raw_info_or("missing", "fb") != "fb":
+		raise SystemExit("get_raw_info_or missing did not fall back")
 	# ok() and the convenience tier deliberately disagree on an explicitly
 	# emptied field: one asks whether the author spoke for it, the other whether
 	# there is a usable value.
