@@ -1071,6 +1071,31 @@ func TestSaveCreatesTheFileBehindADanglingSymlink(t *testing.T) {
 	}
 }
 
+func TestSaveReportsASymlinkCycleInsteadOfReplacingIt(t *testing.T) {
+	// Two links pointing at each other resolve to nothing, so the save fails
+	// and says why. It must not "fix" the cycle by dropping a regular file over
+	// one of the links. Same fixture in every POSIX runner.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink fixture")
+	}
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.shcl"), filepath.Join(dir, "b.shcl")
+	if err := os.Symlink("b.shcl", a); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a.shcl", b); err != nil {
+		t.Fatal(err)
+	}
+	if err := Parse("a: 1\n").SaveFile(a); err == nil {
+		t.Error("a symlink cycle saved without an error")
+	}
+	for _, link := range []string{a, b} {
+		if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("a symlink cycle was replaced by a regular file: %v %v", st, err)
+		}
+	}
+}
+
 func TestSaveRewritesAReadOnlyFile(t *testing.T) {
 	// A read-only target is rewritten, as it is on POSIX, and comes back
 	// read-only; no temp file is left behind. Same fixture in every runner.

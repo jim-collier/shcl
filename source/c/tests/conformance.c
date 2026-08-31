@@ -927,6 +927,24 @@ int main(int argc, char **argv) {
 		free(tt); shcl_free(dd);
 		remove(dlink); remove(dtarget); rmdir(dreal); rmdir(ddir);
 	}
+	// Two links pointing at each other resolve to nothing, so the save fails
+	// and says why. It must not "fix" the cycle by dropping a regular file over
+	// one of the links. Same fixture in every POSIX runner.
+	{
+		char cdir[256], ca[288], cb[288];
+		snprintf(cdir, sizeof cdir, "%s/shcl-cycle-%ld", tmp_root(), (long)getpid());
+		snprintf(ca, sizeof ca, "%s/a.shcl", cdir);
+		snprintf(cb, sizeof cb, "%s/b.shcl", cdir);
+		if (mkdir(cdir, 0700) != 0) fail("cycle", "mkdir failed");
+		if (symlink("b.shcl", ca) != 0 || symlink("a.shcl", cb) != 0) fail("cycle", "symlink failed");
+		shcl_doc *cd = shcl_parse("a: 1\n", 5);
+		if (shcl_save_file(cd, ca) == SHCL_SAVE_OK) fail("cycle", "a symlink cycle saved without an error");
+		struct stat cs;
+		if (lstat(ca, &cs) != 0 || !S_ISLNK(cs.st_mode)) fail("cycle", "a symlink cycle was replaced by a regular file");
+		if (lstat(cb, &cs) != 0 || !S_ISLNK(cs.st_mode)) fail("cycle", "a symlink cycle was replaced by a regular file");
+		shcl_free(cd);
+		remove(ca); remove(cb); rmdir(cdir);
+	}
 #endif
 	// A read-only target is rewritten, as it is on POSIX, and comes back
 	// read-only; no temp file is left behind. Same fixture in every runner.

@@ -144,6 +144,16 @@ cat > "${tmpDir}/rel.json" <<'JSON'
     "tag_name": "v2.0.0",
     "draft": false,
     "prerelease": false
+  },
+  {
+    "tag_name": "v2.1.0-alpha.10",
+    "draft": false,
+    "prerelease": true
+  },
+  {
+    "tag_name": "v2.1.0-alpha.2",
+    "draft": false,
+    "prerelease": true
   }
 ]
 JSON
@@ -152,8 +162,10 @@ JSON
 eval "$(sed -n '/^fPickTag()/,/^}/p' "${repoDir}/install.bash")"
 out="$(fPickTag stable "${tmpDir}/rel.json")"
 [[ "${out}" == "v2.0.0" ]] || fBad "install.bash stable channel picked ${out@Q}, want v2.0.0"
+##	20260829 item 21: a pre-release suffix compared as text, so alpha.10 sorted
+##	below alpha.2. Both installers order the digit runs numerically.
 out="$(fPickTag dev "${tmpDir}/rel.json")"
-[[ "${out}" == "v2.1.0-alpha.1" ]] || fBad "install.bash dev channel picked ${out@Q}, want v2.1.0-alpha.1"
+[[ "${out}" == "v2.1.0-alpha.10" ]] || fBad "install.bash dev channel picked ${out@Q}, want v2.1.0-alpha.10"
 
 if command -v pwsh > /dev/null 2>&1; then
 	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
@@ -165,7 +177,7 @@ if command -v pwsh > /dev/null 2>&1; then
 	} > "${tmpDir}/pick.ps1"
 	out="$(pwsh -NoProfile -File "${tmpDir}/pick.ps1" 2>&1 || true)"
 	[[ "${out}" == *"stable=v2.0.0"* ]]        || fBad "install.ps1 stable channel: ${out@Q}"
-	[[ "${out}" == *"dev=v2.1.0-alpha.1"* ]]   || fBad "install.ps1 dev channel: ${out@Q}"
+	[[ "${out}" == *"dev=v2.1.0-alpha.10"* ]]  || fBad "install.ps1 dev channel: ${out@Q}"
 fi
 
 ##	20260830b item 8: a prerelease version reached NSIS's four-integer version

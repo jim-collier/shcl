@@ -1701,6 +1701,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 #### Done - Features and enhancements
 
+- ✅ Close the remaining test gaps across the recent review rounds.
+	- The earlier pass built three gates and left the rounds' own item list unaudited. This one read every closed item from 20260829, 20260830 and 20260830b and asked what would fail if the fix were backed out.
+	- Most were already covered, several by a fixture whose item text never named it. Four behavior gaps were left, and each now has a row: `-h` after FILE, load diagnostics on stderr without `--write`, `--set` splitting at an `=` inside a selector, and a pre-release suffix ordered numerically rather than as text in both installers.
+	- A symlink cycle joins the file tier's fixtures in all four runners. The save has to fail and say why, and must not "fix" the cycle by dropping a regular file over one of the links.
+	- Not reachable and deliberately left: prose and wording items, and the Python CLI's Windows stdout encoding, which only the hosted Windows job can exercise.
+	- Closed: 20260830-215127
+
 - ✅ Regression tests for the fixes of the last three review rounds.
 	- Those rounds closed 120 items between them and left three corpus cases behind, so most fixes had nothing pinning them and a later round kept re-finding the same classes.
 	- Two corpus cases for defects a corpus can carry: a `set_int_default` after a `remove` (the stale name index), and a `set_raw` info string holding an unquoted `#`. Both fail on all four bindings with their fix backed out.

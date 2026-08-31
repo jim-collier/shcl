@@ -1011,6 +1011,33 @@ fn save_creates_the_file_behind_a_dangling_symlink() {
 	let _ = std::fs::remove_dir(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn save_reports_a_symlink_cycle_instead_of_replacing_it() {
+	// Two links pointing at each other resolve to nothing, so the save fails
+	// and says why. It must not "fix" the cycle by dropping a regular file over
+	// one of the links. Same fixture in every POSIX runner.
+	let dir = std::env::temp_dir().join(format!("shcl-cycle-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let (a, b) = (dir.join("a.shcl"), dir.join("b.shcl"));
+	std::os::unix::fs::symlink("b.shcl", &a).unwrap();
+	std::os::unix::fs::symlink("a.shcl", &b).unwrap();
+	let doc = Document::parse("a: 1\n");
+	assert!(doc.save_file(a.to_str().unwrap()).is_err());
+	for link in [&a, &b] {
+		assert!(
+			std::fs::symlink_metadata(link)
+				.unwrap()
+				.file_type()
+				.is_symlink(),
+			"a symlink cycle was replaced by a regular file"
+		);
+	}
+	let _ = std::fs::remove_file(&a);
+	let _ = std::fs::remove_file(&b);
+	let _ = std::fs::remove_dir(&dir);
+}
+
 #[cfg(windows)]
 #[test]
 fn save_rewrites_a_read_only_file() {
