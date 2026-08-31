@@ -302,10 +302,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-163000
 
-	- 🔘 Item 42: the bash uninstall says "removed" while leaving a directory full of files it did not install.
+	- ✅ Item 42: the bash uninstall says "removed" while leaving a directory full of files it did not install.
 		- Reproduced: a stray file in the install directory survives, the directory removal fails silently, and the script reports removal anyway with no mention of what is left.
 		- The PowerShell installer handles the same case properly and says so.
+		- Fixed: the install dir is removed only when it is empty, and when it is not the script says what it did remove and names the directory it left, in the same words the PowerShell installer already used.
+		- Pinned in `shell-regress.bash` under a fake HOME, both ways: an empty dir still reports a clean removal, a stray file gets named, and the stray file is still there afterwards.
 		- Opened: 20260830-140346
+		- Closed: 20260831-164500
 
 	- 🔘 Item 43: the README does not name the Windows installer's archive-tool requirement.
 		- The script refuses outright without it and names the Windows versions that carry it. The README's prerequisites cover only the Linux side.

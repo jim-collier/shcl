@@ -202,8 +202,21 @@ if (( uninstall )); then
 	[[ -L "${manlink}" && "$(readlink -- "${manlink}")" == "${dest}/"* ]] && ${asroot} rm -f "${manlink}"
 	${asroot} rm -f "${dest}/shcl"
 	${asroot} rm -f "${dest}/code"/* "${dest}/scripts"/* "${dest}/man"/* "${dest}/completions"/* 2>/dev/null || true
-	${asroot} rmdir "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions" "${dest}" 2>/dev/null || true
-	echo "removed"
+	${asroot} rmdir "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions" 2>/dev/null || true
+	## Only an empty dir goes, and say so when it does not: the dir can hold
+	## files this installer never put there (a package's, or someone's own), and
+	## reporting "removed" over the top of them was a lie. Matches what the
+	## PowerShell installer already said.
+	if [[ -d "${dest}" ]]; then
+		if ${asroot} rmdir "${dest}" 2>/dev/null; then
+			echo "removed"
+		else
+			echo "removed what this installer laid down"
+			printf 'left %s in place: it holds files this installer did not put there\n' "${dest}"
+		fi
+	else
+		echo "removed"
+	fi
 	echo
 	exit 0
 fi

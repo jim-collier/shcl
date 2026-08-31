@@ -287,6 +287,21 @@ for inst in install.bash install-dev.bash; do
 	[[ -n "${help}" ]] || fBad "${inst} --help printed nothing"
 done
 
+##	The bash uninstall reported "removed" while leaving a directory full of files
+##	it had not installed. The PowerShell installer already said so; this is the
+##	same wording on the bash side.
+if [[ -f "${repoDir}/install.bash" ]]; then
+	fake="${tmpDir}/fakehome"
+	mkdir -p "${fake}/.local/share/shcl"
+	out="$(HOME="${fake}" bash "${repoDir}/install.bash" --target user --uninstall --yes 2>&1 || true)"
+	grep -q '^removed$' <<<"${out}" || fBad "install.bash --uninstall of an empty dir did not report a clean removal: ${out}"
+	mkdir -p "${fake}/.local/share/shcl"
+	printf 'x\n' > "${fake}/.local/share/shcl/not-ours.txt"
+	out="$(HOME="${fake}" bash "${repoDir}/install.bash" --target user --uninstall --yes 2>&1 || true)"
+	grep -q 'did not put there' <<<"${out}" || fBad "install.bash --uninstall said nothing about the files it left behind: ${out}"
+	[[ -f "${fake}/.local/share/shcl/not-ours.txt" ]] || fBad "install.bash --uninstall removed a file it did not install"
+fi
+
 ##	The profiler stage's hot-spot report. Its only diagnostics go to stderr, and
 ##	the stage used to discard them, so the log recorded the failure with no cause.
 report="${repoDir}/cicd/utility/flame-report.py"
