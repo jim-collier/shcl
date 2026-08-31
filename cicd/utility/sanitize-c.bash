@@ -38,7 +38,7 @@ export ASAN_OPTIONS="exitcode=77:${ASAN_OPTIONS:-}" UBSAN_OPTIONS="exitcode=77:p
 
 work="$(mktemp -d)"; trap 'rm -rf "${work}"' EXIT
 ## compiler, language standard, source, output.
-fBuild(){ "$1" "-std=$2" "${flags[@]}" "$3" -o "$4" -lm || { echo "sanitize-c: build failed: $3" >&2; exit 2; }; }
+fBuild(){ "$1" "-std=$2" "${flags[@]}" "$3" -o "$4" -lm -lpthread || { echo "sanitize-c: build failed: $3" >&2; exit 2; }; }
 
 rc=0
 fBuild cc c11 source/c/tests/conformance.c "${work}/conformance"
@@ -105,7 +105,14 @@ for caseDir in "${corpus}"/*/; do
 	## plus any merge.sets overrides.
 	if [[ -f "${caseDir}expected-merged.shcl" ]]; then
 		layerArgs=()
-		for lf in "${caseDir}"layer*.shcl; do [[ -f "$lf" ]] && layerArgs+=("--layer=$lf"); done
+		## `continue` on the miss, not a trailing `&&`: an unmatched glob leaves
+		## the pattern in $lf, the test fails, and a loop whose body ends on a
+		## failed && list returns 1 - which kills the caller the day this loop
+		## becomes the last thing in a function.
+		for lf in "${caseDir}"layer*.shcl; do
+			[[ -f "$lf" ]] || continue
+			layerArgs+=("--layer=$lf")
+		done
 		setArgs=()
 		if [[ -f "${caseDir}merge.sets" ]]; then
 			while IFS= read -r sline || [[ -n "$sline" ]]; do

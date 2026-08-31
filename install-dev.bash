@@ -46,32 +46,30 @@ have() { command -v "$1" >/dev/null 2>&1; }
 usage() {
 	cat <<'EOF'
 
-## install-dev.bash
-##
-##	Dev-environment setup for shcl on Linux and macOS (on Windows, use WSL -
-##	the dev pipeline is bash). Clones the repo if needed, installs what it can
-##	without sudo (rustup, and the optional linters via pipx/npm/pwsh), and
-##	prints the exact install hint for anything that needs the system package
-##	manager. States the plan first, with an option to abort.
-##
-##	Usage (one-liner):
-##		curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install-dev.bash | bash
-##	With options:
-##		curl -fsSL .../install-dev.bash | bash -s -- --yes
-##
-##	Options:
-##		--dir <path>   where to clone (default ./shcl; skipped when run inside
-##		               an existing shcl clone).
-##		--yes | -y     skip the confirmation prompt.
-##
-##	What a full dev box needs (see contributing.md "How to develop"):
-##		gating:   rustup (rustfmt+clippy ride along), go, python3, gcc+g++,
-##		          shellcheck, ruff, mypy, cppcheck, build, markdownlint-cli2,
-##		          staticcheck, govulncheck, cargo-deny (all at the pinned versions),
-##		          PSScriptAnalyzer (only if pwsh is present)
-##		the gate: cicd/cicd.bash --ci
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+install-dev.bash - dev-environment setup for shcl
 
+Linux and macOS; on Windows use WSL, since the dev pipeline is bash. Clones the
+repo if needed, installs what it can without sudo (rustup, and the optional
+linters via pipx/npm/pwsh), and prints the exact install hint for anything that
+needs the system package manager. States the plan first, with an option to abort.
+
+Usage (one-liner):
+  curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install-dev.bash | bash
+
+With options:
+  curl -fsSL .../install-dev.bash | bash -s -- --yes
+
+Options:
+  --dir <path>   where to clone (default ./shcl; skipped when run inside an
+                 existing shcl clone).
+  --yes, -y      skip the confirmation prompt.
+
+What a full dev box needs (see contributing.md, "How to develop"):
+  gating:    rustup (rustfmt and clippy ride along), go, python3, gcc and g++,
+             shellcheck, ruff, mypy, cppcheck, build, markdownlint-cli2,
+             staticcheck, govulncheck, cargo-deny (all at the pinned versions),
+             PSScriptAnalyzer (only if pwsh is present)
+  the gate:  cicd/cicd.bash --ci
 EOF
 }
 

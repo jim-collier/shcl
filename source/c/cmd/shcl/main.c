@@ -56,6 +56,11 @@ static const char *HELP =
 	"                                         optional commented, wildcards noted)\n"
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
+	"  shcl children [options] FILE [PATH]    child field names under a path, one per\n"
+	"                                         line (the top level when PATH is left\n"
+	"                                         out)\n"
+	"  shcl paths [options] FILE              every field path in the document, one\n"
+	"                                         per line\n"
 	"  shcl help | version                    this help, or the version (also\n"
 	"                                         -h/--help, -v/-V/--version)\n"
 	"  shcl about | donate                    what shcl is, or how to support it\n"
@@ -103,24 +108,31 @@ static const char *HELP =
 	"                                         standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
 	"                                         schema; adds V### diagnostics\n"
-	"  --layer=FILE                           (get/fmt/count/instances/set) merge a\n"
+	"  --layer=FILE                           (all but check/init) merge a\n"
 	"                                         lower-priority layer under FILE;\n"
 	"                                         repeatable, earlier = lower priority\n"
-	"  --set=PATH=VALUE                       (get/fmt/count/instances/set) override\n"
-	"                                         one path as the top layer, after all\n"
-	"                                         files; repeatable. On 'set'\n"
-	"                                         it is an edit to the document itself,\n"
-	"                                         so it persists with --write. VALUE\n"
-	"                                         goes in as data: its type still\n"
-	"                                         follows the text (8 is an int), but a\n"
-	"                                         comma or quote in it is content, not\n"
-	"                                         syntax\n"
+	"  --set=PATH=VALUE                       (all but check/init) override one path\n"
+	"                                         as the top layer, after all files;\n"
+	"                                         repeatable. On 'set' it is an edit to\n"
+	"                                         the document itself, so it persists\n"
+	"                                         with --write. VALUE goes in as data:\n"
+	"                                         its type still follows the text (8 is\n"
+	"                                         an int), but a comma or quote in it is\n"
+	"                                         content, not syntax\n"
 	"  --set-literal=PATH=TEXT                (same subcommands) as --set, except\n"
 	"                                         TEXT goes in as value\n"
 	"                                         syntax the way a file spells it, so\n"
 	"                                         'ports=80, 443' writes a two-element\n"
 	"                                         array. An unquoted # ends the value;\n"
 	"                                         text spanning lines is rejected\n"
+	"  --set-default=PATH=VALUE               (same) as --set, but only when nothing\n"
+	"  --set-literal-default=PATH=TEXT        is at the path yet - the write-out-\n"
+	"                                         defaults half of the writer\n"
+	"  --remove=PATH                          (same) delete what is at the path,\n"
+	"                                         with its subtree. Removing nothing is\n"
+	"                                         not an error\n"
+	"The five above share one ordered list, so two of them touching the same path\n"
+	"resolve in the order given. Raw blocks still go in through the ops script.\n"
 	"\n"
 	"Value options accept either spelling: --default=VALUE or --default VALUE. In\n"
 	"the space form the next argument is taken as the value whatever it looks like,\n"
@@ -130,16 +142,17 @@ static const char *HELP =
 	"refused: --write with --layer; --write with --set outside 'set'; --lossy\n"
 	"without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'\n"
 	"named more than once across FILE, --layer and --schema.\n"
-	"fmt and set print the load's diagnostics to stderr along with the canonical\n"
-	"document. An in-place write also refuses when the load dropped content the\n"
+	"Every subcommand that loads a document prints the load's diagnostics to stderr,\n"
+	"once per run. An in-place write also refuses when the load dropped content the\n"
 	"rewrite would delete (--lossy overrides).\n"
 	"FILE may be '-' for stdin. With --layer, FILE is the highest file layer and\n"
 	"each --layer is merged under it in order; --set applies last. 'fmt' with\n"
 	"layers prints the merged canonical document.\n"
 	"\n"
-	"Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,\n"
+	"Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,\n"
 	"5 multiple instances, 6 check failed, strict load failed, or init's schema\n"
-	"has faults, 7 in-place write refused (--lossy overrides).\n";
+	"has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream\n"
+	"could not be read or written.\n";
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
 // bindings the same way the help text and the init banner are. The version
@@ -165,6 +178,11 @@ static const char *DONATE =
 	"A star on the project, a clear bug report, or a mention to someone who needs it\n"
 	"are worth just as much.\n";
 
+// One edit from the --set family: the path, its length, the value, and which
+// spelling produced it. The five spellings share one ordered list, so two of
+// them touching the same path resolve in the order given.
+typedef struct { const char *path; size_t plen; const char *value; const char *opt; } SetOpt;
+
 typedef struct {
 	const char *kind;         // int|float|bool|datetime|string|raw
 	int array;
@@ -177,11 +195,15 @@ typedef struct {
 	int no_banner;
 	const char *schema;       // NULL if unset
 	const char **layers; int nlayers; // lower-priority layers, in listed order (unbounded)
-	const char **sets; int nsets;     // final override layer: "path=value" (unbounded)
-	const char **set_opts;            // parallel to sets: which spelling produced each
+	SetOpt *sets; int nsets;          // final override layer, in the order given (unbounded)
 	const char **args; int nargs;     // positional: FILE [PATH]
 	const char *seen[16]; int nseen;  // distinct canonical option names, for per-command validation
 } Opts;
+
+// A file or stream that could not be read or written. Its own code since a
+// script's remedy - fix the path, the permissions, the disk - has nothing to do
+// with the remedy for a usage error, which keeps 1.
+#define EXIT_IO 8
 
 static void outln(const char *p, size_t n) { fwrite(p, 1, n, stdout); fputc('\n', stdout); }
 
@@ -286,20 +308,38 @@ static int strict_gate(const shcl_doc *d) {
 }
 
 // Holds a merged doc and the input buffers its nodes still reference (the base
-// layer's node strings are not dup'd off its text). Free everything with
-// layered_free once the doc is done.
-typedef struct { shcl_doc *doc; char **texts; int ntexts; } LayeredDoc;
+// layer's node strings are not dup'd off its text). The over-layers are kept
+// too: a merge does not carry diagnostics over, so their docs are the only
+// place the layers' own diagnostics live. Free everything with layered_free.
+typedef struct { shcl_doc *doc; shcl_doc **overs; int novers; char **texts; int ntexts; } LayeredDoc;
 
 static void layered_push_text(LayeredDoc *L, char *t) {
 	L->texts = (char **)xrealloc(L->texts, ((size_t)L->ntexts + 1) * sizeof *L->texts);
 	L->texts[L->ntexts++] = t;
 }
 
+// Merge dd under/over the doc built so far, keeping it alive for its diagnostics.
+static void layered_push_doc(LayeredDoc *L, shcl_doc *dd) {
+	if (!L->doc) { L->doc = dd; return; }
+	shcl_merge(L->doc, dd);
+	L->overs = (shcl_doc **)xrealloc(L->overs, ((size_t)L->novers + 1) * sizeof *L->overs);
+	L->overs[L->novers++] = dd;
+}
+
 static void layered_free(LayeredDoc *L) {
 	if (L->doc) shcl_free(L->doc);
+	for (int i = 0; i < L->novers; i++) shcl_free(L->overs[i]);
+	free(L->overs);
 	for (int i = 0; i < L->ntexts; i++) free(L->texts[i]);
 	free(L->texts);
-	L->doc = NULL; L->texts = NULL; L->ntexts = 0;
+	L->doc = NULL; L->overs = NULL; L->novers = 0; L->texts = NULL; L->ntexts = 0;
+}
+
+// Every layer's diagnostics, lowest first. Reading them off the merged doc
+// alone would drop the ones for FILE itself, which is the one the caller named.
+static void say_layered_diagnostics(const LayeredDoc *L) {
+	say_diagnostics(L->doc);
+	for (int i = 0; i < L->novers; i++) say_diagnostics(L->overs[i]);
 }
 
 // Load `file` with o's lower-priority --layer files underneath it and its --set
@@ -325,32 +365,38 @@ static int split_set(const char *arg, size_t *plen, const char **val) {
 
 // Apply one --set/--set-literal override. Both spellings share a list so they
 // apply in the order given, which decides the winner when two target one path.
-static int set_apply(shcl_doc *d, const char *spec, const char *opt) {
-	size_t plen = 0; const char *val = spec;
-	split_set(spec, &plen, &val); // parse_opts already refused a spec with no '='
-	size_t vlen = strlen(val);
-	int ok = !strcmp(opt, "--set-literal") ? shcl_set_literal(d, spec, plen, val, vlen)
-	                                       : shcl_set_string(d, spec, plen, val, vlen);
-	if (!ok) fprintf(stderr, "%s: cannot write %.*s: %s\n", opt, (int)plen, spec, describe_refusal(d, spec, plen));
+static int set_apply(shcl_doc *d, const SetOpt *s) {
+	size_t vlen = strlen(s->value);
+	int ok;
+	if (!strcmp(s->opt, "--remove")) {
+		// Removing nothing is not a failure, the same as the ops script's
+		// `remove`: the point of the option is the path's absence after.
+		shcl_remove(d, s->path, s->plen);
+		return 1;
+	}
+	if (!strcmp(s->opt, "--set-literal")) ok = shcl_set_literal(d, s->path, s->plen, s->value, vlen);
+	else if (!strcmp(s->opt, "--set-default")) ok = shcl_set_string_default(d, s->path, s->plen, s->value, vlen);
+	else if (!strcmp(s->opt, "--set-literal-default")) ok = shcl_set_literal_default(d, s->path, s->plen, s->value, vlen);
+	else ok = shcl_set_string(d, s->path, s->plen, s->value, vlen);
+	if (!ok) fprintf(stderr, "%s: cannot write %.*s: %s\n", s->opt, (int)s->plen, s->path, describe_refusal(d, s->path, s->plen));
 	return ok;
 }
 
 static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
-	out->doc = NULL; out->texts = NULL; out->ntexts = 0;
+	out->doc = NULL; out->overs = NULL; out->novers = 0; out->texts = NULL; out->ntexts = 0;
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	for (int i = 0; i <= o->nlayers; i++) {
 		const char *fname = i < o->nlayers ? o->layers[i] : file;
 		size_t len; char *t = read_input(fname, &len);
-		if (!t) { layered_free(out); return 1; }
+		if (!t) { layered_free(out); return EXIT_IO; }
 		layered_push_text(out, t);
 		shcl_doc *dd = shcl_parse_with(t, len, o->strictness);
 		int g = strict_gate(dd);
 		if (g) { shcl_free(dd); layered_free(out); return g; }
-		if (!out->doc) out->doc = dd;
-		else { shcl_merge(out->doc, dd); shcl_free(dd); }
+		layered_push_doc(out, dd);
 	}
 	for (int i = 0; i < o->nsets; i++) {
-		if (!set_apply(out->doc, o->sets[i], o->set_opts[i])) { layered_free(out); return 1; }
+		if (!set_apply(out->doc, &o->sets[i])) { layered_free(out); return 1; }
 	}
 	return 0;
 }
@@ -383,6 +429,10 @@ static int do_get(Opts *o) {
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
 	shcl_doc *d = L.doc;
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	say_layered_diagnostics(&L);
 
 	shcl_status status = SHCL_GOOD;
 	const shcl_status *slotSts = NULL; size_t nSlots = 0;
@@ -515,7 +565,7 @@ static int write_back(shcl_doc *d, const char *file, Opts *o) {
 	int e = errno;
 	if (!dir_writable(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
 	else fprintf(stderr, "%s: %s\n", file, strerror(e));
-	return 1;
+	return EXIT_IO;
 }
 
 static int do_fmt(Opts *o) {
@@ -529,7 +579,7 @@ static int do_fmt(Opts *o) {
 	if (gate) return gate;
 	// Printing the canonical form drops what the load dropped, the same as a
 	// rewrite does, so the diagnostics go out either way.
-	say_diagnostics(L.doc);
+	say_layered_diagnostics(&L);
 	int rc;
 	if (o->write) {
 		rc = write_back(L.doc, file, o);
@@ -700,15 +750,15 @@ static int do_set(Opts *o) {
 	// Any --layer files sit under it and --set overrides sit on top, before ops.
 	// The base layer's node strings are not dup'd off its text, so keep all
 	// buffers.
-	LayeredDoc L; L.doc = NULL; L.texts = NULL; L.ntexts = 0;
+	LayeredDoc L; L.doc = NULL; L.overs = NULL; L.novers = 0; L.texts = NULL; L.ntexts = 0;
 	for (int i = 0; i < o->nlayers; i++) {
 		size_t llen; char *lt = read_input(o->layers[i], &llen);
-		if (!lt) { layered_free(&L); return 1; }
+		if (!lt) { layered_free(&L); return EXIT_IO; }
 		layered_push_text(&L, lt);
 		shcl_doc *dd = shcl_parse_with(lt, llen, o->strictness);
 		int g = strict_gate(dd);
 		if (g) { shcl_free(dd); layered_free(&L); return g; }
-		if (!L.doc) L.doc = dd; else { shcl_merge(L.doc, dd); shcl_free(dd); }
+		layered_push_doc(&L, dd);
 	}
 	// --write names the file this command produces, so a FILE that is not there
 	// yet is a create and the edits land in a new document. Only under --write,
@@ -720,17 +770,17 @@ static int do_set(Opts *o) {
 	int creating = o->write && strcmp(file, "-") != 0 && path_absent(file);
 	char *text; size_t len;
 	if (creating || (!strcmp(file, "-") && o->nsets == 0)) { text = (char *)xrealloc(NULL, 1); len = 0; }
-	else { text = read_input(file, &len); if (!text) { layered_free(&L); return 1; } }
+	else { text = read_input(file, &len); if (!text) { layered_free(&L); return EXIT_IO; } }
 	layered_push_text(&L, text);
 	{
 		shcl_doc *dd = shcl_parse_with(text, len, o->strictness);
 		int gate = strict_gate(dd);
 		if (gate) { shcl_free(dd); layered_free(&L); return gate; }
-		if (!L.doc) L.doc = dd; else { shcl_merge(L.doc, dd); shcl_free(dd); }
+		layered_push_doc(&L, dd);
 	}
 	shcl_doc *d = L.doc;
 	for (int i = 0; i < o->nsets; i++) {
-		if (!set_apply(d, o->sets[i], o->set_opts[i])) { layered_free(&L); return 1; }
+		if (!set_apply(d, &o->sets[i])) { layered_free(&L); return 1; }
 	}
 	// --set carries the edits, so stdin is left alone: reading it here would
 	// block on the console for anyone who passed edits as options.
@@ -744,7 +794,7 @@ static int do_set(Opts *o) {
 		// The ops script gets the same UTF-8 gate as any file input (exit 1).
 		if (!utf8_valid(ops, opslen)) {
 			fprintf(stderr, "stdin: stream did not contain valid UTF-8\n");
-			free(ops); layered_free(&L); return 1;
+			free(ops); layered_free(&L); return EXIT_IO;
 		}
 	}
 	int rc = 0; size_t start = 0, lineno = 0;
@@ -760,7 +810,7 @@ static int do_set(Opts *o) {
 		}
 	}
 	if (rc == 0) {
-		say_diagnostics(d);
+		say_layered_diagnostics(&L);
 		if (o->write) rc = write_back(d, file, o);
 		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
 	}
@@ -770,7 +820,7 @@ static int do_set(Opts *o) {
 static int do_check(const Opts *o) {
 	if (o->nargs != 1) { fprintf(stderr, "usage: shcl check [options] FILE (see --help)\n"); return 1; }
 	size_t len; char *text = read_input(o->args[0], &len);
-	if (!text) return 1;
+	if (!text) return EXIT_IO;
 	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
 	// --schema: append validation diagnostics under the same contract. The
 	// schema itself always loads at Standard (a program artifact); one that
@@ -781,7 +831,7 @@ static int do_check(const Opts *o) {
 	int v99 = 0;
 	if (!shcl_strict_failed(d) && o->schema) {
 		size_t slen; stext = read_input(o->schema, &slen);
-		if (!stext) { shcl_free(d); free(text); return 1; }
+		if (!stext) { shcl_free(d); free(text); return EXIT_IO; }
 		sd = shcl_parse(stext, slen);
 		size_t sn = shcl_diag_count(sd);
 		for (size_t i = 0; i < sn; i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) v99 = 1;
@@ -843,7 +893,7 @@ static int do_init(const Opts *o) {
 	if (o->nargs > 0) { fprintf(stderr, "init takes no file argument (see --help)\n"); return 1; }
 	if (!o->schema) { fprintf(stderr, "init needs --schema=FILE (see --help)\n"); return 1; }
 	size_t slen; char *stext = read_input(o->schema, &slen);
-	if (!stext) return 1;
+	if (!stext) return EXIT_IO;
 	// The schema always loads at Standard - a program artifact, not user data.
 	shcl_doc *sd = shcl_parse(stext, slen);
 	int bad = 0; size_t sn = shcl_diag_count(sd);
@@ -904,6 +954,10 @@ static int do_enum(Opts *o, int want_count) {
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
 	shcl_doc *d = L.doc;
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	say_layered_diagnostics(&L);
 	if (want_count) printf("%zu\n", shcl_count(d, path, plen));
 	else { shcl_str *vals; size_t n = shcl_instances(d, path, plen, &vals); for (size_t i = 0; i < n; i++) outln(vals[i].p, vals[i].n); }
 	layered_free(&L); return 0;
@@ -930,9 +984,16 @@ static void opt_push(const char ***arr, int *n, const char *v) {
 	(*arr)[(*n)++] = v;
 }
 
+static void set_push(Opts *o, const char *path, size_t plen, const char *value, const char *opt) {
+	o->sets = (SetOpt *)xrealloc(o->sets, ((size_t)o->nsets + 1) * sizeof *o->sets);
+	o->sets[o->nsets].path = path; o->sets[o->nsets].plen = plen;
+	o->sets[o->nsets].value = value; o->sets[o->nsets].opt = opt;
+	o->nsets++;
+}
+
 static void opts_free(Opts *o) {
-	free((void *)o->layers); free((void *)o->sets); free((void *)o->set_opts); free((void *)o->args);
-	o->layers = o->sets = o->set_opts = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0;
+	free((void *)o->layers); free(o->sets); free((void *)o->args);
+	o->layers = o->args = NULL; o->sets = NULL; o->nlayers = o->nsets = o->nargs = 0;
 }
 
 
@@ -952,13 +1013,14 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 		o->schema = v; opt_seen(o, "--schema");
 	} else if (!strcmp(name, "--layer")) {
 		opt_push(&o->layers, &o->nlayers, v); opt_seen(o, "--layer");
-	} else if (!strcmp(name, "--set") || !strcmp(name, "--set-literal")) {
+	} else if (!strcmp(name, "--remove")) {
+		if (!*v) { fprintf(stderr, "bad --remove value (want PATH)\n"); return 1; }
+		set_push(o, v, strlen(v), "", "--remove"); opt_seen(o, "--remove");
+	} else if (!strcmp(name, "--set") || !strcmp(name, "--set-literal")
+	           || !strcmp(name, "--set-default") || !strcmp(name, "--set-literal-default")) {
 		size_t plen; const char *val;
 		if (!split_set(v, &plen, &val) || plen == 0) { fprintf(stderr, "bad %s value (want PATH=VALUE, quotes and brackets balanced): %s\n", name, v); return 1; }
-		// set_opts grows in lockstep with sets, so the local count is discarded.
-		int nopt = o->nsets;
-		opt_push(&o->set_opts, &nopt, name);
-		opt_push(&o->sets, &o->nsets, v); opt_seen(o, name);
+		set_push(o, v, plen, val, name); opt_seen(o, name);
 	}
 	return 0;
 }
@@ -966,7 +1028,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
 	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->no_banner = 0; o->schema = NULL;
-	o->layers = o->sets = o->set_opts = o->args = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
+	o->layers = o->args = NULL; o->sets = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
 		const char *a = argv[i];
@@ -983,7 +1045,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) { o->write = 1; opt_seen(o, "--write"); }
 		else if (!strcmp(a, "--lossy")) { o->lossy = 1; opt_seen(o, "--lossy"); }
 		else if (!strcmp(a, "--no-banner")) { o->no_banner = 1; opt_seen(o, "--no-banner"); }
-		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) {
+		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal") || !strcmp(a, "--set-default") || !strcmp(a, "--set-literal-default") || !strcmp(a, "--remove")) {
 			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
 			if (set_value_opt(o, a, argv[++i])) return 1;
 		}
@@ -993,6 +1055,9 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strncmp(a, "--schema=", 9)) { if (set_value_opt(o, "--schema", a + 9)) return 1; }
 		else if (!strncmp(a, "--layer=", 8)) { if (set_value_opt(o, "--layer", a + 8)) return 1; }
 		else if (!strncmp(a, "--set-literal=", 14)) { if (set_value_opt(o, "--set-literal", a + 14)) return 1; }
+		else if (!strncmp(a, "--set-literal-default=", 22)) { if (set_value_opt(o, "--set-literal-default", a + 22)) return 1; }
+		else if (!strncmp(a, "--set-default=", 14)) { if (set_value_opt(o, "--set-default", a + 14)) return 1; }
+		else if (!strncmp(a, "--remove=", 9)) { if (set_value_opt(o, "--remove", a + 9)) return 1; }
 		else if (!strncmp(a, "--set=", 6)) { if (set_value_opt(o, "--set", a + 6)) return 1; }
 		else if (a[0] == '-' && a[1] != '\0') { fprintf(stderr, "unknown option: %s\n", a); return 1; }
 		else opt_push(&o->args, &o->nargs, a);
@@ -1003,13 +1068,49 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 // Every option must be meaningful for its subcommand; an option that would be
 // silently ignored (`set --write` before it existed, `--schema` on `get`) is a
 // usage error instead.
+// Child field names under a path, one per line, in file order and with
+// duplicates kept. PATH may be left out to enumerate the top level. Each name
+// comes out in the form a path accepts, so one holding a dot or a quote splices
+// back into a path with no further work.
+static int do_children(Opts *o) {
+	const char *file, *path = "";
+	if (o->nargs == 1) file = o->args[0];
+	else if (o->nargs == 2) { file = o->args[0]; path = o->args[1]; }
+	else { fprintf(stderr, "usage: shcl children [options] FILE [PATH] (see --help)\n"); return 1; }
+	LayeredDoc L; int gate = load_layered(o, file, &L);
+	if (gate) return gate;
+	say_layered_diagnostics(&L);
+	shcl_str *names = NULL;
+	size_t n = shcl_children(L.doc, path, strlen(path), &names);
+	for (size_t i = 0; i < n; i++) {
+		shcl_str q = shcl_quote_segment(L.doc, names[i].p, names[i].n);
+		fwrite(q.p, 1, q.n, stdout); putchar('\n');
+	}
+	layered_free(&L);
+	return 0;
+}
+
+// Every field path in the document, one per line, in file order and
+// deduplicated - the whole-document counterpart of do_children.
+static int do_paths(Opts *o) {
+	if (o->nargs != 1) { fprintf(stderr, "usage: shcl paths [options] FILE (see --help)\n"); return 1; }
+	LayeredDoc L; int gate = load_layered(o, o->args[0], &L);
+	if (gate) return gate;
+	say_layered_diagnostics(&L);
+	shcl_str *ps = NULL;
+	size_t n = shcl_paths(L.doc, &ps);
+	for (size_t i = 0; i < n; i++) { fwrite(ps[i].p, 1, ps[i].n, stdout); putchar('\n'); }
+	layered_free(&L);
+	return 0;
+}
+
 static int check_opts(const char *cmd, const Opts *o) {
-	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", NULL };
-	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy", NULL };
-	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", NULL };
+	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
+	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy", NULL };
+	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *check_ok[] = { "--strictness", "--schema", NULL };
 	static const char *init_ok[] = { "--schema", "--no-banner", NULL };
-	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", NULL };
+	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *none_ok[] = { NULL };
 	const char **allowed = none_ok;
 	if (!strcmp(cmd, "get")) allowed = get_ok;
@@ -1017,7 +1118,8 @@ static int check_opts(const char *cmd, const Opts *o) {
 	else if (!strcmp(cmd, "fmt")) allowed = fmt_ok;
 	else if (!strcmp(cmd, "check")) allowed = check_ok;
 	else if (!strcmp(cmd, "init")) allowed = init_ok;
-	else if (!strcmp(cmd, "count") || !strcmp(cmd, "instances")) allowed = enum_ok;
+	else if (!strcmp(cmd, "count") || !strcmp(cmd, "instances")
+	         || !strcmp(cmd, "children") || !strcmp(cmd, "paths")) allowed = enum_ok;
 	for (int i = 0; i < o->nseen; i++) {
 		int ok = 0;
 		for (int k = 0; allowed[k]; k++) if (!strcmp(o->seen[i], allowed[k])) { ok = 1; break; }
@@ -1046,7 +1148,7 @@ static int check_opts(const char *cmd, const Opts *o) {
 		return 1;
 	}
 	if (o->write && o->nsets > 0 && strcmp(cmd, "set")) {
-		fprintf(stderr, "--write cannot be combined with --set (see --help)\n");
+		fprintf(stderr, "--write cannot be combined with %s (see --help)\n", o->sets[0].opt);
 		return 1;
 	}
 	// --lossy only overrides the in-place write's refusal, so on its own it says
@@ -1089,12 +1191,12 @@ static const char *asked_for(int argc, char **argv) {
 		if (!strcmp(a, "--about")) return "about";
 		if (!strcmp(a, "--donate")) return "donate";
 		if (!strcmp(a, "--")) return NULL;
-		if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal")) i++;
+		if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal") || !strcmp(a, "--set-default") || !strcmp(a, "--set-literal-default") || !strcmp(a, "--remove")) i++;
 	}
 	return NULL;
 }
 
-static const char *const COMMANDS[] = { "get", "set", "fmt", "check", "init", "count", "instances" };
+static const char *const COMMANDS[] = { "get", "set", "fmt", "check", "init", "count", "instances", "children", "paths" };
 static int is_command(const char *cmd) {
 	for (size_t i = 0; i < sizeof COMMANDS / sizeof COMMANDS[0]; i++)
 		if (!strcmp(cmd, COMMANDS[i])) return 1;
@@ -1145,7 +1247,14 @@ int main(int argc, char **argv) {
 	else if (!strcmp(cmd, "check")) rc = do_check(&o);
 	else if (!strcmp(cmd, "init")) rc = do_init(&o);
 	else if (!strcmp(cmd, "count")) rc = do_enum(&o, 1);
-	else rc = do_enum(&o, 0);
+	else if (!strcmp(cmd, "instances")) rc = do_enum(&o, 0);
+	else if (!strcmp(cmd, "children")) rc = do_children(&o);
+	else if (!strcmp(cmd, "paths")) rc = do_paths(&o);
+	// A refusal rather than a fall-through: with one, adding a name to COMMANDS
+	// without adding a branch here quietly ran whichever command the last line
+	// named, with no message. main gates on COMMANDS first, so this is only
+	// reachable through that mistake.
+	else { fprintf(stderr, "%s: no dispatch arm (see --help)\n", cmd); rc = 1; }
 	opts_free(&o);
 	return rc;
 }

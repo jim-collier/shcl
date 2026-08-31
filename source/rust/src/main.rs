@@ -28,6 +28,11 @@ Usage:
                                          optional commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+  shcl children [options] FILE [PATH]    child field names under a path, one per
+                                         line (the top level when PATH is left
+                                         out)
+  shcl paths [options] FILE              every field path in the document, one
+                                         per line
   shcl help | version                    this help, or the version (also
                                          -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
@@ -75,24 +80,31 @@ Options (the subcommands each belongs to are in parentheses):
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
-  --layer=FILE                           (get/fmt/count/instances/set) merge a
+  --layer=FILE                           (all but check/init) merge a
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
-  --set=PATH=VALUE                       (get/fmt/count/instances/set) override
-                                         one path as the top layer, after all
-                                         files; repeatable. On 'set'
-                                         it is an edit to the document itself,
-                                         so it persists with --write. VALUE
-                                         goes in as data: its type still
-                                         follows the text (8 is an int), but a
-                                         comma or quote in it is content, not
-                                         syntax
+  --set=PATH=VALUE                       (all but check/init) override one path
+                                         as the top layer, after all files;
+                                         repeatable. On 'set' it is an edit to
+                                         the document itself, so it persists
+                                         with --write. VALUE goes in as data:
+                                         its type still follows the text (8 is
+                                         an int), but a comma or quote in it is
+                                         content, not syntax
   --set-literal=PATH=TEXT                (same subcommands) as --set, except
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
                                          array. An unquoted # ends the value;
                                          text spanning lines is rejected
+  --set-default=PATH=VALUE               (same) as --set, but only when nothing
+  --set-literal-default=PATH=TEXT        is at the path yet - the write-out-
+                                         defaults half of the writer
+  --remove=PATH                          (same) delete what is at the path,
+                                         with its subtree. Removing nothing is
+                                         not an error
+The five above share one ordered list, so two of them touching the same path
+resolve in the order given. Raw blocks still go in through the ops script.
 
 Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
@@ -102,16 +114,17 @@ An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
 without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
 named more than once across FILE, --layer and --schema.
-fmt and set print the load's diagnostics to stderr along with the canonical
-document. An in-place write also refuses when the load dropped content the
+Every subcommand that loads a document prints the load's diagnostics to stderr,
+once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
-Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
+Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides).
+has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream
+could not be read or written.
 ";
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
@@ -156,25 +169,45 @@ fn status_code(st: Status) -> u8 {
 /// One `--set`/`--set-literal` override. Both spellings share a list so they
 /// apply in the order given, which is what decides the winner when two target
 /// the same path.
+/// Which spelling produced one edit. They share a single ordered list, so two
+/// options touching the same path resolve in the order given.
+#[derive(Clone, Copy, PartialEq)]
+enum SetKind {
+	Data,
+	Literal,
+	DataDefault,
+	LiteralDefault,
+	Remove,
+}
+
 struct Set {
 	path: String,
 	value: String,
-	literal: bool,
+	kind: SetKind,
 }
 
 impl Set {
 	fn apply(&self, doc: &mut Document) -> bool {
-		if self.literal {
-			doc.set_literal(&self.path, &self.value)
-		} else {
-			doc.set_string(&self.path, &self.value)
+		match self.kind {
+			SetKind::Data => doc.set_string(&self.path, &self.value),
+			SetKind::Literal => doc.set_literal(&self.path, &self.value),
+			SetKind::DataDefault => doc.set_string_default(&self.path, &self.value),
+			SetKind::LiteralDefault => doc.set_literal_default(&self.path, &self.value),
+			// Removing nothing is not a failure, the same as the ops script's
+			// `remove`: the point of the option is the path's absence after.
+			SetKind::Remove => {
+				doc.remove(&self.path);
+				true
+			}
 		}
 	}
 	fn opt(&self) -> &'static str {
-		if self.literal {
-			"--set-literal"
-		} else {
-			"--set"
+		match self.kind {
+			SetKind::Data => "--set",
+			SetKind::Literal => "--set-literal",
+			SetKind::DataDefault => "--set-default",
+			SetKind::LiteralDefault => "--set-literal-default",
+			SetKind::Remove => "--remove",
 		}
 	}
 }
@@ -255,8 +288,16 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 			"--about" => return Some("about"),
 			"--donate" => return Some("donate"),
 			"--" => return None,
-			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
-			| "--set-literal" => i += 1,
+			"--default"
+			| "--on-bad"
+			| "--strictness"
+			| "--schema"
+			| "--layer"
+			| "--set"
+			| "--set-literal"
+			| "--set-default"
+			| "--set-literal-default"
+			| "--remove" => i += 1,
 			_ => {}
 		}
 		i += 1;
@@ -347,8 +388,16 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 				o.no_banner = true;
 				o.seen.push("--no-banner");
 			}
-			"--default" | "--on-bad" | "--strictness" | "--schema" | "--layer" | "--set"
-			| "--set-literal" => {
+			"--default"
+			| "--on-bad"
+			| "--strictness"
+			| "--schema"
+			| "--layer"
+			| "--set"
+			| "--set-literal"
+			| "--set-default"
+			| "--set-literal-default"
+			| "--remove" => {
 				i += 1;
 				let v = argv
 					.get(i)
@@ -361,9 +410,16 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			_ if a.starts_with("--schema=") => set_value_opt(&mut o, "--schema", &a[9..])?,
 			_ if a.starts_with("--layer=") => set_value_opt(&mut o, "--layer", &a[8..])?,
 			_ if a.starts_with("--set=") => set_value_opt(&mut o, "--set", &a[6..])?,
+			_ if a.starts_with("--set-literal-default=") => {
+				set_value_opt(&mut o, "--set-literal-default", &a[22..])?
+			}
 			_ if a.starts_with("--set-literal=") => {
 				set_value_opt(&mut o, "--set-literal", &a[14..])?
 			}
+			_ if a.starts_with("--set-default=") => {
+				set_value_opt(&mut o, "--set-default", &a[14..])?
+			}
+			_ if a.starts_with("--remove=") => set_value_opt(&mut o, "--remove", &a[9..])?,
 			_ if a.starts_with('-') && a.len() > 1 => {
 				return Err(format!("unknown option: {}", a));
 			}
@@ -403,23 +459,36 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			o.layers.push(v.to_string());
 			o.seen.push("--layer");
 		}
-		"--set" | "--set-literal" => {
+		"--remove" => {
+			if v.is_empty() {
+				return Err("bad --remove value (want PATH)".to_string());
+			}
+			o.sets.push(Set {
+				path: v.to_string(),
+				value: String::new(),
+				kind: SetKind::Remove,
+			});
+			o.seen.push("--remove");
+		}
+		"--set" | "--set-literal" | "--set-default" | "--set-literal-default" => {
 			let (p, val) = split_set(v).filter(|(p, _)| !p.is_empty()).ok_or_else(|| {
 				format!(
 					"bad {} value (want PATH=VALUE, quotes and brackets balanced): {}",
 					name, v
 				)
 			})?;
+			let (kind, canon) = match name {
+				"--set-literal" => (SetKind::Literal, "--set-literal"),
+				"--set-default" => (SetKind::DataDefault, "--set-default"),
+				"--set-literal-default" => (SetKind::LiteralDefault, "--set-literal-default"),
+				_ => (SetKind::Data, "--set"),
+			};
 			o.sets.push(Set {
 				path: p.to_string(),
 				value: val.to_string(),
-				literal: name == "--set-literal",
+				kind,
 			});
-			o.seen.push(if name == "--set-literal" {
-				"--set-literal"
-			} else {
-				"--set"
-			});
+			o.seen.push(canon);
 		}
 		_ => return Err(format!("unknown option: {}", name)),
 	}
@@ -441,12 +510,18 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			"--layer",
 			"--set",
 			"--set-literal",
+			"--set-default",
+			"--set-literal-default",
+			"--remove",
 		],
 		"set" => &[
 			"--strictness",
 			"--layer",
 			"--set",
 			"--set-literal",
+			"--set-default",
+			"--set-literal-default",
+			"--remove",
 			"--write",
 			"--lossy",
 		],
@@ -457,10 +532,21 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			"--layer",
 			"--set",
 			"--set-literal",
+			"--set-default",
+			"--set-literal-default",
+			"--remove",
 		],
 		"check" => &["--strictness", "--schema"],
 		"init" => &["--schema", "--no-banner"],
-		"count" | "instances" => &["--strictness", "--layer", "--set", "--set-literal"],
+		"count" | "instances" | "children" | "paths" => &[
+			"--strictness",
+			"--layer",
+			"--set",
+			"--set-literal",
+			"--set-default",
+			"--set-literal-default",
+			"--remove",
+		],
 		_ => &[],
 	};
 	for s in &o.seen {
@@ -498,7 +584,10 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		return Err(1);
 	}
 	if o.write && !o.sets.is_empty() && cmd != "set" {
-		eprintln!("--write cannot be combined with --set (see --help)");
+		eprintln!(
+			"--write cannot be combined with {} (see --help)",
+			o.sets[0].opt()
+		);
 		return Err(1);
 	}
 	// --lossy only overrides the in-place write's refusal, so on its own it says
@@ -556,23 +645,30 @@ fn say_diagnostics(diags: &[Diagnostic]) {
 /// `--set` overrides on top - the layered-load fold. Every layer parses at the
 /// requested strictness; a strict-load failure on any layer aborts like a
 /// single-file strict failure (exit 6, nothing printed).
-fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
+///
+/// Returns every layer's diagnostics alongside the merged document, lowest
+/// layer first. A merge does not carry them over, so the merged document only
+/// holds the lowest layer's - reading them off it drops the diagnostics for
+/// FILE itself, which is the one the caller named.
+fn load_layered(o: &Opts, file: &str) -> Result<(Document, Vec<Diagnostic>), u8> {
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	let mut texts: Vec<String> = Vec::with_capacity(o.layers.len() + 1);
 	for lf in &o.layers {
 		texts.push(read_input(lf).map_err(|e| {
 			eprintln!("{}", e);
-			1u8
+			EXIT_IO
 		})?);
 	}
 	let base_text = read_input(file).map_err(|e| {
 		eprintln!("{}", e);
-		1u8
+		EXIT_IO
 	})?;
 	texts.push(base_text);
 	let mut doc = load(&texts[0], o.strictness)?;
+	let mut diags = doc.diagnostics().to_vec();
 	for t in &texts[1..] {
 		let over = load(t, o.strictness)?;
+		diags.extend_from_slice(over.diagnostics());
 		doc.merge(&over);
 	}
 	for s in &o.sets {
@@ -586,7 +682,7 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 			return Err(1);
 		}
 	}
-	Ok(doc)
+	Ok((doc, diags))
 }
 
 /// The in-place half of `fmt`/`set`. Overwriting the source is the one place a
@@ -613,10 +709,15 @@ fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
 		}
 		Err(e) => {
 			eprintln!("{}", e);
-			1
+			EXIT_IO
 		}
 	}
 }
+
+/// A file or stream that could not be read or written. Its own code since a
+/// script's remedy - fix the path, the permissions, the disk - has nothing to
+/// do with the remedy for a usage error, which keeps 1.
+const EXIT_IO: u8 = 8;
 
 fn read_input(file: &str) -> Result<String, String> {
 	if file == "-" {
@@ -654,10 +755,14 @@ fn do_get(o: &Opts) -> u8 {
 		eprintln!("usage: shcl get [type] [options] FILE PATH (see --help)");
 		return 1;
 	};
-	let doc = match load_layered(o, file) {
+	let (doc, diags) = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	say_diagnostics(&diags);
 	let (lines, status, slots): (Vec<String>, Status, Vec<Status>) = if o.array {
 		match o.kind {
 			Kind::Int => {
@@ -848,13 +953,13 @@ fn do_fmt(o: &Opts) -> u8 {
 		eprintln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	let doc = match load_layered(o, file) {
+	let (doc, diags) = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
 	// Printing the canonical form drops what the load dropped, the same as a
 	// rewrite does, so the diagnostics go out either way.
-	say_diagnostics(doc.diagnostics());
+	say_diagnostics(&diags);
 	if o.write {
 		return write_back(&doc, file, o);
 	}
@@ -1012,7 +1117,7 @@ fn do_set(o: &Opts) -> u8 {
 			Ok(t) => layer_texts.push(t),
 			Err(e) => {
 				eprintln!("{}", e);
-				return 1;
+				return EXIT_IO;
 			}
 		}
 	}
@@ -1029,7 +1134,7 @@ fn do_set(o: &Opts) -> u8 {
 			Ok(t) => t,
 			Err(e) => {
 				eprintln!("{}", e);
-				return 1;
+				return EXIT_IO;
 			}
 		}
 	};
@@ -1038,9 +1143,13 @@ fn do_set(o: &Opts) -> u8 {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
+	let mut diags = doc.diagnostics().to_vec();
 	for t in &layer_texts[1..] {
 		match load(t, o.strictness) {
-			Ok(over) => doc.merge(&over),
+			Ok(over) => {
+				diags.extend_from_slice(over.diagnostics());
+				doc.merge(&over);
+			}
 			Err(code) => return code,
 		}
 	}
@@ -1069,7 +1178,7 @@ fn do_set(o: &Opts) -> u8 {
 		);
 		if let Err(e) = std::io::stdin().read_to_string(&mut ops) {
 			eprintln!("stdin: {}", e);
-			return 1;
+			return EXIT_IO;
 		}
 	}
 	for (n, line) in ops.lines().enumerate() {
@@ -1082,7 +1191,7 @@ fn do_set(o: &Opts) -> u8 {
 			return 1;
 		}
 	}
-	say_diagnostics(doc.diagnostics());
+	say_diagnostics(&diags);
 	if o.write {
 		return write_back(&doc, file, o);
 	}
@@ -1099,7 +1208,7 @@ fn do_check(o: &Opts) -> u8 {
 		Ok(t) => t,
 		Err(e) => {
 			eprintln!("{}", e);
-			return 1;
+			return EXIT_IO;
 		}
 	};
 	let (diags, strict_failed) = match Document::parse_with(&text, o.strictness) {
@@ -1113,7 +1222,7 @@ fn do_check(o: &Opts) -> u8 {
 					Ok(t) => t,
 					Err(e) => {
 						eprintln!("{}", e);
-						return 1;
+						return EXIT_IO;
 					}
 				};
 				let sdoc = Document::parse(&stext);
@@ -1182,7 +1291,7 @@ fn do_init(o: &Opts) -> u8 {
 		Ok(t) => t,
 		Err(e) => {
 			eprintln!("{}", e);
-			return 1;
+			return EXIT_IO;
 		}
 	};
 	// The schema always loads at Standard - a program artifact, not user data.
@@ -1227,10 +1336,14 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 		eprintln!("usage: shcl {} [options] FILE PATH (see --help)", name);
 		return 1;
 	};
-	let doc = match load_layered(o, file) {
+	let (doc, diags) = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	say_diagnostics(&diags);
 	if want_count {
 		println!("{}", doc.count(path));
 	} else {
@@ -1241,12 +1354,69 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 	0
 }
 
-const COMMANDS: [&str; 7] = ["get", "set", "fmt", "check", "init", "count", "instances"];
+/// Child field names under a path, one per line, in file order and with
+/// duplicates kept. PATH may be left out to enumerate the top level. Each name
+/// comes out in the form a path accepts, so one holding a dot or a quote
+/// splices back into a path with no further work.
+fn do_children(o: &Opts) -> u8 {
+	let (file, path) = match o.args.as_slice() {
+		[file] => (file.as_str(), ""),
+		[file, path] => (file.as_str(), path.as_str()),
+		_ => {
+			eprintln!("usage: shcl children [options] FILE [PATH] (see --help)");
+			return 1;
+		}
+	};
+	let (doc, diags) = match load_layered(o, file) {
+		Ok(d) => d,
+		Err(code) => return code,
+	};
+	say_diagnostics(&diags);
+	for name in doc.children(path) {
+		println!("{}", shcl::quote_segment(&name));
+	}
+	0
+}
+
+/// Every field path in the document, one per line, in file order and
+/// deduplicated - the whole-document counterpart of `children`.
+fn do_paths(o: &Opts) -> u8 {
+	let [file] = o.args.as_slice() else {
+		eprintln!("usage: shcl paths [options] FILE (see --help)");
+		return 1;
+	};
+	let (doc, diags) = match load_layered(o, file) {
+		Ok(d) => d,
+		Err(code) => return code,
+	};
+	say_diagnostics(&diags);
+	for p in doc.paths() {
+		println!("{}", p);
+	}
+	0
+}
+
+const COMMANDS: [&str; 9] = [
+	"get",
+	"set",
+	"fmt",
+	"check",
+	"init",
+	"count",
+	"instances",
+	"children",
+	"paths",
+];
 
 fn run(cmd: &str, o: &Opts) -> u8 {
 	if let Err(code) = check_opts(cmd, o) {
 		return code;
 	}
+	// Every command spelled out, and the last arm a refusal rather than a
+	// fall-through: with a catch-all, adding a name to COMMANDS without adding
+	// an arm here quietly ran whichever command the catch-all named, with no
+	// compile error and no message. main() gates on COMMANDS first, so the arm
+	// below is only reachable through that mistake.
 	match cmd {
 		"get" => do_get(o),
 		"set" => do_set(o),
@@ -1254,7 +1424,13 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 		"check" => do_check(o),
 		"init" => do_init(o),
 		"count" => do_enum(o, true),
-		_ => do_enum(o, false),
+		"instances" => do_enum(o, false),
+		"children" => do_children(o),
+		"paths" => do_paths(o),
+		other => {
+			eprintln!("{}: no dispatch arm (see --help)", other);
+			1
+		}
 	}
 }
 

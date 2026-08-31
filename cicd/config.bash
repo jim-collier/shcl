@@ -179,7 +179,7 @@ TEST_EXTRA=(
 	'GOMAXPROCS="${CPU_CAP}" go -C source/go test ./...'
 	'GOMAXPROCS="${CPU_CAP}" go -C source/go/cmd test ./...'
 	'python3 source/python/tests/conformance.py'
-	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
+	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm -lpthread && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
 	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
 	'obin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/oom_hook.c -o "${obin}" -lm && "${obin}"; orc=$?; rm -f "${obin}"; ((orc==0))'
 	## CLI behavior the corpus cannot reach: closed streams, '-' twice on one

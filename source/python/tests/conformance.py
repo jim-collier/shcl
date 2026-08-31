@@ -9,6 +9,7 @@
 import os
 import stat
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -496,6 +497,16 @@ def main():
 				if got != expected:
 					fails.append(f"{at}: instances got {got!r} want {expected!r}")
 				continue
+			if kind == "children":
+				got = "|".join(doc.children(query))
+				if got != expected:
+					fails.append(f"{at}: children got {got!r} want {expected!r}")
+				continue
+			if kind == "paths":
+				got = "|".join(doc.paths())
+				if got != expected:
+					fails.append(f"{at}: paths got {got!r} want {expected!r}")
+				continue
 
 			got_value, got_status, got_slots = scalar_read(doc, kind, query)
 			if got_status.name != status:
@@ -963,7 +974,7 @@ def main():
 	# cross-binding spelling for it, so a routine ported between two bindings
 	# cannot keep the call name while changing which tier it lands on. Same
 	# fixture in every runner.
-	cdoc = shcl.Document.parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\n")
+	cdoc = shcl.Document.parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\nblk:\n\t```html\n\thi\n\t```\n")
 	if cdoc.get_int_or("a", 9) != 42:
 		raise SystemExit(f"get_int_or Good got {cdoc.get_int_or('a', 9)}")
 	for p in ("b", "e", "missing"):
@@ -975,6 +986,14 @@ def main():
 		raise SystemExit("get_int_array_or missing did not fall back")
 	if cdoc.get_string_or("missing", "fb") != "fb":
 		raise SystemExit("get_string_or missing did not fall back")
+	# The raw block's info-string was the one typed read with no convenience
+	# tier, so it alone forced a caller down to the status tier.
+	if cdoc.get_raw_info("blk") != "html":
+		raise SystemExit("get_raw_info did not read the info-string")
+	if cdoc.get_raw_info_or("blk", "fb") != "html":
+		raise SystemExit("get_raw_info_or Good did not read through")
+	if cdoc.get_raw_info_or("missing", "fb") != "fb":
+		raise SystemExit("get_raw_info_or missing did not fall back")
 	# ok() and the convenience tier deliberately disagree on an explicitly
 	# emptied field: one asks whether the author spoke for it, the other whether
 	# there is a usable value.
@@ -1064,6 +1083,52 @@ def main():
 		raise SystemExit(f"set_float of a wide int wrote {tdoc.read_string('h').value!r}")
 	if not tdoc.set_float_array("i", [10 ** 400, -(10 ** 400)]) or tdoc.read_string("i").value != "inf, -inf":
 		raise SystemExit(f"set_float_array past the float range wrote {tdoc.read_string('i').value!r}")
+
+	# Three hot-path shortcuts this binding carries because it is the slow one.
+	# Each is asserted structurally, by what the code does rather than by a
+	# clock: a wall-time threshold on a constant-factor win either flakes or
+	# never fires. Their combined effect was parse-plus-emit 1.05 s -> 0.87 s on
+	# a 1.7 MB document, output byte-identical.
+	class _CountingList(list):
+		iters = 0
+
+		def __iter__(self):
+			_CountingList.iters += 1
+			return list.__iter__(self)
+
+	pdoc = shcl.Document.parse("one: a\ntwo: a, b\n")
+	for pnode in pdoc.arena:
+		if pnode.value.kind == "cell":
+			pnode.value.els = _CountingList(pnode.value.els)
+	for want_len, want_iters in ((1, 0), (2, 2)):
+		_CountingList.iters = 0
+		for pnode in pdoc.arena:
+			if pnode.value.kind == "cell" and len(pnode.value.els) == want_len:
+				pnode.value.display()
+				shcl._merge_key(pnode.name, pnode.value)
+		if _CountingList.iters != want_iters:
+			raise SystemExit(
+				f"display/merge-key walked a {want_len}-element cell {_CountingList.iters} time(s), want {want_iters}"
+			)
+
+	# The source-attach guard settles the common line by identity, so neither
+	# key is built. Anything above zero means it went back to comparing a value
+	# with itself the long way.
+	key_calls = [0]
+	real_value_key = shcl._value_key
+	try:
+		shcl._value_key = lambda v: (key_calls.__setitem__(0, key_calls[0] + 1), real_value_key(v))[1]
+		shcl.Document.parse("".join(f"k{i}: v{i}\n" for i in range(200)))
+	finally:
+		shcl._value_key = real_value_key
+	if key_calls[0]:
+		raise SystemExit(f"the source-attach guard built {key_calls[0]} value key(s) on 200 plain lines")
+
+	# The path scanner's two helpers are module level. Defined inside it they
+	# would be rebuilt, with a fresh cell each, once per document line.
+	inner = [c.co_name for c in shcl._scan_path_ex.__code__.co_consts if isinstance(c, types.CodeType)]
+	if inner:
+		raise SystemExit(f"the path scanner rebuilds {inner} on every call")
 
 	print(f"conformance: {len(cases)} case(s) pass")
 	return 0

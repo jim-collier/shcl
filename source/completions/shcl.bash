@@ -16,7 +16,7 @@
 ##	SPDX-License-Identifier: MIT
 
 ## Subcommands. The CLI takes exactly one, and always as the first word.
-_shcl_subcommands='get set fmt check init count instances help version about donate'
+_shcl_subcommands='get set fmt check init count instances children paths help version about donate'
 
 ## Type options, valid on `get` only. The table below carries them as the single
 ## token --<type>, exactly as the CLI's own table does.
@@ -26,12 +26,12 @@ _shcl_types='--int --float --bool --datetime --string --raw --rawinfo'
 ## so offering it here would be a lie.
 _shcl_opts() {
 	case "$1" in
-		get)             echo '--<type> --array --slots --default --on-bad --strictness --layer --set --set-literal' ;;
-		set)             echo '--strictness --layer --set --set-literal --write --lossy' ;;
-		fmt)             echo '--write --lossy --strictness --layer --set --set-literal' ;;
+		get)             echo '--<type> --array --slots --default --on-bad --strictness --layer --set --set-literal --set-default --set-literal-default --remove' ;;
+		set)             echo '--strictness --layer --set --set-literal --set-default --set-literal-default --remove --write --lossy' ;;
+		fmt)             echo '--write --lossy --strictness --layer --set --set-literal --set-default --set-literal-default --remove' ;;
 		check)           echo '--strictness --schema' ;;
 		init)            echo '--schema --no-banner' ;;
-		count|instances) echo '--strictness --layer --set --set-literal' ;;
+		count|instances|children|paths) echo '--strictness --layer --set --set-literal --set-default --set-literal-default --remove' ;;
 		*)               echo '' ;;
 	esac
 }
@@ -42,7 +42,7 @@ _shcl_opts() {
 ## filenames that would always be wrong.
 _shcl_fileslot() {
 	case "$1" in
-		get|set|fmt|check|count|instances) echo 1 ;;
+		get|set|fmt|check|count|instances|children|paths) echo 1 ;;
 		*)                                 echo 0 ;;
 	esac
 }

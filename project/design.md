@@ -112,8 +112,11 @@ See `spec.md` - fields/instances, accessor-driven types, arrays vs instances, ra
 The consumer-facing surface is the **Accessor** (read) and the **Writer** (emit).
 
 - The Accessor's one conceptual operation is a **lookup** (query) - get a value at a path, coerced to a type, with a default and an on-bad policy - realized idiomatically per language.
+
 - The type is chosen by a typed entry point or compile-time generic (not a runtime field), so results go into a strongly-typed variable with no consumer cast everywhere.
+
 - For consuming a file as a whole there is **traversal** (scan): materialize the document - merge duplicates, order deterministically - then walk it (wildcards, instance enumeration).
+
 - The Writer is the reverse: write out defaults, values, and comments. Structured diagnostics ride alongside.
 
 The consuming programmer is assumed to be a junior in *every* binding, not just the dynamic ones, so ergonomics are a design constraint, not an afterthought. Decided:
@@ -142,11 +145,11 @@ One question - "how do you pull SHCL into your project?" - with two kinds of ans
 
 - **Package**. Add it as an ordinary dependency and let the package manager fetch it (`go get`, `pip install`, `npm i`, and so on).
 
-- **Shared library**. Link the prebuilt `.so`, `.dll`, or `.dylib` at runtime. The library stays a separate file.
+- **Shared library**. Compile a drop-in source file into a `.so`, `.dll`, or `.dylib` and link it at runtime. The library stays a separate file.
 
-- **Bundled**. Static-link it into your binary, so you distribute one self-contained file.
+- **Bundled**. Compile the same source into your binary, so you distribute one self-contained file.
 
-The last two are the same compiled code linked two ways - "shared" stays a separate file loaded at runtime, "bundled" is baked into your binary. Every mode reaches the same Accessor/Writer surface; the choice is packaging, not capability.
+The last two are the same code compiled two ways - "shared" stays a separate file loaded at runtime, "bundled" is baked into your binary. Neither is published as a prebuilt artifact, and that is a decision rather than a gap. A release carries the CLI binaries, the packages and the drop-in sources. Shipping a shared object means an ABI to keep: a soname, symbol versioning, a separate headers package, and a promise that a caller built against an old one keeps working. All of that pulls against the one-file zero-dependency premise, and the C header exports plain externs with no export macro, so a Windows DLL would need one anyway. Every mode reaches the same Accessor/Writer surface; the choice is packaging, not capability.
 
 ### Power layer (library-level, grammar untouched)
 
@@ -206,6 +209,7 @@ Consequences of the flat form, all verified against the current binary:
 **The vocabulary stays small and closed**, in the same spirit as the Loose coercion list: `type`, `required`, `allowed` (an enum, written as an ordinary array), `min`/`max` (numeric ranges, inclusive), `repeat`, plus `default` and `desc` which only the generator reads.
 
 - Fragments later added `inherits` as a constraint key, alongside the top-level `fragment:` declaration. Nothing joins that list without a spec change.
+
 - Datetime ranges were considered and dropped for the same reason as regex below: comparing datetimes across zone suffixes needs calendar arithmetic (an offset can roll the date), no parser has any, and four hand-written implementations of it is a parity minefield.
 
 **Regular-expression constraints are rejected outright**, and this is the one real capability given up. No two of the target languages share a regex engine - character classes, Unicode properties, and anchoring all differ - so a `pattern` key could not hold byte-for-byte agreement across bindings, which is the product's core guarantee. An enum covers the common case; anything past that belongs in the consuming program.
@@ -223,7 +227,9 @@ The "did you mean `enabled`?" suggestion rides in the prose message, not the cod
 **A broken schema is reported against the schema.** Codes `V090+` cover schema faults (unknown constraint key, unusable type name), and their line numbers refer to the schema file.
 
 - Originally any fault suppressed data validation entirely; after consumer feedback we decided a fault must not mask real violations - the schema builder already drops a broken key or field individually, so the surviving constraints now check the document too, with the faults listed first.
+
 - The unknown-field sweep needs the complete declared vocabulary of names, but a key-level fault keeps its entry's path. So after a second round of the same feedback we decided the sweep runs through key-level faults. It skips only when a fault cost a path spelling outright (an unreadable `field:` path, or a mount naming no declared fragment), the two classes that would make declared fields read as unknown.
+
 - Generation keeps the all-or-nothing rule - a partial starter file would be worse than an error.
 
 **CLI surface: `shcl check --schema SCHEMA FILE`**, rather than a new subcommand. Loading and validating are the same question ("is this file good?"), the output shape and exit codes are already defined by `check`, and folding it in avoids a second nearly identical command.
@@ -237,38 +243,51 @@ Both open points are settled:
 **Fragments close the recursion gap with one construct: `fragment:` declares, `inherits:` mounts.** The data language nests freely, but a flat path list cannot describe a tree whose nodes contain their own kind. Consumers were generating schema entries to a fixed depth, past which correct keys reported as unknown: validation returning false errors on valid files, in the tool CI gates on.
 
 - Every mature schema language grew a named-shape reference for this reason; declining it would mean telling tree-shaped configs to flatten into instances with parent pointers, which makes the file serve the schema tool instead of the reader.
+
 - Naming: `use` was rejected as overloaded English (verb-directive or "purpose"); `parent` collides with the parent/child vocabulary of a nesting language; `inherits` reads as a single plain word beside `type`/`required`/`allowed` and is accurate - the mount inherits the fragment's fields and can add its own.
+
 - Design properties worth keeping true: expansion is demand-driven (a mount is followed only where the document has nodes), so recursion has no depth limit, needs no cycle detection, and costs document-proportional time and memory; the generator is the one place expansion could run away, and it cuts exactly where a fragment would re-enter itself.
+
 - Suggestions do not descend mounts, same rationale as below stars.
 
 **Open sections use a name-position wildcard, and it lives in the lookup grammar, not just the schema.** A map-shaped section ("any child name under `indicators`, each shaped like this") had no schema spelling at all - wildcards selected instances, never names.
 
 - Among the candidates (a `*` name segment, an `open:` constraint key, glob patterns), the bare `*` segment won: it reads exactly like the `[*]` story one level up, needs no new vocabulary word, and composes with deeper paths (`indicators.*.period`) without a second construct.
+
 - We decided it also belongs in reads, not only schemas, so the query language stays one language: `Get("*.port")` slots across children of any name the way `[*]` slots across instances. The Writer refuses it like any wildcard (paths must name their target to be writable). A field literally named `*` stays addressable quoted (`"*"`), which is never a wildcard.
+
 - Suggestions ("did you mean") do not reach below a `*`, since there is no fixed sibling list to suggest from, and a `repeat` on a `*` leaf disavows no `H001`.
 
 **A quoted by-value selector is scalar-only.** By-value matching is against the display form, and an inline array's display joins elements with `, ` - so the scalar `"a, b"` and the list `a, b` met the same selector and a read could only answer Multiple.
 
 - Among the candidates (a scalar-only quoted spelling, an IndexOf companion, leaving it documented) we decided the quoted spelling wins: quoting already forces a value match over an index and already escapes sentinels and formats elsewhere this round, so "quoted selects the scalar spelling only" extends one rule instead of adding a second construct.
+
 - Bare selectors keep the whole-display match, so existing paths behave identically; the parser's accelerator keeps the first same-display child, with a rare fallback scan when a quoted selector needs the scalar sibling instead.
 
 **Hand-edited configs are structurally safe across a round trip: retain what can be retained, gate the save on the rest.** A malformed line used to be diagnosed and dropped, so a stray typo plus one settings change equaled a silently vanished hand-written line.
 
 - The full fix splits by what is provably safe. A content-malformed line (unreadable at any position) is retained as inert trivia and re-emitted in place; it re-diagnoses identically and can never read as a live binding. A line the parser could read but not apply (bad indent, unusable selector, depth cap) cannot be made inert: re-emitted, it might parse as live content and invent data, which the fuzzer confirmed for BOM-led lines.
+
 - Those instead count into `LostCount`, and the file tier's save refuses while it is nonzero, with an explicit lossy variant as the override - so deleting a user's line is always a stated choice. We considered retaining everything verbatim and rejected it on the invented-content risk.
+
 - The CLI's in-place write goes through the same gate: it was first left alone on the grounds that a person sees the diagnostics on stderr, which turned out to be false - at the default strictness the load recovers and prints nothing, so `--write` deleted the line at exit 0 in silence. It now prints the load's diagnostics and refuses while `LostCount` is nonzero, with `--lossy` as the stated override.
+
 - The CLIs call `SaveFile` rather than carrying their own copy of the rule, so the command line and a consumer program cannot disagree about which rewrites are safe.
+
 - The refusal is a value, not prose: every binding reports it distinguishably from a failed write, because only one of the two is the caller's to reverse - and Python raises rather than returning a message, since a message a caller may ignore turns the safest spelling of the call into a silent no-op that reports success.
 
 **The library carries an optional file tier; file lifecycle is where consumer bugs live.** Consumer feedback showed every program that persists a config re-implementing the same load/save dance and making the same mistakes independently - confusing absent with unreadable, fumbling buffer lengths, tearing a config with a plain overwrite.
 
 - We decided on a small companion tier. The load never fails and returns a four-way status (clean / had-errors / not-found / unreadable) beside an always-usable document. The save writes canonical text through the same atomic temp-and-rename the CLI's `--write` already used, moved into the library so the CLIs call it and the two cannot drift.
+
 - It stays a companion, not core: C guards it behind `SHCL_NO_FILE_IO` so embedded consumers keep a file-I/O-free build.
 
 **H002 reports every merged level, and a schema can disavow it per section with `reopen:`.** The first cut hinted only the outermost re-open: inner merges looked adjacent at their own scope, because the newest-child test cannot see that the whole region arrived by re-opening. That made consumer-side filtering unsound - allowing one section's hint silently waved through everything nested under it.
 
 - We decided merges under a hinted container hint too, each naming its own earlier line (the parser carries the re-open line down, so text the re-opened region itself wrote stays silent).
+
 - The disavowal is a dedicated `reopen:` key rather than an overload of `repeat` - "many instances" and "one section written in parts" are different declarations.
+
 - Suppression mechanics mirror the H001 one exactly: single wording site, leaf-name match, dropped where diagnostics and a schema meet.
 
 ### Formatter
@@ -278,11 +297,13 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 **Author quoting on plain strings survives canonical output; quoted data-format values still normalize to bare.** Quoting had been pure spelling, normalized away entirely - which silently un-escaped values a downstream language treats as special (`"@null"`, a quoted function ref), the very case the `quoted` read flag was added for.
 
 - We decided the rule splits by what the text reads as: int, float, bool, and datetime spellings normalize (`ver: "8"` -> `ver: 8` - readers type the value either way, so the quotes say nothing), while a quoted plain string keeps its quotes through `fmt` and `init`.
+
 - The gate uses standard strictness, fixed, so canonical form cannot vary with load strictness, and the rule only ever adds quoting over the reserved-character minimum, so no bare emit can become unsafe.
 
 **A raw block's nesting is the closing fence's own indent, and the rule is symmetric.** The nesting used to be the common indent of the body's non-blank lines, which made a shared body indent unrepresentable and needed an emit exception for a body with no non-blank line at all - the shape that once grew by a level per pass.
 
 - It was decided that the fence, not the body, defines the nesting: each body line loses only what it shares with the closing fence's indent (the opening line's when the block never closes), and emit pads every non-empty body line by that same indent.
+
 - Strip and pad mirror each other exactly, so no special case is left: a body's shared extra indent survives as content, and a whitespace-only body keeps its spacing for the same reason as any other line - a raw block promising verbatim content should not be the place that quietly rewrites it.
 
 **`SetRaw` refuses an info-string an emitted fence line cannot carry.** A line break, or an unquoted `#` - the fence line would read the `#` as opening a trailing comment, so the block came back with a different info-string than the one written. The info-string is also trimmed the way a fence line reads it back, and the op script's `raw` op shares the gate.
@@ -290,11 +311,12 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 **A raw block in a higher layer fills a same-named empty binding below.** Merge matched instances by `(name, value)` only, so a bare `blk:` in the base and a `blk:` carrying a block in the overlay both survived a merge, where parsing the two run together folds them.
 
 - That made merged output not a formatter fixpoint, and dragged in a second defect, since the emitter's workaround for the resulting pair spells the fence on the name's line and loses an info string containing `#`.
+
 - It was decided that merge adopts the parser's own empty-fill rule, so a merge and a parse of the concatenation agree. The fill is limited to raw blocks because that is the limit of the parser's rule: a valued instance still appends.
 
 ### Saving a file
 
-- **A save publishes a new file in the old one's place** - write a temp file beside the target, then move it over. That is what makes an interrupted save unable to truncate a config, and it is also the source of every limitation below: the bytes are new, so anything the old file carried outside its contents has to be deliberately carried across or it is gone.
+- **A save publishes a new file in the old one's place.** Write a temp file beside the target, then move it over. That is what makes an interrupted save unable to truncate a config, and it is also the source of every limitation below: the bytes are new, so anything the old file carried outside its contents has to be deliberately carried across or it is gone.
 
 - **What is carried, and what is not.** The permission bits are copied deliberately, and on POSIX that is the whole of what gets copied: ACLs, extended attributes, the SELinux label and any other xattr are lost, as are other hard links to the old file.
 	- None of that is fixable at this layer, since a rename cannot preserve what a rename replaces, so it is documented in the spec rather than papered over.
@@ -316,7 +338,9 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - **A refused in-place write exits 7, its own code.** It shared 1 with usage and I/O errors, so a script could not tell "pass `--lossy` or fix the file" apart from "the command line is wrong" - and the refusal is the one failure whose remedy is a decision rather than a correction.
 
-- **`fmt` and `set` print the load's diagnostics to stderr in both modes, not only with `--write`.** The two modes share one load, and it was decided that where the canonical text goes should not decide whether a recovered-from typo is mentioned; stdout carries the same bytes either way.
+- **A file or stream that cannot be read or written exits 8, and 1 is now the usage code alone.** The same reasoning as exit 7, applied to what was left in the catch-all. The two remedies have nothing in common: one is fixing the command line, the other is fixing a path, a permission or a disk. A path a write option refuses (a wildcard, an index naming no instance) stays at 1, because what has to change there is the option's value.
+
+- **Every subcommand that loads a document prints the load's diagnostics to stderr, once per run.** It was decided that neither where the canonical text goes nor which subcommand asked for the load should decide whether a recovered-from typo is mentioned. This started as `fmt` and `set` in both modes, with the read subcommands left quiet; that half was reversed, because a read below strict returns the value and says nothing at all, which is the case where silence costs most. stdout carries the same bytes either way.
 
 - **The mode is applied to the temp file again after its data is written.** The kernel clears setuid and setgid on a write by a process without the right capability, so giving the temp file the target's mode before filling it silently dropped those bits - the copied mode has to land last, after write and fsync, before the publish.
 
@@ -400,8 +424,11 @@ One thing the tool found about a library rather than a format, recorded so nobod
 What it found, at 64 MiB per shape (rerun after the 2.0 memory work):
 
 - SHCL writes the smallest file of the five in three shapes of four, and the gap widens with nesting - half the size of JSON and of XML on deep structure. Gzipped, the five sit within a fifth of each other, so the win is a plain-text one.
+
 - SHCL is still the slowest to load in both tiers by aggregate, six to ten times behind `serde_json`, but now sits near the light end on memory: below TOML and YAML on every shape, below JSON on two of four, and a quarter of `toml_edit`, the one other parser that keeps the file.
+
 - The Python tier says the load cost is the format's rather than one implementation's - against `tomllib`, the tier's one other pure-Python parser, SHCL is 3.5x behind, against 2.1x behind `toml` in Rust. That trade is the design working as intended rather than a defect.
+
 - At the two realistic sizes the size result holds and the speed result stops mattering: SHCL writes the smallest file of the five for both the config and the schema definition, and reads them in 0.07 ms and 13 ms.
 
 ### CI/CD

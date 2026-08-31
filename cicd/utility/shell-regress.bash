@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 ##	Purpose:
-##		Pin the shell surface: the two wrappers, the one-liner's scope hygiene,
-##		and the packaging script's version handling. None of it is reachable
-##		from the corpus or the CLI gate, and every row here is a defect a review
-##		round found in a shipped script.
+##		Pin the tooling surface: the two wrappers, the one-liner's scope hygiene,
+##		the packaging script's version handling, and the comparison worker's
+##		argument handling. None of it is reachable from the corpus or the CLI
+##		gate, and every row here is a defect a review round found.
 ##
 ##		Also scans the repo's own errexit scripts for the trap that has now bit
 ##		four times: a `grep` inside a command substitution whose result is
@@ -206,6 +206,158 @@ while IFS= read -r h; do
 done < <(grep -n 'IsWindows' "${repoDir}/source/powershell/shcl.ps1" \
 	| grep -vE '^[0-9]+:##' | grep -vE 'PSVersion\.Major -lt 6 -or' || true)
 
+##	The comparison worker: a bad ITERS used to be a traceback, and a zero one
+##	raised while formatting a time that was never taken. The listing must also
+##	survive a loader failing some way other than a missing import, and must not
+##	grow a duplicate search-path entry per call.
+worker="${repoDir}/cicd/utility/comparison/pyworker.py"
+if [[ -f "${worker}" ]]; then
+	: > "${tmpDir}/w.shcl"
+	printf 'a: 1\n' > "${tmpDir}/w.shcl"
+	for bad in abc 0 -1; do
+		out="$(python3 "${worker}" shcl "${tmpDir}/w.shcl" "${bad}" 2>&1)" && rc=0 || rc=$?
+		((rc == 2)) || fBad "pyworker.py ITERS=${bad}: exit ${rc}, expected 2"
+		[[ "${out}" == usage:* ]] || fBad "pyworker.py ITERS=${bad} did not print the usage line: ${out}"
+	done
+	## Its own loader is called once per listed entry, so a path pushed per call
+	## shows up as a duplicate after two.
+	dups="$(python3 - "${worker}" <<'PYEOF'
+import runpy, sys
+path = sys.argv[1]
+mod = runpy.run_path(path)
+before = list(sys.path)
+mod["load_shcl"](); mod["load_shcl"]()
+print(len(sys.path) - len(before))
+PYEOF
+)"
+	[[ "${dups}" == "1" ]] || fBad "pyworker.py load_shcl added ${dups} path entries over two calls, expected 1"
+fi
+
+##	The completions check against a subcommand that takes no options. One side
+##	emitted a row for it and the other dropped any row with an empty option
+##	list, so the two could never agree however the completions spelled it - a
+##	lint failure blaming the completions on the day such a subcommand is added.
+##	The fixture is the real files with one added, so the check runs against the
+##	extractors as shipped rather than a hand-written stand-in.
+gate="${repoDir}/cicd/utility/check-completions.bash"
+if [[ -x "${gate}" ]]; then
+	fix="${tmpDir}/optless"
+	mkdir -p "${fix}/source/rust/src" "${fix}/source/completions"
+	python3 - "${repoDir}" "${fix}" <<'PYEOF'
+import sys
+repo, fix = sys.argv[1], sys.argv[2]
+TAB = chr(9)
+NL = chr(10)
+s = open(repo + "/source/rust/src/main.rs").read()
+arm = TAB * 2 + '"count" | "instances" | "children" | "paths" => &['
+s = s.replace(arm, TAB * 2 + '"ping" => &[],' + NL + arm, 1)
+s = s.replace(TAB + '"paths",' + NL + "];", TAB + '"paths",' + NL + TAB + '"ping",' + NL + "];", 1)
+disp = TAB * 2 + '"paths" => do_paths(o),'
+s = s.replace(disp, disp + NL + TAB * 2 + '"ping" => 0,', 1)
+open(fix + "/source/rust/src/main.rs", "w").write(s)
+for name in ("shcl.bash", "_shcl"):
+    c = open(repo + "/source/completions/" + name).read()
+    row = TAB * 2 + "count|instances|children|paths) echo '--strictness"
+    c = c.replace(row, TAB * 2 + "ping)            echo '' ;;" + NL + row, 1)
+    if name == "shcl.bash":
+        c = c.replace("instances children paths help", "instances children paths ping help", 1)
+    else:
+        pl = TAB * 2 + "'paths:every field path in the document'"
+        c = c.replace(pl, pl + NL + TAB * 2 + "'ping:say nothing'", 1)
+    open(fix + "/source/completions/" + name, "w").write(c)
+PYEOF
+	if ! out="$("${gate}" "${fix}" 2>&1)"; then
+		fBad "check-completions rejects an option-less subcommand the completions spell correctly: ${out}"
+	fi
+fi
+
+##	Both bash installers used to heredoc their own source header, so the help
+##	opened with the file name as a comment and every wrapped line carried a `##`
+##	and a hard tab. The PowerShell installer printed clean prose, so the two
+##	documented installers spoke in different registers.
+for inst in install.bash install-dev.bash; do
+	[[ -f "${repoDir}/${inst}" ]] || continue
+	help="$(bash "${repoDir}/${inst}" --help 2>&1 || true)"
+	if grep -q '^##' <<<"${help}"; then
+		fBad "${inst} --help prints comment markup"
+	fi
+	if grep -qP '\t' <<<"${help}"; then
+		fBad "${inst} --help prints hard tabs, which render raggedly off tab width 8"
+	fi
+	[[ -n "${help}" ]] || fBad "${inst} --help printed nothing"
+done
+
+##	The bash uninstall reported "removed" while leaving a directory full of files
+##	it had not installed. The PowerShell installer already said so; this is the
+##	same wording on the bash side.
+if [[ -f "${repoDir}/install.bash" ]]; then
+	fake="${tmpDir}/fakehome"
+	mkdir -p "${fake}/.local/share/shcl"
+	out="$(HOME="${fake}" bash "${repoDir}/install.bash" --target user --uninstall --yes 2>&1 || true)"
+	grep -q '^removed$' <<<"${out}" || fBad "install.bash --uninstall of an empty dir did not report a clean removal: ${out}"
+	mkdir -p "${fake}/.local/share/shcl"
+	printf 'x\n' > "${fake}/.local/share/shcl/not-ours.txt"
+	out="$(HOME="${fake}" bash "${repoDir}/install.bash" --target user --uninstall --yes 2>&1 || true)"
+	grep -q 'did not put there' <<<"${out}" || fBad "install.bash --uninstall said nothing about the files it left behind: ${out}"
+	[[ -f "${fake}/.local/share/shcl/not-ours.txt" ]] || fBad "install.bash --uninstall removed a file it did not install"
+fi
+
+##	install.ps1 used to run the binary only after writing it into place, where
+##	the Linux installer runs it from the temp dir first so one that will not
+##	start never becomes an install. Order in the source is the whole assertion;
+##	running the real thing needs a network and a release.
+ps1="${repoDir}/install.ps1"
+if [[ -f "${ps1}" ]]; then
+	smokeLine="$({ grep -n "(Join-Path \$tmp 'shcl.exe') version" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
+	publishLine="$({ grep -n "Move-Item -Force -LiteralPath (Join-Path \$dest '.shcl.exe.new')" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
+	if [[ -z "${smokeLine}" ]]; then
+		fBad "install.ps1 never runs the downloaded binary from the temp dir"
+	elif [[ -z "${publishLine}" ]]; then
+		fBad "install.ps1: cannot find where the binary is published"
+	elif ((smokeLine >= publishLine)); then
+		fBad "install.ps1 runs the binary at line ${smokeLine}, after publishing it at ${publishLine}"
+	fi
+	## A bare native call throws under this script's error preference on 7.4+,
+	## which turned a failing binary into an exception after the success message.
+	grep -q 'LASTEXITCODE -ne 0' <<<"$(sed -n "${smokeLine:-1},+4p" "${ps1}")" \
+		|| fBad "install.ps1 does not test the smoke run's exit status"
+fi
+
+##	The profiler stage's hot-spot report. Its only diagnostics go to stderr, and
+##	the stage used to discard them, so the log recorded the failure with no cause.
+report="${repoDir}/cicd/utility/flame-report.py"
+if [[ -f "${report}" ]]; then
+	out="$(python3 "${report}" --dir "${tmpDir}/no-such-profile-dir" 2>&1 || true)"
+	[[ "${out}" == *"no profiling dir"* ]] || fBad "flame-report.py says nothing usable about a missing directory: ${out}"
+	if grep -qE 'flame-report\.py[^|]*2>/dev/null' "${repoDir}/cicd/cicd.bash"; then
+		fBad "cicd.bash discards the hot-spot report's stderr, which is its only diagnostic"
+	fi
+fi
+
+##	A one-line loop body that is a `[[ ... ]] && ...` list. When the test fails
+##	on the last iteration the loop returns 1, which is harmless at statement
+##	level on this bash but kills the caller the moment the loop becomes the last
+##	command in a function. Unmatched globs are the usual way in. `|| continue`
+##	or an `if` is the fix.
+while IFS= read -r f; do
+	grep -qE '^set -[A-Za-z]*e' "${f}" || continue
+	hits="$(grep -nE 'do[[:space:]]+\[\[[^]]*\]\][[:space:]]*&&[^;]*;[[:space:]]*done' "${f}" || true)"
+	if [[ -n "${hits}" ]]; then
+		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: loop body ends on a failed-test && list: ${h}"; done <<<"${hits}"
+	fi
+done < <(find "${repoDir}" -name '*.bash' -not -path '*/target/*' -not -path '*/.git/*' | sort)
+
+##	`\t` in a grep -E pattern. POSIX ERE has no such escape, so the pattern
+##	matches nothing under the grep a script gets, while matching fine under the
+##	interactive one on this box - a check that looks like it works and asserts
+##	nothing. Twice in one round. Use a literal tab or `[[:space:]]`.
+while IFS= read -r f; do
+	hits="$(grep -nE "grep [^|;]*-[A-Za-z]*E[A-Za-z]* '[^']*\\\\t" "${f}" || true)"
+	if [[ -n "${hits}" ]]; then
+		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: backslash-t in a grep -E pattern, which POSIX ERE does not read as a tab: ${h}"; done <<<"${hits}"
+	fi
+done < <(find "${repoDir}/cicd" -name '*.bash' | sort)
+
 ##	The static half. Line continuations are joined first, so a substitution that
 ##	ends in `|| true` several lines down is read as guarded.
 while IFS= read -r f; do
@@ -222,7 +374,7 @@ if ((nBad)); then
 	echo "shell-regress: ${nBad} check(s) failed" >&2
 	exit 1
 fi
-echo "shell-regress: OK: wrappers, one-liner scope, packaging, and no unguarded grep substitutions"
+echo "shell-regress: OK: wrappers, one-liner scope, packaging, installers, comparison worker, and no unguarded greps, failed-test loop bodies or tab escapes in an ERE"
 
 ##	History:
 ##		2026-08-30  Created, pinning the wrapper and installer defects from the

@@ -227,6 +227,8 @@ fReadRow(){
 		              fCompare "fmt ${level:-standard}" fmt "${strictArg[@]}" "$input" ;;
 		count)        fCompare "count ${query}" count "${strictArg[@]}" "$input" "$query" ;;
 		instances)    fCompare "instances ${query}" instances "${strictArg[@]}" "$input" "$query" ;;
+		children)     fCompare "children ${query}" children "${strictArg[@]}" "$input" "$query" ;;
+		paths)        fCompare "paths" paths "${strictArg[@]}" "$input" ;;
 		*'[]')        fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
 		              fCompare "get ${query} ${type} slots" get "--${type%[]}" --array --slots "${strictArg[@]}" "$input" "$query" ;;
 		*)            fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query"
@@ -273,7 +275,10 @@ for caseDir in "$corpus"/*/; do
 	# input.shcl (filename order = priority) plus any merge.sets --set overrides.
 	if [[ -f "${caseDir}expected-merged.shcl" ]]; then
 		layerArgs=()
-		for lf in "${caseDir}"layer*.shcl; do [[ -f "$lf" ]] && layerArgs+=("--layer=$lf"); done
+		for lf in "${caseDir}"layer*.shcl; do
+			[[ -f "$lf" ]] || continue
+			layerArgs+=("--layer=$lf")
+		done
 		setArgs=()
 		if [[ -f "${caseDir}merge.sets" ]]; then
 			while IFS= read -r sline || [[ -n "$sline" ]]; do

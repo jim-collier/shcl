@@ -82,42 +82,42 @@ die() { printf 'install.bash: %s\n' "$*" >&2; exit 1; }
 usage() {
 	echo
 	cat <<'EOF'
-## install.bash
-##
-##	Release installer for shcl (Simple Hierarchical Config Language) on Linux.
-##	Downloads the latest release from GitHub, checks the sha256sums file against
-##	the release signing key before trusting a checksum out of it, and lays out
-##	the binary plus the drop-in source files and shell wrappers. Idempotent:
-##	re-running updates an existing install in place.
-##
-##	Needs curl or wget, plus openssl for the signature check.
-##
-##	Usage (one-liner):
-##		curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
-##		wget -qO- https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
-##	With options:
-##		curl -fsSL .../install.bash | bash -s -- --target=user --yes
-##
-##	Options (both --opt=VALUE and --opt VALUE work):
-##		--release <dev|stable>   dev = newest release including pre-releases
-##		                         (default); stable = newest full release.
-##		--target <user|system>   system (default): /opt/shcl + a symlink at
-##		                         /usr/local/bin/shcl (sudo if not root).
-##		                         user: ~/.local/share/shcl + a symlink at
-##		                         ~/.local/bin/shcl. No sudo.
-##		--yes | -y               skip the confirmation prompt.
-##		--uninstall              remove what an install of the same --target
-##		                         laid down (binary, symlinks, code/, scripts/,
-##		                         man/, completions/), and nothing else.
-##
-##	Layout under the install dir:
-##		shcl         the CLI binary
-##		code/        drop-in single-file bindings (lib.rs, shcl.go, shcl.py,
-##		             shcl.h, shcl.hpp)
-##		scripts/     shell wrappers (shcl.bash, shcl.ps1)
-##		man/         the man page, symlinked into the target's man1 dir
-##		completions/ bash and zsh completions, enabled by hand (see the note the
-##		             install prints - the .deb/.rpm put these in place for you)
+install.bash - release installer for shcl on Linux
+
+Downloads the latest release from GitHub, checks the sha256sums file against the
+release signing key before trusting a checksum out of it, and lays out the binary
+plus the drop-in source files and shell wrappers. Idempotent: re-running updates
+an existing install in place.
+
+Needs curl or wget, plus openssl for the signature check.
+
+Usage (one-liner):
+  curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+  wget -qO- https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+
+With options:
+  curl -fsSL .../install.bash | bash -s -- --target=user --yes
+
+Options (both --opt=VALUE and --opt VALUE work):
+  --release <dev|stable>   dev = newest release including pre-releases
+                           (default); stable = newest full release.
+  --target <user|system>   system (default): /opt/shcl plus a symlink at
+                           /usr/local/bin/shcl (sudo if not root).
+                           user: ~/.local/share/shcl plus a symlink at
+                           ~/.local/bin/shcl. No sudo.
+  --yes, -y                skip the confirmation prompt.
+  --uninstall              remove what an install of the same --target laid
+                           down (binary, symlinks, code/, scripts/, man/,
+                           completions/), and nothing else.
+
+Layout under the install dir:
+  shcl          the CLI binary
+  code/         drop-in single-file bindings (lib.rs, shcl.go, shcl.py,
+                shcl.h, shcl.hpp)
+  scripts/      shell wrappers (shcl.bash, shcl.ps1)
+  man/          the man page, symlinked into the target's man1 dir
+  completions/  bash and zsh completions, enabled by hand (see the note the
+                install prints - the .deb/.rpm put these in place for you)
 EOF
 	echo
 }
@@ -202,8 +202,21 @@ if (( uninstall )); then
 	[[ -L "${manlink}" && "$(readlink -- "${manlink}")" == "${dest}/"* ]] && ${asroot} rm -f "${manlink}"
 	${asroot} rm -f "${dest}/shcl"
 	${asroot} rm -f "${dest}/code"/* "${dest}/scripts"/* "${dest}/man"/* "${dest}/completions"/* 2>/dev/null || true
-	${asroot} rmdir "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions" "${dest}" 2>/dev/null || true
-	echo "removed"
+	${asroot} rmdir "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions" 2>/dev/null || true
+	## Only an empty dir goes, and say so when it does not: the dir can hold
+	## files this installer never put there (a package's, or someone's own), and
+	## reporting "removed" over the top of them was a lie. Matches what the
+	## PowerShell installer already said.
+	if [[ -d "${dest}" ]]; then
+		if ${asroot} rmdir "${dest}" 2>/dev/null; then
+			echo "removed"
+		else
+			echo "removed what this installer laid down"
+			printf 'left %s in place: it holds files this installer did not put there\n' "${dest}"
+		fi
+	else
+		echo "removed"
+	fi
 	echo
 	exit 0
 fi

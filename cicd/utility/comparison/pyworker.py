@@ -60,7 +60,10 @@ def vmhwm() -> int:
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 def load_shcl() -> Loader:
-	sys.path.insert(0, str(REPO_PY))
+	# Every call used to push the same entry again, and the listing calls every
+	# loader, so the search path grew a duplicate each time.
+	if str(REPO_PY) not in sys.path:
+		sys.path.insert(0, str(REPO_PY))
 	import shcl
 	return "working tree", shcl.Document.parse, lambda d: d.to_canonical()
 
@@ -139,8 +142,10 @@ def emit_list() -> None:
 	for key, (loader, fmt, lib, retains, note) in ENTRIES.items():
 		try:
 			version, _, _ = loader()
-		except ImportError as e:
-			print(f"unavailable|{key}|{e}")
+		# Not just ImportError: a loader that fails any other way is one entry
+		# unavailable, not the whole listing gone.
+		except Exception as e:
+			print(f"unavailable|{key}|{type(e).__name__}: {e}")
 			continue
 		print(f"available|{key}|{fmt}|{lib}|{retains}|{version}|{note}")
 
@@ -201,7 +206,16 @@ def main() -> int:
 	if len(args) != 3 or args[0] not in ENTRIES:
 		print("usage: pyworker.py --list | KEY FILE ITERS", file=sys.stderr)
 		return 2
-	run(args[0], args[1], int(args[2]))
+	try:
+		iters = int(args[2])
+	except ValueError:
+		iters = 0
+	# Zero timed rounds leaves the best time unset, which used to raise while
+	# formatting it - two lines below a usage line that says what ITERS is.
+	if iters < 1:
+		print("usage: pyworker.py --list | KEY FILE ITERS (ITERS is a positive integer)", file=sys.stderr)
+		return 2
+	run(args[0], args[1], iters)
 	return 0
 
 

@@ -25,22 +25,23 @@
 ##	exact tail matters.
 ##
 ##	Functions defined when sourced (each mirrors the CLI and returns its code):
-##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances ...
+##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances|
+##		                     children|paths ...
 ##		shcl_get             read a string (the default type)
 ##		shcl_int shcl_float shcl_bool shcl_datetime shcl_raw
 ##		                     read one typed value
 ##		shcl_array           read an array (pass a --type, else --string)
-##		shcl_fmt shcl_check shcl_count shcl_instances
+##		shcl_fmt shcl_check shcl_count shcl_instances shcl_children shcl_paths
 ##		                     the matching subcommands
 ##
 ##	Finding the binary (first hit wins):
 ##		$SHCL_BIN, else a `shcl` beside this file, else `shcl` on PATH, else the
 ##		repo release/debug build. Set SHCL_BIN to pin an exact one.
 ##
-##	Exit codes (straight from the binary): 0 good, 1 usage/IO, 2 empty,
+##	Exit codes (straight from the binary): 0 good, 1 usage error, 2 empty,
 ##	3 not found, 4 bad type, 5 multiple instances, 6 check failed, strict
 ##	load failure, or a faulty init schema, 7 in-place write refused
-##	(--lossy overrides).
+##	(--lossy overrides), 8 a file or stream could not be read or written.
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 ##	Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
@@ -122,6 +123,8 @@ shcl_fmt()       { shcl fmt "$@"            ; }
 shcl_check()     { shcl check "$@"          ; }
 shcl_count()     { shcl count "$@"          ; }
 shcl_instances() { shcl instances "$@"      ; }
+shcl_children()  { shcl children "$@"       ; }
+shcl_paths()     { shcl paths "$@"          ; }
 
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 # Run path

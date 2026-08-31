@@ -419,6 +419,10 @@ class _Value:
 		if self.kind == "empty":
 			return ""
 		if self.kind == "cell":
+			# One element is the overwhelming case (every scalar field), and the
+			# join plus generator cost more than the string it produces.
+			if len(self.els) == 1:
+				return self.els[0].text
 			return ", ".join(e.text for e in self.els)
 		return self.content
 
@@ -918,7 +922,10 @@ def _merge_key(name, v):
 	tuple machinery here is C-speed, a hand-rolled hash loop is not."""
 	k = v.kind
 	if k == "cell":
-		return (name, "c", tuple(e.text for e in v.els))
+		els = v.els
+		if len(els) == 1:
+			return (name, "c", (els[0].text,))
+		return (name, "c", tuple(e.text for e in els))
 	if k == "empty":
 		return (name, "e")
 	return (name, "r", v.info, v.content)
@@ -957,8 +964,11 @@ def _fence_open(rest):
 
 
 def _is_fence_close(line, ch, min_len):
+	# min_len is the opening fence's length, which the grammar puts at three or
+	# more, so the length test already rules out the empty line all() would
+	# otherwise accept.
 	t = _trim(line)
-	return len(t) >= min_len and len(t) > 0 and all(c == ch for c in t)
+	return len(t) >= min_len and all(c == ch for c in t)
 
 
 def _leading_ws(line):
@@ -1048,43 +1058,48 @@ def _scan_lookup(inp):
 	return _scan_path_ex(inp, True)
 
 
+# The reference spells these two as inner functions of the scanner. Here they
+# are module level, taking the same arguments: defined inside, they would be
+# rebuilt with a fresh cell on every call, and the scanner runs once per line.
+def _scan_skip_ws(chars, n, p):
+	while p < n and (chars[p] == " " or chars[p] == "\t"):
+		p += 1
+	return p
+
+
+def _scan_read_quoted(chars, n, p):
+	q = chars[p]
+	p += 1
+	out = []
+	while True:
+		if p >= n:
+			raise _PathError("unterminated quote")
+		c = chars[p]
+		if c == "\\" and p + 1 < n:
+			out.append(c)
+			out.append(chars[p + 1])
+			p += 2
+			continue
+		p += 1
+		if c == q:
+			return "".join(out), p
+		out.append(c)
+
+
 def _scan_path_ex(inp, stars):
 	chars = inp
 	n = len(chars)
 
-	def skip_ws(p):
-		while p < n and (chars[p] == " " or chars[p] == "\t"):
-			p += 1
-		return p
-
-	def read_quoted(p):
-		q = chars[p]
-		p += 1
-		out = []
-		while True:
-			if p >= n:
-				raise _PathError("unterminated quote")
-			c = chars[p]
-			if c == "\\" and p + 1 < n:
-				out.append(c)
-				out.append(chars[p + 1])
-				p += 2
-				continue
-			p += 1
-			if c == q:
-				return "".join(out), p
-			out.append(c)
-
 	pos = 0
 	segments = []
 	while True:
-		pos = skip_ws(pos)
+		pos = _scan_skip_ws(chars, n, pos)
 		if pos >= n:
 			raise _PathError("empty path")
 		# Field name: quoted, bare, or (lookups only) the `*` name wildcard.
 		star = False
 		if chars[pos] == '"' or chars[pos] == "'":
-			name, pos = read_quoted(pos)
+			name, pos = _scan_read_quoted(chars, n, pos)
 		elif stars and chars[pos] == "*":
 			pos += 1
 			star = True
@@ -1097,20 +1112,20 @@ def _scan_path_ex(inp, stars):
 				raise _PathError(f"expected field name, found '{chars[pos]}'")
 			name = chars[start:pos]
 		selector = None
-		pos = skip_ws(pos)
+		pos = _scan_skip_ws(chars, n, pos)
 		# Optional selector, with its optional sugar colon (colon counts as
 		# selector sugar only when the next non-ws char is an open bracket).
 		bracket_at = None
 		if pos < n and chars[pos] == "[":
 			bracket_at = pos
 		elif pos < n and chars[pos] == ":":
-			q = skip_ws(pos + 1)
+			q = _scan_skip_ws(chars, n, pos + 1)
 			if q < n and chars[q] == "[":
 				bracket_at = q
 		if bracket_at is not None:
-			pos = skip_ws(bracket_at + 1)
+			pos = _scan_skip_ws(chars, n, bracket_at + 1)
 			if pos < n and (chars[pos] == '"' or chars[pos] == "'"):
-				v, pos = read_quoted(pos)
+				v, pos = _scan_read_quoted(chars, n, pos)
 				selector = ("val", v, True)   # quotes force a value match, even numeric - and scalar-only
 			else:
 				start = pos
@@ -1127,10 +1142,10 @@ def _scan_path_ex(inp, stars):
 					raise _PathError("empty selector")
 				else:
 					selector = ("val", _normalize_dangling_backslash(body), False)
-			pos = skip_ws(pos)
+			pos = _scan_skip_ws(chars, n, pos)
 			if pos >= n or chars[pos] != "]":
 				raise _PathError("unterminated selector")
-			pos = skip_ws(pos + 1)
+			pos = _scan_skip_ws(chars, n, pos + 1)
 		if star and selector is not None:
 			raise _PathError("selector on a name wildcard")
 		# Names resolve escapes, the same rule values follow when they are
@@ -1370,10 +1385,12 @@ class _Parser:
 				# creating a spurious second one - via the disp_map accelerator
 				# (the inline spelling was quadratic in siblings without it).
 				# Create only when nothing matches.
-				# A quoted selector is scalar-only, and the accelerator keeps
-				# just the first same-display child - a later remap can drop an
-				# entry a different sibling still satisfies - so a non-scalar hit
-				# and an outright miss both fall to the (rare) fallback scan.
+				# A quoted selector is scalar-only, so it is the one that needs
+				# the fallback scan: the accelerator keeps just the first same-
+				# display child, which may be the non-scalar one. An unquoted
+				# selector takes whatever the accelerator holds and does not scan,
+				# so it can bind a raw block where a quoted selector picks the
+				# scalar sibling.
 				found = self._find_by_value(cur, seg.name, sel[1], sel[2])
 				if found is not None:
 					cur = found
@@ -1737,10 +1754,16 @@ class _Parser:
 			# Record only when the bound node holds exactly this line's value
 			# (a merge into an equal-valued node keeps the first line's span;
 			# a value dropped after a last-segment selector records nothing).
-			vkey = _value_key(value) if src_text is not None else None
 			node = self._attach_path(parent, segments, value, lineno)
 			if node is not None:
-				if src_text is not None and not self.arena[node].src_set and _value_key(self.arena[node].value) == vkey:
+				# The bound node usually holds the very object just parsed, so
+				# identity settles it and neither key gets built. The key
+				# compare is only needed when a merge landed on an equal-valued
+				# node that already existed.
+				if src_text is not None and not self.arena[node].src_set and (
+					self.arena[node].value is value
+					or _value_key(self.arena[node].value) == _value_key(value)
+				):
 					self.arena[node].src_set = True
 					if not _src_matches_display(self.arena[node].value, src_text):
 						self.arena[node].src = src_text
@@ -3090,6 +3113,9 @@ class Document:
 	def get_raw(self, path: str, default: Any = _NO_DEFAULT) -> str:
 		return self._get(self.read_raw(path), default)
 
+	def get_raw_info(self, path: str, default: Any = _NO_DEFAULT) -> str:
+		return self._get(self.read_raw_info(path), default)
+
 	def get_datetime(self, path: str, default: Any = _NO_DEFAULT) -> ShclDateTime:
 		return self._get(self.read_datetime(path), default)
 
@@ -3128,6 +3154,9 @@ class Document:
 
 	def get_raw_or(self, path: str, default: str) -> str:
 		return self._get(self.read_raw(path), default)
+
+	def get_raw_info_or(self, path: str, default: str) -> str:
+		return self._get(self.read_raw_info(path), default)
 
 	def get_datetime_or(self, path: str, default: ShclDateTime) -> ShclDateTime:
 		return self._get(self.read_datetime(path), default)

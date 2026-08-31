@@ -38,6 +38,11 @@ Usage:
                                          optional commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+  shcl children [options] FILE [PATH]    child field names under a path, one per
+                                         line (the top level when PATH is left
+                                         out)
+  shcl paths [options] FILE              every field path in the document, one
+                                         per line
   shcl help | version                    this help, or the version (also
                                          -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
@@ -85,24 +90,31 @@ Options (the subcommands each belongs to are in parentheses):
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
-  --layer=FILE                           (get/fmt/count/instances/set) merge a
+  --layer=FILE                           (all but check/init) merge a
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
-  --set=PATH=VALUE                       (get/fmt/count/instances/set) override
-                                         one path as the top layer, after all
-                                         files; repeatable. On 'set'
-                                         it is an edit to the document itself,
-                                         so it persists with --write. VALUE
-                                         goes in as data: its type still
-                                         follows the text (8 is an int), but a
-                                         comma or quote in it is content, not
-                                         syntax
+  --set=PATH=VALUE                       (all but check/init) override one path
+                                         as the top layer, after all files;
+                                         repeatable. On 'set' it is an edit to
+                                         the document itself, so it persists
+                                         with --write. VALUE goes in as data:
+                                         its type still follows the text (8 is
+                                         an int), but a comma or quote in it is
+                                         content, not syntax
   --set-literal=PATH=TEXT                (same subcommands) as --set, except
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
                                          array. An unquoted # ends the value;
                                          text spanning lines is rejected
+  --set-default=PATH=VALUE               (same) as --set, but only when nothing
+  --set-literal-default=PATH=TEXT        is at the path yet - the write-out-
+                                         defaults half of the writer
+  --remove=PATH                          (same) delete what is at the path,
+                                         with its subtree. Removing nothing is
+                                         not an error
+The five above share one ordered list, so two of them touching the same path
+resolve in the order given. Raw blocks still go in through the ops script.
 
 Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
@@ -112,16 +124,17 @@ An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
 without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
 named more than once across FILE, --layer and --schema.
-fmt and set print the load's diagnostics to stderr along with the canonical
-document. An in-place write also refuses when the load dropped content the
+Every subcommand that loads a document prints the load's diagnostics to stderr,
+once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
-Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
+Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides).
+has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream
+could not be read or written.
 `
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
@@ -167,22 +180,51 @@ func statusCode(st shcl.Status) int {
 // setOpt is one --set/--set-literal override. Both spellings share a list so
 // they apply in the order given, which is what decides the winner when two
 // target the same path.
+// setKind is which spelling produced one edit. They share a single ordered
+// list, so two options touching the same path resolve in the order given.
+type setKind int
+
+const (
+	setData setKind = iota
+	setLiteral
+	setDataDefault
+	setLiteralDefault
+	setRemove
+)
+
 type setOpt struct {
-	path    string
-	value   string
-	literal bool
+	path  string
+	value string
+	kind  setKind
 }
 
 func (s setOpt) apply(doc *shcl.Document) bool {
-	if s.literal {
+	switch s.kind {
+	case setLiteral:
 		return doc.SetLiteral(s.path, s.value)
+	case setDataDefault:
+		return doc.SetStringDefault(s.path, s.value)
+	case setLiteralDefault:
+		return doc.SetLiteralDefault(s.path, s.value)
+	case setRemove:
+		// Removing nothing is not a failure, the same as the ops script's
+		// `remove`: the point of the option is the path's absence after.
+		doc.Remove(s.path)
+		return true
 	}
 	return doc.SetString(s.path, s.value)
 }
 
 func (s setOpt) opt() string {
-	if s.literal {
+	switch s.kind {
+	case setLiteral:
 		return "--set-literal"
+	case setDataDefault:
+		return "--set-default"
+	case setLiteralDefault:
+		return "--set-literal-default"
+	case setRemove:
+		return "--remove"
 	}
 	return "--set"
 }
@@ -282,7 +324,8 @@ func askedFor(argv []string) string {
 		case a == "--":
 			return ""
 		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" ||
-			a == "--layer" || a == "--set" || a == "--set-literal":
+			a == "--layer" || a == "--set" || a == "--set-literal" ||
+			a == "--set-default" || a == "--set-literal-default" || a == "--remove":
 			i++
 		}
 	}
@@ -319,6 +362,28 @@ func splitSet(arg string) (string, string, bool) {
 	return "", "", false
 }
 
+// asciiLower folds A-Z only, mirroring the library helper the strictness option
+// already goes through. strings.ToLower folds by Unicode, which is a different
+// question from "is this one of three ASCII words".
+func asciiLower(s string) string {
+	i := 0
+	for ; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			break
+		}
+	}
+	if i == len(s) {
+		return s
+	}
+	b := []byte(s)
+	for ; i < len(b); i++ {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
 func setValueOpt(o *opts, name, v string) error {
 	switch name {
 	case "--default":
@@ -326,7 +391,7 @@ func setValueOpt(o *opts, name, v string) error {
 		o.onBad = onBadDefault
 		o.seen = append(o.seen, "--default")
 	case "--on-bad":
-		switch strings.ToLower(v) {
+		switch asciiLower(v) {
 		case "error":
 			o.onBad = onBadError
 		case "default":
@@ -350,12 +415,27 @@ func setValueOpt(o *opts, name, v string) error {
 	case "--layer":
 		o.layers = append(o.layers, v)
 		o.seen = append(o.seen, "--layer")
-	case "--set", "--set-literal":
+	case "--remove":
+		if v == "" {
+			return fmt.Errorf("bad --remove value (want PATH)")
+		}
+		o.sets = append(o.sets, setOpt{path: v, kind: setRemove})
+		o.seen = append(o.seen, "--remove")
+	case "--set", "--set-literal", "--set-default", "--set-literal-default":
 		p, val, ok := splitSet(v)
 		if !ok || p == "" {
 			return fmt.Errorf("bad %s value (want PATH=VALUE, quotes and brackets balanced): %s", name, v)
 		}
-		o.sets = append(o.sets, setOpt{path: p, value: val, literal: name == "--set-literal"})
+		k := setData
+		switch name {
+		case "--set-literal":
+			k = setLiteral
+		case "--set-default":
+			k = setDataDefault
+		case "--set-literal-default":
+			k = setLiteralDefault
+		}
+		o.sets = append(o.sets, setOpt{path: p, value: val, kind: k})
 		o.seen = append(o.seen, name)
 	}
 	return nil
@@ -394,7 +474,8 @@ func parseOpts(argv []string) (*opts, error) {
 			o.noBanner = true
 			o.seen = append(o.seen, "--no-banner")
 		case a == "--default" || a == "--on-bad" || a == "--strictness" || a == "--schema" ||
-			a == "--layer" || a == "--set" || a == "--set-literal":
+			a == "--layer" || a == "--set" || a == "--set-literal" ||
+			a == "--set-default" || a == "--set-literal-default" || a == "--remove":
 			i++
 			if i >= len(argv) {
 				return nil, fmt.Errorf("missing value for %s (try %s=VALUE)", a, a)
@@ -406,8 +487,20 @@ func parseOpts(argv []string) (*opts, error) {
 			if err := setValueOpt(o, "--layer", a[len("--layer="):]); err != nil {
 				return nil, err
 			}
+		case strings.HasPrefix(a, "--set-literal-default="):
+			if err := setValueOpt(o, "--set-literal-default", a[len("--set-literal-default="):]); err != nil {
+				return nil, err
+			}
 		case strings.HasPrefix(a, "--set-literal="):
 			if err := setValueOpt(o, "--set-literal", a[len("--set-literal="):]); err != nil {
+				return nil, err
+			}
+		case strings.HasPrefix(a, "--set-default="):
+			if err := setValueOpt(o, "--set-default", a[len("--set-default="):]); err != nil {
+				return nil, err
+			}
+		case strings.HasPrefix(a, "--remove="):
+			if err := setValueOpt(o, "--remove", a[len("--remove="):]); err != nil {
 				return nil, err
 			}
 		case strings.HasPrefix(a, "--set="):
@@ -447,17 +540,20 @@ func checkOpts(cmd string, o *opts) int {
 	switch cmd {
 	case "get":
 		allowed = []string{"--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness",
-			"--layer", "--set", "--set-literal"}
+			"--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove"}
 	case "set":
-		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy"}
+		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--set-default",
+			"--set-literal-default", "--remove", "--write", "--lossy"}
 	case "fmt":
-		allowed = []string{"--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal"}
+		allowed = []string{"--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal",
+			"--set-default", "--set-literal-default", "--remove"}
 	case "check":
 		allowed = []string{"--strictness", "--schema"}
 	case "init":
 		allowed = []string{"--schema", "--no-banner"}
-	case "count", "instances":
-		allowed = []string{"--strictness", "--layer", "--set", "--set-literal"}
+	case "count", "instances", "children", "paths":
+		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--set-default",
+			"--set-literal-default", "--remove"}
 	}
 	for _, s := range o.seen {
 		ok := false
@@ -499,7 +595,7 @@ func checkOpts(cmd string, o *opts) int {
 		return 1
 	}
 	if o.write && len(o.sets) > 0 && cmd != "set" {
-		fmt.Fprintln(os.Stderr, "--write cannot be combined with --set (see --help)")
+		fmt.Fprintf(os.Stderr, "--write cannot be combined with %s (see --help)\n", o.sets[0].opt())
 		return 1
 	}
 	// --lossy only overrides the in-place write's refusal, so on its own it says
@@ -568,6 +664,11 @@ func sayDiagnostics(diags []shcl.Diagnostic) {
 	}
 }
 
+// exitIO is a file or stream that could not be read or written. Its own code
+// since a script's remedy - fix the path, the permissions, the disk - has
+// nothing to do with the remedy for a usage error, which keeps 1.
+const exitIO = 8
+
 func readInput(file string) (string, error) {
 	var b []byte
 	var err error
@@ -635,47 +736,53 @@ func writeBack(doc *shcl.Document, file string, o *opts) int {
 		return 7
 	}
 	fmt.Fprintln(os.Stderr, werr)
-	return 1
+	return exitIO
 }
 
 // loadLayered loads file with o's lower-priority --layer files underneath and
 // its --set overrides on top - the layered-load fold. Every layer parses at the
 // requested strictness; a strict-load failure on any layer aborts like a
-// single-file strict failure (exit 6). Returns (doc, 0) or (nil, code).
-func loadLayered(o *opts, file string) (*shcl.Document, int) {
+// single-file strict failure (exit 6). Returns (doc, diags, 0) or (nil, nil, code).
+//
+// The diagnostics come back per layer, lowest first: a merge does not carry
+// them over, so reading them off the merged document drops the ones for FILE
+// itself, which is the one the caller named.
+func loadLayered(o *opts, file string) (*shcl.Document, []shcl.Diagnostic, int) {
 	texts := make([]string, 0, len(o.layers)+1)
 	for _, lf := range o.layers {
 		t, err := readInput(lf)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return nil, 1
+			return nil, nil, exitIO
 		}
 		texts = append(texts, t)
 	}
 	base, err := readInput(file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return nil, 1
+		return nil, nil, exitIO
 	}
 	texts = append(texts, base)
 	doc, code := loadDoc(texts[0], o.strictness)
 	if code != 0 {
-		return nil, code
+		return nil, nil, code
 	}
+	diags := append([]shcl.Diagnostic(nil), doc.Diagnostics()...)
 	for _, t := range texts[1:] {
 		over, c := loadDoc(t, o.strictness)
 		if c != 0 {
-			return nil, c
+			return nil, nil, c
 		}
+		diags = append(diags, over.Diagnostics()...)
 		doc.Merge(over)
 	}
 	for _, s := range o.sets {
 		if !s.apply(doc) {
 			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path))
-			return nil, 1
+			return nil, nil, 1
 		}
 	}
-	return doc, 0
+	return doc, diags, 0
 }
 
 // doGet: one value read, formatted for the shell: scalars print as one line,
@@ -686,10 +793,14 @@ func doGet(o *opts) int {
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
-	doc, code := loadLayered(o, file)
+	doc, diags, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	sayDiagnostics(diags)
 	var lines []string
 	var status shcl.Status
 	var slots []shcl.Status
@@ -880,13 +991,13 @@ func doFmt(o *opts) int {
 		fmt.Fprintln(os.Stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
-	doc, code := loadLayered(o, file)
+	doc, diags, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
 	// Printing the canonical form drops what the load dropped, the same as a
 	// rewrite does, so the diagnostics go out either way.
-	sayDiagnostics(doc.Diagnostics())
+	sayDiagnostics(diags)
 	if o.write {
 		return writeBack(doc, file, o)
 	}
@@ -921,7 +1032,7 @@ func floatGrammar(s string) bool {
 	if s == "" {
 		return false
 	}
-	low := strings.ToLower(s)
+	low := asciiLower(s)
 	if low == "inf" || low == "infinity" || low == "nan" {
 		return true
 	}
@@ -1243,7 +1354,7 @@ func doSet(o *opts) int {
 		t, err := readInput(lf)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return exitIO
 		}
 		layerTexts = append(layerTexts, t)
 	}
@@ -1263,7 +1374,7 @@ func doSet(o *opts) int {
 		t, err := readInput(file)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return exitIO
 		}
 		base = t
 	}
@@ -1272,11 +1383,13 @@ func doSet(o *opts) int {
 	if doc == nil {
 		return code
 	}
+	diags := append([]shcl.Diagnostic(nil), doc.Diagnostics()...)
 	for _, t := range layerTexts[1:] {
 		over, c := loadDoc(t, o.strictness)
 		if over == nil {
 			return c
 		}
+		diags = append(diags, over.Diagnostics()...)
 		doc.Merge(over)
 	}
 	for _, s := range o.sets {
@@ -1298,7 +1411,7 @@ func doSet(o *opts) int {
 		ops, err = io.ReadAll(os.Stdin)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
-			return 1
+			return exitIO
 		}
 		// The reference reads ops via read_to_string; mirror its UTF-8 failure.
 		if !utf8.Valid(ops) {
@@ -1316,7 +1429,7 @@ func doSet(o *opts) int {
 			return 1
 		}
 	}
-	sayDiagnostics(doc.Diagnostics())
+	sayDiagnostics(diags)
 	if o.write {
 		return writeBack(doc, file, o)
 	}
@@ -1332,7 +1445,7 @@ func doCheck(o *opts) int {
 	text, err := readInput(o.args[0])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return exitIO
 	}
 	var diags []shcl.Diagnostic
 	strictFailed := false
@@ -1350,7 +1463,7 @@ func doCheck(o *opts) int {
 			stext, serr := readInput(o.schema)
 			if serr != nil {
 				fmt.Fprintln(os.Stderr, serr)
-				return 1
+				return exitIO
 			}
 			sdoc := shcl.Parse(stext)
 			bad := false
@@ -1411,7 +1524,7 @@ func doInit(o *opts) int {
 	stext, err := readInput(o.schema)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return exitIO
 	}
 	// The schema always loads at Standard - a program artifact, not user data.
 	sdoc := shcl.Parse(stext)
@@ -1452,10 +1565,14 @@ func doEnum(o *opts, wantCount bool) int {
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
-	doc, code := loadLayered(o, file)
+	doc, diags, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	sayDiagnostics(diags)
 	if wantCount {
 		fmt.Println(doc.Count(path))
 	} else {
@@ -1466,7 +1583,51 @@ func doEnum(o *opts, wantCount bool) int {
 	return 0
 }
 
-var commands = [...]string{"get", "set", "fmt", "check", "init", "count", "instances"}
+// doChildren: child field names under a path, one per line, in file order and
+// with duplicates kept. PATH may be left out to enumerate the top level. Each
+// name comes out in the form a path accepts, so one holding a dot or a quote
+// splices back into a path with no further work.
+func doChildren(o *opts) int {
+	var file, path string
+	switch len(o.args) {
+	case 1:
+		file = o.args[0]
+	case 2:
+		file, path = o.args[0], o.args[1]
+	default:
+		fmt.Fprintln(os.Stderr, "usage: shcl children [options] FILE [PATH] (see --help)")
+		return 1
+	}
+	doc, diags, code := loadLayered(o, file)
+	if doc == nil {
+		return code
+	}
+	sayDiagnostics(diags)
+	for _, name := range doc.Children(path) {
+		fmt.Println(shcl.QuoteSegment(name))
+	}
+	return 0
+}
+
+// doPaths: every field path in the document, one per line, in file order and
+// deduplicated - the whole-document counterpart of doChildren.
+func doPaths(o *opts) int {
+	if len(o.args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: shcl paths [options] FILE (see --help)")
+		return 1
+	}
+	doc, diags, code := loadLayered(o, o.args[0])
+	if doc == nil {
+		return code
+	}
+	sayDiagnostics(diags)
+	for _, p := range doc.Paths() {
+		fmt.Println(p)
+	}
+	return 0
+}
+
+var commands = [...]string{"get", "set", "fmt", "check", "init", "count", "instances", "children", "paths"}
 
 func run() int {
 	argv := os.Args[1:]
@@ -1527,6 +1688,11 @@ func run() int {
 	if code := checkOpts(argv[0], o); code != 0 {
 		return code
 	}
+	// Every command spelled out, and the last arm a refusal rather than a
+	// fall-through: with a default arm, adding a name to commands without
+	// adding one here quietly ran whichever command the default named, with no
+	// compile error and no message. run() gates on commands first, so the arm
+	// below is only reachable through that mistake.
 	switch argv[0] {
 	case "get":
 		return doGet(o)
@@ -1540,8 +1706,15 @@ func run() int {
 		return doInit(o)
 	case "count":
 		return doEnum(o, true)
-	default:
+	case "instances":
 		return doEnum(o, false)
+	case "children":
+		return doChildren(o)
+	case "paths":
+		return doPaths(o)
+	default:
+		fmt.Fprintf(os.Stderr, "%s: no dispatch arm (see --help)\n", argv[0])
+		return 1
 	}
 }
 

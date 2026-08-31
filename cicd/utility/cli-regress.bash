@@ -51,11 +51,19 @@ printf 'field: server.port\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\
 ## An instance whose discriminator holds an '=', which is what made --set's own
 ## split ambiguous.
 printf 'x[a=b]:\n\tc: 0\n' > "${tmpDir}/sel.shcl"
+## A name a path cannot hold bare, for the traversal commands: enumerating keys
+## is only useful if what comes back can be read straight back.
+printf 'db:\n\thost: h\n\t"odd.key": 2\nweb:\n\tport: 1\n' > "${tmpDir}/tree.shcl"
+## Two plain keys, for the edit options: what each one leaves behind is the
+## whole assertion, so the document has to be small enough to spell out.
+printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
 ##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %X% an
-##	instance whose discriminator holds an '='.
+##	instance whose discriminator holds an '=', %T% a document with a name that
+##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
+##	path with no file at it.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that stream.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	Each row names the round and item it pins.
@@ -71,8 +79,9 @@ rows=(
 	'closed-stdout|fmt %F%|@closedout|0|-|^$'
 	## 20260830 item 16: C dropped the line number and the offending op.
 	'bad-op-unknown|set %F%|bogus\ta\t1\n|1|-|op line 1: unknown op: bogus'
-	## 20260830 item 18: C answered a directory with a bare "read error".
-	'read-dir-names-error|fmt %D%|-|1|-|[Ii]s a directory'
+	## 20260830 item 18: C answered a directory with a bare "read error". Exit 8
+	## since 20260830b item 22 split I/O out of the usage code.
+	'read-dir-names-error|fmt %D%|-|8|-|[Ii]s a directory'
 	## 20260830 item 17: C printed a bare count instead of naming the diagnostics.
 	'strict-load-list|fmt --strictness=strict %B%|-|6|-|strict load failed: 2 error diagnostic'
 	## 20260830 round: an unknown command is judged before its options.
@@ -93,6 +102,42 @@ rows=(
 	## 20260829 item 6: --set split PATH from VALUE at the first '=' anywhere, so
 	## a selector holding one could not be addressed at all.
 	'set-eq-in-selector|set --set=x[a=b].c=1 %X%|-|0|x: a=b\n\tc: 1\n|-'
+	## 20260830b item 18: a read below strict returned the value and said nothing
+	## about a line the load had dropped, so a damaged file read clean at exit 0.
+	'get-diags|get %B% a|-|0|1|E015 missing colon'
+	'count-diags|count %B% a|-|0|1|E015 missing colon'
+	'instances-diags|instances %B% a|-|0|1|E015 missing colon'
+	## 20260830b item 22: usage and I/O shared exit 1, so a script could not
+	## tell "the command line is wrong" from "that file is not there".
+	'io-missing-file|get %M% a|-|8|-|-'
+	'io-missing-layer|fmt --layer=%M% %F%|-|8|-|-'
+	'io-missing-check|check %M%|-|8|-|-'
+	'io-missing-schema|init --schema=%M%|-|8|-|-'
+	'usage-unknown-option|get --nope %F% a|-|1|-|unknown option'
+	'usage-bad-write-path|set --set=a[*]=1 %F%|-|1|-|wildcard path cannot be written'
+	## 20260830b item 21: removal and the set-if-absent family had no option
+	## form, so a one-key edit meant a printf with a literal tab piped into set.
+	## The five spellings share one ordered list, so the last one on a path wins.
+	'remove-option|set --remove=b %F2%|-|0|a: 1\n|-'
+	'set-default-absent|set --set-default=c=3 %F2%|-|0|a: 1\nb: 2\n\nc: 3\n|-'
+	'set-default-present|set --set-default=a=9 %F2%|-|0|a: 1\nb: 2\n|-'
+	'set-literal-default|set --set-literal-default=p=1,2 %F2%|-|0|a: 1\nb: 2\n\np: 1, 2\n|-'
+	'set-family-order|set --set=a=5 --remove=a %F2%|-|0|b: 2\n|-'
+	'remove-ephemeral|get --remove=a %F2% a|-|3|-|-'
+	'remove-write-refused|fmt --write --remove=a %F2%|-|1|-|cannot be combined with --remove'
+	'remove-empty-path|set --remove= %F2%|-|1|-|bad --remove value'
+	## 20260830b item 19: a script could read an open section's values but never
+	## learn its keys, so the only route was parsing fmt output in shell. A name
+	## needing quotes comes back path-ready, or enumerating it buys nothing.
+	'children-top|children %T%|-|0|db\nweb|-'
+	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
+	'children-missing|children %T% nope|-|0||-'
+	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	## Found working 20260830b item 18: a merge does not carry diagnostics, so
+	## reading them off the merged doc reported the lowest layer and stayed
+	## silent about FILE - the one file the caller actually named.
+	'layer-base-diags|fmt --layer=%F% %B%|-|0|-|E015 missing colon'
+	'layer-base-diags-set|set --set=q=1 --layer=%F% %B%|-|0|-|E015 missing colon'
 )
 
 declare -i nRun=0 nBad=0
@@ -105,6 +150,9 @@ for row in "${rows[@]}"; do
 	argv="${argv//%P%/${tmpDir}/deep.shcl}"
 	argv="${argv//%S%/${tmpDir}/baddef.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
+	argv="${argv//%T%/${tmpDir}/tree.shcl}"
+	argv="${argv//%F2%/${tmpDir}/two.shcl}"
+	argv="${argv//%M%/${tmpDir}/not-there.shcl}"
 	read -r -a args <<<"${argv}"
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"

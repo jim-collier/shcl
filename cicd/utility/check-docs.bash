@@ -72,6 +72,89 @@ if [[ -f "${backlog}" ]]; then
 	' "${backlog}")
 fi
 
+##	The documents list five integration modes, two of which are a shared library.
+##	Nothing in the tree builds one - no crate-type, no export macro in the C
+##	header, and the release stage produces binaries, packages and the drop-in
+##	tarball. So a document may describe compiling one, but may not offer it as
+##	something already built. If a build for it is ever added, this check is what
+##	says the wording may go back.
+buildsSharedLib=0
+if grep -rqE 'crate-type[^=]*=[^]]*(cdylib|dylib|staticlib)' --include='Cargo.toml' "${repoDir}"; then
+	buildsSharedLib=1
+fi
+if ((! buildsSharedLib)); then
+	while IFS= read -r hit; do
+		fBad "offers a shared library as already built, and nothing builds one: ${hit}"
+	done < <(grep -rniE '(prebuilt|pre-built|published|shipped)[^.]*\.(so|dll|dylib)|\b(prebuilt|pre-built)\b[^.]*shared librar' \
+		--include='*.md' "${repoDir}" | grep -v '/backlog\.md:' || true)
+fi
+
+##	The Windows installer refuses outright without `tar`, and the README's
+##	prerequisites used to cover only the Linux side, so the requirement was
+##	reachable only by running it and failing.
+ps1="${repoDir}/install.ps1"
+readme="${repoDir}/README.md"
+if [[ -f "${ps1}" && -f "${readme}" ]] && grep -q "needs tar to unpack" "${ps1}"; then
+	grep -qE '(^|[^a-z])tar([^a-z]|$).*[Ww]indows|[Ww]indows.*(^|[^a-z])tar([^a-z]|$)' "${readme}" \
+		|| fBad "install.ps1 requires tar and README.md never says so on the Windows side"
+fi
+
+##	Two top-level bullets with no blank line between them. Auto-generated TOC
+##	blocks are the exception - the tool strips blank lines out of them, so a
+##	`<!-- TOC -->` region is skipped, as is any list of bare anchor links, which
+##	is what a hand-maintained contents block looks like.
+while IFS= read -r f; do
+	while IFS= read -r hit; do
+		fBad "adjacent top-level bullets: ${f#"${repoDir}/"}:${hit}"
+	done < <(awk '
+		/<!-- TOC -->/      { toc = 1 }
+		/<!-- \/TOC -->/    { toc = 0 }
+		{
+			isBullet = ($0 ~ /^- /)
+			anchor   = ($0 ~ /^- \[[^]]*\]\(#[^)]*\)[[:space:]]*$/)
+			if (!toc && !anchor && prevBullet && isBullet) print NR ": " substr($0, 1, 60)
+			prevBullet = isBullet && !anchor
+			prev = $0
+		}' "${f}" || true)
+done < <(find "${repoDir}" -name '*.md' -not -path '*/target/*' -not -path '*/.git/*' -not -path '*/node_modules/*' | sort)
+
+##	The claim that the code goes to stdout and the prose to stderr. The stderr
+##	line carries the code too, and has since the round that changed the CLI's
+##	voice - so a document saying otherwise describes a split that is not there.
+while IFS= read -r hit; do
+	fBad "says the prose alone goes to stderr, but the stderr line carries the code: ${hit}"
+done < <(grep -rn "prose to stderr" --include='*.md' "${repoDir}" | grep -v '/backlog\.md:' || true)
+
+##	Each language example says a setter reports whether the write applied, then
+##	three of the four called the first two bare. The Rust one checks all three,
+##	because the type system makes it, so it is the comparison a reader has.
+readme="${repoDir}/README.md"
+if [[ -f "${readme}" ]]; then
+	for fence in rust go python c; do
+		block="$(awk -v f="^\`\`\`${fence}\$" '$0 ~ f, /^```$/' "${readme}")"
+		[[ -n "${block}" ]] || continue
+		calls="$(grep -cE '(doc\.[Ss]et[A-Za-z_]+\(|shcl_set_[a-z]+\(doc)' <<<"${block}" || true)"
+		checked="$(grep -cE '(if !doc\.[Ss]et|if not doc\.set_|if \(!shcl_set_)' <<<"${block}" || true)"
+		((calls == 0)) && continue
+		((checked >= calls)) || fBad "README ${fence} example calls ${calls} setter(s) and checks ${checked}"
+	done
+fi
+
+##	The stamps terminate an item: an outcome bullet below them makes them stop
+##	being a reliable end marker, and puts the result furthest from the finding.
+while IFS= read -r hit; do
+	fBad "backlog.md: sub-bullet below the stamps: ${hit}"
+done < <(awk '
+	match($0, /^\t+- (Opened|Closed): /) { stamp = NR; indent = length($0) - length(substr($0, RSTART + RLENGTH)); next }
+	stamp == NR - 1 && /^\t+- / { print NR ": " substr($0, 1, 60) }
+	{ stamp = 0 }' "${backlog}" || true)
+
+##	How a defect was found is not what changed. The gate that caught it belongs
+##	in the cause line where it is the point, not in a bullet of its own.
+while IFS= read -r hit; do
+	fBad "backlog.md: says how it was found rather than what changed: ${hit}"
+done < <(grep -nE '^[[:space:]]*- Found (by|while) ' "${backlog}" || true)
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

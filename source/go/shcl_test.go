@@ -127,6 +127,9 @@ func loadCases(t *testing.T) []corpusCase {
 		}
 		if em, err := os.ReadFile(filepath.Join(caseDir, "expected-merged.shcl")); err == nil {
 			// Layer files: every layer*.shcl, in filename (= priority) order.
+			// The directory was just read for the case files, so a failure here
+			// would mean it vanished mid-run; the case then has no layers and
+			// the merge assertion below reports it.
 			dirEntries, _ := os.ReadDir(caseDir)
 			var layerNames []string
 			for _, de := range dirEntries {
@@ -1297,10 +1300,29 @@ func TestInitGenerationMatchesExpected(t *testing.T) {
 	}
 }
 
+// Go-only: nearly every name is already folded, and the helper used to copy the
+// whole string into a byte slice before discovering it had nothing to change.
+// Asserted as an allocation count rather than a time, since a constant-factor
+// win has no wall-clock threshold that both fires and does not flake.
+func TestAsciiLowerDoesNotCopyAFoldedName(t *testing.T) {
+	var sink string
+	folded := strings.Repeat("server-config-name-", 40)
+	if n := testing.AllocsPerRun(200, func() { sink = asciiLower(folded) }); n != 0 {
+		t.Errorf("asciiLower allocated %v time(s) on an already-folded name, want 0", n)
+	}
+	if sink != folded {
+		t.Errorf("asciiLower changed an already-folded name")
+	}
+	mixed := strings.Repeat("Server-Config-Name-", 40)
+	if got := asciiLower(mixed); got != folded {
+		t.Errorf("asciiLower(mixed) = %q", got[:40])
+	}
+}
+
 func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {
 	// Mirror of the reference: the *Or value survives only on Good; Empty,
 	// BadType, and NotFound all yield the call-site fallback.
-	d := Parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\n")
+	d := Parse("a: 42\nb: not-a-number\ne:\narr: 1, 2, 3\nblk:\n\t```html\n\thi\n\t```\n")
 	if got := d.GetIntOr("a", 9); got != 42 {
 		t.Fatalf("GetIntOr Good = %d, want 42", got)
 	}
@@ -1322,6 +1344,17 @@ func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {
 	}
 	if _, st := d.GetIntArray("missing"); st != NotFound {
 		t.Fatalf("GetIntArray(missing) status = %v, want NotFound", st)
+	}
+	// The raw block's info-string was the one typed read with no convenience
+	// tier, so it alone forced a caller down to the status tier.
+	if got, st := d.GetRawInfo("blk"); st != Good || got != "html" {
+		t.Fatalf("GetRawInfo(blk) = %q, %v", got, st)
+	}
+	if got := d.GetRawInfoOr("blk", "fb"); got != "html" {
+		t.Fatalf("GetRawInfoOr Good = %q, want html", got)
+	}
+	if got := d.GetRawInfoOr("missing", "fb"); got != "fb" {
+		t.Fatalf("GetRawInfoOr missing = %q, want fallback", got)
 	}
 	// Ok and the convenience tier deliberately disagree on an explicitly
 	// emptied field: one asks whether the author spoke for it, the other whether
@@ -1383,6 +1416,18 @@ func TestReadsMatchExpected(t *testing.T) {
 			if kind == "instances" {
 				if got := strings.Join(doc.Instances(query), "|"); got != expected {
 					t.Errorf("%s: instances: got %q want %q", at, got, expected)
+				}
+				continue
+			}
+			if kind == "children" {
+				if got := strings.Join(doc.Children(query), "|"); got != expected {
+					t.Errorf("%s: children: got %q want %q", at, got, expected)
+				}
+				continue
+			}
+			if kind == "paths" {
+				if got := strings.Join(doc.Paths(), "|"); got != expected {
+					t.Errorf("%s: paths: got %q want %q", at, got, expected)
 				}
 				continue
 			}

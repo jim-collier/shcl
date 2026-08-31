@@ -409,6 +409,8 @@ On Windows, `irm | iex` cannot take arguments at all, so use the scriptblock for
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1))) -Target user
 ```
 
+The installer unpacks the drop-in payload with `tar`, which Windows 10 1803, Server 2019 and later carry. On an older Windows, use the setup `.exe` from the releases page instead.
+
 | Target | Linux | Windows
 | :-- | :-- | :--
 | `system` (default) | `/opt/shcl` plus a `/usr/local/bin/shcl` symlink | `C:\Program Files\Shcl`, added to `PATH`
@@ -473,6 +475,24 @@ Good	on
 Good	off
 ```
 
+When the keys are the thing you do not know, `children` lists them and `paths` walks the whole file. Each name comes back in the form a path accepts, so it can go straight back into the next read:
+
+```console
+$ shcl children server.shcl
+listen
+workers
+log-level
+site
+site
+maintenance-page
+
+$ shcl children server.shcl 'site[example.com]'
+root
+max-upload-mb
+methods
+tls
+```
+
 `check` is where the forgiving parser shows its hand. Knock the colon off line 3 of that file, and line 3 is all you lose:
 
 ```console
@@ -485,7 +505,7 @@ $ shcl get server.shcl log-level     # the rest of the file loaded fine
 warn
 ```
 
-The stable code goes to stdout and the prose to stderr, so a script can match on `E014` without parsing English, and `check` exits 6 when it found errors - enough to gate a build.
+Both streams carry the code; only stdout is the contract. The stdout line is `line N: Severity: CODE` and nothing else, so a script can match on `E014` without parsing English, while the stderr line adds the prose for a person reading along. `check` exits 6 when it found errors - enough to gate a build.
 
 Hand it a schema and it validates against that too. A schema is an ordinary `.shcl` file: one `field:` instance per path, constraints written as its children ([the spec](project/spec.md#schema-validation) has the full vocabulary).
 
@@ -632,8 +652,12 @@ if mb, st := doc.GetInt("site[example.com].max-upload-mb"); st == shcl.Good {
 // A setter reports whether the write applied: a path that cannot be written
 // writes nothing at all rather than half of it, and WriteReason names which of
 // the five reasons it hit.
-doc.SetInt("workers", workers*2)
-doc.SetBool("site[example.com].tls.hsts", true)
+if !doc.SetInt("workers", workers*2) {
+	fmt.Println("workers:", doc.WriteReason("workers"))
+}
+if !doc.SetBool("site[example.com].tls.hsts", true) {
+	fmt.Println("hsts:", doc.WriteReason("site[example.com].tls.hsts"))
+}
 if !doc.SetString("site[blog.example.com].root", "/srv/www/blog") {
 	fmt.Println("blog root:", doc.WriteReason("site[blog.example.com].root"))
 }
@@ -671,8 +695,10 @@ if read.status is not shcl.Status.Good:
 # A setter reports whether the write applied: a path that cannot be written
 # writes nothing at all rather than half of it, and write_reason names which of
 # the five reasons it hit.
-doc.set_int("workers", workers * 2)
-doc.set_bool("site[example.com].tls.hsts", True)
+if not doc.set_int("workers", workers * 2):
+	print("workers:", doc.write_reason("workers"))
+if not doc.set_bool("site[example.com].tls.hsts", True):
+	print("hsts:", doc.write_reason("site[example.com].tls.hsts"))
 if not doc.set_string("site[blog.example.com].root", "/srv/www/blog"):
 	print("blog root:", doc.write_reason("site[blog.example.com].root"))
 
@@ -761,8 +787,10 @@ if (root.status == SHCL_GOOD)
 // A setter reports whether the write applied: a path that cannot be written
 // writes nothing at all rather than half of it, and shcl_write_reason_ names
 // which of the five reasons it hit (SHCL_W_WILDCARD here, say).
-shcl_set_int(doc, P("workers"), workers * 2);
-shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1);
+if (!shcl_set_int(doc, P("workers"), workers * 2))
+	printf("workers: %d\n", shcl_write_reason_(doc, P("workers")));
+if (!shcl_set_bool(doc, P("site[example.com].tls.hsts"), 1))
+	printf("hsts: %d\n", shcl_write_reason_(doc, P("site[example.com].tls.hsts")));
 if (!shcl_set_string(doc, P("site[blog.example.com].root"), P("/srv/www/blog")))
 	fprintf(stderr, "blog root: reason %d\n", shcl_write_reason_(doc, P("site[blog.example.com].root")));
 

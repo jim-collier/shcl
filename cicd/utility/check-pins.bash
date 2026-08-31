@@ -50,7 +50,10 @@ fNamesAt(){ grep -qE -- "(^|[^A-Za-z0-9_-])${1}(==|@|-|/|-version: \")v?${2//./\
 rc=0
 for pin in "${TOOL_PINS[@]}"; do
 	name="${pin%%|*}"; rest="${pin#*|}"; ver="${rest%%|*}"
-	skip=0; for x in "${notInCi[@]}"; do [[ "${x}" == "${name}" ]] && skip=1; done
+	skip=0
+	for x in "${notInCi[@]}"; do
+		if [[ "${x}" == "${name}" ]]; then skip=1; fi
+	done
 	((skip)) && continue
 	if [[ "${name}" == cppcheck ]]; then
 		fNamesAt cppcheck "${CPPCHECK_WHEEL}" || { echo "check-pins: cppcheck's wheel is ${CPPCHECK_WHEEL} in config.bash, and no line of ci.yml installs cppcheck==${CPPCHECK_WHEEL}" >&2; rc=1; }

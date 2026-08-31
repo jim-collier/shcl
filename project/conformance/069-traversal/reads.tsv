@@ -1,0 +1,8 @@
+query	type	expected	status
+	children	db|web|server|server	-
+db	children	host|port|odd.key|port	-
+web	children	roots|a b	-
+nope	children		-
+-	paths	db|db.host|db.port|db."odd.key"|web|web.roots|web."a b"|server|server.bind	-
+db.port	count	2	-
+db."odd.key"	int	2	Good

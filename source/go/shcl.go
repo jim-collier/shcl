@@ -748,18 +748,24 @@ const MaxDepth = 512
 // Lexical helpers
 // ---------------------------------------------------------------------------
 
-// asciiLower folds A-Z only; non-ASCII passes through untouched.
+// asciiLower folds A-Z only; non-ASCII passes through untouched. Nearly every
+// name is already folded, so the scan comes first: copying and then finding
+// nothing to change was the whole cost on the common path.
 func asciiLower(s string) string {
-	b := []byte(s)
-	changed := false
-	for i := 0; i < len(b); i++ {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 'a' - 'A'
-			changed = true
+	i := 0
+	for ; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			break
 		}
 	}
-	if !changed {
+	if i == len(s) {
 		return s
+	}
+	b := []byte(s)
+	for ; i < len(b); i++ {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
 	}
 	return string(b)
 }
@@ -1293,9 +1299,12 @@ func fenceOpen(rest string) (ch byte, length int, info string, ok bool) {
 	return first, run, strings.TrimSpace(rest[run:]), true
 }
 
+// minLen is the opening fence's length, which the grammar puts at three or
+// more, so the length test already rules out the empty line the loop below
+// would otherwise accept.
 func isFenceClose(line string, ch byte, minLen int) bool {
 	t := strings.TrimSpace(line)
-	if len(t) < minLen || t == "" {
+	if len(t) < minLen {
 		return false
 	}
 	for i := 0; i < len(t); i++ {
@@ -1850,10 +1859,11 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			// a spurious second one - via the dispMap accelerator (the inline
 			// spelling was quadratic in siblings without it). Create only when
 			// nothing matches.
-			// A quoted selector is scalar-only, and the accelerator keeps just
-			// the first same-display child - a later remap can drop an entry a
-			// different sibling still satisfies - so a non-scalar hit and an
-			// outright miss both fall to the (rare) fallback scan.
+			// A quoted selector is scalar-only, so it is the one that needs the
+			// fallback scan: the accelerator keeps just the first same-display
+			// child, which may be the non-scalar one. An unquoted selector takes
+			// whatever the accelerator holds and does not scan, so it can bind a
+			// raw block where a quoted selector picks the scalar sibling.
 			if found, ok := p.findByValue(cur, seg.name, seg.sel.value, seg.sel.quoted); ok {
 				cur = found
 			} else {
@@ -2814,7 +2824,12 @@ func WriteFileAtomic(file, data string) error {
 	if err == nil && existErr == nil && runtime.GOOS != "windows" {
 		_ = f.Chmod(existing.Mode())
 	}
-	f.Close()
+	// The sync above is what forces the data out, so a close error here is the
+	// unlikely tail of it - but a write error that only surfaces on close would
+	// otherwise publish a truncated temp file over the target.
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
 	if err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: %w", file, err)
@@ -5149,6 +5164,12 @@ func (d *Document) GetRaw(path string) (string, Status) {
 	return r.Value, r.Status
 }
 
+// GetRawInfo is ReadRawInfo reduced to (value, status).
+func (d *Document) GetRawInfo(path string) (string, Status) {
+	r := d.ReadRawInfo(path)
+	return r.Value, r.Status
+}
+
 // GetDateTime is ReadDateTime reduced to (value, status).
 func (d *Document) GetDateTime(path string) (DateTime, Status) {
 	r := d.ReadDateTime(path)
@@ -5230,6 +5251,15 @@ func (d *Document) GetStringOr(path string, def string) string {
 // GetRawOr is the raw-block content at path, or def when the read is not Good.
 func (d *Document) GetRawOr(path string, def string) string {
 	if r := d.ReadRaw(path); r.Status == Good {
+		return r.Value
+	}
+	return def
+}
+
+// GetRawInfoOr is the raw block's info-string at path, or def when the read is
+// not Good.
+func (d *Document) GetRawInfoOr(path string, def string) string {
+	if r := d.ReadRawInfo(path); r.Status == Good {
 		return r.Value
 	}
 	return def

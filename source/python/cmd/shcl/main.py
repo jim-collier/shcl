@@ -35,6 +35,11 @@ Usage:
                                          optional commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+  shcl children [options] FILE [PATH]    child field names under a path, one per
+                                         line (the top level when PATH is left
+                                         out)
+  shcl paths [options] FILE              every field path in the document, one
+                                         per line
   shcl help | version                    this help, or the version (also
                                          -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
@@ -82,24 +87,31 @@ Options (the subcommands each belongs to are in parentheses):
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
-  --layer=FILE                           (get/fmt/count/instances/set) merge a
+  --layer=FILE                           (all but check/init) merge a
                                          lower-priority layer under FILE;
                                          repeatable, earlier = lower priority
-  --set=PATH=VALUE                       (get/fmt/count/instances/set) override
-                                         one path as the top layer, after all
-                                         files; repeatable. On 'set'
-                                         it is an edit to the document itself,
-                                         so it persists with --write. VALUE
-                                         goes in as data: its type still
-                                         follows the text (8 is an int), but a
-                                         comma or quote in it is content, not
-                                         syntax
+  --set=PATH=VALUE                       (all but check/init) override one path
+                                         as the top layer, after all files;
+                                         repeatable. On 'set' it is an edit to
+                                         the document itself, so it persists
+                                         with --write. VALUE goes in as data:
+                                         its type still follows the text (8 is
+                                         an int), but a comma or quote in it is
+                                         content, not syntax
   --set-literal=PATH=TEXT                (same subcommands) as --set, except
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
                                          array. An unquoted # ends the value;
                                          text spanning lines is rejected
+  --set-default=PATH=VALUE               (same) as --set, but only when nothing
+  --set-literal-default=PATH=TEXT        is at the path yet - the write-out-
+                                         defaults half of the writer
+  --remove=PATH                          (same) delete what is at the path,
+                                         with its subtree. Removing nothing is
+                                         not an error
+The five above share one ordered list, so two of them touching the same path
+resolve in the order given. Raw blocks still go in through the ops script.
 
 Value options accept either spelling: --default=VALUE or --default VALUE. In
 the space form the next argument is taken as the value whatever it looks like,
@@ -109,16 +121,17 @@ An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
 without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
 named more than once across FILE, --layer and --schema.
-fmt and set print the load's diagnostics to stderr along with the canonical
-document. An in-place write also refuses when the load dropped content the
+Every subcommand that loads a document prints the load's diagnostics to stderr,
+once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
-Exit codes: 0 good, 1 usage or I/O error, 2 empty, 3 not found, 4 bad type,
+Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides).
+has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream
+could not be read or written.
 """
 
 # About and donate are stdout, so they are byte-for-byte contracts across the
@@ -151,23 +164,32 @@ def status_code(st):
 
 
 class _SetOpt:
-	# One --set/--set-literal override. Both spellings share a list so they apply
-	# in the order given, which is what decides the winner when two target the
-	# same path.
-	__slots__ = ("path", "value", "literal")
+	# One edit from the --set family. All five spellings share a list so they
+	# apply in the order given, which is what decides the winner when two target
+	# the same path.
+	__slots__ = ("path", "value", "kind")
 
-	def __init__(self, path, value, literal):
+	def __init__(self, path, value, kind):
 		self.path = path
 		self.value = value
-		self.literal = literal
+		self.kind = kind
 
 	def apply(self, doc):
-		if self.literal:
+		if self.kind == "--set-literal":
 			return doc.set_literal(self.path, self.value)
+		if self.kind == "--set-default":
+			return doc.set_string_default(self.path, self.value)
+		if self.kind == "--set-literal-default":
+			return doc.set_literal_default(self.path, self.value)
+		if self.kind == "--remove":
+			# Removing nothing is not a failure, the same as the ops script's
+			# `remove`: the point of the option is the path's absence after.
+			doc.remove(self.path)
+			return True
 		return doc.set_string(self.path, self.value)
 
 	def opt(self):
-		return "--set-literal" if self.literal else "--set"
+		return self.kind
 
 
 class _Opts:
@@ -219,11 +241,16 @@ def _set_value_opt(o, name, v):
 	elif name == "--layer":
 		o.layers.append(v)
 		o.seen.append("--layer")
-	elif name in ("--set", "--set-literal"):
+	elif name == "--remove":
+		if v == "":
+			raise ValueError("bad --remove value (want PATH)")
+		o.sets.append(_SetOpt(v, "", "--remove"))
+		o.seen.append("--remove")
+	elif name in ("--set", "--set-literal", "--set-default", "--set-literal-default"):
 		ps = split_set(v)
 		if ps is None or ps[0] == "":
 			raise ValueError(f"bad {name} value (want PATH=VALUE, quotes and brackets balanced): {v}")
-		o.sets.append(_SetOpt(ps[0], ps[1], name == "--set-literal"))
+		o.sets.append(_SetOpt(ps[0], ps[1], name))
 		o.seen.append(name)
 
 
@@ -273,7 +300,7 @@ def asked_for(argv):
 			return "donate"
 		if a == "--":
 			return None
-		if a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal"):
+		if a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove"):
 			i += 1
 		i += 1
 	return None
@@ -318,7 +345,7 @@ def parse_opts(argv):
 		elif a == "--lossy":
 			o.lossy = True
 			o.seen.append("--lossy")
-		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal"):
+		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove"):
 			i += 1
 			if i >= len(argv):
 				raise ValueError(f"missing value for {a} (try {a}=VALUE)")
@@ -333,8 +360,14 @@ def parse_opts(argv):
 			_set_value_opt(o, "--schema", a[len("--schema="):])
 		elif a.startswith("--layer="):
 			_set_value_opt(o, "--layer", a[len("--layer="):])
+		elif a.startswith("--set-literal-default="):
+			_set_value_opt(o, "--set-literal-default", a[len("--set-literal-default="):])
 		elif a.startswith("--set-literal="):
 			_set_value_opt(o, "--set-literal", a[len("--set-literal="):])
+		elif a.startswith("--set-default="):
+			_set_value_opt(o, "--set-default", a[len("--set-default="):])
+		elif a.startswith("--remove="):
+			_set_value_opt(o, "--remove", a[len("--remove="):])
 		elif a.startswith("--set="):
 			_set_value_opt(o, "--set", a[len("--set="):])
 		elif a.startswith("-") and len(a) > 1:
@@ -343,6 +376,12 @@ def parse_opts(argv):
 			o.args.append(a)
 		i += 1
 	return o
+
+
+# A file or stream that could not be read or written. Its own code since a
+# script's remedy - fix the path, the permissions, the disk - has nothing to do
+# with the remedy for a usage error, which keeps 1.
+EXIT_IO = 8
 
 
 def read_input(file):
@@ -388,31 +427,36 @@ def write_back(doc, file, o):
 		return 7
 	except shcl.SaveError as e:
 		sys.stderr.write(str(e) + "\n")
-	return 1
+	return EXIT_IO
 
 
 def load_layered(o, file):
 	# Load file with o's lower-priority --layer files underneath and its --set
 	# overrides on top - the layered-load fold. Every layer parses at the
 	# requested strictness; a strict-load failure on any layer aborts like a
-	# single-file strict failure. Returns (doc, None) or (None, code).
+	# single-file strict failure. Returns (doc, diags, None) or (None, None, code).
+	# The diagnostics come back per layer, lowest first: a merge does not carry
+	# them over, so reading them off the merged document drops the ones for FILE
+	# itself, which is the one the caller named.
 	texts = []
 	for lf in o.layers:
 		texts.append(read_input(lf))
 	texts.append(read_input(file))
 	doc, code = load_doc(texts[0], o.strictness)
 	if doc is None:
-		return None, code
+		return None, None, code
+	diags = list(doc.diagnostics())
 	for t in texts[1:]:
 		over, c = load_doc(t, o.strictness)
 		if over is None:
-			return None, c
+			return None, None, c
+		diags.extend(over.diagnostics())
 		doc.merge(over)
 	for st in o.sets:
 		if not st.apply(doc):
 			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {describe_refusal(doc, st.path)}\n")
-			return None, 1
-	return doc, None
+			return None, None, 1
+	return doc, diags, None
 
 
 def check_opts(cmd, o):
@@ -420,17 +464,17 @@ def check_opts(cmd, o):
 	# silently ignored (`set --write` before it existed, `--schema` on `get`) is a
 	# usage error instead. Returns an exit code, or None to proceed.
 	if cmd == "get":
-		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal")
+		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	elif cmd == "set":
-		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy")
+		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy")
 	elif cmd == "fmt":
-		allowed = ("--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal")
+		allowed = ("--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	elif cmd == "check":
 		allowed = ("--strictness", "--schema")
 	elif cmd == "init":
 		allowed = ("--schema", "--no-banner")
-	elif cmd in ("count", "instances"):
-		allowed = ("--strictness", "--layer", "--set", "--set-literal")
+	elif cmd in ("count", "instances", "children", "paths"):
+		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	else:
 		allowed = ()
 	for s in o.seen:
@@ -463,7 +507,7 @@ def check_opts(cmd, o):
 		sys.stderr.write("--write cannot be combined with --layer (see --help)\n")
 		return 1
 	if o.write and o.sets and cmd != "set":
-		sys.stderr.write("--write cannot be combined with --set (see --help)\n")
+		sys.stderr.write(f"--write cannot be combined with {o.sets[0].opt()} (see --help)\n")
 		return 1
 	# --lossy only overrides the in-place write's refusal, so on its own it says
 	# nothing and would read as protection the command never had.
@@ -524,12 +568,16 @@ def do_get(o):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		doc, code = load_layered(o, file)
+		doc, diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	if doc is None:
 		return code
+	# A read reports what the load dropped, the same as fmt and set: below
+	# strict the value comes back fine and the damage is otherwise silent.
+	# One report per invocation, so a read in a loop is one line per call.
+	say_diagnostics(diags)
 	if o.array:
 		if o.kind == "int":
 			r = doc.read_int_array(path)
@@ -667,15 +715,15 @@ def do_fmt(o):
 		sys.stderr.write("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
 	try:
-		doc, code = load_layered(o, file)
+		doc, diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	if doc is None:
 		return code
 	# Printing the canonical form drops what the load dropped, the same as a
 	# rewrite does, so the diagnostics go out either way.
-	say_diagnostics(doc.diagnostics())
+	say_diagnostics(diags)
 	if o.write:
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
@@ -875,15 +923,17 @@ def do_set(o):
 		base = "" if creating or (file == "-" and not o.sets) else read_input(file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	layer_texts.append(base)
 	doc, code = load_doc(layer_texts[0], o.strictness)
 	if doc is None:
 		return code
+	diags = list(doc.diagnostics())
 	for t in layer_texts[1:]:
 		over, c = load_doc(t, o.strictness)
 		if over is None:
 			return c
+		diags.extend(over.diagnostics())
 		doc.merge(over)
 	for st in o.sets:
 		if not st.apply(doc):
@@ -906,7 +956,7 @@ def do_set(o):
 			ops = sys.stdin.buffer.read().decode("utf-8")
 		except UnicodeDecodeError:
 			sys.stderr.write("stdin: invalid UTF-8\n")
-			return 1
+			return EXIT_IO
 	pieces = ops.split("\n")
 	for n, line in enumerate(pieces):
 		# The CR of a CRLF comes off with the LF, as the reference's line split
@@ -922,7 +972,7 @@ def do_set(o):
 		except ValueError as e:
 			sys.stderr.write(f"op line {n + 1}: {e}\n")
 			return 1
-	say_diagnostics(doc.diagnostics())
+	say_diagnostics(diags)
 	if o.write:
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
@@ -937,7 +987,7 @@ def do_check(o):
 		text = read_input(o.args[0])
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	strict_failed = False
 	try:
 		doc = shcl.Document.parse_with(text, o.strictness)
@@ -950,7 +1000,7 @@ def do_check(o):
 				stext = read_input(o.schema)
 			except (OSError, ValueError) as e:
 				sys.stderr.write(str(e) + "\n")
-				return 1
+				return EXIT_IO
 			sdoc = shcl.Document.parse(stext)
 			if any(sd.severity == shcl.Severity.Error for sd in sdoc.diagnostics()):
 				for sd in sdoc.diagnostics():
@@ -993,7 +1043,7 @@ def do_init(o):
 		stext = read_input(o.schema)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	# The schema always loads at Standard - a program artifact, not user data.
 	sdoc = shcl.Document.parse(stext)
 	if any(d.severity == shcl.Severity.Error for d in sdoc.diagnostics()):
@@ -1020,12 +1070,16 @@ def do_enum(o, want_count):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		doc, code = load_layered(o, file)
+		doc, diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
-		return 1
+		return EXIT_IO
 	if doc is None:
 		return code
+	# A read reports what the load dropped, the same as fmt and set: below
+	# strict the value comes back fine and the damage is otherwise silent.
+	# One report per invocation, so a read in a loop is one line per call.
+	say_diagnostics(diags)
 	if want_count:
 		print(doc.count(path))
 	else:
@@ -1034,7 +1088,51 @@ def do_enum(o, want_count):
 	return 0
 
 
-COMMANDS = ("get", "set", "fmt", "check", "init", "count", "instances")
+def do_children(o):
+	# Child field names under a path, one per line, in file order and with
+	# duplicates kept. PATH may be left out to enumerate the top level. Each name
+	# comes out in the form a path accepts, so one holding a dot or a quote
+	# splices back into a path with no further work.
+	if len(o.args) == 1:
+		file, path = o.args[0], ""
+	elif len(o.args) == 2:
+		file, path = o.args[0], o.args[1]
+	else:
+		sys.stderr.write("usage: shcl children [options] FILE [PATH] (see --help)\n")
+		return 1
+	try:
+		doc, diags, code = load_layered(o, file)
+	except (OSError, ValueError) as e:
+		sys.stderr.write(str(e) + "\n")
+		return EXIT_IO
+	if doc is None:
+		return code
+	say_diagnostics(diags)
+	for name in doc.children(path):
+		print(shcl.quote_segment(name))
+	return 0
+
+
+def do_paths(o):
+	# Every field path in the document, one per line, in file order and
+	# deduplicated - the whole-document counterpart of do_children.
+	if len(o.args) != 1:
+		sys.stderr.write("usage: shcl paths [options] FILE (see --help)\n")
+		return 1
+	try:
+		doc, diags, code = load_layered(o, o.args[0])
+	except (OSError, ValueError) as e:
+		sys.stderr.write(str(e) + "\n")
+		return EXIT_IO
+	if doc is None:
+		return code
+	say_diagnostics(diags)
+	for p in doc.paths():
+		print(p)
+	return 0
+
+
+COMMANDS = ("get", "set", "fmt", "check", "init", "count", "instances", "children", "paths")
 
 
 def run(argv):
@@ -1095,7 +1193,18 @@ def run(argv):
 		return do_init(o)
 	if cmd == "count":
 		return do_enum(o, True)
-	return do_enum(o, False)
+	if cmd == "instances":
+		return do_enum(o, False)
+	if cmd == "children":
+		return do_children(o)
+	if cmd == "paths":
+		return do_paths(o)
+	# A refusal rather than a fall-through: with one, adding a name to COMMANDS
+	# without adding a branch here quietly ran whichever command the last line
+	# named, with no message. run() gates on COMMANDS first, so this is only
+	# reachable through that mistake.
+	sys.stderr.write(f"{cmd}: no dispatch arm (see --help)\n")
+	return 1
 
 
 def main():

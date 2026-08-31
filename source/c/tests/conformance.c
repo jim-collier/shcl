@@ -26,6 +26,8 @@ typedef int Arena, Node, Value, Element, Str, Parser, Diag, Segment, Selector, S
 #include <direct.h>   // _mkdir - windows' mkdir takes no mode argument
 #else
 #include <sys/stat.h>   // the file-mode fixture stats and chmods for itself
+#include <pthread.h>    // the small-stack validate fixture
+#include <unistd.h>     // sysconf, for the smallest stack this platform allows
 #endif
 
 // Temp root for the file-tier fixture. TMPDIR is the POSIX spelling; windows
@@ -95,6 +97,19 @@ static shcl_strictness parse_level(const char *s) {
 
 // Renders a scalar/array read into a malloc'd string (caller frees); sets *st,
 // and for array kinds the per-slot statuses (arena memory, freed with the doc).
+// A |-joined string of shcl_str values, the shape the reads.tsv list kinds
+// compare against. Caller frees.
+static char *join_pipe(const shcl_str *v, size_t n) {
+	size_t jc = 8, jl = 0;
+	char *joined = xrealloc(NULL, jc); joined[0] = '\0';
+	for (size_t i = 0; i < n; i++) {
+		if (i) { if (jl + 2 > jc) { jc = jl + 2; joined = xrealloc(joined, jc); } joined[jl++] = '|'; joined[jl] = '\0'; }
+		if (jl + v[i].n + 1 > jc) { jc = jl + v[i].n + 1; joined = xrealloc(joined, jc); }
+		memcpy(joined + jl, v[i].p, v[i].n); jl += v[i].n; joined[jl] = '\0';
+	}
+	return joined;
+}
+
 static char *scalar_read(shcl_doc *d, const char *kind, const char *q, size_t qn, shcl_status *st, const shcl_status **slots, size_t *nslots) {
 	*slots = NULL; *nslots = 0;
 	char *out = xrealloc(NULL, 8); memset(out, 0, 8); size_t olen = 0, ocap = 8; char nb[SHCL_F64_BUF];
@@ -267,6 +282,24 @@ static size_t split_lines(char *buf, size_t n, char ***out) {
 	*out = lines; return cnt;
 }
 
+#ifndef _WIN32
+// Runs one validation and reports back through the return value, so a stack
+// overflow inside it is a crashed run rather than a quiet pass.
+static void *validate_on_small_stack(void *unused) {
+	(void)unused;
+	const char *doc = "port: 8080\n";
+	const char *sch = "field: port\n\ttype: int\n\trequired: yes\n";
+	shcl_doc *d = shcl_parse(doc, strlen(doc));
+	shcl_doc *s = shcl_parse(sch, strlen(sch));
+	shcl_validation *v = shcl_validate(d, s);
+	size_t n = shcl_validation_count(v);
+	shcl_validation_free(v);
+	shcl_free(s);
+	shcl_free(d);
+	return n == 0 ? (void *)1 : NULL;
+}
+#endif
+
 int main(int argc, char **argv) {
 	setlocale(LC_ALL, "C");
 	const char *corpus = argc > 1 ? argv[1] : "project/conformance";
@@ -354,9 +387,20 @@ int main(int argc, char **argv) {
 				}
 				if (!strcmp(kind, "instances")) {
 					shcl_str *vals; size_t n = shcl_instances(rd, query, qn, &vals);
-					char *joined = xrealloc(NULL, 8); joined[0] = '\0'; size_t jl = 0, jc = 8;
-					for (size_t i = 0; i < n; i++) { if (i) { if (jl + 2 > jc) { jc = jl + 2; joined = xrealloc(joined, jc); } joined[jl++] = '|'; joined[jl] = '\0'; } if (jl + vals[i].n + 1 > jc) { jc = jl + vals[i].n + 1; joined = xrealloc(joined, jc); } memcpy(joined + jl, vals[i].p, vals[i].n); jl += vals[i].n; joined[jl] = '\0'; }
+					char *joined = join_pipe(vals, n);
 					if (strcmp(joined, exp)) fail(at, "instances mismatch");
+					free(joined); shcl_free(rd); continue;
+				}
+				if (!strcmp(kind, "children")) {
+					shcl_str *names; size_t n = shcl_children(rd, query, qn, &names);
+					char *joined = join_pipe(names, n);
+					if (strcmp(joined, exp)) fail(at, "children mismatch");
+					free(joined); shcl_free(rd); continue;
+				}
+				if (!strcmp(kind, "paths")) {
+					shcl_str *ps; size_t n = shcl_paths(rd, &ps);
+					char *joined = join_pipe(ps, n);
+					if (strcmp(joined, exp)) fail(at, "paths mismatch");
 					free(joined); shcl_free(rd); continue;
 				}
 				shcl_status st; const shcl_status *slots; size_t nslots;
@@ -661,12 +705,17 @@ int main(int argc, char **argv) {
 	// cannot keep the call name while changing which tier it lands on. Same
 	// fixture in every runner (C's convenience tier is the value types only).
 	{
-		const char *ct = "a: 42\nb: not-a-number\ne:\n";
+		const char *ct = "a: 42\nb: not-a-number\ne:\nblk:\n\t```html\n\thi\n\t```\n";
 		shcl_doc *cd = shcl_parse(ct, strlen(ct));
 		if (shcl_get_int_or(cd, "a", 1, 9) != 42) fail("get_or", "Good did not read through");
 		if (shcl_get_int_or(cd, "b", 1, 9) != 9) fail("get_or", "BadType did not fall back");
 		if (shcl_get_int_or(cd, "e", 1, 9) != 9) fail("get_or", "Empty did not fall back");
 		if (shcl_get_int_or(cd, "missing", 7, 9) != 9) fail("get_or", "NotFound did not fall back");
+		// C's convenience tier deliberately stops at the value types, so the
+		// info-string read is only reachable on the status tier here.
+		{ shcl_read_str ri = shcl_read_raw_info(cd, "blk", 3);
+		  if (ri.status != SHCL_GOOD || ri.value.n != 4 || memcmp(ri.value.p, "html", 4))
+			  fail("get_or", "read_raw_info did not read the info-string"); }
 		if (shcl_get_float_or(cd, "missing", 7, 1.5) != 1.5) fail("get_or", "float did not fall back");
 		if (shcl_get_bool_or(cd, "missing", 7, 1) != 1) fail("get_or", "bool did not fall back");
 		// The ok predicate and the convenience tier deliberately disagree on an
@@ -1074,6 +1123,28 @@ int main(int argc, char **argv) {
 		if (shcl_error_count(pd) != 0 || shcl_diag_count(pd) != 0) fail("oneshot", "plain doc not clean");
 		shcl_free(pd);
 	}
+#ifndef _WIN32
+	// Validation used to put one scratch arena per level of the depth cap on the
+	// stack - 16 KB, which is nothing on a main thread and past the whole stack
+	// of a small worker. The platform's smallest allowed thread stack is the
+	// assertion: it is under the array the old code wanted on it.
+	{
+		pthread_attr_t at;
+		pthread_t th;
+		long floorBytes = sysconf(_SC_THREAD_STACK_MIN);
+		size_t small = floorBytes > 0 ? (size_t)floorBytes : (size_t)16384;
+		if (pthread_attr_init(&at) != 0 || pthread_attr_setstacksize(&at, small) != 0) {
+			fail("small-stack", "cannot make a 32 KB thread attribute");
+		} else if (pthread_create(&th, &at, validate_on_small_stack, NULL) != 0) {
+			fail("small-stack", "cannot start a 32 KB thread");
+		} else {
+			void *res = NULL;
+			pthread_join(th, &res);
+			if (res == NULL) fail("small-stack", "validate did not finish on a 32 KB stack");
+		}
+		pthread_attr_destroy(&at);
+	}
+#endif
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }
 	printf("conformance: %zu case(s) pass\n", nn);
 	return 0;

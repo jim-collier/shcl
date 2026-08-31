@@ -40,6 +40,17 @@ shcl \- read, edit, validate and format Simple Hierarchical Config Language file
 .I FILE PATH
 .YS
 .SY shcl
+.B children
+.RI [ options ]
+.I FILE
+.RI [ PATH ]
+.YS
+.SY shcl
+.B paths
+.RI [ options ]
+.I FILE
+.YS
+.SY shcl
 .BR help | version | about | donate
 .YS
 .SH DESCRIPTION
@@ -123,6 +134,19 @@ Print the number of instances at
 Print the instance values at
 .IR PATH ,
 one per line.
+.TP
+.B children
+Print the child field names under
+.IR PATH ,
+one per line, in file order and with duplicates kept. With
+.I PATH
+left out, the top level. Each name is printed in the form a path accepts, so a
+name holding a dot or a quote can be spliced straight back into a lookup path.
+.TP
+.B paths
+Print every field path in the document, one per line, in file order and
+deduplicated \- the whole-document counterpart of
+.BR children .
 .TP
 .BR help ", " version ", " about ", " donate
 Print this command's help, its version, what SHCL is, or where to support it.
@@ -229,7 +253,7 @@ diagnostics; on
 it is what the starter config is generated from.
 .TP
 .BI \-\-layer= FILE
-.RB ( get ", " fmt ", " count ", " instances ", " set )
+.RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
 Merge a lower-priority layer under
 .IR FILE .
 Repeatable; earlier means lower priority.
@@ -242,7 +266,7 @@ into
 instead.
 .TP
 .BI \-\-set= PATH = VALUE
-.RB ( get ", " fmt ", " count ", " instances ", " set )
+.RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
 Override one path as the topmost layer, after every file. Repeatable. On
 .B set
 it is an edit to the document itself, so it persists with
@@ -257,7 +281,7 @@ ends at the first
 outside quotes and brackets, so a selector may hold one.
 .TP
 .BI \-\-set\-literal= PATH = TEXT
-.RB ( get ", " fmt ", " count ", " instances ", " set )
+.RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
 As
 .BR \-\-set ,
 except
@@ -267,6 +291,26 @@ goes in as value syntax the way a file spells it \- so
 writes a two-element array. An unquoted
 .B #
 ends the value, and text spanning lines is rejected.
+.TP
+.BI \-\-set\-default= PATH = VALUE
+.TQ
+.BI \-\-set\-literal\-default= PATH = TEXT
+.RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
+As
+.B \-\-set
+and
+.BR \-\-set\-literal ,
+except the write happens only when nothing is at the path yet \- the
+write-out-defaults half of the writer.
+.TP
+.BI \-\-remove= PATH
+.RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
+Delete whatever is at
+.IR PATH ,
+with its subtree. Repeatable. Removing nothing is not an error.
+.PP
+The five options above share one ordered list, so two of them touching the same
+path resolve in the order given. Raw blocks still go in through the ops script.
 .PP
 Value options accept either spelling:
 .BI \-\-default= VALUE
@@ -371,15 +415,11 @@ given as
 follows stdin: it is the piped document when an option holds the edits, and an
 empty base when the ops script has stdin instead.
 .SH WRITING IN PLACE
-.B fmt
-and
-.B set
-print the load's diagnostics to stderr whether or not
-.B \-\-write
-is given, so a recovered-from typo is just as visible when the result goes to
-stdout. An in-place write also refuses outright, at exit 7, when the load
-dropped content the rewrite would delete \- a typo does not cost the line
-above it.
+Every subcommand that loads a document prints the load's diagnostics to stderr,
+once per run, so a recovered-from typo is just as visible when the value reads
+back fine and the result goes to stdout. An in-place write also refuses
+outright, at exit 7, when the load dropped content the rewrite would delete
+\- a typo does not cost the line above it.
 .B \-\-lossy
 is how to say it was meant.
 .SH EXIT STATUS
@@ -388,7 +428,7 @@ is how to say it was meant.
 Good.
 .TP
 .B 1
-Usage or I/O error.
+Usage error.
 .TP
 .B 2
 The value is empty.
@@ -413,6 +453,10 @@ An in-place write was refused because the load dropped content the rewrite
 would delete.
 .B \-\-lossy
 overrides.
+.TP
+.B 8
+A file or stream could not be read or written \- it is missing, unreadable,
+not a file, or the target cannot be written.
 .SH EXAMPLES
 Read an int, with a fallback when the field is absent:
 .PP

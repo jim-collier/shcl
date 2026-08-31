@@ -1164,9 +1164,12 @@ static ShclFence fence_open(ShclStr rest) {
 	f.info = s_trim(s_slice(rest, run, rest.n));
 	return f;
 }
+/* min_len is the opening fence's length, which the grammar puts at three or
+   more, so the length test already rules out the empty line the loop below
+   would otherwise accept. */
 static int is_fence_close(ShclStr line, unsigned char ch, size_t min_len) {
 	ShclStr t = s_trim(line);
-	if (t.n < min_len || t.n == 0) return 0;
+	if (t.n < min_len) return 0;
 	for (size_t i = 0; i < t.n; i++) if ((unsigned char)t.p[i] != ch) return 0;
 	return 1;
 }
@@ -2201,10 +2204,11 @@ static size_t find_by_value(ShclParser *P, size_t cur, ShclStr name, ShclStr tex
 			&& s_eq(disp_key(P->line, &NODE(P->d, e->val).value), want))
 			found = e->val;
 	}
-	/* A quoted selector is scalar-only, and the accelerator keeps just the
-	   first same-display child - a later remap can drop an entry a different
-	   sibling still satisfies - so a non-scalar hit and an outright miss both
-	   fall to the (rare) fallback scan. */
+	/* A quoted selector is scalar-only, so it is the one that needs the
+	   fallback scan: the accelerator keeps just the first same-display
+	   child, which may be the non-scalar one. An unquoted selector takes
+	   whatever the accelerator holds and does not scan, so it can bind a raw
+	   block where a quoted selector picks the scalar sibling. */
 	if (found != (size_t)-1 && quoted && !single_scalar(&NODE(P->d, found).value)) {
 		found = (size_t)-1;
 	}
@@ -4778,10 +4782,14 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	// not every level of every walk. The parser caps depth at SHCL_MAX_DEPTH
 	// and every mount starts at least one level deeper, so the pool cannot be
 	// outrun; untouched slots never allocate.
-	ShclArena lvls[SHCL_MAX_DEPTH + 1];
-	memset(lvls, 0, sizeof lvls);
+	// On the heap, not the stack: one slot per level of the depth cap is 16 KB,
+	// which is fine on a main thread and not on a small-stack one.
+	ShclArena *lvls = (ShclArena *)calloc(SHCL_MAX_DEPTH + 1, sizeof *lvls);
+	if (!lvls) SHCL_OOM();
 	for (size_t i = 0; i < def.cons.len; i++) v_check(a, lvls, d, &def.cons.data[i], &def, &v->diags);
+	// Nothing returns between the alloc and here, so every slot is reached.
 	for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_free(&lvls[i]);
+	free(lvls);
 	if (def.paths_complete) v_unknown(a, d, &def, &v->diags);
 	return v;
 }

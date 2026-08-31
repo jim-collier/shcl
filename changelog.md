@@ -18,6 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `E018`: a line indented under a line that was skipped is now skipped with it, with its own diagnostic, instead of re-parenting one level up. A skipped header used to hand its children to its parent, so the document gained structure the author never wrote.
 
+- `shcl children FILE [PATH]` and `shcl paths FILE`: the traversal half of the accessor, which the CLI did not carry. A script could read an open section's values but never learn its keys, so the only route was parsing `fmt` output in a shell. Names print in the form a path accepts, quoted where a bare name will not do, so one holding a dot or a quote goes straight back into the next read. The wrappers gain `shcl_children` and `shcl_paths`.
+
+- `--remove=PATH`, `--set-default=PATH=VALUE` and `--set-literal-default=PATH=TEXT` on the CLI. Removal and the set-if-absent family were reachable only through a tab-separated ops script on stdin, which is awkward to write in a shell and easy to get wrong; scalar sets had been given an option form for exactly that reason. All five spellings share one ordered list, so two touching the same path resolve in the order given. Raw blocks still go in through the ops script.
+
+- `get_raw_info` and `get_raw_info_or` in Rust, Go and Python (`GetRawInfo`/`GetRawInfoOr` in Go). A raw block's info-string was the one typed read with no convenience tier, so reading it meant dropping to the status tier while every other type had the short form - and the CLI had carried `--rawinfo` all along. C and the C++ veneer keep the status tier alone, as they do for every read handing back borrowed memory.
+
 - A `DateTime` alias beside `Datetime` in Rust and Python, so the capitalization a consumer tries first still compiles.
 
 - The Linux installer runs the just-verified binary before anything is written, so a system whose glibc is older than the prebuilt binary's floor hears so at install time, with the build-from-source route named, instead of hitting a raw loader error at first use. README states the floor.
@@ -25,6 +31,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The Windows setup handles a running `shcl.exe` and an existing older install instead of failing partway through.
 
 ### Changed
+
+- `get`, `count` and `instances` print the load's diagnostics to stderr, the way `fmt` and `set` already did. Below strict a damaged file used to read back a correct value at exit 0 with nothing said, so the only way to learn a line had been dropped was a separate `check` run. One report per run; stdout is unchanged.
+
+- A file or stream that could not be read or written now exits 8, and exit 1 means a usage error alone. A missing file, an unreadable one, a directory named where a file was wanted, and a target whose directory refuses a write all used to share 1 with a mistyped flag, so a script could not tell "fix the command line" from "fix the path". A path a write option refuses stays at 1, since what has to change there is the option's value.
 
 - An in-place write the save gate refuses now exits 7, its own code, instead of sharing 1 with usage and I/O errors, so a script can tell "pass `--lossy` or fix the file" apart from "the command line is wrong".
 
@@ -45,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Python's typed setters raise `TypeError` on a value of the wrong type instead of writing its text form. `set_float` still takes an int and writes the float it names; a magnitude past the float range becomes `inf`, the value the other bindings store.
 
 - The C++ veneer's `generate` is no longer `const`: a schema fault it reports goes onto the document's diagnostics, which mutates it.
+
 - The stderr voice is tidier: messages dropped their `shcl:` prefix, a usage error answers with a `usage: shcl ...` line, a strict-load failure lists the diagnostics above its `strict load failed: N error diagnostic(s)` summary, and a schema-fault line carries its `V` code the way load diagnostics carry theirs. stdout and the exit codes are untouched, so nothing scripted against the contract moves.
 
 - A raw block's info-string runs to the end of the line in both spellings. On the same-line form (`db: ```c#`) a `#` used to open a trailing comment, so the label came back as `c` and the rest moved onto the field line, while the same text under a child indent stayed whole. An info-string is never interpreted, which is what the grammar and the spec both already said. A comment about a same-line block goes on the line above.
@@ -54,6 +65,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The Linux installer's stable channel picks the highest version rather than the most recently published release, so a patch back-ported to an older line after a newer one shipped is no longer handed out as stable. Both installers now list releases for both channels and drop drafts, which have no assets to install.
 
 ### Fixed
+
+- The C validator put one scratch arena per level of the nesting cap on the stack - 16 KB, fine on a main thread and past the whole stack of a small worker, where it crashed. They are heap-allocated now.
+
+- Go's atomic write ignored the result of closing the temp file, so a write error that surfaced only at close would publish a truncated file over the target. The other three bindings already reported it.
+
+- The Linux installer runs the downloaded binary before writing anything, and so does the Windows one now - a binary that will not start never becomes an install. The Windows installer used to run it only after publishing, where a failure arrived as an exception after the success message.
+
+- `install.bash --uninstall` said "removed" while leaving a directory full of files it had not installed. It now removes the directory only when empty and names what it left, matching the Windows installer.
+
+- Both bash installers print their help as prose. It used to be the source header verbatim, comment markers and hard tabs included.
+
+- `fmt` and `set` with `--layer` reported only the lowest layer's diagnostics, so damage in FILE itself - the file named on the command line - went unmentioned. Every layer's diagnostics are printed now, lowest first.
 
 - C: a save to a path spelled with backslashes failed on Windows, so a consumer that built its config path with the platform separator could never save. The temp name now splits on either separator, and a drive-relative `C:x` target splits after the colon.
 

@@ -50,7 +50,11 @@ fRustTable() {
 fCompTable() {
 	sed -n "s/^[[:space:]]*\([a-z|]\+\))[[:space:]]*echo '\([^']*\)'.*/\1\t\2/p" "$1" \
 	| while IFS=$'\t' read -r names opts; do
-		[[ -n "${opts}" ]] || continue
+		## An empty option list is a row, not a row to drop: the CLI side keeps
+		## its arm either way, so dropping it here made an option-less
+		## subcommand impossible for the two sides to ever agree on. The
+		## completion's `*)` default arm is excluded by the pattern above, which
+		## only matches subcommand words.
 		printf '%s\t%s\n' "${names}" "$(tr ' ' '\n' <<<"${opts}" | sort -u | paste -sd' ')"
 	done
 }
@@ -60,13 +64,23 @@ fCompTable() {
 ## spellings on the left.
 fRustTop() {
 	{
-		grep 'const COMMANDS' "${mainRs}" | grep -o '"[a-z]*"' || true
+		## Whole declaration, not one line: rustfmt wraps the array once it
+		## outgrows the line width, and a single-line grep then reads none of it.
+		sed -n '/const COMMANDS/,/];/p' "${mainRs}" | grep -o '"[a-z]*"' || true
 		sed -n '/fn asked_for/,/^}/p' "${mainRs}" | grep 'return Some(' \
 		| while IFS= read -r arm; do
 			grep -o '"[^"]*"' <<<"${arm%%=>*}" || true
 			grep -o '"[a-z]*"' <<<"${arm#*=>}" || true
 		done
 	} | tr -d '"' | sort -u | paste -sd' '
+}
+
+## The reference's dispatch arms, one name per line. Matched on the arm arrow
+## rather than on indentation: `\t` is not an escape in POSIX ERE, so a pattern
+## carrying one matches nothing under the grep a script gets.
+fRustDispatch() {
+	sed -n '/^fn run(cmd: &str, o: &Opts) -> u8 {/,/^}$/p' "${mainRs}" \
+	| { grep -oE '"[a-z]+" =>' || true ;} | tr -d '">= ' | sort -u
 }
 
 ## The bash completion's word-1 offer: the subcommand list plus the extra
@@ -116,7 +130,19 @@ for cf in "${compFiles[@]}"; do
 	fi
 done
 
-((rc)) || echo "check-completions: OK ($(wc -l <<<"${rustTable}") subcommands + top-level offer, ${#compFiles[@]} completion files)"
+## Every command the CLI accepts must have a dispatch arm of its own. One
+## without used to fall through to whichever command the catch-all named - no
+## compile error, no message.
+rustCmds="$(sed -n '/const COMMANDS/,/];/p' "${mainRs}" | { grep -o '"[a-z]*"' || true ;} | tr -d '"' | sort -u)"
+rustArms="$(fRustDispatch)"
+if [[ "${rustCmds}" != "${rustArms}" ]]; then
+	echo "check-completions: COMMANDS and the dispatch disagree:" >&2
+	echo "  COMMANDS: $(paste -sd' ' <<<"${rustCmds}")" >&2
+	echo "  dispatch: $(paste -sd' ' <<<"${rustArms}")" >&2
+	rc=1
+fi
+
+((rc)) || echo "check-completions: OK ($(wc -l <<<"${rustTable}") subcommands + top-level offer + dispatch, ${#compFiles[@]} completion files)"
 exit "${rc}"
 
 

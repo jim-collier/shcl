@@ -14,6 +14,15 @@
 			Enable         = $true
 			## The installer has to run on the Windows PowerShell that ships with
 			## the OS, not just on 7.
+			##
+			## Syntax only, and that is the whole of what any rule here covers.
+			## It says nothing about which framework members exist, which is the
+			## class two round-20260830b defects fell into: `ResolveLinkTarget`
+			## on a FileInfo, and `$IsWindows`, neither of which exists on 5.1.
+			## PSUseCompatibleTypes was tried and reports nothing, because it
+			## matches type names rather than the members called on an instance.
+			## So the guard for that class is a member test in the code, not a
+			## setting here.
 			TargetVersions = @('5.1', '7.0')
 		}
 	}
