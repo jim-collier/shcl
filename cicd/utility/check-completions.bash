@@ -60,7 +60,9 @@ fCompTable() {
 ## spellings on the left.
 fRustTop() {
 	{
-		grep 'const COMMANDS' "${mainRs}" | grep -o '"[a-z]*"' || true
+		## Whole declaration, not one line: rustfmt wraps the array once it
+		## outgrows the line width, and a single-line grep then reads none of it.
+		sed -n '/const COMMANDS/,/];/p' "${mainRs}" | grep -o '"[a-z]*"' || true
 		sed -n '/fn asked_for/,/^}/p' "${mainRs}" | grep 'return Some(' \
 		| while IFS= read -r arm; do
 			grep -o '"[^"]*"' <<<"${arm%%=>*}" || true

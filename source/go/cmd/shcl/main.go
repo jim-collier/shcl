@@ -38,6 +38,11 @@ Usage:
                                          optional commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+  shcl children [options] FILE [PATH]    child field names under a path, one per
+                                         line (the top level when PATH is left
+                                         out)
+  shcl paths [options] FILE              every field path in the document, one
+                                         per line
   shcl help | version                    this help, or the version (also
                                          -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
@@ -456,7 +461,7 @@ func checkOpts(cmd string, o *opts) int {
 		allowed = []string{"--strictness", "--schema"}
 	case "init":
 		allowed = []string{"--schema", "--no-banner"}
-	case "count", "instances":
+	case "count", "instances", "children", "paths":
 		allowed = []string{"--strictness", "--layer", "--set", "--set-literal"}
 	}
 	for _, s := range o.seen {
@@ -1482,7 +1487,51 @@ func doEnum(o *opts, wantCount bool) int {
 	return 0
 }
 
-var commands = [...]string{"get", "set", "fmt", "check", "init", "count", "instances"}
+// doChildren: child field names under a path, one per line, in file order and
+// with duplicates kept. PATH may be left out to enumerate the top level. Each
+// name comes out in the form a path accepts, so one holding a dot or a quote
+// splices back into a path with no further work.
+func doChildren(o *opts) int {
+	var file, path string
+	switch len(o.args) {
+	case 1:
+		file = o.args[0]
+	case 2:
+		file, path = o.args[0], o.args[1]
+	default:
+		fmt.Fprintln(os.Stderr, "usage: shcl children [options] FILE [PATH] (see --help)")
+		return 1
+	}
+	doc, diags, code := loadLayered(o, file)
+	if doc == nil {
+		return code
+	}
+	sayDiagnostics(diags)
+	for _, name := range doc.Children(path) {
+		fmt.Println(shcl.QuoteSegment(name))
+	}
+	return 0
+}
+
+// doPaths: every field path in the document, one per line, in file order and
+// deduplicated - the whole-document counterpart of doChildren.
+func doPaths(o *opts) int {
+	if len(o.args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: shcl paths [options] FILE (see --help)")
+		return 1
+	}
+	doc, diags, code := loadLayered(o, o.args[0])
+	if doc == nil {
+		return code
+	}
+	sayDiagnostics(diags)
+	for _, p := range doc.Paths() {
+		fmt.Println(p)
+	}
+	return 0
+}
+
+var commands = [...]string{"get", "set", "fmt", "check", "init", "count", "instances", "children", "paths"}
 
 func run() int {
 	argv := os.Args[1:]
@@ -1556,6 +1605,10 @@ func run() int {
 		return doInit(o)
 	case "count":
 		return doEnum(o, true)
+	case "children":
+		return doChildren(o)
+	case "paths":
+		return doPaths(o)
 	default:
 		return doEnum(o, false)
 	}

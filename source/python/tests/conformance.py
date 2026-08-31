@@ -496,6 +496,16 @@ def main():
 				if got != expected:
 					fails.append(f"{at}: instances got {got!r} want {expected!r}")
 				continue
+			if kind == "children":
+				got = "|".join(doc.children(query))
+				if got != expected:
+					fails.append(f"{at}: children got {got!r} want {expected!r}")
+				continue
+			if kind == "paths":
+				got = "|".join(doc.paths())
+				if got != expected:
+					fails.append(f"{at}: paths got {got!r} want {expected!r}")
+				continue
 
 			got_value, got_status, got_slots = scalar_read(doc, kind, query)
 			if got_status.name != status:

@@ -473,6 +473,24 @@ Good	on
 Good	off
 ```
 
+When the keys are the thing you do not know, `children` lists them and `paths` walks the whole file. Each name comes back in the form a path accepts, so it can go straight back into the next read:
+
+```console
+$ shcl children server.shcl
+listen
+workers
+log-level
+site
+site
+maintenance-page
+
+$ shcl children server.shcl 'site[example.com]'
+root
+max-upload-mb
+methods
+tls
+```
+
 `check` is where the forgiving parser shows its hand. Knock the colon off line 3 of that file, and line 3 is all you lose:
 
 ```console

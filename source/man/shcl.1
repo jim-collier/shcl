@@ -40,6 +40,17 @@ shcl \- read, edit, validate and format Simple Hierarchical Config Language file
 .I FILE PATH
 .YS
 .SY shcl
+.B children
+.RI [ options ]
+.I FILE
+.RI [ PATH ]
+.YS
+.SY shcl
+.B paths
+.RI [ options ]
+.I FILE
+.YS
+.SY shcl
 .BR help | version | about | donate
 .YS
 .SH DESCRIPTION
@@ -123,6 +134,19 @@ Print the number of instances at
 Print the instance values at
 .IR PATH ,
 one per line.
+.TP
+.B children
+Print the child field names under
+.IR PATH ,
+one per line, in file order and with duplicates kept. With
+.I PATH
+left out, the top level. Each name is printed in the form a path accepts, so a
+name holding a dot or a quote can be spliced straight back into a lookup path.
+.TP
+.B paths
+Print every field path in the document, one per line, in file order and
+deduplicated \- the whole-document counterpart of
+.BR children .
 .TP
 .BR help ", " version ", " about ", " donate
 Print this command's help, its version, what SHCL is, or where to support it.
@@ -229,7 +253,7 @@ diagnostics; on
 it is what the starter config is generated from.
 .TP
 .BI \-\-layer= FILE
-.RB ( get ", " fmt ", " count ", " instances ", " set )
+.RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
 Merge a lower-priority layer under
 .IR FILE .
 Repeatable; earlier means lower priority.
@@ -242,7 +266,7 @@ into
 instead.
 .TP
 .BI \-\-set= PATH = VALUE
-.RB ( get ", " fmt ", " count ", " instances ", " set )
+.RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
 Override one path as the topmost layer, after every file. Repeatable. On
 .B set
 it is an edit to the document itself, so it persists with
@@ -257,7 +281,7 @@ ends at the first
 outside quotes and brackets, so a selector may hold one.
 .TP
 .BI \-\-set\-literal= PATH = TEXT
-.RB ( get ", " fmt ", " count ", " instances ", " set )
+.RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
 As
 .BR \-\-set ,
 except

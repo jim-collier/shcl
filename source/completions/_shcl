@@ -31,7 +31,7 @@ _shcl_opts() {
 		fmt)             echo '--write --lossy --strictness --layer --set --set-literal' ;;
 		check)           echo '--strictness --schema' ;;
 		init)            echo '--schema --no-banner' ;;
-		count|instances) echo '--strictness --layer --set --set-literal' ;;
+		count|instances|children|paths) echo '--strictness --layer --set --set-literal' ;;
 		*)               echo '' ;;
 	esac
 }
@@ -42,7 +42,7 @@ _shcl_opts() {
 ## filenames that would always be wrong.
 _shcl_fileslot() {
 	case "$1" in
-		get|set|fmt|check|count|instances) echo 1 ;;
+		get|set|fmt|check|count|instances|children|paths) echo 1 ;;
 		*)                                 echo 0 ;;
 	esac
 }
@@ -60,6 +60,8 @@ _shcl() {
 		'init:print a starter config from a schema'
 		'count:number of instances at a path'
 		'instances:instance values at a path'
+		'children:child field names under a path'
+		'paths:every field path in the document'
 		'help:the help text'
 		'version:the version'
 		'about:what shcl is'

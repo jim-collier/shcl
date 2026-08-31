@@ -51,11 +51,15 @@ printf 'field: server.port\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\
 ## An instance whose discriminator holds an '=', which is what made --set's own
 ## split ambiguous.
 printf 'x[a=b]:\n\tc: 0\n' > "${tmpDir}/sel.shcl"
+## A name a path cannot hold bare, for the traversal commands: enumerating keys
+## is only useful if what comes back can be read straight back.
+printf 'db:\n\thost: h\n\t"odd.key": 2\nweb:\n\tport: 1\n' > "${tmpDir}/tree.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
 ##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %X% an
-##	instance whose discriminator holds an '='.
+##	instance whose discriminator holds an '=', %T% a document with a name that
+##	needs quoting in a path.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that stream.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	Each row names the round and item it pins.
@@ -98,6 +102,13 @@ rows=(
 	'get-diags|get %B% a|-|0|1|E015 missing colon'
 	'count-diags|count %B% a|-|0|1|E015 missing colon'
 	'instances-diags|instances %B% a|-|0|1|E015 missing colon'
+	## 20260830b item 19: a script could read an open section's values but never
+	## learn its keys, so the only route was parsing fmt output in shell. A name
+	## needing quotes comes back path-ready, or enumerating it buys nothing.
+	'children-top|children %T%|-|0|db\nweb|-'
+	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
+	'children-missing|children %T% nope|-|0||-'
+	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
 	## Found working 20260830b item 18: a merge does not carry diagnostics, so
 	## reading them off the merged doc reported the lowest layer and stayed
 	## silent about FILE - the one file the caller actually named.
@@ -115,6 +126,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%P%/${tmpDir}/deep.shcl}"
 	argv="${argv//%S%/${tmpDir}/baddef.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
+	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	read -r -a args <<<"${argv}"
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"

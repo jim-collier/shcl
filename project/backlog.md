@@ -73,13 +73,19 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-073000
 
-	- 🔘 Item 19: there is no CLI traversal command, so a script can read an open section's values but never learn its keys.
+	- ✅ Item 19: there is no CLI traversal command, so a script can read an open section's values but never learn its keys.
 		- The README leads with "everything the library does, the binary does from a shell". Children and Paths have no CLI or wrapper spelling.
 		- Both the design and the spec name traversal as one of the accessor's two modes. The CLI carries the lookup half plus count and instances and stops there.
 		- Reproduced on a three-key open section: a wildcard read returns the three values correctly, and nothing returns the three names. `instances` on the wrapper prints three blank lines, because those instances have no value.
 		- The only workaround is parsing `fmt` output in shell, which is the thing the project exists to prevent.
 		- Additive: two subcommands, four CLIs, help, man page, both completion files, a corpus case. No parity risk, minor version.
+		- Added `children FILE [PATH]` and `paths FILE` to all four CLIs, with PATH left out enumerating the top level. Both take the read options the other enumeration subcommands take.
+		- Decided: names print in the form a path accepts, quoted where a bare name will not do, matching what `paths` already emitted. Enumerating keys is only worth doing if what comes back can be read straight back, and for an ordinary name the output is identical either way, so no option was added to choose.
+		- Also: help, man page, both completion files, both wrappers (`shcl_children`, `shcl_paths`), and a README example.
+		- Pinned at three layers, each verified by backing the code out: corpus case `069-traversal` through the four runners (new `children` and `paths` reads.tsv kinds), `cli-regress.bash` rows `children-top`, `children-quoted`, `children-missing` and `paths-all` against fixed output, and the crosscheck replaying both kinds through all four CLIs.
+		- Also fixed: `check-completions.bash` read the command list with a single-line grep, which read nothing once rustfmt wrapped the array at nine entries.
 		- Opened: 20260830-140346
+		- Closed: 20260831-081500
 
 	- 🔘 Item 20: two of the five advertised integration modes have no artifact and no build.
 		- The design lists five and calls the fourth "link the prebuilt shared library". The spec repeats shared and bundled as part of the goal.

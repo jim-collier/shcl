@@ -35,6 +35,11 @@ Usage:
                                          optional commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+  shcl children [options] FILE [PATH]    child field names under a path, one per
+                                         line (the top level when PATH is left
+                                         out)
+  shcl paths [options] FILE              every field path in the document, one
+                                         per line
   shcl help | version                    this help, or the version (also
                                          -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
@@ -434,7 +439,7 @@ def check_opts(cmd, o):
 		allowed = ("--strictness", "--schema")
 	elif cmd == "init":
 		allowed = ("--schema", "--no-banner")
-	elif cmd in ("count", "instances"):
+	elif cmd in ("count", "instances", "children", "paths"):
 		allowed = ("--strictness", "--layer", "--set", "--set-literal")
 	else:
 		allowed = ()
@@ -1049,7 +1054,51 @@ def do_enum(o, want_count):
 	return 0
 
 
-COMMANDS = ("get", "set", "fmt", "check", "init", "count", "instances")
+def do_children(o):
+	# Child field names under a path, one per line, in file order and with
+	# duplicates kept. PATH may be left out to enumerate the top level. Each name
+	# comes out in the form a path accepts, so one holding a dot or a quote
+	# splices back into a path with no further work.
+	if len(o.args) == 1:
+		file, path = o.args[0], ""
+	elif len(o.args) == 2:
+		file, path = o.args[0], o.args[1]
+	else:
+		sys.stderr.write("usage: shcl children [options] FILE [PATH] (see --help)\n")
+		return 1
+	try:
+		doc, diags, code = load_layered(o, file)
+	except (OSError, ValueError) as e:
+		sys.stderr.write(str(e) + "\n")
+		return 1
+	if doc is None:
+		return code
+	say_diagnostics(diags)
+	for name in doc.children(path):
+		print(shcl.quote_segment(name))
+	return 0
+
+
+def do_paths(o):
+	# Every field path in the document, one per line, in file order and
+	# deduplicated - the whole-document counterpart of do_children.
+	if len(o.args) != 1:
+		sys.stderr.write("usage: shcl paths [options] FILE (see --help)\n")
+		return 1
+	try:
+		doc, diags, code = load_layered(o, o.args[0])
+	except (OSError, ValueError) as e:
+		sys.stderr.write(str(e) + "\n")
+		return 1
+	if doc is None:
+		return code
+	say_diagnostics(diags)
+	for p in doc.paths():
+		print(p)
+	return 0
+
+
+COMMANDS = ("get", "set", "fmt", "check", "init", "count", "instances", "children", "paths")
 
 
 def run(argv):
@@ -1110,6 +1159,10 @@ def run(argv):
 		return do_init(o)
 	if cmd == "count":
 		return do_enum(o, True)
+	if cmd == "children":
+		return do_children(o)
+	if cmd == "paths":
+		return do_paths(o)
 	return do_enum(o, False)
 
 

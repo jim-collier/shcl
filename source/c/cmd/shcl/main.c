@@ -56,6 +56,11 @@ static const char *HELP =
 	"                                         optional commented, wildcards noted)\n"
 	"  shcl count [options] FILE PATH         number of instances at a path\n"
 	"  shcl instances [options] FILE PATH     instance values at a path, one per line\n"
+	"  shcl children [options] FILE [PATH]    child field names under a path, one per\n"
+	"                                         line (the top level when PATH is left\n"
+	"                                         out)\n"
+	"  shcl paths [options] FILE              every field path in the document, one\n"
+	"                                         per line\n"
 	"  shcl help | version                    this help, or the version (also\n"
 	"                                         -h/--help, -v/-V/--version)\n"
 	"  shcl about | donate                    what shcl is, or how to support it\n"
@@ -1028,6 +1033,42 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 // Every option must be meaningful for its subcommand; an option that would be
 // silently ignored (`set --write` before it existed, `--schema` on `get`) is a
 // usage error instead.
+// Child field names under a path, one per line, in file order and with
+// duplicates kept. PATH may be left out to enumerate the top level. Each name
+// comes out in the form a path accepts, so one holding a dot or a quote splices
+// back into a path with no further work.
+static int do_children(Opts *o) {
+	const char *file, *path = "";
+	if (o->nargs == 1) file = o->args[0];
+	else if (o->nargs == 2) { file = o->args[0]; path = o->args[1]; }
+	else { fprintf(stderr, "usage: shcl children [options] FILE [PATH] (see --help)\n"); return 1; }
+	LayeredDoc L; int gate = load_layered(o, file, &L);
+	if (gate) return gate;
+	say_layered_diagnostics(&L);
+	shcl_str *names = NULL;
+	size_t n = shcl_children(L.doc, path, strlen(path), &names);
+	for (size_t i = 0; i < n; i++) {
+		shcl_str q = shcl_quote_segment(L.doc, names[i].p, names[i].n);
+		fwrite(q.p, 1, q.n, stdout); putchar('\n');
+	}
+	layered_free(&L);
+	return 0;
+}
+
+// Every field path in the document, one per line, in file order and
+// deduplicated - the whole-document counterpart of do_children.
+static int do_paths(Opts *o) {
+	if (o->nargs != 1) { fprintf(stderr, "usage: shcl paths [options] FILE (see --help)\n"); return 1; }
+	LayeredDoc L; int gate = load_layered(o, o->args[0], &L);
+	if (gate) return gate;
+	say_layered_diagnostics(&L);
+	shcl_str *ps = NULL;
+	size_t n = shcl_paths(L.doc, &ps);
+	for (size_t i = 0; i < n; i++) { fwrite(ps[i].p, 1, ps[i].n, stdout); putchar('\n'); }
+	layered_free(&L);
+	return 0;
+}
+
 static int check_opts(const char *cmd, const Opts *o) {
 	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", NULL };
 	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--write", "--lossy", NULL };
@@ -1042,7 +1083,8 @@ static int check_opts(const char *cmd, const Opts *o) {
 	else if (!strcmp(cmd, "fmt")) allowed = fmt_ok;
 	else if (!strcmp(cmd, "check")) allowed = check_ok;
 	else if (!strcmp(cmd, "init")) allowed = init_ok;
-	else if (!strcmp(cmd, "count") || !strcmp(cmd, "instances")) allowed = enum_ok;
+	else if (!strcmp(cmd, "count") || !strcmp(cmd, "instances")
+	         || !strcmp(cmd, "children") || !strcmp(cmd, "paths")) allowed = enum_ok;
 	for (int i = 0; i < o->nseen; i++) {
 		int ok = 0;
 		for (int k = 0; allowed[k]; k++) if (!strcmp(o->seen[i], allowed[k])) { ok = 1; break; }
@@ -1119,7 +1161,7 @@ static const char *asked_for(int argc, char **argv) {
 	return NULL;
 }
 
-static const char *const COMMANDS[] = { "get", "set", "fmt", "check", "init", "count", "instances" };
+static const char *const COMMANDS[] = { "get", "set", "fmt", "check", "init", "count", "instances", "children", "paths" };
 static int is_command(const char *cmd) {
 	for (size_t i = 0; i < sizeof COMMANDS / sizeof COMMANDS[0]; i++)
 		if (!strcmp(cmd, COMMANDS[i])) return 1;
@@ -1170,6 +1212,8 @@ int main(int argc, char **argv) {
 	else if (!strcmp(cmd, "check")) rc = do_check(&o);
 	else if (!strcmp(cmd, "init")) rc = do_init(&o);
 	else if (!strcmp(cmd, "count")) rc = do_enum(&o, 1);
+	else if (!strcmp(cmd, "children")) rc = do_children(&o);
+	else if (!strcmp(cmd, "paths")) rc = do_paths(&o);
 	else rc = do_enum(&o, 0);
 	opts_free(&o);
 	return rc;

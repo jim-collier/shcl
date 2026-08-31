@@ -397,6 +397,16 @@ fn reads_match_expected() {
 				assert_eq!(got, expected, "{}", at);
 				continue;
 			}
+			if kind == "children" {
+				let got = doc.children(query).join("|");
+				assert_eq!(got, expected, "{}", at);
+				continue;
+			}
+			if kind == "paths" {
+				let got = doc.paths().join("|");
+				assert_eq!(got, expected, "{}", at);
+				continue;
+			}
 
 			let (got_value, got_status, got_slots): (String, shcl::Status, Vec<shcl::Status>) =
 				match kind {

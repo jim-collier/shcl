@@ -95,6 +95,19 @@ static shcl_strictness parse_level(const char *s) {
 
 // Renders a scalar/array read into a malloc'd string (caller frees); sets *st,
 // and for array kinds the per-slot statuses (arena memory, freed with the doc).
+// A |-joined string of shcl_str values, the shape the reads.tsv list kinds
+// compare against. Caller frees.
+static char *join_pipe(const shcl_str *v, size_t n) {
+	size_t jc = 8, jl = 0;
+	char *joined = xrealloc(NULL, jc); joined[0] = '\0';
+	for (size_t i = 0; i < n; i++) {
+		if (i) { if (jl + 2 > jc) { jc = jl + 2; joined = xrealloc(joined, jc); } joined[jl++] = '|'; joined[jl] = '\0'; }
+		if (jl + v[i].n + 1 > jc) { jc = jl + v[i].n + 1; joined = xrealloc(joined, jc); }
+		memcpy(joined + jl, v[i].p, v[i].n); jl += v[i].n; joined[jl] = '\0';
+	}
+	return joined;
+}
+
 static char *scalar_read(shcl_doc *d, const char *kind, const char *q, size_t qn, shcl_status *st, const shcl_status **slots, size_t *nslots) {
 	*slots = NULL; *nslots = 0;
 	char *out = xrealloc(NULL, 8); memset(out, 0, 8); size_t olen = 0, ocap = 8; char nb[SHCL_F64_BUF];
@@ -354,9 +367,20 @@ int main(int argc, char **argv) {
 				}
 				if (!strcmp(kind, "instances")) {
 					shcl_str *vals; size_t n = shcl_instances(rd, query, qn, &vals);
-					char *joined = xrealloc(NULL, 8); joined[0] = '\0'; size_t jl = 0, jc = 8;
-					for (size_t i = 0; i < n; i++) { if (i) { if (jl + 2 > jc) { jc = jl + 2; joined = xrealloc(joined, jc); } joined[jl++] = '|'; joined[jl] = '\0'; } if (jl + vals[i].n + 1 > jc) { jc = jl + vals[i].n + 1; joined = xrealloc(joined, jc); } memcpy(joined + jl, vals[i].p, vals[i].n); jl += vals[i].n; joined[jl] = '\0'; }
+					char *joined = join_pipe(vals, n);
 					if (strcmp(joined, exp)) fail(at, "instances mismatch");
+					free(joined); shcl_free(rd); continue;
+				}
+				if (!strcmp(kind, "children")) {
+					shcl_str *names; size_t n = shcl_children(rd, query, qn, &names);
+					char *joined = join_pipe(names, n);
+					if (strcmp(joined, exp)) fail(at, "children mismatch");
+					free(joined); shcl_free(rd); continue;
+				}
+				if (!strcmp(kind, "paths")) {
+					shcl_str *ps; size_t n = shcl_paths(rd, &ps);
+					char *joined = join_pipe(ps, n);
+					if (strcmp(joined, exp)) fail(at, "paths mismatch");
 					free(joined); shcl_free(rd); continue;
 				}
 				shcl_status st; const shcl_status *slots; size_t nslots;

@@ -1386,6 +1386,18 @@ func TestReadsMatchExpected(t *testing.T) {
 				}
 				continue
 			}
+			if kind == "children" {
+				if got := strings.Join(doc.Children(query), "|"); got != expected {
+					t.Errorf("%s: children: got %q want %q", at, got, expected)
+				}
+				continue
+			}
+			if kind == "paths" {
+				if got := strings.Join(doc.Paths(), "|"); got != expected {
+					t.Errorf("%s: paths: got %q want %q", at, got, expected)
+				}
+				continue
+			}
 
 			var gotValue string
 			var gotStatus Status

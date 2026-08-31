@@ -28,6 +28,11 @@ Usage:
                                          optional commented, wildcards noted)
   shcl count [options] FILE PATH         number of instances at a path
   shcl instances [options] FILE PATH     instance values at a path, one per line
+  shcl children [options] FILE [PATH]    child field names under a path, one per
+                                         line (the top level when PATH is left
+                                         out)
+  shcl paths [options] FILE              every field path in the document, one
+                                         per line
   shcl help | version                    this help, or the version (also
                                          -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
@@ -460,7 +465,9 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		],
 		"check" => &["--strictness", "--schema"],
 		"init" => &["--schema", "--no-banner"],
-		"count" | "instances" => &["--strictness", "--layer", "--set", "--set-literal"],
+		"count" | "instances" | "children" | "paths" => {
+			&["--strictness", "--layer", "--set", "--set-literal"]
+		}
 		_ => &[],
 	};
 	for s in &o.seen {
@@ -1260,7 +1267,59 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 	0
 }
 
-const COMMANDS: [&str; 7] = ["get", "set", "fmt", "check", "init", "count", "instances"];
+/// Child field names under a path, one per line, in file order and with
+/// duplicates kept. PATH may be left out to enumerate the top level. Each name
+/// comes out in the form a path accepts, so one holding a dot or a quote
+/// splices back into a path with no further work.
+fn do_children(o: &Opts) -> u8 {
+	let (file, path) = match o.args.as_slice() {
+		[file] => (file.as_str(), ""),
+		[file, path] => (file.as_str(), path.as_str()),
+		_ => {
+			eprintln!("usage: shcl children [options] FILE [PATH] (see --help)");
+			return 1;
+		}
+	};
+	let (doc, diags) = match load_layered(o, file) {
+		Ok(d) => d,
+		Err(code) => return code,
+	};
+	say_diagnostics(&diags);
+	for name in doc.children(path) {
+		println!("{}", shcl::quote_segment(&name));
+	}
+	0
+}
+
+/// Every field path in the document, one per line, in file order and
+/// deduplicated - the whole-document counterpart of `children`.
+fn do_paths(o: &Opts) -> u8 {
+	let [file] = o.args.as_slice() else {
+		eprintln!("usage: shcl paths [options] FILE (see --help)");
+		return 1;
+	};
+	let (doc, diags) = match load_layered(o, file) {
+		Ok(d) => d,
+		Err(code) => return code,
+	};
+	say_diagnostics(&diags);
+	for p in doc.paths() {
+		println!("{}", p);
+	}
+	0
+}
+
+const COMMANDS: [&str; 9] = [
+	"get",
+	"set",
+	"fmt",
+	"check",
+	"init",
+	"count",
+	"instances",
+	"children",
+	"paths",
+];
 
 fn run(cmd: &str, o: &Opts) -> u8 {
 	if let Err(code) = check_opts(cmd, o) {
@@ -1273,6 +1332,8 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 		"check" => do_check(o),
 		"init" => do_init(o),
 		"count" => do_enum(o, true),
+		"children" => do_children(o),
+		"paths" => do_paths(o),
 		_ => do_enum(o, false),
 	}
 }

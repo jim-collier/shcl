@@ -25,12 +25,13 @@
 ##	exact tail matters.
 ##
 ##	Functions defined when sourced (each mirrors the CLI and returns its code):
-##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances ...
+##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances|
+##		                     children|paths ...
 ##		shcl_get             read a string (the default type)
 ##		shcl_int shcl_float shcl_bool shcl_datetime shcl_raw
 ##		                     read one typed value
 ##		shcl_array           read an array (pass a --type, else --string)
-##		shcl_fmt shcl_check shcl_count shcl_instances
+##		shcl_fmt shcl_check shcl_count shcl_instances shcl_children shcl_paths
 ##		                     the matching subcommands
 ##
 ##	Finding the binary (first hit wins):
@@ -122,6 +123,8 @@ shcl_fmt()       { shcl fmt "$@"            ; }
 shcl_check()     { shcl check "$@"          ; }
 shcl_count()     { shcl count "$@"          ; }
 shcl_instances() { shcl instances "$@"      ; }
+shcl_children()  { shcl children "$@"       ; }
+shcl_paths()     { shcl paths "$@"          ; }
 
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 # Run path

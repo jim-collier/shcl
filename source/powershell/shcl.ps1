@@ -21,13 +21,14 @@
 ##		$hosts = shcl_array --string app.shcl cluster.hosts
 ##
 ##	Functions defined when dot-sourced (each mirrors the CLI, sets $LASTEXITCODE):
-##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances ...
+##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances|
+##		                     children|paths ...
 ##		                     (pipeline input is forwarded, so `set` can be piped)
 ##		shcl_get             read a string (the default type)
 ##		shcl_int shcl_float shcl_bool shcl_datetime shcl_raw
 ##		                     read one typed value
 ##		shcl_array           read an array (pass a --type, else --string)
-##		shcl_fmt shcl_check shcl_count shcl_instances
+##		shcl_fmt shcl_check shcl_count shcl_instances shcl_children shcl_paths
 ##		                     the matching subcommands
 ##
 ##	Finding the binary (first hit wins):
@@ -157,6 +158,8 @@ function shcl_fmt       { shcl fmt @args }
 function shcl_check     { shcl check @args }
 function shcl_count     { shcl count @args }
 function shcl_instances { shcl instances @args }
+function shcl_children { shcl children @args }
+function shcl_paths { shcl paths @args }
 
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 # Run path
