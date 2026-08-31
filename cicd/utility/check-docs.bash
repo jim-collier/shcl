@@ -140,6 +140,21 @@ if [[ -f "${readme}" ]]; then
 	done
 fi
 
+##	The stamps terminate an item: an outcome bullet below them makes them stop
+##	being a reliable end marker, and puts the result furthest from the finding.
+while IFS= read -r hit; do
+	fBad "backlog.md: sub-bullet below the stamps: ${hit}"
+done < <(awk '
+	match($0, /^\t+- (Opened|Closed): /) { stamp = NR; indent = length($0) - length(substr($0, RSTART + RLENGTH)); next }
+	stamp == NR - 1 && /^\t+- / { print NR ": " substr($0, 1, 60) }
+	{ stamp = 0 }' "${backlog}" || true)
+
+##	How a defect was found is not what changed. The gate that caught it belongs
+##	in the cause line where it is the point, not in a bullet of its own.
+while IFS= read -r hit; do
+	fBad "backlog.md: says how it was found rather than what changed: ${hit}"
+done < <(grep -nE '^[[:space:]]*- Found (by|while) ' "${backlog}" || true)
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

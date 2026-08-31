@@ -347,6 +347,17 @@ while IFS= read -r f; do
 	fi
 done < <(find "${repoDir}" -name '*.bash' -not -path '*/target/*' -not -path '*/.git/*' | sort)
 
+##	`\t` in a grep -E pattern. POSIX ERE has no such escape, so the pattern
+##	matches nothing under the grep a script gets, while matching fine under the
+##	interactive one on this box - a check that looks like it works and asserts
+##	nothing. Twice in one round. Use a literal tab or `[[:space:]]`.
+while IFS= read -r f; do
+	hits="$(grep -nE "grep [^|;]*-[A-Za-z]*E[A-Za-z]* '[^']*\\\\t" "${f}" || true)"
+	if [[ -n "${hits}" ]]; then
+		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: backslash-t in a grep -E pattern, which POSIX ERE does not read as a tab: ${h}"; done <<<"${hits}"
+	fi
+done < <(find "${repoDir}/cicd" -name '*.bash' | sort)
+
 ##	The static half. Line continuations are joined first, so a substitution that
 ##	ends in `|| true` several lines down is read as guarded.
 while IFS= read -r f; do
@@ -363,7 +374,7 @@ if ((nBad)); then
 	echo "shell-regress: ${nBad} check(s) failed" >&2
 	exit 1
 fi
-echo "shell-regress: OK: wrappers, one-liner scope, packaging, comparison worker, and no unguarded grep substitutions or failed-test loop bodies"
+echo "shell-regress: OK: wrappers, one-liner scope, packaging, installers, comparison worker, and no unguarded greps, failed-test loop bodies or tab escapes in an ERE"
 
 ##	History:
 ##		2026-08-30  Created, pinning the wrapper and installer defects from the
