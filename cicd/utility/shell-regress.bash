@@ -271,6 +271,22 @@ PYEOF
 	fi
 fi
 
+##	Both bash installers used to heredoc their own source header, so the help
+##	opened with the file name as a comment and every wrapped line carried a `##`
+##	and a hard tab. The PowerShell installer printed clean prose, so the two
+##	documented installers spoke in different registers.
+for inst in install.bash install-dev.bash; do
+	[[ -f "${repoDir}/${inst}" ]] || continue
+	help="$(bash "${repoDir}/${inst}" --help 2>&1 || true)"
+	if grep -q '^##' <<<"${help}"; then
+		fBad "${inst} --help prints comment markup"
+	fi
+	if grep -qP '\t' <<<"${help}"; then
+		fBad "${inst} --help prints hard tabs, which render raggedly off tab width 8"
+	fi
+	[[ -n "${help}" ]] || fBad "${inst} --help printed nothing"
+done
+
 ##	The profiler stage's hot-spot report. Its only diagnostics go to stderr, and
 ##	the stage used to discard them, so the log recorded the failure with no cause.
 report="${repoDir}/cicd/utility/flame-report.py"

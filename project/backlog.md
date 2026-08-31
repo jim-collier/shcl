@@ -293,11 +293,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-161000
 
-	- 🔘 Item 41: both bash installers print comment markup in their help.
+	- ✅ Item 41: both bash installers print comment markup in their help.
 		- The help text is the source header heredoc'd verbatim, comment prefixes and hard tabs included, so it opens with the file name as a comment and every wrapped line carries the prefix.
 		- The PowerShell installer prints clean prose, so the two documented installers print help in visibly different registers.
 		- Tab-indented help renders raggedly wherever tab width is not 8.
+		- Both rewritten as plain prose with space indentation, so all three installers now read the same way. The source headers are unchanged; only what `--help` prints moved.
+		- Pinned in `shell-regress.bash`: neither installer's help may carry a comment prefix or a hard tab, and neither may print nothing. Restoring either old heredoc makes it fail.
 		- Opened: 20260830-140346
+		- Closed: 20260831-163000
 
 	- 🔘 Item 42: the bash uninstall says "removed" while leaving a directory full of files it did not install.
 		- Reproduced: a stray file in the install directory survives, the directory removal fails silently, and the script reports removal anyway with no mention of what is left.
