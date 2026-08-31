@@ -327,11 +327,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-172000
 
-	- 🔘 Item 45: the analyzer settings gate syntax only, and the comment reads as more.
+	- ✅ Item 45: the analyzer settings gate syntax only, and the comment reads as more.
 		- Syntax compatibility says nothing about which framework members exist, which is what items 10 and 11 are. The type-compatibility rule was tried and reports nothing, because it matches type names and not instance members.
 		- So no lint rule covers that class. The practical guard is a member test in the code, not a settings change.
 		- Worth saying so in the settings comment rather than leaving it reading as full coverage.
+		- Said in the settings comment: the rule covers syntax and nothing else, the two defects it did not catch are named, and `PSUseCompatibleTypes` is recorded as tried and useless here because it matches type names rather than instance members. The guard for that class is a member test in the code.
+		- Nothing new proves this one: a comment has nothing to fail. What it points at - the member test in the wrapper - is already pinned by its own row in `shell-regress.bash`.
 		- Opened: 20260830-140346
+		- Closed: 20260831-173000
 
 	- 🔘 Item 46: the design and changelog break the blank-line-between-top-level-bullets rule.
 		- 25 tight pairs in the design document outside its table of contents, and one in the changelog where the other 174 top-level bullets are spaced.
