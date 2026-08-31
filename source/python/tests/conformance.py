@@ -1097,15 +1097,15 @@ def main():
 			return list.__iter__(self)
 
 	pdoc = shcl.Document.parse("one: a\ntwo: a, b\n")
-	for n in pdoc.arena:
-		if n.value.kind == "cell":
-			n.value.els = _CountingList(n.value.els)
+	for pnode in pdoc.arena:
+		if pnode.value.kind == "cell":
+			pnode.value.els = _CountingList(pnode.value.els)
 	for want_len, want_iters in ((1, 0), (2, 2)):
 		_CountingList.iters = 0
-		for n in pdoc.arena:
-			if n.value.kind == "cell" and len(n.value.els) == want_len:
-				n.value.display()
-				shcl._merge_key(n.name, n.value)
+		for pnode in pdoc.arena:
+			if pnode.value.kind == "cell" and len(pnode.value.els) == want_len:
+				pnode.value.display()
+				shcl._merge_key(pnode.name, pnode.value)
 		if _CountingList.iters != want_iters:
 			raise SystemExit(
 				f"display/merge-key walked a {want_len}-element cell {_CountingList.iters} time(s), want {want_iters}"
