@@ -4441,11 +4441,9 @@ func parseIntText(e *element, level Strictness) (int64, bool) {
 	if level == Loose {
 		if f, ok := parseFloatText(e, level); ok {
 			r := math.Round(f)
-			const hi = float64(math.MaxInt64) // rounds up to 2^63, matching the reference's cast bound
-			if r >= float64(math.MinInt64) && r <= hi {
-				if r == hi {
-					return math.MaxInt64, true // saturate like the reference's float->int cast
-				}
+			// math.MaxInt64 has no exact float64 - it rounds up to 2^63 - so
+			// the top bound is 2^63 itself, exclusively. MinInt64 is exact.
+			if r >= float64(math.MinInt64) && r < 9223372036854775808.0 {
 				return int64(r), true
 			}
 		}

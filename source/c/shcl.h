@@ -1524,8 +1524,10 @@ static int parse_int_text(ShclArena *a, const ShclElement *e, shcl_strictness le
 		double f;
 		if (parse_float_text(a, e, level, &f)) {
 			double r = round(f);
-			if (r >= -9223372036854775808.0 && r <= 9223372036854775808.0) {
-				*out = (r >= 9223372036854775808.0) ? INT64_MAX : (int64_t)r;
+			/* INT64_MAX has no exact double, so the top bound is 2^63 itself,
+			   exclusively; INT64_MIN is exact. */
+			if (r >= -9223372036854775808.0 && r < 9223372036854775808.0) {
+				*out = (int64_t)r;
 				return 1;
 			}
 		}

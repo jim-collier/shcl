@@ -4112,7 +4112,11 @@ fn parse_int_text(e: &Element, level: Strictness) -> Option<i64> {
 		&& let Some(f) = parse_float_text(e, level)
 	{
 		let r = f.round();
-		if r >= i64::MIN as f64 && r <= i64::MAX as f64 {
+		// i64::MAX has no exact f64 - the cast rounds it up to 2^63 - so a
+		// `<=` against it lets 2^63 in and the cast below saturates to a value
+		// the text never said. Bound on 2^63 itself, exclusively. i64::MIN is
+		// exact, so the low end needs no such care.
+		if r >= i64::MIN as f64 && r < 9_223_372_036_854_775_808.0 {
 			return Some(r as i64);
 		}
 	}

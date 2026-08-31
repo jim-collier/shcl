@@ -3968,11 +3968,9 @@ def _parse_int_text(e, level):
 		f = _parse_float_text(e, level)
 		if f is not None and not math.isnan(f) and not math.isinf(f):
 			r = _rust_round(f)
-			if -(2 ** 63) <= r <= 2 ** 63:
-				if r > _I64_MAX:
-					r = _I64_MAX
-				elif r < _I64_MIN:
-					r = _I64_MIN
+			# The top bound is 2^63 itself, exclusively: i64 max has no exact
+			# double, so a `.0` spelling of it lands above the range.
+			if -(2 ** 63) <= r < 2 ** 63:
 				return r
 	return None
 
