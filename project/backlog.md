@@ -310,10 +310,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-164500
 
-	- 🔘 Item 43: the README does not name the Windows installer's archive-tool requirement.
+	- ✅ Item 43: the README does not name the Windows installer's archive-tool requirement.
 		- The script refuses outright without it and names the Windows versions that carry it. The README's prerequisites cover only the Linux side.
 		- The script's own message is clear, so this costs a failed run rather than a bad install. One clause fixes it.
+		- One clause added under the Windows one-liner, naming the Windows versions that carry `tar` and pointing at the setup .exe for anything older - the same escape the script's own message gives.
+		- Pinned in `check-docs.bash`: while `install.ps1` carries that refusal, the README has to name `tar` on the Windows side. A loose match was not enough, since the README says "starter" and "start" in several places.
 		- Opened: 20260830-140346
+		- Closed: 20260831-170000
 
 	- 🔘 Item 44: the PowerShell installer runs the binary only after writing it into place.
 		- The bash installer runs the version check from the temp directory first, precisely so a binary that will not start never becomes an install.

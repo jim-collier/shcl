@@ -89,6 +89,16 @@ if ((! buildsSharedLib)); then
 		--include='*.md' "${repoDir}" | grep -v '/backlog\.md:' || true)
 fi
 
+##	The Windows installer refuses outright without `tar`, and the README's
+##	prerequisites used to cover only the Linux side, so the requirement was
+##	reachable only by running it and failing.
+ps1="${repoDir}/install.ps1"
+readme="${repoDir}/README.md"
+if [[ -f "${ps1}" && -f "${readme}" ]] && grep -q "needs tar to unpack" "${ps1}"; then
+	grep -qE '(^|[^a-z])tar([^a-z]|$).*[Ww]indows|[Ww]indows.*(^|[^a-z])tar([^a-z]|$)' "${readme}" \
+		|| fBad "install.ps1 requires tar and README.md never says so on the Windows side"
+fi
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

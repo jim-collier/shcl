@@ -409,6 +409,8 @@ On Windows, `irm | iex` cannot take arguments at all, so use the scriptblock for
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1))) -Target user
 ```
 
+The installer unpacks the drop-in payload with `tar`, which Windows 10 1803, Server 2019 and later carry. On an older Windows, use the setup `.exe` from the releases page instead.
+
 | Target | Linux | Windows
 | :-- | :-- | :--
 | `system` (default) | `/opt/shcl` plus a `/usr/local/bin/shcl` symlink | `C:\Program Files\Shcl`, added to `PATH`
