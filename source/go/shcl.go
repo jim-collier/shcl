@@ -2217,6 +2217,18 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		}
 		// Field line.
 		before, comment := splitComment(rest)
+		// A same-line fence runs to the end of the line: the child-indent
+		// spelling keeps a `#` in its info-string, the grammar gives the
+		// same-line alternative no comment at all, and the emitter already
+		// assumes it. Without this, `a: ```c#` loses the `#`. The cheap test
+		// comes first so an ordinary commented line is not scanned twice.
+		if comment != "" && (strings.Contains(before, "```") || strings.Contains(before, "~~~")) {
+			if sc, err := scanPath(trimEndWS(before)); err == nil && sc.valueText != nil {
+				if _, _, _, okf := fenceOpen(*sc.valueText); okf {
+					before, comment = rest, ""
+				}
+			}
+		}
 		content := trimEndWS(before)
 		if content == "" {
 			// Only a comment survived (e.g. an escaped lead-in); keep it.
@@ -3962,8 +3974,8 @@ func (d *Document) SetRaw(path, content, info string) bool {
 	if _, c := splitComment(info); strings.ContainsAny(info, "\n\r") || c != "" {
 		return false
 	}
-	for _, l := range strings.Split(content, "\n") {
-		if strings.HasSuffix(l, "\r") {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasSuffix(line, "\r") {
 			return false
 		}
 	}

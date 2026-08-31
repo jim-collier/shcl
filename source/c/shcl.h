@@ -1374,6 +1374,11 @@ static void sb_put_u64(ShclArena *a, ShclSB *s, uint64_t v) {
 	sb_put(a, s, o, (size_t)j);
 }
 static int s_contains_char(ShclStr s, char c) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == c) return 1; return 0; }
+static int s_has_fence_run(ShclStr s) {
+	for (size_t i = 0; i + 2 < s.n; i++)
+		if ((s.p[i] == '`' || s.p[i] == '~') && s.p[i + 1] == s.p[i] && s.p[i + 2] == s.p[i]) return 1;
+	return 0;
+}
 
 typedef struct { ShclStr indent; size_t node; } ShclStackEnt;
 DEFINE_VEC(ShclVecStack, ShclStackEnt)
@@ -2466,6 +2471,15 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			i++; continue;
 		}
 		ShclStr comment; ShclStr before = split_comment(rest, &comment);
+		/* A same-line fence runs to the end of the line: the child-indent
+		   spelling keeps a `#` in its info-string, the grammar gives the
+		   same-line alternative no comment at all, and the emitter already
+		   assumes it. Without this, `a: ```c#` loses the `#`. The cheap test
+		   comes first so an ordinary commented line is not scanned twice. */
+		if (comment.n && s_has_fence_run(before)) {
+			ShclPathScan pre = scan_path(&line_arena, trim_end(before));
+			if (pre.ok && pre.has_value && fence_open(pre.value_text).ok) { before = rest; comment.p = NULL; comment.n = 0; }
+		}
 		ShclStr content = trim_end(before);
 		if (content.n == 0) {
 			/* Only a comment survived (e.g. an escaped lead-in); keep it. */

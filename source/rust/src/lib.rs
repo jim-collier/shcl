@@ -2068,7 +2068,21 @@ impl Parser {
 				continue;
 			}
 			// Field line.
-			let (before, comment) = split_comment(rest);
+			let (mut before, mut comment) = split_comment(rest);
+			// A same-line fence runs to the end of the line: the child-indent
+			// spelling keeps a `#` in its info-string, the grammar gives the
+			// same-line alternative no comment at all, and the emitter already
+			// assumes it. Without this, `a: ```c#` loses the `#`. The cheap
+			// test comes first so an ordinary commented line is not scanned
+			// twice.
+			if comment.is_some()
+				&& (before.contains("```") || before.contains("~~~"))
+				&& scan_path(before.trim_end())
+					.is_ok_and(|s| s.value_text.is_some_and(|v| fence_open(&v).is_some()))
+			{
+				before = rest;
+				comment = None;
+			}
 			let content = before.trim_end();
 			if content.is_empty() {
 				// Only a comment survived (e.g. an escaped lead-in); keep it.
@@ -3661,7 +3675,7 @@ impl Document {
 		if info.contains('\n') || info.contains('\r') || split_comment(info).1.is_some() {
 			return false;
 		}
-		if content.split('\n').any(|l| l.ends_with('\r')) {
+		if content.split('\n').any(|line| line.ends_with('\r')) {
 			return false;
 		}
 		let info = info.trim();

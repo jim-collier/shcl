@@ -1663,6 +1663,19 @@ class _Parser:
 				continue
 			# Field line.
 			before, comment = _split_comment(rest)
+			# A same-line fence runs to the end of the line: the child-indent
+			# spelling keeps a `#` in its info-string, the grammar gives the
+			# same-line alternative no comment at all, and the emitter already
+			# assumes it. Without this, `a: ```c#` loses the `#`. The cheap
+			# test comes first so an ordinary commented line is not scanned
+			# twice.
+			if comment and ("```" in before or "~~~" in before):
+				try:
+					_, vt = _scan_path(_trim_end(before))
+				except _PathError:
+					vt = None
+				if vt is not None and _fence_open(vt) is not None:
+					before, comment = rest, ""
 			content = _trim_end(before)
 			if not content:
 				# Only a comment survived (e.g. an escaped lead-in); keep it.
@@ -2575,7 +2588,7 @@ class Document:
 		whole trailing CR run off every line, so it would not read back."""
 		if "\n" in info or "\r" in info or _split_comment(info)[1] != "":
 			return False
-		if any(l.endswith("\r") for l in content.split("\n")):
+		if any(line.endswith("\r") for line in content.split("\n")):
 			return False
 		info = _trim(info)
 		fc, fl = _choose_fence(content)
