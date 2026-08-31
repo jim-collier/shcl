@@ -72,6 +72,23 @@ if [[ -f "${backlog}" ]]; then
 	' "${backlog}")
 fi
 
+##	The documents list five integration modes, two of which are a shared library.
+##	Nothing in the tree builds one - no crate-type, no export macro in the C
+##	header, and the release stage produces binaries, packages and the drop-in
+##	tarball. So a document may describe compiling one, but may not offer it as
+##	something already built. If a build for it is ever added, this check is what
+##	says the wording may go back.
+buildsSharedLib=0
+if grep -rqE 'crate-type[^=]*=[^]]*(cdylib|dylib|staticlib)' --include='Cargo.toml' "${repoDir}"; then
+	buildsSharedLib=1
+fi
+if ((! buildsSharedLib)); then
+	while IFS= read -r hit; do
+		fBad "offers a shared library as already built, and nothing builds one: ${hit}"
+	done < <(grep -rniE '(prebuilt|pre-built|published|shipped)[^.]*\.(so|dll|dylib)|\b(prebuilt|pre-built)\b[^.]*shared librar' \
+		--include='*.md' "${repoDir}" | grep -v '/backlog\.md:' || true)
+fi
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

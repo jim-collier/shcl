@@ -87,13 +87,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-081500
 
-	- 🔘 Item 20: two of the five advertised integration modes have no artifact and no build.
+	- ✅ Item 20: two of the five advertised integration modes have no artifact and no build.
 		- The design lists five and calls the fourth "link the prebuilt shared library". The spec repeats shared and bundled as part of the goal.
 		- Nothing builds one. The manifest declares a library and a binary only, no C ABI surface is exported, and the release stage produces binaries, packages, setups and the drop-in tarball, nothing else.
 		- The C header declares its API with plain externs and no export macro, so a shared object is buildable on ELF by default visibility and a Windows DLL is not.
 		- Worth deciding rather than drifting. A real shared library means an ABI commitment, a soname, symbol versioning and a headers package, all of which pull against the one-file zero-dependency premise.
 		- Narrowing the documents is the cheap answer and probably the right one: drop "prebuilt", and say those two modes mean compiling the drop-in.
+		- Decided: narrow the documents. A published shared object means an ABI to keep - soname, symbol versioning, a headers package - which pulls against the one-file zero-dependency premise. The two modes now read as compiling a drop-in source file two ways, and the paragraph says plainly that neither is published prebuilt and why.
+		- Pinned by `check-docs.bash`: a document may not offer a `.so`, `.dll` or `.dylib` as already built while no manifest declares a library crate-type. Verified by restoring the old wording and watching it fail.
 		- Opened: 20260830-140346
+		- Closed: 20260831-083000
 
 	- 🔘 Item 21: `remove` and the set-if-absent family have no option form, only the stdin ops script.
 		- The design records why scalar sets got a command-line option: a tab-separated script on stdin is something no shell writes comfortably and no editor preserves.

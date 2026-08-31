@@ -142,11 +142,11 @@ One question - "how do you pull SHCL into your project?" - with two kinds of ans
 
 - **Package**. Add it as an ordinary dependency and let the package manager fetch it (`go get`, `pip install`, `npm i`, and so on).
 
-- **Shared library**. Link the prebuilt `.so`, `.dll`, or `.dylib` at runtime. The library stays a separate file.
+- **Shared library**. Compile a drop-in source file into a `.so`, `.dll`, or `.dylib` and link it at runtime. The library stays a separate file.
 
-- **Bundled**. Static-link it into your binary, so you distribute one self-contained file.
+- **Bundled**. Compile the same source into your binary, so you distribute one self-contained file.
 
-The last two are the same compiled code linked two ways - "shared" stays a separate file loaded at runtime, "bundled" is baked into your binary. Every mode reaches the same Accessor/Writer surface; the choice is packaging, not capability.
+The last two are the same code compiled two ways - "shared" stays a separate file loaded at runtime, "bundled" is baked into your binary. Neither is published as a prebuilt artifact, and that is a decision rather than a gap. A release carries the CLI binaries, the packages and the drop-in sources. Shipping a shared object means an ABI to keep: a soname, symbol versioning, a separate headers package, and a promise that a caller built against an old one keeps working. All of that pulls against the one-file zero-dependency premise, and the C header exports plain externs with no export macro, so a Windows DLL would need one anyway. Every mode reaches the same Accessor/Writer surface; the choice is packaging, not capability.
 
 ### Power layer (library-level, grammar untouched)
 
