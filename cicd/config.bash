@@ -182,8 +182,9 @@ TEST_EXTRA=(
 	## CLI behavior the corpus cannot reach: closed streams, '-' twice on one
 	## command line, a carriage return ending an ops line, error-message shape.
 	'cicd/utility/cli-regress.bash "${BINDING_CLIS[@]}"'
-	## The write path must stay small beside the parse. Two superlinear write
-	## regressions reached dev in consecutive rounds with no number to fail on.
+	## The read and write paths must stay small beside the parse. Two superlinear
+	## write regressions reached dev in consecutive rounds with no number to fail
+	## on, and the read side was quadratic before the surviving name index.
 	'cicd/utility/perf-gate.bash "${BINDING_CLIS[@]}"'
 	## The wrappers, the one-liner's scope hygiene, and the errexit grep trap.
 	'cicd/utility/shell-regress.bash'

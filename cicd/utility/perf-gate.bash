@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 ##	Purpose:
-##		Fail when the write path stops being linear. Two rounds running, a fix
+##		Fail when the read or write path stops being linear. Two rounds running,
+##		a fix
 ##		that was correct made bulk writes 4.5x slower and absent-path defaults
 ##		140x slower, and both reached dev because nothing had a number to fail
 ##		on. Each workload is timed against the same binding's parse-only
@@ -47,6 +48,11 @@ awk -v n="${keys}" 'BEGIN{ for (i = 0; i < n; i++) printf "int\tk%d\t%d\n", i, i
 ## Paths that do not resolve: the set-if-absent half, which is where the
 ## whole-index rebuild hid.
 awk 'BEGIN{ for (i = 0; i < 1000; i++) printf "int-default\tnew%d\t%d\n", i, i }' > "${tmpDir}/defaults.ops"
+## Every existing key looked up and left alone. set-if-absent on a path that
+## already resolves is a path read and nothing else, which is the only way to
+## drive one lookup per key through a single process. Without an index that
+## outlives the parse this is a sibling scan per key, so it goes quadratic.
+awk -v n="${keys}" 'BEGIN{ for (i = 0; i < n; i++) printf "int-default\tk%d\t0\n", i }' > "${tmpDir}/reads.ops"
 
 ##	Milliseconds for one run of $2 (an ops file) through CLI $1, best of two so
 ##	a scheduling hiccup does not fail the gate.
@@ -71,7 +77,7 @@ for b in "${bindings[@]}"; do
 	budget=$(( baseMs * factor ))
 	floor=$(( baseMs + 250 ))
 	if ((budget < floor)); then budget="${floor}"; fi
-	for w in writes defaults; do
+	for w in writes defaults reads; do
 		ms="$(fTimeMs "${cli}" "${tmpDir}/${w}.ops")"
 		if ((ms > budget)); then
 			echo "perf-gate: ${name}: ${w} took ${ms} ms against a ${budget} ms budget (parse-only baseline ${baseMs} ms)" >&2
