@@ -135,22 +135,33 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-110000
 
-	- 🔘 Item 24: the Python value display and merge key pay a join and a generator on every single-element cell.
+	- ✅ Item 24: the Python value display and merge key pay a join and a generator on every single-element cell.
 		- Measured on an 8.5 MiB document: display is called 799k times and the merge key 1.4M times, for 363k source lines. The join is the largest non-parse entry in a profile.
 		- A length-one fast path in both took parse-plus-emit from 8.52 s to 7.94 s, about 7%, with byte-identical output.
 		- Python-only spelling. Rust and Go stream these through a hash and build nothing, so this narrows the gap rather than widening a structural difference.
+		- Fixed: a length-one branch in `_Value.display` and in `_merge_key`, which is the shape of every scalar field.
+		- Pinned in the Python runner by a counting sequence: a one-element cell must not be walked at all, a two-element one must be walked twice. That is exact, where a wall-clock threshold on a constant-factor win either flakes or never fires.
+		- Output is byte-identical, verified over a 1.7 MB document and the whole corpus.
 		- Opened: 20260830-140346
+		- Closed: 20260831-113000
 
-	- 🔘 Item 25: the Python source-attach guard builds two merge keys per line, usually to compare a value with itself.
+	- ✅ Item 25: the Python source-attach guard builds two merge keys per line, usually to compare a value with itself.
 		- The key is computed eagerly, then compared against the key of the value just passed in, which in the common case is the same object.
 		- An identity check first took another 2% off, and skips the work entirely when the flag is already set. With item 24 the pair is about 10%, output unchanged.
+		- Fixed: an identity test before the key compare. The bound node holds the object just parsed in the common case, so neither key is built.
+		- Pinned in the Python runner: parsing 200 plain lines must build zero value keys. It built 400 before.
 		- Opened: 20260830-140346
+		- Closed: 20260831-113000
 
-	- 🔘 Item 26: the Python path scanner rebuilds two closures on every call.
+	- ✅ Item 26: the Python path scanner rebuilds two closures on every call.
 		- They are defined in the function body, so they are recreated once per document line, each carrying a cell.
 		- Module-level helpers taking the same arguments keep the call flow and the names, so the mirror of the reference's inner functions survives.
 		- Not measured in isolation, so the size of the win is unknown.
+		- Fixed: the two helpers are module level now, taking the buffer and its length. The reference spells them as inner functions; the deviation is that Python rebuilds a closure per call and the scanner runs once per document line.
+		- Pinned in the Python runner: the scanner's code object must carry no inner code objects.
+		- Measured with items 24 and 25: parse-plus-emit of a 1.7 MB document went 1.05 s to 0.87 s, output byte-identical.
 		- Opened: 20260830-140346
+		- Closed: 20260831-113000
 
 	- 🔘 Item 27: a comment on the value-lookup fallback does not match the code, in all four bindings.
 		- It says a non-scalar hit and an outright miss both fall to the fallback scan. The fallback is gated on the selector being quoted, so an unquoted miss returns nothing with no scan.
