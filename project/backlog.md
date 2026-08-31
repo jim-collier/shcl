@@ -44,146 +44,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Bugs
 
-- Code review 20260830b:
-
-	- A third directive pass, run the same day as the 20260830 round and after it merged. Nine parallel audits over the four bindings, the pipeline, the installers, the docs and the backlog. Items 1 to 17 are here; 18 to 57 are under Features and enhancements. The two prior rounds this week were exhaustive on the code, so most of what is left sits in the writer's fixpoint guarantee, the C read tier, and the documents.
-
-	- ✅ Item 1: a written duplicate folds one level but not the next, so `set` output is not a `fmt` fixpoint.
-		- Reproduced: file `b: 1, 2` over a block `b:` with `a: 2` under it, ops `int b.a 2` then `empty b`. The write emits `a: 2` twice; `fmt` on that output collapses it back to one.
-		- Cause: the fold moves the loser's children onto the survivor and stops. The parser's own late-duplicate fold is depth-first for exactly this reason; the writer's path is not.
-		- No value is lost, since a reload merges the pair. What breaks is the promise that a write leaves a canonical file, so a "fmt changes nothing" gate fails right after a legitimate edit.
-		- All four bindings, and the cross-binding check cannot see it. Fold the moved children after the merge, the shape the parser already uses.
-		- Fixed: the writer folds depth-first now, the shape the parser already used. Only a node that just received children is rechecked, so the cost stays with the fold.
-		- Pinned by corpus case `062-write-fold-deep`, which fails on all four bindings without the change.
-		- Opened: 20260830-140346
-		- Closed: 20260830-145320
-
-	- ✅ Item 2: a bracket array is mis-diagnosed, read wrong, then baked into a string by `fmt --write`.
-		- Reproduced: `ports: [80, 443]` reports `E015 missing colon; repaired as an empty value`. The line has a colon.
-		- `get --array` returns one slot holding `80, 443` at exit 0, so a script gets a wrong answer and no signal.
-		- `fmt --write` rewrites the line to `ports: "80, 443"`. The quoted-plain-string rule then makes that the authored spelling, so the file reports clean forever and the one warning is gone. E015 is a repair, not a loss, so the save gate does not fire.
-		- Bracket syntax is what most authors arrive with, from JSON, TOML and YAML. A pasted YAML list gets the same treatment: `- red` reports `unexpected 'r' after field`.
-		- Cheapest fix is to name the shape in the diagnostic prose, which is per-binding voice and outside the differential contract, so no golden moves. A dedicated code is stronger and costs four bindings plus a corpus case.
-		- Decided: both, and now rather than later. A new code is additive today and expensive to add once there are consumers keying on the old one.
-		- Fixed: new code `E019` names the shape, and the load counts it as lost content, so `fmt --write` refuses at exit 7 instead of baking `"80, 443"` into the file. Spec table and changelog carry it.
-		- The wrong-answer-at-exit-0 half is closed by item 18: once the read subcommands print load diagnostics, a `get` on this file says so too.
-		- A pasted YAML list is untouched and stays `E014`. Its text is kept verbatim as trivia, so nothing is lost and the save gate has nothing to refuse.
-		- Pinned by corpus case `065-bracket-array`, which reports `E015` on all four bindings without the change.
-		- Opened: 20260830-140346
-		- Closed: 20260830-171500
-
-	- ✅ Item 3: array reads grow the document arena on every call, without bound.
-		- Measured: 200k reads of one three-element array add 15.7 MB. The same loop over a scalar field adds nothing. Confirmed against `read_int_array`; the other four array reads allocate the same way.
-		- Cause: the result array and its status array come out of the document arena, which is only freed at `shcl_free`.
-		- This is the defect already fixed twice in this file for the scalar path, and both fixes carry a comment saying so. The array family never got the same treatment.
-		- C only. The other three return owned collections the runtime reclaims, so the cross-binding check is blind to it. A long-running consumer polling an array field grows steadily. The veneer copies into a vector and never looks at the arena memory again, so there it is pure waste.
-		- Fix is a decision, not mechanical: a third arena reset per read call changes the documented lifetime of what a read hands back.
-		- Decided: keep the lifetime, and give consumers a way out rather than leaving them to work around it. Read results moved to their own arena inside the document, and a new `shcl_reads_release` gives that arena back without touching the document. A caller that never calls it sees exactly the old contract.
-		- The same change covers item 35's four accessors, and `shcl_to_canonical` with them, so the whole read surface follows one rule: anything handed to the caller lives in the read arena.
-		- The C++ veneer calls it on every read. It copies each result into owned std types the moment it gets it, so the arena behind it was pure waste, and C++ now reclaims like the other three.
-		- Pinned by two fixtures: the C runner asserts array reads do not touch the document arena and that a release-per-read loop stays flat, and the veneer smoke asserts a 20k-read loop stays flat. Both fail with the change backed out.
-		- Opened: 20260830-140346
-		- Closed: 20260830-181500
-
-	- ✅ Item 4: `init` emits a starter config that fails the schema that produced it.
-		- Reproduced: a field typed `int` with `min: 1`, `max: 10` and `default: 99` generates `# int, 1-10, required` and then `server.port: 99` on the next line. `check --schema` against the same schema fails with `V006`, exit 6.
-		- The generated comment names the range the generated value breaks.
-		- Nothing checks the default against the same field's own constraints; it is written straight out.
-		- The doc comment promises the output "always loads clean and validates clean against its schema", and that promise is copied into all four bindings and the man page. A starter config that fails its own schema is the worst first impression the tool can make.
-		- Either fault the schema at build time with a new V09x, or comment the offending line out and say why. The doc comment has to match whichever is chosen.
-		- Decided: fault the schema. A default outside its own field's constraints is an error in the schema, and saying so is more use to the author than quietly commenting the field out.
-		- Fixed with a new `V097`. Generation now checks its finished text against the schema that produced it rather than trusting each branch, so the doc comment's promise is enforced instead of assumed, and any future defect of the same class is caught with it. `V007` stays exempt, being the documented repeat-lower-bound shortfall.
-		- The C CLI could not report it at first: on a generation fault it rebuilt the fault list by validating an empty document, which cannot reproduce a fault the generator found. It now prints the diagnostics the generator recorded, and keeps the empty-document trick for build faults that leave none.
-		- Pinned by the `init-bad-default` row in `cli-regress.bash`, across all four bindings.
-		- Opened: 20260830-140346
-		- Closed: 20260830-191500
-
-	- 🔘 Item 5: `set_raw` accepts a CR that the load then strips, so content does not survive a round trip.
-		- Reproduced: `set_raw` with body `a\r\nb` reads back as `a\nb`; a body of one CR reads back empty.
-		- Cause: the call refuses CR and LF in the info string but does not check the body. The load strips the whole trailing CR run per line, and a raw block is the one place content is not trimmed.
-		- Two things break at once: silent loss between what a consumer wrote and what it reads back, and the writer's output stops being a fixpoint. A CR mid-line is fine and still round-trips, so only end-of-line CR is affected.
-		- All four bindings. Refuse a body whose lines end in CR, the way the info string is already refused, and add a runner fixture beside the existing one.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 6: `set_comment` does not trim its text, and the load does.
-		- Reproduced: writing comment text `x ` stores `# x `, which reparses as `# x`. Writer output is not a fixpoint.
-		- Empty text stores `# `, a single space stores `#  `. Non-ASCII trailing whitespace does the same, because the parser trims the full whitespace set and the setter trims nothing.
-		- All four bindings. Trim with the parser's own trim before the prefix, and drop the write when nothing is left.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 7: the loose int range check is off by one at the top end.
-		- Reproduced: `9223372036854775808.0` read as int at loose strictness returns `9223372036854775807`. The plain decimal spelling of the same number correctly refuses. Two spellings of one value disagree.
-		- Cause: the bound is compared against `i64::MAX as f64`, which rounds up to 2^63, so the value passes and the cast then saturates.
-		- Rust saturates, so here it is only a wrong answer. The same shape in C is an out-of-range float-to-int conversion, which is undefined behavior, and this is the file the other three mirror.
-		- The low end is already exact. Compare against the exact bound.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 8: the Windows setup build fails outright on any prerelease version.
-		- The installer script writes a four-integer version field straight from the package version. A version like `2.1.0-alpha.1` produces something the tool rejects, and it exits nonzero.
-		- The packaging script runs under `errexit`, so that failure kills the whole release stage. A prerelease cut cannot get past it.
-		- Never exercised: the version field went in after the last prerelease, so no prerelease has been cut since. The installers still offer a dev channel, so this is live workflow.
-		- Fix: reuse the digit-splitting the Rust build script already does for the same field, pass the quad separately, and leave the display strings on the full version.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 9: the installers' stable channel is not version-sorted, so a back-ported patch outranks a newer release.
-		- Both scripts point stable at the "latest release" endpoint and take its tag verbatim. That endpoint is newest by publication date, not by version.
-		- Cut a `1.2.1` fix after `2.0.0` and every stable install is handed `1.2.1`.
-		- The comment directly above the code states this exact hazard as the reason the dev channel sorts, then leaves the stable channel on the date-ordered endpoint. Both scripts and the README promise "newest full release", which date order does not give.
-		- Fix: list releases for both channels, drop prereleases and drafts for stable, and run the comparator that already exists.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 10: the PowerShell wrapper calls a .NET 6 method on the PowerShell 5.1 it claims to support.
-		- The symlink resolver calls a method that arrived in .NET 6. Windows PowerShell 5.1 runs on .NET Framework and does not have it. The header says the file runs on 5.1.
-		- The helper runs unconditionally at load, so every dot-source and every run hits it. The error suppression on the line above covers the lookup, not the method call.
-		- Confirmed failure shape on 7.6.5 against a same-named missing method: at default preferences it writes a red error and continues, under strict mode it halts, under stop-on-error it exits 1. All three are inherited from whatever sources the file.
-		- Fix: test for the member before calling it and fall through to the unresolved-path branch already there.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 11: the same wrapper reads a PowerShell 6+ variable before the test meant to guard it.
-		- The platform test puts the variable first and the null check second, so on 5.1 the first operand is evaluated and throws under a caller's strict mode.
-		- The installer guards the identical read with a version test that short-circuits first. The wrapper never got that treatment, though the comment above it shows the 5.1 case was considered.
-		- Fix: put the version test first.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 12: a system install under a non-default umask lands mode 0700 and only root can run it.
-		- Reproduced under `umask 077`: the install directory, the payload directory and the binary all came out mode 0700. The same lines write the system paths, leaving the launcher resolvable only by root, and the man page and completions unreadable.
-		- Cause: the script sets no umask, and `sudo` keeps the caller's unless sudoers overrides it.
-		- The packages set explicit modes, so the two install routes disagree on the same box.
-		- Fix: set a umask before the install block, or set the modes explicitly.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 13: the README's C example does not build as written.
-		- The snippet calls into the standard library but shows no system includes, so a reader adds them, and the natural place is above the library header.
-		- That order fails: the library asks for a POSIX level, and a feature request only counts before the first system header. Reproduced with the README's own compile line: five implicit declarations and a pointer-from-integer error.
-		- With the library header first, the same example compiles clean and produces a file matching the other three examples.
-		- The constraint is written in the header, but nowhere a README reader looks.
-		- Fix: show the system includes below the library header, or say the header goes first.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 14: the style guide describes a name index the code has not had for two rounds.
-		- It says the index is built during the parse, keyed on name and value, and discarded afterward, with the writer mutating the tree directly instead of maintaining it.
-		- The code says the opposite three ways: built on the first path lookup, keyed on parent and name, and kept current by the writer, with only a merge dropping it.
-		- Nothing else repeats the stale claim, and the changelog has it right.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 15: a double negative in the guidelines license footer reverses its meaning.
-		- It reads "None of this is not legal advice". The same disclaimer in the trademark document is written correctly.
-		- That document is CC BY 4.0 and invites verbatim reuse, so the error travels into anyone's copy.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 16: the spec says an info string is never interpreted, and on the same-line fence it is.
-		- Spelled on the same line as the field, an info string of `html # note` reads back as `html`, with the rest moved onto the field line. Spelled under a child indent, the same text stays whole and is a fixpoint.
-		- The grammar has the same gap: the same-line alternative allows no comment, and the info-string rule admits a `#`.
-		- The emit side of this is documented. The parse side, which is where the two spellings diverge, is not.
-		- Opened: 20260830-140346
-
-	- 🔘 Item 17: both Done sections break the two-run layout the conventions now promise.
-		- The conventions say loose items and code-review rounds form two runs per Done section, each newest first. Both sections run rounds, then loose items, then rounds again.
-		- The two newest rounds are the ones stranded above the loose run.
-		- The 20260830 round filed exactly this and closed it, but only the conventions sentence was added and the file was never reordered, so the stated convention is now false.
-		- Canceled puts its loose item first and rounds after, so one order has to be picked and written down.
-		- Opened: 20260830-140346
-
 ### Features and enhancements
 
 - Code review 20260830b:
@@ -578,6 +438,191 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260830b:
+
+	- A third directive pass, run the same day as the 20260830 round and after it merged. Nine parallel audits over the four bindings, the pipeline, the installers, the docs and the backlog. Items 1 to 17 are here and all closed; 18 to 57 are still open under Features and enhancements. The two prior rounds this week were exhaustive on the code, so most of what is left sits in the writer's fixpoint guarantee, the C read tier, and the documents.
+	- Items 5 to 17 were worked as a bugs-only pass: every fix left a test that fails without it and passes with it, run both ways per binding, and three of them needed the pipeline extended before the defect was reachable at all.
+
+	- ✅ Item 1: a written duplicate folds one level but not the next, so `set` output is not a `fmt` fixpoint.
+		- Reproduced: file `b: 1, 2` over a block `b:` with `a: 2` under it, ops `int b.a 2` then `empty b`. The write emits `a: 2` twice; `fmt` on that output collapses it back to one.
+		- Cause: the fold moves the loser's children onto the survivor and stops. The parser's own late-duplicate fold is depth-first for exactly this reason; the writer's path is not.
+		- No value is lost, since a reload merges the pair. What breaks is the promise that a write leaves a canonical file, so a "fmt changes nothing" gate fails right after a legitimate edit.
+		- All four bindings, and the cross-binding check cannot see it. Fold the moved children after the merge, the shape the parser already uses.
+		- Fixed: the writer folds depth-first now, the shape the parser already used. Only a node that just received children is rechecked, so the cost stays with the fold.
+		- Pinned by corpus case `062-write-fold-deep`, which fails on all four bindings without the change.
+		- Opened: 20260830-140346
+		- Closed: 20260830-145320
+
+	- ✅ Item 2: a bracket array is mis-diagnosed, read wrong, then baked into a string by `fmt --write`.
+		- Reproduced: `ports: [80, 443]` reports `E015 missing colon; repaired as an empty value`. The line has a colon.
+		- `get --array` returns one slot holding `80, 443` at exit 0, so a script gets a wrong answer and no signal.
+		- `fmt --write` rewrites the line to `ports: "80, 443"`. The quoted-plain-string rule then makes that the authored spelling, so the file reports clean forever and the one warning is gone. E015 is a repair, not a loss, so the save gate does not fire.
+		- Bracket syntax is what most authors arrive with, from JSON, TOML and YAML. A pasted YAML list gets the same treatment: `- red` reports `unexpected 'r' after field`.
+		- Cheapest fix is to name the shape in the diagnostic prose, which is per-binding voice and outside the differential contract, so no golden moves. A dedicated code is stronger and costs four bindings plus a corpus case.
+		- Decided: both, and now rather than later. A new code is additive today and expensive to add once there are consumers keying on the old one.
+		- Fixed: new code `E019` names the shape, and the load counts it as lost content, so `fmt --write` refuses at exit 7 instead of baking `"80, 443"` into the file. Spec table and changelog carry it.
+		- The wrong-answer-at-exit-0 half is closed by item 18: once the read subcommands print load diagnostics, a `get` on this file says so too.
+		- A pasted YAML list is untouched and stays `E014`. Its text is kept verbatim as trivia, so nothing is lost and the save gate has nothing to refuse.
+		- Pinned by corpus case `065-bracket-array`, which reports `E015` on all four bindings without the change.
+		- Opened: 20260830-140346
+		- Closed: 20260830-171500
+
+	- ✅ Item 3: array reads grow the document arena on every call, without bound.
+		- Measured: 200k reads of one three-element array add 15.7 MB. The same loop over a scalar field adds nothing. Confirmed against `read_int_array`; the other four array reads allocate the same way.
+		- Cause: the result array and its status array come out of the document arena, which is only freed at `shcl_free`.
+		- This is the defect already fixed twice in this file for the scalar path, and both fixes carry a comment saying so. The array family never got the same treatment.
+		- C only. The other three return owned collections the runtime reclaims, so the cross-binding check is blind to it. A long-running consumer polling an array field grows steadily. The veneer copies into a vector and never looks at the arena memory again, so there it is pure waste.
+		- Fix is a decision, not mechanical: a third arena reset per read call changes the documented lifetime of what a read hands back.
+		- Decided: keep the lifetime, and give consumers a way out rather than leaving them to work around it. Read results moved to their own arena inside the document, and a new `shcl_reads_release` gives that arena back without touching the document. A caller that never calls it sees exactly the old contract.
+		- The same change covers item 35's four accessors, and `shcl_to_canonical` with them, so the whole read surface follows one rule: anything handed to the caller lives in the read arena.
+		- The C++ veneer calls it on every read. It copies each result into owned std types the moment it gets it, so the arena behind it was pure waste, and C++ now reclaims like the other three.
+		- Pinned by two fixtures: the C runner asserts array reads do not touch the document arena and that a release-per-read loop stays flat, and the veneer smoke asserts a 20k-read loop stays flat. Both fail with the change backed out.
+		- Opened: 20260830-140346
+		- Closed: 20260830-181500
+
+	- ✅ Item 4: `init` emits a starter config that fails the schema that produced it.
+		- Reproduced: a field typed `int` with `min: 1`, `max: 10` and `default: 99` generates `# int, 1-10, required` and then `server.port: 99` on the next line. `check --schema` against the same schema fails with `V006`, exit 6.
+		- The generated comment names the range the generated value breaks.
+		- Nothing checks the default against the same field's own constraints; it is written straight out.
+		- The doc comment promises the output "always loads clean and validates clean against its schema", and that promise is copied into all four bindings and the man page. A starter config that fails its own schema is the worst first impression the tool can make.
+		- Either fault the schema at build time with a new V09x, or comment the offending line out and say why. The doc comment has to match whichever is chosen.
+		- Decided: fault the schema. A default outside its own field's constraints is an error in the schema, and saying so is more use to the author than quietly commenting the field out.
+		- Fixed with a new `V097`. Generation now checks its finished text against the schema that produced it rather than trusting each branch, so the doc comment's promise is enforced instead of assumed, and any future defect of the same class is caught with it. `V007` stays exempt, being the documented repeat-lower-bound shortfall.
+		- The C CLI could not report it at first: on a generation fault it rebuilt the fault list by validating an empty document, which cannot reproduce a fault the generator found. It now prints the diagnostics the generator recorded, and keeps the empty-document trick for build faults that leave none.
+		- Pinned by the `init-bad-default` row in `cli-regress.bash`, across all four bindings.
+		- Opened: 20260830-140346
+		- Closed: 20260830-191500
+
+	- ✅ Item 5: `set_raw` accepts a CR that the load then strips, so content does not survive a round trip.
+		- Reproduced: `set_raw` with body `a\r\nb` reads back as `a\nb`; a body of one CR reads back empty.
+		- Cause: the call refuses CR and LF in the info string but does not check the body. The load strips the whole trailing CR run per line, and a raw block is the one place content is not trimmed.
+		- Two things break at once: silent loss between what a consumer wrote and what it reads back, and the writer's output stops being a fixpoint. A CR mid-line is fine and still round-trips, so only end-of-line CR is affected.
+		- All four bindings. Refuse a body whose lines end in CR, the way the info string is already refused, and add a runner fixture beside the existing one.
+		- Fixed: a body line ending in CR is refused, the way the info string already was. A CR mid-line is content and still round-trips.
+		- Pinned by the set_raw fixture in all four runners, which fails on every binding without the change.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 6: `set_comment` does not trim its text, and the load does.
+		- Reproduced: writing comment text `x ` stores `# x `, which reparses as `# x`. Writer output is not a fixpoint.
+		- Empty text stores `# `, a single space stores `#  `. Non-ASCII trailing whitespace does the same, because the parser trims the full whitespace set and the setter trims nothing.
+		- All four bindings. Trim with the parser's own trim before the prefix, and drop the write when nothing is left.
+		- Fixed: the built comment line is trimmed with the parser's own trim, so what is written is what reads back. Text that is blank leaves a bare `#`, which is a valid comment line and a fixpoint, rather than dropping the write.
+		- Pinned by corpus case `066-comment-trim`, covering a trailing space, a trailing non-ASCII space and empty text. The corpus already asserts that writer output is a fmt fixpoint, so the case fails on all four bindings without the change.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 7: the loose int range check is off by one at the top end.
+		- Reproduced: `9223372036854775808.0` read as int at loose strictness returns `9223372036854775807`. The plain decimal spelling of the same number correctly refuses. Two spellings of one value disagree.
+		- Cause: the bound is compared against `i64::MAX as f64`, which rounds up to 2^63, so the value passes and the cast then saturates.
+		- Rust saturates, so here it is only a wrong answer. The same shape in C is an out-of-range float-to-int conversion, which is undefined behavior, and this is the file the other three mirror.
+		- The low end is already exact. Compare against the exact bound.
+		- Fixed: the top bound is 2^63 itself and the compare is strict, in all four. The low end was already exact and is unchanged.
+		- Behavior change: `9223372036854775807.0` now reads BadType at loose. There is no double that holds i64 max, so the float path cannot honestly produce it; the plain decimal spelling still reads exactly.
+		- Pinned by corpus case `067-i64-float-bound`.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 8: the Windows setup build fails outright on any prerelease version.
+		- The installer script writes a four-integer version field straight from the package version. A version like `2.1.0-alpha.1` produces something the tool rejects, and it exits nonzero.
+		- The packaging script runs under `errexit`, so that failure kills the whole release stage. A prerelease cut cannot get past it.
+		- Never exercised: the version field went in after the last prerelease, so no prerelease has been cut since. The installers still offer a dev channel, so this is live workflow.
+		- Fix: reuse the digit-splitting the Rust build script already does for the same field, pass the quad separately, and leave the display strings on the full version.
+		- Fixed: the packaging script derives the four-integer field the way the Rust build script does and passes it separately, so the display strings keep the full version. A release version gives the same quad as before.
+		- Pinned by a row in `shell-regress.bash` that packages `2.1.0-alpha.1` for real and requires a setup out the other end.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 9: the installers' stable channel is not version-sorted, so a back-ported patch outranks a newer release.
+		- Both scripts point stable at the "latest release" endpoint and take its tag verbatim. That endpoint is newest by publication date, not by version.
+		- Cut a `1.2.1` fix after `2.0.0` and every stable install is handed `1.2.1`.
+		- The comment directly above the code states this exact hazard as the reason the dev channel sorts, then leaves the stable channel on the date-ordered endpoint. Both scripts and the README promise "newest full release", which date order does not give.
+		- Fix: list releases for both channels, drop prereleases and drafts for stable, and run the comparator that already exists.
+		- Fixed: both channels list releases and take the highest version through the comparator that was already there. Stable drops pre-releases; a draft is dropped on either channel, since it has no published assets to install.
+		- Pinned by four rows in `shell-regress.bash` against a fixture in publish order, where the date-ordered answer and the version-ordered answer differ. The rows run the shipped selection, lifted out of each installer by name.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 10: the PowerShell wrapper calls a .NET 6 method on the PowerShell 5.1 it claims to support.
+		- The symlink resolver calls a method that arrived in .NET 6. Windows PowerShell 5.1 runs on .NET Framework and does not have it. The header says the file runs on 5.1.
+		- The helper runs unconditionally at load, so every dot-source and every run hits it. The error suppression on the line above covers the lookup, not the method call.
+		- Confirmed failure shape on 7.6.5 against a same-named missing method: at default preferences it writes a red error and continues, under strict mode it halts, under stop-on-error it exits 1. All three are inherited from whatever sources the file.
+		- Fix: test for the member before calling it and fall through to the unresolved-path branch already there.
+		- Fixed: the member is tested for before it is called, and its absence falls through to the unresolved-path branch that was already there.
+		- Pinned by a row in `shell-regress.bash` that hands the resolver an item with no such method, which is the 5.1 shape, plus a row that resolves a real symlink so the working path stays covered.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 11: the same wrapper reads a PowerShell 6+ variable before the test meant to guard it.
+		- The platform test puts the variable first and the null check second, so on 5.1 the first operand is evaluated and throws under a caller's strict mode.
+		- The installer guards the identical read with a version test that short-circuits first. The wrapper never got that treatment, though the comment above it shows the 5.1 case was considered.
+		- Fix: put the version test first.
+		- Fixed: the version test comes first and short-circuits, matching the installer.
+		- Pinned by a scan in `shell-regress.bash`: every `$IsWindows` read in the wrapper has to sit behind that test. It cannot be exercised from a 7.x session, because `$PSVersionTable` is read-only and cannot be shadowed even locally.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 12: a system install under a non-default umask lands mode 0700 and only root can run it.
+		- Reproduced under `umask 077`: the install directory, the payload directory and the binary all came out mode 0700. The same lines write the system paths, leaving the launcher resolvable only by root, and the man page and completions unreadable.
+		- Cause: the script sets no umask, and `sudo` keeps the caller's unless sudoers overrides it.
+		- The packages set explicit modes, so the two install routes disagree on the same box.
+		- Fix: set a umask before the install block, or set the modes explicitly.
+		- Fixed: a system install widens the modes of what it just wrote, which also repairs a tree an earlier run left too tight. A user install still follows the caller's umask; it is one user's copy.
+		- Pinned by a row in `shell-regress.bash` that stages a tree under `umask 077` the way the installer stages one, then requires 755 directories and 644 data.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 13: the README's C example does not build as written.
+		- The snippet calls into the standard library but shows no system includes, so a reader adds them, and the natural place is above the library header.
+		- That order fails: the library asks for a POSIX level, and a feature request only counts before the first system header. Reproduced with the README's own compile line: five implicit declarations and a pointer-from-integer error.
+		- With the library header first, the same example compiles clean and produces a file matching the other three examples.
+		- The constraint is written in the header, but nowhere a README reader looks.
+		- Fix: show the system includes below the library header, or say the header goes first.
+		- Fixed: the example shows its system includes below the library header, with the reason, and the prose says the same.
+		- Harness extended: `check-readme-c.bash` lifts the example out of the README, wraps it in a main, and builds it with the compile line the README gives. It also refuses an example carrying no system include, since without one the order proves nothing.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 14: the style guide describes a name index the code has not had for two rounds.
+		- It says the index is built during the parse, keyed on name and value, and discarded afterward, with the writer mutating the tree directly instead of maintaining it.
+		- The code says the opposite three ways: built on the first path lookup, keyed on parent and name, and kept current by the writer, with only a merge dropping it.
+		- Nothing else repeats the stale claim, and the changelog has it right.
+		- Fixed: the entry now describes both indexes. The parser's `(name, value)` child index goes when the parse ends; a second index keyed on `(parent, name)` is built at the first path lookup and kept current by the writer, and only a merge drops it.
+		- Harness extended: `perf-gate.bash` gained a bulk-read workload, so the surviving index has a number to fail on. Without it the read path is a sibling scan per key and goes quadratic.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 15: a double negative in the guidelines license footer reverses its meaning.
+		- It reads "None of this is not legal advice". The same disclaimer in the trademark document is written correctly.
+		- That document is CC BY 4.0 and invites verbatim reuse, so the error travels into anyone's copy.
+		- Fixed: the sentence says what it means.
+		- Harness extended: `check-docs.bash` flags a second negation in the same sentence as "legal advice", which is the shape of the error. The backlog is excluded, since it quotes the broken wording as a finding.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 16: the spec says an info string is never interpreted, and on the same-line fence it is.
+		- Spelled on the same line as the field, an info string of `html # note` reads back as `html`, with the rest moved onto the field line. Spelled under a child indent, the same text stays whole and is a fixpoint.
+		- The grammar has the same gap: the same-line alternative allows no comment, and the info-string rule admits a `#`.
+		- The emit side of this is documented. The parse side, which is where the two spellings diverge, is not.
+		- Decided: the code was wrong, not the documents. The grammar gives the same-line alternative no comment at all, the spec says an info string is never interpreted, and the emitter already assumes text after a fence is label material. Nothing else in the language has two spellings that mean different things.
+		- Fixed: a same-line fence takes the rest of the line as its info string, in all four. `db: ```c#` now labels the block `c#` instead of silently dropping the `#`.
+		- Behavior change: a trailing comment on a same-line fence is no longer a comment. It goes on the line above.
+		- Note: `set_raw` still refuses an unquoted `#` in an info string. That refusal is now conservative rather than necessary, since both spellings round-trip one. Relaxing it is a separate change and is not a bug.
+		- Pinned by corpus case `068-info-hash-spellings`, which reads the same label through both spellings.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
+
+	- ✅ Item 17: both Done sections break the two-run layout the conventions now promise.
+		- The conventions say loose items and code-review rounds form two runs per Done section, each newest first. Both sections run rounds, then loose items, then rounds again.
+		- The two newest rounds are the ones stranded above the loose run.
+		- The 20260830 round filed exactly this and closed it, but only the conventions sentence was added and the file was never reordered, so the stated convention is now false.
+		- Canceled puts its loose item first and rounds after, so one order has to be picked and written down.
+		- Decided: loose items first, rounds after, each run newest first. That is the order Canceled already had, and it moved two bullets instead of fourteen.
+		- Fixed: both Done sections reordered, and the conventions sentence now names the order rather than describing two runs without saying which comes first.
+		- Harness extended: `check-docs.bash` reads the order back out of the file, and also catches rounds that fall out of date order.
+		- Opened: 20260830-140346
+		- Closed: 20260830-215127
 
 - Code review 20260830:
 
