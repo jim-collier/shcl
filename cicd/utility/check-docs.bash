@@ -45,6 +45,33 @@ done < <(grep -rn "legal advice" --include='*.md' "${repoDir}" \
 		}
 	}' || true)
 
+##	The backlog states an order for its finished sections and then drifted out of
+##	it twice: rounds, loose items, rounds again. Loose items first, rounds after,
+##	each run newest first.
+backlog="${repoDir}/project/backlog.md"
+if [[ -f "${backlog}" ]]; then
+	while IFS= read -r problem; do fBad "${problem}"; done < <(awk '
+		/^#+ / {
+			if (heading != "") check()
+			heading = ($0 ~ /Done|Canceled/) ? $0 : ""
+			seenRound = 0; prevRound = ""; problem = ""
+			next
+		}
+		heading != "" && /^- / {
+			isRound = ($0 ~ /^- Code review [0-9]{8}[a-z]?:/)
+			if (isRound) {
+				tag = $0; sub(/^- Code review /, "", tag); sub(/:.*$/, "", tag)
+				if (prevRound != "" && tag > prevRound && problem == "") problem = heading ": rounds out of order at " tag
+				prevRound = tag; seenRound = 1
+			} else if (seenRound && problem == "") {
+				problem = heading ": a loose item sits below a code-review round"
+			}
+		}
+		END { if (heading != "") check() }
+		function check() { if (problem != "") print problem }
+	' "${backlog}")
+fi
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

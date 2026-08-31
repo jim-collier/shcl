@@ -27,7 +27,7 @@ The product backlog: bugs, features, enhancements, and code-review findings. Out
 
 ## Conventions
 
-In each section, items are listed approximately from newest to oldest. Inside each Done section, loose items and code-review rounds form two separate runs, each newest first. (Tip: use a clipboard or macro manager to make using these emojis easier.)
+In each section, items are listed approximately from newest to oldest. Inside Done and Canceled, loose items come first and code-review rounds after, each run newest first. (Tip: use a clipboard or macro manager to make using these emojis easier.)
 
 | Icon | Status
 | :--: | :--
@@ -450,6 +450,135 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 #### Done - Bugs
 
+- ✅ Four serious limitations and/or bugs in the C version, found while integrating v2.0.0 into nemo-anywhere.
+	- The issues:
+		- ✅ Every save fails on a backslash path
+			- The temp name was split on `/` only. Now either separator on Windows, and a drive-relative `C:x` splits after the colon.
+		- ✅ The library exits the caller's process
+			- The five `exit(70)` sites go through one `SHCL_OOM()` macro an embedder can define. The default is unchanged.
+		- ✅ File tier is code-page bound, not UTF-8
+			- Every file call on Windows is the wide one now. A path that is not valid UTF-8 is refused rather than opened under another name.
+		- ✅ Reader has no size limit and returns no bytes
+			- `ReadFile(path, maxBytes)` in all four bindings and the veneer, and `LoadFile` is built on it. Past the cap is `Unreadable`, so the status enum did not change.
+	- Much more detail, including recommended fixes, is in the defect report on file.
+	- Check to see if other versions have the same problems.
+		- Checked. The first three are C-only: Rust, Go and Python split paths and open files through their runtimes, and allocation failure there is the language's own contract. The fourth is a gap in all four.
+	- Opened: 20260828-131305
+	- Closed: 20260828-133327
+
+- ✅ Hosted CI has been failing on every push since the supply-chain gates went in.
+	- Cause: `staticcheck`, `govulncheck` and `cargo-deny` went into `LINT_EXTRA` and `TOOL_PINS` in the 20260819 round, but nothing was ever added to `ci.yml` to install them. The lint stage aborted at exit 127 about a minute in, so every run since has been red while the local gate stayed green. That is exactly how it went unnoticed.
+	- Fixed by installing all three at their pinned versions. `cargo-deny` comes as a prebuilt binary with a sha256 pin, the same treatment `shellcheck` already gets: building it from source costs minutes and pulls a dependency tree the gate has no reason to compile.
+	- `cargo-zigbuild` is still missing there and stays that way - it only feeds the cross stage, which `--ci` skips, so it is a warning and not a failure.
+	- Second cause behind the same red, found once the first was cleared. The Go toolchain was `stable`, which had rolled to 1.27. staticcheck carries its own type checker that cannot read export data from a Go newer than the release it was cut against. Pinned to the 1.26 series in both jobs; move it when the staticcheck pin moves.
+	- Opened: n/a
+	- Closed: 20260821-121316
+
+- ✅ A raw block body line ending in more than one carriage return is not a `fmt` fixpoint.
+	- Found by the raised fuzz gate, immediately after the two below were fixed. Same family, and the third one none of the shallower runs could reach.
+	- Minimal reproducer: a fenced block whose body line ends `\r\r\n`. Load strips one CR, emit writes the survivor back, and the reload reads `\r\n` as an ordinary line ending and drops it. All four bindings.
+	- A raw body is the only content kept untrimmed, so it is the only place a trailing CR is visible at all; everywhere else the line trim removes it.
+	- Fixed by taking the whole trailing CR run off at load, not just one. A line ending in CR has no spelling that survives a write, so normalizing once is the only stable answer, and it matches the line-ending policy already in place rather than inventing a second one. A CR inside a line is content and still round-trips untouched.
+	- Verified: pinned by a fixture in all four runners rather than a corpus case: a golden holding the bytes would be rewritten by any platform's line-ending translation.
+	- Opened: n/a
+	- Closed: 20260818-183513
+
+- ✅ A raw block whose body is entirely whitespace grows by one indent level on every `fmt`.
+	- Found by the widened fuzzer character set from Code review 20260817 item 29 - the old set could not reach it.
+	- Minimal reproducer: `r:` then a fenced block at one tab whose only body line is a single tab. Each `fmt` adds a tab to that line, without bound. All four bindings, so the corpus is what can pin it.
+	- Cause: the common indent a raw block strips on reload is computed from its non-blank lines, and this block has none - so nothing is stripped, while emit adds depth+1 tabs every pass. Pre-existing: reproduces before the performance pass, and arrived with Code review 20260817 item 7, which stopped blanking such lines.
+	- Proposed fix: when a block has no non-blank content line, take the common indent from the whitespace-only lines themselves. That normalizes an all-whitespace body to empty once, which is the lesser evil against growth without bound - but it moves canonical output, so it wants a decision, a corpus case and a spec sentence.
+	- Same family as the merge item below: raw blocks and whitespace. Settled together, as one branch.
+	- Fixed, but by leaving the body alone rather than normalizing it to empty as proposed above. Emit adds no indent exactly where load stripped none, so the two stay inverses and the body survives byte-for-byte. Normalizing would also have ended the growth, but it discards whatever the body held, and a line of non-breaking or ideographic space is content, not layout, inside a construct whose whole promise is verbatim. Case 055 pins both, including the non-space-whitespace body.
+		- Superseded by Code review 20260829 item 2: the stripped indent is now the closing fence's own, with no special case for a blank body.
+	- Opened: 20260818-170931
+	- Closed: 20260818-183513
+
+- ✅ Merged output is not always a formatter fixpoint: an empty binding in the base and a same-named block in the overlay both survive the merge, where a parse of the two would fold them.
+	- Found by a long fuzz soak; the pipeline's shorter run never reaches it. Pre-existing: reproduces identically on the commit before the performance pass.
+	- Minimal reproducer. Base: `blk:` alone. Overlay: `blk:` carrying a raw block and a child. Merged, both survive; re-parsed, they fold, so the canonical form changes on the second pass.
+	- Cause: the overlay's node has a child, so it takes the instance-merge path and looks for a base sibling with the same (name, value) key. An empty node's key never matches a block's, so it appends instead of filling - while the parser's own rule is that a later binding fills an earlier empty one of the same name. Parser and merge disagree about the same two lines.
+	- A second face of the same bug, and the one that showed first. The emitter works around the pair by writing the block's fence on the name's line (`blk: ```info`), and the value half of that line is comment-split on reparse. So an info string containing `#` comes back as a trailing comment and the fence loses it outright. That half is content loss, not just instability.
+	- Fixed: merge adopts the parser's empty-fill rule, so a merge and a parse of the two layers run together produce the same document. The fill is limited to a raw block, which is the limit of the parser's own rule; an unmatched valued instance still appends, as a parse of the same two lines does. Case 056 pins both halves.
+	- The info-string half needed no separate fix: with the pair folded, the emitter never reaches the same-line-fence spelling for it, so the `#` survives. Pinned in the same case.
+	- Raise the soak in the pipeline, or at least run a long one before a cut: the short gate cannot see this class. Related to Code review 20260817 item 29.
+	- Opened: 20260818-163310
+	- Closed: 20260818-183513
+
+- ✅ `SaveFile` creates a brand-new file at mode 0600, whatever the umask says.
+	- Found by dogfooding the file tier from the new comparison tool: its `results.shcl` came out `rw-------` under a 0002 umask, where every other tool would have written `rw-rw-r--`.
+	- Cause is one missing branch, not a mistake: `write_file_atomic` opens its temp file at 0600 on purpose, so the copy is never briefly readable to anyone the original was not, and then copies the real mode off the target. When the target does not exist yet there is no mode to copy, so the private one stays. All four bindings mirror it.
+	- Two defensible answers, and it wants a decision rather than a patch. Either 0600 is the right default for a file that may hold secrets and the spec should say so out loud, or a new file should be created at `0666 & ~umask` like everything else a person runs. In the second case only an existing file's mode is preserved.
+	- Cheap to settle now: the whole file tier is unreleased, so either answer is free today and a behavior change later.
+	- Settled the second way: a new file is created at `0666 & ~umask`, like anything else a person runs. 0600 would be a surprise the caller never asked for and could not see. A config that needs to be private needs that from the umask or an explicit chmod, not from a library quietly deciding.
+	- Fixed in all four bindings by choosing the temp file's create mode from whether the target already exists, rather than by chmod'ing afterwards. An existing target still gets a private temp and its own mode copied on, so nothing about the case the privacy was for changed.
+	- Verified: pinned in all four runners rather than `crosscheck.bash`: the CLI cannot create a file at all (`set --write` on a missing FILE is an error), so the path is library-only and no CLI comparison can reach it. The fixture compares against a file made by the language's own ordinary create, so it states the rule without hard-coding a umask.
+	- Spec says it now, in the file-tier paragraph beside the rest of the save's mechanics.
+	- Opened: 20260820-075114
+	- Closed: 20260820-120244
+
+- ✅ The Python binding threw outright when saving over an existing file on Windows.
+	- Cause: `os.fchmod` is POSIX-only, and the guard around the mode copy caught `OSError`; an `AttributeError` walks straight past it. So the whole call escaped `save_file`, which documents that it reports rather than throws. Only on the overwrite path, which is the common one.
+	- Found by reading the four write paths against each other, not by a test.
+	- Fixed by making the mode copy conditional on the function existing, which is the right condition: the mode concept is POSIX's, and Windows now carries the destination's attributes across in the publish step instead.
+	- The runner fixture that missed it was POSIX-gated in all four bindings, because it asserts modes. Split so the create and the overwrite are exercised on every platform and only the mode assertions stay POSIX-only. The same fixture in all four, and it would have caught this.
+	- Opened: n/a
+	- Closed: 20260820-154417
+
+- ✅ Canonical output dropped the author's quoting on plain strings, in `fmt` and in `generate` defaults.
+	- From nano-git-db: a quoted `"fFoo()"` default came out bare in the starter file, so their function-ref convention read it back as a call. One `fmt` pass did the same to a document (`"@null"` -> `@null`), un-escaping the sentinel the `quoted` read flag exists to protect. `emit_element` re-derived quoting from content alone.
+	- Done, all four bindings: a quoted element keeps its quotes unless the text reads as an int, float, bool, or datetime at standard strictness - those still normalize to bare (`ver: "8"` -> `ver: 8`). The clause only ever adds quoting over the reserved-character minimum, so no bare emit becomes unsafe (quoted thousands stay covered by the comma rule).
+	- Goldens 017 (NUL string keeps quotes) and 030 (newline default now in its quoted spelling, which the spec prose had promised all along) moved; spec and `design.md` updated.
+	- Opened: n/a
+	- Closed: 20260817-111802
+
+- ✅ A block header whose children are all commented handed those comments back one indent level shallow through `fmt`.
+	- Reported from SilkTerm, whose template config is mostly commented-out defaults: `rotate:`, `contrast_mask:`, `text.scrim:`, `cursor.size:`, `selection:` all lost a level. That was the entire remaining diff against their template, all of it leading tabs.
+	- Reproduced: `rotate:` followed by two depth-1 comments re-emitted them at column 0. With even one live child under the same header the comment kept its depth, so only childless headers lost fidelity, and the loss was always exactly one level.
+	- Cause: after-trivia hung on the deepest open level whose indent prefixes the comment's indent. A childless header never opens its level, since no binding line ever resolves under it, so the comments hung one level up and re-emitted at the header's depth.
+	- Fixed: a hung comment now splits by written depth. At the last binding's own level it trails that binding as before; deeper, it sits inside that binding's block at its own depth, so a childless header keeps its commented children indented.
+	- Verified: all four bindings, new case 045 pins it, and goldens 027/034 moved - a tail note and a deep tail note keep their written depth now.
+	- Opened: 20260804-143741
+	- Closed: 20260804-151804
+
+- ✅ The PowerShell wrapper's sourced `shcl` cannot be fed an op script on stdin. It is a function, so it forwards arguments but not pipeline input: `$ops | shcl set --write f.shcl` drops the ops and the CLI then blocks on console stdin until it is killed. The Bash wrapper pipes fine, so the two wrappers are not at parity, and `set` is the only subcommand that reads stdin.
+	- Workaround, now in the README, is to pipe to the binary instead, resolved as `Get-Command shcl -CommandType Application` - plain `Get-Command shcl` returns the sourced function, whose `.Source` is empty. Callers should not need to know that.
+	- Not crosscheck-visible: the wrappers are forwarders and deliberately sit outside `BINDING_CLIS`, so nothing in the pipeline exercises this.
+	- Fixed: `shcl` forwards `$input` to the binary, but only when `$MyInvocation.ExpectingInput` says something was piped. The guard matters - forwarding an empty `$input` would hand the binary a closed stdin, so a bare `shcl set f.shcl` would read zero ops instead of the console.
+	- Verified both modes against the real binary: dot-sourced with ops piped, and run as a script with a shell-level pipe (that one reaches the process stdin directly, not the PowerShell pipeline, so it takes the other branch). Same ops through the Bash and PowerShell wrappers now leave byte-identical files.
+	- Opened: 20260803-162351
+	- Closed: 20260804-080738
+
+- ✅ Paths() silently drops any node whose name isn't a bare identifier, along with its whole subtree.
+	- Reported from TradeClanker, where it was a live bug. A quoted field name parses with no diagnostics and reads back fine, but the enumeration skips it.
+	- Impact: their unknown-field check walks Paths(), so a typo whose name needs quoting slipped past the one check built to catch typos. It also broke round-tripping, since the writer could create a node the enumeration would not report.
+	- Cause: the skip was deliberate, and pinned by a doc comment, the spec wording, and the shared paths fixture in all four runners.
+	- Fixed: non-bare segments now emit quoted and escaped, in the same spelling the canonical formatter uses, so every returned path resolves. The fixture, the doc comment, and the spec's traversal section moved with the code.
+	- Opened: 20260802-110332
+	- Closed: 20260802-113718
+
+- ✅ A strict parse hands back nothing usable.
+	- Reported from TradeClanker. The Go parse returned a nil document beside the error, so the natural `doc, err :=` followed by `doc.Diagnostics()` panicked.
+	- Cause: the error value did carry the full diagnostics list, but the message was only a count, so the obvious path hid every line and code it was already holding.
+	- Fixed both ways, in all four bindings. The failure now carries the parsed document, and the message names the first three diagnostics with line and code. Go returns the document non-nil beside the error, so the natural path cannot panic.
+	- Opened: n/a
+	- Closed: 20260802-120213
+
+- ✅ `Raw` on a read result was not raw.
+	- Reported from nano-git-db, which found it corrupting regexes. The doc comment promised the original text from the file, but every read filled the field from the canonical display form, which joins elements with a comma and a space.
+	- Reproduced: `regex: ^\d{2,3}$` came back as `^\d{2, 3}$` with no diagnostics. Anything already written `a, b` round-tripped looking correct, so casual testing passed and only a value like `{2,3}` failed.
+	- Fixed: the parser keeps the source line's value span, and reads hand it back verbatim. Writer-built values, stacked-list elements, and raw blocks fall back to the display form. Rust, Go and Python carry it - those are the bindings whose read result exposes the field.
+	- Note: this also covers their separate request to read a comma-bearing scalar verbatim without a fenced block. Having the reader consult the schema's declared type before comma-splitting was declined, since it buys the same result at much higher complexity.
+	- Opened: n/a
+	- Closed: 20260804-095938
+
+- ✅ By-value selectors matched the as-written spelling, not the logical string.
+	- Reported from convert-base-v2. A `["q\"uote"]` selector and a document's `'q"uote'` are the same string but did not cross-match, because both sides kept their escape pairs verbatim and the comparison was spelling against spelling.
+	- Impact: a silent NotFound. Anyone using a quote-bearing discriminator would hit it eventually. The spec pinned matching against the display form but said nothing about escapes.
+	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
+	- Opened: n/a
+	- Closed: 20260804-095938
+
 - Code review 20260830:
 
 	- A second pass over the same directives one day after the last round, aimed first at the code that round changed and then at the whole repo. Items 1 to 23 are here; 24 to 52 are under Done - Features and enhancements. Most of the defects are shared by all four bindings, which is the class the cross-binding check cannot see.
@@ -766,135 +895,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Fixed: curl or wget, and the clone is recognized by its layout.
 		- Opened: 20260829-071126
 		- Closed: 20260829-093755
-
-- ✅ Four serious limitations and/or bugs in the C version, found while integrating v2.0.0 into nemo-anywhere.
-	- The issues:
-		- ✅ Every save fails on a backslash path
-			- The temp name was split on `/` only. Now either separator on Windows, and a drive-relative `C:x` splits after the colon.
-		- ✅ The library exits the caller's process
-			- The five `exit(70)` sites go through one `SHCL_OOM()` macro an embedder can define. The default is unchanged.
-		- ✅ File tier is code-page bound, not UTF-8
-			- Every file call on Windows is the wide one now. A path that is not valid UTF-8 is refused rather than opened under another name.
-		- ✅ Reader has no size limit and returns no bytes
-			- `ReadFile(path, maxBytes)` in all four bindings and the veneer, and `LoadFile` is built on it. Past the cap is `Unreadable`, so the status enum did not change.
-	- Much more detail, including recommended fixes, is in the defect report on file.
-	- Check to see if other versions have the same problems.
-		- Checked. The first three are C-only: Rust, Go and Python split paths and open files through their runtimes, and allocation failure there is the language's own contract. The fourth is a gap in all four.
-	- Opened: 20260828-131305
-	- Closed: 20260828-133327
-
-- ✅ Hosted CI has been failing on every push since the supply-chain gates went in.
-	- Cause: `staticcheck`, `govulncheck` and `cargo-deny` went into `LINT_EXTRA` and `TOOL_PINS` in the 20260819 round, but nothing was ever added to `ci.yml` to install them. The lint stage aborted at exit 127 about a minute in, so every run since has been red while the local gate stayed green. That is exactly how it went unnoticed.
-	- Fixed by installing all three at their pinned versions. `cargo-deny` comes as a prebuilt binary with a sha256 pin, the same treatment `shellcheck` already gets: building it from source costs minutes and pulls a dependency tree the gate has no reason to compile.
-	- `cargo-zigbuild` is still missing there and stays that way - it only feeds the cross stage, which `--ci` skips, so it is a warning and not a failure.
-	- Second cause behind the same red, found once the first was cleared. The Go toolchain was `stable`, which had rolled to 1.27. staticcheck carries its own type checker that cannot read export data from a Go newer than the release it was cut against. Pinned to the 1.26 series in both jobs; move it when the staticcheck pin moves.
-	- Opened: n/a
-	- Closed: 20260821-121316
-
-- ✅ A raw block body line ending in more than one carriage return is not a `fmt` fixpoint.
-	- Found by the raised fuzz gate, immediately after the two below were fixed. Same family, and the third one none of the shallower runs could reach.
-	- Minimal reproducer: a fenced block whose body line ends `\r\r\n`. Load strips one CR, emit writes the survivor back, and the reload reads `\r\n` as an ordinary line ending and drops it. All four bindings.
-	- A raw body is the only content kept untrimmed, so it is the only place a trailing CR is visible at all; everywhere else the line trim removes it.
-	- Fixed by taking the whole trailing CR run off at load, not just one. A line ending in CR has no spelling that survives a write, so normalizing once is the only stable answer, and it matches the line-ending policy already in place rather than inventing a second one. A CR inside a line is content and still round-trips untouched.
-	- Verified: pinned by a fixture in all four runners rather than a corpus case: a golden holding the bytes would be rewritten by any platform's line-ending translation.
-	- Opened: n/a
-	- Closed: 20260818-183513
-
-- ✅ A raw block whose body is entirely whitespace grows by one indent level on every `fmt`.
-	- Found by the widened fuzzer character set from Code review 20260817 item 29 - the old set could not reach it.
-	- Minimal reproducer: `r:` then a fenced block at one tab whose only body line is a single tab. Each `fmt` adds a tab to that line, without bound. All four bindings, so the corpus is what can pin it.
-	- Cause: the common indent a raw block strips on reload is computed from its non-blank lines, and this block has none - so nothing is stripped, while emit adds depth+1 tabs every pass. Pre-existing: reproduces before the performance pass, and arrived with Code review 20260817 item 7, which stopped blanking such lines.
-	- Proposed fix: when a block has no non-blank content line, take the common indent from the whitespace-only lines themselves. That normalizes an all-whitespace body to empty once, which is the lesser evil against growth without bound - but it moves canonical output, so it wants a decision, a corpus case and a spec sentence.
-	- Same family as the merge item below: raw blocks and whitespace. Settled together, as one branch.
-	- Fixed, but by leaving the body alone rather than normalizing it to empty as proposed above. Emit adds no indent exactly where load stripped none, so the two stay inverses and the body survives byte-for-byte. Normalizing would also have ended the growth, but it discards whatever the body held, and a line of non-breaking or ideographic space is content, not layout, inside a construct whose whole promise is verbatim. Case 055 pins both, including the non-space-whitespace body.
-		- Superseded by Code review 20260829 item 2: the stripped indent is now the closing fence's own, with no special case for a blank body.
-	- Opened: 20260818-170931
-	- Closed: 20260818-183513
-
-- ✅ Merged output is not always a formatter fixpoint: an empty binding in the base and a same-named block in the overlay both survive the merge, where a parse of the two would fold them.
-	- Found by a long fuzz soak; the pipeline's shorter run never reaches it. Pre-existing: reproduces identically on the commit before the performance pass.
-	- Minimal reproducer. Base: `blk:` alone. Overlay: `blk:` carrying a raw block and a child. Merged, both survive; re-parsed, they fold, so the canonical form changes on the second pass.
-	- Cause: the overlay's node has a child, so it takes the instance-merge path and looks for a base sibling with the same (name, value) key. An empty node's key never matches a block's, so it appends instead of filling - while the parser's own rule is that a later binding fills an earlier empty one of the same name. Parser and merge disagree about the same two lines.
-	- A second face of the same bug, and the one that showed first. The emitter works around the pair by writing the block's fence on the name's line (`blk: ```info`), and the value half of that line is comment-split on reparse. So an info string containing `#` comes back as a trailing comment and the fence loses it outright. That half is content loss, not just instability.
-	- Fixed: merge adopts the parser's empty-fill rule, so a merge and a parse of the two layers run together produce the same document. The fill is limited to a raw block, which is the limit of the parser's own rule; an unmatched valued instance still appends, as a parse of the same two lines does. Case 056 pins both halves.
-	- The info-string half needed no separate fix: with the pair folded, the emitter never reaches the same-line-fence spelling for it, so the `#` survives. Pinned in the same case.
-	- Raise the soak in the pipeline, or at least run a long one before a cut: the short gate cannot see this class. Related to Code review 20260817 item 29.
-	- Opened: 20260818-163310
-	- Closed: 20260818-183513
-
-- ✅ `SaveFile` creates a brand-new file at mode 0600, whatever the umask says.
-	- Found by dogfooding the file tier from the new comparison tool: its `results.shcl` came out `rw-------` under a 0002 umask, where every other tool would have written `rw-rw-r--`.
-	- Cause is one missing branch, not a mistake: `write_file_atomic` opens its temp file at 0600 on purpose, so the copy is never briefly readable to anyone the original was not, and then copies the real mode off the target. When the target does not exist yet there is no mode to copy, so the private one stays. All four bindings mirror it.
-	- Two defensible answers, and it wants a decision rather than a patch. Either 0600 is the right default for a file that may hold secrets and the spec should say so out loud, or a new file should be created at `0666 & ~umask` like everything else a person runs. In the second case only an existing file's mode is preserved.
-	- Cheap to settle now: the whole file tier is unreleased, so either answer is free today and a behavior change later.
-	- Settled the second way: a new file is created at `0666 & ~umask`, like anything else a person runs. 0600 would be a surprise the caller never asked for and could not see. A config that needs to be private needs that from the umask or an explicit chmod, not from a library quietly deciding.
-	- Fixed in all four bindings by choosing the temp file's create mode from whether the target already exists, rather than by chmod'ing afterwards. An existing target still gets a private temp and its own mode copied on, so nothing about the case the privacy was for changed.
-	- Verified: pinned in all four runners rather than `crosscheck.bash`: the CLI cannot create a file at all (`set --write` on a missing FILE is an error), so the path is library-only and no CLI comparison can reach it. The fixture compares against a file made by the language's own ordinary create, so it states the rule without hard-coding a umask.
-	- Spec says it now, in the file-tier paragraph beside the rest of the save's mechanics.
-	- Opened: 20260820-075114
-	- Closed: 20260820-120244
-
-- ✅ The Python binding threw outright when saving over an existing file on Windows.
-	- Cause: `os.fchmod` is POSIX-only, and the guard around the mode copy caught `OSError`; an `AttributeError` walks straight past it. So the whole call escaped `save_file`, which documents that it reports rather than throws. Only on the overwrite path, which is the common one.
-	- Found by reading the four write paths against each other, not by a test.
-	- Fixed by making the mode copy conditional on the function existing, which is the right condition: the mode concept is POSIX's, and Windows now carries the destination's attributes across in the publish step instead.
-	- The runner fixture that missed it was POSIX-gated in all four bindings, because it asserts modes. Split so the create and the overwrite are exercised on every platform and only the mode assertions stay POSIX-only. The same fixture in all four, and it would have caught this.
-	- Opened: n/a
-	- Closed: 20260820-154417
-
-- ✅ Canonical output dropped the author's quoting on plain strings, in `fmt` and in `generate` defaults.
-	- From nano-git-db: a quoted `"fFoo()"` default came out bare in the starter file, so their function-ref convention read it back as a call. One `fmt` pass did the same to a document (`"@null"` -> `@null`), un-escaping the sentinel the `quoted` read flag exists to protect. `emit_element` re-derived quoting from content alone.
-	- Done, all four bindings: a quoted element keeps its quotes unless the text reads as an int, float, bool, or datetime at standard strictness - those still normalize to bare (`ver: "8"` -> `ver: 8`). The clause only ever adds quoting over the reserved-character minimum, so no bare emit becomes unsafe (quoted thousands stay covered by the comma rule).
-	- Goldens 017 (NUL string keeps quotes) and 030 (newline default now in its quoted spelling, which the spec prose had promised all along) moved; spec and `design.md` updated.
-	- Opened: n/a
-	- Closed: 20260817-111802
-
-- ✅ A block header whose children are all commented handed those comments back one indent level shallow through `fmt`.
-	- Reported from SilkTerm, whose template config is mostly commented-out defaults: `rotate:`, `contrast_mask:`, `text.scrim:`, `cursor.size:`, `selection:` all lost a level. That was the entire remaining diff against their template, all of it leading tabs.
-	- Reproduced: `rotate:` followed by two depth-1 comments re-emitted them at column 0. With even one live child under the same header the comment kept its depth, so only childless headers lost fidelity, and the loss was always exactly one level.
-	- Cause: after-trivia hung on the deepest open level whose indent prefixes the comment's indent. A childless header never opens its level, since no binding line ever resolves under it, so the comments hung one level up and re-emitted at the header's depth.
-	- Fixed: a hung comment now splits by written depth. At the last binding's own level it trails that binding as before; deeper, it sits inside that binding's block at its own depth, so a childless header keeps its commented children indented.
-	- Verified: all four bindings, new case 045 pins it, and goldens 027/034 moved - a tail note and a deep tail note keep their written depth now.
-	- Opened: 20260804-143741
-	- Closed: 20260804-151804
-
-- ✅ The PowerShell wrapper's sourced `shcl` cannot be fed an op script on stdin. It is a function, so it forwards arguments but not pipeline input: `$ops | shcl set --write f.shcl` drops the ops and the CLI then blocks on console stdin until it is killed. The Bash wrapper pipes fine, so the two wrappers are not at parity, and `set` is the only subcommand that reads stdin.
-	- Workaround, now in the README, is to pipe to the binary instead, resolved as `Get-Command shcl -CommandType Application` - plain `Get-Command shcl` returns the sourced function, whose `.Source` is empty. Callers should not need to know that.
-	- Not crosscheck-visible: the wrappers are forwarders and deliberately sit outside `BINDING_CLIS`, so nothing in the pipeline exercises this.
-	- Fixed: `shcl` forwards `$input` to the binary, but only when `$MyInvocation.ExpectingInput` says something was piped. The guard matters - forwarding an empty `$input` would hand the binary a closed stdin, so a bare `shcl set f.shcl` would read zero ops instead of the console.
-	- Verified both modes against the real binary: dot-sourced with ops piped, and run as a script with a shell-level pipe (that one reaches the process stdin directly, not the PowerShell pipeline, so it takes the other branch). Same ops through the Bash and PowerShell wrappers now leave byte-identical files.
-	- Opened: 20260803-162351
-	- Closed: 20260804-080738
-
-- ✅ Paths() silently drops any node whose name isn't a bare identifier, along with its whole subtree.
-	- Reported from TradeClanker, where it was a live bug. A quoted field name parses with no diagnostics and reads back fine, but the enumeration skips it.
-	- Impact: their unknown-field check walks Paths(), so a typo whose name needs quoting slipped past the one check built to catch typos. It also broke round-tripping, since the writer could create a node the enumeration would not report.
-	- Cause: the skip was deliberate, and pinned by a doc comment, the spec wording, and the shared paths fixture in all four runners.
-	- Fixed: non-bare segments now emit quoted and escaped, in the same spelling the canonical formatter uses, so every returned path resolves. The fixture, the doc comment, and the spec's traversal section moved with the code.
-	- Opened: 20260802-110332
-	- Closed: 20260802-113718
-
-- ✅ A strict parse hands back nothing usable.
-	- Reported from TradeClanker. The Go parse returned a nil document beside the error, so the natural `doc, err :=` followed by `doc.Diagnostics()` panicked.
-	- Cause: the error value did carry the full diagnostics list, but the message was only a count, so the obvious path hid every line and code it was already holding.
-	- Fixed both ways, in all four bindings. The failure now carries the parsed document, and the message names the first three diagnostics with line and code. Go returns the document non-nil beside the error, so the natural path cannot panic.
-	- Opened: n/a
-	- Closed: 20260802-120213
-
-- ✅ `Raw` on a read result was not raw.
-	- Reported from nano-git-db, which found it corrupting regexes. The doc comment promised the original text from the file, but every read filled the field from the canonical display form, which joins elements with a comma and a space.
-	- Reproduced: `regex: ^\d{2,3}$` came back as `^\d{2, 3}$` with no diagnostics. Anything already written `a, b` round-tripped looking correct, so casual testing passed and only a value like `{2,3}` failed.
-	- Fixed: the parser keeps the source line's value span, and reads hand it back verbatim. Writer-built values, stacked-list elements, and raw blocks fall back to the display form. Rust, Go and Python carry it - those are the bindings whose read result exposes the field.
-	- Note: this also covers their separate request to read a comma-bearing scalar verbatim without a fenced block. Having the reader consult the schema's declared type before comma-splitting was declined, since it buys the same result at much higher complexity.
-	- Opened: n/a
-	- Closed: 20260804-095938
-
-- ✅ By-value selectors matched the as-written spelling, not the logical string.
-	- Reported from convert-base-v2. A `["q\"uote"]` selector and a document's `'q"uote'` are the same string but did not cross-match, because both sides kept their escape pairs verbatim and the comparison was spelling against spelling.
-	- Impact: a silent NotFound. Anyone using a quote-bearing discriminator would hit it eventually. The spec pinned matching against the display form but said nothing about escapes.
-	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
-	- Opened: n/a
-	- Closed: 20260804-095938
 
 - Code review 20260822:
 
@@ -1667,469 +1667,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Opened: 20260830-145320
 	- Closed: 20260830-163000
 
-- Code review 20260830:
-
-	- The enhancement half of the round. Items 1 to 23 are under Done - Bugs.
-
-	- ✅ Item 24: the changelog's Unreleased section has none of the 20260829 round.
-		- It carries only the C file-tier fixes from 20260828. Needed before the 2.1.0 cut: `E018`, the `DateTime` alias, the raw-block nesting change, the `--set` split rule, the `bool` op gate, the whole-mode copy, the installer smoke run, and the round's user-visible fixes. Internal tooling stays out.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-		- Unreleased carries both rounds now; nothing blocks the 2.1.0 cut.
-
-	- ✅ Item 25: the `bool` op gate from 20260829 item 5 is not in the four conformance runners, so no corpus row can pin it.
-		- The runners still write `false` for `yes`. Port the gate and add a bad-bool row to a `write-bad.ops`.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 26: stderr diagnostics still come in three forms, and 20260829 item 59 was only half applied.
-		- `check` and `init` print schema faults without the code, so a script cannot key on `V091`. A strict-load failure prints each diagnostic twice (once as a line, again in the summary). Four messages carry a `shcl:` prefix and the rest do not.
-		- One line form everywhere, and one prefix rule.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 27: 20260829 item 51 was only half applied.
-		- The three identical `resolve_parent` match blocks in the parser and four argument matches in the CLI still use `match` where `let-else` reads better. The three copies plus the dead-parent check that follows each could be one helper.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 28: a `set_raw` test asserts on a document parsed before the refused writes, so the assertion cannot fail.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 29: a symlink cycle is silently replaced by a regular file on write.
-		- The 40-hop walk gives up and the rename falls on whichever link it stopped at. Refuse it as every other tool does.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 30: small reference tidy.
-		- The type-flag parser matches the same string twice with a catch-all standing in for `--string`.
-		- The name index builds two hash maps keyed identically where one would do.
-		- The comparison tool prints a save error with the debug formatter.
-		- A dead `if i == 0` branch after `truncate(max(i, 1))` in `resolve_parent`, mirrored into Python.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 31: Go tidy.
-		- `Read[T]` exports `Ok()` and `OK()`, same body; nothing calls the second. Deprecate it now, remove at the next major.
-		- `doCheck` shadows the `errors` package with a counter.
-		- Nine lines over 120 columns, two of them from the last round.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-		- OK() stays as a deprecated alias of Ok(); both were public API.
-
-	- ✅ Item 32: Python tidy.
-		- The runner's `_op_int` lost the digit-length gate the CLI has, so its comment is wrong about how a long value is rejected.
-		- `Document.__init__` and its attributes are unhinted; `_Value.fence_char` is typed `str` but starts as `None`.
-		- The pipeline's three Python utilities are still unhinted and on `os.path`, as 20260829 item 54 listed.
-		- `_resolve_target` differs from the reference on an empty name (creates the temp file in the parent of the cwd) and on a lexical `..` through a missing directory.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 33: C tidy.
-		- The veneer smoke test never calls ten of the veneer's public methods.
-		- The sanitizer run covers `fmt`, `check` and `set` only; `get`, `init`, `--layer`, `--write` and the veneer never run under ASan.
-		- A dead `prec` clamp in the float formatter.
-		- Fifty-odd internal typedefs are unprefixed and end up in the consumer's implementation TU; either document "one TU of its own" or prefix them.
-		- The veneer's `generate()` is `const` but can push a diagnostic onto the schema; the hand-written rule of five could be a `unique_ptr` deleter.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-		- Internal typedefs carry the Shcl prefix; the veneer owns its handle via unique_ptr and generate() is no longer const.
-
-	- ✅ Item 34: the "value X is not a valid int" line renders the value four ways across the four CLIs, and C's can span lines.
-		- Rust prints the source spelling escaped, Go escapes differently, Python and C print the resolved text raw, so a raw block or a tab breaks C's message across lines. C also gates the rawinfo case differently.
-		- Decision: parity on this line, or at least keep it on one line.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-		- Decided: one shared quoting for the reason line in every CLI; C reports the logical value (its read structs carry no source text, by standing decision) and uses the same resolve gate.
-
-	- ✅ Item 35: `-h` and `--help` after the FILE argument are an unknown option, although every other option is accepted there.
-		- The guard's stated reason never applies. Drop it in all four.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 36: CLI message wording.
-		- A rejected `--set-literal` text is reported as an unwritable path.
-		- An extra argument gets "get needs FILE and PATH".
-		- Option validation runs before the command name is checked, so `shcl foo --int` complains about `--int`.
-		- `--strictness` values are case-insensitive, `--on-bad` values are not.
-		- `--set==5` and `--set "it's=1"` get messages that do not name the problem.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 37: exit code 1 covers both "add `--lossy`" and "file missing", and `init`'s exit 6 is in no table.
-		- A script gating a rewrite cannot tell the refusal apart. Decision: a code of its own, and a table entry for `init`.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-		- Decided: the refusal has its own exit code, 7. Help, man page, README, wrappers and design.md carry it, along with exit 6's init clause.
-
-	- ✅ Item 38: five help lines run past 80 columns; one wraps mid-word on a default terminal.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 39: man page and help drift.
-		- The `.TH` date is 2026-08-18 and the page changed twice since.
-		- `get` in the synopsis is set with `.RI`, so it renders roman with italic brackets while every other subcommand is bold.
-		- The help header promises a subcommand list per option and `--set` and `--set-literal` have none.
-		- Neither names the four refusals the CLI enforces, or that `--raw` has no array form.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 40: completion drift the checker cannot see.
-		- Neither file offers `--about` or `--donate`; the zsh file offers no top-level options at all and claims to be line for line the bash one.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 41: wrapper docs.
-		- The bash wrapper's header example uses `mapfile` on a wrapper whose target is bash 3.2.
-		- Both headers describe exit 6 as strict load failure only.
-		- The PowerShell wrapper needs pwsh 7.3 on Linux and macOS and nothing says so.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 42: the installer's glibc message names 2.34 for every arch; the arm64 binary needs 2.30.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 43: dev setup and pin checks.
-		- `install-dev.bash` skips the hooks setup in a git worktree, where `.git` is a file.
-		- The cppcheck wheel version is now spelled in three places and only two are compared.
-		- `check-pins.bash` matches by substring; a pin named `build` matches five workflow lines.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 44: two steps still run past the half-the-cores cap: the backup archive in the publish stage and `cargo deny`.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 45: pipeline comment accuracy.
-		- The pre-push header says sharing the target dir avoids a rebuild; cargo keys on the package path, so it rebuilds anyway. The real reason for the link is the relative binary paths.
-		- A ragged four-line comment in `cicd.bash`.
-		- The utility scripts print `tool: message` lines rather than the `fEcho` family. Record the convention either way.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 46: one silent-exit assignment left in `sign-release.bash`, and the four `--help` outputs start and end without a blank line.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 47: `fmt` and `get` without `--write` say nothing about an error-severity line they skipped.
-		- `fmt --write` prints it and `check` exits 6, but `fmt file > new` never learns a line was dropped. Decision.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-		- Decided: fmt and set print the load's diagnostics in both modes; get stays quiet.
-
-	- ✅ Item 48: doc wording.
-		- Avoid-list words that survived 20260829 item 63: "land" in design.md and the spec, "ships" in README, the changelog and the man page, "worth checking" in README, "honest" and "human form" in two binding comments.
-		- README: the tagline repeats "file"; the crate paragraph says the same thing in two adjacent lines and the "installs no command" note three times; "one of them advertised as the differentiating feature" does not say which.
-		- Two spec bullets are single paragraphs of 971 and 526 words.
-		- The README's Docs list omits the changelog.
-		- The `dsl` topic on the repo cuts against the pitch.
-		- Comments added last round carry timings that will go stale.
-		- Dash-as-parentheses is still dense in design.md and the spec.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 49: backlog accuracy.
-		- 20260727 item 2 was done by the 2026-08-21 memory pass; the remap clones nothing now. Move it to Done.
-		- One closed item still says `--write` is deliberately unchanged, the opposite of the standing decision.
-		- Several closed sub-bullets are overtaken: "as of the coming major", "the rest of the veneer list is still open", "worth a look post-1.0", the raw-block fixes that 20260829 item 2 superseded, and the deferred size limit that `read_file` now covers.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 50: backlog structure.
-		- One item in a Done round has no number; one Opened stamp has no time.
-		- Rounds split across sections do not say where their other items are, so numbering gaps look like lost items.
-		- Loose items and rounds are two separate newest-first runs inside each Done section, which the conventions line does not say.
-		- The unused testing icon row; five file-level lint disables that the repo config already covers; six "Code Review" against 21 "Code review".
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 51: backlog prose.
-		- About sixty sub-bullets over forty words, a dozen of them lists that only need bullets; 34 bullets with paired dashes as parentheses.
-		- "shape" as a category word about forty times, a handful of "surfaces", "worth", all-caps and bold emphasis, and a few dramatic adjectives.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-	- ✅ Item 52: backlog detail that belongs in private notes.
-		- Environment and method clauses ("on this box", "under wine", "fault-injected", "converted mechanically", "staged on its own branch").
-		- About fifty lines of timings, byte counts and per-binding multipliers; keep one headline number per item.
-		- The header's claim that tracking is moving to GitHub Issues.
-		- Opened: 20260830-093632
-		- Closed: 20260830-124432
-
-- Code review 20260829:
-
-	- The enhancement half of the round. Items 1 to 25 are under Done - Bugs.
-
-	- ✅ Item 26: packages and the drop-ins tarball are not reproducible.
-		- Two builds seconds apart give different `.deb`, `.rpm` and setup checksums: the staged payload carries the build-time mtime, and the rpm stamps build time and the build host's name.
-		- The drop-ins tarball records the local user and group and the checkout mtimes, so a fresh clone or another box gives a different sum, and the sums file signs it.
-		- The README claim is scoped to binaries and is still true. Set `SOURCE_DATE_EPOCH` from the commit, touch the payload to it, and build the tarball sorted with numeric owner zero.
-		- Fixed: `SOURCE_DATE_EPOCH` from the commit, the payload touched to it, the rpm build host pinned, the tarball built sorted with numeric owner zero. Two builds seconds apart give identical sums for every package and the tarball.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 27: tool pins are copied by hand into the hosted CI file, with nothing checking the two lists agree.
-		- They match today. The last time they did not, hosted CI stayed red for days. A lint-stage check that greps each pin out of the workflow file would catch the next one.
-		- Fixed: `check-pins.bash` in the lint stage greps every pin out of the workflow file.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 28: the dev setup script and contributing.md omit three tools the gate requires, and install the rest unpinned.
-		- staticcheck, govulncheck and cargo-deny gate under `--ci`, and neither the script nor the doc names them; a fresh box following the doc fails the documented gate. The four tools that are installed come at latest, so the first run warns about pin drift.
-		- contributing.md also says hosted CI uses the current Go; it pins the 1.26 series, for a reason the workflow file explains.
-		- Fixed: contributing.md names the three tools and points at the pin list; the dev setup script installs every tool at its pinned version, the three included.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 29: two steps still run past the half-the-cores cap.
-		- The Rust test harness threads are uncapped (the fuzz tests are the heavy ones), and ruff uses every core. Two environment variables.
-		- Fixed: `RUST_TEST_THREADS` and `RAYON_NUM_THREADS` set to the cap.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 30: every run flags advisory noise, so the session-start lint check never reads clean.
-		- cargo-deny warns about three duplicate crates inside the profiling chain that is never released, and the lint report's grep also catches govulncheck's "your code does not appear to call" lines. Allow the duplicates with a reason, and exclude the informational block.
-		- Fixed: the three duplicates are allowed with a reason, and the report skips the informational block.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 31: the pre-push hook gates the working tree, not the commit being pushed.
-		- An uncommitted fix can pass a broken commit; an uncommitted breakage can block a good one. At least warn on a dirty tree; better, run the gate in a detached worktree at the pushed commit.
-		- Fixed: the hook runs the gate in a detached worktree at the pushed commit, sharing the target dir.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 32: the Windows setup does not handle a running or older install, and stages files it never installs.
-		- No check for a running `shcl.exe` (NSIS pops its own retry dialog), no "upgrading from X" line. The payload stages the man page and completions that the setup never copies.
-		- Fixed: the setup checks for a running exe, prints the version it upgrades from, and the payload no longer stages the man page or completions.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 33: `-q` does not flow through to the stage commands.
-		- It only suppresses the preflight block; cargo, go, ruff and the packagers run at normal verbosity either way. Either pass each tool's quiet flag or document `-q` as "no prompt".
-		- Fixed: `-q` passes each tool's quiet flag where one exists; the usage text says what it means.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 34: nothing asserts the release tag matches the crate version at signing.
-		- Cargo.toml is the version source and the three CLI mirrors are gated, but a mistyped tag would publish assets whose names disagree with it. The signing script can refuse when `git describe --exact-match` and the crate version differ.
-		- Fixed: signing refuses unless a `v<version>` tag points at HEAD (`--no-tag-check` for rehearsals).
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 35: the demo gif runs 33 seconds while the scenario file says 20 to 30.
-		- Known and accepted at 33 last round; the comment overstates. Trim a pause or fix the comment.
-		- Fixed: the comments, not the gif: the two screenful reads need their pauses, so the scenario says about 33 s.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 36: the profiler workload is forty copies of the corpus, so the flamegraph measures merging, not parsing.
-		- Four lines in five merge into an existing node, and a fifth of the samples go to formatting the merge hint. The large-document generator already produces a structured, merge-free document; feed the profiler that.
-		- Fixed: the profiler runs on a mid-sized structured document from the shared generator.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 37: the comparison tool's lock file is stale and rewrites itself.
-		- It pins the path dependency at 1.2.0 while the crate is 2.0.0, so any cargo run there dirties the tree. Update it at each cut; add it to the cut recipe.
-		- Fixed: lock updated, and the cut recipe carries the step.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 38: three lint gaps in the pipeline's own tooling.
-		- The flamegraph report and the gif generator are never linted, and fail ruff. The benchmark worker is linted but at ruff's defaults, because the project rule set is not discoverable from that directory.
-		- The publish helper is kept out of shellcheck for a reason that no longer applies (it disables the rule itself and passes clean).
-		- The PowerShell analyzer settings exclude a rule nothing trips, with a comment describing a choice that was never made.
-		- Fixed: the two utilities are linted under the project rule set (E101 off for the cicd files) and pass; the worker too; the publish helper is back in shellcheck; the analyzer exclusion is gone.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 39: nine load-time diagnostic codes are pinned by no corpus case or unit test.
-		- E003 to E007 and E009 to E012 appear nowhere in the corpus or the test files. Item 1 lived in that gap. One case per code.
-		- Fixed: cases 057 to 061 pin E004 to E007, E009 to E012 and the new E018. E003 cannot come from a file (the `#` of `[#N]` always opens a comment there), so there is nothing to pin.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 40: no sanitizer build anywhere in the pipeline.
-		- An address-and-undefined-behavior build of the C test programs found item 12 in one run. It is one extra compile line in the C test stage.
-		- Fixed: `sanitize-c.bash` in the test stage builds the runners and the CLI under ASan and UBSan and runs the corpus.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 41: the reference clones every line's value on attach.
-		- The value is owned by the attach call and cloned once more in the last-segment arm, where nothing reads it afterwards. It is the top leaf in the newest flamegraph. Reference only; no output change.
-		- Fixed: the value is moved into the last segment.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 42: the reference still decodes each element to a code-point array, twice per value line.
-		- Go and C dropped this in the 20260817 round; the reference was not touched. Quotes are ASCII, so a byte check of the two ends is exact.
-		- Fixed: byte checks through a shared `quoted_shape` helper.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 43: three repeated-work habits on the value-line path.
-		- The comment and comma splitters walk every character with no "contains" fast path (Rust and Go; Python has one).
-		- Every value line is comma-split twice, once for the unterminated-quote check and once to parse (all four).
-		- Every value line's source text is cloned and then dropped in the common case (Rust and Go).
-		- Fixed: contains fast paths on both splitters and the quote check, and the source text is copied only when stored.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 44: C string reads and saves grow the document arena on every call.
-		- A string read copies the value into the never-freed arena even with no escape to resolve: a long loop of reads of one field grew a document by tens of megabytes. A save retains a full copy of the output each time.
-		- Return the element slice when there is no backslash, as Python does; emit from scratch for a save.
-		- Fixed: a read with no backslash returns a view of the element, and a save emits into scratch. Fixture pins the arena size over a long loop of reads and saves.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 45: every path read scans the parent's children, so reading every key is quadratic.
-		- Reading a flat document key by key takes seconds at a few thousand keys and tens of seconds at tens of thousands. design.md recommends exactly that loader pattern. The parse-time index is thrown away after the parse.
-		- Keep a per-parent name index (built lazily, invalidated by the writer), or document the cost per read.
-		- Fixed: a lazily built name index (first child per parent and name, chained to the next same-named sibling), dropped by every write. Tens of thousands of keys now read in well under a second. All four bindings.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 46: the writer's duplicate fold builds a key string per same-named sibling.
-		- Quadratic in sets under one parent, with a string allocation per compare. The parser already has an allocation-free hash-and-equal pair; the writer should use it.
-		- Fixed: the fold compares by hash and equality.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 47: smaller allocation habits, one pass.
-		- Emit builds up to three pad strings per node and a joined vector per element list (Rust and Go). Validation builds two full-path strings per node. The repeated-leaf hint pass allocates a vector per child. `[#i]` collects every sibling to pick one. Go's quoted-name reader grows a rune slice. Python has a dozen per-character loops that a `str` builtin replaces exactly.
-		- Fixed: the listed habits in the reference and the ports (pads, joined lists, `[#i]`, the quoted-name reader, the Python loops). Left as is: the validation sweep's per-node path strings and the hint pass's per-child list, both bounded by node count.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 48: pipeline scripts fork inside loops.
-		- The crosscheck wraps each of its 8000 launches in an extra subshell for an exit-code sentinel, probes for NUL with `tr | wc` per case, and calls `basename` per label. The large-document gate samples memory with an awk fork twenty times a second for the whole run. The rotation helper runs `date -d` five times per file. The flamegraph report builds regexes per frame.
-		- Fixed: one fork per CLI launch, a fork-free NUL probe, no `basename`; the memory sampler reads `/proc` without forking; one date call per file; regexes compiled once and rows bisected.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 49: clones in the reference that need a borrow or a reason.
-		- One per parsed line in the parent resolver, where a borrow compiles; two before iterating another document's children, where no borrow conflict exists (Go mirrors both as copies); five more that are needed but say nothing about why.
-		- Fixed: the parent resolver borrows, the overlay walks the other document's children directly, and the clones that stay say why.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 50: the build script and the comparison tool are off house style.
-		- No license header on `build.rs` (it is in the published crate) or the three comparison sources; the comparison tool uses the shell bullet rule as a Rust banner, and has two unexplained unwraps.
-		- Fixed: headers on all four files, banners gone, the two unwraps explained.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 51: small Rust and Go structure fixes.
-		- Twelve extract-or-bail matches where the file already uses `let .. else`. One catch-all arm standing in for a single named variant. CLI kind and on-bad state carried as strings and matched by string. A handful of trailing comments past the wrap width. One exported Go method without a doc comment.
-		- Fixed: `let .. else` where the bail arm binds nothing, the raw read names its variant, the CLI's kind and on-bad are enums (Go too), lines wrapped, the doc comment added.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 52: three functions nest nine tabs deep with repeated bail blocks.
-		- The attach path, the array reader and the schema node check. A per-slot helper flattens each. Cross-binding, so it costs more than the rest of this list.
-		- Fixed: `find_by_value`, `coerced`, and the parse-all form in the schema node check, mirrored where the language has it.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 53: the datetime type is `ShclDateTime` in Rust and Python and `DateTime` in Go, and the style guide records neither as the deviation.
-		- Renaming the Rust type is a breaking change; recording the Go name and adding an alias is not.
-		- Fixed: `DateTime` is an alias in Rust and Python, and the style guide records the Go name as the deviation.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 54: Python tidy.
-		- The conformance runner formats with `.format()` ten times. The library's public functions are mostly unhinted (a known gap with no item tracking it). Three files opened without `with`; one dead helper; one broad `except` with no reason. The cicd utilities use `os.path` where `pathlib` fits.
-		- Fixed: f-strings, the public functions hinted, `Path.touch()`, the dead helper removed.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 55: C tidy.
-		- gcc 15 at a stricter level reports one sign conversion, one cast that drops const, and three shadowed locals in the test runner; cppcheck lists 22 pointers that could be const. The 64-byte datetime buffer is a bare literal in five places. The one-letter string typedef cannot be searched for.
-		- Fixed: clean under gcc 15's stricter set, the const pointers made const, `SHCL_DT_BUF` for the datetime buffers, and the alias is `Str`.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 56: C++ veneer structure.
-		- `generate` takes an out-parameter where every other binding returns a pair; the diagnostic struct has no member initializers; two lines spell bare `size_t`.
-		- Fixed: `generate` returns a pair, the diagnostic has initializers, `std::size_t`.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 57: PowerShell tidy.
-		- The installer is not an advanced script, passes paths positionally, has a helper with no verb, and three one-letter names. The runner script has no comment-based help, so `Get-Help` shows nothing for its parameters.
-		- Fixed: advanced script, named parameters, `Exit-Install`, real names; the runner script has comment-based help.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 58: the rotation helper's bucket maps have one-letter names.
-		- Fixed: renamed.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 59: strict-failure lines on stderr omit the diagnostic code that every other stderr line carries.
-		- Fixed: the code is printed, in the same form as the write-back lines.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 60: two stale claims on the front page.
-		- "Two of them carry the CLI as well as the library": only the crate does since 2.0, and the same section says so two paragraphs down.
-		- "Bindings are byte-for-byte identical": their output is; the sources are not.
-		- Fixed: both sentences.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 61: design.md and the two tables of contents.
-		- design.md sends readers to a notes file that is not in the repo; its lockstep example uses the 1.x version constraints; both its TOC and the README's have drifted from the headings (anchors still resolve).
-		- Fixed: the pointer is gone, the example is on 2.x, both tables of contents match their headings.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 62: CODEOWNERS guards a file that does not exist.
-		- The donation page entry came from a sibling project. Drop it or point it at the support section.
-		- Fixed: entry dropped.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 63: spelling and word-choice pass.
-		- Six British spellings in prose and comments. "honest" eleven times, "crucial" once, "key" as an adjective twice, "human" nine times outside the policy doc. The trademark contact is obfuscated with a non-ASCII glyph unlike the other two files. Three typos in the guidelines doc; "Github" once in the backlog.
-		- Fixed: across the repo; the spec's diagnostics paragraph says prose message now.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 64: README grammar and the ten worst run-on sentences.
-		- Five README sentences read wrong (a dangling relative clause, two parenthetical-dash constructions, a non sequitur, a badge alt text with the shebang backwards). Four README and six design.md sentences run past 45 words on dashes and semicolons.
-		- Fixed: the five sentences rewritten, the ten run-ons split.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 65: performance prose versus the numbers under it.
-		- "Slightly (trivially) slower to read" sits above a stress-read row that is eight times JSON; "columns are ordered fastest to slowest" is false for the schema table; the unit labels mix KiB, KB and MiB over decimal values. Numbers-only edits by rule; the prose needs a look from its author.
-		- Fixed: labels are KB and MB, the ordering sentence is true as written, and the slower-to-read sentence agrees with the numbers, with no number changed.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 66: the file-tier story is told five times in the README.
-		- The same three-line comment heads four code examples, and the temp-file-and-rename explanation appears in full three times. One home for each.
-		- Fixed: the load comment lives on the Rust example and the save story in What saving does; the rest point there.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 67: the front-page pitch.
-		- The tagline is a boast; the "You get" block lists deliverables, not benefits; the provable claims (never deletes a line you typed, signed and reproducible releases, comments survive) first appear far down. Sponsorship is one line near the end and the badge row has no sponsors badge while five badges are decoration.
-		- The About panel's homepage points at the spec; the topic list names the competing formats.
-		- Fixed: plain tagline, a benefits list leading with the provable claims, a sponsors badge in a shorter row, the homepage points at the README, the competing-format topics are gone.
-		- Opened: 20260829-071126
-		- Closed: 20260829-093755
-
-	- ✅ Item 68: backlog upkeep.
-		- Most Done sub-bullets lack the Cause / Fixed / Verified prefix; one closed item quotes a crosscheck total that is not comparable across corpus changes.
-		- Done: the defect-report line under Done - Bugs carried a private absolute path; replaced with a plain pointer.
-		- Fixed: a label on the Done sub-bullets whose role is clear (128 of them); narrative and reasoning bullets stay as written. The quoted crosscheck total is gone.
-		- Opened: 20260829-071126
-		- Closed: 20260829-094951
-
 - ✅ Run the four runners on Windows in CI.
 	- The file tier now has real platform-specific code: the publish step differs by OS, and the create-versus-overwrite fixture in every runner was widened to exercise both paths on every platform. Nothing in the pipeline ran any of it on Windows, so the fixture only fired when someone loaded the repo there by hand.
 	- The gap it closes is proven, not hypothetical: the Python binding threw on every Windows overwrite and no gate here could see it.
@@ -2602,6 +2139,469 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260830:
+
+	- The enhancement half of the round. Items 1 to 23 are under Done - Bugs.
+
+	- ✅ Item 24: the changelog's Unreleased section has none of the 20260829 round.
+		- It carries only the C file-tier fixes from 20260828. Needed before the 2.1.0 cut: `E018`, the `DateTime` alias, the raw-block nesting change, the `--set` split rule, the `bool` op gate, the whole-mode copy, the installer smoke run, and the round's user-visible fixes. Internal tooling stays out.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+		- Unreleased carries both rounds now; nothing blocks the 2.1.0 cut.
+
+	- ✅ Item 25: the `bool` op gate from 20260829 item 5 is not in the four conformance runners, so no corpus row can pin it.
+		- The runners still write `false` for `yes`. Port the gate and add a bad-bool row to a `write-bad.ops`.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 26: stderr diagnostics still come in three forms, and 20260829 item 59 was only half applied.
+		- `check` and `init` print schema faults without the code, so a script cannot key on `V091`. A strict-load failure prints each diagnostic twice (once as a line, again in the summary). Four messages carry a `shcl:` prefix and the rest do not.
+		- One line form everywhere, and one prefix rule.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 27: 20260829 item 51 was only half applied.
+		- The three identical `resolve_parent` match blocks in the parser and four argument matches in the CLI still use `match` where `let-else` reads better. The three copies plus the dead-parent check that follows each could be one helper.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 28: a `set_raw` test asserts on a document parsed before the refused writes, so the assertion cannot fail.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 29: a symlink cycle is silently replaced by a regular file on write.
+		- The 40-hop walk gives up and the rename falls on whichever link it stopped at. Refuse it as every other tool does.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 30: small reference tidy.
+		- The type-flag parser matches the same string twice with a catch-all standing in for `--string`.
+		- The name index builds two hash maps keyed identically where one would do.
+		- The comparison tool prints a save error with the debug formatter.
+		- A dead `if i == 0` branch after `truncate(max(i, 1))` in `resolve_parent`, mirrored into Python.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 31: Go tidy.
+		- `Read[T]` exports `Ok()` and `OK()`, same body; nothing calls the second. Deprecate it now, remove at the next major.
+		- `doCheck` shadows the `errors` package with a counter.
+		- Nine lines over 120 columns, two of them from the last round.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+		- OK() stays as a deprecated alias of Ok(); both were public API.
+
+	- ✅ Item 32: Python tidy.
+		- The runner's `_op_int` lost the digit-length gate the CLI has, so its comment is wrong about how a long value is rejected.
+		- `Document.__init__` and its attributes are unhinted; `_Value.fence_char` is typed `str` but starts as `None`.
+		- The pipeline's three Python utilities are still unhinted and on `os.path`, as 20260829 item 54 listed.
+		- `_resolve_target` differs from the reference on an empty name (creates the temp file in the parent of the cwd) and on a lexical `..` through a missing directory.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 33: C tidy.
+		- The veneer smoke test never calls ten of the veneer's public methods.
+		- The sanitizer run covers `fmt`, `check` and `set` only; `get`, `init`, `--layer`, `--write` and the veneer never run under ASan.
+		- A dead `prec` clamp in the float formatter.
+		- Fifty-odd internal typedefs are unprefixed and end up in the consumer's implementation TU; either document "one TU of its own" or prefix them.
+		- The veneer's `generate()` is `const` but can push a diagnostic onto the schema; the hand-written rule of five could be a `unique_ptr` deleter.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+		- Internal typedefs carry the Shcl prefix; the veneer owns its handle via unique_ptr and generate() is no longer const.
+
+	- ✅ Item 34: the "value X is not a valid int" line renders the value four ways across the four CLIs, and C's can span lines.
+		- Rust prints the source spelling escaped, Go escapes differently, Python and C print the resolved text raw, so a raw block or a tab breaks C's message across lines. C also gates the rawinfo case differently.
+		- Decision: parity on this line, or at least keep it on one line.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+		- Decided: one shared quoting for the reason line in every CLI; C reports the logical value (its read structs carry no source text, by standing decision) and uses the same resolve gate.
+
+	- ✅ Item 35: `-h` and `--help` after the FILE argument are an unknown option, although every other option is accepted there.
+		- The guard's stated reason never applies. Drop it in all four.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 36: CLI message wording.
+		- A rejected `--set-literal` text is reported as an unwritable path.
+		- An extra argument gets "get needs FILE and PATH".
+		- Option validation runs before the command name is checked, so `shcl foo --int` complains about `--int`.
+		- `--strictness` values are case-insensitive, `--on-bad` values are not.
+		- `--set==5` and `--set "it's=1"` get messages that do not name the problem.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 37: exit code 1 covers both "add `--lossy`" and "file missing", and `init`'s exit 6 is in no table.
+		- A script gating a rewrite cannot tell the refusal apart. Decision: a code of its own, and a table entry for `init`.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+		- Decided: the refusal has its own exit code, 7. Help, man page, README, wrappers and design.md carry it, along with exit 6's init clause.
+
+	- ✅ Item 38: five help lines run past 80 columns; one wraps mid-word on a default terminal.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 39: man page and help drift.
+		- The `.TH` date is 2026-08-18 and the page changed twice since.
+		- `get` in the synopsis is set with `.RI`, so it renders roman with italic brackets while every other subcommand is bold.
+		- The help header promises a subcommand list per option and `--set` and `--set-literal` have none.
+		- Neither names the four refusals the CLI enforces, or that `--raw` has no array form.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 40: completion drift the checker cannot see.
+		- Neither file offers `--about` or `--donate`; the zsh file offers no top-level options at all and claims to be line for line the bash one.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 41: wrapper docs.
+		- The bash wrapper's header example uses `mapfile` on a wrapper whose target is bash 3.2.
+		- Both headers describe exit 6 as strict load failure only.
+		- The PowerShell wrapper needs pwsh 7.3 on Linux and macOS and nothing says so.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 42: the installer's glibc message names 2.34 for every arch; the arm64 binary needs 2.30.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 43: dev setup and pin checks.
+		- `install-dev.bash` skips the hooks setup in a git worktree, where `.git` is a file.
+		- The cppcheck wheel version is now spelled in three places and only two are compared.
+		- `check-pins.bash` matches by substring; a pin named `build` matches five workflow lines.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 44: two steps still run past the half-the-cores cap: the backup archive in the publish stage and `cargo deny`.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 45: pipeline comment accuracy.
+		- The pre-push header says sharing the target dir avoids a rebuild; cargo keys on the package path, so it rebuilds anyway. The real reason for the link is the relative binary paths.
+		- A ragged four-line comment in `cicd.bash`.
+		- The utility scripts print `tool: message` lines rather than the `fEcho` family. Record the convention either way.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 46: one silent-exit assignment left in `sign-release.bash`, and the four `--help` outputs start and end without a blank line.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 47: `fmt` and `get` without `--write` say nothing about an error-severity line they skipped.
+		- `fmt --write` prints it and `check` exits 6, but `fmt file > new` never learns a line was dropped. Decision.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+		- Decided: fmt and set print the load's diagnostics in both modes; get stays quiet.
+
+	- ✅ Item 48: doc wording.
+		- Avoid-list words that survived 20260829 item 63: "land" in design.md and the spec, "ships" in README, the changelog and the man page, "worth checking" in README, "honest" and "human form" in two binding comments.
+		- README: the tagline repeats "file"; the crate paragraph says the same thing in two adjacent lines and the "installs no command" note three times; "one of them advertised as the differentiating feature" does not say which.
+		- Two spec bullets are single paragraphs of 971 and 526 words.
+		- The README's Docs list omits the changelog.
+		- The `dsl` topic on the repo cuts against the pitch.
+		- Comments added last round carry timings that will go stale.
+		- Dash-as-parentheses is still dense in design.md and the spec.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 49: backlog accuracy.
+		- 20260727 item 2 was done by the 2026-08-21 memory pass; the remap clones nothing now. Move it to Done.
+		- One closed item still says `--write` is deliberately unchanged, the opposite of the standing decision.
+		- Several closed sub-bullets are overtaken: "as of the coming major", "the rest of the veneer list is still open", "worth a look post-1.0", the raw-block fixes that 20260829 item 2 superseded, and the deferred size limit that `read_file` now covers.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 50: backlog structure.
+		- One item in a Done round has no number; one Opened stamp has no time.
+		- Rounds split across sections do not say where their other items are, so numbering gaps look like lost items.
+		- Loose items and rounds are two separate newest-first runs inside each Done section, which the conventions line does not say.
+		- The unused testing icon row; five file-level lint disables that the repo config already covers; six "Code Review" against 21 "Code review".
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 51: backlog prose.
+		- About sixty sub-bullets over forty words, a dozen of them lists that only need bullets; 34 bullets with paired dashes as parentheses.
+		- "shape" as a category word about forty times, a handful of "surfaces", "worth", all-caps and bold emphasis, and a few dramatic adjectives.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+	- ✅ Item 52: backlog detail that belongs in private notes.
+		- Environment and method clauses ("on this box", "under wine", "fault-injected", "converted mechanically", "staged on its own branch").
+		- About fifty lines of timings, byte counts and per-binding multipliers; keep one headline number per item.
+		- The header's claim that tracking is moving to GitHub Issues.
+		- Opened: 20260830-093632
+		- Closed: 20260830-124432
+
+- Code review 20260829:
+
+	- The enhancement half of the round. Items 1 to 25 are under Done - Bugs.
+
+	- ✅ Item 26: packages and the drop-ins tarball are not reproducible.
+		- Two builds seconds apart give different `.deb`, `.rpm` and setup checksums: the staged payload carries the build-time mtime, and the rpm stamps build time and the build host's name.
+		- The drop-ins tarball records the local user and group and the checkout mtimes, so a fresh clone or another box gives a different sum, and the sums file signs it.
+		- The README claim is scoped to binaries and is still true. Set `SOURCE_DATE_EPOCH` from the commit, touch the payload to it, and build the tarball sorted with numeric owner zero.
+		- Fixed: `SOURCE_DATE_EPOCH` from the commit, the payload touched to it, the rpm build host pinned, the tarball built sorted with numeric owner zero. Two builds seconds apart give identical sums for every package and the tarball.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 27: tool pins are copied by hand into the hosted CI file, with nothing checking the two lists agree.
+		- They match today. The last time they did not, hosted CI stayed red for days. A lint-stage check that greps each pin out of the workflow file would catch the next one.
+		- Fixed: `check-pins.bash` in the lint stage greps every pin out of the workflow file.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 28: the dev setup script and contributing.md omit three tools the gate requires, and install the rest unpinned.
+		- staticcheck, govulncheck and cargo-deny gate under `--ci`, and neither the script nor the doc names them; a fresh box following the doc fails the documented gate. The four tools that are installed come at latest, so the first run warns about pin drift.
+		- contributing.md also says hosted CI uses the current Go; it pins the 1.26 series, for a reason the workflow file explains.
+		- Fixed: contributing.md names the three tools and points at the pin list; the dev setup script installs every tool at its pinned version, the three included.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 29: two steps still run past the half-the-cores cap.
+		- The Rust test harness threads are uncapped (the fuzz tests are the heavy ones), and ruff uses every core. Two environment variables.
+		- Fixed: `RUST_TEST_THREADS` and `RAYON_NUM_THREADS` set to the cap.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 30: every run flags advisory noise, so the session-start lint check never reads clean.
+		- cargo-deny warns about three duplicate crates inside the profiling chain that is never released, and the lint report's grep also catches govulncheck's "your code does not appear to call" lines. Allow the duplicates with a reason, and exclude the informational block.
+		- Fixed: the three duplicates are allowed with a reason, and the report skips the informational block.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 31: the pre-push hook gates the working tree, not the commit being pushed.
+		- An uncommitted fix can pass a broken commit; an uncommitted breakage can block a good one. At least warn on a dirty tree; better, run the gate in a detached worktree at the pushed commit.
+		- Fixed: the hook runs the gate in a detached worktree at the pushed commit, sharing the target dir.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 32: the Windows setup does not handle a running or older install, and stages files it never installs.
+		- No check for a running `shcl.exe` (NSIS pops its own retry dialog), no "upgrading from X" line. The payload stages the man page and completions that the setup never copies.
+		- Fixed: the setup checks for a running exe, prints the version it upgrades from, and the payload no longer stages the man page or completions.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 33: `-q` does not flow through to the stage commands.
+		- It only suppresses the preflight block; cargo, go, ruff and the packagers run at normal verbosity either way. Either pass each tool's quiet flag or document `-q` as "no prompt".
+		- Fixed: `-q` passes each tool's quiet flag where one exists; the usage text says what it means.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 34: nothing asserts the release tag matches the crate version at signing.
+		- Cargo.toml is the version source and the three CLI mirrors are gated, but a mistyped tag would publish assets whose names disagree with it. The signing script can refuse when `git describe --exact-match` and the crate version differ.
+		- Fixed: signing refuses unless a `v<version>` tag points at HEAD (`--no-tag-check` for rehearsals).
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 35: the demo gif runs 33 seconds while the scenario file says 20 to 30.
+		- Known and accepted at 33 last round; the comment overstates. Trim a pause or fix the comment.
+		- Fixed: the comments, not the gif: the two screenful reads need their pauses, so the scenario says about 33 s.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 36: the profiler workload is forty copies of the corpus, so the flamegraph measures merging, not parsing.
+		- Four lines in five merge into an existing node, and a fifth of the samples go to formatting the merge hint. The large-document generator already produces a structured, merge-free document; feed the profiler that.
+		- Fixed: the profiler runs on a mid-sized structured document from the shared generator.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 37: the comparison tool's lock file is stale and rewrites itself.
+		- It pins the path dependency at 1.2.0 while the crate is 2.0.0, so any cargo run there dirties the tree. Update it at each cut; add it to the cut recipe.
+		- Fixed: lock updated, and the cut recipe carries the step.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 38: three lint gaps in the pipeline's own tooling.
+		- The flamegraph report and the gif generator are never linted, and fail ruff. The benchmark worker is linted but at ruff's defaults, because the project rule set is not discoverable from that directory.
+		- The publish helper is kept out of shellcheck for a reason that no longer applies (it disables the rule itself and passes clean).
+		- The PowerShell analyzer settings exclude a rule nothing trips, with a comment describing a choice that was never made.
+		- Fixed: the two utilities are linted under the project rule set (E101 off for the cicd files) and pass; the worker too; the publish helper is back in shellcheck; the analyzer exclusion is gone.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 39: nine load-time diagnostic codes are pinned by no corpus case or unit test.
+		- E003 to E007 and E009 to E012 appear nowhere in the corpus or the test files. Item 1 lived in that gap. One case per code.
+		- Fixed: cases 057 to 061 pin E004 to E007, E009 to E012 and the new E018. E003 cannot come from a file (the `#` of `[#N]` always opens a comment there), so there is nothing to pin.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 40: no sanitizer build anywhere in the pipeline.
+		- An address-and-undefined-behavior build of the C test programs found item 12 in one run. It is one extra compile line in the C test stage.
+		- Fixed: `sanitize-c.bash` in the test stage builds the runners and the CLI under ASan and UBSan and runs the corpus.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 41: the reference clones every line's value on attach.
+		- The value is owned by the attach call and cloned once more in the last-segment arm, where nothing reads it afterwards. It is the top leaf in the newest flamegraph. Reference only; no output change.
+		- Fixed: the value is moved into the last segment.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 42: the reference still decodes each element to a code-point array, twice per value line.
+		- Go and C dropped this in the 20260817 round; the reference was not touched. Quotes are ASCII, so a byte check of the two ends is exact.
+		- Fixed: byte checks through a shared `quoted_shape` helper.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 43: three repeated-work habits on the value-line path.
+		- The comment and comma splitters walk every character with no "contains" fast path (Rust and Go; Python has one).
+		- Every value line is comma-split twice, once for the unterminated-quote check and once to parse (all four).
+		- Every value line's source text is cloned and then dropped in the common case (Rust and Go).
+		- Fixed: contains fast paths on both splitters and the quote check, and the source text is copied only when stored.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 44: C string reads and saves grow the document arena on every call.
+		- A string read copies the value into the never-freed arena even with no escape to resolve: a long loop of reads of one field grew a document by tens of megabytes. A save retains a full copy of the output each time.
+		- Return the element slice when there is no backslash, as Python does; emit from scratch for a save.
+		- Fixed: a read with no backslash returns a view of the element, and a save emits into scratch. Fixture pins the arena size over a long loop of reads and saves.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 45: every path read scans the parent's children, so reading every key is quadratic.
+		- Reading a flat document key by key takes seconds at a few thousand keys and tens of seconds at tens of thousands. design.md recommends exactly that loader pattern. The parse-time index is thrown away after the parse.
+		- Keep a per-parent name index (built lazily, invalidated by the writer), or document the cost per read.
+		- Fixed: a lazily built name index (first child per parent and name, chained to the next same-named sibling), dropped by every write. Tens of thousands of keys now read in well under a second. All four bindings.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 46: the writer's duplicate fold builds a key string per same-named sibling.
+		- Quadratic in sets under one parent, with a string allocation per compare. The parser already has an allocation-free hash-and-equal pair; the writer should use it.
+		- Fixed: the fold compares by hash and equality.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 47: smaller allocation habits, one pass.
+		- Emit builds up to three pad strings per node and a joined vector per element list (Rust and Go). Validation builds two full-path strings per node. The repeated-leaf hint pass allocates a vector per child. `[#i]` collects every sibling to pick one. Go's quoted-name reader grows a rune slice. Python has a dozen per-character loops that a `str` builtin replaces exactly.
+		- Fixed: the listed habits in the reference and the ports (pads, joined lists, `[#i]`, the quoted-name reader, the Python loops). Left as is: the validation sweep's per-node path strings and the hint pass's per-child list, both bounded by node count.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 48: pipeline scripts fork inside loops.
+		- The crosscheck wraps each of its 8000 launches in an extra subshell for an exit-code sentinel, probes for NUL with `tr | wc` per case, and calls `basename` per label. The large-document gate samples memory with an awk fork twenty times a second for the whole run. The rotation helper runs `date -d` five times per file. The flamegraph report builds regexes per frame.
+		- Fixed: one fork per CLI launch, a fork-free NUL probe, no `basename`; the memory sampler reads `/proc` without forking; one date call per file; regexes compiled once and rows bisected.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 49: clones in the reference that need a borrow or a reason.
+		- One per parsed line in the parent resolver, where a borrow compiles; two before iterating another document's children, where no borrow conflict exists (Go mirrors both as copies); five more that are needed but say nothing about why.
+		- Fixed: the parent resolver borrows, the overlay walks the other document's children directly, and the clones that stay say why.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 50: the build script and the comparison tool are off house style.
+		- No license header on `build.rs` (it is in the published crate) or the three comparison sources; the comparison tool uses the shell bullet rule as a Rust banner, and has two unexplained unwraps.
+		- Fixed: headers on all four files, banners gone, the two unwraps explained.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 51: small Rust and Go structure fixes.
+		- Twelve extract-or-bail matches where the file already uses `let .. else`. One catch-all arm standing in for a single named variant. CLI kind and on-bad state carried as strings and matched by string. A handful of trailing comments past the wrap width. One exported Go method without a doc comment.
+		- Fixed: `let .. else` where the bail arm binds nothing, the raw read names its variant, the CLI's kind and on-bad are enums (Go too), lines wrapped, the doc comment added.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 52: three functions nest nine tabs deep with repeated bail blocks.
+		- The attach path, the array reader and the schema node check. A per-slot helper flattens each. Cross-binding, so it costs more than the rest of this list.
+		- Fixed: `find_by_value`, `coerced`, and the parse-all form in the schema node check, mirrored where the language has it.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 53: the datetime type is `ShclDateTime` in Rust and Python and `DateTime` in Go, and the style guide records neither as the deviation.
+		- Renaming the Rust type is a breaking change; recording the Go name and adding an alias is not.
+		- Fixed: `DateTime` is an alias in Rust and Python, and the style guide records the Go name as the deviation.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 54: Python tidy.
+		- The conformance runner formats with `.format()` ten times. The library's public functions are mostly unhinted (a known gap with no item tracking it). Three files opened without `with`; one dead helper; one broad `except` with no reason. The cicd utilities use `os.path` where `pathlib` fits.
+		- Fixed: f-strings, the public functions hinted, `Path.touch()`, the dead helper removed.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 55: C tidy.
+		- gcc 15 at a stricter level reports one sign conversion, one cast that drops const, and three shadowed locals in the test runner; cppcheck lists 22 pointers that could be const. The 64-byte datetime buffer is a bare literal in five places. The one-letter string typedef cannot be searched for.
+		- Fixed: clean under gcc 15's stricter set, the const pointers made const, `SHCL_DT_BUF` for the datetime buffers, and the alias is `Str`.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 56: C++ veneer structure.
+		- `generate` takes an out-parameter where every other binding returns a pair; the diagnostic struct has no member initializers; two lines spell bare `size_t`.
+		- Fixed: `generate` returns a pair, the diagnostic has initializers, `std::size_t`.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 57: PowerShell tidy.
+		- The installer is not an advanced script, passes paths positionally, has a helper with no verb, and three one-letter names. The runner script has no comment-based help, so `Get-Help` shows nothing for its parameters.
+		- Fixed: advanced script, named parameters, `Exit-Install`, real names; the runner script has comment-based help.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 58: the rotation helper's bucket maps have one-letter names.
+		- Fixed: renamed.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 59: strict-failure lines on stderr omit the diagnostic code that every other stderr line carries.
+		- Fixed: the code is printed, in the same form as the write-back lines.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 60: two stale claims on the front page.
+		- "Two of them carry the CLI as well as the library": only the crate does since 2.0, and the same section says so two paragraphs down.
+		- "Bindings are byte-for-byte identical": their output is; the sources are not.
+		- Fixed: both sentences.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 61: design.md and the two tables of contents.
+		- design.md sends readers to a notes file that is not in the repo; its lockstep example uses the 1.x version constraints; both its TOC and the README's have drifted from the headings (anchors still resolve).
+		- Fixed: the pointer is gone, the example is on 2.x, both tables of contents match their headings.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 62: CODEOWNERS guards a file that does not exist.
+		- The donation page entry came from a sibling project. Drop it or point it at the support section.
+		- Fixed: entry dropped.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 63: spelling and word-choice pass.
+		- Six British spellings in prose and comments. "honest" eleven times, "crucial" once, "key" as an adjective twice, "human" nine times outside the policy doc. The trademark contact is obfuscated with a non-ASCII glyph unlike the other two files. Three typos in the guidelines doc; "Github" once in the backlog.
+		- Fixed: across the repo; the spec's diagnostics paragraph says prose message now.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 64: README grammar and the ten worst run-on sentences.
+		- Five README sentences read wrong (a dangling relative clause, two parenthetical-dash constructions, a non sequitur, a badge alt text with the shebang backwards). Four README and six design.md sentences run past 45 words on dashes and semicolons.
+		- Fixed: the five sentences rewritten, the ten run-ons split.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 65: performance prose versus the numbers under it.
+		- "Slightly (trivially) slower to read" sits above a stress-read row that is eight times JSON; "columns are ordered fastest to slowest" is false for the schema table; the unit labels mix KiB, KB and MiB over decimal values. Numbers-only edits by rule; the prose needs a look from its author.
+		- Fixed: labels are KB and MB, the ordering sentence is true as written, and the slower-to-read sentence agrees with the numbers, with no number changed.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 66: the file-tier story is told five times in the README.
+		- The same three-line comment heads four code examples, and the temp-file-and-rename explanation appears in full three times. One home for each.
+		- Fixed: the load comment lives on the Rust example and the save story in What saving does; the rest point there.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 67: the front-page pitch.
+		- The tagline is a boast; the "You get" block lists deliverables, not benefits; the provable claims (never deletes a line you typed, signed and reproducible releases, comments survive) first appear far down. Sponsorship is one line near the end and the badge row has no sponsors badge while five badges are decoration.
+		- The About panel's homepage points at the spec; the topic list names the competing formats.
+		- Fixed: plain tagline, a benefits list leading with the provable claims, a sponsors badge in a shorter row, the homepage points at the README, the competing-format topics are gone.
+		- Opened: 20260829-071126
+		- Closed: 20260829-093755
+
+	- ✅ Item 68: backlog upkeep.
+		- Most Done sub-bullets lack the Cause / Fixed / Verified prefix; one closed item quotes a crosscheck total that is not comparable across corpus changes.
+		- Done: the defect-report line under Done - Bugs carried a private absolute path; replaced with a plain pointer.
+		- Fixed: a label on the Done sub-bullets whose role is clear (128 of them); narrative and reasoning bullets stay as written. The quoted crosscheck total is gone.
+		- Opened: 20260829-071126
+		- Closed: 20260829-094951
 
 - Code review 20260822:
 
