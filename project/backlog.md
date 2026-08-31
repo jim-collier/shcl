@@ -336,10 +336,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-173000
 
-	- 🔘 Item 46: the design and changelog break the blank-line-between-top-level-bullets rule.
+	- ✅ Item 46: the design and changelog break the blank-line-between-top-level-bullets rule.
 		- 25 tight pairs in the design document outside its table of contents, and one in the changelog where the other 174 top-level bullets are spaced.
 		- The spec, style guide, trademark and both package READMEs have none. The README's only hits are inside generated table-of-contents blocks, where the tool strips blank lines.
+		- All 26 spaced: 25 in the design document and the one in the changelog.
+		- Pinned in `check-docs.bash` over every markdown file in the repo, skipping generated TOC regions and bare anchor-link lists, which is what the tool strips blank lines out of. Restoring the design document makes it report 25.
 		- Opened: 20260830-140346
+		- Closed: 20260831-175000
 
 	- 🔘 Item 47: the spec tables a load-time code no file can produce.
 		- The block is introduced as the load-time codes so a gate can key on them. The selector code cannot fire from a file, because the marker opens a comment before the selector is read.

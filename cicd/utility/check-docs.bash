@@ -99,6 +99,25 @@ if [[ -f "${ps1}" && -f "${readme}" ]] && grep -q "needs tar to unpack" "${ps1}"
 		|| fBad "install.ps1 requires tar and README.md never says so on the Windows side"
 fi
 
+##	Two top-level bullets with no blank line between them. Auto-generated TOC
+##	blocks are the exception - the tool strips blank lines out of them, so a
+##	`<!-- TOC -->` region is skipped, as is any list of bare anchor links, which
+##	is what a hand-maintained contents block looks like.
+while IFS= read -r f; do
+	while IFS= read -r hit; do
+		fBad "adjacent top-level bullets: ${f#"${repoDir}/"}:${hit}"
+	done < <(awk '
+		/<!-- TOC -->/      { toc = 1 }
+		/<!-- \/TOC -->/    { toc = 0 }
+		{
+			isBullet = ($0 ~ /^- /)
+			anchor   = ($0 ~ /^- \[[^]]*\]\(#[^)]*\)[[:space:]]*$/)
+			if (!toc && !anchor && prevBullet && isBullet) print NR ": " substr($0, 1, 60)
+			prevBullet = isBullet && !anchor
+			prev = $0
+		}' "${f}" || true)
+done < <(find "${repoDir}" -name '*.md' -not -path '*/target/*' -not -path '*/.git/*' -not -path '*/node_modules/*' | sort)
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

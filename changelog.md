@@ -55,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Python's typed setters raise `TypeError` on a value of the wrong type instead of writing its text form. `set_float` still takes an int and writes the float it names; a magnitude past the float range becomes `inf`, the value the other bindings store.
 
 - The C++ veneer's `generate` is no longer `const`: a schema fault it reports goes onto the document's diagnostics, which mutates it.
+
 - The stderr voice is tidier: messages dropped their `shcl:` prefix, a usage error answers with a `usage: shcl ...` line, a strict-load failure lists the diagnostics above its `strict load failed: N error diagnostic(s)` summary, and a schema-fault line carries its `V` code the way load diagnostics carry theirs. stdout and the exit codes are untouched, so nothing scripted against the contract moves.
 
 - A raw block's info-string runs to the end of the line in both spellings. On the same-line form (`db: ```c#`) a `#` used to open a trailing comment, so the label came back as `c` and the rest moved onto the field line, while the same text under a child indent stayed whole. An info-string is never interpreted, which is what the grammar and the spec both already said. A comment about a same-line block goes on the line above.
