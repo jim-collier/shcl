@@ -340,6 +340,17 @@ if [[ -n "${want_src}" ]]; then
 	have_dropins=1
 fi
 
+## A system install has to be readable and runnable by every user, and the modes
+## cannot come from whoever happened to run the script: sudo keeps the caller's
+## umask unless sudoers overrides it, and 077 left /opt/shcl, the launcher and
+## the man page root-only. `a+rX` gives what the .deb and .rpm set - directories
+## and the binary 755, data 644 - and repairs a tree an earlier run wrote too
+## tightly. A user install keeps the caller's umask: it is one user's copy.
+fWidenModes(){
+	local run="${1}"; shift
+	${run} chmod -R a+rX "$@"
+}
+
 ## Install. The binary goes in via a hidden temp + mv in the same dir, so a
 ## running copy only ever sees the complete old or new file.
 ${asroot} mkdir -p "${dest}" "$(dirname "${link}")"
@@ -360,6 +371,9 @@ if (( have_docs )); then
 	fi
 fi
 ${asroot} ln -sfn "${dest}/shcl" "${link}"
+if [[ "${target}" == "system" ]]; then
+	fWidenModes "${asroot}" "${dest}"
+fi
 
 echo
 printf 'installed shcl %s -> %s\n' "${version}" "${link}"

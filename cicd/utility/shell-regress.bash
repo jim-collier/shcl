@@ -100,6 +100,25 @@ else
 	echo "shell-regress: pwsh not installed - PowerShell rows skipped"
 fi
 
+##	20260830b item 12: nothing set the modes on a system install, and sudo keeps
+##	the caller's umask, so under 077 the tree and the launcher came out 0700 and
+##	only root could run what had just been installed for everyone. Staged the
+##	way the installer stages it, under that umask.
+eval "$(sed -n '/^fWidenModes()/,/^}/p' "${repoDir}/install.bash")"
+(
+	umask 077
+	mkdir -p "${tmpDir}/inst/code"
+	printf 'bin\n'  > "${tmpDir}/inst/shcl";      chmod 700 "${tmpDir}/inst/shcl"
+	printf 'data\n' > "${tmpDir}/inst/code/lib.rs"
+)
+fWidenModes "" "${tmpDir}/inst"
+while IFS= read -r row; do
+	case "${row}" in
+		"755 ${tmpDir}/inst"|"755 ${tmpDir}/inst/code"|"755 ${tmpDir}/inst/shcl"|"644 ${tmpDir}/inst/code/lib.rs") ;;
+		*) fBad "install.bash left a system install unreadable: ${row}" ;;
+	esac
+done < <(find "${tmpDir}/inst" -printf '%m %p\n' | sort)
+
 ##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
 ##	release" verbatim, so a patch back-ported to an older line after a newer one
 ##	shipped was handed out as stable. The fixture is in publish order, newest
