@@ -60,13 +60,18 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- The enhancement half of the round. Items 18 to 57; bugs 1 to 17 are under Bugs. Several of these are design questions rather than defects, and a few are recorded so they are not re-derived next round.
 
-	- 🔘 Item 18: the read subcommands print no load diagnostics at all.
+	- ✅ Item 18: the read subcommands print no load diagnostics at all.
 		- `fmt` and `set` print them on stderr in both modes, settled last round. `get`, `count` and `instances` print nothing at any strictness below strict.
 		- Reproduced: a file whose line 3 is dropped reads clean through all three, empty stderr, exit 0.
 		- This is what makes item 2 bite. It is also the asymmetry that matters most, since the read subcommands are the ones a script actually runs.
 		- The only escapes are a separate `check` pass, or strict, which fails the read instead of mentioning anything. There is no "read the value and tell me the file is damaged".
 		- Against it: a read in a loop would start emitting per-call noise, which the write subcommands do not have. A quiet flag, or emitting once per process, covers that.
+		- Decided: every subcommand that loads a document reports, once per run, in the shape fmt and set already use. One CLI run is one load, so the loop case is one line per call and no quiet flag was added. This supersedes the "get stays quiet" half of item 47 of the 20260830 round, noted there.
+		- Fixed in all four bindings. Help text, man page and design updated; the four help texts still match byte for byte.
+		- Pinned by `cli-regress.bash` rows `get-diags`, `count-diags` and `instances-diags`, which fail in all four bindings without the fix.
+		- Left alone: `check` builds its own diagnostic list and is unchanged, and the crosscheck discards stderr so it neither sees nor is moved by this.
 		- Opened: 20260830-140346
+		- Closed: 20260831-073000
 
 	- 🔘 Item 19: there is no CLI traversal command, so a script can read an open section's values but never learn its keys.
 		- The README leads with "everything the library does, the binary does from a shell". Children and Paths have no CLI or wrapper spelling.
@@ -2353,6 +2358,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-093632
 		- Closed: 20260830-124432
 		- Decided: fmt and set print the load's diagnostics in both modes; get stays quiet.
+		- Superseded 20260831 by item 18 of the 20260830b round: the read subcommands print them too. A read below strict returns the value and reported nothing at all, which is the case where the silence costs most.
 
 	- ✅ Item 48: doc wording.
 		- Avoid-list words that survived 20260829 item 63: "land" in design.md and the spec, "ships" in README, the changelog and the man page, "worth checking" in README, "honest" and "human form" in two binding comments.

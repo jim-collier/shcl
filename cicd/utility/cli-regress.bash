@@ -93,6 +93,11 @@ rows=(
 	## 20260829 item 6: --set split PATH from VALUE at the first '=' anywhere, so
 	## a selector holding one could not be addressed at all.
 	'set-eq-in-selector|set --set=x[a=b].c=1 %X%|-|0|x: a=b\n\tc: 1\n|-'
+	## 20260830b item 18: a read below strict returned the value and said nothing
+	## about a line the load had dropped, so a damaged file read clean at exit 0.
+	'get-diags|get %B% a|-|0|1|E015 missing colon'
+	'count-diags|count %B% a|-|0|1|E015 missing colon'
+	'instances-diags|instances %B% a|-|0|1|E015 missing colon'
 	## Found working 20260830b item 18: a merge does not carry diagnostics, so
 	## reading them off the merged doc reported the lowest layer and stayed
 	## silent about FILE - the one file the caller actually named.

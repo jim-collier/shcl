@@ -112,8 +112,8 @@ An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
 without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
 named more than once across FILE, --layer and --schema.
-fmt and set print the load's diagnostics to stderr along with the canonical
-document. An in-place write also refuses when the load dropped content the
+Every subcommand that loads a document prints the load's diagnostics to stderr,
+once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
@@ -692,10 +692,14 @@ func doGet(o *opts) int {
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
-	doc, _, code := loadLayered(o, file)
+	doc, diags, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	sayDiagnostics(diags)
 	var lines []string
 	var status shcl.Status
 	var slots []shcl.Status
@@ -1460,10 +1464,14 @@ func doEnum(o *opts, wantCount bool) int {
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
-	doc, _, code := loadLayered(o, file)
+	doc, diags, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	sayDiagnostics(diags)
 	if wantCount {
 		fmt.Println(doc.Count(path))
 	} else {

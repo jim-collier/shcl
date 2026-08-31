@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `get`, `count` and `instances` print the load's diagnostics to stderr, the way `fmt` and `set` already did. Below strict a damaged file used to read back a correct value at exit 0 with nothing said, so the only way to learn a line had been dropped was a separate `check` run. One report per run; stdout is unchanged.
+
 - An in-place write the save gate refuses now exits 7, its own code, instead of sharing 1 with usage and I/O errors, so a script can tell "pass `--lossy` or fix the file" apart from "the command line is wrong".
 
 - A raw block's nesting is the closing fence's own indent (the opening line's when the block never closes), and each body line loses only what it shares with that indent. A body whose lines all sit past the fence keeps that shared indent, which previously could not be stored at all, and emit pads every non-empty body line by the same rule. The rule is symmetric now, so the all-blank-body special case is gone.

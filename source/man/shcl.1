@@ -371,15 +371,11 @@ given as
 follows stdin: it is the piped document when an option holds the edits, and an
 empty base when the ops script has stdin instead.
 .SH WRITING IN PLACE
-.B fmt
-and
-.B set
-print the load's diagnostics to stderr whether or not
-.B \-\-write
-is given, so a recovered-from typo is just as visible when the result goes to
-stdout. An in-place write also refuses outright, at exit 7, when the load
-dropped content the rewrite would delete \- a typo does not cost the line
-above it.
+Every subcommand that loads a document prints the load's diagnostics to stderr,
+once per run, so a recovered-from typo is just as visible when the value reads
+back fine and the result goes to stdout. An in-place write also refuses
+outright, at exit 7, when the load dropped content the rewrite would delete
+\- a typo does not cost the line above it.
 .B \-\-lossy
 is how to say it was meant.
 .SH EXIT STATUS

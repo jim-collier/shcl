@@ -109,8 +109,8 @@ An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
 without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
 named more than once across FILE, --layer and --schema.
-fmt and set print the load's diagnostics to stderr along with the canonical
-document. An in-place write also refuses when the load dropped content the
+Every subcommand that loads a document prints the load's diagnostics to stderr,
+once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
@@ -529,12 +529,16 @@ def do_get(o):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		doc, _diags, code = load_layered(o, file)
+		doc, diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
 	if doc is None:
 		return code
+	# A read reports what the load dropped, the same as fmt and set: below
+	# strict the value comes back fine and the damage is otherwise silent.
+	# One report per invocation, so a read in a loop is one line per call.
+	say_diagnostics(diags)
 	if o.array:
 		if o.kind == "int":
 			r = doc.read_int_array(path)
@@ -1027,12 +1031,16 @@ def do_enum(o, want_count):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		doc, _diags, code = load_layered(o, file)
+		doc, diags, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
 	if doc is None:
 		return code
+	# A read reports what the load dropped, the same as fmt and set: below
+	# strict the value comes back fine and the damage is otherwise silent.
+	# One report per invocation, so a read in a loop is one line per call.
+	say_diagnostics(diags)
 	if want_count:
 		print(doc.count(path))
 	else:

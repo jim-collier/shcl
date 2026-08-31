@@ -102,8 +102,8 @@ An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
 without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
 named more than once across FILE, --layer and --schema.
-fmt and set print the load's diagnostics to stderr along with the canonical
-document. An in-place write also refuses when the load dropped content the
+Every subcommand that loads a document prints the load's diagnostics to stderr,
+once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides).
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
@@ -661,10 +661,14 @@ fn do_get(o: &Opts) -> u8 {
 		eprintln!("usage: shcl get [type] [options] FILE PATH (see --help)");
 		return 1;
 	};
-	let (doc, _diags) = match load_layered(o, file) {
+	let (doc, diags) = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	say_diagnostics(&diags);
 	let (lines, status, slots): (Vec<String>, Status, Vec<Status>) = if o.array {
 		match o.kind {
 			Kind::Int => {
@@ -1238,10 +1242,14 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 		eprintln!("usage: shcl {} [options] FILE PATH (see --help)", name);
 		return 1;
 	};
-	let (doc, _diags) = match load_layered(o, file) {
+	let (doc, diags) = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	say_diagnostics(&diags);
 	if want_count {
 		println!("{}", doc.count(path));
 	} else {

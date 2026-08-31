@@ -130,8 +130,8 @@ static const char *HELP =
 	"refused: --write with --layer; --write with --set outside 'set'; --lossy\n"
 	"without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'\n"
 	"named more than once across FILE, --layer and --schema.\n"
-	"fmt and set print the load's diagnostics to stderr along with the canonical\n"
-	"document. An in-place write also refuses when the load dropped content the\n"
+	"Every subcommand that loads a document prints the load's diagnostics to stderr,\n"
+	"once per run. An in-place write also refuses when the load dropped content the\n"
 	"rewrite would delete (--lossy overrides).\n"
 	"FILE may be '-' for stdin. With --layer, FILE is the highest file layer and\n"
 	"each --layer is merged under it in order; --set applies last. 'fmt' with\n"
@@ -400,6 +400,10 @@ static int do_get(Opts *o) {
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
 	shcl_doc *d = L.doc;
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	say_layered_diagnostics(&L);
 
 	shcl_status status = SHCL_GOOD;
 	const shcl_status *slotSts = NULL; size_t nSlots = 0;
@@ -921,6 +925,10 @@ static int do_enum(Opts *o, int want_count) {
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
 	shcl_doc *d = L.doc;
+	// A read reports what the load dropped, the same as fmt and set: below
+	// strict the value comes back fine and the damage is otherwise silent.
+	// One report per invocation, so a read in a loop is one line per call.
+	say_layered_diagnostics(&L);
 	if (want_count) printf("%zu\n", shcl_count(d, path, plen));
 	else { shcl_str *vals; size_t n = shcl_instances(d, path, plen, &vals); for (size_t i = 0; i < n; i++) outln(vals[i].p, vals[i].n); }
 	layered_free(&L); return 0;
