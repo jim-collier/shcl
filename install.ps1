@@ -298,6 +298,17 @@ file. Nothing unverified is installed.
 			$haveDropins = $true
 		}
 
+		## Run it from the temp dir before anything is written, the way the Linux
+		## installer does: a binary that will not start here should never become
+		## an install. Redirected and status-tested rather than called bare,
+		## since a nonzero exit from a native command throws under this script's
+		## own error preference on 7.4 and later - which used to mean a success
+		## message followed by an exception, with the install left in place.
+		$smokeOut = & (Join-Path $tmp 'shcl.exe') version 2>&1
+		if ($LASTEXITCODE -ne 0) {
+			Exit-Install "the downloaded shcl.exe does not run here: $($smokeOut -join ' ')"
+		}
+
 		## Install. The binary goes in via a temp name + Move-Item in the same dir,
 		## so a running copy only ever sees the complete old or new file.
 		New-Item -ItemType Directory -Force -Path $dest | Out-Null
@@ -340,7 +351,8 @@ file. Nothing unverified is installed.
 		if (-not $haveDropins) { Write-Output "note: this release ships no signed drop-in payload, so $dest\code and $dest\scripts were skipped - take them from the repo if you want them" }
 		$rerun = if ($invokedAsFile) { "& '$scriptPath'" } else { '& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1)))' }
 		Write-Output "to remove it again: $rerun -Uninstall -Target $Target"
-		& (Join-Path $dest 'shcl.exe') version
+		## Already proved above, from the temp dir; this line is the receipt.
+		Write-Output $smokeOut
 		Write-Output ''
 	} finally {
 		Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue

@@ -318,11 +318,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-170000
 
-	- 🔘 Item 44: the PowerShell installer runs the binary only after writing it into place.
+	- ✅ Item 44: the PowerShell installer runs the binary only after writing it into place.
 		- The bash installer runs the version check from the temp directory first, precisely so a binary that will not start never becomes an install.
 		- On PowerShell 7.4 and later a nonzero exit from that line throws under the script's own error preference, giving a success message followed by an exception, with the install left in place.
 		- Read, not reproduced, since no failing binary was available.
+		- Fixed: the smoke run happens from the temp dir before anything is written, matching the Linux installer, and its output is captured with the exit status tested rather than called bare. The line at the end now prints what that run already produced, so a failing binary cannot reach a success message.
+		- Pinned in `shell-regress.bash` as a source-order check: the smoke run must appear before the publish, and must test `$LASTEXITCODE`. Running the real installer needs a network and a release, so order is what can honestly be asserted here.
 		- Opened: 20260830-140346
+		- Closed: 20260831-172000
 
 	- 🔘 Item 45: the analyzer settings gate syntax only, and the comment reads as more.
 		- Syntax compatibility says nothing about which framework members exist, which is what items 10 and 11 are. The type-compatibility rule was tried and reports nothing, because it matches type names and not instance members.

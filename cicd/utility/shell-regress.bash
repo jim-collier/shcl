@@ -302,6 +302,27 @@ if [[ -f "${repoDir}/install.bash" ]]; then
 	[[ -f "${fake}/.local/share/shcl/not-ours.txt" ]] || fBad "install.bash --uninstall removed a file it did not install"
 fi
 
+##	install.ps1 used to run the binary only after writing it into place, where
+##	the Linux installer runs it from the temp dir first so one that will not
+##	start never becomes an install. Order in the source is the whole assertion;
+##	running the real thing needs a network and a release.
+ps1="${repoDir}/install.ps1"
+if [[ -f "${ps1}" ]]; then
+	smokeLine="$({ grep -n "(Join-Path \$tmp 'shcl.exe') version" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
+	publishLine="$({ grep -n "Move-Item -Force -LiteralPath (Join-Path \$dest '.shcl.exe.new')" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
+	if [[ -z "${smokeLine}" ]]; then
+		fBad "install.ps1 never runs the downloaded binary from the temp dir"
+	elif [[ -z "${publishLine}" ]]; then
+		fBad "install.ps1: cannot find where the binary is published"
+	elif ((smokeLine >= publishLine)); then
+		fBad "install.ps1 runs the binary at line ${smokeLine}, after publishing it at ${publishLine}"
+	fi
+	## A bare native call throws under this script's error preference on 7.4+,
+	## which turned a failing binary into an exception after the success message.
+	grep -q 'LASTEXITCODE -ne 0' <<<"$(sed -n "${smokeLine:-1},+4p" "${ps1}")" \
+		|| fBad "install.ps1 does not test the smoke run's exit status"
+fi
+
 ##	The profiler stage's hot-spot report. Its only diagnostics go to stderr, and
 ##	the stage used to discard them, so the log recorded the failure with no cause.
 report="${repoDir}/cicd/utility/flame-report.py"
