@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 
 ##	Purpose:
-##		Pin the shell surface: the two wrappers, and the one-liner's scope
-##		hygiene. None of it is reachable from the corpus or the CLI gate, and
-##		every row here is a defect a review round found in a shipped script.
+##		Pin the shell surface: the two wrappers, the one-liner's scope hygiene,
+##		and the packaging script's version handling. None of it is reachable
+##		from the corpus or the CLI gate, and every row here is a defect a review
+##		round found in a shipped script.
 ##
 ##		Also scans the repo's own errexit scripts for the trap that has now bit
 ##		four times: a `grep` inside a command substitution whose result is
@@ -57,6 +58,26 @@ if command -v pwsh > /dev/null 2>&1; then
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${tmpDir}'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 	[[ "${out}" == *"not executable"* ]] || fBad "PowerShell wrapper took a directory as SHCL_BIN: ${out@Q}"
 
+	##	20260830b item 10: the symlink resolver called a .NET 6 method that
+	##	Windows PowerShell 5.1 does not have, unguarded and at load, so every
+	##	dot-source on 5.1 hit it. An Env: item stands in for 5.1's method-less
+	##	FileInfo. The link row is the other half: resolution still works where
+	##	the method does exist.
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^function _shcl_scriptdir/,/^}/p' "${repoDir}/source/powershell/shcl.ps1"
+		echo 'try { $null = _shcl_scriptdir "Env:HOME"; Write-Output "resolved" } catch { Write-Output "threw" }'
+	} > "${tmpDir}/scriptdir.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/scriptdir.ps1" 2>&1 || true)"
+	[[ "${out}" == "resolved" ]] || fBad "PowerShell wrapper called a missing link resolver: ${out@Q}"
+	mkdir -p "${tmpDir}/real" "${tmpDir}/lnk"
+	cp "${repoDir}/source/powershell/shcl.ps1" "${tmpDir}/real/"
+	ln -sf "${tmpDir}/real/shcl.ps1" "${tmpDir}/lnk/shcl.ps1"
+	out="$(pwsh -NoProfile -Command ". '${tmpDir}/lnk/shcl.ps1'; Write-Output \"root=\$script:_SHCL_ROOT\"" 2>&1 || true)"
+	[[ "${out}" == "root=${tmpDir}/real" ]] || fBad "PowerShell wrapper did not resolve its own symlink: ${out@Q}"
+
 	##	20260829 item 16 and 20260830 item 8: the script used to end the caller's
 	##	shell, and then to leave strict mode and its functions behind in it.
 	##	Through a file rather than -Command, so the PowerShell keeps its own
@@ -79,6 +100,112 @@ else
 	echo "shell-regress: pwsh not installed - PowerShell rows skipped"
 fi
 
+##	20260830b item 12: nothing set the modes on a system install, and sudo keeps
+##	the caller's umask, so under 077 the tree and the launcher came out 0700 and
+##	only root could run what had just been installed for everyone. Staged the
+##	way the installer stages it, under that umask.
+eval "$(sed -n '/^fWidenModes()/,/^}/p' "${repoDir}/install.bash")"
+(
+	umask 077
+	mkdir -p "${tmpDir}/inst/code"
+	printf 'bin\n'  > "${tmpDir}/inst/shcl";      chmod 700 "${tmpDir}/inst/shcl"
+	printf 'data\n' > "${tmpDir}/inst/code/lib.rs"
+)
+fWidenModes "" "${tmpDir}/inst"
+while IFS= read -r row; do
+	case "${row}" in
+		"755 ${tmpDir}/inst"|"755 ${tmpDir}/inst/code"|"755 ${tmpDir}/inst/shcl"|"644 ${tmpDir}/inst/code/lib.rs") ;;
+		*) fBad "install.bash left a system install unreadable: ${row}" ;;
+	esac
+done < <(find "${tmpDir}/inst" -printf '%m %p\n' | sort)
+
+##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
+##	release" verbatim, so a patch back-ported to an older line after a newer one
+##	shipped was handed out as stable. The fixture is in publish order, newest
+##	first, and the answer must not be the first row.
+cat > "${tmpDir}/rel.json" <<'JSON'
+[
+  {
+    "tag_name": "v1.2.1",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v2.1.0-alpha.1",
+    "draft": false,
+    "prerelease": true
+  },
+  {
+    "tag_name": "v2.2.0",
+    "draft": true,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v2.0.0",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "tag_name": "v2.1.0-alpha.10",
+    "draft": false,
+    "prerelease": true
+  },
+  {
+    "tag_name": "v2.1.0-alpha.2",
+    "draft": false,
+    "prerelease": true
+  }
+]
+JSON
+##	The function comes out of the shipped installer by name, so the gate runs
+##	the real text rather than a copy that can drift.
+eval "$(sed -n '/^fPickTag()/,/^}/p' "${repoDir}/install.bash")"
+out="$(fPickTag stable "${tmpDir}/rel.json")"
+[[ "${out}" == "v2.0.0" ]] || fBad "install.bash stable channel picked ${out@Q}, want v2.0.0"
+##	20260829 item 21: a pre-release suffix compared as text, so alpha.10 sorted
+##	below alpha.2. Both installers order the digit runs numerically.
+out="$(fPickTag dev "${tmpDir}/rel.json")"
+[[ "${out}" == "v2.1.0-alpha.10" ]] || fBad "install.bash dev channel picked ${out@Q}, want v2.1.0-alpha.10"
+
+if command -v pwsh > /dev/null 2>&1; then
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		sed -n '/^\tfunction Select-ReleaseTag/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "\$rel = Get-Content '${tmpDir}/rel.json' -Raw | ConvertFrom-Json"
+		echo 'Write-Output ("stable=" + (Select-ReleaseTag stable $rel).tag_name)'
+		echo 'Write-Output ("dev=" + (Select-ReleaseTag dev $rel).tag_name)'
+	} > "${tmpDir}/pick.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/pick.ps1" 2>&1 || true)"
+	[[ "${out}" == *"stable=v2.0.0"* ]]        || fBad "install.ps1 stable channel: ${out@Q}"
+	[[ "${out}" == *"dev=v2.1.0-alpha.10"* ]]  || fBad "install.ps1 dev channel: ${out@Q}"
+fi
+
+##	20260830b item 8: a prerelease version reached NSIS's four-integer version
+##	field verbatim, and makensis rejected it under errexit, so the release stage
+##	died on the first prerelease cut. A fake .exe is enough - the setup never
+##	runs, it only has to build.
+if command -v makensis > /dev/null 2>&1; then
+	pkgDir="${tmpDir}/pkg"; mkdir -p "${pkgDir}"
+	: > "${pkgDir}/shcl-2.1.0-alpha.1-windows-x86_64.exe"
+	if "${repoDir}/cicd/utility/package.bash" "${repoDir}" "${pkgDir}" "2.1.0-alpha.1" > "${tmpDir}/pkg.log" 2>&1; then
+		[[ -f "${pkgDir}/shcl-2.1.0-alpha.1-windows-x86_64-setup.exe" ]] \
+			|| fBad "packaging a prerelease built no setup: $(cat "${tmpDir}/pkg.log")"
+	else
+		fBad "packaging a prerelease failed: $(cat "${tmpDir}/pkg.log")"
+	fi
+else
+	echo "shell-regress: makensis not installed - packaging row skipped"
+fi
+
+##	20260830b item 11: $IsWindows does not exist on Windows PowerShell 5.1, and
+##	reading it there throws under a caller's strict mode. Every read has to sit
+##	behind a version test that short-circuits first, which cannot be exercised
+##	from a 7.x session because $PSVersionTable is read-only.
+while IFS= read -r h; do
+	fBad "source/powershell/shcl.ps1: unguarded \$IsWindows read: ${h}"
+done < <(grep -n 'IsWindows' "${repoDir}/source/powershell/shcl.ps1" \
+	| grep -vE '^[0-9]+:##' | grep -vE 'PSVersion\.Major -lt 6 -or' || true)
+
 ##	The static half. Line continuations are joined first, so a substitution that
 ##	ends in `|| true` several lines down is read as guarded.
 while IFS= read -r f; do
@@ -95,7 +222,7 @@ if ((nBad)); then
 	echo "shell-regress: ${nBad} check(s) failed" >&2
 	exit 1
 fi
-echo "shell-regress: OK: wrappers, one-liner scope, and no unguarded grep substitutions"
+echo "shell-regress: OK: wrappers, one-liner scope, packaging, and no unguarded grep substitutions"
 
 ##	History:
 ##		2026-08-30  Created, pinning the wrapper and installer defects from the

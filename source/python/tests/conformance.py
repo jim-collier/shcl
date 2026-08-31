@@ -831,6 +831,23 @@ def main():
 				raise SystemExit("save replaced the dangling link")
 			if _read(os.path.join(td, "real", "c.shcl")) != "a: 1\n":
 				raise SystemExit("save did not create the file behind the link")
+		if os.name != "nt":
+			# Two links pointing at each other resolve to nothing, so the save
+			# fails and says why. It must not "fix" the cycle by dropping a
+			# regular file over one of the links. Same fixture in every POSIX
+			# runner.
+			cyc_a = os.path.join(td, "cyc-a.shcl")
+			cyc_b = os.path.join(td, "cyc-b.shcl")
+			os.symlink("cyc-b.shcl", cyc_a)
+			os.symlink("cyc-a.shcl", cyc_b)
+			try:
+				shcl.Document.parse("a: 1\n").save_file(cyc_a)
+				raise SystemExit("a symlink cycle saved without an error")
+			except shcl.SaveFailed:
+				pass
+			for link in (cyc_a, cyc_b):
+				if not os.path.islink(link):
+					raise SystemExit("a symlink cycle was replaced by a regular file")
 		if os.name == "nt":
 			# A read-only target is rewritten, as it is on POSIX, and comes back
 			# read-only; no temp file is left behind. Same fixture in every runner.
@@ -988,6 +1005,16 @@ def main():
 		raise SystemExit("refused set_raw changed the document")
 	if rawback.read_raw_info("q").value != '"a # b"':
 		raise SystemExit(f"set_raw quoted info got {rawback.read_raw_info('q').value!r}")
+	# A body line ending in CR has no fence spelling: the load takes the whole
+	# trailing CR run off every line, so it is refused rather than lost. A CR
+	# mid-line is content and still round-trips.
+	if rawdoc.set_raw("q", "a\r\nb", "") or rawdoc.set_raw("q", "\r", ""):
+		raise SystemExit("set_raw accepted a body with a line-ending CR")
+	if not rawdoc.set_raw("q", "a\rb", ""):
+		raise SystemExit("set_raw refused a body with a mid-line CR")
+	rawback = shcl.Document.parse(rawdoc.to_canonical())
+	if rawback.get_raw("q") != "a\rb":
+		raise SystemExit(f"set_raw mid-line CR got {rawback.get_raw('q')!r}")
 	# Typed setters take exactly their type and raise a TypeError naming the
 	# setter for anything else, rather than writing text the reader of that
 	# type would call bad-type (set_int of 3.5 wrote `3.5`). bool is an int

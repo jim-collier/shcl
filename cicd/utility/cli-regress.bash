@@ -48,9 +48,14 @@ awk 'BEGIN{ for (i = 0; i < 511; i++) { for (j = 0; j < i; j++) printf "\t"; pri
 ## A schema whose own default breaks the field's constraints. Generation used to
 ## emit it anyway, so the starter config failed the schema that produced it.
 printf 'field: server.port\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\tdefault: 99\n' > "${tmpDir}/baddef.shcl"
+## An instance whose discriminator holds an '=', which is what made --set's own
+## split ambiguous.
+printf 'x[a=b]:\n\tc: 0\n' > "${tmpDir}/sel.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
-##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory.
+##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
+##	%P% the deepest legal document, %S% the self-contradicting schema, %X% an
+##	instance whose discriminator holds an '='.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that stream.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	Each row names the round and item it pins.
@@ -76,6 +81,18 @@ rows=(
 	'deep-nesting|fmt %P%|-|0|-|^$'
 	## 20260830b item 4: init emitted a config that fails the schema that made it.
 	'init-bad-default|init --schema=%S%|-|6||V097 generated value fails the schema'
+	## 20260830 item 35: -h and --help after FILE were an unknown option, though
+	## every other option is read there.
+	'help-after-file|get %F% -h|-|0|-|-'
+	'help-after-file-long|get %F% --help|-|0|-|-'
+	## 20260830 item 47: at the default strictness a recovered-from typo was
+	## silent unless --write was passed, so stdout carried the repair with
+	## nothing said about it.
+	'fmt-diags-without-write|fmt %B%|-|0|-|E015 missing colon'
+	'set-diags-without-write|set --set=a=2 %B%|-|0|-|E015 missing colon'
+	## 20260829 item 6: --set split PATH from VALUE at the first '=' anywhere, so
+	## a selector holding one could not be addressed at all.
+	'set-eq-in-selector|set --set=x[a=b].c=1 %X%|-|0|x: a=b\n\tc: 1\n|-'
 )
 
 declare -i nRun=0 nBad=0
@@ -87,6 +104,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%D%/${tmpDir}/adir}"
 	argv="${argv//%P%/${tmpDir}/deep.shcl}"
 	argv="${argv//%S%/${tmpDir}/baddef.shcl}"
+	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	read -r -a args <<<"${argv}"
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"

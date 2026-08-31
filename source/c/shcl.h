@@ -1374,6 +1374,11 @@ static void sb_put_u64(ShclArena *a, ShclSB *s, uint64_t v) {
 	sb_put(a, s, o, (size_t)j);
 }
 static int s_contains_char(ShclStr s, char c) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == c) return 1; return 0; }
+static int s_has_fence_run(ShclStr s) {
+	for (size_t i = 0; i + 2 < s.n; i++)
+		if ((s.p[i] == '`' || s.p[i] == '~') && s.p[i + 1] == s.p[i] && s.p[i + 2] == s.p[i]) return 1;
+	return 0;
+}
 
 typedef struct { ShclStr indent; size_t node; } ShclStackEnt;
 DEFINE_VEC(ShclVecStack, ShclStackEnt)
@@ -1524,8 +1529,10 @@ static int parse_int_text(ShclArena *a, const ShclElement *e, shcl_strictness le
 		double f;
 		if (parse_float_text(a, e, level, &f)) {
 			double r = round(f);
-			if (r >= -9223372036854775808.0 && r <= 9223372036854775808.0) {
-				*out = (r >= 9223372036854775808.0) ? INT64_MAX : (int64_t)r;
+			/* INT64_MAX has no exact double, so the top bound is 2^63 itself,
+			   exclusively; INT64_MIN is exact. */
+			if (r >= -9223372036854775808.0 && r < 9223372036854775808.0) {
+				*out = (int64_t)r;
 				return 1;
 			}
 		}
@@ -2464,6 +2471,15 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			i++; continue;
 		}
 		ShclStr comment; ShclStr before = split_comment(rest, &comment);
+		/* A same-line fence runs to the end of the line: the child-indent
+		   spelling keeps a `#` in its info-string, the grammar gives the
+		   same-line alternative no comment at all, and the emitter already
+		   assumes it. Without this, `a: ```c#` loses the `#`. The cheap test
+		   comes first so an ordinary commented line is not scanned twice. */
+		if (comment.n && s_has_fence_run(before)) {
+			ShclPathScan pre = scan_path(&line_arena, trim_end(before));
+			if (pre.ok && pre.has_value && fence_open(pre.value_text).ok) { before = rest; comment.p = NULL; comment.n = 0; }
+		}
 		ShclStr content = trim_end(before);
 		if (content.n == 0) {
 			/* Only a comment survived (e.g. an escaped lead-in); keep it. */
@@ -3172,6 +3188,9 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	ShclStr out;
 	if (line.n == 0 || line.p[0] != '#') { ShclSB b = {0}; sb_puts(a, &b, "# "); sb_putS(a, &b, line); out = sb_S(&b); }
 	else out = s_dup(a, line);
+	/* Without this the load trims what was written and the writer's output
+	   stops being a fmt fixpoint. Blank text leaves a bare `#`. */
+	out = trim_end(out);
 	/* The node's own blank moves above its first comment; otherwise the blank
 	   would separate the comment from what it annotates. */
 	ShclNode *nd = &NODE(d, idx);
@@ -3210,13 +3229,16 @@ int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_dat
 // Bind a raw block at a path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed); one
 // holding a line break or an unquoted `#` has no fence-line spelling (the `#`
-// would read back as a comment) and fails the write.
+// would read back as a comment) and fails the write. A body line ending in CR
+// fails for the same reason: the load takes the whole trailing CR run off every
+// line, so it would not read back.
 int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) {
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen;
 	ShclStr it; it.p = info; it.n = ilen;
 	if (it.n && (memchr(it.p, '\n', it.n) || memchr(it.p, '\r', it.n))) return 0;
 	ShclStr icomment; split_comment(it, &icomment);
 	if (icomment.n) return 0;
+	for (size_t i = 0; i < clen; i++) if (content[i] == '\r' && (i + 1 == clen || content[i + 1] == '\n')) return 0;
 	it = s_trim(it);
 	ShclStr c = w_dupz(a, content, clen), inf = s_dup(a, it);
 	unsigned char fc; size_t fl; w_choose_fence(c, &fc, &fl);

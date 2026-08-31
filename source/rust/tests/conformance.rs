@@ -973,6 +973,14 @@ fn set_raw_keeps_a_shared_indent_and_trims_the_info() {
 	let back = Document::parse(&doc.to_canonical());
 	assert_eq!(back.get_raw("q"), Ok("  a\n  b".to_string()));
 	assert_eq!(back.read_raw_info("q").value, "\"a # b\"");
+	// A body line ending in CR has no fence spelling: the load takes the whole
+	// trailing CR run off every line, so it is refused rather than lost. A CR
+	// mid-line is content and still round-trips.
+	assert!(!doc.set_raw("q", "a\r\nb", ""));
+	assert!(!doc.set_raw("q", "\r", ""));
+	assert!(doc.set_raw("q", "a\rb", ""));
+	let back = Document::parse(&doc.to_canonical());
+	assert_eq!(back.get_raw("q"), Ok("a\rb".to_string()));
 }
 
 #[cfg(unix)]
@@ -1000,6 +1008,33 @@ fn save_creates_the_file_behind_a_dangling_symlink() {
 	let _ = std::fs::remove_file(&link);
 	let _ = std::fs::remove_file(dir.join("real/c.shcl"));
 	let _ = std::fs::remove_dir(dir.join("real"));
+	let _ = std::fs::remove_dir(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn save_reports_a_symlink_cycle_instead_of_replacing_it() {
+	// Two links pointing at each other resolve to nothing, so the save fails
+	// and says why. It must not "fix" the cycle by dropping a regular file over
+	// one of the links. Same fixture in every POSIX runner.
+	let dir = std::env::temp_dir().join(format!("shcl-cycle-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let (a, b) = (dir.join("a.shcl"), dir.join("b.shcl"));
+	std::os::unix::fs::symlink("b.shcl", &a).unwrap();
+	std::os::unix::fs::symlink("a.shcl", &b).unwrap();
+	let doc = Document::parse("a: 1\n");
+	assert!(doc.save_file(a.to_str().unwrap()).is_err());
+	for link in [&a, &b] {
+		assert!(
+			std::fs::symlink_metadata(link)
+				.unwrap()
+				.file_type()
+				.is_symlink(),
+			"a symlink cycle was replaced by a regular file"
+		);
+	}
+	let _ = std::fs::remove_file(&a);
+	let _ = std::fs::remove_file(&b);
 	let _ = std::fs::remove_dir(&dir);
 }
 

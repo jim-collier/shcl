@@ -129,7 +129,11 @@ The wins that matter were locked in by the architecture, before any code was hot
 
 - C owns memory with a bump arena per document, plus a scratch arena that resets on every read call. No per-object ownership, no free list - `shcl_free` drops the whole thing.
 
-- The parser builds its `(name, value)` child index as it goes, so lookups and merges never rescan siblings. The index holds hashes and node indices only - key strings are never built; a hit is verified against the arena. It is discarded after parse; the Writer mutates the tree directly instead of maintaining it.
+- The parser builds its `(name, value)` child index as it goes, so in-file duplicate folding and merges never rescan siblings. It is discarded once the parse is done.
+
+- Path lookups use a second index, keyed on `(parent, name)` and built the first time a lookup needs one, so reading every key in a large document does not scan siblings per key. The Writer keeps it current as it places, folds and removes nodes; only a merge drops it, and the next lookup rebuilds.
+
+- Both indexes hold hashes and node indices only. Key strings are never built, and a hit is verified against the arena, so a hash collision costs a comparison rather than a wrong answer.
 
 Then there are the habits, which cost nothing to write and are not premature:
 

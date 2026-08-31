@@ -118,6 +118,11 @@ LINT_EXTRA=(
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'cicd/utility/check-completions.bash'
 	'cicd/utility/check-wheel.bash'
+	## The README's C example is the first thing a C consumer copies, and it is
+	## the one example nothing else here builds.
+	'cicd/utility/check-readme-c.bash'
+	## Claims the documents make about themselves, that no linter checks.
+	'cicd/utility/check-docs.bash'
 	## TOOL_PINS above is copied by hand into ci.yml; this fails the stage when
 	## the two disagree, instead of hosted CI going red days later.
 	'cicd/utility/check-pins.bash'
@@ -129,7 +134,9 @@ SHELLCHECK_TARGETS=(
 	cicd/cicd.bash
 	cicd/config.bash
 	cicd/utility/check-completions.bash
+	cicd/utility/check-docs.bash
 	cicd/utility/check-pins.bash
+	cicd/utility/check-readme-c.bash
 	cicd/utility/check-wheel.bash
 	cicd/utility/cli-regress.bash
 	cicd/utility/comparison/compare.bash
@@ -178,8 +185,9 @@ TEST_EXTRA=(
 	## CLI behavior the corpus cannot reach: closed streams, '-' twice on one
 	## command line, a carriage return ending an ops line, error-message shape.
 	'cicd/utility/cli-regress.bash "${BINDING_CLIS[@]}"'
-	## The write path must stay small beside the parse. Two superlinear write
-	## regressions reached dev in consecutive rounds with no number to fail on.
+	## The read and write paths must stay small beside the parse. Two superlinear
+	## write regressions reached dev in consecutive rounds with no number to fail
+	## on, and the read side was quadratic before the surviving name index.
 	'cicd/utility/perf-gate.bash "${BINDING_CLIS[@]}"'
 	## The wrappers, the one-liner's scope hygiene, and the errexit grep trap.
 	'cicd/utility/shell-regress.bash'

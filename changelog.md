@@ -47,6 +47,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The C++ veneer's `generate` is no longer `const`: a schema fault it reports goes onto the document's diagnostics, which mutates it.
 - The stderr voice is tidier: messages dropped their `shcl:` prefix, a usage error answers with a `usage: shcl ...` line, a strict-load failure lists the diagnostics above its `strict load failed: N error diagnostic(s)` summary, and a schema-fault line carries its `V` code the way load diagnostics carry theirs. stdout and the exit codes are untouched, so nothing scripted against the contract moves.
 
+- A raw block's info-string runs to the end of the line in both spellings. On the same-line form (`db: ```c#`) a `#` used to open a trailing comment, so the label came back as `c` and the rest moved onto the field line, while the same text under a child indent stayed whole. An info-string is never interpreted, which is what the grammar and the spec both already said. A comment about a same-line block goes on the line above.
+
+- Reading a float as an int at loose strictness refuses anything at or past 2^63, rather than saturating to the integer maximum. `9223372036854775808.0` used to read as `9223372036854775807` while the same number spelled without the `.0` correctly refused. No double holds the integer maximum, so `9223372036854775807.0` is refused too; the plain decimal spelling still reads exactly.
+
+- The Linux installer's stable channel picks the highest version rather than the most recently published release, so a patch back-ported to an older line after a newer one shipped is no longer handed out as stable. Both installers now list releases for both channels and drop drafts, which have no assets to install.
+
 ### Fixed
 
 - C: a save to a path spelled with backslashes failed on Windows, so a consumer that built its config path with the platform separator could never save. The temp name now splits on either separator, and a drive-relative `C:x` target splits after the colon.
@@ -56,6 +62,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `set_raw` (and the `raw` op) trims the info-string the way a fence line reads it back, and refuses one holding a line break or an unquoted `#`. Either would read back as something other than what was written.
 
 - `read_file`'s byte cap saturates instead of overflowing when set near the integer ceiling.
+
+- `set_raw` refuses a body whose lines end in a carriage return. The load takes the whole trailing CR run off every line, so such a body did not read back: `a\r\nb` came back as `a\nb` and a body of one CR came back empty. A CR mid-line is content and still round-trips.
+
+- `set_comment` trims its text the way the load does, so what is written is what reads back and the writer's output stays a formatter fixpoint. Text that is blank leaves a bare `#`.
+
+- A system install by `install.bash` is readable and runnable by every user whatever umask the caller had. Under `umask 077` the install directory, the binary, the man page and the completions all came out mode 0700, so only root could use what had just been installed for everyone. The run also repairs a tree an earlier install wrote too tightly.
+
+- The Windows setup builds for a prerelease version. Its four-integer version field took the package version verbatim, which the tool rejects for anything carrying a prerelease tail, and the release stage died there.
+
+- The PowerShell wrapper works on Windows PowerShell 5.1 again, which its header claims support for. It called a .NET 6 method that 5.1 does not have, unguarded and at load, so every dot-source hit it; and it read a PowerShell 6+ variable before the test meant to guard the read, which throws under a caller's strict mode.
+
+- The README's C example builds as a reader would write it. The library header asks for a POSIX level, a feature request only counts before the first system header, and the example did not say so - adding `<stdio.h>` above it, the natural place, gave five implicit declarations and a pointer-from-integer error.
 
 - A save through a dangling symlink creates the file where the link points, in all four bindings, instead of replacing the link with a regular file. A symlink cycle at the target is reported as the error it is, instead of the link being replaced.
 

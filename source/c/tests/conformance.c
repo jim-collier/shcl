@@ -893,6 +893,17 @@ int main(int argc, char **argv) {
 		if (br.status != SHCL_GOOD || br.value.n != 7 || memcmp(br.value.p, "  a\n  b", 7) != 0) fail("set_raw", "content did not survive the reload");
 		bi = shcl_read_raw_info(back, "q", 1);
 		if (bi.status != SHCL_GOOD || bi.value.n != 7 || memcmp(bi.value.p, "\"a # b\"", 7) != 0) fail("set_raw", "quoted # info did not round-trip");
+		shcl_free(back);
+		// A body line ending in CR has no fence spelling: the load takes the
+		// whole trailing CR run off every line, so it is refused rather than
+		// lost. A CR mid-line is content and still round-trips.
+		if (shcl_set_raw(sd, "q", 1, "a\r\nb", 4, "", 0)) fail("set_raw", "body with a line-ending CR accepted");
+		if (shcl_set_raw(sd, "q", 1, "\r", 1, "", 0)) fail("set_raw", "body of one CR accepted");
+		if (!shcl_set_raw(sd, "q", 1, "a\rb", 3, "", 0)) fail("set_raw", "body with a mid-line CR refused");
+		sc = shcl_to_canonical(sd);
+		back = shcl_parse(sc.p, sc.n);
+		br = shcl_read_raw(back, "q", 1);
+		if (br.status != SHCL_GOOD || br.value.n != 3 || memcmp(br.value.p, "a\rb", 3) != 0) fail("set_raw", "mid-line CR did not survive the reload");
 		shcl_free(back); shcl_free(sd);
 	}
 	// A link to a file that is not there yet is written through like any
@@ -915,6 +926,24 @@ int main(int argc, char **argv) {
 		if (!tt || tn != 5 || memcmp(tt, "a: 1\n", 5) != 0) fail("dangling", "file not created behind the link");
 		free(tt); shcl_free(dd);
 		remove(dlink); remove(dtarget); rmdir(dreal); rmdir(ddir);
+	}
+	// Two links pointing at each other resolve to nothing, so the save fails
+	// and says why. It must not "fix" the cycle by dropping a regular file over
+	// one of the links. Same fixture in every POSIX runner.
+	{
+		char cdir[256], ca[288], cb[288];
+		snprintf(cdir, sizeof cdir, "%s/shcl-cycle-%ld", tmp_root(), (long)getpid());
+		snprintf(ca, sizeof ca, "%s/a.shcl", cdir);
+		snprintf(cb, sizeof cb, "%s/b.shcl", cdir);
+		if (mkdir(cdir, 0700) != 0) fail("cycle", "mkdir failed");
+		if (symlink("b.shcl", ca) != 0 || symlink("a.shcl", cb) != 0) fail("cycle", "symlink failed");
+		shcl_doc *cd = shcl_parse("a: 1\n", 5);
+		if (shcl_save_file(cd, ca) == SHCL_SAVE_OK) fail("cycle", "a symlink cycle saved without an error");
+		struct stat cs;
+		if (lstat(ca, &cs) != 0 || !S_ISLNK(cs.st_mode)) fail("cycle", "a symlink cycle was replaced by a regular file");
+		if (lstat(cb, &cs) != 0 || !S_ISLNK(cs.st_mode)) fail("cycle", "a symlink cycle was replaced by a regular file");
+		shcl_free(cd);
+		remove(ca); remove(cb); rmdir(cdir);
 	}
 #endif
 	// A read-only target is rewritten, as it is on POSIX, and comes back

@@ -1663,6 +1663,19 @@ class _Parser:
 				continue
 			# Field line.
 			before, comment = _split_comment(rest)
+			# A same-line fence runs to the end of the line: the child-indent
+			# spelling keeps a `#` in its info-string, the grammar gives the
+			# same-line alternative no comment at all, and the emitter already
+			# assumes it. Without this, `a: ```c#` loses the `#`. The cheap
+			# test comes first so an ordinary commented line is not scanned
+			# twice.
+			if comment and ("```" in before or "~~~" in before):
+				try:
+					_, vt = _scan_path(_trim_end(before))
+				except _PathError:
+					vt = None
+				if vt is not None and _fence_open(vt) is not None:
+					before, comment = rest, ""
 			content = _trim_end(before)
 			if not content:
 				# Only a comment survived (e.g. an escaped lead-in); keep it.
@@ -2511,13 +2524,18 @@ class Document:
 
 	def set_comment(self, path: str, text: str) -> bool:
 		"""Attach a leading comment line to the node at a path (creating an empty
-		node if absent). A missing '#' is added; only the first line is kept."""
+		node if absent). A missing '#' is added; only the first line is kept, and
+		trailing whitespace comes off the way the load takes it, so text that is
+		blank leaves a bare '#'."""
 		idx = self._place(path)
 		if idx is None:
 			return False
 		line = text.split("\n", 1)[0]
 		if not line.startswith("#"):
 			line = "# " + line
+		# Without this the load trims what was written and the writer's output
+		# stops being a fmt fixpoint.
+		line = _trim_end(line)
 		# The node's own blank moves above its first comment; otherwise the
 		# blank would separate the comment from what it annotates.
 		nd = self.arena[idx]
@@ -2565,8 +2583,12 @@ class Document:
 		"""Bind a raw block at a path, picking a fence longer than any content
 		line. The info-string is stored as a fence line would read it back
 		(trimmed); one holding a line break or an unquoted `#` has no fence-line
-		spelling (the `#` would read back as a comment) and fails the write."""
+		spelling (the `#` would read back as a comment) and fails the write. A
+		body line ending in CR fails for the same reason: the load takes the
+		whole trailing CR run off every line, so it would not read back."""
 		if "\n" in info or "\r" in info or _split_comment(info)[1] != "":
+			return False
+		if any(line.endswith("\r") for line in content.split("\n")):
 			return False
 		info = _trim(info)
 		fc, fl = _choose_fence(content)
@@ -3959,11 +3981,9 @@ def _parse_int_text(e, level):
 		f = _parse_float_text(e, level)
 		if f is not None and not math.isnan(f) and not math.isinf(f):
 			r = _rust_round(f)
-			if -(2 ** 63) <= r <= 2 ** 63:
-				if r > _I64_MAX:
-					r = _I64_MAX
-				elif r < _I64_MIN:
-					r = _I64_MIN
+			# The top bound is 2^63 itself, exclusively: i64 max has no exact
+			# double, so a `.0` spelling of it lands above the range.
+			if -(2 ** 63) <= r < 2 ** 63:
 				return r
 	return None
 

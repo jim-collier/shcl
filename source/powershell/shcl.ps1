@@ -65,9 +65,11 @@ function _shcl_err([string]$msg) { [Console]::Error.WriteLine($msg) }
 ## Launchable? On Unix require an execute bit (any of user/group/other); on
 ## Windows (or pre-6 PowerShell, where $IsWindows is undefined) a leaf is enough,
 ## the OS decides by extension. Mirrors bash's `-x` test at every resolution site.
+## The version test comes first so 5.1 never reads $IsWindows, which does not
+## exist there and throws under a caller's strict mode.
 function _shcl_executable([string]$path) {
-	if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
-	if ($IsWindows -or ($null -eq $IsWindows))              { return $true }
+	if (-not (Test-Path -LiteralPath $path -PathType Leaf))       { return $false }
+	if ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows)     { return $true }
 	$mode = (Get-Item -LiteralPath $path).UnixFileMode
 	$exec = [System.IO.UnixFileMode]::UserExecute  -bor `
 	        [System.IO.UnixFileMode]::GroupExecute -bor `
@@ -85,11 +87,13 @@ function _shcl_exe([string]$base) {
 
 ## Real directory of this file, following symlinks, so a linked-in copy still
 ## finds its sibling binary and the repo release/debug build tree.
-function _shcl_scriptdir {
-	$self = $PSCommandPath
+function _shcl_scriptdir([string]$self = $PSCommandPath) {
 	if (-not $self) { return $PSScriptRoot }
 	$item = Get-Item -LiteralPath $self -ErrorAction SilentlyContinue
-	if ($item) {
+	## ResolveLinkTarget arrived in .NET 6, so Windows PowerShell 5.1 has no
+	## such method and calling it is an error the SilentlyContinue above does
+	## not cover. Without it the path is used as given, links and all.
+	if ($item -and ($item.PSObject.Methods.Name -contains 'ResolveLinkTarget')) {
 		$target = $item.ResolveLinkTarget($true)
 		if ($target) { $self = $target.FullName }
 	}

@@ -728,15 +728,19 @@ Alongside it goes an `impl.c` of two lines (`#define SHCL_IMPLEMENTATION`, then 
 
 ### C, C++
 
-C and C++ have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit, and link `-lm`. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
+C and C++ have no registry worth targeting. `shcl.h` is a single dependency-free header: copy it into your tree from a release tag and pin that tag, or take it from an installed package under `/usr/share/shcl/code/`. Define `SHCL_IMPLEMENTATION` in exactly one translation unit, put the header above your own system includes, and link `-lm`. C++ callers can add `shcl.hpp` alongside it for the typed veneer.
 
 - Install: vendor `shcl.h`
 
 - Dependency line: pin the release tag
 
 ```c
+// shcl.h asks for a POSIX level for its file tier, and a feature request only
+// counts before the first system header, so it goes above your own includes.
 #define SHCL_IMPLEMENTATION   // in exactly one translation unit
 #include "shcl.h"
+#include <stdio.h>
+#include <string.h>
 
 #define P(s) s, strlen(s)     // paths take a pointer and a length, not a NUL terminator
 

@@ -17,6 +17,9 @@
 !ifndef OUTFILE
 	!error "pass /DOUTFILE="
 !endif
+!ifndef VERQUAD
+	!error "pass /DVERQUAD="
+!endif
 
 Unicode true
 Name "SHCL ${VERSION}"
@@ -26,12 +29,14 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
 ; Same icon the executable carries, and the metadata Windows shows for the
-; setup itself. VIProductVersion needs four numbers where the project has three.
+; setup itself. VIProductVersion needs four integers and nothing else, so the
+; caller passes VERQUAD; the display strings keep the full version, prerelease
+; tail and all.
 !ifdef ICON
 	Icon "${ICON}"
 	UninstallIcon "${ICON}"
 !endif
-VIProductVersion "${VERSION}.0"
+VIProductVersion "${VERQUAD}"
 VIAddVersionKey "ProductName"     "SHCL"
 VIAddVersionKey "FileDescription" "SHCL installer"
 VIAddVersionKey "FileVersion"     "${VERSION}"

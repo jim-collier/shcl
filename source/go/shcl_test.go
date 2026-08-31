@@ -1027,6 +1027,22 @@ func TestSetRawKeepsASharedIndentAndTrimsTheInfo(t *testing.T) {
 	if info := back.ReadRawInfo("q").Value; info != "\"a # b\"" {
 		t.Errorf("quoted info: got %q", info)
 	}
+	// A body line ending in CR has no fence spelling: the load takes the whole
+	// trailing CR run off every line, so it is refused rather than lost. A CR
+	// mid-line is content and still round-trips.
+	if doc.SetRaw("q", "a\r\nb", "") {
+		t.Error("body with a line-ending carriage return was accepted")
+	}
+	if doc.SetRaw("q", "\r", "") {
+		t.Error("body of one carriage return was accepted")
+	}
+	if !doc.SetRaw("q", "a\rb", "") {
+		t.Fatal("body with a mid-line carriage return was refused")
+	}
+	back = Parse(doc.ToCanonical())
+	if v, st := back.GetRaw("q"); st != Good || v != "a\rb" {
+		t.Errorf("mid-line CR: got %q %v", v, st)
+	}
 }
 
 func TestSaveCreatesTheFileBehindADanglingSymlink(t *testing.T) {
@@ -1052,6 +1068,31 @@ func TestSaveCreatesTheFileBehindADanglingSymlink(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "real", "c.shcl")); err != nil || string(got) != "a: 1\n" {
 		t.Errorf("file behind the link: got %q %v", got, err)
+	}
+}
+
+func TestSaveReportsASymlinkCycleInsteadOfReplacingIt(t *testing.T) {
+	// Two links pointing at each other resolve to nothing, so the save fails
+	// and says why. It must not "fix" the cycle by dropping a regular file over
+	// one of the links. Same fixture in every POSIX runner.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink fixture")
+	}
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.shcl"), filepath.Join(dir, "b.shcl")
+	if err := os.Symlink("b.shcl", a); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a.shcl", b); err != nil {
+		t.Fatal(err)
+	}
+	if err := Parse("a: 1\n").SaveFile(a); err == nil {
+		t.Error("a symlink cycle saved without an error")
+	}
+	for _, link := range []string{a, b} {
+		if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("a symlink cycle was replaced by a regular file: %v %v", st, err)
+		}
 	}
 }
 

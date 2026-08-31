@@ -2217,6 +2217,18 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		}
 		// Field line.
 		before, comment := splitComment(rest)
+		// A same-line fence runs to the end of the line: the child-indent
+		// spelling keeps a `#` in its info-string, the grammar gives the
+		// same-line alternative no comment at all, and the emitter already
+		// assumes it. Without this, `a: ```c#` loses the `#`. The cheap test
+		// comes first so an ordinary commented line is not scanned twice.
+		if comment != "" && (strings.Contains(before, "```") || strings.Contains(before, "~~~")) {
+			if sc, err := scanPath(trimEndWS(before)); err == nil && sc.valueText != nil {
+				if _, _, _, okf := fenceOpen(*sc.valueText); okf {
+					before, comment = rest, ""
+				}
+			}
+		}
 		content := trimEndWS(before)
 		if content == "" {
 			// Only a comment survived (e.g. an escaped lead-in); keep it.
@@ -3889,7 +3901,8 @@ func (d *Document) Remove(path string) int {
 
 // SetComment attaches a leading comment line to the node at a path (creating an
 // empty node if absent, so a section can be annotated). A missing '#' is added;
-// only the first line is kept (a comment is one line).
+// only the first line is kept (a comment is one line), and trailing whitespace
+// comes off the way the load takes it, so text that is blank leaves a bare '#'.
 func (d *Document) SetComment(path, text string) bool {
 	idx, ok := d.place(path)
 	if !ok {
@@ -3902,6 +3915,9 @@ func (d *Document) SetComment(path, text string) bool {
 	if !strings.HasPrefix(line, "#") {
 		line = "# " + line
 	}
+	// Without this the load trims what was written and the writer's output
+	// stops being a fmt fixpoint.
+	line = trimEndWS(line)
 	// The node's own blank moves above its first comment; otherwise the blank
 	// would separate the comment from what it annotates.
 	nd := &d.arena[idx]
@@ -3951,10 +3967,17 @@ func (d *Document) SetEmpty(path string) bool {
 // SetRaw binds a raw block at path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed); one
 // holding a line break or an unquoted `#` has no fence-line spelling (the `#`
-// would read back as a comment) and fails the write.
+// would read back as a comment) and fails the write. A body line ending in CR
+// fails for the same reason: the load takes the whole trailing CR run off every
+// line, so it would not read back.
 func (d *Document) SetRaw(path, content, info string) bool {
 	if _, c := splitComment(info); strings.ContainsAny(info, "\n\r") || c != "" {
 		return false
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasSuffix(line, "\r") {
+			return false
+		}
 	}
 	info = strings.TrimSpace(info)
 	fc, fl := chooseFence(content)
@@ -4430,11 +4453,9 @@ func parseIntText(e *element, level Strictness) (int64, bool) {
 	if level == Loose {
 		if f, ok := parseFloatText(e, level); ok {
 			r := math.Round(f)
-			const hi = float64(math.MaxInt64) // rounds up to 2^63, matching the reference's cast bound
-			if r >= float64(math.MinInt64) && r <= hi {
-				if r == hi {
-					return math.MaxInt64, true // saturate like the reference's float->int cast
-				}
+			// math.MaxInt64 has no exact float64 - it rounds up to 2^63 - so
+			// the top bound is 2^63 itself, exclusively. MinInt64 is exact.
+			if r >= float64(math.MinInt64) && r < 9223372036854775808.0 {
 				return int64(r), true
 			}
 		}

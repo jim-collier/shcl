@@ -2068,7 +2068,21 @@ impl Parser {
 				continue;
 			}
 			// Field line.
-			let (before, comment) = split_comment(rest);
+			let (mut before, mut comment) = split_comment(rest);
+			// A same-line fence runs to the end of the line: the child-indent
+			// spelling keeps a `#` in its info-string, the grammar gives the
+			// same-line alternative no comment at all, and the emitter already
+			// assumes it. Without this, `a: ```c#` loses the `#`. The cheap
+			// test comes first so an ordinary commented line is not scanned
+			// twice.
+			if comment.is_some()
+				&& (before.contains("```") || before.contains("~~~"))
+				&& scan_path(before.trim_end())
+					.is_ok_and(|s| s.value_text.is_some_and(|v| fence_open(&v).is_some()))
+			{
+				before = rest;
+				comment = None;
+			}
 			let content = before.trim_end();
 			if content.is_empty() {
 				// Only a comment survived (e.g. an escaped lead-in); keep it.
@@ -3591,7 +3605,9 @@ impl Document {
 
 	/// Attach a leading comment line to the node at a path (creating an empty
 	/// node if it does not exist yet, so a section can be annotated). A missing
-	/// `#` is added; only the first line is kept (a comment is one line).
+	/// `#` is added; only the first line is kept (a comment is one line), and
+	/// trailing whitespace comes off the way the load takes it, so text that is
+	/// blank leaves a bare `#`.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_comment(&mut self, path: &str, text: &str) -> bool {
 		match self.place(path) {
@@ -3602,6 +3618,9 @@ impl Document {
 				} else {
 					format!("# {}", line)
 				};
+				// Without this the load trims what was written and the writer's
+				// output stops being a fmt fixpoint.
+				let c = c.trim_end().to_string();
 				// The node's own blank moves above its first comment; otherwise
 				// the blank would separate the comment from what it annotates.
 				let nd = &mut self.arena[node];
@@ -3648,10 +3667,15 @@ impl Document {
 	/// Bind a raw block at a path, picking a fence longer than any content line.
 	/// The info-string is stored as a fence line would read it back (trimmed);
 	/// one holding a line break or an unquoted `#` has no fence-line spelling
-	/// (the `#` would read back as a comment) and fails the write.
+	/// (the `#` would read back as a comment) and fails the write. A body line
+	/// ending in CR fails for the same reason: the load takes the whole
+	/// trailing CR run off every line, so it would not read back.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
 		if info.contains('\n') || info.contains('\r') || split_comment(info).1.is_some() {
+			return false;
+		}
+		if content.split('\n').any(|line| line.ends_with('\r')) {
 			return false;
 		}
 		let info = info.trim();
@@ -4102,7 +4126,11 @@ fn parse_int_text(e: &Element, level: Strictness) -> Option<i64> {
 		&& let Some(f) = parse_float_text(e, level)
 	{
 		let r = f.round();
-		if r >= i64::MIN as f64 && r <= i64::MAX as f64 {
+		// i64::MAX has no exact f64 - the cast rounds it up to 2^63 - so a
+		// `<=` against it lets 2^63 in and the cast below saturates to a value
+		// the text never said. Bound on 2^63 itself, exclusively. i64::MIN is
+		// exact, so the low end needs no such care.
+		if r >= i64::MIN as f64 && r < 9_223_372_036_854_775_808.0 {
 			return Some(r as i64);
 		}
 	}
