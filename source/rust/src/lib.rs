@@ -1083,9 +1083,12 @@ fn fence_open(rest: &str) -> Option<(u8, usize, String)> {
 	Some((first, run, rest[run..].trim().to_string()))
 }
 
+// `min_len` is the opening fence's length, which the grammar puts at three or
+// more, so the length test already rules out the empty line that `all` would
+// otherwise accept.
 fn is_fence_close(line: &str, ch: u8, min_len: usize) -> bool {
 	let t = line.trim();
-	t.len() >= min_len && !t.is_empty() && t.bytes().all(|b| b == ch)
+	t.len() >= min_len && t.bytes().all(|b| b == ch)
 }
 
 /// The leading space/tab run of a line (the indent).

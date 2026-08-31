@@ -229,10 +229,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260830-140346
 		- Closed: 20260831-134000
 
-	- 🔘 Item 34: a redundant condition in the closing-fence test.
+	- ✅ Item 34: a redundant condition in the closing-fence test.
 		- The length test is already implied by the minimum the opening fence enforces, so the emptiness check can never decide anything.
 		- Harmless, but it is the dead-condition class the review directive asks for, and the same shape is flagged on the C side.
+		- Removed in all four, with a comment saying why the length test is enough: the opening fence is three characters or more, so nothing empty can reach the all-same-character loop.
+		- The invariant the length test now carries alone is already pinned by corpus case `053-raw-blank-line`. Dropping the length test instead of the emptiness test fails it in every binding, which is what says the remaining condition is the load-bearing one.
 		- Opened: 20260830-140346
+		- Closed: 20260831-140000
 
 	- ✅ Item 35: four more C accessors grow the arena the way item 3 does, but these are documented.
 		- Same measurement run: 200k calls add 15.9 MB, 3.2 MB, 31.3 MB and 6.4 MB respectively.

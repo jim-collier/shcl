@@ -964,8 +964,11 @@ def _fence_open(rest):
 
 
 def _is_fence_close(line, ch, min_len):
+	# min_len is the opening fence's length, which the grammar puts at three or
+	# more, so the length test already rules out the empty line all() would
+	# otherwise accept.
 	t = _trim(line)
-	return len(t) >= min_len and len(t) > 0 and all(c == ch for c in t)
+	return len(t) >= min_len and all(c == ch for c in t)
 
 
 def _leading_ws(line):

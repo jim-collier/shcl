@@ -1164,9 +1164,12 @@ static ShclFence fence_open(ShclStr rest) {
 	f.info = s_trim(s_slice(rest, run, rest.n));
 	return f;
 }
+/* min_len is the opening fence's length, which the grammar puts at three or
+   more, so the length test already rules out the empty line the loop below
+   would otherwise accept. */
 static int is_fence_close(ShclStr line, unsigned char ch, size_t min_len) {
 	ShclStr t = s_trim(line);
-	if (t.n < min_len || t.n == 0) return 0;
+	if (t.n < min_len) return 0;
 	for (size_t i = 0; i < t.n; i++) if ((unsigned char)t.p[i] != ch) return 0;
 	return 1;
 }

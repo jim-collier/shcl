@@ -1299,9 +1299,12 @@ func fenceOpen(rest string) (ch byte, length int, info string, ok bool) {
 	return first, run, strings.TrimSpace(rest[run:]), true
 }
 
+// minLen is the opening fence's length, which the grammar puts at three or
+// more, so the length test already rules out the empty line the loop below
+// would otherwise accept.
 func isFenceClose(line string, ch byte, minLen int) bool {
 	t := strings.TrimSpace(line)
-	if len(t) < minLen || t == "" {
+	if len(t) < minLen {
 		return false
 	}
 	for i := 0; i < len(t); i++ {
