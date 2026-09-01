@@ -77,13 +77,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-140100
 		- Closed: 20260901-163000
 
-	- 🔘 Item 3: in C, `shcl_paths` grows the document on every call and `shcl_reads_release` cannot give it back.
+	- ✅ Item 3: in C, `shcl_paths` grows the document on every call and `shcl_reads_release` cannot give it back.
 		- The header states the invariant this breaks. `scratch` is documented as "reset on entry to each resolve, so read-only use of a long-lived document stays flat", and `shcl_reads_release` names `shcl_paths` in the list of calls whose results it gives back, for "a process polling the same document in a loop... so the memory does not climb".
 		- Measured on a 180-path document, with `shcl_reads_release` called between every pass: 11.4 KB per call, 557 MB over 50,000 calls. All of it comes back at `shcl_free`, so it is unbounded growth for the document's lifetime rather than a leak past it.
 		- Cause: `shcl_paths` puts its walk stack and dedup set in `d->scratch` and never resets it. Every other read resets scratch on entry, at the path lookup - and `shcl_paths` takes no path, so it misses the one reset that would cover it.
 		- Every other read entry point is flat: twelve were measured and only this one climbs. One path-based read anywhere in the same loop drops it to 0.4 bytes per call, which is why nothing has caught it.
 		- C only, so the four-way check is structurally blind. It matters most to exactly the kind of consumer the C binding exists for.
+		- Fixed: `shcl_paths` resets scratch on entry, the way the path lookup does for every other read.
+		- Pinned in `mem_bounds.c`: 2,000 released passes of one read call each, judged after a warm-up pass, must not grow the process by more than 4 KB. One call per loop, because a path read in the same loop resets scratch on the next call's behalf and hid this for a round. `shcl_paths` grew 22.8 MB on the old code; `shcl_children`, an array read and `shcl_to_canonical` were flat before and after.
 		- Opened: 20260901-140200
+		- Closed: 20260901-164500
 
 	- 🔘 Item 4: the typed setters write values their own reader refuses, and report success.
 		- Spec is explicit that each setter is the exact inverse of the matching read - `SetFloat` emits the number text the reader accepts, `SetDateTime` stores the canonical spelling. Neither holds.
