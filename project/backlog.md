@@ -127,15 +127,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Smaller than item 3 and reachable only by a consumer that writes in a loop. Worth a documented note even if no call is added.
 		- Opened: 20260901-140800
 
-- 🔘 Ports: Tier 3.
-	- Each a drop-in where possible, and corpus-green before release.
-	- Type via a typed entry point or compile-time generic, never a runtime type field.
-	- Languages, in the order they are wanted:
-		- 🔘 JavaScript (node)
-		- 🔘 C#
-		- 🔘 Java, and Kotlin with it
-	- Opened: 20260728-114451
-
 ### Done
 
 #### Done - Bugs
@@ -3654,14 +3645,18 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Future and/or deferred
 
-- Code review 20260819:
+- ✋ Ports: Tier 3.
+	- Each a drop-in where possible, and corpus-green before release.
+	- Type via a typed entry point or compile-time generic, never a runtime type field.
+	- Languages, in the order they are wanted:
+		- ✋ JavaScript (node)
+		- ✋ C#
+		- ✋ Java, and Kotlin with it
+	- Opened: 20260728-114451
 
-	- Item 7 is here; the rest of the round is under Done - Features and enhancements and Canceled.
-
-	- ✋ Item 7: no BSD package.
-		- Listed among the packaging targets and never built. README.md is straight about it, so nothing overpromises.
-		- Deferred until there is demand: it needs a BSD build first, and there is none.
-		- Opened: 20260819-111243
+- ✋ BSD package.
+	- Listed among the packaging targets and never built. README.md is accurate.
+	- Opened: 20260819-111243
 
 ### Canceled
 

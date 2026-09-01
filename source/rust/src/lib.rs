@@ -299,10 +299,13 @@ impl Lead {
 
 /// A pending whole-line comment during parse: text, source indent (used only
 /// to decide whether it hangs on a deeper block), and the blank it consumed.
+/// `ceiling` is the shortest incoming indent already checked against it: a
+/// later check can only hang it from a shorter one, so a longer one skips it.
 struct Pend {
 	text: String,
 	indent: String,
 	blank_before: bool,
+	ceiling: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1267,6 +1270,12 @@ struct Parser {
 	// source indent is kept only to decide after-attachment (a comment deeper
 	// than the next binding hangs on the block it sits in).
 	pending: Vec<Pend>,
+	// (end index, indent length): every pending entry before `end` has a
+	// ceiling at or under that length. Lengths rise along the stack, so a
+	// hang check pops the marks above its own indent and walks only what
+	// they covered. Without it a run of retained bad lines is rewalked per
+	// line and a plain text file parses in quadratic time.
+	pend_marks: Vec<(usize, usize)>,
 	saw_blank: bool, // a blank line waits to become the next bound node's blank_before
 	// An open stacked list defers its merge-key remap (rebuilding the key per
 	// element is O(list^2) time); (node, key hash, display hash) at deferral
@@ -1307,6 +1316,7 @@ impl Parser {
 			child_map: vec![None],
 			disp_map: vec![None],
 			pending: Vec::new(),
+			pend_marks: Vec::new(),
 			saw_blank: false,
 			star_open: None,
 			reentered: HashMap::new(),
@@ -1483,6 +1493,7 @@ impl Parser {
 					blank_before: p.blank_before,
 				});
 			}
+			self.pend_marks.clear();
 		}
 		if let Some(tr) = trailing {
 			let t = self.arena[node].triv_mut();
@@ -1506,9 +1517,15 @@ impl Parser {
 		if self.pending.is_empty() {
 			return;
 		}
-		let taken = std::mem::take(&mut self.pending);
-		for p in taken {
-			if p.indent.len() > new_indent.len() {
+		let new_len = new_indent.len();
+		// Only entries above the last mark at or under this indent can hang.
+		while self.pend_marks.last().is_some_and(|m| m.1 > new_len) {
+			self.pend_marks.pop();
+		}
+		let start = self.pend_marks.last().map_or(0, |m| m.0);
+		let taken: Vec<Pend> = self.pending.drain(start..).collect();
+		for mut p in taken {
+			if p.ceiling > new_len {
 				// A level shallower than the incoming line stays open and may
 				// still gain children, so a comment must not hang there - it
 				// would emit below the child; keep it pending instead.
@@ -1534,8 +1551,13 @@ impl Parser {
 					}
 					continue;
 				}
+				p.ceiling = new_len;
 			}
 			self.pending.push(p);
+		}
+		match self.pend_marks.last_mut() {
+			Some(m) if m.1 == new_len => m.0 = self.pending.len(),
+			_ => self.pend_marks.push((self.pending.len(), new_len)),
 		}
 	}
 
@@ -1986,6 +2008,7 @@ impl Parser {
 					text: rest.to_string(),
 					indent: indent.to_string(),
 					blank_before: std::mem::take(&mut self.saw_blank),
+					ceiling: indent.len(),
 				});
 				i += 1;
 				continue;
@@ -2051,6 +2074,7 @@ impl Parser {
 					text: rest.trim_end().to_string(),
 					indent: indent.to_string(),
 					blank_before: had_blank,
+					ceiling: indent.len(),
 				});
 				i += 1;
 				continue;
@@ -2079,6 +2103,7 @@ impl Parser {
 						text: c.to_string(),
 						indent: indent.to_string(),
 						blank_before: had_blank,
+						ceiling: indent.len(),
 					});
 				}
 				i += 1;
@@ -2113,6 +2138,7 @@ impl Parser {
 							text: rest.trim_end().to_string(),
 							indent: indent.to_string(),
 							blank_before: had_blank,
+							ceiling: indent.len(),
 						});
 					}
 					self.stack.push((indent.to_string(), DEAD));

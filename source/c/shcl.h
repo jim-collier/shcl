@@ -1871,13 +1871,22 @@ static void cmap_del(ShclCMap *m, uint64_t h, size_t val) {
 
 /* A pending whole-line comment during parse: text, source indent (used only
    to decide whether it hangs on a deeper block), and the blank it consumed.
-   Both strings slice the retained input copy. */
-typedef struct { ShclStr text; ShclStr indent; int blank_before; } ShclPend;
+   Both strings slice the retained input copy. ceiling is the shortest
+   incoming indent already checked against it: a later check can only hang it
+   from a shorter one, so a longer one skips it. */
+typedef struct { ShclStr text; ShclStr indent; int blank_before; size_t ceiling; } ShclPend;
 DEFINE_VEC(ShclVecPend, ShclPend)
+/* Every pending entry before end has a ceiling at or under indent_len. */
+typedef struct { size_t end; size_t indent_len; } ShclPendMark;
+DEFINE_VEC(ShclVecPendMark, ShclPendMark)
 
 /* pending: whole-line comments waiting for the next line that binds a node.
    The source indent is kept only to decide after-attachment (a comment deeper
    than the next binding hangs on the block it sits in).
+   pend_marks: lengths rise along the stack, so a hang check pops the marks
+   above its own indent and walks only what they covered. Without it a run of
+   retained bad lines is rewalked per line and a plain text file parses in
+   quadratic time.
    star_*: a stacked list defers its merge-key remap while it is the open field
    (rebuilding the key per element is O(list^2) time); (key hash, display
    hash) at deferral start, and the deferred remap flushes before any other
@@ -1904,7 +1913,7 @@ DEFINE_VEC(ShclVecPend, ShclPend)
    do_parse's frame: the recovery path is reached by longjmp, which leaves a
    local the parse has written to indeterminate. */
 typedef struct { ShclArena line, hints; ShclVecMapPtr cmaps, dmaps; } ShclParseOwn;
-typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line;
+typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; ShclVecPendMark pend_marks; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line;
 	/* shcl_parse_limited's caps, 0 = uncapped: nodes counted against the
 	   arena (root excluded), elements against a single value's cell. */
 	size_t max_nodes, max_elements; } ShclParser;
@@ -2011,6 +2020,7 @@ static void attach_trivia(ShclParser *P, size_t node, ShclStr trailing) {
 			ShclVecLead_push(a, &t->leading, lead_make(p->text, p->blank_before));
 		}
 		P->pending.len = 0;
+		P->pend_marks.len = 0;
 	}
 	if (trailing.n) {
 		ShclTrivia *t = triv_mut(a, &NODE(P->d, node));
@@ -2030,10 +2040,12 @@ static void attach_trivia(ShclParser *P, size_t node, ShclStr trailing) {
 static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 	if (P->pending.len == 0) return;
 	ShclArena *a = &P->d->arena;
-	size_t w = 0;
-	for (size_t k = 0; k < P->pending.len; k++) {
+	/* Only entries above the last mark at or under this indent can hang. */
+	while (P->pend_marks.len && P->pend_marks.data[P->pend_marks.len - 1].indent_len > new_indent.n) P->pend_marks.len--;
+	size_t w = P->pend_marks.len ? P->pend_marks.data[P->pend_marks.len - 1].end : 0;
+	for (size_t k = w; k < P->pending.len; k++) {
 		ShclPend p = P->pending.data[k];
-		if (p.indent.n > new_indent.n) {
+		if (p.ceiling > new_indent.n) {
 			/* A level shallower than the incoming line stays open and may
 			   still gain children, so a comment must not hang there - it
 			   would emit below the child; keep it pending instead. */
@@ -2049,10 +2061,13 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 				else ShclVecLead_push(a, &t->inside, lead);
 				continue;
 			}
+			p.ceiling = new_indent.n;
 		}
 		P->pending.data[w++] = p;
 	}
 	P->pending.len = w;
+	if (P->pend_marks.len && P->pend_marks.data[P->pend_marks.len - 1].indent_len == new_indent.n) P->pend_marks.data[P->pend_marks.len - 1].end = w;
+	else { ShclPendMark m; m.end = w; m.indent_len = new_indent.n; ShclVecPendMark_push(P->tmp, &P->pend_marks, m); }
 }
 
 static int resolve_parent(ShclParser *P, ShclStr indent, size_t *out) {
@@ -2396,7 +2411,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	   cannot share the scratch arena: that one carries the parser's bookkeeping
 	   for the whole parse. Everything a node keeps is dup'd into the document
 	   arena before the next reset. */
-	ShclParser P; P.d = d; P.tmp = &d->scratch; P.line = &own->line; P.hints = &own->hints; P.cmaps = &own->cmaps; P.dmaps = &own->dmaps; memset(&P.stack, 0, sizeof P.stack); memset(&P.pending, 0, sizeof P.pending);
+	ShclParser P; P.d = d; P.tmp = &d->scratch; P.line = &own->line; P.hints = &own->hints; P.cmaps = &own->cmaps; P.dmaps = &own->dmaps; memset(&P.stack, 0, sizeof P.stack); memset(&P.pending, 0, sizeof P.pending); memset(&P.pend_marks, 0, sizeof P.pend_marks);
 	P.star_open = 0; P.star_node = 0; P.star_key = 0; P.star_disp = 0; P.saw_blank = 0;
 	P.max_nodes = max_nodes; P.max_elements = max_elements;
 	memset(&P.reent_node, 0, sizeof P.reent_node); memset(&P.reent_line, 0, sizeof P.reent_line);
@@ -2453,7 +2468,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		   comment-only regions survives the round-trip. Text and indent are
 		   slices of the retained input copy, so they store as-is. */
 		if (rest.p[0] == '#') {
-			ShclPend pd; pd.text = rest; pd.indent = indent; pd.blank_before = P.saw_blank; P.saw_blank = 0;
+			ShclPend pd; pd.text = rest; pd.indent = indent; pd.blank_before = P.saw_blank; pd.ceiling = indent.n; P.saw_blank = 0;
 			ShclVecPend_push(P.tmp, &P.pending, pd);
 			i++; continue;
 		}
@@ -2494,7 +2509,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			   sibling site below carries cannot apply here: this line starts
 			   with the '*' that brought us in. */
 			{
-				ShclPend pd; pd.text = trim_end(rest); pd.indent = indent; pd.blank_before = had_blank;
+				ShclPend pd; pd.text = trim_end(rest); pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n;
 				ShclVecPend_push(P.tmp, &P.pending, pd);
 			}
 			i++; continue;
@@ -2513,7 +2528,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		if (content.n == 0) {
 			/* Only a comment survived (e.g. an escaped lead-in); keep it. */
 			if (comment.n) {
-				ShclPend pd; pd.text = comment; pd.indent = indent; pd.blank_before = had_blank;
+				ShclPend pd; pd.text = comment; pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n;
 				ShclVecPend_push(P.tmp, &P.pending, pd);
 			}
 			i++; continue;
@@ -2528,7 +2543,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			   rationale (and same BOM exception) as the bad '*' line above. */
 			if (rest.n >= 3 && (unsigned char)rest.p[0] == 0xEF && (unsigned char)rest.p[1] == 0xBB && (unsigned char)rest.p[2] == 0xBF) d->lost++;
 			else {
-				ShclPend pd; pd.text = trim_end(rest); pd.indent = indent; pd.blank_before = had_blank;
+				ShclPend pd; pd.text = trim_end(rest); pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n;
 				ShclVecPend_push(P.tmp, &P.pending, pd);
 			}
 			ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);

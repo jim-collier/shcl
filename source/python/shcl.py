@@ -299,13 +299,16 @@ class _Lead:
 
 class _Pend:
 	"""A pending whole-line comment during parse: text, source indent (used only
-	to decide whether it hangs on a deeper block), and the blank it consumed."""
-	__slots__ = ("text", "indent", "blank_before")
+	to decide whether it hangs on a deeper block), and the blank it consumed.
+	`ceiling` is the shortest incoming indent already checked against it: a
+	later check can only hang it from a shorter one, so a longer one skips it."""
+	__slots__ = ("text", "indent", "blank_before", "ceiling")
 
 	def __init__(self, text, indent, blank_before):
 		self.text = text
 		self.indent = indent
 		self.blank_before = blank_before
+		self.ceiling = len(indent)
 
 
 # Shared empty element list for the kinds that have none: only "cell" ever
@@ -1144,6 +1147,12 @@ class _Parser:
 		# source indent is kept only to decide after-attachment (a comment
 		# deeper than the next binding hangs on the block it sits in).
 		self.pending = []
+		# (end index, indent length): every pending entry before end has a
+		# ceiling at or under that length. Lengths rise along the stack, so a
+		# hang check pops the marks above its own indent and walks only what
+		# they covered. Without it a run of retained bad lines is rewalked per
+		# line and a plain text file parses in quadratic time.
+		self.pend_marks = []
 		self.saw_blank = False  # a blank line waits to become the next bound node's blank_before
 		# An open stacked list defers its merge-key remap (rebuilding the key per
 		# element is O(list^2) time); (node, map key, display key) at deferral
@@ -1249,6 +1258,7 @@ class _Parser:
 			for p in self.pending:
 				t.leading.append(_Lead(p.text, p.blank_before))
 			self.pending = []
+			self.pend_marks = []
 		if trailing:
 			t = self.arena[node]._triv()
 			if not t.trailing:
@@ -1267,10 +1277,15 @@ class _Parser:
 		end of parse with the empty indent, so tail comments keep their block)."""
 		if not self.pending:
 			return
-		taken = self.pending
-		self.pending = []
+		new_len = len(new_indent)
+		# Only entries above the last mark at or under this indent can hang.
+		while self.pend_marks and self.pend_marks[-1][1] > new_len:
+			self.pend_marks.pop()
+		start = self.pend_marks[-1][0] if self.pend_marks else 0
+		taken = self.pending[start:]
+		del self.pending[start:]
 		for p in taken:
-			if len(p.indent) > len(new_indent):
+			if p.ceiling > new_len:
 				# A level shallower than the incoming line stays open and may
 				# still gain children, so a comment must not hang there - it
 				# would emit below the child; keep it pending instead.
@@ -1288,7 +1303,12 @@ class _Parser:
 					else:
 						self.arena[target]._triv().inside.append(lead)
 					continue
+				p.ceiling = new_len
 			self.pending.append(p)
+		if self.pend_marks and self.pend_marks[-1][1] == new_len:
+			self.pend_marks[-1] = (len(self.pending), new_len)
+		else:
+			self.pend_marks.append((len(self.pending), new_len))
 
 	def _resolve_parent(self, indent):
 		"""Resolve which open level this indent belongs to. Child only when the
