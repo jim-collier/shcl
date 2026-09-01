@@ -101,13 +101,19 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-140300
 		- Closed: 20260901-173000
 
-	- 🔘 Item 5: `init` emits a starter config that `check --schema` rejects, with nothing said, when a repeat lower bound is 1.
+	- ✅ Item 5: `init` emits a starter config that `check --schema` rejects, with nothing said, when a repeat lower bound is 1.
 		- Generation promises its output validates clean against the schema that produced it, with one documented exception: a repeat lower bound of 2 or more, which cannot be auto-satisfied because identical generated lines would merge.
 		- The self-check filters out every `V007` instead of only that case, so a lower bound of 1 slips through as well. A lower bound of 1 is a must-exist path, which generation is supposed to satisfy.
 		- Reproduced in all four bindings on two schemas that differ in one word. With `required: yes` on `"srv[*].port"`, generation fails loudly with `V097`. With `repeat: 1` on the same path, `init` exits 0, emits `srv: web` and `srv.port:`, and the very next `check --schema` on that file exits 6.
 		- The generated pair does not mean what it looks like: `srv: web` and `srv.port:` are two instances of `srv`, one carrying the discriminator and the other carrying the port, so the wildcard finds an instance with no port. That is the outcome the dotted-form rule exists to prevent - a live line materializes the parent, but the dotted line then targets a different instance than the one it created.
 		- Six of 700 generated schemas hit it; the other 43 failures in that set are the documented 2-or-more case.
+		- Fixed, in two parts. The generator now selects a valued live parent by its value: `srv: web` is followed by `srv[web].port:`, which lands on the instance the first line made, and a concrete child (`srv.host`) gets the same treatment, since `srv.host:` under `srv: web` was two instances as well. A default that would end or escape the selector (`]`, `[`, a backslash) is spelled quoted; the selector matches on the escaped display, so it still finds the bare value. And the self-check lets through only a `V007` whose lower bound is 2 or more, read off the message's `not in LO..HI`, so `repeat: 1` on a path generation cannot satisfy (a nameless `*` path) faults the schema the way `required` already did. Spec: the dotted-form rule names the selector.
+		- Of the six schemas, the `srv[*].port` shape now generates a config that passes its own schema; the five with `repeat: 1` on a `*` field fault with `V097`. The 700 schemas produce byte-identical stdout, stderr and exit codes across the four bindings; the 46 remaining self-schema failures are all the sanctioned lower bound of 2 or 3.
+		- Found on the way: the C CLI reported a schema that does not build by validating an empty document, which added that document's own `V002`/`V007` to the fault list. `shcl_generate` records its build faults on the schema document now, like the other generation faults, and the CLI prints those.
+		- Pinned by corpus `073-init-parent-value` (valued parent with a wildcard child and a concrete child, a quoted default, a `]` in a default, an optional parent, a bare parent; fails on the old code in all four runners, which also check the output against its own schema), and by three `cli-regress` rows: `repeat: 1` on `*` exits 6 with `V097 ... not in 1..1`, `repeat: 2` generates, and a build fault reports `V091` with no `V002` beside it. The last one needed a negative stderr form in the harness.
+		- Left alone: an optional parent with a default (`#opt: x`) and a must-exist child still emits `opt.child:`, which materializes an empty `opt`. Uncommenting the parent then makes two instances. The schema says the parent is optional, so the generator does not make it live; a selector form there would.
 		- Opened: 20260901-140400
+		- Closed: 20260901-181500
 
 	- 🔘 Item 6: `set_literal` reads bracket-array text differently from the parser, silently.
 		- Spec says `SetLiteral` reads its argument the way the parser reads the half of a line after the colon. For bracket text it does not.

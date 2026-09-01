@@ -5602,6 +5602,17 @@ fn gen_default_text(v: &str) -> String {
 	s
 }
 
+/// Whether a V007 from the self-check is the sanctioned kind: its message
+/// ends `: N not in LO..HI`, and LO is 2 or more.
+fn v007_sanctioned(message: &str) -> bool {
+	message
+		.rsplit(" not in ")
+		.next()
+		.and_then(|range| range.split("..").next())
+		.and_then(|lo| lo.parse::<u64>().ok())
+		.is_some_and(|lo| lo >= 2)
+}
+
 /// Emit a commented, typed starter config from a schema (`shcl init --schema`).
 /// Paths that must exist (required, or a repeat lower bound of 1+) are live
 /// (their `default`, or an empty value); optional paths are commented out so
@@ -5658,9 +5669,6 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
 	// some live path). Fixpoint: a fill can materialize another's parent.
-	fn names_of(segs: &[Segment]) -> Vec<&str> {
-		segs.iter().map(|s| s.name.as_str()).collect()
-	}
 	let mut live: Vec<Vec<&str>> = cons
 		.iter()
 		.filter(|c| !has_wild(c) && !unwritable(c) && must_exist(c))
@@ -5694,6 +5702,16 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			break;
 		}
 	}
+	// A live line with a value materializes an instance carrying that value,
+	// and a dotted child names the empty-valued instance instead - so `srv:
+	// web` followed by `srv.port:` is two `srv` nodes, and the child never
+	// lands where the schema looks. Any line under such a parent selects it
+	// by its value: `srv[web].port:`.
+	let parent_values: HashMap<Vec<&str>, &str> = cons
+		.iter()
+		.filter(|c| !has_wild(c) && !unwritable(c) && must_exist(c))
+		.filter_map(|c| c.default_text.as_deref().map(|d| (names_of(&c.segs), d)))
+		.collect();
 	let mut out = String::new();
 	let mut wild: Vec<(String, String)> = Vec::new();
 	let mut first = true;
@@ -5719,12 +5737,16 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		// string value must not break out of it.
 		out.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
 		out.push('\n');
-		// A filled wildcard emits in dotted form, targeting the first (the
-		// materialized) instance. Rebuilt from the parsed segments, not by
-		// cutting text out of the path: the same path can be written several
-		// ways, and only the segments say what it means.
-		let path = if fill[i] {
-			gen_path_text(&c.segs)
+		// A filled wildcard emits in dotted form, targeting the materialized
+		// instance - by its value when the materializing line carries one.
+		// Rebuilt from the parsed segments, not by cutting text out of the
+		// path: the same path can be written several ways, and only the
+		// segments say what it means. Otherwise the schema's own spelling.
+		let under_valued_parent = (1..c.segs.len()).any(|k| {
+			c.segs[k - 1].selector.is_none() && parent_values.contains_key(&names_of(&c.segs[..k]))
+		});
+		let path = if fill[i] || under_valued_parent {
+			gen_path_text(&c.segs, &parent_values)
 		} else {
 			c.path.clone()
 		};
@@ -5756,12 +5778,16 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// it, so check that here rather than trusting each branch above. A
 	// `default` outside its own field's constraints is the schema's fault, and
 	// the author should hear about it instead of getting a starter config that
-	// fails the first time it is checked. V007 is the one sanctioned shortfall
-	// (a repeat lower bound of 2+ generates identical lines, which merge).
+	// fails the first time it is checked. The one sanctioned shortfall is a
+	// V007 for a repeat lower bound of 2+: generating that many identical
+	// lines merges them into one. A lower bound of 1 is a must-exist path
+	// like any other, so its V007 is a fault.
 	let bad: Vec<Diagnostic> = Document::parse(&out)
 		.validate(schema)
 		.into_iter()
-		.filter(|d| d.severity == Severity::Error && d.code != "V007")
+		.filter(|d| {
+			d.severity == Severity::Error && !(d.code == "V007" && v007_sanctioned(&d.message))
+		})
 		.map(|d| Diagnostic {
 			line: 0,
 			severity: Severity::Error,
@@ -5801,7 +5827,9 @@ const GEN_BANNER: &str = "\
 /// Render parsed segments back as a dotted path, dropping wildcard selectors
 /// (a generated line targets the one instance it materializes) and quoting a
 /// name that needs it, so the result is a path the scanner reads back the same.
-fn gen_path_text(segs: &[Segment]) -> String {
+/// A segment whose prefix names a live line carrying a value selects that
+/// instance by the value, in place of a wildcard or a bare name.
+fn gen_path_text(segs: &[Segment], parent_values: &HashMap<Vec<&str>, &str>) -> String {
 	let mut out = String::new();
 	for (i, s) in segs.iter().enumerate() {
 		if i > 0 {
@@ -5811,6 +5839,15 @@ fn gen_path_text(segs: &[Segment]) -> String {
 			out.push('*');
 		} else {
 			out.push_str(&emit_name(&s.name));
+		}
+		if i + 1 < segs.len()
+			&& !matches!(s.selector, Some(Selector::ByValue { .. }))
+			&& let Some(v) = parent_values.get(&names_of(&segs[..=i]))
+		{
+			out.push('[');
+			out.push_str(&gen_selector_text(v));
+			out.push(']');
+			continue;
 		}
 		match &s.selector {
 			Some(Selector::ByValue { text, quoted }) => {
@@ -5829,6 +5866,24 @@ fn gen_path_text(segs: &[Segment]) -> String {
 		}
 	}
 	out
+}
+
+/// A default's spelling inside a `[value]` selector: the value-side text as
+/// is, except that a bracket or a backslash would end or escape the selector,
+/// so those go quoted (the selector matches on the escaped display, so the
+/// quoted spelling finds the bare value).
+fn gen_selector_text(v: &str) -> String {
+	if v.contains('\n') {
+		return gen_default_text(v);
+	}
+	if v.contains(['[', ']', '\\']) && !quoted_shape(v) {
+		return quote_text(v);
+	}
+	v.to_string()
+}
+
+fn names_of(segs: &[Segment]) -> Vec<&str> {
+	segs.iter().map(|s| s.name.as_str()).collect()
 }
 
 /// Inline every fragment mount into a flat constraint list, depth-first in
