@@ -43,10 +43,15 @@ fBuild(){ "$1" "-std=$2" "${flags[@]}" "$3" -o "$4" -lm -lpthread || { echo "san
 rc=0
 fBuild cc c11 source/c/tests/conformance.c "${work}/conformance"
 "${work}/conformance" "${corpus}" || { echo "sanitize-c: conformance runner: exit $?" >&2; rc=1; }
-## The OOM hook there longjmps out of the parse, so every budget that trips it
-## abandons a partly built document on purpose; that is the test, not a leak.
+## The OOM hook there longjmps out of a write, so every budget that trips it
+## abandons a partly applied edit on purpose; that is the test, not a leak.
 fBuild cc c11 source/c/tests/oom_hook.c "${work}/oom_hook"
 ASAN_OPTIONS="${ASAN_OPTIONS}:detect_leaks=0" "${work}/oom_hook" || { echo "sanitize-c: oom_hook: exit $?" >&2; rc=1; }
+## Its opposite: a parse or a validate that cannot allocate unwinds on its own
+## and returns NULL, and leak detection stays ON, because giving back
+## everything the half-built document held is half of what that is worth.
+fBuild cc c11 source/c/tests/oom_recover.c "${work}/oom_recover"
+"${work}/oom_recover" || { echo "sanitize-c: oom_recover: exit $?" >&2; rc=1; }
 ## The C++ veneer owns the C handle by hand (rule of five over a raw pointer),
 ## which is exactly the kind of code a leak or double free hides in.
 fBuild g++ c++17 source/c/tests/veneer_smoke.cpp "${work}/veneer_smoke"
@@ -136,7 +141,7 @@ done
 if ((nBad)); then
 	echo "sanitize-c: ${nBad}/${nRuns} CLI run(s) stopped by a sanitizer" >&2; rc=1
 else
-	echo "sanitize-c: OK: runner, oom_hook, veneer_smoke and ${nRuns} CLI run(s) clean under ASan+UBSan"
+	echo "sanitize-c: OK: runner, oom_hook, oom_recover, veneer_smoke and ${nRuns} CLI run(s) clean under ASan+UBSan"
 fi
 exit "${rc}"
 

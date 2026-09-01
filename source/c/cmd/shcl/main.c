@@ -226,12 +226,21 @@ static int utf8_valid(const char *p, size_t n) {
 	return 1;
 }
 
-// realloc that never returns NULL: on OOM, free the old block and take the same
-// exit-70 path the library arena uses (was a silent segfault on unchecked realloc).
+// realloc that never returns NULL: on OOM, free the old block and exit 70 (was a
+// silent segfault on unchecked realloc).
 static void *xrealloc(void *p, size_t n) {
 	void *q = realloc(p, n);
 	if (!q) { free(p); fprintf(stderr, "shcl: out of memory\n"); exit(70); }
 	return q;
+}
+
+// The library reports an allocation failure by handing back NULL rather than
+// ending the process, which is right for an embedder whose process is not the
+// library's to end. This one owns its process and has nowhere to carry on to,
+// so it takes the same exit as above.
+static void *xdoc(void *p) {
+	if (!p) { fprintf(stderr, "shcl: out of memory\n"); exit(70); }
+	return p;
 }
 
 // Reads FILE (or stdin for "-") fully. Returns malloc'd buffer + len, or NULL on
@@ -390,7 +399,7 @@ static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 		size_t len; char *t = read_input(fname, &len);
 		if (!t) { layered_free(out); return EXIT_IO; }
 		layered_push_text(out, t);
-		shcl_doc *dd = shcl_parse_with(t, len, o->strictness);
+		shcl_doc *dd = xdoc(shcl_parse_with(t, len, o->strictness));
 		int g = strict_gate(dd);
 		if (g) { shcl_free(dd); layered_free(out); return g; }
 		layered_push_doc(out, dd);
@@ -759,7 +768,7 @@ static int do_set(Opts *o) {
 		size_t llen; char *lt = read_input(o->layers[i], &llen);
 		if (!lt) { layered_free(&L); return EXIT_IO; }
 		layered_push_text(&L, lt);
-		shcl_doc *dd = shcl_parse_with(lt, llen, o->strictness);
+		shcl_doc *dd = xdoc(shcl_parse_with(lt, llen, o->strictness));
 		int g = strict_gate(dd);
 		if (g) { shcl_free(dd); layered_free(&L); return g; }
 		layered_push_doc(&L, dd);
@@ -777,7 +786,7 @@ static int do_set(Opts *o) {
 	else { text = read_input(file, &len); if (!text) { layered_free(&L); return EXIT_IO; } }
 	layered_push_text(&L, text);
 	{
-		shcl_doc *dd = shcl_parse_with(text, len, o->strictness);
+		shcl_doc *dd = xdoc(shcl_parse_with(text, len, o->strictness));
 		int gate = strict_gate(dd);
 		if (gate) { shcl_free(dd); layered_free(&L); return gate; }
 		layered_push_doc(&L, dd);
@@ -825,7 +834,7 @@ static int do_check(const Opts *o) {
 	if (o->nargs != 1) { fprintf(stderr, "usage: shcl check [options] FILE (see --help)\n"); return 1; }
 	size_t len; char *text = read_input(o->args[0], &len);
 	if (!text) return EXIT_IO;
-	shcl_doc *d = shcl_parse_with(text, len, o->strictness);
+	shcl_doc *d = xdoc(shcl_parse_with(text, len, o->strictness));
 	// --schema: append validation diagnostics under the same contract. The
 	// schema itself always loads at Standard (a program artifact); one that
 	// does not load cleanly is a single V099 schema fault.
@@ -836,7 +845,7 @@ static int do_check(const Opts *o) {
 	if (!shcl_strict_failed(d) && o->schema) {
 		size_t slen; stext = read_input(o->schema, &slen);
 		if (!stext) { shcl_free(d); free(text); return EXIT_IO; }
-		sd = shcl_parse(stext, slen);
+		sd = xdoc(shcl_parse(stext, slen));
 		size_t sn = shcl_diag_count(sd);
 		for (size_t i = 0; i < sn; i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) v99 = 1;
 		if (v99) {
@@ -847,7 +856,7 @@ static int do_check(const Opts *o) {
 				fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 			}
 		} else {
-			val = shcl_validate(d, sd);
+			val = xdoc(shcl_validate(d, sd));
 			shcl_suppress_declared_repeats(sd, d);
 			shcl_suppress_declared_reopens(sd, d);
 		}
@@ -899,7 +908,7 @@ static int do_init(const Opts *o) {
 	size_t slen; char *stext = read_input(o->schema, &slen);
 	if (!stext) return EXIT_IO;
 	// The schema always loads at Standard - a program artifact, not user data.
-	shcl_doc *sd = shcl_parse(stext, slen);
+	shcl_doc *sd = xdoc(shcl_parse(stext, slen));
 	int bad = 0; size_t sn = shcl_diag_count(sd);
 	for (size_t i = 0; i < sn; i++) if (shcl_diag_severity(sd, i) == SHCL_SEV_ERROR) bad = 1;
 	if (bad) {
@@ -930,8 +939,8 @@ static int do_init(const Opts *o) {
 		if (nd == diagMark) {
 			// A build fault leaves nothing on the document; validating an empty
 			// document against the schema reproduces the same V09x list.
-			shcl_doc *ed = shcl_parse("", 0);
-			shcl_validation *val = shcl_validate(ed, sd);
+			shcl_doc *ed = xdoc(shcl_parse("", 0));
+			shcl_validation *val = xdoc(shcl_validate(ed, sd));
 			size_t nv = shcl_validation_count(val);
 			for (size_t i = 0; i < nv; i++) {
 				const char *sev = shcl_validation_severity(val, i) == SHCL_SEV_ERROR ? "Error" : "Hint";

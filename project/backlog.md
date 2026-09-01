@@ -85,6 +85,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 			- The temp name was split on `/` only. Now either separator on Windows, and a drive-relative `C:x` splits after the colon.
 		- ✅ The library exits the caller's process
 			- The five `exit(70)` sites go through one `SHCL_OOM()` macro an embedder can define. The default is unchanged.
+			- Then the rest of it: a parse and a validate arm a recovery point, so an allocation failure unwinds out of them and the call returns NULL instead of reaching the macro at all. `shcl_load_file` follows its parse and the C++ veneer's `Document` tests false. The report's own sketch - carry on out of a small scratch block - was tried and abandoned: a bump arena holds its vectors' bookkeeping, so an allocation served out of nowhere hands back node indices that are no longer node indices.
 		- ✅ File tier is code-page bound, not UTF-8
 			- Every file call on Windows is the wide one now. A path that is not valid UTF-8 is refused rather than opened under another name.
 		- ✅ Reader has no size limit and returns no bytes

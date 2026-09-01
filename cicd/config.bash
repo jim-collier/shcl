@@ -183,6 +183,7 @@ TEST_EXTRA=(
 	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm -lpthread && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
 	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
 	'obin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/oom_hook.c -o "${obin}" -lm && "${obin}"; orc=$?; rm -f "${obin}"; ((orc==0))'
+	'rbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/oom_recover.c -o "${rbin}" -lm && "${rbin}"; rrc=$?; rm -f "${rbin}"; ((rrc==0))'
 	## CLI behavior the corpus cannot reach: closed streams, '-' twice on one
 	## command line, a carriage return ending an ops line, error-message shape.
 	'cicd/utility/cli-regress.bash "${BINDING_CLIS[@]}"'
