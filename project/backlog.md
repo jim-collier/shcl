@@ -1476,6 +1476,20 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 #### Done - Features and enhancements
 
+- ✅ `install-dev.bash --hooks-only`, and a gate over its hook setup.
+	- The hook setup was the one piece of that script nothing exercised: the toolchain installs in front of it cannot run in a gate. Noted as still ungated when the test-gap round closed.
+	- Fixed: `--hooks-only` skips the toolchain and just points git at the tracked hooks. Useful on its own for a box that already has the tools, and it makes the tail runnable. An explicit `--dir` wins over in-clone detection under it, so it can be aimed at any clone.
+	- Pinned by: `check-install-dev.bash`, on a throwaway local clone - both configs set, a second run changes nothing, a chosen `core.sshCommand` survives, the in-clone path works, and a directory that is not a clone is refused.
+	- Opened: 20260901-114703
+	- Closed: 20260901-114703
+
+- ✅ The Windows installers' PATH handling is tested against a real registry.
+	- Noted as still ungated when the test-gap round closed: it needs a registry, which only the hosted windows job has.
+	- Fixed on the way in: `install.ps1`'s two PATH edits are one function now, and the setup's PATH script is a real file (`cicd/packaging/shclpath.ps1`) packed into the installer instead of line-by-line writes from the .nsi - so the text that ships is the text the gate runs.
+	- Pinned by: `winpath-regress.ps1`, run by `win-runners.bash` on the hosted windows job against the runner's own Environment keys, saved first and restored after. What it holds: `%VAR%` references survive unexpanded, the value stays REG_EXPAND_SZ, segments compare whole (a superstring dir still appends), add is idempotent, and remove takes exactly its own segment.
+	- Opened: 20260901-114703
+	- Closed: 20260901-114703
+
 - ✅ Close the remaining test gaps across the recent review rounds.
 	- The earlier pass built three gates and left the rounds' own item list unaudited. This one read every closed item from 20260829, 20260830 and 20260830b and asked what would fail if the fix were backed out.
 	- Most were already covered, several by a fixture whose item text never named it. Four behavior gaps were left, and each now has a row: `-h` after FILE, load diagnostics on stderr without `--write`, `--set` splitting at an `=` inside a selector, and a pre-release suffix ordered numerically rather than as text in both installers.
