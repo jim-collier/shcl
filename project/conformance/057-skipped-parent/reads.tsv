@@ -5,4 +5,10 @@ a.d	int	2	Good
 a.d.e	int	3	Good
 a.f	count	0	Good
 a.g	count	0	Good
+a.g.gg	count	0	Good
+a.gg	count	0	Good
+a.l	count	0	Good
+a.ll	count	0	Good
 a.m	count	1	Good
+a	children	d|m	-
+-	paths	a|a.d|a.d.e|a.m	-
