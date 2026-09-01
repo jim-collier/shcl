@@ -3362,6 +3362,10 @@ static int literal_value(ShclArena *a, ShclArena *tmp, ShclStr text, ShclValue *
 	for (size_t i = 0; i < text.n; i++) { if (text.p[i] == '\n' || text.p[i] == '\r') return 0; }
 	ShclStr comment; ShclStr v = s_trim(split_comment(text, &comment));
 	if (unterminated_quote(tmp, v)) return 0;
+	/* Bracket-array text is refused too: in a file it is E019 and the line is
+	   lost, so writing it as a two-element array holding `[1` and `2]` would
+	   be a different wrong answer. */
+	if (v.n && v.p[0] == '[' && v.p[v.n - 1] == ']') return 0;
 	/* One copy of the value text up front: parse_cell stores slices, and the
 	   caller's buffer need not outlive the call (the setter contract). */
 	*out = parse_cell(a, tmp, s_dup(a, v));

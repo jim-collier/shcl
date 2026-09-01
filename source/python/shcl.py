@@ -408,11 +408,13 @@ def _literal_value(text):
 	# Read text as the value half of a line, for the setters that take value
 	# syntax rather than data. Rejects what could not have come off one line: a
 	# line break, or a quote that never closes. An unquoted # ends the value
-	# here exactly as it would in a file.
+	# here exactly as it would in a file. Bracket-array text is refused too: in
+	# a file it is E019 and the line is lost, so writing it as a two-element
+	# array holding `[1` and `2]` would be a different wrong answer.
 	if "\n" in text or "\r" in text:
 		return None
 	v = _trim(_split_comment(text)[0])
-	if _unterminated_quote(v):
+	if _unterminated_quote(v) or (v.startswith("[") and v.endswith("]")):
 		return None
 	return _parse_cell(v)
 

@@ -3381,14 +3381,16 @@ impl Document {
 /// Read text as the value half of a line, for the setters that take value
 /// syntax rather than data. Rejects what could not have come off one line: a
 /// line break, or a quote that never closes. An unquoted `#` ends the value
-/// here exactly as it would in a file.
+/// here exactly as it would in a file. Bracket-array text is refused too: in
+/// a file it is E019 and the line is lost, so writing it as a two-element
+/// array holding `[1` and `2]` would be a different wrong answer.
 fn literal_value(text: &str) -> Option<Value> {
 	if text.contains('\n') || text.contains('\r') {
 		return None;
 	}
 	let (v, _) = split_comment(text);
 	let v = v.trim();
-	if unterminated_quote(v) {
+	if unterminated_quote(v) || (v.starts_with('[') && v.ends_with(']')) {
 		return None;
 	}
 	Some(parse_cell(v))
