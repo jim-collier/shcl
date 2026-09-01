@@ -2902,7 +2902,11 @@ static ShclStr emit_name(ShclArena *a, ShclStr name);
 
 size_t shcl_paths(shcl_doc *d, shcl_str **out) {
 	ShclArena *a = &d->reads;
-	ShclArena *t = &d->scratch; // walk stack + dedup set: dead after the call
+	// Walk stack + dedup set: dead after the call. Every other read resets
+	// scratch inside its path lookup; this one takes no path, so it resets
+	// here, or the document grows 11 KB per call for its whole lifetime.
+	arena_reset(&d->scratch);
+	ShclArena *t = &d->scratch;
 	typedef struct { size_t node; ShclStr prefix; } PEnt;
 	PEnt *stack = NULL; size_t sn = 0, sc = 0;
 	shcl_str *arr = NULL; size_t n = 0, cap = 0;
