@@ -1019,6 +1019,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- The reference takes the list by reference, so the mutation is expected there. The Go spelling returns a value, which reads as a copy.
 		- Command-line use is unaffected; this only bit programs using the library.
 		- Fixed: it builds its own list, so the caller's is never disturbed.
+		- Pinned since 20260831 by `TestSuppressLeavesTheCallersDiagnosticsAlone`, over both filters. Backing the fix out reproduces the shuffle and the duplicate exactly.
 		- Opened: 20260803-111610
 		- Closed: 20260803-134341
 
