@@ -959,6 +959,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Values that came from parsing are always short enough, so the test corpus can't see it.
 		- Fixed: the text is built in full and then clamped to the documented size, which is now stated at the declaration. Output for values that came from parsing is unchanged.
 		- Found alongside it: negating the most negative offset was itself undefined, and is now done at a width that holds it.
+		- Pinned since 20260831 by the C runner's `dt_clamp` fixture, which renders a struct filled with the extreme of every field. The clamp is checked directly; the working buffer behind it is checked by the sanitizer run.
 		- Opened: 20260803-111610
 		- Closed: 20260803-130248
 
@@ -1266,6 +1267,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Cause: `frac` is a public field with no cap and is `memcpy`'d unbounded; the public `shcl_set_datetime` passes a 64-byte stack array.
 		- Not reachable from parsed input, since the parser bounds every component, so this is a defensiveness gap in a public API, not an input-driven hole.
 		- Fixed: the frac copy is capped so the render always fits the documented 64 bytes; header doc states the truncation.
+		- Pinned since 20260831 by the C runner's `dt_clamp` fixture, with the same round's item 7.
 		- Opened: 20260725-152141
 		- Closed: 20260725-170306
 
