@@ -183,7 +183,20 @@ static int cf_f64(const char *p, size_t n, double *out) {
 		}
 		if (i != n) return 0;
 	}
-	char *b = (char *)xrealloc(NULL, n + 1); memcpy(b, p, n); b[n] = 0;
+	/* strtod follows the locale's decimal point, and the gate runs this under a
+	   comma-decimal one. An op file spells a float with '.', same as a
+	   document, so translate before the call - the library does the same at its
+	   own two conversion sites. */
+	const char *dp = localeconv()->decimal_point;
+	size_t dn = (dp && *dp) ? strlen(dp) : 1;
+	if (!dp || !*dp) dp = ".";
+	char *b = (char *)xrealloc(NULL, n * dn + 1);
+	size_t j = 0;
+	for (size_t k = 0; k < n; k++) {
+		if (p[k] == '.') { memcpy(b + j, dp, dn); j += dn; }
+		else b[j++] = p[k];
+	}
+	b[j] = 0;
 	*out = strtod(b, NULL);
 	free(b);
 	return 1;
@@ -302,6 +315,11 @@ static void *validate_on_small_stack(void *unused) {
 
 int main(int argc, char **argv) {
 	setlocale(LC_ALL, "C");
+	/* The library has to format and read floats the same whatever locale the
+	   host program has set, and no corpus case can ask for a locale. The gate
+	   builds a comma-decimal one and runs the whole corpus under it; only the
+	   numeric category moves, so everything else here stays deterministic. */
+	if (getenv("SHCL_TEST_LC_NUMERIC")) setlocale(LC_NUMERIC, "");
 	const char *corpus = argc > 1 ? argv[1] : "project/conformance";
 
 	DIR *dir = opendir(corpus);

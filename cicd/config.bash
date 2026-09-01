@@ -136,6 +136,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/check-c-compilers.bash
 	cicd/utility/check-completions.bash
 	cicd/utility/check-docs.bash
+	cicd/utility/check-locale.bash
 	cicd/utility/check-pins.bash
 	cicd/utility/check-readme-c.bash
 	cicd/utility/check-wheel.bash
@@ -197,6 +198,9 @@ TEST_EXTRA=(
 	## gcc is a different version, and the two disagree about what -Werror
 	## rejects. A round went out green here and red there over exactly that.
 	'cicd/utility/check-c-compilers.bash'
+	## Float handling must not follow the host program's locale, which no corpus
+	## case can ask for: the gate builds a comma-decimal locale of its own.
+	'cicd/utility/check-locale.bash'
 	## The same C programs again under the address and undefined-behavior
 	## sanitizers, plus the CLI over the corpus. A read past a buffer that does
 	## not change stdout passes every gate above; this one sees it.
