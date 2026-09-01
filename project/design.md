@@ -129,6 +129,11 @@ The consuming programmer is assumed to be a junior in *every* binding, not just 
 
 - Portability is unaffected: the type is still fixed by the entry point/generic, and the fallback is an ordinary parameter.
 
+- **Resource caps are the caller's, not constants.** The depth cap is a constant because no legitimate document is 512 deep, but a legitimate large config genuinely has millions of nodes, so one built-in number would either refuse real documents or sit too high to protect anything. Decided: `ParseLimited` takes a node cap and an array-element cap (0 = uncapped), new API surface added the same way in every binding.
+	- At the node cap the parse stops and reports once (`E020`), with the unparsed remainder counted as lost. Skipping line by line, the way the depth cap recovers, would emit one diagnostic per remaining line on exactly the input the cap exists for.
+	- An over-long array refuses its whole line (`E021`). Truncating it would leave a value the author never wrote, checking clean forever after - the bracket-array lesson.
+	- The depth cap keeps its skip-and-continue recovery. It was weighed against stopping there too and left alone: a deep line already loses only its own subtree, every dropped line is diagnosed and counted lost, and the save gate refuses to rewrite the file - while stopping would also discard everything after the deep line, which is more loss, not less.
+
 - **Reading a whole config into one structure is declined, not overlooked.** Every binding is path-at-a-time, so a forty-key config is forty call sites - and users arriving from libraries that decode a document into a typed struct in one call will notice.
 	- It was considered and turned down, because the reference cannot implement it: a derive-based decoder needs a proc-macro, which is a second crate, and one file per binding with no dependencies is what the product *is*.
 	- Hand-writing the reflection instead would give each binding its own machinery with nothing in the reference to mirror - the parity rule inverted, and the thing that keeps a fix portable by mechanical diff.

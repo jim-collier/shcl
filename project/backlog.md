@@ -3308,7 +3308,17 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 - Code review 20260725:
 
-	- Items 24 to 41 are here; 1 to 23 are under Done - Bugs; the deferred half of 28 is under Future and/or deferred.
+	- Items 24 to 41 are here; 1 to 23 are under Done - Bugs.
+
+	- ✅ Item 28: size, node count and array length limits.
+		- The depth cap closed the crash class. The rest is additive API that can be added later without breaking anything, and a consuming program can bound input size itself before calling parse.
+		- The size half came first: `read_file(path, max_bytes)` caps the read in all four bindings.
+		- Measured: a 4.3 MB document of one-line fields holds 252 MB resident, about 59x, so the byte cap alone cannot bound a load. That is what reopened the deferred half.
+		- Decided: the caps are the caller's, not constants - `parse_limited(text, strictness, max_nodes, max_elements)` in every binding and the C++ veneer, 0 = uncapped. At the node cap the parse stops with one `E020` and the unparsed remainder counts as lost; an over-long array is refused whole (`E021`), never truncated. The depth cap keeps its skip-and-continue recovery; reasons in design.md.
+		- Fixed: all four bindings plus the veneer, byte-identical diagnostics.
+		- Pinned by: a parse_limited fixture in all four runners plus a veneer smoke line - cap crossing and its line number, lost accounting, the last-line cross, the one-line overshoot, both array spellings, strict failure carrying the document.
+		- Opened: 20260725-152141
+		- Closed: 20260901-112357
 
 	- ✅ Item 29: thread the diagnostic code through every call site.
 		- All four bindings recover the code from about 30 hand-ordered message prefixes, so rewording a message can change a code, and the ordering matters.
@@ -3559,15 +3569,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Listed among the packaging targets and never built. README.md is straight about it, so nothing overpromises.
 		- Deferred until there is demand: it needs a BSD build first, and there is none.
 		- Opened: 20260819-111243
-
-- Code review 20260725:
-
-	- The deferred half of item 28; the done halves are under Done - Features and enhancements.
-
-	- ✋ Item 28: size, node count and array length limits.
-		- The depth cap closed the crash class. The rest is additive API that can be added later without breaking anything, and a consuming program can bound input size itself before calling parse.
-		- The size half is now covered: `read_file(path, max_bytes)` caps the read in all four bindings. Node count and array length stay deferred.
-		- Opened: 20260725-152141
 
 ### Canceled
 

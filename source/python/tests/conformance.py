@@ -671,6 +671,38 @@ def main():
 	# Canonical output folds the case, as it always has, and escapes the tab.
 	if sdoc3.to_canonical() != '"ab\\tcd": 2\n':
 		raise SystemExit(f"canonical name spelling got {sdoc3.to_canonical()!r}")
+	# parse_limited: the caps exist because a document amplifies to many times
+	# its byte size in memory, so read_file's byte cap alone cannot bound a
+	# load. Same fixture in every runner.
+	ltext = "a: 1\nb: 2\nc: 3\nd: 4\n"
+	ldoc = shcl.Document.parse_limited(ltext, shcl.Strictness.Standard, 2, 0)
+	lcaps = [g for g in ldoc.diagnostics() if g.code == "E020"]
+	if len(lcaps) != 1 or lcaps[0].line != 4:
+		raise SystemExit(f"node cap: {[(g.line, g.code) for g in ldoc.diagnostics()]}")
+	if ldoc.lost_count() != 1 or ldoc.get_int("a") != 1 or ldoc.exists("d"):
+		raise SystemExit("node cap: remainder must be lost and unparsed")
+	ldoc = shcl.Document.parse_limited("a: 1\nb: 2\nc: 3", shcl.Strictness.Standard, 2, 0)
+	if sum(1 for g in ldoc.diagnostics() if g.code == "E020") != 1 or ldoc.lost_count() != 0:
+		raise SystemExit("node cap crossed on the last line must still report")
+	ldoc = shcl.Document.parse_limited("x.y.z: 1\n", shcl.Strictness.Standard, 1, 0)
+	if sum(1 for g in ldoc.diagnostics() if g.code == "E020") != 1 or ldoc.get_int("x.y.z") != 1:
+		raise SystemExit("node cap overshoot line must stay in the document")
+	ldoc = shcl.Document.parse_limited(ltext, shcl.Strictness.Standard, 0, 0)
+	if ldoc.diagnostics():
+		raise SystemExit("uncapped parse_limited must match parse_with")
+	ldoc = shcl.Document.parse_limited("arr: 1, 2, 3\nok: 5\n", shcl.Strictness.Standard, 0, 2)
+	lcaps = [g for g in ldoc.diagnostics() if g.code == "E021"]
+	if len(lcaps) != 1 or lcaps[0].line != 1 or ldoc.exists("arr") or ldoc.get_int("ok") != 5 or ldoc.lost_count() != 1:
+		raise SystemExit("element cap: the whole line is refused, the rest untouched")
+	ldoc = shcl.Document.parse_limited("arr:\n\t* 1\n\t* 2\n\t* 3\n", shcl.Strictness.Standard, 0, 2)
+	if sum(1 for g in ldoc.diagnostics() if g.code == "E021") != 1 or ldoc.get_int_array("arr") != [1, 2]:
+		raise SystemExit("element cap: a stacked array keeps what fit")
+	try:
+		shcl.Document.parse_limited(ltext, shcl.Strictness.Strict, 2, 0)
+		raise SystemExit("capped strict load must fail")
+	except shcl.LoadError as ex:
+		if ex.document is None or ex.document.get_int("a") != 1:
+			raise SystemExit("failed strict doc must stay readable") from None
 	# load_file/save_file: the status separates absent / unreadable / parsed
 	# with errors / clean, and a save round-trips through the atomic write.
 	# Same fixture in every runner.
