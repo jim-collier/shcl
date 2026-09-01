@@ -64,14 +64,18 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-140000
 		- Closed: 20260901-160000
 
-	- 🔘 Item 2: the element cap is applied after the array is built, so it bounds nothing.
+	- ✅ Item 2: the element cap is applied after the array is built, so it bounds nothing.
 		- Spec says the caps exist because bounding the bytes read cannot bound what a load allocates, and that only counting what the parse builds can. The inline spelling builds the whole array first and refuses the line afterwards, so the peak is whatever the text asked for.
 		- Measured: 9 MB of input as one over-cap array peaks at 256 MB with a cap of 8, against 257 MB with no cap at all. The cap saves 0.3%.
 		- In C the memory is not even a peak. 12 MB of input as one refused array leaves 108.5 MB held for the document's lifetime. The same 12 MB as a plain string value that is kept costs 11.7 MB, which is what rules out ordinary parse overhead.
 		- The stacked spelling is worse than useless. Its cap is enforced correctly, per element, before the push - but every refused line emits a diagnostic, and the diagnostics cost more than the elements they refuse: 15 MB of input peaks at 510 MB with the cap set and 254 MB with it off. Setting the cap doubles the memory.
 		- Trivia is outside both caps too, so a comment-only document amplifies fortyfold with the caps set as tight as they go and neither one firing.
 		- The check has to happen while the array is being built, and the per-line diagnostics need collapsing.
+		- Fixed, inline spelling: the element count is taken by a scan that builds nothing, and it runs before the quote check as well, since that check splits the value too. A refused 200k-element line now costs about the text in every binding (Rust 1.0x, Go 0.01x, Python 4x, C 1.4x) against 38x to 78x before.
+		- Pinned three ways in all four bindings: an allocation bound on that line (under 8x the text; the old code fails at 38x and up), a table of thirteen value spellings whose cap count must equal the count the array reads back as (quoted and escaped commas, empty and blank slots, Unicode blanks, an open quote), and a refused line reporting `E021` alone. Rust's bound lives in its own test binary because the counting allocator is process-wide; C's is a new `mem_bounds.c`, in the compiler sweep and the sanitizer run too.
+		- The stacked spelling's cap was already right; its cost is the per-line diagnostics, which item 8's ceiling bounds. Trivia amplification is the same per-line overhead any document has and is not a cap matter; a caller bounds it by bytes with `ReadFile`.
 		- Opened: 20260901-140100
+		- Closed: 20260901-163000
 
 	- 🔘 Item 3: in C, `shcl_paths` grows the document on every call and `shcl_reads_release` cannot give it back.
 		- The header states the invariant this breaks. `scratch` is documented as "reset on entry to each resolve, so read-only use of a long-lived document stays flat", and `shcl_reads_release` names `shcl_paths` in the list of calls whose results it gives back, for "a process polling the same document in a loop... so the memory does not climb".

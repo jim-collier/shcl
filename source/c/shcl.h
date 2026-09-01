@@ -1003,6 +1003,26 @@ static int literal_value(ShclArena *a, ShclArena *tmp, ShclStr text, ShclValue *
 // Element texts land in `a` (only when built - see parse_element); the comma
 // offsets and the growing element vector are per-call temporaries and go to
 // `tmp`, so only the exact-size final array reaches the document arena.
+/* Whether parse_cell would build more than max elements. Counts the pieces
+   the way the splitter cuts them, without building any, so a capped parse
+   refuses an over-long line before holding the array. */
+static int cell_exceeds(ShclStr text, size_t max) {
+	size_t count = 0, i = 0; int has_content = 0; uint32_t in_quote = 0;
+	while (i < text.n) {
+		uint32_t c; size_t l = utf8_decode(text.p, text.n, i, &c); i += l;
+		if (c == '\\') { has_content = 1; if (i < text.n) i += utf8_decode(text.p, text.n, i, &c); continue; }
+		if (in_quote) { if (c == in_quote) in_quote = 0; }
+		else if (c == '"' || c == '\'') in_quote = c;
+		else if (c == ',') {
+			if (has_content && ++count > max) return 1;
+			has_content = 0; continue;
+		}
+		if (!is_ws(c)) has_content = 1;
+	}
+	if (has_content) count++;
+	return count > max;
+}
+
 static ShclValue parse_cell(ShclArena *a, ShclArena *tmp, ShclStr text) {
 	ShclVecSize starts = {0}, ends = {0};
 	split_unquoted_commas(tmp, text, &starts, &ends);
@@ -2566,18 +2586,20 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			ShclFence vf = fence_open(scan.value_text);
 			if (vf.ok) value = consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, vf, &next);
 			else {
+				/* Element cap: the whole line is refused, so a capped load
+				   never holds a truncated array that would read as the
+				   document's value. Counted before anything splits the value
+				   (the quote check does too), or the cap would bound nothing. */
+				if (P.max_elements && cell_exceeds(scan.value_text, P.max_elements)) {
+					ShclSB m = {0}; sb_puts(a, &m, "array longer than "); sb_put_u64(a, &m, P.max_elements); sb_puts(a, &m, " elements; line skipped");
+					p_err(&P, lineno, "E021", sb_S(&m));
+					P.d->lost++;
+					ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);
+					i = next; continue;
+				}
 				if (unterminated_quote(&own->line, scan.value_text)) p_err(&P, lineno, "E017", s_lit("unterminated quote in value"));
 				value = parse_cell(a, &own->line, scan.value_text);
 			}
-		}
-		/* Element cap: the whole line is refused, so a capped load never holds
-		   a truncated array that would read as the document's value. */
-		if (P.max_elements && value.kind == V_CELL && value.nels > P.max_elements) {
-			ShclSB m = {0}; sb_puts(a, &m, "array longer than "); sb_put_u64(a, &m, P.max_elements); sb_puts(a, &m, " elements; line skipped");
-			p_err(&P, lineno, "E021", sb_S(&m));
-			P.d->lost++;
-			ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);
-			i = next; continue;
 		}
 		size_t node = 0; /* attach_path fills it; the init quiets gcc's inlining-dependent maybe-uninitialized */
 		if (attach_path(&P, parent, scan.segs.data, scan.segs.len, value, lineno, &node)) {

@@ -762,6 +762,44 @@ fn parse_limited_caps() {
 		1
 	);
 	assert_eq!(doc.get_int_array("arr"), Ok(vec![1, 2]));
+	// The count the cap judges is the count the array reads back as, spelling
+	// by spelling: quoted and escaped commas, empty and blank slots, Unicode
+	// blanks, a quote that never closes. Refused at one under, kept at exact.
+	#[rustfmt::skip]
+	let counts: &[(&str, usize)] = &[
+		("1, 2, 3", 3), ("\"a, b\", c", 2), ("a\\, b, c", 2), ("a,,b", 2),
+		("a, , b", 2), (" a ", 1), ("\"\", ''", 2), ("'a\", b'", 1),
+		("\"open, b", 1), ("\\", 1), ("x,\u{3000}", 1), ("x, \u{a0}y", 2), (", , ,", 0),
+	];
+	for &(spelling, n) in counts {
+		let text = format!("v: {spelling}\n");
+		let doc = Document::parse_limited(&text, Strictness::Standard, 0, n.max(1)).unwrap();
+		assert!(
+			!doc.diagnostics().iter().any(|d| d.code == "E021"),
+			"{spelling:?} at cap {n}"
+		);
+		if n == 0 {
+			assert!(
+				doc.exists("v") && doc.get_string_array("v").is_err(),
+				"{spelling:?} empty"
+			);
+		} else {
+			assert_eq!(
+				doc.get_string_array("v").map(|a| a.len()),
+				Ok(n),
+				"{spelling:?}"
+			);
+		}
+		if n >= 2 {
+			let doc = Document::parse_limited(&text, Strictness::Standard, 0, n - 1).unwrap();
+			assert_eq!(doc.lost_count(), 1, "{spelling:?} at cap {}", n - 1);
+		}
+	}
+	// A refused line reports the cap alone: the quote check runs after it, so
+	// it never splits a value the cap already turned away.
+	let doc = Document::parse_limited("v: a, \"open, b\n", Strictness::Standard, 0, 1).unwrap();
+	let codes: Vec<&str> = doc.diagnostics().iter().map(|d| &*d.code).collect();
+	assert_eq!(codes, ["E021"]);
 	// A cap diagnostic is an error, so a capped Strict load fails - with the
 	// parsed part still on the error.
 	let err = Document::parse_limited(text, Strictness::Strict, 2, 0).unwrap_err();

@@ -878,6 +878,49 @@ func parseElement(piece string) (element, bool) {
 	return element{text: normalizeDanglingBackslash(t)}, true
 }
 
+// cellExceeds reports whether parseCell would build more than max elements.
+// Counts the pieces the way the splitter cuts them, without building any, so
+// a capped parse refuses an over-long line before holding the array.
+func cellExceeds(text string, max int) bool {
+	count := 0
+	hasContent := false
+	var inQuote rune
+	skip := false
+	for _, c := range text {
+		if skip {
+			skip = false
+			continue
+		}
+		if c == '\\' {
+			hasContent = true
+			skip = true
+			continue
+		}
+		switch {
+		case inQuote != 0 && c == inQuote:
+			inQuote = 0
+		case inQuote == 0 && (c == '"' || c == '\''):
+			inQuote = c
+		case inQuote == 0 && c == ',':
+			if hasContent {
+				count++
+				if count > max {
+					return true
+				}
+			}
+			hasContent = false
+			continue
+		}
+		if !unicode.IsSpace(c) {
+			hasContent = true
+		}
+	}
+	if hasContent {
+		count++
+	}
+	return count > max
+}
+
 func parseCell(text string) value {
 	var els []element
 	for _, piece := range splitUnquotedCommas(text) {
@@ -2275,21 +2318,23 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				// Same-line fence spelling.
 				v, next = p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 			} else {
+				// Element cap: the whole line is refused, so a capped load
+				// never holds a truncated array that would read as the
+				// document's value. Counted before anything splits the value
+				// (the quote check does too), or the cap would bound nothing.
+				if p.maxElements != 0 && cellExceeds(*scan.valueText, p.maxElements) {
+					p.err(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements))
+					p.lost++
+					p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+					i = next
+					continue
+				}
 				if unterminatedQuote(*scan.valueText) {
 					p.err(lineno, "E017", "unterminated quote in value")
 				}
 				srcText, haveSrc = *scan.valueText, true
 				v = parseCell(*scan.valueText)
 			}
-		}
-		// Element cap: the whole line is refused, so a capped load never
-		// holds a truncated array that would read as the document's value.
-		if p.maxElements != 0 && v.kind == vCell && len(v.els) > p.maxElements {
-			p.err(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements))
-			p.lost++
-			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
-			i = next
-			continue
 		}
 		// Record only when the bound node holds exactly this line's value
 		// (a merge into an equal-valued node keeps the first line's span;
