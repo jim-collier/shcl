@@ -9,6 +9,7 @@
 import os
 import stat
 import sys
+import tracemalloc
 import types
 from pathlib import Path
 from typing import Any
@@ -697,6 +698,45 @@ def main():
 	ldoc = shcl.Document.parse_limited("arr:\n\t* 1\n\t* 2\n\t* 3\n", shcl.Strictness.Standard, 0, 2)
 	if sum(1 for g in ldoc.diagnostics() if g.code == "E021") != 1 or ldoc.get_int_array("arr") != [1, 2]:
 		raise SystemExit("element cap: a stacked array keeps what fit")
+	# The count the cap judges is the count the array reads back as, spelling
+	# by spelling: quoted and escaped commas, empty and blank slots, Unicode
+	# blanks, a quote that never closes. Refused at one under, kept at exact.
+	counts = [
+		("1, 2, 3", 3), ('"a, b", c', 2), ("a\\, b, c", 2), ("a,,b", 2),
+		("a, , b", 2), (" a ", 1), ("\"\", ''", 2), ("'a\", b'", 1),
+		('"open, b', 1), ("\\", 1), ("x,\u3000", 1), ("x, \u00a0y", 2), (", , ,", 0),
+	]
+	for spelling, n in counts:
+		text = f"v: {spelling}\n"
+		ldoc = shcl.Document.parse_limited(text, shcl.Strictness.Standard, 0, max(n, 1))
+		if any(g.code == "E021" for g in ldoc.diagnostics()):
+			raise SystemExit(f"{spelling!r} at cap {n}: E021")
+		r = ldoc.read_string_array("v")
+		if n == 0:
+			if not ldoc.exists("v") or r.status == shcl.Status.Good:
+				raise SystemExit(f"{spelling!r}: want empty, got {r.status}")
+		elif r.status != shcl.Status.Good or len(r.value) != n:
+			raise SystemExit(f"{spelling!r}: want {n} elements, got {r.value} {r.status}")
+		if n >= 2:
+			ldoc = shcl.Document.parse_limited(text, shcl.Strictness.Standard, 0, n - 1)
+			if ldoc.lost_count() != 1:
+				raise SystemExit(f"{spelling!r} at cap {n - 1}: not refused")
+	# A refused line reports the cap alone: the quote check runs after it, so
+	# it never splits a value the cap already turned away.
+	ldoc = shcl.Document.parse_limited('v: a, "open, b\n', shcl.Strictness.Standard, 0, 1)
+	if [g.code for g in ldoc.diagnostics()] != ["E021"]:
+		raise SystemExit("refused line must report the cap alone")
+	# What a capped parse holds is the text and its lines. The refused line
+	# used to be built in full first (38x the text), so the cap saved nothing.
+	btext = "arr: " + "1, " * 200000 + "\nok: 5\n"
+	tracemalloc.start()
+	ldoc = shcl.Document.parse_limited(btext, shcl.Strictness.Standard, 0, 8)
+	lpeak = tracemalloc.get_traced_memory()[1]
+	tracemalloc.stop()
+	if ldoc.lost_count() != 1 or ldoc.get_int("ok") != 5:
+		raise SystemExit("capped parse: wrong result")
+	if lpeak > len(btext) * 8:
+		raise SystemExit(f"a capped parse held the array it refused: {lpeak} bytes for {len(btext)} of text")
 	try:
 		shcl.Document.parse_limited(ltext, shcl.Strictness.Strict, 2, 0)
 		raise SystemExit("capped strict load must fail")

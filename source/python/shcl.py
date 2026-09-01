@@ -817,6 +817,41 @@ def _parse_element(piece):
 	return _Element(_normalize_dangling_backslash(t), False)
 
 
+def _cell_exceeds(text, max_elements):
+	"""Whether _parse_cell would build more than max_elements elements. Counts
+	the pieces the way the splitter cuts them, without building any, so a
+	capped parse refuses an over-long line before holding the array."""
+	count = 0
+	has_content = False
+	in_quote = None
+	i = 0
+	n = len(text)
+	while i < n:
+		c = text[i]
+		if c == "\\":
+			has_content = True
+			i += 2
+			continue
+		i += 1
+		if in_quote is not None:
+			if c == in_quote:
+				in_quote = None
+		elif c == '"' or c == "'":
+			in_quote = c
+		elif c == ",":
+			if has_content:
+				count += 1
+				if count > max_elements:
+					return True
+			has_content = False
+			continue
+		if c not in _WS_SET:
+			has_content = True
+	if has_content:
+		count += 1
+	return count > max_elements
+
+
 def _parse_cell(text):
 	els = []
 	for piece in _split_unquoted_commas(text):
@@ -1746,18 +1781,21 @@ class _Parser:
 					# Same-line fence spelling.
 					value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				else:
+					# Element cap: the whole line is refused, so a capped load
+					# never holds a truncated array that would read as the
+					# document's value. Counted before anything splits the
+					# value (the quote check does too), or the cap would bound
+					# nothing.
+					if self.max_elements and _cell_exceeds(value_text, self.max_elements):
+						self._err(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped")
+						self.lost += 1
+						self.stack.append((indent, DEAD))
+						i = nxt
+						continue
 					if _unterminated_quote(value_text):
 						self._err(lineno, "E017", "unterminated quote in value")
 					src_text = value_text
 					value = _parse_cell(value_text)
-			# Element cap: the whole line is refused, so a capped load never
-			# holds a truncated array that would read as the document's value.
-			if self.max_elements and value.kind == "cell" and len(value.els) > self.max_elements:
-				self._err(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped")
-				self.lost += 1
-				self.stack.append((indent, DEAD))
-				i = nxt
-				continue
 			# Record only when the bound node holds exactly this line's value
 			# (a merge into an equal-valued node keeps the first line's span;
 			# a value dropped after a last-segment selector records nothing).

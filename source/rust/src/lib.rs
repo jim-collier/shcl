@@ -742,6 +742,45 @@ fn parse_element(piece: &str) -> Option<Element> {
 	})
 }
 
+/// Whether `parse_cell` would build more than `max` elements. Counts the
+/// pieces the way the splitter cuts them, without building any, so a capped
+/// parse refuses an over-long line before holding the array.
+fn cell_exceeds(text: &str, max: usize) -> bool {
+	let mut count = 0usize;
+	let mut has_content = false;
+	let mut in_quote: Option<char> = None;
+	let mut it = text.chars();
+	while let Some(c) = it.next() {
+		if c == '\\' {
+			has_content = true;
+			it.next();
+			continue;
+		}
+		match in_quote {
+			Some(q) if c == q => in_quote = None,
+			None if c == '"' || c == '\'' => in_quote = Some(c),
+			None if c == ',' => {
+				if has_content {
+					count += 1;
+					if count > max {
+						return true;
+					}
+				}
+				has_content = false;
+				continue;
+			}
+			_ => {}
+		}
+		if !c.is_whitespace() {
+			has_content = true;
+		}
+	}
+	if has_content {
+		count += 1;
+	}
+	count > max
+}
+
 fn parse_cell(text: &str) -> Value {
 	let mut els = Vec::new();
 	for piece in split_unquoted_commas(text) {
@@ -2178,6 +2217,25 @@ impl Parser {
 						next = n;
 						val
 					} else {
+						// Element cap: the whole line is refused, so a capped
+						// load never holds a truncated array that would read
+						// as the document's value. Counted before anything
+						// splits the value (the quote check does too), or
+						// the cap would bound nothing.
+						if self.max_elements != 0 && cell_exceeds(v, self.max_elements) {
+							self.err(
+								lineno,
+								"E021",
+								format!(
+									"array longer than {} elements; line skipped",
+									self.max_elements
+								),
+							);
+							self.lost += 1;
+							self.stack.push((indent.to_string(), DEAD));
+							i = next;
+							continue;
+						}
 						if unterminated_quote(v) {
 							self.err(lineno, "E017", "unterminated quote in value");
 						}
@@ -2186,25 +2244,6 @@ impl Parser {
 					}
 				}
 			};
-			// Element cap: the whole line is refused, so a capped load never
-			// holds a truncated array that would read as the document's value.
-			if self.max_elements != 0
-				&& let Value::Cell(els) = &value
-				&& els.len() > self.max_elements
-			{
-				self.err(
-					lineno,
-					"E021",
-					format!(
-						"array longer than {} elements; line skipped",
-						self.max_elements
-					),
-				);
-				self.lost += 1;
-				self.stack.push((indent.to_string(), DEAD));
-				i = next;
-				continue;
-			}
 			// Record only when the bound node holds exactly this line's value
 			// (a merge into an equal-valued node keeps the first line's span;
 			// a value dropped after a last-segment selector records nothing).

@@ -1267,6 +1267,47 @@ func TestParseLimitedCaps(t *testing.T) {
 	if v, st := doc.GetIntArray("arr"); st != Good || !reflect.DeepEqual(v, []int64{1, 2}) {
 		t.Fatalf("star array: %v %v", v, st)
 	}
+	// The count the cap judges is the count the array reads back as, spelling
+	// by spelling: quoted and escaped commas, empty and blank slots, Unicode
+	// blanks, a quote that never closes. Refused at one under, kept at exact.
+	counts := []struct {
+		spelling string
+		n        int
+	}{
+		{"1, 2, 3", 3}, {"\"a, b\", c", 2}, {"a\\, b, c", 2}, {"a,,b", 2},
+		{"a, , b", 2}, {" a ", 1}, {"\"\", ''", 2}, {"'a\", b'", 1},
+		{"\"open, b", 1}, {"\\", 1}, {"x,\u3000", 1}, {"x, \u00a0y", 2}, {", , ,", 0},
+	}
+	for _, c := range counts {
+		text := "v: " + c.spelling + "\n"
+		cap := c.n
+		if cap == 0 {
+			cap = 1
+		}
+		doc, _ = ParseLimited(text, Standard, 0, cap)
+		if n, _ := codeCount(doc, "E021"); n != 0 {
+			t.Fatalf("%q at cap %d: E021", c.spelling, c.n)
+		}
+		if v, st := doc.GetStringArray("v"); c.n == 0 {
+			if !doc.Exists("v") || st == Good {
+				t.Fatalf("%q: want empty, got %v %v", c.spelling, v, st)
+			}
+		} else if st != Good || len(v) != c.n {
+			t.Fatalf("%q: want %d elements, got %v %v", c.spelling, c.n, v, st)
+		}
+		if c.n >= 2 {
+			doc, _ = ParseLimited(text, Standard, 0, c.n-1)
+			if doc.LostCount() != 1 {
+				t.Fatalf("%q at cap %d: not refused", c.spelling, c.n-1)
+			}
+		}
+	}
+	// A refused line reports the cap alone: the quote check runs after it, so
+	// it never splits a value the cap already turned away.
+	doc, _ = ParseLimited("v: a, \"open, b\n", Standard, 0, 1)
+	if len(doc.Diagnostics()) != 1 || doc.Diagnostics()[0].Code != "E021" {
+		t.Fatalf("refused line: %v", doc.Diagnostics())
+	}
 	// A cap diagnostic is an error, so a capped Strict load fails - with the
 	// parsed part still on the error.
 	doc, err = ParseLimited(text, Strict, 2, 0)

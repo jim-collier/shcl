@@ -799,6 +799,37 @@ int main(int argc, char **argv) {
 		if (ncap != 1 || ra.status != SHCL_GOOD || ra.n != 2 || ra.values[0] != 1 || ra.values[1] != 2)
 			fail("parse_limited", "stacked array must keep what fit");
 		shcl_free(ld);
+		// The count the cap judges is the count the array reads back as,
+		// spelling by spelling: quoted and escaped commas, empty and blank
+		// slots, Unicode blanks, a quote that never closes. Refused at one
+		// under, kept at exact.
+		static const struct { const char *spelling; size_t n; } counts[] = {
+			{"1, 2, 3", 3}, {"\"a, b\", c", 2}, {"a\\, b, c", 2}, {"a,,b", 2},
+			{"a, , b", 2}, {" a ", 1}, {"\"\", ''", 2}, {"'a\", b'", 1},
+			{"\"open, b", 1}, {"\\", 1}, {"x,\xe3\x80\x80", 1}, {"x, \xc2\xa0y", 2}, {", , ,", 0},
+		};
+		for (size_t ci = 0; ci < sizeof counts / sizeof counts[0]; ci++) {
+			char ctext[64]; snprintf(ctext, sizeof ctext, "v: %s\n", counts[ci].spelling);
+			size_t n = counts[ci].n;
+			ld = shcl_parse_limited(ctext, strlen(ctext), SHCL_STANDARD, 0, n ? n : 1);
+			for (size_t k = 0; k < shcl_diag_count(ld); k++)
+				if (strcmp(shcl_diag_code(ld, k), "E021") == 0) fail("parse_limited", "count table: refused at the exact cap");
+			shcl_read_str_arr sa = shcl_read_string_array(ld, "v", 1);
+			if (n == 0 ? (!shcl_exists(ld, "v", 1) || sa.status == SHCL_GOOD) : (sa.status != SHCL_GOOD || sa.n != n))
+				fail("parse_limited", "count table: element count differs from the read");
+			shcl_free(ld);
+			if (n >= 2) {
+				ld = shcl_parse_limited(ctext, strlen(ctext), SHCL_STANDARD, 0, n - 1);
+				if (shcl_lost_count(ld) != 1) fail("parse_limited", "count table: not refused one under");
+				shcl_free(ld);
+			}
+		}
+		// A refused line reports the cap alone: the quote check runs after
+		// it, so it never splits a value the cap already turned away.
+		const char *qt = "v: a, \"open, b\n";
+		ld = shcl_parse_limited(qt, strlen(qt), SHCL_STANDARD, 0, 1);
+		if (shcl_diag_count(ld) != 1 || strcmp(shcl_diag_code(ld, 0), "E021") != 0) fail("parse_limited", "refused line must report the cap alone");
+		shcl_free(ld);
 		// A cap diagnostic is an error, so a Strict capped load fails - with
 		// the parsed part still readable.
 		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STRICT, 2, 0);
