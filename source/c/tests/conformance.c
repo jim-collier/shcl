@@ -743,6 +743,69 @@ int main(int argc, char **argv) {
 		if (shcl_status_ok(shcl_read_int(cd, "missing", 7).status)) fail("status_ok", "a missing field is ok");
 		shcl_free(cd);
 	}
+	// parse_limited: the caps exist because a document amplifies to many times
+	// its byte size in memory, so shcl_read_file's byte cap alone cannot bound
+	// a load. Same fixture in every runner.
+	{
+		const char *lt = "a: 1\nb: 2\nc: 3\nd: 4\n";
+		shcl_doc *ld = shcl_parse_limited(lt, strlen(lt), SHCL_STANDARD, 2, 0);
+		size_t ncap = 0, capline = 0;
+		for (size_t k = 0; k < shcl_diag_count(ld); k++)
+			if (strcmp(shcl_diag_code(ld, k), "E020") == 0) { ncap++; capline = shcl_diag_line(ld, k); }
+		if (ncap != 1 || capline != 4) fail("parse_limited", "want one E020 at line 4");
+		if (shcl_lost_count(ld) != 1) fail("parse_limited", "the remainder must count as lost");
+		if (shcl_get_int_or(ld, "a", 1, 0) != 1) fail("parse_limited", "parsed part unreadable");
+		if (shcl_exists(ld, "d", 1)) fail("parse_limited", "the remainder must not parse");
+		shcl_free(ld);
+		// A cap crossed by the document's last content line still reports.
+		ld = shcl_parse_limited("a: 1\nb: 2\nc: 3", 15, SHCL_STANDARD, 2, 0);
+		ncap = 0;
+		for (size_t k = 0; k < shcl_diag_count(ld); k++)
+			if (strcmp(shcl_diag_code(ld, k), "E020") == 0) ncap++;
+		if (ncap != 1 || shcl_lost_count(ld) != 0) fail("parse_limited", "last-line cross must report, nothing lost");
+		shcl_free(ld);
+		// One line may overshoot the cap by its own path; the parse still stops.
+		ld = shcl_parse_limited("x.y.z: 1\n", 9, SHCL_STANDARD, 1, 0);
+		ncap = 0;
+		for (size_t k = 0; k < shcl_diag_count(ld); k++)
+			if (strcmp(shcl_diag_code(ld, k), "E020") == 0) ncap++;
+		if (ncap != 1) fail("parse_limited", "deep line must report E020");
+		if (shcl_get_int_or(ld, "x.y.z", 5, 0) != 1) fail("parse_limited", "overshot line must stay in the document");
+		shcl_free(ld);
+		// 0 is no cap: identical to shcl_parse_with.
+		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STANDARD, 0, 0);
+		if (shcl_diag_count(ld) != 0) fail("parse_limited", "uncapped must match parse_with");
+		shcl_free(ld);
+		// Element cap, inline spelling: the whole line is refused, the rest of
+		// the document is untouched.
+		const char *et = "arr: 1, 2, 3\nok: 5\n";
+		ld = shcl_parse_limited(et, strlen(et), SHCL_STANDARD, 0, 2);
+		ncap = 0; capline = 0;
+		for (size_t k = 0; k < shcl_diag_count(ld); k++)
+			if (strcmp(shcl_diag_code(ld, k), "E021") == 0) { ncap++; capline = shcl_diag_line(ld, k); }
+		if (ncap != 1 || capline != 1) fail("parse_limited", "want one E021 at line 1");
+		if (shcl_exists(ld, "arr", 3)) fail("parse_limited", "refused line must not bind");
+		if (shcl_get_int_or(ld, "ok", 2, 0) != 5) fail("parse_limited", "rest of the document unreadable");
+		if (shcl_lost_count(ld) != 1) fail("parse_limited", "refused line must count as lost");
+		shcl_free(ld);
+		// Element cap, stacked spelling: each element line past the cap is
+		// refused on its own; the array keeps what fit.
+		const char *st2 = "arr:\n\t* 1\n\t* 2\n\t* 3\n";
+		ld = shcl_parse_limited(st2, strlen(st2), SHCL_STANDARD, 0, 2);
+		ncap = 0;
+		for (size_t k = 0; k < shcl_diag_count(ld); k++)
+			if (strcmp(shcl_diag_code(ld, k), "E021") == 0) ncap++;
+		shcl_read_i64_arr ra = shcl_read_int_array(ld, "arr", 3);
+		if (ncap != 1 || ra.status != SHCL_GOOD || ra.n != 2 || ra.values[0] != 1 || ra.values[1] != 2)
+			fail("parse_limited", "stacked array must keep what fit");
+		shcl_free(ld);
+		// A cap diagnostic is an error, so a Strict capped load fails - with
+		// the parsed part still readable.
+		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STRICT, 2, 0);
+		if (!shcl_strict_failed(ld)) fail("parse_limited", "capped strict load must fail");
+		if (shcl_get_int_or(ld, "a", 1, 0) != 1) fail("parse_limited", "failed strict doc unusable");
+		shcl_free(ld);
+	}
 	// load_file/save_file: the status separates absent / unreadable / parsed
 	// with errors / clean, and a save round-trips through the atomic write.
 	// Same fixture in every runner.

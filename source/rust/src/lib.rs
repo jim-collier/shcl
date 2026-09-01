@@ -1279,6 +1279,10 @@ struct Parser {
 	// children (hint) from ones the re-opened region itself created (silent).
 	reentered: HashMap<usize, usize>,
 	lost: usize, // dropped lines/values canonical output cannot re-emit
+	// parse_limited's caps, 0 = uncapped: nodes counted against the arena
+	// (root excluded), elements against a single value's cell.
+	max_nodes: usize,
+	max_elements: usize,
 }
 
 impl Parser {
@@ -1307,7 +1311,16 @@ impl Parser {
 			star_open: None,
 			reentered: HashMap::new(),
 			lost: 0,
+			max_nodes: 0,
+			max_elements: 0,
 		}
+	}
+
+	fn limited(max_nodes: usize, max_elements: usize) -> Parser {
+		let mut p = Parser::new();
+		p.max_nodes = max_nodes;
+		p.max_elements = max_elements;
+		p
 	}
 
 	fn err(&mut self, line: usize, code: &'static str, msg: impl Into<String>) {
@@ -1826,6 +1839,23 @@ impl Parser {
 			self.lost += 1;
 			return;
 		};
+		// Element cap: each element line past it is refused on its own, the way
+		// any other bad element line is.
+		if self.max_elements != 0
+			&& let Value::Cell(els) = &self.arena[parent].value
+			&& els.len() >= self.max_elements
+		{
+			self.err(
+				line,
+				"E021",
+				format!(
+					"array longer than {} elements; line skipped",
+					self.max_elements
+				),
+			);
+			self.lost += 1;
+			return;
+		}
 		if self.arena[parent].value.is_empty() {
 			let old_key = merge_hash(&self.arena[parent].name, &self.arena[parent].value);
 			let old_disp = disp_hash(&self.arena[parent].name, &self.arena[parent].value);
@@ -1918,7 +1948,22 @@ impl Parser {
 		let text = text.strip_prefix('\u{feff}').unwrap_or(text);
 		let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
 		let mut i = 0usize;
+		let mut node_capped = false;
 		while i < lines.len() {
+			// Node cap: reported at the first line not parsed, so the count can
+			// overshoot by at most one line's path. The unparsed remainder counts
+			// as lost, which is what keeps save_file from writing a silently
+			// truncated document.
+			if self.max_nodes != 0 && self.arena.len() - 1 > self.max_nodes {
+				self.err(
+					i + 1,
+					"E020",
+					format!("node cap of {} exceeded; parse stopped", self.max_nodes),
+				);
+				self.lost += lines[i..].iter().filter(|l| !l.trim().is_empty()).count();
+				node_capped = true;
+				break;
+			}
 			let lineno = i + 1;
 			let line = lines[i].trim_end();
 			// Indent chars are ASCII space/tab, so a byte scan slices the same run.
@@ -2115,6 +2160,25 @@ impl Parser {
 					}
 				}
 			};
+			// Element cap: the whole line is refused, so a capped load never
+			// holds a truncated array that would read as the document's value.
+			if self.max_elements != 0
+				&& let Value::Cell(els) = &value
+				&& els.len() > self.max_elements
+			{
+				self.err(
+					lineno,
+					"E021",
+					format!(
+						"array longer than {} elements; line skipped",
+						self.max_elements
+					),
+				);
+				self.lost += 1;
+				self.stack.push((indent.to_string(), DEAD));
+				i = next;
+				continue;
+			}
 			// Record only when the bound node holds exactly this line's value
 			// (a merge into an equal-valued node keeps the first line's span;
 			// a value dropped after a last-segment selector records nothing).
@@ -2138,6 +2202,15 @@ impl Parser {
 				self.stack.push((indent.to_string(), DEAD));
 			}
 			i = next;
+		}
+		// A cap crossed on the document's last line still reports, with nothing
+		// left to skip.
+		if !node_capped && self.max_nodes != 0 && self.arena.len() - 1 > self.max_nodes {
+			self.err(
+				lines.len(),
+				"E020",
+				format!("node cap of {} exceeded; parse stopped", self.max_nodes),
+			);
 		}
 		self.star_flush();
 		self.fold_late_dups();
@@ -2181,6 +2254,36 @@ impl Document {
 	#[allow(clippy::result_large_err)]
 	pub fn parse_with(text: &str, strictness: Strictness) -> Result<Document, LoadError> {
 		let doc = Parser::new().parse(text, strictness);
+		if strictness == Strictness::Strict
+			&& doc.diags.iter().any(|d| d.severity == Severity::Error)
+		{
+			return Err(LoadError {
+				diagnostics: doc.diags.clone(),
+				document: doc,
+			});
+		}
+		Ok(doc)
+	}
+
+	/// Parse with resource caps beside the strictness, for input the consumer
+	/// does not control: a document amplifies to many times its byte size in
+	/// memory, so a size cap alone cannot bound what a load allocates.
+	/// `max_nodes` stops the parse once a line takes the node count past it -
+	/// one `E020` error, and the unparsed remainder counts as lost so a save
+	/// cannot silently truncate. `max_elements` refuses any line whose array
+	/// would hold more elements (`E021`, that line alone is skipped). 0
+	/// disables a cap, making this parse_with. Both caps are parse-time only;
+	/// the write API is the consumer's own arithmetic. As everywhere, the Err
+	/// fires only at Strict, and a cap diagnostic is an error, so a capped
+	/// Strict load fails; at other levels the parsed part stays readable.
+	#[allow(clippy::result_large_err)]
+	pub fn parse_limited(
+		text: &str,
+		strictness: Strictness,
+		max_nodes: usize,
+		max_elements: usize,
+	) -> Result<Document, LoadError> {
+		let doc = Parser::limited(max_nodes, max_elements).parse(text, strictness);
 		if strictness == Strictness::Strict
 			&& doc.diags.iter().any(|d| d.severity == Severity::Error)
 		{
