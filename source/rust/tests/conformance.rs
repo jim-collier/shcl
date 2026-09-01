@@ -695,6 +695,80 @@ fn depth_cap_boundary_and_writer() {
 }
 
 #[test]
+fn parse_limited_caps() {
+	// The caps exist because a document amplifies to many times its byte size
+	// in memory, so read_file's byte cap alone cannot bound a load. Same
+	// fixture in every runner.
+	use shcl::Strictness;
+	// Node cap: one E020 at the first line not parsed, the remainder counts
+	// as lost, and what parsed before the cap stays readable.
+	let text = "a: 1\nb: 2\nc: 3\nd: 4\n";
+	let doc = Document::parse_limited(text, Strictness::Standard, 2, 0).unwrap();
+	let e020: Vec<_> = doc
+		.diagnostics()
+		.iter()
+		.filter(|d| d.code == "E020")
+		.collect();
+	assert_eq!(e020.len(), 1, "one E020");
+	assert_eq!(e020[0].line, 4);
+	assert_eq!(doc.lost_count(), 1);
+	assert_eq!(doc.get_int("a"), Ok(1));
+	assert!(!doc.exists("d"), "the remainder must not parse");
+	// A cap crossed by the document's last content line still reports.
+	let doc = Document::parse_limited("a: 1\nb: 2\nc: 3", Strictness::Standard, 2, 0).unwrap();
+	assert_eq!(
+		doc.diagnostics()
+			.iter()
+			.filter(|d| d.code == "E020")
+			.count(),
+		1
+	);
+	assert_eq!(doc.lost_count(), 0, "nothing was dropped");
+	// One line may overshoot the cap by its own path; the parse still stops.
+	let doc = Document::parse_limited("x.y.z: 1\n", Strictness::Standard, 1, 0).unwrap();
+	assert_eq!(
+		doc.diagnostics()
+			.iter()
+			.filter(|d| d.code == "E020")
+			.count(),
+		1
+	);
+	assert_eq!(doc.get_int("x.y.z"), Ok(1));
+	// 0 is no cap: identical to parse_with.
+	let doc = Document::parse_limited(text, Strictness::Standard, 0, 0).unwrap();
+	assert!(doc.diagnostics().is_empty());
+	// Element cap, inline spelling: the whole line is refused, the rest of the
+	// document is untouched.
+	let doc = Document::parse_limited("arr: 1, 2, 3\nok: 5\n", Strictness::Standard, 0, 2).unwrap();
+	let e021: Vec<_> = doc
+		.diagnostics()
+		.iter()
+		.filter(|d| d.code == "E021")
+		.collect();
+	assert_eq!(e021.len(), 1, "one E021");
+	assert_eq!(e021[0].line, 1);
+	assert!(!doc.exists("arr"));
+	assert_eq!(doc.get_int("ok"), Ok(5));
+	assert_eq!(doc.lost_count(), 1);
+	// Element cap, stacked spelling: each element line past the cap is refused
+	// on its own; the array keeps what fit.
+	let doc =
+		Document::parse_limited("arr:\n\t* 1\n\t* 2\n\t* 3\n", Strictness::Standard, 0, 2).unwrap();
+	assert_eq!(
+		doc.diagnostics()
+			.iter()
+			.filter(|d| d.code == "E021")
+			.count(),
+		1
+	);
+	assert_eq!(doc.get_int_array("arr"), Ok(vec![1, 2]));
+	// A cap diagnostic is an error, so a capped Strict load fails - with the
+	// parsed part still on the error.
+	let err = Document::parse_limited(text, Strictness::Strict, 2, 0).unwrap_err();
+	assert_eq!(err.document.get_int("a"), Ok(1));
+}
+
+#[test]
 fn write_bad_ops_are_rejected() {
 	// Bad-op dimension: each write-bad.ops line, applied alone to the case
 	// input, must be rejected (bad value, bad datetime, or unusable path) and

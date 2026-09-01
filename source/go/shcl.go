@@ -1530,6 +1530,10 @@ type parser struct {
 	// children (hint) from ones the re-opened region itself created (silent).
 	reentered map[int]int
 	lost      int // dropped lines/values canonical output cannot re-emit
+	// ParseLimited's caps, 0 = uncapped: nodes counted against the arena
+	// (root excluded), elements against a single value's cell.
+	maxNodes    int
+	maxElements int
 }
 
 func newParser() *parser {
@@ -1969,6 +1973,13 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 		p.lost++
 		return
 	}
+	// Element cap: each element line past it is refused on its own, the way
+	// any other bad element line is.
+	if p.maxElements != 0 && p.arena[parent].value.kind == vCell && len(p.arena[parent].value.els) >= p.maxElements {
+		p.err(line, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements))
+		p.lost++
+		return
+	}
 	switch {
 	case p.arena[parent].value.isEmpty():
 		oldKey := mergeHash(p.arena[parent].name, &p.arena[parent].value)
@@ -2064,7 +2075,22 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		lines[j] = strings.TrimRight(l, "\r")
 	}
 	i := 0
+	nodeCapped := false
 	for i < len(lines) {
+		// Node cap: reported at the first line not parsed, so the count can
+		// overshoot by at most one line's path. The unparsed remainder counts
+		// as lost, which is what keeps SaveFile from writing a silently
+		// truncated document.
+		if p.maxNodes != 0 && len(p.arena)-1 > p.maxNodes {
+			p.err(i+1, "E020", fmt.Sprintf("node cap of %d exceeded; parse stopped", p.maxNodes))
+			for _, l := range lines[i:] {
+				if strings.TrimSpace(l) != "" {
+					p.lost++
+				}
+			}
+			nodeCapped = true
+			break
+		}
 		lineno := i + 1
 		line := trimEndWS(lines[i])
 		indent := leadingWS(line)
@@ -2226,6 +2252,15 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				v = parseCell(*scan.valueText)
 			}
 		}
+		// Element cap: the whole line is refused, so a capped load never
+		// holds a truncated array that would read as the document's value.
+		if p.maxElements != 0 && v.kind == vCell && len(v.els) > p.maxElements {
+			p.err(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements))
+			p.lost++
+			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+			i = next
+			continue
+		}
 		// Record only when the bound node holds exactly this line's value
 		// (a merge into an equal-valued node keeps the first line's span;
 		// a value dropped after a last-segment selector records nothing).
@@ -2250,6 +2285,11 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
 		}
 		i = next
+	}
+	// A cap crossed on the document's last line still reports, with nothing
+	// left to skip.
+	if !nodeCapped && p.maxNodes != 0 && len(p.arena)-1 > p.maxNodes {
+		p.err(len(lines), "E020", fmt.Sprintf("node cap of %d exceeded; parse stopped", p.maxNodes))
 	}
 	p.starFlush()
 	p.foldLateDups()
@@ -2280,6 +2320,32 @@ func Parse(text string) *Document {
 // inspect doc.Diagnostics() without a nil check blowing up.
 func ParseWith(text string, strictness Strictness) (*Document, error) {
 	doc := newParser().parse(text, strictness)
+	if strictness == Strict {
+		for _, d := range doc.diags {
+			if d.Severity == SeverityError {
+				return doc, &LoadError{Diagnostics: doc.diags, Document: doc}
+			}
+		}
+	}
+	return doc, nil
+}
+
+// ParseLimited parses with resource caps beside the strictness, for input the
+// consumer does not control: a document amplifies to many times its byte size
+// in memory, so a size cap alone cannot bound what a load allocates. maxNodes
+// stops the parse once a line takes the node count past it - one E020 error,
+// and the unparsed remainder counts as lost so a save cannot silently
+// truncate. maxElements refuses any line whose array would hold more elements
+// (E021, that line alone is skipped). 0 disables a cap, making this ParseWith.
+// Both caps are parse-time only; the write API is the consumer's own
+// arithmetic. As everywhere, the error fires only at Strict, and a cap
+// diagnostic is an error, so a capped Strict load fails; at other levels the
+// parsed part stays readable.
+func ParseLimited(text string, strictness Strictness, maxNodes, maxElements int) (*Document, error) {
+	p := newParser()
+	p.maxNodes = maxNodes
+	p.maxElements = maxElements
+	doc := p.parse(text, strictness)
 	if strictness == Strict {
 		for _, d := range doc.diags {
 			if d.Severity == SeverityError {
