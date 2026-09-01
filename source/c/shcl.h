@@ -1901,52 +1901,11 @@ DEFINE_VEC(ShclVecPend, ShclPend)
 typedef struct { ShclArena line, hints; ShclVecMapPtr cmaps, dmaps; } ShclParseOwn;
 typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line; } ShclParser;
 
-// The one place prose couples to a code, so the wording stays free everywhere else.
-static const char *diag_code(shcl_severity sev, ShclStr msg) {
-	if (s_starts(msg, "merged with ")) return "H002";
-	if (sev == SHCL_SEV_HINT) return "H001"; // repeated bare leaf
-	if (s_starts(msg, "field mixed with list elements")) return "E001";
-	if (s_starts(msg, "value after selector on ")) return "E002";
-	if (s_starts(msg, "no instance ")) return "E003";
-	if (s_starts(msg, "wildcard selector is query-only")) return "E004";
-	if (s_starts(msg, "unterminated raw block")) return "E005";
-	if (s_starts(msg, "raw block with no parent field")) return "E006";
-	if (s_starts(msg, "list element with no parent field")) return "E007";
-	if (s_starts(msg, "list element mixed with field children")) return "E008";
-	if (s_starts(msg, "empty list element")) return "E009";
-	if (s_starts(msg, "bare comma in list element")) return "E010";
-	if (s_starts(msg, "field already has a value")) return "E011";
-	if (s_starts(msg, "indentation matches no open level")) return "E012";
-	if (s_starts(msg, "malformed line skipped")) return "E014";
-	if (s_starts(msg, "malformed line: ")) return "E013";
-	if (s_starts(msg, "missing colon")) return "E015";
-	if (s_starts(msg, "nesting deeper than")) return "E016";
-	if (s_starts(msg, "unterminated quote in value")) return "E017";
-	if (s_starts(msg, "parent line was skipped")) return "E018";
-	if (s_starts(msg, "bracket array syntax")) return "E019";
-	if (s_starts(msg, "unknown field ")) return "V001";
-	if (s_starts(msg, "required path missing")) return "V002";
-	if (s_starts(msg, "wrong type at ")) return "V003";
-	if (s_starts(msg, "value not allowed at ")) return "V004";
-	if (s_starts(msg, "value below min at ")) return "V005";
-	if (s_starts(msg, "value above max at ")) return "V006";
-	if (s_starts(msg, "instance count out of bounds at ")) return "V007";
-	if (s_starts(msg, "unknown schema key ")) return "V090";
-	if (s_starts(msg, "unknown schema type ")) return "V091";
-	if (s_starts(msg, "bad schema constraint ")) return "V092";
-	if (s_starts(msg, "bad schema path")) return "V093";
-	if (s_starts(msg, "bad schema fragment")) return "V094";
-	if (s_starts(msg, "unknown schema fragment ")) return "V095";
-	if (s_starts(msg, "schema expands past ")) return "V096";
-	if (s_starts(msg, "generated value fails the schema")) return "V097";
-	if (s_starts(msg, "schema failed to load")) return "V099";
-	return "E000";
-}
-static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, ShclStr msg) {
-	ShclDiag dg; dg.line = line; dg.sev = sev; dg.message = msg; dg.code = diag_code(sev, msg);
+static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, const char *code, ShclStr msg) {
+	ShclDiag dg; dg.line = line; dg.sev = sev; dg.message = msg; dg.code = code;
 	ShclVecDiag_push(&d->arena, &d->diags, dg);
 }
-static void p_err(ShclParser *P, size_t line, ShclStr msg) { push_diag(P->d, line, SHCL_SEV_ERROR, msg); }
+static void p_err(ShclParser *P, size_t line, const char *code, ShclStr msg) { push_diag(P->d, line, SHCL_SEV_ERROR, code, msg); }
 
 static void remap_child(ShclParser *P, size_t node, uint64_t old_key, uint64_t old_disp);
 static size_t find_by_value(ShclParser *P, size_t cur, ShclStr name, ShclStr text, int quoted);
@@ -2105,7 +2064,7 @@ static int resolve_parent(ShclParser *P, ShclStr indent, size_t *out) {
 /* Diagnose a line written under a skipped line, and skip it too. Its own
    level stays dead so deeper lines go the same way. */
 static void skip_under_dead(ShclParser *P, size_t line, ShclStr indent) {
-	p_err(P, line, s_lit("parent line was skipped; line skipped"));
+	p_err(P, line, "E018", s_lit("parent line was skipped; line skipped"));
 	P->d->lost++;
 	ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P->tmp, &P->stack, se);
 }
@@ -2133,7 +2092,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 	star_flush(P);
 	if (NODE(P->d, parent).star_list && !NODE(P->d, parent).star_mixed) {
 		NODE(P->d, parent).star_mixed = 1;
-		p_err(P, line, s_lit("field mixed with list elements"));
+		p_err(P, line, "E001", s_lit("field mixed with list elements"));
 	}
 	/* Nesting cap: parent depth plus the segments this line adds. Checked
 	   before any node is created so a rejected line leaves nothing behind. */
@@ -2141,7 +2100,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 	for (size_t up = parent; up != ROOT; up = NODE(P->d, up).parent) parent_depth++;
 	if (parent_depth + nsegs > SHCL_MAX_DEPTH) {
 		ShclSB m = {0}; sb_puts(a, &m, "nesting deeper than "); sb_put_u64(a, &m, SHCL_MAX_DEPTH); sb_puts(a, &m, " levels; line skipped");
-		p_err(P, line, sb_S(&m));
+		p_err(P, line, "E016", sb_S(&m));
 		P->d->lost++;
 		return 0;
 	}
@@ -2168,7 +2127,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 			}
 			if (is_last && !v_is_empty(&value)) {
 				ShclSB m = {0}; sb_puts(a, &m, "value after selector on '"); sb_putS(a, &m, seg->name); sb_puts(a, &m, "' ignored");
-				p_err(P, line, sb_S(&m));
+				p_err(P, line, "E002", sb_S(&m));
 				P->d->lost++;
 			}
 			break;
@@ -2184,12 +2143,12 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 			if (found != (size_t)-1) cur = found;
 			else {
 				ShclSB m = {0}; sb_puts(a, &m, "no instance "); sb_put_u64(a, &m, seg->sel.index); sb_puts(a, &m, " of '"); sb_putS(a, &m, seg->name); sb_putc(a, &m, '\'');
-				p_err(P, line, sb_S(&m)); P->d->lost++; return 0;
+				p_err(P, line, "E003", sb_S(&m)); P->d->lost++; return 0;
 			}
 			break;
 		}
 		case SEL_WILDCARD:
-			p_err(P, line, s_lit("wildcard selector is query-only")); P->d->lost++; return 0;
+			p_err(P, line, "E004", s_lit("wildcard selector is query-only")); P->d->lost++; return 0;
 		case SEL_NONE: {
 			size_t seg_parent = cur;
 			size_t before = P->d->nodes.len;
@@ -2212,7 +2171,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 					sb_putS(a, &m, h002_head(a, seg->name));
 					sb_puts(a, &m, "line "); sb_put_u64(a, &m, NODE(P->d, cur).line);
 					sb_puts(a, &m, " (same name and value combine)");
-					push_diag(P->d, line, SHCL_SEV_HINT, sb_S(&m));
+					push_diag(P->d, line, SHCL_SEV_HINT, "H002", sb_S(&m));
 					reent_set(P, cur, line);
 				}
 			}
@@ -2275,7 +2234,7 @@ static ShclValue consume_raw(ShclParser *P, const ShclStr *lines, size_t nlines,
 		}
 		ShclVecS_push(P->tmp, &content, lines[i]); i++;
 	}
-	if (!closed) p_err(P, open_line, s_lit("unterminated raw block"));
+	if (!closed) p_err(P, open_line, "E005", s_lit("unterminated raw block"));
 	ShclSB out = {0};
 	for (size_t k = 0; k < content.len; k++) {
 		if (k) sb_putc(a, &out, '\n');
@@ -2291,7 +2250,7 @@ static ShclValue consume_raw(ShclParser *P, const ShclStr *lines, size_t nlines,
 
 /* Returns the node the block landed on ((size_t)-1 = no parent, diagnosed). */
 static size_t bind_block(ShclParser *P, size_t parent, ShclValue value, size_t line) {
-	if (parent == ROOT) { p_err(P, line, s_lit("raw block with no parent field")); P->d->lost++; return (size_t)-1; }
+	if (parent == ROOT) { p_err(P, line, "E006", s_lit("raw block with no parent field")); P->d->lost++; return (size_t)-1; }
 	if (v_is_empty(&NODE(P->d, parent).value)) {
 		uint64_t old_key = merge_hash(NODE(P->d, parent).name, &NODE(P->d, parent).value);
 		uint64_t old_disp = disp_hash(NODE(P->d, parent).name, &NODE(P->d, parent).value);
@@ -2305,15 +2264,15 @@ static size_t bind_block(ShclParser *P, size_t parent, ShclValue value, size_t l
 
 static void add_star_element(ShclParser *P, size_t parent, ShclStr body, size_t line) {
 	ShclArena *a = &P->d->arena;
-	if (parent == ROOT) { p_err(P, line, s_lit("list element with no parent field")); P->d->lost++; return; }
+	if (parent == ROOT) { p_err(P, line, "E007", s_lit("list element with no parent field")); P->d->lost++; return; }
 	/* Uniform-or-nothing (spec): a mix with field children is not a block array. */
-	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, s_lit("list element mixed with field children; ignored")); P->d->lost++; return; }
+	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, "E008", s_lit("list element mixed with field children; ignored")); P->d->lost++; return; }
 	ShclStr trimmed = s_trim(body);
-	if (trimmed.n == 0) { p_err(P, line, s_lit("empty list element")); P->d->lost++; return; }
-	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, s_lit("bare comma in list element (one element per line)")); P->d->lost++; return; }
-	if (unterminated_quote(P->line, trimmed)) p_err(P, line, s_lit("unterminated quote in value"));
+	if (trimmed.n == 0) { p_err(P, line, "E009", s_lit("empty list element")); P->d->lost++; return; }
+	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, "E010", s_lit("bare comma in list element (one element per line)")); P->d->lost++; return; }
+	if (unterminated_quote(P->line, trimmed)) p_err(P, line, "E017", s_lit("unterminated quote in value"));
 	ShclElement el;
-	if (!parse_element(a, trimmed, &el)) { p_err(P, line, s_lit("empty list element")); P->d->lost++; return; }
+	if (!parse_element(a, trimmed, &el)) { p_err(P, line, "E009", s_lit("empty list element")); P->d->lost++; return; }
 	ShclNode *node = &NODE(P->d, parent);
 	if (node->value.kind == V_EMPTY) {
 		uint64_t old_key = merge_hash(node->name, &node->value);
@@ -2341,7 +2300,7 @@ static void add_star_element(ShclParser *P, size_t parent, ShclStr body, size_t 
 		}
 		node->value.els[node->value.nels++] = el;
 	} else {
-		p_err(P, line, s_lit("field already has a value; list element ignored"));
+		p_err(P, line, "E011", s_lit("field already has a value; list element ignored"));
 		P->d->lost++;
 	}
 }
@@ -2402,7 +2361,7 @@ static void emit_repeated_leaf_hints(ShclParser *P) {
 			ShclSB joined = {0};
 			for (size_t k = 0; k < grp.len; k++) { if (k) sb_puts(tmp, &joined, ", "); sb_putS(tmp, &joined, value_display(tmp, &NODE(P->d, grp.data[k]).value)); }
 			ShclSB m = {0}; sb_putS(a, &m, h001_head(a, names.data[gi])); sb_putS(a, &m, sb_S(&joined)); sb_puts(a, &m, "'?");
-			push_diag(P->d, maxline, SHCL_SEV_HINT, sb_S(&m));
+			push_diag(P->d, maxline, SHCL_SEV_HINT, "H001", sb_S(&m));
 		}
 	}
 	arena_free(tmp);
@@ -2478,7 +2437,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		ShclFence f = fence_open(rest);
 		if (f.ok) {
 			size_t parent;
-			if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
+			if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
 			size_t next; ShclValue val = consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, f, &next);
 			if (parent == DEAD) skip_under_dead(&P, lineno, indent);
 			else {
@@ -2491,14 +2450,14 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			ShclStr after = s_slice(rest, 1, rest.n);
 			if (after.n >= 1 && (after.p[0] == ' ' || after.p[0] == '\t')) {
 				size_t parent;
-				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
+				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
 				if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
 				ShclStr ecomment; ShclStr body = split_comment(after, &ecomment);
 				/* Elements have no node of their own; trivia rides the field. */
 				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
 				add_star_element(&P, parent, body, lineno); i++; continue;
 			}
-			p_err(&P, lineno, s_lit("malformed line: '*' must be followed by a space"));
+			p_err(&P, lineno, "E013", s_lit("malformed line: '*' must be followed by a space"));
 			/* Content-malformed at any position, so it is safe to retain
 			   verbatim as trivia: re-emitted, it re-diagnoses identically and
 			   can never read as a live binding. A hand-typo no longer
@@ -2531,11 +2490,11 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			i++; continue;
 		}
 		size_t parent;
-		if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
+		if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
 		if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
 		ShclPathScan scan = scan_path(&own->line, content);
 		if (!scan.ok) {
-			ShclSB m = {0}; sb_puts(a, &m, "malformed line skipped: "); sb_putS(a, &m, scan.err); p_err(&P, lineno, sb_S(&m));
+			ShclSB m = {0}; sb_puts(a, &m, "malformed line skipped: "); sb_putS(a, &m, scan.err); p_err(&P, lineno, "E014", sb_S(&m));
 			/* Content-malformed at any position - retained as trivia, same
 			   rationale (and same BOM exception) as the bad '*' line above. */
 			if (rest.n >= 3 && (unsigned char)rest.p[0] == 0xEF && (unsigned char)rest.p[1] == 0xBB && (unsigned char)rest.p[2] == 0xBF) d->lost++;
@@ -2553,9 +2512,9 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 				/* The brackets never survive the load, so a rewrite would bake
 				   the changed value in and the file would check clean forever
 				   after. Count it lost so the save gate stops that. */
-				p_err(&P, lineno, s_lit("bracket array syntax; an array is comma-separated, without brackets"));
+				p_err(&P, lineno, "E019", s_lit("bracket array syntax; an array is comma-separated, without brackets"));
 				P.d->lost++;
-			} else p_err(&P, lineno, s_lit("missing colon; repaired as an empty value"));
+			} else p_err(&P, lineno, "E015", s_lit("missing colon; repaired as an empty value"));
 			value = v_empty();
 		}
 		else if (scan.value_text.n == 0) value = v_empty();
@@ -2563,7 +2522,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			ShclFence vf = fence_open(scan.value_text);
 			if (vf.ok) value = consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, vf, &next);
 			else {
-				if (unterminated_quote(&own->line, scan.value_text)) p_err(&P, lineno, s_lit("unterminated quote in value"));
+				if (unterminated_quote(&own->line, scan.value_text)) p_err(&P, lineno, "E017", s_lit("unterminated quote in value"));
 				value = parse_cell(a, &own->line, scan.value_text);
 			}
 		}
@@ -4119,8 +4078,8 @@ static const ShclVecVCons *v_frag_get(const ShclVSchemaDef *def, ShclStr name) {
 	return NULL;
 }
 
-static void v_diag(ShclArena *a, ShclVecDiag *out, size_t line, ShclStr msg) {
-	ShclDiag dg; dg.line = line; dg.sev = SHCL_SEV_ERROR; dg.message = msg; dg.code = diag_code(SHCL_SEV_ERROR, msg);
+static void v_diag(ShclArena *a, ShclVecDiag *out, size_t line, const char *code, ShclStr msg) {
+	ShclDiag dg; dg.line = line; dg.sev = SHCL_SEV_ERROR; dg.message = msg; dg.code = code;
 	ShclVecDiag_push(a, out, dg);
 }
 static ShclStr v_msgz(ShclArena *a, const char *z) { ShclStr s; s.p = z; s.n = strlen(z); return s_dup(a, s); }
@@ -4167,12 +4126,12 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 	ShclNode *node = &NODE(schema, f);
 	ShclStr path;
 	if (!v_single_text(a, &node->value, &path)) {
-		v_diag(a, faults, node->line, v_msgz(a, "bad schema path"));
+		v_diag(a, faults, node->line, "V093", v_msgz(a, "bad schema path"));
 		return 0;
 	}
 	ShclPathScan ps = scan_lookup(a, path);
 	if (!ps.ok || ps.has_value) {
-		v_diag(a, faults, node->line, v_msg3(a, "bad schema path: ", path, ""));
+		v_diag(a, faults, node->line, "V093", v_msg3(a, "bad schema path: ", path, ""));
 		return 0;
 	}
 	ShclVCons c; memset(&c, 0, sizeof c);
@@ -4194,19 +4153,19 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 				for (size_t x = 0; x < sizeof v_schema_types / sizeof v_schema_types[0]; x++)
 					if (s_eq(low, s_lit(v_schema_types[x]))) { canon = v_schema_types[x]; break; }
 				if (canon) {
-					if (c.ty) v_diag(a, faults, kid->line, v_msg_key(a, "type"));
+					if (c.ty) v_diag(a, faults, kid->line, "V092", v_msg_key(a, "type"));
 					else c.ty = canon;
 				} else {
-					v_diag(a, faults, kid->line, v_msg3(a, "unknown schema type '", low, "'"));
+					v_diag(a, faults, kid->line, "V091", v_msg3(a, "unknown schema type '", low, "'"));
 				}
 			} else {
-				v_diag(a, faults, kid->line, v_msg_key(a, "type"));
+				v_diag(a, faults, kid->line, "V092", v_msg_key(a, "type"));
 			}
 		} else if (s_eq(kid->name, s_lit("required"))) {
 			ShclStr t; int b = 0;
 			int ok = v_single_text(a, &kid->value, &t) && parse_bool_text(a, t, SHCL_STANDARD, &b);
 			if (ok && required < 0) required = b;
-			else v_diag(a, faults, kid->line, v_msg_key(a, "required"));
+			else v_diag(a, faults, kid->line, "V092", v_msg_key(a, "required"));
 		} else if (s_eq(kid->name, s_lit("reopen"))) {
 			/* Consumed by the H002 suppressor (which reads the schema document
 			   directly); validation itself ignores it, but a bad value still
@@ -4214,33 +4173,33 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 			ShclStr t; int b = 0;
 			int ok = v_single_text(a, &kid->value, &t) && parse_bool_text(a, t, SHCL_STANDARD, &b);
 			if (ok && !reopen_seen) reopen_seen = 1;
-			else v_diag(a, faults, kid->line, v_msg_key(a, "reopen"));
+			else v_diag(a, faults, kid->line, "V092", v_msg_key(a, "reopen"));
 		} else if (s_eq(kid->name, s_lit("allowed"))) {
 			if (kid->value.kind == V_CELL && allowed_at == (size_t)-1) allowed_at = kids.data[ki];
-			else v_diag(a, faults, kid->line, v_msg_key(a, "allowed"));
+			else v_diag(a, faults, kid->line, "V092", v_msg_key(a, "allowed"));
 		} else if (s_eq(kid->name, s_lit("min"))) {
 			if (kid->value.kind == V_CELL && kid->value.nels == 1 && min_at == (size_t)-1) min_at = kids.data[ki];
-			else v_diag(a, faults, kid->line, v_msg_key(a, "min"));
+			else v_diag(a, faults, kid->line, "V092", v_msg_key(a, "min"));
 		} else if (s_eq(kid->name, s_lit("max"))) {
 			if (kid->value.kind == V_CELL && kid->value.nels == 1 && max_at == (size_t)-1) max_at = kids.data[ki];
-			else v_diag(a, faults, kid->line, v_msg_key(a, "max"));
+			else v_diag(a, faults, kid->line, "V092", v_msg_key(a, "max"));
 		} else if (s_eq(kid->name, s_lit("repeat"))) {
 			if (kid->value.kind == V_CELL && !c.has_repeat && (kid->value.nels == 1 || kid->value.nels == 2)) {
 				uint64_t lo, hi;
 				if (parse_u64(kid->value.els[0].text, &lo) && parse_u64(kid->value.els[kid->value.nels - 1].text, &hi) && lo <= hi) {
 					c.has_repeat = 1; c.rep_lo = lo; c.rep_hi = hi;
 				} else {
-					v_diag(a, faults, kid->line, v_msg_key(a, "repeat"));
+					v_diag(a, faults, kid->line, "V092", v_msg_key(a, "repeat"));
 				}
 			} else {
-				v_diag(a, faults, kid->line, v_msg_key(a, "repeat"));
+				v_diag(a, faults, kid->line, "V092", v_msg_key(a, "repeat"));
 			}
 		} else if (s_eq(kid->name, s_lit("inherits"))) {
 			ShclStr t;
 			if (v_single_text(a, &kid->value, &t) && t.n && c.inherits.n == 0) {
 				c.inherits = t; c.inherits_line = kid->line;
 			} else {
-				v_diag(a, faults, kid->line, v_msg_key(a, "inherits"));
+				v_diag(a, faults, kid->line, "V092", v_msg_key(a, "inherits"));
 			}
 		} else if (s_eq(kid->name, s_lit("desc"))) {
 			// Generator-only (`shcl init`); validation ignores it. First wins.
@@ -4253,7 +4212,7 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 				c.has_default = 1; c.default_text = sb_S(&s);
 			}
 		} else {
-			v_diag(a, faults, kid->line, v_msg3(a, "unknown schema key '", kid->name, "'"));
+			v_diag(a, faults, kid->line, "V090", v_msg3(a, "unknown schema key '", kid->name, "'"));
 		}
 	}
 	c.required = required > 0;
@@ -4295,7 +4254,7 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 			for (size_t x = 0; x < n; x++) c.a_strs[x] = apply_escapes(a, els[x].text);
 		}
 		if (ok) c.has_allowed = 1;
-		else v_diag(a, faults, kid->line, v_msg_key(a, "allowed"));
+		else v_diag(a, faults, kid->line, "V092", v_msg_key(a, "allowed"));
 	}
 	for (int mm = 0; mm < 2; mm++) {
 		int is_min = mm == 0;
@@ -4309,15 +4268,15 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 			if (parse_int_text(a, el, SHCL_STANDARD, &v)) {
 				if (is_min) { c.has_min_i = 1; c.min_i = v; }
 				else { c.has_max_i = 1; c.max_i = v; }
-			} else v_diag(a, faults, kid->line, v_msg_key(a, key));
+			} else v_diag(a, faults, kid->line, "V092", v_msg_key(a, key));
 		} else if (strcmp(base, "float") == 0) {
 			double v;
 			if (parse_float_text(a, el, SHCL_STANDARD, &v)) {
 				if (is_min) { c.has_min_f = 1; c.min_f = v; }
 				else { c.has_max_f = 1; c.max_f = v; }
-			} else v_diag(a, faults, kid->line, v_msg_key(a, key));
+			} else v_diag(a, faults, kid->line, "V092", v_msg_key(a, key));
 		} else {
-			v_diag(a, faults, kid->line, v_msg_key(a, key));
+			v_diag(a, faults, kid->line, "V092", v_msg_key(a, key));
 		}
 	}
 	*out = c;
@@ -4341,11 +4300,11 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 		} else if (s_eq(node->name, s_lit("fragment"))) {
 			ShclStr name;
 			if (!v_single_text(a, &node->value, &name) || name.n == 0) {
-				v_diag(a, faults, node->line, v_msgz(a, "bad schema fragment"));
+				v_diag(a, faults, node->line, "V094", v_msgz(a, "bad schema fragment"));
 				continue;
 			}
 			if (v_frag_get(def, name)) {
-				v_diag(a, faults, node->line, v_msg3(a, "bad schema fragment '", name, "': duplicate"));
+				v_diag(a, faults, node->line, "V094", v_msg3(a, "bad schema fragment '", name, "': duplicate"));
 				continue;
 			}
 			ShclVFrag fr; fr.name = name; memset(&fr.fields, 0, sizeof fr.fields);
@@ -4360,12 +4319,12 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 					ShclSB s = {0, 0, 0};
 					sb_puts(a, &s, "bad schema fragment '"); sb_putS(a, &s, name);
 					sb_puts(a, &s, "': unknown key '"); sb_putS(a, &s, kid->name); sb_puts(a, &s, "'");
-					v_diag(a, faults, kid->line, sb_S(&s));
+					v_diag(a, faults, kid->line, "V094", sb_S(&s));
 				}
 			}
 			ShclVecVFrag_push(a, &def->frags, fr);
 		} else {
-			v_diag(a, faults, node->line, v_msg3(a, "unknown schema key '", node->name, "'"));
+			v_diag(a, faults, node->line, "V090", v_msg3(a, "unknown schema key '", node->name, "'"));
 		}
 	}
 	// Every mount must name a declared fragment; cycles (self or mutual) are
@@ -4375,7 +4334,7 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 		for (size_t i = 0; i < list->len; i++) {
 			const ShclVCons *c = &list->data[i];
 			if (c->inherits.n && !v_frag_get(def, c->inherits)) {
-				v_diag(a, faults, c->inherits_line, v_msg3(a, "unknown schema fragment '", c->inherits, "'"));
+				v_diag(a, faults, c->inherits_line, "V095", v_msg3(a, "unknown schema fragment '", c->inherits, "'"));
 				def->paths_complete = 0;
 			}
 		}
@@ -4502,13 +4461,13 @@ static void v_wrong_type(ShclArena *a, ShclVecDiag *out, size_t line, const Shcl
 	ShclSB s = {0, 0, 0};
 	sb_puts(a, &s, "wrong type at '"); sb_putS(a, &s, c->path);
 	sb_puts(a, &s, "': value is not a valid "); sb_puts(a, &s, c->ty ? c->ty : "string");
-	v_diag(a, out, line, sb_S(&s));
+	v_diag(a, out, line, "V003", sb_S(&s));
 }
 static void v_not_allowed(ShclArena *a, ShclVecDiag *out, size_t line, const ShclVCons *c, ShclStr text) {
 	ShclSB s = {0, 0, 0};
 	sb_puts(a, &s, "value not allowed at '"); sb_putS(a, &s, c->path);
 	sb_puts(a, &s, "': "); sb_putS(a, &s, text);
-	v_diag(a, out, line, sb_S(&s));
+	v_diag(a, out, line, "V004", sb_S(&s));
 }
 
 // Diagnostic messages go to a (they outlive the walk); coercion temporaries
@@ -4553,8 +4512,8 @@ static void v_node(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCons *c,
 				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
 			}
 		}
-		if (c->has_min_i) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_i) { v_diag(a, out, line, v_msg3(a, "value below min at '", c->path, "'")); break; } }
-		if (c->has_max_i) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_i) { v_diag(a, out, line, v_msg3(a, "value above max at '", c->path, "'")); break; } }
+		if (c->has_min_i) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_i) { v_diag(a, out, line, "V005", v_msg3(a, "value below min at '", c->path, "'")); break; } }
+		if (c->has_max_i) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_i) { v_diag(a, out, line, "V006", v_msg3(a, "value above max at '", c->path, "'")); break; } }
 	} else if (V_BASE_IS("float")) {
 		double *vals = (double *)arena_alloc(lv, (nels ? nels : 1) * sizeof(double));
 		for (size_t x = 0; x < nels; x++)
@@ -4566,8 +4525,8 @@ static void v_node(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCons *c,
 				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
 			}
 		}
-		if (c->has_min_f) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_f) { v_diag(a, out, line, v_msg3(a, "value below min at '", c->path, "'")); break; } }
-		if (c->has_max_f) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_f) { v_diag(a, out, line, v_msg3(a, "value above max at '", c->path, "'")); break; } }
+		if (c->has_min_f) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_f) { v_diag(a, out, line, "V005", v_msg3(a, "value below min at '", c->path, "'")); break; } }
+		if (c->has_max_f) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_f) { v_diag(a, out, line, "V006", v_msg3(a, "value above max at '", c->path, "'")); break; } }
 	} else if (V_BASE_IS("bool")) {
 		int *vals = (int *)arena_alloc(lv, (nels ? nels : 1) * sizeof(int));
 		for (size_t x = 0; x < nels; x++)
@@ -4626,7 +4585,7 @@ static void v_check_from(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCo
 	for (size_t i = 0; i < ctxs.len; i++) {
 		ShclVCtx *ctx = &ctxs.data[i];
 		if (c->required && ctx->found.len == 0)
-			v_diag(a, out, ctx->anchor, v_msg3(a, "required path missing: ", c->path, ""));
+			v_diag(a, out, ctx->anchor, "V002", v_msg3(a, "required path missing: ", c->path, ""));
 		if (c->has_repeat) {
 			uint64_t n = (uint64_t)ctx->found.len;
 			if (n < c->rep_lo || n > c->rep_hi) {
@@ -4635,7 +4594,7 @@ static void v_check_from(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCo
 				sb_puts(a, &s, "': "); sb_put_u64(a, &s, n);
 				sb_puts(a, &s, " not in "); sb_put_u64(a, &s, c->rep_lo);
 				sb_puts(a, &s, ".."); sb_put_u64(a, &s, c->rep_hi);
-				v_diag(a, out, ctx->anchor, sb_S(&s));
+				v_diag(a, out, ctx->anchor, "V007", sb_S(&s));
 			}
 		}
 		for (size_t k = 0; k < ctx->found.len; k++) {
@@ -4839,7 +4798,7 @@ static void v_unknown(ShclArena *a, ShclArena *tmp, shcl_doc *d, const ShclVSche
 			for (ShclCMapEnt *e = cmap_first(&sib_of, hpc); e; e = cmap_next(e, hpc))
 				if (s_eq(sib_chain.data[e->val], pchain)) { sg = e->val; break; }
 			v_suggest(a, tmp, sg == (size_t)-1 ? NULL : &sibs[sg], node->name, &msg);
-			v_diag(a, out, node->line, sb_S(&msg));
+			v_diag(a, out, node->line, "V001", sb_S(&msg));
 			continue;
 		}
 		ShclVecSize ch = node->children;
@@ -5040,7 +4999,7 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 		int sbad = 0;
 		for (size_t i = 0; i < sd->diags.len; i++) if (sd->diags.data[i].sev == SHCL_SEV_ERROR) { sbad = 1; break; }
 		if (sbad) {
-			push_diag(d, 0, SHCL_SEV_ERROR, s_lit("schema failed to load"));
+			push_diag(d, 0, SHCL_SEV_ERROR, "V099", s_lit("schema failed to load"));
 			shcl_free(sd);
 			return d;
 		}
@@ -5642,7 +5601,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		sb_puts(a, &m, "schema expands past "); sb_put_u64(a, &m, GEN_MAX_FIELDS);
 		sb_puts(a, &m, " fields; fragments mounted at more than one path multiply");
 		// the diag outlives this call: its text must leave the private arena
-		push_diag(schema, 0, SHCL_SEV_ERROR, s_dup(&schema->arena, sb_S(&m)));
+		push_diag(schema, 0, SHCL_SEV_ERROR, "V096", s_dup(&schema->arena, sb_S(&m)));
 		if (ok) *ok = 0;
 		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
 	}
@@ -5755,7 +5714,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			sb_puts(a, &m, "generated value fails the schema that produced it: ");
 			sb_putS(a, &m, shcl_validation_message(v, i));
 			/* the diag outlives this call: its text must leave the private arena */
-			push_diag(schema, 0, SHCL_SEV_ERROR, s_dup(&schema->arena, sb_S(&m)));
+			push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
 			nbad++;
 		}
 		if (v) shcl_validation_free(v);
