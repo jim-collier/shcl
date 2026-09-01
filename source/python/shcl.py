@@ -121,51 +121,6 @@ class Diagnostic:
 		self.code = code          # stable machine code (E001.., H001..); the contract
 
 
-# The one place prose couples to a code, so the wording stays free everywhere else.
-def _diag_code(msg):
-	for prefix, code in (
-		("field mixed with list elements", "E001"),
-		("value after selector on ", "E002"),
-		("no instance ", "E003"),
-		("wildcard selector is query-only", "E004"),
-		("unterminated raw block", "E005"),
-		("raw block with no parent field", "E006"),
-		("list element with no parent field", "E007"),
-		("list element mixed with field children", "E008"),
-		("empty list element", "E009"),
-		("bare comma in list element", "E010"),
-		("field already has a value", "E011"),
-		("indentation matches no open level", "E012"),
-		("malformed line skipped", "E014"),
-		("malformed line: ", "E013"),
-		("missing colon", "E015"),
-		("nesting deeper than", "E016"),
-		("unterminated quote in value", "E017"),
-		("parent line was skipped", "E018"),
-		("bracket array syntax", "E019"),
-		("merged with ", "H002"),
-		("unknown field ", "V001"),
-		("required path missing", "V002"),
-		("wrong type at ", "V003"),
-		("value not allowed at ", "V004"),
-		("value below min at ", "V005"),
-		("value above max at ", "V006"),
-		("instance count out of bounds at ", "V007"),
-		("unknown schema key ", "V090"),
-		("unknown schema type ", "V091"),
-		("bad schema constraint ", "V092"),
-		("bad schema path", "V093"),
-		("bad schema fragment", "V094"),
-		("unknown schema fragment ", "V095"),
-		("schema expands past ", "V096"),
-		("generated value fails the schema", "V097"),
-		("schema failed to load", "V099"),
-	):
-		if msg.startswith(prefix):
-			return code
-	return "E000"
-
-
 class Read:
 	"""Value plus status plus the original raw text (when the path resolved).
 	Array reads also carry one status per slot (element, or wildcard instance)
@@ -1203,8 +1158,8 @@ class _Parser:
 		# Dropped lines/values canonical output cannot re-emit.
 		self.lost = 0
 
-	def _err(self, line, msg):
-		self.diags.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
+	def _err(self, line, code, msg):
+		self.diags.append(Diagnostic(line, Severity.Error, msg, code))
 
 	def _select_or_create(self, parent, name, name_src, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
@@ -1350,7 +1305,7 @@ class _Parser:
 	def _skip_under_dead(self, line, indent):
 		"""Diagnose a line written under a skipped line, and skip it too. Its own
 		level stays dead so deeper lines go the same way."""
-		self._err(line, "parent line was skipped; line skipped")
+		self._err(line, "E018", "parent line was skipped; line skipped")
 		self.lost += 1
 		self.stack.append((indent, DEAD))
 
@@ -1362,7 +1317,7 @@ class _Parser:
 		pnode = self.arena[parent]
 		if pnode.star_list and not pnode.star_mixed:
 			pnode.star_mixed = True
-			self._err(line, "field mixed with list elements")
+			self._err(line, "E001", "field mixed with list elements")
 		# Nesting cap: parent depth plus the segments this line adds. Checked
 		# before any node is created so a rejected line leaves nothing behind.
 		parent_depth = 0
@@ -1371,7 +1326,7 @@ class _Parser:
 			parent_depth += 1
 			up = self.arena[up].parent
 		if parent_depth + len(segs) > MAX_DEPTH:
-			self._err(line, f"nesting deeper than {MAX_DEPTH} levels; line skipped")
+			self._err(line, "E016", f"nesting deeper than {MAX_DEPTH} levels; line skipped")
 			self.lost += 1
 			return None
 		cur = parent
@@ -1400,7 +1355,7 @@ class _Parser:
 				if is_last and not value.is_empty():
 					# `a.b[X]: v` - the discriminator is the value; a second
 					# value has nowhere unambiguous to go.
-					self._err(line, f"value after selector on '{seg.name}' ignored")
+					self._err(line, "E002", f"value after selector on '{seg.name}' ignored")
 					self.lost += 1
 			elif sel is not None and sel[0] == "idx":
 				k = sel[1]
@@ -1415,11 +1370,11 @@ class _Parser:
 				if found is not None:
 					cur = found
 				else:
-					self._err(line, f"no instance {k} of '{seg.name}'")
+					self._err(line, "E003", f"no instance {k} of '{seg.name}'")
 					self.lost += 1
 					return None
 			elif sel is not None and sel[0] == "wild":
-				self._err(line, "wildcard selector is query-only")
+				self._err(line, "E004", "wildcard selector is query-only")
 				self.lost += 1
 				return None
 			elif not is_last:
@@ -1485,7 +1440,7 @@ class _Parser:
 			content.append(lines[i])
 			i += 1
 		if not closed:
-			self._err(open_line, "unterminated raw block")
+			self._err(open_line, "E005", "unterminated raw block")
 		stripped = [_strip_common(ln, nest) for ln in content]
 		return _raw("\n".join(stripped), info, ch, length), i
 
@@ -1494,7 +1449,7 @@ class _Parser:
 		value, else creates a new instance of that field (the repeated-leaf rule).
 		Returns the node the block landed on (None = no parent, diagnosed)."""
 		if parent == ROOT:
-			self._err(line, "raw block with no parent field")
+			self._err(line, "E006", "raw block with no parent field")
 			self.lost += 1
 			return None
 		if self.arena[parent].value.is_empty():
@@ -1512,29 +1467,29 @@ class _Parser:
 	def _add_star_element(self, parent, body, line):
 		"""One stacked-list element (`* scalar`) appends to the parent's array."""
 		if parent == ROOT:
-			self._err(line, "list element with no parent field")
+			self._err(line, "E007", "list element with no parent field")
 			self.lost += 1
 			return
 		# Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if self.arena[parent].children:
-			self._err(line, "list element mixed with field children; ignored")
+			self._err(line, "E008", "list element mixed with field children; ignored")
 			self.lost += 1
 			return
 		trimmed = _trim(body)
 		if not trimmed:
-			self._err(line, "empty list element")
+			self._err(line, "E009", "empty list element")
 			self.lost += 1
 			return
 		# One scalar per line; a bare comma is an error, not a second element.
 		if len(_split_unquoted_commas(trimmed)) > 1:
-			self._err(line, "bare comma in list element (one element per line)")
+			self._err(line, "E010", "bare comma in list element (one element per line)")
 			self.lost += 1
 			return
 		if _unterminated_quote(trimmed):
-			self._err(line, "unterminated quote in value")
+			self._err(line, "E017", "unterminated quote in value")
 		el = _parse_element(trimmed)
 		if el is None:
-			self._err(line, "empty list element")
+			self._err(line, "E009", "empty list element")
 			self.lost += 1
 			return
 		node = self.arena[parent]
@@ -1559,7 +1514,7 @@ class _Parser:
 				self.star_open = (parent, old_key, old_disp)
 			node.value.els.append(el)
 		else:
-			self._err(line, "field already has a value; list element ignored")
+			self._err(line, "E011", "field already has a value; list element ignored")
 			self.lost += 1
 
 	def _emit_repeated_leaf_hints(self):
@@ -1634,7 +1589,7 @@ class _Parser:
 			if fence is not None:
 				parent = self._resolve_parent(indent)
 				if parent is None:
-					self._err(lineno, "indentation matches no open level")
+					self._err(lineno, "E012", "indentation matches no open level")
 					self.lost += 1
 					i += 1
 					continue
@@ -1653,7 +1608,7 @@ class _Parser:
 				if after.startswith(" ") or after.startswith("\t"):
 					parent = self._resolve_parent(indent)
 					if parent is None:
-						self._err(lineno, "indentation matches no open level")
+						self._err(lineno, "E012", "indentation matches no open level")
 						self.lost += 1
 						i += 1
 						continue
@@ -1668,7 +1623,7 @@ class _Parser:
 					self._add_star_element(parent, body, lineno)
 					i += 1
 					continue
-				self._err(lineno, "malformed line: '*' must be followed by a space")
+				self._err(lineno, "E013", "malformed line: '*' must be followed by a space")
 				# Content-malformed at any position, so it is safe to retain
 				# verbatim as trivia: re-emitted, it re-diagnoses identically
 				# and can never read as a live binding. A hand-typo no longer
@@ -1702,7 +1657,7 @@ class _Parser:
 				continue
 			parent = self._resolve_parent(indent)
 			if parent is None:
-				self._err(lineno, "indentation matches no open level")
+				self._err(lineno, "E012", "indentation matches no open level")
 				self.lost += 1
 				i += 1
 				continue
@@ -1713,7 +1668,7 @@ class _Parser:
 			try:
 				segments, value_text = _scan_path(content)
 			except _PathError as e:
-				self._err(lineno, f"malformed line skipped: {e.args[0]}")
+				self._err(lineno, "E014", f"malformed line skipped: {e.args[0]}")
 				# Content-malformed at any position - retained as trivia, same
 				# rationale (and same BOM exception) as the bad '*' line above.
 				if rest.startswith("\ufeff"):
@@ -1732,12 +1687,12 @@ class _Parser:
 					# The brackets never survive the load, so a rewrite would
 					# bake the changed value in and the file would check clean
 					# forever after. Count it lost so the save gate stops that.
-					self._err(lineno, "bracket array syntax; an array is comma-separated, without brackets")
+					self._err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
 					self.lost += 1
 				else:
 					# A clean path with no colon is the one defined repair:
 					# the obvious intent is that path with an empty value.
-					self._err(lineno, "missing colon; repaired as an empty value")
+					self._err(lineno, "E015", "missing colon; repaired as an empty value")
 				value = _empty()
 			elif value_text == "":
 				value = _empty()
@@ -1748,7 +1703,7 @@ class _Parser:
 					value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				else:
 					if _unterminated_quote(value_text):
-						self._err(lineno, "unterminated quote in value")
+						self._err(lineno, "E017", "unterminated quote in value")
 					src_text = value_text
 					value = _parse_cell(value_text)
 			# Record only when the bound node holds exactly this line's value
@@ -3275,12 +3230,12 @@ class Document:
 			elif job[0] == "ctx":
 				_, c, anchor, found = job
 				if c.required and not found:
-					_vdiag(out, anchor, f"required path missing: {c.path}")
+					_vdiag(out, anchor, "V002", f"required path missing: {c.path}")
 				if c.repeat is not None:
 					lo, hi = c.repeat
 					n = len(found)
 					if n < lo or n > hi:
-						_vdiag(out, anchor, f"instance count out of bounds at '{c.path}': {n} not in {lo}..{hi}")
+						_vdiag(out, anchor, "V007", f"instance count out of bounds at '{c.path}': {n} not in {lo}..{hi}")
 				for n in reversed(found):
 					stack.append(("node", c, n))
 			else:
@@ -3306,7 +3261,7 @@ class Document:
 		is_array = c.ty is not None and c.ty.endswith("-array")
 
 		def wrong():
-			_vdiag(out, line, f"wrong type at '{c.path}': value is not a valid {c.ty}")
+			_vdiag(out, line, "V003", f"wrong type at '{c.path}': value is not a valid {c.ty}")
 
 		if node.value.kind == "empty":
 			# Empty passes everything; required already counted it as present.
@@ -3319,7 +3274,7 @@ class Document:
 				return
 			if c.allowed is not None and c.allowed[0] == "strings":
 				if node.value.content not in c.allowed[1]:
-					_vdiag(out, line, f"value not allowed at '{c.path}': {node.value.content}")
+					_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {node.value.content}")
 			return
 		els = node.value.els
 		if base == "raw":
@@ -3339,12 +3294,12 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "ints":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
 						break
 			if c.min_i is not None and any(v < c.min_i for v in vals):
-				_vdiag(out, line, f"value below min at '{c.path}'")
+				_vdiag(out, line, "V005", f"value below min at '{c.path}'")
 			if c.max_i is not None and any(v > c.max_i for v in vals):
-				_vdiag(out, line, f"value above max at '{c.path}'")
+				_vdiag(out, line, "V006", f"value above max at '{c.path}'")
 		elif base == "float":
 			vals = [_parse_float_text(e, self._strictness) for e in els]
 			if any(v is None for v in vals):
@@ -3353,12 +3308,12 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "floats":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
 						break
 			if c.min_f is not None and any(v < c.min_f for v in vals):
-				_vdiag(out, line, f"value below min at '{c.path}'")
+				_vdiag(out, line, "V005", f"value below min at '{c.path}'")
 			if c.max_f is not None and any(v > c.max_f for v in vals):
-				_vdiag(out, line, f"value above max at '{c.path}'")
+				_vdiag(out, line, "V006", f"value above max at '{c.path}'")
 		elif base == "bool":
 			vals = [_parse_bool_text(e.text, self._strictness) for e in els]
 			if any(v is None for v in vals):
@@ -3367,7 +3322,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "bools":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
 						break
 		elif base == "datetime":
 			vals = [parse_datetime(e.text) for e in els]
@@ -3377,7 +3332,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "dates":
 				for i, v in enumerate(vals):
 					if not any(_dt_equal(v, a) for a in c.allowed[1]):
-						_vdiag(out, line, f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
 						break
 		else:
 			# string kind or untyped: every element coerces; only the allowed
@@ -3386,7 +3341,7 @@ class Document:
 				for e in els:
 					s = _apply_escapes(e.text)
 					if s not in c.allowed[1]:
-						_vdiag(out, line, f"value not allowed at '{c.path}': {s}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {s}")
 						break
 
 	def _v_unknown(self, sdef, out):
@@ -3426,7 +3381,7 @@ class Document:
 				and not (has_mounts and _chain_legal(cons, sdef.frags, chain))
 			):
 				hint = _v_suggest(siblings, pchain, node.name)
-				_vdiag(out, node.line, f"unknown field '{shown}'{hint}")
+				_vdiag(out, node.line, "V001", f"unknown field '{shown}'{hint}")
 				continue
 			for k in reversed(node.children):
 				stack.append((k, chain, shown))
@@ -4422,8 +4377,8 @@ def _coerced(coerce, el, default):
 	return v, Status.Good
 
 
-def _vdiag(out, line, msg):
-	out.append(Diagnostic(line, Severity.Error, msg, _diag_code(msg)))
+def _vdiag(out, line, code, msg):
+	out.append(Diagnostic(line, Severity.Error, msg, code))
 
 
 def _single_text(v):
@@ -4459,10 +4414,10 @@ def _build_schema(schema):
 		elif node.name == "fragment":
 			name = _single_text(node.value)
 			if not name:
-				_vdiag(faults, node.line, "bad schema fragment")
+				_vdiag(faults, node.line, "V094", "bad schema fragment")
 				continue
 			if name in frags:
-				_vdiag(faults, node.line, f"bad schema fragment '{name}': duplicate")
+				_vdiag(faults, node.line, "V094", f"bad schema fragment '{name}': duplicate")
 				continue
 			fcs = []
 			for k in schema.arena[f].children:
@@ -4474,15 +4429,15 @@ def _build_schema(schema):
 					else:
 						paths_complete = False
 				else:
-					_vdiag(faults, kid.line, f"bad schema fragment '{name}': unknown key '{kid.name}'")
+					_vdiag(faults, kid.line, "V094", f"bad schema fragment '{name}': unknown key '{kid.name}'")
 			frags[name] = fcs
 		else:
-			_vdiag(faults, node.line, f"unknown schema key '{node.name}'")
+			_vdiag(faults, node.line, "V090", f"unknown schema key '{node.name}'")
 	# Every mount must name a declared fragment; cycles (self or mutual) are
 	# legal - expansion is demand-driven against a finite document.
 	for c in cons + [fc for fcs in frags.values() for fc in fcs]:
 		if c.inherits is not None and c.inherits not in frags:
-			_vdiag(faults, c.inherits_line, f"unknown schema fragment '{c.inherits}'")
+			_vdiag(faults, c.inherits_line, "V095", f"unknown schema fragment '{c.inherits}'")
 			paths_complete = False
 	# One constraint per line in practice, so line order = file order.
 	faults.sort(key=lambda d: d.line)
@@ -4495,14 +4450,14 @@ def _parse_field(schema, f, faults):
 	node = schema.arena[f]
 	path = _single_text(node.value)
 	if path is None:
-		_vdiag(faults, node.line, "bad schema path")
+		_vdiag(faults, node.line, "V093", "bad schema path")
 		return None
 	try:
 		segs, value_text = _scan_lookup(path)
 	except _PathError:
 		segs, value_text = None, None
 	if segs is None or value_text is not None:
-		_vdiag(faults, node.line, f"bad schema path: {path}")
+		_vdiag(faults, node.line, "V093", f"bad schema path: {path}")
 		return None
 	c = _Constraint(path, segs)
 	# Deferred so `min: 1` may precede `type: int` in the file.
@@ -4521,20 +4476,20 @@ def _parse_field(schema, f, faults):
 				t = _ascii_lower(t)
 			if t in _SCHEMA_TYPES:
 				if c.ty is not None:
-					_vdiag(faults, kid.line, "bad schema constraint 'type'")
+					_vdiag(faults, kid.line, "V092", "bad schema constraint 'type'")
 				else:
 					c.ty = t
 			elif t is not None:
-				_vdiag(faults, kid.line, f"unknown schema type '{t}'")
+				_vdiag(faults, kid.line, "V091", f"unknown schema type '{t}'")
 			else:
-				_vdiag(faults, kid.line, "bad schema constraint 'type'")
+				_vdiag(faults, kid.line, "V092", "bad schema constraint 'type'")
 		elif kid.name == "required":
 			t = _single_text(kid.value)
 			b = _parse_bool_text(t, Strictness.Standard) if t is not None else None
 			if b is not None and required is None:
 				required = b
 			else:
-				_vdiag(faults, kid.line, "bad schema constraint 'required'")
+				_vdiag(faults, kid.line, "V092", "bad schema constraint 'required'")
 		elif kid.name == "reopen":
 			# Consumed by the H002 suppressor (which reads the schema document
 			# directly); validation itself ignores it, but a bad value still
@@ -4544,22 +4499,22 @@ def _parse_field(schema, f, faults):
 			if b is not None and not reopen_seen:
 				reopen_seen = True
 			else:
-				_vdiag(faults, kid.line, "bad schema constraint 'reopen'")
+				_vdiag(faults, kid.line, "V092", "bad schema constraint 'reopen'")
 		elif kid.name == "allowed":
 			if kid.value.kind == "cell" and allowed_at is None:
 				allowed_at = k
 			else:
-				_vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+				_vdiag(faults, kid.line, "V092", "bad schema constraint 'allowed'")
 		elif kid.name == "min":
 			if kid.value.kind == "cell" and len(kid.value.els) == 1 and min_at is None:
 				min_at = k
 			else:
-				_vdiag(faults, kid.line, "bad schema constraint 'min'")
+				_vdiag(faults, kid.line, "V092", "bad schema constraint 'min'")
 		elif kid.name == "max":
 			if kid.value.kind == "cell" and len(kid.value.els) == 1 and max_at is None:
 				max_at = k
 			else:
-				_vdiag(faults, kid.line, "bad schema constraint 'max'")
+				_vdiag(faults, kid.line, "V092", "bad schema constraint 'max'")
 		elif kid.name == "repeat":
 			if kid.value.kind == "cell" and c.repeat is None and len(kid.value.els) in (1, 2):
 				lo = _parse_uint(kid.value.els[0].text)
@@ -4567,16 +4522,16 @@ def _parse_field(schema, f, faults):
 				if lo is not None and hi is not None and lo <= hi:
 					c.repeat = (lo, hi)
 				else:
-					_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+					_vdiag(faults, kid.line, "V092", "bad schema constraint 'repeat'")
 			else:
-				_vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+				_vdiag(faults, kid.line, "V092", "bad schema constraint 'repeat'")
 		elif kid.name == "inherits":
 			t = _single_text(kid.value)
 			if t and c.inherits is None:
 				c.inherits = t
 				c.inherits_line = kid.line
 			else:
-				_vdiag(faults, kid.line, "bad schema constraint 'inherits'")
+				_vdiag(faults, kid.line, "V092", "bad schema constraint 'inherits'")
 		elif kid.name == "desc":
 			# Generator-only (`shcl init`); validation ignores it. First wins.
 			if c.desc is None:
@@ -4585,7 +4540,7 @@ def _parse_field(schema, f, faults):
 			if c.default_text is None:
 				c.default_text = _emit_value_inline(kid.value)
 		else:
-			_vdiag(faults, kid.line, f"unknown schema key '{kid.name}'")
+			_vdiag(faults, kid.line, "V090", f"unknown schema key '{kid.name}'")
 	if required is not None:
 		c.required = required
 	base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
@@ -4621,7 +4576,7 @@ def _parse_field(schema, f, faults):
 		if ok:
 			c.allowed = setv
 		else:
-			_vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+			_vdiag(faults, kid.line, "V092", "bad schema constraint 'allowed'")
 	for at, is_min in ((min_at, True), (max_at, False)):
 		if at is None:
 			continue
@@ -4631,7 +4586,7 @@ def _parse_field(schema, f, faults):
 		if base == "int":
 			v = _parse_int_text(el, Strictness.Standard)
 			if v is None:
-				_vdiag(faults, kid.line, f"bad schema constraint '{key}'")
+				_vdiag(faults, kid.line, "V092", f"bad schema constraint '{key}'")
 			elif is_min:
 				c.min_i = v
 			else:
@@ -4639,13 +4594,13 @@ def _parse_field(schema, f, faults):
 		elif base == "float":
 			v = _parse_float_text(el, Strictness.Standard)
 			if v is None:
-				_vdiag(faults, kid.line, f"bad schema constraint '{key}'")
+				_vdiag(faults, kid.line, "V092", f"bad schema constraint '{key}'")
 			elif is_min:
 				c.min_f = v
 			else:
 				c.max_f = v
 		else:
-			_vdiag(faults, kid.line, f"bad schema constraint '{key}'")
+			_vdiag(faults, kid.line, "V092", f"bad schema constraint '{key}'")
 	return c
 
 
@@ -4745,7 +4700,7 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	cons, cuts = _expand_mounts(sdef)
 	if len(cons) >= _GEN_MAX_FIELDS:
 		faults = []
-		_vdiag(faults, 0, f"schema expands past {_GEN_MAX_FIELDS} fields; fragments mounted at more than one path multiply")
+		_vdiag(faults, 0, "V096", f"schema expands past {_GEN_MAX_FIELDS} fields; fragments mounted at more than one path multiply")
 		return "", faults
 
 	def must_exist(c):
