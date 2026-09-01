@@ -53,84 +53,6 @@ pub struct Diagnostic {
 	pub code: &'static str,
 }
 
-/// Map a diagnostic message to its stable code. The one place prose couples to a
-/// code, so the wording stays free everywhere else.
-fn diag_code(msg: &str) -> &'static str {
-	if msg.starts_with("field mixed with list elements") {
-		"E001"
-	} else if msg.starts_with("value after selector on ") {
-		"E002"
-	} else if msg.starts_with("no instance ") {
-		"E003"
-	} else if msg.starts_with("wildcard selector is query-only") {
-		"E004"
-	} else if msg.starts_with("unterminated raw block") {
-		"E005"
-	} else if msg.starts_with("raw block with no parent field") {
-		"E006"
-	} else if msg.starts_with("list element with no parent field") {
-		"E007"
-	} else if msg.starts_with("list element mixed with field children") {
-		"E008"
-	} else if msg.starts_with("empty list element") {
-		"E009"
-	} else if msg.starts_with("bare comma in list element") {
-		"E010"
-	} else if msg.starts_with("field already has a value") {
-		"E011"
-	} else if msg.starts_with("indentation matches no open level") {
-		"E012"
-	} else if msg.starts_with("malformed line skipped") {
-		"E014"
-	} else if msg.starts_with("malformed line: ") {
-		"E013"
-	} else if msg.starts_with("missing colon") {
-		"E015"
-	} else if msg.starts_with("nesting deeper than") {
-		"E016"
-	} else if msg.starts_with("unterminated quote in value") {
-		"E017"
-	} else if msg.starts_with("parent line was skipped") {
-		"E018"
-	} else if msg.starts_with("bracket array syntax") {
-		"E019"
-	} else if msg.starts_with("merged with ") {
-		"H002"
-	} else if msg.starts_with("unknown field ") {
-		"V001"
-	} else if msg.starts_with("required path missing") {
-		"V002"
-	} else if msg.starts_with("wrong type at ") {
-		"V003"
-	} else if msg.starts_with("value not allowed at ") {
-		"V004"
-	} else if msg.starts_with("value below min at ") {
-		"V005"
-	} else if msg.starts_with("value above max at ") {
-		"V006"
-	} else if msg.starts_with("instance count out of bounds at ") {
-		"V007"
-	} else if msg.starts_with("unknown schema key ") {
-		"V090"
-	} else if msg.starts_with("unknown schema type ") {
-		"V091"
-	} else if msg.starts_with("bad schema constraint ") {
-		"V092"
-	} else if msg.starts_with("bad schema path") {
-		"V093"
-	} else if msg.starts_with("bad schema fragment") {
-		"V094"
-	} else if msg.starts_with("unknown schema fragment ") {
-		"V095"
-	} else if msg.starts_with("generated value fails the schema") {
-		"V097"
-	} else if msg.starts_with("schema failed to load") {
-		"V099"
-	} else {
-		"E000" // uncategorized error (should not happen; keeps the map total)
-	}
-}
-
 /// Read status sentinels. `Empty` is informational - the empty value is still returned.
 /// Ordered by severity so a worst-of aggregate is just `max`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1388,9 +1310,8 @@ impl Parser {
 		}
 	}
 
-	fn err(&mut self, line: usize, msg: impl Into<String>) {
+	fn err(&mut self, line: usize, code: &'static str, msg: impl Into<String>) {
 		let message = msg.into();
-		let code = diag_code(&message);
 		self.diags.push(Diagnostic {
 			line,
 			severity: Severity::Error,
@@ -1630,7 +1551,7 @@ impl Parser {
 	/// Diagnose a line written under a skipped line, and skip it too. Its own
 	/// level stays dead so deeper lines go the same way.
 	fn skip_under_dead(&mut self, line: usize, indent: &str) {
-		self.err(line, "parent line was skipped; line skipped");
+		self.err(line, "E018", "parent line was skipped; line skipped");
 		self.lost += 1;
 		self.stack.push((indent.to_string(), DEAD));
 	}
@@ -1651,7 +1572,7 @@ impl Parser {
 		// Field child under a stacked list: diagnose the mix once, keep the field.
 		if self.arena[parent].star_list && !self.arena[parent].star_mixed {
 			self.arena[parent].star_mixed = true;
-			self.err(line, "field mixed with list elements");
+			self.err(line, "E001", "field mixed with list elements");
 		}
 		// Nesting cap: parent depth plus the segments this line adds. Checked
 		// before any node is created so a rejected line leaves nothing behind.
@@ -1664,6 +1585,7 @@ impl Parser {
 		if parent_depth + segs.len() > MAX_DEPTH {
 			self.err(
 				line,
+				"E016",
 				format!("nesting deeper than {} levels; line skipped", MAX_DEPTH),
 			);
 			self.lost += 1;
@@ -1700,6 +1622,7 @@ impl Parser {
 						// value has nowhere unambiguous to go.
 						self.err(
 							line,
+							"E002",
 							format!("value after selector on '{}' ignored", seg.name),
 						);
 						self.lost += 1;
@@ -1717,13 +1640,13 @@ impl Parser {
 					if let Some(found) = found {
 						cur = found;
 					} else {
-						self.err(line, format!("no instance {} of '{}'", n, seg.name));
+						self.err(line, "E003", format!("no instance {} of '{}'", n, seg.name));
 						self.lost += 1;
 						return None;
 					}
 				}
 				(Some(Selector::Wildcard), _) => {
-					self.err(line, "wildcard selector is query-only");
+					self.err(line, "E004", "wildcard selector is query-only");
 					self.lost += 1;
 					return None;
 				}
@@ -1822,7 +1745,7 @@ impl Parser {
 			i += 1;
 		}
 		if !closed {
-			self.err(open_line, "unterminated raw block");
+			self.err(open_line, "E005", "unterminated raw block");
 		}
 		let stripped: Vec<&str> = content.iter().map(|l| strip_common(l, nest)).collect();
 		(
@@ -1841,7 +1764,7 @@ impl Parser {
 	/// Returns the node the block landed on (None = no parent, diagnosed).
 	fn bind_block(&mut self, parent: usize, value: Value, line: usize) -> Option<usize> {
 		if parent == ROOT {
-			self.err(line, "raw block with no parent field");
+			self.err(line, "E006", "raw block with no parent field");
 			self.lost += 1;
 			return None;
 		}
@@ -1865,33 +1788,41 @@ impl Parser {
 	/// One stacked-list element (`* scalar`) appends to the parent's array.
 	fn add_star_element(&mut self, parent: usize, body: &str, line: usize) {
 		if parent == ROOT {
-			self.err(line, "list element with no parent field");
+			self.err(line, "E007", "list element with no parent field");
 			self.lost += 1;
 			return;
 		}
 		// Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if !self.arena[parent].children.is_empty() {
-			self.err(line, "list element mixed with field children; ignored");
+			self.err(
+				line,
+				"E008",
+				"list element mixed with field children; ignored",
+			);
 			self.lost += 1;
 			return;
 		}
 		let trimmed = body.trim();
 		if trimmed.is_empty() {
-			self.err(line, "empty list element");
+			self.err(line, "E009", "empty list element");
 			self.lost += 1;
 			return;
 		}
 		// One scalar per line; a bare comma is an error, not a second element.
 		if split_unquoted_commas(trimmed).len() > 1 {
-			self.err(line, "bare comma in list element (one element per line)");
+			self.err(
+				line,
+				"E010",
+				"bare comma in list element (one element per line)",
+			);
 			self.lost += 1;
 			return;
 		}
 		if unterminated_quote(trimmed) {
-			self.err(line, "unterminated quote in value");
+			self.err(line, "E017", "unterminated quote in value");
 		}
 		let Some(el) = parse_element(trimmed) else {
-			self.err(line, "empty list element");
+			self.err(line, "E009", "empty list element");
 			self.lost += 1;
 			return;
 		};
@@ -1920,7 +1851,11 @@ impl Parser {
 				els.push(el);
 			}
 		} else {
-			self.err(line, "field already has a value; list element ignored");
+			self.err(
+				line,
+				"E011",
+				"field already has a value; list element ignored",
+			);
 			self.lost += 1;
 		}
 	}
@@ -2019,7 +1954,7 @@ impl Parser {
 			// Child-indent fence: a value line for its parent field.
 			if let Some(fence) = fence_open(rest) {
 				let Some(parent) = self.resolve_parent(indent) else {
-					self.err(lineno, "indentation matches no open level");
+					self.err(lineno, "E012", "indentation matches no open level");
 					self.lost += 1;
 					i += 1;
 					continue;
@@ -2037,7 +1972,7 @@ impl Parser {
 			if let Some(after) = rest.strip_prefix('*') {
 				if after.starts_with(' ') || after.starts_with('\t') {
 					let Some(parent) = self.resolve_parent(indent) else {
-						self.err(lineno, "indentation matches no open level");
+						self.err(lineno, "E012", "indentation matches no open level");
 						self.lost += 1;
 						i += 1;
 						continue;
@@ -2056,7 +1991,11 @@ impl Parser {
 					i += 1;
 					continue;
 				}
-				self.err(lineno, "malformed line: '*' must be followed by a space");
+				self.err(
+					lineno,
+					"E013",
+					"malformed line: '*' must be followed by a space",
+				);
 				// Content-malformed at any position, so it is safe to retain
 				// verbatim as trivia: re-emitted, it re-diagnoses identically
 				// and can never read as a live binding. A hand-typo no longer
@@ -2101,7 +2040,7 @@ impl Parser {
 				continue;
 			}
 			let Some(parent) = self.resolve_parent(indent) else {
-				self.err(lineno, "indentation matches no open level");
+				self.err(lineno, "E012", "indentation matches no open level");
 				self.lost += 1;
 				i += 1;
 				continue;
@@ -2114,7 +2053,11 @@ impl Parser {
 			let scan = match scan_path(content) {
 				Ok(s) => s,
 				Err(reason) => {
-					self.err(lineno, format!("malformed line skipped: {}", reason));
+					self.err(
+						lineno,
+						"E014",
+						format!("malformed line skipped: {}", reason),
+					);
 					// Content-malformed at any position - retained as trivia,
 					// same rationale (and same BOM exception) as the bad '*'
 					// line above.
@@ -2145,13 +2088,14 @@ impl Parser {
 						// gate stops that.
 						self.err(
 							lineno,
+							"E019",
 							"bracket array syntax; an array is comma-separated, without brackets",
 						);
 						self.lost += 1;
 					} else {
 						// A clean path with no colon is the one defined repair:
 						// the obvious intent is that path with an empty value.
-						self.err(lineno, "missing colon; repaired as an empty value");
+						self.err(lineno, "E015", "missing colon; repaired as an empty value");
 					}
 					Value::Empty
 				}
@@ -2164,7 +2108,7 @@ impl Parser {
 						val
 					} else {
 						if unterminated_quote(v) {
-							self.err(lineno, "unterminated quote in value");
+							self.err(lineno, "E017", "unterminated quote in value");
 						}
 						src_text = Some(v);
 						parse_cell(v)
@@ -4983,8 +4927,7 @@ fn coerced<T: Default>(coerce: &impl Fn(&Element) -> Option<T>, el: &Element) ->
 	}
 }
 
-fn vdiag(out: &mut Vec<Diagnostic>, line: usize, msg: String) {
-	let code = diag_code(&msg);
+fn vdiag(out: &mut Vec<Diagnostic>, line: usize, code: &'static str, msg: String) {
 	out.push(Diagnostic {
 		line,
 		severity: Severity::Error,
@@ -5024,13 +4967,19 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 			"fragment" => {
 				let name = single_text(&node.value).filter(|n| !n.is_empty());
 				let Some(name) = name else {
-					vdiag(&mut faults, node.line, "bad schema fragment".to_string());
+					vdiag(
+						&mut faults,
+						node.line,
+						"V094",
+						"bad schema fragment".to_string(),
+					);
 					continue;
 				};
 				if frags.contains_key(&name) {
 					vdiag(
 						&mut faults,
 						node.line,
+						"V094",
 						format!("bad schema fragment '{}': duplicate", name),
 					);
 					continue;
@@ -5048,6 +4997,7 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 						vdiag(
 							&mut faults,
 							kid.line,
+							"V094",
 							format!("bad schema fragment '{}': unknown key '{}'", name, kid.name),
 						);
 					}
@@ -5058,6 +5008,7 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 				vdiag(
 					&mut faults,
 					node.line,
+					"V090",
 					format!("unknown schema key '{}'", other),
 				);
 			}
@@ -5072,6 +5023,7 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 			vdiag(
 				&mut faults,
 				c.inherits_line,
+				"V095",
 				format!("unknown schema fragment '{}'", fr),
 			);
 			paths_complete = false;
@@ -5094,13 +5046,18 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Option<Constraint> {
 	let node = &schema.arena[f];
 	let Some(path) = single_text(&node.value) else {
-		vdiag(faults, node.line, "bad schema path".to_string());
+		vdiag(faults, node.line, "V093", "bad schema path".to_string());
 		return None;
 	};
 	let segs = match scan_lookup(&path) {
 		Ok(s) if s.value_text.is_none() => s.segments,
 		_ => {
-			vdiag(faults, node.line, format!("bad schema path: {}", path));
+			vdiag(
+				faults,
+				node.line,
+				"V093",
+				format!("bad schema path: {}", path),
+			);
 			return None;
 		}
 	};
@@ -5135,15 +5092,30 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 			"type" => match single_text(&kid.value).map(|t| t.to_ascii_lowercase()) {
 				Some(t) if SCHEMA_TYPES.contains(&t.as_str()) => {
 					if c.ty.is_some() {
-						vdiag(faults, kid.line, "bad schema constraint 'type'".to_string());
+						vdiag(
+							faults,
+							kid.line,
+							"V092",
+							"bad schema constraint 'type'".to_string(),
+						);
 					} else {
 						c.ty = Some(t);
 					}
 				}
 				Some(t) => {
-					vdiag(faults, kid.line, format!("unknown schema type '{}'", t));
+					vdiag(
+						faults,
+						kid.line,
+						"V091",
+						format!("unknown schema type '{}'", t),
+					);
 				}
-				None => vdiag(faults, kid.line, "bad schema constraint 'type'".to_string()),
+				None => vdiag(
+					faults,
+					kid.line,
+					"V092",
+					"bad schema constraint 'type'".to_string(),
+				),
 			},
 			"required" => {
 				let v =
@@ -5153,6 +5125,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 					_ => vdiag(
 						faults,
 						kid.line,
+						"V092",
 						"bad schema constraint 'required'".to_string(),
 					),
 				}
@@ -5168,6 +5141,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 					_ => vdiag(
 						faults,
 						kid.line,
+						"V092",
 						"bad schema constraint 'reopen'".to_string(),
 					),
 				}
@@ -5177,16 +5151,27 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 				_ => vdiag(
 					faults,
 					kid.line,
+					"V092",
 					"bad schema constraint 'allowed'".to_string(),
 				),
 			},
 			"min" => match &kid.value {
 				Value::Cell(els) if els.len() == 1 && min_at.is_none() => min_at = Some(k),
-				_ => vdiag(faults, kid.line, "bad schema constraint 'min'".to_string()),
+				_ => vdiag(
+					faults,
+					kid.line,
+					"V092",
+					"bad schema constraint 'min'".to_string(),
+				),
 			},
 			"max" => match &kid.value {
 				Value::Cell(els) if els.len() == 1 && max_at.is_none() => max_at = Some(k),
-				_ => vdiag(faults, kid.line, "bad schema constraint 'max'".to_string()),
+				_ => vdiag(
+					faults,
+					kid.line,
+					"V092",
+					"bad schema constraint 'max'".to_string(),
+				),
 			},
 			"repeat" => match &kid.value {
 				Value::Cell(els) if c.repeat.is_none() && matches!(els.len(), 1 | 2) => {
@@ -5197,6 +5182,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 						_ => vdiag(
 							faults,
 							kid.line,
+							"V092",
 							"bad schema constraint 'repeat'".to_string(),
 						),
 					}
@@ -5204,6 +5190,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 				_ => vdiag(
 					faults,
 					kid.line,
+					"V092",
 					"bad schema constraint 'repeat'".to_string(),
 				),
 			},
@@ -5215,6 +5202,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 				_ => vdiag(
 					faults,
 					kid.line,
+					"V092",
 					"bad schema constraint 'inherits'".to_string(),
 				),
 			},
@@ -5230,7 +5218,12 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 					c.default_text = emit_value_inline(&kid.value);
 				}
 			}
-			other => vdiag(faults, kid.line, format!("unknown schema key '{}'", other)),
+			other => vdiag(
+				faults,
+				kid.line,
+				"V090",
+				format!("unknown schema key '{}'", other),
+			),
 		}
 	}
 	c.required = required.unwrap_or(false);
@@ -5278,6 +5271,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 			None => vdiag(
 				faults,
 				kid.line,
+				"V092",
 				"bad schema constraint 'allowed'".to_string(),
 			),
 		}
@@ -5296,14 +5290,29 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 			"int" => match parse_int_text(el, Strictness::Standard) {
 				Some(v) if is_min => c.min_i = Some(v),
 				Some(v) => c.max_i = Some(v),
-				None => vdiag(faults, kid.line, format!("bad schema constraint '{}'", key)),
+				None => vdiag(
+					faults,
+					kid.line,
+					"V092",
+					format!("bad schema constraint '{}'", key),
+				),
 			},
 			"float" => match parse_float_text(el, Strictness::Standard) {
 				Some(v) if is_min => c.min_f = Some(v),
 				Some(v) => c.max_f = Some(v),
-				None => vdiag(faults, kid.line, format!("bad schema constraint '{}'", key)),
+				None => vdiag(
+					faults,
+					kid.line,
+					"V092",
+					format!("bad schema constraint '{}'", key),
+				),
 			},
-			_ => vdiag(faults, kid.line, format!("bad schema constraint '{}'", key)),
+			_ => vdiag(
+				faults,
+				kid.line,
+				"V092",
+				format!("bad schema constraint '{}'", key),
+			),
 		}
 	}
 	Some(c)
@@ -5812,7 +5821,12 @@ impl Document {
 		self.v_contexts(vec![start], &c.segs, anchor0, &mut ctxs);
 		for (anchor, found) in &ctxs {
 			if c.required && found.is_empty() {
-				vdiag(out, *anchor, format!("required path missing: {}", c.path));
+				vdiag(
+					out,
+					*anchor,
+					"V002",
+					format!("required path missing: {}", c.path),
+				);
 			}
 			if let Some((lo, hi)) = c.repeat {
 				let n = found.len() as u64;
@@ -5820,6 +5834,7 @@ impl Document {
 					vdiag(
 						out,
 						*anchor,
+						"V007",
 						format!(
 							"instance count out of bounds at '{}': {} not in {}..{}",
 							c.path, n, lo, hi
@@ -5859,6 +5874,7 @@ impl Document {
 			vdiag(
 				out,
 				line,
+				"V003",
 				format!(
 					"wrong type at '{}': value is not a valid {}",
 					c.path,
@@ -5883,6 +5899,7 @@ impl Document {
 					vdiag(
 						out,
 						line,
+						"V004",
 						format!("value not allowed at '{}': {}", c.path, content),
 					);
 				}
@@ -5914,18 +5931,29 @@ impl Document {
 							vdiag(
 								out,
 								line,
+								"V004",
 								format!("value not allowed at '{}': {}", c.path, els[i].text),
 							);
 						}
 						if let Some(lo) = c.min_i
 							&& vals.iter().any(|v| *v < lo)
 						{
-							vdiag(out, line, format!("value below min at '{}'", c.path));
+							vdiag(
+								out,
+								line,
+								"V005",
+								format!("value below min at '{}'", c.path),
+							);
 						}
 						if let Some(hi) = c.max_i
 							&& vals.iter().any(|v| *v > hi)
 						{
-							vdiag(out, line, format!("value above max at '{}'", c.path));
+							vdiag(
+								out,
+								line,
+								"V006",
+								format!("value above max at '{}'", c.path),
+							);
 						}
 					}
 					"float" => {
@@ -5943,18 +5971,29 @@ impl Document {
 							vdiag(
 								out,
 								line,
+								"V004",
 								format!("value not allowed at '{}': {}", c.path, els[i].text),
 							);
 						}
 						if let Some(lo) = c.min_f
 							&& vals.iter().any(|v| *v < lo)
 						{
-							vdiag(out, line, format!("value below min at '{}'", c.path));
+							vdiag(
+								out,
+								line,
+								"V005",
+								format!("value below min at '{}'", c.path),
+							);
 						}
 						if let Some(hi) = c.max_f
 							&& vals.iter().any(|v| *v > hi)
 						{
-							vdiag(out, line, format!("value above max at '{}'", c.path));
+							vdiag(
+								out,
+								line,
+								"V006",
+								format!("value above max at '{}'", c.path),
+							);
 						}
 					}
 					"bool" => {
@@ -5972,6 +6011,7 @@ impl Document {
 							vdiag(
 								out,
 								line,
+								"V004",
 								format!("value not allowed at '{}': {}", c.path, els[i].text),
 							);
 						}
@@ -5989,6 +6029,7 @@ impl Document {
 							vdiag(
 								out,
 								line,
+								"V004",
 								format!("value not allowed at '{}': {}", c.path, els[i].text),
 							);
 						}
@@ -6005,6 +6046,7 @@ impl Document {
 								vdiag(
 									out,
 									line,
+									"V004",
 									format!("value not allowed at '{}': {}", c.path, b),
 								);
 							}
@@ -6067,7 +6109,12 @@ impl Document {
 				|| (has_mounts && chain_legal(cons, &def.frags, &chain));
 			if !known {
 				let hint = v_suggest(&siblings, &pchain, &node.name);
-				vdiag(out, node.line, format!("unknown field '{}'{}", shown, hint));
+				vdiag(
+					out,
+					node.line,
+					"V001",
+					format!("unknown field '{}'{}", shown, hint),
+				);
 				continue;
 			}
 			for &k in node.children.iter().rev() {

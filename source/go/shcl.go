@@ -108,87 +108,6 @@ type Diagnostic struct {
 	Code string
 }
 
-// diagCode maps a diagnostic message to its stable code: the one place prose
-// couples to a code, so the wording stays free everywhere else.
-func diagCode(msg string) string {
-	switch {
-	case strings.HasPrefix(msg, "field mixed with list elements"):
-		return "E001"
-	case strings.HasPrefix(msg, "value after selector on "):
-		return "E002"
-	case strings.HasPrefix(msg, "no instance "):
-		return "E003"
-	case strings.HasPrefix(msg, "wildcard selector is query-only"):
-		return "E004"
-	case strings.HasPrefix(msg, "unterminated raw block"):
-		return "E005"
-	case strings.HasPrefix(msg, "raw block with no parent field"):
-		return "E006"
-	case strings.HasPrefix(msg, "list element with no parent field"):
-		return "E007"
-	case strings.HasPrefix(msg, "list element mixed with field children"):
-		return "E008"
-	case strings.HasPrefix(msg, "empty list element"):
-		return "E009"
-	case strings.HasPrefix(msg, "bare comma in list element"):
-		return "E010"
-	case strings.HasPrefix(msg, "field already has a value"):
-		return "E011"
-	case strings.HasPrefix(msg, "indentation matches no open level"):
-		return "E012"
-	case strings.HasPrefix(msg, "malformed line skipped"):
-		return "E014"
-	case strings.HasPrefix(msg, "malformed line: "):
-		return "E013"
-	case strings.HasPrefix(msg, "missing colon"):
-		return "E015"
-	case strings.HasPrefix(msg, "nesting deeper than"):
-		return "E016"
-	case strings.HasPrefix(msg, "unterminated quote in value"):
-		return "E017"
-	case strings.HasPrefix(msg, "parent line was skipped"):
-		return "E018"
-	case strings.HasPrefix(msg, "bracket array syntax"):
-		return "E019"
-	case strings.HasPrefix(msg, "merged with "):
-		return "H002"
-	case strings.HasPrefix(msg, "unknown field "):
-		return "V001"
-	case strings.HasPrefix(msg, "required path missing"):
-		return "V002"
-	case strings.HasPrefix(msg, "wrong type at "):
-		return "V003"
-	case strings.HasPrefix(msg, "value not allowed at "):
-		return "V004"
-	case strings.HasPrefix(msg, "value below min at "):
-		return "V005"
-	case strings.HasPrefix(msg, "value above max at "):
-		return "V006"
-	case strings.HasPrefix(msg, "instance count out of bounds at "):
-		return "V007"
-	case strings.HasPrefix(msg, "unknown schema key "):
-		return "V090"
-	case strings.HasPrefix(msg, "unknown schema type "):
-		return "V091"
-	case strings.HasPrefix(msg, "bad schema constraint "):
-		return "V092"
-	case strings.HasPrefix(msg, "bad schema path"):
-		return "V093"
-	case strings.HasPrefix(msg, "bad schema fragment"):
-		return "V094"
-	case strings.HasPrefix(msg, "unknown schema fragment "):
-		return "V095"
-	case strings.HasPrefix(msg, "schema expands past "):
-		return "V096"
-	case strings.HasPrefix(msg, "generated value fails the schema"):
-		return "V097"
-	case strings.HasPrefix(msg, "schema failed to load"):
-		return "V099"
-	default:
-		return "E000"
-	}
-}
-
 // Status is the read sentinel. Empty is informational - the empty value is
 // still returned.
 type Status int
@@ -1623,8 +1542,8 @@ func newParser() *parser {
 	}
 }
 
-func (p *parser) err(line int, msg string) {
-	p.diags = append(p.diags, Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: diagCode(msg)})
+func (p *parser) err(line int, code, msg string) {
+	p.diags = append(p.diags, Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: code})
 }
 
 // selectOrCreate finds (or creates by merge rule) the child of parent with
@@ -1823,7 +1742,7 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 // skipUnderDead diagnoses a line written under a skipped line, and skips it
 // too. Its own level stays dead so deeper lines go the same way.
 func (p *parser) skipUnderDead(line int, indent string) {
-	p.err(line, "parent line was skipped; line skipped")
+	p.err(line, "E018", "parent line was skipped; line skipped")
 	p.lost++
 	p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
 }
@@ -1835,7 +1754,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 	// Field child under a stacked list: diagnose the mix once, keep the field.
 	if p.arena[parent].starList && !p.arena[parent].starMixed {
 		p.arena[parent].starMixed = true
-		p.err(line, "field mixed with list elements")
+		p.err(line, "E001", "field mixed with list elements")
 	}
 	// Nesting cap: parent depth plus the segments this line adds. Checked
 	// before any node is created so a rejected line leaves nothing behind.
@@ -1844,7 +1763,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 		parentDepth++
 	}
 	if parentDepth+len(segs) > MaxDepth {
-		p.err(line, fmt.Sprintf("nesting deeper than %d levels; line skipped", MaxDepth))
+		p.err(line, "E016", fmt.Sprintf("nesting deeper than %d levels; line skipped", MaxDepth))
 		p.lost++
 		return 0, false
 	}
@@ -1873,7 +1792,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			if isLast && !v.isEmpty() {
 				// `a.b[X]: v` - the discriminator is the value; a second
 				// value has nowhere unambiguous to go.
-				p.err(line, fmt.Sprintf("value after selector on '%s' ignored", seg.name))
+				p.err(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", seg.name))
 				p.lost++
 			}
 		case seg.sel != nil && seg.sel.kind == selByIndex:
@@ -1892,12 +1811,12 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			if ok {
 				cur = found
 			} else {
-				p.err(line, fmt.Sprintf("no instance %d of '%s'", seg.sel.index, seg.name))
+				p.err(line, "E003", fmt.Sprintf("no instance %d of '%s'", seg.sel.index, seg.name))
 				p.lost++
 				return 0, false
 			}
 		case seg.sel != nil:
-			p.err(line, "wildcard selector is query-only")
+			p.err(line, "E004", "wildcard selector is query-only")
 			p.lost++
 			return 0, false
 		case !isLast:
@@ -1983,7 +1902,7 @@ func (p *parser) consumeRaw(
 		i++
 	}
 	if !closed {
-		p.err(openLine, "unterminated raw block")
+		p.err(openLine, "E005", "unterminated raw block")
 	}
 	stripped := make([]string, len(content))
 	for j, l := range content {
@@ -2000,7 +1919,7 @@ func (p *parser) consumeRaw(
 // rule). Returns the node the block landed on (-1 = no parent, diagnosed).
 func (p *parser) bindBlock(parent int, v value, line int) int {
 	if parent == root {
-		p.err(line, "raw block with no parent field")
+		p.err(line, "E006", "raw block with no parent field")
 		p.lost++
 		return -1
 	}
@@ -2019,34 +1938,34 @@ func (p *parser) bindBlock(parent int, v value, line int) int {
 // parent's array.
 func (p *parser) addStarElement(parent int, body string, line int) {
 	if parent == root {
-		p.err(line, "list element with no parent field")
+		p.err(line, "E007", "list element with no parent field")
 		p.lost++
 		return
 	}
 	// Uniform-or-nothing (spec): a mix with field children is not a block array.
 	if len(p.arena[parent].children) != 0 {
-		p.err(line, "list element mixed with field children; ignored")
+		p.err(line, "E008", "list element mixed with field children; ignored")
 		p.lost++
 		return
 	}
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" {
-		p.err(line, "empty list element")
+		p.err(line, "E009", "empty list element")
 		p.lost++
 		return
 	}
 	// One scalar per line; a bare comma is an error, not a second element.
 	if len(splitUnquotedCommas(trimmed)) > 1 {
-		p.err(line, "bare comma in list element (one element per line)")
+		p.err(line, "E010", "bare comma in list element (one element per line)")
 		p.lost++
 		return
 	}
 	if unterminatedQuote(trimmed) {
-		p.err(line, "unterminated quote in value")
+		p.err(line, "E017", "unterminated quote in value")
 	}
 	el, ok := parseElement(trimmed)
 	if !ok {
-		p.err(line, "empty list element")
+		p.err(line, "E009", "empty list element")
 		p.lost++
 		return
 	}
@@ -2075,7 +1994,7 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 		}
 		p.arena[parent].value.els = append(p.arena[parent].value.els, el)
 	default:
-		p.err(line, "field already has a value; list element ignored")
+		p.err(line, "E011", "field already has a value; list element ignored")
 		p.lost++
 	}
 }
@@ -2175,7 +2094,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		if ch, length, info, ok := fenceOpen(rest); ok {
 			parent, okp := p.resolveParent(indent)
 			if !okp {
-				p.err(lineno, "indentation matches no open level")
+				p.err(lineno, "E012", "indentation matches no open level")
 				p.lost++
 				i++
 				continue
@@ -2195,7 +2114,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			if strings.HasPrefix(after, " ") || strings.HasPrefix(after, "\t") {
 				parent, okp := p.resolveParent(indent)
 				if !okp {
-					p.err(lineno, "indentation matches no open level")
+					p.err(lineno, "E012", "indentation matches no open level")
 					p.lost++
 					i++
 					continue
@@ -2214,7 +2133,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				i++
 				continue
 			}
-			p.err(lineno, "malformed line: '*' must be followed by a space")
+			p.err(lineno, "E013", "malformed line: '*' must be followed by a space")
 			// Content-malformed at any position, so it is safe to retain
 			// verbatim as trivia: re-emitted, it re-diagnoses identically
 			// and can never read as a live binding. A hand-typo no longer
@@ -2250,7 +2169,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		}
 		parent, okp := p.resolveParent(indent)
 		if !okp {
-			p.err(lineno, "indentation matches no open level")
+			p.err(lineno, "E012", "indentation matches no open level")
 			p.lost++
 			i++
 			continue
@@ -2262,7 +2181,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		}
 		scan, serr := scanPath(content)
 		if serr != nil {
-			p.err(lineno, "malformed line skipped: "+serr.Error())
+			p.err(lineno, "E014", "malformed line skipped: "+serr.Error())
 			// Content-malformed at any position - retained as trivia, same
 			// rationale (and same BOM exception) as the bad '*' line above.
 			if strings.HasPrefix(rest, "\ufeff") {
@@ -2285,12 +2204,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				// The brackets never survive the load, so a rewrite would bake
 				// the changed value in and the file would check clean forever
 				// after. Count it lost so the save gate stops that.
-				p.err(lineno, "bracket array syntax; an array is comma-separated, without brackets")
+				p.err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
 				p.lost++
 			} else {
 				// A clean path with no colon is the one defined repair:
 				// the obvious intent is that path with an empty value.
-				p.err(lineno, "missing colon; repaired as an empty value")
+				p.err(lineno, "E015", "missing colon; repaired as an empty value")
 			}
 			v = value{kind: vEmpty}
 		case *scan.valueText == "":
@@ -2301,7 +2220,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				v, next = p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 			} else {
 				if unterminatedQuote(*scan.valueText) {
-					p.err(lineno, "unterminated quote in value")
+					p.err(lineno, "E017", "unterminated quote in value")
 				}
 				srcText, haveSrc = *scan.valueText, true
 				v = parseCell(*scan.valueText)
@@ -5399,8 +5318,8 @@ func coerced[T any](coerce func(*element) (T, bool), el *element) (T, Status) {
 	return zero, BadType
 }
 
-func vdiag(out *[]Diagnostic, line int, msg string) {
-	*out = append(*out, Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: diagCode(msg)})
+func vdiag(out *[]Diagnostic, line int, code, msg string) {
+	*out = append(*out, Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: code})
 }
 
 // singleText is one scalar constraint value (escapes applied), or not.
@@ -5446,11 +5365,11 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 		case "fragment":
 			name, ok := singleText(&node.value)
 			if !ok || name == "" {
-				vdiag(&faults, node.line, "bad schema fragment")
+				vdiag(&faults, node.line, "V094", "bad schema fragment")
 				continue
 			}
 			if _, dup := frags[name]; dup {
-				vdiag(&faults, node.line, fmt.Sprintf("bad schema fragment '%s': duplicate", name))
+				vdiag(&faults, node.line, "V094", fmt.Sprintf("bad schema fragment '%s': duplicate", name))
 				continue
 			}
 			var fcs []constraint
@@ -5463,12 +5382,12 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 						pathsComplete = false
 					}
 				} else {
-					vdiag(&faults, kid.line, fmt.Sprintf("bad schema fragment '%s': unknown key '%s'", name, kid.name))
+					vdiag(&faults, kid.line, "V094", fmt.Sprintf("bad schema fragment '%s': unknown key '%s'", name, kid.name))
 				}
 			}
 			frags[name] = fcs
 		default:
-			vdiag(&faults, node.line, fmt.Sprintf("unknown schema key '%s'", node.name))
+			vdiag(&faults, node.line, "V090", fmt.Sprintf("unknown schema key '%s'", node.name))
 		}
 	}
 	// Every mount must name a declared fragment; cycles (self or mutual) are
@@ -5478,7 +5397,7 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 			return
 		}
 		if _, ok := frags[c.inherits]; !ok {
-			vdiag(&faults, c.inheritsLine, fmt.Sprintf("unknown schema fragment '%s'", c.inherits))
+			vdiag(&faults, c.inheritsLine, "V095", fmt.Sprintf("unknown schema fragment '%s'", c.inherits))
 			pathsComplete = false
 		}
 	}
@@ -5501,12 +5420,12 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 	node := &schema.arena[f]
 	path, ok := singleText(&node.value)
 	if !ok {
-		vdiag(faults, node.line, "bad schema path")
+		vdiag(faults, node.line, "V093", "bad schema path")
 		return constraint{}, false
 	}
 	scan, err := scanLookup(path)
 	if err != nil || scan.valueText != nil {
-		vdiag(faults, node.line, fmt.Sprintf("bad schema path: %s", path))
+		vdiag(faults, node.line, "V093", fmt.Sprintf("bad schema path: %s", path))
 		return constraint{}, false
 	}
 	c := constraint{path: path, segs: scan.segments}
@@ -5530,14 +5449,14 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 			switch {
 			case ok && containsString(schemaTypes, t):
 				if c.ty != "" {
-					vdiag(faults, kid.line, "bad schema constraint 'type'")
+					vdiag(faults, kid.line, "V092", "bad schema constraint 'type'")
 				} else {
 					c.ty = t
 				}
 			case ok:
-				vdiag(faults, kid.line, fmt.Sprintf("unknown schema type '%s'", t))
+				vdiag(faults, kid.line, "V091", fmt.Sprintf("unknown schema type '%s'", t))
 			default:
-				vdiag(faults, kid.line, "bad schema constraint 'type'")
+				vdiag(faults, kid.line, "V092", "bad schema constraint 'type'")
 			}
 		case "required":
 			t, ok := singleText(&kid.value)
@@ -5548,7 +5467,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 			if ok && required == nil {
 				required = &b
 			} else {
-				vdiag(faults, kid.line, "bad schema constraint 'required'")
+				vdiag(faults, kid.line, "V092", "bad schema constraint 'required'")
 			}
 		// Consumed by the H002 suppressor (which reads the schema document
 		// directly); validation itself ignores it, but a bad value still
@@ -5561,25 +5480,25 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 			if ok && !reopenSeen {
 				reopenSeen = true
 			} else {
-				vdiag(faults, kid.line, "bad schema constraint 'reopen'")
+				vdiag(faults, kid.line, "V092", "bad schema constraint 'reopen'")
 			}
 		case "allowed":
 			if kid.value.kind == vCell && allowedAt < 0 {
 				allowedAt = k
 			} else {
-				vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+				vdiag(faults, kid.line, "V092", "bad schema constraint 'allowed'")
 			}
 		case "min":
 			if kid.value.kind == vCell && len(kid.value.els) == 1 && minAt < 0 {
 				minAt = k
 			} else {
-				vdiag(faults, kid.line, "bad schema constraint 'min'")
+				vdiag(faults, kid.line, "V092", "bad schema constraint 'min'")
 			}
 		case "max":
 			if kid.value.kind == vCell && len(kid.value.els) == 1 && maxAt < 0 {
 				maxAt = k
 			} else {
-				vdiag(faults, kid.line, "bad schema constraint 'max'")
+				vdiag(faults, kid.line, "V092", "bad schema constraint 'max'")
 			}
 		case "repeat":
 			if kid.value.kind == vCell && c.repeat == nil && (len(kid.value.els) == 1 || len(kid.value.els) == 2) {
@@ -5588,10 +5507,10 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 				if okLo && okHi && lo <= hi {
 					c.repeat = &[2]uint64{lo, hi}
 				} else {
-					vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+					vdiag(faults, kid.line, "V092", "bad schema constraint 'repeat'")
 				}
 			} else {
-				vdiag(faults, kid.line, "bad schema constraint 'repeat'")
+				vdiag(faults, kid.line, "V092", "bad schema constraint 'repeat'")
 			}
 		case "inherits":
 			t, ok := singleText(&kid.value)
@@ -5599,7 +5518,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 				c.inherits = t
 				c.inheritsLine = kid.line
 			} else {
-				vdiag(faults, kid.line, "bad schema constraint 'inherits'")
+				vdiag(faults, kid.line, "V092", "bad schema constraint 'inherits'")
 			}
 		// Generator-only (`shcl init`); validation ignores both. First
 		// occurrence wins (a merged schema could carry two).
@@ -5616,7 +5535,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 				}
 			}
 		default:
-			vdiag(faults, kid.line, fmt.Sprintf("unknown schema key '%s'", kid.name))
+			vdiag(faults, kid.line, "V090", fmt.Sprintf("unknown schema key '%s'", kid.name))
 		}
 	}
 	if required != nil {
@@ -5685,7 +5604,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 		if ok {
 			c.allowed = set
 		} else {
-			vdiag(faults, kid.line, "bad schema constraint 'allowed'")
+			vdiag(faults, kid.line, "V092", "bad schema constraint 'allowed'")
 		}
 	}
 	for _, mm := range []struct {
@@ -5710,7 +5629,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 					c.maxI = &v
 				}
 			} else {
-				vdiag(faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
+				vdiag(faults, kid.line, "V092", fmt.Sprintf("bad schema constraint '%s'", key))
 			}
 		case "float":
 			if v, ok := parseFloatText(el, Standard); ok {
@@ -5720,10 +5639,10 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 					c.maxF = &v
 				}
 			} else {
-				vdiag(faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
+				vdiag(faults, kid.line, "V092", fmt.Sprintf("bad schema constraint '%s'", key))
 			}
 		default:
-			vdiag(faults, kid.line, fmt.Sprintf("bad schema constraint '%s'", key))
+			vdiag(faults, kid.line, "V092", fmt.Sprintf("bad schema constraint '%s'", key))
 		}
 	}
 	return c, true
@@ -5875,7 +5794,7 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	cons, cuts := expandMounts(&def)
 	if len(cons) >= genMaxFields {
 		msg := fmt.Sprintf("schema expands past %d fields; fragments mounted at more than one path multiply", genMaxFields)
-		return "", []Diagnostic{{Line: 0, Severity: SeverityError, Message: msg, Code: diagCode(msg)}}
+		return "", []Diagnostic{{Line: 0, Severity: SeverityError, Message: msg, Code: "V096"}}
 	}
 	mustExist := func(c *constraint) bool {
 		return c.required || (c.repeat != nil && c.repeat[0] >= 1)
@@ -6306,12 +6225,12 @@ func (d *Document) vCheckFrom(
 	d.vContexts([]int{start}, c.segs, anchor0, &ctxs)
 	for _, ctx := range ctxs {
 		if c.required && len(ctx.found) == 0 {
-			vdiag(out, ctx.anchor, fmt.Sprintf("required path missing: %s", c.path))
+			vdiag(out, ctx.anchor, "V002", fmt.Sprintf("required path missing: %s", c.path))
 		}
 		if c.repeat != nil {
 			n := uint64(len(ctx.found))
 			if n < c.repeat[0] || n > c.repeat[1] {
-				vdiag(out, ctx.anchor, fmt.Sprintf("instance count out of bounds at '%s': %d not in %d..%d",
+				vdiag(out, ctx.anchor, "V007", fmt.Sprintf("instance count out of bounds at '%s': %d not in %d..%d",
 					c.path, n, c.repeat[0], c.repeat[1]))
 			}
 		}
@@ -6343,7 +6262,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 	base := strings.TrimSuffix(c.ty, "-array")
 	isArray := strings.HasSuffix(c.ty, "-array")
 	wrong := func() {
-		vdiag(out, line, fmt.Sprintf("wrong type at '%s': value is not a valid %s", c.path, c.ty))
+		vdiag(out, line, "V003", fmt.Sprintf("wrong type at '%s': value is not a valid %s", c.path, c.ty))
 	}
 	switch node.value.kind {
 	// Empty passes everything; required already counted it as present.
@@ -6357,7 +6276,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 		}
 		if c.allowed != nil && c.allowed.kind == allowStrings {
 			if !containsString(c.allowed.strs, node.value.raw.content) {
-				vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, node.value.raw.content))
+				vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, node.value.raw.content))
 			}
 		}
 	case vCell:
@@ -6386,16 +6305,16 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowInts {
 				for i, v := range vals {
 					if !containsInt(c.allowed.ints, v) {
-						vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
 						break
 					}
 				}
 			}
 			if c.minI != nil && anyIntBelow(vals, *c.minI) {
-				vdiag(out, line, fmt.Sprintf("value below min at '%s'", c.path))
+				vdiag(out, line, "V005", fmt.Sprintf("value below min at '%s'", c.path))
 			}
 			if c.maxI != nil && anyIntAbove(vals, *c.maxI) {
-				vdiag(out, line, fmt.Sprintf("value above max at '%s'", c.path))
+				vdiag(out, line, "V006", fmt.Sprintf("value above max at '%s'", c.path))
 			}
 		case "float":
 			vals := make([]float64, 0, len(els))
@@ -6410,16 +6329,16 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowFloats {
 				for i, v := range vals {
 					if !containsFloat(c.allowed.floats, v) {
-						vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
 						break
 					}
 				}
 			}
 			if c.minF != nil && anyFloatBelow(vals, *c.minF) {
-				vdiag(out, line, fmt.Sprintf("value below min at '%s'", c.path))
+				vdiag(out, line, "V005", fmt.Sprintf("value below min at '%s'", c.path))
 			}
 			if c.maxF != nil && anyFloatAbove(vals, *c.maxF) {
-				vdiag(out, line, fmt.Sprintf("value above max at '%s'", c.path))
+				vdiag(out, line, "V006", fmt.Sprintf("value above max at '%s'", c.path))
 			}
 		case "bool":
 			vals := make([]bool, 0, len(els))
@@ -6434,7 +6353,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowBools {
 				for i, v := range vals {
 					if !containsBool(c.allowed.bools, v) {
-						vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
 						break
 					}
 				}
@@ -6452,7 +6371,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowDates {
 				for i, v := range vals {
 					if !containsDate(c.allowed.dates, v) {
-						vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
 						break
 					}
 				}
@@ -6464,7 +6383,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 				for i := range els {
 					s := applyEscapes(els[i].text)
 					if !containsString(c.allowed.strs, s) {
-						vdiag(out, line, fmt.Sprintf("value not allowed at '%s': %s", c.path, s))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, s))
 						break
 					}
 				}
@@ -6604,7 +6523,7 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 		}
 		if !legal[chain] && !starLegal(starPats, chain) && !(hasMounts && chainLegal(cons, def.frags, chain)) {
 			hint := vSuggest(siblings, fr.chain, node.name)
-			vdiag(out, node.line, fmt.Sprintf("unknown field '%s'%s", shown, hint))
+			vdiag(out, node.line, "V001", fmt.Sprintf("unknown field '%s'%s", shown, hint))
 			continue
 		}
 		for i := len(node.children) - 1; i >= 0; i-- {
