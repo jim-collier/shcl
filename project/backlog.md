@@ -1075,6 +1075,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- ✅ Item 23: hosted CI installs a checking tool without verifying the download.
 		- The workflow pins its actions by commit and its packages by version, then fetches one tool as an archive with no checksum and installs it ahead of the system copy.
 		- Fixed: the download is checked against a pinned hash before it is installed.
+		- Pinned since 20260831 in `check-pins.bash`: every file the workflow fetches has to be named on a line that checks it against a sha256.
 		- Opened: 20260803-111610
 		- Closed: 20260803-134341
 
