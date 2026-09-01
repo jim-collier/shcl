@@ -16,8 +16,10 @@
 //
 // Compile-time knobs, each defined before the implementation include:
 //   SHCL_NO_FILE_IO  leave the file tier out (no file I/O in the library)
-//   SHCL_OOM()       what an unrecoverable allocation failure does; the default
-//                    prints and exits 70, which suits the CLI and nothing else
+//   SHCL_OOM()       what an allocation failure outside a parse does; the
+//                    default prints and exits 70, which suits the CLI and
+//                    nothing else. A parse or a validate never reaches it:
+//                    those unwind and return NULL.
 
 // The file tier calls POSIX (fdopen, fileno, fchmod, open, fsync, getpid). Those
 // prototypes are feature-gated, and a feature request only counts before the
@@ -94,8 +96,10 @@ typedef struct { shcl_datetime *values; size_t n; shcl_status status; const shcl
 // fail but never crash the consumer.
 #define SHCL_MAX_DEPTH ((size_t)512)
 
-// Parse never fails: bad lines are skipped and diagnosed. Text need not be NUL
-// terminated. Free with shcl_free.
+// A parse never fails on the document's account: bad lines are skipped and
+// diagnosed. It returns NULL only when an allocation failed, which is the one
+// thing it cannot work around - the process is left standing either way. Text
+// need not be NUL terminated. Free with shcl_free.
 shcl_doc *shcl_parse(const char *text, size_t len);
 shcl_doc *shcl_parse_with(const char *text, size_t len, shcl_strictness s);
 void shcl_free(shcl_doc *d);
@@ -139,6 +143,7 @@ size_t shcl_error_count(const shcl_doc *d);
 // validate and they are still there - call shcl_suppress_declared_repeats /
 // shcl_suppress_declared_reopens yourself, or use shcl_load_and_validate,
 // which runs both for you.
+// NULL only when an allocation failed.
 typedef struct shcl_validation shcl_validation;
 shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema);
 size_t shcl_validation_count(const shcl_validation *v);
@@ -167,17 +172,19 @@ void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc);
 // schema, and hand back a document whose shcl_diag_* accessors serve ONE
 // combined list (parse first, then validation - the order `check --schema`
 // prints), so half the errors can't vanish because a caller forgot one of the
-// two lists. Never fails: a strict-failing document comes back as the
-// document plus its diagnostics (shcl_error_count answers "did it fail"). An
+// two lists. Fails only on an allocation, and then it is NULL: a strict-failing
+// document comes back as the document plus its diagnostics (shcl_error_count
+// answers "did it fail"). An
 // empty schema text skips validation entirely. H001 hints the schema disavows
 // (a declared repeat upper bound above 1) are dropped. Free with shcl_free.
 shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schema, size_t slen, shcl_strictness s);
 
 // File tier (optional companion; compile out with -DSHCL_NO_FILE_IO to keep
-// the core free of file I/O). Load never fails: the document always comes
-// back usable (empty when the file could not be read), and the status
-// out-param (may be NULL) separates the four cases a consumer's own load path
-// otherwise confuses. Save writes the canonical text through a temp file in
+// the core free of file I/O). Load does not fail on the file's account: the
+// document always comes back usable (empty when the file could not be read),
+// and the status out-param (may be NULL) separates the four cases a consumer's
+// own load path otherwise confuses. NULL means an allocation failed, as for a
+// parse. Save writes the canonical text through a temp file in
 // the same directory plus a rename - the same mechanics the CLI's --write
 // uses - so an interrupted save can never truncate the config it rewrites.
 #ifndef SHCL_NO_FILE_IO
@@ -328,7 +335,7 @@ int     shcl_get_bool_or(shcl_doc *d, const char *path, size_t plen, int def);
 // nothing is created on failure. _default forms return 1 when already present.
 // Worth checking rather than assuming: an ignored 0 means the save that follows
 // writes a document missing the edit, and reports success doing it.
-shcl_doc *shcl_new(void); // an empty document (start point for generation)
+shcl_doc *shcl_new(void); // an empty document (start point for generation), or NULL on an allocation failure
 int shcl_exists(shcl_doc *d, const char *path, size_t plen);       // 0/1
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen);    // count deleted
 int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
@@ -428,6 +435,7 @@ int shcl_status_ok(shcl_status s);
 #include <stdio.h>
 #include <math.h>
 #include <inttypes.h>
+#include <setjmp.h>
 #include <locale.h>
 
 // SHCL spells a float with '.', but strtod and printf use whatever the host
@@ -441,21 +449,38 @@ static const char *dec_point(void) {
 
 // --- arena (bump allocator; growable vectors grow by copy, bulk-freed) -------
 
-// Every allocation the library cannot recover from ends here. The default is
-// the CLI's contract (exit 70), which is wrong for a process that is not the
-// library's to end: an embedder defines SHCL_OOM before the implementation to
-// longjmp out, log, or abort on its own terms. Nothing is unwound first, so a
-// hook that returns leaks whatever was being built.
+// Where an allocation failure goes when there is no call to fail. A parse and a
+// validate arm a recovery point first, so those unwind and hand the caller NULL
+// instead; what is left is a read, a write or a merge on a document already
+// built, and there the default is the CLI's contract (exit 70) - wrong for a
+// process that is not the library's to end. An embedder defines SHCL_OOM before
+// the implementation to longjmp out, log, or abort on its own terms. Nothing is
+// unwound first, so a hook that returns leaks whatever was being built - and
+// then aborts, because the allocation it was called for still failed.
 #ifndef SHCL_OOM
 	#define SHCL_OOM() do { fprintf(stderr, "shcl: out of memory\n"); exit(70); } while (0)
 #endif
+
+/* Unwind to the recovery point `panic` names, or fall back to the macro when
+   nothing armed one. Keeping on with a failed allocation is not an option: a
+   bump arena holds its vectors' bookkeeping, so a request served out of
+   nowhere hands back node indices that are no longer node indices. */
+static void arena_panic(jmp_buf *panic) {
+	if (panic) longjmp(*panic, 1);
+	SHCL_OOM();
+	/* A hook that returns leaves nothing to carry on with - the allocation
+	   still failed - so it stops here rather than reading the null pointer one
+	   line later, which is what used to happen. */
+	abort();
+}
 
 typedef struct ShclBlock { struct ShclBlock *next; size_t used, cap; } ShclBlock;
 /* last/last_n: the most recent allocation, so a vector or string builder that
    grows with nothing allocated after it extends in place. A bump arena cannot
    free, so without this every doubling abandons the copy before it - measured
-   at two thirds of a large parse's memory. `last` always points into `head`. */
-typedef struct { ShclBlock *head; void *last; size_t last_n; int growing; } ShclArena;
+   at two thirds of a large parse's memory. `last` always points into `head`.
+   panic: where an allocation failure unwinds to; NULL means SHCL_OOM. */
+typedef struct { ShclBlock *head; void *last; size_t last_n; int growing; jmp_buf *panic; } ShclArena;
 
 static void *arena_alloc(ShclArena *a, size_t n) {
 	n = (n + 15u) & ~(size_t)15u;
@@ -467,7 +492,7 @@ static void *arena_alloc(ShclArena *a, size_t n) {
 		   spent about 2N getting there, and none of it is reclaimable. */
 		size_t cap = n > (size_t)65536 ? (a->growing ? n * 2 : n) : (size_t)65536;
 		ShclBlock *b = (ShclBlock *)malloc(sizeof(ShclBlock) + cap);
-		if (!b) SHCL_OOM();
+		if (!b) arena_panic(a->panic);
 		b->next = a->head; b->used = 0; b->cap = cap; a->head = b;
 	}
 	void *p = (char *)(a->head + 1) + a->head->used;
@@ -480,6 +505,8 @@ static void arena_free(ShclArena *a) {
 	while (b) { ShclBlock *n = b->next; free(b); b = n; }
 	a->head = NULL; a->last = NULL; a->last_n = 0; a->growing = 0;
 }
+/* Hand an arena the recovery point its owner armed. */
+static void arena_guard(ShclArena *a, jmp_buf *panic) { a->panic = panic; }
 static void *arena_grow(ShclArena *a, void *old, size_t oldcap, size_t newcap, size_t sz) {
 	/* Extend in place when nothing has been allocated since `old`. */
 	if (old && a->head && old == a->last) {
@@ -744,6 +771,9 @@ struct shcl_doc {
 	// so a caller that never calls it sees the documented lifetime unchanged.
 	ShclArena reads;
 	ShclVecNode nodes;
+	/* Armed for the length of a parse and cleared before it returns: the two
+	   vectors above are malloc storage, so they cannot read it off an arena. */
+	jmp_buf *panic;
 	ShclVecDiag diags;
 	shcl_strictness strictness;
 	ShclVecLead orphans; /* top-level comments after the last binding line */
@@ -787,7 +817,7 @@ static void nodes_push(shcl_doc *d, ShclNode x) {
 	if (v->len == v->cap) {
 		size_t nc = v->cap ? v->cap * 2 : 8;
 		ShclNode *nd = (ShclNode *)realloc(v->data, nc * sizeof(ShclNode));
-		if (!nd) SHCL_OOM();
+		if (!nd) arena_panic(d->panic);
 		v->data = nd; v->cap = nc;
 	}
 	v->data[v->len++] = x;
@@ -1774,11 +1804,11 @@ static int parse_datetime(ShclArena *a, ShclStr text, shcl_datetime *out) {
    and for the same reason (bump-arena doublings are never given back);
    do_parse frees both at its single exit. */
 typedef struct { ShclCMap **data; size_t len, cap; } ShclVecMapPtr;
-static void maps_push(ShclVecMapPtr *v, ShclCMap *x) {
+static void maps_push(jmp_buf *panic, ShclVecMapPtr *v, ShclCMap *x) {
 	if (v->len == v->cap) {
 		size_t nc = v->cap ? v->cap * 2 : 8;
 		ShclCMap **nd = (ShclCMap **)realloc(v->data, nc * sizeof(ShclCMap *));
-		if (!nd) SHCL_OOM();
+		if (!nd) arena_panic(panic);
 		v->data = nd; v->cap = nc;
 	}
 	v->data[v->len++] = x;
@@ -1865,7 +1895,11 @@ DEFINE_VEC(ShclVecPend, ShclPend)
    per node. Everything a node keeps (name, value, trivia text) is still dup'd
    into the document arena. Nothing resets scratch during a parse; the first
    read after it does. */
-typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclStr src; ShclVecStack stack; ShclVecMapPtr cmaps; ShclVecMapPtr dmaps; ShclVecPend pending; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line; } ShclParser;
+/* What a parse owns outright and has to give back, on the heap rather than in
+   do_parse's frame: the recovery path is reached by longjmp, which leaves a
+   local the parse has written to indeterminate. */
+typedef struct { ShclArena line, hints; ShclVecMapPtr cmaps, dmaps; } ShclParseOwn;
+typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line; } ShclParser;
 
 // The one place prose couples to a code, so the wording stays free everywhere else.
 static const char *diag_code(shcl_severity sev, ShclStr msg) {
@@ -1929,7 +1963,7 @@ static size_t select_or_create(ShclParser *P, size_t parent, ShclStr name, ShclS
 	ShclArena *a = &P->d->arena;
 	star_flush(P);
 	uint64_t h = merge_hash(name, &value);
-	for (ShclCMapEnt *e = cmap_first(P->cmaps.data[parent], h); e; e = cmap_next(e, h))
+	for (ShclCMapEnt *e = cmap_first(P->cmaps->data[parent], h); e; e = cmap_next(e, h))
 		if (merge_eq(NODE(P->d, e->val).name, &NODE(P->d, e->val).value, name, &value)) return e->val;
 	size_t idx = P->d->nodes.len;
 	ShclNode n; memset(&n, 0, sizeof n);
@@ -1938,12 +1972,12 @@ static size_t select_or_create(ShclParser *P, size_t parent, ShclStr name, ShclS
 	n.value = value; n.parent = parent; n.line = line; n.star_list = 0; n.star_mixed = 0;
 	nodes_push(P->d, n);
 	ShclVecSize_push(a, &NODE(P->d, parent).children, idx);
-	maps_push(&P->cmaps, NULL);
-	maps_push(&P->dmaps, NULL);
-	cmap_put(P->tmp, map_mut(P->tmp, &P->cmaps, parent), h, idx);
+	maps_push(P->d->panic, P->cmaps, NULL);
+	maps_push(P->d->panic, P->dmaps, NULL);
+	cmap_put(P->tmp, map_mut(P->tmp, P->cmaps, parent), h, idx);
 	uint64_t hd = disp_hash(name, &value);
-	if (!cmap_first(P->dmaps.data[parent], hd))
-		cmap_put(P->tmp, map_mut(P->tmp, &P->dmaps, parent), hd, idx);
+	if (!cmap_first(P->dmaps->data[parent], hd))
+		cmap_put(P->tmp, map_mut(P->tmp, P->dmaps, parent), hd, idx);
 	return idx;
 }
 
@@ -1953,15 +1987,15 @@ static size_t select_or_create(ShclParser *P, size_t parent, ShclStr name, ShclS
 static void remap_child(ShclParser *P, size_t node, uint64_t old_key, uint64_t old_disp) {
 	size_t parent = NODE(P->d, node).parent;
 	ShclStr name = NODE(P->d, node).name;
-	cmap_del(P->cmaps.data[parent], old_key, node);
+	cmap_del(P->cmaps->data[parent], old_key, node);
 	uint64_t h = merge_hash(name, &NODE(P->d, node).value);
 	int already = 0;
-	for (ShclCMapEnt *e = cmap_first(P->cmaps.data[parent], h); e; e = cmap_next(e, h))
+	for (ShclCMapEnt *e = cmap_first(P->cmaps->data[parent], h); e; e = cmap_next(e, h))
 		if (merge_eq(NODE(P->d, e->val).name, &NODE(P->d, e->val).value, name, &NODE(P->d, node).value)) { already = 1; break; }
-	if (!already) cmap_put(P->tmp, map_mut(P->tmp, &P->cmaps, parent), h, node);
-	cmap_del(P->dmaps.data[parent], old_disp, node);
+	if (!already) cmap_put(P->tmp, map_mut(P->tmp, P->cmaps, parent), h, node);
+	cmap_del(P->dmaps->data[parent], old_disp, node);
 	uint64_t hd = disp_hash(name, &NODE(P->d, node).value);
-	if (!cmap_first(P->dmaps.data[parent], hd)) cmap_put(P->tmp, map_mut(P->tmp, &P->dmaps, parent), hd, node);
+	if (!cmap_first(P->dmaps->data[parent], hd)) cmap_put(P->tmp, map_mut(P->tmp, P->dmaps, parent), hd, node);
 }
 
 /* A value that mutates after its sibling group was keyed - an empty field
@@ -2199,7 +2233,7 @@ static size_t find_by_value(ShclParser *P, size_t cur, ShclStr name, ShclStr tex
 	/* Ownership in dmaps is by hash alone, so the one candidate is verified
 	   exactly against the arena; a failed verify is a miss. */
 	{
-		ShclCMapEnt *e = cmap_first(P->dmaps.data[cur], hd);
+		ShclCMapEnt *e = cmap_first(P->dmaps->data[cur], hd);
 		if (e && s_eq(NODE(P->d, e->val).name, name)
 			&& s_eq(disp_key(P->line, &NODE(P->d, e->val).value), want))
 			found = e->val;
@@ -2332,8 +2366,11 @@ static void emit_repeated_leaf_hints(ShclParser *P) {
 	/* Grouping bookkeeping (name buckets, member lists, joined displays) is
 	   dead on return, so it lives in its own arena, freed here - built in the
 	   document arena it cost several times the hints it found and could never
-	   be given back. Only the hint messages land in the document arena. */
-	ShclArena tmp; memset(&tmp, 0, sizeof tmp);
+	   be given back. Only the hint messages land in the document arena. The
+	   parse owns it rather than this frame, so an allocation failure - which
+	   unwinds straight out of here - still has something to free it with. */
+	ShclArena *tmp = P->hints;
+	arena_guard(tmp, a->panic);
 	for (size_t parent = 0; parent < P->d->nodes.len; parent++) {
 		ShclVecS names = {0}; ShclVecSize *groups = NULL; size_t ngroups = 0, cgroups = 0;
 		ShclCMap group_of; memset(&group_of, 0, sizeof group_of);
@@ -2345,12 +2382,12 @@ static void emit_repeated_leaf_hints(ShclParser *P) {
 			for (ShclCMapEnt *e = cmap_first(&group_of, h); e; e = cmap_next(e, h))
 				if (s_eq(names.data[e->val], nm)) { g = e->val; break; }
 			if (g == (size_t)-1) {
-				ShclVecS_push(&tmp, &names, nm);
-				if (ngroups == cgroups) { size_t nc = cgroups ? cgroups * 2 : 8; groups = (ShclVecSize *)arena_grow(&tmp, groups, cgroups, nc, sizeof(ShclVecSize)); cgroups = nc; }
+				ShclVecS_push(tmp, &names, nm);
+				if (ngroups == cgroups) { size_t nc = cgroups ? cgroups * 2 : 8; groups = (ShclVecSize *)arena_grow(tmp, groups, cgroups, nc, sizeof(ShclVecSize)); cgroups = nc; }
 				memset(&groups[ngroups], 0, sizeof(ShclVecSize)); g = ngroups++;
-				cmap_put(&tmp, &group_of, h, g);
+				cmap_put(tmp, &group_of, h, g);
 			}
-			ShclVecSize_push(&tmp, &groups[g], c);
+			ShclVecSize_push(tmp, &groups[g], c);
 		}
 		for (size_t gi = 0; gi < ngroups; gi++) {
 			ShclVecSize grp = groups[gi];
@@ -2363,18 +2400,19 @@ static void emit_repeated_leaf_hints(ShclParser *P) {
 			}
 			if (!all_scalar) continue;
 			ShclSB joined = {0};
-			for (size_t k = 0; k < grp.len; k++) { if (k) sb_puts(&tmp, &joined, ", "); sb_putS(&tmp, &joined, value_display(&tmp, &NODE(P->d, grp.data[k]).value)); }
+			for (size_t k = 0; k < grp.len; k++) { if (k) sb_puts(tmp, &joined, ", "); sb_putS(tmp, &joined, value_display(tmp, &NODE(P->d, grp.data[k]).value)); }
 			ShclSB m = {0}; sb_putS(a, &m, h001_head(a, names.data[gi])); sb_putS(a, &m, sb_S(&joined)); sb_puts(a, &m, "'?");
 			push_diag(P->d, maxline, SHCL_SEV_HINT, sb_S(&m));
 		}
 	}
-	arena_free(&tmp);
+	arena_free(tmp);
 }
 
-static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) {
-	shcl_doc *d = (shcl_doc *)calloc(1, sizeof *d);
-	if (!d) SHCL_OOM();
-	d->strictness = strict;
+/* The parse proper. Split from do_parse so that no local of a function holding
+   a setjmp is written after it: which of those a compiler thinks an unwind
+   could clobber varies by version and optimization level, and -Wclobbered is
+   an error here. */
+static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t len) {
 	ShclArena *a = &d->arena;
 	ShclNode root; memset(&root, 0, sizeof root); root.value = v_empty(); root.parent = 0; root.line = 0;
 	nodes_push(d, root);
@@ -2383,13 +2421,12 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	   cannot share the scratch arena: that one carries the parser's bookkeeping
 	   for the whole parse. Everything a node keeps is dup'd into the document
 	   arena before the next reset. */
-	ShclArena line_arena; memset(&line_arena, 0, sizeof line_arena);
-	ShclParser P; P.d = d; P.tmp = &d->scratch; P.line = &line_arena; memset(&P.stack, 0, sizeof P.stack); memset(&P.cmaps, 0, sizeof P.cmaps); memset(&P.dmaps, 0, sizeof P.dmaps); memset(&P.pending, 0, sizeof P.pending);
+	ShclParser P; P.d = d; P.tmp = &d->scratch; P.line = &own->line; P.hints = &own->hints; P.cmaps = &own->cmaps; P.dmaps = &own->dmaps; memset(&P.stack, 0, sizeof P.stack); memset(&P.pending, 0, sizeof P.pending);
 	P.star_open = 0; P.star_node = 0; P.star_key = 0; P.star_disp = 0; P.saw_blank = 0;
 	memset(&P.reent_node, 0, sizeof P.reent_node); memset(&P.reent_line, 0, sizeof P.reent_line);
 	ShclStackEnt e0; e0.indent = s_empty(); e0.node = ROOT; ShclVecStack_push(P.tmp, &P.stack, e0);
-	maps_push(&P.cmaps, NULL);
-	maps_push(&P.dmaps, NULL);
+	maps_push(d->panic, P.cmaps, NULL);
+	maps_push(d->panic, P.dmaps, NULL);
 
 	ShclStr full; full.p = text ? text : ""; full.n = len;
 	if (full.n >= 3 && (unsigned char)full.p[0] == 0xEF && (unsigned char)full.p[1] == 0xBB && (unsigned char)full.p[2] == 0xBF) full = s_slice(full, 3, full.n);
@@ -2416,7 +2453,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	}
 	size_t i = 0;
 	while (i < lines.len) {
-		arena_reset(&line_arena);
+		arena_reset(&own->line);
 		size_t lineno = i + 1;
 		ShclStr line = trim_end(lines.data[i]);
 		size_t ind = 0; while (ind < line.n && (line.p[ind] == ' ' || line.p[ind] == '\t')) ind++;
@@ -2481,7 +2518,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		   assumes it. Without this, `a: ```c#` loses the `#`. The cheap test
 		   comes first so an ordinary commented line is not scanned twice. */
 		if (comment.n && s_has_fence_run(before)) {
-			ShclPathScan pre = scan_path(&line_arena, trim_end(before));
+			ShclPathScan pre = scan_path(&own->line, trim_end(before));
 			if (pre.ok && pre.has_value && fence_open(pre.value_text).ok) { before = rest; comment.p = NULL; comment.n = 0; }
 		}
 		ShclStr content = trim_end(before);
@@ -2496,7 +2533,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 		size_t parent;
 		if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, s_lit("indentation matches no open level")); d->lost++; i++; continue; }
 		if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
-		ShclPathScan scan = scan_path(&line_arena, content);
+		ShclPathScan scan = scan_path(&own->line, content);
 		if (!scan.ok) {
 			ShclSB m = {0}; sb_puts(a, &m, "malformed line skipped: "); sb_putS(a, &m, scan.err); p_err(&P, lineno, sb_S(&m));
 			/* Content-malformed at any position - retained as trivia, same
@@ -2526,8 +2563,8 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 			ShclFence vf = fence_open(scan.value_text);
 			if (vf.ok) value = consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, vf, &next);
 			else {
-				if (unterminated_quote(&line_arena, scan.value_text)) p_err(&P, lineno, s_lit("unterminated quote in value"));
-				value = parse_cell(a, &line_arena, scan.value_text);
+				if (unterminated_quote(&own->line, scan.value_text)) p_err(&P, lineno, s_lit("unterminated quote in value"));
+				value = parse_cell(a, &own->line, scan.value_text);
 			}
 		}
 		size_t node;
@@ -2547,10 +2584,55 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) 
 	hang_deeper_pending(&P, s_empty());
 	for (size_t k = 0; k < P.pending.len; k++)
 		ShclVecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before));
-	arena_free(&line_arena);
-	free(P.cmaps.data); free(P.dmaps.data);
+}
+
+/* -Wclobbered guesses at which locals an unwind could leave indeterminate, and
+   it guesses badly once parse_body is inlined into the frame holding the
+   setjmp: the recovery path below reads only the two volatile carriers and
+   returns. clang has no such warning, so naming it there is itself an error. */
+#if defined(__GNUC__) && !defined(__clang__)
+	#pragma GCC diagnostic push
+	#pragma GCC diagnostic ignored "-Wclobbered"
+#endif
+static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict) {
+	/* The two the unwind path has to reach. volatile because that path arrives
+	   by longjmp, which leaves an ordinary local indeterminate. */
+	shcl_doc *volatile doc = (shcl_doc *)calloc(1, sizeof *doc);
+	if (!doc) return NULL;
+	ShclParseOwn *volatile owned = (ShclParseOwn *)calloc(1, sizeof *owned);
+	if (!owned) { free(doc); return NULL; }
+	jmp_buf panic;
+	if (setjmp(panic)) {
+		/* An allocation failed somewhere below. Nothing built so far can be
+		   trusted and there is no way to finish, so the whole document goes and
+		   the caller gets NULL - with the process still standing, which is the
+		   point. */
+		shcl_doc *bad = doc; ShclParseOwn *badOwn = owned;
+		bad->panic = NULL;
+		arena_free(&badOwn->line); arena_free(&badOwn->hints);
+		free(badOwn->cmaps.data); free(badOwn->dmaps.data); free(badOwn);
+		shcl_free(bad);
+		return NULL;
+	}
+	doc->panic = &panic;
+	arena_guard(&doc->arena, &panic); arena_guard(&doc->scratch, &panic);
+	arena_guard(&doc->reads, &panic); arena_guard(&doc->index_arena, &panic);
+	arena_guard(&owned->line, &panic); arena_guard(&owned->hints, &panic);
+	doc->strictness = strict;
+	parse_body(doc, owned, text, len);
+	/* The recovery point is this frame's; leaving it armed would send a later
+	   read or write jumping into a frame that is gone. */
+	shcl_doc *d = doc; ShclParseOwn *own = owned;
+	d->panic = NULL;
+	arena_guard(&d->arena, NULL); arena_guard(&d->scratch, NULL);
+	arena_guard(&d->reads, NULL); arena_guard(&d->index_arena, NULL);
+	arena_free(&own->line); arena_free(&own->hints);
+	free(own->cmaps.data); free(own->dmaps.data); free(own);
 	return d;
 }
+#if defined(__GNUC__) && !defined(__clang__)
+	#pragma GCC diagnostic pop
+#endif
 
 // --- accessor: path resolution ----------------------------------------------
 
@@ -3992,7 +4074,9 @@ const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i
 // line-number space per result.
 // Everything (scratch and results) lives in the validation's own arena.
 
-struct shcl_validation { ShclArena arena; ShclVecDiag diags; };
+/* scratch: v_unknown's suggestion workspace. On the validation rather than in
+   that frame so an allocation failure, which unwinds past it, can free it. */
+struct shcl_validation { ShclArena arena, scratch; ShclVecDiag diags; };
 
 static const char *v_schema_types[] = {
 	"int", "float", "bool", "string", "datetime", "raw",
@@ -4669,12 +4753,12 @@ static int chain_legal(const ShclVSchemaDef *def, ShclStr chain) {
 // Unknown-field sweep: a schema path legalizes its name chain and every prefix
 // (selectors ignored). Only the topmost unknown node is reported; its subtree
 // is implied unknown and skipped.
-static void v_unknown(ShclArena *a, shcl_doc *d, const ShclVSchemaDef *def, ShclVecDiag *out) {
+static void v_unknown(ShclArena *a, ShclArena *tmp, shcl_doc *d, const ShclVSchemaDef *def, ShclVecDiag *out) {
 	const ShclVecVCons *cons = &def->cons;
 	// Chains below a fragment mount only match by descending the mounts.
 	int has_mounts = 0;
 	for (size_t i = 0; i < cons->len; i++) if (cons->data[i].inherits.n) { has_mounts = 1; break; }
-	ShclArena tmp; memset(&tmp, 0, sizeof tmp); // v_suggest scratch, reset per unknown field
+	arena_guard(tmp, a->panic); // v_suggest scratch, reset per unknown field
 	// Legal chains in a hash set (the linear scan compounded the quadratic),
 	// and sibling names bucketed per parent chain, built once: v_suggest used
 	// to rebuild every chain per unknown field. The map entries hold hashes
@@ -4754,7 +4838,7 @@ static void v_unknown(ShclArena *a, shcl_doc *d, const ShclVSchemaDef *def, Shcl
 			uint64_t hpc = cmap_hash(pchain, s_empty());
 			for (ShclCMapEnt *e = cmap_first(&sib_of, hpc); e; e = cmap_next(e, hpc))
 				if (s_eq(sib_chain.data[e->val], pchain)) { sg = e->val; break; }
-			v_suggest(a, &tmp, sg == (size_t)-1 ? NULL : &sibs[sg], node->name, &msg);
+			v_suggest(a, tmp, sg == (size_t)-1 ? NULL : &sibs[sg], node->name, &msg);
 			v_diag(a, out, node->line, sb_S(&msg));
 			continue;
 		}
@@ -4765,13 +4849,33 @@ static void v_unknown(ShclArena *a, shcl_doc *d, const ShclVSchemaDef *def, Shcl
 			ShclVecS_push(a, &sshown, shown);
 		}
 	}
-	arena_free(&tmp);
+	arena_free(tmp);
 }
 
 shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
-	shcl_validation *v = (shcl_validation *)malloc(sizeof *v);
-	if (!v) SHCL_OOM();
-	memset(v, 0, sizeof *v);
+	/* Same shape as do_parse: the two the unwind path has to reach are
+	   volatile, the working copies below are not. */
+	shcl_validation *volatile val = (shcl_validation *)malloc(sizeof *val);
+	if (!val) return NULL;
+	memset(val, 0, sizeof *val);
+	ShclArena *volatile levels = NULL;
+	jmp_buf panic;
+	if (setjmp(panic)) {
+		shcl_validation *bad = val; ShclArena *badLevels = levels;
+		if (badLevels) { for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_free(&badLevels[i]); free(badLevels); }
+		/* The name index is the only thing on the document this call builds,
+		   and half of one is worse than none. Everything else it touched is
+		   scratch. */
+		index_drop(d);
+		arena_guard(&d->index_arena, NULL); arena_guard(&d->scratch, NULL); arena_guard(&d->reads, NULL);
+		arena_free(&bad->arena); arena_free(&bad->scratch); free(bad);
+		return NULL;
+	}
+	shcl_validation *v = val;
+	arena_guard(&v->arena, &panic);
+	/* Reading the document allocates too - the name index above all - so the
+	   read-side arenas unwind here rather than to SHCL_OOM. */
+	arena_guard(&d->index_arena, &panic); arena_guard(&d->scratch, &panic); arena_guard(&d->reads, &panic);
 	ShclArena *a = &v->arena;
 	ShclVSchemaDef def; memset(&def, 0, sizeof def);
 	ShclVecDiag faults = {0};
@@ -4785,12 +4889,18 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	// On the heap, not the stack: one slot per level of the depth cap is 16 KB,
 	// which is fine on a main thread and not on a small-stack one.
 	ShclArena *lvls = (ShclArena *)calloc(SHCL_MAX_DEPTH + 1, sizeof *lvls);
-	if (!lvls) SHCL_OOM();
+	if (!lvls) arena_panic(&panic);
+	levels = lvls;
+	for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_guard(&lvls[i], &panic);
 	for (size_t i = 0; i < def.cons.len; i++) v_check(a, lvls, d, &def.cons.data[i], &def, &v->diags);
 	// Nothing returns between the alloc and here, so every slot is reached.
 	for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_free(&lvls[i]);
 	free(lvls);
-	if (def.paths_complete) v_unknown(a, d, &def, &v->diags);
+	levels = NULL;
+	if (def.paths_complete) v_unknown(a, &v->scratch, d, &def, &v->diags);
+	/* This frame is about to go; the arenas outlive it. */
+	arena_guard(&v->arena, NULL);
+	arena_guard(&d->index_arena, NULL); arena_guard(&d->scratch, NULL); arena_guard(&d->reads, NULL);
 	return v;
 }
 size_t shcl_validation_count(const shcl_validation *v) { return v->diags.len; }
@@ -4800,7 +4910,7 @@ shcl_str shcl_validation_message(const shcl_validation *v, size_t i) {
 	shcl_str s; s.p = v->diags.data[i].message.p; s.n = v->diags.data[i].message.n; return s;
 }
 const char *shcl_validation_code(const shcl_validation *v, size_t i) { return v->diags.data[i].code; }
-void shcl_validation_free(shcl_validation *v) { if (!v) return; arena_free(&v->arena); free(v); }
+void shcl_validation_free(shcl_validation *v) { if (!v) return; arena_free(&v->arena); arena_free(&v->scratch); free(v); }
 
 void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 	/* Everything this probe builds - instance/repeat query results as well as
@@ -4918,9 +5028,11 @@ size_t shcl_error_count(const shcl_doc *d) {
 
 shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schema, size_t slen, shcl_strictness s) {
 	shcl_doc *d = shcl_parse_with(text, len, s);
+	if (!d) return NULL;
 	ShclStr st; st.p = schema ? schema : ""; st.n = schema ? slen : 0;
 	if (s_trim(st).n != 0) {
 		shcl_doc *sd = shcl_parse(schema, slen);
+		if (!sd) { shcl_free(d); return NULL; }
 		// A schema that did not load would silently drop the constraints on
 		// its broken lines, or report every field as unknown - either way
 		// blaming the document for the schema. Say so instead, as `check`
@@ -4933,6 +5045,7 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 			return d;
 		}
 		shcl_validation *v = shcl_validate(d, sd);
+		if (!v) { shcl_free(sd); shcl_free(d); return NULL; }
 		for (size_t i = 0; i < v->diags.len; i++) {
 			ShclDiag dg = v->diags.data[i];
 			/* the validation arena dies below; codes are static strings */
@@ -5277,6 +5390,7 @@ shcl_doc *shcl_load_file_with(const char *path, shcl_strictness s, shcl_file_sta
 	}
 	shcl_doc *d = shcl_parse_with(buf, len, s);
 	free(buf);
+	if (!d) { if (status) *status = st; return NULL; }
 	if (status) {
 		*status = SHCL_FILE_CLEAN;
 		for (size_t i = 0; i < d->diags.len; i++)

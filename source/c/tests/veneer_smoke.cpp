@@ -33,6 +33,9 @@ int main() {
 		"city: Boston\n";
 
 	auto doc = shcl::Document::parse(src);
+	// False only when the parse could not allocate, so every accessor below
+	// is asking about a document that exists.
+	CHECK(static_cast<bool>(doc));
 
 	auto port = doc.get<int64_t>("port");
 	CHECK(port.ok() && port.status == shcl::Status::Good && port.value == 8080);

@@ -35,7 +35,11 @@ done
 ## Same flags the build and test stages use, so a disagreement here is a
 ## disagreement there.
 for cc in "${compilers[@]}"; do
-	for src in source/c/cmd/shcl/main.c source/c/tests/conformance.c; do
+	## The two OOM tests are here for -Wclobbered: the library's recovery point
+	## is a setjmp, and which locals a compiler thinks the unwind can clobber
+	## differs by version and optimization level.
+	for src in source/c/cmd/shcl/main.c source/c/tests/conformance.c \
+	           source/c/tests/oom_hook.c source/c/tests/oom_recover.c; do
 		nRun+=1
 		if ! out="$("${cc}" -std=c11 -O2 -Wall -Wextra -Werror -I"${repoDir}/source/c" \
 			"${repoDir}/${src}" -o "${tmpDir}/out" -lm -lpthread 2>&1)"; then
@@ -55,3 +59,4 @@ echo "check-c-compilers: OK: ${nRun} build(s) across ${#compilers[@]} compiler(s
 ##	History:
 ##		2026-08-31  Created, after gcc 13 on the hosted runner rejected what the
 ##		            local gcc 14 accepted.
+##		2026-08-31  The two OOM tests, for -Wclobbered around the setjmp.
