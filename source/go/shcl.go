@@ -342,10 +342,19 @@ func plainLead(text string) lead {
 
 // pend is a pending whole-line comment during parse: text, source indent (used
 // only to decide whether it hangs on a deeper block), and the blank it consumed.
+// ceiling is the shortest incoming indent already checked against it: a later
+// check can only hang it from a shorter one, so a longer one skips it.
 type pend struct {
 	text        string
 	indent      string
 	blankBefore bool
+	ceiling     int
+}
+
+// pendMark: every pending entry before end has a ceiling at or under indentLen.
+type pendMark struct {
+	end       int
+	indentLen int
 }
 
 type valueKind int
@@ -867,6 +876,49 @@ func parseElement(piece string) (element, bool) {
 		return element{text: t[1 : len(t)-1], quoted: true}, true
 	}
 	return element{text: normalizeDanglingBackslash(t)}, true
+}
+
+// cellExceeds reports whether parseCell would build more than max elements.
+// Counts the pieces the way the splitter cuts them, without building any, so
+// a capped parse refuses an over-long line before holding the array.
+func cellExceeds(text string, max int) bool {
+	count := 0
+	hasContent := false
+	var inQuote rune
+	skip := false
+	for _, c := range text {
+		if skip {
+			skip = false
+			continue
+		}
+		if c == '\\' {
+			hasContent = true
+			skip = true
+			continue
+		}
+		switch {
+		case inQuote != 0 && c == inQuote:
+			inQuote = 0
+		case inQuote == 0 && (c == '"' || c == '\''):
+			inQuote = c
+		case inQuote == 0 && c == ',':
+			if hasContent {
+				count++
+				if count > max {
+					return true
+				}
+			}
+			hasContent = false
+			continue
+		}
+		if !unicode.IsSpace(c) {
+			hasContent = true
+		}
+	}
+	if hasContent {
+		count++
+	}
+	return count > max
 }
 
 func parseCell(text string) value {
@@ -1514,8 +1566,13 @@ type parser struct {
 	// Whole-line comments waiting for the next line that binds a node. The
 	// source indent is kept only to decide after-attachment (a comment deeper
 	// than the next binding hangs on the block it sits in).
-	pending  []pend
-	sawBlank bool // a blank line waits to become the next bound node's blankBefore
+	pending []pend
+	// Lengths rise along the stack, so a hang check pops the marks above its
+	// own indent and walks only what they covered. Without it a run of
+	// retained bad lines is rewalked per line and a plain text file parses in
+	// quadratic time.
+	pendMarks []pendMark
+	sawBlank  bool // a blank line waits to become the next bound node's blankBefore
 	// An open stacked list defers its merge-key remap (rebuilding the key per
 	// element is O(list^2) time); (node, key hash, display hash) at deferral
 	// start, flushed before any map lookup and at end of parse.
@@ -1531,9 +1588,14 @@ type parser struct {
 	reentered map[int]int
 	lost      int // dropped lines/values canonical output cannot re-emit
 	// ParseLimited's caps, 0 = uncapped: nodes counted against the arena
-	// (root excluded), elements against a single value's cell.
-	maxNodes    int
-	maxElements int
+	// (root excluded), elements against a single value's cell, diagnostics
+	// against the list. Past the diagnostic cap nothing is listed, only
+	// counted (errors, hints), for the one tail entry the parse ends with.
+	maxNodes       int
+	maxElements    int
+	maxDiags       int
+	unlistedErrors int
+	unlistedHints  int
 }
 
 func newParser() *parser {
@@ -1547,7 +1609,20 @@ func newParser() *parser {
 }
 
 func (p *parser) err(line int, code, msg string) {
-	p.diags = append(p.diags, Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: code})
+	p.diag(Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: code})
+}
+
+// diag: every parse diagnostic goes through here, so the cap sees them all.
+func (p *parser) diag(d Diagnostic) {
+	if p.maxDiags != 0 && len(p.diags) >= p.maxDiags {
+		if d.Severity == SeverityError {
+			p.unlistedErrors++
+		} else {
+			p.unlistedHints++
+		}
+		return
+	}
+	p.diags = append(p.diags, d)
 }
 
 // selectOrCreate finds (or creates by merge rule) the child of parent with
@@ -1660,6 +1735,7 @@ func (p *parser) attachTrivia(node int, trailing string) {
 			t.leading = append(t.leading, lead{text: pn.text, blankBefore: pn.blankBefore})
 		}
 		p.pending = p.pending[:0]
+		p.pendMarks = p.pendMarks[:0]
 	}
 	if trailing != "" {
 		t := p.arena[node].trivMut()
@@ -1683,10 +1759,19 @@ func (p *parser) hangDeeperPending(newIndent string) {
 	if len(p.pending) == 0 {
 		return
 	}
-	taken := p.pending
-	p.pending = nil
+	newLen := len(newIndent)
+	// Only entries above the last mark at or under this indent can hang.
+	for len(p.pendMarks) > 0 && p.pendMarks[len(p.pendMarks)-1].indentLen > newLen {
+		p.pendMarks = p.pendMarks[:len(p.pendMarks)-1]
+	}
+	start := 0
+	if len(p.pendMarks) > 0 {
+		start = p.pendMarks[len(p.pendMarks)-1].end
+	}
+	taken := append([]pend(nil), p.pending[start:]...)
+	p.pending = p.pending[:start]
 	for _, pn := range taken {
-		if len(pn.indent) > len(newIndent) {
+		if pn.ceiling > newLen {
 			// A level shallower than the incoming line stays open and may
 			// still gain children, so a comment must not hang there - it
 			// would emit below the child; keep it pending instead.
@@ -1711,8 +1796,14 @@ func (p *parser) hangDeeperPending(newIndent string) {
 				}
 				continue
 			}
+			pn.ceiling = newLen
 		}
 		p.pending = append(p.pending, pn)
+	}
+	if n := len(p.pendMarks); n > 0 && p.pendMarks[n-1].indentLen == newLen {
+		p.pendMarks[n-1].end = len(p.pending)
+	} else {
+		p.pendMarks = append(p.pendMarks, pendMark{end: len(p.pending), indentLen: newLen})
 	}
 }
 
@@ -1843,7 +1934,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 				rl, ok := p.reentered[parent]
 				crossRegion := ok && p.arena[cur].line < rl
 				if nonLast || crossRegion {
-					p.diags = append(p.diags, Diagnostic{
+					p.diag(Diagnostic{
 						Line:     line,
 						Severity: SeverityHint,
 						Message:  fmt.Sprintf("%sline %d (same name and value combine)", h002Head(seg.name), p.arena[cur].line),
@@ -2054,7 +2145,7 @@ func (p *parser) emitRepeatedLeafHints() {
 				}
 				vals = append(vals, p.arena[c].value.display())
 			}
-			p.diags = append(p.diags, Diagnostic{
+			p.diag(Diagnostic{
 				Line:     line,
 				Severity: SeverityHint,
 				Message:  fmt.Sprintf("%s%s'?", h001Head(g.name), strings.Join(vals, ", ")),
@@ -2104,7 +2195,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// It consumes a pending blank into its own flag, so a blank between
 		// comment-only regions survives the round-trip.
 		if strings.HasPrefix(rest, "#") {
-			p.pending = append(p.pending, pend{text: rest, indent: indent, blankBefore: p.sawBlank})
+			p.pending = append(p.pending, pend{text: rest, indent: indent, blankBefore: p.sawBlank, ceiling: len(indent)})
 			p.sawBlank = false
 			i++
 			continue
@@ -2166,7 +2257,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			// vanishes on the consumer's next save. The BOM exception the
 			// sibling site below carries cannot apply here: this line starts
 			// with the '*' that brought us in.
-			p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank})
+			p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 			i++
 			continue
 		}
@@ -2188,7 +2279,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		if content == "" {
 			// Only a comment survived (e.g. an escaped lead-in); keep it.
 			if comment != "" {
-				p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank})
+				p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 			}
 			i++
 			continue
@@ -2213,7 +2304,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			if strings.HasPrefix(rest, "\ufeff") {
 				p.lost++
 			} else {
-				p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank})
+				p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 			}
 			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
 			i++
@@ -2245,21 +2336,23 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				// Same-line fence spelling.
 				v, next = p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 			} else {
+				// Element cap: the whole line is refused, so a capped load
+				// never holds a truncated array that would read as the
+				// document's value. Counted before anything splits the value
+				// (the quote check does too), or the cap would bound nothing.
+				if p.maxElements != 0 && cellExceeds(*scan.valueText, p.maxElements) {
+					p.err(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements))
+					p.lost++
+					p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+					i = next
+					continue
+				}
 				if unterminatedQuote(*scan.valueText) {
 					p.err(lineno, "E017", "unterminated quote in value")
 				}
 				srcText, haveSrc = *scan.valueText, true
 				v = parseCell(*scan.valueText)
 			}
-		}
-		// Element cap: the whole line is refused, so a capped load never
-		// holds a truncated array that would read as the document's value.
-		if p.maxElements != 0 && v.kind == vCell && len(v.els) > p.maxElements {
-			p.err(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements))
-			p.lost++
-			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
-			i = next
-			continue
 		}
 		// Record only when the bound node holds exactly this line's value
 		// (a merge into an equal-valued node keeps the first line's span;
@@ -2301,6 +2394,21 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore})
 	}
 	p.pending = p.pending[:0]
+	// The one entry past the cap: what was not listed, and whether any of it
+	// was an error, so a consumer scanning the list for errors still finds
+	// one and a Strict load still fails.
+	if more := p.unlistedErrors + p.unlistedHints; more > 0 {
+		sev := SeverityHint
+		if p.unlistedErrors > 0 {
+			sev = SeverityError
+		}
+		p.diags = append(p.diags, Diagnostic{
+			Line:     0, // about the list, not a line
+			Severity: sev,
+			Code:     "E022",
+			Message:  fmt.Sprintf("diagnostic cap of %d reached; %d more not listed, %d of them errors", p.maxDiags, more, p.unlistedErrors),
+		})
+	}
 	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: orphans, lost: p.lost}
 }
 
@@ -2336,15 +2444,20 @@ func ParseWith(text string, strictness Strictness) (*Document, error) {
 // stops the parse once a line takes the node count past it - one E020 error,
 // and the unparsed remainder counts as lost so a save cannot silently
 // truncate. maxElements refuses any line whose array would hold more elements
-// (E021, that line alone is skipped). 0 disables a cap, making this ParseWith.
-// Both caps are parse-time only; the write API is the consumer's own
-// arithmetic. As everywhere, the error fires only at Strict, and a cap
-// diagnostic is an error, so a capped Strict load fails; at other levels the
-// parsed part stays readable.
-func ParseLimited(text string, strictness Strictness, maxNodes, maxElements int) (*Document, error) {
+// (E021, that line alone is skipped). maxDiags bounds the diagnostics list
+// itself - a document of nothing but bad lines costs a diagnostic per line -
+// by listing the first that many and ending with one E022 that counts the
+// rest; ErrorCount and the Strict gate see that tail as an error whenever an
+// unlisted one was. 0 disables a cap, making this ParseWith. The caps are
+// parse-time only; the write API is the consumer's own arithmetic. As
+// everywhere, the error fires only at Strict, and a cap diagnostic is an
+// error, so a capped Strict load fails; at other levels the parsed part stays
+// readable.
+func ParseLimited(text string, strictness Strictness, maxNodes, maxElements, maxDiags int) (*Document, error) {
 	p := newParser()
 	p.maxNodes = maxNodes
 	p.maxElements = maxElements
+	p.maxDiags = maxDiags
 	doc := p.parse(text, strictness)
 	if strictness == Strict {
 		for _, d := range doc.diags {
@@ -3542,7 +3655,10 @@ func literalValue(text string) (value, bool) {
 	}
 	v, _ := splitComment(text)
 	v = strings.TrimFunc(v, unicode.IsSpace)
-	if unterminatedQuote(v) {
+	// Bracket-array text is refused too: in a file it is E019 and the line is
+	// lost, so writing it as a two-element array holding `[1` and `2]` would
+	// be a different wrong answer.
+	if unterminatedQuote(v) || (strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]")) {
 		return value{}, false
 	}
 	return parseCell(v), true
@@ -3939,8 +4055,13 @@ func (d *Document) SetInt(path string, v int64) bool {
 	return d.setValue(path, cellOf(strconv.FormatInt(v, 10)))
 }
 
-// SetFloat binds a float at path, in the canonical shortest spelling.
+// SetFloat binds a float at path, in the canonical shortest spelling. An
+// infinity or a NaN has no spelling the reader accepts, so it fails the write
+// rather than binding a value that cannot read back.
 func (d *Document) SetFloat(path string, v float64) bool {
+	if math.IsInf(v, 0) || math.IsNaN(v) {
+		return false
+	}
 	return d.setValue(path, cellOf(FormatFloat(v)))
 }
 
@@ -3954,8 +4075,14 @@ func (d *Document) SetString(path, v string) bool {
 	return d.setValue(path, cellOf(encodeString(v)))
 }
 
-// SetDateTime binds a datetime at path, in its canonical spelling.
+// SetDateTime binds a datetime at path, in its canonical spelling. The
+// struct's fields are public and carry no invariant, so a value the reader
+// would refuse (month 13, a fraction with no seconds, an empty struct) fails
+// the write rather than binding text that cannot read back.
 func (d *Document) SetDateTime(path string, v DateTime) bool {
+	if !datetimeReadsBack(v) {
+		return false
+	}
 	return d.setValue(path, cellOf(v.String()))
 }
 
@@ -3995,6 +4122,11 @@ func (d *Document) SetIntArray(path string, v []int64) bool {
 
 // SetFloatArray binds an inline float array at path.
 func (d *Document) SetFloatArray(path string, v []float64) bool {
+	for _, x := range v {
+		if math.IsInf(x, 0) || math.IsNaN(x) {
+			return false
+		}
+	}
 	texts := make([]string, len(v))
 	for i, x := range v {
 		texts[i] = FormatFloat(x)
@@ -4022,6 +4154,11 @@ func (d *Document) SetStringArray(path string, v []string) bool {
 
 // SetDateTimeArray binds an inline datetime array at path.
 func (d *Document) SetDateTimeArray(path string, v []DateTime) bool {
+	for _, x := range v {
+		if !datetimeReadsBack(x) {
+			return false
+		}
+	}
 	texts := make([]string, len(v))
 	for i, x := range v {
 		texts[i] = x.String()
@@ -4500,9 +4637,11 @@ func parseFloatText(e *element, level Strictness) (float64, bool) {
 	if floatShapeOK(t) {
 		f, err := strconv.ParseFloat(t, 64)
 		if err != nil {
-			// Over/underflow keeps the reference's parse result (inf / 0).
+			// Underflow keeps the reference's parse result (0). Overflow is an
+			// infinity, which no double holds and no setter can write back:
+			// BadType, like a text that is not a number at all.
 			var ne *strconv.NumError
-			if !errors.As(err, &ne) || ne.Err != strconv.ErrRange {
+			if !errors.As(err, &ne) || ne.Err != strconv.ErrRange || math.IsInf(f, 0) {
 				return 0, false
 			}
 		}
@@ -4817,6 +4956,18 @@ func parseTimePart(s string) (h, mi, sec int, hasSec bool, frac string, zone *Zo
 		}
 	}
 	return h, mi, sec, hasSec, frac, zone, true
+}
+
+// datetimeReadsBack reports whether a datetime's canonical spelling reads
+// back as the same value: the setter's inverse-of-the-read promise, checked
+// by making the round trip.
+func datetimeReadsBack(v DateTime) bool {
+	back, ok := ParseDateTime(v.String())
+	if !ok || (v.Zone == nil) != (back.Zone == nil) || (v.Zone != nil && *v.Zone != *back.Zone) {
+		return false
+	}
+	v.Zone, back.Zone = nil, nil
+	return v == back
 }
 
 // ParseDateTime is the whole-value date/time parse per the whitelist.
@@ -5946,6 +6097,18 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			break
 		}
 	}
+	// A live line with a value materializes an instance carrying that value,
+	// and a dotted child names the empty-valued instance instead - so `srv:
+	// web` followed by `srv.port:` is two `srv` nodes, and the child never
+	// lands where the schema looks. Any line under such a parent selects it
+	// by its value: `srv[web].port:`.
+	parentValues := map[string]string{}
+	for i := range cons {
+		c := &cons[i]
+		if !hasWild(c) && !unwritable(c) && mustExist(c) && c.defaultText != nil {
+			parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
+		}
+	}
 	var b strings.Builder
 	var wild [][2]string
 	first := true
@@ -5975,13 +6138,21 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		// string value must not break out of it.
 		b.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
 		b.WriteByte('\n')
-		// A filled wildcard emits in dotted form, targeting the first (the
-		// materialized) instance. Rebuilt from the parsed segments, not by
-		// cutting text out of the path: the same path can be written several
-		// ways, and only the segments say what it means.
+		// A filled wildcard emits in dotted form, targeting the materialized
+		// instance - by its value when the materializing line carries one.
+		// Rebuilt from the parsed segments, not by cutting text out of the
+		// path: the same path can be written several ways, and only the
+		// segments say what it means. Otherwise the schema's own spelling.
+		underValuedParent := false
+		for k := 1; k < len(c.segs); k++ {
+			if _, ok := parentValues[namesKey(namesOf(c.segs[:k]))]; ok && c.segs[k-1].sel == nil {
+				underValuedParent = true
+				break
+			}
+		}
 		path := c.path
-		if fill[i] {
-			path = genPathText(c.segs)
+		if fill[i] || underValuedParent {
+			path = genPathText(c.segs, parentValues)
 		}
 		prefix := "#"
 		if mustExist(c) {
@@ -6015,12 +6186,14 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// it, so check that here rather than trusting each branch above. A
 	// `default` outside its own field's constraints is the schema's fault, and
 	// the author should hear about it instead of getting a starter config that
-	// fails the first time it is checked. V007 is the one sanctioned shortfall
-	// (a repeat lower bound of 2+ generates identical lines, which merge).
+	// fails the first time it is checked. The one sanctioned shortfall is a
+	// V007 for a repeat lower bound of 2+: generating that many identical
+	// lines merges them into one. A lower bound of 1 is a must-exist path
+	// like any other, so its V007 is a fault.
 	text := b.String()
 	var bad []Diagnostic
 	for _, d := range Parse(text).Validate(schema) {
-		if d.Severity == SeverityError && d.Code != "V007" {
+		if d.Severity == SeverityError && !(d.Code == "V007" && v007Sanctioned(d.Message)) {
 			bad = append(bad, Diagnostic{
 				Line:     0,
 				Severity: SeverityError,
@@ -6054,12 +6227,51 @@ const genBanner = "#\n" +
 	"#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n" +
 	"#\n"
 
+// v007Sanctioned reports whether a V007 from the self-check is the sanctioned
+// kind: its message ends `: N not in LO..HI`, and LO is 2 or more.
+func v007Sanctioned(message string) bool {
+	i := strings.LastIndex(message, " not in ")
+	if i < 0 {
+		return false
+	}
+	lo, _, _ := strings.Cut(message[i+len(" not in "):], "..")
+	n, err := strconv.ParseUint(lo, 10, 64)
+	return err == nil && n >= 2
+}
+
+// namesKey joins segment names for the parent-value map, each length-prefixed
+// so no name content can make two different prefixes read the same.
+func namesKey(names []string) string {
+	var b strings.Builder
+	for _, n := range names {
+		fmt.Fprintf(&b, "%d:%s", len(n), n)
+	}
+	return b.String()
+}
+
+// genSelectorText is a default's spelling inside a `[value]` selector: the
+// value-side text as is, except that a bracket or a backslash would end or
+// escape the selector, so those go quoted (the selector matches on the
+// escaped display, so the quoted spelling finds the bare value).
+func genSelectorText(v string) string {
+	if strings.Contains(v, "\n") {
+		return genDefaultText(v)
+	}
+	if strings.ContainsAny(v, "[]\\") && !quotedShape(v) {
+		return quoteText(v)
+	}
+	return v
+}
+
 // genPathText renders parsed segments back as a dotted path, dropping
 // wildcard selectors (a generated line targets the one instance it
 // materializes) and quoting a name that needs it, so the result is a path the
-// scanner reads back the same.
-func genPathText(segs []segment) string {
+// scanner reads back the same. A segment whose prefix names a live line
+// carrying a value selects that instance by the value, in place of a wildcard
+// or a bare name.
+func genPathText(segs []segment, parentValues map[string]string) string {
 	var out strings.Builder
+	names := make([]string, 0, len(segs))
 	for i, s := range segs {
 		if i > 0 {
 			out.WriteByte('.')
@@ -6068,6 +6280,13 @@ func genPathText(segs []segment) string {
 			out.WriteByte('*')
 		} else {
 			out.WriteString(emitName(s.name))
+		}
+		names = append(names, s.name)
+		if v, ok := parentValues[namesKey(names)]; ok && i+1 < len(segs) && (s.sel == nil || s.sel.kind != selByValue) {
+			out.WriteByte('[')
+			out.WriteString(genSelectorText(v))
+			out.WriteByte(']')
+			continue
 		}
 		if s.sel != nil {
 			switch s.sel.kind {

@@ -49,6 +49,15 @@ awk 'BEGIN{ for (i = 0; i < 511; i++) { for (j = 0; j < i; j++) printf "\t"; pri
 ## A schema whose own default breaks the field's constraints. Generation used to
 ## emit it anyway, so the starter config failed the schema that produced it.
 printf 'field: server.port\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\tdefault: 99\n' > "${tmpDir}/baddef.shcl"
+## A must-exist path with no name to generate: repeat 1 is a must-exist bound
+## like `required`, and generation cannot satisfy it, so the schema is faulted
+## rather than a starter that fails its first check. Repeat 2 is the one
+## documented shortfall and generates.
+printf 'field: "*"\n\ttype: int\n\trepeat: 1\n' > "${tmpDir}/star1.shcl"
+printf 'field: "*"\n\ttype: int\n\trepeat: 2\n' > "${tmpDir}/star2.shcl"
+## A schema that does not build: the report is the build faults alone, not the
+## faults plus what an empty document would owe the schema.
+printf 'field: a\n\ttype: int\n\trequired: yes\nfield: b\n\ttype: nope\n' > "${tmpDir}/nobuild.shcl"
 ## An instance whose discriminator holds an '=', which is what made --set's own
 ## split ambiguous.
 printf 'x[a=b]:\n\tc: 0\n' > "${tmpDir}/sel.shcl"
@@ -61,12 +70,15 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
 ##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
-##	%P% the deepest legal document, %S% the self-contradicting schema, %X% an
+##	%P% the deepest legal document, %S% the self-contradicting schema, %S1%/%S2%
+##	a nameless must-exist path at repeat 1 and 2, %S3% a schema that does not
+##	build, %X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
 ##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
 ##	path with no file at it.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that stream.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
+##	A stderr regex starting with '!' must match NO line.
 ##	Each row names the round and item it pins.
 rows=(
 	## 20260830 item 15: a second '-' read an empty document that looked like an answer.
@@ -91,6 +103,13 @@ rows=(
 	'deep-nesting|fmt %P%|-|0|-|^$'
 	## 20260830b item 4: init emitted a config that fails the schema that made it.
 	'init-bad-default|init --schema=%S%|-|6||V097 generated value fails the schema'
+	## 20260901 item 5: the self-check waved every V007 through, so a repeat
+	## lower bound of 1 - a must-exist path - went out as a config that fails
+	## its own schema at exit 0.
+	'init-star-repeat1|init --schema=%S1%|-|6||V097 .*not in 1\.\.1'
+	'init-star-repeat2|init --schema=%S2%|-|0|-|^$'
+	'init-build-fault|init --schema=%S3%|-|6||V091 unknown schema type'
+	'init-build-fault-only|init --schema=%S3%|-|6||!V002'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'
@@ -150,6 +169,9 @@ for row in "${rows[@]}"; do
 	argv="${argv//%D%/${tmpDir}/adir}"
 	argv="${argv//%P%/${tmpDir}/deep.shcl}"
 	argv="${argv//%S%/${tmpDir}/baddef.shcl}"
+	argv="${argv//%S1%/${tmpDir}/star1.shcl}"
+	argv="${argv//%S2%/${tmpDir}/star2.shcl}"
+	argv="${argv//%S3%/${tmpDir}/nobuild.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
@@ -178,7 +200,11 @@ for row in "${rows[@]}"; do
 		if [[ "${wantErr}" != "-" ]]; then
 			## The stdin notice is a prompt, not a diagnostic; it is not what a row is about.
 			gotErr="$(grep -v 'reading write-ops from stdin' "${tmpDir}/err" || true)"
-			if ! grep -qE -- "${wantErr}" <<<"${gotErr}"; then
+			if [[ "${wantErr}" == !* ]]; then
+				if grep -qE -- "${wantErr#!}" <<<"${gotErr}"; then
+					echo "cli-regress: ${id} [${name}]: stderr ${gotErr@Q} matches /${wantErr#!}/" >&2; nBad+=1
+				fi
+			elif ! grep -qE -- "${wantErr}" <<<"${gotErr}"; then
 				echo "cli-regress: ${id} [${name}]: stderr ${gotErr@Q} does not match /${wantErr}/" >&2; nBad+=1
 			fi
 		fi

@@ -703,7 +703,7 @@ fn parse_limited_caps() {
 	// Node cap: one E020 at the first line not parsed, the remainder counts
 	// as lost, and what parsed before the cap stays readable.
 	let text = "a: 1\nb: 2\nc: 3\nd: 4\n";
-	let doc = Document::parse_limited(text, Strictness::Standard, 2, 0).unwrap();
+	let doc = Document::parse_limited(text, Strictness::Standard, 2, 0, 0).unwrap();
 	let e020: Vec<_> = doc
 		.diagnostics()
 		.iter()
@@ -715,7 +715,7 @@ fn parse_limited_caps() {
 	assert_eq!(doc.get_int("a"), Ok(1));
 	assert!(!doc.exists("d"), "the remainder must not parse");
 	// A cap crossed by the document's last content line still reports.
-	let doc = Document::parse_limited("a: 1\nb: 2\nc: 3", Strictness::Standard, 2, 0).unwrap();
+	let doc = Document::parse_limited("a: 1\nb: 2\nc: 3", Strictness::Standard, 2, 0, 0).unwrap();
 	assert_eq!(
 		doc.diagnostics()
 			.iter()
@@ -725,7 +725,7 @@ fn parse_limited_caps() {
 	);
 	assert_eq!(doc.lost_count(), 0, "nothing was dropped");
 	// One line may overshoot the cap by its own path; the parse still stops.
-	let doc = Document::parse_limited("x.y.z: 1\n", Strictness::Standard, 1, 0).unwrap();
+	let doc = Document::parse_limited("x.y.z: 1\n", Strictness::Standard, 1, 0, 0).unwrap();
 	assert_eq!(
 		doc.diagnostics()
 			.iter()
@@ -735,11 +735,12 @@ fn parse_limited_caps() {
 	);
 	assert_eq!(doc.get_int("x.y.z"), Ok(1));
 	// 0 is no cap: identical to parse_with.
-	let doc = Document::parse_limited(text, Strictness::Standard, 0, 0).unwrap();
+	let doc = Document::parse_limited(text, Strictness::Standard, 0, 0, 0).unwrap();
 	assert!(doc.diagnostics().is_empty());
 	// Element cap, inline spelling: the whole line is refused, the rest of the
 	// document is untouched.
-	let doc = Document::parse_limited("arr: 1, 2, 3\nok: 5\n", Strictness::Standard, 0, 2).unwrap();
+	let doc =
+		Document::parse_limited("arr: 1, 2, 3\nok: 5\n", Strictness::Standard, 0, 2, 0).unwrap();
 	let e021: Vec<_> = doc
 		.diagnostics()
 		.iter()
@@ -752,8 +753,8 @@ fn parse_limited_caps() {
 	assert_eq!(doc.lost_count(), 1);
 	// Element cap, stacked spelling: each element line past the cap is refused
 	// on its own; the array keeps what fit.
-	let doc =
-		Document::parse_limited("arr:\n\t* 1\n\t* 2\n\t* 3\n", Strictness::Standard, 0, 2).unwrap();
+	let doc = Document::parse_limited("arr:\n\t* 1\n\t* 2\n\t* 3\n", Strictness::Standard, 0, 2, 0)
+		.unwrap();
 	assert_eq!(
 		doc.diagnostics()
 			.iter()
@@ -762,9 +763,90 @@ fn parse_limited_caps() {
 		1
 	);
 	assert_eq!(doc.get_int_array("arr"), Ok(vec![1, 2]));
+	// The count the cap judges is the count the array reads back as, spelling
+	// by spelling: quoted and escaped commas, empty and blank slots, Unicode
+	// blanks, a quote that never closes. Refused at one under, kept at exact.
+	#[rustfmt::skip]
+	let counts: &[(&str, usize)] = &[
+		("1, 2, 3", 3), ("\"a, b\", c", 2), ("a\\, b, c", 2), ("a,,b", 2),
+		("a, , b", 2), (" a ", 1), ("\"\", ''", 2), ("'a\", b'", 1),
+		("\"open, b", 1), ("\\", 1), ("x,\u{3000}", 1), ("x, \u{a0}y", 2), (", , ,", 0),
+	];
+	for &(spelling, n) in counts {
+		let text = format!("v: {spelling}\n");
+		let doc = Document::parse_limited(&text, Strictness::Standard, 0, n.max(1), 0).unwrap();
+		assert!(
+			!doc.diagnostics().iter().any(|d| d.code == "E021"),
+			"{spelling:?} at cap {n}"
+		);
+		if n == 0 {
+			assert!(
+				doc.exists("v") && doc.get_string_array("v").is_err(),
+				"{spelling:?} empty"
+			);
+		} else {
+			assert_eq!(
+				doc.get_string_array("v").map(|a| a.len()),
+				Ok(n),
+				"{spelling:?}"
+			);
+		}
+		if n >= 2 {
+			let doc = Document::parse_limited(&text, Strictness::Standard, 0, n - 1, 0).unwrap();
+			assert_eq!(doc.lost_count(), 1, "{spelling:?} at cap {}", n - 1);
+		}
+	}
+	// A refused line reports the cap alone: the quote check runs after it, so
+	// it never splits a value the cap already turned away.
+	let doc = Document::parse_limited("v: a, \"open, b\n", Strictness::Standard, 0, 1, 0).unwrap();
+	let codes: Vec<&str> = doc.diagnostics().iter().map(|d| d.code).collect();
+	assert_eq!(codes, ["E021"]);
+	// Diagnostic cap: the first N are listed and one E022 tail counts the
+	// rest. Its severity is Error when any unlisted one was, so a scan of the
+	// list for errors still finds one and error_count stays nonzero.
+	let bad = "no colon\n".repeat(50);
+	let doc = Document::parse_limited(&bad, Strictness::Standard, 0, 0, 10).unwrap();
+	assert_eq!(doc.diagnostics().len(), 11);
+	assert!(doc.diagnostics()[..10].iter().all(|d| d.code == "E014"));
+	let tail = &doc.diagnostics()[10];
+	assert_eq!(
+		(tail.code, tail.severity, tail.line),
+		("E022", shcl::Severity::Error, 0)
+	);
+	assert_eq!(
+		tail.message,
+		"diagnostic cap of 10 reached; 40 more not listed, 40 of them errors"
+	);
+	assert_eq!(doc.error_count(), 11);
+	assert!(Document::parse_limited(&bad, Strictness::Strict, 0, 0, 10).is_err());
+	// Hints past the cap leave a Hint tail, so a document with no error
+	// still loads at Strict.
+	let hints = "x: 1\nx: 2\ny: 1\ny: 2\n";
+	let doc = Document::parse_limited(hints, Strictness::Strict, 0, 0, 1).unwrap();
+	let codes: Vec<(&str, shcl::Severity)> = doc
+		.diagnostics()
+		.iter()
+		.map(|d| (d.code, d.severity))
+		.collect();
+	assert_eq!(
+		codes,
+		[
+			("H001", shcl::Severity::Hint),
+			("E022", shcl::Severity::Hint)
+		]
+	);
+	assert!(
+		doc.diagnostics()[1]
+			.message
+			.ends_with("1 more not listed, 0 of them errors")
+	);
+	assert_eq!(doc.error_count(), 0);
+	// At the cap exactly, nothing is unlisted and there is no tail.
+	let doc = Document::parse_limited(hints, Strictness::Standard, 0, 0, 2).unwrap();
+	assert_eq!(doc.diagnostics().len(), 2);
 	// A cap diagnostic is an error, so a capped Strict load fails - with the
 	// parsed part still on the error.
-	let err = Document::parse_limited(text, Strictness::Strict, 2, 0).unwrap_err();
+	let err = Document::parse_limited(text, Strictness::Strict, 2, 0, 0).unwrap_err();
 	assert_eq!(err.document.get_int("a"), Ok(1));
 }
 
@@ -848,6 +930,67 @@ fn write_reason_names_the_failure() {
 	// The probe never creates: the doc is unchanged after all of the above.
 	assert_eq!(doc.count("a"), 1);
 	assert_eq!(doc.paths(), vec!["a", "a.b"]);
+}
+
+#[test]
+fn setters_refuse_a_value_the_reader_refuses() {
+	// Each setter is the inverse of its read, so a value with no spelling the
+	// reader accepts fails the write and leaves the document alone. Same
+	// fixture in every runner.
+	use shcl::{ShclDateTime, ZoneSpec};
+	let mut doc = Document::parse("z: 0\n");
+	for v in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+		assert!(!doc.set_float("f", v), "{v}");
+		assert!(!doc.set_float_default("f", v), "{v}");
+		assert!(!doc.set_float_array("f", &[1.0, v]), "{v}");
+	}
+	assert!(doc.set_float("f", 2.5) && doc.get_float("f") == Ok(2.5));
+	let good = |d: Option<(i32, u32, u32)>, t: Option<(u32, u32, Option<u32>)>| ShclDateTime {
+		date: d,
+		time: t,
+		frac: None,
+		zone: None,
+	};
+	let with = |dt: ShclDateTime, frac: Option<&str>, zone: Option<ZoneSpec>| ShclDateTime {
+		frac: frac.map(str::to_string),
+		zone,
+		..dt
+	};
+	let bad = [
+		ShclDateTime::default(),                                 // nothing written
+		good(Some((2026, 13, 1)), None),                         // month 13
+		good(Some((2026, 2, 30)), None),                         // February 30
+		good(Some((-1, 1, 1)), None),                            // negative year
+		good(None, Some((24, 0, None))),                         // hour 24
+		with(good(None, Some((1, 2, None))), Some("5"), None),   // fraction with no seconds
+		with(good(None, Some((1, 2, Some(3)))), Some(""), None), // empty fraction
+		with(good(None, Some((1, 2, Some(3)))), Some("12345678901"), None), // 11 digits
+		with(
+			good(None, Some((1, 2, None))),
+			None,
+			Some(ZoneSpec::OffsetMinutes(9999)),
+		), // +166:39
+		with(good(Some((2026, 1, 1)), None), None, Some(ZoneSpec::Utc)), // zone on a date alone
+	];
+	for dt in &bad {
+		assert!(!doc.set_datetime("d", dt), "{dt}");
+		assert!(!doc.set_datetime_default("d", dt), "{dt}");
+		assert!(
+			!doc.set_datetime_array("d", &[good(Some((2026, 1, 1)), None), dt.clone()]),
+			"{dt}"
+		);
+	}
+	let ok = with(
+		good(Some((2026, 1, 2)), Some((3, 4, Some(5)))),
+		Some("60"),
+		Some(ZoneSpec::OffsetMinutes(-90)),
+	);
+	assert!(doc.set_datetime("d", &ok));
+	assert_eq!(doc.get_datetime("d"), Ok(ok));
+	assert_eq!(
+		doc.to_canonical(),
+		"z: 0\n\nf: 2.5\n\nd: \"2026-01-02T03:04:05.60-01:30\"\n"
+	);
 }
 
 #[test]

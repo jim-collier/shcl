@@ -299,10 +299,13 @@ impl Lead {
 
 /// A pending whole-line comment during parse: text, source indent (used only
 /// to decide whether it hangs on a deeper block), and the blank it consumed.
+/// `ceiling` is the shortest incoming indent already checked against it: a
+/// later check can only hang it from a shorter one, so a longer one skips it.
 struct Pend {
 	text: String,
 	indent: String,
 	blank_before: bool,
+	ceiling: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -737,6 +740,45 @@ fn parse_element(piece: &str) -> Option<Element> {
 		text: normalize_dangling_backslash(t.to_string()),
 		quoted: false,
 	})
+}
+
+/// Whether `parse_cell` would build more than `max` elements. Counts the
+/// pieces the way the splitter cuts them, without building any, so a capped
+/// parse refuses an over-long line before holding the array.
+fn cell_exceeds(text: &str, max: usize) -> bool {
+	let mut count = 0usize;
+	let mut has_content = false;
+	let mut in_quote: Option<char> = None;
+	let mut it = text.chars();
+	while let Some(c) = it.next() {
+		if c == '\\' {
+			has_content = true;
+			it.next();
+			continue;
+		}
+		match in_quote {
+			Some(q) if c == q => in_quote = None,
+			None if c == '"' || c == '\'' => in_quote = Some(c),
+			None if c == ',' => {
+				if has_content {
+					count += 1;
+					if count > max {
+						return true;
+					}
+				}
+				has_content = false;
+				continue;
+			}
+			_ => {}
+		}
+		if !c.is_whitespace() {
+			has_content = true;
+		}
+	}
+	if has_content {
+		count += 1;
+	}
+	count > max
 }
 
 fn parse_cell(text: &str) -> Value {
@@ -1267,6 +1309,12 @@ struct Parser {
 	// source indent is kept only to decide after-attachment (a comment deeper
 	// than the next binding hangs on the block it sits in).
 	pending: Vec<Pend>,
+	// (end index, indent length): every pending entry before `end` has a
+	// ceiling at or under that length. Lengths rise along the stack, so a
+	// hang check pops the marks above its own indent and walks only what
+	// they covered. Without it a run of retained bad lines is rewalked per
+	// line and a plain text file parses in quadratic time.
+	pend_marks: Vec<(usize, usize)>,
 	saw_blank: bool, // a blank line waits to become the next bound node's blank_before
 	// An open stacked list defers its merge-key remap (rebuilding the key per
 	// element is O(list^2) time); (node, key hash, display hash) at deferral
@@ -1280,9 +1328,13 @@ struct Parser {
 	reentered: HashMap<usize, usize>,
 	lost: usize, // dropped lines/values canonical output cannot re-emit
 	// parse_limited's caps, 0 = uncapped: nodes counted against the arena
-	// (root excluded), elements against a single value's cell.
+	// (root excluded), elements against a single value's cell, diagnostics
+	// against the list. Past the diagnostic cap nothing is listed, only
+	// counted (errors, hints), for the one tail entry the parse ends with.
 	max_nodes: usize,
 	max_elements: usize,
+	max_diags: usize,
+	unlisted: (usize, usize),
 }
 
 impl Parser {
@@ -1307,25 +1359,42 @@ impl Parser {
 			child_map: vec![None],
 			disp_map: vec![None],
 			pending: Vec::new(),
+			pend_marks: Vec::new(),
 			saw_blank: false,
 			star_open: None,
 			reentered: HashMap::new(),
 			lost: 0,
 			max_nodes: 0,
 			max_elements: 0,
+			max_diags: 0,
+			unlisted: (0, 0),
 		}
 	}
 
-	fn limited(max_nodes: usize, max_elements: usize) -> Parser {
+	fn limited(max_nodes: usize, max_elements: usize, max_diags: usize) -> Parser {
 		let mut p = Parser::new();
 		p.max_nodes = max_nodes;
 		p.max_elements = max_elements;
+		p.max_diags = max_diags;
 		p
+	}
+
+	/// Every parse diagnostic goes through here, so the cap sees them all.
+	fn diag(&mut self, d: Diagnostic) {
+		if self.max_diags != 0 && self.diags.len() >= self.max_diags {
+			if d.severity == Severity::Error {
+				self.unlisted.0 += 1;
+			} else {
+				self.unlisted.1 += 1;
+			}
+			return;
+		}
+		self.diags.push(d);
 	}
 
 	fn err(&mut self, line: usize, code: &'static str, msg: impl Into<String>) {
 		let message = msg.into();
-		self.diags.push(Diagnostic {
+		self.diag(Diagnostic {
 			line,
 			severity: Severity::Error,
 			message,
@@ -1483,6 +1552,7 @@ impl Parser {
 					blank_before: p.blank_before,
 				});
 			}
+			self.pend_marks.clear();
 		}
 		if let Some(tr) = trailing {
 			let t = self.arena[node].triv_mut();
@@ -1506,9 +1576,15 @@ impl Parser {
 		if self.pending.is_empty() {
 			return;
 		}
-		let taken = std::mem::take(&mut self.pending);
-		for p in taken {
-			if p.indent.len() > new_indent.len() {
+		let new_len = new_indent.len();
+		// Only entries above the last mark at or under this indent can hang.
+		while self.pend_marks.last().is_some_and(|m| m.1 > new_len) {
+			self.pend_marks.pop();
+		}
+		let start = self.pend_marks.last().map_or(0, |m| m.0);
+		let taken: Vec<Pend> = self.pending.drain(start..).collect();
+		for mut p in taken {
+			if p.ceiling > new_len {
 				// A level shallower than the incoming line stays open and may
 				// still gain children, so a comment must not hang there - it
 				// would emit below the child; keep it pending instead.
@@ -1534,8 +1610,13 @@ impl Parser {
 					}
 					continue;
 				}
+				p.ceiling = new_len;
 			}
 			self.pending.push(p);
+		}
+		match self.pend_marks.last_mut() {
+			Some(m) if m.1 == new_len => m.0 = self.pending.len(),
+			_ => self.pend_marks.push((self.pending.len(), new_len)),
 		}
 	}
 
@@ -1688,7 +1769,7 @@ impl Parser {
 						if non_last || cross_region {
 							let at = self.arena[cur].line;
 							let name = seg.name.clone();
-							self.diags.push(Diagnostic {
+							self.diag(Diagnostic {
 								line,
 								severity: Severity::Hint,
 								message: format!(
@@ -1930,7 +2011,7 @@ impl Parser {
 			}
 		}
 		for (line, message) in hints {
-			self.diags.push(Diagnostic {
+			self.diag(Diagnostic {
 				line,
 				severity: Severity::Hint,
 				message,
@@ -1986,6 +2067,7 @@ impl Parser {
 					text: rest.to_string(),
 					indent: indent.to_string(),
 					blank_before: std::mem::take(&mut self.saw_blank),
+					ceiling: indent.len(),
 				});
 				i += 1;
 				continue;
@@ -2051,6 +2133,7 @@ impl Parser {
 					text: rest.trim_end().to_string(),
 					indent: indent.to_string(),
 					blank_before: had_blank,
+					ceiling: indent.len(),
 				});
 				i += 1;
 				continue;
@@ -2079,6 +2162,7 @@ impl Parser {
 						text: c.to_string(),
 						indent: indent.to_string(),
 						blank_before: had_blank,
+						ceiling: indent.len(),
 					});
 				}
 				i += 1;
@@ -2113,6 +2197,7 @@ impl Parser {
 							text: rest.trim_end().to_string(),
 							indent: indent.to_string(),
 							blank_before: had_blank,
+							ceiling: indent.len(),
 						});
 					}
 					self.stack.push((indent.to_string(), DEAD));
@@ -2152,6 +2237,25 @@ impl Parser {
 						next = n;
 						val
 					} else {
+						// Element cap: the whole line is refused, so a capped
+						// load never holds a truncated array that would read
+						// as the document's value. Counted before anything
+						// splits the value (the quote check does too), or
+						// the cap would bound nothing.
+						if self.max_elements != 0 && cell_exceeds(v, self.max_elements) {
+							self.err(
+								lineno,
+								"E021",
+								format!(
+									"array longer than {} elements; line skipped",
+									self.max_elements
+								),
+							);
+							self.lost += 1;
+							self.stack.push((indent.to_string(), DEAD));
+							i = next;
+							continue;
+						}
 						if unterminated_quote(v) {
 							self.err(lineno, "E017", "unterminated quote in value");
 						}
@@ -2160,25 +2264,6 @@ impl Parser {
 					}
 				}
 			};
-			// Element cap: the whole line is refused, so a capped load never
-			// holds a truncated array that would read as the document's value.
-			if self.max_elements != 0
-				&& let Value::Cell(els) = &value
-				&& els.len() > self.max_elements
-			{
-				self.err(
-					lineno,
-					"E021",
-					format!(
-						"array longer than {} elements; line skipped",
-						self.max_elements
-					),
-				);
-				self.lost += 1;
-				self.stack.push((indent.to_string(), DEAD));
-				i = next;
-				continue;
-			}
 			// Record only when the bound node holds exactly this line's value
 			// (a merge into an equal-valued node keeps the first line's span;
 			// a value dropped after a last-segment selector records nothing).
@@ -2225,6 +2310,27 @@ impl Parser {
 				blank_before: p.blank_before,
 			})
 			.collect();
+		// The one entry past the cap: what was not listed, and whether any
+		// of it was an error, so a consumer scanning the list for errors
+		// still finds one and a Strict load still fails.
+		let (errors, hints) = self.unlisted;
+		if errors + hints > 0 {
+			self.diags.push(Diagnostic {
+				line: 0, // about the list, not a line
+				severity: if errors > 0 {
+					Severity::Error
+				} else {
+					Severity::Hint
+				},
+				code: "E022",
+				message: format!(
+					"diagnostic cap of {} reached; {} more not listed, {} of them errors",
+					self.max_diags,
+					errors + hints,
+					errors
+				),
+			});
+		}
 		Document {
 			arena: self.arena,
 			diags: self.diags,
@@ -2271,8 +2377,12 @@ impl Document {
 	/// `max_nodes` stops the parse once a line takes the node count past it -
 	/// one `E020` error, and the unparsed remainder counts as lost so a save
 	/// cannot silently truncate. `max_elements` refuses any line whose array
-	/// would hold more elements (`E021`, that line alone is skipped). 0
-	/// disables a cap, making this parse_with. Both caps are parse-time only;
+	/// would hold more elements (`E021`, that line alone is skipped).
+	/// `max_diags` bounds the diagnostics list itself - a document of nothing
+	/// but bad lines costs a diagnostic per line - by listing the first that
+	/// many and ending with one `E022` that counts the rest; error_count and
+	/// the Strict gate see that tail as an error whenever an unlisted one was.
+	/// 0 disables a cap, making this parse_with. The caps are parse-time only;
 	/// the write API is the consumer's own arithmetic. As everywhere, the Err
 	/// fires only at Strict, and a cap diagnostic is an error, so a capped
 	/// Strict load fails; at other levels the parsed part stays readable.
@@ -2282,8 +2392,9 @@ impl Document {
 		strictness: Strictness,
 		max_nodes: usize,
 		max_elements: usize,
+		max_diags: usize,
 	) -> Result<Document, LoadError> {
-		let doc = Parser::limited(max_nodes, max_elements).parse(text, strictness);
+		let doc = Parser::limited(max_nodes, max_elements, max_diags).parse(text, strictness);
 		if strictness == Strictness::Strict
 			&& doc.diags.iter().any(|d| d.severity == Severity::Error)
 		{
@@ -3316,14 +3427,16 @@ impl Document {
 /// Read text as the value half of a line, for the setters that take value
 /// syntax rather than data. Rejects what could not have come off one line: a
 /// line break, or a quote that never closes. An unquoted `#` ends the value
-/// here exactly as it would in a file.
+/// here exactly as it would in a file. Bracket-array text is refused too: in
+/// a file it is E019 and the line is lost, so writing it as a two-element
+/// array holding `[1` and `2]` would be a different wrong answer.
 fn literal_value(text: &str) -> Option<Value> {
 	if text.contains('\n') || text.contains('\r') {
 		return None;
 	}
 	let (v, _) = split_comment(text);
 	let v = v.trim();
-	if unterminated_quote(v) {
+	if unterminated_quote(v) || (v.starts_with('[') && v.ends_with(']')) {
 		return None;
 	}
 	Some(parse_cell(v))
@@ -3695,9 +3808,14 @@ impl Document {
 	pub fn set_int(&mut self, path: &str, v: i64) -> bool {
 		self.set_value(path, cell_of(v.to_string()))
 	}
-	/// Bind a float at a path, in the canonical shortest spelling.
+	/// Bind a float at a path, in the canonical shortest spelling. An
+	/// infinity or a NaN has no spelling the reader accepts, so it fails the
+	/// write rather than binding a value that cannot read back.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float(&mut self, path: &str, v: f64) -> bool {
+		if !v.is_finite() {
+			return false;
+		}
 		self.set_value(path, cell_of(format_f64(v)))
 	}
 	/// Bind true/false at a path.
@@ -3710,9 +3828,15 @@ impl Document {
 	pub fn set_string(&mut self, path: &str, v: &str) -> bool {
 		self.set_value(path, cell_of(encode_string(v)))
 	}
-	/// Bind a datetime at a path, in its canonical spelling.
+	/// Bind a datetime at a path, in its canonical spelling. The struct's
+	/// fields are public and carry no invariant, so a value the reader would
+	/// refuse (month 13, a fraction with no seconds, an empty struct) fails
+	/// the write rather than binding text that cannot read back.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime(&mut self, path: &str, v: &ShclDateTime) -> bool {
+		if !datetime_reads_back(v) {
+			return false;
+		}
 		self.set_value(path, cell_of(v.to_string()))
 	}
 	/// Bind a raw block at a path, picking a fence longer than any content line.
@@ -3755,6 +3879,9 @@ impl Document {
 	/// Bind an inline float array at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_array(&mut self, path: &str, v: &[f64]) -> bool {
+		if !v.iter().all(|x| x.is_finite()) {
+			return false;
+		}
 		self.set_value(path, array_cell(v.iter().map(|x| format_f64(*x)).collect()))
 	}
 	/// Bind an inline bool array at a path.
@@ -3780,6 +3907,9 @@ impl Document {
 	/// Bind an inline datetime array at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime_array(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
+		if !v.iter().all(datetime_reads_back) {
+			return false;
+		}
 		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
 
@@ -4224,7 +4354,10 @@ fn parse_float_text(e: &Element, level: Strictness) -> Option<f64> {
 		}
 	}
 	let v = if float_shape_ok(t) {
-		t.parse::<f64>().ok()?
+		// A literal past the double range parses as an infinity, which no
+		// double holds and no setter can write back: BadType, like a text
+		// that is not a number at all.
+		t.parse::<f64>().ok().filter(|v| v.is_finite())?
 	} else {
 		// An integer is a valid float on read (incl. hex and quoted thousands).
 		let el = Element {
@@ -4479,6 +4612,12 @@ fn parse_time_part(s: &str) -> Option<TimeParts> {
 		}
 	};
 	Some(((h, mi, sec), frac, zone))
+}
+
+/// Whether a datetime's canonical spelling reads back as the same value: the
+/// setter's inverse-of-the-read promise, checked by making the round trip.
+fn datetime_reads_back(v: &ShclDateTime) -> bool {
+	parse_datetime(&v.to_string()).as_ref() == Some(v)
 }
 
 /// Whole-value date/time parse per the whitelist. None = BadType.
@@ -5514,6 +5653,17 @@ fn gen_default_text(v: &str) -> String {
 	s
 }
 
+/// Whether a V007 from the self-check is the sanctioned kind: its message
+/// ends `: N not in LO..HI`, and LO is 2 or more.
+fn v007_sanctioned(message: &str) -> bool {
+	message
+		.rsplit(" not in ")
+		.next()
+		.and_then(|range| range.split("..").next())
+		.and_then(|lo| lo.parse::<u64>().ok())
+		.is_some_and(|lo| lo >= 2)
+}
+
 /// Emit a commented, typed starter config from a schema (`shcl init --schema`).
 /// Paths that must exist (required, or a repeat lower bound of 1+) are live
 /// (their `default`, or an empty value); optional paths are commented out so
@@ -5570,9 +5720,6 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
 	// some live path). Fixpoint: a fill can materialize another's parent.
-	fn names_of(segs: &[Segment]) -> Vec<&str> {
-		segs.iter().map(|s| s.name.as_str()).collect()
-	}
 	let mut live: Vec<Vec<&str>> = cons
 		.iter()
 		.filter(|c| !has_wild(c) && !unwritable(c) && must_exist(c))
@@ -5606,6 +5753,16 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			break;
 		}
 	}
+	// A live line with a value materializes an instance carrying that value,
+	// and a dotted child names the empty-valued instance instead - so `srv:
+	// web` followed by `srv.port:` is two `srv` nodes, and the child never
+	// lands where the schema looks. Any line under such a parent selects it
+	// by its value: `srv[web].port:`.
+	let parent_values: HashMap<Vec<&str>, &str> = cons
+		.iter()
+		.filter(|c| !has_wild(c) && !unwritable(c) && must_exist(c))
+		.filter_map(|c| c.default_text.as_deref().map(|d| (names_of(&c.segs), d)))
+		.collect();
 	let mut out = String::new();
 	let mut wild: Vec<(String, String)> = Vec::new();
 	let mut first = true;
@@ -5631,12 +5788,16 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		// string value must not break out of it.
 		out.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
 		out.push('\n');
-		// A filled wildcard emits in dotted form, targeting the first (the
-		// materialized) instance. Rebuilt from the parsed segments, not by
-		// cutting text out of the path: the same path can be written several
-		// ways, and only the segments say what it means.
-		let path = if fill[i] {
-			gen_path_text(&c.segs)
+		// A filled wildcard emits in dotted form, targeting the materialized
+		// instance - by its value when the materializing line carries one.
+		// Rebuilt from the parsed segments, not by cutting text out of the
+		// path: the same path can be written several ways, and only the
+		// segments say what it means. Otherwise the schema's own spelling.
+		let under_valued_parent = (1..c.segs.len()).any(|k| {
+			c.segs[k - 1].selector.is_none() && parent_values.contains_key(&names_of(&c.segs[..k]))
+		});
+		let path = if fill[i] || under_valued_parent {
+			gen_path_text(&c.segs, &parent_values)
 		} else {
 			c.path.clone()
 		};
@@ -5668,12 +5829,16 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// it, so check that here rather than trusting each branch above. A
 	// `default` outside its own field's constraints is the schema's fault, and
 	// the author should hear about it instead of getting a starter config that
-	// fails the first time it is checked. V007 is the one sanctioned shortfall
-	// (a repeat lower bound of 2+ generates identical lines, which merge).
+	// fails the first time it is checked. The one sanctioned shortfall is a
+	// V007 for a repeat lower bound of 2+: generating that many identical
+	// lines merges them into one. A lower bound of 1 is a must-exist path
+	// like any other, so its V007 is a fault.
 	let bad: Vec<Diagnostic> = Document::parse(&out)
 		.validate(schema)
 		.into_iter()
-		.filter(|d| d.severity == Severity::Error && d.code != "V007")
+		.filter(|d| {
+			d.severity == Severity::Error && !(d.code == "V007" && v007_sanctioned(&d.message))
+		})
 		.map(|d| Diagnostic {
 			line: 0,
 			severity: Severity::Error,
@@ -5713,7 +5878,9 @@ const GEN_BANNER: &str = "\
 /// Render parsed segments back as a dotted path, dropping wildcard selectors
 /// (a generated line targets the one instance it materializes) and quoting a
 /// name that needs it, so the result is a path the scanner reads back the same.
-fn gen_path_text(segs: &[Segment]) -> String {
+/// A segment whose prefix names a live line carrying a value selects that
+/// instance by the value, in place of a wildcard or a bare name.
+fn gen_path_text(segs: &[Segment], parent_values: &HashMap<Vec<&str>, &str>) -> String {
 	let mut out = String::new();
 	for (i, s) in segs.iter().enumerate() {
 		if i > 0 {
@@ -5723,6 +5890,15 @@ fn gen_path_text(segs: &[Segment]) -> String {
 			out.push('*');
 		} else {
 			out.push_str(&emit_name(&s.name));
+		}
+		if i + 1 < segs.len()
+			&& !matches!(s.selector, Some(Selector::ByValue { .. }))
+			&& let Some(v) = parent_values.get(&names_of(&segs[..=i]))
+		{
+			out.push('[');
+			out.push_str(&gen_selector_text(v));
+			out.push(']');
+			continue;
 		}
 		match &s.selector {
 			Some(Selector::ByValue { text, quoted }) => {
@@ -5741,6 +5917,24 @@ fn gen_path_text(segs: &[Segment]) -> String {
 		}
 	}
 	out
+}
+
+/// A default's spelling inside a `[value]` selector: the value-side text as
+/// is, except that a bracket or a backslash would end or escape the selector,
+/// so those go quoted (the selector matches on the escaped display, so the
+/// quoted spelling finds the bare value).
+fn gen_selector_text(v: &str) -> String {
+	if v.contains('\n') {
+		return gen_default_text(v);
+	}
+	if v.contains(['[', ']', '\\']) && !quoted_shape(v) {
+		return quote_text(v);
+	}
+	v.to_string()
+}
+
+fn names_of(segs: &[Segment]) -> Vec<&str> {
+	segs.iter().map(|s| s.name.as_str()).collect()
 }
 
 /// Inline every fragment mount into a flat constraint list, depth-first in

@@ -52,6 +52,9 @@ ASAN_OPTIONS="${ASAN_OPTIONS}:detect_leaks=0" "${work}/oom_hook" || { echo "sani
 ## everything the half-built document held is half of what that is worth.
 fBuild cc c11 source/c/tests/oom_recover.c "${work}/oom_recover"
 "${work}/oom_recover" || { echo "sanitize-c: oom_recover: exit $?" >&2; rc=1; }
+## The allocation bounds, under the same instrumentation.
+fBuild cc c11 source/c/tests/mem_bounds.c "${work}/mem_bounds"
+"${work}/mem_bounds" || { echo "sanitize-c: mem_bounds: exit $?" >&2; rc=1; }
 ## The C++ veneer owns the C handle by hand (rule of five over a raw pointer),
 ## which is exactly the kind of code a leak or double free hides in.
 fBuild g++ c++17 source/c/tests/veneer_smoke.cpp "${work}/veneer_smoke"
@@ -141,7 +144,7 @@ done
 if ((nBad)); then
 	echo "sanitize-c: ${nBad}/${nRuns} CLI run(s) stopped by a sanitizer" >&2; rc=1
 else
-	echo "sanitize-c: OK: runner, oom_hook, oom_recover, veneer_smoke and ${nRuns} CLI run(s) clean under ASan+UBSan"
+	echo "sanitize-c: OK: runner, oom_hook, oom_recover, mem_bounds, veneer_smoke and ${nRuns} CLI run(s) clean under ASan+UBSan"
 fi
 exit "${rc}"
 

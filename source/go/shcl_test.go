@@ -308,10 +308,8 @@ func tryApplyOpTest(doc *Document, line string) error {
 			return 0, fmt.Errorf("bad float: %s", s)
 		}
 		n, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			if ne, ok := err.(*strconv.NumError); !ok || ne.Err != strconv.ErrRange {
-				return 0, fmt.Errorf("bad float: %s", s)
-			}
+		if err != nil || math.IsInf(n, 0) || math.IsNaN(n) {
+			return 0, fmt.Errorf("bad float: %s", s)
 		}
 		return n, nil
 	}
@@ -719,6 +717,53 @@ func TestWriteReasonNamesTheFailure(t *testing.T) {
 	}
 	if got := doc.Paths(); strings.Join(got, ",") != "a,a.b" {
 		t.Errorf("paths: got %v", got)
+	}
+}
+
+func TestSettersRefuseAValueTheReaderRefuses(t *testing.T) {
+	// Each setter is the inverse of its read, so a value with no spelling the
+	// reader accepts fails the write and leaves the document alone. Same
+	// fixture in every runner.
+	doc := Parse("z: 0\n")
+	for _, v := range []float64{math.Inf(1), math.Inf(-1), math.NaN()} {
+		if doc.SetFloat("f", v) || doc.SetFloatDefault("f", v) || doc.SetFloatArray("f", []float64{1, v}) {
+			t.Fatalf("float %v was written", v)
+		}
+	}
+	if v, st := 2.5, Good; !doc.SetFloat("f", v) || func() bool { g, s := doc.GetFloat("f"); return g != v || s != st }() {
+		t.Fatalf("a finite float was refused")
+	}
+	date := func(y, m, d int) DateTime { return DateTime{HasDate: true, Year: y, Month: m, Day: d} }
+	clock := func(h, mi int, sec int, hasSec bool, frac string) DateTime {
+		return DateTime{HasTime: true, Hour: h, Minute: mi, HasSeconds: hasSec, Second: sec, Frac: frac}
+	}
+	offset := func(dt DateTime, min int) DateTime { dt.Zone = &Zone{Kind: ZoneOffset, OffsetMinutes: min}; return dt }
+	utc := func(dt DateTime) DateTime { dt.Zone = &Zone{Kind: ZoneUTC}; return dt }
+	bad := []DateTime{
+		{},                                      // nothing written
+		date(2026, 13, 1),                       // month 13
+		date(2026, 2, 30),                       // February 30
+		date(-1, 1, 1),                          // negative year
+		clock(24, 0, 0, false, ""),              // hour 24
+		clock(1, 2, 0, false, "5"),              // fraction with no seconds
+		clock(1, 2, 3, true, "12345678901"),     // 11 digits
+		offset(clock(1, 2, 0, false, ""), 9999), // +166:39
+		utc(date(2026, 1, 1)),                   // zone on a date alone
+	}
+	for _, dt := range bad {
+		if doc.SetDateTime("d", dt) || doc.SetDateTimeDefault("d", dt) || doc.SetDateTimeArray("d", []DateTime{date(2026, 1, 1), dt}) {
+			t.Fatalf("datetime %q was written", dt.String())
+		}
+	}
+	ok := offset(DateTime{HasDate: true, Year: 2026, Month: 1, Day: 2, HasTime: true, Hour: 3, Minute: 4, HasSeconds: true, Second: 5, Frac: "60"}, -90)
+	if !doc.SetDateTime("d", ok) {
+		t.Fatalf("a valid datetime was refused")
+	}
+	if got, st := doc.GetDateTime("d"); st != Good || got.String() != ok.String() {
+		t.Fatalf("datetime read back as %q %v", got.String(), st)
+	}
+	if got := doc.ToCanonical(); got != "z: 0\n\nf: 2.5\n\nd: \"2026-01-02T03:04:05.60-01:30\"\n" {
+		t.Fatalf("document after the refusals: %q", got)
 	}
 }
 
@@ -1209,7 +1254,7 @@ func TestParseLimitedCaps(t *testing.T) {
 	// Node cap: one E020 at the first line not parsed, the remainder counts
 	// as lost, and what parsed before the cap stays readable.
 	text := "a: 1\nb: 2\nc: 3\nd: 4\n"
-	doc, err := ParseLimited(text, Standard, 2, 0)
+	doc, err := ParseLimited(text, Standard, 2, 0, 0)
 	if err != nil {
 		t.Fatalf("standard must not fail: %v", err)
 	}
@@ -1226,12 +1271,12 @@ func TestParseLimitedCaps(t *testing.T) {
 		t.Fatalf("the remainder must not parse")
 	}
 	// A cap crossed by the document's last content line still reports.
-	doc, _ = ParseLimited("a: 1\nb: 2\nc: 3", Standard, 2, 0)
+	doc, _ = ParseLimited("a: 1\nb: 2\nc: 3", Standard, 2, 0, 0)
 	if n, _ := codeCount(doc, "E020"); n != 1 || doc.LostCount() != 0 {
 		t.Fatalf("last-line cross: %d E020, lost %d", n, doc.LostCount())
 	}
 	// One line may overshoot the cap by its own path; the parse still stops.
-	doc, _ = ParseLimited("x.y.z: 1\n", Standard, 1, 0)
+	doc, _ = ParseLimited("x.y.z: 1\n", Standard, 1, 0, 0)
 	if n, _ := codeCount(doc, "E020"); n != 1 {
 		t.Fatalf("deep line: %d E020", n)
 	}
@@ -1239,13 +1284,13 @@ func TestParseLimitedCaps(t *testing.T) {
 		t.Fatalf("overshot line must still be in the document: %d %v", v, st)
 	}
 	// 0 is no cap: identical to ParseWith.
-	doc, _ = ParseLimited(text, Standard, 0, 0)
+	doc, _ = ParseLimited(text, Standard, 0, 0, 0)
 	if len(doc.Diagnostics()) != 0 {
 		t.Fatalf("uncapped: %v", doc.Diagnostics())
 	}
 	// Element cap, inline spelling: the whole line is refused, the rest of
 	// the document is untouched.
-	doc, _ = ParseLimited("arr: 1, 2, 3\nok: 5\n", Standard, 0, 2)
+	doc, _ = ParseLimited("arr: 1, 2, 3\nok: 5\n", Standard, 0, 2, 0)
 	if n, line := codeCount(doc, "E021"); n != 1 || line != 1 {
 		t.Fatalf("want one E021 at line 1, got %d at %d", n, line)
 	}
@@ -1260,16 +1305,95 @@ func TestParseLimitedCaps(t *testing.T) {
 	}
 	// Element cap, stacked spelling: each element line past the cap is
 	// refused on its own; the array keeps what fit.
-	doc, _ = ParseLimited("arr:\n\t* 1\n\t* 2\n\t* 3\n", Standard, 0, 2)
+	doc, _ = ParseLimited("arr:\n\t* 1\n\t* 2\n\t* 3\n", Standard, 0, 2, 0)
 	if n, _ := codeCount(doc, "E021"); n != 1 {
 		t.Fatalf("star: %d E021", n)
 	}
 	if v, st := doc.GetIntArray("arr"); st != Good || !reflect.DeepEqual(v, []int64{1, 2}) {
 		t.Fatalf("star array: %v %v", v, st)
 	}
+	// The count the cap judges is the count the array reads back as, spelling
+	// by spelling: quoted and escaped commas, empty and blank slots, Unicode
+	// blanks, a quote that never closes. Refused at one under, kept at exact.
+	counts := []struct {
+		spelling string
+		n        int
+	}{
+		{"1, 2, 3", 3}, {"\"a, b\", c", 2}, {"a\\, b, c", 2}, {"a,,b", 2},
+		{"a, , b", 2}, {" a ", 1}, {"\"\", ''", 2}, {"'a\", b'", 1},
+		{"\"open, b", 1}, {"\\", 1}, {"x,\u3000", 1}, {"x, \u00a0y", 2}, {", , ,", 0},
+	}
+	for _, c := range counts {
+		text := "v: " + c.spelling + "\n"
+		cap := c.n
+		if cap == 0 {
+			cap = 1
+		}
+		doc, _ = ParseLimited(text, Standard, 0, cap, 0)
+		if n, _ := codeCount(doc, "E021"); n != 0 {
+			t.Fatalf("%q at cap %d: E021", c.spelling, c.n)
+		}
+		if v, st := doc.GetStringArray("v"); c.n == 0 {
+			if !doc.Exists("v") || st == Good {
+				t.Fatalf("%q: want empty, got %v %v", c.spelling, v, st)
+			}
+		} else if st != Good || len(v) != c.n {
+			t.Fatalf("%q: want %d elements, got %v %v", c.spelling, c.n, v, st)
+		}
+		if c.n >= 2 {
+			doc, _ = ParseLimited(text, Standard, 0, c.n-1, 0)
+			if doc.LostCount() != 1 {
+				t.Fatalf("%q at cap %d: not refused", c.spelling, c.n-1)
+			}
+		}
+	}
+	// A refused line reports the cap alone: the quote check runs after it, so
+	// it never splits a value the cap already turned away.
+	doc, _ = ParseLimited("v: a, \"open, b\n", Standard, 0, 1, 0)
+	if len(doc.Diagnostics()) != 1 || doc.Diagnostics()[0].Code != "E021" {
+		t.Fatalf("refused line: %v", doc.Diagnostics())
+	}
+	// Diagnostic cap: the first N are listed and one E022 tail counts the
+	// rest. Its severity is Error when any unlisted one was, so a scan of the
+	// list for errors still finds one and ErrorCount stays nonzero.
+	bad := strings.Repeat("no colon\n", 50)
+	doc, _ = ParseLimited(bad, Standard, 0, 0, 10)
+	if len(doc.Diagnostics()) != 11 {
+		t.Fatalf("diag cap: %d listed", len(doc.Diagnostics()))
+	}
+	for _, d := range doc.Diagnostics()[:10] {
+		if d.Code != "E014" {
+			t.Fatalf("diag cap: listed %s", d.Code)
+		}
+	}
+	tail := doc.Diagnostics()[10]
+	if tail.Code != "E022" || tail.Severity != SeverityError || tail.Line != 0 ||
+		tail.Message != "diagnostic cap of 10 reached; 40 more not listed, 40 of them errors" {
+		t.Fatalf("diag cap tail: %+v", tail)
+	}
+	if doc.ErrorCount() != 11 {
+		t.Fatalf("diag cap: error count %d", doc.ErrorCount())
+	}
+	if _, err := ParseLimited(bad, Strict, 0, 0, 10); err == nil {
+		t.Fatalf("diag cap: capped strict load must fail")
+	}
+	// Hints past the cap leave a Hint tail, so a document with no error
+	// still loads at Strict.
+	hints := "x: 1\nx: 2\ny: 1\ny: 2\n"
+	doc, err = ParseLimited(hints, Strict, 0, 0, 1)
+	if err != nil || len(doc.Diagnostics()) != 2 || doc.Diagnostics()[0].Code != "H001" ||
+		doc.Diagnostics()[1].Code != "E022" || doc.Diagnostics()[1].Severity != SeverityHint ||
+		!strings.HasSuffix(doc.Diagnostics()[1].Message, "1 more not listed, 0 of them errors") || doc.ErrorCount() != 0 {
+		t.Fatalf("hint tail: %v %+v", err, doc.Diagnostics())
+	}
+	// At the cap exactly, nothing is unlisted and there is no tail.
+	doc, _ = ParseLimited(hints, Standard, 0, 0, 2)
+	if len(doc.Diagnostics()) != 2 {
+		t.Fatalf("at the cap: %+v", doc.Diagnostics())
+	}
 	// A cap diagnostic is an error, so a capped Strict load fails - with the
 	// parsed part still on the error.
-	doc, err = ParseLimited(text, Strict, 2, 0)
+	doc, err = ParseLimited(text, Strict, 2, 0, 0)
 	if err == nil {
 		t.Fatalf("capped strict load must fail")
 	}

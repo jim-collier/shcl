@@ -6,9 +6,11 @@
 # binding must pass; column meanings live in project/conformance/README.md. Plain
 # stdlib (no pytest) so cicd runs it with a bare python3. Exit nonzero on any miss.
 
+import math
 import os
 import stat
 import sys
+import tracemalloc
 import types
 from pathlib import Path
 from typing import Any
@@ -222,11 +224,14 @@ def _float_grammar_ok(s):
 
 
 def _op_flt(s):
-	# float() after the grammar gate is safe; overflow (1e400) yields inf,
-	# matching Rust's parse.
+	# float() after the grammar gate is safe. Overflow (1e400) yields inf,
+	# which the reader refuses, so it is a bad value like the CLI says.
 	if not _float_grammar_ok(s):
 		raise ValueError(f"bad float: {s}")
-	return float(s)
+	x = float(s)
+	if not math.isfinite(x):
+		raise ValueError(f"bad float: {s}")
+	return x
 
 
 def try_apply_op(doc, line):
@@ -589,6 +594,36 @@ def main():
 		raise SystemExit("write_reason probe created an instance")
 	if wdoc.paths() != ["a", "a.b"]:
 		raise SystemExit(f"write_reason probe changed paths: {wdoc.paths()}")
+	# Each setter is the inverse of its read, so a value with no spelling the
+	# reader accepts fails the write and leaves the document alone. Same
+	# fixture in every runner.
+	sdoc = shcl.Document.parse("z: 0\n")
+	for v in (math.inf, -math.inf, math.nan):
+		if sdoc.set_float("f", v) or sdoc.set_float_default("f", v) or sdoc.set_float_array("f", [1.0, v]):
+			raise SystemExit(f"float {v} was written")
+	if not sdoc.set_float("f", 2.5) or sdoc.get_float("f") != 2.5:
+		raise SystemExit("a finite float was refused")
+	DT = shcl.ShclDateTime
+	bad_dts = [
+		DT(),                                                  # nothing written
+		DT(date=(2026, 13, 1)),                                # month 13
+		DT(date=(2026, 2, 30)),                                # February 30
+		DT(date=(-1, 1, 1)),                                   # negative year
+		DT(time=(24, 0, None)),                                # hour 24
+		DT(time=(1, 2, None), frac="5"),                       # fraction with no seconds
+		DT(time=(1, 2, 3), frac=""),                           # empty fraction
+		DT(time=(1, 2, 3), frac="12345678901"),                # 11 digits
+		DT(time=(1, 2, None), zone=("offset", 9999)),          # +166:39
+		DT(date=(2026, 1, 1), zone=("utc", None)),             # zone on a date alone
+	]
+	for dt in bad_dts:
+		if sdoc.set_datetime("d", dt) or sdoc.set_datetime_default("d", dt) or sdoc.set_datetime_array("d", [DT(date=(2026, 1, 1)), dt]):
+			raise SystemExit(f"datetime {dt} was written")
+	ok_dt = DT(date=(2026, 1, 2), time=(3, 4, 5), frac="60", zone=("offset", -90))
+	if not sdoc.set_datetime("d", ok_dt) or str(sdoc.get_datetime("d")) != str(ok_dt):
+		raise SystemExit("a valid datetime was refused or read back differently")
+	if sdoc.to_canonical() != 'z: 0\n\nf: 2.5\n\nd: "2026-01-02T03:04:05.60-01:30"\n':
+		raise SystemExit(f"document after the refusals: {sdoc.to_canonical()!r}")
 	# A raw body is the only content kept untrimmed, so it is the only place a
 	# trailing CR survives the load - and one written back becomes CRLF, which
 	# reads as neither. The whole trailing run comes off instead; a CR inside a
@@ -697,6 +732,91 @@ def main():
 	ldoc = shcl.Document.parse_limited("arr:\n\t* 1\n\t* 2\n\t* 3\n", shcl.Strictness.Standard, 0, 2)
 	if sum(1 for g in ldoc.diagnostics() if g.code == "E021") != 1 or ldoc.get_int_array("arr") != [1, 2]:
 		raise SystemExit("element cap: a stacked array keeps what fit")
+	# The count the cap judges is the count the array reads back as, spelling
+	# by spelling: quoted and escaped commas, empty and blank slots, Unicode
+	# blanks, a quote that never closes. Refused at one under, kept at exact.
+	counts = [
+		("1, 2, 3", 3), ('"a, b", c', 2), ("a\\, b, c", 2), ("a,,b", 2),
+		("a, , b", 2), (" a ", 1), ("\"\", ''", 2), ("'a\", b'", 1),
+		('"open, b', 1), ("\\", 1), ("x,\u3000", 1), ("x, \u00a0y", 2), (", , ,", 0),
+	]
+	for spelling, n in counts:
+		text = f"v: {spelling}\n"
+		ldoc = shcl.Document.parse_limited(text, shcl.Strictness.Standard, 0, max(n, 1))
+		if any(g.code == "E021" for g in ldoc.diagnostics()):
+			raise SystemExit(f"{spelling!r} at cap {n}: E021")
+		r = ldoc.read_string_array("v")
+		if n == 0:
+			if not ldoc.exists("v") or r.status == shcl.Status.Good:
+				raise SystemExit(f"{spelling!r}: want empty, got {r.status}")
+		elif r.status != shcl.Status.Good or len(r.value) != n:
+			raise SystemExit(f"{spelling!r}: want {n} elements, got {r.value} {r.status}")
+		if n >= 2:
+			ldoc = shcl.Document.parse_limited(text, shcl.Strictness.Standard, 0, n - 1)
+			if ldoc.lost_count() != 1:
+				raise SystemExit(f"{spelling!r} at cap {n - 1}: not refused")
+	# A refused line reports the cap alone: the quote check runs after it, so
+	# it never splits a value the cap already turned away.
+	ldoc = shcl.Document.parse_limited('v: a, "open, b\n', shcl.Strictness.Standard, 0, 1)
+	if [g.code for g in ldoc.diagnostics()] != ["E021"]:
+		raise SystemExit("refused line must report the cap alone")
+	# What a capped parse holds is the text and its lines. The refused line
+	# used to be built in full first (38x the text), so the cap saved nothing.
+	btext = "arr: " + "1, " * 200000 + "\nok: 5\n"
+	tracemalloc.start()
+	ldoc = shcl.Document.parse_limited(btext, shcl.Strictness.Standard, 0, 8)
+	lpeak = tracemalloc.get_traced_memory()[1]
+	tracemalloc.stop()
+	if ldoc.lost_count() != 1 or ldoc.get_int("ok") != 5:
+		raise SystemExit("capped parse: wrong result")
+	if lpeak > len(btext) * 8:
+		raise SystemExit(f"a capped parse held the array it refused: {lpeak} bytes for {len(btext)} of text")
+	# Diagnostic cap: the first N are listed and one E022 tail counts the
+	# rest. Its severity is Error when any unlisted one was, so a scan of the
+	# list for errors still finds one and error_count stays nonzero.
+	bad = "no colon\n" * 50
+	ldoc = shcl.Document.parse_limited(bad, shcl.Strictness.Standard, 0, 0, 10)
+	lds = ldoc.diagnostics()
+	if len(lds) != 11 or any(g.code != "E014" for g in lds[:10]):
+		raise SystemExit(f"diag cap: {[g.code for g in lds]}")
+	if (lds[10].code, lds[10].severity, lds[10].line, lds[10].message) != (
+		"E022", shcl.Severity.Error, 0, "diagnostic cap of 10 reached; 40 more not listed, 40 of them errors"
+	):
+		raise SystemExit(f"diag cap tail: {lds[10]}")
+	if ldoc.error_count() != 11:
+		raise SystemExit(f"diag cap: error count {ldoc.error_count()}")
+	try:
+		shcl.Document.parse_limited(bad, shcl.Strictness.Strict, 0, 0, 10)
+		raise SystemExit("diag cap: capped strict load must fail")
+	except shcl.LoadError:
+		pass
+	# Hints past the cap leave a Hint tail, so a document with no error still
+	# loads at Strict.
+	hints = "x: 1\nx: 2\ny: 1\ny: 2\n"
+	ldoc = shcl.Document.parse_limited(hints, shcl.Strictness.Strict, 0, 0, 1)
+	lds = ldoc.diagnostics()
+	if [(g.code, g.severity) for g in lds] != [("H001", shcl.Severity.Hint), ("E022", shcl.Severity.Hint)]:
+		raise SystemExit(f"hint tail: {[(g.code, g.severity) for g in lds]}")
+	if not lds[1].message.endswith("1 more not listed, 0 of them errors") or ldoc.error_count() != 0:
+		raise SystemExit(f"hint tail: {lds[1].message} {ldoc.error_count()}")
+	# At the cap exactly, nothing is unlisted and there is no tail.
+	if len(shcl.Document.parse_limited(hints, shcl.Strictness.Standard, 0, 0, 2).diagnostics()) != 2:
+		raise SystemExit("at the cap: a tail appeared")
+	# The stacked spelling refuses each element line past the cap on its own,
+	# and every refusal is a diagnostic: with the element cap alone, 200k
+	# refused lines cost more than the elements they refused. The diagnostic
+	# cap is what bounds that.
+	btext = "arr:\n" + "\t* 1\n" * 200000
+	tracemalloc.start()
+	ldoc = shcl.Document.parse_limited(btext, shcl.Strictness.Standard, 0, 8, 100)
+	lpeak = tracemalloc.get_traced_memory()[1]
+	tracemalloc.stop()
+	if len(ldoc.diagnostics()) != 101 or ldoc.lost_count() != 200000 - 8:
+		raise SystemExit("diagnostic-capped parse: wrong result")
+	# 16x rather than 8x: the split lines alone are 10x here, since a
+	# five-byte line is a fifty-byte str object. Uncapped it is 48x.
+	if lpeak > len(btext) * 16:
+		raise SystemExit(f"a diagnostic-capped parse held its unlisted diagnostics: {lpeak} bytes for {len(btext)} of text")
 	try:
 		shcl.Document.parse_limited(ltext, shcl.Strictness.Strict, 2, 0)
 		raise SystemExit("capped strict load must fail")
@@ -1109,12 +1229,13 @@ def main():
 	if not tdoc.set_float_array_default("g", [1, 2.5]) or tdoc.read_float_array("g").value != [1.0, 2.5]:
 		raise SystemExit("set_float_array_default refused an int element")
 	# Python-only: an int is written as the float it converts to, the f64 a
-	# caller of the other bindings would hold - not its exact digits, and one
-	# past the float range as inf.
+	# caller of the other bindings would hold - not its exact digits. One past
+	# the float range has no f64 but inf, which the reader refuses, so it
+	# fails the write like any other infinity.
 	if not tdoc.set_float("h", 9007199254740993) or tdoc.read_string("h").value != "9007199254740992":
 		raise SystemExit(f"set_float of a wide int wrote {tdoc.read_string('h').value!r}")
-	if not tdoc.set_float_array("i", [10 ** 400, -(10 ** 400)]) or tdoc.read_string("i").value != "inf, -inf":
-		raise SystemExit(f"set_float_array past the float range wrote {tdoc.read_string('i').value!r}")
+	if tdoc.set_float_array("i", [10 ** 400, -(10 ** 400)]) or tdoc.exists("i"):
+		raise SystemExit("set_float_array past the float range bound a value")
 
 	# Three hot-path shortcuts this binding carries because it is the slow one.
 	# Each is asserted structurally, by what the code does rather than by a

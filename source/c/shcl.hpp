@@ -105,8 +105,9 @@ public:
 	static Document parse(std::string_view t) { return Document(shcl_parse(t.data(), t.size())); }
 	static Document parse_with(std::string_view t, Strictness s) { return Document(shcl_parse_with(t.data(), t.size(), static_cast<shcl_strictness>(s))); }
 	// Parse with resource caps (E020 stops the parse past max_nodes, E021
-	// refuses a line whose array would exceed max_elements; 0 = no cap).
-	static Document parse_limited(std::string_view t, Strictness s, std::size_t max_nodes, std::size_t max_elements) { return Document(shcl_parse_limited(t.data(), t.size(), static_cast<shcl_strictness>(s), max_nodes, max_elements)); }
+	// refuses a line whose array would exceed max_elements, E022 ends a
+	// diagnostics list cut at max_diags with a count of the rest; 0 = no cap).
+	static Document parse_limited(std::string_view t, Strictness s, std::size_t max_nodes, std::size_t max_elements, std::size_t max_diags) { return Document(shcl_parse_limited(t.data(), t.size(), static_cast<shcl_strictness>(s), max_nodes, max_elements, max_diags)); }
 
 #ifndef SHCL_NO_FILE_IO
 	// File tier: load does not fail on the file's account (the document always
@@ -203,6 +204,11 @@ public:
 	// Layered loading: overlay `over` (a higher-priority layer) onto this doc.
 	// Leaf names in `over` override; container instances merge by (name, value).
 	void merge(const Document &over) { shcl_merge(d_.get(), over.d_.get()); }
+
+	// Give back what repeated writes left behind: the document is rebuilt into
+	// fresh storage holding only what it now contains. For a long-running
+	// writer; a write-once consumer never needs it.
+	void compact() { shcl_compact(d_.get()); }
 
 	// Schema-driven generation (`shcl init`): a commented, typed starter config
 	// from this document read as a schema, and whether it succeeded - false on
