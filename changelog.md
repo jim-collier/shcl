@@ -72,6 +72,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `ParseLimited`'s element cap bounded nothing for an inline array: the line was built in full and refused afterwards, so 9 MB of input peaked at the same 256 MB with the cap as without, and in C the refused array stayed held for the document's lifetime. The count is taken before anything splits the value now, so a refused line costs its text and no more.
 
+- `SetFloat` wrote `inf`, `-inf` and `NaN`, and `SetDateTime` wrote whatever the struct held (month 99, February 30, a fraction with no seconds, an empty struct as an empty value), each reporting success and each leaving a field the reader refused. Both refuse the value now and return false, the way `SetRaw` refuses an info-string it cannot spell. The CLI's float ops refuse `inf`, `nan` and a literal past the double range for the same reason; a datetime op already did.
+
 - `shcl_paths` in the C binding grew the document by about 11 KB on every call, and `shcl_reads_release` could not give it back, so a process polling a document's key list climbed for the document's lifetime. It was the one read that took no path and so missed the scratch reset the path lookup does; it resets on entry now.
 
 - The C validator put one scratch arena per level of the nesting cap on the stack - 16 KB, fine on a main thread and past the whole stack of a small worker, where it crashed. They are heap-allocated now.

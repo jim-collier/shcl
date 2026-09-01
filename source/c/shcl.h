@@ -336,8 +336,10 @@ int     shcl_get_bool_or(shcl_doc *d, const char *path, size_t plen, int def);
 // typed value and places it at a path (creating intermediate nodes). New values
 // are copied into the arena, so the caller's buffers need not outlive the call.
 // Setters return 1 when the write applied, 0 when the path is unusable
-// (wildcard, missing [#N] instance, a value part, or past the depth cap) -
-// nothing is created on failure. _default forms return 1 when already present.
+// (wildcard, missing [#N] instance, a value part, or past the depth cap) or
+// the value has no spelling the reader accepts (a non-finite float, a datetime
+// the reader would refuse, a raw info-string holding a `#`) - nothing is
+// created on failure. _default forms return 1 when already present.
 // Worth checking rather than assuming: an ignored 0 means the save that follows
 // writes a document missing the edit, and reports success doing it.
 shcl_doc *shcl_new(void); // an empty document (start point for generation), or NULL on an allocation failure
@@ -3037,6 +3039,19 @@ static ShclStr w_int_text(ShclArena *a, int64_t v) { char b[32]; int n = snprint
 static ShclStr w_float_text(ShclArena *a, double v) { char b[SHCL_F64_BUF]; size_t n = shcl_format_f64(v, b); return w_dupz(a, b, n); }
 static ShclStr w_bool_text(int v) { return v ? s_lit("true") : s_lit("false"); }
 static ShclStr w_dt_text(ShclArena *a, const shcl_datetime *dt) { char b[SHCL_DT_BUF]; size_t n = shcl_datetime_str(dt, b); return w_dupz(a, b, n); }
+/* Whether a datetime's canonical spelling reads back as the same value: the
+   setter's inverse-of-the-read promise, checked by making the round trip. */
+static int dt_reads_back(ShclArena *scratch, const shcl_datetime *dt) {
+	char b[SHCL_DT_BUF]; ShclStr t; t.p = b; t.n = shcl_datetime_str(dt, b);
+	shcl_datetime back;
+	if (!parse_datetime(scratch, t, &back)) return 0;
+	if (back.has_date != dt->has_date || back.has_time != dt->has_time || back.has_sec != dt->has_sec || back.has_frac != dt->has_frac || back.zone != dt->zone) return 0;
+	if (dt->has_date && (back.year != dt->year || back.month != dt->month || back.day != dt->day)) return 0;
+	if (dt->has_time && (back.hour != dt->hour || back.minute != dt->minute || (dt->has_sec && back.sec != dt->sec))) return 0;
+	if (dt->has_frac && !s_eq(back.frac, dt->frac)) return 0;
+	if (dt->zone == SHCL_ZONE_OFFSET && back.off_min != dt->off_min) return 0;
+	return 1;
+}
 
 // Inverse of a scalar string read (apply_escapes): only backslash, newline, and
 // tab need encoding; emit_element wraps quote/reserved chars, reparse strips it.
@@ -3335,7 +3350,11 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 
 int shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { ShclStr p; p.p = path; p.n = plen; return w_set(d, p, v_empty()); }
 int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_int_text(a, v))); }
-int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_float_text(a, v))); }
+/* An infinity or a NaN has no spelling the reader accepts, and neither does a
+   datetime the reader would refuse (month 13, a fraction with no seconds, an
+   empty struct): each fails the write rather than binding text that cannot
+   read back. */
+int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { if (!isfinite(v)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_float_text(a, v))); }
 int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_bool_text(v))); }
 int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr in; in.p = s; in.n = slen; return w_set(d, p, w_cell1(a, w_encode_string(a, in))); }
 
@@ -3355,7 +3374,7 @@ int shcl_set_literal(shcl_doc *d, const char *path, size_t plen, const char *tex
 	if (!literal_value(a, &d->scratch, in, &v)) return 0;
 	return w_set(d, p, v);
 }
-int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
+int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!dt_reads_back(&d->scratch, dt)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
 // Bind a raw block at a path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed); one
 // holding a line break or an unquoted `#` has no fence-line spelling (the `#`
@@ -3384,6 +3403,7 @@ int shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t
 	return w_set(d, p, w_array(a, t, n));
 }
 int shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) {
+	for (size_t i = 0; i < n; i++) if (!isfinite(v[i])) return 0;
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_float_text(a, v[i]);
 	return w_set(d, p, w_array(a, t, n));
@@ -3399,6 +3419,7 @@ int shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char
 	return w_set(d, p, w_array(a, t, n));
 }
 int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) {
+	for (size_t i = 0; i < n; i++) if (!dt_reads_back(&d->scratch, &v[i])) return 0;
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_dt_text(a, &v[i]);
 	return w_set(d, p, w_array(a, t, n));

@@ -308,10 +308,8 @@ func tryApplyOpTest(doc *Document, line string) error {
 			return 0, fmt.Errorf("bad float: %s", s)
 		}
 		n, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			if ne, ok := err.(*strconv.NumError); !ok || ne.Err != strconv.ErrRange {
-				return 0, fmt.Errorf("bad float: %s", s)
-			}
+		if err != nil || math.IsInf(n, 0) || math.IsNaN(n) {
+			return 0, fmt.Errorf("bad float: %s", s)
 		}
 		return n, nil
 	}
@@ -719,6 +717,53 @@ func TestWriteReasonNamesTheFailure(t *testing.T) {
 	}
 	if got := doc.Paths(); strings.Join(got, ",") != "a,a.b" {
 		t.Errorf("paths: got %v", got)
+	}
+}
+
+func TestSettersRefuseAValueTheReaderRefuses(t *testing.T) {
+	// Each setter is the inverse of its read, so a value with no spelling the
+	// reader accepts fails the write and leaves the document alone. Same
+	// fixture in every runner.
+	doc := Parse("z: 0\n")
+	for _, v := range []float64{math.Inf(1), math.Inf(-1), math.NaN()} {
+		if doc.SetFloat("f", v) || doc.SetFloatDefault("f", v) || doc.SetFloatArray("f", []float64{1, v}) {
+			t.Fatalf("float %v was written", v)
+		}
+	}
+	if v, st := 2.5, Good; !doc.SetFloat("f", v) || func() bool { g, s := doc.GetFloat("f"); return g != v || s != st }() {
+		t.Fatalf("a finite float was refused")
+	}
+	date := func(y, m, d int) DateTime { return DateTime{HasDate: true, Year: y, Month: m, Day: d} }
+	clock := func(h, mi int, sec int, hasSec bool, frac string) DateTime {
+		return DateTime{HasTime: true, Hour: h, Minute: mi, HasSeconds: hasSec, Second: sec, Frac: frac}
+	}
+	offset := func(dt DateTime, min int) DateTime { dt.Zone = &Zone{Kind: ZoneOffset, OffsetMinutes: min}; return dt }
+	utc := func(dt DateTime) DateTime { dt.Zone = &Zone{Kind: ZoneUTC}; return dt }
+	bad := []DateTime{
+		{},                                      // nothing written
+		date(2026, 13, 1),                       // month 13
+		date(2026, 2, 30),                       // February 30
+		date(-1, 1, 1),                          // negative year
+		clock(24, 0, 0, false, ""),              // hour 24
+		clock(1, 2, 0, false, "5"),              // fraction with no seconds
+		clock(1, 2, 3, true, "12345678901"),     // 11 digits
+		offset(clock(1, 2, 0, false, ""), 9999), // +166:39
+		utc(date(2026, 1, 1)),                   // zone on a date alone
+	}
+	for _, dt := range bad {
+		if doc.SetDateTime("d", dt) || doc.SetDateTimeDefault("d", dt) || doc.SetDateTimeArray("d", []DateTime{date(2026, 1, 1), dt}) {
+			t.Fatalf("datetime %q was written", dt.String())
+		}
+	}
+	ok := offset(DateTime{HasDate: true, Year: 2026, Month: 1, Day: 2, HasTime: true, Hour: 3, Minute: 4, HasSeconds: true, Second: 5, Frac: "60"}, -90)
+	if !doc.SetDateTime("d", ok) {
+		t.Fatalf("a valid datetime was refused")
+	}
+	if got, st := doc.GetDateTime("d"); st != Good || got.String() != ok.String() {
+		t.Fatalf("datetime read back as %q %v", got.String(), st)
+	}
+	if got := doc.ToCanonical(); got != "z: 0\n\nf: 2.5\n\nd: \"2026-01-02T03:04:05.60-01:30\"\n" {
+		t.Fatalf("document after the refusals: %q", got)
 	}
 }
 

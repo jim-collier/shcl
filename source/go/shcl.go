@@ -4014,8 +4014,13 @@ func (d *Document) SetInt(path string, v int64) bool {
 	return d.setValue(path, cellOf(strconv.FormatInt(v, 10)))
 }
 
-// SetFloat binds a float at path, in the canonical shortest spelling.
+// SetFloat binds a float at path, in the canonical shortest spelling. An
+// infinity or a NaN has no spelling the reader accepts, so it fails the write
+// rather than binding a value that cannot read back.
 func (d *Document) SetFloat(path string, v float64) bool {
+	if math.IsInf(v, 0) || math.IsNaN(v) {
+		return false
+	}
 	return d.setValue(path, cellOf(FormatFloat(v)))
 }
 
@@ -4029,8 +4034,14 @@ func (d *Document) SetString(path, v string) bool {
 	return d.setValue(path, cellOf(encodeString(v)))
 }
 
-// SetDateTime binds a datetime at path, in its canonical spelling.
+// SetDateTime binds a datetime at path, in its canonical spelling. The
+// struct's fields are public and carry no invariant, so a value the reader
+// would refuse (month 13, a fraction with no seconds, an empty struct) fails
+// the write rather than binding text that cannot read back.
 func (d *Document) SetDateTime(path string, v DateTime) bool {
+	if !datetimeReadsBack(v) {
+		return false
+	}
 	return d.setValue(path, cellOf(v.String()))
 }
 
@@ -4070,6 +4081,11 @@ func (d *Document) SetIntArray(path string, v []int64) bool {
 
 // SetFloatArray binds an inline float array at path.
 func (d *Document) SetFloatArray(path string, v []float64) bool {
+	for _, x := range v {
+		if math.IsInf(x, 0) || math.IsNaN(x) {
+			return false
+		}
+	}
 	texts := make([]string, len(v))
 	for i, x := range v {
 		texts[i] = FormatFloat(x)
@@ -4097,6 +4113,11 @@ func (d *Document) SetStringArray(path string, v []string) bool {
 
 // SetDateTimeArray binds an inline datetime array at path.
 func (d *Document) SetDateTimeArray(path string, v []DateTime) bool {
+	for _, x := range v {
+		if !datetimeReadsBack(x) {
+			return false
+		}
+	}
 	texts := make([]string, len(v))
 	for i, x := range v {
 		texts[i] = x.String()
@@ -4892,6 +4913,18 @@ func parseTimePart(s string) (h, mi, sec int, hasSec bool, frac string, zone *Zo
 		}
 	}
 	return h, mi, sec, hasSec, frac, zone, true
+}
+
+// datetimeReadsBack reports whether a datetime's canonical spelling reads
+// back as the same value: the setter's inverse-of-the-read promise, checked
+// by making the round trip.
+func datetimeReadsBack(v DateTime) bool {
+	back, ok := ParseDateTime(v.String())
+	if !ok || (v.Zone == nil) != (back.Zone == nil) || (v.Zone != nil && *v.Zone != *back.Zone) {
+		return false
+	}
+	v.Zone, back.Zone = nil, nil
+	return v == back
 }
 
 // ParseDateTime is the whole-value date/time parse per the whitelist.

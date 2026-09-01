@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -1083,17 +1084,17 @@ func parseOpInt(s string) (int64, error) {
 	return n, nil
 }
 
-// parseOpFloat gates an ops float; overflow yields +/-Inf like the reference,
-// not an error.
+// parseOpFloat gates an ops float like the reference. The language's own
+// float reader takes inf and nan, and overflow lands on them too; the
+// document's reader does not, so they are bad values here, the way a bad
+// datetime is.
 func parseOpFloat(s string) (float64, error) {
 	if !floatGrammar(s) {
 		return 0, fmt.Errorf("bad float: %s", s)
 	}
 	n, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		if ne, ok := err.(*strconv.NumError); !ok || ne.Err != strconv.ErrRange {
-			return 0, fmt.Errorf("bad float: %s", s)
-		}
+	if err != nil || math.IsInf(n, 0) || math.IsNaN(n) {
+		return 0, fmt.Errorf("bad float: %s", s)
 	}
 	return n, nil
 }

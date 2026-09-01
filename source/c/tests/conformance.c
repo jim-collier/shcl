@@ -199,7 +199,7 @@ static int cf_f64(const char *p, size_t n, double *out) {
 	b[j] = 0;
 	*out = strtod(b, NULL);
 	free(b);
-	return 1;
+	return isfinite(*out) ? 1 : 0;
 }
 // Exactly `true` or `false`; anything else is rejected, like a bad int.
 static int cf_bool(const char *p, int *out) {
@@ -1202,10 +1202,12 @@ int main(int argc, char **argv) {
 		size_t dn = shcl_datetime_str(&worst, out);
 		if (dn > SHCL_DT_BUF) fail("dt_clamp", "the render outgrew the buffer it documents");
 		free(out);
-		// The set path passes its own SHCL_DT_BUF array, so it has to survive
-		// the same value.
+		// The set path renders into its own SHCL_DT_BUF array before it judges
+		// the value, so it has to survive the same value - and then refuse it,
+		// since nothing this shape reads back.
 		shcl_doc *dd = shcl_new();
-		if (!shcl_set_datetime(dd, "when", 4, &worst)) fail("dt_clamp", "the setter refused a hand-built datetime");
+		if (shcl_set_datetime(dd, "when", 4, &worst)) fail("dt_clamp", "the setter bound a datetime the reader refuses");
+		if (shcl_exists(dd, "when", 4)) fail("dt_clamp", "a refused datetime left a node behind");
 		shcl_free(dd);
 	}
 	// write_reason: the reason behind a setter's bare 0. Same fixture in every
@@ -1237,6 +1239,45 @@ int main(int argc, char **argv) {
 		// The probe never creates: the doc is unchanged after all of the above.
 		if (shcl_count(wd, "a", 1) != 1) fail("write_reason", "probe created nodes");
 		shcl_free(wd);
+	}
+	// Each setter is the inverse of its read, so a value with no spelling the
+	// reader accepts fails the write and leaves the document alone. Same
+	// fixture in every runner.
+	{
+		shcl_doc *sd = shcl_parse("z: 0\n", 5);
+		double nonfinite[3]; nonfinite[0] = INFINITY; nonfinite[1] = -INFINITY; nonfinite[2] = NAN;
+		for (int i = 0; i < 3; i++) {
+			double pair[2]; pair[0] = 1; pair[1] = nonfinite[i];
+			if (shcl_set_float(sd, "f", 1, nonfinite[i]) || shcl_set_float_default(sd, "f", 1, nonfinite[i]) || shcl_set_float_array(sd, "f", 1, pair, 2))
+				fail("setters_refuse", "a non-finite float was written");
+		}
+		if (!shcl_set_float(sd, "f", 1, 2.5) || shcl_get_float_or(sd, "f", 1, 0) != 2.5) fail("setters_refuse", "a finite float was refused");
+		shcl_datetime bad[10]; memset(bad, 0, sizeof bad);
+		// [0] nothing written
+		bad[1].has_date = 1; bad[1].year = 2026; bad[1].month = 13; bad[1].day = 1;
+		bad[2].has_date = 1; bad[2].year = 2026; bad[2].month = 2; bad[2].day = 30;
+		bad[3].has_date = 1; bad[3].year = -1; bad[3].month = 1; bad[3].day = 1;
+		bad[4].has_time = 1; bad[4].hour = 24;
+		bad[5].has_time = 1; bad[5].hour = 1; bad[5].minute = 2; bad[5].has_frac = 1; bad[5].frac = s_lit("5"); // fraction with no seconds
+		bad[6].has_time = 1; bad[6].hour = 1; bad[6].minute = 2; bad[6].has_sec = 1; bad[6].sec = 3; bad[6].has_frac = 1; bad[6].frac = s_lit(""); // empty fraction
+		bad[7] = bad[6]; bad[7].frac = s_lit("12345678901"); // 11 digits
+		bad[8].has_time = 1; bad[8].hour = 1; bad[8].minute = 2; bad[8].zone = SHCL_ZONE_OFFSET; bad[8].off_min = 9999; // +166:39
+		bad[9].has_date = 1; bad[9].year = 2026; bad[9].month = 1; bad[9].day = 1; bad[9].zone = SHCL_ZONE_UTC; // zone on a date alone
+		shcl_datetime good; memset(&good, 0, sizeof good); good.has_date = 1; good.year = 2026; good.month = 1; good.day = 1;
+		for (int i = 0; i < 10; i++) {
+			shcl_datetime pair[2]; pair[0] = good; pair[1] = bad[i];
+			if (shcl_set_datetime(sd, "d", 1, &bad[i]) || shcl_set_datetime_default(sd, "d", 1, &bad[i]) || shcl_set_datetime_array(sd, "d", 1, pair, 2))
+				fail("setters_refuse", "a datetime the reader refuses was written");
+		}
+		shcl_datetime ok = good; ok.day = 2; ok.has_time = 1; ok.hour = 3; ok.minute = 4; ok.has_sec = 1; ok.sec = 5; ok.has_frac = 1; ok.frac = s_lit("60"); ok.zone = SHCL_ZONE_OFFSET; ok.off_min = -90;
+		if (!shcl_set_datetime(sd, "d", 1, &ok)) fail("setters_refuse", "a valid datetime was refused");
+		shcl_read_dt rd = shcl_read_datetime(sd, "d", 1);
+		char okb[SHCL_DT_BUF], rdb[SHCL_DT_BUF]; size_t okn = shcl_datetime_str(&ok, okb), rdn = shcl_datetime_str(&rd.value, rdb);
+		if (rd.status != SHCL_GOOD || okn != rdn || memcmp(okb, rdb, okn) != 0) fail("setters_refuse", "the datetime read back differently");
+		shcl_str canon = shcl_to_canonical(sd);
+		const char *want = "z: 0\n\nf: 2.5\n\nd: \"2026-01-02T03:04:05.60-01:30\"\n";
+		if (canon.n != strlen(want) || memcmp(canon.p, want, canon.n) != 0) fail("setters_refuse", "document after the refusals differs");
+		shcl_free(sd);
 	}
 	// One combined diagnostics list (parse first, then validation) and an
 	// error predicate, so recover-and-continue can't read as success by
