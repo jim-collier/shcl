@@ -1530,6 +1530,10 @@ static int strtod_full(ShclArena *a, ShclStr t, double *out) {
 	buf[j] = '\0';
 	char *end; double v = strtod(buf, &end);
 	if (end != buf + j) return 0;
+	/* A literal past the double range is an infinity, which no double holds
+	   and no setter can write back: BadType, like a text that is not a number
+	   at all. */
+	if (!isfinite(v)) return 0;
 	*out = v; return 1;
 }
 static int parse_float_text(ShclArena *a, const ShclElement *e, shcl_strictness level, double *out) {

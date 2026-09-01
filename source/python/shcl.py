@@ -4151,6 +4151,11 @@ def _parse_float_text(e, level):
 			v = float(t)
 		except ValueError:
 			return None
+		# A literal past the double range is an infinity, which no double
+		# holds and no setter can write back: BadType, like a text that is not
+		# a number at all.
+		if not math.isfinite(v):
+			return None
 	else:
 		# An integer is a valid float on read (incl. hex and quoted thousands).
 		iv = _parse_int_text_no_loose(_Element(t, e.quoted))

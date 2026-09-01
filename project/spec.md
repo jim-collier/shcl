@@ -181,6 +181,8 @@ Recognized when a value is read as a float:
 
 - An integer is a valid float on read.
 
+- The value must fit a double. A literal past its range (`1e400`) is `BadType`, since no double holds it and no setter could write it back; one below it (`1e-400`) reads as zero.
+
 - No currency and no percent handling: `$3.14` and `50%` are strings, `BadType` as floats. (The Loose strictness level re-admits both; see Strictness levels.)
 
 ### Booleans

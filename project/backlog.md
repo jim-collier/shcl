@@ -132,12 +132,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- The enhancement half of the round whose bugs are under Bugs. Three items, kept to what was actually reproduced.
 
-	- 🔘 Item 7: a float literal past the double range reads as infinity, at `Good`.
+	- ✅ Item 7: a float literal past the double range reads as infinity, at `Good`.
 		- `1e400` reads as `inf` and exits 0, in all four bindings. So does `1e309` and `1.8e308`. The negative spellings give `-inf`.
 		- Not a spec violation - the float section states no range - which is why this is here rather than under Bugs.
 		- It does contradict the reasoning behind the 20260830b decision on the loose float-to-int read, which stopped saturating at 2^63 because no double holds that value and the path could not honestly produce it. The same sentence applies to a float literal the double cannot hold.
 		- It also feeds item 4: read the value, write it back unchanged, and the field no longer reads.
+		- Done: the float reader refuses a non-finite parse result in all four bindings, at every strictness, so `1e400` is `BadType` like any text that is not a number. Underflow (`1e-400`) still reads as zero, and the largest double still reads. Spec: the float section states the range. Changelog entry under Changed, since a read that answered now refuses.
+		- Pinned by corpus `074-float-range`: scalar, array and loose-currency spellings at three strictness levels, plus the largest double and an underflow. Fails on the old code in all four runners.
 		- Opened: 20260901-140600
+		- Closed: 20260901-190000
 
 	- 🔘 Item 8: nothing bounds the diagnostic list.
 		- A parse emits one diagnostic per bad line with no ceiling, so a document of nothing but bad lines costs several hundred bytes each. Three million of them run to roughly 500 MB.
