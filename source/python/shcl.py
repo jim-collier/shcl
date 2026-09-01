@@ -4878,6 +4878,16 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 				changed = True
 		if not changed:
 			break
+	# A live line with a value materializes an instance carrying that value,
+	# and a dotted child names the empty-valued instance instead - so `srv:
+	# web` followed by `srv.port:` is two `srv` nodes, and the child never
+	# lands where the schema looks. Any line under such a parent selects it by
+	# its value: `srv[web].port:`.
+	parent_values = {
+		tuple(names_of(c.segs)): c.default_text
+		for c in cons
+		if not has_wild(c) and not unwritable(c) and must_exist(c) and c.default_text is not None
+	}
 	out = []
 	wild = []
 	first = True
@@ -4895,11 +4905,16 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		# The annotation is a comment: a newline smuggled in via an allowed
 		# string value must not break out of it.
 		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
-		# A filled wildcard emits in dotted form, targeting the first (the
-		# materialized) instance. Rebuilt from the parsed segments, not by
-		# cutting text out of the path: the same path can be written several
-		# ways, and only the segments say what it means.
-		path = _gen_path_text(c.segs) if fill[i] else c.path
+		# A filled wildcard emits in dotted form, targeting the materialized
+		# instance - by its value when the materializing line carries one.
+		# Rebuilt from the parsed segments, not by cutting text out of the
+		# path: the same path can be written several ways, and only the
+		# segments say what it means. Otherwise the schema's own spelling.
+		under_valued_parent = any(
+			c.segs[k - 1].selector is None and tuple(names_of(c.segs[:k])) in parent_values
+			for k in range(1, len(c.segs))
+		)
+		path = _gen_path_text(c.segs, parent_values) if fill[i] or under_valued_parent else c.path
 		prefix = "" if must_exist(c) else "#"
 		if c.default_text is not None:
 			out.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
@@ -4923,12 +4938,14 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# so check that here rather than trusting each branch above. A `default`
 	# outside its own field's constraints is the schema's fault, and the author
 	# should hear about it instead of getting a starter config that fails the
-	# first time it is checked. V007 is the one sanctioned shortfall (a repeat
-	# lower bound of 2+ generates identical lines, which merge).
+	# first time it is checked. The one sanctioned shortfall is a V007 for a
+	# repeat lower bound of 2+: generating that many identical lines merges
+	# them into one. A lower bound of 1 is a must-exist path like any other,
+	# so its V007 is a fault.
 	bad = [
 		Diagnostic(0, Severity.Error, "generated value fails the schema that produced it: " + d.message, "V097")
 		for d in Document.parse(text).validate(schema)
-		if d.severity == Severity.Error and d.code != "V007"
+		if d.severity == Severity.Error and not (d.code == "V007" and _v007_sanctioned(d.message))
 	]
 	if bad:
 		return "", bad
@@ -4956,11 +4973,34 @@ _GEN_BANNER = (
 )
 
 
-def _gen_path_text(segs):
+def _v007_sanctioned(message):
+	"""Whether a V007 from the self-check is the sanctioned kind: its message
+	ends `: N not in LO..HI`, and LO is 2 or more."""
+	_, sep, rest = message.rpartition(" not in ")
+	lo = rest.split("..", 1)[0]
+	return bool(sep) and lo.isdigit() and int(lo) >= 2
+
+
+def _gen_selector_text(v):
+	"""A default's spelling inside a `[value]` selector: the value-side text as
+	is, except that a bracket or a backslash would end or escape the selector,
+	so those go quoted (the selector matches on the escaped display, so the
+	quoted spelling finds the bare value)."""
+	if "\n" in v:
+		return _gen_default_text(v)
+	if any(ch in v for ch in "[]\\") and not _quoted_shape(v):
+		return _quote_text(v)
+	return v
+
+
+def _gen_path_text(segs, parent_values):
 	"""Render parsed segments back as a dotted path, dropping wildcard selectors
 	(a generated line targets the one instance it materializes) and quoting a
-	name that needs it, so the result is a path the scanner reads back the same."""
+	name that needs it, so the result is a path the scanner reads back the same.
+	A segment whose prefix names a live line carrying a value selects that
+	instance by the value, in place of a wildcard or a bare name."""
 	out = []
+	names = []
 	for i, s in enumerate(segs):
 		if i > 0:
 			out.append(".")
@@ -4968,6 +5008,11 @@ def _gen_path_text(segs):
 			out.append("*")
 		else:
 			out.append(_emit_name(s.name))
+		names.append(s.name)
+		v = parent_values.get(tuple(names))
+		if v is not None and i + 1 < len(segs) and (s.selector is None or s.selector[0] != "val"):
+			out.append(f"[{_gen_selector_text(v)}]")
+			continue
 		if s.selector is not None:
 			if s.selector[0] == "val":
 				out.append(f"[{_quote_text(s.selector[1]) if s.selector[2] else s.selector[1]}]")

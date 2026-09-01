@@ -5625,10 +5625,48 @@ static ShclStr g_default_text(ShclArena *a, ShclStr v) {
 	"#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n" \
 	"#\n"
 
+/* Whether a V007 from the self-check is the sanctioned kind: its message ends
+   `: N not in LO..HI`, and LO is 2 or more. */
+static int v007_sanctioned(ShclStr message) {
+	const char *tail = NULL;
+	for (size_t i = 0; i + 8 <= message.n; i++) if (memcmp(message.p + i, " not in ", 8) == 0) tail = message.p + i + 8;
+	if (!tail) return 0;
+	uint64_t lo = 0; size_t k = 0, n = message.n - (size_t)(tail - message.p);
+	while (k < n && tail[k] >= '0' && tail[k] <= '9') { lo = lo * 10 + (uint64_t)(tail[k] - '0'); k++; }
+	return k > 0 && lo >= 2;
+}
+
+/* Parent lines that carry a value, keyed by their segment names: the live
+   must-exist concrete constraints with a default. A dotted child of one has
+   to select that instance by the value, or it names the empty-valued one. */
+typedef struct { const ShclVecSeg *segs; ShclStr value; } ShclParentValue;
+typedef struct { ShclParentValue *data; size_t len; } ShclParentValues;
+static const ShclStr *parent_value_for(const ShclParentValues *pv, const ShclVecSeg *segs, size_t n) {
+	for (size_t i = 0; i < pv->len; i++) {
+		if (pv->data[i].segs->len != n) continue;
+		int eq = 1;
+		for (size_t k = 0; k < n && eq; k++) eq = s_eq(pv->data[i].segs->data[k].name, segs->data[k].name);
+		if (eq) return &pv->data[i].value;
+	}
+	return NULL;
+}
+
+/* A default's spelling inside a `[value]` selector: the value-side text as
+   is, except that a bracket or a backslash would end or escape the selector,
+   so those go quoted (the selector matches on the escaped display, so the
+   quoted spelling finds the bare value). */
+static ShclStr gen_selector_text(ShclArena *a, ShclStr v) {
+	if (memchr(v.p, '\n', v.n)) return g_default_text(a, v);
+	if ((memchr(v.p, '[', v.n) || memchr(v.p, ']', v.n) || memchr(v.p, '\\', v.n)) && !quoted_shape(v)) return quote_text(a, v);
+	return v;
+}
+
 // Render parsed segments back as a dotted path, dropping wildcard selectors
 // (a generated line targets the one instance it materializes) and quoting a
 // name that needs it, so the result is a path the scanner reads back the same.
-static ShclStr gen_path_text(ShclArena *a, const ShclVecSeg *segs) {
+// A segment whose prefix names a live line carrying a value selects that
+// instance by the value, in place of a wildcard or a bare name.
+static ShclStr gen_path_text(ShclArena *a, const ShclVecSeg *segs, const ShclParentValues *pv) {
 	ShclSB out = {0, 0, 0};
 	char nb[32];
 	for (size_t i = 0; i < segs->len; i++) {
@@ -5636,6 +5674,8 @@ static ShclStr gen_path_text(ShclArena *a, const ShclVecSeg *segs) {
 		if (i > 0) sb_putc(a, &out, '.');
 		if (s->star) sb_putc(a, &out, '*');
 		else sb_putS(a, &out, emit_name(a, s->name));
+		const ShclStr *v = (i + 1 < segs->len && s->sel.tag != SEL_VALUE) ? parent_value_for(pv, segs, i + 1) : NULL;
+		if (v) { sb_putc(a, &out, '['); sb_putS(a, &out, gen_selector_text(a, *v)); sb_putc(a, &out, ']'); continue; }
 		switch (s->sel.tag) {
 		case SEL_VALUE:
 			sb_putc(a, &out, '[');
@@ -5706,7 +5746,15 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	// safe partial mode: any fault fails it.
 	v_build_schema(a, schema, &def, &faults);
 	shcl_str r;
-	if (faults.len) { if (ok) *ok = 0; ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r; }
+	if (faults.len) {
+		// Recorded on the schema document like every other generation fault,
+		// so a caller sees the V09x list itself and does not have to rebuild
+		// it by validating an empty document (which adds that document's own
+		// V002/V007 to the list).
+		for (size_t i = 0; i < faults.len; i++) push_diag(schema, faults.data[i].line, faults.data[i].sev, faults.data[i].code, s_dup(&schema->arena, faults.data[i].message));
+		if (ok) *ok = 0;
+		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
+	}
 	if (ok) *ok = 1;
 	ShclVecVCons cons = {0, 0, 0};
 	ShclVecS cut_path = {0, 0, 0}, cut_frag = {0, 0, 0};
@@ -5755,6 +5803,17 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		if (!changed) break;
 	}
 	#undef LIVE_PUSH
+	/* A live line with a value materializes an instance carrying that value,
+	   and a dotted child names the empty-valued instance instead - so `srv:
+	   web` followed by `srv.port:` is two `srv` nodes, and the child never
+	   lands where the schema looks. Any line under such a parent selects it
+	   by its value: `srv[web].port:`. */
+	ShclParentValues pv; pv.len = 0;
+	pv.data = (ShclParentValue *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *pv.data);
+	for (size_t i = 0; i < cons.len; i++) {
+		const ShclVCons *c = &cons.data[i];
+		if (!g_has_wild(c) && !g_unwritable(c) && g_must_exist(c) && c->has_default) { pv.data[pv.len].segs = &c->segs; pv.data[pv.len].value = c->default_text; pv.len++; }
+	}
 	ShclSB out = {0, 0, 0};
 	ShclVecS wild_path = {0, 0, 0}, wild_type = {0, 0, 0};
 	int first = 1;
@@ -5781,15 +5840,16 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		}
 		sb_puts(a, &out, "# "); sb_putS(a, &out, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &out, '\n');
 		if (!g_must_exist(c)) sb_putc(a, &out, '#');
-		if (fill[i]) {
-			// A filled wildcard emits in dotted form, targeting the first (the
-			// materialized) instance. Rebuilt from the parsed segments, not by
-			// cutting text out of the path: the same path can be written several
-			// ways, and only the segments say what it means.
-			sb_putS(a, &out, gen_path_text(a, &c->segs));
-		} else {
-			sb_putS(a, &out, c->path);
-		}
+		// A filled wildcard emits in dotted form, targeting the materialized
+		// instance - by its value when the materializing line carries one.
+		// Rebuilt from the parsed segments, not by cutting text out of the
+		// path: the same path can be written several ways, and only the
+		// segments say what it means. Otherwise the schema's own spelling.
+		int under_valued_parent = 0;
+		for (size_t k = 1; k < c->segs.len && !under_valued_parent; k++)
+			under_valued_parent = c->segs.data[k - 1].sel.tag == SEL_NONE && parent_value_for(&pv, &c->segs, k) != NULL;
+		if (fill[i] || under_valued_parent) sb_putS(a, &out, gen_path_text(a, &c->segs, &pv));
+		else sb_putS(a, &out, c->path);
 		if (c->has_default) { sb_puts(a, &out, ": "); sb_putS(a, &out, g_default_text(a, c->default_text)); }
 		else sb_putc(a, &out, ':');
 		sb_putc(a, &out, '\n');
@@ -5817,8 +5877,10 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	   it, so check that here rather than trusting each branch above. A
 	   `default` outside its own field's constraints is the schema's fault, and
 	   the author should hear about it instead of getting a starter config that
-	   fails the first time it is checked. V007 is the one sanctioned shortfall
-	   (a repeat lower bound of 2+ generates identical lines, which merge). */
+	   fails the first time it is checked. The one sanctioned shortfall is a
+	   V007 for a repeat lower bound of 2+: generating that many identical
+	   lines merges them into one. A lower bound of 1 is a must-exist path
+	   like any other, so its V007 is a fault. */
 	{
 		shcl_doc *self_ = shcl_parse(s.p, s.n);
 		shcl_validation *v = self_ ? shcl_validate(self_, schema) : NULL;
@@ -5826,7 +5888,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		for (size_t i = 0; i < nv; i++) {
 			const char *code = shcl_validation_code(v, i);
 			if (shcl_validation_severity(v, i) != SHCL_SEV_ERROR) continue;
-			if (code && strcmp(code, "V007") == 0) continue;
+			if (code && strcmp(code, "V007") == 0 && v007_sanctioned(shcl_validation_message(v, i))) continue;
 			ShclSB m = {0, 0, 0};
 			sb_puts(a, &m, "generated value fails the schema that produced it: ");
 			sb_putS(a, &m, shcl_validation_message(v, i));

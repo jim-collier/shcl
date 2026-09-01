@@ -1,0 +1,38 @@
+# string, required
+srv: web
+
+	# int, repeat 1
+	port:
+
+	# string, required
+	host: "a b"
+
+		# string, required
+		zone:
+opt:
+
+	# string
+	#opt: x
+
+	# int, required
+	child:
+
+# string, required
+odd: "a]b"
+
+	# int, required
+	under:
+
+# string, required
+bare:
+
+	# int, required
+	leaf:
+
+#
+# This config file format is SHCL.
+# "Simple Hierarchical Config Language"
+#    Home     https://github.com/jim-collier/shcl
+#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+#

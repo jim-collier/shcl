@@ -6054,6 +6054,18 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			break
 		}
 	}
+	// A live line with a value materializes an instance carrying that value,
+	// and a dotted child names the empty-valued instance instead - so `srv:
+	// web` followed by `srv.port:` is two `srv` nodes, and the child never
+	// lands where the schema looks. Any line under such a parent selects it
+	// by its value: `srv[web].port:`.
+	parentValues := map[string]string{}
+	for i := range cons {
+		c := &cons[i]
+		if !hasWild(c) && !unwritable(c) && mustExist(c) && c.defaultText != nil {
+			parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
+		}
+	}
 	var b strings.Builder
 	var wild [][2]string
 	first := true
@@ -6083,13 +6095,21 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		// string value must not break out of it.
 		b.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
 		b.WriteByte('\n')
-		// A filled wildcard emits in dotted form, targeting the first (the
-		// materialized) instance. Rebuilt from the parsed segments, not by
-		// cutting text out of the path: the same path can be written several
-		// ways, and only the segments say what it means.
+		// A filled wildcard emits in dotted form, targeting the materialized
+		// instance - by its value when the materializing line carries one.
+		// Rebuilt from the parsed segments, not by cutting text out of the
+		// path: the same path can be written several ways, and only the
+		// segments say what it means. Otherwise the schema's own spelling.
+		underValuedParent := false
+		for k := 1; k < len(c.segs); k++ {
+			if _, ok := parentValues[namesKey(namesOf(c.segs[:k]))]; ok && c.segs[k-1].sel == nil {
+				underValuedParent = true
+				break
+			}
+		}
 		path := c.path
-		if fill[i] {
-			path = genPathText(c.segs)
+		if fill[i] || underValuedParent {
+			path = genPathText(c.segs, parentValues)
 		}
 		prefix := "#"
 		if mustExist(c) {
@@ -6123,12 +6143,14 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// it, so check that here rather than trusting each branch above. A
 	// `default` outside its own field's constraints is the schema's fault, and
 	// the author should hear about it instead of getting a starter config that
-	// fails the first time it is checked. V007 is the one sanctioned shortfall
-	// (a repeat lower bound of 2+ generates identical lines, which merge).
+	// fails the first time it is checked. The one sanctioned shortfall is a
+	// V007 for a repeat lower bound of 2+: generating that many identical
+	// lines merges them into one. A lower bound of 1 is a must-exist path
+	// like any other, so its V007 is a fault.
 	text := b.String()
 	var bad []Diagnostic
 	for _, d := range Parse(text).Validate(schema) {
-		if d.Severity == SeverityError && d.Code != "V007" {
+		if d.Severity == SeverityError && !(d.Code == "V007" && v007Sanctioned(d.Message)) {
 			bad = append(bad, Diagnostic{
 				Line:     0,
 				Severity: SeverityError,
@@ -6162,12 +6184,51 @@ const genBanner = "#\n" +
 	"#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n" +
 	"#\n"
 
+// v007Sanctioned reports whether a V007 from the self-check is the sanctioned
+// kind: its message ends `: N not in LO..HI`, and LO is 2 or more.
+func v007Sanctioned(message string) bool {
+	i := strings.LastIndex(message, " not in ")
+	if i < 0 {
+		return false
+	}
+	lo, _, _ := strings.Cut(message[i+len(" not in "):], "..")
+	n, err := strconv.ParseUint(lo, 10, 64)
+	return err == nil && n >= 2
+}
+
+// namesKey joins segment names for the parent-value map, each length-prefixed
+// so no name content can make two different prefixes read the same.
+func namesKey(names []string) string {
+	var b strings.Builder
+	for _, n := range names {
+		fmt.Fprintf(&b, "%d:%s", len(n), n)
+	}
+	return b.String()
+}
+
+// genSelectorText is a default's spelling inside a `[value]` selector: the
+// value-side text as is, except that a bracket or a backslash would end or
+// escape the selector, so those go quoted (the selector matches on the
+// escaped display, so the quoted spelling finds the bare value).
+func genSelectorText(v string) string {
+	if strings.Contains(v, "\n") {
+		return genDefaultText(v)
+	}
+	if strings.ContainsAny(v, "[]\\") && !quotedShape(v) {
+		return quoteText(v)
+	}
+	return v
+}
+
 // genPathText renders parsed segments back as a dotted path, dropping
 // wildcard selectors (a generated line targets the one instance it
 // materializes) and quoting a name that needs it, so the result is a path the
-// scanner reads back the same.
-func genPathText(segs []segment) string {
+// scanner reads back the same. A segment whose prefix names a live line
+// carrying a value selects that instance by the value, in place of a wildcard
+// or a bare name.
+func genPathText(segs []segment, parentValues map[string]string) string {
 	var out strings.Builder
+	names := make([]string, 0, len(segs))
 	for i, s := range segs {
 		if i > 0 {
 			out.WriteByte('.')
@@ -6176,6 +6237,13 @@ func genPathText(segs []segment) string {
 			out.WriteByte('*')
 		} else {
 			out.WriteString(emitName(s.name))
+		}
+		names = append(names, s.name)
+		if v, ok := parentValues[namesKey(names)]; ok && i+1 < len(segs) && (s.sel == nil || s.sel.kind != selByValue) {
+			out.WriteByte('[')
+			out.WriteString(genSelectorText(v))
+			out.WriteByte(']')
+			continue
 		}
 		if s.sel != nil {
 			switch s.sel.kind {
