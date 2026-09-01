@@ -1588,9 +1588,14 @@ type parser struct {
 	reentered map[int]int
 	lost      int // dropped lines/values canonical output cannot re-emit
 	// ParseLimited's caps, 0 = uncapped: nodes counted against the arena
-	// (root excluded), elements against a single value's cell.
-	maxNodes    int
-	maxElements int
+	// (root excluded), elements against a single value's cell, diagnostics
+	// against the list. Past the diagnostic cap nothing is listed, only
+	// counted (errors, hints), for the one tail entry the parse ends with.
+	maxNodes       int
+	maxElements    int
+	maxDiags       int
+	unlistedErrors int
+	unlistedHints  int
 }
 
 func newParser() *parser {
@@ -1604,7 +1609,20 @@ func newParser() *parser {
 }
 
 func (p *parser) err(line int, code, msg string) {
-	p.diags = append(p.diags, Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: code})
+	p.diag(Diagnostic{Line: line, Severity: SeverityError, Message: msg, Code: code})
+}
+
+// diag: every parse diagnostic goes through here, so the cap sees them all.
+func (p *parser) diag(d Diagnostic) {
+	if p.maxDiags != 0 && len(p.diags) >= p.maxDiags {
+		if d.Severity == SeverityError {
+			p.unlistedErrors++
+		} else {
+			p.unlistedHints++
+		}
+		return
+	}
+	p.diags = append(p.diags, d)
 }
 
 // selectOrCreate finds (or creates by merge rule) the child of parent with
@@ -1916,7 +1934,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 				rl, ok := p.reentered[parent]
 				crossRegion := ok && p.arena[cur].line < rl
 				if nonLast || crossRegion {
-					p.diags = append(p.diags, Diagnostic{
+					p.diag(Diagnostic{
 						Line:     line,
 						Severity: SeverityHint,
 						Message:  fmt.Sprintf("%sline %d (same name and value combine)", h002Head(seg.name), p.arena[cur].line),
@@ -2127,7 +2145,7 @@ func (p *parser) emitRepeatedLeafHints() {
 				}
 				vals = append(vals, p.arena[c].value.display())
 			}
-			p.diags = append(p.diags, Diagnostic{
+			p.diag(Diagnostic{
 				Line:     line,
 				Severity: SeverityHint,
 				Message:  fmt.Sprintf("%s%s'?", h001Head(g.name), strings.Join(vals, ", ")),
@@ -2376,6 +2394,21 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore})
 	}
 	p.pending = p.pending[:0]
+	// The one entry past the cap: what was not listed, and whether any of it
+	// was an error, so a consumer scanning the list for errors still finds
+	// one and a Strict load still fails.
+	if more := p.unlistedErrors + p.unlistedHints; more > 0 {
+		sev := SeverityHint
+		if p.unlistedErrors > 0 {
+			sev = SeverityError
+		}
+		p.diags = append(p.diags, Diagnostic{
+			Line:     0, // about the list, not a line
+			Severity: sev,
+			Code:     "E022",
+			Message:  fmt.Sprintf("diagnostic cap of %d reached; %d more not listed, %d of them errors", p.maxDiags, more, p.unlistedErrors),
+		})
+	}
 	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: orphans, lost: p.lost}
 }
 
@@ -2411,15 +2444,20 @@ func ParseWith(text string, strictness Strictness) (*Document, error) {
 // stops the parse once a line takes the node count past it - one E020 error,
 // and the unparsed remainder counts as lost so a save cannot silently
 // truncate. maxElements refuses any line whose array would hold more elements
-// (E021, that line alone is skipped). 0 disables a cap, making this ParseWith.
-// Both caps are parse-time only; the write API is the consumer's own
-// arithmetic. As everywhere, the error fires only at Strict, and a cap
-// diagnostic is an error, so a capped Strict load fails; at other levels the
-// parsed part stays readable.
-func ParseLimited(text string, strictness Strictness, maxNodes, maxElements int) (*Document, error) {
+// (E021, that line alone is skipped). maxDiags bounds the diagnostics list
+// itself - a document of nothing but bad lines costs a diagnostic per line -
+// by listing the first that many and ending with one E022 that counts the
+// rest; ErrorCount and the Strict gate see that tail as an error whenever an
+// unlisted one was. 0 disables a cap, making this ParseWith. The caps are
+// parse-time only; the write API is the consumer's own arithmetic. As
+// everywhere, the error fires only at Strict, and a cap diagnostic is an
+// error, so a capped Strict load fails; at other levels the parsed part stays
+// readable.
+func ParseLimited(text string, strictness Strictness, maxNodes, maxElements, maxDiags int) (*Document, error) {
 	p := newParser()
 	p.maxNodes = maxNodes
 	p.maxElements = maxElements
+	p.maxDiags = maxDiags
 	doc := p.parse(text, strictness)
 	if strictness == Strict {
 		for _, d := range doc.diags {

@@ -771,6 +771,52 @@ def main():
 		raise SystemExit("capped parse: wrong result")
 	if lpeak > len(btext) * 8:
 		raise SystemExit(f"a capped parse held the array it refused: {lpeak} bytes for {len(btext)} of text")
+	# Diagnostic cap: the first N are listed and one E022 tail counts the
+	# rest. Its severity is Error when any unlisted one was, so a scan of the
+	# list for errors still finds one and error_count stays nonzero.
+	bad = "no colon\n" * 50
+	ldoc = shcl.Document.parse_limited(bad, shcl.Strictness.Standard, 0, 0, 10)
+	lds = ldoc.diagnostics()
+	if len(lds) != 11 or any(g.code != "E014" for g in lds[:10]):
+		raise SystemExit(f"diag cap: {[g.code for g in lds]}")
+	if (lds[10].code, lds[10].severity, lds[10].line, lds[10].message) != (
+		"E022", shcl.Severity.Error, 0, "diagnostic cap of 10 reached; 40 more not listed, 40 of them errors"
+	):
+		raise SystemExit(f"diag cap tail: {lds[10]}")
+	if ldoc.error_count() != 11:
+		raise SystemExit(f"diag cap: error count {ldoc.error_count()}")
+	try:
+		shcl.Document.parse_limited(bad, shcl.Strictness.Strict, 0, 0, 10)
+		raise SystemExit("diag cap: capped strict load must fail")
+	except shcl.LoadError:
+		pass
+	# Hints past the cap leave a Hint tail, so a document with no error still
+	# loads at Strict.
+	hints = "x: 1\nx: 2\ny: 1\ny: 2\n"
+	ldoc = shcl.Document.parse_limited(hints, shcl.Strictness.Strict, 0, 0, 1)
+	lds = ldoc.diagnostics()
+	if [(g.code, g.severity) for g in lds] != [("H001", shcl.Severity.Hint), ("E022", shcl.Severity.Hint)]:
+		raise SystemExit(f"hint tail: {[(g.code, g.severity) for g in lds]}")
+	if not lds[1].message.endswith("1 more not listed, 0 of them errors") or ldoc.error_count() != 0:
+		raise SystemExit(f"hint tail: {lds[1].message} {ldoc.error_count()}")
+	# At the cap exactly, nothing is unlisted and there is no tail.
+	if len(shcl.Document.parse_limited(hints, shcl.Strictness.Standard, 0, 0, 2).diagnostics()) != 2:
+		raise SystemExit("at the cap: a tail appeared")
+	# The stacked spelling refuses each element line past the cap on its own,
+	# and every refusal is a diagnostic: with the element cap alone, 200k
+	# refused lines cost more than the elements they refused. The diagnostic
+	# cap is what bounds that.
+	btext = "arr:\n" + "\t* 1\n" * 200000
+	tracemalloc.start()
+	ldoc = shcl.Document.parse_limited(btext, shcl.Strictness.Standard, 0, 8, 100)
+	lpeak = tracemalloc.get_traced_memory()[1]
+	tracemalloc.stop()
+	if len(ldoc.diagnostics()) != 101 or ldoc.lost_count() != 200000 - 8:
+		raise SystemExit("diagnostic-capped parse: wrong result")
+	# 16x rather than 8x: the split lines alone are 10x here, since a
+	# five-byte line is a fifty-byte str object. Uncapped it is 48x.
+	if lpeak > len(btext) * 16:
+		raise SystemExit(f"a diagnostic-capped parse held its unlisted diagnostics: {lpeak} bytes for {len(btext)} of text")
 	try:
 		shcl.Document.parse_limited(ltext, shcl.Strictness.Strict, 2, 0)
 		raise SystemExit("capped strict load must fail")

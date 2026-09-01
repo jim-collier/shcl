@@ -703,7 +703,7 @@ fn parse_limited_caps() {
 	// Node cap: one E020 at the first line not parsed, the remainder counts
 	// as lost, and what parsed before the cap stays readable.
 	let text = "a: 1\nb: 2\nc: 3\nd: 4\n";
-	let doc = Document::parse_limited(text, Strictness::Standard, 2, 0).unwrap();
+	let doc = Document::parse_limited(text, Strictness::Standard, 2, 0, 0).unwrap();
 	let e020: Vec<_> = doc
 		.diagnostics()
 		.iter()
@@ -715,7 +715,7 @@ fn parse_limited_caps() {
 	assert_eq!(doc.get_int("a"), Ok(1));
 	assert!(!doc.exists("d"), "the remainder must not parse");
 	// A cap crossed by the document's last content line still reports.
-	let doc = Document::parse_limited("a: 1\nb: 2\nc: 3", Strictness::Standard, 2, 0).unwrap();
+	let doc = Document::parse_limited("a: 1\nb: 2\nc: 3", Strictness::Standard, 2, 0, 0).unwrap();
 	assert_eq!(
 		doc.diagnostics()
 			.iter()
@@ -725,7 +725,7 @@ fn parse_limited_caps() {
 	);
 	assert_eq!(doc.lost_count(), 0, "nothing was dropped");
 	// One line may overshoot the cap by its own path; the parse still stops.
-	let doc = Document::parse_limited("x.y.z: 1\n", Strictness::Standard, 1, 0).unwrap();
+	let doc = Document::parse_limited("x.y.z: 1\n", Strictness::Standard, 1, 0, 0).unwrap();
 	assert_eq!(
 		doc.diagnostics()
 			.iter()
@@ -735,11 +735,12 @@ fn parse_limited_caps() {
 	);
 	assert_eq!(doc.get_int("x.y.z"), Ok(1));
 	// 0 is no cap: identical to parse_with.
-	let doc = Document::parse_limited(text, Strictness::Standard, 0, 0).unwrap();
+	let doc = Document::parse_limited(text, Strictness::Standard, 0, 0, 0).unwrap();
 	assert!(doc.diagnostics().is_empty());
 	// Element cap, inline spelling: the whole line is refused, the rest of the
 	// document is untouched.
-	let doc = Document::parse_limited("arr: 1, 2, 3\nok: 5\n", Strictness::Standard, 0, 2).unwrap();
+	let doc =
+		Document::parse_limited("arr: 1, 2, 3\nok: 5\n", Strictness::Standard, 0, 2, 0).unwrap();
 	let e021: Vec<_> = doc
 		.diagnostics()
 		.iter()
@@ -752,8 +753,8 @@ fn parse_limited_caps() {
 	assert_eq!(doc.lost_count(), 1);
 	// Element cap, stacked spelling: each element line past the cap is refused
 	// on its own; the array keeps what fit.
-	let doc =
-		Document::parse_limited("arr:\n\t* 1\n\t* 2\n\t* 3\n", Strictness::Standard, 0, 2).unwrap();
+	let doc = Document::parse_limited("arr:\n\t* 1\n\t* 2\n\t* 3\n", Strictness::Standard, 0, 2, 0)
+		.unwrap();
 	assert_eq!(
 		doc.diagnostics()
 			.iter()
@@ -773,7 +774,7 @@ fn parse_limited_caps() {
 	];
 	for &(spelling, n) in counts {
 		let text = format!("v: {spelling}\n");
-		let doc = Document::parse_limited(&text, Strictness::Standard, 0, n.max(1)).unwrap();
+		let doc = Document::parse_limited(&text, Strictness::Standard, 0, n.max(1), 0).unwrap();
 		assert!(
 			!doc.diagnostics().iter().any(|d| d.code == "E021"),
 			"{spelling:?} at cap {n}"
@@ -791,18 +792,61 @@ fn parse_limited_caps() {
 			);
 		}
 		if n >= 2 {
-			let doc = Document::parse_limited(&text, Strictness::Standard, 0, n - 1).unwrap();
+			let doc = Document::parse_limited(&text, Strictness::Standard, 0, n - 1, 0).unwrap();
 			assert_eq!(doc.lost_count(), 1, "{spelling:?} at cap {}", n - 1);
 		}
 	}
 	// A refused line reports the cap alone: the quote check runs after it, so
 	// it never splits a value the cap already turned away.
-	let doc = Document::parse_limited("v: a, \"open, b\n", Strictness::Standard, 0, 1).unwrap();
+	let doc = Document::parse_limited("v: a, \"open, b\n", Strictness::Standard, 0, 1, 0).unwrap();
 	let codes: Vec<&str> = doc.diagnostics().iter().map(|d| &*d.code).collect();
 	assert_eq!(codes, ["E021"]);
+	// Diagnostic cap: the first N are listed and one E022 tail counts the
+	// rest. Its severity is Error when any unlisted one was, so a scan of the
+	// list for errors still finds one and error_count stays nonzero.
+	let bad = "no colon\n".repeat(50);
+	let doc = Document::parse_limited(&bad, Strictness::Standard, 0, 0, 10).unwrap();
+	assert_eq!(doc.diagnostics().len(), 11);
+	assert!(doc.diagnostics()[..10].iter().all(|d| d.code == "E014"));
+	let tail = &doc.diagnostics()[10];
+	assert_eq!(
+		(tail.code, tail.severity, tail.line),
+		("E022", shcl::Severity::Error, 0)
+	);
+	assert_eq!(
+		tail.message,
+		"diagnostic cap of 10 reached; 40 more not listed, 40 of them errors"
+	);
+	assert_eq!(doc.error_count(), 11);
+	assert!(Document::parse_limited(&bad, Strictness::Strict, 0, 0, 10).is_err());
+	// Hints past the cap leave a Hint tail, so a document with no error
+	// still loads at Strict.
+	let hints = "x: 1\nx: 2\ny: 1\ny: 2\n";
+	let doc = Document::parse_limited(hints, Strictness::Strict, 0, 0, 1).unwrap();
+	let codes: Vec<(&str, shcl::Severity)> = doc
+		.diagnostics()
+		.iter()
+		.map(|d| (&*d.code, d.severity))
+		.collect();
+	assert_eq!(
+		codes,
+		[
+			("H001", shcl::Severity::Hint),
+			("E022", shcl::Severity::Hint)
+		]
+	);
+	assert!(
+		doc.diagnostics()[1]
+			.message
+			.ends_with("1 more not listed, 0 of them errors")
+	);
+	assert_eq!(doc.error_count(), 0);
+	// At the cap exactly, nothing is unlisted and there is no tail.
+	let doc = Document::parse_limited(hints, Strictness::Standard, 0, 0, 2).unwrap();
+	assert_eq!(doc.diagnostics().len(), 2);
 	// A cap diagnostic is an error, so a capped Strict load fails - with the
 	// parsed part still on the error.
-	let err = Document::parse_limited(text, Strictness::Strict, 2, 0).unwrap_err();
+	let err = Document::parse_limited(text, Strictness::Strict, 2, 0, 0).unwrap_err();
 	assert_eq!(err.document.get_int("a"), Ok(1));
 }
 

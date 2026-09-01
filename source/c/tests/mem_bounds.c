@@ -37,18 +37,36 @@ int main(void) {
 	for (size_t i = 0; i < reps; i++) memcpy(text + 5 + i * 3, "1, ", 3);
 	memcpy(text + 5 + reps * 3, "\nok: 5\n", 8);
 	size_t before = allocated;
-	shcl_doc *d = shcl_parse_limited(text, tlen, SHCL_STANDARD, 0, 8);
+	shcl_doc *d = shcl_parse_limited(text, tlen, SHCL_STANDARD, 0, 8, 0);
 	size_t capped = allocated - before;
 	if (!d || shcl_lost_count(d) != 1 || shcl_get_int_or(d, "ok", 2, 0) != 5) fail("capped parse: wrong result");
 	shcl_free(d);
 	before = allocated;
-	d = shcl_parse_limited(text, tlen, SHCL_STANDARD, 0, 0);
+	d = shcl_parse_limited(text, tlen, SHCL_STANDARD, 0, 0, 0);
 	size_t uncapped = allocated - before;
 	shcl_read_i64_arr ra = shcl_read_int_array(d, "arr", 3);
 	if (ra.status != SHCL_GOOD || ra.n != reps) fail("uncapped parse: wrong result");
 	shcl_free(d);
 	printf("mem_bounds: element cap: capped %zu, uncapped %zu, text %zu\n", capped, uncapped, tlen);
 	if (capped > tlen * 8) fail("a capped parse held the array it refused");
+	free(text);
+
+	// Diagnostic cap: the stacked spelling refuses each element line past the
+	// cap on its own, and every refusal is a diagnostic. With the element cap
+	// alone, 200k refused lines cost more than the elements they refused; the
+	// diagnostic cap is what bounds that, and an unlisted message must not
+	// stay in the document either.
+	tlen = 5 + reps * 5;
+	text = (char *)malloc(tlen + 1);
+	memcpy(text, "arr:\n", 5);
+	for (size_t i = 0; i < reps; i++) memcpy(text + 5 + i * 5, "\t* 1\n", 5);
+	before = allocated;
+	d = shcl_parse_limited(text, tlen, SHCL_STANDARD, 0, 8, 100);
+	size_t dcapped = allocated - before;
+	if (!d || shcl_diag_count(d) != 101 || shcl_lost_count(d) != reps - 8) fail("diagnostic-capped parse: wrong result");
+	shcl_free(d);
+	printf("mem_bounds: diagnostic cap: %zu for text %zu\n", dcapped, tlen);
+	if (dcapped > tlen * 8) fail("a diagnostic-capped parse held its unlisted diagnostics");
 	free(text);
 
 	// A read-only loop over a long-lived document, with shcl_reads_release

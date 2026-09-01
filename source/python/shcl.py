@@ -1204,12 +1204,27 @@ class _Parser:
 		# Dropped lines/values canonical output cannot re-emit.
 		self.lost = 0
 		# parse_limited's caps, 0 = uncapped: nodes counted against the arena
-		# (root excluded), elements against a single value's cell.
+		# (root excluded), elements against a single value's cell, diagnostics
+		# against the list. Past the diagnostic cap nothing is listed, only
+		# counted (errors, hints), for the one tail entry the parse ends with.
 		self.max_nodes = 0
 		self.max_elements = 0
+		self.max_diags = 0
+		self.unlisted_errors = 0
+		self.unlisted_hints = 0
 
 	def _err(self, line, code, msg):
-		self.diags.append(Diagnostic(line, Severity.Error, msg, code))
+		self._diag(Diagnostic(line, Severity.Error, msg, code))
+
+	def _diag(self, d):
+		# Every parse diagnostic goes through here, so the cap sees them all.
+		if self.max_diags and len(self.diags) >= self.max_diags:
+			if d.severity == Severity.Error:
+				self.unlisted_errors += 1
+			else:
+				self.unlisted_hints += 1
+			return
+		self.diags.append(d)
 
 	def _select_or_create(self, parent, name, name_src, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
@@ -1458,7 +1473,7 @@ class _Parser:
 					cross_region = reopen_line is not None and self.arena[cur].line < reopen_line
 					if non_last or cross_region:
 						at = self.arena[cur].line
-						self.diags.append(Diagnostic(
+						self._diag(Diagnostic(
 							line, Severity.Hint,
 							f"{_h002_head(seg.name)}line {at} (same name and value combine)",
 							"H002"))
@@ -1619,7 +1634,7 @@ class _Parser:
 					joined = ", ".join(self.arena[c].value.display() for c in group)
 					hints.append((line, f"{_h001_head(name)}{joined}'?"))
 		for line, message in hints:
-			self.diags.append(Diagnostic(line, Severity.Hint, message, "H001"))
+			self._diag(Diagnostic(line, Severity.Hint, message, "H001"))
 
 	def parse(self, text, strictness):
 		# UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
@@ -1832,6 +1847,16 @@ class _Parser:
 		self._hang_deeper_pending("")
 		orphans = [_Lead(p.text, p.blank_before) for p in self.pending]
 		self.pending = []
+		# The one entry past the cap: what was not listed, and whether any of
+		# it was an error, so a consumer scanning the list for errors still
+		# finds one and a Strict load still fails.
+		more = self.unlisted_errors + self.unlisted_hints
+		if more:
+			self.diags.append(Diagnostic(
+				0,  # about the list, not a line
+				Severity.Error if self.unlisted_errors else Severity.Hint,
+				f"diagnostic cap of {self.max_diags} reached; {more} more not listed, {self.unlisted_errors} of them errors",
+				"E022"))
 		return Document(self.arena, self.diags, strictness, orphans, self.lost)
 
 
@@ -1939,7 +1964,7 @@ class Document:
 
 	@staticmethod
 	def parse_limited(
-		text: str, strictness: Strictness, max_nodes: int = 0, max_elements: int = 0
+		text: str, strictness: Strictness, max_nodes: int = 0, max_elements: int = 0, max_diags: int = 0
 	) -> Document:
 		"""Parse with resource caps beside the strictness, for input the
 		consumer does not control: a document amplifies to many times its byte
@@ -1947,15 +1972,20 @@ class Document:
 		allocates. max_nodes stops the parse once a line takes the node count
 		past it - one E020 error, and the unparsed remainder counts as lost so
 		a save cannot silently truncate. max_elements refuses any line whose
-		array would hold more elements (E021, that line alone is skipped). 0
-		disables a cap, making this parse_with. Both caps are parse-time only;
-		the write API is the consumer's own arithmetic. As everywhere, the
-		raised LoadError fires only at Strict, and a cap diagnostic is an
+		array would hold more elements (E021, that line alone is skipped).
+		max_diags bounds the diagnostics list itself - a document of nothing
+		but bad lines costs a diagnostic per line - by listing the first that
+		many and ending with one E022 that counts the rest; error_count and
+		the Strict gate see that tail as an error whenever an unlisted one
+		was. 0 disables a cap, making this parse_with. The caps are parse-time
+		only; the write API is the consumer's own arithmetic. As everywhere,
+		the raised LoadError fires only at Strict, and a cap diagnostic is an
 		error, so a capped Strict load fails; at other levels the parsed part
 		stays readable."""
 		p = _Parser()
 		p.max_nodes = max_nodes
 		p.max_elements = max_elements
+		p.max_diags = max_diags
 		doc = p.parse(text, strictness)
 		if strictness == Strictness.Strict and any(d.severity == Severity.Error for d in doc.diags):
 			raise LoadError(doc.diags, doc)

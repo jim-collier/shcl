@@ -142,11 +142,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-140600
 		- Closed: 20260901-190000
 
-	- 🔘 Item 8: nothing bounds the diagnostic list.
+	- ✅ Item 8: nothing bounds the diagnostic list.
 		- A parse emits one diagnostic per bad line with no ceiling, so a document of nothing but bad lines costs several hundred bytes each. Three million of them run to roughly 500 MB.
 		- That is the mechanism behind item 2's stacked-array measurement, but it is not specific to `E021` - any per-line code does it, and a caller reaching for `ParseLimited` because the input is untrusted has no way to cap it.
 		- A ceiling with a "and N more" tail is the usual shape. It would want a spec line, since the diagnostics list is a contract.
+		- Done: `ParseLimited` takes a third cap, `max_diags` (0 = uncapped, and the plain parse stays uncapped). Every parse diagnostic goes through one gate; past the cap it is counted by severity and dropped, and the parse ends its list with one `E022` at line 0 naming the cap, the count not listed and how many of those were errors. The tail is an error whenever an unlisted one was, so a consumer scanning the list still finds an error, `error_count` stays nonzero and a Strict load still fails; a hint otherwise. In C a message is built in the per-line arena and copied into the document only when listed, so an unlisted one costs nothing past its line. The C++ veneer mirrors the new parameter. Spec: `E022` row and the Limits bullet; the changelog's `ParseLimited` entry names the third cap.
+		- Pinned by the `parse_limited` fixture in all four runners (fifty bad lines at cap 10: ten `E014` then the tail with its exact message; error count 11; Strict fails; hints past the cap leave a hint tail that loads at Strict; at the cap exactly there is no tail) and by an allocation bound in all four: 200k stacked element lines under an element cap of 8 and a diagnostic cap of 100 must stay under 8x the text (16x in Python, where the split lines alone are 10x). With the cap made a no-op every fixture and every bound fails.
 		- Opened: 20260901-140700
+		- Closed: 20260901-200000
 
 	- 🔘 Item 9: C has no write-side counterpart to `shcl_reads_release`.
 		- Repeated writes to the same path grow the document arena: about 48 bytes per `shcl_set_int`, 63 per `shcl_set_string`, none of it reclaimed until `shcl_free`. Overwriting one field once a second is a few megabytes a day.

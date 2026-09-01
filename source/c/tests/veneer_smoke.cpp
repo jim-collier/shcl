@@ -111,9 +111,9 @@ int main() {
 	auto strictDoc = shcl::Document::parse_with("x 1\n", shcl::Strictness::Strict);
 	CHECK(strictDoc.strict_failed());
 	// parse_limited: a capped load stops with E020, the parsed part readable.
-	auto capped = shcl::Document::parse_limited("a: 1\nb: 2\nc: 3\nd: 4\n", shcl::Strictness::Standard, 2, 0);
+	auto capped = shcl::Document::parse_limited("a: 1\nb: 2\nc: 3\nd: 4\n", shcl::Strictness::Standard, 2, 0, 0);
 	CHECK(capped.error_count() == 1 && capped.get_or<std::int64_t>("a", 0) == 1 && !capped.exists("d"));
-	auto elCapped = shcl::Document::parse_limited("arr: 1, 2, 3\n", shcl::Strictness::Standard, 0, 2);
+	auto elCapped = shcl::Document::parse_limited("arr: 1, 2, 3\n", shcl::Strictness::Standard, 0, 2, 0);
 	CHECK(elCapped.error_count() == 1 && !elCapped.exists("arr"));
 	auto allPaths = doc.paths();
 	CHECK(allPaths.size() == 6 && allPaths[0] == "name" && allPaths[5] == "city");
