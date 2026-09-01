@@ -115,12 +115,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-140400
 		- Closed: 20260901-181500
 
-	- 🔘 Item 6: `set_literal` reads bracket-array text differently from the parser, silently.
+	- ✅ Item 6: `set_literal` reads bracket-array text differently from the parser, silently.
 		- Spec says `SetLiteral` reads its argument the way the parser reads the half of a line after the colon. For bracket text it does not.
 		- `p: [1, 2]` in a file is `E019`, counted as lost content, and `fmt --write` refuses it at exit 7. `--set-literal 'p=[1, 2]'` writes a two-element array holding `[1` and `2]`, with no diagnostic, at exit 0.
 		- So the door the `E019` work closed is still open through the writer, and what comes through it is a different wrong answer rather than the same one.
 		- All four bindings agree. Refusing the shape, the way `SetLiteral` already refuses a quote that never closes, is the consistent answer.
+		- Fixed: `SetLiteral` and `SetLiteralDefault` refuse a value that, after the comment is split off and the ends trimmed, starts with `[` and ends with `]` - the parser's own test for `E019`. The refusal returns false and binds nothing. Spec: the `SetLiteral` sentence names it beside the other two refusals.
+		- Pinned by corpus `065-bracket-array`, which gained a `write-bad.ops` (four bracket spellings, one through the default form, one with a trailing comment) and a `write.ops` for the two neighbours that stay accepted: a quoted `"[80, 443]"`, which is a string, and an unclosed `[80, 443`, which the parser also reads as two elements. Fails on the old code in all four runners.
 		- Opened: 20260901-140500
+		- Closed: 20260901-183000
 
 ### Features and enhancements
 

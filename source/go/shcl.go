@@ -3617,7 +3617,10 @@ func literalValue(text string) (value, bool) {
 	}
 	v, _ := splitComment(text)
 	v = strings.TrimFunc(v, unicode.IsSpace)
-	if unterminatedQuote(v) {
+	// Bracket-array text is refused too: in a file it is E019 and the line is
+	// lost, so writing it as a two-element array holding `[1` and `2]` would
+	// be a different wrong answer.
+	if unterminatedQuote(v) || (strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]")) {
 		return value{}, false
 	}
 	return parseCell(v), true
