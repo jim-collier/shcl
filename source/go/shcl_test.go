@@ -1193,6 +1193,91 @@ func TestStrictFailureCarriesDocument(t *testing.T) {
 	}
 }
 
+func TestParseLimitedCaps(t *testing.T) {
+	// The caps exist because a document amplifies to many times its byte size
+	// in memory, so ReadFile's byte cap alone cannot bound a load. Same
+	// fixture in every runner.
+	codeCount := func(d *Document, code string) (n int, line int) {
+		for _, g := range d.Diagnostics() {
+			if g.Code == code {
+				n++
+				line = g.Line
+			}
+		}
+		return
+	}
+	// Node cap: one E020 at the first line not parsed, the remainder counts
+	// as lost, and what parsed before the cap stays readable.
+	text := "a: 1\nb: 2\nc: 3\nd: 4\n"
+	doc, err := ParseLimited(text, Standard, 2, 0)
+	if err != nil {
+		t.Fatalf("standard must not fail: %v", err)
+	}
+	if n, line := codeCount(doc, "E020"); n != 1 || line != 4 {
+		t.Fatalf("want one E020 at line 4, got %d at %d", n, line)
+	}
+	if doc.LostCount() != 1 {
+		t.Fatalf("lost: %d", doc.LostCount())
+	}
+	if v, st := doc.GetInt("a"); v != 1 || st != Good {
+		t.Fatalf("a: %d %v", v, st)
+	}
+	if doc.Exists("d") {
+		t.Fatalf("the remainder must not parse")
+	}
+	// A cap crossed by the document's last content line still reports.
+	doc, _ = ParseLimited("a: 1\nb: 2\nc: 3", Standard, 2, 0)
+	if n, _ := codeCount(doc, "E020"); n != 1 || doc.LostCount() != 0 {
+		t.Fatalf("last-line cross: %d E020, lost %d", n, doc.LostCount())
+	}
+	// One line may overshoot the cap by its own path; the parse still stops.
+	doc, _ = ParseLimited("x.y.z: 1\n", Standard, 1, 0)
+	if n, _ := codeCount(doc, "E020"); n != 1 {
+		t.Fatalf("deep line: %d E020", n)
+	}
+	if v, st := doc.GetInt("x.y.z"); v != 1 || st != Good {
+		t.Fatalf("overshot line must still be in the document: %d %v", v, st)
+	}
+	// 0 is no cap: identical to ParseWith.
+	doc, _ = ParseLimited(text, Standard, 0, 0)
+	if len(doc.Diagnostics()) != 0 {
+		t.Fatalf("uncapped: %v", doc.Diagnostics())
+	}
+	// Element cap, inline spelling: the whole line is refused, the rest of
+	// the document is untouched.
+	doc, _ = ParseLimited("arr: 1, 2, 3\nok: 5\n", Standard, 0, 2)
+	if n, line := codeCount(doc, "E021"); n != 1 || line != 1 {
+		t.Fatalf("want one E021 at line 1, got %d at %d", n, line)
+	}
+	if doc.Exists("arr") {
+		t.Fatalf("refused line must not bind")
+	}
+	if v, st := doc.GetInt("ok"); v != 5 || st != Good {
+		t.Fatalf("ok: %d %v", v, st)
+	}
+	if doc.LostCount() != 1 {
+		t.Fatalf("lost: %d", doc.LostCount())
+	}
+	// Element cap, stacked spelling: each element line past the cap is
+	// refused on its own; the array keeps what fit.
+	doc, _ = ParseLimited("arr:\n\t* 1\n\t* 2\n\t* 3\n", Standard, 0, 2)
+	if n, _ := codeCount(doc, "E021"); n != 1 {
+		t.Fatalf("star: %d E021", n)
+	}
+	if v, st := doc.GetIntArray("arr"); st != Good || !reflect.DeepEqual(v, []int64{1, 2}) {
+		t.Fatalf("star array: %v %v", v, st)
+	}
+	// A cap diagnostic is an error, so a capped Strict load fails - with the
+	// parsed part still on the error.
+	doc, err = ParseLimited(text, Strict, 2, 0)
+	if err == nil {
+		t.Fatalf("capped strict load must fail")
+	}
+	if v, st := doc.GetInt("a"); v != 1 || st != Good {
+		t.Fatalf("failed strict doc unusable: %d %v", v, st)
+	}
+}
+
 func TestRawIsSourceText(t *testing.T) {
 	// Raw: the verbatim value span from the source line - not the display
 	// join, which rewrites `{2,3}` to `{2, 3}`. Same fixture in every runner

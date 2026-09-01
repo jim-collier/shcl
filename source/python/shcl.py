@@ -1157,6 +1157,10 @@ class _Parser:
 		self.reentered = {}
 		# Dropped lines/values canonical output cannot re-emit.
 		self.lost = 0
+		# parse_limited's caps, 0 = uncapped: nodes counted against the arena
+		# (root excluded), elements against a single value's cell.
+		self.max_nodes = 0
+		self.max_elements = 0
 
 	def _err(self, line, code, msg):
 		self.diags.append(Diagnostic(line, Severity.Error, msg, code))
@@ -1492,6 +1496,16 @@ class _Parser:
 			self._err(line, "E009", "empty list element")
 			self.lost += 1
 			return
+		# Element cap: each element line past it is refused on its own, the way
+		# any other bad element line is.
+		if (
+			self.max_elements
+			and self.arena[parent].value.kind == "cell"
+			and len(self.arena[parent].value.els) >= self.max_elements
+		):
+			self._err(line, "E021", f"array longer than {self.max_elements} elements; line skipped")
+			self.lost += 1
+			return
 		node = self.arena[parent]
 		if node.value.kind == "empty":
 			old_key = _merge_key(node.name, node.value)
@@ -1560,7 +1574,17 @@ class _Parser:
 		lines = [ln.rstrip("\r") for ln in text.split("\n")]
 		i = 0
 		nlines = len(lines)
+		node_capped = False
 		while i < nlines:
+			# Node cap: reported at the first line not parsed, so the count can
+			# overshoot by at most one line's path. The unparsed remainder
+			# counts as lost, which is what keeps save_file from writing a
+			# silently truncated document.
+			if self.max_nodes and len(self.arena) - 1 > self.max_nodes:
+				self._err(i + 1, "E020", f"node cap of {self.max_nodes} exceeded; parse stopped")
+				self.lost += sum(1 for ln in lines[i:] if ln.strip())
+				node_capped = True
+				break
 			lineno = i + 1
 			line = _trim_end(lines[i])
 			rest = line.lstrip(" \t")
@@ -1706,6 +1730,14 @@ class _Parser:
 						self._err(lineno, "E017", "unterminated quote in value")
 					src_text = value_text
 					value = _parse_cell(value_text)
+			# Element cap: the whole line is refused, so a capped load never
+			# holds a truncated array that would read as the document's value.
+			if self.max_elements and value.kind == "cell" and len(value.els) > self.max_elements:
+				self._err(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped")
+				self.lost += 1
+				self.stack.append((indent, DEAD))
+				i = nxt
+				continue
 			# Record only when the bound node holds exactly this line's value
 			# (a merge into an equal-valued node keeps the first line's span;
 			# a value dropped after a last-segment selector records nothing).
@@ -1729,6 +1761,10 @@ class _Parser:
 			else:
 				self.stack.append((indent, DEAD))
 			i = nxt
+		# A cap crossed on the document's last line still reports, with nothing
+		# left to skip.
+		if not node_capped and self.max_nodes and len(self.arena) - 1 > self.max_nodes:
+			self._err(nlines, "E020", f"node cap of {self.max_nodes} exceeded; parse stopped")
 		self._star_flush()
 		self._fold_late_dups()
 		self._emit_repeated_leaf_hints()
@@ -1837,6 +1873,30 @@ class Document:
 		diagnostic); the raised LoadError still carries the parsed document
 		alongside the diagnostics."""
 		doc = _Parser().parse(text, strictness)
+		if strictness == Strictness.Strict and any(d.severity == Severity.Error for d in doc.diags):
+			raise LoadError(doc.diags, doc)
+		return doc
+
+	@staticmethod
+	def parse_limited(
+		text: str, strictness: Strictness, max_nodes: int = 0, max_elements: int = 0
+	) -> Document:
+		"""Parse with resource caps beside the strictness, for input the
+		consumer does not control: a document amplifies to many times its byte
+		size in memory, so a size cap alone cannot bound what a load
+		allocates. max_nodes stops the parse once a line takes the node count
+		past it - one E020 error, and the unparsed remainder counts as lost so
+		a save cannot silently truncate. max_elements refuses any line whose
+		array would hold more elements (E021, that line alone is skipped). 0
+		disables a cap, making this parse_with. Both caps are parse-time only;
+		the write API is the consumer's own arithmetic. As everywhere, the
+		raised LoadError fires only at Strict, and a cap diagnostic is an
+		error, so a capped Strict load fails; at other levels the parsed part
+		stays readable."""
+		p = _Parser()
+		p.max_nodes = max_nodes
+		p.max_elements = max_elements
+		doc = p.parse(text, strictness)
 		if strictness == Strictness.Strict and any(d.severity == Severity.Error for d in doc.diags):
 			raise LoadError(doc.diags, doc)
 		return doc
