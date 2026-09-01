@@ -25,6 +25,12 @@ static void *counting_realloc(void *p, size_t n) { allocated += n; return reallo
 #undef calloc
 #undef realloc
 
+static size_t arena_bytes(const ShclArena *a) {
+	size_t n = 0;
+	for (const ShclBlock *b = a->head; b; b = b->next) n += b->used;
+	return n;
+}
+
 static int failures = 0;
 static void fail(const char *what) { fprintf(stderr, "FAIL mem_bounds: %s\n", what); failures++; }
 
@@ -99,6 +105,26 @@ int main(void) {
 		printf("mem_bounds: read loop %d: %zu bytes over 2000 released passes\n", which, grew);
 		if (grew > 4096) fail("a released read loop grew the document");
 	}
+	shcl_free(d);
+
+	// A write lands in a bump arena and the value it replaced stays behind, so
+	// a loop rewriting one field grows the document until shcl_free. Compaction
+	// is the way out: the rebuilt document holds what it now contains and no
+	// more, and reads the same.
+	d = shcl_parse("group:\n\tkey: 1\n\tother: x\n", 26);
+	size_t fresh = arena_bytes(&d->arena);
+	for (int i = 0; i < 100000; i++) shcl_set_int(d, "group.key", 9, i);
+	size_t grown = arena_bytes(&d->arena);
+	shcl_str want = shcl_to_canonical(d);
+	char *wcopy = (char *)malloc(want.n); memcpy(wcopy, want.p, want.n); size_t wn = want.n;
+	shcl_compact(d);
+	size_t compacted = arena_bytes(&d->arena);
+	shcl_str got = shcl_to_canonical(d);
+	printf("mem_bounds: writes: fresh %zu, after 100k rewrites %zu, compacted %zu\n", fresh, grown, compacted);
+	if (grown < 1000000) fail("the rewrite loop did not grow the arena (the test measures nothing)");
+	if (compacted > fresh * 2 + 4096) fail("compaction did not give the replaced values back");
+	if (got.n != wn || memcmp(got.p, wcopy, wn) != 0 || shcl_get_int_or(d, "group.key", 9, -1) != 99999) fail("compaction changed the document");
+	free(wcopy);
 	shcl_free(d);
 
 	if (failures) return 1;
