@@ -46,6 +46,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Bugs
 
+### Features and enhancements
+
+### Done
+
+#### Done - Bugs
+
 - Code review 20260901:
 
 	- A fresh adversarial pass, run from scratch rather than from the previous rounds' notes, and aimed at what the three merges of 20260901 changed plus the ground the 20260830b round recorded as unreached. Six defects here, three enhancements under Features and enhancements. Everything below was reproduced, not read off the code.
@@ -125,44 +131,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Pinned by corpus `065-bracket-array`, which gained a `write-bad.ops` (four bracket spellings, one through the default form, one with a trailing comment) and a `write.ops` for the two neighbours that stay accepted: a quoted `"[80, 443]"`, which is a string, and an unclosed `[80, 443`, which the parser also reads as two elements. Fails on the old code in all four runners.
 		- Opened: 20260901-140500
 		- Closed: 20260901-183000
-
-### Features and enhancements
-
-- Code review 20260901:
-
-	- The enhancement half of the round whose bugs are under Bugs. Three items, kept to what was actually reproduced.
-
-	- ✅ Item 7: a float literal past the double range reads as infinity, at `Good`.
-		- `1e400` reads as `inf` and exits 0, in all four bindings. So does `1e309` and `1.8e308`. The negative spellings give `-inf`.
-		- Not a spec violation - the float section states no range - which is why this is here rather than under Bugs.
-		- It does contradict the reasoning behind the 20260830b decision on the loose float-to-int read, which stopped saturating at 2^63 because no double holds that value and the path could not honestly produce it. The same sentence applies to a float literal the double cannot hold.
-		- It also feeds item 4: read the value, write it back unchanged, and the field no longer reads.
-		- Done: the float reader refuses a non-finite parse result in all four bindings, at every strictness, so `1e400` is `BadType` like any text that is not a number. Underflow (`1e-400`) still reads as zero, and the largest double still reads. Spec: the float section states the range. Changelog entry under Changed, since a read that answered now refuses.
-		- Pinned by corpus `074-float-range`: scalar, array and loose-currency spellings at three strictness levels, plus the largest double and an underflow. Fails on the old code in all four runners.
-		- Opened: 20260901-140600
-		- Closed: 20260901-190000
-
-	- ✅ Item 8: nothing bounds the diagnostic list.
-		- A parse emits one diagnostic per bad line with no ceiling, so a document of nothing but bad lines costs several hundred bytes each. Three million of them run to roughly 500 MB.
-		- That is the mechanism behind item 2's stacked-array measurement, but it is not specific to `E021` - any per-line code does it, and a caller reaching for `ParseLimited` because the input is untrusted has no way to cap it.
-		- A ceiling with a "and N more" tail is the usual shape. It would want a spec line, since the diagnostics list is a contract.
-		- Done: `ParseLimited` takes a third cap, `max_diags` (0 = uncapped, and the plain parse stays uncapped). Every parse diagnostic goes through one gate; past the cap it is counted by severity and dropped, and the parse ends its list with one `E022` at line 0 naming the cap, the count not listed and how many of those were errors. The tail is an error whenever an unlisted one was, so a consumer scanning the list still finds an error, `error_count` stays nonzero and a Strict load still fails; a hint otherwise. In C a message is built in the per-line arena and copied into the document only when listed, so an unlisted one costs nothing past its line. The C++ veneer mirrors the new parameter. Spec: `E022` row and the Limits bullet; the changelog's `ParseLimited` entry names the third cap.
-		- Pinned by the `parse_limited` fixture in all four runners (fifty bad lines at cap 10: ten `E014` then the tail with its exact message; error count 11; Strict fails; hints past the cap leave a hint tail that loads at Strict; at the cap exactly there is no tail) and by an allocation bound in all four: 200k stacked element lines under an element cap of 8 and a diagnostic cap of 100 must stay under 8x the text (16x in Python, where the split lines alone are 10x). With the cap made a no-op every fixture and every bound fails.
-		- Opened: 20260901-140700
-		- Closed: 20260901-200000
-
-	- ✅ Item 9: C has no write-side counterpart to `shcl_reads_release`.
-		- Repeated writes to the same path grow the document arena: about 48 bytes per `shcl_set_int`, 63 per `shcl_set_string`, none of it reclaimed until `shcl_free`. Overwriting one field once a second is a few megabytes a day.
-		- Inherent to a bump arena and not documented as otherwise, so it is not a defect. The reads got their own arena and a release call for the same reason, and a long-running writer has the same problem with no answer.
-		- Smaller than item 3 and reachable only by a consumer that writes in a loop. Worth a documented note even if no call is added.
-		- Done: `shcl_compact(d)` rebuilds the document into fresh arenas through the clone the merge already uses, carries the diagnostics, orphans, lost count and strictness across, swaps the rebuilt document in and frees the old storage. Read results are invalid after it, as after `shcl_reads_release`; on an allocation failure the document is left as it was. The C++ veneer exposes `compact()`. Recorded in `style-guide.md` as a sanctioned deviation, named in the README's C note, and in the changelog under Added.
-		- Pinned by `mem_bounds.c` (100k rewrites of one field grow the arena from 800 bytes to 4.8 MB; compaction brings it to 864 and the document reads the same) and by a property over every corpus case in the C runner: canonical output, every diagnostic, the lost count, the error count and the strictness are unchanged across a compaction. Clean under ASan, UBSan and the leak check.
-		- Opened: 20260901-140800
-		- Closed: 20260901-203000
-
-### Done
-
-#### Done - Bugs
 
 - ✅ The round went out green locally and red on the hosted runner: gcc 13 rejected what gcc 14 and 15 accept.
 	- Reproduced: `apply_op`'s array branches allocate a slot array and fill only the first `an`, and at `an` of zero the setter is handed slots nothing wrote. The callee reads none of them, but a compiler that inlines the allocator cannot see that and calls them uninitialized. gcc 13 says so under `-Werror`; 12, 14, 15 and clang do not.
@@ -1579,6 +1547,38 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- Code review 20260901:
+
+	- The enhancement half of the round whose bugs are under Bugs. Three items, kept to what was actually reproduced.
+
+	- ✅ Item 7: a float literal past the double range reads as infinity, at `Good`.
+		- `1e400` reads as `inf` and exits 0, in all four bindings. So does `1e309` and `1.8e308`. The negative spellings give `-inf`.
+		- Not a spec violation - the float section states no range - which is why this is here rather than under Bugs.
+		- It does contradict the reasoning behind the 20260830b decision on the loose float-to-int read, which stopped saturating at 2^63 because no double holds that value and the path could not honestly produce it. The same sentence applies to a float literal the double cannot hold.
+		- It also feeds item 4: read the value, write it back unchanged, and the field no longer reads.
+		- Done: the float reader refuses a non-finite parse result in all four bindings, at every strictness, so `1e400` is `BadType` like any text that is not a number. Underflow (`1e-400`) still reads as zero, and the largest double still reads. Spec: the float section states the range. Changelog entry under Changed, since a read that answered now refuses.
+		- Pinned by corpus `074-float-range`: scalar, array and loose-currency spellings at three strictness levels, plus the largest double and an underflow. Fails on the old code in all four runners.
+		- Opened: 20260901-140600
+		- Closed: 20260901-190000
+
+	- ✅ Item 8: nothing bounds the diagnostic list.
+		- A parse emits one diagnostic per bad line with no ceiling, so a document of nothing but bad lines costs several hundred bytes each. Three million of them run to roughly 500 MB.
+		- That is the mechanism behind item 2's stacked-array measurement, but it is not specific to `E021` - any per-line code does it, and a caller reaching for `ParseLimited` because the input is untrusted has no way to cap it.
+		- A ceiling with a "and N more" tail is the usual shape. It would want a spec line, since the diagnostics list is a contract.
+		- Done: `ParseLimited` takes a third cap, `max_diags` (0 = uncapped, and the plain parse stays uncapped). Every parse diagnostic goes through one gate; past the cap it is counted by severity and dropped, and the parse ends its list with one `E022` at line 0 naming the cap, the count not listed and how many of those were errors. The tail is an error whenever an unlisted one was, so a consumer scanning the list still finds an error, `error_count` stays nonzero and a Strict load still fails; a hint otherwise. In C a message is built in the per-line arena and copied into the document only when listed, so an unlisted one costs nothing past its line. The C++ veneer mirrors the new parameter. Spec: `E022` row and the Limits bullet; the changelog's `ParseLimited` entry names the third cap.
+		- Pinned by the `parse_limited` fixture in all four runners (fifty bad lines at cap 10: ten `E014` then the tail with its exact message; error count 11; Strict fails; hints past the cap leave a hint tail that loads at Strict; at the cap exactly there is no tail) and by an allocation bound in all four: 200k stacked element lines under an element cap of 8 and a diagnostic cap of 100 must stay under 8x the text (16x in Python, where the split lines alone are 10x). With the cap made a no-op every fixture and every bound fails.
+		- Opened: 20260901-140700
+		- Closed: 20260901-200000
+
+	- ✅ Item 9: C has no write-side counterpart to `shcl_reads_release`.
+		- Repeated writes to the same path grow the document arena: about 48 bytes per `shcl_set_int`, 63 per `shcl_set_string`, none of it reclaimed until `shcl_free`. Overwriting one field once a second is a few megabytes a day.
+		- Inherent to a bump arena and not documented as otherwise, so it is not a defect. The reads got their own arena and a release call for the same reason, and a long-running writer has the same problem with no answer.
+		- Smaller than item 3 and reachable only by a consumer that writes in a loop. Worth a documented note even if no call is added.
+		- Done: `shcl_compact(d)` rebuilds the document into fresh arenas through the clone the merge already uses, carries the diagnostics, orphans, lost count and strictness across, swaps the rebuilt document in and frees the old storage. Read results are invalid after it, as after `shcl_reads_release`; on an allocation failure the document is left as it was. The C++ veneer exposes `compact()`. Recorded in `style-guide.md` as a sanctioned deviation, named in the README's C note, and in the changelog under Added.
+		- Pinned by `mem_bounds.c` (100k rewrites of one field grow the arena from 800 bytes to 4.8 MB; compaction brings it to 864 and the document reads the same) and by a property over every corpus case in the C runner: canonical output, every diagnostic, the lost count, the error count and the strictness are unchanged across a compaction. Clean under ASan, UBSan and the leak check.
+		- Opened: 20260901-140800
+		- Closed: 20260901-203000
 
 - ✅ `install-dev.bash --hooks-only`, and a gate over its hook setup.
 	- The hook setup was the one piece of that script nothing exercised: the toolchain installs in front of it cannot run in a gate. Noted as still ungated when the test-gap round closed.
