@@ -64,6 +64,54 @@ fn mutate(rng: &mut Rng, base: &str) -> String {
 	chars.into_iter().collect()
 }
 
+// Line-level shapes the character mutator almost never builds: duplicate keys
+// with children under them, a refused line with content beneath it, bracket
+// arrays, mixed and staircase indent, comments at every depth, stacked
+// elements against fields. Every defect all four bindings shared in the last
+// three rounds was one of these, so half the soup is built from them.
+fn structural(rng: &mut Rng) -> String {
+	const NAMES: &[&str] = &["a", "b", "c", "srv", "\"q.k\"", "*"];
+	let mut out = String::new();
+	let mut depth = 0usize;
+	for _ in 0..(1 + rng.below(16)) {
+		// Indent: usually the current or next level, sometimes a jump back,
+		// sometimes a space in place of a tab, sometimes one level too deep.
+		depth = match rng.below(8) {
+			0 => 0,
+			1 => depth + 2,
+			2 => depth.saturating_sub(1),
+			3 | 4 => depth + 1,
+			_ => depth,
+		};
+		let unit = if rng.below(6) == 0 { " " } else { "\t" };
+		let indent = unit.repeat(depth);
+		let name = NAMES[rng.below(NAMES.len())];
+		let sel = match rng.below(6) {
+			0 => "[x]",
+			1 => "[*]",
+			2 => "[#1]",
+			_ => "",
+		};
+		let line = match rng.below(14) {
+			0 => format!("{indent}# comment {}", rng.below(3)),
+			1 => String::new(),
+			2 => format!("{indent}no colon here"),
+			3 => format!("{indent}* {}", rng.below(4)),
+			4 => format!("{indent}{name}: [{}, {}]", rng.below(9), rng.below(9)),
+			5 => format!("{indent}{name}{sel}:"),
+			6 => format!("{indent}{name}.{name}{sel}: {}", rng.below(9)),
+			7 => format!("{indent}{name}: ```\n{indent}\tbody\n{indent}```"),
+			8 => format!("{indent}{name}: \"open"),
+			9 => format!("{indent}{name}: 1, , 2 # trailing"),
+			10 => format!("{indent}\u{feff}{name}: 1"),
+			_ => format!("{indent}{name}{sel}: {}", rng.below(9)),
+		};
+		out.push_str(&line);
+		out.push('\n');
+	}
+	out
+}
+
 fn seed_texts() -> Vec<String> {
 	let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../project/conformance");
 	let mut seeds: Vec<String> = Vec::new();
@@ -101,8 +149,12 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 		.and_then(|v| v.parse().ok())
 		.unwrap_or(500);
 	for i in 0..iters {
-		let base = &seeds[rng.below(seeds.len())];
-		let text = mutate(&mut rng, base);
+		let text = if i % 2 == 0 {
+			let base = &seeds[rng.below(seeds.len())];
+			mutate(&mut rng, base)
+		} else {
+			structural(&mut rng)
+		};
 		if let Some(dir) = &dump_dir
 			&& i < dump_max
 		{
@@ -145,6 +197,47 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 			twice, once,
 			"formatter not idempotent at iteration {} for mutated input:\n{}",
 			i, text
+		);
+	}
+}
+
+/// A write on structural soup must leave a formatter fixpoint: the corpus
+/// pins this for a handful of documents, and the one fold defect that broke it
+/// (duplicates folded one level and no deeper) was invisible to every
+/// value-level check because reads did not change.
+#[test]
+fn writes_on_structural_soup_stay_fixpoint() {
+	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(300);
+	let mut rng = Rng(0x5EED_57A7_1C00_0002);
+	for i in 0..iters {
+		let text = structural(&mut rng);
+		let mut doc = Document::parse(&text);
+		let paths = doc.paths();
+		let path = if paths.is_empty() || rng.below(4) == 0 {
+			format!("new{}.k", rng.below(3))
+		} else {
+			paths[rng.below(paths.len())].clone()
+		};
+		// Every setter answers false only for a path it could not write, which
+		// a wildcard or a missing instance among the enumerated paths can be.
+		let _ = match rng.below(7) {
+			0 => doc.set_int(&path, 7),
+			1 => doc.set_string(&path, "v w"),
+			2 => doc.remove(&path) > 0,
+			3 => doc.set_int_default(&path, 1),
+			4 => doc.set_empty(&path),
+			5 => doc.set_comment(&path, "note"),
+			_ => doc.set_raw(&path, "line 1\n  line 2", "txt"),
+		};
+		let once = doc.to_canonical();
+		let twice = Document::parse(&once).to_canonical();
+		assert_eq!(
+			twice, once,
+			"write on structural soup not a fixpoint at iteration {} (path {:?}):\n{}",
+			i, path, text
 		);
 	}
 }

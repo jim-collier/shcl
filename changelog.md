@@ -8,7 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `ReadFile(path, maxBytes)` in every binding and the C++ veneer: the file tier's read half on its own - the file's text, or the load status saying why not, with a cap on how much is read (past it is `Unreadable`; 0 is no cap). `LoadFile` is now this plus a parse. It is for a consumer that needs the exact bytes it last saw, to tell its own save coming back as a change notification from somebody else's edit, or a bound on what it will read before parsing - both of which meant keeping a hand-rolled read beside the library.
 
-- `ParseLimited` (each binding's spelling, and the C++ veneer): a parse with caller-supplied caps, for input the consumer does not control. A document holds many times its byte size in memory, so `ReadFile`'s byte cap alone cannot bound a load. A node cap stops the parse with one `E020` and counts the unparsed remainder as lost, so a save cannot silently truncate; an element cap refuses any line whose array would exceed it (`E021`), skipping the line whole rather than truncating the value. 0 disables a cap.
+- `ParseLimited` (each binding's spelling, and the C++ veneer): a parse with caller-supplied caps, for input the consumer does not control. A document holds many times its byte size in memory, so `ReadFile`'s byte cap alone cannot bound a load. A node cap stops the parse with one `E020` and counts the unparsed remainder as lost, so a save cannot silently truncate; an element cap refuses any line whose array would exceed it (`E021`), skipping the line whole rather than truncating the value; a diagnostic cap lists only that many and ends the list with one `E022` that counts the rest, since a document of nothing but bad lines costs a diagnostic per line. 0 disables a cap.
+
+- `shcl_compact()` in the C binding, and `compact()` on the C++ veneer: the write-side counterpart to `shcl_reads_release`. A write lands in the document's bump arena and the value it replaced stays there until `shcl_free`, so a process rewriting one field once a second grew by a few megabytes a day with no way to give it back. Compaction rebuilds the document into fresh arenas holding only what it now contains, diagnostics, lost count and strictness included, so a save or a strict gate afterwards reads the same. Optional; a write-once consumer never needs it.
 
 - `shcl_reads_release()` in the C binding: gives back the memory the read calls have handed out, without touching the document. Read results live in the document's arena until it is freed, which is right for a read-once consumer and wrong for a process polling one document in a loop - 200k array reads held 15.7 MB it could not give back. Optional, so nothing changes for a caller that ignores it; the C++ veneer calls it on every read, since it copies each result out immediately.
 
@@ -33,6 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The Windows setup handles a running `shcl.exe` and an existing older install instead of failing partway through.
 
 ### Changed
+
+- A float literal past the double range (`1e400`) reads as `BadType` instead of an infinity at `Good`. No double holds the value, and the infinity could not be written back, so a read-modify-write left a field the reader then refused. A literal below the range still reads as zero.
 
 - `get`, `count` and `instances` print the load's diagnostics to stderr, the way `fmt` and `set` already did. Below strict a damaged file used to read back a correct value at exit 0 with nothing said, so the only way to learn a line had been dropped was a separate `check` run. One report per run; stdout is unchanged.
 
@@ -67,6 +71,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The Linux installer's stable channel picks the highest version rather than the most recently published release, so a patch back-ported to an older line after a newer one shipped is no longer handed out as stable. Both installers now list releases for both channels and drop drafts, which have no assets to install.
 
 ### Fixed
+
+- A file of lines with no colon at a constant indent parsed in quadratic time - a 1 MB plain text file took half a minute, and neither `ParseLimited` cap could stop it because no nodes or elements were built. Each refused line is kept as trivia, and every following line rewalked the whole retained list. The list is walked only as far as an incoming line could change it now, so the parse is linear again.
+
+- `ParseLimited`'s element cap bounded nothing for an inline array: the line was built in full and refused afterwards, so 9 MB of input peaked at the same 256 MB with the cap as without, and in C the refused array stayed held for the document's lifetime. The count is taken before anything splits the value now, so a refused line costs its text and no more.
+
+- `SetFloat` wrote `inf`, `-inf` and `NaN`, and `SetDateTime` wrote whatever the struct held (month 99, February 30, a fraction with no seconds, an empty struct as an empty value), each reporting success and each leaving a field the reader refused. Both refuse the value now and return false, the way `SetRaw` refuses an info-string it cannot spell. The CLI's float ops refuse `inf`, `nan` and a literal past the double range for the same reason; a datetime op already did.
+
+- `init` wrote a child under a valued parent as a dotted line - `srv: web` and then `srv.port:` - which is two `srv` instances to the parser, so the child never landed where the schema looks. With a repeat lower bound of 1 on the child the self-check waved it through, and the starter config failed the schema that produced it at the very next `check --schema`. A line under a valued live parent now selects that instance by its value (`srv[web].port:`), and the self-check lets through only the one documented shortfall, a repeat lower bound of 2 or more. The C CLI reported a schema that does not build with the faults an empty document would owe it added on; it reports the build faults alone now, like the other three.
+
+- `SetLiteral` (and `--set-literal`) took bracket-array text and wrote a two-element array holding `[80` and `443]`, with nothing said, where the same text in a file is `E019` and the line is refused. It refuses the text now, the way it already refused a quote that never closes.
+
+- `shcl_paths` in the C binding grew the document by about 11 KB on every call, and `shcl_reads_release` could not give it back, so a process polling a document's key list climbed for the document's lifetime. It was the one read that took no path and so missed the scratch reset the path lookup does; it resets on entry now.
 
 - The C validator put one scratch arena per level of the nesting cap on the stack - 16 KB, fine on a main thread and past the whole stack of a small worker, where it crashed. They are heap-allocated now.
 

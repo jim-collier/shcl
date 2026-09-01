@@ -20,6 +20,7 @@
 #include <string.h>
 #include <locale.h>
 #include <errno.h>
+#include <math.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #ifdef _WIN32
@@ -664,11 +665,13 @@ static int g_f64(const char *p, size_t n, double *out) {
 		}
 		if (i != n) return 0;
 	}
-	// Overflow via strtod gives +-inf like Rust, so ERANGE is not an error here.
+	// The language's own float reader takes inf and nan, and overflow lands on
+	// them too; the document's reader does not, so they are bad values here,
+	// the way a bad datetime is.
 	char *b = (char *)xrealloc(NULL, n + 1); memcpy(b, p, n); b[n] = 0;
 	*out = strtod(b, NULL);
 	free(b);
-	return 1;
+	return isfinite(*out) ? 1 : 0;
 }
 // Exactly `true` or `false`; anything else is a bad value, like a bad int.
 static int g_bool(const char *p, size_t n, int *out) {
@@ -935,20 +938,6 @@ static int do_init(const Opts *o) {
 			shcl_str m = shcl_diag_message(sd, i);
 			fprintf(stderr, "schema line %zu: %s: %s ", shcl_diag_line(sd, i), sev, shcl_diag_code(sd, i));
 			fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
-		}
-		if (nd == diagMark) {
-			// A build fault leaves nothing on the document; validating an empty
-			// document against the schema reproduces the same V09x list.
-			shcl_doc *ed = xdoc(shcl_parse("", 0));
-			shcl_validation *val = xdoc(shcl_validate(ed, sd));
-			size_t nv = shcl_validation_count(val);
-			for (size_t i = 0; i < nv; i++) {
-				const char *sev = shcl_validation_severity(val, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
-				shcl_str m = shcl_validation_message(val, i);
-				fprintf(stderr, "schema line %zu: %s: %s ", shcl_validation_line(val, i), sev, shcl_validation_code(val, i));
-				fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
-			}
-			shcl_validation_free(val); shcl_free(ed);
 		}
 		fprintf(stderr, "init: schema has faults\n");
 		shcl_free(sd); free(stext); return 6;

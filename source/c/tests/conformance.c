@@ -199,7 +199,7 @@ static int cf_f64(const char *p, size_t n, double *out) {
 	b[j] = 0;
 	*out = strtod(b, NULL);
 	free(b);
-	return 1;
+	return isfinite(*out) ? 1 : 0;
 }
 // Exactly `true` or `false`; anything else is rejected, like a bad int.
 static int cf_bool(const char *p, int *out) {
@@ -371,6 +371,35 @@ int main(int argc, char **argv) {
 			memcpy(dj + jl, sum, (size_t)sw); jl += (size_t)sw;
 			if (jl != dlen || (dlen && memcmp(dj, ediags, dlen) != 0)) fail(names[ci], "diagnostics differ from expected-diags.txt");
 			free(dj); free(ediags);
+		}
+		// Compaction rebuilds the document into fresh arenas: everything a save
+		// or a strict gate reads off it has to come through unchanged. Every
+		// case, so no shape of trivia or value is left to a hand-picked
+		// fixture; mem_bounds.c checks that the old storage goes.
+		{
+			size_t ndiag = shcl_diag_count(d), nlost = shcl_lost_count(d), nerr = shcl_error_count(d);
+			shcl_strictness st = shcl_strictness_of(d);
+			char *canon = (char *)xrealloc(NULL, got.n + 1); memcpy(canon, got.p, got.n); size_t cn = got.n;
+			char *dj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
+			for (size_t i = 0; i < ndiag; i++) {
+				shcl_str m = shcl_diag_message(d, i);
+				int w = snprintf(NULL, 0, "%zu|%d|%s|", shcl_diag_line(d, i), (int)shcl_diag_severity(d, i), shcl_diag_code(d, i));
+				if (jl + (size_t)w + m.n + 2 > jc) { jc = (jl + (size_t)w + m.n + 2) * 2; dj = xrealloc(dj, jc); }
+				jl += (size_t)snprintf(dj + jl, jc - jl, "%zu|%d|%s|", shcl_diag_line(d, i), (int)shcl_diag_severity(d, i), shcl_diag_code(d, i));
+				memcpy(dj + jl, m.p, m.n); jl += m.n; dj[jl++] = '\n';
+			}
+			shcl_compact(d);
+			if (shcl_diag_count(d) != ndiag || shcl_lost_count(d) != nlost || shcl_error_count(d) != nerr || shcl_strictness_of(d) != st) fail(names[ci], "compaction changed the load's counts");
+			size_t kl = 0;
+			for (size_t i = 0; i < shcl_diag_count(d); i++) {
+				shcl_str m = shcl_diag_message(d, i);
+				char head[128]; int w = snprintf(head, sizeof head, "%zu|%d|%s|", shcl_diag_line(d, i), (int)shcl_diag_severity(d, i), shcl_diag_code(d, i));
+				if (kl + (size_t)w + m.n + 1 > jl || memcmp(dj + kl, head, (size_t)w) != 0 || memcmp(dj + kl + w, m.p, m.n) != 0) { fail(names[ci], "compaction changed a diagnostic"); break; }
+				kl += (size_t)w + m.n + 1;
+			}
+			shcl_str after = shcl_to_canonical(d);
+			if (after.n != cn || (cn && memcmp(after.p, canon, cn) != 0)) fail(names[ci], "compaction changed the canonical output");
+			free(canon); free(dj);
 		}
 		shcl_free(d);
 
@@ -748,7 +777,7 @@ int main(int argc, char **argv) {
 	// a load. Same fixture in every runner.
 	{
 		const char *lt = "a: 1\nb: 2\nc: 3\nd: 4\n";
-		shcl_doc *ld = shcl_parse_limited(lt, strlen(lt), SHCL_STANDARD, 2, 0);
+		shcl_doc *ld = shcl_parse_limited(lt, strlen(lt), SHCL_STANDARD, 2, 0, 0);
 		size_t ncap = 0, capline = 0;
 		for (size_t k = 0; k < shcl_diag_count(ld); k++)
 			if (strcmp(shcl_diag_code(ld, k), "E020") == 0) { ncap++; capline = shcl_diag_line(ld, k); }
@@ -758,14 +787,14 @@ int main(int argc, char **argv) {
 		if (shcl_exists(ld, "d", 1)) fail("parse_limited", "the remainder must not parse");
 		shcl_free(ld);
 		// A cap crossed by the document's last content line still reports.
-		ld = shcl_parse_limited("a: 1\nb: 2\nc: 3", 15, SHCL_STANDARD, 2, 0);
+		ld = shcl_parse_limited("a: 1\nb: 2\nc: 3", 15, SHCL_STANDARD, 2, 0, 0);
 		ncap = 0;
 		for (size_t k = 0; k < shcl_diag_count(ld); k++)
 			if (strcmp(shcl_diag_code(ld, k), "E020") == 0) ncap++;
 		if (ncap != 1 || shcl_lost_count(ld) != 0) fail("parse_limited", "last-line cross must report, nothing lost");
 		shcl_free(ld);
 		// One line may overshoot the cap by its own path; the parse still stops.
-		ld = shcl_parse_limited("x.y.z: 1\n", 9, SHCL_STANDARD, 1, 0);
+		ld = shcl_parse_limited("x.y.z: 1\n", 9, SHCL_STANDARD, 1, 0, 0);
 		ncap = 0;
 		for (size_t k = 0; k < shcl_diag_count(ld); k++)
 			if (strcmp(shcl_diag_code(ld, k), "E020") == 0) ncap++;
@@ -773,13 +802,13 @@ int main(int argc, char **argv) {
 		if (shcl_get_int_or(ld, "x.y.z", 5, 0) != 1) fail("parse_limited", "overshot line must stay in the document");
 		shcl_free(ld);
 		// 0 is no cap: identical to shcl_parse_with.
-		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STANDARD, 0, 0);
+		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STANDARD, 0, 0, 0);
 		if (shcl_diag_count(ld) != 0) fail("parse_limited", "uncapped must match parse_with");
 		shcl_free(ld);
 		// Element cap, inline spelling: the whole line is refused, the rest of
 		// the document is untouched.
 		const char *et = "arr: 1, 2, 3\nok: 5\n";
-		ld = shcl_parse_limited(et, strlen(et), SHCL_STANDARD, 0, 2);
+		ld = shcl_parse_limited(et, strlen(et), SHCL_STANDARD, 0, 2, 0);
 		ncap = 0; capline = 0;
 		for (size_t k = 0; k < shcl_diag_count(ld); k++)
 			if (strcmp(shcl_diag_code(ld, k), "E021") == 0) { ncap++; capline = shcl_diag_line(ld, k); }
@@ -791,7 +820,7 @@ int main(int argc, char **argv) {
 		// Element cap, stacked spelling: each element line past the cap is
 		// refused on its own; the array keeps what fit.
 		const char *st2 = "arr:\n\t* 1\n\t* 2\n\t* 3\n";
-		ld = shcl_parse_limited(st2, strlen(st2), SHCL_STANDARD, 0, 2);
+		ld = shcl_parse_limited(st2, strlen(st2), SHCL_STANDARD, 0, 2, 0);
 		ncap = 0;
 		for (size_t k = 0; k < shcl_diag_count(ld); k++)
 			if (strcmp(shcl_diag_code(ld, k), "E021") == 0) ncap++;
@@ -799,9 +828,74 @@ int main(int argc, char **argv) {
 		if (ncap != 1 || ra.status != SHCL_GOOD || ra.n != 2 || ra.values[0] != 1 || ra.values[1] != 2)
 			fail("parse_limited", "stacked array must keep what fit");
 		shcl_free(ld);
+		// The count the cap judges is the count the array reads back as,
+		// spelling by spelling: quoted and escaped commas, empty and blank
+		// slots, Unicode blanks, a quote that never closes. Refused at one
+		// under, kept at exact.
+		static const struct { const char *spelling; size_t n; } counts[] = {
+			{"1, 2, 3", 3}, {"\"a, b\", c", 2}, {"a\\, b, c", 2}, {"a,,b", 2},
+			{"a, , b", 2}, {" a ", 1}, {"\"\", ''", 2}, {"'a\", b'", 1},
+			{"\"open, b", 1}, {"\\", 1}, {"x,\xe3\x80\x80", 1}, {"x, \xc2\xa0y", 2}, {", , ,", 0},
+		};
+		for (size_t ci = 0; ci < sizeof counts / sizeof counts[0]; ci++) {
+			char ctext[64]; snprintf(ctext, sizeof ctext, "v: %s\n", counts[ci].spelling);
+			size_t n = counts[ci].n;
+			ld = shcl_parse_limited(ctext, strlen(ctext), SHCL_STANDARD, 0, n ? n : 1, 0);
+			for (size_t k = 0; k < shcl_diag_count(ld); k++)
+				if (strcmp(shcl_diag_code(ld, k), "E021") == 0) fail("parse_limited", "count table: refused at the exact cap");
+			shcl_read_str_arr sa = shcl_read_string_array(ld, "v", 1);
+			if (n == 0 ? (!shcl_exists(ld, "v", 1) || sa.status == SHCL_GOOD) : (sa.status != SHCL_GOOD || sa.n != n))
+				fail("parse_limited", "count table: element count differs from the read");
+			shcl_free(ld);
+			if (n >= 2) {
+				ld = shcl_parse_limited(ctext, strlen(ctext), SHCL_STANDARD, 0, n - 1, 0);
+				if (shcl_lost_count(ld) != 1) fail("parse_limited", "count table: not refused one under");
+				shcl_free(ld);
+			}
+		}
+		// A refused line reports the cap alone: the quote check runs after
+		// it, so it never splits a value the cap already turned away.
+		const char *qt = "v: a, \"open, b\n";
+		ld = shcl_parse_limited(qt, strlen(qt), SHCL_STANDARD, 0, 1, 0);
+		if (shcl_diag_count(ld) != 1 || strcmp(shcl_diag_code(ld, 0), "E021") != 0) fail("parse_limited", "refused line must report the cap alone");
+		shcl_free(ld);
+		// Diagnostic cap: the first N are listed and one E022 tail counts the
+		// rest. Its severity is Error when any unlisted one was, so a scan of
+		// the list for errors still finds one and error_count stays nonzero.
+		char bad[9 * 50 + 1]; bad[0] = 0;
+		for (int i = 0; i < 50; i++) strcat(bad, "no colon\n");
+		ld = shcl_parse_limited(bad, strlen(bad), SHCL_STANDARD, 0, 0, 10);
+		if (shcl_diag_count(ld) != 11) fail("parse_limited", "diag cap: want 11 listed");
+		else {
+			for (size_t k = 0; k < 10; k++) if (strcmp(shcl_diag_code(ld, k), "E014") != 0) fail("parse_limited", "diag cap: listed the wrong code");
+			shcl_str tm = shcl_diag_message(ld, 10);
+			const char *want = "diagnostic cap of 10 reached; 40 more not listed, 40 of them errors";
+			if (strcmp(shcl_diag_code(ld, 10), "E022") != 0 || shcl_diag_severity(ld, 10) != SHCL_SEV_ERROR || shcl_diag_line(ld, 10) != 0 || tm.n != strlen(want) || memcmp(tm.p, want, tm.n) != 0)
+				fail("parse_limited", "diag cap: tail differs");
+		}
+		if (shcl_error_count(ld) != 11) fail("parse_limited", "diag cap: error count");
+		shcl_free(ld);
+		ld = shcl_parse_limited(bad, strlen(bad), SHCL_STRICT, 0, 0, 10);
+		if (!shcl_strict_failed(ld)) fail("parse_limited", "diag cap: capped strict load must fail");
+		shcl_free(ld);
+		// Hints past the cap leave a Hint tail, so a document with no error
+		// still loads at Strict.
+		const char *hints = "x: 1\nx: 2\ny: 1\ny: 2\n";
+		ld = shcl_parse_limited(hints, strlen(hints), SHCL_STRICT, 0, 0, 1);
+		if (shcl_strict_failed(ld) || shcl_diag_count(ld) != 2 || strcmp(shcl_diag_code(ld, 0), "H001") != 0 || strcmp(shcl_diag_code(ld, 1), "E022") != 0 || shcl_diag_severity(ld, 1) != SHCL_SEV_HINT || shcl_error_count(ld) != 0)
+			fail("parse_limited", "hint tail differs");
+		else {
+			shcl_str tm = shcl_diag_message(ld, 1); const char *suffix = "1 more not listed, 0 of them errors";
+			if (tm.n < strlen(suffix) || memcmp(tm.p + tm.n - strlen(suffix), suffix, strlen(suffix)) != 0) fail("parse_limited", "hint tail message");
+		}
+		shcl_free(ld);
+		// At the cap exactly, nothing is unlisted and there is no tail.
+		ld = shcl_parse_limited(hints, strlen(hints), SHCL_STANDARD, 0, 0, 2);
+		if (shcl_diag_count(ld) != 2) fail("parse_limited", "at the cap: a tail appeared");
+		shcl_free(ld);
 		// A cap diagnostic is an error, so a Strict capped load fails - with
 		// the parsed part still readable.
-		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STRICT, 2, 0);
+		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STRICT, 2, 0, 0);
 		if (!shcl_strict_failed(ld)) fail("parse_limited", "capped strict load must fail");
 		if (shcl_get_int_or(ld, "a", 1, 0) != 1) fail("parse_limited", "failed strict doc unusable");
 		shcl_free(ld);
@@ -1171,10 +1265,12 @@ int main(int argc, char **argv) {
 		size_t dn = shcl_datetime_str(&worst, out);
 		if (dn > SHCL_DT_BUF) fail("dt_clamp", "the render outgrew the buffer it documents");
 		free(out);
-		// The set path passes its own SHCL_DT_BUF array, so it has to survive
-		// the same value.
+		// The set path renders into its own SHCL_DT_BUF array before it judges
+		// the value, so it has to survive the same value - and then refuse it,
+		// since nothing this shape reads back.
 		shcl_doc *dd = shcl_new();
-		if (!shcl_set_datetime(dd, "when", 4, &worst)) fail("dt_clamp", "the setter refused a hand-built datetime");
+		if (shcl_set_datetime(dd, "when", 4, &worst)) fail("dt_clamp", "the setter bound a datetime the reader refuses");
+		if (shcl_exists(dd, "when", 4)) fail("dt_clamp", "a refused datetime left a node behind");
 		shcl_free(dd);
 	}
 	// write_reason: the reason behind a setter's bare 0. Same fixture in every
@@ -1206,6 +1302,45 @@ int main(int argc, char **argv) {
 		// The probe never creates: the doc is unchanged after all of the above.
 		if (shcl_count(wd, "a", 1) != 1) fail("write_reason", "probe created nodes");
 		shcl_free(wd);
+	}
+	// Each setter is the inverse of its read, so a value with no spelling the
+	// reader accepts fails the write and leaves the document alone. Same
+	// fixture in every runner.
+	{
+		shcl_doc *sd = shcl_parse("z: 0\n", 5);
+		double nonfinite[3]; nonfinite[0] = INFINITY; nonfinite[1] = -INFINITY; nonfinite[2] = NAN;
+		for (int i = 0; i < 3; i++) {
+			double pair[2]; pair[0] = 1; pair[1] = nonfinite[i];
+			if (shcl_set_float(sd, "f", 1, nonfinite[i]) || shcl_set_float_default(sd, "f", 1, nonfinite[i]) || shcl_set_float_array(sd, "f", 1, pair, 2))
+				fail("setters_refuse", "a non-finite float was written");
+		}
+		if (!shcl_set_float(sd, "f", 1, 2.5) || shcl_get_float_or(sd, "f", 1, 0) != 2.5) fail("setters_refuse", "a finite float was refused");
+		shcl_datetime bad[10]; memset(bad, 0, sizeof bad);
+		// [0] nothing written
+		bad[1].has_date = 1; bad[1].year = 2026; bad[1].month = 13; bad[1].day = 1;
+		bad[2].has_date = 1; bad[2].year = 2026; bad[2].month = 2; bad[2].day = 30;
+		bad[3].has_date = 1; bad[3].year = -1; bad[3].month = 1; bad[3].day = 1;
+		bad[4].has_time = 1; bad[4].hour = 24;
+		bad[5].has_time = 1; bad[5].hour = 1; bad[5].minute = 2; bad[5].has_frac = 1; bad[5].frac = s_lit("5"); // fraction with no seconds
+		bad[6].has_time = 1; bad[6].hour = 1; bad[6].minute = 2; bad[6].has_sec = 1; bad[6].sec = 3; bad[6].has_frac = 1; bad[6].frac = s_lit(""); // empty fraction
+		bad[7] = bad[6]; bad[7].frac = s_lit("12345678901"); // 11 digits
+		bad[8].has_time = 1; bad[8].hour = 1; bad[8].minute = 2; bad[8].zone = SHCL_ZONE_OFFSET; bad[8].off_min = 9999; // +166:39
+		bad[9].has_date = 1; bad[9].year = 2026; bad[9].month = 1; bad[9].day = 1; bad[9].zone = SHCL_ZONE_UTC; // zone on a date alone
+		shcl_datetime good; memset(&good, 0, sizeof good); good.has_date = 1; good.year = 2026; good.month = 1; good.day = 1;
+		for (int i = 0; i < 10; i++) {
+			shcl_datetime pair[2]; pair[0] = good; pair[1] = bad[i];
+			if (shcl_set_datetime(sd, "d", 1, &bad[i]) || shcl_set_datetime_default(sd, "d", 1, &bad[i]) || shcl_set_datetime_array(sd, "d", 1, pair, 2))
+				fail("setters_refuse", "a datetime the reader refuses was written");
+		}
+		shcl_datetime ok = good; ok.day = 2; ok.has_time = 1; ok.hour = 3; ok.minute = 4; ok.has_sec = 1; ok.sec = 5; ok.has_frac = 1; ok.frac = s_lit("60"); ok.zone = SHCL_ZONE_OFFSET; ok.off_min = -90;
+		if (!shcl_set_datetime(sd, "d", 1, &ok)) fail("setters_refuse", "a valid datetime was refused");
+		shcl_read_dt rd = shcl_read_datetime(sd, "d", 1);
+		char okb[SHCL_DT_BUF], rdb[SHCL_DT_BUF]; size_t okn = shcl_datetime_str(&ok, okb), rdn = shcl_datetime_str(&rd.value, rdb);
+		if (rd.status != SHCL_GOOD || okn != rdn || memcmp(okb, rdb, okn) != 0) fail("setters_refuse", "the datetime read back differently");
+		shcl_str canon = shcl_to_canonical(sd);
+		const char *want = "z: 0\n\nf: 2.5\n\nd: \"2026-01-02T03:04:05.60-01:30\"\n";
+		if (canon.n != strlen(want) || memcmp(canon.p, want, canon.n) != 0) fail("setters_refuse", "document after the refusals differs");
+		shcl_free(sd);
 	}
 	// One combined diagnostics list (parse first, then validation) and an
 	// error predicate, so recover-and-continue can't read as success by

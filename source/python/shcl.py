@@ -299,13 +299,16 @@ class _Lead:
 
 class _Pend:
 	"""A pending whole-line comment during parse: text, source indent (used only
-	to decide whether it hangs on a deeper block), and the blank it consumed."""
-	__slots__ = ("text", "indent", "blank_before")
+	to decide whether it hangs on a deeper block), and the blank it consumed.
+	`ceiling` is the shortest incoming indent already checked against it: a
+	later check can only hang it from a shorter one, so a longer one skips it."""
+	__slots__ = ("text", "indent", "blank_before", "ceiling")
 
 	def __init__(self, text, indent, blank_before):
 		self.text = text
 		self.indent = indent
 		self.blank_before = blank_before
+		self.ceiling = len(indent)
 
 
 # Shared empty element list for the kinds that have none: only "cell" ever
@@ -405,11 +408,13 @@ def _literal_value(text):
 	# Read text as the value half of a line, for the setters that take value
 	# syntax rather than data. Rejects what could not have come off one line: a
 	# line break, or a quote that never closes. An unquoted # ends the value
-	# here exactly as it would in a file.
+	# here exactly as it would in a file. Bracket-array text is refused too: in
+	# a file it is E019 and the line is lost, so writing it as a two-element
+	# array holding `[1` and `2]` would be a different wrong answer.
 	if "\n" in text or "\r" in text:
 		return None
 	v = _trim(_split_comment(text)[0])
-	if _unterminated_quote(v):
+	if _unterminated_quote(v) or (v.startswith("[") and v.endswith("]")):
 		return None
 	return _parse_cell(v)
 
@@ -814,6 +819,41 @@ def _parse_element(piece):
 	return _Element(_normalize_dangling_backslash(t), False)
 
 
+def _cell_exceeds(text, max_elements):
+	"""Whether _parse_cell would build more than max_elements elements. Counts
+	the pieces the way the splitter cuts them, without building any, so a
+	capped parse refuses an over-long line before holding the array."""
+	count = 0
+	has_content = False
+	in_quote = None
+	i = 0
+	n = len(text)
+	while i < n:
+		c = text[i]
+		if c == "\\":
+			has_content = True
+			i += 2
+			continue
+		i += 1
+		if in_quote is not None:
+			if c == in_quote:
+				in_quote = None
+		elif c == '"' or c == "'":
+			in_quote = c
+		elif c == ",":
+			if has_content:
+				count += 1
+				if count > max_elements:
+					return True
+			has_content = False
+			continue
+		if c not in _WS_SET:
+			has_content = True
+	if has_content:
+		count += 1
+	return count > max_elements
+
+
 def _parse_cell(text):
 	els = []
 	for piece in _split_unquoted_commas(text):
@@ -1144,6 +1184,12 @@ class _Parser:
 		# source indent is kept only to decide after-attachment (a comment
 		# deeper than the next binding hangs on the block it sits in).
 		self.pending = []
+		# (end index, indent length): every pending entry before end has a
+		# ceiling at or under that length. Lengths rise along the stack, so a
+		# hang check pops the marks above its own indent and walks only what
+		# they covered. Without it a run of retained bad lines is rewalked per
+		# line and a plain text file parses in quadratic time.
+		self.pend_marks = []
 		self.saw_blank = False  # a blank line waits to become the next bound node's blank_before
 		# An open stacked list defers its merge-key remap (rebuilding the key per
 		# element is O(list^2) time); (node, map key, display key) at deferral
@@ -1158,12 +1204,27 @@ class _Parser:
 		# Dropped lines/values canonical output cannot re-emit.
 		self.lost = 0
 		# parse_limited's caps, 0 = uncapped: nodes counted against the arena
-		# (root excluded), elements against a single value's cell.
+		# (root excluded), elements against a single value's cell, diagnostics
+		# against the list. Past the diagnostic cap nothing is listed, only
+		# counted (errors, hints), for the one tail entry the parse ends with.
 		self.max_nodes = 0
 		self.max_elements = 0
+		self.max_diags = 0
+		self.unlisted_errors = 0
+		self.unlisted_hints = 0
 
 	def _err(self, line, code, msg):
-		self.diags.append(Diagnostic(line, Severity.Error, msg, code))
+		self._diag(Diagnostic(line, Severity.Error, msg, code))
+
+	def _diag(self, d):
+		# Every parse diagnostic goes through here, so the cap sees them all.
+		if self.max_diags and len(self.diags) >= self.max_diags:
+			if d.severity == Severity.Error:
+				self.unlisted_errors += 1
+			else:
+				self.unlisted_hints += 1
+			return
+		self.diags.append(d)
 
 	def _select_or_create(self, parent, name, name_src, value, line):
 		"""Find (or create by merge rule) the child of `parent` with this (name, value)."""
@@ -1249,6 +1310,7 @@ class _Parser:
 			for p in self.pending:
 				t.leading.append(_Lead(p.text, p.blank_before))
 			self.pending = []
+			self.pend_marks = []
 		if trailing:
 			t = self.arena[node]._triv()
 			if not t.trailing:
@@ -1267,10 +1329,15 @@ class _Parser:
 		end of parse with the empty indent, so tail comments keep their block)."""
 		if not self.pending:
 			return
-		taken = self.pending
-		self.pending = []
+		new_len = len(new_indent)
+		# Only entries above the last mark at or under this indent can hang.
+		while self.pend_marks and self.pend_marks[-1][1] > new_len:
+			self.pend_marks.pop()
+		start = self.pend_marks[-1][0] if self.pend_marks else 0
+		taken = self.pending[start:]
+		del self.pending[start:]
 		for p in taken:
-			if len(p.indent) > len(new_indent):
+			if p.ceiling > new_len:
 				# A level shallower than the incoming line stays open and may
 				# still gain children, so a comment must not hang there - it
 				# would emit below the child; keep it pending instead.
@@ -1288,7 +1355,12 @@ class _Parser:
 					else:
 						self.arena[target]._triv().inside.append(lead)
 					continue
+				p.ceiling = new_len
 			self.pending.append(p)
+		if self.pend_marks and self.pend_marks[-1][1] == new_len:
+			self.pend_marks[-1] = (len(self.pending), new_len)
+		else:
+			self.pend_marks.append((len(self.pending), new_len))
 
 	def _resolve_parent(self, indent):
 		"""Resolve which open level this indent belongs to. Child only when the
@@ -1401,7 +1473,7 @@ class _Parser:
 					cross_region = reopen_line is not None and self.arena[cur].line < reopen_line
 					if non_last or cross_region:
 						at = self.arena[cur].line
-						self.diags.append(Diagnostic(
+						self._diag(Diagnostic(
 							line, Severity.Hint,
 							f"{_h002_head(seg.name)}line {at} (same name and value combine)",
 							"H002"))
@@ -1562,7 +1634,7 @@ class _Parser:
 					joined = ", ".join(self.arena[c].value.display() for c in group)
 					hints.append((line, f"{_h001_head(name)}{joined}'?"))
 		for line, message in hints:
-			self.diags.append(Diagnostic(line, Severity.Hint, message, "H001"))
+			self._diag(Diagnostic(line, Severity.Hint, message, "H001"))
 
 	def parse(self, text, strictness):
 		# UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
@@ -1726,18 +1798,21 @@ class _Parser:
 					# Same-line fence spelling.
 					value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				else:
+					# Element cap: the whole line is refused, so a capped load
+					# never holds a truncated array that would read as the
+					# document's value. Counted before anything splits the
+					# value (the quote check does too), or the cap would bound
+					# nothing.
+					if self.max_elements and _cell_exceeds(value_text, self.max_elements):
+						self._err(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped")
+						self.lost += 1
+						self.stack.append((indent, DEAD))
+						i = nxt
+						continue
 					if _unterminated_quote(value_text):
 						self._err(lineno, "E017", "unterminated quote in value")
 					src_text = value_text
 					value = _parse_cell(value_text)
-			# Element cap: the whole line is refused, so a capped load never
-			# holds a truncated array that would read as the document's value.
-			if self.max_elements and value.kind == "cell" and len(value.els) > self.max_elements:
-				self._err(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped")
-				self.lost += 1
-				self.stack.append((indent, DEAD))
-				i = nxt
-				continue
 			# Record only when the bound node holds exactly this line's value
 			# (a merge into an equal-valued node keeps the first line's span;
 			# a value dropped after a last-segment selector records nothing).
@@ -1772,6 +1847,16 @@ class _Parser:
 		self._hang_deeper_pending("")
 		orphans = [_Lead(p.text, p.blank_before) for p in self.pending]
 		self.pending = []
+		# The one entry past the cap: what was not listed, and whether any of
+		# it was an error, so a consumer scanning the list for errors still
+		# finds one and a Strict load still fails.
+		more = self.unlisted_errors + self.unlisted_hints
+		if more:
+			self.diags.append(Diagnostic(
+				0,  # about the list, not a line
+				Severity.Error if self.unlisted_errors else Severity.Hint,
+				f"diagnostic cap of {self.max_diags} reached; {more} more not listed, {self.unlisted_errors} of them errors",
+				"E022"))
 		return Document(self.arena, self.diags, strictness, orphans, self.lost)
 
 
@@ -1879,7 +1964,7 @@ class Document:
 
 	@staticmethod
 	def parse_limited(
-		text: str, strictness: Strictness, max_nodes: int = 0, max_elements: int = 0
+		text: str, strictness: Strictness, max_nodes: int = 0, max_elements: int = 0, max_diags: int = 0
 	) -> Document:
 		"""Parse with resource caps beside the strictness, for input the
 		consumer does not control: a document amplifies to many times its byte
@@ -1887,15 +1972,20 @@ class Document:
 		allocates. max_nodes stops the parse once a line takes the node count
 		past it - one E020 error, and the unparsed remainder counts as lost so
 		a save cannot silently truncate. max_elements refuses any line whose
-		array would hold more elements (E021, that line alone is skipped). 0
-		disables a cap, making this parse_with. Both caps are parse-time only;
-		the write API is the consumer's own arithmetic. As everywhere, the
-		raised LoadError fires only at Strict, and a cap diagnostic is an
+		array would hold more elements (E021, that line alone is skipped).
+		max_diags bounds the diagnostics list itself - a document of nothing
+		but bad lines costs a diagnostic per line - by listing the first that
+		many and ending with one E022 that counts the rest; error_count and
+		the Strict gate see that tail as an error whenever an unlisted one
+		was. 0 disables a cap, making this parse_with. The caps are parse-time
+		only; the write API is the consumer's own arithmetic. As everywhere,
+		the raised LoadError fires only at Strict, and a cap diagnostic is an
 		error, so a capped Strict load fails; at other levels the parsed part
 		stays readable."""
 		p = _Parser()
 		p.max_nodes = max_nodes
 		p.max_elements = max_elements
+		p.max_diags = max_diags
 		doc = p.parse(text, strictness)
 		if strictness == Strictness.Strict and any(d.severity == Severity.Error for d in doc.diags):
 			raise LoadError(doc.diags, doc)
@@ -2598,9 +2688,14 @@ class Document:
 
 	def set_float(self, path: str, v: float) -> bool:
 		"""Bind a float; an int is accepted and written as the float it converts
-		to (one past the float range writes inf), a bool is a TypeError."""
+		to, a bool is a TypeError. An infinity or a NaN (one past the float
+		range included) has no spelling the reader accepts, so it fails the
+		write rather than binding a value that cannot read back."""
 		_want("set_float", v, "float")
-		return self._set_value(path, _cell_of(format_float(_as_float(v))))
+		x = _as_float(v)
+		if not math.isfinite(x):
+			return False
+		return self._set_value(path, _cell_of(format_float(x)))
 
 	def set_bool(self, path: str, v: bool) -> bool:
 		"""Bind a bool; anything else, 0/1 included, is a TypeError."""
@@ -2613,8 +2708,13 @@ class Document:
 		return self._set_value(path, _cell_of(_encode_string(v)))
 
 	def set_datetime(self, path: str, v: ShclDateTime) -> bool:
-		"""Bind a ShclDateTime; anything else is a TypeError."""
+		"""Bind a ShclDateTime; anything else is a TypeError. Its fields carry
+		no invariant, so a value the reader would refuse (month 13, a fraction
+		with no seconds, an empty one) fails the write rather than binding
+		text that cannot read back."""
 		_want("set_datetime", v, "datetime")
+		if not _datetime_reads_back(v):
+			return False
 		return self._set_value(path, _cell_of(str(v)))
 
 	def set_raw(self, path: str, content: str, info: str) -> bool:
@@ -2645,7 +2745,10 @@ class Document:
 	def set_float_array(self, path: str, v: list[float]) -> bool:
 		"""Bind an inline float array; every element is converted as set_float does."""
 		_want_all("set_float_array", v, "float")
-		return self._set_value(path, _array_cell([format_float(_as_float(x)) for x in v]))
+		xs = [_as_float(x) for x in v]
+		if not all(math.isfinite(x) for x in xs):
+			return False
+		return self._set_value(path, _array_cell([format_float(x) for x in xs]))
 
 	def set_bool_array(self, path: str, v: list[bool]) -> bool:
 		_want_all("set_bool_array", v, "bool")
@@ -2657,6 +2760,8 @@ class Document:
 
 	def set_datetime_array(self, path: str, v: list[ShclDateTime]) -> bool:
 		_want_all("set_datetime_array", v, "datetime")
+		if not all(_datetime_reads_back(x) for x in v):
+			return False
 		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	# Default (only-if-absent) forms - the "emit defaults" half of the Writer.
@@ -4076,6 +4181,11 @@ def _parse_float_text(e, level):
 			v = float(t)
 		except ValueError:
 			return None
+		# A literal past the double range is an infinity, which no double
+		# holds and no setter can write back: BadType, like a text that is not
+		# a number at all.
+		if not math.isfinite(v):
+			return None
 	else:
 		# An integer is a valid float on read (incl. hex and quoted thousands).
 		iv = _parse_int_text_no_loose(_Element(t, e.quoted))
@@ -4320,6 +4430,13 @@ def _parse_time_part(s):
 		else:
 			h = h_raw + 12
 	return ((h, mi, sec), frac, zone)
+
+
+def _datetime_reads_back(v: ShclDateTime) -> bool:
+	"""Whether a datetime's canonical spelling reads back as the same value:
+	the setter's inverse-of-the-read promise, checked by making the round trip."""
+	back = parse_datetime(str(v))
+	return back is not None and (back.date, back.time, back.frac, back.zone) == (v.date, v.time, v.frac, v.zone)
 
 
 def parse_datetime(text: str) -> ShclDateTime | None:
@@ -4798,6 +4915,16 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 				changed = True
 		if not changed:
 			break
+	# A live line with a value materializes an instance carrying that value,
+	# and a dotted child names the empty-valued instance instead - so `srv:
+	# web` followed by `srv.port:` is two `srv` nodes, and the child never
+	# lands where the schema looks. Any line under such a parent selects it by
+	# its value: `srv[web].port:`.
+	parent_values = {
+		tuple(names_of(c.segs)): c.default_text
+		for c in cons
+		if not has_wild(c) and not unwritable(c) and must_exist(c) and c.default_text is not None
+	}
 	out = []
 	wild = []
 	first = True
@@ -4815,11 +4942,16 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		# The annotation is a comment: a newline smuggled in via an allowed
 		# string value must not break out of it.
 		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
-		# A filled wildcard emits in dotted form, targeting the first (the
-		# materialized) instance. Rebuilt from the parsed segments, not by
-		# cutting text out of the path: the same path can be written several
-		# ways, and only the segments say what it means.
-		path = _gen_path_text(c.segs) if fill[i] else c.path
+		# A filled wildcard emits in dotted form, targeting the materialized
+		# instance - by its value when the materializing line carries one.
+		# Rebuilt from the parsed segments, not by cutting text out of the
+		# path: the same path can be written several ways, and only the
+		# segments say what it means. Otherwise the schema's own spelling.
+		under_valued_parent = any(
+			c.segs[k - 1].selector is None and tuple(names_of(c.segs[:k])) in parent_values
+			for k in range(1, len(c.segs))
+		)
+		path = _gen_path_text(c.segs, parent_values) if fill[i] or under_valued_parent else c.path
 		prefix = "" if must_exist(c) else "#"
 		if c.default_text is not None:
 			out.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
@@ -4843,12 +4975,14 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# so check that here rather than trusting each branch above. A `default`
 	# outside its own field's constraints is the schema's fault, and the author
 	# should hear about it instead of getting a starter config that fails the
-	# first time it is checked. V007 is the one sanctioned shortfall (a repeat
-	# lower bound of 2+ generates identical lines, which merge).
+	# first time it is checked. The one sanctioned shortfall is a V007 for a
+	# repeat lower bound of 2+: generating that many identical lines merges
+	# them into one. A lower bound of 1 is a must-exist path like any other,
+	# so its V007 is a fault.
 	bad = [
 		Diagnostic(0, Severity.Error, "generated value fails the schema that produced it: " + d.message, "V097")
 		for d in Document.parse(text).validate(schema)
-		if d.severity == Severity.Error and d.code != "V007"
+		if d.severity == Severity.Error and not (d.code == "V007" and _v007_sanctioned(d.message))
 	]
 	if bad:
 		return "", bad
@@ -4876,11 +5010,34 @@ _GEN_BANNER = (
 )
 
 
-def _gen_path_text(segs):
+def _v007_sanctioned(message):
+	"""Whether a V007 from the self-check is the sanctioned kind: its message
+	ends `: N not in LO..HI`, and LO is 2 or more."""
+	_, sep, rest = message.rpartition(" not in ")
+	lo = rest.split("..", 1)[0]
+	return bool(sep) and lo.isdigit() and int(lo) >= 2
+
+
+def _gen_selector_text(v):
+	"""A default's spelling inside a `[value]` selector: the value-side text as
+	is, except that a bracket or a backslash would end or escape the selector,
+	so those go quoted (the selector matches on the escaped display, so the
+	quoted spelling finds the bare value)."""
+	if "\n" in v:
+		return _gen_default_text(v)
+	if any(ch in v for ch in "[]\\") and not _quoted_shape(v):
+		return _quote_text(v)
+	return v
+
+
+def _gen_path_text(segs, parent_values):
 	"""Render parsed segments back as a dotted path, dropping wildcard selectors
 	(a generated line targets the one instance it materializes) and quoting a
-	name that needs it, so the result is a path the scanner reads back the same."""
+	name that needs it, so the result is a path the scanner reads back the same.
+	A segment whose prefix names a live line carrying a value selects that
+	instance by the value, in place of a wildcard or a bare name."""
 	out = []
+	names = []
 	for i, s in enumerate(segs):
 		if i > 0:
 			out.append(".")
@@ -4888,6 +5045,11 @@ def _gen_path_text(segs):
 			out.append("*")
 		else:
 			out.append(_emit_name(s.name))
+		names.append(s.name)
+		v = parent_values.get(tuple(names))
+		if v is not None and i + 1 < len(segs) and (s.selector is None or s.selector[0] != "val"):
+			out.append(f"[{_gen_selector_text(v)}]")
+			continue
 		if s.selector is not None:
 			if s.selector[0] == "val":
 				out.append(f"[{_quote_text(s.selector[1]) if s.selector[2] else s.selector[1]}]")

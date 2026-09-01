@@ -6,6 +6,7 @@
 # mirror the Rust reference exactly; the cicd cross-binding check compares them
 # byte for byte, so any drift here fails the pipeline.
 
+import math
 import os
 import signal
 import sys
@@ -822,11 +823,15 @@ def _float_grammar_ok(s):
 
 
 def _op_flt(s):
-	# float() after the grammar gate is safe; overflow (1e400) yields inf,
-	# matching Rust's parse.
+	# The language's own float reader takes inf and nan, and overflow (1e400)
+	# lands on them too; the document's reader does not, so they are bad
+	# values here, the way a bad datetime is.
 	if not _float_grammar_ok(s):
 		raise ValueError(f"bad float: {s}")
-	return float(s)
+	x = float(s)
+	if not math.isfinite(x):
+		raise ValueError(f"bad float: {s}")
+	return x
 
 
 def apply_op(doc, line):

@@ -996,7 +996,14 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	let path = f.get(1).copied().unwrap_or("");
 	let val = || f.get(2).copied().unwrap_or("");
 	let pint = |s: &str| s.parse::<i64>().map_err(|_| format!("bad int: {}", s));
-	let pflt = |s: &str| s.parse::<f64>().map_err(|_| format!("bad float: {}", s));
+	// The language's own float reader takes inf and nan; the document's does
+	// not, so they are bad values here, the way a bad datetime is.
+	let pflt = |s: &str| {
+		s.parse::<f64>()
+			.ok()
+			.filter(|v| v.is_finite())
+			.ok_or_else(|| format!("bad float: {}", s))
+	};
 	let pbool = |s: &str| match s {
 		"true" => Ok(true),
 		"false" => Ok(false),
