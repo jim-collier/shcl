@@ -1,0 +1,110 @@
+#!/usr/bin/env pwsh
+## winpath-regress.ps1 - the Windows installers' PATH handling, against the real
+## registry, so it only runs on the hosted windows job (win-runners.bash guards
+## that). Two subjects, both the shipped text rather than a copy of the logic:
+## install.ps1's Update-ShclPath, lifted from the script by name and run against
+## HKCU, and the setup's shclpath.ps1 run as the installer runs it, against
+## HKLM. What they must preserve: %VAR% references (read unexpanded), the
+## REG_EXPAND_SZ kind, and whole-segment comparison. Everything touched is
+## saved first and restored in a finally.
+##
+## Exit: 0 = all checks pass, 1 = a check failed (named), 2 = cannot set up.
+
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingInvokeExpression', '', Justification = 'runs the function text lifted from the shipped installer')]
+param()
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+if (-not ($env:OS -eq 'Windows_NT')) {
+	Write-Output 'winpath-regress: not windows; nothing to test here'
+	exit 2
+}
+
+$root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+$failures = 0
+function Test-Check([bool]$Ok, [string]$Name) {
+	if ($Ok) { Write-Output "winpath-regress: OK: $Name" }
+	else { Write-Output "winpath-regress: FAIL: $Name"; $script:failures++ }
+}
+
+## Lift Update-ShclPath out of install.ps1 by name - the shipped text, so a
+## drift in the script is a drift in the test subject.
+$lines = Get-Content (Join-Path $root 'install.ps1')
+$start = -1
+for ($i = 0; $i -lt $lines.Count; $i++) {
+	if ($lines[$i] -match '^\tfunction Update-ShclPath\b') { $start = $i; break }
+}
+if ($start -lt 0) { Write-Output 'winpath-regress: install.ps1 has no Update-ShclPath'; exit 2 }
+$end = -1
+for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+	if ($lines[$i] -match '^\t\}\s*$') { $end = $i; break }
+}
+if ($end -lt 0) { Write-Output 'winpath-regress: Update-ShclPath never closes'; exit 2 }
+Invoke-Expression (($lines[$start..$end] -join "`n"))
+
+function Get-RawPath([Microsoft.Win32.RegistryKey]$Key) {
+	[string]$Key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+}
+function Get-PathKind([Microsoft.Win32.RegistryKey]$Key) {
+	if ($Key.GetValueNames() -contains 'Path') { $Key.GetValueKind('Path') } else { $null }
+}
+function Restore-PathValue([Microsoft.Win32.RegistryKey]$Key, [string]$Value, $Kind) {
+	if ($null -eq $Kind) { if ($Key.GetValueNames() -contains 'Path') { $Key.DeleteValue('Path') } }
+	else { $Key.SetValue('Path', $Value, $Kind) }
+}
+
+## HKCU: seed a user PATH the way real ones look - a %USERPROFILE% reference,
+## stored REG_EXPAND_SZ - and check every property on the shipped function.
+$cu = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+$savedCu = Get-RawPath $cu
+$savedCuKind = Get-PathKind $cu
+try {
+	$seed = '%USERPROFILE%\bin;C:\seeded'
+	$cu.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+	$dir = 'C:\shcl-pathtest'
+	Test-Check (Update-ShclPath -Scope User -Dir $dir) 'user add reports a write'
+	Test-Check ((Get-RawPath $cu) -eq "$seed;$dir") 'user add appends, references unexpanded'
+	Test-Check ((Get-PathKind $cu) -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) 'user add keeps REG_EXPAND_SZ'
+	Test-Check (-not (Update-ShclPath -Scope User -Dir $dir)) 'user add is idempotent'
+	Test-Check ((Get-RawPath $cu) -eq "$seed;$dir") 'idempotent add leaves the value alone'
+	## Whole segments: a dir containing the other's name is not "already there".
+	Test-Check (Update-ShclPath -Scope User -Dir "${dir}2") 'a superstring dir still appends'
+	Test-Check ((Get-RawPath $cu) -eq "$seed;$dir;${dir}2") 'both segments present'
+	Test-Check (Update-ShclPath -Scope User -Dir $dir -Remove) 'user remove reports a write'
+	Test-Check ((Get-RawPath $cu) -eq "$seed;${dir}2") 'remove takes its segment alone'
+	Test-Check ((Get-PathKind $cu) -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) 'remove keeps REG_EXPAND_SZ'
+	Test-Check (-not (Update-ShclPath -Scope User -Dir 'C:\never-there' -Remove)) 'removing an absent segment writes nothing'
+} finally {
+	Restore-PathValue $cu $savedCu $savedCuKind
+	$cu.Close()
+}
+
+## HKLM: the setup's shclpath.ps1, run the way the installer runs it. No
+## seeding - the machine PATH is the runner's working one - so the assertions
+## are segment-wise against what was there.
+$lm = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true)
+$savedLm = Get-RawPath $lm
+$savedLmKind = Get-PathKind $lm
+$script = Join-Path $root 'cicd\packaging\shclpath.ps1'
+$dir = 'C:\shcl-nsistest'
+try {
+	$before = @($savedLm -split ';' | Where-Object { $_ -ne '' })
+	& powershell -NoProfile -ExecutionPolicy Bypass -File $script -Dir $dir
+	Test-Check ($LASTEXITCODE -eq 0) 'setup add exits 0'
+	$after = @((Get-RawPath $lm) -split ';' | Where-Object { $_ -ne '' })
+	Test-Check (($after -join ';') -eq (($before + $dir) -join ';')) 'setup add appends one segment, the rest byte-identical'
+	Test-Check ((Get-PathKind $lm) -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) 'setup add keeps REG_EXPAND_SZ'
+	& powershell -NoProfile -ExecutionPolicy Bypass -File $script -Dir $dir
+	Test-Check ((Get-RawPath $lm) -eq ($after -join ';')) 'setup add is idempotent'
+	& powershell -NoProfile -ExecutionPolicy Bypass -File $script -Dir $dir -Remove
+	Test-Check ($LASTEXITCODE -eq 0) 'setup remove exits 0'
+	Test-Check ((Get-RawPath $lm) -eq ($before -join ';')) 'setup remove restores the segments'
+} finally {
+	Restore-PathValue $lm $savedLm $savedLmKind
+	$lm.Close()
+}
+
+if ($failures -eq 0) { Write-Output 'winpath-regress: OK'; exit 0 }
+Write-Output "winpath-regress: $failures check(s) failed"
+exit 1
