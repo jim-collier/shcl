@@ -151,11 +151,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-140700
 		- Closed: 20260901-200000
 
-	- 🔘 Item 9: C has no write-side counterpart to `shcl_reads_release`.
+	- ✅ Item 9: C has no write-side counterpart to `shcl_reads_release`.
 		- Repeated writes to the same path grow the document arena: about 48 bytes per `shcl_set_int`, 63 per `shcl_set_string`, none of it reclaimed until `shcl_free`. Overwriting one field once a second is a few megabytes a day.
 		- Inherent to a bump arena and not documented as otherwise, so it is not a defect. The reads got their own arena and a release call for the same reason, and a long-running writer has the same problem with no answer.
 		- Smaller than item 3 and reachable only by a consumer that writes in a loop. Worth a documented note even if no call is added.
+		- Done: `shcl_compact(d)` rebuilds the document into fresh arenas through the clone the merge already uses, carries the diagnostics, orphans, lost count and strictness across, swaps the rebuilt document in and frees the old storage. Read results are invalid after it, as after `shcl_reads_release`; on an allocation failure the document is left as it was. The C++ veneer exposes `compact()`. Recorded in `style-guide.md` as a sanctioned deviation, named in the README's C note, and in the changelog under Added.
+		- Pinned by `mem_bounds.c` (100k rewrites of one field grow the arena from 800 bytes to 4.8 MB; compaction brings it to 864 and the document reads the same) and by a property over every corpus case in the C runner: canonical output, every diagnostic, the lost count, the error count and the strictness are unchanged across a compaction. Clean under ASan, UBSan and the leak check.
 		- Opened: 20260901-140800
+		- Closed: 20260901-203000
 
 ### Done
 

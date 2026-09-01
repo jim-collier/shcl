@@ -205,6 +205,11 @@ public:
 	// Leaf names in `over` override; container instances merge by (name, value).
 	void merge(const Document &over) { shcl_merge(d_.get(), over.d_.get()); }
 
+	// Give back what repeated writes left behind: the document is rebuilt into
+	// fresh storage holding only what it now contains. For a long-running
+	// writer; a write-once consumer never needs it.
+	void compact() { shcl_compact(d_.get()); }
+
 	// Schema-driven generation (`shcl init`): a commented, typed starter config
 	// from this document read as a schema, and whether it succeeded - false on
 	// schema faults, with the text then empty; for the fault list, validate()

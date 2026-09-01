@@ -372,6 +372,35 @@ int main(int argc, char **argv) {
 			if (jl != dlen || (dlen && memcmp(dj, ediags, dlen) != 0)) fail(names[ci], "diagnostics differ from expected-diags.txt");
 			free(dj); free(ediags);
 		}
+		// Compaction rebuilds the document into fresh arenas: everything a save
+		// or a strict gate reads off it has to come through unchanged. Every
+		// case, so no shape of trivia or value is left to a hand-picked
+		// fixture; mem_bounds.c checks that the old storage goes.
+		{
+			size_t ndiag = shcl_diag_count(d), nlost = shcl_lost_count(d), nerr = shcl_error_count(d);
+			shcl_strictness st = shcl_strictness_of(d);
+			char *canon = (char *)xrealloc(NULL, got.n + 1); memcpy(canon, got.p, got.n); size_t cn = got.n;
+			char *dj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
+			for (size_t i = 0; i < ndiag; i++) {
+				shcl_str m = shcl_diag_message(d, i);
+				int w = snprintf(NULL, 0, "%zu|%d|%s|", shcl_diag_line(d, i), (int)shcl_diag_severity(d, i), shcl_diag_code(d, i));
+				if (jl + (size_t)w + m.n + 2 > jc) { jc = (jl + (size_t)w + m.n + 2) * 2; dj = xrealloc(dj, jc); }
+				jl += (size_t)snprintf(dj + jl, jc - jl, "%zu|%d|%s|", shcl_diag_line(d, i), (int)shcl_diag_severity(d, i), shcl_diag_code(d, i));
+				memcpy(dj + jl, m.p, m.n); jl += m.n; dj[jl++] = '\n';
+			}
+			shcl_compact(d);
+			if (shcl_diag_count(d) != ndiag || shcl_lost_count(d) != nlost || shcl_error_count(d) != nerr || shcl_strictness_of(d) != st) fail(names[ci], "compaction changed the load's counts");
+			size_t kl = 0;
+			for (size_t i = 0; i < shcl_diag_count(d); i++) {
+				shcl_str m = shcl_diag_message(d, i);
+				char head[128]; int w = snprintf(head, sizeof head, "%zu|%d|%s|", shcl_diag_line(d, i), (int)shcl_diag_severity(d, i), shcl_diag_code(d, i));
+				if (kl + (size_t)w + m.n + 1 > jl || memcmp(dj + kl, head, (size_t)w) != 0 || memcmp(dj + kl + w, m.p, m.n) != 0) { fail(names[ci], "compaction changed a diagnostic"); break; }
+				kl += (size_t)w + m.n + 1;
+			}
+			shcl_str after = shcl_to_canonical(d);
+			if (after.n != cn || (cn && memcmp(after.p, canon, cn) != 0)) fail(names[ci], "compaction changed the canonical output");
+			free(canon); free(dj);
+		}
 		shcl_free(d);
 
 		if (reads) {

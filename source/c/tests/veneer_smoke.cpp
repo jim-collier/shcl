@@ -155,6 +155,10 @@ int main() {
 	CHECK(base.get_or<int64_t>("port", 0) == 9090);
 	CHECK(base.get_or<int64_t>("server[web1].port", 0) == 80);
 	CHECK(base.get_or<std::string>("server[web1].host", std::string()) == "h1");
+	// Compaction: the same document in fresh storage.
+	auto beforeCompact = base.to_canonical();
+	base.compact();
+	CHECK(base.to_canonical() == beforeCompact && base.get_or<int64_t>("port", 0) == 9090);
 
 	// Schema-driven generation: a starter config with a required live field.
 	// The default run appends the format footer; --no-banner is the same bytes

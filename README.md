@@ -802,7 +802,7 @@ if (shcl_save_file(doc, "server.shcl") != SHCL_SAVE_OK)
 shcl_free(doc);   // frees the document and everything handed out from it
 ```
 
-The C binding uses `round()`, so link the math library - `cc -std=c11 -O2 ex.c -o ex -lm`. There are no per-object frees: reads hand back pointers into the document's arena, and the single `shcl_free` releases all of it, so anything you need afterwards must be copied out first. The file calls are an optional companion: `-DSHCL_NO_FILE_IO` compiles them out for an embedded target, leaving `shcl_parse` and `shcl_to_canonical` to work on text you hold yourself.
+The C binding uses `round()`, so link the math library - `cc -std=c11 -O2 ex.c -o ex -lm`. There are no per-object frees: reads hand back pointers into the document's arena, and the single `shcl_free` releases all of it, so anything you need afterwards must be copied out first. A long-running process has two optional calls for a document it keeps: `shcl_reads_release` gives back what the reads have handed out, and `shcl_compact` gives back what repeated writes left behind. The file calls are an optional companion: `-DSHCL_NO_FILE_IO` compiles them out for an embedded target, leaving `shcl_parse` and `shcl_to_canonical` to work on text you hold yourself.
 
 ### Bash
 

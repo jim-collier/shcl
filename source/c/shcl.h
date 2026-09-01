@@ -320,6 +320,15 @@ shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t 
 // read-once consumer wants. A process polling the same document in a loop calls
 // it between passes so the memory does not climb.
 void shcl_reads_release(shcl_doc *d);
+// The write-side counterpart. A write lands in a bump arena and the value it
+// replaced stays there until shcl_free, so a process rewriting one field in a
+// loop grows by a few dozen bytes per write. Compaction rebuilds the document
+// into fresh arenas holding only what it now contains - same content, same
+// diagnostics, same lost count, same strictness - and gives the old ones back.
+// Every read result is invalid after it, as after shcl_reads_release. Optional,
+// for a long-running writer; a write-once consumer never needs it. On an
+// allocation failure the document is left as it was.
+void shcl_compact(shcl_doc *d);
 
 // Convenience tier: the value, or the call-site fallback unless the read is Good
 // - so a missing/empty/bad/ambiguous read cannot masquerade as a real zero. The
@@ -3492,6 +3501,15 @@ static ShclValue w_dup_value(ShclArena *a, const ShclValue *v) {
 
 // Deep-copy over's subtree at `oi` into d's arena under `parent`. d->nodes may
 // reallocate on push, so parent's children vec is fetched only via NODE().
+static ShclTrivia *w_clone_trivia(ShclArena *a, const ShclTrivia *st) {
+	ShclTrivia *nt = (ShclTrivia *)arena_alloc(a, sizeof(ShclTrivia));
+	memset(nt, 0, sizeof(ShclTrivia));
+	nt->trailing = s_dup(a, st->trailing);
+	for (size_t i = 0; i < st->leading.len; i++) ShclVecLead_push(a, &nt->leading, lead_make(s_dup(a, st->leading.data[i].text), st->leading.data[i].blank_before));
+	for (size_t i = 0; i < st->after.len; i++) ShclVecLead_push(a, &nt->after, lead_make(s_dup(a, st->after.data[i].text), st->after.data[i].blank_before));
+	for (size_t i = 0; i < st->inside.len; i++) ShclVecLead_push(a, &nt->inside, lead_make(s_dup(a, st->inside.data[i].text), st->inside.data[i].blank_before));
+	return nt;
+}
 static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size_t parent) {
 	ShclArena *a = &d->arena;
 	const ShclNode *src = &over->nodes.data[oi];
@@ -3504,16 +3522,7 @@ static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size
 	n.star_list = src->star_list;
 	n.star_mixed = src->star_mixed;
 	n.blank_before = src->blank_before;
-	if (src->trivia) {
-		const ShclTrivia *st = src->trivia;
-		ShclTrivia *nt = (ShclTrivia *)arena_alloc(a, sizeof(ShclTrivia));
-		memset(nt, 0, sizeof(ShclTrivia));
-		nt->trailing = s_dup(a, st->trailing);
-		for (size_t i = 0; i < st->leading.len; i++) ShclVecLead_push(a, &nt->leading, lead_make(s_dup(a, st->leading.data[i].text), st->leading.data[i].blank_before));
-		for (size_t i = 0; i < st->after.len; i++) ShclVecLead_push(a, &nt->after, lead_make(s_dup(a, st->after.data[i].text), st->after.data[i].blank_before));
-		for (size_t i = 0; i < st->inside.len; i++) ShclVecLead_push(a, &nt->inside, lead_make(s_dup(a, st->inside.data[i].text), st->inside.data[i].blank_before));
-		n.trivia = nt;
-	}
+	if (src->trivia) n.trivia = w_clone_trivia(a, src->trivia);
 	size_t idx = d->nodes.len;
 	nodes_push(d, n);
 	// Snapshot the source children (const, stable) before recursing.
@@ -4161,6 +4170,30 @@ shcl_doc *shcl_parse_with(const char *text, size_t len, shcl_strictness s) { ret
 shcl_doc *shcl_parse_limited(const char *text, size_t len, shcl_strictness s, size_t max_nodes, size_t max_elements, size_t max_diags) { return do_parse(text, len, s, max_nodes, max_elements, max_diags); }
 void shcl_free(shcl_doc *d) { if (!d) return; free(d->nodes.data); arena_free(&d->arena); arena_free(&d->scratch); arena_free(&d->reads); arena_free(&d->index_arena); free(d); }
 void shcl_reads_release(shcl_doc *d) { if (d) arena_reset(&d->reads); }
+void shcl_compact(shcl_doc *d) {
+	if (!d) return;
+	shcl_doc *n = shcl_new();
+	if (!n) return;
+	ShclArena *a = &n->arena;
+	// The tree, root's own trivia included, then everything the load recorded
+	// that a save or a strict gate reads off the document.
+	const ShclNode *root = &d->nodes.data[ROOT];
+	NODE(n, ROOT).blank_before = root->blank_before;
+	if (root->trivia) NODE(n, ROOT).trivia = w_clone_trivia(a, root->trivia);
+	for (size_t i = 0; i < root->children.len; i++) {
+		size_t c = w_clone_subtree(n, d, root->children.data[i], ROOT);
+		ShclVecSize_push(a, &NODE(n, ROOT).children, c);
+	}
+	for (size_t i = 0; i < d->diags.len; i++) push_diag(n, d->diags.data[i].line, d->diags.data[i].sev, d->diags.data[i].code, s_dup(a, d->diags.data[i].message));
+	for (size_t i = 0; i < d->orphans.len; i++) ShclVecLead_push(a, &n->orphans, lead_make(s_dup(a, d->orphans.data[i].text), d->orphans.data[i].blank_before));
+	n->strictness = d->strictness;
+	n->lost = d->lost;
+	// Swap the rebuilt document in and give the old storage back.
+	shcl_doc old = *d;
+	*d = *n;
+	free(n);
+	free(old.nodes.data); arena_free(&old.arena); arena_free(&old.scratch); arena_free(&old.reads); arena_free(&old.index_arena);
+}
 int shcl_strict_failed(const shcl_doc *d) {
 	if (d->strictness != SHCL_STRICT) return 0;
 	for (size_t i = 0; i < d->diags.len; i++) if (d->diags.data[i].sev == SHCL_SEV_ERROR) return 1;
