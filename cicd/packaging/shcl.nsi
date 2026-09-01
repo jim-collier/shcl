@@ -52,22 +52,10 @@ VIAddVersionKey "LegalCopyright"  "Copyright (C) 2026 Jim Collier. MIT License."
 ; through NSIS variables: NSIS strings are capped at NSIS_MAX_STRLEN (1024), so
 ; a longer PATH came back truncated - or empty, which no length guard can tell
 ; from a genuinely empty value - and writing that back destroyed it. The script
-; also compares whole segments case-insensitively (a substring test let any
-; directory containing the name suppress the append) and keeps REG_EXPAND_SZ.
+; is a real file (shclpath.ps1, beside this one) rather than FileWrite lines,
+; so the text that ships is the text the hosted gate runs.
 !macro WriteShclPathPs1
-	FileOpen $0 "$PLUGINSDIR\shclpath.ps1" w
-	FileWrite $0 "param([string]$$Dir, [switch]$$Remove)$\r$\n"
-	FileWrite $0 "$$key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $$true)$\r$\n"
-	FileWrite $0 "$$cur = [string]$$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)$\r$\n"
-	FileWrite $0 "$$parts = @($$cur -split ';' | Where-Object { $$_ -ne '' })$\r$\n"
-	FileWrite $0 "if ($$Remove) {$\r$\n"
-	FileWrite $0 "	$$new = @($$parts | Where-Object { $$_ -ne $$Dir }) -join ';'$\r$\n"
-	FileWrite $0 "	if ($$new -ne $$cur) { $$key.SetValue('Path', $$new, [Microsoft.Win32.RegistryValueKind]::ExpandString) }$\r$\n"
-	FileWrite $0 "} elseif ($$parts -notcontains $$Dir) {$\r$\n"
-	FileWrite $0 "	$$key.SetValue('Path', (@($$parts + $$Dir) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)$\r$\n"
-	FileWrite $0 "}$\r$\n"
-	FileWrite $0 "$$key.Close()$\r$\n"
-	FileClose $0
+	File "/oname=$PLUGINSDIR\shclpath.ps1" "shclpath.ps1"
 !macroend
 
 Section "Install"

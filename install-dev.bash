@@ -17,6 +17,8 @@
 ##		--dir <path>   where to clone (default ./shcl; skipped when run inside
 ##		               an existing shcl clone).
 ##		--yes | -y     skip the confirmation prompt.
+##		--hooks-only   skip the toolchain and just point git at the tracked
+##		               hooks (for a box that already has the tools).
 ##
 ##	What a full dev box needs (see contributing.md "How to develop"):
 ##		gating:   rustup (rustfmt+clippy ride along), go, python3, gcc+g++,
@@ -36,6 +38,8 @@ set -euo pipefail
 REPO_URL="https://github.com/jim-collier/shcl"
 clone_dir="./shcl"
 assume_yes=0
+hooks_only=0
+dir_given=0
 
 die() { printf 'install-dev.bash: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -63,6 +67,9 @@ Options:
   --dir <path>   where to clone (default ./shcl; skipped when run inside an
                  existing shcl clone).
   --yes, -y      skip the confirmation prompt.
+  --hooks-only   skip the toolchain and just point git at the tracked hooks
+                 (for a box that already has the tools). Needs an existing
+                 clone: run it inside one, or name one with --dir.
 
 What a full dev box needs (see contributing.md, "How to develop"):
   gating:    rustup (rustfmt and clippy ride along), go, python3, gcc and g++,
@@ -75,8 +82,9 @@ EOF
 
 while (( $# )); do
 	case "$1" in
-		--dir=*) clone_dir="${1#*=}" ;;
-		--dir)   (( $# >= 2 )) || die "missing value for --dir (try --dir=VALUE)"; shift; clone_dir="$1" ;;
+		--dir=*) clone_dir="${1#*=}"; dir_given=1 ;;
+		--dir)   (( $# >= 2 )) || die "missing value for --dir (try --dir=VALUE)"; shift; clone_dir="$1"; dir_given=1 ;;
+		--hooks-only) hooks_only=1 ;;
 		-y|--yes) assume_yes=1 ;;
 		-h|--help) usage; exit 0 ;;
 		*) die "unknown option: $1" ;;
@@ -96,12 +104,38 @@ elif have wget; then
 	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"; }
 fi
 
+## Point git at the tracked hooks rather than copying them in, so an update to
+## the hook arrives with a pull instead of needing a reinstall. -e, not -d: in
+## a worktree .git is a file.
+setup_hooks() {
+	git -C "${clone_dir}" config core.hooksPath cicd/hooks
+	echo "git hooks: core.hooksPath -> cicd/hooks (pre-push gates main and dev)"
+	## The gate runs for minutes while git already holds the ssh session open;
+	## without keepalives GitHub drops it and the push dies of SIGPIPE after a
+	## green gate. Only set when nothing is configured, so a chosen key stays.
+	if ! git -C "${clone_dir}" config core.sshCommand >/dev/null; then
+		git -C "${clone_dir}" config core.sshCommand "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=30"
+		echo "git ssh: keepalives on, so the pre-push gate cannot outlive the connection"
+	fi
+}
+
 ## Already inside a clone? Then set up here instead of cloning again. Known by
-## shape, not by remote URL, so a fork's clone counts too.
+## shape, not by remote URL, so a fork's clone counts too. An explicit --dir
+## wins under --hooks-only, which exists to be pointed at a clone.
 in_clone=0
-if top="$(git rev-parse --show-toplevel 2>/dev/null)" \
+if (( ! (hooks_only && dir_given) )) \
+	&& top="$(git rev-parse --show-toplevel 2>/dev/null)" \
 	&& [[ -f "${top}/cicd/cicd.bash" ]] && grep -q '^name = "shcl"' "${top}/source/rust/Cargo.toml" 2>/dev/null; then
 	in_clone=1; clone_dir="${top}"
+fi
+
+## Hooks only: no clone, no stocktaking, no installs.
+if (( hooks_only )); then
+	if (( ! in_clone )); then
+		[[ -e "${clone_dir}/.git" && -f "${clone_dir}/cicd/cicd.bash" ]] || die "--hooks-only needs an existing clone (run inside one, or name one with --dir)"
+	fi
+	setup_hooks
+	exit 0
 fi
 
 ## Tool versions come from TOOL_PINS in cicd/config.bash, so a dev box gets what
@@ -247,20 +281,7 @@ if have pwsh; then
 	pwsh -NoProfile -Command "if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Install-Module PSScriptAnalyzer -Scope CurrentUser -Force }"
 fi
 
-## Point git at the tracked hooks rather than copying them in, so an update to
-## the hook arrives with a pull instead of needing a reinstall. -e, not -d: in
-## a worktree .git is a file.
-if [[ -e "${clone_dir}/.git" ]]; then
-	git -C "${clone_dir}" config core.hooksPath cicd/hooks
-	echo "git hooks: core.hooksPath -> cicd/hooks (pre-push gates main and dev)"
-	## The gate runs for minutes while git already holds the ssh session open;
-	## without keepalives GitHub drops it and the push dies of SIGPIPE after a
-	## green gate. Only set when nothing is configured, so a chosen key stays.
-	if ! git -C "${clone_dir}" config core.sshCommand >/dev/null; then
-		git -C "${clone_dir}" config core.sshCommand "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=30"
-		echo "git ssh: keepalives on, so the pre-push gate cannot outlive the connection"
-	fi
-fi
+[[ -e "${clone_dir}/.git" ]] && setup_hooks
 
 echo
 echo "done. The gate is:  cicd/cicd.bash --ci"

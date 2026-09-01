@@ -107,6 +107,8 @@ if command -v makensis >/dev/null 2>&1; then
 	## Same icon the executables carry. Absent is not an error - the setup just
 	## falls back to the NSIS default.
 	icoArg=""; [[ -f "${root}/assets/shcl.ico" ]] && icoArg="${root}/assets/shcl.ico"
+	## Packed verbatim into the setup; its mtime rides into the archive too.
+	fPinMtime "${meDir}/../packaging/shclpath.ps1"
 	for osarch in x86_64 arm64; do
 		exe="${artDir}/shcl-${ver}-windows-${osarch}.exe"
 		[[ -f "${exe}" ]] || continue
