@@ -85,6 +85,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 			- The temp name was split on `/` only. Now either separator on Windows, and a drive-relative `C:x` splits after the colon.
 		- ✅ The library exits the caller's process
 			- The five `exit(70)` sites go through one `SHCL_OOM()` macro an embedder can define. The default is unchanged.
+			- Then the rest of it: a parse and a validate arm a recovery point, so an allocation failure unwinds out of them and the call returns NULL instead of reaching the macro at all. `shcl_load_file` follows its parse and the C++ veneer's `Document` tests false. The report's own sketch - carry on out of a small scratch block - was tried and abandoned: a bump arena holds its vectors' bookkeeping, so an allocation served out of nowhere hands back node indices that are no longer node indices.
 		- ✅ File tier is code-page bound, not UTF-8
 			- Every file call on Windows is the wide one now. A path that is not valid UTF-8 is refused rather than opened under another name.
 		- ✅ Reader has no size limit and returns no bytes
@@ -756,7 +757,8 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Cause: the number parser and the number formatter both go through library calls that follow the locale's decimal point. The other three bindings' equivalents are locale-independent by definition.
 		- The cli is safe: it pins the locale at startup, with a comment saying exactly why. The library, which is the actual product for c, does not, and a host application setting its own locale is ordinary.
 		- Fix: pin the numeric locale around those two sites.
-		- Fixed by translating the decimal point at both sites instead of pinning: pinning is a process-wide side effect a library has no business causing, and it is not thread-safe. Whole corpus now formats byte-identically under a comma-decimal locale. Not corpus-pinnable (no case can set a locale), so it lives in the code.
+		- Fixed by translating the decimal point at both sites instead of pinning: pinning is a process-wide side effect a library has no business causing, and it is not thread-safe. Whole corpus now formats byte-identically under a comma-decimal locale.
+		- Pinned since 20260831 by `check-locale.bash`, which builds a comma-decimal locale of its own and runs the whole C corpus and the CLI under it. The earlier reading that this could not be tested was about the corpus, where it holds, and not about a gate. The runner's own float parsing had the same defect and was fixed with it.
 		- Opened: 20260817-204524
 		- Closed: 20260818-113345
 
@@ -957,6 +959,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Values that came from parsing are always short enough, so the test corpus can't see it.
 		- Fixed: the text is built in full and then clamped to the documented size, which is now stated at the declaration. Output for values that came from parsing is unchanged.
 		- Found alongside it: negating the most negative offset was itself undefined, and is now done at a width that holds it.
+		- Pinned since 20260831 by the C runner's `dt_clamp` fixture, which renders a struct filled with the extreme of every field. The clamp is checked directly; the working buffer behind it is checked by the sanitizer run.
 		- Opened: 20260803-111610
 		- Closed: 20260803-130248
 
@@ -1016,6 +1019,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- The reference takes the list by reference, so the mutation is expected there. The Go spelling returns a value, which reads as a copy.
 		- Command-line use is unaffected; this only bit programs using the library.
 		- Fixed: it builds its own list, so the caller's is never disturbed.
+		- Pinned since 20260831 by `TestSuppressLeavesTheCallersDiagnosticsAlone`, over both filters. Backing the fix out reproduces the shuffle and the duplicate exactly.
 		- Opened: 20260803-111610
 		- Closed: 20260803-134341
 
@@ -1072,6 +1076,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- ✅ Item 23: hosted CI installs a checking tool without verifying the download.
 		- The workflow pins its actions by commit and its packages by version, then fetches one tool as an archive with no checksum and installs it ahead of the system copy.
 		- Fixed: the download is checked against a pinned hash before it is installed.
+		- Pinned since 20260831 in `check-pins.bash`: every file the workflow fetches has to be named on a line that checks it against a sha256.
 		- Opened: 20260803-111610
 		- Closed: 20260803-134341
 
@@ -1264,6 +1269,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Cause: `frac` is a public field with no cap and is `memcpy`'d unbounded; the public `shcl_set_datetime` passes a 64-byte stack array.
 		- Not reachable from parsed input, since the parser bounds every component, so this is a defensiveness gap in a public API, not an input-driven hole.
 		- Fixed: the frac copy is capped so the render always fits the documented 64 bytes; header doc states the truncation.
+		- Pinned since 20260831 by the C runner's `dt_clamp` fixture, with the same round's item 7.
 		- Opened: 20260725-152141
 		- Closed: 20260725-170306
 

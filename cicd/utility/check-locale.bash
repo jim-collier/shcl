@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+
+##	Purpose:
+##		Float handling must not follow the host program's locale. The C library
+##		converts both directions through calls that do - strtod and printf -
+##		and under a comma-decimal locale it once wrote 1.5 as "1" and read every
+##		float back as a bad type. No corpus case can ask for a locale, so the
+##		fix went in with nothing pinning it.
+##
+##		This builds a comma-decimal locale from a definition of its own (no
+##		system locale is guaranteed to have one, and generating one needs no
+##		privileges) and runs the whole C corpus under it, then the CLI end to
+##		end on the same document.
+##	Syntax:
+##		check-locale.bash [ROOT]
+##	Exit: 0 = clean or skipped, 1 = a check failed, 2 = usage or missing input.
+##	History: At bottom of script.
+
+##	Copyright © 2026 Bubbles (ID: XଌฅრX۳ᛟԃლፀƅꓩหδლც)
+##	Licensed under The MIT License (MIT). Full text at:
+##		https://mit-license.org/
+##	SPDX-License-Identifier: MIT
+
+
+set -Eeuo pipefail
+
+repoDir="${1:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}"
+[[ -d "${repoDir}" ]] || { echo "check-locale: no such directory: ${repoDir}" >&2; exit 2 ;}
+
+##	Both come from libc's own packaging, so a machine missing them is one where
+##	no locale could be built at all. Loud rather than silent: a gate nobody
+##	notices has stopped running is worse than one that fails.
+if ! command -v localedef >/dev/null 2>&1 || [[ ! -e /usr/share/i18n/locales/POSIX ]]; then
+	echo "check-locale: SKIPPED - localedef or the POSIX locale source is missing"
+	exit 0
+fi
+
+work="$(mktemp -d)"; trap 'rm -rf "${work}"' EXIT
+
+##	POSIX for every category except the numeric one, which is the whole point.
+##	A real locale (de_DE and friends) would do, but none is guaranteed present.
+{
+	printf 'LC_NUMERIC\ndecimal_point "<U002C>"\nthousands_sep "<U002E>"\ngrouping 3;3\nEND LC_NUMERIC\n\n'
+	for cat in LC_CTYPE LC_COLLATE LC_TIME LC_MONETARY LC_MESSAGES LC_PAPER; do
+		printf '%s\ncopy "POSIX"\nEND %s\n\n' "${cat}" "${cat}"
+	done
+} > "${work}/commadec"
+mkdir -p "${work}/loc"
+##	-c to write the locale anyway: POSIX defines none of the address-book
+##	categories, so it warns about each missing one and exits nonzero. Whether it
+##	worked is decided by reading the locale back, not by the exit status.
+localedef -c -i "${work}/commadec" -f UTF-8 "${work}/loc/commadec.UTF-8" >"${work}/localedef.log" 2>&1 || true
+export LOCPATH="${work}/loc"
+point="$(LC_ALL=commadec.UTF-8 locale decimal_point 2>/dev/null || true)"
+if [[ "${point}" != "," ]]; then
+	echo "check-locale: the built locale's decimal point is '${point}', not a comma:" >&2
+	tail -n 5 "${work}/localedef.log" >&2
+	exit 2
+fi
+
+declare -i nBad=0
+fBad(){ echo "check-locale: $1" >&2; nBad+=1 ;}
+
+##	The library, through the corpus runner. SHCL_TEST_LC_NUMERIC is what tells
+##	it to take the numeric category from the environment instead of pinning C.
+cc -std=c11 -O2 -Wall -Wextra -Werror -I"${repoDir}/source/c" \
+	"${repoDir}/source/c/tests/conformance.c" -o "${work}/conformance" -lm -lpthread \
+	|| { echo "check-locale: the corpus runner did not build" >&2; exit 2 ;}
+LC_ALL=commadec.UTF-8 SHCL_TEST_LC_NUMERIC=1 "${work}/conformance" "${repoDir}/project/conformance" \
+	> "${work}/corpus.out" 2>&1 || { fBad "the corpus fails under a comma-decimal locale:"; tail -n 5 "${work}/corpus.out" >&2 ;}
+
+##	And the same property end to end, which is what a user sees. The CLI pins its
+##	own locale at startup as well, so this holds twice over now; back either half
+##	out on its own and the corpus check above is the one that fires.
+cc -std=c11 -O2 -Wall -Wextra -Werror -I"${repoDir}/source/c" \
+	"${repoDir}/source/c/cmd/shcl/main.c" -o "${work}/shcl" -lm \
+	|| { echo "check-locale: the C CLI did not build" >&2; exit 2 ;}
+printf 'ratio: 3.5\ntiny: 0.125\nbig: 1.5e300\nneg: -0.5\n' > "${work}/floats.shcl"
+LC_ALL=C "${work}/shcl" fmt "${work}/floats.shcl" > "${work}/plain.out" 2>&1 || true
+LC_ALL=commadec.UTF-8 "${work}/shcl" fmt "${work}/floats.shcl" > "${work}/comma.out" 2>&1 || true
+if ! cmp -s "${work}/plain.out" "${work}/comma.out"; then
+	fBad "the CLI formats floats differently under a comma-decimal locale:"
+	diff "${work}/plain.out" "${work}/comma.out" | head -n 6 >&2
+fi
+grep -q '^ratio: 3\.5$' "${work}/comma.out" || fBad "the CLI did not write 3.5 under a comma-decimal locale"
+
+if ((nBad)); then
+	echo "check-locale: ${nBad} check(s) failed" >&2
+	exit 1
+fi
+echo "check-locale: OK: corpus and CLI unchanged under a comma-decimal locale"
+
+##	History:
+##		2026-08-31  Created. The locale fix from the 20260817 round went in with
+##		            nothing pinning it, on the reading that a corpus case cannot
+##		            set a locale - which is true of the corpus and not of a gate.

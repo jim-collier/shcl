@@ -183,7 +183,20 @@ static int cf_f64(const char *p, size_t n, double *out) {
 		}
 		if (i != n) return 0;
 	}
-	char *b = (char *)xrealloc(NULL, n + 1); memcpy(b, p, n); b[n] = 0;
+	/* strtod follows the locale's decimal point, and the gate runs this under a
+	   comma-decimal one. An op file spells a float with '.', same as a
+	   document, so translate before the call - the library does the same at its
+	   own two conversion sites. */
+	const char *dp = localeconv()->decimal_point;
+	size_t dn = (dp && *dp) ? strlen(dp) : 1;
+	if (!dp || !*dp) dp = ".";
+	char *b = (char *)xrealloc(NULL, n * dn + 1);
+	size_t j = 0;
+	for (size_t k = 0; k < n; k++) {
+		if (p[k] == '.') { memcpy(b + j, dp, dn); j += dn; }
+		else b[j++] = p[k];
+	}
+	b[j] = 0;
 	*out = strtod(b, NULL);
 	free(b);
 	return 1;
@@ -302,6 +315,11 @@ static void *validate_on_small_stack(void *unused) {
 
 int main(int argc, char **argv) {
 	setlocale(LC_ALL, "C");
+	/* The library has to format and read floats the same whatever locale the
+	   host program has set, and no corpus case can ask for a locale. The gate
+	   builds a comma-decimal one and runs the whole corpus under it; only the
+	   numeric category moves, so everything else here stays deterministic. */
+	if (getenv("SHCL_TEST_LC_NUMERIC")) setlocale(LC_NUMERIC, "");
 	const char *corpus = argc > 1 ? argv[1] : "project/conformance";
 
 	DIR *dir = opendir(corpus);
@@ -1070,6 +1088,31 @@ int main(int argc, char **argv) {
 		}
 		if (arena_bytes(&ad->reads) > 4096) fail("array_retain", "releasing per read did not keep the arena flat");
 		shcl_free(ad);
+	}
+	// Every field of shcl_datetime is public, so a caller can hand the renderer
+	// values the parser never produces - a negative year, epoch seconds in sec,
+	// a frac of any length. The buffer it documents is fixed, so the render has
+	// to clamp. C-only: nothing to mirror where the caller cannot supply them.
+	{
+		shcl_datetime worst;
+		memset(&worst, 0, sizeof worst);
+		char frac[4096]; memset(frac, '9', sizeof frac);
+		worst.has_date = 1; worst.year = INT32_MIN; worst.month = UINT32_MAX; worst.day = UINT32_MAX;
+		worst.has_time = 1; worst.hour = UINT32_MAX; worst.minute = UINT32_MAX;
+		worst.has_sec = 1; worst.sec = UINT32_MAX;
+		worst.has_frac = 1; worst.frac.p = frac; worst.frac.n = sizeof frac;
+		worst.zone = SHCL_ZONE_OFFSET; worst.off_min = INT32_MIN;
+		// On the heap and exactly the documented size, so a write past it is a
+		// sanitizer stop rather than a quiet stamp on the next local.
+		char *out = (char *)xrealloc(NULL, SHCL_DT_BUF);
+		size_t dn = shcl_datetime_str(&worst, out);
+		if (dn > SHCL_DT_BUF) fail("dt_clamp", "the render outgrew the buffer it documents");
+		free(out);
+		// The set path passes its own SHCL_DT_BUF array, so it has to survive
+		// the same value.
+		shcl_doc *dd = shcl_new();
+		if (!shcl_set_datetime(dd, "when", 4, &worst)) fail("dt_clamp", "the setter refused a hand-built datetime");
+		shcl_free(dd);
 	}
 	// write_reason: the reason behind a setter's bare 0. Same fixture in every
 	// runner.
