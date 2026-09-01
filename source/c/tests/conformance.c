@@ -748,7 +748,7 @@ int main(int argc, char **argv) {
 	// a load. Same fixture in every runner.
 	{
 		const char *lt = "a: 1\nb: 2\nc: 3\nd: 4\n";
-		shcl_doc *ld = shcl_parse_limited(lt, strlen(lt), SHCL_STANDARD, 2, 0);
+		shcl_doc *ld = shcl_parse_limited(lt, strlen(lt), SHCL_STANDARD, 2, 0, 0);
 		size_t ncap = 0, capline = 0;
 		for (size_t k = 0; k < shcl_diag_count(ld); k++)
 			if (strcmp(shcl_diag_code(ld, k), "E020") == 0) { ncap++; capline = shcl_diag_line(ld, k); }
@@ -758,14 +758,14 @@ int main(int argc, char **argv) {
 		if (shcl_exists(ld, "d", 1)) fail("parse_limited", "the remainder must not parse");
 		shcl_free(ld);
 		// A cap crossed by the document's last content line still reports.
-		ld = shcl_parse_limited("a: 1\nb: 2\nc: 3", 15, SHCL_STANDARD, 2, 0);
+		ld = shcl_parse_limited("a: 1\nb: 2\nc: 3", 15, SHCL_STANDARD, 2, 0, 0);
 		ncap = 0;
 		for (size_t k = 0; k < shcl_diag_count(ld); k++)
 			if (strcmp(shcl_diag_code(ld, k), "E020") == 0) ncap++;
 		if (ncap != 1 || shcl_lost_count(ld) != 0) fail("parse_limited", "last-line cross must report, nothing lost");
 		shcl_free(ld);
 		// One line may overshoot the cap by its own path; the parse still stops.
-		ld = shcl_parse_limited("x.y.z: 1\n", 9, SHCL_STANDARD, 1, 0);
+		ld = shcl_parse_limited("x.y.z: 1\n", 9, SHCL_STANDARD, 1, 0, 0);
 		ncap = 0;
 		for (size_t k = 0; k < shcl_diag_count(ld); k++)
 			if (strcmp(shcl_diag_code(ld, k), "E020") == 0) ncap++;
@@ -773,13 +773,13 @@ int main(int argc, char **argv) {
 		if (shcl_get_int_or(ld, "x.y.z", 5, 0) != 1) fail("parse_limited", "overshot line must stay in the document");
 		shcl_free(ld);
 		// 0 is no cap: identical to shcl_parse_with.
-		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STANDARD, 0, 0);
+		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STANDARD, 0, 0, 0);
 		if (shcl_diag_count(ld) != 0) fail("parse_limited", "uncapped must match parse_with");
 		shcl_free(ld);
 		// Element cap, inline spelling: the whole line is refused, the rest of
 		// the document is untouched.
 		const char *et = "arr: 1, 2, 3\nok: 5\n";
-		ld = shcl_parse_limited(et, strlen(et), SHCL_STANDARD, 0, 2);
+		ld = shcl_parse_limited(et, strlen(et), SHCL_STANDARD, 0, 2, 0);
 		ncap = 0; capline = 0;
 		for (size_t k = 0; k < shcl_diag_count(ld); k++)
 			if (strcmp(shcl_diag_code(ld, k), "E021") == 0) { ncap++; capline = shcl_diag_line(ld, k); }
@@ -791,7 +791,7 @@ int main(int argc, char **argv) {
 		// Element cap, stacked spelling: each element line past the cap is
 		// refused on its own; the array keeps what fit.
 		const char *st2 = "arr:\n\t* 1\n\t* 2\n\t* 3\n";
-		ld = shcl_parse_limited(st2, strlen(st2), SHCL_STANDARD, 0, 2);
+		ld = shcl_parse_limited(st2, strlen(st2), SHCL_STANDARD, 0, 2, 0);
 		ncap = 0;
 		for (size_t k = 0; k < shcl_diag_count(ld); k++)
 			if (strcmp(shcl_diag_code(ld, k), "E021") == 0) ncap++;
@@ -811,7 +811,7 @@ int main(int argc, char **argv) {
 		for (size_t ci = 0; ci < sizeof counts / sizeof counts[0]; ci++) {
 			char ctext[64]; snprintf(ctext, sizeof ctext, "v: %s\n", counts[ci].spelling);
 			size_t n = counts[ci].n;
-			ld = shcl_parse_limited(ctext, strlen(ctext), SHCL_STANDARD, 0, n ? n : 1);
+			ld = shcl_parse_limited(ctext, strlen(ctext), SHCL_STANDARD, 0, n ? n : 1, 0);
 			for (size_t k = 0; k < shcl_diag_count(ld); k++)
 				if (strcmp(shcl_diag_code(ld, k), "E021") == 0) fail("parse_limited", "count table: refused at the exact cap");
 			shcl_read_str_arr sa = shcl_read_string_array(ld, "v", 1);
@@ -819,7 +819,7 @@ int main(int argc, char **argv) {
 				fail("parse_limited", "count table: element count differs from the read");
 			shcl_free(ld);
 			if (n >= 2) {
-				ld = shcl_parse_limited(ctext, strlen(ctext), SHCL_STANDARD, 0, n - 1);
+				ld = shcl_parse_limited(ctext, strlen(ctext), SHCL_STANDARD, 0, n - 1, 0);
 				if (shcl_lost_count(ld) != 1) fail("parse_limited", "count table: not refused one under");
 				shcl_free(ld);
 			}
@@ -827,12 +827,46 @@ int main(int argc, char **argv) {
 		// A refused line reports the cap alone: the quote check runs after
 		// it, so it never splits a value the cap already turned away.
 		const char *qt = "v: a, \"open, b\n";
-		ld = shcl_parse_limited(qt, strlen(qt), SHCL_STANDARD, 0, 1);
+		ld = shcl_parse_limited(qt, strlen(qt), SHCL_STANDARD, 0, 1, 0);
 		if (shcl_diag_count(ld) != 1 || strcmp(shcl_diag_code(ld, 0), "E021") != 0) fail("parse_limited", "refused line must report the cap alone");
+		shcl_free(ld);
+		// Diagnostic cap: the first N are listed and one E022 tail counts the
+		// rest. Its severity is Error when any unlisted one was, so a scan of
+		// the list for errors still finds one and error_count stays nonzero.
+		char bad[9 * 50 + 1]; bad[0] = 0;
+		for (int i = 0; i < 50; i++) strcat(bad, "no colon\n");
+		ld = shcl_parse_limited(bad, strlen(bad), SHCL_STANDARD, 0, 0, 10);
+		if (shcl_diag_count(ld) != 11) fail("parse_limited", "diag cap: want 11 listed");
+		else {
+			for (size_t k = 0; k < 10; k++) if (strcmp(shcl_diag_code(ld, k), "E014") != 0) fail("parse_limited", "diag cap: listed the wrong code");
+			shcl_str tm = shcl_diag_message(ld, 10);
+			const char *want = "diagnostic cap of 10 reached; 40 more not listed, 40 of them errors";
+			if (strcmp(shcl_diag_code(ld, 10), "E022") != 0 || shcl_diag_severity(ld, 10) != SHCL_SEV_ERROR || shcl_diag_line(ld, 10) != 0 || tm.n != strlen(want) || memcmp(tm.p, want, tm.n) != 0)
+				fail("parse_limited", "diag cap: tail differs");
+		}
+		if (shcl_error_count(ld) != 11) fail("parse_limited", "diag cap: error count");
+		shcl_free(ld);
+		ld = shcl_parse_limited(bad, strlen(bad), SHCL_STRICT, 0, 0, 10);
+		if (!shcl_strict_failed(ld)) fail("parse_limited", "diag cap: capped strict load must fail");
+		shcl_free(ld);
+		// Hints past the cap leave a Hint tail, so a document with no error
+		// still loads at Strict.
+		const char *hints = "x: 1\nx: 2\ny: 1\ny: 2\n";
+		ld = shcl_parse_limited(hints, strlen(hints), SHCL_STRICT, 0, 0, 1);
+		if (shcl_strict_failed(ld) || shcl_diag_count(ld) != 2 || strcmp(shcl_diag_code(ld, 0), "H001") != 0 || strcmp(shcl_diag_code(ld, 1), "E022") != 0 || shcl_diag_severity(ld, 1) != SHCL_SEV_HINT || shcl_error_count(ld) != 0)
+			fail("parse_limited", "hint tail differs");
+		else {
+			shcl_str tm = shcl_diag_message(ld, 1); const char *suffix = "1 more not listed, 0 of them errors";
+			if (tm.n < strlen(suffix) || memcmp(tm.p + tm.n - strlen(suffix), suffix, strlen(suffix)) != 0) fail("parse_limited", "hint tail message");
+		}
+		shcl_free(ld);
+		// At the cap exactly, nothing is unlisted and there is no tail.
+		ld = shcl_parse_limited(hints, strlen(hints), SHCL_STANDARD, 0, 0, 2);
+		if (shcl_diag_count(ld) != 2) fail("parse_limited", "at the cap: a tail appeared");
 		shcl_free(ld);
 		// A cap diagnostic is an error, so a Strict capped load fails - with
 		// the parsed part still readable.
-		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STRICT, 2, 0);
+		ld = shcl_parse_limited(lt, strlen(lt), SHCL_STRICT, 2, 0, 0);
 		if (!shcl_strict_failed(ld)) fail("parse_limited", "capped strict load must fail");
 		if (shcl_get_int_or(ld, "a", 1, 0) != 1) fail("parse_limited", "failed strict doc unusable");
 		shcl_free(ld);

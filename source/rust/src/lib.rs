@@ -1328,9 +1328,13 @@ struct Parser {
 	reentered: HashMap<usize, usize>,
 	lost: usize, // dropped lines/values canonical output cannot re-emit
 	// parse_limited's caps, 0 = uncapped: nodes counted against the arena
-	// (root excluded), elements against a single value's cell.
+	// (root excluded), elements against a single value's cell, diagnostics
+	// against the list. Past the diagnostic cap nothing is listed, only
+	// counted (errors, hints), for the one tail entry the parse ends with.
 	max_nodes: usize,
 	max_elements: usize,
+	max_diags: usize,
+	unlisted: (usize, usize),
 }
 
 impl Parser {
@@ -1362,19 +1366,35 @@ impl Parser {
 			lost: 0,
 			max_nodes: 0,
 			max_elements: 0,
+			max_diags: 0,
+			unlisted: (0, 0),
 		}
 	}
 
-	fn limited(max_nodes: usize, max_elements: usize) -> Parser {
+	fn limited(max_nodes: usize, max_elements: usize, max_diags: usize) -> Parser {
 		let mut p = Parser::new();
 		p.max_nodes = max_nodes;
 		p.max_elements = max_elements;
+		p.max_diags = max_diags;
 		p
+	}
+
+	/// Every parse diagnostic goes through here, so the cap sees them all.
+	fn diag(&mut self, d: Diagnostic) {
+		if self.max_diags != 0 && self.diags.len() >= self.max_diags {
+			if d.severity == Severity::Error {
+				self.unlisted.0 += 1;
+			} else {
+				self.unlisted.1 += 1;
+			}
+			return;
+		}
+		self.diags.push(d);
 	}
 
 	fn err(&mut self, line: usize, code: &'static str, msg: impl Into<String>) {
 		let message = msg.into();
-		self.diags.push(Diagnostic {
+		self.diag(Diagnostic {
 			line,
 			severity: Severity::Error,
 			message,
@@ -1749,7 +1769,7 @@ impl Parser {
 						if non_last || cross_region {
 							let at = self.arena[cur].line;
 							let name = seg.name.clone();
-							self.diags.push(Diagnostic {
+							self.diag(Diagnostic {
 								line,
 								severity: Severity::Hint,
 								message: format!(
@@ -1991,7 +2011,7 @@ impl Parser {
 			}
 		}
 		for (line, message) in hints {
-			self.diags.push(Diagnostic {
+			self.diag(Diagnostic {
 				line,
 				severity: Severity::Hint,
 				message,
@@ -2290,6 +2310,27 @@ impl Parser {
 				blank_before: p.blank_before,
 			})
 			.collect();
+		// The one entry past the cap: what was not listed, and whether any
+		// of it was an error, so a consumer scanning the list for errors
+		// still finds one and a Strict load still fails.
+		let (errors, hints) = self.unlisted;
+		if errors + hints > 0 {
+			self.diags.push(Diagnostic {
+				line: 0, // about the list, not a line
+				severity: if errors > 0 {
+					Severity::Error
+				} else {
+					Severity::Hint
+				},
+				code: "E022",
+				message: format!(
+					"diagnostic cap of {} reached; {} more not listed, {} of them errors",
+					self.max_diags,
+					errors + hints,
+					errors
+				),
+			});
+		}
 		Document {
 			arena: self.arena,
 			diags: self.diags,
@@ -2336,8 +2377,12 @@ impl Document {
 	/// `max_nodes` stops the parse once a line takes the node count past it -
 	/// one `E020` error, and the unparsed remainder counts as lost so a save
 	/// cannot silently truncate. `max_elements` refuses any line whose array
-	/// would hold more elements (`E021`, that line alone is skipped). 0
-	/// disables a cap, making this parse_with. Both caps are parse-time only;
+	/// would hold more elements (`E021`, that line alone is skipped).
+	/// `max_diags` bounds the diagnostics list itself - a document of nothing
+	/// but bad lines costs a diagnostic per line - by listing the first that
+	/// many and ending with one `E022` that counts the rest; error_count and
+	/// the Strict gate see that tail as an error whenever an unlisted one was.
+	/// 0 disables a cap, making this parse_with. The caps are parse-time only;
 	/// the write API is the consumer's own arithmetic. As everywhere, the Err
 	/// fires only at Strict, and a cap diagnostic is an error, so a capped
 	/// Strict load fails; at other levels the parsed part stays readable.
@@ -2347,8 +2392,9 @@ impl Document {
 		strictness: Strictness,
 		max_nodes: usize,
 		max_elements: usize,
+		max_diags: usize,
 	) -> Result<Document, LoadError> {
-		let doc = Parser::limited(max_nodes, max_elements).parse(text, strictness);
+		let doc = Parser::limited(max_nodes, max_elements, max_diags).parse(text, strictness);
 		if strictness == Strictness::Strict
 			&& doc.diags.iter().any(|d| d.severity == Severity::Error)
 		{

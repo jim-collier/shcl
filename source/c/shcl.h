@@ -105,8 +105,11 @@ shcl_doc *shcl_parse_with(const char *text, size_t len, shcl_strictness s);
 // Parse with resource caps beside the strictness: max_nodes stops the parse
 // once a line takes the node count past it (one E020 error; the unparsed
 // remainder counts as lost), max_elements refuses any line whose array would
-// hold more elements (E021, that line alone skipped). 0 disables a cap.
-shcl_doc *shcl_parse_limited(const char *text, size_t len, shcl_strictness s, size_t max_nodes, size_t max_elements);
+// hold more elements (E021, that line alone skipped), max_diags lists only
+// that many diagnostics and ends the list with one E022 counting the rest
+// (an error whenever an unlisted one was, so the strict gate still fails).
+// 0 disables a cap.
+shcl_doc *shcl_parse_limited(const char *text, size_t len, shcl_strictness s, size_t max_nodes, size_t max_elements, size_t max_diags);
 void shcl_free(shcl_doc *d);
 
 // True when a strict load would fail (strictness==strict and an error diagnostic
@@ -1942,13 +1945,26 @@ typedef struct { ShclArena line, hints; ShclVecMapPtr cmaps, dmaps; } ShclParseO
 typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; ShclVecPendMark pend_marks; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line;
 	/* shcl_parse_limited's caps, 0 = uncapped: nodes counted against the
 	   arena (root excluded), elements against a single value's cell. */
-	size_t max_nodes, max_elements; } ShclParser;
+	size_t max_nodes, max_elements;
+	/* Diagnostic cap: past it nothing is listed, only counted (errors, hints),
+	   for the one tail entry the parse ends with. */
+	size_t max_diags, unlisted_errors, unlisted_hints; } ShclParser;
 
 static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, const char *code, ShclStr msg) {
 	ShclDiag dg; dg.line = line; dg.sev = sev; dg.message = msg; dg.code = code;
 	ShclVecDiag_push(&d->arena, &d->diags, dg);
 }
-static void p_err(ShclParser *P, size_t line, const char *code, ShclStr msg) { push_diag(P->d, line, SHCL_SEV_ERROR, code, msg); }
+/* Every parse diagnostic goes through here, so the cap sees them all. A
+   message is built in the per-line arena and copied into the document only
+   when listed, so an unlisted one costs nothing past its own line. */
+static void p_diag(ShclParser *P, size_t line, shcl_severity sev, const char *code, ShclStr msg) {
+	if (P->max_diags && P->d->diags.len >= P->max_diags) {
+		if (sev == SHCL_SEV_ERROR) P->unlisted_errors++; else P->unlisted_hints++;
+		return;
+	}
+	push_diag(P->d, line, sev, code, s_dup(&P->d->arena, msg));
+}
+static void p_err(ShclParser *P, size_t line, const char *code, ShclStr msg) { p_diag(P, line, SHCL_SEV_ERROR, code, msg); }
 
 static void remap_child(ShclParser *P, size_t node, uint64_t old_key, uint64_t old_disp);
 static size_t find_by_value(ShclParser *P, size_t cur, ShclStr name, ShclStr text, int quoted);
@@ -2148,7 +2164,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 	size_t parent_depth = 0;
 	for (size_t up = parent; up != ROOT; up = NODE(P->d, up).parent) parent_depth++;
 	if (parent_depth + nsegs > SHCL_MAX_DEPTH) {
-		ShclSB m = {0}; sb_puts(a, &m, "nesting deeper than "); sb_put_u64(a, &m, SHCL_MAX_DEPTH); sb_puts(a, &m, " levels; line skipped");
+		ShclSB m = {0}; sb_puts(P->line, &m, "nesting deeper than "); sb_put_u64(P->line, &m, SHCL_MAX_DEPTH); sb_puts(P->line, &m, " levels; line skipped");
 		p_err(P, line, "E016", sb_S(&m));
 		P->d->lost++;
 		return 0;
@@ -2175,7 +2191,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 				cur = select_or_create(P, cur, seg->name, seg->name_src, disc, line);
 			}
 			if (is_last && !v_is_empty(&value)) {
-				ShclSB m = {0}; sb_puts(a, &m, "value after selector on '"); sb_putS(a, &m, seg->name); sb_puts(a, &m, "' ignored");
+				ShclSB m = {0}; sb_puts(P->line, &m, "value after selector on '"); sb_putS(P->line, &m, seg->name); sb_puts(P->line, &m, "' ignored");
 				p_err(P, line, "E002", sb_S(&m));
 				P->d->lost++;
 			}
@@ -2191,7 +2207,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 			}
 			if (found != (size_t)-1) cur = found;
 			else {
-				ShclSB m = {0}; sb_puts(a, &m, "no instance "); sb_put_u64(a, &m, seg->sel.index); sb_puts(a, &m, " of '"); sb_putS(a, &m, seg->name); sb_putc(a, &m, '\'');
+				ShclSB m = {0}; sb_puts(P->line, &m, "no instance "); sb_put_u64(P->line, &m, seg->sel.index); sb_puts(P->line, &m, " of '"); sb_putS(P->line, &m, seg->name); sb_putc(P->line, &m, '\'');
 				p_err(P, line, "E003", sb_S(&m)); P->d->lost++; return 0;
 			}
 			break;
@@ -2217,10 +2233,10 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 				int cross_region = (rl != 0 && NODE(P->d, cur).line < rl);
 				if (non_last || cross_region) {
 					ShclSB m = {0};
-					sb_putS(a, &m, h002_head(a, seg->name));
-					sb_puts(a, &m, "line "); sb_put_u64(a, &m, NODE(P->d, cur).line);
-					sb_puts(a, &m, " (same name and value combine)");
-					push_diag(P->d, line, SHCL_SEV_HINT, "H002", sb_S(&m));
+					sb_putS(P->line, &m, h002_head(P->line, seg->name));
+					sb_puts(P->line, &m, "line "); sb_put_u64(P->line, &m, NODE(P->d, cur).line);
+					sb_puts(P->line, &m, " (same name and value combine)");
+					p_diag(P, line, SHCL_SEV_HINT, "H002", sb_S(&m));
 					reent_set(P, cur, line);
 				}
 			}
@@ -2325,7 +2341,7 @@ static void add_star_element(ShclParser *P, size_t parent, ShclStr body, size_t 
 	/* Element cap: each element line past it is refused on its own, the way
 	   any other bad element line is. */
 	if (P->max_elements && NODE(P->d, parent).value.kind == V_CELL && NODE(P->d, parent).value.nels >= P->max_elements) {
-		ShclSB m = {0}; sb_puts(a, &m, "array longer than "); sb_put_u64(a, &m, P->max_elements); sb_puts(a, &m, " elements; line skipped");
+		ShclSB m = {0}; sb_puts(P->line, &m, "array longer than "); sb_put_u64(P->line, &m, P->max_elements); sb_puts(P->line, &m, " elements; line skipped");
 		p_err(P, line, "E021", sb_S(&m));
 		P->d->lost++;
 		return;
@@ -2417,8 +2433,8 @@ static void emit_repeated_leaf_hints(ShclParser *P) {
 			if (!all_scalar) continue;
 			ShclSB joined = {0};
 			for (size_t k = 0; k < grp.len; k++) { if (k) sb_puts(tmp, &joined, ", "); sb_putS(tmp, &joined, value_display(tmp, &NODE(P->d, grp.data[k]).value)); }
-			ShclSB m = {0}; sb_putS(a, &m, h001_head(a, names.data[gi])); sb_putS(a, &m, sb_S(&joined)); sb_puts(a, &m, "'?");
-			push_diag(P->d, maxline, SHCL_SEV_HINT, "H001", sb_S(&m));
+			ShclSB m = {0}; sb_putS(tmp, &m, h001_head(tmp, names.data[gi])); sb_putS(tmp, &m, sb_S(&joined)); sb_puts(tmp, &m, "'?");
+			p_diag(P, maxline, SHCL_SEV_HINT, "H001", sb_S(&m));
 		}
 	}
 	arena_free(tmp);
@@ -2428,7 +2444,7 @@ static void emit_repeated_leaf_hints(ShclParser *P) {
    a setjmp is written after it: which of those a compiler thinks an unwind
    could clobber varies by version and optimization level, and -Wclobbered is
    an error here. */
-static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t len, size_t max_nodes, size_t max_elements) {
+static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t len, size_t max_nodes, size_t max_elements, size_t max_diags) {
 	ShclArena *a = &d->arena;
 	ShclNode root; memset(&root, 0, sizeof root); root.value = v_empty(); root.parent = 0; root.line = 0;
 	nodes_push(d, root);
@@ -2439,7 +2455,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	   arena before the next reset. */
 	ShclParser P; P.d = d; P.tmp = &d->scratch; P.line = &own->line; P.hints = &own->hints; P.cmaps = &own->cmaps; P.dmaps = &own->dmaps; memset(&P.stack, 0, sizeof P.stack); memset(&P.pending, 0, sizeof P.pending); memset(&P.pend_marks, 0, sizeof P.pend_marks);
 	P.star_open = 0; P.star_node = 0; P.star_key = 0; P.star_disp = 0; P.saw_blank = 0;
-	P.max_nodes = max_nodes; P.max_elements = max_elements;
+	P.max_nodes = max_nodes; P.max_elements = max_elements; P.max_diags = max_diags; P.unlisted_errors = 0; P.unlisted_hints = 0;
 	memset(&P.reent_node, 0, sizeof P.reent_node); memset(&P.reent_line, 0, sizeof P.reent_line);
 	ShclStackEnt e0; e0.indent = s_empty(); e0.node = ROOT; ShclVecStack_push(P.tmp, &P.stack, e0);
 	maps_push(d->panic, P.cmaps, NULL);
@@ -2476,7 +2492,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		   as lost, which is what keeps shcl_save_file from writing a silently
 		   truncated document. */
 		if (P.max_nodes && d->nodes.len - 1 > P.max_nodes) {
-			ShclSB m = {0}; sb_puts(a, &m, "node cap of "); sb_put_u64(a, &m, P.max_nodes); sb_puts(a, &m, " exceeded; parse stopped");
+			ShclSB m = {0}; sb_puts(P.line, &m, "node cap of "); sb_put_u64(P.line, &m, P.max_nodes); sb_puts(P.line, &m, " exceeded; parse stopped");
 			p_err(&P, i + 1, "E020", sb_S(&m));
 			for (size_t r = i; r < lines.len; r++) if (s_trim(lines.data[r]).n) d->lost++;
 			node_capped = 1;
@@ -2564,7 +2580,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
 		ShclPathScan scan = scan_path(&own->line, content);
 		if (!scan.ok) {
-			ShclSB m = {0}; sb_puts(a, &m, "malformed line skipped: "); sb_putS(a, &m, scan.err); p_err(&P, lineno, "E014", sb_S(&m));
+			ShclSB m = {0}; sb_puts(P.line, &m, "malformed line skipped: "); sb_putS(P.line, &m, scan.err); p_err(&P, lineno, "E014", sb_S(&m));
 			/* Content-malformed at any position - retained as trivia, same
 			   rationale (and same BOM exception) as the bad '*' line above. */
 			if (rest.n >= 3 && (unsigned char)rest.p[0] == 0xEF && (unsigned char)rest.p[1] == 0xBB && (unsigned char)rest.p[2] == 0xBF) d->lost++;
@@ -2597,7 +2613,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 				   document's value. Counted before anything splits the value
 				   (the quote check does too), or the cap would bound nothing. */
 				if (P.max_elements && cell_exceeds(scan.value_text, P.max_elements)) {
-					ShclSB m = {0}; sb_puts(a, &m, "array longer than "); sb_put_u64(a, &m, P.max_elements); sb_puts(a, &m, " elements; line skipped");
+					ShclSB m = {0}; sb_puts(P.line, &m, "array longer than "); sb_put_u64(P.line, &m, P.max_elements); sb_puts(P.line, &m, " elements; line skipped");
 					p_err(&P, lineno, "E021", sb_S(&m));
 					P.d->lost++;
 					ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);
@@ -2620,7 +2636,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	/* A cap crossed on the document's last line still reports, with nothing
 	   left to skip. */
 	if (!node_capped && P.max_nodes && d->nodes.len - 1 > P.max_nodes) {
-		ShclSB m = {0}; sb_puts(a, &m, "node cap of "); sb_put_u64(a, &m, P.max_nodes); sb_puts(a, &m, " exceeded; parse stopped");
+		ShclSB m = {0}; sb_puts(P.line, &m, "node cap of "); sb_put_u64(P.line, &m, P.max_nodes); sb_puts(P.line, &m, " exceeded; parse stopped");
 		p_err(&P, lines.len, "E020", sb_S(&m));
 	}
 	star_flush(&P);
@@ -2630,6 +2646,16 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	hang_deeper_pending(&P, s_empty());
 	for (size_t k = 0; k < P.pending.len; k++)
 		ShclVecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before));
+	/* The one entry past the cap: what was not listed, and whether any of it
+	   was an error, so a consumer scanning the list for errors still finds
+	   one and a strict load still fails. */
+	if (P.unlisted_errors + P.unlisted_hints) {
+		ShclSB m = {0};
+		sb_puts(a, &m, "diagnostic cap of "); sb_put_u64(a, &m, P.max_diags);
+		sb_puts(a, &m, " reached; "); sb_put_u64(a, &m, P.unlisted_errors + P.unlisted_hints);
+		sb_puts(a, &m, " more not listed, "); sb_put_u64(a, &m, P.unlisted_errors); sb_puts(a, &m, " of them errors");
+		push_diag(d, 0, P.unlisted_errors ? SHCL_SEV_ERROR : SHCL_SEV_HINT, "E022", sb_S(&m)); /* line 0: about the list */
+	}
 }
 
 /* -Wclobbered guesses at which locals an unwind could leave indeterminate, and
@@ -2640,7 +2666,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	#pragma GCC diagnostic push
 	#pragma GCC diagnostic ignored "-Wclobbered"
 #endif
-static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict, size_t max_nodes, size_t max_elements) {
+static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict, size_t max_nodes, size_t max_elements, size_t max_diags) {
 	/* The two the unwind path has to reach. volatile because that path arrives
 	   by longjmp, which leaves an ordinary local indeterminate. */
 	shcl_doc *volatile doc = (shcl_doc *)calloc(1, sizeof *doc);
@@ -2665,7 +2691,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict, 
 	arena_guard(&doc->reads, &panic); arena_guard(&doc->index_arena, &panic);
 	arena_guard(&owned->line, &panic); arena_guard(&owned->hints, &panic);
 	doc->strictness = strict;
-	parse_body(doc, owned, text, len, max_nodes, max_elements);
+	parse_body(doc, owned, text, len, max_nodes, max_elements, max_diags);
 	/* The recovery point is this frame's; leaving it armed would send a later
 	   read or write jumping into a frame that is gone. */
 	shcl_doc *d = doc; ShclParseOwn *own = owned;
@@ -4120,8 +4146,8 @@ int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out) {
 	return 0;
 }
 
-shcl_doc *shcl_parse(const char *text, size_t len) { return do_parse(text, len, SHCL_STANDARD, 0, 0); }
-shcl_doc *shcl_parse_with(const char *text, size_t len, shcl_strictness s) { return do_parse(text, len, s, 0, 0); }
+shcl_doc *shcl_parse(const char *text, size_t len) { return do_parse(text, len, SHCL_STANDARD, 0, 0, 0); }
+shcl_doc *shcl_parse_with(const char *text, size_t len, shcl_strictness s) { return do_parse(text, len, s, 0, 0, 0); }
 /* Parse with resource caps beside the strictness, for input the consumer does
    not control: a document amplifies to many times its byte size in memory, so
    a size cap alone cannot bound what a load allocates. max_nodes stops the
@@ -4132,7 +4158,7 @@ shcl_doc *shcl_parse_with(const char *text, size_t len, shcl_strictness s) { ret
    Both caps are parse-time only; the write API is the consumer's own
    arithmetic. A cap diagnostic is an error, so shcl_error_count answers
    whether a Strict load would have failed; the parsed part stays readable. */
-shcl_doc *shcl_parse_limited(const char *text, size_t len, shcl_strictness s, size_t max_nodes, size_t max_elements) { return do_parse(text, len, s, max_nodes, max_elements); }
+shcl_doc *shcl_parse_limited(const char *text, size_t len, shcl_strictness s, size_t max_nodes, size_t max_elements, size_t max_diags) { return do_parse(text, len, s, max_nodes, max_elements, max_diags); }
 void shcl_free(shcl_doc *d) { if (!d) return; free(d->nodes.data); arena_free(&d->arena); arena_free(&d->scratch); arena_free(&d->reads); arena_free(&d->index_arena); free(d); }
 void shcl_reads_release(shcl_doc *d) { if (d) arena_reset(&d->reads); }
 int shcl_strict_failed(const shcl_doc *d) {
