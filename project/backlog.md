@@ -52,86 +52,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 #### Done - Bugs
 
-- Code review 20260901:
-
-	- A fresh adversarial pass, run from scratch rather than from the previous rounds' notes, and aimed at what the three merges of 20260901 changed plus the ground the 20260830b round recorded as unreached. Six defects here, three enhancements under Features and enhancements. Everything below was reproduced, not read off the code.
-	- The four-way check proves the bindings agree, so five of the six are shapes all four share and it cannot see. The sixth is C-only, which it also cannot see.
-	- Closing the round: the fuzz that feeds the four-way check builds half its inputs from line-level shapes now (duplicate keys with children, a refused line with content beneath it, bracket arrays, mixed and staircase indent, comments at every depth, stacked elements against fields, a BOM, an open quote), where before it only mutated corpus text character by character. A second property runs a write over that soup and checks the result is still a formatter fixpoint. 20,000 iterations of each pass, and a 500-document dump agrees across the four bindings on 6,402 comparisons.
-
-	- ✅ Item 1: colon-less lines at a constant indent make the parse quadratic, and no cap stops it.
-		- Reproduced in all four bindings. 1.1 MB of a plain text file takes 30.9 s in the release reference; time goes up fourfold for every doubling of the input. Go and Python are three to six times slower again, C about a third of the reference.
-		- Cause: a line that fails to scan is retained as trivia on the pending list, and `hang_deeper_pending` walks that whole list on every line that reaches it. Nothing ever claims the entries, because only a binding line drains them, so the list grows by one per line and every line rewalks it.
-		- The same line count with a binding line between each bad one runs in 0.05 s against 7.92 s, which is what pins the cause to the pending list rather than the stack or the diagnostics.
-		- Only equal indent is affected: bad lines at increasing depth hang on their blocks and drain, and finish in 0.04 s.
-		- `ParseLimited` gives a consumer no defense here. No nodes and no elements are built, so neither cap ever fires. The one shape a caller cannot bound is the one that costs the most.
-		- Reachable by accident, not just by malice: pointing the CLI at a text file that is not SHCL is the whole reproducer.
-		- Arrived with the 20260817 round's change to retain malformed lines as trivia. The retention is right; walking the list per line is what costs.
-		- Fixed: each pending entry remembers the shortest incoming indent it was already checked against, and a stack of marks records how far the list is settled at each indent. A hang check pops the marks above its own indent and walks only the entries they covered, so an entry is rewalked only when a shallower line arrives, and a shallower line can only arrive as many times as the indent is long. 40k bad lines: 7.6 s to 0.08 s in the reference, and linear in all four bindings, including the alternating-indent and sawtooth shapes that a max-indent shortcut alone would have left quadratic.
-		- Pinned by `perf-gate.bash`'s new `badlines` workload, which checks a document of refused lines against the same binding's parse baseline. It fails on the old code in every binding (the reference took 7.8 s against a 0.3 s budget) and passes now. Trivia placement is unchanged: 9,000 fuzzed documents mixing comments, blanks, bad lines, stacked elements and mixed indent format byte-identically to the previous build, and the corpus is unchanged.
-		- Opened: 20260901-140000
-		- Closed: 20260901-160000
-
-	- ✅ Item 2: the element cap is applied after the array is built, so it bounds nothing.
-		- Spec says the caps exist because bounding the bytes read cannot bound what a load allocates, and that only counting what the parse builds can. The inline spelling builds the whole array first and refuses the line afterwards, so the peak is whatever the text asked for.
-		- Measured: 9 MB of input as one over-cap array peaks at 256 MB with a cap of 8, against 257 MB with no cap at all. The cap saves 0.3%.
-		- In C the memory is not even a peak. 12 MB of input as one refused array leaves 108.5 MB held for the document's lifetime. The same 12 MB as a plain string value that is kept costs 11.7 MB, which is what rules out ordinary parse overhead.
-		- The stacked spelling is worse than useless. Its cap is enforced correctly, per element, before the push - but every refused line emits a diagnostic, and the diagnostics cost more than the elements they refuse: 15 MB of input peaks at 510 MB with the cap set and 254 MB with it off. Setting the cap doubles the memory.
-		- Trivia is outside both caps too, so a comment-only document amplifies fortyfold with the caps set as tight as they go and neither one firing.
-		- The check has to happen while the array is being built, and the per-line diagnostics need collapsing.
-		- Fixed, inline spelling: the element count is taken by a scan that builds nothing, and it runs before the quote check as well, since that check splits the value too. A refused 200k-element line now costs about the text in every binding (Rust 1.0x, Go 0.01x, Python 4x, C 1.4x) against 38x to 78x before.
-		- Pinned three ways in all four bindings: an allocation bound on that line (under 8x the text; the old code fails at 38x and up), a table of thirteen value spellings whose cap count must equal the count the array reads back as (quoted and escaped commas, empty and blank slots, Unicode blanks, an open quote), and a refused line reporting `E021` alone. Rust's bound lives in its own test binary because the counting allocator is process-wide; C's is a new `mem_bounds.c`, in the compiler sweep and the sanitizer run too.
-		- The stacked spelling's cap was already right; its cost is the per-line diagnostics, which item 8's ceiling bounds. Trivia amplification is the same per-line overhead any document has and is not a cap matter; a caller bounds it by bytes with `ReadFile`.
-		- Opened: 20260901-140100
-		- Closed: 20260901-163000
-
-	- ✅ Item 3: in C, `shcl_paths` grows the document on every call and `shcl_reads_release` cannot give it back.
-		- The header states the invariant this breaks. `scratch` is documented as "reset on entry to each resolve, so read-only use of a long-lived document stays flat", and `shcl_reads_release` names `shcl_paths` in the list of calls whose results it gives back, for "a process polling the same document in a loop... so the memory does not climb".
-		- Measured on a 180-path document, with `shcl_reads_release` called between every pass: 11.4 KB per call, 557 MB over 50,000 calls. All of it comes back at `shcl_free`, so it is unbounded growth for the document's lifetime rather than a leak past it.
-		- Cause: `shcl_paths` puts its walk stack and dedup set in `d->scratch` and never resets it. Every other read resets scratch on entry, at the path lookup - and `shcl_paths` takes no path, so it misses the one reset that would cover it.
-		- Every other read entry point is flat: twelve were measured and only this one climbs. One path-based read anywhere in the same loop drops it to 0.4 bytes per call, which is why nothing has caught it.
-		- C only, so the four-way check is structurally blind. It matters most to exactly the kind of consumer the C binding exists for.
-		- Fixed: `shcl_paths` resets scratch on entry, the way the path lookup does for every other read.
-		- Pinned in `mem_bounds.c`: 2,000 released passes of one read call each, judged after a warm-up pass, must not grow the process by more than 4 KB. One call per loop, because a path read in the same loop resets scratch on the next call's behalf and hid this for a round. `shcl_paths` grew 22.8 MB on the old code; `shcl_children`, an array read and `shcl_to_canonical` were flat before and after.
-		- Opened: 20260901-140200
-		- Closed: 20260901-164500
-
-	- ✅ Item 4: the typed setters write values their own reader refuses, and report success.
-		- Spec is explicit that each setter is the exact inverse of the matching read - `SetFloat` emits the number text the reader accepts, `SetDateTime` stores the canonical spelling. Neither holds.
-		- `SetFloat` with an infinity or a NaN writes `inf`, `-inf` or `NaN`; reading the field back is `BadType`. The float formatter has no finiteness gate.
-		- `SetDateTime` accepts any struct the caller builds. Fourteen out-of-range shapes were tried and all fourteen wrote a value that will not read back - month 99, February 30, a twenty-digit fraction, a fraction with no seconds, an offset of 166 hours. A default-constructed struct, which is what a caller reaches for first, writes an empty string.
-		- Every one of them returns true, so `WriteReason` says the write applied.
-		- The CLI is inconsistent with itself about this. Its datetime op validates the text through the reader's own parser and refuses a bad one; the float op ten lines away parses with the language's own float reader, which takes `inf` and `nan`, and writes them.
-		- All four bindings agree, and the C rendering matches the reference byte for byte on all fourteen, so this is shared logic and not a parity break.
-		- Fixed: `SetFloat` and its array form refuse a non-finite value; `SetDateTime` and its array form render the struct and parse it back, and refuse unless the fields come back equal. Both return false and bind nothing, the way `SetRaw` already did for an info-string it cannot spell. The CLI's float ops (`float`, `float-default`, `float-array`, and the default array) refuse `inf`, `nan` and a literal past the double range in all four bindings. Spec: the setter contract names the refusal.
-		- Pinned by a runner fixture in all four bindings (three non-finite floats through the scalar, default and array setters; ten datetime shapes through the same three; a valid value still writes and reads back equal; the document is byte-identical after every refusal) and by corpus 029's `write-bad.ops`, which gained `1e400`, `INF`, `nan`, `-inf`, `infinity`, an array holding `inf` and a default of `nan`. Those first three were in `write.ops` with `inf`/`NaN` as the expected output, from the 20260725 round's parity fix; that round's item 3 carries a note. Fails on the old code in all four (Rust 2 tests, Go 2, Python 14 lines, C 29).
-		- The C `dt_clamp` fixture still hands the setter its worst-case struct: the render into the fixed buffer happens before the value is judged, so the clamp is still exercised, and the setter is now expected to refuse.
-		- Opened: 20260901-140300
-		- Closed: 20260901-173000
-
-	- ✅ Item 5: `init` emits a starter config that `check --schema` rejects, with nothing said, when a repeat lower bound is 1.
-		- Generation promises its output validates clean against the schema that produced it, with one documented exception: a repeat lower bound of 2 or more, which cannot be auto-satisfied because identical generated lines would merge.
-		- The self-check filters out every `V007` instead of only that case, so a lower bound of 1 slips through as well. A lower bound of 1 is a must-exist path, which generation is supposed to satisfy.
-		- Reproduced in all four bindings on two schemas that differ in one word. With `required: yes` on `"srv[*].port"`, generation fails loudly with `V097`. With `repeat: 1` on the same path, `init` exits 0, emits `srv: web` and `srv.port:`, and the very next `check --schema` on that file exits 6.
-		- The generated pair does not mean what it looks like: `srv: web` and `srv.port:` are two instances of `srv`, one carrying the discriminator and the other carrying the port, so the wildcard finds an instance with no port. That is the outcome the dotted-form rule exists to prevent - a live line materializes the parent, but the dotted line then targets a different instance than the one it created.
-		- Six of 700 generated schemas hit it; the other 43 failures in that set are the documented 2-or-more case.
-		- Fixed, in two parts. The generator now selects a valued live parent by its value: `srv: web` is followed by `srv[web].port:`, which lands on the instance the first line made, and a concrete child (`srv.host`) gets the same treatment, since `srv.host:` under `srv: web` was two instances as well. A default that would end or escape the selector (`]`, `[`, a backslash) is spelled quoted; the selector matches on the escaped display, so it still finds the bare value. And the self-check lets through only a `V007` whose lower bound is 2 or more, read off the message's `not in LO..HI`, so `repeat: 1` on a path generation cannot satisfy (a nameless `*` path) faults the schema the way `required` already did. Spec: the dotted-form rule names the selector.
-		- Of the six schemas, the `srv[*].port` shape now generates a config that passes its own schema; the five with `repeat: 1` on a `*` field fault with `V097`. The 700 schemas produce byte-identical stdout, stderr and exit codes across the four bindings; the 46 remaining self-schema failures are all the sanctioned lower bound of 2 or 3.
-		- Found on the way: the C CLI reported a schema that does not build by validating an empty document, which added that document's own `V002`/`V007` to the fault list. `shcl_generate` records its build faults on the schema document now, like the other generation faults, and the CLI prints those.
-		- Pinned by corpus `073-init-parent-value` (valued parent with a wildcard child and a concrete child, a quoted default, a `]` in a default, an optional parent, a bare parent; fails on the old code in all four runners, which also check the output against its own schema), and by three `cli-regress` rows: `repeat: 1` on `*` exits 6 with `V097 ... not in 1..1`, `repeat: 2` generates, and a build fault reports `V091` with no `V002` beside it. The last one needed a negative stderr form in the harness.
-		- Left alone: an optional parent with a default (`#opt: x`) and a must-exist child still emits `opt.child:`, which materializes an empty `opt`. Uncommenting the parent then makes two instances. The schema says the parent is optional, so the generator does not make it live; a selector form there would.
-		- Opened: 20260901-140400
-		- Closed: 20260901-181500
-
-	- ✅ Item 6: `set_literal` reads bracket-array text differently from the parser, silently.
-		- Spec says `SetLiteral` reads its argument the way the parser reads the half of a line after the colon. For bracket text it does not.
-		- `p: [1, 2]` in a file is `E019`, counted as lost content, and `fmt --write` refuses it at exit 7. `--set-literal 'p=[1, 2]'` writes a two-element array holding `[1` and `2]`, with no diagnostic, at exit 0.
-		- So the door the `E019` work closed is still open through the writer, and what comes through it is a different wrong answer rather than the same one.
-		- All four bindings agree. Refusing the shape, the way `SetLiteral` already refuses a quote that never closes, is the consistent answer.
-		- Fixed: `SetLiteral` and `SetLiteralDefault` refuse a value that, after the comment is split off and the ends trimmed, starts with `[` and ends with `]` - the parser's own test for `E019`. The refusal returns false and binds nothing. Spec: the `SetLiteral` sentence names it beside the other two refusals.
-		- Pinned by corpus `065-bracket-array`, which gained a `write-bad.ops` (four bracket spellings, one through the default form, one with a trailing comment) and a `write.ops` for the two neighbours that stay accepted: a quoted `"[80, 443]"`, which is a string, and an unclosed `[80, 443`, which the parser also reads as two elements. Fails on the old code in all four runners.
-		- Opened: 20260901-140500
-		- Closed: 20260901-183000
-
 - ✅ The round went out green locally and red on the hosted runner: gcc 13 rejected what gcc 14 and 15 accept.
 	- Reproduced: `apply_op`'s array branches allocate a slot array and fill only the first `an`, and at `an` of zero the setter is handed slots nothing wrote. The callee reads none of them, but a compiler that inlines the allocator cannot see that and calls them uninitialized. gcc 13 says so under `-Werror`; 12, 14, 15 and clang do not.
 	- Cause: nothing in the array branches changed this round. Inlining did, because the round added a function beside them, and the warning is inlining-dependent.
@@ -278,6 +198,86 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260901:
+
+	- A fresh adversarial pass, run from scratch rather than from the previous rounds' notes, and aimed at what the three merges of 20260901 changed plus the ground the 20260830b round recorded as unreached. Six defects here, three enhancements under Features and enhancements. Everything below was reproduced, not read off the code.
+	- The four-way check proves the bindings agree, so five of the six are shapes all four share and it cannot see. The sixth is C-only, which it also cannot see.
+	- Closing the round: the fuzz that feeds the four-way check builds half its inputs from line-level shapes now (duplicate keys with children, a refused line with content beneath it, bracket arrays, mixed and staircase indent, comments at every depth, stacked elements against fields, a BOM, an open quote), where before it only mutated corpus text character by character. A second property runs a write over that soup and checks the result is still a formatter fixpoint. 20,000 iterations of each pass, and a 500-document dump agrees across the four bindings on 6,402 comparisons.
+
+	- ✅ Item 1: colon-less lines at a constant indent make the parse quadratic, and no cap stops it.
+		- Reproduced in all four bindings. 1.1 MB of a plain text file takes 30.9 s in the release reference; time goes up fourfold for every doubling of the input. Go and Python are three to six times slower again, C about a third of the reference.
+		- Cause: a line that fails to scan is retained as trivia on the pending list, and `hang_deeper_pending` walks that whole list on every line that reaches it. Nothing ever claims the entries, because only a binding line drains them, so the list grows by one per line and every line rewalks it.
+		- The same line count with a binding line between each bad one runs in 0.05 s against 7.92 s, which is what pins the cause to the pending list rather than the stack or the diagnostics.
+		- Only equal indent is affected: bad lines at increasing depth hang on their blocks and drain, and finish in 0.04 s.
+		- `ParseLimited` gives a consumer no defense here. No nodes and no elements are built, so neither cap ever fires. The one shape a caller cannot bound is the one that costs the most.
+		- Reachable by accident, not just by malice: pointing the CLI at a text file that is not SHCL is the whole reproducer.
+		- Arrived with the 20260817 round's change to retain malformed lines as trivia. The retention is right; walking the list per line is what costs.
+		- Fixed: each pending entry remembers the shortest incoming indent it was already checked against, and a stack of marks records how far the list is settled at each indent. A hang check pops the marks above its own indent and walks only the entries they covered, so an entry is rewalked only when a shallower line arrives, and a shallower line can only arrive as many times as the indent is long. 40k bad lines: 7.6 s to 0.08 s in the reference, and linear in all four bindings, including the alternating-indent and sawtooth shapes that a max-indent shortcut alone would have left quadratic.
+		- Pinned by `perf-gate.bash`'s new `badlines` workload, which checks a document of refused lines against the same binding's parse baseline. It fails on the old code in every binding (the reference took 7.8 s against a 0.3 s budget) and passes now. Trivia placement is unchanged: 9,000 fuzzed documents mixing comments, blanks, bad lines, stacked elements and mixed indent format byte-identically to the previous build, and the corpus is unchanged.
+		- Opened: 20260901-140000
+		- Closed: 20260901-160000
+
+	- ✅ Item 2: the element cap is applied after the array is built, so it bounds nothing.
+		- Spec says the caps exist because bounding the bytes read cannot bound what a load allocates, and that only counting what the parse builds can. The inline spelling builds the whole array first and refuses the line afterwards, so the peak is whatever the text asked for.
+		- Measured: 9 MB of input as one over-cap array peaks at 256 MB with a cap of 8, against 257 MB with no cap at all. The cap saves 0.3%.
+		- In C the memory is not even a peak. 12 MB of input as one refused array leaves 108.5 MB held for the document's lifetime. The same 12 MB as a plain string value that is kept costs 11.7 MB, which is what rules out ordinary parse overhead.
+		- The stacked spelling is worse than useless. Its cap is enforced correctly, per element, before the push - but every refused line emits a diagnostic, and the diagnostics cost more than the elements they refuse: 15 MB of input peaks at 510 MB with the cap set and 254 MB with it off. Setting the cap doubles the memory.
+		- Trivia is outside both caps too, so a comment-only document amplifies fortyfold with the caps set as tight as they go and neither one firing.
+		- The check has to happen while the array is being built, and the per-line diagnostics need collapsing.
+		- Fixed, inline spelling: the element count is taken by a scan that builds nothing, and it runs before the quote check as well, since that check splits the value too. A refused 200k-element line now costs about the text in every binding (Rust 1.0x, Go 0.01x, Python 4x, C 1.4x) against 38x to 78x before.
+		- Pinned three ways in all four bindings: an allocation bound on that line (under 8x the text; the old code fails at 38x and up), a table of thirteen value spellings whose cap count must equal the count the array reads back as (quoted and escaped commas, empty and blank slots, Unicode blanks, an open quote), and a refused line reporting `E021` alone. Rust's bound lives in its own test binary because the counting allocator is process-wide; C's is a new `mem_bounds.c`, in the compiler sweep and the sanitizer run too.
+		- The stacked spelling's cap was already right; its cost is the per-line diagnostics, which item 8's ceiling bounds. Trivia amplification is the same per-line overhead any document has and is not a cap matter; a caller bounds it by bytes with `ReadFile`.
+		- Opened: 20260901-140100
+		- Closed: 20260901-163000
+
+	- ✅ Item 3: in C, `shcl_paths` grows the document on every call and `shcl_reads_release` cannot give it back.
+		- The header states the invariant this breaks. `scratch` is documented as "reset on entry to each resolve, so read-only use of a long-lived document stays flat", and `shcl_reads_release` names `shcl_paths` in the list of calls whose results it gives back, for "a process polling the same document in a loop... so the memory does not climb".
+		- Measured on a 180-path document, with `shcl_reads_release` called between every pass: 11.4 KB per call, 557 MB over 50,000 calls. All of it comes back at `shcl_free`, so it is unbounded growth for the document's lifetime rather than a leak past it.
+		- Cause: `shcl_paths` puts its walk stack and dedup set in `d->scratch` and never resets it. Every other read resets scratch on entry, at the path lookup - and `shcl_paths` takes no path, so it misses the one reset that would cover it.
+		- Every other read entry point is flat: twelve were measured and only this one climbs. One path-based read anywhere in the same loop drops it to 0.4 bytes per call, which is why nothing has caught it.
+		- C only, so the four-way check is structurally blind. It matters most to exactly the kind of consumer the C binding exists for.
+		- Fixed: `shcl_paths` resets scratch on entry, the way the path lookup does for every other read.
+		- Pinned in `mem_bounds.c`: 2,000 released passes of one read call each, judged after a warm-up pass, must not grow the process by more than 4 KB. One call per loop, because a path read in the same loop resets scratch on the next call's behalf and hid this for a round. `shcl_paths` grew 22.8 MB on the old code; `shcl_children`, an array read and `shcl_to_canonical` were flat before and after.
+		- Opened: 20260901-140200
+		- Closed: 20260901-164500
+
+	- ✅ Item 4: the typed setters write values their own reader refuses, and report success.
+		- Spec is explicit that each setter is the exact inverse of the matching read - `SetFloat` emits the number text the reader accepts, `SetDateTime` stores the canonical spelling. Neither holds.
+		- `SetFloat` with an infinity or a NaN writes `inf`, `-inf` or `NaN`; reading the field back is `BadType`. The float formatter has no finiteness gate.
+		- `SetDateTime` accepts any struct the caller builds. Fourteen out-of-range shapes were tried and all fourteen wrote a value that will not read back - month 99, February 30, a twenty-digit fraction, a fraction with no seconds, an offset of 166 hours. A default-constructed struct, which is what a caller reaches for first, writes an empty string.
+		- Every one of them returns true, so `WriteReason` says the write applied.
+		- The CLI is inconsistent with itself about this. Its datetime op validates the text through the reader's own parser and refuses a bad one; the float op ten lines away parses with the language's own float reader, which takes `inf` and `nan`, and writes them.
+		- All four bindings agree, and the C rendering matches the reference byte for byte on all fourteen, so this is shared logic and not a parity break.
+		- Fixed: `SetFloat` and its array form refuse a non-finite value; `SetDateTime` and its array form render the struct and parse it back, and refuse unless the fields come back equal. Both return false and bind nothing, the way `SetRaw` already did for an info-string it cannot spell. The CLI's float ops (`float`, `float-default`, `float-array`, and the default array) refuse `inf`, `nan` and a literal past the double range in all four bindings. Spec: the setter contract names the refusal.
+		- Pinned by a runner fixture in all four bindings (three non-finite floats through the scalar, default and array setters; ten datetime shapes through the same three; a valid value still writes and reads back equal; the document is byte-identical after every refusal) and by corpus 029's `write-bad.ops`, which gained `1e400`, `INF`, `nan`, `-inf`, `infinity`, an array holding `inf` and a default of `nan`. Those first three were in `write.ops` with `inf`/`NaN` as the expected output, from the 20260725 round's parity fix; that round's item 3 carries a note. Fails on the old code in all four (Rust 2 tests, Go 2, Python 14 lines, C 29).
+		- The C `dt_clamp` fixture still hands the setter its worst-case struct: the render into the fixed buffer happens before the value is judged, so the clamp is still exercised, and the setter is now expected to refuse.
+		- Opened: 20260901-140300
+		- Closed: 20260901-173000
+
+	- ✅ Item 5: `init` emits a starter config that `check --schema` rejects, with nothing said, when a repeat lower bound is 1.
+		- Generation promises its output validates clean against the schema that produced it, with one documented exception: a repeat lower bound of 2 or more, which cannot be auto-satisfied because identical generated lines would merge.
+		- The self-check filters out every `V007` instead of only that case, so a lower bound of 1 slips through as well. A lower bound of 1 is a must-exist path, which generation is supposed to satisfy.
+		- Reproduced in all four bindings on two schemas that differ in one word. With `required: yes` on `"srv[*].port"`, generation fails loudly with `V097`. With `repeat: 1` on the same path, `init` exits 0, emits `srv: web` and `srv.port:`, and the very next `check --schema` on that file exits 6.
+		- The generated pair does not mean what it looks like: `srv: web` and `srv.port:` are two instances of `srv`, one carrying the discriminator and the other carrying the port, so the wildcard finds an instance with no port. That is the outcome the dotted-form rule exists to prevent - a live line materializes the parent, but the dotted line then targets a different instance than the one it created.
+		- Six of 700 generated schemas hit it; the other 43 failures in that set are the documented 2-or-more case.
+		- Fixed, in two parts. The generator now selects a valued live parent by its value: `srv: web` is followed by `srv[web].port:`, which lands on the instance the first line made, and a concrete child (`srv.host`) gets the same treatment, since `srv.host:` under `srv: web` was two instances as well. A default that would end or escape the selector (`]`, `[`, a backslash) is spelled quoted; the selector matches on the escaped display, so it still finds the bare value. And the self-check lets through only a `V007` whose lower bound is 2 or more, read off the message's `not in LO..HI`, so `repeat: 1` on a path generation cannot satisfy (a nameless `*` path) faults the schema the way `required` already did. Spec: the dotted-form rule names the selector.
+		- Of the six schemas, the `srv[*].port` shape now generates a config that passes its own schema; the five with `repeat: 1` on a `*` field fault with `V097`. The 700 schemas produce byte-identical stdout, stderr and exit codes across the four bindings; the 46 remaining self-schema failures are all the sanctioned lower bound of 2 or 3.
+		- Found on the way: the C CLI reported a schema that does not build by validating an empty document, which added that document's own `V002`/`V007` to the fault list. `shcl_generate` records its build faults on the schema document now, like the other generation faults, and the CLI prints those.
+		- Pinned by corpus `073-init-parent-value` (valued parent with a wildcard child and a concrete child, a quoted default, a `]` in a default, an optional parent, a bare parent; fails on the old code in all four runners, which also check the output against its own schema), and by three `cli-regress` rows: `repeat: 1` on `*` exits 6 with `V097 ... not in 1..1`, `repeat: 2` generates, and a build fault reports `V091` with no `V002` beside it. The last one needed a negative stderr form in the harness.
+		- Left alone: an optional parent with a default (`#opt: x`) and a must-exist child still emits `opt.child:`, which materializes an empty `opt`. Uncommenting the parent then makes two instances. The schema says the parent is optional, so the generator does not make it live; a selector form there would.
+		- Opened: 20260901-140400
+		- Closed: 20260901-181500
+
+	- ✅ Item 6: `set_literal` reads bracket-array text differently from the parser, silently.
+		- Spec says `SetLiteral` reads its argument the way the parser reads the half of a line after the colon. For bracket text it does not.
+		- `p: [1, 2]` in a file is `E019`, counted as lost content, and `fmt --write` refuses it at exit 7. `--set-literal 'p=[1, 2]'` writes a two-element array holding `[1` and `2]`, with no diagnostic, at exit 0.
+		- So the door the `E019` work closed is still open through the writer, and what comes through it is a different wrong answer rather than the same one.
+		- All four bindings agree. Refusing the shape, the way `SetLiteral` already refuses a quote that never closes, is the consistent answer.
+		- Fixed: `SetLiteral` and `SetLiteralDefault` refuse a value that, after the comment is split off and the ends trimmed, starts with `[` and ends with `]` - the parser's own test for `E019`. The refusal returns false and binds nothing. Spec: the `SetLiteral` sentence names it beside the other two refusals.
+		- Pinned by corpus `065-bracket-array`, which gained a `write-bad.ops` (four bracket spellings, one through the default form, one with a trailing comment) and a `write.ops` for the two neighbours that stay accepted: a quoted `"[80, 443]"`, which is a string, and an unclosed `[80, 443`, which the parser also reads as two elements. Fails on the old code in all four runners.
+		- Opened: 20260901-140500
+		- Closed: 20260901-183000
 
 - Code review 20260830b:
 
@@ -1548,38 +1548,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 #### Done - Features and enhancements
 
-- Code review 20260901:
-
-	- The enhancement half of the round whose bugs are under Bugs. Three items, kept to what was actually reproduced.
-
-	- ✅ Item 7: a float literal past the double range reads as infinity, at `Good`.
-		- `1e400` reads as `inf` and exits 0, in all four bindings. So does `1e309` and `1.8e308`. The negative spellings give `-inf`.
-		- Not a spec violation - the float section states no range - which is why this is here rather than under Bugs.
-		- It does contradict the reasoning behind the 20260830b decision on the loose float-to-int read, which stopped saturating at 2^63 because no double holds that value and the path could not honestly produce it. The same sentence applies to a float literal the double cannot hold.
-		- It also feeds item 4: read the value, write it back unchanged, and the field no longer reads.
-		- Done: the float reader refuses a non-finite parse result in all four bindings, at every strictness, so `1e400` is `BadType` like any text that is not a number. Underflow (`1e-400`) still reads as zero, and the largest double still reads. Spec: the float section states the range. Changelog entry under Changed, since a read that answered now refuses.
-		- Pinned by corpus `074-float-range`: scalar, array and loose-currency spellings at three strictness levels, plus the largest double and an underflow. Fails on the old code in all four runners.
-		- Opened: 20260901-140600
-		- Closed: 20260901-190000
-
-	- ✅ Item 8: nothing bounds the diagnostic list.
-		- A parse emits one diagnostic per bad line with no ceiling, so a document of nothing but bad lines costs several hundred bytes each. Three million of them run to roughly 500 MB.
-		- That is the mechanism behind item 2's stacked-array measurement, but it is not specific to `E021` - any per-line code does it, and a caller reaching for `ParseLimited` because the input is untrusted has no way to cap it.
-		- A ceiling with a "and N more" tail is the usual shape. It would want a spec line, since the diagnostics list is a contract.
-		- Done: `ParseLimited` takes a third cap, `max_diags` (0 = uncapped, and the plain parse stays uncapped). Every parse diagnostic goes through one gate; past the cap it is counted by severity and dropped, and the parse ends its list with one `E022` at line 0 naming the cap, the count not listed and how many of those were errors. The tail is an error whenever an unlisted one was, so a consumer scanning the list still finds an error, `error_count` stays nonzero and a Strict load still fails; a hint otherwise. In C a message is built in the per-line arena and copied into the document only when listed, so an unlisted one costs nothing past its line. The C++ veneer mirrors the new parameter. Spec: `E022` row and the Limits bullet; the changelog's `ParseLimited` entry names the third cap.
-		- Pinned by the `parse_limited` fixture in all four runners (fifty bad lines at cap 10: ten `E014` then the tail with its exact message; error count 11; Strict fails; hints past the cap leave a hint tail that loads at Strict; at the cap exactly there is no tail) and by an allocation bound in all four: 200k stacked element lines under an element cap of 8 and a diagnostic cap of 100 must stay under 8x the text (16x in Python, where the split lines alone are 10x). With the cap made a no-op every fixture and every bound fails.
-		- Opened: 20260901-140700
-		- Closed: 20260901-200000
-
-	- ✅ Item 9: C has no write-side counterpart to `shcl_reads_release`.
-		- Repeated writes to the same path grow the document arena: about 48 bytes per `shcl_set_int`, 63 per `shcl_set_string`, none of it reclaimed until `shcl_free`. Overwriting one field once a second is a few megabytes a day.
-		- Inherent to a bump arena and not documented as otherwise, so it is not a defect. The reads got their own arena and a release call for the same reason, and a long-running writer has the same problem with no answer.
-		- Smaller than item 3 and reachable only by a consumer that writes in a loop. Worth a documented note even if no call is added.
-		- Done: `shcl_compact(d)` rebuilds the document into fresh arenas through the clone the merge already uses, carries the diagnostics, orphans, lost count and strictness across, swaps the rebuilt document in and frees the old storage. Read results are invalid after it, as after `shcl_reads_release`; on an allocation failure the document is left as it was. The C++ veneer exposes `compact()`. Recorded in `style-guide.md` as a sanctioned deviation, named in the README's C note, and in the changelog under Added.
-		- Pinned by `mem_bounds.c` (100k rewrites of one field grow the arena from 800 bytes to 4.8 MB; compaction brings it to 864 and the document reads the same) and by a property over every corpus case in the C runner: canonical output, every diagnostic, the lost count, the error count and the strictness are unchanged across a compaction. Clean under ASan, UBSan and the leak check.
-		- Opened: 20260901-140800
-		- Closed: 20260901-203000
-
 - ✅ `install-dev.bash --hooks-only`, and a gate over its hook setup.
 	- The hook setup was the one piece of that script nothing exercised: the toolchain installs in front of it cannot run in a gate. Noted as still ungated when the test-gap round closed.
 	- Fixed: `--hooks-only` skips the toolchain and just points git at the tracked hooks. Useful on its own for a box that already has the tools, and it makes the tail runnable. An explicit `--dir` wins over in-clone detection under it, so it can be aimed at any clone.
@@ -2084,6 +2052,38 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260901:
+
+	- The enhancement half of the round whose bugs are under Bugs. Three items, kept to what was actually reproduced.
+
+	- ✅ Item 7: a float literal past the double range reads as infinity, at `Good`.
+		- `1e400` reads as `inf` and exits 0, in all four bindings. So does `1e309` and `1.8e308`. The negative spellings give `-inf`.
+		- Not a spec violation - the float section states no range - which is why this is here rather than under Bugs.
+		- It does contradict the reasoning behind the 20260830b decision on the loose float-to-int read, which stopped saturating at 2^63 because no double holds that value and the path could not honestly produce it. The same sentence applies to a float literal the double cannot hold.
+		- It also feeds item 4: read the value, write it back unchanged, and the field no longer reads.
+		- Done: the float reader refuses a non-finite parse result in all four bindings, at every strictness, so `1e400` is `BadType` like any text that is not a number. Underflow (`1e-400`) still reads as zero, and the largest double still reads. Spec: the float section states the range. Changelog entry under Changed, since a read that answered now refuses.
+		- Pinned by corpus `074-float-range`: scalar, array and loose-currency spellings at three strictness levels, plus the largest double and an underflow. Fails on the old code in all four runners.
+		- Opened: 20260901-140600
+		- Closed: 20260901-190000
+
+	- ✅ Item 8: nothing bounds the diagnostic list.
+		- A parse emits one diagnostic per bad line with no ceiling, so a document of nothing but bad lines costs several hundred bytes each. Three million of them run to roughly 500 MB.
+		- That is the mechanism behind item 2's stacked-array measurement, but it is not specific to `E021` - any per-line code does it, and a caller reaching for `ParseLimited` because the input is untrusted has no way to cap it.
+		- A ceiling with a "and N more" tail is the usual shape. It would want a spec line, since the diagnostics list is a contract.
+		- Done: `ParseLimited` takes a third cap, `max_diags` (0 = uncapped, and the plain parse stays uncapped). Every parse diagnostic goes through one gate; past the cap it is counted by severity and dropped, and the parse ends its list with one `E022` at line 0 naming the cap, the count not listed and how many of those were errors. The tail is an error whenever an unlisted one was, so a consumer scanning the list still finds an error, `error_count` stays nonzero and a Strict load still fails; a hint otherwise. In C a message is built in the per-line arena and copied into the document only when listed, so an unlisted one costs nothing past its line. The C++ veneer mirrors the new parameter. Spec: `E022` row and the Limits bullet; the changelog's `ParseLimited` entry names the third cap.
+		- Pinned by the `parse_limited` fixture in all four runners (fifty bad lines at cap 10: ten `E014` then the tail with its exact message; error count 11; Strict fails; hints past the cap leave a hint tail that loads at Strict; at the cap exactly there is no tail) and by an allocation bound in all four: 200k stacked element lines under an element cap of 8 and a diagnostic cap of 100 must stay under 8x the text (16x in Python, where the split lines alone are 10x). With the cap made a no-op every fixture and every bound fails.
+		- Opened: 20260901-140700
+		- Closed: 20260901-200000
+
+	- ✅ Item 9: C has no write-side counterpart to `shcl_reads_release`.
+		- Repeated writes to the same path grow the document arena: about 48 bytes per `shcl_set_int`, 63 per `shcl_set_string`, none of it reclaimed until `shcl_free`. Overwriting one field once a second is a few megabytes a day.
+		- Inherent to a bump arena and not documented as otherwise, so it is not a defect. The reads got their own arena and a release call for the same reason, and a long-running writer has the same problem with no answer.
+		- Smaller than item 3 and reachable only by a consumer that writes in a loop. Worth a documented note even if no call is added.
+		- Done: `shcl_compact(d)` rebuilds the document into fresh arenas through the clone the merge already uses, carries the diagnostics, orphans, lost count and strictness across, swaps the rebuilt document in and frees the old storage. Read results are invalid after it, as after `shcl_reads_release`; on an allocation failure the document is left as it was. The C++ veneer exposes `compact()`. Recorded in `style-guide.md` as a sanctioned deviation, named in the README's C note, and in the changelog under Added.
+		- Pinned by `mem_bounds.c` (100k rewrites of one field grow the arena from 800 bytes to 4.8 MB; compaction brings it to 864 and the document reads the same) and by a property over every corpus case in the C runner: canonical output, every diagnostic, the lost count, the error count and the strictness are unchanged across a compaction. Clean under ASan, UBSan and the leak check.
+		- Opened: 20260901-140800
+		- Closed: 20260901-203000
 
 - Code review 20260830b:
 
