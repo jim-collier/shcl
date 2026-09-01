@@ -4308,7 +4308,10 @@ fn parse_float_text(e: &Element, level: Strictness) -> Option<f64> {
 		}
 	}
 	let v = if float_shape_ok(t) {
-		t.parse::<f64>().ok()?
+		// A literal past the double range parses as an infinity, which no
+		// double holds and no setter can write back: BadType, like a text
+		// that is not a number at all.
+		t.parse::<f64>().ok().filter(|v| v.is_finite())?
 	} else {
 		// An integer is a valid float on read (incl. hex and quoted thousands).
 		let el = Element {

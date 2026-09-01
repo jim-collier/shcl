@@ -34,6 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A float literal past the double range (`1e400`) reads as `BadType` instead of an infinity at `Good`. No double holds the value, and the infinity could not be written back, so a read-modify-write left a field the reader then refused. A literal below the range still reads as zero.
+
 - `get`, `count` and `instances` print the load's diagnostics to stderr, the way `fmt` and `set` already did. Below strict a damaged file used to read back a correct value at exit 0 with nothing said, so the only way to learn a line had been dropped was a separate `check` run. One report per run; stdout is unchanged.
 
 - A file or stream that could not be read or written now exits 8, and exit 1 means a usage error alone. A missing file, an unreadable one, a directory named where a file was wanted, and a target whose directory refuses a write all used to share 1 with a mistyped flag, so a script could not tell "fix the command line" from "fix the path". A path a write option refuses stays at 1, since what has to change there is the option's value.

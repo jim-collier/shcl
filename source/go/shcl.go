@@ -4599,9 +4599,11 @@ func parseFloatText(e *element, level Strictness) (float64, bool) {
 	if floatShapeOK(t) {
 		f, err := strconv.ParseFloat(t, 64)
 		if err != nil {
-			// Over/underflow keeps the reference's parse result (inf / 0).
+			// Underflow keeps the reference's parse result (0). Overflow is an
+			// infinity, which no double holds and no setter can write back:
+			// BadType, like a text that is not a number at all.
 			var ne *strconv.NumError
-			if !errors.As(err, &ne) || ne.Err != strconv.ErrRange {
+			if !errors.As(err, &ne) || ne.Err != strconv.ErrRange || math.IsInf(f, 0) {
 				return 0, false
 			}
 		}
