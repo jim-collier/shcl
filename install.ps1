@@ -112,6 +112,37 @@ file. Nothing unverified is installed.
 	## Detached PKCS#1 v1.5 / SHA-256 signature over a file. Any failure - malformed
 	## key, unreadable signature, bad maths - comes back false, never an exception
 	## that a caller might mistake for a pass.
+
+	## PATH, idempotently - straight at the registry. [Environment]::Get expands
+	## %VAR% references before returning and Set writes the result back REG_SZ,
+	## which freezes every reference and downgrades the value type (user PATHs
+	## commonly carry %USERPROFILE%). Reading unexpanded and writing
+	## REG_EXPAND_SZ keeps the stored value intact. True when it wrote.
+	function Update-ShclPath {
+		## The installer's own confirm prompt is the gate; a nested -WhatIf
+		## plumbing would dead-end at the irm|iex one-liner anyway.
+		[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+		param([string]$Scope, [string]$Dir, [switch]$Remove)
+		$hive = if ($Scope -eq 'Machine') { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
+		$subkey = if ($Scope -eq 'Machine') { 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment' } else { 'Environment' }
+		$envKey = $hive.OpenSubKey($subkey, $true)
+		try {
+			$current = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+			if ($Remove) {
+				$new = @($current -split ';' | Where-Object { $_ -and $_ -ne $Dir }) -join ';'
+				if ($new -eq $current) { return $false }
+				$envKey.SetValue('Path', $new, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+				return $true
+			}
+			if (($current -split ';') -contains $Dir) { return $false }
+			$joined = if ($current -and -not $current.EndsWith(';')) { "$current;$Dir" } else { "$current$Dir" }
+			$envKey.SetValue('Path', $joined, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+			return $true
+		} finally {
+			$envKey.Close()
+		}
+	}
+
 	function Select-ReleaseTag([string]$Channel, $Releases) {
 		$all = @($Releases) | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+' }
 		$all = @($all) | Where-Object { -not $_.draft }
@@ -221,13 +252,7 @@ file. Nothing unverified is installed.
 				Write-Output "left $dest in place: it holds files this installer did not put there"
 			}
 		}
-		$hive = if ($pathScope -eq 'Machine') { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
-		$subkey = if ($pathScope -eq 'Machine') { 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment' } else { 'Environment' }
-		$envKey = $hive.OpenSubKey($subkey, $true)
-		$current = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-		$parts = @($current -split ';' | Where-Object { $_ -and $_ -ne $pathDir })
-		$envKey.SetValue('Path', ($parts -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
-		$envKey.Close()
+		$null = Update-ShclPath -Scope $pathScope -Dir $pathDir -Remove
 		Write-Output 'removed'
 		Write-Output ''
 		return
@@ -321,18 +346,7 @@ file. Nothing unverified is installed.
 			Copy-Item -LiteralPath "$payloadRoot\source\powershell\shcl.ps1", "$payloadRoot\source\bash\shcl.bash" -Destination (Join-Path $dest 'scripts')
 		}
 
-		## PATH, idempotently - straight at the registry. [Environment]::Get expands
-		## %VAR% references before returning and Set writes the result back REG_SZ,
-		## which freezes every reference and downgrades the value type (user PATHs
-		## commonly carry %USERPROFILE%). Reading unexpanded and writing
-		## REG_EXPAND_SZ keeps the stored value intact.
-		$hive = if ($pathScope -eq 'Machine') { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
-		$subkey = if ($pathScope -eq 'Machine') { 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment' } else { 'Environment' }
-		$envKey = $hive.OpenSubKey($subkey, $true)
-		$current = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-		if (($current -split ';') -notcontains $pathDir) {
-			$joined = if ($current -and -not $current.EndsWith(';')) { "$current;$pathDir" } else { "$current$pathDir" }
-			$envKey.SetValue('Path', $joined, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+		if (Update-ShclPath -Scope $pathScope -Dir $pathDir) {
 			Write-Output "added $pathDir to the $pathScope PATH (new shells pick it up)"
 			## Nudge running shells; best-effort.
 			try {
@@ -344,7 +358,6 @@ file. Nothing unverified is installed.
 				Write-Output 'PATH change broadcast skipped (new shells still pick it up)'
 			}
 		}
-		$envKey.Close()
 
 		Write-Output ''
 		Write-Output "installed shcl $version -> $dest\shcl.exe"

@@ -116,6 +116,8 @@ LINT_EXTRA=(
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/packaging/shclpath.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/winpath-regress.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'cicd/utility/check-completions.bash'
 	'cicd/utility/check-wheel.bash'
 	## The README's C example is the first thing a C consumer copies, and it is
@@ -136,6 +138,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/check-c-compilers.bash
 	cicd/utility/check-completions.bash
 	cicd/utility/check-docs.bash
+	cicd/utility/check-install-dev.bash
 	cicd/utility/check-locale.bash
 	cicd/utility/check-pins.bash
 	cicd/utility/check-readme-c.bash
@@ -194,6 +197,10 @@ TEST_EXTRA=(
 	'cicd/utility/perf-gate.bash "${BINDING_CLIS[@]}"'
 	## The wrappers, the one-liner's scope hygiene, and the errexit grep trap.
 	'cicd/utility/shell-regress.bash'
+	## install-dev's hook setup, through its --hooks-only path on a throwaway
+	## clone - the one piece of that script the toolchain installs used to wall
+	## off from any gate.
+	'cicd/utility/check-install-dev.bash'
 	## Every C compiler on the box, not just the default one: the hosted runner's
 	## gcc is a different version, and the two disagree about what -Werror
 	## rejects. A round went out green here and red there over exactly that.

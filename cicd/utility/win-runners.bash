@@ -8,8 +8,8 @@
 ##		the library with real per-platform code - covered only where the
 ##		platform-specific half never executes, and the python binding threw on
 ##		every windows overwrite for a release without anything noticing. This is
-##		the smaller gate that does run there: the runners and the veneer smoke,
-##		and nothing else.
+##		the smaller gate that does run there: the runners, the veneer smoke and,
+##		on a real windows host, the installers' registry PATH handling.
 ##	Syntax:
 ##		win-runners.bash [ROOT]
 ##		  ROOT   repo root (default: two levels up from this script)
@@ -88,6 +88,14 @@ fRun "python"      "${py}" source/python/tests/conformance.py
 fRun "c"           fRunC
 fRun "c++ veneer"  fRunCxx
 fRun "c oom hook"  fRunOom
+## The installers' PATH handling needs a real registry, which only exists here:
+## it edits and restores the runner's own Environment keys, so it stays off
+## every other host.
+case "$(uname -s 2>/dev/null || true)" in
+	MINGW*|MSYS*|CYGWIN*)
+		fRun "windows path" powershell -NoProfile -ExecutionPolicy Bypass -File cicd/utility/winpath-regress.ps1
+		;;
+esac
 
 echo
 if ((${#failed[@]} == 0)); then
@@ -101,3 +109,5 @@ fi
 ##	Script history:
 ##		- 20260821: Created. Nothing in the pipeline ran any binding on windows,
 ##		  where the file tier's publish step is a different code path in all four.
+##		- 20260901: The installers' PATH handling joins, windows hosts only - it
+##		  needs a real registry.
