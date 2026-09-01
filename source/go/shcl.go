@@ -342,10 +342,19 @@ func plainLead(text string) lead {
 
 // pend is a pending whole-line comment during parse: text, source indent (used
 // only to decide whether it hangs on a deeper block), and the blank it consumed.
+// ceiling is the shortest incoming indent already checked against it: a later
+// check can only hang it from a shorter one, so a longer one skips it.
 type pend struct {
 	text        string
 	indent      string
 	blankBefore bool
+	ceiling     int
+}
+
+// pendMark: every pending entry before end has a ceiling at or under indentLen.
+type pendMark struct {
+	end       int
+	indentLen int
 }
 
 type valueKind int
@@ -1514,8 +1523,13 @@ type parser struct {
 	// Whole-line comments waiting for the next line that binds a node. The
 	// source indent is kept only to decide after-attachment (a comment deeper
 	// than the next binding hangs on the block it sits in).
-	pending  []pend
-	sawBlank bool // a blank line waits to become the next bound node's blankBefore
+	pending []pend
+	// Lengths rise along the stack, so a hang check pops the marks above its
+	// own indent and walks only what they covered. Without it a run of
+	// retained bad lines is rewalked per line and a plain text file parses in
+	// quadratic time.
+	pendMarks []pendMark
+	sawBlank  bool // a blank line waits to become the next bound node's blankBefore
 	// An open stacked list defers its merge-key remap (rebuilding the key per
 	// element is O(list^2) time); (node, key hash, display hash) at deferral
 	// start, flushed before any map lookup and at end of parse.
@@ -1660,6 +1674,7 @@ func (p *parser) attachTrivia(node int, trailing string) {
 			t.leading = append(t.leading, lead{text: pn.text, blankBefore: pn.blankBefore})
 		}
 		p.pending = p.pending[:0]
+		p.pendMarks = p.pendMarks[:0]
 	}
 	if trailing != "" {
 		t := p.arena[node].trivMut()
@@ -1683,10 +1698,19 @@ func (p *parser) hangDeeperPending(newIndent string) {
 	if len(p.pending) == 0 {
 		return
 	}
-	taken := p.pending
-	p.pending = nil
+	newLen := len(newIndent)
+	// Only entries above the last mark at or under this indent can hang.
+	for len(p.pendMarks) > 0 && p.pendMarks[len(p.pendMarks)-1].indentLen > newLen {
+		p.pendMarks = p.pendMarks[:len(p.pendMarks)-1]
+	}
+	start := 0
+	if len(p.pendMarks) > 0 {
+		start = p.pendMarks[len(p.pendMarks)-1].end
+	}
+	taken := append([]pend(nil), p.pending[start:]...)
+	p.pending = p.pending[:start]
 	for _, pn := range taken {
-		if len(pn.indent) > len(newIndent) {
+		if pn.ceiling > newLen {
 			// A level shallower than the incoming line stays open and may
 			// still gain children, so a comment must not hang there - it
 			// would emit below the child; keep it pending instead.
@@ -1711,8 +1735,14 @@ func (p *parser) hangDeeperPending(newIndent string) {
 				}
 				continue
 			}
+			pn.ceiling = newLen
 		}
 		p.pending = append(p.pending, pn)
+	}
+	if n := len(p.pendMarks); n > 0 && p.pendMarks[n-1].indentLen == newLen {
+		p.pendMarks[n-1].end = len(p.pending)
+	} else {
+		p.pendMarks = append(p.pendMarks, pendMark{end: len(p.pending), indentLen: newLen})
 	}
 }
 
@@ -2104,7 +2134,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// It consumes a pending blank into its own flag, so a blank between
 		// comment-only regions survives the round-trip.
 		if strings.HasPrefix(rest, "#") {
-			p.pending = append(p.pending, pend{text: rest, indent: indent, blankBefore: p.sawBlank})
+			p.pending = append(p.pending, pend{text: rest, indent: indent, blankBefore: p.sawBlank, ceiling: len(indent)})
 			p.sawBlank = false
 			i++
 			continue
@@ -2166,7 +2196,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			// vanishes on the consumer's next save. The BOM exception the
 			// sibling site below carries cannot apply here: this line starts
 			// with the '*' that brought us in.
-			p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank})
+			p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 			i++
 			continue
 		}
@@ -2188,7 +2218,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		if content == "" {
 			// Only a comment survived (e.g. an escaped lead-in); keep it.
 			if comment != "" {
-				p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank})
+				p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 			}
 			i++
 			continue
@@ -2213,7 +2243,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			if strings.HasPrefix(rest, "\ufeff") {
 				p.lost++
 			} else {
-				p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank})
+				p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 			}
 			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
 			i++
