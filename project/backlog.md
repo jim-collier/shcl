@@ -757,7 +757,8 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Cause: the number parser and the number formatter both go through library calls that follow the locale's decimal point. The other three bindings' equivalents are locale-independent by definition.
 		- The cli is safe: it pins the locale at startup, with a comment saying exactly why. The library, which is the actual product for c, does not, and a host application setting its own locale is ordinary.
 		- Fix: pin the numeric locale around those two sites.
-		- Fixed by translating the decimal point at both sites instead of pinning: pinning is a process-wide side effect a library has no business causing, and it is not thread-safe. Whole corpus now formats byte-identically under a comma-decimal locale. Not corpus-pinnable (no case can set a locale), so it lives in the code.
+		- Fixed by translating the decimal point at both sites instead of pinning: pinning is a process-wide side effect a library has no business causing, and it is not thread-safe. Whole corpus now formats byte-identically under a comma-decimal locale.
+		- Pinned since 20260831 by `check-locale.bash`, which builds a comma-decimal locale of its own and runs the whole C corpus and the CLI under it. The earlier reading that this could not be tested was about the corpus, where it holds, and not about a gate. The runner's own float parsing had the same defect and was fixed with it.
 		- Opened: 20260817-204524
 		- Closed: 20260818-113345
 
