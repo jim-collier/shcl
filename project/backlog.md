@@ -3308,7 +3308,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 - Code review 20260725:
 
-	- Items 24 to 41 are here; 1 to 23 are under Done - Bugs; the deferred halves of 28 and 29 are under Future and/or deferred.
+	- Items 24 to 41 are here; 1 to 23 are under Done - Bugs; the deferred half of 28 is under Future and/or deferred.
+
+	- ✅ Item 29: thread the diagnostic code through every call site.
+		- All four bindings recover the code from about 30 hand-ordered message prefixes, so rewording a message can change a code, and the ordering matters.
+		- Large, mechanical and invisible to users. Every corpus case pins the code per line, so the exposure is limited to messages no case exercises.
+		- Fixed: every diagnostic site names its code directly and the prefix maps are gone, in all four bindings. Message wording is now free for real, which is what the code field's doc comment already claimed.
+		- Pinned by: corpus 071 and 072, new, covering the schema-fault and typed-allowed arms nothing exercised before. With them the suite reaches every diagnostic site except the two below.
+		- Note: two sites are unreachable from any input and stay as defensive code - a duplicate fragment name (same-name nodes merge at parse, so the check can never see one) and the second empty-list-element check (its input was already trimmed and tested non-empty). Same class as E003.
+		- Opened: 20260725-152141
+		- Closed: 20260901-105524
 
 	- ✅ Item 24: `merge()` is O(children^2) per parent in all four bindings.
 		- Cause: the over-side name dedup, the per-name group filter and the base-side instance match are all linear scans, and each rebuilds merge keys as it goes.
@@ -3553,16 +3562,11 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 - Code review 20260725:
 
-	- The deferred halves of items 28 and 29; the done halves are under Done - Features and enhancements.
+	- The deferred half of item 28; the done halves are under Done - Features and enhancements.
 
 	- ✋ Item 28: size, node count and array length limits.
 		- The depth cap closed the crash class. The rest is additive API that can be added later without breaking anything, and a consuming program can bound input size itself before calling parse.
 		- The size half is now covered: `read_file(path, max_bytes)` caps the read in all four bindings. Node count and array length stay deferred.
-		- Opened: 20260725-152141
-
-	- ✋ Item 29: thread the diagnostic code through every call site.
-		- All four bindings recover the code from about 30 hand-ordered message prefixes, so rewording a message can change a code, and the ordering matters.
-		- Large, mechanical and invisible to users. Every corpus case pins the code per line, so the exposure is limited to messages no case exercises.
 		- Opened: 20260725-152141
 
 ### Canceled
