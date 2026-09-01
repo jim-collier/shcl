@@ -51,7 +51,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- A fresh adversarial pass, run from scratch rather than from the previous rounds' notes, and aimed at what the three merges of 20260901 changed plus the ground the 20260830b round recorded as unreached. Six defects here, three enhancements under Features and enhancements. Everything below was reproduced, not read off the code.
 	- The four-way check proves the bindings agree, so five of the six are shapes all four share and it cannot see. The sixth is C-only, which it also cannot see.
 
-	- 🔘 Item 1: colon-less lines at a constant indent make the parse quadratic, and no cap stops it.
+	- ✅ Item 1: colon-less lines at a constant indent make the parse quadratic, and no cap stops it.
 		- Reproduced in all four bindings. 1.1 MB of a plain text file takes 30.9 s in the release reference; time goes up fourfold for every doubling of the input. Go and Python are three to six times slower again, C about a third of the reference.
 		- Cause: a line that fails to scan is retained as trivia on the pending list, and `hang_deeper_pending` walks that whole list on every line that reaches it. Nothing ever claims the entries, because only a binding line drains them, so the list grows by one per line and every line rewalks it.
 		- The same line count with a binding line between each bad one runs in 0.05 s against 7.92 s, which is what pins the cause to the pending list rather than the stack or the diagnostics.
@@ -59,7 +59,10 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- `ParseLimited` gives a consumer no defense here. No nodes and no elements are built, so neither cap ever fires. The one shape a caller cannot bound is the one that costs the most.
 		- Reachable by accident, not just by malice: pointing the CLI at a text file that is not SHCL is the whole reproducer.
 		- Arrived with the 20260817 round's change to retain malformed lines as trivia. The retention is right; walking the list per line is what costs.
+		- Fixed: each pending entry remembers the shortest incoming indent it was already checked against, and a stack of marks records how far the list is settled at each indent. A hang check pops the marks above its own indent and walks only the entries they covered, so an entry is rewalked only when a shallower line arrives, and a shallower line can only arrive as many times as the indent is long. 40k bad lines: 7.6 s to 0.08 s in the reference, and linear in all four bindings, including the alternating-indent and sawtooth shapes that a max-indent shortcut alone would have left quadratic.
+		- Pinned by `perf-gate.bash`'s new `badlines` workload, which checks a document of refused lines against the same binding's parse baseline. It fails on the old code in every binding (the reference took 7.8 s against a 0.3 s budget) and passes now. Trivia placement is unchanged: 9,000 fuzzed documents mixing comments, blanks, bad lines, stacked elements and mixed indent format byte-identically to the previous build, and the corpus is unchanged.
 		- Opened: 20260901-140000
+		- Closed: 20260901-160000
 
 	- 🔘 Item 2: the element cap is applied after the array is built, so it bounds nothing.
 		- Spec says the caps exist because bounding the bytes read cannot bound what a load allocates, and that only counting what the parse builds can. The inline spelling builds the whole array first and refuses the line afterwards, so the peak is whatever the text asked for.
