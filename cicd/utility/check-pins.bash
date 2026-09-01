@@ -69,7 +69,19 @@ for pin in "${TOOL_PINS[@]}"; do
 	rc=1
 done
 
-((rc)) || echo "check-pins: OK: every TOOL_PINS entry the hosted gate installs matches ci.yml"
+## A version pin is only half of it. The workflow also fetches two tools as
+## archives and puts them ahead of the system copy, and one of those went in
+## with nothing checked at all, so the pin bought nothing.
+while IFS= read -r target; do
+	checked="$(grep -F -- "${target}\" | sha256sum -c" "${ciFile}" || true)"
+	if [[ -z "${checked}" ]]; then
+		echo "check-pins: ci.yml downloads ${target} and never checks it" >&2; rc=1
+	elif ! grep -qE -- '[0-9a-f]{64}' <<<"${checked}"; then
+		echo "check-pins: the check on ${target} carries no sha256" >&2; rc=1
+	fi
+done < <(grep -oE -- '-o[[:space:]]+/[^[:space:]]+' "${ciFile}" | sed 's/^-o[[:space:]]*//' | sort -u)
+
+((rc)) || echo "check-pins: OK: every TOOL_PINS entry the hosted gate installs matches ci.yml, and every download it fetches is hashed"
 exit "${rc}"
 
 
@@ -77,3 +89,4 @@ exit "${rc}"
 ##		- 2026-08-29 JC: Created.
 ##		- 2026-08-30 JC: Whole-token matching; the cppcheck wheel is checked
 ##		  against CPPCHECK_WHEEL as well as the binary version.
+##		- 2026-08-31 JC: Every archive the workflow downloads has to be hashed.
