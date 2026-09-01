@@ -50,6 +50,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- A fresh adversarial pass, run from scratch rather than from the previous rounds' notes, and aimed at what the three merges of 20260901 changed plus the ground the 20260830b round recorded as unreached. Six defects here, three enhancements under Features and enhancements. Everything below was reproduced, not read off the code.
 	- The four-way check proves the bindings agree, so five of the six are shapes all four share and it cannot see. The sixth is C-only, which it also cannot see.
+	- Closing the round: the fuzz that feeds the four-way check builds half its inputs from line-level shapes now (duplicate keys with children, a refused line with content beneath it, bracket arrays, mixed and staircase indent, comments at every depth, stacked elements against fields, a BOM, an open quote), where before it only mutated corpus text character by character. A second property runs a write over that soup and checks the result is still a formatter fixpoint. 20,000 iterations of each pass, and a 500-document dump agrees across the four bindings on 6,402 comparisons.
 
 	- ✅ Item 1: colon-less lines at a constant indent make the parse quadratic, and no cap stops it.
 		- Reproduced in all four bindings. 1.1 MB of a plain text file takes 30.9 s in the release reference; time goes up fourfold for every doubling of the input. Go and Python are three to six times slower again, C about a third of the reference.
