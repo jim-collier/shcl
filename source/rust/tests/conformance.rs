@@ -799,7 +799,7 @@ fn parse_limited_caps() {
 	// A refused line reports the cap alone: the quote check runs after it, so
 	// it never splits a value the cap already turned away.
 	let doc = Document::parse_limited("v: a, \"open, b\n", Strictness::Standard, 0, 1, 0).unwrap();
-	let codes: Vec<&str> = doc.diagnostics().iter().map(|d| &*d.code).collect();
+	let codes: Vec<&str> = doc.diagnostics().iter().map(|d| d.code).collect();
 	assert_eq!(codes, ["E021"]);
 	// Diagnostic cap: the first N are listed and one E022 tail counts the
 	// rest. Its severity is Error when any unlisted one was, so a scan of the
@@ -826,7 +826,7 @@ fn parse_limited_caps() {
 	let codes: Vec<(&str, shcl::Severity)> = doc
 		.diagnostics()
 		.iter()
-		.map(|d| (&*d.code, d.severity))
+		.map(|d| (d.code, d.severity))
 		.collect();
 	assert_eq!(
 		codes,
