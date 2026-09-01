@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strconv"
@@ -1316,6 +1317,30 @@ func TestAsciiLowerDoesNotCopyAFoldedName(t *testing.T) {
 	mixed := strings.Repeat("Server-Config-Name-", 40)
 	if got := asciiLower(mixed); got != folded {
 		t.Errorf("asciiLower(mixed) = %q", got[:40])
+	}
+}
+
+func TestSuppressLeavesTheCallersDiagnosticsAlone(t *testing.T) {
+	// It returns a new list, which reads as a copy, so filtering the caller's
+	// slice in place left the document's own diagnostics shuffled and
+	// duplicated. The reference takes its list by reference, so the mutation is
+	// expected there and not here.
+	doc := Parse("unique: a\nunique: b\nnote: x\nnote: y\n")
+	schema := Parse("field: unique\n\ttype: string\n\trepeat: 1, 9\nfield: note\n\ttype: string\n")
+	diags := doc.Diagnostics()
+	if len(diags) < 2 {
+		t.Fatalf("want two H001 hints to filter, got %d diagnostic(s)", len(diags))
+	}
+	before := append([]Diagnostic(nil), diags...)
+	for _, filter := range []func(*Document, []Diagnostic) []Diagnostic{SuppressDeclaredRepeats, SuppressDeclaredReopens} {
+		filter(schema, diags)
+		if !reflect.DeepEqual(diags, before) {
+			t.Fatalf("the caller's slice changed: %v, want %v", diags, before)
+		}
+	}
+	// The filter has to be doing something, or the check above is vacuous.
+	if len(SuppressDeclaredRepeats(schema, diags)) != 1 {
+		t.Fatal("the filter dropped no hint, so nothing above was proved")
 	}
 }
 

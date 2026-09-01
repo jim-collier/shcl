@@ -97,14 +97,20 @@ public:
 	Document(Document &&) noexcept = default;
 	Document &operator=(Document &&) noexcept = default;
 
+	// False when the parse or load could not allocate and there is no document
+	// to work with. True on any system that has not run out of memory, which is
+	// most of them; every accessor below assumes a true one.
+	explicit operator bool() const { return d_ != nullptr; }
+
 	static Document parse(std::string_view t) { return Document(shcl_parse(t.data(), t.size())); }
 	static Document parse_with(std::string_view t, Strictness s) { return Document(shcl_parse_with(t.data(), t.size(), static_cast<shcl_strictness>(s))); }
 
 #ifndef SHCL_NO_FILE_IO
-	// File tier: load never fails (the document always comes back usable,
-	// empty when the file could not be read; the status separates absent /
-	// unreadable / parsed-with-errors / clean), and save writes canonical
-	// text atomically - the CLI --write mechanics.
+	// File tier: load does not fail on the file's account (the document always
+	// comes back usable, empty when the file could not be read; the status
+	// separates absent / unreadable / parsed-with-errors / clean - an
+	// allocation failure is the exception, and shows as a false document), and
+	// save writes canonical text atomically - the CLI --write mechanics.
 	enum class FileStatus { Clean = SHCL_FILE_CLEAN, HadErrors = SHCL_FILE_HAD_ERRORS, NotFound = SHCL_FILE_NOT_FOUND, Unreadable = SHCL_FILE_UNREADABLE };
 	static Document load_file(const std::string &path, FileStatus *status = nullptr) {
 		// Initialized: an out-parameter the caller reads unconditionally should
@@ -184,6 +190,7 @@ public:
 		std::vector<Diagnostic> v;
 		// Owned from the call on, so a throw while copying cannot leak it.
 		std::unique_ptr<shcl_validation, void (*)(shcl_validation *)> r(shcl_validate(d_.get(), schema.d_.get()), &shcl_validation_free);
+		if (!r) return v;  // an allocation failed; the document is finished
 		std::size_t n = shcl_validation_count(r.get());
 		for (std::size_t i = 0; i < n; i++)
 			v.push_back({shcl_validation_line(r.get(), i), shcl_validation_severity(r.get(), i) == SHCL_SEV_ERROR, to_str(shcl_validation_message(r.get(), i)), shcl_validation_code(r.get(), i)});

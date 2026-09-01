@@ -136,6 +136,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/check-c-compilers.bash
 	cicd/utility/check-completions.bash
 	cicd/utility/check-docs.bash
+	cicd/utility/check-locale.bash
 	cicd/utility/check-pins.bash
 	cicd/utility/check-readme-c.bash
 	cicd/utility/check-wheel.bash
@@ -183,6 +184,7 @@ TEST_EXTRA=(
 	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm -lpthread && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
 	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
 	'obin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/oom_hook.c -o "${obin}" -lm && "${obin}"; orc=$?; rm -f "${obin}"; ((orc==0))'
+	'rbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/oom_recover.c -o "${rbin}" -lm && "${rbin}"; rrc=$?; rm -f "${rbin}"; ((rrc==0))'
 	## CLI behavior the corpus cannot reach: closed streams, '-' twice on one
 	## command line, a carriage return ending an ops line, error-message shape.
 	'cicd/utility/cli-regress.bash "${BINDING_CLIS[@]}"'
@@ -196,6 +198,9 @@ TEST_EXTRA=(
 	## gcc is a different version, and the two disagree about what -Werror
 	## rejects. A round went out green here and red there over exactly that.
 	'cicd/utility/check-c-compilers.bash'
+	## Float handling must not follow the host program's locale, which no corpus
+	## case can ask for: the gate builds a comma-decimal locale of its own.
+	'cicd/utility/check-locale.bash'
 	## The same C programs again under the address and undefined-behavior
 	## sanitizers, plus the CLI over the corpus. A read past a buffer that does
 	## not change stdout passes every gate above; this one sees it.
