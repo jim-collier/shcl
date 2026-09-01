@@ -4,10 +4,11 @@
 ##		Pin CLI behavior the conformance corpus structurally cannot reach: a
 ##		closed stdin or stdout, '-' named twice on one command line, a carriage
 ##		return at the end of an ops line, the shape of an op-script error, and
-##		whether a read failure still names its cause. Every row runs against
-##		every binding and is checked against a fixed expectation, not against
-##		the other bindings - four-way agreement proves parity, not correctness,
-##		and each of these was a defect all four shared.
+##		whether a read failure still names its cause. Plus the one thing about
+##		the help text a diff between bindings cannot see: how wide it is. Every
+##		row runs against every binding and is checked against a fixed
+##		expectation, not against the other bindings - four-way agreement proves
+##		parity, not correctness, and each of these was a defect all four shared.
 ##
 ##		stdout and the exit code are contract and are matched exactly. stderr
 ##		wording is per-binding voice, so a row matches it with a regex that has
@@ -184,6 +185,33 @@ for row in "${rows[@]}"; do
 	done
 done
 
+## The help text is a column-aligned table sitting at exactly 80 wide, and it is
+## hand-duplicated in four CLIs, so one added word wraps it in every terminal at
+## once and nothing else here would notice. Only help is checked: about and
+## donate carry the copyright symbol and the CryptogID by design, so a byte
+## count is not a column count there, and neither is aligned anyway.
+maxCols=80
+for b in "${bindings[@]}"; do
+	name="${b%%|*}"; cli="${b#*|}"
+	for cmd in help --help; do
+		text="$("${cli}" "${cmd}" 2>/dev/null </dev/null || true)"
+		nRun+=1
+		if [[ -z "${text}" ]]; then
+			echo "cli-regress: help-width [${name}]: ${cmd} printed nothing" >&2; nBad+=1; continue
+		fi
+		## ASCII first: it is what makes the byte count below a column count.
+		if LC_ALL=C grep -q '[^ -~]' <<<"${text}"; then
+			echo "cli-regress: help-width [${name}]: ${cmd} is not plain ASCII" >&2; nBad+=1
+		fi
+		if grep -q "$(printf '\t')" <<<"${text}"; then
+			echo "cli-regress: help-width [${name}]: ${cmd} prints hard tabs" >&2; nBad+=1
+		fi
+		while IFS= read -r wide; do
+			echo "cli-regress: help-width [${name}]: ${cmd} line ${wide}" >&2; nBad+=1
+		done < <(LC_ALL=C awk -v m="${maxCols}" 'length($0) > m { print NR " is " length($0) " columns: " substr($0, 1, 40) }' <<<"${text}")
+	done
+done
+
 if ((nBad)); then
 	echo "cli-regress: ${nBad} of ${nRun} check(s) failed" >&2
 	exit 1
@@ -193,3 +221,5 @@ echo "cli-regress: OK: ${#rows[@]} row(s) across ${#bindings[@]} binding(s), ${n
 ##	History:
 ##		2026-08-30  Created, pinning the CLI defects from the 20260829 and
 ##		            20260830 rounds that no corpus case can express.
+##		2026-08-31  Help width, after the help text was found sitting at exactly
+##		            80 columns with nothing to fail on.
