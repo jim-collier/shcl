@@ -543,6 +543,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Cause: only a successful bind pushes its indent level. A skipped line leaves nothing for its children to hang from.
 		- Shared by all four bindings, so the crosscheck agrees on the wrong answer. Needs a corpus case with the fix.
 		- Fixed: a skipped line now holds its indent level, so what was written under it is skipped with it (`E018`, new) and the next sibling binds where it should. Corpus case 057.
+		- Case 057 was widened later to a whole subtree: a grandchild under a skipped line, under both the dropped and the retained-as-trivia spelling, plus `children` and `paths` rows so enumeration cannot hand back a name a read then refuses. Backing the skip out re-parents the grandchild with its parent, which the earlier one-level rows did not see.
 		- Opened: 20260829-071126
 		- Closed: 20260829-093755
 
