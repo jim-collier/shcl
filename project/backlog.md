@@ -88,14 +88,18 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-140200
 		- Closed: 20260901-164500
 
-	- 🔘 Item 4: the typed setters write values their own reader refuses, and report success.
+	- ✅ Item 4: the typed setters write values their own reader refuses, and report success.
 		- Spec is explicit that each setter is the exact inverse of the matching read - `SetFloat` emits the number text the reader accepts, `SetDateTime` stores the canonical spelling. Neither holds.
 		- `SetFloat` with an infinity or a NaN writes `inf`, `-inf` or `NaN`; reading the field back is `BadType`. The float formatter has no finiteness gate.
 		- `SetDateTime` accepts any struct the caller builds. Fourteen out-of-range shapes were tried and all fourteen wrote a value that will not read back - month 99, February 30, a twenty-digit fraction, a fraction with no seconds, an offset of 166 hours. A default-constructed struct, which is what a caller reaches for first, writes an empty string.
 		- Every one of them returns true, so `WriteReason` says the write applied.
 		- The CLI is inconsistent with itself about this. Its datetime op validates the text through the reader's own parser and refuses a bad one; the float op ten lines away parses with the language's own float reader, which takes `inf` and `nan`, and writes them.
 		- All four bindings agree, and the C rendering matches the reference byte for byte on all fourteen, so this is shared logic and not a parity break.
+		- Fixed: `SetFloat` and its array form refuse a non-finite value; `SetDateTime` and its array form render the struct and parse it back, and refuse unless the fields come back equal. Both return false and bind nothing, the way `SetRaw` already did for an info-string it cannot spell. The CLI's float ops (`float`, `float-default`, `float-array`, and the default array) refuse `inf`, `nan` and a literal past the double range in all four bindings. Spec: the setter contract names the refusal.
+		- Pinned by a runner fixture in all four bindings (three non-finite floats through the scalar, default and array setters; ten datetime shapes through the same three; a valid value still writes and reads back equal; the document is byte-identical after every refusal) and by corpus 029's `write-bad.ops`, which gained `1e400`, `INF`, `nan`, `-inf`, `infinity`, an array holding `inf` and a default of `nan`. Those first three were in `write.ops` with `inf`/`NaN` as the expected output, from the 20260725 round's parity fix; that round's item 3 carries a note. Fails on the old code in all four (Rust 2 tests, Go 2, Python 14 lines, C 29).
+		- The C `dt_clamp` fixture still hands the setter its worst-case struct: the render into the fixed buffer happens before the value is judged, so the clamp is still exercised, and the setter is now expected to refuse.
 		- Opened: 20260901-140300
+		- Closed: 20260901-173000
 
 	- 🔘 Item 5: `init` emits a starter config that `check --schema` rejects, with nothing said, when a repeat lower bound is 1.
 		- Generation promises its output validates clean against the schema that produced it, with one documented exception: a repeat lower bound of 2 or more, which cannot be auto-satisfied because identical generated lines would merge.
@@ -1257,6 +1261,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- The ops script on stdin also skips the UTF-8 gate the file reader applies, so bad bytes become U+FFFD instead of exit 1.
 		- stdout and exit codes are contract here and the crosscheck replays `set`, so this only escapes CI because no corpus op line carries a malformed value.
 		- Fixed: go/python/C now gate op values with the reference's exact grammar: sign + ASCII digits + i64 range for ints, the Rust f64 grammar for floats, with overflow stored as `inf`. C's truncating staging buffers are gone. The ops stdin gets the same UTF-8 gate as file input in all four. Corpus case 029 pins accept and reject sets cross-binding (`write-bad.ops` dimension in all four runners + the differential harness).
+		- Superseded in part by the 20260901 round's item 4: overflow is refused now rather than stored as `inf`, since the reader refuses `inf`. The grammar gate and the UTF-8 gate stand.
 		- Opened: 20260725-152141
 		- Closed: 20260725-170306
 

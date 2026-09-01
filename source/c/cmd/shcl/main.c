@@ -20,6 +20,7 @@
 #include <string.h>
 #include <locale.h>
 #include <errno.h>
+#include <math.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #ifdef _WIN32
@@ -664,11 +665,13 @@ static int g_f64(const char *p, size_t n, double *out) {
 		}
 		if (i != n) return 0;
 	}
-	// Overflow via strtod gives +-inf like Rust, so ERANGE is not an error here.
+	// The language's own float reader takes inf and nan, and overflow lands on
+	// them too; the document's reader does not, so they are bad values here,
+	// the way a bad datetime is.
 	char *b = (char *)xrealloc(NULL, n + 1); memcpy(b, p, n); b[n] = 0;
 	*out = strtod(b, NULL);
 	free(b);
-	return 1;
+	return isfinite(*out) ? 1 : 0;
 }
 // Exactly `true` or `false`; anything else is a bad value, like a bad int.
 static int g_bool(const char *p, size_t n, int *out) {

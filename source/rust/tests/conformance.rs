@@ -889,6 +889,67 @@ fn write_reason_names_the_failure() {
 }
 
 #[test]
+fn setters_refuse_a_value_the_reader_refuses() {
+	// Each setter is the inverse of its read, so a value with no spelling the
+	// reader accepts fails the write and leaves the document alone. Same
+	// fixture in every runner.
+	use shcl::{ShclDateTime, ZoneSpec};
+	let mut doc = Document::parse("z: 0\n");
+	for v in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+		assert!(!doc.set_float("f", v), "{v}");
+		assert!(!doc.set_float_default("f", v), "{v}");
+		assert!(!doc.set_float_array("f", &[1.0, v]), "{v}");
+	}
+	assert!(doc.set_float("f", 2.5) && doc.get_float("f") == Ok(2.5));
+	let good = |d: Option<(i32, u32, u32)>, t: Option<(u32, u32, Option<u32>)>| ShclDateTime {
+		date: d,
+		time: t,
+		frac: None,
+		zone: None,
+	};
+	let with = |dt: ShclDateTime, frac: Option<&str>, zone: Option<ZoneSpec>| ShclDateTime {
+		frac: frac.map(str::to_string),
+		zone,
+		..dt
+	};
+	let bad = [
+		ShclDateTime::default(),                                 // nothing written
+		good(Some((2026, 13, 1)), None),                         // month 13
+		good(Some((2026, 2, 30)), None),                         // February 30
+		good(Some((-1, 1, 1)), None),                            // negative year
+		good(None, Some((24, 0, None))),                         // hour 24
+		with(good(None, Some((1, 2, None))), Some("5"), None),   // fraction with no seconds
+		with(good(None, Some((1, 2, Some(3)))), Some(""), None), // empty fraction
+		with(good(None, Some((1, 2, Some(3)))), Some("12345678901"), None), // 11 digits
+		with(
+			good(None, Some((1, 2, None))),
+			None,
+			Some(ZoneSpec::OffsetMinutes(9999)),
+		), // +166:39
+		with(good(Some((2026, 1, 1)), None), None, Some(ZoneSpec::Utc)), // zone on a date alone
+	];
+	for dt in &bad {
+		assert!(!doc.set_datetime("d", dt), "{dt}");
+		assert!(!doc.set_datetime_default("d", dt), "{dt}");
+		assert!(
+			!doc.set_datetime_array("d", &[good(Some((2026, 1, 1)), None), dt.clone()]),
+			"{dt}"
+		);
+	}
+	let ok = with(
+		good(Some((2026, 1, 2)), Some((3, 4, Some(5)))),
+		Some("60"),
+		Some(ZoneSpec::OffsetMinutes(-90)),
+	);
+	assert!(doc.set_datetime("d", &ok));
+	assert_eq!(doc.get_datetime("d"), Ok(ok));
+	assert_eq!(
+		doc.to_canonical(),
+		"z: 0\n\nf: 2.5\n\nd: \"2026-01-02T03:04:05.60-01:30\"\n"
+	);
+}
+
+#[test]
 fn setter_refuses_a_path_it_could_not_write_back() {
 	// The refusal has to bite the setters too, not just the probe: a created
 	// node here would leave a document that no longer parses, and the reload

@@ -3760,9 +3760,14 @@ impl Document {
 	pub fn set_int(&mut self, path: &str, v: i64) -> bool {
 		self.set_value(path, cell_of(v.to_string()))
 	}
-	/// Bind a float at a path, in the canonical shortest spelling.
+	/// Bind a float at a path, in the canonical shortest spelling. An
+	/// infinity or a NaN has no spelling the reader accepts, so it fails the
+	/// write rather than binding a value that cannot read back.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float(&mut self, path: &str, v: f64) -> bool {
+		if !v.is_finite() {
+			return false;
+		}
 		self.set_value(path, cell_of(format_f64(v)))
 	}
 	/// Bind true/false at a path.
@@ -3775,9 +3780,15 @@ impl Document {
 	pub fn set_string(&mut self, path: &str, v: &str) -> bool {
 		self.set_value(path, cell_of(encode_string(v)))
 	}
-	/// Bind a datetime at a path, in its canonical spelling.
+	/// Bind a datetime at a path, in its canonical spelling. The struct's
+	/// fields are public and carry no invariant, so a value the reader would
+	/// refuse (month 13, a fraction with no seconds, an empty struct) fails
+	/// the write rather than binding text that cannot read back.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime(&mut self, path: &str, v: &ShclDateTime) -> bool {
+		if !datetime_reads_back(v) {
+			return false;
+		}
 		self.set_value(path, cell_of(v.to_string()))
 	}
 	/// Bind a raw block at a path, picking a fence longer than any content line.
@@ -3820,6 +3831,9 @@ impl Document {
 	/// Bind an inline float array at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_array(&mut self, path: &str, v: &[f64]) -> bool {
+		if !v.iter().all(|x| x.is_finite()) {
+			return false;
+		}
 		self.set_value(path, array_cell(v.iter().map(|x| format_f64(*x)).collect()))
 	}
 	/// Bind an inline bool array at a path.
@@ -3845,6 +3859,9 @@ impl Document {
 	/// Bind an inline datetime array at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime_array(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
+		if !v.iter().all(datetime_reads_back) {
+			return false;
+		}
 		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
 
@@ -4544,6 +4561,12 @@ fn parse_time_part(s: &str) -> Option<TimeParts> {
 		}
 	};
 	Some(((h, mi, sec), frac, zone))
+}
+
+/// Whether a datetime's canonical spelling reads back as the same value: the
+/// setter's inverse-of-the-read promise, checked by making the round trip.
+fn datetime_reads_back(v: &ShclDateTime) -> bool {
+	parse_datetime(&v.to_string()).as_ref() == Some(v)
 }
 
 /// Whole-value date/time parse per the whitelist. None = BadType.

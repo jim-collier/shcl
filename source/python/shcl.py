@@ -2656,9 +2656,14 @@ class Document:
 
 	def set_float(self, path: str, v: float) -> bool:
 		"""Bind a float; an int is accepted and written as the float it converts
-		to (one past the float range writes inf), a bool is a TypeError."""
+		to, a bool is a TypeError. An infinity or a NaN (one past the float
+		range included) has no spelling the reader accepts, so it fails the
+		write rather than binding a value that cannot read back."""
 		_want("set_float", v, "float")
-		return self._set_value(path, _cell_of(format_float(_as_float(v))))
+		x = _as_float(v)
+		if not math.isfinite(x):
+			return False
+		return self._set_value(path, _cell_of(format_float(x)))
 
 	def set_bool(self, path: str, v: bool) -> bool:
 		"""Bind a bool; anything else, 0/1 included, is a TypeError."""
@@ -2671,8 +2676,13 @@ class Document:
 		return self._set_value(path, _cell_of(_encode_string(v)))
 
 	def set_datetime(self, path: str, v: ShclDateTime) -> bool:
-		"""Bind a ShclDateTime; anything else is a TypeError."""
+		"""Bind a ShclDateTime; anything else is a TypeError. Its fields carry
+		no invariant, so a value the reader would refuse (month 13, a fraction
+		with no seconds, an empty one) fails the write rather than binding
+		text that cannot read back."""
 		_want("set_datetime", v, "datetime")
+		if not _datetime_reads_back(v):
+			return False
 		return self._set_value(path, _cell_of(str(v)))
 
 	def set_raw(self, path: str, content: str, info: str) -> bool:
@@ -2703,7 +2713,10 @@ class Document:
 	def set_float_array(self, path: str, v: list[float]) -> bool:
 		"""Bind an inline float array; every element is converted as set_float does."""
 		_want_all("set_float_array", v, "float")
-		return self._set_value(path, _array_cell([format_float(_as_float(x)) for x in v]))
+		xs = [_as_float(x) for x in v]
+		if not all(math.isfinite(x) for x in xs):
+			return False
+		return self._set_value(path, _array_cell([format_float(x) for x in xs]))
 
 	def set_bool_array(self, path: str, v: list[bool]) -> bool:
 		_want_all("set_bool_array", v, "bool")
@@ -2715,6 +2728,8 @@ class Document:
 
 	def set_datetime_array(self, path: str, v: list[ShclDateTime]) -> bool:
 		_want_all("set_datetime_array", v, "datetime")
+		if not all(_datetime_reads_back(x) for x in v):
+			return False
 		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	# Default (only-if-absent) forms - the "emit defaults" half of the Writer.
@@ -4378,6 +4393,13 @@ def _parse_time_part(s):
 		else:
 			h = h_raw + 12
 	return ((h, mi, sec), frac, zone)
+
+
+def _datetime_reads_back(v: ShclDateTime) -> bool:
+	"""Whether a datetime's canonical spelling reads back as the same value:
+	the setter's inverse-of-the-read promise, checked by making the round trip."""
+	back = parse_datetime(str(v))
+	return back is not None and (back.date, back.time, back.frac, back.zone) == (v.date, v.time, v.frac, v.zone)
 
 
 def parse_datetime(text: str) -> ShclDateTime | None:

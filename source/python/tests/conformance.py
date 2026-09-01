@@ -6,6 +6,7 @@
 # binding must pass; column meanings live in project/conformance/README.md. Plain
 # stdlib (no pytest) so cicd runs it with a bare python3. Exit nonzero on any miss.
 
+import math
 import os
 import stat
 import sys
@@ -223,11 +224,14 @@ def _float_grammar_ok(s):
 
 
 def _op_flt(s):
-	# float() after the grammar gate is safe; overflow (1e400) yields inf,
-	# matching Rust's parse.
+	# float() after the grammar gate is safe. Overflow (1e400) yields inf,
+	# which the reader refuses, so it is a bad value like the CLI says.
 	if not _float_grammar_ok(s):
 		raise ValueError(f"bad float: {s}")
-	return float(s)
+	x = float(s)
+	if not math.isfinite(x):
+		raise ValueError(f"bad float: {s}")
+	return x
 
 
 def try_apply_op(doc, line):
@@ -590,6 +594,36 @@ def main():
 		raise SystemExit("write_reason probe created an instance")
 	if wdoc.paths() != ["a", "a.b"]:
 		raise SystemExit(f"write_reason probe changed paths: {wdoc.paths()}")
+	# Each setter is the inverse of its read, so a value with no spelling the
+	# reader accepts fails the write and leaves the document alone. Same
+	# fixture in every runner.
+	sdoc = shcl.Document.parse("z: 0\n")
+	for v in (math.inf, -math.inf, math.nan):
+		if sdoc.set_float("f", v) or sdoc.set_float_default("f", v) or sdoc.set_float_array("f", [1.0, v]):
+			raise SystemExit(f"float {v} was written")
+	if not sdoc.set_float("f", 2.5) or sdoc.get_float("f") != 2.5:
+		raise SystemExit("a finite float was refused")
+	DT = shcl.ShclDateTime
+	bad_dts = [
+		DT(),                                                  # nothing written
+		DT(date=(2026, 13, 1)),                                # month 13
+		DT(date=(2026, 2, 30)),                                # February 30
+		DT(date=(-1, 1, 1)),                                   # negative year
+		DT(time=(24, 0, None)),                                # hour 24
+		DT(time=(1, 2, None), frac="5"),                       # fraction with no seconds
+		DT(time=(1, 2, 3), frac=""),                           # empty fraction
+		DT(time=(1, 2, 3), frac="12345678901"),                # 11 digits
+		DT(time=(1, 2, None), zone=("offset", 9999)),          # +166:39
+		DT(date=(2026, 1, 1), zone=("utc", None)),             # zone on a date alone
+	]
+	for dt in bad_dts:
+		if sdoc.set_datetime("d", dt) or sdoc.set_datetime_default("d", dt) or sdoc.set_datetime_array("d", [DT(date=(2026, 1, 1)), dt]):
+			raise SystemExit(f"datetime {dt} was written")
+	ok_dt = DT(date=(2026, 1, 2), time=(3, 4, 5), frac="60", zone=("offset", -90))
+	if not sdoc.set_datetime("d", ok_dt) or str(sdoc.get_datetime("d")) != str(ok_dt):
+		raise SystemExit("a valid datetime was refused or read back differently")
+	if sdoc.to_canonical() != 'z: 0\n\nf: 2.5\n\nd: "2026-01-02T03:04:05.60-01:30"\n':
+		raise SystemExit(f"document after the refusals: {sdoc.to_canonical()!r}")
 	# A raw body is the only content kept untrimmed, so it is the only place a
 	# trailing CR survives the load - and one written back becomes CRLF, which
 	# reads as neither. The whole trailing run comes off instead; a CR inside a
@@ -1149,12 +1183,13 @@ def main():
 	if not tdoc.set_float_array_default("g", [1, 2.5]) or tdoc.read_float_array("g").value != [1.0, 2.5]:
 		raise SystemExit("set_float_array_default refused an int element")
 	# Python-only: an int is written as the float it converts to, the f64 a
-	# caller of the other bindings would hold - not its exact digits, and one
-	# past the float range as inf.
+	# caller of the other bindings would hold - not its exact digits. One past
+	# the float range has no f64 but inf, which the reader refuses, so it
+	# fails the write like any other infinity.
 	if not tdoc.set_float("h", 9007199254740993) or tdoc.read_string("h").value != "9007199254740992":
 		raise SystemExit(f"set_float of a wide int wrote {tdoc.read_string('h').value!r}")
-	if not tdoc.set_float_array("i", [10 ** 400, -(10 ** 400)]) or tdoc.read_string("i").value != "inf, -inf":
-		raise SystemExit(f"set_float_array past the float range wrote {tdoc.read_string('i').value!r}")
+	if tdoc.set_float_array("i", [10 ** 400, -(10 ** 400)]) or tdoc.exists("i"):
+		raise SystemExit("set_float_array past the float range bound a value")
 
 	# Three hot-path shortcuts this binding carries because it is the slow one.
 	# Each is asserted structurally, by what the code does rather than by a
