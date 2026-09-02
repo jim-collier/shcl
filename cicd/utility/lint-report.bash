@@ -85,10 +85,12 @@ fi
 ##	run's log (a passing run aborts on the first error). Drop the "0 warnings" noise,
 ##	govulncheck's clean-result prose (its "found N vulnerabilities in modules you
 ##	require, but your code doesn't appear to call" block is informational and prints
-##	on every run), and the echoed cppcheck command line, which carries the word.
+##	on every run), and the echoed command lines that carry the word: cppcheck's
+##	`--enable=warning`, and clippy's `-D warnings`, which the pre-push gate's
+##	nested run echoes during publish and which used to read as a finding.
 warns="$(grep -inE 'warning|rustsec-|vulnerab|unmaintained|yanked|error\[' "$log" 2>/dev/null \
 	| grep -viE 'generated 0 warnings|: 0 warnings|no warnings|0 warnings emitted' \
-	| grep -viE 'no vulnerabilities found|affected by 0 vulnerabilities|this scan also found|appear to call|^[0-9]+:these vulnerabilities\.$|enable=warning' || true)"
+	| grep -viE 'no vulnerabilities found|affected by 0 vulnerabilities|this scan also found|appear to call|^[0-9]+:these vulnerabilities\.$|enable=warning|-D warnings' || true)"
 if [[ -n "$warns" ]]; then n=$(printf '%s\n' "$warns" | grep -c .); else n=0; fi
 
 tag="FLAG"; ((check)) && tag="NEW"
@@ -103,3 +105,4 @@ fi
 
 ##	Script history:
 ##		- 20260709: Created.
+##		- 20260902: The echoed `-D warnings` of a nested clippy run is not a finding.

@@ -211,6 +211,17 @@ for bad in gap cut junk; do
 	[[ "${flameOut}" != *Traceback* ]] || fBad "flame-report.py tracebacked on a ${bad} graph"
 done
 
+##	20260901b item 21: lint-report.bash counted the `-D warnings` in the clippy
+##	command line the pre-push gate's nested run echoes as a warning, so every
+##	run that pushed to dev read as one finding. A real clippy warning and a
+##	cppcheck one still count; the two echoed command lines do not.
+printf 'Lint ...........: cargo clippy --all-targets -- -D warnings\nLint ...........: cppcheck --enable=warning,portability src.c\nOK: lint\n' > "${tmpDir}/run_20260101-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260101-000000.log" 2>&1 || true)"
+[[ "${lintOut}" == "CLEAN "* ]] || fBad "lint-report.bash counted an echoed command line as a warning: ${lintOut@Q}"
+printf 'warning: unused variable: x\n --> src/main.rs:1:1\nsrc.c:12:3: warning: uninitialized variable [uninitvar]\n' >> "${tmpDir}/run_20260101-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260101-000000.log" 2>&1 || true)"
+[[ "${lintOut}" == "FLAG "*"(2 warning line(s))"* ]] || fBad "lint-report.bash missed a real warning: ${lintOut@Q}"
+
 ##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
 ##	release" verbatim, so a patch back-ported to an older line after a newer one
 ##	shipped was handed out as stable. The fixture is in publish order, newest

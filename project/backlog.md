@@ -203,9 +203,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-191900
 		- Closed: 20260902-160000
 
-	- 🔘 Item 21: `lint-report.bash` flags the nested pre-push gate's own plan line.
+	- ✅ Item 21: `lint-report.bash` flags the nested pre-push gate's own plan line.
 		- Reproduced on today's log. The line it reports is the `-D warnings` in the clippy command the pre-push hook echoes during the publish stage, which is why only runs that push to dev or main show a warning. The cppcheck `--enable=warning` echo is already excluded; this one is not.
+		- Fixed: the echoed `-D warnings` is excluded the way the cppcheck `--enable=warning` echo already was. Today's log reads CLEAN.
+		- Pinned by `shell-regress.bash`: a log holding both echoed command lines is CLEAN, and one with a clippy and a cppcheck warning appended is FLAG with exactly two lines. The old script counted three.
 		- Opened: 20260901-192000
+		- Closed: 20260902-161500
 
 	- 🔘 Item 22: the C++ veneer's `to_canonical()` never gives the read arena back, so a save loop grows without bound.
 		- Measured: 1000 calls on a 2.9 MB document, 94 MB to 2.9 GB. Every other copying wrapper releases before its call; this one was missed.
