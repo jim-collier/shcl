@@ -73,9 +73,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-190200
 		- Closed: 20260902-091500
 
-	- 🔘 Item 4: a fragment mounted at one node by two top-level schema paths is checked twice, and its diagnostics repeat.
+	- ✅ Item 4: a fragment mounted at one node by two top-level schema paths is checked twice, and its diagnostics repeat.
 		- Reproduced in all four. `field: a` and `field: "a[*]"` both inheriting one fragment report each of its faults twice. The spec says once per node. The dedupe set is created per top-level constraint, so it only covers mounts reached inside one constraint's own recursion.
+		- Fixed: the mounted set is created once per validation and shared by every top-level constraint, so a (fragment, node) pair runs once whichever paths reach it. The per-constraint wrapper is gone in all four.
+		- Pinned by corpus `077` (`srv` and `srv[*]` both inheriting one fragment; each fault once). Failed in all four before, passes now.
 		- Opened: 20260901-190300
+		- Closed: 20260902-093000
 
 	- 🔘 Item 5: `H001`/`H002` disavowal re-reads the schema through the raw path text and the raw `repeat` value, so an escaped quote in a segment defeats it and a faulted `repeat` still disavows.
 		- Reproduced in all four. `field: "a.\"b.c\""` with `repeat: 2` still prints the hint, while the unescaped spellings work. `repeat: 0x2` and a three-element `repeat` are schema faults and still silence the hint.

@@ -6452,8 +6452,12 @@ func min3(a, b, c int) int {
 func (d *Document) Validate(schema *Document) []Diagnostic {
 	def, faults := buildSchema(schema)
 	out := faults
+	// One mount set for the whole schema: two top-level paths can resolve to
+	// the same node and mount the same fragment there, and the spec says each
+	// fragment runs once per node.
+	mounted := make(map[fragMount]bool)
 	for i := range def.cons {
-		d.vCheck(&def.cons[i], &def, &out)
+		d.vCheckFrom(&def.cons[i], &def, root, 0, &out, mounted)
 	}
 	if def.pathsComplete {
 		d.vUnknown(&def, &out)
@@ -6535,11 +6539,6 @@ func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vCo
 type fragMount struct {
 	fr string
 	n  int
-}
-
-func (d *Document) vCheck(c *constraint, def *schemaDef, out *[]Diagnostic) {
-	mounted := make(map[fragMount]bool)
-	d.vCheckFrom(c, def, root, 0, out, mounted)
 }
 
 // A mounted fragment's fields run per resolved node, right after that node's

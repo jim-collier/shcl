@@ -6062,8 +6062,12 @@ impl Document {
 	pub fn validate(&self, schema: &Document) -> Vec<Diagnostic> {
 		let (def, faults) = build_schema(schema);
 		let mut out = faults;
+		// One mount set for the whole schema: two top-level paths can resolve
+		// to the same node and mount the same fragment there, and the spec
+		// says each fragment runs once per node.
+		let mut mounted = std::collections::HashSet::new();
 		for c in &def.cons {
-			self.v_check(c, &def, &mut out);
+			self.v_check_from(c, &def, ROOT, 0, &mut out, &mut mounted);
 		}
 		if def.paths_complete {
 			self.v_unknown(&def, &mut out);
@@ -6138,11 +6142,6 @@ impl Document {
 			}
 		}
 		out.push((anchor, cur));
-	}
-
-	fn v_check(&self, c: &Constraint, def: &SchemaDef, out: &mut Vec<Diagnostic>) {
-		let mut mounted = std::collections::HashSet::new();
-		self.v_check_from(c, def, ROOT, 0, out, &mut mounted);
 	}
 
 	// A mounted fragment's fields run per resolved node, right after that
