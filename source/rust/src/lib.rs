@@ -2747,7 +2747,47 @@ fn emit_name(name: &str) -> String {
 /// text by hand should not have to know which of the four they are reading.
 #[must_use]
 pub fn format_f64(v: f64) -> String {
-	format!("{v}")
+	let s = format!("{v}");
+	if !v.is_finite() || v == 0.0 {
+		return s;
+	}
+	// The shortest spelling that reads back is the same in every binding
+	// except on an exact tie between two spellings of that length, where core
+	// rounds away from zero and Go, Python and C round to even. The correctly
+	// rounded spelling of the same length is the to-even one, so use it when
+	// it reads back; when it does not (a lopsided interval at a power of
+	// two), the shortest one is the only choice and all four agree already.
+	let sig = s
+		.trim_start_matches('-')
+		.replace('.', "")
+		.trim_start_matches('0')
+		.trim_end_matches('0')
+		.len()
+		.max(1);
+	let e = format!("{v:.*e}", sig - 1);
+	if e.parse::<f64>() != Ok(v) {
+		return s;
+	}
+	let (mant, exp) = e.split_once('e').unwrap_or((&e, "0"));
+	let digits: String = mant.chars().filter(char::is_ascii_digit).collect();
+	let point = exp.parse::<i64>().unwrap_or(0) + 1;
+	let mut out = String::new();
+	if v.is_sign_negative() {
+		out.push('-');
+	}
+	if point <= 0 {
+		out.push_str("0.");
+		out.extend(std::iter::repeat_n('0', (-point) as usize));
+		out.push_str(&digits);
+	} else if point as usize >= digits.len() {
+		out.push_str(&digits);
+		out.extend(std::iter::repeat_n('0', point as usize - digits.len()));
+	} else {
+		out.push_str(&digits[..point as usize]);
+		out.push('.');
+		out.push_str(&digits[point as usize..]);
+	}
+	out
 }
 
 /// Quote one path segment so it can be spliced into a lookup path: a bare name

@@ -4117,12 +4117,40 @@ shcl_str shcl_to_canonical(shcl_doc *d) {
 
 // --- format helpers + remaining public API ----------------------------------
 
+// The correctly rounded string at a precision is the closest one, but at a
+// power of two the rounding interval is lopsided, and the neighbor one digit
+// up or down can read back while the closest does not. The shortest-digits
+// algorithms the other bindings use find it; stepping the last digit of the
+// "%.*e" text in tmp by delta (with carry) and reading it back does the same.
+// A carry past the leading digit is a shorter spelling, already tried.
+static int f64_neighbor(const char *tmp, double v, int delta, char *out) {
+	strcpy(out, tmp);
+	char *e = strchr(out, 'e');
+	if (!e || e == out) return 0;
+	char *p = e - 1;
+	for (;;) {
+		if (*p >= '0' && *p <= '9') {
+			int d = *p - '0' + delta;
+			if (d >= 0 && d <= 9) { *p = (char)('0' + d); break; }
+			*p = (char)(d < 0 ? '9' : '0');
+		}
+		if (p == out) return 0;
+		p--;
+	}
+	if (*(out[0] == '-' ? out + 1 : out) == '0') return 0;
+	return strtod(out, NULL) == v;
+}
+
 size_t shcl_format_f64(double v, char *out) {
 	if (isnan(v)) { memcpy(out, "NaN", 3); return 3; }
 	if (isinf(v)) { if (v < 0) { memcpy(out, "-inf", 4); return 4; } memcpy(out, "inf", 3); return 3; }
 	if (v == 0.0) { if (signbit(v)) { memcpy(out, "-0", 2); return 2; } out[0] = '0'; return 1; }
-	char tmp[64]; int prec;
-	for (prec = 1; prec <= 17; prec++) { snprintf(tmp, sizeof tmp, "%.*e", prec - 1, v); if (strtod(tmp, NULL) == v) break; }
+	char tmp[64], alt[64]; int prec;
+	for (prec = 1; prec <= 17; prec++) {
+		snprintf(tmp, sizeof tmp, "%.*e", prec - 1, v);
+		if (strtod(tmp, NULL) == v) break;
+		if (f64_neighbor(tmp, v, 1, alt) || f64_neighbor(tmp, v, -1, alt)) { memcpy(tmp, alt, sizeof tmp); break; }
+	}
 	// The round-trip above needed tmp in the host locale; the scan below wants '.'.
 	{
 		const char *dp = dec_point(); size_t dn = strlen(dp);
