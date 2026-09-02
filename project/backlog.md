@@ -46,7 +46,207 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Bugs
 
+- Code review 20260901b:
+
+	- The areas the 20260901 round recorded as not reached: the C parser and emitter read line by line, Go's validation walk, Python's validator, `v_suggest`, a full run under mingw and wine, the installers and packaging, `--layer` and merge semantics, and the three tooling scripts nobody had opened. Twenty-three defects here, the rest under Features and enhancements. Everything below was reproduced, not read off the code.
+	- Nine of the defects are shapes all four bindings share, so the four-way check cannot see them. Seven are C or C++ only, which it also cannot see. Four were found only by running the windows builds; two are the release tooling.
+
+	- 🔘 Item 1: a line refused with `E012` does not hold its indent level, so what was written under it re-parents, and a refused fence line's body is parsed as live bindings.
+		- Reproduced in all four bindings. `d: 3` written under a refused `c: 2` becomes a child of the level above it, where the spec's `E018` row says it is skipped with the line it sits under. The 20260829 fix that added `E018` covered the `E014` and `E021` arms and missed all three `E012` arms.
+		- The fence arm is the damaging one. A fence at a bad indent is skipped but its body is not consumed, so raw content becomes root bindings and the closing fence opens a second, unterminated block.
+		- Opened: 20260901-190000
+
+	- 🔘 Item 2: a line refused with `E013` (a `*` with no space) does not hold its level either, so its next sibling is lost.
+		- Reproduced in all four. Content under the bad line re-parents up, and the line's own next sibling then reports `E012` and is dropped. The `E014` arm beside it, same class of defect, does this right.
+		- Opened: 20260901-190100
+
+	- 🔘 Item 3: a value after a last-segment index selector is dropped with no diagnostic and no lost count, so a save deletes it.
+		- Reproduced in all four. `a[0]: 2` loads clean and formats to nothing; the same with a raw block loads clean and the block vanishes. `fmt --write` exits 0 and bakes it in. The spec says the trailing value is reported as an error and counted as lost; the value-selector arm does exactly that, the index arm has no check at all.
+		- Opened: 20260901-190200
+
+	- 🔘 Item 4: a fragment mounted at one node by two top-level schema paths is checked twice, and its diagnostics repeat.
+		- Reproduced in all four. `field: a` and `field: "a[*]"` both inheriting one fragment report each of its faults twice. The spec says once per node. The dedupe set is created per top-level constraint, so it only covers mounts reached inside one constraint's own recursion.
+		- Opened: 20260901-190300
+
+	- 🔘 Item 5: `H001`/`H002` disavowal re-reads the schema through the raw path text and the raw `repeat` value, so an escaped quote in a segment defeats it and a faulted `repeat` still disavows.
+		- Reproduced in all four. `field: "a.\"b.c\""` with `repeat: 2` still prints the hint, while the unescaped spellings work. `repeat: 0x2` and a three-element `repeat` are schema faults and still silence the hint.
+		- Cause: both suppressors take paths from `instances()` display text and read `repeat` with the loose array read, where the schema build reads both correctly. Deriving the disavowed names from the built constraints closes both.
+		- Opened: 20260901-190400
+
+	- 🔘 Item 6: a merge appends unmatched `over` nodes grouped by name, where the spec says file order.
+		- Reproduced in all four. `c, s, c` in the layer comes out `c, c, s`. So merging onto an empty base is not the identity, and a layered `fmt` reorders siblings the layer's author put in a deliberate order. Reads are unaffected, which is why nothing caught it.
+		- Opened: 20260901-190500
+
+	- 🔘 Item 7: a layer's own repeated footer comments collapse to one.
+		- Reproduced in all four. The once-per-layer footer dedupe compares each line against a list that already holds the lines just added from the same layer, so a within-file repeat is dropped. Another way an empty-base merge fails to be the identity.
+		- Opened: 20260901-190600
+
+	- 🔘 Item 8: the did-you-mean suggestion is quadratic in name length, so a check against a schema with long field names takes seconds to minutes.
+		- Measured: 300 unknown fields of 300 characters against 300 schema names of 300 characters, 188 KB in all, takes 23 s in the release reference, 27 s in Go, 10 s in C. Double both lengths and the reference did not finish in two minutes.
+		- Cause: a full Levenshtein table per pair with no prefilter, while the result is discarded past distance 2. A length difference over 2 can be rejected outright, and a banded table bounded by the threshold makes the rest linear.
+		- Opened: 20260901-190700
+
+	- 🔘 Item 9: C formats an exact power of two with 17 digits where the other three print 16.
+		- Reproduced, C only: 46 of the 2098 powers of two, none of 11,206 random doubles. `get --float` and a float write op both show it, so it reaches a saved file.
+		- Cause: the shortest-round-trip loop tries only the correctly rounded string at each precision. At a power of two the rounding interval is lopsided and the neighbor one digit up is the one that round-trips.
+		- Opened: 20260901-190800
+
+	- 🔘 Item 10: on a value exactly halfway at 17 digits, the reference rounds up and the other three round half-even.
+		- Reproduced: `2.9802322387695312e-08` written back is `...313` from Rust and `...312` from Go, Python and C. Two hits in 11,206 random doubles; both spellings parse to the same double.
+		- Needs a decision on which side to match. Matching the reference means each port detects the tie and bumps the digit; matching the three means the reference post-processes its own formatter.
+		- Opened: 20260901-190900
+
+	- 🔘 Item 11: the distributed CLI aborts on Windows when the program reading its output closes early.
+		- Reproduced under wine: `fmt` of a 40k-key file piped through `head` panics with "failed printing to stdout: Pipe not connected", and the release build turns the panic into an abort. Go and C exit 0 silently there, and all three are silent on Linux.
+		- Cause: the broken-pipe handling restores the default signal action and is compiled only on unix. Windows has no SIGPIPE; the write returns an error and the next print panics. Piping into `more` or `Select-Object -First` is ordinary use.
+		- Opened: 20260901-191000
+
+	- 🔘 Item 12: the C CLI on Windows takes its arguments in the active code page and checks them as UTF-8, so a non-ASCII path is refused, and a name the code page best-fits maps to a different file, including for `--write`.
+		- Reproduced under wine with code page 1252. `café.shcl` is refused as bad encoding. With `ā.shcl` and `a.shcl` both present, `set --write` on the first exits 0 and rewrites the second.
+		- The library's own file tier was made wide in the 20260828 fixes; the CLI's narrow `main` and the header's silence on argument encoding are what is left. The C CLI is not distributed, but a C consumer's own `main` inherits the same trap.
+		- Opened: 20260901-191100
+
+	- 🔘 Item 13: on Windows, `shcl_write_file_atomic` reports failure with `errno` untouched when the publish step fails, so the C CLI prints `Success` beside exit 8.
+		- Reproduced under wine: a target held open by another process, or a device name as the target, both print `<file>: Success`. Rust and Go name the real cause.
+		- Cause: the wide publish calls set the Win32 last error and nothing maps it to `errno`, against what the header promises.
+		- Opened: 20260901-191200
+
+	- 🔘 Item 14: the C runner's Windows read-only fixture cannot see a leftover temp file, because it skips every dotfile and the temp name starts with a dot.
+		- Reproduced: a planted `.ro.shcl.tmp999.0` passes the fixture. The other three runners count it.
+		- Opened: 20260901-191300
+
+	- 🔘 Item 15: the `.deb` and `.rpm` declare no dependencies, so they install cleanly on a system where the binary cannot run.
+		- Reproduced with the pipeline's own packages: lintian reports undeclared ELF prerequisites and the rpm lists no requires. The binary needs glibc 2.34 and libgcc; on Debian 11 or RHEL 8 the package installs and `shcl` dies with a loader error, which is exactly what the installer's glibc check exists to prevent.
+		- Also from the same lintian run: no copyright file, no changelog, an unknown `License` field. Cheap to close together.
+		- Opened: 20260901-191400
+
+	- 🔘 Item 16: a system install under umask 077 still leaves the man directory root-only when the installer has to create it.
+		- Reproduced with the system paths redirected into a sandbox. The 20260830b fix widens the install root only; `man1` under `/usr/local/share/man` is created by a plain `mkdir` under the caller's umask and is not widened, and a fresh Debian does not have it.
+		- Opened: 20260901-191500
+
+	- 🔘 Item 17: `sign-release.bash` signs before it checks the key, and checks nothing about the sums file.
+		- Reproduced with a throwaway key: the run fails on the key check and leaves a valid-looking `.sig` beside the sums file. The tag check compares against `Cargo.toml` but never against the sums file's own name, and the sums are never verified against the files present, so a stale sums file from a rebuilt tree signs clean.
+		- Opened: 20260901-191600
+
+	- 🔘 Item 18: the installer's "not on your PATH" note fires when the directory is on PATH with a trailing slash.
+		- Reproduced. A string compare against `:dir:` misses `dir/`, which the shell resolves fine. Same shape in `install-dev.bash`.
+		- Opened: 20260901-191700
+
+	- 🔘 Item 19: the profiler workload merges half its nodes and prints a hint per unit, so the profile measures hint formatting and stderr writes, and the run log carries a million hint lines.
+		- Reproduced: the generator's trailing `service: svcN` line reopens the block above it, so every unit's two `port` leaves collide. 37% of the profiled CPU is the unbuffered hint stream. Today's run log is 93 MB, and a million of its lines are `H001`, from the profiler stage and the large-document fixpoint check.
+		- The generator's own header says nothing in it merges, and the config comment says it was introduced to stop measuring exactly this.
+		- Opened: 20260901-191800
+
+	- 🔘 Item 20: `flame-report.py` accepts a truncated or reshaped profile as a good one, and tracebacks on a non-UTF-8 file.
+		- Reproduced: a profile cut off at 35 KB reports attribution summing to 9% at exit 0, and one with the row height changed reports 173% parse, both with the seen marker written. Random bytes give a decode traceback instead of the skip path.
+		- Cause: any file with a sample count and one frame passes, and the row step is a hard-coded constant that nothing verifies.
+		- Opened: 20260901-191900
+
+	- 🔘 Item 21: `lint-report.bash` flags the nested pre-push gate's own plan line.
+		- Reproduced on today's log. The line it reports is the `-D warnings` in the clippy command the pre-push hook echoes during the publish stage, which is why only runs that push to dev or main show a warning. The cppcheck `--enable=warning` echo is already excluded; this one is not.
+		- Opened: 20260901-192000
+
+	- 🔘 Item 22: the C++ veneer's `to_canonical()` never gives the read arena back, so a save loop grows without bound.
+		- Measured: 1000 calls on a 2.9 MB document, 94 MB to 2.9 GB. Every other copying wrapper releases before its call; this one was missed.
+		- Opened: 20260901-192100
+
+	- 🔘 Item 23: Go's two suppress filters return the caller's slice when nothing is disavowed, against their own comment, and `Diagnostics()` hands out the live internal slice.
+		- Reproduced: the returned slice shares its backing array, so an append by the caller and the document's own next append overwrite each other. The in-place-filter bug fixed on 20260831 was the drop path; this is its sibling on the keep-everything path, which the test for it does not cover.
+		- Opened: 20260901-192200
+
 ### Features and enhancements
+
+- Code review 20260901b:
+
+	- The enhancement half of the round whose bugs are under Bugs. Test gaps, decisions the spec leaves open, and the smaller installer and tooling items.
+
+	- 🔘 Item 24: diagnostics printed under `--layer` do not say which file they came from.
+		- Two layers with a bad line 2 print `line 2: ...` twice, indistinguishable. Schema diagnostics already carry a `schema line N` prefix for the same reason.
+		- Opened: 20260901-192300
+
+	- 🔘 Item 25: nothing in the suite reads from a merged in-memory document; only the merged text is compared.
+		- Every read path through a merged arena (dropped nodes, rebuilt index, cloned lists, wildcard slots) is uncovered. A property run found them all correct today, so this is a gap, not a defect. A `reads-merged.tsv` per case, replayed with the layer arguments, would close it.
+		- Opened: 20260901-192400
+
+	- 🔘 Item 26: merge behaviors the spec does not state, needing a decision each.
+		- `Line(path)` after a merge cites a line of whichever file the node came from, unlabeled. A leaf override drops the base leaf's comments and its blank-line grouping, where the in-file fold keeps both. Merging a document over itself doubles its leading comments. `lost` sums across layers, so a library consumer that merges then saves to a fresh path is refused for a line a layer dropped. A strict failure in a lower layer prints only that layer's diagnostics. All four bindings agree on every one.
+		- Opened: 20260901-192500
+
+	- 🔘 Item 27: datetime `allowed` equality is on the written shape, so `-00:00` equals `+00:00` and neither equals `Z`, and `12:00:00` is not `12:00:00.0`.
+		- All four agree. The struct mirrors what was written, so this is arguably by design, but it is not a rule anyone would write down. Either compare on a normalized key or state the as-written rule in the spec.
+		- Opened: 20260901-192600
+
+	- 🔘 Item 28: a raw body in a `V004` message embeds its newlines, so one diagnostic spans several stderr lines.
+		- Opened: 20260901-192700
+
+	- 🔘 Item 29: validation questions the spec leaves open.
+		- `type: string` on a multi-element value checks type against the joined string and `allowed` per element, so `allowed: "x, y, z"` fails on `c: x, y, z` while `get --string` returns the joined form. `min` above `max` is not a schema fault. Both consistent across the four.
+		- Opened: 20260901-192800
+
+	- 🔘 Item 30: `E003` is reachable from a file after all, and the spec, the backlog and the corpus all say it is not.
+		- `a[5].b: 2` with one `a` reports it in all four. The spec's "unreachable" reasoning covers only the `[#N]` spelling; the bare `[N]` index is documented and reaches it. Reword the row and add a corpus row.
+		- Opened: 20260901-192900
+
+	- 🔘 Item 31: the hosted windows job runs one of the three C memory tests.
+		- `oom_recover.c`, the setjmp unwind and the most platform-sensitive test in the suite, and `mem_bounds.c` are built on Linux only. Both pass under wine, so it is two lines in `win-runners.bash`.
+		- Opened: 20260901-193000
+
+	- 🔘 Item 32: two `cli-regress` rows are Linux-only and nothing says so.
+		- A directory as the input expects "is a directory"; Windows says access denied, invalid function or permission denied depending on the binding, because none of the three stats the path first. The closed-stdin row cannot be judged under wine at all. Either give the rows a per-platform expectation or report the directory case from a stat.
+		- Opened: 20260901-193100
+
+	- 🔘 Item 33: three windows behaviors that wine cannot show and the hosted job should verify.
+		- Go's CLI likely exits 8 on a closed stdin on real Windows where Rust and C exit 0, because only the Go runtime on Linux reopens closed standard fds. The C file tier passes paths over 260 characters through unprefixed where Rust and Go add the long-path prefix. The C file tier on Windows does not resolve a symlinked target, so a save through a link may replace the link. None of the three could be exercised under wine.
+		- Opened: 20260901-193200
+
+	- 🔘 Item 34: installer behaviors read but not run.
+		- Uninstalling a system tree laid down by the pre-fix installer under a tight umask leaves the four subdirectories and prints a false "files this installer did not put there" note, because the glob does not expand in a root-only directory. `install.ps1` from a 32-bit host lands the 64-bit binary under the x86 program files. The tag picker in `install.bash` returns nothing on compact JSON. On PowerShell 5.1 a native command writing to stderr under `2>&1` throws before the exit code is read.
+		- Opened: 20260901-193300
+
+	- 🔘 Item 35: the `.rpm` does not own `/usr/share/shcl`, so removal leaves the directory behind. The `.deb` is fine.
+		- Opened: 20260901-193400
+
+	- 🔘 Item 36: `install.bash` silently replaces a symlink at the bin path that points somewhere else.
+		- Only a regular file is refused. A link to a cargo-built or hand-built copy is overwritten with no word about it, where the uninstall path already knows how to test "only ours".
+		- Opened: 20260901-193500
+
+	- 🔘 Item 37: neither installer notices a different `shcl` shadowing the one it just installed.
+		- The receipt line runs the installed link directly, never what `shcl` resolves to on PATH. On Windows the user PATH entry is appended after the machine PATH, so a setup.exe install shadows every later user install permanently.
+		- Opened: 20260901-193600
+
+	- 🔘 Item 38: `install.ps1 -Uninstall -Target system` over a setup.exe install guts it and leaves the Add/Remove Programs entry pointing at nothing, and the reverse leaves a stale version there.
+		- Both write the same directory. When `uninstall.exe` is present, run it or say to.
+		- Opened: 20260901-193700
+
+	- 🔘 Item 39: a read-only HOME fails after both downloads, with two raw `mkdir` errors.
+		- The plan step could probe the nearest existing parent for writability before spending the downloads.
+		- Opened: 20260901-193800
+
+	- 🔘 Item 40: `install-dev.bash` leaves a fresh clone on `main` while contributing.md says to branch from `dev`.
+		- Opened: 20260901-193900
+
+	- 🔘 Item 41: both installers report a GitHub API rate limit as "none published yet, or network down".
+		- An unauthenticated 403 is common behind a shared address. Honor `GITHUB_TOKEN` when set and name a 403.
+		- Opened: 20260901-194000
+
+	- 🔘 Item 42: every installer fix since 2.0.0 is on dev only, while the README one-liners fetch `install.bash` and `install.ps1` from main.
+		- 424 changed lines across four rounds, including the shell-scope leak and the umask tree, and every user today runs the pre-fix scripts whichever release they get. The next cut resolves it once; the standing question is whether installer fixes count under the docs-only main merge exception, or the one-liners should fetch at a tag.
+		- Opened: 20260901-194100
+
+	- 🔘 Item 43: the flamegraph drops 35 to 60% of the profiled CPU time and the report does not say so.
+		- The sampler's library blocklist drops any sample whose leaf is inside libc rather than truncating it, so allocation, copying and write time are invisible and every percentage is over the survivors. Today's graph kept 930 of about 1600 samples. Print the expected count beside the kept one at least.
+		- Opened: 20260901-194200
+
+	- 🔘 Item 44: a third of the parser's visible self-time is freeing the per-line path buffer.
+		- Today's profile puts 33% under dropping the path scan's segment vector, which builds two strings per segment per line and frees them per line. Keeping the vector across lines and clearing it would remove most of that. With item 43's blind spot the true share is likely larger.
+		- Opened: 20260901-194300
+
+	- 🔘 Item 45: two style-guide gaps.
+		- A Python deviation bullet sits under the C heading. The Python section does not list the iterative walks that replace the reference's recursion, whose reason lives only in a closed backlog item and the function comments.
+		- Opened: 20260901-194400
+
+	- 🔘 Item 46: the PowerShell wrapper's header carries one ragged 126-column line where its bash twin wraps.
+		- Opened: 20260901-194500
 
 ### Done
 
