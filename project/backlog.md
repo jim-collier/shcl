@@ -134,19 +134,29 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-191000
 		- Closed: 20260902-124500
 
-	- 🔘 Item 12: the C CLI on Windows takes its arguments in the active code page and checks them as UTF-8, so a non-ASCII path is refused, and a name the code page best-fits maps to a different file, including for `--write`.
+	- ✅ Item 12: the C CLI on Windows takes its arguments in the active code page and checks them as UTF-8, so a non-ASCII path is refused, and a name the code page best-fits maps to a different file, including for `--write`.
 		- Reproduced under wine with code page 1252. `café.shcl` is refused as bad encoding. With `ā.shcl` and `a.shcl` both present, `set --write` on the first exits 0 and rewrites the second.
 		- The library's own file tier was made wide in the 20260828 fixes; the CLI's narrow `main` and the header's silence on argument encoding are what is left. The C CLI is not distributed, but a C consumer's own `main` inherits the same trap.
+		- Fixed: on windows the C CLI takes its arguments from the wide command line and converts them to UTF-8, and its own file opens and the directory check go through the library's wide calls instead of the narrow `fopen`/`_access`. The header's file-tier comment now says paths are UTF-8 on every platform and that a consumer's `main` has to hand over UTF-8 too.
+		- Pinned by a `c cli argv` step in `win-runners.bash`, which builds the C CLI on the windows job, reads `café.shcl` and writes `ā.shcl` beside an `a.shcl` that must stay untouched. On the old build the first is refused and the second rewrites `a.shcl`; both pass now.
 		- Opened: 20260901-191100
+		- Closed: 20260902-140000
 
-	- 🔘 Item 13: on Windows, `shcl_write_file_atomic` reports failure with `errno` untouched when the publish step fails, so the C CLI prints `Success` beside exit 8.
+	- ✅ Item 13: on Windows, `shcl_write_file_atomic` reports failure with `errno` untouched when the publish step fails, so the C CLI prints `Success` beside exit 8.
 		- Reproduced under wine: a target held open by another process, or a device name as the target, both print `<file>: Success`. Rust and Go name the real cause.
 		- Cause: the wide publish calls set the Win32 last error and nothing maps it to `errno`, against what the header promises.
+		- Fixed: a failed publish maps `GetLastError` onto errno (`EACCES` for a sharing or lock violation, `ENOENT`, `EEXIST`, `ENOSPC`, `EINVAL`, `EIO` for the rest), and the temp-file unlink on the failure path no longer overwrites the errno the failure left, on either platform.
+		- Pinned by a windows-only fixture in the C runner: a write over a target held open without delete sharing, and one to a device name, both fail with a non-zero errno. Fails on the old header, passes now.
+		- Note: wine's `strtod` (and mingw's `__mingw_strtod`) read `7.67844768714563e-239` one ulp high where glibc, UCRT and Python agree, so under wine the C runner fails corpus `080` in the float formatter's read-back test. The C binding is only as exact as its C runtime's `strtod`; the hosted job decides what real windows does.
 		- Opened: 20260901-191200
+		- Closed: 20260902-140000
 
-	- 🔘 Item 14: the C runner's Windows read-only fixture cannot see a leftover temp file, because it skips every dotfile and the temp name starts with a dot.
+	- ✅ Item 14: the C runner's Windows read-only fixture cannot see a leftover temp file, because it skips every dotfile and the temp name starts with a dot.
 		- Reproduced: a planted `.ro.shcl.tmp999.0` passes the fixture. The other three runners count it.
+		- Fixed: the fixture skips only `.` and `..` when counting what the write left behind, so a leftover dot-named temp counts like it does in the other three runners.
+		- Pinned by planting `.ro.shcl.tmp999.0` in the fixture's directory: the old filter counted nothing, the new one fails the fixture.
 		- Opened: 20260901-191300
+		- Closed: 20260902-140000
 
 	- 🔘 Item 15: the `.deb` and `.rpm` declare no dependencies, so they install cleanly on a system where the binary cannot run.
 		- Reproduced with the pipeline's own packages: lintian reports undeclared ELF prerequisites and the rpm lists no requires. The binary needs glibc 2.34 and libgcc; on Debian 11 or RHEL 8 the package installs and `shcl` dies with a loader error, which is exactly what the installer's glibc check exists to prevent.

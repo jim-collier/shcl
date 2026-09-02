@@ -1187,13 +1187,44 @@ int main(int argc, char **argv) {
 		if (!rt || rn != 5 || memcmp(rt, "a: 2\n", 5) != 0) fail("readonly", "file not rewritten");
 		free(rt);
 		if (!(GetFileAttributesA(rfile) & FILE_ATTRIBUTE_READONLY)) fail("readonly", "file did not come back read-only");
+		// The temp name starts with a dot, so only the two directory entries
+		// are skipped, not every dotfile.
 		DIR *rdd = opendir(rdir); int left = 0; const struct dirent *re;
-		while (rdd && (re = readdir(rdd))) if (re->d_name[0] != '.') left++;
+		while (rdd && (re = readdir(rdd))) if (strcmp(re->d_name, ".") != 0 && strcmp(re->d_name, "..") != 0) left++;
 		if (rdd) closedir(rdd);
 		if (left != 1) fail("readonly", "a temp file was left behind");
 		shcl_free(rd);
 		SetFileAttributesA(rfile, FILE_ATTRIBUTE_NORMAL);
 		remove(rfile); rmdir(rdir);
+	}
+	// A publish that fails leaves errno describing it. The wide calls report
+	// through GetLastError and used to leave errno at 0, so the CLI printed
+	// "Success" beside exit 8. A target held open without delete sharing
+	// fails the replace; a device name fails the move.
+	{
+		char hdir[256], hfile[288];
+		snprintf(hdir, sizeof hdir, "%s/shcl-held-%ld", tmp_root(), (long)getpid());
+		snprintf(hfile, sizeof hfile, "%s/held.shcl", hdir);
+		if (_mkdir(hdir) != 0) fail("errno", "mkdir failed");
+		FILE *hf = fopen(hfile, "wb");
+		if (!hf || fputs("a: 1\n", hf) == EOF || fclose(hf) != 0) fail("errno", "seed write failed");
+		wchar_t wh[320];
+		if (MultiByteToWideChar(CP_UTF8, 0, hfile, -1, wh, 320) == 0) fail("errno", "widen failed");
+		HANDLE hold = CreateFileW(wh, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (hold == INVALID_HANDLE_VALUE) fail("errno", "hold failed");
+		errno = 0;
+		if (shcl_write_file_atomic(hfile, "a: 2\n", 5)) fail("errno", "write over a held file succeeded");
+		if (errno == 0) fail("errno", "failed publish left errno at 0");
+		CloseHandle(hold);
+		errno = 0;
+		if (shcl_write_file_atomic("nul", "a: 2\n", 5)) fail("errno", "write to a device name succeeded");
+		if (errno == 0) fail("errno", "failed publish to a device left errno at 0");
+		DIR *hdd = opendir(hdir); const struct dirent *he;
+		while (hdd && (he = readdir(hdd))) if (strcmp(he->d_name, ".") != 0 && strcmp(he->d_name, "..") != 0) {
+			char left[600]; snprintf(left, sizeof left, "%s/%s", hdir, he->d_name); remove(left);
+		}
+		if (hdd) closedir(hdd);
+		rmdir(hdir);
 	}
 #endif
 	// Reads and saves must not retain: a read of a plain field hands back a

@@ -188,7 +188,10 @@ void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc);
 shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schema, size_t slen, shcl_strictness s);
 
 // File tier (optional companion; compile out with -DSHCL_NO_FILE_IO to keep
-// the core free of file I/O). Load does not fail on the file's account: the
+// the core free of file I/O). Paths are UTF-8 on every platform: on windows
+// they are widened for the file calls rather than read in the active code
+// page, so a program's own main() has to hand over UTF-8 too (the wide
+// command line, not the narrow argv). Load does not fail on the file's account: the
 // document always comes back usable (empty when the file could not be read),
 // and the status out-param (may be NULL) separates the four cases a consumer's
 // own load path otherwise confuses. NULL means an allocation failed, as for a
@@ -5291,6 +5294,23 @@ static wchar_t *shcl_widen(const char *s) {
 	return w;
 }
 
+// The Win32 calls report through GetLastError and leave errno alone, and
+// errno is what the header promises a failed write describes. The common
+// causes map; the rest is EIO, which at least is not "Success".
+static int shcl_errno_from_win32(DWORD e) {
+	switch (e) {
+	case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_INVALID_DRIVE: return ENOENT;
+	case ERROR_ACCESS_DENIED: case ERROR_SHARING_VIOLATION: case ERROR_LOCK_VIOLATION: case ERROR_USER_MAPPED_FILE: return EACCES;
+	case ERROR_ALREADY_EXISTS: case ERROR_FILE_EXISTS: return EEXIST;
+	case ERROR_NOT_ENOUGH_MEMORY: case ERROR_OUTOFMEMORY: return ENOMEM;
+	case ERROR_INVALID_NAME: case ERROR_BAD_PATHNAME: case ERROR_INVALID_PARAMETER: case ERROR_FILENAME_EXCED_RANGE: return EINVAL;
+	case ERROR_DISK_FULL: case ERROR_HANDLE_DISK_FULL: return ENOSPC;
+	case ERROR_BUSY: return EBUSY;
+	case ERROR_DIRECTORY: return ENOTDIR;
+	default: return EIO;
+	}
+}
+
 // ReplaceFile carries the destination's ACLs, attributes and named streams
 // onto the replacement; a move publishes a brand-new file and leaves all of it
 // behind. It needs the destination to exist, and it fails rather than skip a
@@ -5298,9 +5318,11 @@ static wchar_t *shcl_widen(const char *s) {
 // to MoveFileEx - which is there regardless because C rename() will not
 // replace an existing file on Windows at all.
 static int shcl_publish_file(const wchar_t *tmp, const wchar_t *target) {
-	return (GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES
+	int ok = (GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES
 			&& ReplaceFileW(target, tmp, NULL, REPLACEFILE_WRITE_THROUGH, NULL, NULL))
 		|| MoveFileExW(tmp, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+	if (!ok) errno = shcl_errno_from_win32(GetLastError());
+	return ok;
 }
 #endif
 
@@ -5489,7 +5511,8 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	ok = ok && rename(tmp, target) == 0;
 	if (ok) shcl_sync_dir(target);
 #endif
-	if (!ok) SHCL_FILE_UNLINK();
+	// The unlink must not overwrite the errno the failure left behind.
+	if (!ok) { int e = errno; SHCL_FILE_UNLINK(); errno = e; }
 	free(tmp);
 	SHCL_FILE_CLEANUP();
 #undef SHCL_FILE_CLEANUP
