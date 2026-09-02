@@ -131,6 +131,8 @@ Case `061` pins `E012`: a dedent to a column that matches no open level is skipp
 
 Case `075` pins that a skipped line holds its indent level in the other two skip shapes too: a line refused with `E012`, and a `*` line with no space (`E013`). What is written under either is skipped with it (`E018`), a fence line at a bad indent takes its whole body with it, and a second line at the same bad indent is refused the same way rather than binding one level up.
 
+Case `076` pins a value written after an index selector on the last segment (`a[0]: 2`): the instance is selected and the value is reported (`E002`) and counted as lost, exactly as after a value selector, so a save cannot quietly delete it. A same-line fence there is the same case. A value after an index that is not last still binds the deeper leaf.
+
 Case `045` pins comment depth under childless headers: a header whose children are all commented keeps them indented under it (top-level, nested, and at end of file), while a commented line trailing a live child keeps the existing trails-the-binding placement.
 
 Case `044` pins the value-syntax setter: an array, a single element, a quoted element keeping its internal comma, trimming, an unquoted `#` ending the value, an empty value, and the only-if-absent form both skipping an existing path and creating a new one. Its `write-bad.ops` pins the two rejections - a value opening a quote it never closes (the same text the parser reports `E017` for) and a wildcard path.

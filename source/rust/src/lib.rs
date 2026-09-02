@@ -1757,6 +1757,16 @@ impl Parser {
 						self.lost += 1;
 						return None;
 					}
+					if is_last && value.as_ref().is_some_and(|v| !v.is_empty()) {
+						// Same as the value selector: the instance is already
+						// chosen, so a trailing value has nowhere to bind.
+						self.err(
+							line,
+							"E002",
+							format!("value after selector on '{}' ignored", seg.name),
+						);
+						self.lost += 1;
+					}
 				}
 				(Some(Selector::Wildcard), _) => {
 					self.err(line, "E004", "wildcard selector is query-only");

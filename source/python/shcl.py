@@ -1461,6 +1461,11 @@ class _Parser:
 					self._err(line, "E003", f"no instance {k} of '{seg.name}'")
 					self.lost += 1
 					return None
+				if is_last and not value.is_empty():
+					# Same as the value selector: the instance is already chosen,
+					# so a trailing value has nowhere to bind.
+					self._err(line, "E002", f"value after selector on '{seg.name}' ignored")
+					self.lost += 1
 			elif sel is not None and sel[0] == "wild":
 				self._err(line, "E004", "wildcard selector is query-only")
 				self.lost += 1

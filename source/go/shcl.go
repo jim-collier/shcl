@@ -1932,6 +1932,12 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 				p.lost++
 				return 0, false
 			}
+			if isLast && !v.isEmpty() {
+				// Same as the value selector: the instance is already chosen,
+				// so a trailing value has nowhere to bind.
+				p.err(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", seg.name))
+				p.lost++
+			}
 		case seg.sel != nil:
 			p.err(line, "E004", "wildcard selector is query-only")
 			p.lost++

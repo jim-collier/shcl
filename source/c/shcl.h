@@ -2232,6 +2232,13 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 				ShclSB m = {0}; sb_puts(P->line, &m, "no instance "); sb_put_u64(P->line, &m, seg->sel.index); sb_puts(P->line, &m, " of '"); sb_putS(P->line, &m, seg->name); sb_putc(P->line, &m, '\'');
 				p_err(P, line, "E003", sb_S(&m)); P->d->lost++; return 0;
 			}
+			/* Same as the value selector: the instance is already chosen, so a
+			   trailing value has nowhere to bind. */
+			if (is_last && !v_is_empty(&value)) {
+				ShclSB m = {0}; sb_puts(P->line, &m, "value after selector on '"); sb_putS(P->line, &m, seg->name); sb_puts(P->line, &m, "' ignored");
+				p_err(P, line, "E002", sb_S(&m));
+				P->d->lost++;
+			}
 			break;
 		}
 		case SEL_WILDCARD:
