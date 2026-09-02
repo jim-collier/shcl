@@ -5,13 +5,15 @@
 ##		Two rounds running, a fix that was correct made bulk writes 4.5x slower
 ##		and absent-path defaults 140x slower, and both reached dev because
 ##		nothing had a number to fail on. A third round found a plain text file
-##		parsing in quadratic time. Each workload is timed against the same
+##		parsing in quadratic time, and a fourth the did-you-mean suggestion
+##		quadratic in name length. Each workload is timed against the same
 ##		binding's parse-only baseline on the same machine, so the gate carries
 ##		no wall-clock constant and does not care how fast the runner is:
-##		applying the ops, or refusing every line, must stay small beside
-##		reading a well-formed document of the same size. A per-op index
-##		rebuild, a scan of every sibling, or a rewalk of the retained lines
-##		breaks that ratio by more than an order of magnitude.
+##		applying the ops, refusing every line, or suggesting a name for every
+##		unknown field, must stay small beside reading a well-formed document
+##		of the same size. A per-op index rebuild, a scan of every sibling, a
+##		rewalk of the retained lines, or a full edit-distance table per name
+##		pair breaks that ratio by more than an order of magnitude.
 ##	Syntax:
 ##		perf-gate.bash [--keys N] [--factor F] NAME|CLI [NAME|CLI ...]
 ##		  --keys N    flat keys in the generated document (default 40000)
@@ -59,16 +61,27 @@ awk -v n="${keys}" 'BEGIN{ for (i = 0; i < n; i++) printf "int-default\tk%d\t0\n
 ## retained as trivia, and the retained list must not be rewalked per line.
 badDoc="${tmpDir}/bad.shcl"
 awk -v n="${keys}" 'BEGIN{ for (i = 0; i < n; i++) print "no colon here" }' > "${badDoc}"
+## Unknown fields with long names against a schema of long names, all one
+## length so the length prefilter rejects nothing: every pair must cost time
+## linear in the length, not the full table. 30 x 30 pairs at 800 characters
+## is 2 s to 90 s across the bindings with a full table and well under their
+## baselines with a banded one.
+sugSchema="${tmpDir}/sug-schema.shcl"; sugDoc="${tmpDir}/sug.shcl"
+awk 'BEGIN{ pad = sprintf("%794s", ""); gsub(/ /, "x", pad); for (i = 0; i < 30; i++) printf "field: s%05d%s\n", i, pad }' > "${sugSchema}"
+awk 'BEGIN{ pad = sprintf("%794s", ""); gsub(/ /, "x", pad); for (i = 0; i < 30; i++) printf "u%05d%s: 1\n", i, pad }' > "${sugDoc}"
 
-##	Milliseconds for one run of $2 (an ops file, or a document when $3 is
-##	"check") through CLI $1, best of two so a scheduling hiccup does not fail
-##	the gate.
+##	Milliseconds for one run of $2 (an ops file, a document when $3 is
+##	"check", or a document validated against ${sugSchema} when $3 is
+##	"suggest") through CLI $1, best of two so a scheduling hiccup does not
+##	fail the gate.
 fTimeMs(){
 	local cli="$1" input="$2" mode="${3:-set}" best=0 ms start end
 	for _ in 1 2; do
 		start="$(date +%s%N)"
 		if [[ "${mode}" == check ]]; then
 			"${cli}" check "${input}" > /dev/null 2>&1 || true
+		elif [[ "${mode}" == suggest ]]; then
+			"${cli}" check --schema "${sugSchema}" "${input}" > /dev/null 2>&1 || true
 		else
 			"${cli}" set "${doc}" < "${input}" > /dev/null 2>&1 || true
 		fi
@@ -88,9 +101,11 @@ for b in "${bindings[@]}"; do
 	budget=$(( baseMs * factor ))
 	floor=$(( baseMs + 250 ))
 	if ((budget < floor)); then budget="${floor}"; fi
-	for w in writes defaults reads badlines; do
+	for w in writes defaults reads badlines suggest; do
 		if [[ "${w}" == badlines ]]; then
 			ms="$(fTimeMs "${cli}" "${badDoc}" check)"
+		elif [[ "${w}" == suggest ]]; then
+			ms="$(fTimeMs "${cli}" "${sugDoc}" suggest)"
 		else
 			ms="$(fTimeMs "${cli}" "${tmpDir}/${w}.ops")"
 		fi
@@ -114,3 +129,5 @@ echo "perf-gate: OK: ${keys} keys, ${#bindings[@]} binding(s) within ${factor}x 
 ##		            in consecutive rounds with no numeric gate to catch them.
 ##		2026-09-01  badlines workload: a document of refused lines, which went
 ##		            quadratic through the retained-trivia list.
+##		2026-09-02  suggest workload: long unknown names against long schema names,
+##		            which cost a full edit-distance table per pair.

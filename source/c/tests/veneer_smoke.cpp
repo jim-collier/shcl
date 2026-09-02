@@ -261,6 +261,16 @@ int main() {
 		std::size_t held_bytes = 0;
 		for (const ShclBlock *b = raw->reads.head; b; b = b->next) held_bytes += b->used;
 		CHECK(held_bytes <= 4096);
+		// The canonical text is a read result too. 200 copies of a 30 KB
+		// document held at once would be 6 MB; released per call it is one.
+		std::string big;
+		for (int i = 0; i < 2000; i++) big += "key" + std::to_string(i) + ": value" + std::to_string(i) + "\n";
+		shcl_doc *rawBig = shcl_parse(big.data(), big.size());
+		shcl::Document heldBig(rawBig);
+		for (int i = 0; i < 200; i++) CHECK(heldBig.to_canonical().size() == big.size());
+		held_bytes = 0;
+		for (const ShclBlock *b = rawBig->reads.head; b; b = b->next) held_bytes += b->used;
+		CHECK(held_bytes <= 2 * big.size());
 	}
 
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }

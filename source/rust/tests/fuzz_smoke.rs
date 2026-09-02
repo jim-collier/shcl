@@ -267,6 +267,17 @@ fn merge_never_panics_and_stays_fixpoint() {
 			"merged output not idempotent at iteration {} for:\nA:\n{}\nB:\n{}",
 			i, a, b
 		);
+		// Onto an empty base a merge is the identity: nothing to match, so
+		// every node and every footer line comes across in file order.
+		let mut empty = Document::new();
+		empty.merge(&Document::parse(&b));
+		assert_eq!(
+			empty.to_canonical(),
+			Document::parse(&b).to_canonical(),
+			"merge onto empty base is not the identity at iteration {} for:\n{}",
+			i,
+			b
+		);
 	}
 }
 

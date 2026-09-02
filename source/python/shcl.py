@@ -592,6 +592,9 @@ ROOT = 0
 # re-parenting one level up. sys.maxsize so an arena index through it fails
 # loudly rather than reading a real node.
 DEAD = sys.maxsize
+# Stack entry for a line whose indent matched no open level (E012): never a
+# level a sibling can bind at, but deeper lines are still under it.
+UNOPENED = sys.maxsize - 1
 # Ends a name-index chain (see _NameIndex).
 NIL = sys.maxsize
 
@@ -1344,7 +1347,7 @@ class _Parser:
 				target = None
 				at_own_level = False
 				for ind, node in reversed(self.stack):
-					if node != ROOT and node != DEAD and len(ind) >= len(new_indent) and p.indent.startswith(ind):
+					if node != ROOT and node != DEAD and node != UNOPENED and len(ind) >= len(new_indent) and p.indent.startswith(ind):
 						target = node
 						at_own_level = len(ind) == len(p.indent)
 						break
@@ -1368,14 +1371,23 @@ class _Parser:
 		an open level exactly (dedent), else it is a recoverable error."""
 		top_indent, top_node = self.stack[-1]
 		if len(indent) > len(top_indent) and indent.startswith(top_indent):
-			return top_node
+			return DEAD if top_node == UNOPENED else top_node
 		for i in range(len(self.stack) - 1, -1, -1):
-			if self.stack[i][0] == indent:
+			if self.stack[i][0] == indent and self.stack[i][1] != UNOPENED:
 				# Sibling of stack[i]: its parent is the entry below it.
 				parent = ROOT if i == 0 else self.stack[i - 1][1]
 				# Keep the sentinel; a top-level line resolves to ROOT.
 				self.stack = self.stack[:max(i, 1)]
-				return parent
+				return DEAD if parent == UNOPENED else parent
+		# Skipped, but it still owns its indent: whatever is written deeper is
+		# skipped with it, and a sibling at the same bad indent is refused the
+		# same way instead of binding one level up.
+		while len(self.stack) > 1:
+			top = self.stack[-1][0]
+			if len(indent) > len(top) and indent.startswith(top):
+				break
+			self.stack.pop()
+		self.stack.append((indent, UNOPENED))
 		return None
 
 	def _skip_under_dead(self, line, indent):
@@ -1449,6 +1461,11 @@ class _Parser:
 					self._err(line, "E003", f"no instance {k} of '{seg.name}'")
 					self.lost += 1
 					return None
+				if is_last and not value.is_empty():
+					# Same as the value selector: the instance is already chosen,
+					# so a trailing value has nowhere to bind.
+					self._err(line, "E002", f"value after selector on '{seg.name}' ignored")
+					self.lost += 1
 			elif sel is not None and sel[0] == "wild":
 				self._err(line, "E004", "wildcard selector is query-only")
 				self.lost += 1
@@ -1684,12 +1701,14 @@ class _Parser:
 			fence = _fence_open(rest)
 			if fence is not None:
 				parent = self._resolve_parent(indent)
+				value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				if parent is None:
+					# The body goes with its fence: parsed live, it would read as
+					# root bindings and the closing fence would open a second block.
 					self._err(lineno, "E012", "indentation matches no open level")
 					self.lost += 1
-					i += 1
+					i = nxt
 					continue
-				value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				if parent == DEAD:
 					self._skip_under_dead(lineno, indent)
 				else:
@@ -1719,6 +1738,16 @@ class _Parser:
 					self._add_star_element(parent, body, lineno)
 					i += 1
 					continue
+				parent = self._resolve_parent(indent)
+				if parent is None:
+					self._err(lineno, "E012", "indentation matches no open level")
+					self.lost += 1
+					i += 1
+					continue
+				if parent == DEAD:
+					self._skip_under_dead(lineno, indent)
+					i += 1
+					continue
 				self._err(lineno, "E013", "malformed line: '*' must be followed by a space")
 				# Content-malformed at any position, so it is safe to retain
 				# verbatim as trivia: re-emitted, it re-diagnoses identically
@@ -1727,6 +1756,7 @@ class _Parser:
 				# sibling site below carries cannot apply here: this line
 				# starts with the '*' that brought us in.
 				self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
+				self.stack.append((indent, DEAD))
 				i += 1
 				continue
 			# Field line.
@@ -2865,9 +2895,11 @@ class Document:
 		self._lost += over._lost
 		self._overlay(ROOT, over, ROOT)
 		# Layers commonly share a footer; keeping one copy of each keeps a
-		# stack of files from repeating it once per layer.
+		# stack of files from repeating it once per layer. Only the lines
+		# already here count: a layer's own repeats are its content.
+		had = len(self.orphans)
 		for o in over.orphans:
-			if not any(e.text == o.text for e in self.orphans):
+			if not any(e.text == o.text for e in self.orphans[:had]):
 				self.orphans.append(_Lead(o.text, o.blank_before))
 
 	# One grouping pass over each side, then a single children rebuild: the
@@ -2909,14 +2941,14 @@ class Document:
 		# Over side: name -> node bucket, in first-appearance order.
 		order = []
 		groups: dict = {}
-		for k in over_kids:
+		for pos, k in enumerate(over_kids):
 			n = over.arena[k].name
 			g = groups.get(n)
 			if g is None:
 				order.append(n)
 				g = []
 				groups[n] = g
-			g.append(k)
+			g.append((pos, k))
 		# Base side, one pass: does the name have a container instance, and
 		# which child carries each (name, key) - every key computed once. The
 		# list is copied because the splices below rewrite it as they go.
@@ -2933,24 +2965,25 @@ class Document:
 		# mention, not a leaf, so it falls through to the instance merge: a
 		# bare section header in a higher layer never wipes the subtree below.
 		# Replaced groups splice in the rebuild; everything appended (unmatched
-		# instances, and replaced names base never had) keeps processing order.
+		# instances, and replaced names base never had) keeps the over file's
+		# order, which the per-name pass here would otherwise regroup.
 		replace = {}
 		appended = []
 		pending = []
 		empty_key = _Value("empty").key()
 		for name in order:
 			group = groups[name]
-			over_leafy = all(not over.arena[k].children for k in group)
+			over_leafy = all(not over.arena[k].children for _, k in group)
 			in_base = name in has_container
 			base_container = has_container.get(name, False)
 			if over_leafy and not base_container:
-				clones = [self._clone_subtree(over, ok, base_parent) for ok in group]
+				clones = [(pos, self._clone_subtree(over, ok, base_parent)) for pos, ok in group]
 				if in_base:
-					replace[name] = clones
+					replace[name] = [c for _, c in clones]
 				else:
 					appended.extend(clones)
 			else:
-				for ok in group:
+				for pos, ok in group:
 					okey = over.arena[ok].value.key()
 					b = by_key.get((name, okey))
 					# A raw block in the higher layer fills a same-named empty
@@ -2971,7 +3004,7 @@ class Document:
 						# survives the rebuild below and can wait for it.
 						pending.append((b, ok))
 					else:
-						appended.append(self._clone_subtree(over, ok, base_parent))
+						appended.append((pos, self._clone_subtree(over, ok, base_parent)))
 		if not replace and not appended:
 			return pending
 		# Rebuild once: each replaced group lands at its name's first original
@@ -2987,7 +3020,8 @@ class Document:
 			elif name not in spliced:
 				spliced.add(name)
 				new_kids.extend(clones)
-		new_kids.extend(appended)
+		appended.sort(key=lambda pc: pc[0])
+		new_kids.extend(c for _, c in appended)
 		self.arena[base_parent].children = new_kids
 		return pending
 
@@ -3320,8 +3354,12 @@ class Document:
 		a key-level fault keeps its entry's chain."""
 		sdef, faults = _build_schema(schema)
 		out = faults
+		# One mount set for the whole schema: two top-level paths can resolve
+		# to the same node and mount the same fragment there, and the spec
+		# says each fragment runs once per node.
+		mounted: set = set()
 		for c in sdef.cons:
-			self._v_check(c, sdef, out)
+			self._v_check_from(c, sdef, ROOT, 0, out, mounted)
 		if sdef.paths_complete:
 			self._v_unknown(sdef, out)
 		return out
@@ -3368,9 +3406,6 @@ class Document:
 					cur = [nxt[sel[1]]] if sel[1] < len(nxt) else []
 			if not done:
 				out.append((anchor, cur))
-
-	def _v_check(self, c, sdef, out):
-		self._v_check_from(c, sdef, ROOT, 0, out, set())
 
 	# A mounted fragment's fields run per resolved node, right after that
 	# node's own checks, in fragment order - depth-first, so diagnostic order
@@ -3619,35 +3654,7 @@ def suppress_declared_repeats(schema: Document, diags: list[Diagnostic]) -> None
 	consumers were hand-rolling - which errs toward quiet, for a hint. Used by
 	`check --schema` and load_and_validate; call it wherever doc diagnostics
 	and a schema meet. Mutates diags in place."""
-	# Top-level fields plus every fragment's fields: a repeat declared inside
-	# a mounted shape disavows the hint the same way.
-	groups = [("field", schema.instances("field"))]
-	for k in range(schema.count("fragment")):
-		base = f"fragment[#{k}].field"
-		groups.append((base, schema.instances(base)))
-	names = []
-	for base, paths in groups:
-		for i, p in enumerate(paths):
-			# repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
-			# that matters here is the last one.
-			rep = schema.read_int_array(f"{base}[#{i}].repeat")
-			if rep.status != Status.Good:
-				continue
-			if not rep.value or rep.value[-1] <= 1:
-				continue
-			# Leaf name from the parsed path, not a re-split of its text: a
-			# quoted last segment may contain dots (`a."b.c"`). The scanner
-			# folds the name; the doc side stores names folded too.
-			try:
-				segments, _ = _scan_lookup(p)
-			except _PathError:
-				continue
-			if not segments:
-				continue
-			seg = segments[-1]
-			if seg.star:
-				continue   # name wildcard: no single leaf name to disavow
-			names.append(seg.name)
+	names = _disavowed_names(schema, lambda c: c.repeat is not None and c.repeat[1] > 1)
 	if not names:
 		return
 	heads = [_h001_head(n) for n in names]
@@ -3909,6 +3916,25 @@ def _set_read_only(path, on):
 		pass
 
 
+def _disavowed_names(schema, pick):
+	"""Leaf names of the schema entries `pick` accepts, top-level fields and
+	every fragment's fields alike. Read through the built schema, so the names
+	are the ones validation will use (escapes resolved) and an entry whose key
+	faulted disavows nothing."""
+	sdef, _ = _build_schema(schema)
+	names = []
+	lists = [sdef.cons] + list(sdef.frags.values())
+	for cons in lists:
+		for c in cons:
+			if not pick(c) or not c.segs:
+				continue
+			# Name wildcard: no single leaf name to disavow.
+			seg = c.segs[-1]
+			if not seg.star:
+				names.append(seg.name)
+	return names
+
+
 def _h002_head(name):
 	"""The single H002 wording site: the merge hint and the schema suppressor
 	both come here, same discipline as _h001_head."""
@@ -3922,26 +3948,7 @@ def suppress_declared_reopens(schema: Document, diags: list[Diagnostic]) -> None
 	H001 suppressor, and it errs toward quiet, for a hint. Used by
 	`check --schema` and load_and_validate; call it wherever doc diagnostics
 	and a schema meet. Mutates diags in place."""
-	groups = [("field", schema.instances("field"))]
-	for k in range(schema.count("fragment")):
-		base = f"fragment[#{k}].field"
-		groups.append((base, schema.instances(base)))
-	names = []
-	for base, paths in groups:
-		for i, p in enumerate(paths):
-			re = schema.read_bool(f"{base}[#{i}].reopen")
-			if re.status != Status.Good or not re.value:
-				continue
-			try:
-				segments, _ = _scan_lookup(p)
-			except _PathError:
-				continue
-			if not segments:
-				continue
-			seg = segments[-1]
-			if seg.star:
-				continue   # name wildcard: no single leaf name to disavow
-			names.append(seg.name)
+	names = _disavowed_names(schema, lambda c: c.reopen)
 	if not names:
 		return
 	heads = [_h002_head(n) for n in names]
@@ -4491,7 +4498,7 @@ _SCHEMA_TYPES = (
 class _Constraint:
 	__slots__ = (
 		"path", "segs", "ty", "required", "allowed",
-		"min_i", "max_i", "min_f", "max_f", "repeat",
+		"min_i", "max_i", "min_f", "max_f", "repeat", "reopen",
 		"inherits", "inherits_line",
 		"desc", "default_text",
 	)
@@ -4507,6 +4514,7 @@ class _Constraint:
 		self.min_f = None
 		self.max_f = None
 		self.repeat = None        # (lo, hi)
+		self.reopen = False       # H002 suppressor only; validation ignores it
 		self.inherits = None      # fragment mounted at this path (subtree shape)
 		self.inherits_line = 0    # schema line of the `inherits` key, for V095
 		# Generator-only (`shcl init`): validation ignores both.
@@ -4523,6 +4531,7 @@ class _Constraint:
 		cc.min_f = self.min_f
 		cc.max_f = self.max_f
 		cc.repeat = self.repeat
+		cc.reopen = self.reopen
 		cc.inherits = self.inherits
 		cc.inherits_line = self.inherits_line
 		cc.desc = self.desc
@@ -4668,13 +4677,14 @@ def _parse_field(schema, f, faults):
 			else:
 				_vdiag(faults, kid.line, "V092", "bad schema constraint 'required'")
 		elif kid.name == "reopen":
-			# Consumed by the H002 suppressor (which reads the schema document
-			# directly); validation itself ignores it, but a bad value still
-			# faults so a typo cannot silently disavow nothing.
+			# Consumed by the H002 suppressor; validation itself ignores it,
+			# but a bad value still faults so a typo cannot silently disavow
+			# nothing.
 			t = _single_text(kid.value)
 			b = _parse_bool_text(t, Strictness.Standard) if t is not None else None
 			if b is not None and not reopen_seen:
 				reopen_seen = True
+				c.reopen = b
 			else:
 				_vdiag(faults, kid.line, "V092", "bad schema constraint 'reopen'")
 		elif kid.name == "allowed":
@@ -5098,15 +5108,33 @@ def _expand_mounts(sdef):
 	return out, cuts
 
 
-def _edit_distance(a, b):
-	# Two-row Levenshtein; powers the "did you mean" prose (never the code).
-	prev = list(range(len(b) + 1))
-	cur = [0] * (len(b) + 1)
+def _edit_distance(a, b, cap):
+	# Levenshtein distance capped at `cap`, for the "did you mean" prose (never
+	# the code): anything past the cap comes back as cap + 1. Only the band
+	# |i - j| <= cap of the table is computed, so a pair costs linear time in
+	# the names' length, and a length gap past the cap needs no table at all.
+	inf = cap + 1
+	if abs(len(a) - len(b)) > cap:
+		return inf
+	prev = [min(j, inf) for j in range(len(b) + 1)]
+	cur = [inf] * (len(b) + 1)
 	for i in range(1, len(a) + 1):
-		cur[0] = i
-		for j in range(1, len(b) + 1):
+		cur[0] = min(i, inf)
+		lo = max(i - cap, 1)
+		hi = min(i + cap, len(b))
+		if lo > 1:
+			cur[lo - 1] = inf
+		row_min = cur[0]
+		for j in range(lo, hi + 1):
 			cost = 0 if a[i - 1] == b[j - 1] else 1
-			cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+			cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost, inf)
+			if cur[j] < row_min:
+				row_min = cur[j]
+		if hi < len(b):
+			cur[hi + 1] = inf
+		# No cell in a later row can come back under this row's minimum.
+		if row_min > cap:
+			return inf
 		prev, cur = cur, prev
 	return prev[len(b)]
 
@@ -5185,7 +5213,7 @@ def _v_suggest(siblings, parent_chain, name):
 	contract. The sibling lists are prebuilt once per validate."""
 	best = None
 	for s in siblings.get(parent_chain, ()):
-		dist = _edit_distance(name, s)
+		dist = _edit_distance(name, s, 2)
 		if dist <= 2 and (best is None or dist < best[0]):
 			best = (dist, s)
 	if best is None:

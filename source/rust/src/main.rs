@@ -10,6 +10,34 @@ use shcl::{
 };
 use std::process::ExitCode;
 
+// Every stdout write goes through these. On windows a reader that closed
+// early is not a signal but a write error, and the std print macros turn that
+// into a panic, which the release build aborts on; a `fmt` piped into `more`
+// must not do that. unix never reaches the error branch: main restores the
+// SIGPIPE default and the write kills the process the conventional way.
+macro_rules! out {
+	($($arg:tt)*) => {{
+		use std::io::Write;
+		if write!(std::io::stdout(), $($arg)*).is_err() {
+			broken_pipe();
+		}
+	}};
+}
+macro_rules! outln {
+	($($arg:tt)*) => {{
+		use std::io::Write;
+		if writeln!(std::io::stdout(), $($arg)*).is_err() {
+			broken_pipe();
+		}
+	}};
+}
+
+/// Nothing more can be delivered, and nobody is there to read an error
+/// either: leave quietly, the way Go and C do here.
+fn broken_pipe() -> ! {
+	std::process::exit(0)
+}
+
 const HELP: &str = "\
 shcl - Simple Hierarchical Config Language (reference CLI)
 
@@ -843,9 +871,9 @@ fn do_get(o: &Opts) -> u8 {
 	let emit = |lines: &[String]| {
 		for (i, l) in lines.iter().enumerate() {
 			if o.slots {
-				println!("{:?}\t{}", slot_at(i), l);
+				outln!("{:?}\t{}", slot_at(i), l);
 			} else {
-				println!("{}", l);
+				outln!("{}", l);
 			}
 		}
 	};
@@ -904,9 +932,9 @@ fn do_get(o: &Opts) -> u8 {
 			} else {
 				let dv = o.default.clone().unwrap_or_default();
 				if o.slots {
-					println!("{:?}\t{}", status, dv);
+					outln!("{:?}\t{}", status, dv);
 				} else {
-					println!("{}", dv);
+					outln!("{}", dv);
 				}
 			}
 			0
@@ -963,7 +991,7 @@ fn do_fmt(o: &Opts) -> u8 {
 	if o.write {
 		return write_back(&doc, file, o);
 	}
-	print!("{}", doc.to_canonical());
+	out!("{}", doc.to_canonical());
 	0
 }
 
@@ -1202,7 +1230,7 @@ fn do_set(o: &Opts) -> u8 {
 	if o.write {
 		return write_back(&doc, file, o);
 	}
-	print!("{}", doc.to_canonical());
+	out!("{}", doc.to_canonical());
 	0
 }
 
@@ -1265,7 +1293,7 @@ fn do_check(o: &Opts) -> u8 {
 	// A V090-V093 line number is a SCHEMA line (the code table says so); the
 	// prose names the file so the two number spaces cannot be confused.
 	for d in &diags {
-		println!("line {}: {:?}: {}", d.line, d.severity, d.code);
+		outln!("line {}: {:?}: {}", d.line, d.severity, d.code);
 	}
 	say_diagnostics(&diags);
 	let errors = diags
@@ -1273,14 +1301,14 @@ fn do_check(o: &Opts) -> u8 {
 		.filter(|d| d.severity == Severity::Error)
 		.count();
 	if strict_failed {
-		println!("strict load failed: {} diagnostic(s)", diags.len());
+		outln!("strict load failed: {} diagnostic(s)", diags.len());
 		6
 	} else if errors > 0 {
 		// Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
-		println!("failed: {} diagnostic(s), {} error(s)", diags.len(), errors);
+		outln!("failed: {} diagnostic(s), {} error(s)", diags.len(), errors);
 		6
 	} else {
-		println!("ok ({} diagnostic(s))", diags.len());
+		outln!("ok ({} diagnostic(s))", diags.len());
 		0
 	}
 }
@@ -1321,7 +1349,7 @@ fn do_init(o: &Opts) -> u8 {
 	}
 	match generate(&sdoc, o.no_banner) {
 		Ok(text) => {
-			print!("{}", text);
+			out!("{}", text);
 			0
 		}
 		Err(faults) => {
@@ -1352,10 +1380,10 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 	// One report per invocation, so a read in a loop is one line per call.
 	say_diagnostics(&diags);
 	if want_count {
-		println!("{}", doc.count(path));
+		outln!("{}", doc.count(path));
 	} else {
 		for v in doc.instances(path) {
-			println!("{}", v);
+			outln!("{}", v);
 		}
 	}
 	0
@@ -1380,7 +1408,7 @@ fn do_children(o: &Opts) -> u8 {
 	};
 	say_diagnostics(&diags);
 	for name in doc.children(path) {
-		println!("{}", shcl::quote_segment(&name));
+		outln!("{}", shcl::quote_segment(&name));
 	}
 	0
 }
@@ -1398,7 +1426,7 @@ fn do_paths(o: &Opts) -> u8 {
 	};
 	say_diagnostics(&diags);
 	for p in doc.paths() {
-		println!("{}", p);
+		outln!("{}", p);
 	}
 	0
 }
@@ -1510,19 +1538,19 @@ fn main() -> ExitCode {
 	// block from the surrounding prompts. A bare run used to print the same
 	// text unpadded and exit 1, which read as neither a help nor an error.
 	if asked == Some("help") || first == Some("help") || argv.is_empty() {
-		print!("\n{}\n", HELP);
+		out!("\n{}\n", HELP);
 		return ExitCode::from(0);
 	}
 	if asked == Some("version") || first == Some("version") {
-		println!("shcl {}", env!("CARGO_PKG_VERSION"));
+		outln!("shcl {}", env!("CARGO_PKG_VERSION"));
 		return ExitCode::from(0);
 	}
 	if asked == Some("about") || first == Some("about") {
-		print!("\n{}\n", ABOUT);
+		out!("\n{}\n", ABOUT);
 		return ExitCode::from(0);
 	}
 	if asked == Some("donate") || first == Some("donate") {
-		print!("\n{}\n", DONATE);
+		out!("\n{}\n", DONATE);
 		return ExitCode::from(0);
 	}
 	let cmd = argv[0].clone();

@@ -155,10 +155,19 @@ refOut="${work}/out-${refName}.shcl"
 if [[ -s "${refOut}" ]]; then
 	refCli="${bindings[0]#*|}"
 	echo
-	if "${refCli}" fmt "${refOut}" | cmp -s - "${refOut}"; then
+	if "${refCli}" fmt "${refOut}" 2>/dev/null | cmp -s - "${refOut}"; then
 		echo "largedoc: fmt is a fixpoint at ${actualMib} MiB"
 	else
 		echo "largedoc: FAILED: fmt is not a fixpoint at ${actualMib} MiB" >&2; rc=1
+	fi
+	## The generator promises a document nothing in it merges into and that
+	## loads clean; the profiler's numbers depend on it. A hint per unit once
+	## made the profile measure stderr.
+	summary="$("${refCli}" check "${doc}" 2>/dev/null | tail -1 || true)"
+	if [[ "${summary}" == "ok (0 diagnostic(s))" ]]; then
+		echo "largedoc: the generated document loads with no diagnostics"
+	else
+		echo "largedoc: FAILED: the generated document does not load clean: ${summary}" >&2; rc=1
 	fi
 	wideCount="$("${refCli}" get --int --array "${refOut}" wide | grep -c '' || true)"
 	if ((wideCount == 20000)); then

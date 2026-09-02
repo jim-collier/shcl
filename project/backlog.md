@@ -51,108 +51,178 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- The areas the 20260901 round recorded as not reached: the C parser and emitter read line by line, Go's validation walk, Python's validator, `v_suggest`, a full run under mingw and wine, the installers and packaging, `--layer` and merge semantics, and the three tooling scripts nobody had opened. Twenty-three defects here, the rest under Features and enhancements. Everything below was reproduced, not read off the code.
 	- Nine of the defects are shapes all four bindings share, so the four-way check cannot see them. Seven are C or C++ only, which it also cannot see. Four were found only by running the windows builds; two are the release tooling.
 
-	- 🔘 Item 1: a line refused with `E012` does not hold its indent level, so what was written under it re-parents, and a refused fence line's body is parsed as live bindings.
+	- ✅ Item 1: a line refused with `E012` does not hold its indent level, so what was written under it re-parents, and a refused fence line's body is parsed as live bindings.
 		- Reproduced in all four bindings. `d: 3` written under a refused `c: 2` becomes a child of the level above it, where the spec's `E018` row says it is skipped with the line it sits under. The 20260829 fix that added `E018` covered the `E014` and `E021` arms and missed all three `E012` arms.
 		- The fence arm is the damaging one. A fence at a bad indent is skipped but its body is not consumed, so raw content becomes root bindings and the closing fence opens a second, unterminated block.
+		- Fixed: a line whose indent matches no open level now holds that indent as a level of its own, in all three `E012` arms. Deeper lines are skipped under it (`E018`), a refused fence line consumes its body, and a second line at the same bad indent is refused the same way rather than binding one level up. Spec rule reworded.
+		- Pinned by corpus `075`, which every binding failed before the change (a fence body read as root bindings, and a bad-indent line's children re-parenting up) and passes now. Existing `061` (a single `E012` line) is unchanged.
 		- Opened: 20260901-190000
+		- Closed: 20260902-090000
 
-	- 🔘 Item 2: a line refused with `E013` (a `*` with no space) does not hold its level either, so its next sibling is lost.
+	- ✅ Item 2: a line refused with `E013` (a `*` with no space) does not hold its level either, so its next sibling is lost.
 		- Reproduced in all four. Content under the bad line re-parents up, and the line's own next sibling then reports `E012` and is dropped. The `E014` arm beside it, same class of defect, does this right.
+		- Fixed: the `*`-with-no-space arm resolves its level first, like the `E014` arm beside it, and pushes the level as skipped. Its sibling binds where it should and what is written under it is skipped with it.
+		- Pinned by corpus `075` (the `p` block), failing before and passing now in all four.
 		- Opened: 20260901-190100
+		- Closed: 20260902-090000
 
-	- 🔘 Item 3: a value after a last-segment index selector is dropped with no diagnostic and no lost count, so a save deletes it.
+	- ✅ Item 3: a value after a last-segment index selector is dropped with no diagnostic and no lost count, so a save deletes it.
 		- Reproduced in all four. `a[0]: 2` loads clean and formats to nothing; the same with a raw block loads clean and the block vanishes. `fmt --write` exits 0 and bakes it in. The spec says the trailing value is reported as an error and counted as lost; the value-selector arm does exactly that, the index arm has no check at all.
+		- Fixed: the index arm carries the same last-segment check as the value arm: the trailing value is reported (`E002`) and counted as lost, so an in-place write refuses instead of deleting it.
+		- Pinned by corpus `076` (plain value and same-line fence after `a[0]`, plus a value after a non-last index that still binds). Failed in all four before, passes now.
 		- Opened: 20260901-190200
+		- Closed: 20260902-091500
 
-	- 🔘 Item 4: a fragment mounted at one node by two top-level schema paths is checked twice, and its diagnostics repeat.
+	- ✅ Item 4: a fragment mounted at one node by two top-level schema paths is checked twice, and its diagnostics repeat.
 		- Reproduced in all four. `field: a` and `field: "a[*]"` both inheriting one fragment report each of its faults twice. The spec says once per node. The dedupe set is created per top-level constraint, so it only covers mounts reached inside one constraint's own recursion.
+		- Fixed: the mounted set is created once per validation and shared by every top-level constraint, so a (fragment, node) pair runs once whichever paths reach it. The per-constraint wrapper is gone in all four.
+		- Pinned by corpus `077` (`srv` and `srv[*]` both inheriting one fragment; each fault once). Failed in all four before, passes now.
 		- Opened: 20260901-190300
+		- Closed: 20260902-093000
 
-	- 🔘 Item 5: `H001`/`H002` disavowal re-reads the schema through the raw path text and the raw `repeat` value, so an escaped quote in a segment defeats it and a faulted `repeat` still disavows.
+	- ✅ Item 5: `H001`/`H002` disavowal re-reads the schema through the raw path text and the raw `repeat` value, so an escaped quote in a segment defeats it and a faulted `repeat` still disavows.
 		- Reproduced in all four. `field: "a.\"b.c\""` with `repeat: 2` still prints the hint, while the unescaped spellings work. `repeat: 0x2` and a three-element `repeat` are schema faults and still silence the hint.
 		- Cause: both suppressors take paths from `instances()` display text and read `repeat` with the loose array read, where the schema build reads both correctly. Deriving the disavowed names from the built constraints closes both.
+		- Fixed: both suppressors take their names from the built schema (a shared `disavowed_names` helper over the top-level constraints and every fragment's), so the leaf name is the resolved one validation uses and a `repeat` or `reopen` that faulted disavows nothing. The constraint carries `reopen` now; the display-text and loose-array reads are gone from all four.
+		- Pinned by corpus `078` (escaped-quote path with `repeat: 2`, `repeat: 0x2`, a three-element `repeat`, `reopen: yes`, `reopen: 0x1`). Failed in all four before, passes now.
 		- Opened: 20260901-190400
+		- Closed: 20260902-100000
 
-	- 🔘 Item 6: a merge appends unmatched `over` nodes grouped by name, where the spec says file order.
+	- ✅ Item 6: a merge appends unmatched `over` nodes grouped by name, where the spec says file order.
 		- Reproduced in all four. `c, s, c` in the layer comes out `c, c, s`. So merging onto an empty base is not the identity, and a layered `fmt` reorders siblings the layer's author put in a deliberate order. Reads are unaffected, which is why nothing caught it.
+		- Fixed: each appended clone remembers its position among the over node's children and the rebuild emits them in that order. Replaced leaf groups still splice at the name's first base position, as the spec says.
+		- Pinned by corpus `079` (layer appends `c, a, b, a` in file order) and the merge fuzz property, which now also asserts that a merge onto an empty document is the identity over every seed and mutation. Both failed in all four before and pass now.
 		- Opened: 20260901-190500
+		- Closed: 20260902-104500
 
-	- 🔘 Item 7: a layer's own repeated footer comments collapse to one.
+	- ✅ Item 7: a layer's own repeated footer comments collapse to one.
 		- Reproduced in all four. The once-per-layer footer dedupe compares each line against a list that already holds the lines just added from the same layer, so a within-file repeat is dropped. Another way an empty-base merge fails to be the identity.
+		- Fixed: the footer dedupe compares against the lines the base held before the merge, so a layer's own repeated line is kept and a line the base already has is still carried once.
+		- Pinned by corpus `079` (`# more` twice in the top layer) and the same identity property.
 		- Opened: 20260901-190600
+		- Closed: 20260902-104500
 
-	- 🔘 Item 8: the did-you-mean suggestion is quadratic in name length, so a check against a schema with long field names takes seconds to minutes.
+	- ✅ Item 8: the did-you-mean suggestion is quadratic in name length, so a check against a schema with long field names takes seconds to minutes.
 		- Measured: 300 unknown fields of 300 characters against 300 schema names of 300 characters, 188 KB in all, takes 23 s in the release reference, 27 s in Go, 10 s in C. Double both lengths and the reference did not finish in two minutes.
 		- Cause: a full Levenshtein table per pair with no prefilter, while the result is discarded past distance 2. A length difference over 2 can be rejected outright, and a banded table bounded by the threshold makes the rest linear.
+		- Fixed: the edit distance takes the cap (2): a length gap past it returns at once, only the band of cells within the cap is computed, and a row whose minimum passes the cap ends the pair. The 188 KB repro went from 23 s to 0.06 s in the reference; the 2000-character shape that did not finish in two minutes takes 0.04 s. The banded result equals the full table for every distance at or under the cap (checked over 200k random pairs at four caps), so no suggestion changes.
+		- Pinned by `perf-gate.bash`'s new `suggest` workload: 30 unknown 800-character names against 30 schema names of the same length, timed against the binding's parse baseline. Over budget on the old code in every binding (17 s, 1.9 s, 86 s, 0.66 s for rust, go, python, c) and 10 to 370 ms now.
 		- Opened: 20260901-190700
+		- Closed: 20260902-113000
 
-	- 🔘 Item 9: C formats an exact power of two with 17 digits where the other three print 16.
+	- ✅ Item 9: C formats an exact power of two with 17 digits where the other three print 16.
 		- Reproduced, C only: 46 of the 2098 powers of two, none of 11,206 random doubles. `get --float` and a float write op both show it, so it reaches a saved file.
 		- Cause: the shortest-round-trip loop tries only the correctly rounded string at each precision. At a power of two the rounding interval is lopsided and the neighbor one digit up is the one that round-trips.
+		- Fixed: at each precision the C formatter also tries the spelling one last digit up and one down before adding a digit, which is the neighbor a shortest-digits algorithm picks when the closest spelling falls outside a lopsided interval. All 2098 powers of two and 208k doubles now spell the same in all four.
+		- Pinned by corpus `080` (the 46 powers of two plus the ties) and a `float spelling` dimension in `crosscheck.bash` over every power of two and 3000 fixed random doubles. Both diverged on the old C and agree now.
 		- Opened: 20260901-190800
+		- Closed: 20260902-121500
 
-	- 🔘 Item 10: on a value exactly halfway at 17 digits, the reference rounds up and the other three round half-even.
+	- ✅ Item 10: on a value exactly halfway at 17 digits, the reference rounds up and the other three round half-even.
 		- Reproduced: `2.9802322387695312e-08` written back is `...313` from Rust and `...312` from Go, Python and C. Two hits in 11,206 random doubles; both spellings parse to the same double.
 		- Needs a decision on which side to match. Matching the reference means each port detects the tie and bumps the digit; matching the three means the reference post-processes its own formatter.
+		- Fixed: decided for round-half-even: it is IEEE's own tie rule, what three of the four did already, and what Python's `repr` and Go's `strconv` print, so a value read from another tool's output spells the same here. The reference now takes the correctly rounded spelling of the shortest length whenever it reads back (core rounds that to even), and keeps its shortest spelling only when it does not (the lopsided power-of-two case, where every binding has one choice). Ties turned out to occur at any length, not only 17 digits: `811212085039910.25` is one at 16.
+		- Pinned by corpus `080` and the crosscheck float dimension; the old reference diverged on nine of the corpus values.
 		- Opened: 20260901-190900
+		- Closed: 20260902-121500
 
-	- 🔘 Item 11: the distributed CLI aborts on Windows when the program reading its output closes early.
+	- ✅ Item 11: the distributed CLI aborts on Windows when the program reading its output closes early.
 		- Reproduced under wine: `fmt` of a 40k-key file piped through `head` panics with "failed printing to stdout: Pipe not connected", and the release build turns the panic into an abort. Go and C exit 0 silently there, and all three are silent on Linux.
 		- Cause: the broken-pipe handling restores the default signal action and is compiled only on unix. Windows has no SIGPIPE; the write returns an error and the next print panics. Piping into `more` or `Select-Object -First` is ordinary use.
+		- Fixed: every stdout write in the CLI goes through one pair of macros that exit 0 quietly when the write fails, which is what Go and C do on windows. unix is unchanged: the SIGPIPE default is still restored and the signal ends the process before the error branch is reached.
+		- Pinned by `tests/cli_pipe.rs`, which runs the built CLI with a reader that closes after one byte and requires an empty stderr and a clean exit (SIGPIPE or 0 on unix, 0 elsewhere). It runs on the hosted windows job; on the windows build it fails on the old code with the panic text on stderr and passes now.
 		- Opened: 20260901-191000
+		- Closed: 20260902-124500
 
-	- 🔘 Item 12: the C CLI on Windows takes its arguments in the active code page and checks them as UTF-8, so a non-ASCII path is refused, and a name the code page best-fits maps to a different file, including for `--write`.
+	- ✅ Item 12: the C CLI on Windows takes its arguments in the active code page and checks them as UTF-8, so a non-ASCII path is refused, and a name the code page best-fits maps to a different file, including for `--write`.
 		- Reproduced under wine with code page 1252. `café.shcl` is refused as bad encoding. With `ā.shcl` and `a.shcl` both present, `set --write` on the first exits 0 and rewrites the second.
 		- The library's own file tier was made wide in the 20260828 fixes; the CLI's narrow `main` and the header's silence on argument encoding are what is left. The C CLI is not distributed, but a C consumer's own `main` inherits the same trap.
+		- Fixed: on windows the C CLI takes its arguments from the wide command line and converts them to UTF-8, and its own file opens and the directory check go through the library's wide calls instead of the narrow `fopen`/`_access`. The header's file-tier comment now says paths are UTF-8 on every platform and that a consumer's `main` has to hand over UTF-8 too.
+		- Pinned by a `c cli argv` step in `win-runners.bash`, which builds the C CLI on the windows job, reads `café.shcl` and writes `ā.shcl` beside an `a.shcl` that must stay untouched. On the old build the first is refused and the second rewrites `a.shcl`; both pass now.
 		- Opened: 20260901-191100
+		- Closed: 20260902-140000
 
-	- 🔘 Item 13: on Windows, `shcl_write_file_atomic` reports failure with `errno` untouched when the publish step fails, so the C CLI prints `Success` beside exit 8.
+	- ✅ Item 13: on Windows, `shcl_write_file_atomic` reports failure with `errno` untouched when the publish step fails, so the C CLI prints `Success` beside exit 8.
 		- Reproduced under wine: a target held open by another process, or a device name as the target, both print `<file>: Success`. Rust and Go name the real cause.
 		- Cause: the wide publish calls set the Win32 last error and nothing maps it to `errno`, against what the header promises.
+		- Fixed: a failed publish maps `GetLastError` onto errno (`EACCES` for a sharing or lock violation, `ENOENT`, `EEXIST`, `ENOSPC`, `EINVAL`, `EIO` for the rest), and the temp-file unlink on the failure path no longer overwrites the errno the failure left, on either platform.
+		- Pinned by a windows-only fixture in the C runner: a write over a target held open without delete sharing, and one to a device name, both fail with a non-zero errno. Fails on the old header, passes now.
+		- Note: wine's `strtod`, mingw's `__mingw_strtod` and the hosted windows runner's C runtime all read `7.67844768714563e-239` one ulp high where glibc and Python agree, which failed corpus `080` on the C runner there. The formatter's read-back test is now integer arithmetic on the double's rounding interval (`f64_interval` / `f64_reads_back`), agreeing with glibc on 20 million spellings, so the C spelling no longer depends on the libc. The parser's float reads still go through `strtod`; recorded as a deviation in `style-guide.md`.
 		- Opened: 20260901-191200
+		- Closed: 20260902-140000
 
-	- 🔘 Item 14: the C runner's Windows read-only fixture cannot see a leftover temp file, because it skips every dotfile and the temp name starts with a dot.
+	- ✅ Item 14: the C runner's Windows read-only fixture cannot see a leftover temp file, because it skips every dotfile and the temp name starts with a dot.
 		- Reproduced: a planted `.ro.shcl.tmp999.0` passes the fixture. The other three runners count it.
+		- Fixed: the fixture skips only `.` and `..` when counting what the write left behind, so a leftover dot-named temp counts like it does in the other three runners.
+		- Pinned by planting `.ro.shcl.tmp999.0` in the fixture's directory: the old filter counted nothing, the new one fails the fixture.
 		- Opened: 20260901-191300
+		- Closed: 20260902-140000
 
-	- 🔘 Item 15: the `.deb` and `.rpm` declare no dependencies, so they install cleanly on a system where the binary cannot run.
+	- ✅ Item 15: the `.deb` and `.rpm` declare no dependencies, so they install cleanly on a system where the binary cannot run.
 		- Reproduced with the pipeline's own packages: lintian reports undeclared ELF prerequisites and the rpm lists no requires. The binary needs glibc 2.34 and libgcc; on Debian 11 or RHEL 8 the package installs and `shcl` dies with a loader error, which is exactly what the installer's glibc check exists to prevent.
 		- Also from the same lintian run: no copyright file, no changelog, an unknown `License` field. Cheap to close together.
+		- Fixed: the packages declare what the binary links against, read off the binary at build time: its newest `GLIBC_` symbol version is the glibc floor (`libc6 (>= 2.34)` and `glibc >= 2.34` on x86_64, 2.30 on arm64), and `libgcc-s1` / `libgcc` join only when `libgcc_s` is in the dynamic section (x86_64 only; arm64 links it statically). The deb also carries `/usr/share/doc/shcl/copyright` (the license) and `changelog.gz`. lintian's two errors and the prerequisites warning are gone; the `License` field warning is nfpm's own and stays.
+		- Pinned by `package.bash` itself: after each build it reads the deb's Depends and the rpm's Requires back and fails unless they carry the floor it derived, libgcc when needed, and the two doc files. Against the 2.0.0 package it fails on the empty Depends.
 		- Opened: 20260901-191400
+		- Closed: 20260902-143000
 
-	- 🔘 Item 16: a system install under umask 077 still leaves the man directory root-only when the installer has to create it.
+	- ✅ Item 16: a system install under umask 077 still leaves the man directory root-only when the installer has to create it.
 		- Reproduced with the system paths redirected into a sandbox. The 20260830b fix widens the install root only; `man1` under `/usr/local/share/man` is created by a plain `mkdir` under the caller's umask and is not widened, and a fresh Debian does not have it.
+		- Fixed: the lay-down step notes, before each `mkdir -p`, the shallowest directory it will have to create (the install root's, the bin directory's, the man1 directory's) and widens those along with the install root; a directory that already existed is left alone. The step is a function now (`fLayDown`), so it can run on a staged payload.
+		- Pinned by `shell-regress.bash`, which runs `fLayDown` under umask 077 into a sandbox where `bin` and `man1` do not exist yet and requires every directory 755. With the widening narrowed back to the install root it reports four root-only directories.
 		- Opened: 20260901-191500
+		- Closed: 20260902-150000
 
-	- 🔘 Item 17: `sign-release.bash` signs before it checks the key, and checks nothing about the sums file.
+	- ✅ Item 17: `sign-release.bash` signs before it checks the key, and checks nothing about the sums file.
 		- Reproduced with a throwaway key: the run fails on the key check and leaves a valid-looking `.sig` beside the sums file. The tag check compares against `Cargo.toml` but never against the sums file's own name, and the sums are never verified against the files present, so a stale sums file from a rebuilt tree signs clean.
+		- Fixed: the signer checks before it writes: the sums file must be named `shcl-<version>-sha256sums.txt` for the `Cargo.toml` version, every entry must match the file beside it (`sha256sum -c --strict`), and the key must be the one all three shipped copies trust. Only then is the signature written, and one that fails its own verify is removed.
+		- Pinned by `shell-regress.bash`: a throwaway key against a correct sums file is refused with no `.sig` left, a stale entry and a sums file for another version are each refused before the key is looked at. The old signer failed all five checks.
 		- Opened: 20260901-191600
+		- Closed: 20260902-153000
 
-	- 🔘 Item 18: the installer's "not on your PATH" note fires when the directory is on PATH with a trailing slash.
+	- ✅ Item 18: the installer's "not on your PATH" note fires when the directory is on PATH with a trailing slash.
 		- Reproduced. A string compare against `:dir:` misses `dir/`, which the shell resolves fine. Same shape in `install-dev.bash`.
+		- Fixed: a `fOnPath` helper in both installers walks PATH by element and ignores a trailing slash on either side.
+		- Pinned by `shell-regress.bash`: a PATH element `dir/` is seen, `dir/` asked for is seen, and a prefix or a deeper path is not.
 		- Opened: 20260901-191700
+		- Closed: 20260902-150000
 
-	- 🔘 Item 19: the profiler workload merges half its nodes and prints a hint per unit, so the profile measures hint formatting and stderr writes, and the run log carries a million hint lines.
+	- ✅ Item 19: the profiler workload merges half its nodes and prints a hint per unit, so the profile measures hint formatting and stderr writes, and the run log carries a million hint lines.
 		- Reproduced: the generator's trailing `service: svcN` line reopens the block above it, so every unit's two `port` leaves collide. 37% of the profiled CPU is the unbuffered hint stream. Today's run log is 93 MB, and a million of its lines are `H001`, from the profiler stage and the large-document fixpoint check.
 		- The generator's own header says nothing in it merges, and the config comment says it was introduced to stop measuring exactly this.
+		- Fixed: each unit's second `service` line carries its own value (`svcN-b`), so nothing merges and the document loads with no diagnostics; the profiler run and every timed workload close stderr as well as stdout, so the log no longer carries the hint stream.
+		- Pinned by the large-document gate, which now requires the generated document to load with exactly zero diagnostics (`ok (0 diagnostic(s))`). The old generator gives 6107 at 2 MiB.
 		- Opened: 20260901-191800
+		- Closed: 20260902-154500
 
-	- 🔘 Item 20: `flame-report.py` accepts a truncated or reshaped profile as a good one, and tracebacks on a non-UTF-8 file.
+	- ✅ Item 20: `flame-report.py` accepts a truncated or reshaped profile as a good one, and tracebacks on a non-UTF-8 file.
 		- Reproduced: a profile cut off at 35 KB reports attribution summing to 9% at exit 0, and one with the row height changed reports 173% parse, both with the seen marker written. Random bytes give a decode traceback instead of the skip path.
 		- Cause: any file with a sample count and one frame passes, and the row step is a hard-coded constant that nothing verifies.
+		- Fixed: the report skips at exit 2, with no marker written, unless the file ends in `</svg>`, its rows are evenly spaced, exactly one root frame spans every sample, and the self times sum to the sample count. The row height is read off the rows instead of assumed, and the file is decoded with replacement so bytes that are not UTF-8 skip like any other bad input.
+		- Pinned by `shell-regress.bash` with synthetic graphs: a whole one and one at another row height report 60/40 with nothing in `other`; a graph missing the frame between a leaf and the root, one cut off before its closing tag, and random bytes each skip at 2 with no traceback. The old script accepted the first two and tracebacked on the third.
 		- Opened: 20260901-191900
+		- Closed: 20260902-160000
 
-	- 🔘 Item 21: `lint-report.bash` flags the nested pre-push gate's own plan line.
+	- ✅ Item 21: `lint-report.bash` flags the nested pre-push gate's own plan line.
 		- Reproduced on today's log. The line it reports is the `-D warnings` in the clippy command the pre-push hook echoes during the publish stage, which is why only runs that push to dev or main show a warning. The cppcheck `--enable=warning` echo is already excluded; this one is not.
+		- Fixed: the echoed `-D warnings` is excluded the way the cppcheck `--enable=warning` echo already was. Today's log reads CLEAN.
+		- Pinned by `shell-regress.bash`: a log holding both echoed command lines is CLEAN, and one with a clippy and a cppcheck warning appended is FLAG with exactly two lines. The old script counted three.
 		- Opened: 20260901-192000
+		- Closed: 20260902-161500
 
-	- 🔘 Item 22: the C++ veneer's `to_canonical()` never gives the read arena back, so a save loop grows without bound.
+	- ✅ Item 22: the C++ veneer's `to_canonical()` never gives the read arena back, so a save loop grows without bound.
 		- Measured: 1000 calls on a 2.9 MB document, 94 MB to 2.9 GB. Every other copying wrapper releases before its call; this one was missed.
+		- Fixed: `to_canonical()` releases the read arena before its call, like every other copying wrapper.
+		- Pinned by `veneer_smoke.cpp`: 200 `to_canonical()` calls on a 30 KB document leave the read arena holding at most two copies. The old veneer holds all 200.
 		- Opened: 20260901-192100
+		- Closed: 20260902-162000
 
-	- 🔘 Item 23: Go's two suppress filters return the caller's slice when nothing is disavowed, against their own comment, and `Diagnostics()` hands out the live internal slice.
+	- ✅ Item 23: Go's two suppress filters return the caller's slice when nothing is disavowed, against their own comment, and `Diagnostics()` hands out the live internal slice.
 		- Reproduced: the returned slice shares its backing array, so an append by the caller and the document's own next append overwrite each other. The in-place-filter bug fixed on 20260831 was the drop path; this is its sibling on the keep-everything path, which the test for it does not cover.
+		- Fixed: both suppressors copy on the keep-everything path, and `Diagnostics()` returns a copy of the document's list, so nothing handed out shares a backing array with the document.
+		- Pinned by `TestSuppressLeavesTheCallersDiagnosticsAlone`, extended: with a schema that disavows nothing, each suppressor's result and `Diagnostics()` itself must not point at the caller's or the document's array. Fails on the old code.
 		- Opened: 20260901-192200
+		- Closed: 20260902-163000
 
 ### Features and enhancements
 
