@@ -102,22 +102,46 @@ fi
 
 ##	20260830b item 12: nothing set the modes on a system install, and sudo keeps
 ##	the caller's umask, so under 077 the tree and the launcher came out 0700 and
-##	only root could run what had just been installed for everyone. Staged the
-##	way the installer stages it, under that umask.
-eval "$(sed -n '/^fWidenModes()/,/^}/p' "${repoDir}/install.bash")"
+##	only root could run what had just been installed for everyone. 20260901b
+##	item 16: the widening covered the install root alone, and a man1 directory
+##	the installer had to create stayed root-only. The installer's own lay-down
+##	step runs here on a staged payload, under that umask, into a sandbox whose
+##	bin and man1 directories do not exist yet.
+eval "$(sed -n '/^fWidenModes()/,/^}/p;/^fTopMissing()/,/^}/p;/^fLayDown()/,/^}/p' "${repoDir}/install.bash")"
 (
 	umask 077
-	mkdir -p "${tmpDir}/inst/code"
-	printf 'bin\n'  > "${tmpDir}/inst/shcl";      chmod 700 "${tmpDir}/inst/shcl"
-	printf 'data\n' > "${tmpDir}/inst/code/lib.rs"
+	mkdir -p "${tmpDir}/stage/code" "${tmpDir}/stage/scripts" "${tmpDir}/stage/man" "${tmpDir}/stage/completions" "${tmpDir}/sys/usr/local/share"
+	printf 'bin\n'  > "${tmpDir}/stage/shcl";      chmod 700 "${tmpDir}/stage/shcl"
+	printf 'data\n' > "${tmpDir}/stage/code/lib.rs"
+	printf 'data\n' > "${tmpDir}/stage/scripts/shcl.bash"
+	printf 'man\n'  > "${tmpDir}/stage/man/shcl.1"
+	printf 'comp\n' > "${tmpDir}/stage/completions/shcl.bash"
+	## The installer's own globals, as the lifted function reads them.
+	# shellcheck disable=SC2034
+	asroot="" tmp="${tmpDir}/stage" dest="${tmpDir}/sys/opt/shcl" link="${tmpDir}/sys/usr/local/bin/shcl"
+	# shellcheck disable=SC2034
+	manlink="${tmpDir}/sys/usr/local/share/man/man1/shcl.1" target=system have_dropins=1 have_docs=1
+	fLayDown
 )
-fWidenModes "" "${tmpDir}/inst"
 while IFS= read -r row; do
 	case "${row}" in
-		"755 ${tmpDir}/inst"|"755 ${tmpDir}/inst/code"|"755 ${tmpDir}/inst/shcl"|"644 ${tmpDir}/inst/code/lib.rs") ;;
+		"755 d "*|"755 f ${tmpDir}/sys/opt/shcl/shcl"|"644 f "*|"777 l "*) ;;
 		*) fBad "install.bash left a system install unreadable: ${row}" ;;
 	esac
-done < <(find "${tmpDir}/inst" -printf '%m %p\n' | sort)
+done < <(find "${tmpDir}/sys/opt" "${tmpDir}/sys/usr/local/bin" "${tmpDir}/sys/usr/local/share/man" -printf '%m %y %p\n' | sort)
+[[ -L "${tmpDir}/sys/usr/local/share/man/man1/shcl.1" ]] || fBad "install.bash did not link the man page"
+
+##	20260901b item 18: the "not on your PATH" note compared strings against
+##	`:dir:`, so a PATH element written with a trailing slash was not seen.
+eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
+(
+	PATH="/usr/bin:${tmpDir}/pbin/:/bin"
+	fOnPath "${tmpDir}/pbin"  || fBad "install.bash: a PATH element with a trailing slash was not seen"
+	fOnPath "${tmpDir}/pbin/" || fBad "install.bash: a directory asked for with a trailing slash was not seen"
+	fOnPath "${tmpDir}/pbi"   && fBad "install.bash: a PATH prefix was taken for the directory"
+	fOnPath "${tmpDir}/pbin/x" && fBad "install.bash: a deeper directory was taken for a PATH element"
+	exit 0
+)
 
 ##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
 ##	release" verbatim, so a patch back-ported to an older line after a newer one

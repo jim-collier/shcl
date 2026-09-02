@@ -112,7 +112,7 @@ if command -v nfpm >/dev/null 2>&1; then
 		## The dependencies come off the binary: its newest GLIBC_ symbol
 		## version is the glibc floor, and libgcc is needed only when the
 		## dynamic section says so (the arm64 build links it statically).
-		glibc="$(objdump -T "${bin}" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)"
+		glibc="$(objdump -T "${bin}" | { grep -o 'GLIBC_[0-9.]*' || true; } | sed 's/GLIBC_//' | sort -uV | tail -1)"
 		[[ -n "${glibc}" ]] || fDie "no GLIBC_ symbol version in ${bin}"
 		debGcc=""; rpmGcc=""
 		if readelf -d "${bin}" | grep -q 'NEEDED.*libgcc_s'; then debGcc=$'\n      - libgcc-s1'; rpmGcc=$'\n      - libgcc'; fi
