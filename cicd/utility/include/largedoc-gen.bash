@@ -9,7 +9,9 @@
 ##		one name, nesting, inline and bullet arrays, quoted values holding the
 ##		separator, raw blocks, comments, blank lines, non-ASCII, and one array
 ##		long enough to walk past any fixed element buffer. Nothing in it merges
-##		into an earlier line, so a profile of it measures parsing, not merging.
+##		into an earlier line, so a profile of it measures parsing, not merging,
+##		and it loads with no diagnostics at all (the large-document gate
+##		checks that; a hint per unit once made the profile measure stderr).
 ##	History: At bottom of script.
 
 ##	Copyright © 2026 Bubbles (ID: XଌฅრX۳ᛟԃლፀƅꓩหδლც)
@@ -38,7 +40,7 @@ largedoc_gen(){
 			    "\t\tburst:\n"
 			for (j = 0; j < 4; j++) s = s "\t\t\t* " ((j*i)%1000) "\n"
 			s = s "\tnotes:\n\t\t~~~\n\t\tgenerated entry " i "\n\t\tsecond line\n\t\t~~~\n" \
-			      "service: svc" i "\n\tport: " (9000 + i%1000) "\n\n"
+			      "service: svc" i "-b\n\tport: " (9000 + i%1000) "\n\n"
 			printf "%s", s
 			bytes += length(s)
 		}
@@ -56,3 +58,5 @@ declare -i isSourced_ldg7c=0; [[ "${BASH_SOURCE[0]}" == "${0}" ]] || isSourced_l
 ##	History:
 ##		- 2026-08-29 JC: Lifted out of largedoc.bash so the profiler runs the
 ##		  same document instead of forty concatenated copies of the corpus.
+##		- 2026-09-02 JC: The second instance of each service carries its own value;
+##		  it used to reopen the first, so half the nodes merged and every unit hinted.

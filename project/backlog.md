@@ -187,10 +187,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-191700
 		- Closed: 20260902-150000
 
-	- 🔘 Item 19: the profiler workload merges half its nodes and prints a hint per unit, so the profile measures hint formatting and stderr writes, and the run log carries a million hint lines.
+	- ✅ Item 19: the profiler workload merges half its nodes and prints a hint per unit, so the profile measures hint formatting and stderr writes, and the run log carries a million hint lines.
 		- Reproduced: the generator's trailing `service: svcN` line reopens the block above it, so every unit's two `port` leaves collide. 37% of the profiled CPU is the unbuffered hint stream. Today's run log is 93 MB, and a million of its lines are `H001`, from the profiler stage and the large-document fixpoint check.
 		- The generator's own header says nothing in it merges, and the config comment says it was introduced to stop measuring exactly this.
+		- Fixed: each unit's second `service` line carries its own value (`svcN-b`), so nothing merges and the document loads with no diagnostics; the profiler run and every timed workload close stderr as well as stdout, so the log no longer carries the hint stream.
+		- Pinned by the large-document gate, which now requires the generated document to load with exactly zero diagnostics (`ok (0 diagnostic(s))`). The old generator gives 6107 at 2 MiB.
 		- Opened: 20260901-191800
+		- Closed: 20260902-154500
 
 	- 🔘 Item 20: `flame-report.py` accepts a truncated or reshaped profile as a good one, and tracebacks on a non-UTF-8 file.
 		- Reproduced: a profile cut off at 35 KB reports attribution summing to 9% at exit 0, and one with the row height changed reports 173% parse, both with the seen marker written. Random bytes give a decode traceback instead of the skip path.
