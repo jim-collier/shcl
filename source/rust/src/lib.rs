@@ -563,6 +563,9 @@ const ROOT: usize = 0;
 // level, so the lines written under it are skipped with it instead of
 // re-parenting one level up.
 const DEAD: usize = usize::MAX;
+// Stack entry for a line whose indent matched no open level (E012): never a
+// level a sibling can bind at, but deeper lines are still under it.
+const UNOPENED: usize = usize::MAX - 1;
 
 /// Merge a later instance into an earlier one under the in-file merge rule:
 /// children and trivia move over, first trailing wins (a second demotes to a
@@ -1594,7 +1597,8 @@ impl Parser {
 					.rev()
 					.find(|(ind, node)| {
 						*node != ROOT
-							&& *node != DEAD && ind.len() >= new_indent.len()
+							&& *node != DEAD && *node != UNOPENED
+							&& ind.len() >= new_indent.len()
 							&& p.indent.starts_with(ind.as_str())
 					})
 					.map(|(ind, n)| (*n, ind.len() == p.indent.len()));
@@ -1628,17 +1632,32 @@ impl Parser {
 			return None; // sentinel invariant; degrade, never abort
 		};
 		if indent.len() > top_indent.len() && indent.starts_with(top_indent.as_str()) {
-			return Some(*top_node);
+			return Some(if *top_node == UNOPENED {
+				DEAD
+			} else {
+				*top_node
+			});
 		}
 		for i in (0..self.stack.len()).rev() {
-			if self.stack[i].0 == indent {
+			if self.stack[i].0 == indent && self.stack[i].1 != UNOPENED {
 				// Sibling of stack[i]: its parent is the entry below it.
 				let parent = if i == 0 { ROOT } else { self.stack[i - 1].1 };
 				// Keep the sentinel; a top-level line resolves to ROOT.
 				self.stack.truncate(i.max(1));
-				return Some(parent);
+				return Some(if parent == UNOPENED { DEAD } else { parent });
 			}
 		}
+		// Skipped, but it still owns its indent: whatever is written deeper is
+		// skipped with it, and a sibling at the same bad indent is refused the
+		// same way instead of binding one level up.
+		while self.stack.len() > 1 {
+			let top = &self.stack[self.stack.len() - 1].0;
+			if indent.len() > top.len() && indent.starts_with(top.as_str()) {
+				break;
+			}
+			self.stack.pop();
+		}
+		self.stack.push((indent.to_string(), UNOPENED));
 		None
 	}
 
@@ -1737,6 +1756,16 @@ impl Parser {
 						self.err(line, "E003", format!("no instance {} of '{}'", n, seg.name));
 						self.lost += 1;
 						return None;
+					}
+					if is_last && value.as_ref().is_some_and(|v| !v.is_empty()) {
+						// Same as the value selector: the instance is already
+						// chosen, so a trailing value has nowhere to bind.
+						self.err(
+							line,
+							"E002",
+							format!("value after selector on '{}' ignored", seg.name),
+						);
+						self.lost += 1;
 					}
 				}
 				(Some(Selector::Wildcard), _) => {
@@ -2080,13 +2109,16 @@ impl Parser {
 			self.hang_deeper_pending(indent);
 			// Child-indent fence: a value line for its parent field.
 			if let Some(fence) = fence_open(rest) {
-				let Some(parent) = self.resolve_parent(indent) else {
+				let parent = self.resolve_parent(indent);
+				let (value, next) = self.consume_raw(&lines, i + 1, lineno, indent, fence);
+				let Some(parent) = parent else {
+					// The body goes with its fence: parsed live, it would read as
+					// root bindings and the closing fence would open a second block.
 					self.err(lineno, "E012", "indentation matches no open level");
 					self.lost += 1;
-					i += 1;
+					i = next;
 					continue;
 				};
-				let (value, next) = self.consume_raw(&lines, i + 1, lineno, indent, fence);
 				if parent == DEAD {
 					self.skip_under_dead(lineno, indent);
 				} else if let Some(node) = self.bind_block(parent, value, lineno) {
@@ -2118,6 +2150,17 @@ impl Parser {
 					i += 1;
 					continue;
 				}
+				let Some(parent) = self.resolve_parent(indent) else {
+					self.err(lineno, "E012", "indentation matches no open level");
+					self.lost += 1;
+					i += 1;
+					continue;
+				};
+				if parent == DEAD {
+					self.skip_under_dead(lineno, indent);
+					i += 1;
+					continue;
+				}
 				self.err(
 					lineno,
 					"E013",
@@ -2135,6 +2178,7 @@ impl Parser {
 					blank_before: had_blank,
 					ceiling: indent.len(),
 				});
+				self.stack.push((indent.to_string(), DEAD));
 				i += 1;
 				continue;
 			}
@@ -2703,7 +2747,47 @@ fn emit_name(name: &str) -> String {
 /// text by hand should not have to know which of the four they are reading.
 #[must_use]
 pub fn format_f64(v: f64) -> String {
-	format!("{v}")
+	let s = format!("{v}");
+	if !v.is_finite() || v == 0.0 {
+		return s;
+	}
+	// The shortest spelling that reads back is the same in every binding
+	// except on an exact tie between two spellings of that length, where core
+	// rounds away from zero and Go, Python and C round to even. The correctly
+	// rounded spelling of the same length is the to-even one, so use it when
+	// it reads back; when it does not (a lopsided interval at a power of
+	// two), the shortest one is the only choice and all four agree already.
+	let sig = s
+		.trim_start_matches('-')
+		.replace('.', "")
+		.trim_start_matches('0')
+		.trim_end_matches('0')
+		.len()
+		.max(1);
+	let e = format!("{v:.*e}", sig - 1);
+	if e.parse::<f64>() != Ok(v) {
+		return s;
+	}
+	let (mant, exp) = e.split_once('e').unwrap_or((&e, "0"));
+	let digits: String = mant.chars().filter(char::is_ascii_digit).collect();
+	let point = exp.parse::<i64>().unwrap_or(0) + 1;
+	let mut out = String::new();
+	if v.is_sign_negative() {
+		out.push('-');
+	}
+	if point <= 0 {
+		out.push_str("0.");
+		out.extend(std::iter::repeat_n('0', (-point) as usize));
+		out.push_str(&digits);
+	} else if point as usize >= digits.len() {
+		out.push_str(&digits);
+		out.extend(std::iter::repeat_n('0', point as usize - digits.len()));
+	} else {
+		out.push_str(&digits[..point as usize]);
+		out.push('.');
+		out.push_str(&digits[point as usize..]);
+	}
+	out
 }
 
 /// Quote one path segment so it can be spliced into a lookup path: a bare name
@@ -2975,48 +3059,32 @@ fn h001_head(name: &str) -> String {
 /// `check --schema` and load_and_validate; call it wherever doc diagnostics
 /// and a schema meet.
 pub fn suppress_declared_repeats(schema: &Document, diags: &mut Vec<Diagnostic>) {
-	// Top-level fields plus every fragment's fields: a repeat declared inside
-	// a mounted shape disavows the hint the same way.
-	let mut groups: Vec<(String, Vec<String>)> =
-		vec![("field".to_string(), schema.instances("field"))];
-	for k in 0..schema.count("fragment") {
-		let base = format!("fragment[#{}].field", k);
-		let paths = schema.instances(&base);
-		groups.push((base, paths));
-	}
-	let mut names: Vec<String> = Vec::new();
-	for (base, paths) in &groups {
-		for (i, p) in paths.iter().enumerate() {
-			// repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
-			// that matters here is the last one.
-			let rep = schema.read_int_array(&format!("{}[#{}].repeat", base, i));
-			if rep.status != Status::Good {
-				continue;
-			}
-			match rep.value.last() {
-				Some(&u) if u > 1 => {}
-				_ => continue,
-			}
-			// Leaf name from the parsed path, not a re-split of its text: a
-			// quoted last segment may contain dots (`a."b.c"`). The scanner
-			// folds the name; the doc side stores names folded too.
-			let Ok(scan) = scan_lookup(p) else {
-				continue;
-			};
-			let Some(seg) = scan.segments.last() else {
-				continue;
-			};
-			if seg.star {
-				continue; // name wildcard: no single leaf name to disavow
-			}
-			names.push(seg.name.clone());
-		}
-	}
+	let names = disavowed_names(schema, |c| c.repeat.is_some_and(|(_, hi)| hi > 1));
 	if names.is_empty() {
 		return;
 	}
 	let heads: Vec<String> = names.iter().map(|n| h001_head(n)).collect();
 	diags.retain(|d| d.code != "H001" || !heads.iter().any(|h| d.message.starts_with(h.as_str())));
+}
+
+/// Leaf names of the schema entries `pick` accepts, top-level fields and every
+/// fragment's fields alike. Read through the built schema, so the names are
+/// the ones validation will use (escapes resolved) and an entry whose key
+/// faulted disavows nothing.
+fn disavowed_names(schema: &Document, pick: impl Fn(&Constraint) -> bool) -> Vec<String> {
+	let (def, _) = build_schema(schema);
+	let mut names: Vec<String> = Vec::new();
+	let frags = def.frags.values().flat_map(|v| v.iter());
+	for c in def.cons.iter().chain(frags) {
+		if !pick(c) {
+			continue;
+		}
+		// Name wildcard: no single leaf name to disavow.
+		if let Some(seg) = c.segs.last().filter(|seg| !seg.star) {
+			names.push(seg.name.clone());
+		}
+	}
+	names
 }
 
 /// The single H002 wording site: the merge hint and the schema suppressor
@@ -3032,32 +3100,7 @@ fn h002_head(name: &str) -> String {
 /// `check --schema` and load_and_validate; call it wherever doc diagnostics
 /// and a schema meet.
 pub fn suppress_declared_reopens(schema: &Document, diags: &mut Vec<Diagnostic>) {
-	let mut groups: Vec<(String, Vec<String>)> =
-		vec![("field".to_string(), schema.instances("field"))];
-	for k in 0..schema.count("fragment") {
-		let base = format!("fragment[#{}].field", k);
-		let paths = schema.instances(&base);
-		groups.push((base, paths));
-	}
-	let mut names: Vec<String> = Vec::new();
-	for (base, paths) in &groups {
-		for (i, p) in paths.iter().enumerate() {
-			let re = schema.read_bool(&format!("{}[#{}].reopen", base, i));
-			if re.status != Status::Good || !re.value {
-				continue;
-			}
-			let Ok(scan) = scan_lookup(p) else {
-				continue;
-			};
-			let Some(seg) = scan.segments.last() else {
-				continue;
-			};
-			if seg.star {
-				continue; // name wildcard: no single leaf name to disavow
-			}
-			names.push(seg.name.clone());
-		}
-	}
+	let names = disavowed_names(schema, |c| c.reopen);
 	if names.is_empty() {
 		return;
 	}
@@ -4043,9 +4086,11 @@ impl Document {
 		self.lost += over.lost;
 		self.overlay(ROOT, over, ROOT);
 		// Layers commonly share a footer; keeping one copy of each keeps a
-		// stack of files from repeating it once per layer.
+		// stack of files from repeating it once per layer. Only the lines
+		// already here count: a layer's own repeats are its content.
+		let had = self.orphans.len();
 		for o in &over.orphans {
-			if !self.orphans.iter().any(|e| e.text == o.text) {
+			if !self.orphans[..had].iter().any(|e| e.text == o.text) {
 				self.orphans.push(o.clone());
 			}
 		}
@@ -4079,8 +4124,8 @@ impl Document {
 		let over_kids = &over.arena[over_parent].children;
 		// Over side: name -> node bucket, in first-appearance order.
 		let mut order: Vec<String> = Vec::new();
-		let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
-		for &k in over_kids {
+		let mut groups: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+		for (pos, &k) in over_kids.iter().enumerate() {
 			let n = &over.arena[k].name;
 			groups
 				.entry(n.clone())
@@ -4088,7 +4133,7 @@ impl Document {
 					order.push(n.clone());
 					Vec::new()
 				})
-				.push(k);
+				.push((pos, k));
 		}
 		// Base side, one pass: does the name have a container instance, and
 		// which child carries each (name, key) - every key computed once. The
@@ -4108,27 +4153,30 @@ impl Document {
 		// mention, not a leaf, so it falls through to the instance merge: a
 		// bare section header in a higher layer never wipes the subtree below.
 		// Replaced groups splice in the rebuild; everything appended (unmatched
-		// instances, and replaced names base never had) keeps processing order.
+		// instances, and replaced names base never had) keeps the over file's
+		// order, which the per-name pass here would otherwise regroup.
 		let mut replace: HashMap<String, Vec<usize>> = HashMap::new();
-		let mut appended: Vec<usize> = Vec::new();
+		let mut appended: Vec<(usize, usize)> = Vec::new();
 		let empty_key = Value::Empty.key();
 		for name in &order {
 			let group = &groups[name];
-			let over_leafy = group.iter().all(|&k| over.arena[k].children.is_empty());
+			let over_leafy = group
+				.iter()
+				.all(|&(_, k)| over.arena[k].children.is_empty());
 			let in_base = has_container.contains_key(name);
 			let base_container = has_container.get(name).copied().unwrap_or(false);
 			if over_leafy && !base_container {
-				let clones: Vec<usize> = group
+				let clones: Vec<(usize, usize)> = group
 					.iter()
-					.map(|&ok| self.clone_subtree(over, ok, base_parent))
+					.map(|&(pos, ok)| (pos, self.clone_subtree(over, ok, base_parent)))
 					.collect();
 				if in_base {
-					replace.insert(name.clone(), clones);
+					replace.insert(name.clone(), clones.into_iter().map(|(_, c)| c).collect());
 				} else {
 					appended.extend(clones);
 				}
 			} else {
-				for &ok in group {
+				for &(pos, ok) in group {
 					let okey = over.arena[ok].value.key();
 					// A raw block in the higher layer fills a same-named empty
 					// binding below, exactly as a fence line fills one inside a
@@ -4153,7 +4201,7 @@ impl Document {
 						}
 						None => {
 							let c = self.clone_subtree(over, ok, base_parent);
-							appended.push(c);
+							appended.push((pos, c));
 						}
 					}
 				}
@@ -4178,7 +4226,8 @@ impl Document {
 				None => newkids.push(b),
 			}
 		}
-		newkids.extend(appended.iter().copied());
+		appended.sort_by_key(|&(pos, _)| pos);
+		newkids.extend(appended.iter().map(|&(_, c)| c));
 		self.arena[base_parent].children = newkids;
 	}
 
@@ -5141,6 +5190,7 @@ struct Constraint {
 	min_f: Option<f64>,
 	max_f: Option<f64>,
 	repeat: Option<(u64, u64)>,
+	reopen: bool,             // H002 suppressor only; validation ignores it
 	inherits: Option<String>, // fragment mounted at this path (subtree shape)
 	inherits_line: usize,     // schema line of the `inherits` key, for V095
 	// Generator-only (`shcl init`): validation ignores both.
@@ -5314,6 +5364,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 		min_f: None,
 		max_f: None,
 		repeat: None,
+		reopen: false,
 		inherits: None,
 		inherits_line: 0,
 		desc: None,
@@ -5372,14 +5423,17 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 					),
 				}
 			}
-			// Consumed by the H002 suppressor (which reads the schema document
-			// directly); validation itself ignores it, but a bad value still
-			// faults so a typo cannot silently disavow nothing.
+			// Consumed by the H002 suppressor; validation itself ignores it,
+			// but a bad value still faults so a typo cannot silently disavow
+			// nothing.
 			"reopen" => {
 				let v =
 					single_text(&kid.value).and_then(|t| parse_bool_text(&t, Strictness::Standard));
 				match v {
-					Some(_) if !reopen_seen => reopen_seen = true,
+					Some(b) if !reopen_seen => {
+						reopen_seen = true;
+						c.reopen = b;
+					}
 					_ => vdiag(
 						faults,
 						kid.line,
@@ -5984,17 +6038,41 @@ fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
 	(out, cuts)
 }
 
-/// Two-row Levenshtein; powers the "did you mean" prose (never the code).
-fn edit_distance(a: &str, b: &str) -> usize {
+/// Levenshtein distance capped at `cap`, for the "did you mean" prose (never
+/// the code): anything past the cap comes back as `cap + 1`. Only the band
+/// `|i - j| <= cap` of the table is computed, so a pair costs linear time in
+/// the names' length, and a length gap past the cap needs no table at all.
+fn edit_distance(a: &str, b: &str, cap: usize) -> usize {
 	let a: Vec<char> = a.chars().collect();
 	let b: Vec<char> = b.chars().collect();
-	let mut prev: Vec<usize> = (0..=b.len()).collect();
-	let mut cur = vec![0usize; b.len() + 1];
+	let inf = cap + 1;
+	if a.len().abs_diff(b.len()) > cap {
+		return inf;
+	}
+	let mut prev: Vec<usize> = (0..=b.len()).map(|j| j.min(inf)).collect();
+	let mut cur = vec![inf; b.len() + 1];
 	for i in 1..=a.len() {
-		cur[0] = i;
-		for j in 1..=b.len() {
+		cur[0] = i.min(inf);
+		let lo = i.saturating_sub(cap).max(1);
+		let hi = (i + cap).min(b.len());
+		if lo > 1 {
+			cur[lo - 1] = inf;
+		}
+		let mut row_min = cur[0];
+		for j in lo..=hi {
 			let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-			cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+			cur[j] = (prev[j] + 1)
+				.min(cur[j - 1] + 1)
+				.min(prev[j - 1] + cost)
+				.min(inf);
+			row_min = row_min.min(cur[j]);
+		}
+		if hi < b.len() {
+			cur[hi + 1] = inf;
+		}
+		// No cell in a later row can come back under this row's minimum.
+		if row_min > cap {
+			return inf;
 		}
 		std::mem::swap(&mut prev, &mut cur);
 	}
@@ -6018,8 +6096,12 @@ impl Document {
 	pub fn validate(&self, schema: &Document) -> Vec<Diagnostic> {
 		let (def, faults) = build_schema(schema);
 		let mut out = faults;
+		// One mount set for the whole schema: two top-level paths can resolve
+		// to the same node and mount the same fragment there, and the spec
+		// says each fragment runs once per node.
+		let mut mounted = std::collections::HashSet::new();
 		for c in &def.cons {
-			self.v_check(c, &def, &mut out);
+			self.v_check_from(c, &def, ROOT, 0, &mut out, &mut mounted);
 		}
 		if def.paths_complete {
 			self.v_unknown(&def, &mut out);
@@ -6094,11 +6176,6 @@ impl Document {
 			}
 		}
 		out.push((anchor, cur));
-	}
-
-	fn v_check(&self, c: &Constraint, def: &SchemaDef, out: &mut Vec<Diagnostic>) {
-		let mut mounted = std::collections::HashSet::new();
-		self.v_check_from(c, def, ROOT, 0, out, &mut mounted);
 	}
 
 	// A mounted fragment's fields run per resolved node, right after that
@@ -6508,7 +6585,7 @@ fn v_suggest(siblings: &HashMap<String, Vec<String>>, parent_chain: &str, name: 
 	let mut best: Option<(usize, &str)> = None;
 	if let Some(names) = siblings.get(parent_chain) {
 		for s in names {
-			let dist = edit_distance(name, s);
+			let dist = edit_distance(name, s, 2);
 			if dist <= 2 && best.is_none_or(|(bd, _)| dist < bd) {
 				best = Some((dist, s.as_str()));
 			}

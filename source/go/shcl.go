@@ -638,6 +638,11 @@ const root = 0
 // of re-parenting one level up.
 const dead = -1
 
+// unopened is the stack entry for a line whose indent matched no open level
+// (E012): never a level a sibling can bind at, but deeper lines are still
+// under it.
+const unopened = -2
+
 // foldNodeInto merges a later instance into an earlier one under the in-file
 // merge rule: children and trivia move over, first trailing wins (a second
 // demotes to a leading line), first spelling stays. The caller drops the loser
@@ -1779,7 +1784,7 @@ func (p *parser) hangDeeperPending(newIndent string) {
 			atOwnLevel := false
 			for j := len(p.stack) - 1; j >= 0; j-- {
 				ent := p.stack[j]
-				if ent.node != root && ent.node != dead && len(ent.indent) >= len(newIndent) &&
+				if ent.node != root && ent.node != dead && ent.node != unopened && len(ent.indent) >= len(newIndent) &&
 					strings.HasPrefix(pn.indent, ent.indent) {
 					target = ent.node
 					atOwnLevel = len(ent.indent) == len(pn.indent)
@@ -1813,10 +1818,13 @@ func (p *parser) hangDeeperPending(newIndent string) {
 func (p *parser) resolveParent(indent string) (int, bool) {
 	top := p.stack[len(p.stack)-1]
 	if len(indent) > len(top.indent) && strings.HasPrefix(indent, top.indent) {
+		if top.node == unopened {
+			return dead, true
+		}
 		return top.node, true
 	}
 	for i := len(p.stack) - 1; i >= 0; i-- {
-		if p.stack[i].indent == indent {
+		if p.stack[i].indent == indent && p.stack[i].node != unopened {
 			// Sibling of stack[i]: its parent is the entry below it. Keep the
 			// sentinel; a top-level line resolves to root.
 			parent := root
@@ -1828,9 +1836,23 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 				keep = 1
 			}
 			p.stack = p.stack[:keep]
+			if parent == unopened {
+				return dead, true
+			}
 			return parent, true
 		}
 	}
+	// Skipped, but it still owns its indent: whatever is written deeper is
+	// skipped with it, and a sibling at the same bad indent is refused the
+	// same way instead of binding one level up.
+	for len(p.stack) > 1 {
+		topIndent := p.stack[len(p.stack)-1].indent
+		if len(indent) > len(topIndent) && strings.HasPrefix(indent, topIndent) {
+			break
+		}
+		p.stack = p.stack[:len(p.stack)-1]
+	}
+	p.stack = append(p.stack, stackEnt{indent: indent, node: unopened})
 	return 0, false
 }
 
@@ -1909,6 +1931,12 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 				p.err(line, "E003", fmt.Sprintf("no instance %d of '%s'", seg.sel.index, seg.name))
 				p.lost++
 				return 0, false
+			}
+			if isLast && !v.isEmpty() {
+				// Same as the value selector: the instance is already chosen,
+				// so a trailing value has nowhere to bind.
+				p.err(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", seg.name))
+				p.lost++
 			}
 		case seg.sel != nil:
 			p.err(line, "E004", "wildcard selector is query-only")
@@ -2210,13 +2238,15 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// Child-indent fence: a value line for its parent field.
 		if ch, length, info, ok := fenceOpen(rest); ok {
 			parent, okp := p.resolveParent(indent)
+			v, next := p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 			if !okp {
+				// The body goes with its fence: parsed live, it would read as
+				// root bindings and the closing fence would open a second block.
 				p.err(lineno, "E012", "indentation matches no open level")
 				p.lost++
-				i++
+				i = next
 				continue
 			}
-			v, next := p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 			if parent == dead {
 				p.skipUnderDead(lineno, indent)
 			} else if node := p.bindBlock(parent, v, lineno); node >= 0 {
@@ -2250,6 +2280,18 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				i++
 				continue
 			}
+			parent, okp := p.resolveParent(indent)
+			if !okp {
+				p.err(lineno, "E012", "indentation matches no open level")
+				p.lost++
+				i++
+				continue
+			}
+			if parent == dead {
+				p.skipUnderDead(lineno, indent)
+				i++
+				continue
+			}
 			p.err(lineno, "E013", "malformed line: '*' must be followed by a space")
 			// Content-malformed at any position, so it is safe to retain
 			// verbatim as trivia: re-emitted, it re-diagnoses identically
@@ -2258,6 +2300,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			// sibling site below carries cannot apply here: this line starts
 			// with the '*' that brought us in.
 			p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
+			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
 			i++
 			continue
 		}
@@ -2472,7 +2515,10 @@ func ParseLimited(text string, strictness Strictness, maxNodes, maxElements, max
 // Diagnostics is everything the load recorded (after LoadAndValidate,
 // validation findings too).
 func (d *Document) Diagnostics() []Diagnostic {
-	return d.diags
+	// A copy: the reference hands out a borrowed view nobody can append to,
+	// and a Go slice sharing the document's backing array would let a
+	// caller's append and the document's next one overwrite each other.
+	return append([]Diagnostic(nil), d.diags...)
 }
 
 // LostCount is how many lines or values parsing dropped that canonical
@@ -2750,42 +2796,9 @@ func h001Head(name string) string {
 // allocation and never disturbs the input (the reference filters its list in
 // place behind &mut; a Go return reads as a copy, so it must behave as one).
 func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic {
-	// Top-level fields plus every fragment's fields: a repeat declared inside
-	// a mounted shape disavows the hint the same way.
-	type group struct {
-		base  string
-		paths []string
-	}
-	groups := []group{{"field", schema.Instances("field")}}
-	for k := 0; k < schema.Count("fragment"); k++ {
-		base := fmt.Sprintf("fragment[#%d].field", k)
-		groups = append(groups, group{base, schema.Instances(base)})
-	}
-	var names []string
-	for _, g := range groups {
-		for i, p := range g.paths {
-			// repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
-			// that matters here is the last one.
-			rep := schema.ReadIntArray(fmt.Sprintf("%s[#%d].repeat", g.base, i))
-			if rep.Status != Good || len(rep.Value) == 0 || rep.Value[len(rep.Value)-1] <= 1 {
-				continue
-			}
-			// Leaf name from the parsed path, not a re-split of its text: a
-			// quoted last segment may contain dots (`a."b.c"`). The scanner
-			// folds the name; the doc side stores names folded too.
-			scan, err := scanLookup(p)
-			if err != nil || len(scan.segments) == 0 {
-				continue
-			}
-			seg := scan.segments[len(scan.segments)-1]
-			if seg.star {
-				continue // name wildcard: no single leaf name to disavow
-			}
-			names = append(names, seg.name)
-		}
-	}
+	names := disavowedNames(schema, func(c *constraint) bool { return c.repeat != nil && c.repeat[1] > 1 })
 	if len(names) == 0 {
-		return diags
+		return append([]Diagnostic(nil), diags...)
 	}
 	heads := make([]string, len(names))
 	for i, n := range names {
@@ -3105,6 +3118,32 @@ func (d *Document) SaveFileLossy(path string) error {
 	return WriteFileAtomic(path, d.ToCanonical())
 }
 
+// disavowedNames returns the leaf names of the schema entries pick accepts,
+// top-level fields and every fragment's fields alike. Read through the built
+// schema, so the names are the ones validation will use (escapes resolved)
+// and an entry whose key faulted disavows nothing.
+func disavowedNames(schema *Document, pick func(*constraint) bool) []string {
+	def, _ := buildSchema(schema)
+	var names []string
+	all := [][]constraint{def.cons}
+	for _, fcs := range def.frags {
+		all = append(all, fcs)
+	}
+	for _, list := range all {
+		for i := range list {
+			c := &list[i]
+			if !pick(c) || len(c.segs) == 0 {
+				continue
+			}
+			// Name wildcard: no single leaf name to disavow.
+			if seg := c.segs[len(c.segs)-1]; !seg.star {
+				names = append(names, seg.name)
+			}
+		}
+	}
+	return names
+}
+
 // h002Head is the single H002 wording site: the merge hint and the schema
 // suppressor both come here, same discipline as h001Head.
 func h002Head(name string) string {
@@ -3118,35 +3157,9 @@ func h002Head(name string) string {
 // Used by `check --schema` and LoadAndValidate; call it wherever doc
 // diagnostics and a schema meet. Returns a fresh slice like the H001 one.
 func SuppressDeclaredReopens(schema *Document, diags []Diagnostic) []Diagnostic {
-	type group struct {
-		base  string
-		paths []string
-	}
-	groups := []group{{"field", schema.Instances("field")}}
-	for k := 0; k < schema.Count("fragment"); k++ {
-		base := fmt.Sprintf("fragment[#%d].field", k)
-		groups = append(groups, group{base, schema.Instances(base)})
-	}
-	var names []string
-	for _, g := range groups {
-		for i, p := range g.paths {
-			re := schema.ReadBool(fmt.Sprintf("%s[#%d].reopen", g.base, i))
-			if re.Status != Good || !re.Value {
-				continue
-			}
-			scan, err := scanLookup(p)
-			if err != nil || len(scan.segments) == 0 {
-				continue
-			}
-			seg := scan.segments[len(scan.segments)-1]
-			if seg.star {
-				continue // name wildcard: no single leaf name to disavow
-			}
-			names = append(names, seg.name)
-		}
-	}
+	names := disavowedNames(schema, func(c *constraint) bool { return c.reopen })
 	if len(names) == 0 {
-		return diags
+		return append([]Diagnostic(nil), diags...)
 	}
 	heads := make([]string, len(names))
 	for i, n := range names {
@@ -4294,10 +4307,12 @@ func (d *Document) Merge(over *Document) {
 	d.lost += over.lost
 	d.overlay(root, over, root)
 	// Layers commonly share a footer; keeping one copy of each keeps a
-	// stack of files from repeating it once per layer.
+	// stack of files from repeating it once per layer. Only the lines
+	// already here count: a layer's own repeats are its content.
+	had := len(d.orphans)
 	for _, o := range over.orphans {
 		seen := false
-		for _, e := range d.orphans {
+		for _, e := range d.orphans[:had] {
 			if e.text == o.text {
 				seen = true
 				break
@@ -4341,13 +4356,14 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	overKids := over.arena[overParent].children
 	// Over side: name -> node bucket, in first-appearance order.
 	var order []string
-	groups := map[string][]int{}
-	for _, k := range overKids {
+	type overKid struct{ pos, node int }
+	groups := map[string][]overKid{}
+	for pos, k := range overKids {
 		n := over.arena[k].name
 		if _, seen := groups[n]; !seen {
 			order = append(order, n)
 		}
-		groups[n] = append(groups[n], k)
+		groups[n] = append(groups[n], overKid{pos, k})
 	}
 	// Base side, one pass: does the name have a container instance, and
 	// which child carries each (name, key) - every key computed once. The
@@ -4369,15 +4385,16 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	// mention, not a leaf, so it falls through to the instance merge: a
 	// bare section header in a higher layer never wipes the subtree below.
 	// Replaced groups splice in the rebuild; everything appended (unmatched
-	// instances, and replaced names base never had) keeps processing order.
+	// instances, and replaced names base never had) keeps the over file's
+	// order, which the per-name pass here would otherwise regroup.
 	replace := map[string][]int{}
-	var appended []int
+	var appended []overKid
 	emptyKey := (&value{kind: vEmpty}).key()
 	for _, name := range order {
 		group := groups[name]
 		overLeafy := true
 		for _, k := range group {
-			if len(over.arena[k].children) > 0 {
+			if len(over.arena[k.node].children) > 0 {
 				overLeafy = false
 				break
 			}
@@ -4386,15 +4403,18 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 		if overLeafy && !baseContainer {
 			clones := make([]int, len(group))
 			for i, ok := range group {
-				clones[i] = d.cloneSubtree(over, ok, baseParent)
+				clones[i] = d.cloneSubtree(over, ok.node, baseParent)
 			}
 			if inBase {
 				replace[name] = clones
 			} else {
-				appended = append(appended, clones...)
+				for i, ok := range group {
+					appended = append(appended, overKid{ok.pos, clones[i]})
+				}
 			}
 		} else {
-			for _, ok := range group {
+			for _, k := range group {
+				ok := k.node
 				okey := over.arena[ok].value.key()
 				target, found := byKey[[2]string{name, okey}]
 				// A raw block in the higher layer fills a same-named empty
@@ -4419,7 +4439,7 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 					d.overlay(target, over, ok)
 				} else {
 					c := d.cloneSubtree(over, ok, baseParent)
-					appended = append(appended, c)
+					appended = append(appended, overKid{k.pos, c})
 				}
 			}
 		}
@@ -4443,7 +4463,10 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 			newKids = append(newKids, b)
 		}
 	}
-	newKids = append(newKids, appended...)
+	sort.Slice(appended, func(i, j int) bool { return appended[i].pos < appended[j].pos })
+	for _, k := range appended {
+		newKids = append(newKids, k.node)
+	}
 	d.arena[baseParent].children = newKids
 }
 
@@ -5506,6 +5529,7 @@ type constraint struct {
 	minF         *float64
 	maxF         *float64
 	repeat       *[2]uint64
+	reopen       bool   // H002 suppressor only; validation ignores it
 	inherits     string // fragment mounted at this path (subtree shape); "" = none
 	inheritsLine int    // schema line of the `inherits` key, for V095
 	// Generator-only (`shcl init`): validation ignores both.
@@ -5686,16 +5710,17 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 			} else {
 				vdiag(faults, kid.line, "V092", "bad schema constraint 'required'")
 			}
-		// Consumed by the H002 suppressor (which reads the schema document
-		// directly); validation itself ignores it, but a bad value still
-		// faults so a typo cannot silently disavow nothing.
+		// Consumed by the H002 suppressor; validation itself ignores it, but
+		// a bad value still faults so a typo cannot silently disavow nothing.
 		case "reopen":
 			t, ok := singleText(&kid.value)
+			var b bool
 			if ok {
-				_, ok = parseBoolText(t, Standard)
+				b, ok = parseBoolText(t, Standard)
 			}
 			if ok && !reopenSeen {
 				reopenSeen = true
+				c.reopen = b
 			} else {
 				vdiag(faults, kid.line, "V092", "bad schema constraint 'reopen'")
 			}
@@ -6359,28 +6384,71 @@ func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
 	return out, cuts
 }
 
-// editDistance is two-row Levenshtein; powers the "did you mean" prose (never
-// the code).
-func editDistance(a, b string) int {
+// editDistance is the Levenshtein distance capped at cap, for the "did you
+// mean" prose (never the code): anything past the cap comes back as cap + 1.
+// Only the band |i - j| <= cap of the table is computed, so a pair costs
+// linear time in the names' length, and a length gap past the cap needs no
+// table at all.
+func editDistance(a, b string, cap int) int {
 	ar := []rune(a)
 	br := []rune(b)
+	inf := cap + 1
+	if absDiff(len(ar), len(br)) > cap {
+		return inf
+	}
 	prev := make([]int, len(br)+1)
 	cur := make([]int, len(br)+1)
 	for j := range prev {
-		prev[j] = j
+		prev[j] = minInt(j, inf)
+		cur[j] = inf
 	}
 	for i := 1; i <= len(ar); i++ {
-		cur[0] = i
-		for j := 1; j <= len(br); j++ {
+		cur[0] = minInt(i, inf)
+		lo := maxInt(i-cap, 1)
+		hi := minInt(i+cap, len(br))
+		if lo > 1 {
+			cur[lo-1] = inf
+		}
+		rowMin := cur[0]
+		for j := lo; j <= hi; j++ {
 			cost := 1
 			if ar[i-1] == br[j-1] {
 				cost = 0
 			}
-			cur[j] = min3(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+			cur[j] = minInt(min3(prev[j]+1, cur[j-1]+1, prev[j-1]+cost), inf)
+			rowMin = minInt(rowMin, cur[j])
+		}
+		if hi < len(br) {
+			cur[hi+1] = inf
+		}
+		// No cell in a later row can come back under this row's minimum.
+		if rowMin > cap {
+			return inf
 		}
 		prev, cur = cur, prev
 	}
 	return prev[len(br)]
+}
+
+func absDiff(a, b int) int {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func min3(a, b, c int) int {
@@ -6409,8 +6477,12 @@ func min3(a, b, c int) int {
 func (d *Document) Validate(schema *Document) []Diagnostic {
 	def, faults := buildSchema(schema)
 	out := faults
+	// One mount set for the whole schema: two top-level paths can resolve to
+	// the same node and mount the same fragment there, and the spec says each
+	// fragment runs once per node.
+	mounted := make(map[fragMount]bool)
 	for i := range def.cons {
-		d.vCheck(&def.cons[i], &def, &out)
+		d.vCheckFrom(&def.cons[i], &def, root, 0, &out, mounted)
 	}
 	if def.pathsComplete {
 		d.vUnknown(&def, &out)
@@ -6492,11 +6564,6 @@ func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vCo
 type fragMount struct {
 	fr string
 	n  int
-}
-
-func (d *Document) vCheck(c *constraint, def *schemaDef, out *[]Diagnostic) {
-	mounted := make(map[fragMount]bool)
-	d.vCheckFrom(c, def, root, 0, out, mounted)
 }
 
 // A mounted fragment's fields run per resolved node, right after that node's
@@ -6920,7 +6987,7 @@ func vSuggest(siblings map[string][]string, parentChain, name string) string {
 	bestDist := -1
 	bestName := ""
 	for _, s := range siblings[parentChain] {
-		dist := editDistance(name, s)
+		dist := editDistance(name, s, 2)
 		if dist <= 2 && (bestDist < 0 || dist < bestDist) {
 			bestDist = dist
 			bestName = s

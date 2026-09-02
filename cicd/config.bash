@@ -245,7 +245,9 @@ LARGEDOC_MIB=100
 ## enough to sample meaningfully: the large-document generator at a few MiB. It
 ## used to be forty copies of the corpus concatenated, which made four lines in
 ## five merge into an existing node, so the graph measured merging and hint
-## formatting rather than parsing.
+## formatting rather than parsing. stderr is closed off on every run: a hint
+## per unit once put a million lines in the log and a third of the samples in
+## the write path.
 ## Kernel perf is locked down on this box (perf_event_paranoid=3), hence the
 ## in-process sampler. PROFILE_WORKLOAD_GEN / PROFILE_RUN are eval'd by the engine
 ## with PROFILE_WORKLOAD / PROFILE_OUT / PROFILE_SECS exported.
@@ -255,18 +257,18 @@ PROFILE_BUILD_CMD=(cargo build --profile profiling --features profiling -j "${CP
 PROFILE_BIN="source/rust/target/profiling/${EXE_NAME}"
 PROFILE_OUT_DIR="cicd/artifacts/profiling"   ## relative to repo root; gitignored
 PROFILE_WORKLOAD_GEN='source cicd/utility/include/largedoc-gen.bash; largedoc_gen 4 > "${PROFILE_WORKLOAD}"'
-PROFILE_RUN='SHCL_PROFILE_OUT="${PROFILE_OUT}" SHCL_PROFILE_SECS="${PROFILE_SECS}" "${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null'
+PROFILE_RUN='SHCL_PROFILE_OUT="${PROFILE_OUT}" SHCL_PROFILE_SECS="${PROFILE_SECS}" "${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null 2>&1'
 ## Wall-clock per surface, logged after the flamegraph: the graph shows where
 ## time goes inside fmt, these catch merge/validate/generate/set/read going
 ## quadratic without moving a sample. "name|command"; nonzero exit = FAILED
 ## (append `|| [ $? -eq N ]` where a nonzero exit is the expected outcome).
 PROFILE_TIMED=(
-	'fmt|"${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null'
-	'merge|"${PROFILE_BIN}" fmt --layer="${PROFILE_WORKLOAD}" "${PROFILE_WORKLOAD}" >/dev/null'
-	'reads|"${PROFILE_BIN}" instances "${PROFILE_WORKLOAD}" service >/dev/null && "${PROFILE_BIN}" count "${PROFILE_WORKLOAD}" service >/dev/null'
+	'fmt|"${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null 2>&1'
+	'merge|"${PROFILE_BIN}" fmt --layer="${PROFILE_WORKLOAD}" "${PROFILE_WORKLOAD}" >/dev/null 2>&1'
+	'reads|"${PROFILE_BIN}" instances "${PROFILE_WORKLOAD}" service >/dev/null 2>&1 && "${PROFILE_BIN}" count "${PROFILE_WORKLOAD}" service >/dev/null 2>&1'
 	'validate|"${PROFILE_BIN}" check --schema=project/conformance/021-schema-valid/schema.shcl "${PROFILE_WORKLOAD}" >/dev/null 2>&1 || [ $? -eq 6 ]'
 	'generate|"${PROFILE_BIN}" init --schema=project/conformance/026-init-schema/init-schema.shcl >/dev/null'
-	'set|printf "int\tprofile.k\t1\nstring\tprofile.s\tv\nremove\tprofile.k\n" | "${PROFILE_BIN}" set "${PROFILE_WORKLOAD}" >/dev/null'
+	'set|printf "int\tprofile.k\t1\nstring\tprofile.s\tv\nremove\tprofile.k\n" | "${PROFILE_BIN}" set "${PROFILE_WORKLOAD}" >/dev/null 2>&1'
 )
 
 ## Stage 6: native release + cross targets. One per line:

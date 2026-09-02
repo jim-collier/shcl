@@ -78,6 +78,25 @@ fRunOom() {
 		source/c/tests/oom_hook.c -o "${work}/oom_hook${exe}" -lm \
 		&& "${work}/oom_hook${exe}"
 }
+## The C CLI's argv: the narrow one arrives in the active code page, best-fit
+## mapped, so a name the page cannot spell reached a different file. The two
+## names here are the shapes that went wrong: one outside the page, one the
+## page maps onto a plain letter.
+fRunCcli() {
+	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
+		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	local dir="${work}/argv"
+	mkdir -p "${dir}"
+	printf 'a: 1\n' > "${dir}/a.shcl"
+	printf 'b: 1\n' > "${dir}/ā.shcl"
+	printf 'c: 1\n' > "${dir}/café.shcl"
+	local got
+	got="$("${work}/shcl-c${exe}" get "${dir}/café.shcl" c 2>&1)" || { echo "win-runners: c cli: café.shcl: ${got}" >&2; return 1; }
+	[[ "${got}" == "1" ]] || { echo "win-runners: c cli: café.shcl read ${got@Q}" >&2; return 1; }
+	"${work}/shcl-c${exe}" set --write --set x=1 "${dir}/ā.shcl" > /dev/null || return 1
+	[[ "$(cat "${dir}/a.shcl")" == "a: 1" ]] || { echo "win-runners: c cli: a.shcl was rewritten in place of ā.shcl" >&2; return 1; }
+	grep -q '^x: 1$' "${dir}/ā.shcl" || { echo "win-runners: c cli: ā.shcl was not written" >&2; return 1; }
+}
 
 ## Fuzz iterations stay at the in-test default: the long soak is the Linux gate's
 ## job, and nothing about it is platform-dependent.
@@ -88,6 +107,7 @@ fRun "python"      "${py}" source/python/tests/conformance.py
 fRun "c"           fRunC
 fRun "c++ veneer"  fRunCxx
 fRun "c oom hook"  fRunOom
+fRun "c cli argv"  fRunCcli
 ## The installers' PATH handling needs a real registry, which only exists here:
 ## it edits and restores the runner's own Environment keys, so it stays off
 ## every other host.

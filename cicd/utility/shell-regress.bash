@@ -102,22 +102,125 @@ fi
 
 ##	20260830b item 12: nothing set the modes on a system install, and sudo keeps
 ##	the caller's umask, so under 077 the tree and the launcher came out 0700 and
-##	only root could run what had just been installed for everyone. Staged the
-##	way the installer stages it, under that umask.
-eval "$(sed -n '/^fWidenModes()/,/^}/p' "${repoDir}/install.bash")"
+##	only root could run what had just been installed for everyone. 20260901b
+##	item 16: the widening covered the install root alone, and a man1 directory
+##	the installer had to create stayed root-only. The installer's own lay-down
+##	step runs here on a staged payload, under that umask, into a sandbox whose
+##	bin and man1 directories do not exist yet.
+eval "$(sed -n '/^fWidenModes()/,/^}/p;/^fTopMissing()/,/^}/p;/^fLayDown()/,/^}/p' "${repoDir}/install.bash")"
 (
 	umask 077
-	mkdir -p "${tmpDir}/inst/code"
-	printf 'bin\n'  > "${tmpDir}/inst/shcl";      chmod 700 "${tmpDir}/inst/shcl"
-	printf 'data\n' > "${tmpDir}/inst/code/lib.rs"
+	mkdir -p "${tmpDir}/stage/code" "${tmpDir}/stage/scripts" "${tmpDir}/stage/man" "${tmpDir}/stage/completions" "${tmpDir}/sys/usr/local/share"
+	printf 'bin\n'  > "${tmpDir}/stage/shcl";      chmod 700 "${tmpDir}/stage/shcl"
+	printf 'data\n' > "${tmpDir}/stage/code/lib.rs"
+	printf 'data\n' > "${tmpDir}/stage/scripts/shcl.bash"
+	printf 'man\n'  > "${tmpDir}/stage/man/shcl.1"
+	printf 'comp\n' > "${tmpDir}/stage/completions/shcl.bash"
+	## The installer's own globals, as the lifted function reads them.
+	# shellcheck disable=SC2034
+	asroot="" tmp="${tmpDir}/stage" dest="${tmpDir}/sys/opt/shcl" link="${tmpDir}/sys/usr/local/bin/shcl"
+	# shellcheck disable=SC2034
+	manlink="${tmpDir}/sys/usr/local/share/man/man1/shcl.1" target=system have_dropins=1 have_docs=1
+	fLayDown
 )
-fWidenModes "" "${tmpDir}/inst"
 while IFS= read -r row; do
 	case "${row}" in
-		"755 ${tmpDir}/inst"|"755 ${tmpDir}/inst/code"|"755 ${tmpDir}/inst/shcl"|"644 ${tmpDir}/inst/code/lib.rs") ;;
+		"755 d "*|"755 f ${tmpDir}/sys/opt/shcl/shcl"|"644 f "*|"777 l "*) ;;
 		*) fBad "install.bash left a system install unreadable: ${row}" ;;
 	esac
-done < <(find "${tmpDir}/inst" -printf '%m %p\n' | sort)
+done < <(find "${tmpDir}/sys/opt" "${tmpDir}/sys/usr/local/bin" "${tmpDir}/sys/usr/local/share/man" -printf '%m %y %p\n' | sort)
+[[ -L "${tmpDir}/sys/usr/local/share/man/man1/shcl.1" ]] || fBad "install.bash did not link the man page"
+
+##	20260901b item 18: the "not on your PATH" note compared strings against
+##	`:dir:`, so a PATH element written with a trailing slash was not seen.
+eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
+(
+	PATH="/usr/bin:${tmpDir}/pbin/:/bin"
+	fOnPath "${tmpDir}/pbin"  || fBad "install.bash: a PATH element with a trailing slash was not seen"
+	fOnPath "${tmpDir}/pbin/" || fBad "install.bash: a directory asked for with a trailing slash was not seen"
+	fOnPath "${tmpDir}/pbi"   && fBad "install.bash: a PATH prefix was taken for the directory"
+	fOnPath "${tmpDir}/pbin/x" && fBad "install.bash: a deeper directory was taken for a PATH element"
+	exit 0
+)
+
+##	20260901b item 17: sign-release.bash wrote the signature first and checked
+##	the key after, so a run with the wrong key failed and left a .sig behind
+##	that looked finished; and nothing checked the sums file's name against the
+##	version, or its entries against the files. A throwaway key stands in for
+##	the wrong one, and every refusal must leave no .sig.
+if command -v openssl >/dev/null 2>&1; then
+	sver="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "${repoDir}/source/rust/Cargo.toml" | head -1)"
+	openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${tmpDir}/wrong.pem" 2>/dev/null
+	fSignRun(){   ## fSignRun DIR: run the signer on DIR with the throwaway key; stderr in signOut
+		signOut="$(bash "${repoDir}/cicd/utility/sign-release.bash" --key "${tmpDir}/wrong.pem" --dir "$1" --no-tag-check 2>&1 || true)"
+	}
+	## Right name, right sums, wrong key: refused on the key, nothing written.
+	mkdir -p "${tmpDir}/sign1"; printf 'bin\n' > "${tmpDir}/sign1/shcl-${sver}-linux-x86_64"
+	(cd "${tmpDir}/sign1" && sha256sum "shcl-${sver}-linux-x86_64" > "shcl-${sver}-sha256sums.txt")
+	fSignRun "${tmpDir}/sign1"
+	[[ "${signOut}" == *"not this key"* ]] || fBad "sign-release.bash did not refuse the wrong key: ${signOut@Q}"
+	[[ ! -e "${tmpDir}/sign1/shcl-${sver}-sha256sums.txt.sig" ]] || fBad "sign-release.bash left a .sig behind after refusing the key"
+	## Stale sums: an entry that no longer matches its file.
+	mkdir -p "${tmpDir}/sign2"; cp "${tmpDir}/sign1/"* "${tmpDir}/sign2/"; printf 'rebuilt\n' > "${tmpDir}/sign2/shcl-${sver}-linux-x86_64"
+	fSignRun "${tmpDir}/sign2"
+	[[ "${signOut}" == *"does not match the files"* ]] || fBad "sign-release.bash signed a stale sums file: ${signOut@Q}"
+	[[ ! -e "${tmpDir}/sign2/shcl-${sver}-sha256sums.txt.sig" ]] || fBad "sign-release.bash left a .sig behind after a stale sums file"
+	## A sums file from another version.
+	mkdir -p "${tmpDir}/sign3"; printf 'bin\n' > "${tmpDir}/sign3/shcl-0.0.1-linux-x86_64"
+	(cd "${tmpDir}/sign3" && sha256sum "shcl-0.0.1-linux-x86_64" > "shcl-0.0.1-sha256sums.txt")
+	fSignRun "${tmpDir}/sign3"
+	[[ "${signOut}" == *"is not the sums file for ${sver}"* ]] || fBad "sign-release.bash signed a sums file for another version: ${signOut@Q}"
+	[[ ! -e "${tmpDir}/sign3/shcl-0.0.1-sha256sums.txt.sig" ]] || fBad "sign-release.bash left a .sig behind after a misnamed sums file"
+else
+	echo "shell-regress: openssl not installed - signing rows skipped"
+fi
+
+##	20260901b item 20: flame-report.py took any file with a sample count and one
+##	frame for a whole flamegraph, so a profile cut off mid-write reported a
+##	fraction of itself at exit 0 and recorded the marker; a row height other
+##	than the constant it assumed double-counted; a non-UTF-8 file was a
+##	traceback. Three frames are a whole graph; a graph missing the frame
+##	between a leaf and the root, one cut off before its closing tag, and
+##	random bytes must each skip at 2.
+fFlame(){   ## fFlame FILE STEP FRAMES...: a flamegraph of 100 samples with rows STEP apart
+	local file="$1" step="$2"; shift 2
+	{
+		printf '<svg total_samples="100">\n'
+		printf '<title>all (100 samples, 100%%)</title><rect x="0" y="%s" fg:x="0" fg:w="100"/>\n' "$((step * 3))"
+		for fr in "$@"; do
+			IFS='|' read -r fname fx fy fw <<<"${fr}"
+			printf '<title>%s (%s samples)</title><rect x="0" y="%s" fg:x="%s" fg:w="%s"/>\n' "${fname}" "${fw}" "$((step * fy))" "${fx}" "${fw}"
+		done
+		printf '</svg>\n'
+	} > "${file}"
+}
+mkdir -p "${tmpDir}/flame"
+fFlame "${tmpDir}/flame/flame_20260101-000000_whole.svg" 16 'shcl::Parser::parse|0|2|60' 'shcl::Document::to_canonical|60|2|40' 'shcl::scan_path|0|1|10'
+fFlame "${tmpDir}/flame/flame_20260101-000000_tall.svg"  24 'shcl::Parser::parse|0|2|60' 'shcl::Document::to_canonical|60|2|40' 'shcl::scan_path|0|1|10'
+fFlame "${tmpDir}/flame/flame_20260101-000000_gap.svg"   16 'shcl::Document::to_canonical|60|2|40' 'shcl::scan_path|0|1|10'
+head -c 200 "${tmpDir}/flame/flame_20260101-000000_whole.svg" > "${tmpDir}/flame/flame_20260101-000000_cut.svg"
+head -c 1000 /dev/urandom > "${tmpDir}/flame/flame_20260101-000000_junk.svg"
+fFlameRun(){ flameRc=0; flameOut="$(python3 "${repoDir}/cicd/utility/flame-report.py" --file "$1" 2>&1)" || flameRc=$?; }
+fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
+[[ "${flameRc}" == 0 && "${flameOut}" == *"parse (tokenize/merge/diags) .:  60.0%"* ]] || fBad "flame-report.py misread a whole graph (rc ${flameRc}): ${flameOut@Q}"
+fFlameRun "${tmpDir}/flame/flame_20260101-000000_tall.svg"
+[[ "${flameRc}" == 0 && "${flameOut}" == *"parse (tokenize/merge/diags) .:  60.0%"* && "${flameOut}" == *"other ........................:   0.0%"* ]] || fBad "flame-report.py misread a graph with a different row height (rc ${flameRc}): ${flameOut@Q}"
+for bad in gap cut junk; do
+	fFlameRun "${tmpDir}/flame/flame_20260101-000000_${bad}.svg"
+	[[ "${flameRc}" == 2 ]] || fBad "flame-report.py accepted a ${bad} graph (rc ${flameRc}): ${flameOut@Q}"
+	[[ "${flameOut}" != *Traceback* ]] || fBad "flame-report.py tracebacked on a ${bad} graph"
+done
+
+##	20260901b item 21: lint-report.bash counted the `-D warnings` in the clippy
+##	command line the pre-push gate's nested run echoes as a warning, so every
+##	run that pushed to dev read as one finding. A real clippy warning and a
+##	cppcheck one still count; the two echoed command lines do not.
+printf 'Lint ...........: cargo clippy --all-targets -- -D warnings\nLint ...........: cppcheck --enable=warning,portability src.c\nOK: lint\n' > "${tmpDir}/run_20260101-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260101-000000.log" 2>&1 || true)"
+[[ "${lintOut}" == "CLEAN "* ]] || fBad "lint-report.bash counted an echoed command line as a warning: ${lintOut@Q}"
+printf 'warning: unused variable: x\n --> src/main.rs:1:1\nsrc.c:12:3: warning: uninitialized variable [uninitvar]\n' >> "${tmpDir}/run_20260101-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260101-000000.log" 2>&1 || true)"
+[[ "${lintOut}" == "FLAG "*"(2 warning line(s))"* ]] || fBad "lint-report.bash missed a real warning: ${lintOut@Q}"
 
 ##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
 ##	release" verbatim, so a patch back-ported to an older line after a newer one

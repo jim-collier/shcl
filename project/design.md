@@ -319,6 +319,12 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - It was decided that merge adopts the parser's own empty-fill rule, so a merge and a parse of the concatenation agree. The fill is limited to raw blocks because that is the limit of the parser's rule: a valued instance still appends.
 
+**A float is written with the fewest digits that read back, and an exact tie between two such spellings rounds to even.** Shortest-round-trip formatters agree on every double except two cases, and both had leaked into the output: at a power of two the rounding interval is lopsided, so the closest short spelling can fall outside it while its neighbor reads back, and on an exact tie between two spellings of the shortest length Rust's formatter rounds away from zero where Go's, Python's and glibc's round to even.
+
+- We decided on round to even: it is IEEE 754's own tie rule, what three of the four bindings already did, and what `repr` in Python and `strconv` in Go print, so a value read from another tool's output spells the same here. The reference takes the correctly rounded spelling of the shortest length whenever it reads back, and keeps its own shortest spelling only when it does not.
+
+- C tries the last-digit neighbors before adding a digit, which is what the shortest-digits algorithms find at a power of two. Every power of two and a fixed set of random doubles go through a float write in every binding in the cross-binding check, so a formatter that drifts on either case is caught there.
+
 ### Saving a file
 
 - **A save publishes a new file in the old one's place.** Write a temp file beside the target, then move it over. That is what makes an interrupted save unable to truncate a config, and it is also the source of every limitation below: the bytes are new, so anything the old file carried outside its contents has to be deliberately carried across or it is gone.

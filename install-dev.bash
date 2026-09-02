@@ -287,8 +287,17 @@ echo
 echo "done. The gate is:  cicd/cicd.bash --ci"
 echo "(rust-toolchain.toml pins the toolchain; the first cargo run fetches it.)"
 (( ${#hints[@]} )) && echo "note: the hinted packages above are still missing."
+## By element, with a trailing slash ignored on either side: the shell
+## resolves `bin/` fine, and a plain string compare did not.
+fOnPath(){
+	local dir="${1%/}" elem
+	while IFS= read -r -d: elem || [[ -n "${elem}" ]]; do
+		[[ "${elem%/}" == "${dir}" ]] && return 0
+	done <<<"${orig_path}:"
+	return 1
+}
 for bindir in "${HOME}/.cargo/bin" "${gobin}"; do
-	[[ -n "${bindir}" && -d "${bindir}" && ":${orig_path}:" != *":${bindir}:"* ]] && echo "note: ${bindir} is not on your PATH - the tools installed there need it to be."
+	[[ -n "${bindir}" && -d "${bindir}" ]] && ! fOnPath "${bindir}" && echo "note: ${bindir} is not on your PATH - the tools installed there need it to be."
 done
 echo
 exit 0
