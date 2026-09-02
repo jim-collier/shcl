@@ -3650,35 +3650,7 @@ def suppress_declared_repeats(schema: Document, diags: list[Diagnostic]) -> None
 	consumers were hand-rolling - which errs toward quiet, for a hint. Used by
 	`check --schema` and load_and_validate; call it wherever doc diagnostics
 	and a schema meet. Mutates diags in place."""
-	# Top-level fields plus every fragment's fields: a repeat declared inside
-	# a mounted shape disavows the hint the same way.
-	groups = [("field", schema.instances("field"))]
-	for k in range(schema.count("fragment")):
-		base = f"fragment[#{k}].field"
-		groups.append((base, schema.instances(base)))
-	names = []
-	for base, paths in groups:
-		for i, p in enumerate(paths):
-			# repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
-			# that matters here is the last one.
-			rep = schema.read_int_array(f"{base}[#{i}].repeat")
-			if rep.status != Status.Good:
-				continue
-			if not rep.value or rep.value[-1] <= 1:
-				continue
-			# Leaf name from the parsed path, not a re-split of its text: a
-			# quoted last segment may contain dots (`a."b.c"`). The scanner
-			# folds the name; the doc side stores names folded too.
-			try:
-				segments, _ = _scan_lookup(p)
-			except _PathError:
-				continue
-			if not segments:
-				continue
-			seg = segments[-1]
-			if seg.star:
-				continue   # name wildcard: no single leaf name to disavow
-			names.append(seg.name)
+	names = _disavowed_names(schema, lambda c: c.repeat is not None and c.repeat[1] > 1)
 	if not names:
 		return
 	heads = [_h001_head(n) for n in names]
@@ -3940,6 +3912,25 @@ def _set_read_only(path, on):
 		pass
 
 
+def _disavowed_names(schema, pick):
+	"""Leaf names of the schema entries `pick` accepts, top-level fields and
+	every fragment's fields alike. Read through the built schema, so the names
+	are the ones validation will use (escapes resolved) and an entry whose key
+	faulted disavows nothing."""
+	sdef, _ = _build_schema(schema)
+	names = []
+	lists = [sdef.cons] + list(sdef.frags.values())
+	for cons in lists:
+		for c in cons:
+			if not pick(c) or not c.segs:
+				continue
+			# Name wildcard: no single leaf name to disavow.
+			seg = c.segs[-1]
+			if not seg.star:
+				names.append(seg.name)
+	return names
+
+
 def _h002_head(name):
 	"""The single H002 wording site: the merge hint and the schema suppressor
 	both come here, same discipline as _h001_head."""
@@ -3953,26 +3944,7 @@ def suppress_declared_reopens(schema: Document, diags: list[Diagnostic]) -> None
 	H001 suppressor, and it errs toward quiet, for a hint. Used by
 	`check --schema` and load_and_validate; call it wherever doc diagnostics
 	and a schema meet. Mutates diags in place."""
-	groups = [("field", schema.instances("field"))]
-	for k in range(schema.count("fragment")):
-		base = f"fragment[#{k}].field"
-		groups.append((base, schema.instances(base)))
-	names = []
-	for base, paths in groups:
-		for i, p in enumerate(paths):
-			re = schema.read_bool(f"{base}[#{i}].reopen")
-			if re.status != Status.Good or not re.value:
-				continue
-			try:
-				segments, _ = _scan_lookup(p)
-			except _PathError:
-				continue
-			if not segments:
-				continue
-			seg = segments[-1]
-			if seg.star:
-				continue   # name wildcard: no single leaf name to disavow
-			names.append(seg.name)
+	names = _disavowed_names(schema, lambda c: c.reopen)
 	if not names:
 		return
 	heads = [_h002_head(n) for n in names]
@@ -4522,7 +4494,7 @@ _SCHEMA_TYPES = (
 class _Constraint:
 	__slots__ = (
 		"path", "segs", "ty", "required", "allowed",
-		"min_i", "max_i", "min_f", "max_f", "repeat",
+		"min_i", "max_i", "min_f", "max_f", "repeat", "reopen",
 		"inherits", "inherits_line",
 		"desc", "default_text",
 	)
@@ -4538,6 +4510,7 @@ class _Constraint:
 		self.min_f = None
 		self.max_f = None
 		self.repeat = None        # (lo, hi)
+		self.reopen = False       # H002 suppressor only; validation ignores it
 		self.inherits = None      # fragment mounted at this path (subtree shape)
 		self.inherits_line = 0    # schema line of the `inherits` key, for V095
 		# Generator-only (`shcl init`): validation ignores both.
@@ -4554,6 +4527,7 @@ class _Constraint:
 		cc.min_f = self.min_f
 		cc.max_f = self.max_f
 		cc.repeat = self.repeat
+		cc.reopen = self.reopen
 		cc.inherits = self.inherits
 		cc.inherits_line = self.inherits_line
 		cc.desc = self.desc
@@ -4699,13 +4673,14 @@ def _parse_field(schema, f, faults):
 			else:
 				_vdiag(faults, kid.line, "V092", "bad schema constraint 'required'")
 		elif kid.name == "reopen":
-			# Consumed by the H002 suppressor (which reads the schema document
-			# directly); validation itself ignores it, but a bad value still
-			# faults so a typo cannot silently disavow nothing.
+			# Consumed by the H002 suppressor; validation itself ignores it,
+			# but a bad value still faults so a typo cannot silently disavow
+			# nothing.
 			t = _single_text(kid.value)
 			b = _parse_bool_text(t, Strictness.Standard) if t is not None else None
 			if b is not None and not reopen_seen:
 				reopen_seen = True
+				c.reopen = b
 			else:
 				_vdiag(faults, kid.line, "V092", "bad schema constraint 'reopen'")
 		elif kid.name == "allowed":
