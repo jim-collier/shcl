@@ -4304,10 +4304,12 @@ func (d *Document) Merge(over *Document) {
 	d.lost += over.lost
 	d.overlay(root, over, root)
 	// Layers commonly share a footer; keeping one copy of each keeps a
-	// stack of files from repeating it once per layer.
+	// stack of files from repeating it once per layer. Only the lines
+	// already here count: a layer's own repeats are its content.
+	had := len(d.orphans)
 	for _, o := range over.orphans {
 		seen := false
-		for _, e := range d.orphans {
+		for _, e := range d.orphans[:had] {
 			if e.text == o.text {
 				seen = true
 				break
@@ -4351,13 +4353,14 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	overKids := over.arena[overParent].children
 	// Over side: name -> node bucket, in first-appearance order.
 	var order []string
-	groups := map[string][]int{}
-	for _, k := range overKids {
+	type overKid struct{ pos, node int }
+	groups := map[string][]overKid{}
+	for pos, k := range overKids {
 		n := over.arena[k].name
 		if _, seen := groups[n]; !seen {
 			order = append(order, n)
 		}
-		groups[n] = append(groups[n], k)
+		groups[n] = append(groups[n], overKid{pos, k})
 	}
 	// Base side, one pass: does the name have a container instance, and
 	// which child carries each (name, key) - every key computed once. The
@@ -4379,15 +4382,16 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	// mention, not a leaf, so it falls through to the instance merge: a
 	// bare section header in a higher layer never wipes the subtree below.
 	// Replaced groups splice in the rebuild; everything appended (unmatched
-	// instances, and replaced names base never had) keeps processing order.
+	// instances, and replaced names base never had) keeps the over file's
+	// order, which the per-name pass here would otherwise regroup.
 	replace := map[string][]int{}
-	var appended []int
+	var appended []overKid
 	emptyKey := (&value{kind: vEmpty}).key()
 	for _, name := range order {
 		group := groups[name]
 		overLeafy := true
 		for _, k := range group {
-			if len(over.arena[k].children) > 0 {
+			if len(over.arena[k.node].children) > 0 {
 				overLeafy = false
 				break
 			}
@@ -4396,15 +4400,18 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 		if overLeafy && !baseContainer {
 			clones := make([]int, len(group))
 			for i, ok := range group {
-				clones[i] = d.cloneSubtree(over, ok, baseParent)
+				clones[i] = d.cloneSubtree(over, ok.node, baseParent)
 			}
 			if inBase {
 				replace[name] = clones
 			} else {
-				appended = append(appended, clones...)
+				for i, ok := range group {
+					appended = append(appended, overKid{ok.pos, clones[i]})
+				}
 			}
 		} else {
-			for _, ok := range group {
+			for _, k := range group {
+				ok := k.node
 				okey := over.arena[ok].value.key()
 				target, found := byKey[[2]string{name, okey}]
 				// A raw block in the higher layer fills a same-named empty
@@ -4429,7 +4436,7 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 					d.overlay(target, over, ok)
 				} else {
 					c := d.cloneSubtree(over, ok, baseParent)
-					appended = append(appended, c)
+					appended = append(appended, overKid{k.pos, c})
 				}
 			}
 		}
@@ -4453,7 +4460,10 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 			newKids = append(newKids, b)
 		}
 	}
-	newKids = append(newKids, appended...)
+	sort.Slice(appended, func(i, j int) bool { return appended[i].pos < appended[j].pos })
+	for _, k := range appended {
+		newKids = append(newKids, k.node)
+	}
 	d.arena[baseParent].children = newKids
 }
 

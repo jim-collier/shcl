@@ -4046,9 +4046,11 @@ impl Document {
 		self.lost += over.lost;
 		self.overlay(ROOT, over, ROOT);
 		// Layers commonly share a footer; keeping one copy of each keeps a
-		// stack of files from repeating it once per layer.
+		// stack of files from repeating it once per layer. Only the lines
+		// already here count: a layer's own repeats are its content.
+		let had = self.orphans.len();
 		for o in &over.orphans {
-			if !self.orphans.iter().any(|e| e.text == o.text) {
+			if !self.orphans[..had].iter().any(|e| e.text == o.text) {
 				self.orphans.push(o.clone());
 			}
 		}
@@ -4082,8 +4084,8 @@ impl Document {
 		let over_kids = &over.arena[over_parent].children;
 		// Over side: name -> node bucket, in first-appearance order.
 		let mut order: Vec<String> = Vec::new();
-		let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
-		for &k in over_kids {
+		let mut groups: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+		for (pos, &k) in over_kids.iter().enumerate() {
 			let n = &over.arena[k].name;
 			groups
 				.entry(n.clone())
@@ -4091,7 +4093,7 @@ impl Document {
 					order.push(n.clone());
 					Vec::new()
 				})
-				.push(k);
+				.push((pos, k));
 		}
 		// Base side, one pass: does the name have a container instance, and
 		// which child carries each (name, key) - every key computed once. The
@@ -4111,27 +4113,28 @@ impl Document {
 		// mention, not a leaf, so it falls through to the instance merge: a
 		// bare section header in a higher layer never wipes the subtree below.
 		// Replaced groups splice in the rebuild; everything appended (unmatched
-		// instances, and replaced names base never had) keeps processing order.
+		// instances, and replaced names base never had) keeps the over file's
+		// order, which the per-name pass here would otherwise regroup.
 		let mut replace: HashMap<String, Vec<usize>> = HashMap::new();
-		let mut appended: Vec<usize> = Vec::new();
+		let mut appended: Vec<(usize, usize)> = Vec::new();
 		let empty_key = Value::Empty.key();
 		for name in &order {
 			let group = &groups[name];
-			let over_leafy = group.iter().all(|&k| over.arena[k].children.is_empty());
+			let over_leafy = group.iter().all(|&(_, k)| over.arena[k].children.is_empty());
 			let in_base = has_container.contains_key(name);
 			let base_container = has_container.get(name).copied().unwrap_or(false);
 			if over_leafy && !base_container {
-				let clones: Vec<usize> = group
+				let clones: Vec<(usize, usize)> = group
 					.iter()
-					.map(|&ok| self.clone_subtree(over, ok, base_parent))
+					.map(|&(pos, ok)| (pos, self.clone_subtree(over, ok, base_parent)))
 					.collect();
 				if in_base {
-					replace.insert(name.clone(), clones);
+					replace.insert(name.clone(), clones.into_iter().map(|(_, c)| c).collect());
 				} else {
 					appended.extend(clones);
 				}
 			} else {
-				for &ok in group {
+				for &(pos, ok) in group {
 					let okey = over.arena[ok].value.key();
 					// A raw block in the higher layer fills a same-named empty
 					// binding below, exactly as a fence line fills one inside a
@@ -4156,7 +4159,7 @@ impl Document {
 						}
 						None => {
 							let c = self.clone_subtree(over, ok, base_parent);
-							appended.push(c);
+							appended.push((pos, c));
 						}
 					}
 				}
@@ -4181,7 +4184,8 @@ impl Document {
 				None => newkids.push(b),
 			}
 		}
-		newkids.extend(appended.iter().copied());
+		appended.sort_by_key(|&(pos, _)| pos);
+		newkids.extend(appended.iter().map(|&(_, c)| c));
 		self.arena[base_parent].children = newkids;
 	}
 
