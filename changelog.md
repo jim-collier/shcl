@@ -72,6 +72,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A line whose indent matches no open level (`E012`) and a `*` line with no space after it (`E013`) now hold their indent level, so what is written under them is skipped with them (`E018`) instead of attaching one level up, a fence line at a bad indent takes its whole body with it instead of parsing it as top-level bindings, and a second line at the same bad indent is refused the same way rather than binding.
+
+- A value after an index selector on the last segment (`a[0]: 2`) was dropped with no diagnostic and no lost count, so an in-place write deleted it at exit 0. It is reported (`E002`) and counted as lost now, as a value after a value selector always was.
+
+- A fragment mounted at one node by two schema paths reported every fault under it twice.
+
+- The `H001`/`H002` hints a schema disavows were matched on the schema's raw text, so a field path with an escaped quote in it kept its hint, and a `repeat` or `reopen` that faulted (`repeat: 0x2`, three elements) still silenced it. Both now go by the built schema.
+
+- A merge appended a layer's unmatched nodes grouped by name instead of in that file's order, and dropped a footer comment the layer repeated itself. Merging onto an empty document is the identity again.
+
+- The did-you-mean suggestion cost a full edit-distance table per name pair, so a schema and document with long field names took seconds to minutes to check. The distance is capped at the threshold and computed within that band, so it is linear in the name length.
+
+- Every binding spells a float the same way. C printed 17 digits for 46 exact powers of two where 16 read back, and the reference rounded an exact tie between two shortest spellings away from zero where Go, Python and C round to even (`2.9802322387695312e-08` came back as `...313` from one and `...312` from the other three). Ties round to even everywhere now.
+
+- On Windows the CLI aborted when the program reading its output closed early (`fmt` piped into `more`); it exits quietly now, as it dies quietly of SIGPIPE elsewhere.
+
+- The C CLI on Windows took its arguments in the active code page, so a path outside it was refused and a name the page best-fits (`ā.shcl` to `a.shcl`) reached the wrong file, `--write` included. It reads the wide command line now, and the header says paths are UTF-8 on every platform. A failed publish on Windows also left errno at 0, so the CLI printed `Success` beside its failure exit; the Win32 error is mapped onto errno now.
+
+- The `.deb` and `.rpm` declared no dependencies, so they installed on a system whose glibc is older than the binary needs and the binary then failed to load. They declare the glibc floor and libgcc read off the binary, and the deb carries its copyright and changelog files.
+
+- A system install under a tight umask left a bin or man1 directory the installer had to create root-only; the "not on your PATH" note fired when the directory was on PATH with a trailing slash.
+
+- The C++ veneer's `to_canonical()` never gave the read memory back, so a save loop grew without bound.
+
+- Go's `Diagnostics()` and both suppress filters could hand back a slice sharing the document's own backing array.
+
 - A file of lines with no colon at a constant indent parsed in quadratic time - a 1 MB plain text file took half a minute, and neither `ParseLimited` cap could stop it because no nodes or elements were built. Each refused line is kept as trivia, and every following line rewalked the whole retained list. The list is walked only as far as an incoming line could change it now, so the parse is linear again.
 
 - `ParseLimited`'s element cap bounded nothing for an inline array: the line was built in full and refused afterwards, so 9 MB of input peaked at the same 256 MB with the cap as without, and in C the refused array stayed held for the document's lifetime. The count is taken before anything splits the value now, so a refused line costs its text and no more.
