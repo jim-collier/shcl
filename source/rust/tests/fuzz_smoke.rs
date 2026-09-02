@@ -275,7 +275,8 @@ fn merge_never_panics_and_stays_fixpoint() {
 			empty.to_canonical(),
 			Document::parse(&b).to_canonical(),
 			"merge onto empty base is not the identity at iteration {} for:\n{}",
-			i, b
+			i,
+			b
 		);
 	}
 }

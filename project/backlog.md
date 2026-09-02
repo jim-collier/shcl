@@ -126,10 +126,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-190900
 		- Closed: 20260902-121500
 
-	- 🔘 Item 11: the distributed CLI aborts on Windows when the program reading its output closes early.
+	- ✅ Item 11: the distributed CLI aborts on Windows when the program reading its output closes early.
 		- Reproduced under wine: `fmt` of a 40k-key file piped through `head` panics with "failed printing to stdout: Pipe not connected", and the release build turns the panic into an abort. Go and C exit 0 silently there, and all three are silent on Linux.
 		- Cause: the broken-pipe handling restores the default signal action and is compiled only on unix. Windows has no SIGPIPE; the write returns an error and the next print panics. Piping into `more` or `Select-Object -First` is ordinary use.
+		- Fixed: every stdout write in the CLI goes through one pair of macros that exit 0 quietly when the write fails, which is what Go and C do on windows. unix is unchanged: the SIGPIPE default is still restored and the signal ends the process before the error branch is reached.
+		- Pinned by `tests/cli_pipe.rs`, which runs the built CLI with a reader that closes after one byte and requires an empty stderr and a clean exit (SIGPIPE or 0 on unix, 0 elsewhere). It runs on the hosted windows job; on the windows build it fails on the old code with the panic text on stderr and passes now.
 		- Opened: 20260901-191000
+		- Closed: 20260902-124500
 
 	- 🔘 Item 12: the C CLI on Windows takes its arguments in the active code page and checks them as UTF-8, so a non-ASCII path is refused, and a name the code page best-fits maps to a different file, including for `--write`.
 		- Reproduced under wine with code page 1252. `café.shcl` is refused as bad encoding. With `ā.shcl` and `a.shcl` both present, `set --write` on the first exits 0 and rewrites the second.

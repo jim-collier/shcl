@@ -4160,7 +4160,9 @@ impl Document {
 		let empty_key = Value::Empty.key();
 		for name in &order {
 			let group = &groups[name];
-			let over_leafy = group.iter().all(|&(_, k)| over.arena[k].children.is_empty());
+			let over_leafy = group
+				.iter()
+				.all(|&(_, k)| over.arena[k].children.is_empty());
 			let in_base = has_container.contains_key(name);
 			let base_container = has_container.get(name).copied().unwrap_or(false);
 			if over_leafy && !base_container {
@@ -6059,7 +6061,10 @@ fn edit_distance(a: &str, b: &str, cap: usize) -> usize {
 		let mut row_min = cur[0];
 		for j in lo..=hi {
 			let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-			cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost).min(inf);
+			cur[j] = (prev[j] + 1)
+				.min(cur[j - 1] + 1)
+				.min(prev[j - 1] + cost)
+				.min(inf);
 			row_min = row_min.min(cur[j]);
 		}
 		if hi < b.len() {
