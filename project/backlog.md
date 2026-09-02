@@ -195,10 +195,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-191800
 		- Closed: 20260902-154500
 
-	- 🔘 Item 20: `flame-report.py` accepts a truncated or reshaped profile as a good one, and tracebacks on a non-UTF-8 file.
+	- ✅ Item 20: `flame-report.py` accepts a truncated or reshaped profile as a good one, and tracebacks on a non-UTF-8 file.
 		- Reproduced: a profile cut off at 35 KB reports attribution summing to 9% at exit 0, and one with the row height changed reports 173% parse, both with the seen marker written. Random bytes give a decode traceback instead of the skip path.
 		- Cause: any file with a sample count and one frame passes, and the row step is a hard-coded constant that nothing verifies.
+		- Fixed: the report skips at exit 2, with no marker written, unless the file ends in `</svg>`, its rows are evenly spaced, exactly one root frame spans every sample, and the self times sum to the sample count. The row height is read off the rows instead of assumed, and the file is decoded with replacement so bytes that are not UTF-8 skip like any other bad input.
+		- Pinned by `shell-regress.bash` with synthetic graphs: a whole one and one at another row height report 60/40 with nothing in `other`; a graph missing the frame between a leaf and the root, one cut off before its closing tag, and random bytes each skip at 2 with no traceback. The old script accepted the first two and tracebacked on the third.
 		- Opened: 20260901-191900
+		- Closed: 20260902-160000
 
 	- 🔘 Item 21: `lint-report.bash` flags the nested pre-push gate's own plan line.
 		- Reproduced on today's log. The line it reports is the `-D warnings` in the clippy command the pre-push hook echoes during the publish stage, which is why only runs that push to dev or main show a warning. The cppcheck `--enable=warning` echo is already excluded; this one is not.
