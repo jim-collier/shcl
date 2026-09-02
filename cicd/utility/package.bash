@@ -32,6 +32,7 @@ meDir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 fEcho(){ echo "[ $* ]"; }
 fWarn(){ fEcho "WARNING: $*"; }
+fDie(){ echo "package: $*" >&2; exit 1; }
 
 ##	NSIS wants four dot-separated integers where the project version can carry a
 ##	prerelease tail. Same rule the Rust build script uses for the executable's
@@ -68,6 +69,25 @@ find "${payload}" -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +
 
 built=0
 
+##	The deb's Depends and the rpm's Requires against the binary they carry:
+##	the glibc floor, libgcc when linked, and the Debian doc files.
+fCheckDeps(){
+	local stem="$1" glibc="$2" needGcc="$3" deps
+	deps="$(dpkg-deb -f "${stem}.deb" Depends)"
+	[[ "${deps}" == *"libc6 (>= ${glibc})"* ]] || fDie "$(basename "${stem}").deb: Depends ${deps@Q} lacks libc6 (>= ${glibc})"
+	if [[ -n "${needGcc}" && "${deps}" != *libgcc-s1* ]]; then fDie "$(basename "${stem}").deb: Depends ${deps@Q} lacks libgcc-s1"; fi
+	## Into a variable first: grep -q quitting early would kill the tar behind
+	## dpkg-deb with SIGPIPE and fail the pipeline for the wrong reason.
+	local listing; listing="$(dpkg-deb -c "${stem}.deb")"
+	grep -q ' ./usr/share/doc/shcl/copyright$' <<<"${listing}" || fDie "$(basename "${stem}").deb: no copyright file"
+	grep -q ' ./usr/share/doc/shcl/changelog.gz$' <<<"${listing}" || fDie "$(basename "${stem}").deb: no changelog"
+	if command -v rpm >/dev/null 2>&1; then
+		deps="$(rpm -qp --requires "${stem}.rpm" 2>/dev/null)"
+		[[ "${deps}" == *"glibc >= ${glibc}"* ]] || fDie "$(basename "${stem}").rpm: Requires ${deps@Q} lacks glibc >= ${glibc}"
+		if [[ -n "${needGcc}" && "${deps}" != *libgcc* ]]; then fDie "$(basename "${stem}").rpm: Requires ${deps@Q} lacks libgcc"; fi
+	fi
+}
+
 ## Linux: .deb + .rpm per arch with a binary present. nfpm arch names are
 ## GOARCH-style; the artifact names carry the uname-style spelling. The config
 ## template is sed-rendered per build (nfpm won't expand env vars in src paths).
@@ -77,18 +97,28 @@ if command -v nfpm >/dev/null 2>&1; then
 	## formats want the man page compressed; -n keeps the timestamp and the
 	## original name out of the gzip header, so the same source gives the same
 	## bytes on every build.
-	mkdir -p "${payload}/man" "${payload}/completions"
+	mkdir -p "${payload}/man" "${payload}/completions" "${payload}/doc"
 	gzip -9 -n -c "${root}/source/man/shcl.1" > "${payload}/man/shcl.1.gz"
 	cp "${root}/source/completions/shcl.bash" "${root}/source/completions/_shcl" "${payload}/completions/"
-	chmod 644 "${payload}/man/shcl.1.gz" "${payload}"/completions/*
-	fPinMtime "${payload}/man" "${payload}/man/shcl.1.gz" "${payload}/completions" "${payload}"/completions/*
+	cp "${root}/license.md" "${payload}/doc/copyright"
+	gzip -9 -n -c "${root}/changelog.md" > "${payload}/doc/changelog.gz"
+	chmod 644 "${payload}/man/shcl.1.gz" "${payload}"/completions/* "${payload}"/doc/*
+	fPinMtime "${payload}/man" "${payload}/man/shcl.1.gz" "${payload}/completions" "${payload}"/completions/* "${payload}/doc" "${payload}"/doc/*
 	for pair in "x86_64|amd64" "arm64|arm64"; do
 		osarch="${pair%%|*}"; goarch="${pair#*|}"
 		bin="${artDir}/shcl-${ver}-linux-${osarch}"
 		[[ -f "${bin}" ]] || continue
 		fPinMtime "${bin}"
+		## The dependencies come off the binary: its newest GLIBC_ symbol
+		## version is the glibc floor, and libgcc is needed only when the
+		## dynamic section says so (the arm64 build links it statically).
+		glibc="$(objdump -T "${bin}" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)"
+		[[ -n "${glibc}" ]] || fDie "no GLIBC_ symbol version in ${bin}"
+		debGcc=""; rpmGcc=""
+		if readelf -d "${bin}" | grep -q 'NEEDED.*libgcc_s'; then debGcc=$'\n      - libgcc-s1'; rpmGcc=$'\n      - libgcc'; fi
 		sed -e "s|\${SHCL_VERSION}|${ver}|g" -e "s|\${SHCL_ARCH}|${goarch}|g" \
 		    -e "s|\${SHCL_BIN}|${bin}|g" -e "s|\${SHCL_PAYLOAD}|${payload}|g" \
+		    -e "s|\${SHCL_GLIBC}|${glibc}|g" -e "s|\${SHCL_DEB_LIBGCC}|${debGcc//$'\n'/\\n}|g" -e "s|\${SHCL_RPM_LIBGCC}|${rpmGcc//$'\n'/\\n}|g" \
 		    "${meDir}/../packaging/nfpm.yaml" > "${payload}/nfpm.yaml"
 		for fmt in deb rpm; do
 			out="${artDir}/shcl-${ver}-linux-${osarch}.${fmt}"
@@ -96,6 +126,9 @@ if command -v nfpm >/dev/null 2>&1; then
 			fEcho "OK: package: $(basename "${out}") ($(du -h --apparent-size "${out}" | cut -f1))"
 			built=$((built + 1))
 		done
+		## What went in has to match what the binary needs, or the package
+		## installs where the binary cannot run.
+		fCheckDeps "${artDir}/shcl-${ver}-linux-${osarch}" "${glibc}" "${debGcc:+1}"
 	done
 else
 	fWarn "nfpm not installed; .deb/.rpm skipped"
@@ -131,3 +164,5 @@ fi
 ##		- 2026-07-22: Created: nfpm deb/rpm + NSIS setup over the release artifact dir.
 ##		- 2026-08-29: Reproducible output: mtimes pinned to the commit time; man page
 ##		  and completions staged for the Linux packages only.
+##		- 2026-09-02: Dependencies read off the binary, Debian copyright and changelog
+##		  files, and a check of both against every package built.

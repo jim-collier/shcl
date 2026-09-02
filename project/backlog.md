@@ -158,10 +158,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-191300
 		- Closed: 20260902-140000
 
-	- 🔘 Item 15: the `.deb` and `.rpm` declare no dependencies, so they install cleanly on a system where the binary cannot run.
+	- ✅ Item 15: the `.deb` and `.rpm` declare no dependencies, so they install cleanly on a system where the binary cannot run.
 		- Reproduced with the pipeline's own packages: lintian reports undeclared ELF prerequisites and the rpm lists no requires. The binary needs glibc 2.34 and libgcc; on Debian 11 or RHEL 8 the package installs and `shcl` dies with a loader error, which is exactly what the installer's glibc check exists to prevent.
 		- Also from the same lintian run: no copyright file, no changelog, an unknown `License` field. Cheap to close together.
+		- Fixed: the packages declare what the binary links against, read off the binary at build time: its newest `GLIBC_` symbol version is the glibc floor (`libc6 (>= 2.34)` and `glibc >= 2.34` on x86_64, 2.30 on arm64), and `libgcc-s1` / `libgcc` join only when `libgcc_s` is in the dynamic section (x86_64 only; arm64 links it statically). The deb also carries `/usr/share/doc/shcl/copyright` (the license) and `changelog.gz`. lintian's two errors and the prerequisites warning are gone; the `License` field warning is nfpm's own and stays.
+		- Pinned by `package.bash` itself: after each build it reads the deb's Depends and the rpm's Requires back and fails unless they carry the floor it derived, libgcc when needed, and the two doc files. Against the 2.0.0 package it fails on the empty Depends.
 		- Opened: 20260901-191400
+		- Closed: 20260902-143000
 
 	- 🔘 Item 16: a system install under umask 077 still leaves the man directory root-only when the installer has to create it.
 		- Reproduced with the system paths redirected into a sandbox. The 20260830b fix widens the install root only; `man1` under `/usr/local/share/man` is created by a plain `mkdir` under the caller's umask and is not widened, and a fresh Debian does not have it.
