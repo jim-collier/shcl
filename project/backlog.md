@@ -147,7 +147,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Cause: the wide publish calls set the Win32 last error and nothing maps it to `errno`, against what the header promises.
 		- Fixed: a failed publish maps `GetLastError` onto errno (`EACCES` for a sharing or lock violation, `ENOENT`, `EEXIST`, `ENOSPC`, `EINVAL`, `EIO` for the rest), and the temp-file unlink on the failure path no longer overwrites the errno the failure left, on either platform.
 		- Pinned by a windows-only fixture in the C runner: a write over a target held open without delete sharing, and one to a device name, both fail with a non-zero errno. Fails on the old header, passes now.
-		- Note: wine's `strtod` (and mingw's `__mingw_strtod`) read `7.67844768714563e-239` one ulp high where glibc, UCRT and Python agree, so under wine the C runner fails corpus `080` in the float formatter's read-back test. The C binding is only as exact as its C runtime's `strtod`; the hosted job decides what real windows does.
+		- Note: wine's `strtod`, mingw's `__mingw_strtod` and the hosted windows runner's C runtime all read `7.67844768714563e-239` one ulp high where glibc and Python agree, which failed corpus `080` on the C runner there. The formatter's read-back test is now integer arithmetic on the double's rounding interval (`f64_interval` / `f64_reads_back`), agreeing with glibc on 20 million spellings, so the C spelling no longer depends on the libc. The parser's float reads still go through `strtod`; recorded as a deviation in `style-guide.md`.
 		- Opened: 20260901-191200
 		- Closed: 20260902-140000
 

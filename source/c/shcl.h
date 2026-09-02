@@ -4120,13 +4120,78 @@ shcl_str shcl_to_canonical(shcl_doc *d) {
 
 // --- format helpers + remaining public API ----------------------------------
 
+// Whether a decimal spelling reads back as exactly v, decided with integer
+// arithmetic rather than strtod: more than one C runtime (msvcrt, and wine's)
+// parses some 15-digit spellings one ulp off, and a spelling that only reads
+// back on a correct libc is not a spelling every binding agrees on. A double
+// is m * 2^e; a decimal d * 10^k reads back when it sits inside v's rounding
+// interval, half a spacing each way, except below a power of two where the
+// spacing halves. A midpoint reads back only when m is even (ties to even).
+// Both ends are scaled to integers by 2^S * 10^T once per value; a candidate
+// then costs one small multiply and a shift before the compare.
+typedef struct { uint32_t w[96]; int n; } ShclBig;
+static void big_set(ShclBig *b, uint64_t v) { memset(b, 0, sizeof *b); b->w[0] = (uint32_t)v; b->w[1] = (uint32_t)(v >> 32); b->n = b->w[1] ? 2 : (b->w[0] ? 1 : 0); }
+static void big_mul_small(ShclBig *b, uint32_t m) {
+	uint64_t carry = 0;
+	for (int i = 0; i < b->n; i++) { uint64_t t = (uint64_t)b->w[i] * m + carry; b->w[i] = (uint32_t)t; carry = t >> 32; }
+	if (carry && b->n < (int)(sizeof b->w / sizeof b->w[0])) b->w[b->n++] = (uint32_t)carry;
+}
+static void big_mul_pow10(ShclBig *b, int t) {
+	static const uint32_t p10[9] = { 1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u, 10000000u, 100000000u };
+	for (; t >= 9; t -= 9) big_mul_small(b, 1000000000u);
+	if (t > 0 && t < 9) big_mul_small(b, p10[t]);
+}
+static void big_shl(ShclBig *b, int bits) {
+	int limbs = bits / 32, cap = (int)(sizeof b->w / sizeof b->w[0]);
+	if (limbs && b->n) {
+		if (b->n + limbs > cap) limbs = cap - b->n;
+		memmove(b->w + limbs, b->w, (size_t)b->n * sizeof b->w[0]);
+		memset(b->w, 0, (size_t)limbs * sizeof b->w[0]);
+		b->n += limbs;
+	}
+	if (bits % 32) big_mul_small(b, 1u << (bits % 32));
+}
+static int big_cmp(const ShclBig *a, const ShclBig *b) {
+	if (a->n != b->n) return a->n < b->n ? -1 : 1;
+	for (int i = a->n; i-- > 0;) if (a->w[i] != b->w[i]) return a->w[i] < b->w[i] ? -1 : 1;
+	return 0;
+}
+typedef struct { ShclBig lo, hi; int S, T, even; } ShclF64Interval;
+// exp10 is the decimal exponent of v's 17-digit spelling: the smallest k any
+// shorter spelling can carry is exp10 - 16, which fixes T for all of them.
+static void f64_interval(double v, int exp10, ShclF64Interval *iv) {
+	uint64_t bits; memcpy(&bits, &v, sizeof bits);
+	int E = (int)((bits >> 52) & 0x7FF); uint64_t F = bits & 0xFFFFFFFFFFFFFull;
+	uint64_t m = E ? (F | (1ull << 52)) : F; int e = E ? E - 1075 : -1074;
+	int above = e - 1, below = (E > 1 && F == 0) ? e - 2 : e - 1;   // log2 of each half-width
+	iv->S = below < 0 ? -below : 0;
+	iv->T = exp10 - 16 < 0 ? 16 - exp10 : 0;
+	iv->even = (m & 1) == 0;
+	// v -+ 2^x = (m * 2^(e-x) -+ 1) * 2^x, and e - x is 1 or 2.
+	big_set(&iv->lo, (m << (e - below)) - 1); big_shl(&iv->lo, below + iv->S); big_mul_pow10(&iv->lo, iv->T);
+	big_set(&iv->hi, (m << (e - above)) + 1); big_shl(&iv->hi, above + iv->S); big_mul_pow10(&iv->hi, iv->T);
+}
+static int f64_reads_back(const char *tmp, const ShclF64Interval *iv) {
+	// The spelling: digits then an exponent, sign already known to match v.
+	const char *s = tmp; if (*s == '-' || *s == '+') s++;
+	uint64_t d = 0; int nd = 0;
+	for (; *s && *s != 'e' && *s != 'E'; s++) if (*s >= '0' && *s <= '9') { d = d * 10 + (uint64_t)(*s - '0'); nd++; }
+	if (!nd || *s == '\0') return 0;
+	int k = atoi(s + 1) - (nd - 1);
+	if (k + iv->T < 0) return 0;
+	ShclBig D; big_set(&D, d); big_mul_pow10(&D, k + iv->T); big_shl(&D, iv->S);
+	int cl = big_cmp(&D, &iv->lo), ch = big_cmp(&D, &iv->hi);
+	if (cl > 0 && ch < 0) return 1;
+	return (cl == 0 || ch == 0) && iv->even;
+}
+
 // The correctly rounded string at a precision is the closest one, but at a
 // power of two the rounding interval is lopsided, and the neighbor one digit
 // up or down can read back while the closest does not. The shortest-digits
 // algorithms the other bindings use find it; stepping the last digit of the
 // "%.*e" text in tmp by delta (with carry) and reading it back does the same.
 // A carry past the leading digit is a shorter spelling, already tried.
-static int f64_neighbor(const char *tmp, double v, int delta, char *out) {
+static int f64_neighbor(const char *tmp, const ShclF64Interval *iv, int delta, char *out) {
 	strcpy(out, tmp);
 	char *e = strchr(out, 'e');
 	if (!e || e == out) return 0;
@@ -4141,7 +4206,7 @@ static int f64_neighbor(const char *tmp, double v, int delta, char *out) {
 		p--;
 	}
 	if (*(out[0] == '-' ? out + 1 : out) == '0') return 0;
-	return strtod(out, NULL) == v;
+	return f64_reads_back(out, iv);
 }
 
 size_t shcl_format_f64(double v, char *out) {
@@ -4149,12 +4214,15 @@ size_t shcl_format_f64(double v, char *out) {
 	if (isinf(v)) { if (v < 0) { memcpy(out, "-inf", 4); return 4; } memcpy(out, "inf", 3); return 3; }
 	if (v == 0.0) { if (signbit(v)) { memcpy(out, "-0", 2); return 2; } out[0] = '0'; return 1; }
 	char tmp[64], alt[64]; int prec;
+	// A locale's decimal point is whatever it is; the digit walks skip it.
+	ShclF64Interval iv;
+	snprintf(tmp, sizeof tmp, "%.16e", v);
+	f64_interval(v, atoi(strchr(tmp, 'e') + 1), &iv);
 	for (prec = 1; prec <= 17; prec++) {
 		snprintf(tmp, sizeof tmp, "%.*e", prec - 1, v);
-		if (strtod(tmp, NULL) == v) break;
-		if (f64_neighbor(tmp, v, 1, alt) || f64_neighbor(tmp, v, -1, alt)) { memcpy(tmp, alt, sizeof tmp); break; }
+		if (f64_reads_back(tmp, &iv)) break;
+		if (f64_neighbor(tmp, &iv, 1, alt) || f64_neighbor(tmp, &iv, -1, alt)) { memcpy(tmp, alt, sizeof tmp); break; }
 	}
-	// The round-trip above needed tmp in the host locale; the scan below wants '.'.
 	{
 		const char *dp = dec_point(); size_t dn = strlen(dp);
 		if (dn != 1 || *dp != '.') {
