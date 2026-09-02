@@ -4573,23 +4573,37 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 	}
 }
 
-// Two-row Levenshtein over codepoints; powers the "did you mean" prose (never
-// the code).
-static size_t v_edit_distance(ShclArena *a, ShclStr sa, ShclStr sb) {
+// Levenshtein distance over codepoints capped at cap, for the "did you mean"
+// prose (never the code): anything past the cap comes back as cap + 1. Only
+// the band |i - j| <= cap of the table is computed, so a pair costs linear
+// time in the names' length, and a length gap past the cap needs no table at
+// all.
+static size_t v_edit_distance(ShclArena *a, ShclStr sa, ShclStr sb, size_t cap) {
 	ShclCPs ca = decode_cps(a, sa);
 	ShclCPs cb = decode_cps(a, sb);
+	size_t inf = cap + 1;
+	if ((ca.n > cb.n ? ca.n - cb.n : cb.n - ca.n) > cap) return inf;
 	size_t *prev = (size_t *)arena_alloc(a, (cb.n + 1) * sizeof(size_t));
 	size_t *cur = (size_t *)arena_alloc(a, (cb.n + 1) * sizeof(size_t));
-	for (size_t j = 0; j <= cb.n; j++) prev[j] = j;
+	for (size_t j = 0; j <= cb.n; j++) { prev[j] = j < inf ? j : inf; cur[j] = inf; }
 	for (size_t i = 1; i <= ca.n; i++) {
-		cur[0] = i;
-		for (size_t j = 1; j <= cb.n; j++) {
+		cur[0] = i < inf ? i : inf;
+		size_t lo = i > cap ? i - cap : 1;
+		size_t hi = i + cap < cb.n ? i + cap : cb.n;
+		if (lo > 1) cur[lo - 1] = inf;
+		size_t row_min = cur[0];
+		for (size_t j = lo; j <= hi; j++) {
 			size_t cost = ca.cp[i - 1] == cb.cp[j - 1] ? 0 : 1;
 			size_t m = prev[j] + 1;
 			if (cur[j - 1] + 1 < m) m = cur[j - 1] + 1;
 			if (prev[j - 1] + cost < m) m = prev[j - 1] + cost;
+			if (m > inf) m = inf;
 			cur[j] = m;
+			if (m < row_min) row_min = m;
 		}
+		if (hi < cb.n) cur[hi + 1] = inf;
+		// No cell in a later row can come back under this row's minimum.
+		if (row_min > cap) return inf;
 		size_t *t = prev; prev = cur; cur = t;
 	}
 	return prev[cb.n];
@@ -4606,7 +4620,7 @@ static void v_suggest(ShclArena *a, ShclArena *tmp, const ShclVecS *names, ShclS
 	if (!names) return;
 	int have = 0; size_t best_dist = 0; ShclStr best_name = s_empty();
 	for (size_t i = 0; i < names->len; i++) {
-		size_t dist = v_edit_distance(tmp, name, names->data[i]);
+		size_t dist = v_edit_distance(tmp, name, names->data[i], 2);
 		if (dist <= 2 && (!have || dist < best_dist)) { have = 1; best_dist = dist; best_name = names->data[i]; }
 	}
 	if (have) {
