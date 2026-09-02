@@ -6381,28 +6381,71 @@ func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
 	return out, cuts
 }
 
-// editDistance is two-row Levenshtein; powers the "did you mean" prose (never
-// the code).
-func editDistance(a, b string) int {
+// editDistance is the Levenshtein distance capped at cap, for the "did you
+// mean" prose (never the code): anything past the cap comes back as cap + 1.
+// Only the band |i - j| <= cap of the table is computed, so a pair costs
+// linear time in the names' length, and a length gap past the cap needs no
+// table at all.
+func editDistance(a, b string, cap int) int {
 	ar := []rune(a)
 	br := []rune(b)
+	inf := cap + 1
+	if absDiff(len(ar), len(br)) > cap {
+		return inf
+	}
 	prev := make([]int, len(br)+1)
 	cur := make([]int, len(br)+1)
 	for j := range prev {
-		prev[j] = j
+		prev[j] = minInt(j, inf)
+		cur[j] = inf
 	}
 	for i := 1; i <= len(ar); i++ {
-		cur[0] = i
-		for j := 1; j <= len(br); j++ {
+		cur[0] = minInt(i, inf)
+		lo := maxInt(i-cap, 1)
+		hi := minInt(i+cap, len(br))
+		if lo > 1 {
+			cur[lo-1] = inf
+		}
+		rowMin := cur[0]
+		for j := lo; j <= hi; j++ {
 			cost := 1
 			if ar[i-1] == br[j-1] {
 				cost = 0
 			}
-			cur[j] = min3(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+			cur[j] = minInt(min3(prev[j]+1, cur[j-1]+1, prev[j-1]+cost), inf)
+			rowMin = minInt(rowMin, cur[j])
+		}
+		if hi < len(br) {
+			cur[hi+1] = inf
+		}
+		// No cell in a later row can come back under this row's minimum.
+		if rowMin > cap {
+			return inf
 		}
 		prev, cur = cur, prev
 	}
 	return prev[len(br)]
+}
+
+func absDiff(a, b int) int {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func min3(a, b, c int) int {
@@ -6941,7 +6984,7 @@ func vSuggest(siblings map[string][]string, parentChain, name string) string {
 	bestDist := -1
 	bestName := ""
 	for _, s := range siblings[parentChain] {
-		dist := editDistance(name, s)
+		dist := editDistance(name, s, 2)
 		if dist <= 2 && (bestDist < 0 || dist < bestDist) {
 			bestDist = dist
 			bestName = s

@@ -102,10 +102,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-190600
 		- Closed: 20260902-104500
 
-	- 🔘 Item 8: the did-you-mean suggestion is quadratic in name length, so a check against a schema with long field names takes seconds to minutes.
+	- ✅ Item 8: the did-you-mean suggestion is quadratic in name length, so a check against a schema with long field names takes seconds to minutes.
 		- Measured: 300 unknown fields of 300 characters against 300 schema names of 300 characters, 188 KB in all, takes 23 s in the release reference, 27 s in Go, 10 s in C. Double both lengths and the reference did not finish in two minutes.
 		- Cause: a full Levenshtein table per pair with no prefilter, while the result is discarded past distance 2. A length difference over 2 can be rejected outright, and a banded table bounded by the threshold makes the rest linear.
+		- Fixed: the edit distance takes the cap (2): a length gap past it returns at once, only the band of cells within the cap is computed, and a row whose minimum passes the cap ends the pair. The 188 KB repro went from 23 s to 0.06 s in the reference; the 2000-character shape that did not finish in two minutes takes 0.04 s. The banded result equals the full table for every distance at or under the cap (checked over 200k random pairs at four caps), so no suggestion changes.
+		- Pinned by `perf-gate.bash`'s new `suggest` workload: 30 unknown 800-character names against 30 schema names of the same length, timed against the binding's parse baseline. Over budget on the old code in every binding (17 s, 1.9 s, 86 s, 0.66 s for rust, go, python, c) and 10 to 370 ms now.
 		- Opened: 20260901-190700
+		- Closed: 20260902-113000
 
 	- 🔘 Item 9: C formats an exact power of two with 17 digits where the other three print 16.
 		- Reproduced, C only: 46 of the 2098 powers of two, none of 11,206 random doubles. `get --float` and a float write op both show it, so it reaches a saved file.

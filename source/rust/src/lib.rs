@@ -5996,17 +5996,38 @@ fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
 	(out, cuts)
 }
 
-/// Two-row Levenshtein; powers the "did you mean" prose (never the code).
-fn edit_distance(a: &str, b: &str) -> usize {
+/// Levenshtein distance capped at `cap`, for the "did you mean" prose (never
+/// the code): anything past the cap comes back as `cap + 1`. Only the band
+/// `|i - j| <= cap` of the table is computed, so a pair costs linear time in
+/// the names' length, and a length gap past the cap needs no table at all.
+fn edit_distance(a: &str, b: &str, cap: usize) -> usize {
 	let a: Vec<char> = a.chars().collect();
 	let b: Vec<char> = b.chars().collect();
-	let mut prev: Vec<usize> = (0..=b.len()).collect();
-	let mut cur = vec![0usize; b.len() + 1];
+	let inf = cap + 1;
+	if a.len().abs_diff(b.len()) > cap {
+		return inf;
+	}
+	let mut prev: Vec<usize> = (0..=b.len()).map(|j| j.min(inf)).collect();
+	let mut cur = vec![inf; b.len() + 1];
 	for i in 1..=a.len() {
-		cur[0] = i;
-		for j in 1..=b.len() {
+		cur[0] = i.min(inf);
+		let lo = i.saturating_sub(cap).max(1);
+		let hi = (i + cap).min(b.len());
+		if lo > 1 {
+			cur[lo - 1] = inf;
+		}
+		let mut row_min = cur[0];
+		for j in lo..=hi {
 			let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-			cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+			cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost).min(inf);
+			row_min = row_min.min(cur[j]);
+		}
+		if hi < b.len() {
+			cur[hi + 1] = inf;
+		}
+		// No cell in a later row can come back under this row's minimum.
+		if row_min > cap {
+			return inf;
 		}
 		std::mem::swap(&mut prev, &mut cur);
 	}
@@ -6519,7 +6540,7 @@ fn v_suggest(siblings: &HashMap<String, Vec<String>>, parent_chain: &str, name: 
 	let mut best: Option<(usize, &str)> = None;
 	if let Some(names) = siblings.get(parent_chain) {
 		for s in names {
-			let dist = edit_distance(name, s);
+			let dist = edit_distance(name, s, 2);
 			if dist <= 2 && best.is_none_or(|(bd, _)| dist < bd) {
 				best = Some((dist, s.as_str()));
 			}

@@ -5108,15 +5108,33 @@ def _expand_mounts(sdef):
 	return out, cuts
 
 
-def _edit_distance(a, b):
-	# Two-row Levenshtein; powers the "did you mean" prose (never the code).
-	prev = list(range(len(b) + 1))
-	cur = [0] * (len(b) + 1)
+def _edit_distance(a, b, cap):
+	# Levenshtein distance capped at `cap`, for the "did you mean" prose (never
+	# the code): anything past the cap comes back as cap + 1. Only the band
+	# |i - j| <= cap of the table is computed, so a pair costs linear time in
+	# the names' length, and a length gap past the cap needs no table at all.
+	inf = cap + 1
+	if abs(len(a) - len(b)) > cap:
+		return inf
+	prev = [min(j, inf) for j in range(len(b) + 1)]
+	cur = [inf] * (len(b) + 1)
 	for i in range(1, len(a) + 1):
-		cur[0] = i
-		for j in range(1, len(b) + 1):
+		cur[0] = min(i, inf)
+		lo = max(i - cap, 1)
+		hi = min(i + cap, len(b))
+		if lo > 1:
+			cur[lo - 1] = inf
+		row_min = cur[0]
+		for j in range(lo, hi + 1):
 			cost = 0 if a[i - 1] == b[j - 1] else 1
-			cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+			cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost, inf)
+			if cur[j] < row_min:
+				row_min = cur[j]
+		if hi < len(b):
+			cur[hi + 1] = inf
+		# No cell in a later row can come back under this row's minimum.
+		if row_min > cap:
+			return inf
 		prev, cur = cur, prev
 	return prev[len(b)]
 
@@ -5195,7 +5213,7 @@ def _v_suggest(siblings, parent_chain, name):
 	contract. The sibling lists are prebuilt once per validate."""
 	best = None
 	for s in siblings.get(parent_chain, ()):
-		dist = _edit_distance(name, s)
+		dist = _edit_distance(name, s, 2)
 		if dist <= 2 and (best is None or dist < best[0]):
 			best = (dist, s)
 	if best is None:
