@@ -51,18 +51,27 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- The areas the 20260901 round recorded as not reached: the C parser and emitter read line by line, Go's validation walk, Python's validator, `v_suggest`, a full run under mingw and wine, the installers and packaging, `--layer` and merge semantics, and the three tooling scripts nobody had opened. Twenty-three defects here, the rest under Features and enhancements. Everything below was reproduced, not read off the code.
 	- Nine of the defects are shapes all four bindings share, so the four-way check cannot see them. Seven are C or C++ only, which it also cannot see. Four were found only by running the windows builds; two are the release tooling.
 
-	- 🔘 Item 1: a line refused with `E012` does not hold its indent level, so what was written under it re-parents, and a refused fence line's body is parsed as live bindings.
+	- ✅ Item 1: a line refused with `E012` does not hold its indent level, so what was written under it re-parents, and a refused fence line's body is parsed as live bindings.
 		- Reproduced in all four bindings. `d: 3` written under a refused `c: 2` becomes a child of the level above it, where the spec's `E018` row says it is skipped with the line it sits under. The 20260829 fix that added `E018` covered the `E014` and `E021` arms and missed all three `E012` arms.
 		- The fence arm is the damaging one. A fence at a bad indent is skipped but its body is not consumed, so raw content becomes root bindings and the closing fence opens a second, unterminated block.
+		- Fixed: a line whose indent matches no open level now holds that indent as a level of its own, in all three `E012` arms. Deeper lines are skipped under it (`E018`), a refused fence line consumes its body, and a second line at the same bad indent is refused the same way rather than binding one level up. Spec rule reworded.
+		- Pinned by corpus `075`, which every binding failed before the change (a fence body read as root bindings, and a bad-indent line's children re-parenting up) and passes now. Existing `061` (a single `E012` line) is unchanged.
 		- Opened: 20260901-190000
+		- Closed: 20260902-090000
 
-	- 🔘 Item 2: a line refused with `E013` (a `*` with no space) does not hold its level either, so its next sibling is lost.
+	- ✅ Item 2: a line refused with `E013` (a `*` with no space) does not hold its level either, so its next sibling is lost.
 		- Reproduced in all four. Content under the bad line re-parents up, and the line's own next sibling then reports `E012` and is dropped. The `E014` arm beside it, same class of defect, does this right.
+		- Fixed: the `*`-with-no-space arm resolves its level first, like the `E014` arm beside it, and pushes the level as skipped. Its sibling binds where it should and what is written under it is skipped with it.
+		- Pinned by corpus `075` (the `p` block), failing before and passing now in all four.
 		- Opened: 20260901-190100
+		- Closed: 20260902-090000
 
-	- 🔘 Item 3: a value after a last-segment index selector is dropped with no diagnostic and no lost count, so a save deletes it.
+	- ✅ Item 3: a value after a last-segment index selector is dropped with no diagnostic and no lost count, so a save deletes it.
 		- Reproduced in all four. `a[0]: 2` loads clean and formats to nothing; the same with a raw block loads clean and the block vanishes. `fmt --write` exits 0 and bakes it in. The spec says the trailing value is reported as an error and counted as lost; the value-selector arm does exactly that, the index arm has no check at all.
+		- Fixed: the index arm carries the same last-segment check as the value arm: the trailing value is reported (`E002`) and counted as lost, so an in-place write refuses instead of deleting it.
+		- Pinned by corpus `076` (plain value and same-line fence after `a[0]`, plus a value after a non-last index that still binds). Failed in all four before, passes now.
 		- Opened: 20260901-190200
+		- Closed: 20260902-091500
 
 	- 🔘 Item 4: a fragment mounted at one node by two top-level schema paths is checked twice, and its diagnostics repeat.
 		- Reproduced in all four. `field: a` and `field: "a[*]"` both inheriting one fragment report each of its faults twice. The spec says once per node. The dedupe set is created per top-level constraint, so it only covers mounts reached inside one constraint's own recursion.
