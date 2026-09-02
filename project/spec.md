@@ -126,7 +126,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 - A line indented deeper than the previous line is its child. Indentation is **relative and stack-based**: any increase opens a level; a decrease must return to the exact column of an ancestor.
 
-- A dedent to a column that matches no open level is a (recoverable) error - the line is diagnosed and skipped, the rest of the file continues.
+- A dedent to a column that matches no open level is a (recoverable) error - the line is diagnosed and skipped, the rest of the file continues. Like any skipped line it holds its column: what is written deeper is skipped with it (`E018`), a fence line there takes its whole body with it, and another line at the same bad column is refused the same way rather than binding one level up.
 
 - Indentation is tabs *or* spaces, consistent within a subtree. (Detection resets at each top-level ancestor, so distinct top-level trees could technically differ, but authors should just keep it uniform per file.)
 
@@ -429,7 +429,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 | `E010` | bare comma in a stacked `*` list element (one element per line)
 | `E011` | stacked `*` element for a field that already has a value (element ignored)
 | `E012` | indentation matches no open level
-| `E013` | malformed `*` line (`*` not followed by a space); line skipped
+| `E013` | malformed `*` line (`*` not followed by a space); line skipped, and what is written under it with it
 | `E014` | malformed line skipped (with the reason named in the message)
 | `E015` | missing colon (repaired as an empty value)
 | `E016` | nesting deeper than the 512-level cap (line skipped)

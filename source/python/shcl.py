@@ -592,6 +592,9 @@ ROOT = 0
 # re-parenting one level up. sys.maxsize so an arena index through it fails
 # loudly rather than reading a real node.
 DEAD = sys.maxsize
+# Stack entry for a line whose indent matched no open level (E012): never a
+# level a sibling can bind at, but deeper lines are still under it.
+UNOPENED = sys.maxsize - 1
 # Ends a name-index chain (see _NameIndex).
 NIL = sys.maxsize
 
@@ -1344,7 +1347,7 @@ class _Parser:
 				target = None
 				at_own_level = False
 				for ind, node in reversed(self.stack):
-					if node != ROOT and node != DEAD and len(ind) >= len(new_indent) and p.indent.startswith(ind):
+					if node != ROOT and node != DEAD and node != UNOPENED and len(ind) >= len(new_indent) and p.indent.startswith(ind):
 						target = node
 						at_own_level = len(ind) == len(p.indent)
 						break
@@ -1368,14 +1371,23 @@ class _Parser:
 		an open level exactly (dedent), else it is a recoverable error."""
 		top_indent, top_node = self.stack[-1]
 		if len(indent) > len(top_indent) and indent.startswith(top_indent):
-			return top_node
+			return DEAD if top_node == UNOPENED else top_node
 		for i in range(len(self.stack) - 1, -1, -1):
-			if self.stack[i][0] == indent:
+			if self.stack[i][0] == indent and self.stack[i][1] != UNOPENED:
 				# Sibling of stack[i]: its parent is the entry below it.
 				parent = ROOT if i == 0 else self.stack[i - 1][1]
 				# Keep the sentinel; a top-level line resolves to ROOT.
 				self.stack = self.stack[:max(i, 1)]
-				return parent
+				return DEAD if parent == UNOPENED else parent
+		# Skipped, but it still owns its indent: whatever is written deeper is
+		# skipped with it, and a sibling at the same bad indent is refused the
+		# same way instead of binding one level up.
+		while len(self.stack) > 1:
+			top = self.stack[-1][0]
+			if len(indent) > len(top) and indent.startswith(top):
+				break
+			self.stack.pop()
+		self.stack.append((indent, UNOPENED))
 		return None
 
 	def _skip_under_dead(self, line, indent):
@@ -1684,12 +1696,14 @@ class _Parser:
 			fence = _fence_open(rest)
 			if fence is not None:
 				parent = self._resolve_parent(indent)
+				value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				if parent is None:
+					# The body goes with its fence: parsed live, it would read as
+					# root bindings and the closing fence would open a second block.
 					self._err(lineno, "E012", "indentation matches no open level")
 					self.lost += 1
-					i += 1
+					i = nxt
 					continue
-				value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				if parent == DEAD:
 					self._skip_under_dead(lineno, indent)
 				else:
@@ -1719,6 +1733,16 @@ class _Parser:
 					self._add_star_element(parent, body, lineno)
 					i += 1
 					continue
+				parent = self._resolve_parent(indent)
+				if parent is None:
+					self._err(lineno, "E012", "indentation matches no open level")
+					self.lost += 1
+					i += 1
+					continue
+				if parent == DEAD:
+					self._skip_under_dead(lineno, indent)
+					i += 1
+					continue
 				self._err(lineno, "E013", "malformed line: '*' must be followed by a space")
 				# Content-malformed at any position, so it is safe to retain
 				# verbatim as trivia: re-emitted, it re-diagnoses identically
@@ -1727,6 +1751,7 @@ class _Parser:
 				# sibling site below carries cannot apply here: this line
 				# starts with the '*' that brought us in.
 				self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
+				self.stack.append((indent, DEAD))
 				i += 1
 				continue
 			# Field line.

@@ -825,6 +825,9 @@ struct shcl_doc {
    level, so the lines written under it are skipped with it instead of
    re-parenting one level up. */
 #define DEAD ((size_t)-1)
+/* Stack entry for a line whose indent matched no open level (E012): never a
+   level a sibling can bind at, but deeper lines are still under it. */
+#define UNOPENED ((size_t)-2)
 
 /* The node vector lives in malloc storage, not the bump arena: the arena
    cannot reclaim the abandoned copy at each doubling, which held about one
@@ -2103,7 +2106,7 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 			size_t target = (size_t)-1; int at_own_level = 0;
 			for (size_t ii = P->stack.len; ii-- > 0;) {
 				ShclStr ind = P->stack.data[ii].indent; size_t n = P->stack.data[ii].node;
-				if (n != ROOT && n != DEAD && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; at_own_level = ind.n == p.indent.n; break; }
+				if (n != ROOT && n != DEAD && n != UNOPENED && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; at_own_level = ind.n == p.indent.n; break; }
 			}
 			if (target != (size_t)-1) {
 				ShclLead lead = lead_make(p.text, p.blank_before);
@@ -2124,14 +2127,24 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 static int resolve_parent(ShclParser *P, ShclStr indent, size_t *out) {
 	size_t top = P->stack.len - 1;
 	ShclStr ti = P->stack.data[top].indent; size_t tn = P->stack.data[top].node;
-	if (indent.n > ti.n && (ti.n == 0 || memcmp(indent.p, ti.p, ti.n) == 0)) { *out = tn; return 1; }
+	if (indent.n > ti.n && (ti.n == 0 || memcmp(indent.p, ti.p, ti.n) == 0)) { *out = tn == UNOPENED ? DEAD : tn; return 1; }
 	for (size_t ii = P->stack.len; ii-- > 0;) {
-		if (s_eq(P->stack.data[ii].indent, indent)) {
-			*out = (ii == 0) ? ROOT : P->stack.data[ii - 1].node;
+		if (s_eq(P->stack.data[ii].indent, indent) && P->stack.data[ii].node != UNOPENED) {
+			size_t parent = (ii == 0) ? ROOT : P->stack.data[ii - 1].node;
+			*out = parent == UNOPENED ? DEAD : parent;
 			P->stack.len = ii ? ii : 1;
 			return 1;
 		}
 	}
+	/* Skipped, but it still owns its indent: whatever is written deeper is
+	   skipped with it, and a sibling at the same bad indent is refused the
+	   same way instead of binding one level up. */
+	while (P->stack.len > 1) {
+		ShclStr top_indent = P->stack.data[P->stack.len - 1].indent;
+		if (indent.n > top_indent.n && (top_indent.n == 0 || memcmp(indent.p, top_indent.p, top_indent.n) == 0)) break;
+		P->stack.len--;
+	}
+	{ ShclStackEnt se; se.indent = indent; se.node = UNOPENED; ShclVecStack_push(P->tmp, &P->stack, se); }
 	return 0;
 }
 
@@ -2532,8 +2545,11 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		ShclFence f = fence_open(rest);
 		if (f.ok) {
 			size_t parent;
-			if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
+			int resolved = resolve_parent(&P, indent, &parent);
 			size_t next; ShclValue val = consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, f, &next);
+			/* The body goes with its fence: parsed live, it would read as root
+			   bindings and the closing fence would open a second block. */
+			if (!resolved) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i = next; continue; }
 			if (parent == DEAD) skip_under_dead(&P, lineno, indent);
 			else {
 				size_t bnode = bind_block(&P, parent, val, lineno);
@@ -2552,6 +2568,11 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
 				add_star_element(&P, parent, body, lineno); i++; continue;
 			}
+			{
+				size_t parent;
+				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
+				if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
+			}
 			p_err(&P, lineno, "E013", s_lit("malformed line: '*' must be followed by a space"));
 			/* Content-malformed at any position, so it is safe to retain
 			   verbatim as trivia: re-emitted, it re-diagnoses identically and
@@ -2562,6 +2583,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			{
 				ShclPend pd; pd.text = trim_end(rest); pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n;
 				ShclVecPend_push(P.tmp, &P.pending, pd);
+				ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);
 			}
 			i++; continue;
 		}
@@ -5986,6 +6008,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 #undef NODE
 #undef NIL
 #undef DEAD
+#undef UNOPENED
 #undef GEN_MAX_FIELDS
 #undef GEN_BANNER
 

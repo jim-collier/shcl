@@ -563,6 +563,9 @@ const ROOT: usize = 0;
 // level, so the lines written under it are skipped with it instead of
 // re-parenting one level up.
 const DEAD: usize = usize::MAX;
+// Stack entry for a line whose indent matched no open level (E012): never a
+// level a sibling can bind at, but deeper lines are still under it.
+const UNOPENED: usize = usize::MAX - 1;
 
 /// Merge a later instance into an earlier one under the in-file merge rule:
 /// children and trivia move over, first trailing wins (a second demotes to a
@@ -1594,7 +1597,8 @@ impl Parser {
 					.rev()
 					.find(|(ind, node)| {
 						*node != ROOT
-							&& *node != DEAD && ind.len() >= new_indent.len()
+							&& *node != DEAD && *node != UNOPENED
+							&& ind.len() >= new_indent.len()
 							&& p.indent.starts_with(ind.as_str())
 					})
 					.map(|(ind, n)| (*n, ind.len() == p.indent.len()));
@@ -1628,17 +1632,32 @@ impl Parser {
 			return None; // sentinel invariant; degrade, never abort
 		};
 		if indent.len() > top_indent.len() && indent.starts_with(top_indent.as_str()) {
-			return Some(*top_node);
+			return Some(if *top_node == UNOPENED {
+				DEAD
+			} else {
+				*top_node
+			});
 		}
 		for i in (0..self.stack.len()).rev() {
-			if self.stack[i].0 == indent {
+			if self.stack[i].0 == indent && self.stack[i].1 != UNOPENED {
 				// Sibling of stack[i]: its parent is the entry below it.
 				let parent = if i == 0 { ROOT } else { self.stack[i - 1].1 };
 				// Keep the sentinel; a top-level line resolves to ROOT.
 				self.stack.truncate(i.max(1));
-				return Some(parent);
+				return Some(if parent == UNOPENED { DEAD } else { parent });
 			}
 		}
+		// Skipped, but it still owns its indent: whatever is written deeper is
+		// skipped with it, and a sibling at the same bad indent is refused the
+		// same way instead of binding one level up.
+		while self.stack.len() > 1 {
+			let top = &self.stack[self.stack.len() - 1].0;
+			if indent.len() > top.len() && indent.starts_with(top.as_str()) {
+				break;
+			}
+			self.stack.pop();
+		}
+		self.stack.push((indent.to_string(), UNOPENED));
 		None
 	}
 
@@ -2080,13 +2099,16 @@ impl Parser {
 			self.hang_deeper_pending(indent);
 			// Child-indent fence: a value line for its parent field.
 			if let Some(fence) = fence_open(rest) {
-				let Some(parent) = self.resolve_parent(indent) else {
+				let parent = self.resolve_parent(indent);
+				let (value, next) = self.consume_raw(&lines, i + 1, lineno, indent, fence);
+				let Some(parent) = parent else {
+					// The body goes with its fence: parsed live, it would read as
+					// root bindings and the closing fence would open a second block.
 					self.err(lineno, "E012", "indentation matches no open level");
 					self.lost += 1;
-					i += 1;
+					i = next;
 					continue;
 				};
-				let (value, next) = self.consume_raw(&lines, i + 1, lineno, indent, fence);
 				if parent == DEAD {
 					self.skip_under_dead(lineno, indent);
 				} else if let Some(node) = self.bind_block(parent, value, lineno) {
@@ -2118,6 +2140,17 @@ impl Parser {
 					i += 1;
 					continue;
 				}
+				let Some(parent) = self.resolve_parent(indent) else {
+					self.err(lineno, "E012", "indentation matches no open level");
+					self.lost += 1;
+					i += 1;
+					continue;
+				};
+				if parent == DEAD {
+					self.skip_under_dead(lineno, indent);
+					i += 1;
+					continue;
+				}
 				self.err(
 					lineno,
 					"E013",
@@ -2135,6 +2168,7 @@ impl Parser {
 					blank_before: had_blank,
 					ceiling: indent.len(),
 				});
+				self.stack.push((indent.to_string(), DEAD));
 				i += 1;
 				continue;
 			}
