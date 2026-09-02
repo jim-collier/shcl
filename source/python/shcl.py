@@ -2895,9 +2895,11 @@ class Document:
 		self._lost += over._lost
 		self._overlay(ROOT, over, ROOT)
 		# Layers commonly share a footer; keeping one copy of each keeps a
-		# stack of files from repeating it once per layer.
+		# stack of files from repeating it once per layer. Only the lines
+		# already here count: a layer's own repeats are its content.
+		had = len(self.orphans)
 		for o in over.orphans:
-			if not any(e.text == o.text for e in self.orphans):
+			if not any(e.text == o.text for e in self.orphans[:had]):
 				self.orphans.append(_Lead(o.text, o.blank_before))
 
 	# One grouping pass over each side, then a single children rebuild: the
@@ -2939,14 +2941,14 @@ class Document:
 		# Over side: name -> node bucket, in first-appearance order.
 		order = []
 		groups: dict = {}
-		for k in over_kids:
+		for pos, k in enumerate(over_kids):
 			n = over.arena[k].name
 			g = groups.get(n)
 			if g is None:
 				order.append(n)
 				g = []
 				groups[n] = g
-			g.append(k)
+			g.append((pos, k))
 		# Base side, one pass: does the name have a container instance, and
 		# which child carries each (name, key) - every key computed once. The
 		# list is copied because the splices below rewrite it as they go.
@@ -2963,24 +2965,25 @@ class Document:
 		# mention, not a leaf, so it falls through to the instance merge: a
 		# bare section header in a higher layer never wipes the subtree below.
 		# Replaced groups splice in the rebuild; everything appended (unmatched
-		# instances, and replaced names base never had) keeps processing order.
+		# instances, and replaced names base never had) keeps the over file's
+		# order, which the per-name pass here would otherwise regroup.
 		replace = {}
 		appended = []
 		pending = []
 		empty_key = _Value("empty").key()
 		for name in order:
 			group = groups[name]
-			over_leafy = all(not over.arena[k].children for k in group)
+			over_leafy = all(not over.arena[k].children for _, k in group)
 			in_base = name in has_container
 			base_container = has_container.get(name, False)
 			if over_leafy and not base_container:
-				clones = [self._clone_subtree(over, ok, base_parent) for ok in group]
+				clones = [(pos, self._clone_subtree(over, ok, base_parent)) for pos, ok in group]
 				if in_base:
-					replace[name] = clones
+					replace[name] = [c for _, c in clones]
 				else:
 					appended.extend(clones)
 			else:
-				for ok in group:
+				for pos, ok in group:
 					okey = over.arena[ok].value.key()
 					b = by_key.get((name, okey))
 					# A raw block in the higher layer fills a same-named empty
@@ -3001,7 +3004,7 @@ class Document:
 						# survives the rebuild below and can wait for it.
 						pending.append((b, ok))
 					else:
-						appended.append(self._clone_subtree(over, ok, base_parent))
+						appended.append((pos, self._clone_subtree(over, ok, base_parent)))
 		if not replace and not appended:
 			return pending
 		# Rebuild once: each replaced group lands at its name's first original
@@ -3017,7 +3020,8 @@ class Document:
 			elif name not in spliced:
 				spliced.add(name)
 				new_kids.extend(clones)
-		new_kids.extend(appended)
+		appended.sort(key=lambda pc: pc[0])
+		new_kids.extend(c for _, c in appended)
 		self.arena[base_parent].children = new_kids
 		return pending
 

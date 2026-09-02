@@ -3593,8 +3593,9 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 	ShclArena *a = &d->arena;
 	ShclArena *t = &d->scratch;
 	ShclVecSize okids = over->nodes.data[op].children; // const doc: stable
-	// Over side: name -> bucket, in first-appearance order. Map hits verify
-	// against what the entry's value names (hash-only entries store no key).
+	// Over side: name -> bucket of child positions, in first-appearance
+	// order. Map hits verify against what the entry's value names (hash-only
+	// entries store no key).
 	ShclVecS order = {0}; ShclVecSize *buckets = NULL; size_t nb = 0, cb = 0;
 	ShclCMap group_of; memset(&group_of, 0, sizeof group_of);
 	for (size_t i = 0; i < okids.len; i++) {
@@ -3610,7 +3611,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 			cmap_put(t, &group_of, h, g);
 			ShclVecS_push(t, &order, nm);
 		}
-		ShclVecSize_push(t, &buckets[g], k);
+		ShclVecSize_push(t, &buckets[g], i);
 	}
 	// Base side, one pass: does the name exist / have a container instance
 	// (entries name a representative base child), and which child carries
@@ -3644,10 +3645,14 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 	// not a leaf, so it falls through to the instance merge: a bare section
 	// header in a higher layer never wipes the subtree below it. Replaced
 	// groups splice in the rebuild; everything appended (unmatched instances,
-	// and replaced names base never had) keeps processing order.
+	// and replaced names base never had) keeps the over file's order, which
+	// the per-name pass here would otherwise regroup: app_at is indexed by
+	// the over child's position.
 	ShclVecSize *rep = (ShclVecSize *)arena_alloc(t, (nb ? nb : 1) * sizeof(ShclVecSize));
 	int *is_rep = (int *)arena_alloc(t, (nb ? nb : 1) * sizeof(int));
-	ShclVecSize appended = {0};
+	size_t *app_at = (size_t *)arena_alloc(t, (okids.len ? okids.len : 1) * sizeof(size_t));
+	for (size_t i = 0; i < okids.len; i++) app_at[i] = (size_t)-1;
+	size_t nappended = 0;
 	int any_rep = 0;
 	ShclValue ev; memset(&ev, 0, sizeof ev); ev.kind = V_EMPTY;
 	for (size_t gi = 0; gi < nb; gi++) {
@@ -3655,7 +3660,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 		ShclVecSize grp = buckets[gi];
 		memset(&rep[gi], 0, sizeof rep[gi]); is_rep[gi] = 0;
 		int over_leafy = 1;
-		for (size_t i = 0; i < grp.len; i++) if (over->nodes.data[grp.data[i]].children.len > 0) { over_leafy = 0; break; }
+		for (size_t i = 0; i < grp.len; i++) if (over->nodes.data[okids.data[grp.data[i]]].children.len > 0) { over_leafy = 0; break; }
 		uint64_t hn = cmap_hash(name, s_empty());
 		int inb = 0, bc = 0;
 		for (ShclCMapEnt *e = cmap_first(&in_base, hn); e; e = cmap_next(e, hn))
@@ -3664,13 +3669,16 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 			if (s_eq(NODE(d, e->val).name, name)) { bc = 1; break; }
 		if (over_leafy && !bc) {
 			for (size_t i = 0; i < grp.len; i++) {
-				size_t c = w_clone_subtree(d, over, grp.data[i], bp);
-				ShclVecSize_push(t, inb ? &rep[gi] : &appended, c);
+				size_t pos = grp.data[i];
+				size_t c = w_clone_subtree(d, over, okids.data[pos], bp);
+				if (inb) ShclVecSize_push(t, &rep[gi], c);
+				else { app_at[pos] = c; nappended++; }
 			}
 			if (inb) { is_rep[gi] = 1; any_rep = 1; }
 		} else {
 			for (size_t i = 0; i < grp.len; i++) {
-				size_t ok = grp.data[i];
+				size_t pos = grp.data[i];
+				size_t ok = okids.data[pos];
 				uint64_t hk = merge_hash(name, &over->nodes.data[ok].value);
 				size_t b = (size_t)-1;
 				for (ShclCMapEnt *e = cmap_first(&by_key, hk); e; e = cmap_next(e, hk))
@@ -3696,11 +3704,11 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 					}
 				}
 				if (b != (size_t)-1) { adopt_trivia(d, b, over, ok); w_overlay(d, b, over, ok); }
-				else ShclVecSize_push(t, &appended, w_clone_subtree(d, over, ok, bp));
+				else { app_at[pos] = w_clone_subtree(d, over, ok, bp); nappended++; }
 			}
 		}
 	}
-	if (!any_rep && appended.len == 0) return;
+	if (!any_rep && nappended == 0) return;
 	// Rebuild once: each replaced group lands at its name's first original
 	// position (dropped nodes stay in the arena, unreferenced - reads and
 	// emit walk children from the root), appends go at the end. One splice
@@ -3723,7 +3731,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 			ShclVecSize_push(a, &nw, b);
 		}
 	}
-	for (size_t k = 0; k < appended.len; k++) ShclVecSize_push(a, &nw, appended.data[k]);
+	for (size_t k = 0; k < okids.len; k++) if (app_at[k] != (size_t)-1) ShclVecSize_push(a, &nw, app_at[k]);
 	NODE(d, bp).children = nw;
 }
 
@@ -3734,11 +3742,13 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	arena_reset(&d->scratch); // merge temporaries (compare keys, clone lists) die here
 	w_overlay(d, ROOT, over, ROOT);
 	// Layers commonly share a footer; keeping one copy of each keeps a stack
-	// of files from repeating it once per layer.
+	// of files from repeating it once per layer. Only the lines already here
+	// count: a layer's own repeats are its content.
+	size_t had = d->orphans.len;
 	for (size_t i = 0; i < over->orphans.len; i++) {
 		ShclStr ot = over->orphans.data[i].text;
 		int dup = 0;
-		for (size_t k = 0; k < d->orphans.len; k++) if (s_eq(d->orphans.data[k].text, ot)) { dup = 1; break; }
+		for (size_t k = 0; k < had; k++) if (s_eq(d->orphans.data[k].text, ot)) { dup = 1; break; }
 		if (!dup) ShclVecLead_push(a, &d->orphans, lead_make(s_dup(a, ot), over->orphans.data[i].blank_before));
 	}
 }

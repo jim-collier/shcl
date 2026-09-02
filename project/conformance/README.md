@@ -137,6 +137,8 @@ Case `077` pins that a fragment mounted at one node by two schema paths (`srv` a
 
 Case `078` pins what a schema disavows: a `repeat` above 1 drops the `H001` hint for a field whose path carries an escaped quote, a `reopen: true` drops the `H002` hint, and a `repeat` or `reopen` that faults (`V092`) disavows nothing, so the hint stays beside the fault.
 
+Case `079` pins the order a merge appends in: unmatched higher-layer nodes keep that file's order (`c, a, b, a`) rather than regrouping by name, and a footer line the layer repeats itself is kept twice, while one the base already carries is carried over once. Merging onto an empty base is the identity.
+
 Case `045` pins comment depth under childless headers: a header whose children are all commented keeps them indented under it (top-level, nested, and at end of file), while a commented line trailing a live child keeps the existing trails-the-binding placement.
 
 Case `044` pins the value-syntax setter: an array, a single element, a quoted element keeping its internal comma, trimming, an unquoted `#` ending the value, an empty value, and the only-if-absent form both skipping an existing path and creating a new one. Its `write-bad.ops` pins the two rejections - a value opening a quote it never closes (the same text the parser reports `E017` for) and a wildcard path.

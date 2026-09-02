@@ -88,13 +88,19 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-190400
 		- Closed: 20260902-100000
 
-	- 🔘 Item 6: a merge appends unmatched `over` nodes grouped by name, where the spec says file order.
+	- ✅ Item 6: a merge appends unmatched `over` nodes grouped by name, where the spec says file order.
 		- Reproduced in all four. `c, s, c` in the layer comes out `c, c, s`. So merging onto an empty base is not the identity, and a layered `fmt` reorders siblings the layer's author put in a deliberate order. Reads are unaffected, which is why nothing caught it.
+		- Fixed: each appended clone remembers its position among the over node's children and the rebuild emits them in that order. Replaced leaf groups still splice at the name's first base position, as the spec says.
+		- Pinned by corpus `079` (layer appends `c, a, b, a` in file order) and the merge fuzz property, which now also asserts that a merge onto an empty document is the identity over every seed and mutation. Both failed in all four before and pass now.
 		- Opened: 20260901-190500
+		- Closed: 20260902-104500
 
-	- 🔘 Item 7: a layer's own repeated footer comments collapse to one.
+	- ✅ Item 7: a layer's own repeated footer comments collapse to one.
 		- Reproduced in all four. The once-per-layer footer dedupe compares each line against a list that already holds the lines just added from the same layer, so a within-file repeat is dropped. Another way an empty-base merge fails to be the identity.
+		- Fixed: the footer dedupe compares against the lines the base held before the merge, so a layer's own repeated line is kept and a line the base already has is still carried once.
+		- Pinned by corpus `079` (`# more` twice in the top layer) and the same identity property.
 		- Opened: 20260901-190600
+		- Closed: 20260902-104500
 
 	- 🔘 Item 8: the did-you-mean suggestion is quadratic in name length, so a check against a schema with long field names takes seconds to minutes.
 		- Measured: 300 unknown fields of 300 characters against 300 schema names of 300 characters, 188 KB in all, takes 23 s in the release reference, 27 s in Go, 10 s in C. Double both lengths and the reference did not finish in two minutes.
