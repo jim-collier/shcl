@@ -377,6 +377,21 @@ fCompare "fmt --write rejects --set" fmt --write --set a=1 missing.shcl
 fCompareWrite "set --write creates a missing file" fFixAbsent set --write --set a=1
 fCompareWrite "fmt --write still refuses a missing file" fFixAbsent fmt --write
 
+# Float spelling: shortest-round-trip formatters may lawfully differ at a
+# power of two (a lopsided rounding interval) and on an exact tie between two
+# spellings of the shortest length. Every power of two, plus a fixed set of
+# random doubles built as exact m * 2^e so the text reads back to the double
+# it names, through a float write in each binding.
+awk 'BEGIN{
+	for (e = -1074; e <= 1023; e++) printf "float\tp%d\t%.17g\n", e + 1074, 2 ^ e;
+	srand(20260902);
+	for (i = 0; i < 3000; i++) {
+		m = int(rand() * 9007199254740992); e = int(rand() * 1900) - 1000;
+		printf "float\tr%d\t%.17g\n", i, m * 2 ^ e;
+	}
+}' > "${tmpDir}/floats.ops"
+fCompareStdin "float spelling" "${tmpDir}/floats.ops" set -
+
 # `set -` follows stdin, so the same spelling means two things and both are
 # pinned: the piped document when an option holds the edits, an empty base when
 # stdin is the ops script instead.

@@ -110,15 +110,21 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-190700
 		- Closed: 20260902-113000
 
-	- 🔘 Item 9: C formats an exact power of two with 17 digits where the other three print 16.
+	- ✅ Item 9: C formats an exact power of two with 17 digits where the other three print 16.
 		- Reproduced, C only: 46 of the 2098 powers of two, none of 11,206 random doubles. `get --float` and a float write op both show it, so it reaches a saved file.
 		- Cause: the shortest-round-trip loop tries only the correctly rounded string at each precision. At a power of two the rounding interval is lopsided and the neighbor one digit up is the one that round-trips.
+		- Fixed: at each precision the C formatter also tries the spelling one last digit up and one down before adding a digit, which is the neighbor a shortest-digits algorithm picks when the closest spelling falls outside a lopsided interval. All 2098 powers of two and 208k doubles now spell the same in all four.
+		- Pinned by corpus `080` (the 46 powers of two plus the ties) and a `float spelling` dimension in `crosscheck.bash` over every power of two and 3000 fixed random doubles. Both diverged on the old C and agree now.
 		- Opened: 20260901-190800
+		- Closed: 20260902-121500
 
-	- 🔘 Item 10: on a value exactly halfway at 17 digits, the reference rounds up and the other three round half-even.
+	- ✅ Item 10: on a value exactly halfway at 17 digits, the reference rounds up and the other three round half-even.
 		- Reproduced: `2.9802322387695312e-08` written back is `...313` from Rust and `...312` from Go, Python and C. Two hits in 11,206 random doubles; both spellings parse to the same double.
 		- Needs a decision on which side to match. Matching the reference means each port detects the tie and bumps the digit; matching the three means the reference post-processes its own formatter.
+		- Fixed: decided for round-half-even: it is IEEE's own tie rule, what three of the four did already, and what Python's `repr` and Go's `strconv` print, so a value read from another tool's output spells the same here. The reference now takes the correctly rounded spelling of the shortest length whenever it reads back (core rounds that to even), and keeps its shortest spelling only when it does not (the lopsided power-of-two case, where every binding has one choice). Ties turned out to occur at any length, not only 17 digits: `811212085039910.25` is one at 16.
+		- Pinned by corpus `080` and the crosscheck float dimension; the old reference diverged on nine of the corpus values.
 		- Opened: 20260901-190900
+		- Closed: 20260902-121500
 
 	- 🔘 Item 11: the distributed CLI aborts on Windows when the program reading its output closes early.
 		- Reproduced under wine: `fmt` of a 40k-key file piped through `head` panics with "failed printing to stdout: Pipe not connected", and the release build turns the panic into an abort. Go and C exit 0 silently there, and all three are silent on Linux.
