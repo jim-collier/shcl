@@ -164,7 +164,10 @@ public:
 
 	bool strict_failed() const { return shcl_strict_failed(d_.get()) != 0; }
 	Strictness strictness() const { return static_cast<Strictness>(shcl_strictness_of(d_.get())); }
-	std::string to_canonical() const { return to_str(shcl_to_canonical(d_.get())); }
+	// The canonical text lives in the read arena like every other result, so
+	// it is released first the way the reads below are: a save loop otherwise
+	// holds every copy until the Document goes.
+	std::string to_canonical() const { shcl_reads_release(d_.get()); return to_str(shcl_to_canonical(d_.get())); }
 
 	std::vector<Diagnostic> diagnostics() const {
 		std::vector<Diagnostic> v; std::size_t n = shcl_diag_count(d_.get());

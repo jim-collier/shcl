@@ -210,9 +210,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-192000
 		- Closed: 20260902-161500
 
-	- 🔘 Item 22: the C++ veneer's `to_canonical()` never gives the read arena back, so a save loop grows without bound.
+	- ✅ Item 22: the C++ veneer's `to_canonical()` never gives the read arena back, so a save loop grows without bound.
 		- Measured: 1000 calls on a 2.9 MB document, 94 MB to 2.9 GB. Every other copying wrapper releases before its call; this one was missed.
+		- Fixed: `to_canonical()` releases the read arena before its call, like every other copying wrapper.
+		- Pinned by `veneer_smoke.cpp`: 200 `to_canonical()` calls on a 30 KB document leave the read arena holding at most two copies. The old veneer holds all 200.
 		- Opened: 20260901-192100
+		- Closed: 20260902-162000
 
 	- 🔘 Item 23: Go's two suppress filters return the caller's slice when nothing is disavowed, against their own comment, and `Diagnostics()` hands out the live internal slice.
 		- Reproduced: the returned slice shares its backing array, so an append by the caller and the document's own next append overwrite each other. The in-place-filter bug fixed on 20260831 was the drop path; this is its sibling on the keep-everything path, which the test for it does not cover.
