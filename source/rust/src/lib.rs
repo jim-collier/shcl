@@ -3019,48 +3019,32 @@ fn h001_head(name: &str) -> String {
 /// `check --schema` and load_and_validate; call it wherever doc diagnostics
 /// and a schema meet.
 pub fn suppress_declared_repeats(schema: &Document, diags: &mut Vec<Diagnostic>) {
-	// Top-level fields plus every fragment's fields: a repeat declared inside
-	// a mounted shape disavows the hint the same way.
-	let mut groups: Vec<(String, Vec<String>)> =
-		vec![("field".to_string(), schema.instances("field"))];
-	for k in 0..schema.count("fragment") {
-		let base = format!("fragment[#{}].field", k);
-		let paths = schema.instances(&base);
-		groups.push((base, paths));
-	}
-	let mut names: Vec<String> = Vec::new();
-	for (base, paths) in &groups {
-		for (i, p) in paths.iter().enumerate() {
-			// repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
-			// that matters here is the last one.
-			let rep = schema.read_int_array(&format!("{}[#{}].repeat", base, i));
-			if rep.status != Status::Good {
-				continue;
-			}
-			match rep.value.last() {
-				Some(&u) if u > 1 => {}
-				_ => continue,
-			}
-			// Leaf name from the parsed path, not a re-split of its text: a
-			// quoted last segment may contain dots (`a."b.c"`). The scanner
-			// folds the name; the doc side stores names folded too.
-			let Ok(scan) = scan_lookup(p) else {
-				continue;
-			};
-			let Some(seg) = scan.segments.last() else {
-				continue;
-			};
-			if seg.star {
-				continue; // name wildcard: no single leaf name to disavow
-			}
-			names.push(seg.name.clone());
-		}
-	}
+	let names = disavowed_names(schema, |c| c.repeat.is_some_and(|(_, hi)| hi > 1));
 	if names.is_empty() {
 		return;
 	}
 	let heads: Vec<String> = names.iter().map(|n| h001_head(n)).collect();
 	diags.retain(|d| d.code != "H001" || !heads.iter().any(|h| d.message.starts_with(h.as_str())));
+}
+
+/// Leaf names of the schema entries `pick` accepts, top-level fields and every
+/// fragment's fields alike. Read through the built schema, so the names are
+/// the ones validation will use (escapes resolved) and an entry whose key
+/// faulted disavows nothing.
+fn disavowed_names(schema: &Document, pick: impl Fn(&Constraint) -> bool) -> Vec<String> {
+	let (def, _) = build_schema(schema);
+	let mut names: Vec<String> = Vec::new();
+	let frags = def.frags.values().flat_map(|v| v.iter());
+	for c in def.cons.iter().chain(frags) {
+		if !pick(c) {
+			continue;
+		}
+		// Name wildcard: no single leaf name to disavow.
+		if let Some(seg) = c.segs.last().filter(|seg| !seg.star) {
+			names.push(seg.name.clone());
+		}
+	}
+	names
 }
 
 /// The single H002 wording site: the merge hint and the schema suppressor
@@ -3076,32 +3060,7 @@ fn h002_head(name: &str) -> String {
 /// `check --schema` and load_and_validate; call it wherever doc diagnostics
 /// and a schema meet.
 pub fn suppress_declared_reopens(schema: &Document, diags: &mut Vec<Diagnostic>) {
-	let mut groups: Vec<(String, Vec<String>)> =
-		vec![("field".to_string(), schema.instances("field"))];
-	for k in 0..schema.count("fragment") {
-		let base = format!("fragment[#{}].field", k);
-		let paths = schema.instances(&base);
-		groups.push((base, paths));
-	}
-	let mut names: Vec<String> = Vec::new();
-	for (base, paths) in &groups {
-		for (i, p) in paths.iter().enumerate() {
-			let re = schema.read_bool(&format!("{}[#{}].reopen", base, i));
-			if re.status != Status::Good || !re.value {
-				continue;
-			}
-			let Ok(scan) = scan_lookup(p) else {
-				continue;
-			};
-			let Some(seg) = scan.segments.last() else {
-				continue;
-			};
-			if seg.star {
-				continue; // name wildcard: no single leaf name to disavow
-			}
-			names.push(seg.name.clone());
-		}
-	}
+	let names = disavowed_names(schema, |c| c.reopen);
 	if names.is_empty() {
 		return;
 	}
@@ -5185,6 +5144,7 @@ struct Constraint {
 	min_f: Option<f64>,
 	max_f: Option<f64>,
 	repeat: Option<(u64, u64)>,
+	reopen: bool,             // H002 suppressor only; validation ignores it
 	inherits: Option<String>, // fragment mounted at this path (subtree shape)
 	inherits_line: usize,     // schema line of the `inherits` key, for V095
 	// Generator-only (`shcl init`): validation ignores both.
@@ -5358,6 +5318,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 		min_f: None,
 		max_f: None,
 		repeat: None,
+		reopen: false,
 		inherits: None,
 		inherits_line: 0,
 		desc: None,
@@ -5416,14 +5377,17 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 					),
 				}
 			}
-			// Consumed by the H002 suppressor (which reads the schema document
-			// directly); validation itself ignores it, but a bad value still
-			// faults so a typo cannot silently disavow nothing.
+			// Consumed by the H002 suppressor; validation itself ignores it,
+			// but a bad value still faults so a typo cannot silently disavow
+			// nothing.
 			"reopen" => {
 				let v =
 					single_text(&kid.value).and_then(|t| parse_bool_text(&t, Strictness::Standard));
 				match v {
-					Some(_) if !reopen_seen => reopen_seen = true,
+					Some(b) if !reopen_seen => {
+						reopen_seen = true;
+						c.reopen = b;
+					}
 					_ => vdiag(
 						faults,
 						kid.line,

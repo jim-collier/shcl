@@ -2793,40 +2793,7 @@ func h001Head(name string) string {
 // allocation and never disturbs the input (the reference filters its list in
 // place behind &mut; a Go return reads as a copy, so it must behave as one).
 func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic {
-	// Top-level fields plus every fragment's fields: a repeat declared inside
-	// a mounted shape disavows the hint the same way.
-	type group struct {
-		base  string
-		paths []string
-	}
-	groups := []group{{"field", schema.Instances("field")}}
-	for k := 0; k < schema.Count("fragment"); k++ {
-		base := fmt.Sprintf("fragment[#%d].field", k)
-		groups = append(groups, group{base, schema.Instances(base)})
-	}
-	var names []string
-	for _, g := range groups {
-		for i, p := range g.paths {
-			// repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
-			// that matters here is the last one.
-			rep := schema.ReadIntArray(fmt.Sprintf("%s[#%d].repeat", g.base, i))
-			if rep.Status != Good || len(rep.Value) == 0 || rep.Value[len(rep.Value)-1] <= 1 {
-				continue
-			}
-			// Leaf name from the parsed path, not a re-split of its text: a
-			// quoted last segment may contain dots (`a."b.c"`). The scanner
-			// folds the name; the doc side stores names folded too.
-			scan, err := scanLookup(p)
-			if err != nil || len(scan.segments) == 0 {
-				continue
-			}
-			seg := scan.segments[len(scan.segments)-1]
-			if seg.star {
-				continue // name wildcard: no single leaf name to disavow
-			}
-			names = append(names, seg.name)
-		}
-	}
+	names := disavowedNames(schema, func(c *constraint) bool { return c.repeat != nil && c.repeat[1] > 1 })
 	if len(names) == 0 {
 		return diags
 	}
@@ -3148,6 +3115,32 @@ func (d *Document) SaveFileLossy(path string) error {
 	return WriteFileAtomic(path, d.ToCanonical())
 }
 
+// disavowedNames returns the leaf names of the schema entries pick accepts,
+// top-level fields and every fragment's fields alike. Read through the built
+// schema, so the names are the ones validation will use (escapes resolved)
+// and an entry whose key faulted disavows nothing.
+func disavowedNames(schema *Document, pick func(*constraint) bool) []string {
+	def, _ := buildSchema(schema)
+	var names []string
+	all := [][]constraint{def.cons}
+	for _, fcs := range def.frags {
+		all = append(all, fcs)
+	}
+	for _, list := range all {
+		for i := range list {
+			c := &list[i]
+			if !pick(c) || len(c.segs) == 0 {
+				continue
+			}
+			// Name wildcard: no single leaf name to disavow.
+			if seg := c.segs[len(c.segs)-1]; !seg.star {
+				names = append(names, seg.name)
+			}
+		}
+	}
+	return names
+}
+
 // h002Head is the single H002 wording site: the merge hint and the schema
 // suppressor both come here, same discipline as h001Head.
 func h002Head(name string) string {
@@ -3161,33 +3154,7 @@ func h002Head(name string) string {
 // Used by `check --schema` and LoadAndValidate; call it wherever doc
 // diagnostics and a schema meet. Returns a fresh slice like the H001 one.
 func SuppressDeclaredReopens(schema *Document, diags []Diagnostic) []Diagnostic {
-	type group struct {
-		base  string
-		paths []string
-	}
-	groups := []group{{"field", schema.Instances("field")}}
-	for k := 0; k < schema.Count("fragment"); k++ {
-		base := fmt.Sprintf("fragment[#%d].field", k)
-		groups = append(groups, group{base, schema.Instances(base)})
-	}
-	var names []string
-	for _, g := range groups {
-		for i, p := range g.paths {
-			re := schema.ReadBool(fmt.Sprintf("%s[#%d].reopen", g.base, i))
-			if re.Status != Good || !re.Value {
-				continue
-			}
-			scan, err := scanLookup(p)
-			if err != nil || len(scan.segments) == 0 {
-				continue
-			}
-			seg := scan.segments[len(scan.segments)-1]
-			if seg.star {
-				continue // name wildcard: no single leaf name to disavow
-			}
-			names = append(names, seg.name)
-		}
-	}
+	names := disavowedNames(schema, func(c *constraint) bool { return c.reopen })
 	if len(names) == 0 {
 		return diags
 	}
@@ -5549,6 +5516,7 @@ type constraint struct {
 	minF         *float64
 	maxF         *float64
 	repeat       *[2]uint64
+	reopen       bool   // H002 suppressor only; validation ignores it
 	inherits     string // fragment mounted at this path (subtree shape); "" = none
 	inheritsLine int    // schema line of the `inherits` key, for V095
 	// Generator-only (`shcl init`): validation ignores both.
@@ -5729,16 +5697,17 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 			} else {
 				vdiag(faults, kid.line, "V092", "bad schema constraint 'required'")
 			}
-		// Consumed by the H002 suppressor (which reads the schema document
-		// directly); validation itself ignores it, but a bad value still
-		// faults so a typo cannot silently disavow nothing.
+		// Consumed by the H002 suppressor; validation itself ignores it, but
+		// a bad value still faults so a typo cannot silently disavow nothing.
 		case "reopen":
 			t, ok := singleText(&kid.value)
+			var b bool
 			if ok {
-				_, ok = parseBoolText(t, Standard)
+				b, ok = parseBoolText(t, Standard)
 			}
 			if ok && !reopenSeen {
 				reopenSeen = true
+				c.reopen = b
 			} else {
 				vdiag(faults, kid.line, "V092", "bad schema constraint 'reopen'")
 			}

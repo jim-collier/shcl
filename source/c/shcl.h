@@ -4267,6 +4267,7 @@ typedef struct {
 	int has_min_i, has_max_i, has_min_f, has_max_f;
 	int64_t min_i, max_i; double min_f, max_f;
 	int has_repeat; uint64_t rep_lo, rep_hi;
+	int reopen;                 // H002 suppressor only; validation ignores it
 	ShclStr inherits;           // fragment mounted at this path (subtree shape); .n == 0 = none
 	size_t inherits_line; // schema line of the `inherits` key, for V095
 	// Generator-only (`shcl init`): validation ignores both. has_* gates them.
@@ -4380,12 +4381,12 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 			if (ok && required < 0) required = b;
 			else v_diag(a, faults, kid->line, "V092", v_msg_key(a, "required"));
 		} else if (s_eq(kid->name, s_lit("reopen"))) {
-			/* Consumed by the H002 suppressor (which reads the schema document
-			   directly); validation itself ignores it, but a bad value still
-			   faults so a typo cannot silently disavow nothing. */
+			/* Consumed by the H002 suppressor; validation itself ignores it,
+			   but a bad value still faults so a typo cannot silently disavow
+			   nothing. */
 			ShclStr t; int b = 0;
 			int ok = v_single_text(a, &kid->value, &t) && parse_bool_text(a, t, SHCL_STANDARD, &b);
-			if (ok && !reopen_seen) reopen_seen = 1;
+			if (ok && !reopen_seen) { reopen_seen = 1; c.reopen = b; }
 			else v_diag(a, faults, kid->line, "V092", v_msg_key(a, "reopen"));
 		} else if (s_eq(kid->name, s_lit("allowed"))) {
 			if (kid->value.kind == V_CELL && allowed_at == (size_t)-1) allowed_at = kids.data[ki];
@@ -5082,42 +5083,37 @@ shcl_str shcl_validation_message(const shcl_validation *v, size_t i) {
 const char *shcl_validation_code(const shcl_validation *v, size_t i) { return v->diags.data[i].code; }
 void shcl_validation_free(shcl_validation *v) { if (!v) return; arena_free(&v->arena); arena_free(&v->scratch); free(v); }
 
+/* Leaf names of the schema entries pick accepts, top-level fields and every
+   fragment's fields alike. Read through the built schema, so the names are
+   the ones validation will use (escapes resolved) and an entry whose key
+   faulted disavows nothing. Everything is built in tmp. */
+static int v_pick_repeat(const ShclVCons *c) { return c->has_repeat && c->rep_hi > 1; }
+static int v_pick_reopen(const ShclVCons *c) { return c->reopen; }
+static ShclVecS v_disavowed_names(shcl_doc *schema, ShclArena *tmp, int (*pick)(const ShclVCons *)) {
+	ShclVSchemaDef def; memset(&def, 0, sizeof def);
+	ShclVecDiag faults = {0};
+	v_build_schema(tmp, schema, &def, &faults);
+	ShclVecS names = {0};
+	for (size_t g = 0; g <= def.frags.len; g++) {
+		const ShclVecVCons *list = g == 0 ? &def.cons : &def.frags.data[g - 1].fields;
+		for (size_t i = 0; i < list->len; i++) {
+			const ShclVCons *c = &list->data[i];
+			if (!pick(c) || c->segs.len == 0) continue;
+			/* Name wildcard: no single leaf name to disavow. */
+			const ShclSegment *last = &c->segs.data[c->segs.len - 1];
+			if (!last->star && last->name.n) ShclVecS_push(tmp, &names, last->name);
+		}
+	}
+	return names;
+}
+
 void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 	/* Everything this probe builds - instance/repeat query results as well as
 	   the collected names (which must survive the per-read scratch resets) -
 	   goes into its own arena, freed on exit: the function owns neither doc,
 	   so it must not leave allocations behind in either. */
 	ShclArena tmp; memset(&tmp, 0, sizeof tmp);
-	ShclVecS names = {0};
-	/* Top-level fields plus every fragment's fields: a repeat declared inside
-	   a mounted shape disavows the hint the same way. */
-	size_t nfrag = shcl_count(schema, "fragment", 8);
-	for (size_t g = 0; g <= nfrag; g++) {
-		char base[48];
-		int bn = g == 0 ? snprintf(base, sizeof base, "field")
-		                : snprintf(base, sizeof base, "fragment[#%zu].field", g - 1);
-		shcl_str *paths;
-		ShclStr bp; bp.p = base; bp.n = (size_t)bn;
-		size_t np = instances_in(schema, &tmp, bp, &paths);
-		for (size_t i = 0; i < np; i++) {
-			char q[80];
-			int qn = snprintf(q, sizeof q, "%s[#%zu].repeat", base, i);
-			/* repeat is a 1-2 element array (`repeat: lo[, hi]`); the bound
-			   that matters here is the last one. */
-			ShclStr qp; qp.p = q; qp.n = (size_t)qn;
-			shcl_read_i64_arr rep = read_int_array_in(schema, &tmp, qp);
-			if (rep.status != SHCL_GOOD || rep.n == 0 || rep.values[rep.n - 1] <= 1) continue;
-			ShclStr p; p.p = paths[i].p; p.n = paths[i].n;
-			/* Leaf name from the parsed path, not a re-split of its text: a
-			   quoted last segment may contain dots (`a."b.c"`). The scanner
-			   folds the name; the doc side stores names folded too. */
-			ShclPathScan ps = scan_lookup(&tmp, p);
-			if (!ps.ok || ps.segs.len == 0) continue;
-			const ShclSegment *last = &ps.segs.data[ps.segs.len - 1];
-			if (last->star) continue; /* name wildcard: no single leaf name to disavow */
-			if (last->name.n) ShclVecS_push(&tmp, &names, last->name);
-		}
-	}
+	ShclVecS names = v_disavowed_names(schema, &tmp, v_pick_repeat);
 	if (!names.len) { arena_free(&tmp); return; }
 	ShclVecS heads = {0};
 	for (size_t k = 0; k < names.len; k++) ShclVecS_push(&tmp, &heads, h001_head(&tmp, names.data[k]));
@@ -5141,28 +5137,7 @@ void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc) {
 	/* Same arena discipline as the H001 suppressor above. */
 	ShclArena tmp; memset(&tmp, 0, sizeof tmp);
-	ShclVecS names = {0};
-	size_t nfrag = shcl_count(schema, "fragment", 8);
-	for (size_t g = 0; g <= nfrag; g++) {
-		char base[48];
-		int bn = g == 0 ? snprintf(base, sizeof base, "field")
-		                : snprintf(base, sizeof base, "fragment[#%zu].field", g - 1);
-		shcl_str *paths;
-		ShclStr bp; bp.p = base; bp.n = (size_t)bn;
-		size_t np = instances_in(schema, &tmp, bp, &paths);
-		for (size_t i = 0; i < np; i++) {
-			char q[80];
-			int qn = snprintf(q, sizeof q, "%s[#%zu].reopen", base, i);
-			shcl_read_bool re = shcl_read_bool_(schema, q, (size_t)qn);
-			if (re.status != SHCL_GOOD || !re.value) continue;
-			ShclStr p; p.p = paths[i].p; p.n = paths[i].n;
-			ShclPathScan ps = scan_lookup(&tmp, p);
-			if (!ps.ok || ps.segs.len == 0) continue;
-			const ShclSegment *last = &ps.segs.data[ps.segs.len - 1];
-			if (last->star) continue; /* name wildcard: no single leaf name to disavow */
-			if (last->name.n) ShclVecS_push(&tmp, &names, last->name);
-		}
-	}
+	ShclVecS names = v_disavowed_names(schema, &tmp, v_pick_reopen);
 	if (!names.len) { arena_free(&tmp); return; }
 	ShclVecS heads = {0};
 	for (size_t k = 0; k < names.len; k++) ShclVecS_push(&tmp, &heads, h002_head(&tmp, names.data[k]));
