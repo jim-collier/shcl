@@ -175,6 +175,42 @@ else
 	echo "shell-regress: openssl not installed - signing rows skipped"
 fi
 
+##	20260901b item 20: flame-report.py took any file with a sample count and one
+##	frame for a whole flamegraph, so a profile cut off mid-write reported a
+##	fraction of itself at exit 0 and recorded the marker; a row height other
+##	than the constant it assumed double-counted; a non-UTF-8 file was a
+##	traceback. Three frames are a whole graph; a graph missing the frame
+##	between a leaf and the root, one cut off before its closing tag, and
+##	random bytes must each skip at 2.
+fFlame(){   ## fFlame FILE STEP FRAMES...: a flamegraph of 100 samples with rows STEP apart
+	local file="$1" step="$2"; shift 2
+	{
+		printf '<svg total_samples="100">\n'
+		printf '<title>all (100 samples, 100%%)</title><rect x="0" y="%s" fg:x="0" fg:w="100"/>\n' "$((step * 3))"
+		for fr in "$@"; do
+			IFS='|' read -r fname fx fy fw <<<"${fr}"
+			printf '<title>%s (%s samples)</title><rect x="0" y="%s" fg:x="%s" fg:w="%s"/>\n' "${fname}" "${fw}" "$((step * fy))" "${fx}" "${fw}"
+		done
+		printf '</svg>\n'
+	} > "${file}"
+}
+mkdir -p "${tmpDir}/flame"
+fFlame "${tmpDir}/flame/flame_20260101-000000_whole.svg" 16 'shcl::Parser::parse|0|2|60' 'shcl::Document::to_canonical|60|2|40' 'shcl::scan_path|0|1|10'
+fFlame "${tmpDir}/flame/flame_20260101-000000_tall.svg"  24 'shcl::Parser::parse|0|2|60' 'shcl::Document::to_canonical|60|2|40' 'shcl::scan_path|0|1|10'
+fFlame "${tmpDir}/flame/flame_20260101-000000_gap.svg"   16 'shcl::Document::to_canonical|60|2|40' 'shcl::scan_path|0|1|10'
+head -c 200 "${tmpDir}/flame/flame_20260101-000000_whole.svg" > "${tmpDir}/flame/flame_20260101-000000_cut.svg"
+head -c 1000 /dev/urandom > "${tmpDir}/flame/flame_20260101-000000_junk.svg"
+fFlameRun(){ flameRc=0; flameOut="$(python3 "${repoDir}/cicd/utility/flame-report.py" --file "$1" 2>&1)" || flameRc=$?; }
+fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
+[[ "${flameRc}" == 0 && "${flameOut}" == *"parse (tokenize/merge/diags) .:  60.0%"* ]] || fBad "flame-report.py misread a whole graph (rc ${flameRc}): ${flameOut@Q}"
+fFlameRun "${tmpDir}/flame/flame_20260101-000000_tall.svg"
+[[ "${flameRc}" == 0 && "${flameOut}" == *"parse (tokenize/merge/diags) .:  60.0%"* && "${flameOut}" == *"other ........................:   0.0%"* ]] || fBad "flame-report.py misread a graph with a different row height (rc ${flameRc}): ${flameOut@Q}"
+for bad in gap cut junk; do
+	fFlameRun "${tmpDir}/flame/flame_20260101-000000_${bad}.svg"
+	[[ "${flameRc}" == 2 ]] || fBad "flame-report.py accepted a ${bad} graph (rc ${flameRc}): ${flameOut@Q}"
+	[[ "${flameOut}" != *Traceback* ]] || fBad "flame-report.py tracebacked on a ${bad} graph"
+done
+
 ##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
 ##	release" verbatim, so a patch back-ported to an older line after a newer one
 ##	shipped was handed out as stable. The fixture is in publish order, newest

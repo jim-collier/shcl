@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
-STEP      = 16              # flamegraph row height in the SVG, px (a child sits at parent_y - STEP)
+STEP      = 16.0            # flamegraph row height in the SVG, px, until fParse reads the real one off the rows
 SELF_TOP  = 22             	# self-time leaders to list
 INCL_TOP  = 14             	# inclusive-time buckets to list
 CHAIN     = 4              	# leaves whose caller chain we walk up to the root
@@ -64,7 +64,14 @@ def fAttr(attrs: str, key: str) -> float | None:
 
 
 def fParse(path: Path) -> tuple[int, list[Frame]]:
-	text = path.read_text(encoding="utf-8")
+	##	Skip rather than trust anything that is not a whole graph: a file cut
+	##	off mid-write, or one whose rows are not where the row height says,
+	##	still yields a sample count and some frames, and the report it gave
+	##	summed to a fraction of the samples with the marker written. The row
+	##	height comes off the rows themselves; the root and the self-time sum
+	##	are the checks that a graph is all there.
+	global STEP
+	text = path.read_text(encoding="utf-8", errors="replace")
 	m = re.search(r'total_samples="(\d+)"', text)
 	total = int(m.group(1)) if m else 0
 	frames: list[Frame] = []
@@ -77,6 +84,17 @@ def fParse(path: Path) -> tuple[int, list[Frame]]:
 		frames.append((name, x, y, w))
 	if not total or not frames:
 		fSkip(f"could not parse a flamegraph out of {path}")
+	if not text.rstrip().endswith("</svg>"):
+		fSkip(f"{path} does not end in </svg>; cut off mid-write")
+	ys = sorted({fr[2] for fr in frames})
+	gaps = {round(b - a, 6) for a, b in zip(ys, ys[1:])}
+	if len(gaps) > 1:
+		fSkip(f"rows are not evenly spaced in {path} (gaps {sorted(gaps)}); not a whole flamegraph")
+	if gaps:
+		STEP = gaps.pop()
+	roots = [fr for fr in frames if fr[2] == ys[-1]]
+	if len(roots) != 1 or abs(roots[0][3] - total) > 1e-6:
+		fSkip(f"no single root frame spanning all {total} samples in {path}; not a whole flamegraph")
 	return total, frames
 
 
@@ -116,6 +134,8 @@ def fAnalyze(total: int, frames: list[Frame], top: int) -> None:
 		return None
 
 	selfOf = {fr: fr[3] - sum(c[3] for c in kids(fr)) for fr in frames}
+	if abs(sum(selfOf.values()) - total) > 1 or min(selfOf.values()) < -1e-6:
+		fSkip(f"self time sums to {sum(selfOf.values()):.0f} of {total} samples; frames are missing or misplaced, not a whole flamegraph")
 
 	selfBy: dict[str, float] = {}
 	inclBy: dict[str, float] = {}
@@ -238,3 +258,5 @@ if __name__ == "__main__":
 ##	History:
 ##		- 20260712: Created from the SilkTerm sibling; attribution buckets redone for shcl (parse / emit / reads).
 ##		- 20260829: Regexes compiled once; rows indexed and bisected instead of scanned per frame.
+##		- 2026-09-02 JC: A truncated or reshaped graph skips at exit 2 instead of
+##		  reporting a fraction of it; the row height is read off the rows.
