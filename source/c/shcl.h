@@ -4841,13 +4841,6 @@ static void v_check_from(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCo
 	}
 }
 
-static void v_check(ShclArena *a, ShclArena *lvls, shcl_doc *d, const ShclVCons *c, const ShclVSchemaDef *def, ShclVecDiag *out) {
-	// (fragment, node) pairs already mounted during this constraint's walk;
-	// entries live in the validation arena, so the set needs no own teardown.
-	ShclVMounts mounted; memset(&mounted, 0, sizeof mounted);
-	v_check_from(a, lvls, d, c, def, ROOT, 0, out, &mounted);
-}
-
 // Append a segment to a chain key. Chain keys join segments length-prefixed
 // (`<len>:<name>`), not with a bare NUL: NUL is legal in a quoted name, so a
 // single field named "x\0y" would impersonate the two-segment path x.y. Same
@@ -5064,7 +5057,12 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	if (!lvls) arena_panic(&panic);
 	levels = lvls;
 	for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_guard(&lvls[i], &panic);
-	for (size_t i = 0; i < def.cons.len; i++) v_check(a, lvls, d, &def.cons.data[i], &def, &v->diags);
+	// One mount set for the whole schema: two top-level paths can resolve to
+	// the same node and mount the same fragment there, and the spec says each
+	// fragment runs once per node. Entries live in the validation arena, so
+	// the set needs no own teardown.
+	ShclVMounts mounted; memset(&mounted, 0, sizeof mounted);
+	for (size_t i = 0; i < def.cons.len; i++) v_check_from(a, lvls, d, &def.cons.data[i], &def, ROOT, 0, &v->diags, &mounted);
 	// Nothing returns between the alloc and here, so every slot is reached.
 	for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_free(&lvls[i]);
 	free(lvls);

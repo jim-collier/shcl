@@ -3350,8 +3350,12 @@ class Document:
 		a key-level fault keeps its entry's chain."""
 		sdef, faults = _build_schema(schema)
 		out = faults
+		# One mount set for the whole schema: two top-level paths can resolve
+		# to the same node and mount the same fragment there, and the spec
+		# says each fragment runs once per node.
+		mounted: set = set()
 		for c in sdef.cons:
-			self._v_check(c, sdef, out)
+			self._v_check_from(c, sdef, ROOT, 0, out, mounted)
 		if sdef.paths_complete:
 			self._v_unknown(sdef, out)
 		return out
@@ -3398,9 +3402,6 @@ class Document:
 					cur = [nxt[sel[1]]] if sel[1] < len(nxt) else []
 			if not done:
 				out.append((anchor, cur))
-
-	def _v_check(self, c, sdef, out):
-		self._v_check_from(c, sdef, ROOT, 0, out, set())
 
 	# A mounted fragment's fields run per resolved node, right after that
 	# node's own checks, in fragment order - depth-first, so diagnostic order
