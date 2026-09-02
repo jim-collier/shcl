@@ -173,9 +173,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-191500
 		- Closed: 20260902-150000
 
-	- 🔘 Item 17: `sign-release.bash` signs before it checks the key, and checks nothing about the sums file.
+	- ✅ Item 17: `sign-release.bash` signs before it checks the key, and checks nothing about the sums file.
 		- Reproduced with a throwaway key: the run fails on the key check and leaves a valid-looking `.sig` beside the sums file. The tag check compares against `Cargo.toml` but never against the sums file's own name, and the sums are never verified against the files present, so a stale sums file from a rebuilt tree signs clean.
+		- Fixed: the signer checks before it writes: the sums file must be named `shcl-<version>-sha256sums.txt` for the `Cargo.toml` version, every entry must match the file beside it (`sha256sum -c --strict`), and the key must be the one all three shipped copies trust. Only then is the signature written, and one that fails its own verify is removed.
+		- Pinned by `shell-regress.bash`: a throwaway key against a correct sums file is refused with no `.sig` left, a stale entry and a sums file for another version are each refused before the key is looked at. The old signer failed all five checks.
 		- Opened: 20260901-191600
+		- Closed: 20260902-153000
 
 	- ✅ Item 18: the installer's "not on your PATH" note fires when the directory is on PATH with a trailing slash.
 		- Reproduced. A string compare against `:dir:` misses `dir/`, which the shell resolves fine. Same shape in `install-dev.bash`.

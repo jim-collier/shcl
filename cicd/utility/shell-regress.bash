@@ -143,6 +143,38 @@ eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
 	exit 0
 )
 
+##	20260901b item 17: sign-release.bash wrote the signature first and checked
+##	the key after, so a run with the wrong key failed and left a .sig behind
+##	that looked finished; and nothing checked the sums file's name against the
+##	version, or its entries against the files. A throwaway key stands in for
+##	the wrong one, and every refusal must leave no .sig.
+if command -v openssl >/dev/null 2>&1; then
+	sver="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "${repoDir}/source/rust/Cargo.toml" | head -1)"
+	openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${tmpDir}/wrong.pem" 2>/dev/null
+	fSignRun(){   ## fSignRun DIR: run the signer on DIR with the throwaway key; stderr in signOut
+		signOut="$(bash "${repoDir}/cicd/utility/sign-release.bash" --key "${tmpDir}/wrong.pem" --dir "$1" --no-tag-check 2>&1 || true)"
+	}
+	## Right name, right sums, wrong key: refused on the key, nothing written.
+	mkdir -p "${tmpDir}/sign1"; printf 'bin\n' > "${tmpDir}/sign1/shcl-${sver}-linux-x86_64"
+	(cd "${tmpDir}/sign1" && sha256sum "shcl-${sver}-linux-x86_64" > "shcl-${sver}-sha256sums.txt")
+	fSignRun "${tmpDir}/sign1"
+	[[ "${signOut}" == *"not this key"* ]] || fBad "sign-release.bash did not refuse the wrong key: ${signOut@Q}"
+	[[ ! -e "${tmpDir}/sign1/shcl-${sver}-sha256sums.txt.sig" ]] || fBad "sign-release.bash left a .sig behind after refusing the key"
+	## Stale sums: an entry that no longer matches its file.
+	mkdir -p "${tmpDir}/sign2"; cp "${tmpDir}/sign1/"* "${tmpDir}/sign2/"; printf 'rebuilt\n' > "${tmpDir}/sign2/shcl-${sver}-linux-x86_64"
+	fSignRun "${tmpDir}/sign2"
+	[[ "${signOut}" == *"does not match the files"* ]] || fBad "sign-release.bash signed a stale sums file: ${signOut@Q}"
+	[[ ! -e "${tmpDir}/sign2/shcl-${sver}-sha256sums.txt.sig" ]] || fBad "sign-release.bash left a .sig behind after a stale sums file"
+	## A sums file from another version.
+	mkdir -p "${tmpDir}/sign3"; printf 'bin\n' > "${tmpDir}/sign3/shcl-0.0.1-linux-x86_64"
+	(cd "${tmpDir}/sign3" && sha256sum "shcl-0.0.1-linux-x86_64" > "shcl-0.0.1-sha256sums.txt")
+	fSignRun "${tmpDir}/sign3"
+	[[ "${signOut}" == *"is not the sums file for ${sver}"* ]] || fBad "sign-release.bash signed a sums file for another version: ${signOut@Q}"
+	[[ ! -e "${tmpDir}/sign3/shcl-0.0.1-sha256sums.txt.sig" ]] || fBad "sign-release.bash left a .sig behind after a misnamed sums file"
+else
+	echo "shell-regress: openssl not installed - signing rows skipped"
+fi
+
 ##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
 ##	release" verbatim, so a patch back-ported to an older line after a newer one
 ##	shipped was handed out as stable. The fixture is in publish order, newest

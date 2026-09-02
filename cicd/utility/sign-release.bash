@@ -11,10 +11,12 @@
 ##		is offline, and this script is run by hand at release time. A key sitting
 ##		in CI would be reachable by exactly the compromise this defends against.
 ##
-##		Signs, then verifies what it just wrote, then checks that the key used
-##		is the one the shipped installers actually trust - a signature made with
-##		the wrong key verifies perfectly on its own and fails for every user, so
-##		that last check is the one that matters.
+##		Checks first, signs last: the sums file has to be named for the version
+##		being cut and match the files beside it, and the key has to be the one
+##		the shipped installers actually trust - a signature made with the wrong
+##		key verifies perfectly on its own and fails for every user. Nothing is
+##		written until every check has passed, so a failed run leaves no .sig
+##		behind to be attached by mistake.
 ##	Syntax:
 ##		sign-release.bash --key FILE [--dir DIR] [--no-tag-check]
 ##		  --key FILE      private signing key (PEM). Prompts if passphrase-protected.
@@ -49,10 +51,12 @@ fUsage(){
 ##		is offline, and this script is run by hand at release time. A key sitting
 ##		in CI would be reachable by exactly the compromise this defends against.
 ##
-##		Signs, then verifies what it just wrote, then checks that the key used
-##		is the one the shipped installers actually trust - a signature made with
-##		the wrong key verifies perfectly on its own and fails for every user, so
-##		that last check is the one that matters.
+##		Checks first, signs last: the sums file has to be named for the version
+##		being cut and match the files beside it, and the key has to be the one
+##		the shipped installers actually trust - a signature made with the wrong
+##		key verifies perfectly on its own and fails for every user. Nothing is
+##		written until every check has passed, so a failed run leaves no .sig
+##		behind to be attached by mistake.
 ##	Syntax:
 ##		sign-release.bash --key FILE [--dir DIR] [--no-tag-check]
 ##		  --key FILE      private signing key (PEM). Prompts if passphrase-protected.
@@ -95,29 +99,36 @@ command -v openssl >/dev/null || fDie "need openssl"
 ## sums file whose entries no download URL can reach, so refuse unless HEAD
 ## carries exactly v<version>. `git tag --points-at` rather than `describe`:
 ## the cut puts two tags on the commit (v2.0.0 and source/go/v2.0.0).
+ver="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "${root}/source/rust/Cargo.toml" | head -1)"
+[[ -n "${ver}" ]] || fDie "cannot read the version from source/rust/Cargo.toml"
 if (( tagCheck )); then
-	ver="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "${root}/source/rust/Cargo.toml" | head -1)"
-	[[ -n "${ver}" ]] || fDie "cannot read the version from source/rust/Cargo.toml"
 	headTags="$(git -C "${root}" tag --points-at HEAD 2>/dev/null || true)"
 	if ! grep -qxF "v${ver}" <<<"${headTags}"; then
 		fDie "HEAD is not tagged v${ver} (Cargo.toml says ${ver}); tag the cut first, or --no-tag-check for a rehearsal"
 	fi
 fi
 
-## Exactly one sums file, or we would be signing an ambiguous trust root.
+## Exactly one sums file, or we would be signing an ambiguous trust root, and
+## it has to be the one for this version: a stale file from an earlier cut
+## signs just as well and would then be attached beside assets it never
+## covered.
 mapfile -t sums < <(find "${dir}" -maxdepth 1 -type f -name '*-sha256sums.txt' | sort)
 (( ${#sums[@]} == 1 )) || fDie "expected exactly 1 *-sha256sums.txt in ${dir}, found ${#sums[@]}" 2
 sumsfile="${sums[0]}"
 sigfile="${sumsfile}.sig"
+[[ "${sumsfile##*/}" == "shcl-${ver}-sha256sums.txt" ]] \
+	|| fDie "${sumsfile##*/} is not the sums file for ${ver} (Cargo.toml); rebuild the artifacts or fix the version"
 
-openssl dgst -sha256 -sign "${key}" -out "${sigfile}" "${sumsfile}" \
-	|| fDie "signing failed"
+## Every entry has to match the file beside it. A sums file written before a
+## rebuild is the same trap as a stale one: the signature would vouch for
+## bytes nobody is shipping.
+[[ -s "${sumsfile}" ]] || fDie "${sumsfile##*/} is empty"
+(cd "${dir}" && sha256sum -c --quiet --strict "${sumsfile##*/}") \
+	|| fDie "${sumsfile##*/} does not match the files in ${dir}; rebuild the artifacts before signing"
 
-## Verify what we just wrote, against the public half of the same key.
-pub="$(mktemp)"; trap 'rm -f "${pub}"' EXIT
+## The public half of the key, for the identity checks and the verify.
+pub="$(mktemp)"; tmppub="$(mktemp)"; trap 'rm -f "${pub}" "${tmppub}"' EXIT
 openssl pkey -in "${key}" -pubout -out "${pub}" 2>/dev/null || fDie "cannot derive the public key"
-openssl dgst -sha256 -verify "${pub}" -signature "${sigfile}" "${sumsfile}" >/dev/null 2>&1 \
-	|| fDie "wrote a signature that does not verify"
 
 ## The checks that actually catch mistakes: is this the key every shipped copy
 ## trusts? Signing with the wrong key produces a perfectly valid signature that
@@ -125,7 +136,6 @@ openssl dgst -sha256 -verify "${pub}" -signature "${sigfile}" "${sumsfile}" >/de
 ## have to agree - the published .pub, the PEM inlined in install.bash, and the
 ## raw modulus inlined in install.ps1 - so any one of them drifting is caught
 ## here rather than by somebody's failed install.
-tmppub="$(mktemp)"; trap 'rm -f "${pub}" "${tmppub}"' EXIT
 ## `|| true` inside the substitutions below: under pipefail a pipe that finds
 ## nothing fails the assignment and errexit ends the script with no message, so
 ## the guard after it would never run.
@@ -158,6 +168,13 @@ if [[ -r "${root}/install.ps1" ]]; then
 	[[ -n "${psmod}" && "${psmod}" == "${keymod}" ]] || fDie "install.ps1 carries a different key"
 fi
 
+## Everything checked; sign, and verify what was written. A signature that
+## does not verify is removed rather than left looking finished.
+openssl dgst -sha256 -sign "${key}" -out "${sigfile}" "${sumsfile}" \
+	|| { rm -f "${sigfile}"; fDie "signing failed"; }
+openssl dgst -sha256 -verify "${pub}" -signature "${sigfile}" "${sumsfile}" >/dev/null 2>&1 \
+	|| { rm -f "${sigfile}"; fDie "wrote a signature that does not verify"; }
+
 printf 'signed  %s\n' "${sumsfile##*/}"
 printf 'wrote   %s\n' "${sigfile##*/}"
 printf 'key fp  %s\n' "$(openssl pkey -in "${key}" -pubout 2>/dev/null | openssl pkey -pubin -outform DER -pubout 2>/dev/null | sha256sum | cut -d' ' -f1)"
@@ -171,3 +188,5 @@ printf 'attach both the sums file and its .sig to the release.\n'
 ##		- 2026-08-30 JC: The modulus and fingerprint guards are reachable again
 ##		  (a failed pipe used to end the script before them); help is framed
 ##		  with a blank line each side.
+##		- 2026-09-02 JC: Checks before the signature: the sums file's name and
+##		  contents, then the key, and only then the write; a failed run leaves no .sig.
