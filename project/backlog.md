@@ -166,17 +166,23 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-191400
 		- Closed: 20260902-143000
 
-	- 🔘 Item 16: a system install under umask 077 still leaves the man directory root-only when the installer has to create it.
+	- ✅ Item 16: a system install under umask 077 still leaves the man directory root-only when the installer has to create it.
 		- Reproduced with the system paths redirected into a sandbox. The 20260830b fix widens the install root only; `man1` under `/usr/local/share/man` is created by a plain `mkdir` under the caller's umask and is not widened, and a fresh Debian does not have it.
+		- Fixed: the lay-down step notes, before each `mkdir -p`, the shallowest directory it will have to create (the install root's, the bin directory's, the man1 directory's) and widens those along with the install root; a directory that already existed is left alone. The step is a function now (`fLayDown`), so it can run on a staged payload.
+		- Pinned by `shell-regress.bash`, which runs `fLayDown` under umask 077 into a sandbox where `bin` and `man1` do not exist yet and requires every directory 755. With the widening narrowed back to the install root it reports four root-only directories.
 		- Opened: 20260901-191500
+		- Closed: 20260902-150000
 
 	- 🔘 Item 17: `sign-release.bash` signs before it checks the key, and checks nothing about the sums file.
 		- Reproduced with a throwaway key: the run fails on the key check and leaves a valid-looking `.sig` beside the sums file. The tag check compares against `Cargo.toml` but never against the sums file's own name, and the sums are never verified against the files present, so a stale sums file from a rebuilt tree signs clean.
 		- Opened: 20260901-191600
 
-	- 🔘 Item 18: the installer's "not on your PATH" note fires when the directory is on PATH with a trailing slash.
+	- ✅ Item 18: the installer's "not on your PATH" note fires when the directory is on PATH with a trailing slash.
 		- Reproduced. A string compare against `:dir:` misses `dir/`, which the shell resolves fine. Same shape in `install-dev.bash`.
+		- Fixed: a `fOnPath` helper in both installers walks PATH by element and ignores a trailing slash on either side.
+		- Pinned by `shell-regress.bash`: a PATH element `dir/` is seen, `dir/` asked for is seen, and a prefix or a deeper path is not.
 		- Opened: 20260901-191700
+		- Closed: 20260902-150000
 
 	- 🔘 Item 19: the profiler workload merges half its nodes and prints a hint per unit, so the profile measures hint formatting and stderr writes, and the run log carries a million hint lines.
 		- Reproduced: the generator's trailing `service: svcN` line reopens the block above it, so every unit's two `port` leaves collide. 37% of the profiled CPU is the unbuffered hint stream. Today's run log is 93 MB, and a million of its lines are `H001`, from the profiler stage and the large-document fixpoint check.

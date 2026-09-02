@@ -364,29 +364,60 @@ fWidenModes(){
 	${run} chmod -R a+rX "$@"
 }
 
-## Install. The binary goes in via a hidden temp + mv in the same dir, so a
-## running copy only ever sees the complete old or new file.
-${asroot} mkdir -p "${dest}" "$(dirname "${link}")"
-${asroot} cp "${tmp}/shcl" "${dest}/.shcl.new"
-${asroot} mv -f "${dest}/.shcl.new" "${dest}/shcl"
-if (( have_dropins )); then
-	${asroot} mkdir -p "${dest}/code" "${dest}/scripts"
-	${asroot} cp "${tmp}"/code/* "${dest}/code/"
-	${asroot} cp "${tmp}"/scripts/* "${dest}/scripts/"
-fi
-if (( have_docs )); then
-	${asroot} mkdir -p "${dest}/man" "${dest}/completions" "$(dirname "${manlink}")"
-	${asroot} cp "${tmp}"/man/* "${dest}/man/"
-	${asroot} cp "${tmp}"/completions/* "${dest}/completions/"
-	## Never over a real file: a man1/shcl.1 that is not ours came from a package.
-	if [[ -L "${manlink}" || ! -e "${manlink}" ]]; then
-		${asroot} ln -sfn "${dest}/man/shcl.1" "${manlink}"
+## The shallowest directory `mkdir -p DIR` will have to create, or nothing
+## when DIR exists. The bin and man1 directories are usually there already
+## on a system; when they are not, they are ours to widen too, and a system
+## directory that was already there is left alone.
+fTopMissing(){
+	local dir="${1}" top=""
+	while [[ "${dir}" != "/" && "${dir}" != "." && ! -d "${dir}" ]]; do top="${dir}"; dir="$(dirname "${dir}")"; done
+	printf '%s' "${top}"
+}
+
+## Lay the payload in ${tmp} down under ${dest} and link it. The binary goes
+## in via a hidden temp + mv in the same dir, so a running copy only ever sees
+## the complete old or new file. A function so the same steps run on a staged
+## payload without the downloads in front of them.
+fLayDown(){
+	local desttop linkdir mandir
+	desttop="$(fTopMissing "${dest}")"
+	linkdir="$(fTopMissing "$(dirname "${link}")")"
+	${asroot} mkdir -p "${dest}" "$(dirname "${link}")"
+	${asroot} cp "${tmp}/shcl" "${dest}/.shcl.new"
+	${asroot} mv -f "${dest}/.shcl.new" "${dest}/shcl"
+	if (( have_dropins )); then
+		${asroot} mkdir -p "${dest}/code" "${dest}/scripts"
+		${asroot} cp "${tmp}"/code/* "${dest}/code/"
+		${asroot} cp "${tmp}"/scripts/* "${dest}/scripts/"
 	fi
-fi
-${asroot} ln -sfn "${dest}/shcl" "${link}"
-if [[ "${target}" == "system" ]]; then
-	fWidenModes "${asroot}" "${dest}"
-fi
+	mandir=""
+	if (( have_docs )); then
+		mandir="$(fTopMissing "$(dirname "${manlink}")")"
+		${asroot} mkdir -p "${dest}/man" "${dest}/completions" "$(dirname "${manlink}")"
+		${asroot} cp "${tmp}"/man/* "${dest}/man/"
+		${asroot} cp "${tmp}"/completions/* "${dest}/completions/"
+		## Never over a real file: a man1/shcl.1 that is not ours came from a package.
+		if [[ -L "${manlink}" || ! -e "${manlink}" ]]; then
+			${asroot} ln -sfn "${dest}/man/shcl.1" "${manlink}"
+		fi
+	fi
+	${asroot} ln -sfn "${dest}/shcl" "${link}"
+	if [[ "${target}" == "system" ]]; then
+		fWidenModes "${asroot}" "${desttop:-${dest}}" ${linkdir:+"${linkdir}"} ${mandir:+"${mandir}"}
+	fi
+}
+
+## Is DIR on the PATH? By element, with a trailing slash ignored on either
+## side: the shell resolves `bin/` fine, and a plain string compare did not.
+fOnPath(){
+	local dir="${1%/}" elem
+	while IFS= read -r -d: elem || [[ -n "${elem}" ]]; do
+		[[ "${elem%/}" == "${dir}" ]] && return 0
+	done <<<"${PATH}:"
+	return 1
+}
+
+fLayDown
 
 echo
 printf 'installed shcl %s -> %s\n' "${version}" "${link}"
@@ -413,7 +444,7 @@ printf 'to remove it again: %s --uninstall --target=%s\n' "${rerun}" "${target}"
 ## check below, so say something when the symlink dir is off the PATH. It costs
 ## the man page too - man derives its search dirs from the bin dirs on PATH.
 linkdir="$(dirname "${link}")"
-if [[ ":${PATH}:" != *":${linkdir}:"* ]]; then
+if ! fOnPath "${linkdir}"; then
 	# The PATH expansion is for the user to paste, not for us to expand here.
 	# shellcheck disable=SC2016
 	printf 'note: %s is not on your PATH, so neither shcl nor "man shcl" will be found - add it with:\n  export PATH="%s:$PATH"\n(put that line in your shell profile to make it stick)\n' "${linkdir}" "${linkdir}"
