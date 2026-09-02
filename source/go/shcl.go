@@ -638,6 +638,11 @@ const root = 0
 // of re-parenting one level up.
 const dead = -1
 
+// unopened is the stack entry for a line whose indent matched no open level
+// (E012): never a level a sibling can bind at, but deeper lines are still
+// under it.
+const unopened = -2
+
 // foldNodeInto merges a later instance into an earlier one under the in-file
 // merge rule: children and trivia move over, first trailing wins (a second
 // demotes to a leading line), first spelling stays. The caller drops the loser
@@ -1779,7 +1784,7 @@ func (p *parser) hangDeeperPending(newIndent string) {
 			atOwnLevel := false
 			for j := len(p.stack) - 1; j >= 0; j-- {
 				ent := p.stack[j]
-				if ent.node != root && ent.node != dead && len(ent.indent) >= len(newIndent) &&
+				if ent.node != root && ent.node != dead && ent.node != unopened && len(ent.indent) >= len(newIndent) &&
 					strings.HasPrefix(pn.indent, ent.indent) {
 					target = ent.node
 					atOwnLevel = len(ent.indent) == len(pn.indent)
@@ -1813,10 +1818,13 @@ func (p *parser) hangDeeperPending(newIndent string) {
 func (p *parser) resolveParent(indent string) (int, bool) {
 	top := p.stack[len(p.stack)-1]
 	if len(indent) > len(top.indent) && strings.HasPrefix(indent, top.indent) {
+		if top.node == unopened {
+			return dead, true
+		}
 		return top.node, true
 	}
 	for i := len(p.stack) - 1; i >= 0; i-- {
-		if p.stack[i].indent == indent {
+		if p.stack[i].indent == indent && p.stack[i].node != unopened {
 			// Sibling of stack[i]: its parent is the entry below it. Keep the
 			// sentinel; a top-level line resolves to root.
 			parent := root
@@ -1828,9 +1836,23 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 				keep = 1
 			}
 			p.stack = p.stack[:keep]
+			if parent == unopened {
+				return dead, true
+			}
 			return parent, true
 		}
 	}
+	// Skipped, but it still owns its indent: whatever is written deeper is
+	// skipped with it, and a sibling at the same bad indent is refused the
+	// same way instead of binding one level up.
+	for len(p.stack) > 1 {
+		topIndent := p.stack[len(p.stack)-1].indent
+		if len(indent) > len(topIndent) && strings.HasPrefix(indent, topIndent) {
+			break
+		}
+		p.stack = p.stack[:len(p.stack)-1]
+	}
+	p.stack = append(p.stack, stackEnt{indent: indent, node: unopened})
 	return 0, false
 }
 
@@ -2210,13 +2232,15 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// Child-indent fence: a value line for its parent field.
 		if ch, length, info, ok := fenceOpen(rest); ok {
 			parent, okp := p.resolveParent(indent)
+			v, next := p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 			if !okp {
+				// The body goes with its fence: parsed live, it would read as
+				// root bindings and the closing fence would open a second block.
 				p.err(lineno, "E012", "indentation matches no open level")
 				p.lost++
-				i++
+				i = next
 				continue
 			}
-			v, next := p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 			if parent == dead {
 				p.skipUnderDead(lineno, indent)
 			} else if node := p.bindBlock(parent, v, lineno); node >= 0 {
@@ -2250,6 +2274,18 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				i++
 				continue
 			}
+			parent, okp := p.resolveParent(indent)
+			if !okp {
+				p.err(lineno, "E012", "indentation matches no open level")
+				p.lost++
+				i++
+				continue
+			}
+			if parent == dead {
+				p.skipUnderDead(lineno, indent)
+				i++
+				continue
+			}
 			p.err(lineno, "E013", "malformed line: '*' must be followed by a space")
 			// Content-malformed at any position, so it is safe to retain
 			// verbatim as trivia: re-emitted, it re-diagnoses identically
@@ -2258,6 +2294,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			// sibling site below carries cannot apply here: this line starts
 			// with the '*' that brought us in.
 			p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
+			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
 			i++
 			continue
 		}
