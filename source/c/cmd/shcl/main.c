@@ -25,6 +25,7 @@
 #include <stdarg.h>
 #ifdef _WIN32
 	#include <windows.h>
+	#include <shellapi.h>
 	#include <io.h>
 	#include <process.h>
 	#include <sys/stat.h>
@@ -246,11 +247,22 @@ static void *xdoc(void *p) {
 
 // Reads FILE (or stdin for "-") fully. Returns malloc'd buffer + len, or NULL on
 // error (message printed to stderr). Rejects invalid UTF-8 like the reference.
+// A narrow fopen reads the path in the active code page. The argv here is
+// UTF-8 (see utf8_argv), so the file opens go through the library's wide
+// open, which is the only way a name outside the code page reaches its file.
+static FILE *open_rb(const char *file) {
+#ifdef _WIN32
+	return shcl_fopen_rb(file);
+#else
+	return fopen(file, "rb");
+#endif
+}
+
 // Nothing at the path at all, as opposed to something there that will not open.
 // fopen rather than stat/access so the check needs no platform header: a
 // directory opens here and a protected file sets EACCES, so both stay errors.
 static int path_absent(const char *file) {
-	FILE *p = fopen(file, "rb");
+	FILE *p = open_rb(file);
 	if (p) { fclose(p); return 0; }
 	return errno == ENOENT;
 }
@@ -259,7 +271,7 @@ static char *read_input(const char *file, size_t *len) {
 	char *buf = NULL; size_t cap = 0, n = 0;
 	int is_stdin = strcmp(file, "-") == 0;
 	const char *who = is_stdin ? "stdin" : file;
-	FILE *f = is_stdin ? stdin : fopen(file, "rb");
+	FILE *f = is_stdin ? stdin : open_rb(file);
 	if (!f) { fprintf(stderr, "%s: %s\n", who, strerror(errno)); return NULL; }
 	char chunk[65536]; size_t r;
 	errno = 0;
@@ -554,7 +566,10 @@ static int dir_writable(const char *file) {
 	else if (slash == file) snprintf(dir, sizeof dir, "/");
 	else snprintf(dir, sizeof dir, "%.*s", (int)(slash - file), file);
 #ifdef _WIN32
-	return _access(dir, 2) == 0;
+	wchar_t *w = shcl_widen(dir);
+	int ok = w && _waccess(w, 2) == 0;
+	free(w);
+	return ok;
 #else
 	return access(dir, W_OK) == 0;
 #endif
@@ -1205,6 +1220,29 @@ static int is_command(const char *cmd) {
 	return 0;
 }
 
+#ifdef _WIN32
+// The narrow argv arrives in the active code page, best-fit mapped: a name
+// the page cannot spell becomes a different name, and `--write` then rewrites
+// a different file. The wide command line is exact; hand it over as UTF-8,
+// which is what the library's file tier expects. NULL when the conversion
+// fails (nothing sensible is left to run).
+static char **utf8_argv(int *argc) {
+	int n = 0;
+	wchar_t **wargv = CommandLineToArgvW(GetCommandLineW(), &n);
+	if (!wargv) return NULL;
+	char **out = (char **)calloc((size_t)n + 1, sizeof *out);
+	if (!out) return NULL;
+	for (int i = 0; i < n; i++) {
+		int len = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+		if (len <= 0 || !(out[i] = (char *)malloc((size_t)len))) return NULL;
+		WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, out[i], len, NULL, NULL);
+	}
+	LocalFree(wargv);
+	*argc = n;
+	return out;
+}
+#endif
+
 int main(int argc, char **argv) {
 	setlocale(LC_ALL, "C"); // strtod/printf must use '.' regardless of environment
 #ifdef _WIN32
@@ -1212,6 +1250,7 @@ int main(int argc, char **argv) {
 	_setmode(_fileno(stdin), _O_BINARY);
 	_setmode(_fileno(stdout), _O_BINARY);
 	_setmode(_fileno(stderr), _O_BINARY);
+	if (!(argv = utf8_argv(&argc))) { fprintf(stderr, "cannot read the command line\n"); return 1; }
 #endif
 	// Reject non-UTF-8 argv up front (exit 1), matching the reference; the parser
 	// assumes valid UTF-8, and a garbled arg is a usage error, not a real miss.
