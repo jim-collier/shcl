@@ -1551,6 +1551,22 @@ func TestSuppressLeavesTheCallersDiagnosticsAlone(t *testing.T) {
 	if len(SuppressDeclaredRepeats(schema, diags)) != 1 {
 		t.Fatal("the filter dropped no hint, so nothing above was proved")
 	}
+	// The keep-everything path and Diagnostics() itself have to hand out
+	// their own backing array too: shared with the document's, a caller's
+	// append and the document's next append land in the same slot.
+	none := Parse("field: other\n")
+	for name, kept := range map[string][]Diagnostic{
+		"SuppressDeclaredRepeats": SuppressDeclaredRepeats(none, diags),
+		"SuppressDeclaredReopens": SuppressDeclaredReopens(none, diags),
+		"Diagnostics":             doc.Diagnostics(),
+	} {
+		if len(kept) != len(diags) {
+			t.Fatalf("%s: want %d diagnostics kept, got %d", name, len(diags), len(kept))
+		}
+		if &kept[0] == &diags[0] || &kept[0] == &doc.diags[0] {
+			t.Fatalf("%s: returned the caller's or the document's own backing array", name)
+		}
+	}
 }
 
 func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {

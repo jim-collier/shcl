@@ -2515,7 +2515,10 @@ func ParseLimited(text string, strictness Strictness, maxNodes, maxElements, max
 // Diagnostics is everything the load recorded (after LoadAndValidate,
 // validation findings too).
 func (d *Document) Diagnostics() []Diagnostic {
-	return d.diags
+	// A copy: the reference hands out a borrowed view nobody can append to,
+	// and a Go slice sharing the document's backing array would let a
+	// caller's append and the document's next one overwrite each other.
+	return append([]Diagnostic(nil), d.diags...)
 }
 
 // LostCount is how many lines or values parsing dropped that canonical
@@ -2795,7 +2798,7 @@ func h001Head(name string) string {
 func SuppressDeclaredRepeats(schema *Document, diags []Diagnostic) []Diagnostic {
 	names := disavowedNames(schema, func(c *constraint) bool { return c.repeat != nil && c.repeat[1] > 1 })
 	if len(names) == 0 {
-		return diags
+		return append([]Diagnostic(nil), diags...)
 	}
 	heads := make([]string, len(names))
 	for i, n := range names {
@@ -3156,7 +3159,7 @@ func h002Head(name string) string {
 func SuppressDeclaredReopens(schema *Document, diags []Diagnostic) []Diagnostic {
 	names := disavowedNames(schema, func(c *constraint) bool { return c.reopen })
 	if len(names) == 0 {
-		return diags
+		return append([]Diagnostic(nil), diags...)
 	}
 	heads := make([]string, len(names))
 	for i, n := range names {
