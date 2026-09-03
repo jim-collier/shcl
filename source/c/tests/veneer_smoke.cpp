@@ -171,6 +171,16 @@ int main() {
 	CHECK(starter.find("This config file format is SHCL.", bare.size()) != std::string::npos);
 	auto faulty = shcl::Document::parse("field: port\n\tfrobnicate: 1\n").generate();
 	CHECK(!faulty.second && faulty.first.empty());
+	// The fault list is on the schema itself. The header used to send a reader
+	// to validate() against an empty document, which cannot reproduce a
+	// generation-only code - it reports that document's own V002/V007 instead.
+	auto genfault = shcl::Document::parse("field: p\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\tdefault: 99\n");
+	CHECK(!genfault.generate(true).second);
+	bool sawV097 = false;
+	for (const auto &g : genfault.diagnostics()) if (g.code == "V097") sawV097 = true;
+	CHECK(sawV097);
+	shcl::Document empty;
+	for (const auto &g : empty.validate(genfault)) CHECK(g.code != "V097");
 	// A default-constructed Document is an empty one, not a null handle.
 	shcl::Document blank;
 	CHECK(blank.to_canonical().empty() && blank.count("x") == 0 && blank.diagnostics().empty());
