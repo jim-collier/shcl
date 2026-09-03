@@ -4109,8 +4109,11 @@ _I64_MAX = 2 ** 63 - 1
 
 
 def _strip_currency(t):
+	# The remainder after a leading currency symbol, with the space a person
+	# writes after one taken off - `$ 1200` reached the int path's thousands
+	# branch, which trims, and the float path's shape test, which does not.
 	if t and t[0] in _CURRENCY:
-		return t[1:]
+		return t[1:].lstrip(_WS)
 	return t
 
 

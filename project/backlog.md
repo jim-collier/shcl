@@ -241,10 +241,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-172200
 		- Closed: 20260903-021500
 
-	- 🔘 Item 24: at Loose, `$ 1200` reads as 1200 but `$ 3.14` is BadType.
+	- ✅ Item 24: at Loose, `$ 1200` reads as 1200 but `$ 3.14` is BadType.
 		- Reproduced in all four: whitespace after the currency symbol is tolerated on the integer path only, because the float path tests the shape on the untrimmed remainder and then falls into the integer path, which trims.
-		- Note: trim after `strip_currency` in both paths, or refuse the space in both; one corpus row at Loose.
+		- Fixed: the currency strip takes the space with the symbol, in all four, so both paths see the same remainder.
+		- Pinned by corpus `003` (`"$ 3.14"` reading 3.14 as a float and 3 as an int at Loose, and BadType at Standard). All four read BadType before.
 		- Opened: 20260902-172300
+		- Closed: 20260903-023000
 
 	- 🔘 Item 25: `Jul 12, 2026` is listed as an admitted date spelling, and bare in a file the comma splits it into a two-element array.
 		- Reproduced in all four: `b: Jul 12, 2026` reads BadType (two elements, `Jul 12` and `2026`) while the quoted spelling reads `2026-07-12`. The code is right by the array rule; the Integers section says "only inside quotes, since `,` is reserved bare" and the datetime bullet says nothing.

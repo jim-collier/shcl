@@ -4567,11 +4567,15 @@ var currencyRunes = []rune{
 	'$', '¢', '£', '¤', '¥', '₩', '₪', '₫', '€', '₭', '₮', '₱', '₲', '₴', '₹', '₺', '₼', '₽', '₾', '₿',
 }
 
+// stripCurrency is the remainder after a leading currency symbol, with the
+// space a person writes after one taken off - `$ 1200` reached the int path's
+// thousands branch, which trims, and the float path's shape test, which does
+// not.
 func stripCurrency(t string) string {
 	r, size := utf8.DecodeRuneInString(t)
 	for _, c := range currencyRunes {
 		if r == c {
-			return t[size:]
+			return strings.TrimLeftFunc(t[size:], unicode.IsSpace)
 		}
 	}
 	return t

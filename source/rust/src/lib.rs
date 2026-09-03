@@ -4313,10 +4313,13 @@ const CURRENCY: &[char] = &[
 	'₿',
 ];
 
+/// The remainder after a leading currency symbol, with the space a person
+/// writes after one taken off - `$ 1200` reached the int path's thousands
+/// branch, which trims, and the float path's shape test, which does not.
 fn strip_currency(t: &str) -> &str {
 	let mut it = t.chars();
 	match it.next() {
-		Some(c) if CURRENCY.contains(&c) => it.as_str(),
+		Some(c) if CURRENCY.contains(&c) => it.as_str().trim_start(),
 		_ => t,
 	}
 }
