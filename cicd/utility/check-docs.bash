@@ -155,6 +155,14 @@ while IFS= read -r hit; do
 	fBad "backlog.md: says how it was found rather than what changed: ${hit}"
 done < <(grep -nE '^[[:space:]]*- Found (by|while) ' "${backlog}" || true)
 
+##	V096 and V097 come only from generation, so validating anything against the
+##	schema cannot reproduce them - the veneer header used to send a reader that
+##	way for the fault list, which returns the validated document's own V002 and
+##	V007 instead. The C CLI made the same mistake and was fixed in 20260830b.
+while IFS= read -r hit; do
+	fBad "shcl.hpp: sends a reader to validate() for generation faults: ${hit}"
+done < <(grep -nE 'for the fault list, validate\(\)' "${repoDir}/source/c/shcl.hpp" || true)
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

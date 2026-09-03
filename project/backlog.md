@@ -225,10 +225,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-172000
 		- Closed: 20260903-015000
 
-	- 🔘 Item 22: `shcl.hpp` tells the veneer user to recover generation faults by validating an empty document, which cannot reproduce them.
+	- ✅ Item 22: `shcl.hpp` tells the veneer user to recover generation faults by validating an empty document, which cannot reproduce them.
 		- Reproduced: `validate(empty, schema)` after a failed `generate()` gives `V002`, never the `V097` the generator recorded. V096 and V097 are generation-only codes. The C CLI made the same mistake and was fixed in the 20260830b round; the veneer comment kept the old recipe.
-		- Note: "read `diagnostics()` on this document after the call".
+		- Fixed: the comment says to read `diagnostics()` on the schema after the call, and says why validating cannot answer it.
+		- Pinned by `check-docs.bash`, which refuses the old sentence, and by `veneer_smoke.cpp`, which requires the V097 to be on the schema and absent from validating an empty document against it.
 		- Opened: 20260902-172100
+		- Closed: 20260903-020000
 
 	- 🔘 Item 23: the datetime whitelist admits spellings the spec does not list.
 		- Reproduced in all four, all Good: `9:30` (one-digit hour with no meridiem), `2026-7-1` and `2026/7/4` (one-digit month and day), `14:30z` and `2026-07-12t14:30` (lower case), `14:30 Z` and `14:30 +05:00` (space before the zone), `2026-07-12  14:30` (two spaces as the separator). The spec says the formats are a closed whitelist and anything else is BadType. Correctly refused in the same run: `24:00`, `14:30:60`, `2026-02-29`, `12-Jul/2026`, `2026-07-12 T 14:30`, `Jul 12,2026`.
