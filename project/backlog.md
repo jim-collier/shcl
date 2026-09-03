@@ -630,8 +630,11 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-192600
 		- Closed: 20260903-200000
 
-	- 🔘 Item 28: a raw body in a `V004` message embeds its newlines, so one diagnostic spans several stderr lines.
+	- ✅ Item 28: a raw body in a `V004` message embeds its newlines, so one diagnostic spans several stderr lines.
+		- Fixed: the value a `V004` message quotes has its line breaks and tabs escaped, in all four, so one diagnostic is one line however the value was written.
+		- Pinned by a `cli-regress` row: a raw block with a two-line body against a string `allowed` must report on one line.
 		- Opened: 20260901-192700
+		- Closed: 20260903-210000
 
 	- 🔘 Item 29: validation questions the spec leaves open.
 		- `type: string` on a multi-element value checks type against the joined string and `allowed` per element, so `allowed: "x, y, z"` fails on `c: x, y, z` while `get --string` returns the joined form. `min` above `max` is not a schema fault. Both consistent across the four.

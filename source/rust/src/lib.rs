@@ -748,6 +748,16 @@ fn unterminated_quote(text: &str) -> bool {
 
 /// True when the text is one quote pair: a quote char at both ends, the last
 /// one not escaped. Quotes and the backslash are ASCII, so bytes suffice.
+/// Value text for a diagnostic message: line breaks and tabs escaped, so one
+/// diagnostic is one line. A raw block's body is the value that made this
+/// necessary - it carries its own newlines.
+fn one_line(s: &str) -> String {
+	s.replace('\\', "\\\\")
+		.replace('\n', "\\n")
+		.replace('\r', "\\r")
+		.replace('\t', "\\t")
+}
+
 fn quoted_shape(t: &str) -> bool {
 	let b = t.as_bytes();
 	let Some(&first) = b.first() else {
@@ -6527,7 +6537,7 @@ impl Document {
 						out,
 						line,
 						"V004",
-						format!("value not allowed at '{}': {}", c.path, content),
+						format!("value not allowed at '{}': {}", c.path, one_line(content)),
 					);
 				}
 			}
@@ -6559,7 +6569,11 @@ impl Document {
 								out,
 								line,
 								"V004",
-								format!("value not allowed at '{}': {}", c.path, els[i].text),
+								format!(
+									"value not allowed at '{}': {}",
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 						if let Some(lo) = c.min_i
@@ -6599,7 +6613,11 @@ impl Document {
 								out,
 								line,
 								"V004",
-								format!("value not allowed at '{}': {}", c.path, els[i].text),
+								format!(
+									"value not allowed at '{}': {}",
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 						if let Some(lo) = c.min_f
@@ -6639,7 +6657,11 @@ impl Document {
 								out,
 								line,
 								"V004",
-								format!("value not allowed at '{}': {}", c.path, els[i].text),
+								format!(
+									"value not allowed at '{}': {}",
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 					}
@@ -6659,7 +6681,11 @@ impl Document {
 								out,
 								line,
 								"V004",
-								format!("value not allowed at '{}': {}", c.path, els[i].text),
+								format!(
+									"value not allowed at '{}': {}",
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 					}
@@ -6676,7 +6702,7 @@ impl Document {
 									out,
 									line,
 									"V004",
-									format!("value not allowed at '{}': {}", c.path, b),
+									format!("value not allowed at '{}': {}", c.path, one_line(&b)),
 								);
 							}
 						}
