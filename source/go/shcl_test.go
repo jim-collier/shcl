@@ -1567,6 +1567,17 @@ func TestSuppressLeavesTheCallersDiagnosticsAlone(t *testing.T) {
 			t.Fatalf("%s: returned the caller's or the document's own backing array", name)
 		}
 	}
+	// A failed strict load hands out the same list, and used to hand out the
+	// document's own: writing through it changed what the document reports.
+	_, err := ParseWith("a\n", Strict)
+	var le *LoadError
+	if !errors.As(err, &le) || len(le.Diagnostics) == 0 {
+		t.Fatal("want a strict load failure carrying diagnostics")
+	}
+	le.Diagnostics[0].Message = "rewritten by the caller"
+	if bad := le.Document.Diagnostics(); bad[0].Message == "rewritten by the caller" {
+		t.Fatal("LoadError shares the document's diagnostics list")
+	}
 }
 
 func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {

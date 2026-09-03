@@ -1989,7 +1989,7 @@ class Document:
 		alongside the diagnostics."""
 		doc = _Parser().parse(text, strictness)
 		if strictness == Strictness.Strict and any(d.severity == Severity.Error for d in doc.diags):
-			raise LoadError(doc.diags, doc)
+			raise LoadError(list(doc.diags), doc)
 		return doc
 
 	@staticmethod
@@ -2018,7 +2018,7 @@ class Document:
 		p.max_diags = max_diags
 		doc = p.parse(text, strictness)
 		if strictness == Strictness.Strict and any(d.severity == Severity.Error for d in doc.diags):
-			raise LoadError(doc.diags, doc)
+			raise LoadError(list(doc.diags), doc)
 		return doc
 
 	@staticmethod
@@ -2066,7 +2066,10 @@ class Document:
 			raise SaveFailed(err)
 
 	def diagnostics(self) -> list[Diagnostic]:
-		return self.diags
+		# A copy: the reference hands out a borrowed view nobody can append to,
+		# and the document's own list would let a caller's edit and the
+		# document's next append overwrite each other.
+		return list(self.diags)
 
 	def lost_count(self) -> int:
 		"""How many lines or values parsing dropped that canonical output cannot
