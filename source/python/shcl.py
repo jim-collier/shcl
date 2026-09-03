@@ -452,8 +452,15 @@ def _want(setter, v, kind):
 
 
 def _want_all(setter, v, kind):
-	for x in v:
+	# A sequence, not any iterable. A str is a sequence of one-character strings,
+	# so set_string_array("abc") wrote three elements; a generator is consumed by
+	# the check and the setter then reads an empty one and reports success.
+	if isinstance(v, (str, bytes, bytearray)):
+		raise TypeError(f"{setter}: want a list of {kind}, got {type(v).__name__}")
+	items = list(v)
+	for x in items:
 		_want(setter, x, kind)
+	return items
 
 
 def _as_float(v):
@@ -2764,6 +2771,7 @@ class Document:
 		node if absent). A missing '#' is added; only the first line is kept, and
 		trailing whitespace comes off the way the load takes it, so text that is
 		blank leaves a bare '#'."""
+		_want("set_comment", text, "str")
 		idx = self._place(path)
 		if idx is None:
 			return False
@@ -2833,6 +2841,8 @@ class Document:
 		spelling (the `#` would read back as a comment) and fails the write. A
 		body line ending in CR fails for the same reason: the load takes the
 		whole trailing CR run off every line, so it would not read back."""
+		_want("set_raw", content, "str")
+		_want("set_raw", info, "str")
 		if "\n" in info or "\r" in info or _split_comment(info)[1] != "":
 			return False
 		if any(line.endswith("\r") for line in content.split("\n")):
@@ -2846,29 +2856,29 @@ class Document:
 
 	def set_int_array(self, path: str, v: list[int]) -> bool:
 		"""Bind an inline int array; every element is checked as set_int does."""
-		_want_all("set_int_array", v, "int")
+		v = _want_all("set_int_array", v, "int")
 		if not all(_fits_i64(x) for x in v):
 			return False
 		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	def set_float_array(self, path: str, v: list[float]) -> bool:
 		"""Bind an inline float array; every element is converted as set_float does."""
-		_want_all("set_float_array", v, "float")
+		v = _want_all("set_float_array", v, "float")
 		xs = [_as_float(x) for x in v]
 		if not all(math.isfinite(x) for x in xs):
 			return False
 		return self._set_value(path, _array_cell([format_float(x) for x in xs]))
 
 	def set_bool_array(self, path: str, v: list[bool]) -> bool:
-		_want_all("set_bool_array", v, "bool")
+		v = _want_all("set_bool_array", v, "bool")
 		return self._set_value(path, _array_cell(["true" if x else "false" for x in v]))
 
 	def set_string_array(self, path: str, v: list[str]) -> bool:
-		_want_all("set_string_array", v, "str")
+		v = _want_all("set_string_array", v, "str")
 		return self._set_value(path, _array_cell([_encode_string(x) for x in v]))
 
 	def set_datetime_array(self, path: str, v: list[ShclDateTime]) -> bool:
-		_want_all("set_datetime_array", v, "datetime")
+		v = _want_all("set_datetime_array", v, "datetime")
 		if not all(_datetime_reads_back(x) for x in v):
 			return False
 		return self._set_value(path, _array_cell([str(x) for x in v]))
@@ -2902,6 +2912,7 @@ class Document:
 		a config line, a user's --set argument - writes it without knowing its
 		shape first. Returns False on text that could not be one line's value.
 		"""
+		_want("set_literal", text, "str")
 		v = _literal_value(text)
 		if v is None:
 			return False

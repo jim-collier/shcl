@@ -538,9 +538,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-173700
 		- Closed: 20260903-095000
 
-	- 🔘 Item 39: Python's array setters take any iterable, so a string or a generator writes the wrong value at `True`.
+	- ✅ Item 39: Python's array setters take any iterable, so a string or a generator writes the wrong value at `True`.
 		- `set_string_array("k", "abc")` writes `k: a, b, c`; `set_int_array("k", (x for x in [1, 2, 3]))` writes an empty value and returns `True`, because the type gate consumes the generator before the setter reads it. `set_comment`, `set_raw` and `set_literal` have no type gate at all and raise from inside on a non-string. The module's own comment says a typed setter takes exactly the type its name says. Refuse `str` and `bytes`, materialize the iterable once, and gate the three.
+		- Fixed: the shared element check refuses `str`, `bytes` and `bytearray` outright and materializes the iterable once, handing the list back to the setter; the three untyped setters call the same type gate their typed siblings use.
+		- Pinned by a fixture in the Python runner (five wrong-type calls that must raise, and a generator that must write three elements). Python-only: the other three bindings are statically typed here.
 		- Opened: 20260902-173800
+		- Closed: 20260903-103000
 
 	- 🔘 Item 40: two library-level parity points in the file tier and the Go writer.
 		- Rust alone writes through a trailing `/` on a regular-file path (`save_file("f/")` succeeds where POSIX refuses `open("f/")`); Go refuses `f/` but writes `f/.`; Python refuses both. Go's `SetString` of a string that is not UTF-8 stores U+FFFD per bad byte and reports success, so the value does not read back verbatim; return false from the string setters on invalid input, or say so in the Go doc comment.

@@ -722,6 +722,27 @@ def main():
 		raise SystemExit("a one-element bare cell reads quoted as an array")
 	if shcl.Document.parse('m: "x", "y"\n').read_string_array("m").quoted:
 		raise SystemExit("a two-element cell reported a single element's quoting")
+	# A typed array setter takes a list of its type, not any iterable: a str is a
+	# sequence of one-character strings, so set_string_array("abc") wrote three
+	# elements, and a generator was consumed by the type check before the setter
+	# read it - an empty value written at True. The three untyped setters raised
+	# from inside on a non-string; they gate like their typed siblings now.
+	# Python-only: the other three bindings are statically typed here.
+	gdoc = shcl.Document.new()
+	for call, args in (
+		("set_string_array", ("k", "abc")),
+		("set_int_array", ("k", b"12")),
+		("set_comment", ("k", 5)),
+		("set_raw", ("k", 5, "")),
+		("set_literal", ("k", 5)),
+	):
+		try:
+			getattr(gdoc, call)(*args)
+			raise SystemExit(f"{call} accepted the wrong type")
+		except TypeError:
+			pass
+	if not gdoc.set_int_array("k", (x for x in [1, 2, 3])) or gdoc.to_canonical() != "k: 1, 2, 3\n":
+		raise SystemExit(f"a generator wrote {gdoc.to_canonical()!r}")
 	# A written value carrying both quote kinds is stored the way its own reload
 	# stores it, so instances() and a read's raw text agree across a save. The
 	# emitter escapes the double quotes; the writer used to keep them bare. Same
