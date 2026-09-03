@@ -216,11 +216,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-171900
 		- Closed: 20260903-013000
 
-	- 🔘 Item 21: `shcl_generate` keeps the output of a V097-failing call in the schema's arena, and a succeeding call's output can never be released.
+	- ✅ Item 21: `shcl_generate` keeps the output of a V097-failing call in the schema's arena, and a succeeding call's output can never be released.
 		- Reproduced: 1000 calls on a schema whose default fails its own constraint grow the heap by 21.9 KB per call while returning nothing, and leave 1001 copies of the same diagnostic on the schema; 1000 succeeding calls grow it by one output each, and `shcl_reads_release` cannot reclaim them because the output goes to `schema->arena`, not `schema->reads`. The header's own comment says everything but the returned bytes dies inside the call.
 		- Cause: the output is copied into the schema arena before the self-check, and the failure path returns empty without reclaiming it; faults are appended to the schema on every call.
-		- Note: self-check the private-arena text and copy into the arena only on success; place the output in `reads` and list it under `shcl_reads_release`; replace rather than append earlier generation faults, or document that a schema should not be regenerated from after it has reported.
+		- Fixed: the self-check runs on the private-arena text and the bytes are copied into the schema's read arena only on success, so a refusal keeps nothing and a caller can reclaim what it got. V096 and V097 come from nowhere else, so any left on the schema are dropped before generating - the list describes this call. The header says both, `shcl_reads_release` lists generation, and the veneer's `generate()` releases first like every other copying wrapper.
+		- Measured: 200 refused calls grow the schema by 19.5 KB of diagnostic text (it was 49 KB plus 200 stacked diagnostics), and 200 succeeding calls with a release between leave the document exactly as it started (it grew 6.4 KB).
+		- Pinned by `mem_bounds.c`, which fails both ways on the old header.
 		- Opened: 20260902-172000
+		- Closed: 20260903-015000
 
 	- 🔘 Item 22: `shcl.hpp` tells the veneer user to recover generation faults by validating an empty document, which cannot reproduce them.
 		- Reproduced: `validate(empty, schema)` after a failed `generate()` gives `V002`, never the `V097` the generator recorded. V096 and V097 are generation-only codes. The C CLI made the same mistake and was fixed in the 20260830b round; the veneer comment kept the old recipe.

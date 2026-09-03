@@ -239,7 +239,10 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 // the schema document's diagnostics. A footer naming the format and pointing at the spec is
 // written last unless no_banner; the flag is negative so passing 0 writes the
 // footer. *ok is set to 1 on success, 0 if the schema has faults (V09x) - then
-// the returned string is empty. Bytes live in the schema's arena.
+// the returned string is empty and nothing was kept. Bytes live in the schema's
+// read arena; valid until shcl_free, or until shcl_reads_release. Generation
+// faults from an earlier call on the same schema are dropped first, so the list
+// describes this call.
 shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The
@@ -317,7 +320,7 @@ shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t 
 
 // Give back everything the read calls have handed out. Every result from a read
 // - shcl_read_*, shcl_children, shcl_paths, shcl_instances, shcl_lines,
-// shcl_quote_segment, shcl_to_canonical - is invalid after this; the document itself is untouched
+// shcl_quote_segment, shcl_to_canonical, shcl_generate - is invalid after this; the document itself is untouched
 // and stays readable, so the next read works normally. Optional: leave it alone
 // and results live until shcl_free, which is the documented contract and what a
 // read-once consumer wants. A process polling the same document in a loop calls
@@ -6037,6 +6040,19 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	ShclArena *a = &tmp;
 	ShclVSchemaDef def; memset(&def, 0, sizeof def);
 	ShclVecDiag faults = {0, 0, 0};
+	/* V096 and V097 can only come from generation, so any on the schema are
+	   this call's predecessors. Drop them, or a caller generating in a loop
+	   collects one copy per attempt and the diagnostic count stops meaning
+	   anything. */
+	{
+		size_t w = 0;
+		for (size_t i = 0; i < schema->diags.len; i++) {
+			const char *c = schema->diags.data[i].code;
+			if (c && (!strcmp(c, "V096") || !strcmp(c, "V097"))) continue;
+			schema->diags.data[w++] = schema->diags.data[i];
+		}
+		schema->diags.len = w;
+	}
 	// Generation lays the whole schema out, so unlike validation it has no
 	// safe partial mode: any fault fails it.
 	v_build_schema(a, schema, &def, &faults);
@@ -6200,7 +6216,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		if (out.len) sb_putc(a, &out, '\n');
 		sb_puts(a, &out, GEN_BANNER);
 	}
-	ShclStr s = s_dup(&schema->arena, sb_S(&out)); r.p = s.p; r.n = s.n;
+	ShclStr s = sb_S(&out);
 	/* The output promises to validate clean against the schema that produced
 	   it, so check that here rather than trusting each branch above. A
 	   `default` outside its own field's constraints is the schema's fault, and
@@ -6232,6 +6248,11 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			return r;
 		}
 	}
+	/* Only now does the text leave the private arena, and it goes to the read
+	   arena rather than the document's own: a refused call then costs the
+	   schema nothing, and a caller generating in a loop can give the copies
+	   back with shcl_reads_release. */
+	ShclStr kept = s_dup(&schema->reads, s); r.p = kept.p; r.n = kept.n;
 	arena_free(&tmp);
 	return r;
 }

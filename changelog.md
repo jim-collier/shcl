@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `shcl_generate` keeps nothing when it refuses, and what it returns can be given back. The output was copied into the schema's own arena before the self-check, so a call that failed kept text it never returned, and a call that succeeded left a copy no `shcl_reads_release` could reclaim - 21.9 KB per call in a loop. The bytes live in the read arena now, and generation faults from an earlier call are dropped rather than stacked up. The C++ veneer's `generate()` releases first, like every other copying wrapper.
+
 - `init` names the path it cannot generate. A required path with a `[#N]` selector, or one past the nesting cap, went to the trailing comment block and then failed the self-check with "required path missing", which points at the generated config rather than at the schema line nothing can satisfy. It is a `V097` fault naming the path now. A name carrying a newline is generated rather than refused: names have been stored escape-resolved since 2.0 and the name escaper spells one.
 
 - A blank line before the first thing canonical output prints is dropped at load. Canonical output never starts with a blank, so a document that kept the flag did not survive its own canonical form: merging a layer gave a different result from merging its `fmt`, and the fold placed a blank line the author never wrote. Three shapes did it - a file starting with a blank line, a blank after a leading line the load dropped, and a blank on a later instance that merged into the first.
