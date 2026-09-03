@@ -3408,9 +3408,17 @@ func (d *Document) nameIndex() *nameIndex {
 	for i := range idx.nextSame {
 		idx.nextSame[i] = nilNode
 	}
-	for p := range d.arena {
+	// From the root, not across the arena: a removed subtree's nodes are still
+	// there with their child lists intact, so an arena walk indexes every node
+	// the document ever held. Chains stay in file order - a chain is one
+	// parent's same-named children, and each parent's are appended in order.
+	stack := []int{root}
+	for len(stack) > 0 {
+		p := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
 		for _, c := range d.arena[p].children {
 			idx.append(nameKey(p, d.arena[c].name), c)
+			stack = append(stack, c)
 		}
 	}
 	d.index.Store(idx)

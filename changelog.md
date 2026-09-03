@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The name index is rebuilt by walking the document rather than the arena. A set-and-remove cycle leaves its nodes behind, and the rebuild indexed every one of them, so the first read after a merge grew with the number of edits ever made instead of with the document - 1000 live nodes behind 400000 dead ones cost 48 ms a read. C's merge and its string setter also stop abandoning a doubling chain in the document arena: a merge onto a 40000-key base cost 786 KB and costs 320 KB, and a 20 MB string value cost 55 MB and costs 20 MB.
+
 - Two spellings of one value are one instance. `a: "q\"uote"` and `a: 'q"uote'` were two, while `a["q\"uote"]` matched both - so one selector addressed two nodes, `count` said 2 and a read could only answer `Multiple`. Identity resolves escapes now, the way a selector already did and the way names have since 2.0. Quoting was never part of identity and still is not.
 
 - On Windows a save keeps the file's hidden and system attributes. `ReplaceFile`'s documented preserve list stops at security attributes and named streams, and the fallback rename carries nothing, so a hidden config came back visible. They are re-applied after the publish now, the way read-only already was. The `REPLACEFILE_WRITE_THROUGH` flag Microsoft documents as unsupported is no longer described as what makes the write durable; the file's own flush before the publish is.

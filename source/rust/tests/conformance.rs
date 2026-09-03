@@ -1344,6 +1344,41 @@ fn set_attrs(path: &std::path::Path, attrs: u32) {
 	}
 }
 
+/// The name index used to be rebuilt by walking the arena, which still holds
+/// every node a set-and-remove cycle ever made - so the first read after a
+/// merge grew with the number of edits, not with the document. Timed against
+/// the same document with no dead nodes; the ratio is what matters, since an
+/// absolute figure would be a machine constant. Same fixture in every runner.
+#[test]
+fn index_rebuild_ignores_removed_nodes() {
+	let mut ms = [0.0f64; 2];
+	for churned in 0..2 {
+		let mut d = Document::parse("g:\n\tk: 1\n");
+		if churned == 1 {
+			for i in 0..100_000 {
+				d.set_int("g.tmp", i);
+				d.remove("g.tmp");
+			}
+		}
+		let other = Document::parse("g:\n\tk: 1\n");
+		let t0 = std::time::Instant::now();
+		for _ in 0..200 {
+			d.merge(&other);
+			assert_eq!(d.get_int_or("g.k", -1), 1);
+		}
+		ms[churned] = t0.elapsed().as_secs_f64() * 1000.0;
+	}
+	// A generous ratio on purpose: the chain array is still sized by the arena,
+	// which is a memset the walk cannot avoid. What the bound catches is the
+	// walk itself going over every dead node, which is orders larger.
+	assert!(
+		ms[1] <= ms[0] * 25.0 + 25.0,
+		"index rebuild after churn {:.1} ms against {:.1} ms fresh - it walks nodes the document no longer holds",
+		ms[1],
+		ms[0]
+	);
+}
+
 #[test]
 fn standard_trait_surface() {
 	// Rust-only: the traits a rust user reaches for before reading any docs.

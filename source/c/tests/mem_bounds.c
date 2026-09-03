@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static size_t allocated = 0;
 static void *counting_malloc(size_t n) { allocated += n; return malloc(n); }
@@ -158,6 +159,28 @@ int main(void) {
 	printf("mem_bounds: released generation: arena %zu -> %zu\n", held, arena_bytes(&d->arena));
 	if (arena_bytes(&d->arena) > held + 4096) fail("a released generation still grew the document");
 	shcl_free(d);
+
+	// The name index used to be rebuilt by walking the arena, which still holds
+	// every node a set-and-remove cycle ever made - so the first read after a
+	// merge grew with the number of edits, not with the document. Timed against
+	// the same document with no dead nodes; the ratio is what matters, since an
+	// absolute figure would be a machine constant.
+	{
+		double t[2];
+		for (int churned = 0; churned < 2; churned++) {
+			shcl_doc *cd = shcl_parse("g:\n\tk: 1\n", 9);
+			if (churned) for (int i = 0; i < 100000; i++) { shcl_set_int(cd, "g.tmp", 5, i); shcl_remove(cd, "g.tmp", 5); }
+			clock_t c0 = clock();
+			for (int i = 0; i < 200; i++) { shcl_merge(cd, cd); if (shcl_get_int_or(cd, "g.k", 3, -1) != 1) fail("index walk: wrong result"); }
+			t[churned] = (double)(clock() - c0) / CLOCKS_PER_SEC * 1000.0;
+			shcl_free(cd);
+		}
+		printf("mem_bounds: index rebuild: %.1f ms fresh, %.1f ms after 100k set+remove\n", t[0], t[1]);
+		/* A generous ratio on purpose: the chain array is still sized by the
+		   arena, which is a memset the walk cannot avoid. What the bound
+		   catches is the walk itself going over every dead node. */
+		if (t[1] > t[0] * 25 + 25) fail("the index rebuild walks nodes the document no longer holds");
+	}
 
 	// A merge rebuilt the parent's child list with a builder growing in the
 	// document arena, so every doubling step was abandoned there; and a string
