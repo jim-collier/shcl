@@ -81,10 +81,20 @@ fCheckDeps(){
 	local listing; listing="$(dpkg-deb -c "${stem}.deb")"
 	grep -q ' ./usr/share/doc/shcl/copyright$' <<<"${listing}" || fDie "$(basename "${stem}").deb: no copyright file"
 	grep -q ' ./usr/share/doc/shcl/changelog.gz$' <<<"${listing}" || fDie "$(basename "${stem}").deb: no changelog"
+	if ! command -v rpm >/dev/null 2>&1 && [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+		## Under the gate a skipped read-back is a failure: the check exists to
+		## catch a package that declares nothing, and it cannot do that silently.
+		fDie "rpm is missing and the gate requires it to read the package back"
+	fi
+	grep -q ' ./usr/share/shcl/$' <<<"${listing}" || fDie "$(basename "${stem}").deb: does not own /usr/share/shcl"
 	if command -v rpm >/dev/null 2>&1; then
 		deps="$(rpm -qp --requires "${stem}.rpm" 2>/dev/null)"
 		[[ "${deps}" == *"glibc >= ${glibc}"* ]] || fDie "$(basename "${stem}").rpm: Requires ${deps@Q} lacks glibc >= ${glibc}"
 		if [[ -n "${needGcc}" && "${deps}" != *libgcc* ]]; then fDie "$(basename "${stem}").rpm: Requires ${deps@Q} lacks libgcc"; fi
+		## rpm owns only what is listed, so the payload's own parent has to be
+		## listed too or removing the package leaves the directory behind.
+		local files; files="$(rpm -qlp "${stem}.rpm" 2>/dev/null)"
+		grep -qx '/usr/share/shcl' <<<"${files}" || fDie "$(basename "${stem}").rpm: does not own /usr/share/shcl"
 	fi
 }
 

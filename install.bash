@@ -151,9 +151,11 @@ esac
 ## curl or wget, whichever is present. https is pinned through redirects and
 ## TLS floored at 1.2, so a bounced download can't silently downgrade.
 if command -v curl >/dev/null; then
-	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1"; }
+	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 ${GITHUB_TOKEN:+-H "Authorization: Bearer ${GITHUB_TOKEN}"} -o "$2" "$1"; }
+	fApiStatus() { curl -fsS -o /dev/null -w '%{http_code}' --proto '=https' --tlsv1.2 ${GITHUB_TOKEN:+-H "Authorization: Bearer ${GITHUB_TOKEN}"} "$1" 2>/dev/null || true; }
 elif command -v wget >/dev/null; then
-	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"; }
+	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 ${GITHUB_TOKEN:+--header="Authorization: Bearer ${GITHUB_TOKEN}"} -O "$2" "$1"; }
+	fApiStatus() { wget -q --https-only --secure-protocol=TLSv1_2 --server-response -O /dev/null "$1" 2>&1 | awk '/^  HTTP/ { code = $2 } END { print code }'; }
 else
 	die "need curl or wget"
 fi
@@ -183,6 +185,23 @@ else
 	asroot=""
 fi
 
+## The payload directories' contents, then the directories - never a recursive
+## delete. The globs have to expand in the shell that can read the directory, so
+## they go inside the privileged one: a system tree only root could list left
+## them unexpanded, nothing was removed, and the run then reported the install
+## directory as holding files it had not put there.
+fRemoveLaidDown(){   ## fRemoveLaidDown DEST
+	local dest="$1"
+	# shellcheck disable=SC2016  ## the positional parameters are the inner shell's
+	${asroot} sh -c '
+		for d in "$@"; do
+			rm -f "${d}"/* 2>/dev/null
+			rmdir "${d}" 2>/dev/null
+		done
+		exit 0
+	' sh "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions"
+}
+
 ## Uninstall: the reverse of what the install lays down, and nothing else - the
 ## symlink, the binary, and the two payload dirs, then the install dir if it is
 ## empty. Never a recursive delete of a path the user may have pointed elsewhere.
@@ -201,8 +220,7 @@ if (( uninstall )); then
 	[[ -L "${link}" && "$(readlink -- "${link}")" == "${dest}/"* ]] && ${asroot} rm -f "${link}"
 	[[ -L "${manlink}" && "$(readlink -- "${manlink}")" == "${dest}/"* ]] && ${asroot} rm -f "${manlink}"
 	${asroot} rm -f "${dest}/shcl"
-	${asroot} rm -f "${dest}/code"/* "${dest}/scripts"/* "${dest}/man"/* "${dest}/completions"/* 2>/dev/null || true
-	${asroot} rmdir "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions" 2>/dev/null || true
+	fRemoveLaidDown "${dest}"
 	## Only an empty dir goes, and say so when it does not: the dir can hold
 	## files this installer never put there (a package's, or someone's own), and
 	## reporting "removed" over the top of them was a lie. Matches what the
@@ -224,9 +242,28 @@ fi
 ## Never over a real file: a bin/shcl that is not a symlink is a hand-placed
 ## install (the DIY route), and replacing it would throw that work away. Checked
 ## before any download so the refusal costs nothing.
-if [[ -e "${link}" && ! -L "${link}" ]]; then
-	die "${link} exists and is not a symlink - move it aside first, then re-run"
-fi
+## What is at the bin path: nothing, our own link, a real file, or a link
+## somewhere else. A real file is a hand-placed install (the DIY route) and a
+## link to a cargo-built or hand-built copy is as much a working install as
+## that; either used to be replaced with nothing said. The uninstall already
+## declines to remove a link that is not ours.
+fLinkOwner(){   ## fLinkOwner LINK DEST
+	local link="$1" dest="$2" tgt
+	if [[ -L "${link}" ]]; then
+		tgt="$(readlink -- "${link}")"
+		if [[ "${tgt}" == "${dest}/"* ]]; then printf 'ours\n'; else printf 'elsewhere %s\n' "${tgt}"; fi
+	elif [[ -e "${link}" ]]; then
+		printf 'file\n'
+	else
+		printf 'free\n'
+	fi
+}
+owner="$(fLinkOwner "${link}" "${dest}")"
+case "${owner}" in
+	free|ours) ;;
+	file) die "${link} exists and is not a symlink - move it aside first, then re-run" ;;
+	*)    die "${link} is a symlink to ${owner#elsewhere } - move it aside first, then re-run" ;;
+esac
 
 ## Pick the tag out of a /releases listing: highest version wins, never newest
 ## by date. GitHub's /releases/latest is date-ordered, so a patch back-ported to
@@ -237,13 +274,24 @@ fi
 ## that order within one release object, so the flags that follow a tag belong
 ## to it. sort -V with the first '-' mapped to '~' ranks a pre-release below its
 ## own final (v2.0.0-rc1 < v2.0.0); mapped back afterwards.
+## The three fields are read in the order the API emits them, so a whole release
+## on one line has to be split first: a compact response used to yield no tag at
+## all, and the run said no release was published.
 fPickTag(){
 	local channel="$1" json="$2" tags
 	tags="$(awk -v channel="${channel}" '
-		/"tag_name":/          { t = $0; sub(/.*"tag_name": *"/, "", t); sub(/".*/, "", t) }
-		/"draft": *true/       { t = "" }
-		/"prerelease": *true/  { if (channel != "stable" && t != "") print t; t = "" }
-		/"prerelease": *false/ { if (t != "") print t; t = "" }
+		{ buf = buf $0 "\n" }
+		END {
+			gsub(/"(tag_name|draft|prerelease)":/, "\n&", buf)
+			n = split(buf, line, "\n")
+			for (i = 1; i <= n; i++) {
+				s = line[i]
+				if (s ~ /^"tag_name":/)               { t = s; sub(/^"tag_name": *"/, "", t); sub(/".*/, "", t) }
+				else if (s ~ /^"draft": *true/)       { t = "" }
+				else if (s ~ /^"prerelease": *true/)  { if (channel != "stable" && t != "") print t; t = "" }
+				else if (s ~ /^"prerelease": *false/) { if (t != "") print t; t = "" }
+			}
+		}
 	' "${json}")"
 	printf '%s\n' "${tags}" | sed 's/-/~/' | sort -V | tail -n1 | sed 's/~/-/'
 }
@@ -251,7 +299,17 @@ fPickTag(){
 api="https://api.github.com/repos/${REPO}/releases?per_page=100"
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
-fetch "${api}" "${tmp}/rel.json" || die "cannot fetch the ${release} release (none published yet, or network down)"
+## A 403 from an unauthenticated request is the API's rate limit, and behind a
+## shared address it is common - "none published yet, or network down" sent
+## people looking in the wrong place. GITHUB_TOKEN is used when it is set.
+fApiFailure(){   ## fApiFailure STATUS RELEASE
+	case "$1" in
+		403|429) printf "GitHub's API refused the request (rate limit). Wait, or set GITHUB_TOKEN to a token with public read access and re-run\n" ;;
+		401)     printf 'GitHub rejected the credentials in GITHUB_TOKEN - unset it, or replace it with one that has public read access\n' ;;
+		*)       printf 'cannot fetch the %s release (none published yet, or network down)\n' "$2" ;;
+	esac
+}
+fetch "${api}" "${tmp}/rel.json" || die "$(fApiFailure "$(fApiStatus "${api}")" "${release}")"
 ## Every grep below may legitimately match nothing (no release, no such asset,
 ## a release cut before the drop-in payload existed). Under pipefail that is a
 ## failed substitution, which would end the script here instead of at the check
@@ -279,6 +337,24 @@ if (( ! assume_yes )); then
 		die "no terminal to confirm on - pass --yes"
 	fi
 	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
+fi
+
+## Nothing is downloaded before the destinations are known to be writable: a
+## read-only HOME used to get through both downloads and then fail on a raw
+## mkdir error, twice. A sudo install writes as root, so the question is only
+## about what this shell can reach.
+fNearestExisting(){   ## fNearestExisting PATH
+	local p="$1"
+	while [[ -n "${p}" && "${p}" != "/" && "${p}" != "." && ! -e "${p}" ]]; do
+		p="$(dirname -- "${p}")"
+	done
+	printf '%s\n' "${p}"
+}
+if [[ -z "${asroot}" ]]; then
+	for want in "${dest}" "$(dirname -- "${link}")" "$(dirname -- "${manlink}")"; do
+		near="$(fNearestExisting "${want}")"
+		[[ -d "${near}" && -w "${near}" ]] || die "cannot write ${want}: ${near} is not writable"
+	done
 fi
 
 ## Download and verify the binary.
@@ -448,6 +524,18 @@ if ! fOnPath "${linkdir}"; then
 	# The PATH expansion is for the user to paste, not for us to expand here.
 	# shellcheck disable=SC2016
 	printf 'note: %s is not on your PATH, so neither shcl nor "man shcl" will be found - add it with:\n  export PATH="%s:$PATH"\n(put that line in your shell profile to make it stick)\n' "${linkdir}" "${linkdir}"
+fi
+## And what `shcl` actually resolves to: the receipt below runs the link we just
+## wrote, so another copy earlier on PATH used to be invisible here and the next
+## `shcl` the user typed was someone else's.
+fShadowedBy(){   ## fShadowedBy LINK
+	local link="$1" onpath
+	onpath="$(command -v shcl 2>/dev/null || true)"
+	[[ -z "${onpath}" || "${onpath}" -ef "${link}" ]] && return 1
+	printf '%s\n' "${onpath}"
+}
+if shadow="$(fShadowedBy "${link}")"; then
+	printf 'note: shcl on your PATH is %s, not the copy just installed - it comes first on PATH\n' "${shadow}"
 fi
 "${link}" version 2>/dev/null || "${dest}/shcl" version
 echo

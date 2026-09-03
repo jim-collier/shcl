@@ -40,6 +40,30 @@ static const char *tmp_root(void) {
 	return "/tmp";
 }
 
+#ifdef _WIN32
+/* The fixture's own tree goes past MAX_PATH, and the narrow calls refuse such a
+   path the same way the library used to - so its setup and teardown carry the
+   long-path prefix too. Forward slashes are not allowed after it. */
+static wchar_t *long_wide(const char *p) {
+	char buf[1200];
+	int n = snprintf(buf, sizeof buf, "\\\\?\\%s", p);
+	for (int i = 4; i < n; i++) if (buf[i] == '/') buf[i] = '\\';
+	return shcl_widen(buf);
+}
+static void mkdir_long(const char *p) {
+	wchar_t *w = long_wide(p);
+	if (w) { CreateDirectoryW(w, NULL); free(w); }
+}
+static void remove_long(const char *p) {
+	wchar_t *w = long_wide(p);
+	if (w) { DeleteFileW(w); free(w); }
+}
+static void rmdir_long(const char *p) {
+	wchar_t *w = long_wide(p);
+	if (w) { RemoveDirectoryW(w); free(w); }
+}
+#endif
+
 static int nfail = 0;
 static void fail(const char *at, const char *msg) { fprintf(stderr, "FAIL %s: %s\n", at, msg); nfail++; }
 
@@ -599,10 +623,43 @@ int main(int argc, char **argv) {
 			}
 			shcl_str mgot = shcl_to_canonical(md);
 			if (mgot.n != emlen || (emlen && memcmp(mgot.p, em, emlen) != 0)) fail(names[ci], "merged output differs from expected-merged.shcl");
-			shcl_doc *md2 = shcl_parse(mgot.p, mgot.n);
+			/* The canonical text lives in md's read arena, so it is copied out
+			   before md2 is parsed from it. */
+			char *mcopy = (char *)malloc(mgot.n ? mgot.n : 1);
+			if (!mcopy) { fail(names[ci], "out of memory"); return 1; }
+			memcpy(mcopy, mgot.p, mgot.n);
+			shcl_doc *md2 = shcl_parse(mcopy, mgot.n);
 			shcl_str magain = shcl_to_canonical(md2);
-			if (magain.n != mgot.n || (mgot.n && memcmp(magain.p, mgot.p, mgot.n) != 0)) fail(names[ci], "merged output is not a fmt fixpoint");
-			shcl_free(md2); shcl_free(md);
+			if (magain.n != mgot.n || (mgot.n && memcmp(magain.p, mcopy, mgot.n) != 0)) fail(names[ci], "merged output is not a fmt fixpoint");
+			/* Reads answered by the merged document itself, not just its text: a
+			   merged arena holds dropped nodes, a rebuilt index and cloned child
+			   lists, and only a read walks those. shcl_instances is left out
+			   because it hands back the source spelling, which canonical output
+			   may respell. Same fixture in every runner. Results live until
+			   shcl_free here, so nothing has to be copied between reads. */
+			{
+				shcl_str *mp1 = NULL, *mp2 = NULL;
+				size_t mn1 = shcl_paths(md, &mp1), mn2 = shcl_paths(md2, &mp2);
+				int same = mn1 == mn2;
+				for (size_t k = 0; same && k < mn1; k++) same = s_eq(mp1[k], mp2[k]);
+				if (!same) fail(names[ci], "merged paths differ from a reparse");
+				for (size_t k = 0; same && k < mn1; k++) {
+					const char *pp = mp1[k].p; size_t pn = mp1[k].n;
+					if (shcl_count(md, pp, pn) != shcl_count(md2, pp, pn)) fail(names[ci], "merged count differs from a reparse");
+					shcl_str *k1, *k2;
+					size_t kn1 = shcl_children(md, pp, pn, &k1), kn2 = shcl_children(md2, pp, pn, &k2);
+					int ksame = kn1 == kn2;
+					for (size_t x = 0; ksame && x < kn1; x++) ksame = s_eq(k1[x], k2[x]);
+					if (!ksame) fail(names[ci], "merged children differ from a reparse");
+					shcl_read_str r1 = shcl_read_string(md, pp, pn), r2 = shcl_read_string(md2, pp, pn);
+					if (r1.status != r2.status || !s_eq(r1.value, r2.value)) fail(names[ci], "merged read differs from a reparse");
+					shcl_read_str_arr a1 = shcl_read_string_array(md, pp, pn), a2 = shcl_read_string_array(md2, pp, pn);
+					int asame = a1.status == a2.status && a1.n == a2.n;
+					for (size_t x = 0; asame && x < a1.n; x++) asame = a1.statuses[x] == a2.statuses[x] && s_eq(a1.values[x], a2.values[x]);
+					if (!asame) fail(names[ci], "merged array read differs from a reparse");
+				}
+			}
+			shcl_free(md2); shcl_free(md); free(mcopy);
 			for (int li = 0; li < nt; li++) free(ltexts[li]);
 			free(em);
 		}
@@ -1434,6 +1491,144 @@ int main(int argc, char **argv) {
 		pthread_attr_destroy(&at);
 	}
 #endif
+	/* A path that names a directory - it ends in a separator, or its last
+	   component is `.` or `..` - is not a document. A path cleanup drops the
+	   trailing separator first, so a save through `f/.` used to rewrite `f` in
+	   some bindings. Same fixture in every runner. */
+	{
+		char ddir[256], dfile[320], dpath[336];
+		snprintf(ddir, sizeof ddir, "%s/shcl-dirpath-%ld", tmp_root(), (long)getpid());
+		snprintf(dfile, sizeof dfile, "%s/f.shcl", ddir);
+#ifdef _WIN32
+		if (_mkdir(ddir) != 0) fail("dirpath", "mkdir failed");
+#else
+		if (mkdir(ddir, 0700) != 0) fail("dirpath", "mkdir failed");
+#endif
+		FILE *df = fopen(dfile, "wb");
+		if (!df || fputs("a: 1\n", df) == EOF || fclose(df) != 0) fail("dirpath", "seed write failed");
+		shcl_doc *dd = shcl_parse("a: 2\n", 5);
+		static const char *sfx[] = { "/", "/.", "/.." };
+		for (size_t si = 0; si < sizeof sfx / sizeof sfx[0]; si++) {
+			snprintf(dpath, sizeof dpath, "%s%s", dfile, sfx[si]);
+			if (shcl_save_file(dd, dpath) == SHCL_SAVE_OK) fail("dirpath", "a directory-shaped path was accepted");
+		}
+		size_t dn; char *dt = read_file(dfile, &dn);
+		if (!dt || dn != 5 || memcmp(dt, "a: 1\n", 5) != 0) fail("dirpath", "a refused save changed the file");
+		free(dt);
+		if (shcl_save_file(dd, dfile) != SHCL_SAVE_OK) fail("dirpath", "the plain path did not save");
+		shcl_free(dd);
+		remove(dfile); rmdir(ddir);
+	}
+
+	/* A written value carrying both quote kinds is stored the way its own
+	   reload stores it, so shcl_instances and a read's raw text agree across a
+	   save. The emitter escapes the double quotes; the writer used to keep them
+	   bare. Same fixture in every runner. */
+	{
+		shcl_doc *wd = shcl_parse("x: 1\n", 5);
+		if (!shcl_set_string(wd, "k", 1, "q\"q'", 4)) fail("written_spelling", "set_string refused");
+		/* The canonical text lives in wd's read arena, so it is copied onto
+		   the stack before wb is parsed from it - a fixture value is short. */
+		shcl_str wc = shcl_to_canonical(wd);
+		char wcopy[64];
+		if (wc.n > sizeof wcopy) fail("written_spelling", "canonical text longer than the fixture buffer");
+		memcpy(wcopy, wc.p, wc.n < sizeof wcopy ? wc.n : sizeof wcopy);
+		shcl_doc *wb = shcl_parse(wcopy, wc.n < sizeof wcopy ? wc.n : sizeof wcopy);
+		shcl_str *wi = NULL, *bi = NULL;
+		size_t wn = shcl_instances(wd, "k", 1, &wi), bn = shcl_instances(wb, "k", 1, &bi);
+		if (wn != 1 || bn != 1 || wi[0].n != bi[0].n || memcmp(wi[0].p, bi[0].p, wi[0].n) != 0)
+			fail("written_spelling", "instances differ across a reload");
+		shcl_read_str r = shcl_read_string(wd, "k", 1);
+		if (r.status != SHCL_GOOD || r.value.n != 4 || memcmp(r.value.p, "q\"q'", 4) != 0)
+			fail("written_spelling", "written value did not read back");
+		shcl_free(wb); shcl_free(wd);
+	}
+
+#ifdef _WIN32
+	/* Windows-only, and wine cannot show either one: it maps onto a filesystem
+	   with no MAX_PATH and follows a unix symlink before the API ever sees it.
+	   The hosted windows job is where these are judged. */
+	{
+		/* A path past MAX_PATH. The narrow and wide file calls both refuse one
+		   unless it carries the \\?\ prefix, so a save through a deep tree used
+		   to fail on windows and work everywhere else. */
+		char lp[1024], real_short[320]; size_t ln = 0;
+		snprintf(real_short, sizeof real_short, "%s/shcl-short-%ld.shcl", tmp_root(), (long)getpid());
+		size_t lbase = (size_t)snprintf(lp, sizeof lp, "%s/shcl-lp-%ld", tmp_root(), (long)getpid());
+		ln = lbase;
+		mkdir_long(lp);
+		for (int i = 0; i < 12 && ln < sizeof lp - 64; i++) {
+			ln += (size_t)snprintf(lp + ln, sizeof lp - ln, "/dddddddddddddddddddddddd%02d", i);
+			mkdir_long(lp);
+		}
+		ln += (size_t)snprintf(lp + ln, sizeof lp - ln, "/cfg.shcl");
+		if (ln <= MAX_PATH) fail("longpath", "the fixture path is not past MAX_PATH");
+		/* The prefix is the mechanism, and wine's filesystem has no MAX_PATH to
+		   refuse the path without it, so the spelling is asserted directly. */
+		char *lr = shcl_resolve_target(lp);
+		if (!lr || strncmp(lr, "\\\\?\\", 4) != 0) fail("longpath", "a path past MAX_PATH did not take the long-path prefix");
+		free(lr);
+		char *sr = shcl_resolve_target(real_short);
+		if (!sr || strncmp(sr, "\\\\?\\", 4) == 0) fail("longpath", "a short path took the long-path prefix");
+		free(sr);
+		shcl_doc *ld = shcl_parse("a: 1\n", 5);
+		if (shcl_save_file(ld, lp) != SHCL_SAVE_OK) fail("longpath", "save refused a path past MAX_PATH");
+		/* Through the library, which is what has to carry the prefix: the
+		   runner's own reader is plain fopen and would refuse the path. */
+		size_t rn = 0; shcl_file_status lst; char *rt = shcl_read_file(lp, 0, &rn, &lst);
+		if (!rt || lst != SHCL_FILE_CLEAN || rn != 5 || memcmp(rt, "a: 1\n", 5) != 0)
+			fail("longpath", "the long path did not read back");
+		free(rt);
+		if (shcl_set_int(ld, "a", 1, 2) && shcl_save_file(ld, lp) != SHCL_SAVE_OK)
+			fail("longpath", "a rewrite of a path past MAX_PATH failed");
+		shcl_free(ld);
+		remove_long(lp);
+		/* Up to the fixture's own root and no further: the walk is what removes
+		   the tree, and one step too many would be someone else's directory. */
+		for (ln = strlen(lp); ln > lbase; ) {
+			while (ln > lbase && lp[ln] != '/') ln--;
+			lp[ln] = '\0';
+			rmdir_long(lp);
+			if (ln > lbase) ln--;
+		}
+	}
+	{
+		/* A save through a link replaces what the link points at, not the link.
+		   An unprivileged symlink needs developer mode, so a runner without it
+		   skips rather than failing on the setup. */
+		char sdir[256], real[320], link[320];
+		snprintf(sdir, sizeof sdir, "%s/shcl-link-%ld", tmp_root(), (long)getpid());
+		if (_mkdir(sdir) != 0) fail("winlink", "mkdir failed");
+		snprintf(real, sizeof real, "%s/real.shcl", sdir);
+		snprintf(link, sizeof link, "%s/link.shcl", sdir);
+		FILE *sf = fopen(real, "wb");
+		if (!sf || fputs("a: 1\n", sf) == EOF || fclose(sf) != 0) fail("winlink", "seed write failed");
+		wchar_t *wl = shcl_widen(link), *wr = shcl_widen(real);
+		int made = wl && wr && CreateSymbolicLinkW(wl, wr, 0x2 /* ALLOW_UNPRIVILEGED_CREATE */);
+		/* Wine reports success and creates nothing, so the attribute is what
+		   says a link is really there. Without the privilege, so does windows. */
+		if (made) {
+			DWORD la = GetFileAttributesW(wl);
+			made = la != INVALID_FILE_ATTRIBUTES && (la & FILE_ATTRIBUTE_REPARSE_POINT);
+		}
+		if (!made) printf("conformance: winlink skipped (no symlink)\n");
+		else {
+			shcl_doc *sd = shcl_parse("a: 2\n", 5);
+			if (shcl_save_file(sd, link) != SHCL_SAVE_OK) fail("winlink", "save through the link failed");
+			shcl_free(sd);
+			size_t rn; char *rt = read_file(real, &rn);
+			if (!rt || rn != 5 || memcmp(rt, "a: 2\n", 5) != 0) fail("winlink", "the save did not reach the link's target");
+			free(rt);
+			DWORD a = GetFileAttributesW(wl);
+			if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_REPARSE_POINT))
+				fail("winlink", "the save replaced the link with a regular file");
+			remove(link);
+		}
+		free(wl); free(wr);
+		remove(real); _rmdir(sdir);
+	}
+#endif
+
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }
 	printf("conformance: %zu case(s) pass\n", nn);
 	return 0;

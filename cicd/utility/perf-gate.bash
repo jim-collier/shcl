@@ -74,18 +74,36 @@ awk 'BEGIN{ pad = sprintf("%794s", ""); gsub(/ /, "x", pad); for (i = 0; i < 30;
 ##	"check", or a document validated against ${sugSchema} when $3 is
 ##	"suggest") through CLI $1, best of two so a scheduling hiccup does not
 ##	fail the gate.
+##	The exit code and the size of what came out are checked too: the timer used
+##	to discard both, so a CLI that printed a usage error and exited 1 was inside
+##	every budget and the gate reported OK. A run that did not do the work is a
+##	failure, not a fast one.
 fTimeMs(){
-	local cli="$1" input="$2" mode="${3:-set}" best=0 ms start end
+	local cli="$1" input="$2" mode="${3:-set}" want="${4:-1}" best=0 ms start end rc lines
 	for _ in 1 2; do
 		start="$(date +%s%N)"
+		rc=0
 		if [[ "${mode}" == check ]]; then
-			"${cli}" check "${input}" > /dev/null 2>&1 || true
+			"${cli}" check "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == suggest ]]; then
-			"${cli}" check --schema "${sugSchema}" "${input}" > /dev/null 2>&1 || true
+			"${cli}" check --schema "${sugSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		else
-			"${cli}" set "${doc}" < "${input}" > /dev/null 2>&1 || true
+			"${cli}" set "${doc}" < "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		fi
 		end="$(date +%s%N)"
+		##	`check` on a document with diagnostics exits 6; everything else here
+		##	succeeds. Anything else means the run did no work.
+		local wantRc=0
+		[[ "${mode}" == check || "${mode}" == suggest ]] && wantRc=6
+		if ((rc != wantRc)); then
+			echo "perf-gate: ${cli##*/}: ${mode} run exited ${rc}, expected ${wantRc} - it did not do the work" >&2
+			printf '%s' -1; return
+		fi
+		lines="$(wc -l < "${tmpDir}/out")"
+		if ((lines < want)); then
+			echo "perf-gate: ${cli##*/}: ${mode} run printed ${lines} line(s), expected at least ${want}" >&2
+			printf '%s' -1; return
+		fi
 		ms=$(( (end - start) / 1000000 ))
 		if ((best == 0 || ms < best)); then best="${ms}"; fi
 	done
@@ -95,7 +113,10 @@ fTimeMs(){
 declare -i nBad=0
 for b in "${bindings[@]}"; do
 	name="${b%%|*}"; cli="${b#*|}"
-	baseMs="$(fTimeMs "${cli}" "${tmpDir}/base.ops")"
+	##	Every `set` run prints the whole document, so the line count is the key
+	##	count; `check` prints one line per diagnostic plus a summary.
+	baseMs="$(fTimeMs "${cli}" "${tmpDir}/base.ops" set "${keys}")"
+	if ((baseMs < 0)); then nBad+=1; continue; fi
 	## A floor, so a binding fast enough to land near the clock's resolution is
 	## not judged on noise.
 	budget=$(( baseMs * factor ))
@@ -103,13 +124,15 @@ for b in "${bindings[@]}"; do
 	if ((budget < floor)); then budget="${floor}"; fi
 	for w in writes defaults reads badlines suggest; do
 		if [[ "${w}" == badlines ]]; then
-			ms="$(fTimeMs "${cli}" "${badDoc}" check)"
+			ms="$(fTimeMs "${cli}" "${badDoc}" check 2)"
 		elif [[ "${w}" == suggest ]]; then
-			ms="$(fTimeMs "${cli}" "${sugDoc}" suggest)"
+			ms="$(fTimeMs "${cli}" "${sugDoc}" suggest 2)"
 		else
-			ms="$(fTimeMs "${cli}" "${tmpDir}/${w}.ops")"
+			ms="$(fTimeMs "${cli}" "${tmpDir}/${w}.ops" set "${keys}")"
 		fi
-		if ((ms > budget)); then
+		if ((ms < 0)); then
+			nBad+=1
+		elif ((ms > budget)); then
 			echo "perf-gate: ${name}: ${w} took ${ms} ms against a ${budget} ms budget (parse-only baseline ${baseMs} ms)" >&2
 			nBad+=1
 		else

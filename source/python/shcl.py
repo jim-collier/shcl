@@ -363,9 +363,10 @@ class _Value:
 			# legal in a quoted string), silently merging them.
 			parts = ["c:"]
 			for e in self.els:
-				parts.append(str(len(e.text)))
+				t = _key_text(e.text)
+				parts.append(str(len(t)))
 				parts.append(":")
-				parts.append(e.text)
+				parts.append(t)
 			return "".join(parts)
 		# Info-string is part of identity (a `sql` and a `python` block are
 		# different values even with equal bodies); fence style is not. Info is
@@ -451,8 +452,15 @@ def _want(setter, v, kind):
 
 
 def _want_all(setter, v, kind):
-	for x in v:
+	# A sequence, not any iterable. A str is a sequence of one-character strings,
+	# so set_string_array("abc") wrote three elements; a generator is consumed by
+	# the check and the setter then reads an empty one and reports success.
+	if isinstance(v, (str, bytes, bytearray)):
+		raise TypeError(f"{setter}: want a list of {kind}, got {type(v).__name__}")
+	items = list(v)
+	for x in items:
 		_want(setter, x, kind)
+	return items
 
 
 def _as_float(v):
@@ -487,7 +495,29 @@ def _encode_string(s):
 			out.append("\\t")
 		else:
 			out.append(c)
-	return "".join(out)
+	text = "".join(out)
+	# The emitter escapes a bare double quote when both quote kinds appear, so a
+	# reparse of the written line stores the escaped spelling. Store it here too,
+	# or instances() and a read's raw text differ between a written document and
+	# its own reload.
+	dq, sq = _bare_quote_counts(text)
+	if dq and sq:
+		esc = []
+		i = 0
+		while i < len(text):
+			c = text[i]
+			if c == "\\":
+				esc.append(c)
+				i += 1
+				if i < len(text):
+					esc.append(text[i])
+			elif c == '"':
+				esc.append('\\"')
+			else:
+				esc.append(c)
+			i += 1
+		return "".join(esc)
+	return text
 
 
 def _choose_fence(content):
@@ -799,6 +829,13 @@ def _unterminated_quote(text):
 	return False
 
 
+def _one_line(s):
+	# Value text for a diagnostic message: line breaks and tabs escaped, so one
+	# diagnostic is one line. A raw block's body is the value that made this
+	# necessary - it carries its own newlines.
+	return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
 def _quoted_shape(t):
 	"""True when the text is one quote pair: a quote char at both ends, the last
 	one not escaped (a trailing backslash run of odd length escapes it)."""
@@ -866,6 +903,15 @@ def _parse_cell(text):
 	return _cell(els) if els else _empty()
 
 
+def _key_text(s):
+	"""The identity spelling of an element's text: escapes resolved, so two
+	spellings of one string are one instance. Names have followed that rule
+	since 2.0, and a `[value]` selector matches on the resolved text already -
+	without this, one selector addressed two instances. The common case has
+	nothing to resolve and returns the input."""
+	return _apply_escapes(s) if "\\" in s else s
+
+
 def _apply_escapes(s):
 	"""Escape processing (string reads): \\t \\n \\\\ \\" \\'; unknown escapes stay literal."""
 	# Fast path: every non-backslash char passes through verbatim, so with no
@@ -922,8 +968,8 @@ def _merge_key(name, v):
 	if k == "cell":
 		els = v.els
 		if len(els) == 1:
-			return (name, "c", (els[0].text,))
-		return (name, "c", tuple(e.text for e in els))
+			return (name, "c", (_key_text(els[0].text),))
+		return (name, "c", tuple(_key_text(e.text) for e in els))
 	if k == "empty":
 		return (name, "e")
 	return (name, "r", v.info, v.content)
@@ -1351,7 +1397,14 @@ class _Parser:
 						target = node
 						at_own_level = len(ind) == len(p.indent)
 						break
-				if target is not None:
+				# A root node's trailing comment emits at column zero, which is
+				# exactly how the document's own trailing comment is spelled, so
+				# keeping the two apart here made a merge depend on whether the
+				# layer had been formatted first. Let it orphan, the way a
+				# reload of this document's own output reads it. A comment
+				# deeper than the node keeps an indent of its own and comes back
+				# where it was, so it still hangs.
+				if target is not None and (not at_own_level or self.arena[target].parent != ROOT):
 					lead = _Lead(p.text, p.blank_before)
 					if at_own_level:
 						self.arena[target]._triv().after.append(lead)
@@ -2271,9 +2324,17 @@ class Document:
 		idx = self._index
 		if idx is None:
 			idx = _NameIndex({}, {}, [NIL] * len(self.arena))
-			for p, node in enumerate(self.arena):
-				for c in node.children:
+			# From the root, not across the arena: a removed subtree's nodes are
+			# still there with their child lists intact, so an arena walk
+			# indexes every node the document ever held. Chains stay in file
+			# order - a chain is one parent's same-named children, and each
+			# parent's are appended in order.
+			stack = [ROOT]
+			while stack:
+				p = stack.pop()
+				for c in self.arena[p].children:
 					idx.append(_name_key(p, self.arena[c].name), c)
+					stack.append(c)
 			self._index = idx
 		return idx
 
@@ -2724,6 +2785,7 @@ class Document:
 		node if absent). A missing '#' is added; only the first line is kept, and
 		trailing whitespace comes off the way the load takes it, so text that is
 		blank leaves a bare '#'."""
+		_want("set_comment", text, "str")
 		idx = self._place(path)
 		if idx is None:
 			return False
@@ -2793,6 +2855,8 @@ class Document:
 		spelling (the `#` would read back as a comment) and fails the write. A
 		body line ending in CR fails for the same reason: the load takes the
 		whole trailing CR run off every line, so it would not read back."""
+		_want("set_raw", content, "str")
+		_want("set_raw", info, "str")
 		if "\n" in info or "\r" in info or _split_comment(info)[1] != "":
 			return False
 		if any(line.endswith("\r") for line in content.split("\n")):
@@ -2806,29 +2870,29 @@ class Document:
 
 	def set_int_array(self, path: str, v: list[int]) -> bool:
 		"""Bind an inline int array; every element is checked as set_int does."""
-		_want_all("set_int_array", v, "int")
+		v = _want_all("set_int_array", v, "int")
 		if not all(_fits_i64(x) for x in v):
 			return False
 		return self._set_value(path, _array_cell([str(x) for x in v]))
 
 	def set_float_array(self, path: str, v: list[float]) -> bool:
 		"""Bind an inline float array; every element is converted as set_float does."""
-		_want_all("set_float_array", v, "float")
+		v = _want_all("set_float_array", v, "float")
 		xs = [_as_float(x) for x in v]
 		if not all(math.isfinite(x) for x in xs):
 			return False
 		return self._set_value(path, _array_cell([format_float(x) for x in xs]))
 
 	def set_bool_array(self, path: str, v: list[bool]) -> bool:
-		_want_all("set_bool_array", v, "bool")
+		v = _want_all("set_bool_array", v, "bool")
 		return self._set_value(path, _array_cell(["true" if x else "false" for x in v]))
 
 	def set_string_array(self, path: str, v: list[str]) -> bool:
-		_want_all("set_string_array", v, "str")
+		v = _want_all("set_string_array", v, "str")
 		return self._set_value(path, _array_cell([_encode_string(x) for x in v]))
 
 	def set_datetime_array(self, path: str, v: list[ShclDateTime]) -> bool:
-		_want_all("set_datetime_array", v, "datetime")
+		v = _want_all("set_datetime_array", v, "datetime")
 		if not all(_datetime_reads_back(x) for x in v):
 			return False
 		return self._set_value(path, _array_cell([str(x) for x in v]))
@@ -2862,6 +2926,7 @@ class Document:
 		a config line, a user's --set argument - writes it without knowing its
 		shape first. Returns False on text that could not be one line's value.
 		"""
+		_want("set_literal", text, "str")
 		v = _literal_value(text)
 		if v is None:
 			return False
@@ -2929,7 +2994,14 @@ class Document:
 		and raw blocks get real override while a bare section header merges
 		instead of wiping. over-only nodes are appended. Comment trivia rides
 		with each node. Load(defaults, site, user) is a left fold of this: each
-		later file overlaid on the earlier ones."""
+		later file overlaid on the earlier ones.
+
+		The fold is not associative: (A+B)+C and A+(B+C) differ where a bare
+		header meets an overridden leaf, so a cached upper pair is not the same
+		document the CLI's left fold produces. self keeps its own strictness, so
+		a value from a stricter layer reads with self's coercion. And a replaced
+		node is kept until the document is dropped: this costs a pass over the
+		touched scopes plus an index rebuild on the next read."""
 		self._index = None
 		self._lost += over._lost
 		self._overlay(ROOT, over, ROOT)
@@ -3518,7 +3590,7 @@ class Document:
 				return
 			if c.allowed is not None and c.allowed[0] == "strings":
 				if node.value.content not in c.allowed[1]:
-					_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {node.value.content}")
+					_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(node.value.content)}")
 			return
 		els = node.value.els
 		if base == "raw":
@@ -3538,7 +3610,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "ints":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
 						break
 			if c.min_i is not None and any(v < c.min_i for v in vals):
 				_vdiag(out, line, "V005", f"value below min at '{c.path}'")
@@ -3552,7 +3624,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "floats":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
 						break
 			if c.min_f is not None and any(v < c.min_f for v in vals):
 				_vdiag(out, line, "V005", f"value below min at '{c.path}'")
@@ -3566,7 +3638,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "bools":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
 						break
 		elif base == "datetime":
 			vals = [parse_datetime(e.text) for e in els]
@@ -3575,8 +3647,8 @@ class Document:
 				return
 			if c.allowed is not None and c.allowed[0] == "dates":
 				for i, v in enumerate(vals):
-					if not any(_dt_equal(v, a) for a in c.allowed[1]):
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
+					if not any(_same_moment(v, a) for a in c.allowed[1]):
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
 						break
 		else:
 			# string kind or untyped: every element coerces; only the allowed
@@ -3585,7 +3657,7 @@ class Document:
 				for e in els:
 					s = _apply_escapes(e.text)
 					if s not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {s}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(s)}")
 						break
 
 	def _v_unknown(self, sdef, out):
@@ -3861,6 +3933,13 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	# that touches the filesystem instead, so every one of them below has to
 	# carry the same guard.
 	file = os.fspath(file)   # an int is a TypeError here, not a descriptor (see read_file)
+	# A path that names a directory rather than a file: it ends in a separator,
+	# or its last component is `.` or `..`. The OS refuses to open such a path as
+	# a regular file, but a path cleanup drops the trailing separator first, so a
+	# save through `f/.` used to rewrite `f` in some bindings.
+	last = file.replace("\\", "/").rsplit("/", 1)[-1] if os.name == "nt" else file.rsplit("/", 1)[-1]
+	if file and (file[-1] in ("/", "\\" if os.name == "nt" else "/") or last in (".", "..")):
+		return f"{file}: is a directory"
 	try:
 		target = _resolve_target(file)
 	except (OSError, ValueError) as e:
@@ -4645,9 +4724,25 @@ def _single_text(v):
 	return None
 
 
-def _dt_equal(a, b):
-	# Field-wise; tuples/None compare by value already.
-	return a.date == b.date and a.time == b.time and a.frac == b.frac and a.zone == b.zone
+def _same_moment(a, b):
+	# Two datetimes naming the same moment, whatever the spelling. The struct
+	# mirrors what was written, so 12:00:00Z and 12:00:00+00:00 are different
+	# values field by field while naming one time, and 12:00:00 and 12:00:00.0
+	# differ only in written precision. A [value] selector matches on text, but
+	# an allowed set is about the value, so it compares here. An absent zone is
+	# local and matches no zone at all - that is the one spelling difference
+	# that is a real difference.
+	def offset(z):
+		if z is None:
+			return None
+		return 0 if z[0] == "utc" else z[1]
+
+	return (
+		a.date == b.date
+		and a.time == b.time
+		and (a.frac or "").rstrip("0") == (b.frac or "").rstrip("0")
+		and offset(a.zone) == offset(b.zone)
+	)
 
 
 def _build_schema(schema):
@@ -4721,6 +4816,7 @@ def _parse_field(schema, f, faults):
 	required = None
 	reopen_seen = False
 	allowed_at = None
+	default_at = None
 	min_at = None
 	max_at = None
 	for k in schema.arena[f].children:
@@ -4792,15 +4888,26 @@ def _parse_field(schema, f, faults):
 				_vdiag(faults, kid.line, "V092", "bad schema constraint 'inherits'")
 		elif kid.name == "desc":
 			# Generator-only (`shcl init`); validation ignores it. First wins.
-			if c.desc is None:
-				c.desc = _single_text(kid.value)
+			# A comma in a sentence makes the value several elements, and the
+			# comment is prose: take them all, spelled as written.
+			if c.desc is None and kid.value.kind == "cell":
+				c.desc = ", ".join(_apply_escapes(e.text) for e in kid.value.els)
 		elif kid.name == "default":
 			if c.default_text is None:
 				c.default_text = _emit_value_inline(kid.value)
+				default_at = k
 		else:
 			_vdiag(faults, kid.line, "V090", f"unknown schema key '{kid.name}'")
 	if required is not None:
 		c.required = required
+	# A raw block has no inline spelling, so a `default` that is one cannot reach
+	# a generated line - it used to be dropped and the field emitted with no
+	# value at all - and a `default` under `type: raw` goes out inline and then
+	# fails its own type check.
+	if default_at is not None:
+		dkid = schema.arena[default_at]
+		if dkid.value.kind == "raw" or (c.ty == "raw" and c.default_text is not None):
+			_vdiag(faults, dkid.line, "V092", "bad schema constraint 'default'")
 	base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
 	if base is None:
 		base = "string"
@@ -4859,6 +4966,18 @@ def _parse_field(schema, f, faults):
 				c.max_f = v
 		else:
 			_vdiag(faults, kid.line, "V092", f"bad schema constraint '{key}'")
+	# A lower bound above the upper one admits nothing, so every value fails
+	# twice and the schema, not the config, is what has to change. Reported at
+	# the max line, and the field is dropped like any other broken one so the
+	# document is not told off twice per value for a range it could never have
+	# satisfied.
+	crossed = (c.min_i is not None and c.max_i is not None and c.min_i > c.max_i) or (
+		c.min_f is not None and c.max_f is not None and c.min_f > c.max_f
+	)
+	if crossed:
+		line = schema.arena[max_at].line if max_at is not None else schema.arena[f].line
+		_vdiag(faults, line, "V092", "bad schema constraint 'max'")
+		return None
 	return c
 
 

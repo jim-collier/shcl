@@ -10,6 +10,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+/* Nested rather than one expression: gcc 12 parses the whole #if line before it
+   short-circuits, and refuses __has_feature(...) where the macro is undefined. */
+#if defined(__has_feature)
+#	if __has_feature(address_sanitizer)
+#		define SHCL_UNDER_ASAN 1
+#	endif
+#endif
+#if defined(__SANITIZE_ADDRESS__)
+#	define SHCL_UNDER_ASAN 1
+#endif
 
 static size_t allocated = 0;
 static void *counting_malloc(size_t n) { allocated += n; return malloc(n); }
@@ -158,6 +170,90 @@ int main(void) {
 	printf("mem_bounds: released generation: arena %zu -> %zu\n", held, arena_bytes(&d->arena));
 	if (arena_bytes(&d->arena) > held + 4096) fail("a released generation still grew the document");
 	shcl_free(d);
+
+	// The name index used to be rebuilt by walking the arena, which still holds
+	// every node a set-and-remove cycle ever made - so the first read after a
+	// merge grew with the number of edits, not with the document. Timed against
+	// the same document with no dead nodes; the ratio is what matters, since an
+	// absolute figure would be a machine constant.
+	{
+		double t[2];
+		for (int churned = 0; churned < 2; churned++) {
+			shcl_doc *cd = shcl_parse("g:\n\tk: 1\n", 9);
+			if (churned) for (int i = 0; i < 100000; i++) { shcl_set_int(cd, "g.tmp", 5, i); shcl_remove(cd, "g.tmp", 5); }
+			clock_t c0 = clock();
+			for (int i = 0; i < 200; i++) { shcl_merge(cd, cd); if (shcl_get_int_or(cd, "g.k", 3, -1) != 1) fail("index walk: wrong result"); }
+			t[churned] = (double)(clock() - c0) / CLOCKS_PER_SEC * 1000.0;
+			shcl_free(cd);
+		}
+		printf("mem_bounds: index rebuild: %.1f ms fresh, %.1f ms after 100k set+remove\n", t[0], t[1]);
+		/* A ratio between two timings says nothing under a sanitizer, which
+		   costs per allocation rather than per node walked. The plain build in
+		   the test stage is where this is judged. */
+#ifdef SHCL_UNDER_ASAN
+		printf("mem_bounds: index rebuild ratio not judged under a sanitizer\n");
+#else
+		/* A clock that cannot resolve the fresh side leaves the ratio resting on
+		   one or two ticks, and then the bound is an absolute figure on
+		   whatever machine is running - which is what it was written not to be.
+		   glibc counts in microseconds and the fresh side is a hundred ticks;
+		   windows counts in whole milliseconds and it is one. */
+		if (t[0] < 20.0 * (1000.0 / (double)CLOCKS_PER_SEC))
+			printf("mem_bounds: index rebuild ratio not judged (clock too coarse)\n");
+		else
+		/* A generous ratio on purpose: the chain array is still sized by the
+		   arena, which is a memset the walk cannot avoid. What the bound
+		   catches is the walk itself going over every dead node. */
+		if (t[1] > t[0] * 25 + 25) fail("the index rebuild walks nodes the document no longer holds");
+#endif
+	}
+
+	// shcl_authored_name hands back the stored spelling, which lives in the
+	// document's own arena - so it outlives shcl_reads_release, where the header
+	// used to promise the shorter read-arena lifetime.
+	{
+		shcl_doc *ad = shcl_parse("SYMBOLS: 3\n", 11);
+		shcl_str an = shcl_authored_name(ad, "symbols", 7);
+		if (an.n != 7 || memcmp(an.p, "SYMBOLS", 7) != 0) fail("authored_name: wrong spelling");
+		shcl_reads_release(ad);
+		if (an.n != 7 || memcmp(an.p, "SYMBOLS", 7) != 0) fail("authored_name did not survive a read release");
+		shcl_free(ad);
+	}
+
+	// A merge rebuilt the parent's child list with a builder growing in the
+	// document arena, so every doubling step was abandoned there; and a string
+	// value climbed from 32 bytes the same way. Both are opened at the size the
+	// caller already knows now.
+	{
+		size_t keys = 20000, cap = keys * 24 + 16, tl = 0;
+		char *txt = (char *)malloc(cap);
+		for (size_t i = 0; i < keys; i++) tl += (size_t)sprintf(txt + tl, "k%zu: %zu\n", i, i);
+		shcl_doc *base = shcl_parse(txt, tl);
+		shcl_doc *over = shcl_parse("k0: 9\n", 6);
+		size_t start = arena_bytes(&base->arena);
+		for (int i = 0; i < 50; i++) shcl_merge(base, over);
+		size_t per = (arena_bytes(&base->arena) - start) / 50;
+		printf("mem_bounds: merge: %zu bytes per merge onto %zu keys (list is %zu)\n", per, keys, keys * sizeof(size_t));
+		if (shcl_get_int_or(base, "k0", 2, -1) != 9) fail("merge: wrong result");
+		// The rebuilt list is unavoidable; a doubling chain beside it is not.
+		if (per > keys * sizeof(size_t) * 3 / 2) fail("a merge abandoned its builder in the document arena");
+		shcl_free(over); shcl_free(base); free(txt);
+	}
+	{
+		size_t big = 4u * 1024 * 1024;
+		char *blob = (char *)malloc(big);
+		memset(blob, 'x', big);
+		d = shcl_parse("a: 1\n", 5);
+		held = arena_bytes(&d->arena);
+		if (!shcl_set_string(d, "a", 1, blob, big)) fail("set_string of a large value failed");
+		size_t grew = arena_bytes(&d->arena) - held;
+		printf("mem_bounds: set_string: %zu bytes for a %zu-byte value\n", grew, big);
+		// The builder is opened at the value's own size, so the only slack is
+		// the arena's block rounding. A doubling climb costs a multiple.
+		if (grew > big + 65536) fail("a string value cost more than its own size");
+		shcl_free(d);
+		free(blob);
+	}
 
 	// A write lands in a bump arena and the value it replaced stays behind, so
 	// a loop rewriting one field grows the document until shcl_free. Compaction

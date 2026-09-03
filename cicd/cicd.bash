@@ -116,6 +116,11 @@ esac; done
 
 ## --ci: correctness only, deterministic, side-effect free.
 if ((ci_mode)); then
+	## A gate that quietly skips what it cannot run is a gate that stops
+	## checking when a runner loses a tool. The gates read this and fail on a
+	## skip instead; locally a missing tool is still a skip, since a working
+	## copy is not required to carry every one.
+	export SHCL_GATE_STRICT=1
 	sync_enable=0       ## the runner already checked out the exact commit under test
 	FMT_CMD=()          ## check-only via FMT_CHECK_CMD; never rewrite in CI
 	CROSS_TARGETS=()

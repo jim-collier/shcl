@@ -278,6 +278,45 @@ fn merge_never_panics_and_stays_fixpoint() {
 			i,
 			b
 		);
+		// Reads answered by the merged document itself, not just its text. A
+		// merged arena holds dropped nodes, a rebuilt index and cloned child
+		// lists, and only a read walks those; the text compare above cannot
+		// see them. Every eighth iteration, since it walks every path.
+		//
+		// `instances` is left out on purpose: it hands back the SOURCE
+		// spelling, and canonical output legitimately respells a value -
+		// escaping a quote to keep it on one line, say - so the two differ for
+		// a reason that has nothing to do with merging.
+		if i % 8 == 0 {
+			let back = Document::parse(&once);
+			assert_eq!(doc.paths(), back.paths(), "paths differ at iteration {}", i);
+			for p in doc.paths() {
+				assert_eq!(doc.count(&p), back.count(&p), "count {:?} at {}", p, i);
+				assert_eq!(
+					doc.children(&p),
+					back.children(&p),
+					"children {:?} at {}",
+					p,
+					i
+				);
+				let (x, y) = (doc.read_string(&p), back.read_string(&p));
+				assert_eq!(
+					(x.value, x.status),
+					(y.value, y.status),
+					"read {:?} at {}",
+					p,
+					i
+				);
+				let (x, y) = (doc.read_string_array(&p), back.read_string_array(&p));
+				assert_eq!(
+					(x.value, x.status, x.slots),
+					(y.value, y.status, y.slots),
+					"array read {:?} at {}",
+					p,
+					i
+				);
+			}
+		}
 		// A layer and its canonical form must merge the same: a load that
 		// keeps a bit its own emitter cannot re-emit makes the fold depend on
 		// whether the caller formatted the layer first.
@@ -327,6 +366,16 @@ fn writer_roundtrips_and_stays_fixpoint() {
 			Document::parse(&text).to_canonical(),
 			text,
 			"writer output not a fixpoint #{} for {:?}",
+			i,
+			s
+		);
+		// The written document and its own reload agree on the source spelling
+		// too, not just on the value: a text carrying both quote kinds used to
+		// store one form and reparse as another.
+		assert_eq!(
+			d.instances("k"),
+			Document::parse(&text).instances("k"),
+			"instances differ between a written document and its reload #{} for {:?}",
 			i,
 			s
 		);

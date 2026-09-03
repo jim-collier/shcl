@@ -275,8 +275,8 @@ int shcl_quoted(shcl_doc *d, const char *path, size_t plen);
 // Resolution mirrors shcl_line: empty when the path does not resolve to
 // exactly one node. Merged instances keep the first binding's spelling; a
 // writer-built node keeps the spelling the setter's path used.
-// Borrowed from the document's read arena; valid until shcl_free, or until
-// shcl_reads_release.
+// Borrowed from the document's own arena, so it outlives shcl_reads_release and
+// is valid until shcl_free or shcl_compact - the name is stored, not built.
 shcl_str shcl_authored_name(shcl_doc *d, const char *path, size_t plen);
 // The plural shcl_line: 1-based source lines at a path, in file order, so a
 // repeated field - the case that most wants a citable line - yields every
@@ -413,6 +413,13 @@ int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, 
 // a bare section header merges instead of wiping); over-only nodes are
 // appended. `over`'s content is deep-copied into d's arena, so d stays valid
 // after `over` is freed.
+//
+// The fold is not associative: (A+B)+C and A+(B+C) differ where a bare header
+// meets an overridden leaf, so a cached upper pair is not the same document the
+// CLI's left fold produces. d keeps its own strictness, so a value from a
+// stricter layer reads with d's coercion. And a replaced node is kept until
+// shcl_free or shcl_compact: this costs a pass over the touched scopes plus an
+// index rebuild on the next read.
 void shcl_merge(shcl_doc *d, const shcl_doc *over);
 
 // CLI/aliases: 1|2|3 or loose|standard|strict. Returns 1 on success.
@@ -617,6 +624,13 @@ static void sb_put(ShclArena *a, ShclSB *s, const char *p, size_t n) {
 		while (nc < s->len + n) nc *= 2;
 		s->data = (char *)arena_grow(a, s->data, s->cap, nc, 1); s->cap = nc; }
 	memcpy(s->data + s->len, p, n); s->len += n;
+}
+/* Open the builder at a size the caller already knows. A bump arena abandons
+   every step of a doubling climb, so a 20 MB value built from 32 bytes cost
+   about four times its own size. */
+static void sb_reserve(ShclArena *a, ShclSB *s, size_t n) {
+	if (n <= s->cap) return;
+	s->data = (char *)arena_grow(a, s->data, s->cap, n, 1); s->cap = n;
 }
 static void sb_putc(ShclArena *a, ShclSB *s, char c) { sb_put(a, s, &c, 1); }
 static void sb_puts(ShclArena *a, ShclSB *s, const char *z) { sb_put(a, s, z, strlen(z)); }
@@ -1150,47 +1164,6 @@ static uint64_t name_key(size_t parent, ShclStr name) {
 /* Hash of the (name, merge-key) pair, spelling the merge-key byte sequence -
    'e', or each cell element (and the raw info-string) length-prefixed so the
    sequence is injective - without building it as a string. */
-static uint64_t merge_hash(ShclStr name, const ShclValue *v) {
-	uint64_t h = 1469598103934665603ull;
-	h = fnv_str(h, name);
-	h = fnv_byte(h, 0xFFu);
-	if (v->kind == V_EMPTY) return fnv_byte(h, 'e');
-	if (v->kind == V_CELL) {
-		h = fnv_byte(h, 'c'); h = fnv_byte(h, ':');
-		for (size_t i = 0; i < v->nels; i++) {
-			h = fnv_dec(h, v->els[i].text.n);
-			h = fnv_byte(h, ':');
-			h = fnv_str(h, v->els[i].text);
-		}
-		return h;
-	}
-	/* Info-string is part of identity (a `sql` and a `python` block are
-	   different values even with equal bodies); fence style is not. */
-	h = fnv_byte(h, 'r'); h = fnv_byte(h, ':');
-	h = fnv_dec(h, v->raw->info.n);
-	h = fnv_byte(h, ':');
-	h = fnv_str(h, v->raw->info);
-	return fnv_str(h, v->raw->content);
-}
-
-/* The exact (name, merge-key) equality a hashed hit is verified with -
-   compares what the two key strings would have held, element by element. The
-   quoted flag is not part of the key, same as the strings never carried it. */
-static int value_eq(const ShclValue *a, const ShclValue *b) {
-	if (a->kind != b->kind) return 0;
-	if (a->kind == V_EMPTY) return 1;
-	if (a->kind == V_CELL) {
-		if (a->nels != b->nels) return 0;
-		for (size_t i = 0; i < a->nels; i++)
-			if (!s_eq(a->els[i].text, b->els[i].text)) return 0;
-		return 1;
-	}
-	return s_eq(a->raw->info, b->raw->info) && s_eq(a->raw->content, b->raw->content);
-}
-static int merge_eq(ShclStr name_a, const ShclValue *va, ShclStr name_b, const ShclValue *vb) {
-	return s_eq(name_a, name_b) && value_eq(va, vb);
-}
-
 /* apply_escapes as a streaming feed into the hash - the same state machine,
    one byte at a time, no intermediate string. Bytes suffice: every special
    character is ASCII and UTF-8 never puts an ASCII byte inside a multibyte
@@ -1221,6 +1194,95 @@ static uint64_t esc_finish(ShclEscHash *e) {
 	if (e->pending) { e->pending = 0; e->h = fnv_byte(e->h, '\\'); }
 	return e->h;
 }
+
+/* The escape-resolved length of s, so a merge key can length-prefix an element
+   without building the resolved text. Mirrors apply_escapes exactly: five
+   escapes collapse two bytes to one, any other backslash pair keeps both, and
+   a trailing lone backslash stands. */
+static size_t esc_len(ShclStr s) {
+	size_t n = 0;
+	for (size_t i = 0; i < s.n; i++) {
+		if (s.p[i] != '\\' || i + 1 >= s.n) { n++; continue; }
+		unsigned char d = (unsigned char)s.p[i + 1];
+		n++;
+		if (d == 't' || d == 'n' || d == '\\' || d == '"' || d == '\'') i++;
+	}
+	return n;
+}
+
+/* One resolved byte at a time, so two texts compare with escapes applied and
+   nothing built. */
+static int esc_next(ShclStr s, size_t *i, unsigned char *out) {
+	if (*i >= s.n) return 0;
+	unsigned char c = (unsigned char)s.p[(*i)++];
+	if (c != '\\' || *i >= s.n) { *out = c; return 1; }
+	unsigned char d = (unsigned char)s.p[*i];
+	switch (d) {
+	case 't':  *out = '\t'; (*i)++; return 1;
+	case 'n':  *out = '\n'; (*i)++; return 1;
+	case '\\': *out = '\\'; (*i)++; return 1;
+	case '"':  *out = '"';  (*i)++; return 1;
+	case '\'': *out = '\''; (*i)++; return 1;
+	default:   *out = '\\'; return 1;   /* the backslash stands; d comes next */
+	}
+}
+
+/* Escape-resolved equality: two spellings of one string are one instance.
+   Names have followed that rule since 2.0, and a `[value]` selector matches on
+   the resolved text already - without this, one selector addressed two
+   instances. */
+static int esc_eq(ShclStr a, ShclStr b) {
+	size_t i = 0, j = 0; unsigned char x = 0, y = 0;
+	for (;;) {
+		int ha = esc_next(a, &i, &x), hb = esc_next(b, &j, &y);
+		if (!ha || !hb) return ha == hb;
+		if (x != y) return 0;
+	}
+}
+
+static uint64_t merge_hash(ShclStr name, const ShclValue *v) {
+	uint64_t h = 1469598103934665603ull;
+	h = fnv_str(h, name);
+	h = fnv_byte(h, 0xFFu);
+	if (v->kind == V_EMPTY) return fnv_byte(h, 'e');
+	if (v->kind == V_CELL) {
+		h = fnv_byte(h, 'c'); h = fnv_byte(h, ':');
+		for (size_t i = 0; i < v->nels; i++) {
+			h = fnv_dec(h, esc_len(v->els[i].text));
+			h = fnv_byte(h, ':');
+			ShclEscHash e; e.h = h; e.pending = 0;
+			esc_str(&e, v->els[i].text);
+			h = esc_finish(&e);
+		}
+		return h;
+	}
+	/* Info-string is part of identity (a `sql` and a `python` block are
+	   different values even with equal bodies); fence style is not. */
+	h = fnv_byte(h, 'r'); h = fnv_byte(h, ':');
+	h = fnv_dec(h, v->raw->info.n);
+	h = fnv_byte(h, ':');
+	h = fnv_str(h, v->raw->info);
+	return fnv_str(h, v->raw->content);
+}
+
+/* The exact (name, merge-key) equality a hashed hit is verified with -
+   compares what the two key strings would have held, element by element. The
+   quoted flag is not part of the key, same as the strings never carried it. */
+static int value_eq(const ShclValue *a, const ShclValue *b) {
+	if (a->kind != b->kind) return 0;
+	if (a->kind == V_EMPTY) return 1;
+	if (a->kind == V_CELL) {
+		if (a->nels != b->nels) return 0;
+		for (size_t i = 0; i < a->nels; i++)
+			if (!esc_eq(a->els[i].text, b->els[i].text)) return 0;
+		return 1;
+	}
+	return s_eq(a->raw->info, b->raw->info) && s_eq(a->raw->content, b->raw->content);
+}
+static int merge_eq(ShclStr name_a, const ShclValue *va, ShclStr name_b, const ShclValue *vb) {
+	return s_eq(name_a, name_b) && value_eq(va, vb);
+}
+
 
 /* Hash of the (name, display-with-escapes-applied) pair a `[value]` selector
    matches with - what disp_key spells, streamed instead of built. */
@@ -2131,7 +2193,14 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 				ShclStr ind = P->stack.data[ii].indent; size_t n = P->stack.data[ii].node;
 				if (n != ROOT && n != DEAD && n != UNOPENED && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; at_own_level = ind.n == p.indent.n; break; }
 			}
-			if (target != (size_t)-1) {
+			/* A root node's trailing comment emits at column zero, which is
+			   exactly how the document's own trailing comment is spelled, so
+			   keeping the two apart here made a merge depend on whether the
+			   layer had been formatted first. Let it orphan, the way a reload
+			   of this document's own output reads it. A comment deeper than the
+			   node keeps an indent of its own and comes back where it was, so
+			   it still hangs. */
+			if (target != (size_t)-1 && (!at_own_level || NODE(P->d, target).parent != ROOT)) {
 				ShclLead lead = lead_make(p.text, p.blank_before);
 				ShclTrivia *t = triv_mut(a, &NODE(P->d, target));
 				if (at_own_level) ShclVecLead_push(a, &t->after, lead);
@@ -2839,10 +2908,20 @@ static void index_unlink(shcl_doc *d, uint64_t key, size_t node) {
 static void name_index(shcl_doc *d) {
 	if (d->index_built) return;
 	index_reserve(d, d->nodes.len ? d->nodes.len : 1);
-	for (size_t p = 0; p < d->nodes.len; p++) {
+	/* From the root, not across the arena: a removed subtree's nodes are still
+	   there with their child lists intact, so an arena walk indexes every node
+	   the document ever held. Chains stay in file order - a chain is one
+	   parent's same-named children, and each parent's are appended in order.
+	   The stack rides in the index arena, which this call owns. */
+	ShclVecSize stack = {0};
+	ShclVecSize_push(&d->index_arena, &stack, ROOT);
+	while (stack.len) {
+		size_t p = stack.data[--stack.len];
 		ShclVecSize ch = NODE(d, p).children;
-		for (size_t k = 0; k < ch.len; k++)
+		for (size_t k = 0; k < ch.len; k++) {
 			index_append(d, name_key(p, NODE(d, ch.data[k]).name), ch.data[k]);
+			ShclVecSize_push(&d->index_arena, &stack, ch.data[k]);
+		}
 	}
 	d->index_built = 1;
 }
@@ -3182,8 +3261,10 @@ static int dt_reads_back(ShclArena *scratch, const shcl_datetime *dt) {
 
 // Inverse of a scalar string read (apply_escapes): only backslash, newline, and
 // tab need encoding; emit_element wraps quote/reserved chars, reparse strips it.
+static void bare_quote_counts(ShclStr t, size_t *dq, size_t *sq);
 static ShclStr w_encode_string(ShclArena *a, ShclStr s) {
 	ShclSB b = {0};
+	sb_reserve(a, &b, s.n);   /* the common value has nothing to escape */
 	for (size_t i = 0; i < s.n; i++) {
 		char c = s.p[i];
 		if (c == '\\') sb_puts(a, &b, "\\\\");
@@ -3191,7 +3272,23 @@ static ShclStr w_encode_string(ShclArena *a, ShclStr s) {
 		else if (c == '\t') sb_puts(a, &b, "\\t");
 		else sb_putc(a, &b, c);
 	}
-	return sb_S(&b);
+	ShclStr out = sb_S(&b);
+	/* The emitter escapes a bare double quote when both quote kinds appear, so
+	   a reparse of the written line stores the escaped spelling. Store it here
+	   too, or shcl_instances and a read's raw text differ between a written
+	   document and its own reload. */
+	size_t dq, sq; bare_quote_counts(out, &dq, &sq);
+	if (dq && sq) {
+		ShclSB e = {0};
+		sb_reserve(a, &e, out.n + dq);
+		for (size_t i = 0; i < out.n; i++) {
+			if (out.p[i] == '\\') { sb_putc(a, &e, out.p[i]); if (i + 1 < out.n) sb_putc(a, &e, out.p[++i]); }
+			else if (out.p[i] == '"') sb_puts(a, &e, "\\\"");
+			else sb_putc(a, &e, out.p[i]);
+		}
+		return sb_S(&e);
+	}
+	return out;
 }
 
 // Pick a backtick fence long enough that no content line closes it early.
@@ -3781,6 +3878,9 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 	// per group, flagged on the group itself.
 	int *spliced = (int *)arena_alloc(t, (nb ? nb : 1) * sizeof(int));
 	for (size_t gi = 0; gi < nb; gi++) spliced[gi] = 0;
+	/* Built in scratch and copied out exactly sized below: a builder growing in
+	   the document arena abandons its doubling chain there, which cost about a
+	   megabyte per merge on a 40000-child parent. */
 	ShclVecSize nw = {0};
 	for (size_t i = 0; i < base.len; i++) {
 		size_t b = base.data[i]; ShclStr nm = NODE(d, b).name;
@@ -3791,14 +3891,18 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 		if (g != (size_t)-1 && is_rep[g]) {
 			if (!spliced[g]) {
 				spliced[g] = 1;
-				for (size_t k = 0; k < rep[g].len; k++) ShclVecSize_push(a, &nw, rep[g].data[k]);
+				for (size_t k = 0; k < rep[g].len; k++) ShclVecSize_push(t, &nw, rep[g].data[k]);
 			}
 		} else {
-			ShclVecSize_push(a, &nw, b);
+			ShclVecSize_push(t, &nw, b);
 		}
 	}
-	for (size_t k = 0; k < okids.len; k++) if (app_at[k] != (size_t)-1) ShclVecSize_push(a, &nw, app_at[k]);
-	NODE(d, bp).children = nw;
+	for (size_t k = 0; k < okids.len; k++) if (app_at[k] != (size_t)-1) ShclVecSize_push(t, &nw, app_at[k]);
+	ShclVecSize kept = {0};
+	kept.data = (size_t *)arena_alloc(a, (nw.len ? nw.len : 1) * sizeof(size_t));
+	for (size_t k = 0; k < nw.len; k++) kept.data[k] = nw.data[k];
+	kept.len = nw.len; kept.cap = nw.len ? nw.len : 1;
+	NODE(d, bp).children = kept;
 }
 
 void shcl_merge(shcl_doc *d, const shcl_doc *over) {
@@ -4488,21 +4592,38 @@ static int v_single_text(ShclArena *a, const ShclValue *v, ShclStr *out) {
 }
 
 // Field-wise datetime equality (struct compare would read unset fields).
-static int v_dt_equal(const shcl_datetime *x, const shcl_datetime *y) {
+/* Two datetimes naming the same moment, whatever the spelling. The struct
+   mirrors what was written, so 12:00:00Z and 12:00:00+00:00 are different values
+   field by field while naming one time, and 12:00:00 and 12:00:00.0 differ only
+   in written precision. A [value] selector matches on text, but an allowed set
+   is about the value, so it compares here. An absent zone is local and matches
+   no zone at all - that is the one spelling difference that is a real
+   difference. */
+static ShclStr v_frac_key(ShclStr f) {
+	while (f.n && f.p[f.n - 1] == '0') f.n--;
+	return f;
+}
+static int v_same_moment(const shcl_datetime *x, const shcl_datetime *y) {
 	if (x->has_date != y->has_date || x->has_time != y->has_time) return 0;
 	if (x->has_date && (x->year != y->year || x->month != y->month || x->day != y->day)) return 0;
 	if (x->has_time) {
 		if (x->hour != y->hour || x->minute != y->minute || x->has_sec != y->has_sec) return 0;
 		if (x->has_sec && x->sec != y->sec) return 0;
 	}
-	if (x->has_frac != y->has_frac) return 0;
-	if (x->has_frac) {
-		ShclStr a; a.p = x->frac.p; a.n = x->frac.n;
-		ShclStr b; b.p = y->frac.p; b.n = y->frac.n;
-		if (!s_eq(a, b)) return 0;
+	{
+		ShclStr a; a.p = x->has_frac ? x->frac.p : ""; a.n = x->has_frac ? x->frac.n : 0;
+		ShclStr b; b.p = y->has_frac ? y->frac.p : ""; b.n = y->has_frac ? y->frac.n : 0;
+		if (!s_eq(v_frac_key(a), v_frac_key(b))) return 0;
 	}
-	if (x->zone != y->zone) return 0;
-	if (x->zone == SHCL_ZONE_OFFSET && x->off_min != y->off_min) return 0;
+	{
+		int xh = x->zone != SHCL_ZONE_NONE, yh = y->zone != SHCL_ZONE_NONE;
+		if (xh != yh) return 0;
+		if (xh) {
+			int xo = x->zone == SHCL_ZONE_OFFSET ? x->off_min : 0;
+			int yo = y->zone == SHCL_ZONE_OFFSET ? y->off_min : 0;
+			if (xo != yo) return 0;
+		}
+	}
 	return 1;
 }
 
@@ -4525,7 +4646,7 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 	// Deferred so `min: 1` may precede `type: int` in the file.
 	int required = -1;
 	int reopen_seen = 0;
-	size_t allowed_at = (size_t)-1, min_at = (size_t)-1, max_at = (size_t)-1;
+	size_t allowed_at = (size_t)-1, min_at = (size_t)-1, max_at = (size_t)-1, default_at = (size_t)-1;
 	ShclVecSize kids = NODE(schema, f).children;
 	for (size_t ki = 0; ki < kids.len; ki++) {
 		ShclNode *kid = &NODE(schema, kids.data[ki]);
@@ -4589,19 +4710,37 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 			}
 		} else if (s_eq(kid->name, s_lit("desc"))) {
 			// Generator-only (`shcl init`); validation ignores it. First wins.
-			ShclStr t;
-			if (!c.has_desc && v_single_text(a, &kid->value, &t)) { c.has_desc = 1; c.desc = t; }
-		} else if (s_eq(kid->name, s_lit("default"))) {
-			if (!c.has_default && kid->value.kind == V_CELL) {
+			// A comma in a sentence makes the value several elements, and the
+			// comment is prose: take them all, spelled as written.
+			if (!c.has_desc && kid->value.kind == V_CELL) {
 				ShclSB s = {0, 0, 0};
-				for (size_t x = 0; x < kid->value.nels; x++) { if (x) sb_puts(a, &s, ", "); sb_putS(a, &s, emit_element(a, &kid->value.els[x])); }
-				c.has_default = 1; c.default_text = sb_S(&s);
+				for (size_t x = 0; x < kid->value.nels; x++) { if (x) sb_puts(a, &s, ", "); sb_putS(a, &s, apply_escapes(a, kid->value.els[x].text)); }
+				c.has_desc = 1; c.desc = sb_S(&s);
+			}
+		} else if (s_eq(kid->name, s_lit("default"))) {
+			if (!c.has_default) {
+				if (kid->value.kind == V_CELL) {
+					ShclSB s = {0, 0, 0};
+					for (size_t x = 0; x < kid->value.nels; x++) { if (x) sb_puts(a, &s, ", "); sb_putS(a, &s, emit_element(a, &kid->value.els[x])); }
+					c.has_default = 1; c.default_text = sb_S(&s);
+				}
+				default_at = kids.data[ki];
 			}
 		} else {
 			v_diag(a, faults, kid->line, "V090", v_msg3(a, "unknown schema key '", kid->name, "'"));
 		}
 	}
 	c.required = required > 0;
+	/* A raw block has no inline spelling, so a `default` that is one cannot
+	   reach a generated line - it used to be dropped and the field emitted with
+	   no value at all - and a `default` under `type: raw` goes out inline and
+	   then fails its own type check. */
+	if (default_at != (size_t)-1) {
+		const ShclNode *dkid = &schema->nodes.data[default_at];
+		int raw_typed = c.ty && !strcmp(c.ty, "raw");
+		if (dkid->value.kind == V_RAW || (raw_typed && c.has_default))
+			v_diag(a, faults, dkid->line, "V092", v_msg_key(a, "default"));
+	}
 	const char *base = c.ty ? c.ty : "string";
 	size_t blen = strlen(base);
 	if (blen > 6 && memcmp(base + blen - 6, "-array", 6) == 0) {
@@ -4664,6 +4803,17 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 		} else {
 			v_diag(a, faults, kid->line, "V092", v_msg_key(a, key));
 		}
+	}
+	/* A lower bound above the upper one admits nothing, so every value fails
+	   twice and the schema, not the config, is what has to change. Reported at
+	   the max line, and the field is dropped like any other broken one so the
+	   document is not told off twice per value for a range it could never have
+	   satisfied. */
+	if ((c.has_min_i && c.has_max_i && c.min_i > c.max_i)
+	    || (c.has_min_f && c.has_max_f && c.min_f > c.max_f)) {
+		size_t line = max_at != (size_t)-1 ? NODE(schema, max_at).line : node->line;
+		v_diag(a, faults, line, "V092", v_msg_key(a, "max"));
+		return 0;
 	}
 	*out = c;
 	return 1;
@@ -4863,10 +5013,27 @@ static void v_wrong_type(ShclArena *a, ShclVecDiag *out, size_t line, const Shcl
 	sb_puts(a, &s, "': value is not a valid "); sb_puts(a, &s, c->ty ? c->ty : "string");
 	v_diag(a, out, line, "V003", sb_S(&s));
 }
+/* Value text for a diagnostic message: line breaks and tabs escaped, so one
+   diagnostic is one line. A raw block's body is the value that made this
+   necessary - it carries its own newlines. */
+static ShclStr v_one_line(ShclArena *a, ShclStr t) {
+	ShclSB o = {0, 0, 0};
+	sb_reserve(a, &o, t.n);
+	for (size_t i = 0; i < t.n; i++) {
+		switch (t.p[i]) {
+		case '\\': sb_puts(a, &o, "\\\\"); break;
+		case '\n': sb_puts(a, &o, "\\n"); break;
+		case '\r': sb_puts(a, &o, "\\r"); break;
+		case '\t': sb_puts(a, &o, "\\t"); break;
+		default: sb_putc(a, &o, t.p[i]); break;
+		}
+	}
+	return sb_S(&o);
+}
 static void v_not_allowed(ShclArena *a, ShclVecDiag *out, size_t line, const ShclVCons *c, ShclStr text) {
 	ShclSB s = {0, 0, 0};
 	sb_puts(a, &s, "value not allowed at '"); sb_putS(a, &s, c->path);
-	sb_puts(a, &s, "': "); sb_putS(a, &s, text);
+	sb_puts(a, &s, "': "); sb_putS(a, &s, v_one_line(a, text));
 	v_diag(a, out, line, "V004", sb_S(&s));
 }
 
@@ -4945,7 +5112,7 @@ static void v_node(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCons *c,
 		if (c->has_allowed && c->akind == ALLOW_DATES) {
 			for (size_t x = 0; x < nels; x++) {
 				int found = 0;
-				for (size_t y = 0; y < c->a_n; y++) if (v_dt_equal(&c->a_dates[y], &vals[x])) { found = 1; break; }
+				for (size_t y = 0; y < c->a_n; y++) if (v_same_moment(&c->a_dates[y], &vals[x])) { found = 1; break; }
 				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
 			}
 		}
@@ -5460,9 +5627,18 @@ static int shcl_publish_file(const wchar_t *tmp, const wchar_t *target) {
 }
 #endif
 
+#ifdef _WIN32
+static char *shcl_resolve_target(const char *file);
+#endif
 static FILE *shcl_fopen_rb(const char *path) {
 #ifdef _WIN32
-	wchar_t *w = shcl_widen(path);
+	// Through the same resolver the write side uses, so a read past MAX_PATH
+	// works too: the narrow and wide file calls both refuse such a path unless
+	// it carries the long-path prefix. A path the resolver cannot spell is
+	// opened as given, which is what it did before.
+	char *real = shcl_resolve_target(path);
+	wchar_t *w = shcl_widen(real ? real : path);
+	free(real);
 	FILE *f = w ? _wfopen(w, L"rb") : NULL;
 	int e = errno; free(w); errno = e;
 	return f;
@@ -5484,6 +5660,70 @@ static const char *shcl_last_sep(const char *target) {
 #endif
 	return sep;
 }
+
+#ifdef _WIN32
+// The path a save actually rewrites. A symlink or junction is followed, so a
+// save through a linked-in config replaces the file it points at rather than
+// the link - the same thing the POSIX side has always done. The answer comes
+// back \\?\-prefixed, which is also what carries a path past MAX_PATH, so the
+// prefix is kept only where the name would otherwise be too long for the temp
+// file beside it; a short path stays the plain name it was. A file that is not
+// there yet has no final path, so its full path is prefixed by hand. malloc'd
+// UTF-8; NULL with errno saying why.
+static char *shcl_narrow(const wchar_t *w) {
+	int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+	char *s = n > 0 ? (char *)malloc((size_t)n) : NULL;
+	if (s) WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL);
+	else errno = n > 0 ? ENOMEM : EINVAL;
+	return s;
+}
+static char *shcl_resolve_target(const char *file) {
+	wchar_t *w = shcl_widen(file);
+	if (!w) return NULL;
+	wchar_t *full = NULL;
+	HANDLE h = CreateFileW(w, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+	                       NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (h != INVALID_HANDLE_VALUE) {
+		DWORD need = GetFinalPathNameByHandleW(h, NULL, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+		if (need && (full = (wchar_t *)malloc((size_t)need * sizeof *full))
+		    && !GetFinalPathNameByHandleW(h, full, need, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
+			free(full); full = NULL;
+		}
+		CloseHandle(h);
+	}
+	if (!full) {
+		// Not there yet (or not openable): build the long-path spelling from
+		// the full path instead. \\server\share becomes \\?\UNC\server\share.
+		DWORD need = GetFullPathNameW(w, 0, NULL, NULL);
+		if (!need) { free(w); errno = shcl_errno_from_win32(GetLastError()); return NULL; }
+		wchar_t *fp = (wchar_t *)malloc((size_t)need * sizeof *fp);
+		if (!fp) { free(w); errno = ENOMEM; return NULL; }
+		if (!GetFullPathNameW(w, need, fp, NULL)) {
+			DWORD e = GetLastError();
+			free(fp); free(w); errno = shcl_errno_from_win32(e); return NULL;
+		}
+		int unc = fp[0] == L'\\' && fp[1] == L'\\';
+		full = (wchar_t *)malloc((wcslen(fp) + 10) * sizeof *full);
+		if (!full) { free(fp); free(w); errno = ENOMEM; return NULL; }
+		wcscpy(full, unc ? L"\\\\?\\UNC" : L"\\\\?\\");
+		wcscat(full, unc ? fp + 1 : fp);
+		free(fp);
+	}
+	free(w);
+	char *out = shcl_narrow(full);
+	free(full);
+	if (!out) return NULL;
+	// The temp file sits beside the target with a suffix of its own, so the
+	// prefix stays on anything near the limit, not only over it. Below that it
+	// comes off, so an ordinary save writes the plain name it always did.
+	size_t on = strlen(out);
+	if (on + 48 < MAX_PATH) {
+		if (!strncmp(out, "\\\\?\\UNC\\", 8)) { memmove(out + 2, out + 8, on - 8 + 1); }
+		else if (!strncmp(out, "\\\\?\\", 4)) memmove(out, out + 4, on - 4 + 1);
+	}
+	return out;
+}
+#endif
 
 #ifndef _WIN32
 // The path a save actually rewrites. A symlink is followed so the write goes
@@ -5572,7 +5812,25 @@ static void shcl_sync_dir(const char *target) {
 // as an editor's rewrite would carry it - is copied onto the temp file; other
 // hard links to the old inode keep the old content (inherent to rename).
 // Returns 1 on success, 0 on failure with errno left describing it.
+/* A path that names a directory rather than a file: it ends in a separator, or
+   its last component is `.` or `..`. The OS refuses to open such a path as a
+   regular file, but a path cleanup drops the trailing separator first, so a
+   save through `f/.` used to rewrite `f` in some bindings. */
+static int shcl_names_a_directory(const char *path) {
+	size_t n = strlen(path);
+	if (!n) return 0;
+	char lastc = path[n - 1];
+	if (lastc == '/') return 1;
+#ifdef _WIN32
+	if (lastc == '\\') return 1;
+#endif
+	const char *last = shcl_last_sep(path);
+	last = last ? last + 1 : path;
+	return !strcmp(last, ".") || !strcmp(last, "..");
+}
+
 int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
+	if (shcl_names_a_directory(path)) { errno = EISDIR; return 0; }
 #ifndef _WIN32
 	char *real = shcl_resolve_target(path);
 	if (!real) return 0;
@@ -5580,9 +5838,11 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	#define SHCL_FILE_CLEANUP() do { free(real); } while (0)
 	#define SHCL_FILE_UNLINK() remove(tmp)
 #else
-	const char *target = path;
+	char *real = shcl_resolve_target(path);
+	if (!real) return 0;
+	const char *target = real;
 	wchar_t *wtarget = shcl_widen(target), *wtmp = NULL;
-	if (!wtarget) return 0;
+	if (!wtarget) { free(real); return 0; }
 	// A read-only file cannot be replaced, and a read-only temp cannot be
 	// removed after a failure, so the attribute comes off the target for the
 	// publish and goes back on the new file after it - the same outcome as
@@ -5594,7 +5854,7 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	DWORD attrs = GetFileAttributesW(wtarget);
 	int read_only = attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY) != 0;
 	DWORD carried = attrs == INVALID_FILE_ATTRIBUTES ? 0 : (attrs & SHCL_CARRIED_ATTRS);
-	#define SHCL_FILE_CLEANUP() do { free(wtarget); free(wtmp); } while (0)
+	#define SHCL_FILE_CLEANUP() do { free(real); free(wtarget); free(wtmp); } while (0)
 	#define SHCL_FILE_UNLINK() _wremove(wtmp)
 #endif
 	const char *slash = shcl_last_sep(target);

@@ -6,6 +6,7 @@
 # mirror the Rust reference exactly; the cicd cross-binding check compares them
 # byte for byte, so any drift here fails the pipeline.
 
+import errno
 import math
 import os
 import signal
@@ -232,7 +233,7 @@ class _SetOpt:
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "lossy", "no_banner", "schema", "layers", "sets", "args", "seen")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "on_bad_arg", "strictness", "write", "lossy", "no_banner", "schema", "layers", "sets", "args", "seen")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -240,6 +241,10 @@ class _Opts:
 		self.slots = False
 		self.default = None
 		self.on_bad = "flag"     # error|default|flag
+		# What an explicit --on-bad asked for, whatever the order. --default sets
+		# on_bad too, so without this the two options silently overwrote each
+		# other and which one survived depended on which came last.
+		self.on_bad_arg = None
 		self.strictness = shcl.Strictness.Standard
 		self.schema = None
 		self.write = False
@@ -267,6 +272,7 @@ def _set_value_opt(o, name, v):
 		if low not in ("error", "default", "flag"):
 			raise ValueError(f"bad --on-bad value: {v}")
 		o.on_bad = low
+		o.on_bad_arg = low
 		o.seen.append("--on-bad")
 	elif name == "--strictness":
 		s = shcl.Strictness.from_arg(v)
@@ -425,8 +431,20 @@ EXIT_IO = 8
 
 def read_input(file):
 	if file == "-":
-		data = sys.stdin.buffer.read()
+		try:
+			data = sys.stdin.buffer.read()
+		except OSError as e:
+			# A stdin that is not attached at all reads as an empty document.
+			# POSIX says EBADF; windows answers invalid handle or invalid
+			# function depending on how the shell closed it.
+			if e.errno not in (errno.EBADF, errno.EINVAL) and getattr(e, "winerror", None) not in (1, 6):
+				raise
+			data = b""
 	else:
+		# The message for reading a directory is the platform's, and windows
+		# spells it four different ways depending on the binding. Say it here.
+		if os.path.isdir(file):
+			raise OSError(f"{file}: Is a directory")
 		with open(file, "rb") as f:
 			data = f.read()
 	# The reference reads as UTF-8 and fails on bad bytes; match its exit path.
@@ -439,10 +457,16 @@ def read_input(file):
 def load_doc(text, strictness):
 	# Returns (doc, None) or (None, code). On strict load failure, prints the
 	# reference's diagnostic lines to stderr and reports code 6.
+	return load_doc_from("", text, strictness)
+
+
+def load_doc_from(file, text, strictness):
+	# The same, labelled with the file the text came from, so a strict failure
+	# in one layer of a fold says which layer.
 	try:
 		return shcl.Document.parse_with(text, strictness), None
 	except shcl.LoadError as le:
-		say_diagnostics(le.diagnostics)
+		say_diagnostics_from(file, le.diagnostics)
 		errors = sum(1 for d in le.diagnostics if d.severity == shcl.Severity.Error)
 		sys.stderr.write(f"strict load failed: {errors} error diagnostic(s)\n")
 		return None, 6
@@ -483,17 +507,22 @@ def load_layered(o, file):
 	for lf in o.layers:
 		texts.append(read_input(lf))
 	texts.append(read_input(file))
-	doc, code = load_doc(texts[0], o.strictness)
+	# Lowest layer first, each labelled with its own file when there is more than
+	# one: the line numbers share a space on the screen otherwise, and two layers
+	# with a bad line 2 printed the same thing twice.
+	names = list(o.layers) + [file]
+	def label(i):
+		return names[i] if len(names) > 1 else ""
+	doc, code = load_doc_from(label(0), texts[0], o.strictness)
 	if doc is None:
 		return None, code
-	diags = list(doc.diagnostics())
-	for t in texts[1:]:
-		over, c = load_doc(t, o.strictness)
+	say_diagnostics_from(label(0), doc.diagnostics())
+	for i, t in enumerate(texts[1:]):
+		over, c = load_doc_from(label(i + 1), t, o.strictness)
 		if over is None:
 			return None, c
-		diags.extend(over.diagnostics())
+		say_diagnostics_from(label(i + 1), over.diagnostics())
 		doc.merge(over)
-	say_diagnostics(diags)
 	for st in o.sets:
 		if not st.apply(doc):
 			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {describe_refusal(doc, st.path)}\n")
@@ -552,6 +581,12 @@ def check_opts(cmd, o):
 		sys.stderr.write(f"--write cannot be combined with {o.sets[0].opt()} (see --help)\n")
 		return 1
 	# --lossy only overrides the in-place write's refusal, so on its own it says
+	# --default says "substitute this" and --on-bad=error says "fail instead", so
+	# the two together are a contradiction. Each used to overwrite the other's
+	# mode, which made the answer depend on the order they were typed in.
+	if "--default" in o.seen and o.on_bad_arg is not None and o.on_bad_arg != "default":
+		sys.stderr.write(f"--default cannot be combined with --on-bad={o.on_bad_arg} (see --help)\n")
+		return 1
 	# nothing and would read as protection the command never had.
 	if o.lossy and not o.write:
 		sys.stderr.write("--lossy is only meaningful with --write (see --help)\n")
@@ -588,9 +623,21 @@ def describe_refusal(doc, path):
 
 def say_diagnostics(diags):
 	# The load's diagnostics, one line each, in the shape every command uses.
+	say_diagnostics_from("", diags)
+
+
+def say_diagnostics_from(file, diags):
+	# The same, labelled with the file the diagnostics came from. Under --layer
+	# several files are loaded and their line numbers share one space on the
+	# screen, so two layers with a bad line 2 printed the same thing twice with
+	# nothing to tell them apart.
 	for d in diags:
-		space = "schema line" if d.code.startswith("V09") and d.code != "V099" else "line"
-		sys.stderr.write(f"{space} {d.line}: {d.severity.name}: {d.code} {d.message}\n")
+		# V090-V095 carry a schema line; V096 and V097 are about generation as a
+		# whole and carry line 0, so "schema line 0" named a line space they are
+		# not in. V099 stands for a schema that did not load and is line 0 too.
+		space = "schema line" if d.code.startswith("V09") and d.code not in ("V096", "V097", "V099") else "line"
+		where = f"{file} {space}" if file else space
+		sys.stderr.write(f"{where} {d.line}: {d.severity.name}: {d.code} {d.message}\n")
 
 
 def _fmt_scalar(kind, value):
@@ -868,8 +915,24 @@ def _op_flt(s):
 	return x
 
 
+_OP_FIELDS = {
+	"empty": 2, "remove": 2,
+	"raw": 4, "raw-default": 4,
+	"int": 3, "float": 3, "bool": 3, "string": 3, "datetime": 3, "literal": 3, "comment": 3,
+	"int-default": 3, "float-default": 3, "bool-default": 3, "string-default": 3,
+	"datetime-default": 3, "literal-default": 3,
+}
+
+
 def apply_op(doc, line):
 	f = line.split("\t")
+	# Every op but the array forms takes a fixed number of tab-separated fields.
+	# Extra ones used to be dropped, so a `raw` whose content held a literal tab
+	# lost everything after it and still reported success; the escape for a tab
+	# inside a value is `\t`.
+	want = _OP_FIELDS.get(f[0])
+	if want is not None and len(f) > want:
+		raise ValueError(f"{f[0]} takes {want} tab-separated field(s), got {len(f)}")
 
 	def get(i):
 		return f[i] if i < len(f) else ""
@@ -1048,6 +1111,12 @@ def do_check(o):
 					sys.stderr.write(f"schema line {sd.line}: {sd.severity.name}: {sd.code} {sd.message}\n")
 				diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
 			else:
+				# The schema's own load has something to say too: an H001 on a
+				# repeated `allowed` is what explains the V092 below it. On
+				# stderr with the schema's own line numbers, the way a V099's
+				# are - stdout is the code contract.
+				for sd in sdoc.diagnostics():
+					sys.stderr.write(f"schema line {sd.line}: {sd.severity.name}: {sd.code} {sd.message}\n")
 				diags.extend(doc.validate(sdoc))
 				shcl.suppress_declared_repeats(sdoc, diags)
 				shcl.suppress_declared_reopens(sdoc, diags)
@@ -1096,8 +1165,7 @@ def do_init(o):
 		return 6
 	text, faults = shcl.generate(sdoc, o.no_banner)
 	if faults:
-		for d in faults:
-			sys.stderr.write(f"schema line {d.line}: {d.severity.name}: {d.code} {d.message}\n")
+		say_diagnostics(faults)
 		sys.stderr.write("init: schema has faults\n")
 		return 6
 	sys.stdout.write(text)

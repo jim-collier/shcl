@@ -9,3 +9,12 @@ server: gamma
 pool: p
 	a: 1
 	a: 2
+
+agg: one
+	v: 1
+agg: two
+	v:
+agg: three
+agg: four
+	v: notanint
+	v: alsonot

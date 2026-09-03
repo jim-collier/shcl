@@ -60,9 +60,15 @@ jobs:
       ## releases stopped flagging, so a script can pass locally and fail here.
       ## Install the pinned version ahead of the image's copy on PATH.
       - run: |
+          ## The prerelease packaging row in shell-regress needs a NSIS
+          ## compiler; without one it used to skip, which under the gate is now
+          ## a failure. Unpinned on purpose: it only has to compile the setup
+          ## script, and the version the image serves is what a contributor
+          ## building a setup would get.
+          sudo apt-get update -qq && sudo apt-get install -y -qq nsis
           pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1 build==1.5.0
           npm install -g markdownlint-cli2@0.23.1
-          pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -Force -Scope CurrentUser'
+          pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser'
           curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/shellcheck.tar.xz \
             "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz"
           # sha256 of shellcheck-v0.11.0.linux.x86_64.tar.xz: a gating tool

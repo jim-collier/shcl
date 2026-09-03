@@ -230,6 +230,29 @@ pub struct ShclDateTime {
 /// The name the Go binding uses for the same type; either spelling works.
 pub type DateTime = ShclDateTime;
 
+/// Two datetimes name the same moment, whatever the spelling. The struct
+/// mirrors what was written, so `12:00:00Z` and `12:00:00+00:00` are different
+/// values field by field while naming one time, and `12:00:00` and
+/// `12:00:00.0` differ only in written precision. A `[value]` selector matches
+/// on text, but an `allowed` set is about the value, so it compares here. An
+/// absent zone is local and matches no zone at all - that is the one spelling
+/// difference that is a real difference.
+fn same_moment(a: &ShclDateTime, b: &ShclDateTime) -> bool {
+	let frac = |f: &Option<String>| {
+		f.as_deref()
+			.map_or(String::new(), |d| d.trim_end_matches('0').to_string())
+	};
+	let zone = |z: &Option<ZoneSpec>| match z {
+		Some(ZoneSpec::Utc) | Some(ZoneSpec::OffsetMinutes(0)) => Some(0),
+		Some(ZoneSpec::OffsetMinutes(m)) => Some(*m),
+		None => None,
+	};
+	a.date == b.date
+		&& a.time == b.time
+		&& frac(&a.frac) == frac(&b.frac)
+		&& zone(&a.zone) == zone(&b.zone)
+}
+
 /// A datetime's zone suffix as written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZoneSpec {
@@ -323,6 +346,19 @@ struct RawVal {
 	fence_len: usize,
 }
 
+/// The identity spelling of an element's text: escapes resolved, so two
+/// spellings of one string are one instance. Names have followed that rule
+/// since 2.0, and a `[value]` selector matches on the resolved text already -
+/// without this, one selector addressed two instances. Borrowed when there is
+/// nothing to resolve, which is nearly every element.
+fn key_text(s: &str) -> std::borrow::Cow<'_, str> {
+	if s.contains('\\') {
+		std::borrow::Cow::Owned(apply_escapes(s))
+	} else {
+		std::borrow::Cow::Borrowed(s)
+	}
+}
+
 impl Value {
 	/// Merge key: nodes with equal (name, key) collapse into one.
 	fn key(&self) -> String {
@@ -334,9 +370,10 @@ impl Value {
 				// "a\0b" (NUL is legal in a quoted string), silently merging them.
 				let mut k = String::from("c:");
 				for e in els {
-					k.push_str(&e.text.len().to_string());
+					let t = key_text(&e.text);
+					k.push_str(&t.len().to_string());
 					k.push(':');
-					k.push_str(&e.text);
+					k.push_str(&t);
 				}
 				k
 			}
@@ -617,8 +654,14 @@ fn looks_like_bracket_array(content: &str) -> bool {
 	}
 }
 
-fn fold_name(s: &str) -> String {
-	s.to_ascii_lowercase() // folds A-Z only; non-ASCII passes through untouched
+/// Folds A-Z only; non-ASCII passes through untouched. Borrowed when there is
+/// nothing to fold, the way key_text borrows when there is nothing to resolve.
+fn fold_name(s: &str) -> std::borrow::Cow<'_, str> {
+	if s.bytes().any(|b| b.is_ascii_uppercase()) {
+		std::borrow::Cow::Owned(s.to_ascii_lowercase())
+	} else {
+		std::borrow::Cow::Borrowed(s)
+	}
 }
 
 fn is_bare_name_char(c: char) -> bool {
@@ -711,6 +754,16 @@ fn unterminated_quote(text: &str) -> bool {
 
 /// True when the text is one quote pair: a quote char at both ends, the last
 /// one not escaped. Quotes and the backslash are ASCII, so bytes suffice.
+/// Value text for a diagnostic message: line breaks and tabs escaped, so one
+/// diagnostic is one line. A raw block's body is the value that made this
+/// necessary - it carries its own newlines.
+fn one_line(s: &str) -> String {
+	s.replace('\\', "\\\\")
+		.replace('\n', "\\n")
+		.replace('\r', "\\r")
+		.replace('\t', "\\t")
+}
+
 fn quoted_shape(t: &str) -> bool {
 	let b = t.as_bytes();
 	let Some(&first) = b.first() else {
@@ -882,9 +935,10 @@ fn merge_hash(name: &str, v: &Value) -> u64 {
 		Value::Cell(els) => {
 			h.bytes(b"c:");
 			for e in els {
-				h.dec(e.text.len());
+				let t = key_text(&e.text);
+				h.dec(t.len());
 				h.byte(b':');
-				h.bytes(e.text.as_bytes());
+				h.bytes(t.as_bytes());
 			}
 		}
 		Value::Raw(r) => {
@@ -912,7 +966,10 @@ fn merge_eq(name_a: &str, va: &Value, name_b: &str, vb: &Value) -> bool {
 	match (va, vb) {
 		(Value::Empty, Value::Empty) => true,
 		(Value::Cell(a), Value::Cell(b)) => {
-			a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.text == y.text)
+			a.len() == b.len()
+				&& a.iter()
+					.zip(b)
+					.all(|(x, y)| key_text(&x.text) == key_text(&y.text))
 		}
 		(Value::Raw(a), Value::Raw(b)) => a.info == b.info && a.content == b.content,
 		_ => false,
@@ -1255,12 +1312,25 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 		if star && selector.is_some() {
 			return Err("selector on a name wildcard".into());
 		}
+		// Names resolve escapes, the same rule values follow when they are
+		// compared: two spellings of one name are one name. name_src keeps the
+		// source spelling, which is what `authored_name` hands back - empty
+		// when it matches, the same sentinel NodeData uses.
+		//
+		// A name with no backslash and no upper case is already its own
+		// resolved, folded spelling, so the scanner's buffer becomes the name
+		// and nothing is allocated. That is nearly every name in a document,
+		// and this runs once per segment per line: building and then freeing
+		// two more strings each time was a third of the parse on a flat file.
+		let plain = !name.contains('\\') && !name.bytes().any(|b| b.is_ascii_uppercase());
+		let (seg_name, seg_src) = if plain {
+			(name, String::new())
+		} else {
+			(fold_name(&key_text(&name)).into_owned(), name)
+		};
 		segments.push(Segment {
-			// Names resolve escapes, the same rule values follow when they are
-			// compared: two spellings of one name are one name. name_src keeps
-			// the source spelling, which is what `authored_name` hands back.
-			name: fold_name(&apply_escapes(&name)),
-			name_src: name,
+			name: seg_name,
+			name_src: seg_src,
 			selector,
 			star,
 		});
@@ -1602,7 +1672,16 @@ impl Parser {
 							&& p.indent.starts_with(ind.as_str())
 					})
 					.map(|(ind, n)| (*n, ind.len() == p.indent.len()));
-				if let Some((n, at_own_level)) = target {
+				// A root node's trailing comment emits at column zero, which
+				// is exactly how the document's own trailing comment is
+				// spelled, so keeping the two apart here made a merge depend on
+				// whether the layer had been formatted first. Let it orphan,
+				// the way a reload of this document's own output reads it. A
+				// comment deeper than the node keeps an indent of its own and
+				// comes back where it was, so it still hangs.
+				let expressible =
+					target.is_some_and(|(n, own)| !own || self.arena[n].parent != ROOT);
+				if let (Some((n, at_own_level)), true) = (target, expressible) {
 					let lead = Lead {
 						text: p.text,
 						blank_before: p.blank_before,
@@ -2858,6 +2937,9 @@ pub fn read_file(path: &str, max_bytes: usize) -> Result<String, FileStatus> {
 /// links to the old inode cannot survive a rename and keep the old content.
 pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	use std::io::Write;
+	if names_a_directory(file) {
+		return Err(format!("{}: Is a directory", file));
+	}
 	let target = resolve_target(file).map_err(|e| format!("{}: {}", file, e))?;
 	let dir = match target.parent() {
 		Some(d) if !d.as_os_str().is_empty() => d,
@@ -2965,6 +3047,22 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 /// A path that is no link at all is a plain create at the path as given.
 /// A link cycle is an error: silently creating a regular file in its place
 /// would be the exact replacement the symlink walk exists to avoid.
+/// A path that names a directory rather than a file: it ends in a separator, or
+/// its last component is `.` or `..`. POSIX refuses to open such a path as a
+/// regular file, but a canonicalize drops the trailing separator first, so a
+/// save through `f/` used to rewrite `f`.
+fn names_a_directory(file: &str) -> bool {
+	let sep = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+	if file.is_empty() {
+		return false;
+	}
+	if file.ends_with(sep) {
+		return true;
+	}
+	let last = file.rsplit(sep).next().unwrap_or("");
+	last == "." || last == ".."
+}
+
 fn resolve_target(file: &str) -> Result<std::path::PathBuf, String> {
 	if let Ok(p) = std::fs::canonicalize(file) {
 		return Ok(p);
@@ -3286,9 +3384,16 @@ impl Document {
 				last: HashMap::new(),
 				next_same: vec![NIL; self.arena.len()],
 			};
-			for (p, node) in self.arena.iter().enumerate() {
-				for &c in &node.children {
+			// From the root, not across the arena: a removed subtree's nodes
+			// are still there with their child lists intact, so an arena walk
+			// indexes every node the document ever held. Chains stay in file
+			// order - a chain is one parent's same-named children, and each
+			// parent's are appended in its own list order.
+			let mut stack = vec![ROOT];
+			while let Some(p) = stack.pop() {
+				for &c in &self.arena[p].children {
 					idx.append(name_key(p, &self.arena[c].name), c);
+					stack.push(c);
 				}
 			}
 			Box::new(idx)
@@ -3572,6 +3677,29 @@ fn encode_string(s: &str) -> String {
 			'\t' => out.push_str("\\t"),
 			_ => out.push(c),
 		}
+	}
+	// The emitter escapes a bare double quote when both quote kinds appear, so
+	// a reparse of the written line stores the escaped spelling. Store it here
+	// too, or `instances` and a read's raw text differ between a written
+	// document and its own reload - the one place `set(x)` and
+	// `load(emit(set(x)))` disagreed.
+	let (dq, sq) = bare_quote_counts(&out);
+	if dq > 0 && sq > 0 {
+		let mut esc = String::with_capacity(out.len() + dq);
+		let mut it = out.chars();
+		while let Some(c) = it.next() {
+			match c {
+				'\\' => {
+					esc.push(c);
+					if let Some(n) = it.next() {
+						esc.push(n);
+					}
+				}
+				'"' => esc.push_str("\\\""),
+				_ => esc.push(c),
+			}
+		}
+		return esc;
 	}
 	out
 }
@@ -4148,6 +4276,12 @@ impl Document {
 	/// rides with each node.
 	/// `Load(defaults, site, user)` is a left fold of this: each later file
 	/// overlaid on the accumulation of the earlier ones.
+	/// The fold is not associative: `(A+B)+C` and `A+(B+C)` differ where a bare
+	/// header meets an overridden leaf, so a cached upper pair is not the same
+	/// document the CLI's left fold produces. self keeps its own strictness,
+	/// so a value from a stricter layer reads with self's coercion. And a
+	/// replaced node is kept until the document is dropped: this costs a pass
+	/// over the touched scopes plus an index rebuild on the next read.
 	pub fn merge(&mut self, over: &Document) {
 		self.index.take();
 		self.lost += over.lost;
@@ -5453,6 +5587,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 	let mut required: Option<bool> = None;
 	let mut reopen_seen = false;
 	let mut allowed_at: Option<usize> = None;
+	let mut default_at: Option<usize> = None;
 	let mut min_at: Option<usize> = None;
 	let mut max_at: Option<usize> = None;
 	for &k in &schema.arena[f].children {
@@ -5584,13 +5719,24 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 			// Generator-only (`shcl init`); validation ignores both. First
 			// occurrence wins (a merged schema could carry two).
 			"desc" => {
+				// A comma in a sentence makes the value several elements, and
+				// the comment is prose: take them all, spelled as written.
 				if c.desc.is_none() {
-					c.desc = single_text(&kid.value);
+					c.desc = match &kid.value {
+						Value::Cell(els) => Some(
+							els.iter()
+								.map(|e| apply_escapes(&e.text))
+								.collect::<Vec<_>>()
+								.join(", "),
+						),
+						_ => None,
+					};
 				}
 			}
 			"default" => {
 				if c.default_text.is_none() {
 					c.default_text = emit_value_inline(&kid.value);
+					default_at = Some(k);
 				}
 			}
 			other => vdiag(
@@ -5602,6 +5748,23 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 		}
 	}
 	c.required = required.unwrap_or(false);
+	// A raw block has no inline spelling, so a `default` that is one cannot
+	// reach a generated line - it used to be dropped and the field emitted with
+	// no value at all - and a `default` under `type: raw` goes out inline and
+	// then fails its own type check.
+	if let Some(dk) = default_at {
+		let kid = &schema.arena[dk];
+		let raw_default = matches!(kid.value, Value::Raw(_));
+		let raw_typed = c.ty.as_deref().is_some_and(|t| t == "raw");
+		if raw_default || (raw_typed && c.default_text.is_some()) {
+			vdiag(
+				faults,
+				kid.line,
+				"V092",
+				"bad schema constraint 'default'".to_string(),
+			);
+		}
+	}
 	let base =
 		c.ty.as_deref()
 			.map(|t| t.strip_suffix("-array").unwrap_or(t))
@@ -5689,6 +5852,22 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 				format!("bad schema constraint '{}'", key),
 			),
 		}
+	}
+	// A lower bound above the upper one admits nothing, so every value fails
+	// twice and the schema, not the config, is what has to change. Reported at
+	// the `max` line, which is the one a reader has to look at with `min`.
+	let crossed = matches!((c.min_i, c.max_i), (Some(lo), Some(hi)) if lo > hi)
+		|| matches!((c.min_f, c.max_f), (Some(lo), Some(hi)) if lo > hi);
+	if crossed {
+		vdiag(
+			faults,
+			max_at.map_or(schema.arena[f].line, |m| schema.arena[m].line),
+			"V092",
+			"bad schema constraint 'max'".to_string(),
+		);
+		// Dropped like any other broken field, so the document is not told off
+		// twice per value for a range it could never have satisfied.
+		return None;
 	}
 	Some(c)
 }
@@ -6402,7 +6581,7 @@ impl Document {
 						out,
 						line,
 						"V004",
-						format!("value not allowed at '{}': {}", c.path, content),
+						format!("value not allowed at '{}': {}", c.path, one_line(content)),
 					);
 				}
 			}
@@ -6434,7 +6613,11 @@ impl Document {
 								out,
 								line,
 								"V004",
-								format!("value not allowed at '{}': {}", c.path, els[i].text),
+								format!(
+									"value not allowed at '{}': {}",
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 						if let Some(lo) = c.min_i
@@ -6474,7 +6657,11 @@ impl Document {
 								out,
 								line,
 								"V004",
-								format!("value not allowed at '{}': {}", c.path, els[i].text),
+								format!(
+									"value not allowed at '{}': {}",
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 						if let Some(lo) = c.min_f
@@ -6514,7 +6701,11 @@ impl Document {
 								out,
 								line,
 								"V004",
-								format!("value not allowed at '{}': {}", c.path, els[i].text),
+								format!(
+									"value not allowed at '{}': {}",
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 					}
@@ -6526,13 +6717,19 @@ impl Document {
 							return;
 						};
 						if let Some(AllowedSet::Dates(set)) = &c.allowed
-							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
+							&& let Some(i) = vals
+								.iter()
+								.position(|v| !set.iter().any(|s| same_moment(s, v)))
 						{
 							vdiag(
 								out,
 								line,
 								"V004",
-								format!("value not allowed at '{}': {}", c.path, els[i].text),
+								format!(
+									"value not allowed at '{}': {}",
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 					}
@@ -6549,7 +6746,7 @@ impl Document {
 									out,
 									line,
 									"V004",
-									format!("value not allowed at '{}': {}", c.path, b),
+									format!("value not allowed at '{}': {}", c.path, one_line(&b)),
 								);
 							}
 						}

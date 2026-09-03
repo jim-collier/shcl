@@ -40,6 +40,15 @@ printf 'a: 1\n' > "${tmpDir}/t.shcl"
 declare -i nBad=0
 fBad(){ echo "shell-regress: $1" >&2; nBad+=1 ;}
 
+##	Is tool $1 here? Under the gate a missing one is a failure rather than a
+##	skipped block: a runner that loses a tool would otherwise report OK forever.
+##	Locally it stays a skip, since a working copy need not carry every tool.
+fHave(){
+	command -v "$1" > /dev/null 2>&1 && return 0
+	[[ -n "${SHCL_GATE_STRICT:-}" ]] && fBad "$1 is missing and the gate requires it"
+	return 1
+}
+
 ##	20260830 item 21: -x is true for a directory, so a directory passed as
 ##	SHCL_BIN got as far as being run.
 out="$(SHCL_BIN="${tmpDir}" bash -c "source '${repoDir}/source/bash/shcl.bash'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
@@ -54,7 +63,7 @@ out="$(SHCL_BIN="${cli}" bash -c "source '${repoDir}/source/bash/shcl.bash'; shc
 out="$(_SHCL_BIN=/nonexistent SHCL_BIN="${cli}" bash -c "source '${repoDir}/source/bash/shcl.bash'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 [[ "${out}" == "1" ]] || fBad "bash wrapper honored an inherited _SHCL_BIN: ${out@Q}"
 
-if command -v pwsh > /dev/null 2>&1; then
+if fHave pwsh; then
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${tmpDir}'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 	[[ "${out}" == *"not executable"* ]] || fBad "PowerShell wrapper took a directory as SHCL_BIN: ${out@Q}"
 
@@ -131,6 +140,155 @@ while IFS= read -r row; do
 done < <(find "${tmpDir}/sys/opt" "${tmpDir}/sys/usr/local/bin" "${tmpDir}/sys/usr/local/share/man" -printf '%m %y %p\n' | sort)
 [[ -L "${tmpDir}/sys/usr/local/share/man/man1/shcl.1" ]] || fBad "install.bash did not link the man page"
 
+##	20260901b item 34: the uninstall's payload globs used to expand in the
+##	unprivileged shell that called sudo, so a system tree only root could list
+##	left them unexpanded - nothing was removed and the run then reported the
+##	install directory as holding files it had not put there. The stand-in below
+##	is what privilege buys: a directory the calling shell cannot read and the
+##	command it runs can.
+eval "$(sed -n '/^fRemoveLaidDown()/,/^}/p' "${repoDir}/install.bash")"
+(
+	udir="${tmpDir}/uninst"
+	mkdir -p "${udir}/code" "${udir}/scripts" "${udir}/man" "${udir}/completions"
+	printf 'x\n' > "${udir}/code/lib.rs"
+	printf 'x\n' > "${udir}/scripts/shcl.bash"
+	printf 'x\n' > "${udir}/man/shcl.1"
+	printf 'x\n' > "${udir}/completions/shcl.bash"
+	export SHCL_TEST_LOCKED="${udir}/code"
+	cat > "${tmpDir}/asroot" <<-'EOS'
+		#!/bin/bash
+		chmod 700 "${SHCL_TEST_LOCKED}"
+		"$@"; rc=$?
+		[[ -d "${SHCL_TEST_LOCKED}" ]] && chmod 000 "${SHCL_TEST_LOCKED}"
+		exit "${rc}"
+	EOS
+	chmod 755 "${tmpDir}/asroot"
+	chmod 000 "${udir}/code"
+	# shellcheck disable=SC2034  ## the lifted function's own global
+	asroot="${tmpDir}/asroot"
+	fRemoveLaidDown "${udir}"
+	chmod 700 "${udir}/code" 2>/dev/null || true
+	for d in code scripts man completions; do
+		[[ -e "${udir}/${d}" ]] && fBad "install.bash uninstall left ${d} behind"
+	done
+	rmdir "${udir}" 2>/dev/null || fBad "install.bash uninstall did not empty the install directory"
+	exit "${nBad}"
+) || nBad=$((nBad + 1))
+
+##	20260901b item 36: only a real file at the bin path was refused, so a
+##	symlink to a cargo-built or hand-built copy was replaced with nothing said.
+eval "$(sed -n '/^fLinkOwner()/,/^}/p' "${repoDir}/install.bash")"
+(
+	odir="${tmpDir}/owner"; mkdir -p "${odir}/dest" "${odir}/bin" "${odir}/other"
+	printf 'x\n' > "${odir}/dest/shcl"; printf 'x\n' > "${odir}/other/shcl"
+	[[ "$(fLinkOwner "${odir}/bin/shcl" "${odir}/dest")" == "free" ]] \
+		|| fBad "install.bash refused a bin path with nothing at it"
+	ln -s "${odir}/dest/shcl" "${odir}/bin/shcl"
+	[[ "$(fLinkOwner "${odir}/bin/shcl" "${odir}/dest")" == "ours" ]] \
+		|| fBad "install.bash refused its own link"
+	ln -sfn "${odir}/other/shcl" "${odir}/bin/shcl"
+	[[ "$(fLinkOwner "${odir}/bin/shcl" "${odir}/dest")" == "elsewhere ${odir}/other/shcl" ]] \
+		|| fBad "install.bash would replace a symlink pointing somewhere else"
+	rm -f "${odir}/bin/shcl"; printf 'x\n' > "${odir}/bin/shcl"
+	[[ "$(fLinkOwner "${odir}/bin/shcl" "${odir}/dest")" == "file" ]] \
+		|| fBad "install.bash would replace a real file at the bin path"
+	exit "${nBad}"
+) || nBad=$((nBad + 1))
+
+##	20260901b item 37: the receipt ran the link the installer had just written,
+##	so another shcl earlier on PATH was invisible and the next one the user
+##	typed was someone else's.
+eval "$(sed -n '/^fShadowedBy()/,/^}/p' "${repoDir}/install.bash")"
+(
+	sdir="${tmpDir}/shadow"; mkdir -p "${sdir}/ours" "${sdir}/theirs"
+	printf '#!/bin/sh\necho ours\n' > "${sdir}/ours/shcl"; chmod 755 "${sdir}/ours/shcl"
+	printf '#!/bin/sh\necho theirs\n' > "${sdir}/theirs/shcl"; chmod 755 "${sdir}/theirs/shcl"
+	PATH="${sdir}/ours:${PATH}" fShadowedBy "${sdir}/ours/shcl" >/dev/null \
+		&& fBad "install.bash called its own copy a shadow"
+	out="$(PATH="${sdir}/theirs:${sdir}/ours:${PATH}" fShadowedBy "${sdir}/ours/shcl" || true)"
+	[[ "${out}" == "${sdir}/theirs/shcl" ]] \
+		|| fBad "install.bash did not see the copy shadowing it: ${out@Q}"
+	PATH="${sdir}/nowhere:/nonexistent" fShadowedBy "${sdir}/ours/shcl" >/dev/null \
+		&& fBad "install.bash reported a shadow where there is no shcl at all"
+	exit "${nBad}"
+) || nBad=$((nBad + 1))
+grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1" \
+	|| fBad "install.ps1 never asks what shcl resolves to on PATH"
+
+##	20260901b item 39: a read-only HOME got through both downloads and then
+##	failed on a raw mkdir error. The destinations are probed first, and the
+##	probe has to walk up to whatever exists.
+eval "$(sed -n '/^fNearestExisting()/,/^}/p' "${repoDir}/install.bash")"
+(
+	wdir="${tmpDir}/writable"; mkdir -p "${wdir}/home"
+	[[ "$(fNearestExisting "${wdir}/home/.local/share/shcl")" == "${wdir}/home" ]] \
+		|| fBad "install.bash did not walk up to the nearest existing directory"
+	[[ "$(fNearestExisting "${wdir}/home")" == "${wdir}/home" ]] \
+		|| fBad "install.bash did not accept a directory that is already there"
+	chmod 500 "${wdir}/home"
+	near="$(fNearestExisting "${wdir}/home/.local/share/shcl")"
+	[[ -w "${near}" ]] && fBad "install.bash would have downloaded into a read-only home"
+	chmod 700 "${wdir}/home"
+	exit "${nBad}"
+) || nBad=$((nBad + 1))
+# shellcheck disable=SC2016  ## install.bash's own $variable, matched literally
+downloadLine="$( { grep -n 'downloading \${asset}' "${repoDir}/install.bash" || true; } | head -n1 | cut -d: -f1)"
+probeLine="$( { grep -n 'is not writable' "${repoDir}/install.bash" || true; } | head -n1 | cut -d: -f1)"
+if [[ -z "${downloadLine}" || -z "${probeLine}" ]] || ((probeLine >= downloadLine)); then
+	fBad "install.bash downloads before it knows the destination can be written"
+fi
+
+##	20260901b item 40: a fresh clone was left on main while contributing.md says
+##	to branch from dev. The lifted function decides; an existing checkout or an
+##	edited tree is left where it is.
+eval "$(sed -n '/^fStartOnDev()/,/^}/p' "${repoDir}/install-dev.bash")"
+(
+	gdir="${tmpDir}/devclone"; mkdir -p "${gdir}/origin"
+	git -C "${gdir}/origin" init -q --initial-branch=main
+	git -C "${gdir}/origin" -c user.email=t@t -c user.name=t commit -q --allow-empty -m first
+	git -C "${gdir}/origin" branch dev
+	git clone -q --no-hardlinks "${gdir}/origin" "${gdir}/a" 2>/dev/null
+	fStartOnDev "${gdir}/a"
+	[[ "$(git -C "${gdir}/a" branch --show-current)" == "dev" ]] \
+		|| fBad "install-dev.bash left a fresh clone on main"
+	git clone -q --no-hardlinks "${gdir}/origin" "${gdir}/b" 2>/dev/null
+	printf 'x\n' > "${gdir}/b/edited"
+	git -C "${gdir}/b" add edited
+	fStartOnDev "${gdir}/b"
+	[[ "$(git -C "${gdir}/b" branch --show-current)" == "main" ]] \
+		|| fBad "install-dev.bash moved a clone with work already in it"
+	mkdir -p "${gdir}/mainonly"
+	git -C "${gdir}/mainonly" init -q --initial-branch=main
+	git -C "${gdir}/mainonly" -c user.email=t@t -c user.name=t commit -q --allow-empty -m first
+	git clone -q --no-hardlinks "${gdir}/mainonly" "${gdir}/c" 2>/dev/null
+	fStartOnDev "${gdir}/c"
+	[[ "$(git -C "${gdir}/c" branch --show-current)" == "main" ]] \
+		|| fBad "install-dev.bash moved a clone of a repo with no dev branch"
+	exit "${nBad}"
+) || nBad=$((nBad + 1))
+
+##	20260901b item 41: an unauthenticated 403 is the API's rate limit and both
+##	installers called it "none published yet, or network down". The status
+##	itself comes from curl; what is checked here is what each status is called.
+eval "$(sed -n '/^fApiFailure()/,/^}/p' "${repoDir}/install.bash")"
+[[ "$(fApiFailure 403 stable)" == *"rate limit"* ]] || fBad "install.bash does not call a 403 a rate limit"
+[[ "$(fApiFailure 429 stable)" == *"rate limit"* ]] || fBad "install.bash does not call a 429 a rate limit"
+[[ "$(fApiFailure 401 stable)" == *"GITHUB_TOKEN"* ]] || fBad "install.bash does not blame the token for a 401"
+[[ "$(fApiFailure 404 stable)" == *"none published yet"* ]] || fBad "install.bash calls a 404 a rate limit"
+[[ "$(fApiFailure 000 dev)" == *"dev release"* ]] || fBad "install.bash does not name the channel when it cannot reach the API"
+grep -q 'rate limit' "${repoDir}/install.bash" || fBad "install.bash does not name a rate limit"
+grep -q 'rate limit' "${repoDir}/install.ps1"  || fBad "install.ps1 does not name a rate limit"
+grep -q 'GITHUB_TOKEN' "${repoDir}/install.bash" || fBad "install.bash ignores GITHUB_TOKEN"
+grep -q 'GITHUB_TOKEN' "${repoDir}/install.ps1"  || fBad "install.ps1 ignores GITHUB_TOKEN"
+
+##	20260901b item 46: the PowerShell wrapper's header ran one line out to 126
+##	columns where its bash twin wraps. Comment lines only - the code in both
+##	carries a couple of long ones on purpose.
+for wrapper in source/bash/shcl.bash source/powershell/shcl.ps1; do
+	long="$(awk '/^#{2}/ && length > 100 { print NR": "length }' "${repoDir}/${wrapper}")"
+	[[ -z "${long}" ]] || fBad "${wrapper}: header comment runs past 100 columns at ${long//$'\n'/, }"
+done
+
 ##	20260901b item 18: the "not on your PATH" note compared strings against
 ##	`:dir:`, so a PATH element written with a trailing slash was not seen.
 eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
@@ -148,7 +306,7 @@ eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
 ##	that looked finished; and nothing checked the sums file's name against the
 ##	version, or its entries against the files. A throwaway key stands in for
 ##	the wrong one, and every refusal must leave no .sig.
-if command -v openssl >/dev/null 2>&1; then
+if fHave openssl; then
 	sver="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "${repoDir}/source/rust/Cargo.toml" | head -1)"
 	openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${tmpDir}/wrong.pem" 2>/dev/null
 	fSignRun(){   ## fSignRun DIR: run the signer on DIR with the throwaway key; stderr in signOut
@@ -210,6 +368,21 @@ for bad in gap cut junk; do
 	[[ "${flameRc}" == 2 ]] || fBad "flame-report.py accepted a ${bad} graph (rc ${flameRc}): ${flameOut@Q}"
 	[[ "${flameOut}" != *Traceback* ]] || fBad "flame-report.py tracebacked on a ${bad} graph"
 done
+##	20260901b item 43: the sampler drops a sample whose leaf is inside libc
+##	rather than truncating it, so a third to half the profiled time never
+##	reaches the graph and every percentage in the report is a share of what
+##	survived. The profiler writes the two counts beside the SVG; the report has
+##	to say them, and has to stay quiet where an older graph has no such file.
+printf '640 1600\n' > "${tmpDir}/flame/flame_20260101-000000_whole.svg.samples"
+fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
+[[ "${flameOut}" == *"640 of about 1600 samples reached the graph (40%)"* ]] \
+	|| fBad "flame-report.py does not say how much of the profile the graph is missing: ${flameOut@Q}"
+rm -f "${tmpDir}/flame/flame_20260101-000000_whole.svg.samples"
+fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
+[[ "${flameOut}" != *"reached the graph"* ]] \
+	|| fBad "flame-report.py invented a sample count for a graph that carries none"
+grep -q '{}.samples' "${repoDir}/source/rust/src/main.rs" \
+	|| fBad "the profiler does not record how many samples reached the graph"
 
 ##	20260901b item 21: lint-report.bash counted the `-D warnings` in the clippy
 ##	command line the pre-push gate's nested run echoes as a warning, so every
@@ -270,7 +443,17 @@ out="$(fPickTag stable "${tmpDir}/rel.json")"
 out="$(fPickTag dev "${tmpDir}/rel.json")"
 [[ "${out}" == "v2.1.0-alpha.10" ]] || fBad "install.bash dev channel picked ${out@Q}, want v2.1.0-alpha.10"
 
-if command -v pwsh > /dev/null 2>&1; then
+##	20260901b item 34: the same list with no whitespace. The API is documented
+##	as pretty-printing, and a proxy that does not left the picker reading one
+##	field per release, so it answered nothing and the run said no release was
+##	published at all.
+tr -d ' \t\n' < "${tmpDir}/rel.json" > "${tmpDir}/rel-compact.json"
+out="$(fPickTag stable "${tmpDir}/rel-compact.json")"
+[[ "${out}" == "v2.0.0" ]] || fBad "install.bash stable channel on compact json picked ${out@Q}, want v2.0.0"
+out="$(fPickTag dev "${tmpDir}/rel-compact.json")"
+[[ "${out}" == "v2.1.0-alpha.10" ]] || fBad "install.bash dev channel on compact json picked ${out@Q}, want v2.1.0-alpha.10"
+
+if fHave pwsh; then
 	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
 	{
 		sed -n '/^\tfunction Select-ReleaseTag/,/^\t}/p' "${repoDir}/install.ps1"
@@ -283,11 +466,91 @@ if command -v pwsh > /dev/null 2>&1; then
 	[[ "${out}" == *"dev=v2.1.0-alpha.10"* ]]  || fBad "install.ps1 dev channel: ${out@Q}"
 fi
 
+##	20260901b item 34, both windows-only and neither reachable from a linux
+##	pwsh: a 32-bit host reads Program Files (x86) out of ProgramFiles, and
+##	Windows PowerShell 5.1 turns a native command's stderr into error records
+##	under `2>&1`, which the script's own Stop preference then throws on. The
+##	first is an expression a linux pwsh can evaluate; the second is source
+##	order, the way the smoke-run placement below is.
+# shellcheck disable=SC2016  ## PowerShell's own $variable, matched literally
+pfLine="$( { grep -F 'programFiles = if ($env:ProgramW6432)' "${repoDir}/install.ps1" || true; } | head -n1)"
+if [[ -z "${pfLine}" ]]; then
+	fBad "install.ps1 reads ProgramFiles without asking for the 64-bit one"
+elif fHave pwsh; then
+	#  shellcheck disable=2016  ## PowerShell's own $variables.
+	{
+		echo '$env:ProgramFiles = "C:\Program Files (x86)"'
+		echo '$env:ProgramW6432 = "C:\Program Files"'
+		printf '%s\n' "${pfLine}"
+		echo 'Write-Output ("wow=" + $programFiles)'
+		echo 'Remove-Item Env:ProgramW6432'
+		printf '%s\n' "${pfLine}"
+		echo 'Write-Output ("plain=" + $programFiles)'
+	} > "${tmpDir}/pf.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/pf.ps1" 2>&1 || true)"
+	[[ "${out}" == *'wow=C:\Program Files'* && "${out}" != *'wow=C:\Program Files (x86)'* ]] \
+		|| fBad "install.ps1 puts a 64-bit install under the x86 program files: ${out@Q}"
+	[[ "${out}" == *'plain=C:\Program Files (x86)'* ]] \
+		|| fBad "install.ps1 ignores ProgramFiles where there is no 64-bit one: ${out@Q}"
+fi
+##	20260901b item 38: the setup .exe writes the same directory and registers
+##	itself with Add/Remove Programs, so deleting its files from here left that
+##	entry pointing at nothing. Windows-only, so the check is source order.
+setupTest="$( { grep -n "uninstall.exe'" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+setupWipe="$( { grep -n "Remove-Item -Force -LiteralPath (Join-Path \$dest 'shcl.exe')" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+if [[ -z "${setupTest}" || -z "${setupWipe}" ]] || ((setupTest >= setupWipe)); then
+	fBad "install.ps1 removes a setup install's files without deferring to its uninstaller"
+fi
+grep -q 'Add/Remove Programs entry still shows the version it installed' "${repoDir}/install.ps1" \
+	|| fBad "install.ps1 does not say a setup install's Add/Remove entry goes stale when it writes over one"
+
+eapLine="$( { grep -n "ErrorActionPreference = 'Continue'" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+smokeRun="$( { grep -n "shcl.exe') version 2>&1" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+if [[ -z "${eapLine}" || -z "${smokeRun}" ]] || ((eapLine >= smokeRun)); then
+	fBad "install.ps1 runs the smoke test under its own Stop preference, which 5.1 throws on"
+fi
+grep -q "finally { \$ErrorActionPreference = \$smokeEap }" "${repoDir}/install.ps1" \
+	|| fBad "install.ps1 does not put the caller's error preference back after the smoke run"
+
+##	20260901b item 35: the rpm listed the payload's subdirectories and not their
+##	parent, so removing the package left /usr/share/shcl behind. The package
+##	read-back lives in package.bash, which only runs at release time; building a
+##	stub package here gives it something to fail on every run.
+## Not through fHave: the package read-back's own home is package.bash, which
+## runs at release time on a box that has these. This is the same check with
+## something to fail on every run, and the hosted gate installs no packager.
+if command -v nfpm >/dev/null 2>&1 && command -v dpkg-deb >/dev/null 2>&1 && command -v rpm >/dev/null 2>&1; then
+	pDir="${tmpDir}/nfpm"
+	mkdir -p "${pDir}/payload/code" "${pDir}/payload/scripts" "${pDir}/payload/man" "${pDir}/payload/doc" "${pDir}/payload/completions"
+	printf 'x\n' > "${pDir}/payload/code/lib.rs"
+	printf 'x\n' > "${pDir}/payload/scripts/shcl.bash"
+	printf 'x\n' > "${pDir}/payload/doc/copyright"
+	printf 'x\n' > "${pDir}/payload/completions/shcl.bash"
+	printf 'x\n' > "${pDir}/payload/completions/_shcl"
+	printf 'x\n' | gzip -9nc > "${pDir}/payload/man/shcl.1.gz"
+	printf 'x\n' | gzip -9nc > "${pDir}/payload/doc/changelog.gz"
+	printf 'x\n' > "${pDir}/shcl"
+	sed -e "s|\${SHCL_VERSION}|9.9.9|g" -e "s|\${SHCL_ARCH}|amd64|g" \
+	    -e "s|\${SHCL_BIN}|${pDir}/shcl|g" -e "s|\${SHCL_PAYLOAD}|${pDir}/payload|g" \
+	    -e "s|\${SHCL_GLIBC}|2.34|g" -e "s|\${SHCL_DEB_LIBGCC}||g" -e "s|\${SHCL_RPM_LIBGCC}||g" \
+	    "${repoDir}/cicd/packaging/nfpm.yaml" > "${pDir}/nfpm.yaml"
+	if nfpm package -f "${pDir}/nfpm.yaml" -p deb -t "${pDir}/p.deb" >/dev/null 2>&1 \
+	   && nfpm package -f "${pDir}/nfpm.yaml" -p rpm -t "${pDir}/p.rpm" >/dev/null 2>&1; then
+		##	The shipped read-back, run on the stub packages.
+		eval "$(sed -n '/^fCheckDeps()/,/^}/p' "${repoDir}/cicd/utility/package.bash")"
+		# shellcheck disable=SC2329  ## called from the lifted fCheckDeps
+		( fDie(){ echo "shell-regress: $*" >&2; exit 1; }; fCheckDeps "${pDir}/p" 2.34 "" ) \
+			|| fBad "the packages do not read back the way package.bash requires"
+	else
+		fBad "nfpm could not build a package from cicd/packaging/nfpm.yaml"
+	fi
+fi
+
 ##	20260830b item 8: a prerelease version reached NSIS's four-integer version
 ##	field verbatim, and makensis rejected it under errexit, so the release stage
 ##	died on the first prerelease cut. A fake .exe is enough - the setup never
 ##	runs, it only has to build.
-if command -v makensis > /dev/null 2>&1; then
+if fHave makensis; then
 	pkgDir="${tmpDir}/pkg"; mkdir -p "${pkgDir}"
 	: > "${pkgDir}/shcl-2.1.0-alpha.1-windows-x86_64.exe"
 	if "${repoDir}/cicd/utility/package.bash" "${repoDir}" "${pkgDir}" "2.1.0-alpha.1" > "${tmpDir}/pkg.log" 2>&1; then
@@ -437,6 +700,74 @@ if [[ -f "${report}" ]]; then
 	fi
 fi
 
+##	Every tracked shell script, whether or not it is named `*.bash`: the
+##	pre-push hook and the publish script carry no extension, and both are
+##	`set -e` scripts the scans below are about. Untracked-but-not-ignored files
+##	are in, so a script written and not yet added is still scanned; build output
+##	is out, because it is ignored. Written once and reused.
+fShellFiles(){
+	local f
+	while IFS= read -r f; do
+		case "${f}" in
+			*.bash) printf '%s\n' "${repoDir}/${f}" ;;
+			*)      [[ -f "${repoDir}/${f}" ]] && head -1 "${repoDir}/${f}" | grep -qE '^#!.*\b(bash|sh)\b' \
+			            && printf '%s\n' "${repoDir}/${f}" ;;
+		esac
+	done < <(git -C "${repoDir}" ls-files --cached --others --exclude-standard | sort -u)
+}
+
+##	The two static scans, as functions so the self-test below can run them over a
+##	file holding every spelling they are meant to catch. Both were written for
+##	one spelling each and missed the ordinary ones.
+##
+##	`\t` in a grep -E pattern: POSIX ERE has no such escape, so the pattern
+##	matches nothing under the grep a script gets, while matching fine under the
+##	interactive one on this box. Either quote style, either option spelling.
+fScanTabEre(){
+	grep -nE "grep [^|;]*(-[A-Za-z]*E[A-Za-z]*|--extended-regexp)[^|;]*['\"][^'\"]*\\\\t" "$1" || true
+}
+
+##	A `grep` inside an assigned command substitution with no `|| true`: when it
+##	matches nothing the assignment fails, errexit kills the script, and the
+##	check that would have printed the reason never runs. Every way to spell an
+##	assignment counts - a keyword prefix, an array element, `+=`, backticks.
+##	Line continuations are joined first, so a substitution that ends in
+##	`|| true` several lines down is read as guarded.
+fScanUnguardedGrep(){
+	sed -e :a -e '/\\$/N; s/\\\n//; ta' "$1" \
+		| grep -nE '^[[:space:]]*(local|declare|typeset|export|readonly)?[[:space:]]*[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=.*(\$\(|`).*\bgrep\b' \
+		| grep -vE '\|\|[[:space:]]*(true|:)' || true
+}
+
+##	The self-test: one file carrying every spelling, so a scan that stops seeing
+##	one of them fails here rather than going quiet over the repo.
+##	The strict switch itself: under the gate a missing tool has to be a failure,
+##	or a runner that loses one reports OK forever. Locally it stays a skip.
+{
+	strictBad=0
+	( SHCL_GATE_STRICT=1; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || strictBad=$?
+	((strictBad == 7)) || fBad "fHave did not fail on a missing tool under the gate"
+	laxBad=0
+	( unset SHCL_GATE_STRICT; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || laxBad=$?
+	((laxBad == 1)) || fBad "fHave did not skip a missing tool outside the gate (exit ${laxBad})"
+}
+
+##	The escape is assembled rather than written, so the bait for the second scan
+##	does not trip that scan when it sweeps this file.
+bs=$'\\'
+#  shellcheck disable=2016  ## the bait is the literal text of the shapes being scanned for.
+{
+	printf '%s\n' '#!/usr/bin/env bash' 'set -Eeuo pipefail' \
+		'local x="$(grep -c a f)"' 'declare y="$(grep -c a f)"' 'export Z="$(grep -c a f)"' \
+		'readonly W="$(grep -c a f)"' 'arr[0]="$(grep -c a f)"' 'acc+="$(grep -c a f)"' \
+		'bt="`grep -c a f`"' 'ok="$(grep -c a f || true)"' \
+		"grep --extended-regexp \"x${bs}ty\" f" "grep -E 'a${bs}tb' f" 'grep -E "[[:space:]]" f'
+} > "${tmpDir}/scanbait.bash"
+n="$(fScanUnguardedGrep "${tmpDir}/scanbait.bash" | wc -l)"
+((n == 7)) || fBad "the unguarded-grep scan found ${n} of 7 spellings"
+n="$(fScanTabEre "${tmpDir}/scanbait.bash" | wc -l)"
+((n == 2)) || fBad "the backslash-t scan found ${n} of 2 spellings"
+
 ##	A one-line loop body that is a `[[ ... ]] && ...` list. When the test fails
 ##	on the last iteration the loop returns 1, which is harmless at statement
 ##	level on this bash but kills the caller the moment the loop becomes the last
@@ -448,30 +779,28 @@ while IFS= read -r f; do
 	if [[ -n "${hits}" ]]; then
 		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: loop body ends on a failed-test && list: ${h}"; done <<<"${hits}"
 	fi
-done < <(find "${repoDir}" -name '*.bash' -not -path '*/target/*' -not -path '*/.git/*' | sort)
+done < <(fShellFiles)
 
 ##	`\t` in a grep -E pattern. POSIX ERE has no such escape, so the pattern
 ##	matches nothing under the grep a script gets, while matching fine under the
 ##	interactive one on this box - a check that looks like it works and asserts
 ##	nothing. Twice in one round. Use a literal tab or `[[:space:]]`.
 while IFS= read -r f; do
-	hits="$(grep -nE "grep [^|;]*-[A-Za-z]*E[A-Za-z]* '[^']*\\\\t" "${f}" || true)"
+	hits="$(fScanTabEre "${f}")"
 	if [[ -n "${hits}" ]]; then
 		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: backslash-t in a grep -E pattern, which POSIX ERE does not read as a tab: ${h}"; done <<<"${hits}"
 	fi
-done < <(find "${repoDir}/cicd" -name '*.bash' | sort)
+done < <(fShellFiles)
 
 ##	The static half. Line continuations are joined first, so a substitution that
 ##	ends in `|| true` several lines down is read as guarded.
 while IFS= read -r f; do
 	grep -qE '^set -[A-Za-z]*e' "${f}" || continue
-	hits="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "${f}" \
-		| grep -nE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=.*\$\(.*\bgrep\b' \
-		| grep -vE '\|\|[[:space:]]*(true|:)' || true)"
+	hits="$(fScanUnguardedGrep "${f}")"
 	if [[ -n "${hits}" ]]; then
 		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: unguarded grep in an assigned substitution: ${h}"; done <<<"${hits}"
 	fi
-done < <(find "${repoDir}" -name '*.bash' -not -path '*/target/*' -not -path '*/.git/*' | sort)
+done < <(fShellFiles)
 
 ##	20260902 item 18: the two corpus replays split a reads.tsv row with
 ##	`IFS=$'\t' read`, which drops a leading or doubled tab because tab is IFS
