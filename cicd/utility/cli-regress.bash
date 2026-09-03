@@ -190,6 +190,7 @@ rows=(
 	'default-vs-onbad|get --int --default=7 --on-bad=error %F% nope|-|1|-|--default cannot be combined with --on-bad=error'
 	'onbad-vs-default|get --int --on-bad=error --default=7 %F% nope|-|1|-|--default cannot be combined with --on-bad=error'
 	'default-with-onbad-default|get --int --default=7 --on-bad=default %F% nope|-|0|7|-'
+	'default-alone|get --int --default=7 %F% nope|-|0|7|-'
 	## 20260902 item 15: a refused edit returned before the load's diagnostics
 	## were printed, so a damaged file said nothing about the damage.
 	'refused-set-still-reports|get --set=a[*]=1 %B% a|-|1|-|E015 missing colon'
