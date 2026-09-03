@@ -767,6 +767,11 @@ const exitIO = 8
 // closed comes back as an invalid handle or an invalid function depending on
 // how it was closed, and the runtimes map those to their own codes.
 func stdinUnattached(err error) bool {
+	// Windows hands back a handle that is not a handle, and the runtime answers
+	// with its own "invalid argument" rather than a system error number.
+	if errors.Is(err, os.ErrInvalid) || errors.Is(err, os.ErrClosed) {
+		return true
+	}
 	var errno syscall.Errno
 	if !errors.As(err, &errno) {
 		return false
