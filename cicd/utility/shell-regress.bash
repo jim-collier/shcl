@@ -437,6 +437,63 @@ if [[ -f "${report}" ]]; then
 	fi
 fi
 
+##	Every tracked shell script, whether or not it is named `*.bash`: the
+##	pre-push hook and the publish script carry no extension, and both are
+##	`set -e` scripts the scans below are about. Untracked-but-not-ignored files
+##	are in, so a script written and not yet added is still scanned; build output
+##	is out, because it is ignored. Written once and reused.
+fShellFiles(){
+	local f
+	while IFS= read -r f; do
+		case "${f}" in
+			*.bash) printf '%s\n' "${repoDir}/${f}" ;;
+			*)      [[ -f "${repoDir}/${f}" ]] && head -1 "${repoDir}/${f}" | grep -qE '^#!.*\b(bash|sh)\b' \
+			            && printf '%s\n' "${repoDir}/${f}" ;;
+		esac
+	done < <(git -C "${repoDir}" ls-files --cached --others --exclude-standard | sort -u)
+}
+
+##	The two static scans, as functions so the self-test below can run them over a
+##	file holding every spelling they are meant to catch. Both were written for
+##	one spelling each and missed the ordinary ones.
+##
+##	`\t` in a grep -E pattern: POSIX ERE has no such escape, so the pattern
+##	matches nothing under the grep a script gets, while matching fine under the
+##	interactive one on this box. Either quote style, either option spelling.
+fScanTabEre(){
+	grep -nE "grep [^|;]*(-[A-Za-z]*E[A-Za-z]*|--extended-regexp)[^|;]*['\"][^'\"]*\\\\t" "$1" || true
+}
+
+##	A `grep` inside an assigned command substitution with no `|| true`: when it
+##	matches nothing the assignment fails, errexit kills the script, and the
+##	check that would have printed the reason never runs. Every way to spell an
+##	assignment counts - a keyword prefix, an array element, `+=`, backticks.
+##	Line continuations are joined first, so a substitution that ends in
+##	`|| true` several lines down is read as guarded.
+fScanUnguardedGrep(){
+	sed -e :a -e '/\\$/N; s/\\\n//; ta' "$1" \
+		| grep -nE '^[[:space:]]*(local|declare|typeset|export|readonly)?[[:space:]]*[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=.*(\$\(|`).*\bgrep\b' \
+		| grep -vE '\|\|[[:space:]]*(true|:)' || true
+}
+
+##	The self-test: one file carrying every spelling, so a scan that stops seeing
+##	one of them fails here rather than going quiet over the repo.
+##	The escape is assembled rather than written, so the bait for the second scan
+##	does not trip that scan when it sweeps this file.
+bs=$'\\'
+#  shellcheck disable=2016  ## the bait is the literal text of the shapes being scanned for.
+{
+	printf '%s\n' '#!/usr/bin/env bash' 'set -Eeuo pipefail' \
+		'local x="$(grep -c a f)"' 'declare y="$(grep -c a f)"' 'export Z="$(grep -c a f)"' \
+		'readonly W="$(grep -c a f)"' 'arr[0]="$(grep -c a f)"' 'acc+="$(grep -c a f)"' \
+		'bt="`grep -c a f`"' 'ok="$(grep -c a f || true)"' \
+		"grep --extended-regexp \"x${bs}ty\" f" "grep -E 'a${bs}tb' f" 'grep -E "[[:space:]]" f'
+} > "${tmpDir}/scanbait.bash"
+n="$(fScanUnguardedGrep "${tmpDir}/scanbait.bash" | wc -l)"
+((n == 7)) || fBad "the unguarded-grep scan found ${n} of 7 spellings"
+n="$(fScanTabEre "${tmpDir}/scanbait.bash" | wc -l)"
+((n == 2)) || fBad "the backslash-t scan found ${n} of 2 spellings"
+
 ##	A one-line loop body that is a `[[ ... ]] && ...` list. When the test fails
 ##	on the last iteration the loop returns 1, which is harmless at statement
 ##	level on this bash but kills the caller the moment the loop becomes the last
@@ -448,30 +505,28 @@ while IFS= read -r f; do
 	if [[ -n "${hits}" ]]; then
 		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: loop body ends on a failed-test && list: ${h}"; done <<<"${hits}"
 	fi
-done < <(find "${repoDir}" -name '*.bash' -not -path '*/target/*' -not -path '*/.git/*' | sort)
+done < <(fShellFiles)
 
 ##	`\t` in a grep -E pattern. POSIX ERE has no such escape, so the pattern
 ##	matches nothing under the grep a script gets, while matching fine under the
 ##	interactive one on this box - a check that looks like it works and asserts
 ##	nothing. Twice in one round. Use a literal tab or `[[:space:]]`.
 while IFS= read -r f; do
-	hits="$(grep -nE "grep [^|;]*-[A-Za-z]*E[A-Za-z]* '[^']*\\\\t" "${f}" || true)"
+	hits="$(fScanTabEre "${f}")"
 	if [[ -n "${hits}" ]]; then
 		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: backslash-t in a grep -E pattern, which POSIX ERE does not read as a tab: ${h}"; done <<<"${hits}"
 	fi
-done < <(find "${repoDir}/cicd" -name '*.bash' | sort)
+done < <(fShellFiles)
 
 ##	The static half. Line continuations are joined first, so a substitution that
 ##	ends in `|| true` several lines down is read as guarded.
 while IFS= read -r f; do
 	grep -qE '^set -[A-Za-z]*e' "${f}" || continue
-	hits="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "${f}" \
-		| grep -nE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=.*\$\(.*\bgrep\b' \
-		| grep -vE '\|\|[[:space:]]*(true|:)' || true)"
+	hits="$(fScanUnguardedGrep "${f}")"
 	if [[ -n "${hits}" ]]; then
 		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: unguarded grep in an assigned substitution: ${h}"; done <<<"${hits}"
 	fi
-done < <(find "${repoDir}" -name '*.bash' -not -path '*/target/*' -not -path '*/.git/*' | sort)
+done < <(fShellFiles)
 
 ##	20260902 item 18: the two corpus replays split a reads.tsv row with
 ##	`IFS=$'\t' read`, which drops a leading or doubled tab because tab is IFS
