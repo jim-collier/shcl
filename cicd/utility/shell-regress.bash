@@ -473,6 +473,22 @@ while IFS= read -r f; do
 	fi
 done < <(find "${repoDir}" -name '*.bash' -not -path '*/target/*' -not -path '*/.git/*' | sort)
 
+##	20260902 item 18: the two corpus replays split a reads.tsv row with
+##	`IFS=$'\t' read`, which drops a leading or doubled tab because tab is IFS
+##	whitespace whatever IFS is set to - so the top-level `children` row arrived
+##	as a type nothing had an arm for and ran nothing. Lifted out of
+##	crosscheck.bash by name so the check cannot drift from the shipped text.
+eval "$(sed -n '/^fSplitTabs()/,/^}/p' "${repoDir}/cicd/utility/crosscheck.bash")"
+cols=()
+fSplitTabs "$(printf '\tchildren\tdb|web\t-')"
+[[ "${#cols[@]}" == 4 && -z "${cols[0]}" && "${cols[1]}" == "children" ]] \
+	|| fBad "fSplitTabs dropped a leading empty field: ${cols[*]@Q}"
+fSplitTabs "$(printf 'nope\tchildren\t\t-')"
+[[ "${#cols[@]}" == 4 && "${cols[2]}" == "" && "${cols[3]}" == "-" ]] \
+	|| fBad "fSplitTabs dropped a middle empty field: ${cols[*]@Q}"
+fSplitTabs "one"
+[[ "${#cols[@]}" == 1 && "${cols[0]}" == "one" ]] || fBad "fSplitTabs mangled a single field: ${cols[*]@Q}"
+
 ##	20260902 item 17: the crosscheck's float-spelling dimension built its powers
 ##	of two as `2 ^ e`, which gawk computes as 1/(2^1074) for a subnormal - so 52
 ##	of its rows were the value zero and tested nothing - and drew its "fixed"

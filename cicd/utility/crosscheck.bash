@@ -223,6 +223,17 @@ fFixLost(){    printf 'a:  1\n\xef\xbb\xbfb: 2\n' >"$1/c.shcl"; chmod 600 "$1/c.
 ##	optional level. expected/status are the corpus contract (each binding's own
 ##	conformance runner asserts those); here only binding-vs-binding agreement
 ##	matters, so the row is just a recipe for an invocation.
+##	Split a row on tabs, keeping empty fields. `IFS=$'\t' read` cannot: tab is
+##	IFS whitespace whatever IFS is set to, so a leading or doubled tab
+##	disappears and every column after it shifts - which silently turned the
+##	top-level `children` row into a type nothing had an arm for.
+fSplitTabs(){
+	local rest="$1"
+	cols=()
+	while [[ "$rest" == *$'\t'* ]]; do cols+=("${rest%%$'\t'*}"); rest="${rest#*$'\t'}"; done
+	cols+=("$rest")
+}
+
 fReadRow(){
 	local input="$1" query="$2" type="$3" level="$4"
 	local -a strictArg=()
@@ -235,14 +246,19 @@ fReadRow(){
 		children)     fCompare "children ${query}" children "${strictArg[@]}" "$input" "$query" ;;
 		paths)        fCompare "paths" paths "${strictArg[@]}" "$input" ;;
 		lost)         : ;;   ## no CLI surface; the in-place write below is what it reaches
-		*'[]')        fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
+		int'[]'|float'[]'|bool'[]'|datetime'[]'|string'[]')
+		              fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
 		              fCompare "get ${query} ${type} slots" get "--${type%[]}" --array --slots "${strictArg[@]}" "$input" "$query" ;;
-		*)            fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query"
+		int|float|bool|datetime|string|raw|rawinfo)
+		              fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query"
 		              # on-bad=error (exit-code differential; message goes to dropped stderr)
 		              # and a default substitution (stdout differential) - the accessor
 		              # policy surface, where hand-written ports diverge most easily.
 		              fCompare "get ${query} ${type} on-bad=error" get "--${type}" --on-bad=error "${strictArg[@]}" "$input" "$query"
 		              fCompare "get ${query} ${type} default" get "--${type}" "--default=<x>" "${strictArg[@]}" "$input" "$query" ;;
+		## A row type with no arm used to fall through to `get --<type>`, which
+		## every binding refuses the same way - so the row compared nothing.
+		*)            echo "crosscheck: unknown reads.tsv type: ${type}" >&2; exit 2 ;;
 	esac
 }
 
@@ -311,8 +327,10 @@ for caseDir in "$corpus"/*/; do
 	fi
 	tsv="${caseDir}reads.tsv"
 	if [[ -f "$tsv" ]]; then
-		while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do
-			[[ -z "$query" || "$query" == "query" ]] && continue
+		while IFS= read -r row || [[ -n "$row" ]]; do
+			[[ -z "$row" || "$row" == query$'\t'* ]] && continue
+			fSplitTabs "$row"
+			query="${cols[0]}"; type="${cols[1]}"; level="${cols[4]:-}"
 			fReadRow "$input" "$query" "$type" "${level:-}"
 		done < "$tsv"
 	fi
