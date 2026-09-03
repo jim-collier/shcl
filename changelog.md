@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A refused `--set` or a failing ops line no longer swallows the load's diagnostics. The edit was applied before anything was printed, so a `get --set` on a file with a dropped line reported the refusal and said nothing about the damage. The diagnostics belong to the load and now go out before any edit runs.
+
 - Go's `LoadError` and Python's `diagnostics()` and `LoadError` hand back a copy. Each returned the document's own list, so a caller sorting or clearing what it was given silently changed what the document reported, and the document's next append landed in the caller's slot. Go's `Diagnostics()` was fixed for this in 2.0; these were the ones it missed.
 
 - The named-month date forms hold the day to `DD`. `Jul +12 2026`, `Jul 0012 2026` and `+12 Jul 2026` read as 12 July, because the space-separated spellings parsed the day as a plain integer where every delimited spelling holds it to one or two digits. The spec calls the format list a closed whitelist and spells the day `DD`.

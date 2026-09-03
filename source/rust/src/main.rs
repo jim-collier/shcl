@@ -696,11 +696,13 @@ fn say_diagnostics(diags: &[Diagnostic]) {
 /// requested strictness; a strict-load failure on any layer aborts like a
 /// single-file strict failure (exit 6, nothing printed).
 ///
-/// Returns every layer's diagnostics alongside the merged document, lowest
-/// layer first. A merge does not carry them over, so the merged document only
-/// holds the lowest layer's - reading them off it drops the diagnostics for
-/// FILE itself, which is the one the caller named.
-fn load_layered(o: &Opts, file: &str) -> Result<(Document, Vec<Diagnostic>), u8> {
+/// Prints every layer's diagnostics itself, lowest layer first, before the
+/// `--set` overrides run: they belong to the load, and a refused edit used to
+/// return before anything was said about them. A merge does not carry
+/// diagnostics over, so the merged document only holds the lowest layer's -
+/// reading them off it drops the diagnostics for FILE itself, which is the one
+/// the caller named.
+fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	let mut texts: Vec<String> = Vec::with_capacity(o.layers.len() + 1);
 	for lf in &o.layers {
@@ -721,6 +723,7 @@ fn load_layered(o: &Opts, file: &str) -> Result<(Document, Vec<Diagnostic>), u8>
 		diags.extend_from_slice(over.diagnostics());
 		doc.merge(&over);
 	}
+	say_diagnostics(&diags);
 	for s in &o.sets {
 		if !s.apply(&mut doc) {
 			errln!(
@@ -732,7 +735,7 @@ fn load_layered(o: &Opts, file: &str) -> Result<(Document, Vec<Diagnostic>), u8>
 			return Err(1);
 		}
 	}
-	Ok((doc, diags))
+	Ok(doc)
 }
 
 /// The in-place half of `fmt`/`set`. Overwriting the source is the one place a
@@ -806,14 +809,10 @@ fn do_get(o: &Opts) -> u8 {
 		errln!("usage: shcl get [type] [options] FILE PATH (see --help)");
 		return 1;
 	};
-	let (doc, diags) = match load_layered(o, file) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	// A read reports what the load dropped, the same as fmt and set: below
-	// strict the value comes back fine and the damage is otherwise silent.
-	// One report per invocation, so a read in a loop is one line per call.
-	say_diagnostics(&diags);
 	let (lines, status, slots): (Vec<String>, Status, Vec<Status>) = if o.array {
 		match o.kind {
 			Kind::Int => {
@@ -1007,13 +1006,10 @@ fn do_fmt(o: &Opts) -> u8 {
 		errln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	let (doc, diags) = match load_layered(o, file) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	// Printing the canonical form drops what the load dropped, the same as a
-	// rewrite does, so the diagnostics go out either way.
-	say_diagnostics(&diags);
 	if o.write {
 		return write_back(&doc, file, o);
 	}
@@ -1214,6 +1210,9 @@ fn do_set(o: &Opts) -> u8 {
 			Err(code) => return code,
 		}
 	}
+	// The load's diagnostics belong to the load, so they go out before any edit
+	// runs: a refused --set or a failing op used to return with nothing said.
+	say_diagnostics(&diags);
 	for s in &o.sets {
 		if !s.apply(&mut doc) {
 			errln!(
@@ -1250,7 +1249,6 @@ fn do_set(o: &Opts) -> u8 {
 			return 1;
 		}
 	}
-	say_diagnostics(&diags);
 	if o.write {
 		return write_back(&doc, file, o);
 	}
@@ -1404,14 +1402,10 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 		errln!("usage: shcl {} [options] FILE PATH (see --help)", name);
 		return 1;
 	};
-	let (doc, diags) = match load_layered(o, file) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	// A read reports what the load dropped, the same as fmt and set: below
-	// strict the value comes back fine and the damage is otherwise silent.
-	// One report per invocation, so a read in a loop is one line per call.
-	say_diagnostics(&diags);
 	if want_count {
 		outln!("{}", doc.count(path));
 	} else {
@@ -1435,11 +1429,10 @@ fn do_children(o: &Opts) -> u8 {
 			return 1;
 		}
 	};
-	let (doc, diags) = match load_layered(o, file) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	say_diagnostics(&diags);
 	for name in doc.children(path) {
 		outln!("{}", shcl::quote_segment(&name));
 	}
@@ -1453,11 +1446,10 @@ fn do_paths(o: &Opts) -> u8 {
 		errln!("usage: shcl paths [options] FILE (see --help)");
 		return 1;
 	};
-	let (doc, diags) = match load_layered(o, file) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	say_diagnostics(&diags);
 	for p in doc.paths() {
 		outln!("{}", p);
 	}

@@ -417,6 +417,9 @@ static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 		if (g) { shcl_free(dd); layered_free(out); return g; }
 		layered_push_doc(out, dd);
 	}
+	// The load's diagnostics belong to the load, so they go out before any edit
+	// runs: a refused --set used to return with nothing said about them.
+	say_layered_diagnostics(out);
 	for (int i = 0; i < o->nsets; i++) {
 		if (!set_apply(out->doc, &o->sets[i])) { layered_free(out); return 1; }
 	}
@@ -451,10 +454,6 @@ static int do_get(Opts *o) {
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
 	shcl_doc *d = L.doc;
-	// A read reports what the load dropped, the same as fmt and set: below
-	// strict the value comes back fine and the damage is otherwise silent.
-	// One report per invocation, so a read in a loop is one line per call.
-	say_layered_diagnostics(&L);
 
 	shcl_status status = SHCL_GOOD;
 	const shcl_status *slotSts = NULL; size_t nSlots = 0;
@@ -602,9 +601,6 @@ static int do_fmt(Opts *o) {
 	}
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
-	// Printing the canonical form drops what the load dropped, the same as a
-	// rewrite does, so the diagnostics go out either way.
-	say_layered_diagnostics(&L);
 	int rc;
 	if (o->write) {
 		rc = write_back(L.doc, file, o);
@@ -810,6 +806,9 @@ static int do_set(Opts *o) {
 		layered_push_doc(&L, dd);
 	}
 	shcl_doc *d = L.doc;
+	// The load's diagnostics belong to the load, so they go out before any edit
+	// runs: a refused --set or a failing op used to return with nothing said.
+	say_layered_diagnostics(&L);
 	for (int i = 0; i < o->nsets; i++) {
 		if (!set_apply(d, &o->sets[i])) { layered_free(&L); return 1; }
 	}
@@ -841,7 +840,6 @@ static int do_set(Opts *o) {
 		}
 	}
 	if (rc == 0) {
-		say_layered_diagnostics(&L);
 		if (o->write) rc = write_back(d, file, o);
 		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
 	}
@@ -971,10 +969,6 @@ static int do_enum(Opts *o, int want_count) {
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
 	shcl_doc *d = L.doc;
-	// A read reports what the load dropped, the same as fmt and set: below
-	// strict the value comes back fine and the damage is otherwise silent.
-	// One report per invocation, so a read in a loop is one line per call.
-	say_layered_diagnostics(&L);
 	if (want_count) printf("%zu\n", shcl_count(d, path, plen));
 	else { shcl_str *vals; size_t n = shcl_instances(d, path, plen, &vals); for (size_t i = 0; i < n; i++) outln(vals[i].p, vals[i].n); }
 	layered_free(&L); return 0;
@@ -1096,7 +1090,6 @@ static int do_children(Opts *o) {
 	else { fprintf(stderr, "usage: shcl children [options] FILE [PATH] (see --help)\n"); return 1; }
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
-	say_layered_diagnostics(&L);
 	shcl_str *names = NULL;
 	size_t n = shcl_children(L.doc, path, strlen(path), &names);
 	for (size_t i = 0; i < n; i++) {
@@ -1113,7 +1106,6 @@ static int do_paths(Opts *o) {
 	if (o->nargs != 1) { fprintf(stderr, "usage: shcl paths [options] FILE (see --help)\n"); return 1; }
 	LayeredDoc L; int gate = load_layered(o, o->args[0], &L);
 	if (gate) return gate;
-	say_layered_diagnostics(&L);
 	shcl_str *ps = NULL;
 	size_t n = shcl_paths(L.doc, &ps);
 	for (size_t i = 0; i < n; i++) { fwrite(ps[i].p, 1, ps[i].n, stdout); putchar('\n'); }
