@@ -693,9 +693,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-193400
 		- Closed: 20260904-013000
 
-	- 🔘 Item 36: `install.bash` silently replaces a symlink at the bin path that points somewhere else.
+	- ✅ Item 36: `install.bash` silently replaces a symlink at the bin path that points somewhere else.
 		- Only a regular file is refused. A link to a cargo-built or hand-built copy is overwritten with no word about it, where the uninstall path already knows how to test "only ours".
+		- Fixed: the check is `fLinkOwner`, and it answers free, ours, file or elsewhere. The last two are refused before any download, naming what is there and where it points.
+		- Pinned by a `shell-regress` block over all four answers.
 		- Opened: 20260901-193500
+		- Closed: 20260904-014000
 
 	- 🔘 Item 37: neither installer notices a different `shcl` shadowing the one it just installed.
 		- The receipt line runs the installed link directly, never what `shcl` resolves to on PATH. On Windows the user PATH entry is appended after the machine PATH, so a setup.exe install shadows every later user install permanently.
