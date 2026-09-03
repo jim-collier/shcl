@@ -1243,8 +1243,19 @@ static char **utf8_argv(int *argc) {
 }
 #endif
 
-int main(int argc, char **argv) {
+static int cli_main(int argc, char **argv) {
 	setlocale(LC_ALL, "C"); // strtod/printf must use '.' regardless of environment
+#ifndef _WIN32
+	// The Rust, Go and Python runtimes point a standard stream that was closed
+	// before the start at the null device; C's does not, so every write would
+	// fail with EBADF where the other three quietly drop it - and the next
+	// file opened would land on fd 1 and be written over.
+	for (int fd = 0; fd <= 2; fd++)
+		if (fcntl(fd, F_GETFD) == -1 && errno == EBADF) {
+			int nfd = open("/dev/null", fd == 0 ? O_RDONLY : O_WRONLY);
+			if (nfd != fd && nfd >= 0) close(nfd);
+		}
+#endif
 #ifdef _WIN32
 	// Byte-for-byte with the reference: no CRLF translation on any stream.
 	_setmode(_fileno(stdin), _O_BINARY);
@@ -1298,4 +1309,19 @@ int main(int argc, char **argv) {
 	else { fprintf(stderr, "%s: no dispatch arm (see --help)\n", cmd); rc = 1; }
 	opts_free(&o);
 	return rc;
+}
+
+int main(int argc, char **argv) {
+	int code = cli_main(argc, argv);
+	// A tail still sitting in the buffer when the work is done fails the same
+	// way a write does. A reader that closed early is nothing to report -
+	// nobody is there to read it - so that leaves quietly; anything else lost
+	// the output, which is the same failure as a file that could not be
+	// written.
+	if (fflush(stdout) != 0 || ferror(stdout)) {
+		if (errno == EPIPE) return 0;
+		fprintf(stderr, "stdout: %s\n", strerror(errno));
+		return 8;
+	}
+	return code;
 }

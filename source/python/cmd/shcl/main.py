@@ -16,6 +16,44 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 import shcl
 
+class _BestEffort:
+	"""stderr, wrapped so a write that fails is dropped. A stream that cannot
+	be written has nowhere to report that fact, and the document on stdout is
+	still good - where an uncaught OSError would lose that too."""
+
+	def __init__(self, stream):
+		self._stream = stream
+
+	def write(self, text):
+		try:
+			self._stream.write(text)
+		except OSError:
+			pass
+		return len(text)
+
+	def flush(self):
+		try:
+			self._stream.flush()
+		except OSError:
+			pass
+
+	def __getattr__(self, name):
+		return getattr(self._stream, name)
+
+
+def write_failed(e):
+	"""A stdout write that failed. A reader that closed early is nothing to
+	report - nobody is there to read it - so that leaves quietly; anything
+	else lost the output, which is the same failure as a file that could not
+	be written. The stream is swapped for a sink so the interpreter's own
+	exit-time flush does not fail again over the top of the exit code."""
+	sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+	if isinstance(e, BrokenPipeError):
+		return 0
+	sys.stderr.write(f"stdout: {e.strerror or e}\n")
+	return 8
+
+
 # Keep in step with source/rust/Cargo.toml, the canonical version source.
 VERSION = "2.0.0"
 
@@ -1242,7 +1280,15 @@ def main():
 				reconfigure(encoding="utf-8", newline="\n")
 			except (ValueError, OSError):
 				pass
-	return run(sys.argv[1:])
+	sys.stderr = _BestEffort(sys.stderr)
+	try:
+		code = run(sys.argv[1:])
+		# A tail still sitting in the buffer when the work is done fails the
+		# same way a write does.
+		sys.stdout.flush()
+	except OSError as e:
+		return write_failed(e)
+	return code
 
 
 if __name__ == "__main__":

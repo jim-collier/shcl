@@ -76,7 +76,8 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	instance whose discriminator holds an '=', %T% a document with a name that
 ##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
 ##	path with no file at it.
-##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that stream.
+##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
+##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	A stderr regex starting with '!' must match NO line.
 ##	Each row names the round and item it pins.
@@ -153,6 +154,14 @@ rows=(
 	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
 	'children-missing|children %T% nope|-|0||-'
 	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	## 20260902 items 8 and 9: a stdout that could not be written was reported
+	## as success by three CLIs, and a stderr that could not be written aborted
+	## the reference with nothing on stdout at all.
+	'full-stdout-fmt|fmt %F%|@fullout|8|-|[Nn]o space left'
+	'full-stdout-check|check %F%|@fullout|8|-|-'
+	'full-stdout-get|get %F% a|@fullout|8|-|-'
+	'full-stdout-set|set --set=a=2 %F%|@fullout|8|-|-'
+	'full-stderr-keeps-stdout|fmt %B%|@fullerr|0|a: 1\n\tbad:\nb 2\n|-'
 	## Found working 20260830b item 18: a merge does not carry diagnostics, so
 	## reading them off the merged doc reported the lowest layer and stayed
 	## silent about FILE - the one file the caller actually named.
@@ -176,6 +185,12 @@ for row in "${rows[@]}"; do
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
 	argv="${argv//%M%/${tmpDir}/not-there.shcl}"
+	## A device that is always full exists on linux and not on windows; the
+	## rows that need one are skipped out loud rather than passing vacuously.
+	if [[ "${stdinSpec}" == @full* && ! -w /dev/full ]]; then
+		echo "cli-regress: skipping ${id} (no /dev/full here)"
+		continue
+	fi
 	read -r -a args <<<"${argv}"
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
@@ -183,6 +198,8 @@ for row in "${rows[@]}"; do
 		case "${stdinSpec}" in
 			@closedin)  "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" 0<&- || rc=$? ;;
 			@closedout) "${cli}" "${args[@]}" 2>"${tmpDir}/err" >&- || rc=$?; : >"${tmpDir}/out" ;;
+			@fullout)   "${cli}" "${args[@]}" 2>"${tmpDir}/err" >/dev/full || rc=$?; : >"${tmpDir}/out" ;;
+			@fullerr)   "${cli}" "${args[@]}" >"${tmpDir}/out" 2>/dev/full || rc=$?; : >"${tmpDir}/err" ;;
 			-)          "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" </dev/null || rc=$? ;;
 			*)          printf '%b' "${stdinSpec}" | "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" || rc=$? ;;
 		esac
