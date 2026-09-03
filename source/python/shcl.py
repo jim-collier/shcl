@@ -1194,6 +1194,10 @@ class _Parser:
 		# line and a plain text file parses in quadratic time.
 		self.pend_marks = []
 		self.saw_blank = False  # a blank line waits to become the next bound node's blank_before
+		# Nothing has been read yet, so a blank line here leads the file and the
+		# emitter would not re-emit it. Dropping it at parse time is what makes
+		# load(emit(load(x))) equal load(x) on that bit, which a merge relies on.
+		self.at_start = True
 		# An open stacked list defers its merge-key remap (rebuilding the key per
 		# element is O(list^2) time); (node, map key, display key) at deferral
 		# start, flushed before any map lookup and at end of parse.
@@ -1679,9 +1683,10 @@ class _Parser:
 			rest = line.lstrip(" \t")
 			indent = line[:len(line) - len(rest)]
 			if not rest:
-				self.saw_blank = True
+				self.saw_blank = not self.at_start
 				i += 1
 				continue
+			self.at_start = False
 			# Whole-line comment: hold it for the next line that binds a node.
 			# It consumes a pending blank into its own flag, so a blank between
 			# comment-only regions survives the round-trip.
@@ -1877,6 +1882,20 @@ class _Parser:
 		self._hang_deeper_pending("")
 		orphans = [_Lead(p.text, p.blank_before) for p in self.pending]
 		self.pending = []
+		# The emitter drops a blank before the first thing it prints, so a
+		# document that kept one there would not survive its own canonical form:
+		# load(emit(load(x))) and load(x) would differ on that bit, and a merge -
+		# where the line is no longer first - would place a blank the author
+		# never wrote. Clear it here, once, wherever output starts.
+		kids = self.arena[ROOT].children
+		if kids:
+			n = self.arena[kids[0]]
+			if n.trivia is not None and n.trivia.leading:
+				n.trivia.leading[0].blank_before = False
+			else:
+				n.blank_before = False
+		elif orphans:
+			orphans[0].blank_before = False
 		# The one entry past the cap: what was not listed, and whether any of
 		# it was an error, so a consumer scanning the list for errors still
 		# finds one and a Strict load still fails.

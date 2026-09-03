@@ -278,6 +278,21 @@ fn merge_never_panics_and_stays_fixpoint() {
 			i,
 			b
 		);
+		// A layer and its canonical form must merge the same: a load that
+		// keeps a bit its own emitter cannot re-emit makes the fold depend on
+		// whether the caller formatted the layer first.
+		let mut from_text = Document::parse(&a);
+		from_text.merge(&Document::parse(&b));
+		let mut from_canon = Document::parse(&a);
+		from_canon.merge(&Document::parse(&Document::parse(&b).to_canonical()));
+		assert_eq!(
+			from_canon.to_canonical(),
+			from_text.to_canonical(),
+			"merging a layer differs from merging its canonical form at iteration {} for:\nA:\n{}\nB:\n{}",
+			i,
+			a,
+			b
+		);
 	}
 }
 

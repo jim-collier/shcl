@@ -1578,6 +1578,10 @@ type parser struct {
 	// quadratic time.
 	pendMarks []pendMark
 	sawBlank  bool // a blank line waits to become the next bound node's blankBefore
+	// Nothing has been read yet, so a blank line here leads the file and the
+	// emitter would not re-emit it. Dropping it at parse time is what makes
+	// load(emit(load(x))) equal load(x) on that bit, which a merge relies on.
+	atStart bool
 	// An open stacked list defers its merge-key remap (rebuilding the key per
 	// element is O(list^2) time); (node, key hash, display hash) at deferral
 	// start, flushed before any map lookup and at end of parse.
@@ -1610,6 +1614,7 @@ func newParser() *parser {
 		childMap:  []map[uint64]slot{nil},
 		dispMap:   []map[uint64]int{nil},
 		reentered: map[int]int{},
+		atStart:   true,
 	}
 }
 
@@ -2215,10 +2220,11 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		indent := leadingWS(line)
 		rest := line[len(indent):]
 		if rest == "" {
-			p.sawBlank = true
+			p.sawBlank = !p.atStart
 			i++
 			continue
 		}
+		p.atStart = false
 		// Whole-line comment: hold it for the next line that binds a node.
 		// It consumes a pending blank into its own flag, so a blank between
 		// comment-only regions survives the round-trip.
@@ -2437,6 +2443,21 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore})
 	}
 	p.pending = p.pending[:0]
+	// The emitter drops a blank before the first thing it prints, so a document
+	// that kept one there would not survive its own canonical form:
+	// load(emit(load(x))) and load(x) would differ on that bit, and a merge -
+	// where the line is no longer first - would place a blank the author never
+	// wrote. Clear it here, once, wherever output starts.
+	if kids := p.arena[root].children; len(kids) > 0 {
+		n := &p.arena[kids[0]]
+		if n.trivia != nil && len(n.trivia.leading) > 0 {
+			n.trivia.leading[0].blankBefore = false
+		} else {
+			n.blankBefore = false
+		}
+	} else if len(orphans) > 0 {
+		orphans[0].blankBefore = false
+	}
 	// The one entry past the cap: what was not listed, and whether any of it
 	// was an error, so a consumer scanning the list for errors still finds
 	// one and a Strict load still fails.

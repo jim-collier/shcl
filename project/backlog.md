@@ -174,11 +174,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-171400
 		- Closed: 20260902-234500
 
-	- 🔘 Item 16: a layer's leading blank line survives the load but not the canonical form, so a merge of a file and a merge of its `fmt` differ.
+	- ✅ Item 16: a layer's leading blank line survives the load but not the canonical form, so a merge of a file and a merge of its `fmt` differ.
 		- Reproduced in all four. With `A` holding `a: 1` and `B` holding a blank line then `b: 2`, `fmt --layer=A B` prints `a: 1`, a blank, `b: 2`, while `fmt --layer=A <(fmt B)` prints no blank. Same with a leading comment and with a comment-only layer. In a 700-seed soak, 129 seeds (every layer beginning with a blank line) gave a different result with an in-memory merged document as `over` than with its reparse; as `base` it never differed.
 		- Cause: the parser sets the pending blank on the first bound node like any other and the emitter suppresses it only at output start, so `load(emit(load(B)))` differs from `load(B)` on that one bit and `merge` copies it unchanged.
-		- Note: drop the blank at parse time when nothing precedes it, in all four, so no emitter or merge special case is needed; a corpus case whose layer starts with a blank line pins it.
+		- Fixed: the parse clears the blank on whatever canonical output would print first - the first root child, its first leading comment, or the first footer line - in all four. One place, so no emitter or merge special case is needed.
+		- Note: the property found two more shapes of the same defect that the finding did not name: a blank after a leading line the load dropped (a BOM-led one), and a blank on a later instance that merged into the first. Clearing at the emitted-first position covers all three; dropping it only at the start of the file covered one.
+		- Pinned by corpus `083` (a layer leading with two blank lines, plus a comment-only layer leading with one) and by a new fuzz property: merging a layer must equal merging its canonical form. Both failed in all four before; the property fails within 30000 iterations on each of the three shapes.
 		- Opened: 20260902-171500
+		- Closed: 20260903-001500
 
 	- 🔘 Item 17: the crosscheck's float-spelling dimension writes `0` for every subnormal power of two under gawk, so its "every power of two" claim is false on this box.
 		- Reproduced: `gawk 'BEGIN{printf "%.17g", 2^-1074}'` prints `0` (it computes a negative power as `1/(2^1074)`, which is `1/inf`); mawk prints the subnormal. The generated ops file starts with 52 `float p<n> 0` rows. The hosted runner's default awk decides which rows it exercises there, and `srand(20260902); rand()` differs per awk as well, so the "fixed" random set is not fixed either.
