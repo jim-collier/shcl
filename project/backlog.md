@@ -143,11 +143,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-171000
 		- Closed: 20260902-222000
 
-	- 🔘 Item 12: the named-month space forms accept a day token that is not `DD`.
+	- ✅ Item 12: the named-month space forms accept a day token that is not `DD`.
 		- Reproduced in all four. `Jul +12 2026`, `+12 Jul 2026`, `Jul 0012 2026` and `Jul 00000000000000012 2026` all read Good as `2026-07-12`, while `Jul-012-2026` is refused and `Jul 12 +2026` is refused because the year is held to four digits. The spec calls the format list a closed whitelist and spells the day `DD`.
 		- Cause: the space forms parse the day token with a full unsigned parse (Rust `u32` from_str, which takes a leading `+` and any leading zeros), mirrored deliberately by Python's `_parse_u32`, Go's `parseU32` and C's `parse_u32_lenient`; the delimited form uses the 1-2 digit `parse_num2`.
-		- Note: use `parse_num2` for the day in both space forms; corpus rows for `Jul +12 2026` and `Jul 012 2026` as BadType.
+		- Fixed: both space forms read the day with the same one-or-two-digit parse the delimited forms use. The lenient u32 parse had no other caller and is gone from all three ports.
+		- Pinned by corpus `007` (`Jul +12 2026`, `Jul 0012 2026`, `+12 Jul 2026`, all BadType). All four read them as 12 July before.
 		- Opened: 20260902-171100
+		- Closed: 20260902-224500
 
 	- 🔘 Item 13: Go's `LoadError.Diagnostics` and Python's `diagnostics()` and `LoadError` hand out the document's own list.
 		- Reproduced: in Go, setting `le.Diagnostics[0].Message` on a strict-load error changes `doc.Diagnostics()[0].Message`; in Python `doc.diagnostics().clear()` takes `error_count()` to 0, and `LoadError.diagnostics` is the same list object. 20260901b item 23 fixed Go's `Diagnostics()` and the two suppressors and did not reach the third hand-out; Python was not looked at.

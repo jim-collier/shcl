@@ -19,3 +19,7 @@ bad2	datetime	-	BadType
 bad3	datetime	-	BadType
 bad4	datetime	-	BadType
 bad5	datetime	-	BadType
+bad6	datetime	-	BadType
+bad7	datetime	-	BadType
+bad8	datetime	-	BadType
+-	lost	0	-

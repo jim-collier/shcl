@@ -4282,24 +4282,6 @@ def _valid_date(y, m, d):
 	return 1 <= m <= 12 and d >= 1 and d <= _days_in_month(y, m)
 
 
-def _parse_u32(s):
-	# Rust u32 parse: optional leading '+', ASCII digits, range-checked.
-	if not s:
-		return None
-	body = s[1:] if s[0] == "+" else s
-	if not body or not _all_ascii_digits(body):
-		return None
-	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
-	# reference just overflows. Leading zeros are legal and don't count toward range.
-	digits = body.lstrip("0") or "0"
-	if len(digits) > 10:
-		return None
-	n = int(digits)
-	if n > 2 ** 32 - 1:
-		return None
-	return n
-
-
 def _parse_year4(s):
 	if len(s) == 4 and _all_ascii_digits(s):
 		return int(s)
@@ -4326,14 +4308,17 @@ def _parse_date_part(s):
 		m = _month_from_name(toks[0])
 		if m is not None:
 			day_tok = toks[1][:-1] if toks[1].endswith(",") else toks[1]
-			d = _parse_u32(day_tok)
+			# The day is DD, like every other form's: a plain integer parse takes
+			# a leading '+' and any number of leading zeros, which the whitelist
+			# does not list and the delimited spellings refuse.
+			d = _parse_num2(day_tok)
 			y = _parse_year4(toks[2])
 			if d is None or y is None:
 				return None
 			return (y, m, d) if _valid_date(y, m, d) else None
 		m = _month_from_name(toks[1])
 		if m is not None:
-			d = _parse_u32(toks[0])
+			d = _parse_num2(toks[0])
 			y = _parse_year4(toks[2])
 			if d is None or y is None:
 				return None

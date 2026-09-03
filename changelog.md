@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The named-month date forms hold the day to `DD`. `Jul +12 2026`, `Jul 0012 2026` and `+12 Jul 2026` read as 12 July, because the space-separated spellings parsed the day as a plain integer where every delimited spelling holds it to one or two digits. The spec calls the format list a closed whitelist and spells the day `DD`.
+
 - A stdout that cannot be written exits 8 instead of reporting success. `shcl fmt f.shcl > /dev/full` exited 0 with an empty stderr in three of the four CLIs and killed the Python one with an interpreter message; the help and the man page have said 8 for a stream that could not be written all along. A reader that closed early is still the quiet exit, since nobody is there to read a complaint.
 
 - A stderr that cannot be written no longer costs the document. The reference aborted with nothing on stdout at all when a diagnostic could not be printed, which turned an unwritable log into a lost `fmt`. Diagnostics are best-effort now; the exit code still carries the outcome.

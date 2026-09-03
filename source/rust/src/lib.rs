@@ -4518,14 +4518,17 @@ fn parse_date_part(s: &str) -> Option<(i32, u32, u32)> {
 	// Space-separated named-month forms; a comma may follow the day in "Mon DD, YYYY".
 	let toks: Vec<&str> = s.split_whitespace().collect();
 	if toks.len() == 3 {
+		// The day is DD, like every other form's: a plain integer parse takes a
+		// leading '+' and any number of leading zeros, which the whitelist does
+		// not list and the delimited spellings already refuse.
 		if let Some(m) = month_from_name(toks[0]) {
 			let day_tok = toks[1].strip_suffix(',').unwrap_or(toks[1]);
-			let d: u32 = day_tok.parse().ok()?;
+			let d: u32 = parse_num2(day_tok)?;
 			let y: i32 = parse_year4(toks[2])?;
 			return valid_date(y, m, d).then_some((y, m, d));
 		}
 		if let Some(m) = month_from_name(toks[1]) {
-			let d: u32 = toks[0].parse().ok()?;
+			let d: u32 = parse_num2(toks[0])?;
 			let y: i32 = parse_year4(toks[2])?;
 			return valid_date(y, m, d).then_some((y, m, d));
 		}
