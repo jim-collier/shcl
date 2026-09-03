@@ -65,7 +65,14 @@ int main(void) {
 
 	// A load is the same call plus a read, so it reports the same way.
 	{
-		const char *path = "/tmp/shcl-oom-recover.shcl";
+		// A mingw binary's fopen does not translate /tmp, and windows hosts do
+		// not all have a C:\tmp for it to land in.
+		const char *dir = getenv("TMPDIR");
+		if (!dir) dir = getenv("TMP");
+		if (!dir) dir = getenv("TEMP");
+		if (!dir) dir = "/tmp";
+		char path[512];
+		snprintf(path, sizeof path, "%s/shcl-oom-recover.shcl", dir);
 		FILE *f = fopen(path, "wb");
 		if (!f) fail("could not write the fixture");
 		else {

@@ -488,9 +488,26 @@ static const char *dec_point(void) {
 // process that is not the library's to end. An embedder defines SHCL_OOM before
 // the implementation to longjmp out, log, or abort on its own terms. Nothing is
 // unwound first, so a hook that returns leaks whatever was being built - and
-// then aborts, because the allocation it was called for still failed.
+// then aborts, because the allocation it was called for still failed. A hook
+// that longjmps wants the NULL-frame setjmp below, for the reason given there:
+// the unwind it starts crosses this library's frames, not just its own.
 #ifndef SHCL_OOM
 	#define SHCL_OOM() do { fprintf(stderr, "shcl: out of memory\n"); exit(70); } while (0)
+#endif
+
+// mingw's setjmp hands longjmp a target frame, and longjmp then unwinds
+// through SEH to reach it. gcc's unwind info for a function that has both a
+// frame pointer and saved xmm registers puts those save slots at offsets the
+// real unwinder resolves past the top of the stack, and the read faults. Wine
+// resolves them from a different base and never sees it, which is why the same
+// binary passes there. A NULL frame makes longjmp restore the context without
+// unwinding at all, and a C recovery point needs nothing more - there is no
+// destructor and no __finally between the failed allocation and the arrival.
+// The full shape is in style-guide.md under the C deviations.
+#if defined(__MINGW32__) && defined(__x86_64__) && defined(__SEH__)
+	#define SHCL_SETJMP(buf) _setjmp((buf), NULL)
+#else
+	#define SHCL_SETJMP(buf) setjmp(buf)
 #endif
 
 /* Unwind to the recovery point `panic` names, or fall back to the macro when
@@ -2819,7 +2836,7 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict, 
 	ShclParseOwn *volatile owned = (ShclParseOwn *)calloc(1, sizeof *owned);
 	if (!owned) { free(doc); return NULL; }
 	jmp_buf panic;
-	if (setjmp(panic)) {
+	if (SHCL_SETJMP(panic)) {
 		/* An allocation failed somewhere below. Nothing built so far can be
 		   trusted and there is no way to finish, so the whole document goes and
 		   the caller gets NULL - with the process still standing, which is the
@@ -5379,7 +5396,7 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	memset(val, 0, sizeof *val);
 	ShclArena *volatile levels = NULL;
 	jmp_buf panic;
-	if (setjmp(panic)) {
+	if (SHCL_SETJMP(panic)) {
 		shcl_validation *bad = val; ShclArena *badLevels = levels;
 		if (badLevels) { for (size_t i = 0; i <= SHCL_MAX_DEPTH; i++) arena_free(&badLevels[i]); free(badLevels); }
 		/* The name index is the only thing on the document this call builds,

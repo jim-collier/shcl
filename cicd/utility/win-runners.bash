@@ -78,9 +78,21 @@ fRunOom() {
 		source/c/tests/oom_hook.c -o "${work}/oom_hook${exe}" -lm \
 		&& "${work}/oom_hook${exe}"
 }
+## The recovery point unwinds through SEH on this host and through nothing much
+## on linux or under wine, so windows is the only place the arrival can be
+## judged. It also has to hold at every optimization level: the shape that broke
+## it needs both a frame pointer and saved xmm registers, which is a decision
+## gcc makes per level, so -O2 alone would have missed -O1.
+fRunOomRecover() {
+	local opt
+	for opt in -O0 -O1 -O2 -O3 -Os; do
+		"${cc}" -std=c11 "${opt}" -Wall -Wextra -Werror -Isource/c \
+			source/c/tests/oom_recover.c -o "${work}/oom_recover${exe}" -lm || return 1
+		"${work}/oom_recover${exe}" || { echo "win-runners: oom_recover: ${opt}: exit $?" >&2; return 1; }
+	done
+}
 ## The allocation bounds move with the allocator, so they belong here rather
-## than on linux alone. The unwind test is deliberately not here: it crashes on
-## a real windows host and passes everywhere else (20260901b item 48).
+## than on linux alone.
 fRunMemBounds() {
 	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
 		source/c/tests/mem_bounds.c -o "${work}/mem_bounds${exe}" -lm \
@@ -144,6 +156,7 @@ fRun "python"      "${py}" source/python/tests/conformance.py
 fRun "c"           fRunC
 fRun "c++ veneer"  fRunCxx
 fRun "c oom hook"  fRunOom
+fRun "c oom recover" fRunOomRecover
 fRun "c mem bounds" fRunMemBounds
 fRun "c cli argv"  fRunCcli
 fRun "closed stdin" fRunClosedStdin
@@ -170,3 +183,5 @@ fi
 ##		  where the file tier's publish step is a different code path in all four.
 ##		- 20260901: The installers' PATH handling joins, windows hosts only - it
 ##		  needs a real registry.
+##		- 20260903: The allocation-failure recovery joins, swept across five
+##		  optimization levels. Its unwind is a real SEH unwind only here.
