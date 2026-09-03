@@ -495,5 +495,17 @@ if ! fOnPath "${linkdir}"; then
 	# shellcheck disable=SC2016
 	printf 'note: %s is not on your PATH, so neither shcl nor "man shcl" will be found - add it with:\n  export PATH="%s:$PATH"\n(put that line in your shell profile to make it stick)\n' "${linkdir}" "${linkdir}"
 fi
+## And what `shcl` actually resolves to: the receipt below runs the link we just
+## wrote, so another copy earlier on PATH used to be invisible here and the next
+## `shcl` the user typed was someone else's.
+fShadowedBy(){   ## fShadowedBy LINK
+	local link="$1" onpath
+	onpath="$(command -v shcl 2>/dev/null || true)"
+	[[ -z "${onpath}" || "${onpath}" -ef "${link}" ]] && return 1
+	printf '%s\n' "${onpath}"
+}
+if shadow="$(fShadowedBy "${link}")"; then
+	printf 'note: shcl on your PATH is %s, not the copy just installed - it comes first on PATH\n' "${shadow}"
+fi
 "${link}" version 2>/dev/null || "${dest}/shcl" version
 echo

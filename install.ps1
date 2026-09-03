@@ -375,6 +375,15 @@ file. Nothing unverified is installed.
 		if (-not $haveDropins) { Write-Output "note: this release ships no signed drop-in payload, so $dest\code and $dest\scripts were skipped - take them from the repo if you want them" }
 		$rerun = if ($invokedAsFile) { "& '$scriptPath'" } else { '& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1)))' }
 		Write-Output "to remove it again: $rerun -Uninstall -Target $Target"
+		## And what `shcl` actually resolves to: the receipt below runs the copy
+		## just written, so another one earlier on PATH used to be invisible
+		## here. A user install cannot get ahead of a machine one - windows puts
+		## the machine entries first - so a setup.exe install shadows it until
+		## that one is removed, and saying so is all this can do.
+		$onPath = (Get-Command shcl -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+		if ($onPath -and $onPath -ne "$dest\shcl.exe") {
+			Write-Output "note: shcl on your PATH is $onPath, not the copy just installed - it comes first on PATH"
+		}
 		## Already proved above, from the temp dir; this line is the receipt.
 		Write-Output $smokeOut
 		Write-Output ''

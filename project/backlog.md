@@ -700,9 +700,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-193500
 		- Closed: 20260904-014000
 
-	- 🔘 Item 37: neither installer notices a different `shcl` shadowing the one it just installed.
+	- ✅ Item 37: neither installer notices a different `shcl` shadowing the one it just installed.
 		- The receipt line runs the installed link directly, never what `shcl` resolves to on PATH. On Windows the user PATH entry is appended after the machine PATH, so a setup.exe install shadows every later user install permanently.
+		- Fixed: both installers ask what `shcl` resolves to and name the other copy when it is not the one just written.
+		- Note: on windows a user install cannot be put ahead of a machine one - windows reads the machine entries first - so saying which copy wins is the whole of what an installer can do there without rewriting someone else's PATH.
+		- Pinned by a `shell-regress` block over the three answers (ours, someone else's, none at all) and a source check that the PowerShell side asks the same question.
 		- Opened: 20260901-193600
+		- Closed: 20260904-014500
 
 	- 🔘 Item 38: `install.ps1 -Uninstall -Target system` over a setup.exe install guts it and leaves the Add/Remove Programs entry pointing at nothing, and the reverse leaves a stale version there.
 		- Both write the same directory. When `uninstall.exe` is present, run it or say to.
