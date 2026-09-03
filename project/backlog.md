@@ -462,9 +462,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- The enhancement half of the round whose defects are under Bugs. Gate soundness, spec sentences the code needs, and library-level shapes no document rules on.
 
-	- 🔘 Item 29: `perf-gate.bash` passes a CLI that fails every workload instantly.
+	- ✅ Item 29: `perf-gate.bash` passes a CLI that fails every workload instantly.
 		- A stub that prints a usage error and exits 1 gets `OK: within 3x their own parse baseline`; the timer discards the exit status and nothing checks that the workload did anything. Today's workloads do run (an uncapped `edit_distance` blows the suggest budget by 20x), so the gate measures what it says and cannot tell when it stops. Require exit 0 (6 for `suggest`) and a non-empty stdout of the expected size per run.
+		- Fixed: every timed run checks its exit code (0 for a write workload, 6 for the two that check a document with diagnostics) and that stdout carries at least the lines the work would produce - the key count for a write, two for a check. A run that did neither is a failure rather than a fast one.
+		- Pinned by the gate itself against a stub that prints a usage error and exits 1: it reported OK before and names the failing run now.
 		- Opened: 20260902-172800
+		- Closed: 20260903-053000
 
 	- 🔘 Item 30: `shell-regress.bash`'s two static scans miss the ordinary spellings of what they scan for.
 		- The unguarded-grep scan finds `a=$(grep`, `b="$(grep` and `c=$( grep` and misses `local x="$(grep ...)"`, `declare`, `export`, `readonly`, backticks, `+=`, an array element, and a `$(` whose `grep` is on the next line; it also skips every `set -e` script without a `.bash` extension, which is the pre-push hook and the publish script. The `\t`-in-ERE scan reads single-quoted patterns under `cicd/` only, so a double-quoted pattern, `--`, `--extended-regexp` and the installers are outside it. No live instance today. Allow the keyword prefixes and both quotes, and drive the file list off `git ls-files` plus a shebang test.
