@@ -722,6 +722,18 @@ def main():
 		raise SystemExit("a one-element bare cell reads quoted as an array")
 	if shcl.Document.parse('m: "x", "y"\n').read_string_array("m").quoted:
 		raise SystemExit("a two-element cell reported a single element's quoting")
+	# A written value carrying both quote kinds is stored the way its own reload
+	# stores it, so instances() and a read's raw text agree across a save. The
+	# emitter escapes the double quotes; the writer used to keep them bare. Same
+	# fixture in every runner.
+	wdoc = shcl.Document.parse("x: 1\n")
+	if not wdoc.set_string("k", "q\"q'"):
+		raise SystemExit("set_string refused")
+	wback = shcl.Document.parse(wdoc.to_canonical())
+	if wback.instances("k") != wdoc.instances("k"):
+		raise SystemExit(f"instances after a reload {wback.instances('k')}, written {wdoc.instances('k')}")
+	if wdoc.get_string_or("k", "") != "q\"q'":
+		raise SystemExit("written value did not read back")
 	# The name index used to be rebuilt by walking the arena, which still holds
 	# every node a set-and-remove cycle ever made - so the first read after a
 	# merge grew with the number of edits, not with the document. Timed against

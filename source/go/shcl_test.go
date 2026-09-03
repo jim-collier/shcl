@@ -1189,6 +1189,24 @@ func TestSaveRewritesAReadOnlyFile(t *testing.T) {
 	}
 }
 
+// A written value carrying both quote kinds is stored the way its own reload
+// stores it, so Instances and a read's raw text agree across a save. The
+// emitter escapes the double quotes; the writer used to keep them bare. Same
+// fixture in every runner.
+func TestWrittenSpellingMatchesItsReload(t *testing.T) {
+	d := Parse("x: 1\n")
+	if !d.SetString("k", "q\"q'") {
+		t.Fatal("set_string refused")
+	}
+	back := Parse(d.ToCanonical())
+	if got, want := strings.Join(back.Instances("k"), "|"), strings.Join(d.Instances("k"), "|"); got != want {
+		t.Errorf("instances after a reload %q, written %q", got, want)
+	}
+	if got := d.GetStringOr("k", ""); got != "q\"q'" {
+		t.Errorf("read back %q", got)
+	}
+}
+
 // The name index used to be rebuilt by walking the arena, which still holds
 // every node a set-and-remove cycle ever made - so the first read after a merge
 // grew with the number of edits, not with the document. Timed against the same

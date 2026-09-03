@@ -330,6 +330,16 @@ fn writer_roundtrips_and_stays_fixpoint() {
 			i,
 			s
 		);
+		// The written document and its own reload agree on the source spelling
+		// too, not just on the value: a text carrying both quote kinds used to
+		// store one form and reparse as another.
+		assert_eq!(
+			d.instances("k"),
+			Document::parse(&text).instances("k"),
+			"instances differ between a written document and its reload #{} for {:?}",
+			i,
+			s
+		);
 		// Array form: each element unquotes/unescapes back to itself.
 		let b = rand_str(&mut rng);
 		let mut da = Document::new();

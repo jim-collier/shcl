@@ -1344,6 +1344,19 @@ fn set_attrs(path: &std::path::Path, attrs: u32) {
 	}
 }
 
+/// A written value carrying both quote kinds is stored the way its own reload
+/// stores it, so `instances` and a read's raw text agree across a save. The
+/// emitter escapes the double quotes; the writer used to keep them bare. Same
+/// fixture in every runner.
+#[test]
+fn written_spelling_matches_its_reload() {
+	let mut d = Document::parse("x: 1\n");
+	assert!(d.set_string("k", "q\"q'"));
+	let back = Document::parse(&d.to_canonical());
+	assert_eq!(back.instances("k"), d.instances("k"));
+	assert_eq!(d.get_string_or("k", String::new()), "q\"q'");
+}
+
 /// The name index used to be rebuilt by walking the arena, which still holds
 /// every node a set-and-remove cycle ever made - so the first read after a
 /// merge grew with the number of edits, not with the document. Timed against

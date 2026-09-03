@@ -3254,6 +3254,7 @@ static int dt_reads_back(ShclArena *scratch, const shcl_datetime *dt) {
 
 // Inverse of a scalar string read (apply_escapes): only backslash, newline, and
 // tab need encoding; emit_element wraps quote/reserved chars, reparse strips it.
+static void bare_quote_counts(ShclStr t, size_t *dq, size_t *sq);
 static ShclStr w_encode_string(ShclArena *a, ShclStr s) {
 	ShclSB b = {0};
 	sb_reserve(a, &b, s.n);   /* the common value has nothing to escape */
@@ -3264,7 +3265,23 @@ static ShclStr w_encode_string(ShclArena *a, ShclStr s) {
 		else if (c == '\t') sb_puts(a, &b, "\\t");
 		else sb_putc(a, &b, c);
 	}
-	return sb_S(&b);
+	ShclStr out = sb_S(&b);
+	/* The emitter escapes a bare double quote when both quote kinds appear, so
+	   a reparse of the written line stores the escaped spelling. Store it here
+	   too, or shcl_instances and a read's raw text differ between a written
+	   document and its own reload. */
+	size_t dq, sq; bare_quote_counts(out, &dq, &sq);
+	if (dq && sq) {
+		ShclSB e = {0};
+		sb_reserve(a, &e, out.n + dq);
+		for (size_t i = 0; i < out.n; i++) {
+			if (out.p[i] == '\\') { sb_putc(a, &e, out.p[i]); if (i + 1 < out.n) sb_putc(a, &e, out.p[++i]); }
+			else if (out.p[i] == '"') sb_puts(a, &e, "\\\"");
+			else sb_putc(a, &e, out.p[i]);
+		}
+		return sb_S(&e);
+	}
+	return out;
 }
 
 // Pick a backtick fence long enough that no content line closes it early.
