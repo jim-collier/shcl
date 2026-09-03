@@ -215,6 +215,29 @@ eval "$(sed -n '/^fShadowedBy()/,/^}/p' "${repoDir}/install.bash")"
 grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1" \
 	|| fBad "install.ps1 never asks what shcl resolves to on PATH"
 
+##	20260901b item 39: a read-only HOME got through both downloads and then
+##	failed on a raw mkdir error. The destinations are probed first, and the
+##	probe has to walk up to whatever exists.
+eval "$(sed -n '/^fNearestExisting()/,/^}/p' "${repoDir}/install.bash")"
+(
+	wdir="${tmpDir}/writable"; mkdir -p "${wdir}/home"
+	[[ "$(fNearestExisting "${wdir}/home/.local/share/shcl")" == "${wdir}/home" ]] \
+		|| fBad "install.bash did not walk up to the nearest existing directory"
+	[[ "$(fNearestExisting "${wdir}/home")" == "${wdir}/home" ]] \
+		|| fBad "install.bash did not accept a directory that is already there"
+	chmod 500 "${wdir}/home"
+	near="$(fNearestExisting "${wdir}/home/.local/share/shcl")"
+	[[ -w "${near}" ]] && fBad "install.bash would have downloaded into a read-only home"
+	chmod 700 "${wdir}/home"
+	exit "${nBad}"
+) || nBad=$((nBad + 1))
+# shellcheck disable=SC2016  ## install.bash's own $variable, matched literally
+downloadLine="$( { grep -n 'downloading \${asset}' "${repoDir}/install.bash" || true; } | head -n1 | cut -d: -f1)"
+probeLine="$( { grep -n 'is not writable' "${repoDir}/install.bash" || true; } | head -n1 | cut -d: -f1)"
+if [[ -z "${downloadLine}" || -z "${probeLine}" ]] || ((probeLine >= downloadLine)); then
+	fBad "install.bash downloads before it knows the destination can be written"
+fi
+
 ##	20260901b item 18: the "not on your PATH" note compared strings against
 ##	`:dir:`, so a PATH element written with a trailing slash was not seen.
 eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
