@@ -40,6 +40,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A `datetime` `allowed` set compares the moment, not the spelling. `allowed: 12:00:00Z` refused a config saying `12:00:00+00:00`, and `12:00:00` refused `12:00:00.0`, because the value mirrors what was written and the comparison was field by field. A value with no zone is still local and still matches no zoned one - that is the one spelling difference that is a real difference.
 
+- The installers say more about what went wrong and refuse more of what would go wrong. A GitHub rate limit is named as one instead of "none published yet, or network down", and `GITHUB_TOKEN` is used when set. A destination that cannot be written is found before the downloads, not after them. A symlink at the bin path pointing at someone else's build is refused like a real file there. Both say when another `shcl` earlier on PATH will win. A Windows uninstall leaves a setup.exe install to its own uninstaller. `install-dev.bash` puts a fresh clone on `dev`.
+
 - A stdin nothing is attached to reads as an empty document in every CLI, on every platform. It always did on Linux; on Windows a closed handle came back as an error and the run exited 8.
 
 - C: a save on Windows follows a symlink or junction to the file it points at, and works on a path past the old 260-character limit. The link used to be replaced by a regular file, and a deep path was refused; the other three bindings already did both.

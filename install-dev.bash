@@ -249,11 +249,22 @@ fi
 
 ## Clone. Resolve the dir to an absolute path afterwards - later steps refer to
 ## it from inside the clone, where a relative --dir no longer points here.
+## contributing.md says to branch from dev, so a fresh clone starts there rather
+## than on the release branch. Anything already checked out or edited is left
+## alone - this is a convenience for a first clone, not a policy.
+fStartOnDev(){   ## fStartOnDev DIR
+	local dir="$1"
+	git -C "${dir}" show-ref --verify --quiet refs/remotes/origin/dev || return 0
+	[[ "$(git -C "${dir}" branch --show-current)" == "main" ]] || return 0
+	git -C "${dir}" diff --quiet && git -C "${dir}" diff --cached --quiet || return 0
+	git -C "${dir}" checkout -q dev
+}
 if (( ! in_clone )); then
 	echo
 	[[ -e "${clone_dir}/.git" ]] || git clone "${REPO_URL}" "${clone_dir}"
 	cd "${clone_dir}"
 	clone_dir="$(pwd)"
+	fStartOnDev "${clone_dir}"
 fi
 
 ## Install the user-space pieces.
