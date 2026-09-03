@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A written value carrying both quote kinds is stored the way its own reload stores it. `SetString("k", "q\"q'")` kept the quote bare while the emitter escaped it, so `Instances` and a read's raw text differed between a written document and a reload of the same text - the one place `set(x)` and `load(emit(set(x)))` disagreed. The value read back the same either way; only the source spelling differed.
+
 - The name index is rebuilt by walking the document rather than the arena. A set-and-remove cycle leaves its nodes behind, and the rebuild indexed every one of them, so the first read after a merge grew with the number of edits ever made instead of with the document - 1000 live nodes behind 400000 dead ones cost 48 ms a read. C's merge and its string setter also stop abandoning a doubling chain in the document arena: a merge onto a 40000-key base cost 786 KB and costs 320 KB, and a 20 MB string value cost 55 MB and costs 20 MB.
 
 - Two spellings of one value are one instance. `a: "q\"uote"` and `a: 'q"uote'` were two, while `a["q\"uote"]` matched both - so one selector addressed two nodes, `count` said 2 and a read could only answer `Multiple`. Identity resolves escapes now, the way a selector already did and the way names have since 2.0. Quoting was never part of identity and still is not.

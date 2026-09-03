@@ -1434,6 +1434,30 @@ int main(int argc, char **argv) {
 		pthread_attr_destroy(&at);
 	}
 #endif
+	/* A written value carrying both quote kinds is stored the way its own
+	   reload stores it, so shcl_instances and a read's raw text agree across a
+	   save. The emitter escapes the double quotes; the writer used to keep them
+	   bare. Same fixture in every runner. */
+	{
+		shcl_doc *wd = shcl_parse("x: 1\n", 5);
+		if (!shcl_set_string(wd, "k", 1, "q\"q'", 4)) fail("written_spelling", "set_string refused");
+		/* The canonical text lives in wd's read arena, so it is copied onto
+		   the stack before wb is parsed from it - a fixture value is short. */
+		shcl_str wc = shcl_to_canonical(wd);
+		char wcopy[64];
+		if (wc.n > sizeof wcopy) fail("written_spelling", "canonical text longer than the fixture buffer");
+		memcpy(wcopy, wc.p, wc.n < sizeof wcopy ? wc.n : sizeof wcopy);
+		shcl_doc *wb = shcl_parse(wcopy, wc.n < sizeof wcopy ? wc.n : sizeof wcopy);
+		shcl_str *wi = NULL, *bi = NULL;
+		size_t wn = shcl_instances(wd, "k", 1, &wi), bn = shcl_instances(wb, "k", 1, &bi);
+		if (wn != 1 || bn != 1 || wi[0].n != bi[0].n || memcmp(wi[0].p, bi[0].p, wi[0].n) != 0)
+			fail("written_spelling", "instances differ across a reload");
+		shcl_read_str r = shcl_read_string(wd, "k", 1);
+		if (r.status != SHCL_GOOD || r.value.n != 4 || memcmp(r.value.p, "q\"q'", 4) != 0)
+			fail("written_spelling", "written value did not read back");
+		shcl_free(wb); shcl_free(wd);
+	}
+
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }
 	printf("conformance: %zu case(s) pass\n", nn);
 	return 0;

@@ -530,9 +530,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-173600
 		- Closed: 20260903-090000
 
-	- 🔘 Item 38: `instances()` shows a writer-built string differently from its reparse when the text holds both quote kinds.
+	- ✅ Item 38: `instances()` shows a writer-built string differently from its reparse when the text holds both quote kinds.
 		- `set_string("k", "q\"q'")` stores `q"q'`, canonical output is `k: "q\"q'"`, and a reparse stores `q\"q'` with the escape intact; reads and selectors agree on both sides, `instances()` returns display text and so differs. All four. The one observable where `set(x)` and `load(emit(set(x)))` disagree; either spell `\"` in the encoders when both quote kinds are present, or leave it documented.
+		- Decided: spell it. The alternative documents a difference between a document and its own reload, which is the one thing the fixpoint rules exist to rule out.
+		- Fixed: the string encoder escapes the bare double quotes when both kinds are present, which is what the emitter writes and therefore what a reparse stores. Reads are unchanged - escapes are resolved on the way out - and identity was already escape-resolved.
+		- Pinned by a fixture in all four runners and by a new fuzz property: a written document and its own reload must agree on `instances`, not only on the value. Both fail in all four on the old encoders; the property fails within 50 iterations.
 		- Opened: 20260902-173700
+		- Closed: 20260903-095000
 
 	- 🔘 Item 39: Python's array setters take any iterable, so a string or a generator writes the wrong value at `True`.
 		- `set_string_array("k", "abc")` writes `k: a, b, c`; `set_int_array("k", (x for x in [1, 2, 3]))` writes an empty value and returns `True`, because the type gate consumes the generator before the setter reads it. `set_comment`, `set_raw` and `set_literal` have no type gate at all and raise from inside on a non-string. The module's own comment says a typed setter takes exactly the type its name says. Refuse `str` and `bytes`, materialize the iterable once, and gate the three.

@@ -3762,7 +3762,31 @@ func encodeString(s string) string {
 			b.WriteRune(c)
 		}
 	}
-	return b.String()
+	out := b.String()
+	// The emitter escapes a bare double quote when both quote kinds appear, so
+	// a reparse of the written line stores the escaped spelling. Store it here
+	// too, or Instances and a read's raw text differ between a written document
+	// and its own reload.
+	dq, sq := bareQuoteCounts(out)
+	if dq > 0 && sq > 0 {
+		var e strings.Builder
+		for i := 0; i < len(out); i++ {
+			switch out[i] {
+			case '\\':
+				e.WriteByte(out[i])
+				if i+1 < len(out) {
+					i++
+					e.WriteByte(out[i])
+				}
+			case '"':
+				e.WriteString("\\\"")
+			default:
+				e.WriteByte(out[i])
+			}
+		}
+		return e.String()
+	}
+	return out
 }
 
 // chooseFence picks a backtick fence long enough that no content line closes it.

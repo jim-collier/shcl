@@ -488,7 +488,29 @@ def _encode_string(s):
 			out.append("\\t")
 		else:
 			out.append(c)
-	return "".join(out)
+	text = "".join(out)
+	# The emitter escapes a bare double quote when both quote kinds appear, so a
+	# reparse of the written line stores the escaped spelling. Store it here too,
+	# or instances() and a read's raw text differ between a written document and
+	# its own reload.
+	dq, sq = _bare_quote_counts(text)
+	if dq and sq:
+		esc = []
+		i = 0
+		while i < len(text):
+			c = text[i]
+			if c == "\\":
+				esc.append(c)
+				i += 1
+				if i < len(text):
+					esc.append(text[i])
+			elif c == '"':
+				esc.append('\\"')
+			else:
+				esc.append(c)
+			i += 1
+		return "".join(esc)
+	return text
 
 
 def _choose_fence(content):

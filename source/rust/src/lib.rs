@@ -3598,6 +3598,29 @@ fn encode_string(s: &str) -> String {
 			_ => out.push(c),
 		}
 	}
+	// The emitter escapes a bare double quote when both quote kinds appear, so
+	// a reparse of the written line stores the escaped spelling. Store it here
+	// too, or `instances` and a read's raw text differ between a written
+	// document and its own reload - the one place `set(x)` and
+	// `load(emit(set(x)))` disagreed.
+	let (dq, sq) = bare_quote_counts(&out);
+	if dq > 0 && sq > 0 {
+		let mut esc = String::with_capacity(out.len() + dq);
+		let mut it = out.chars();
+		while let Some(c) = it.next() {
+			match c {
+				'\\' => {
+					esc.push(c);
+					if let Some(n) = it.next() {
+						esc.push(n);
+					}
+				}
+				'"' => esc.push_str("\\\""),
+				_ => esc.push(c),
+			}
+		}
+		return esc;
+	}
 	out
 }
 
