@@ -2741,6 +2741,11 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict, 
 	arena_guard(&d->reads, NULL); arena_guard(&d->index_arena, NULL);
 	arena_free(&own->line); arena_free(&own->hints);
 	free(own->cmaps.data); free(own->dmaps.data); free(own);
+	/* The parser borrows scratch for its lines vector, per-parent maps, stack
+	   and pending lists - about ten times the input, dead the moment the parse
+	   ends. Every resolve resets it anyway, so a document nobody reads would
+	   otherwise carry all of it until it was freed. */
+	arena_free(&d->scratch);
 	return d;
 }
 #if defined(__GNUC__) && !defined(__clang__)

@@ -125,10 +125,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-170800
 		- Closed: 20260902-213000
 
-	- 🔘 Item 10: a C parse leaves its temporaries in the scratch arena until the first resolve, so a parsed document holds about ten times its input in dead memory.
+	- ✅ Item 10: a C parse leaves its temporaries in the scratch arena until the first resolve, so a parsed document holds about ten times its input in dead memory.
 		- Reproduced: a 49 MiB input parses to 970 MB RSS with 487 MB of it in `d->scratch`; 10 MiB gives 204 MB with 97 MB dead. One `arena_free(&d->scratch)` at the end of `do_parse` gives 766 MB and 157 MB with parse time unchanged, and 46,600 writer, merge and compact operations under ASan and UBSan with that free applied show nothing live pointed into it.
 		- Cause: `parse_body` takes `P.tmp = &d->scratch` for its lines vector, per-parent maps, stack and pending lists, and `do_parse` frees only the two `own` arenas on exit. The header describes `scratch` as per-resolve temporaries reset on entry to each resolve, and says nothing about the parser using it. The 20260901 round's C amplification numbers were measured after a read and so did not see it.
+		- Fixed: `do_parse` gives the scratch arena back at its single exit. Every resolve resets it anyway, so nothing else changes.
+		- Measured: a 15 MB document holds 398 MB after the parse instead of 569 MB; peak is unchanged, since the scratch is live while the parse runs.
+		- Pinned by `mem_bounds.c`, which parses 20000 sections and requires the scratch arena to be empty afterwards. It held 12.3 MB against a 398 KB input before. The sanitizer run is clean, so nothing handed out points into it.
 		- Opened: 20260902-170900
+		- Closed: 20260902-215000
 
 	- 🔘 Item 11: a refused C setter still consumes document arena, against the header's "nothing is created on failure".
 		- Reproduced: a refused 20 MB `set_string` on a wildcard path costs 85 MB of arena, permanently; ten refused `set_raw` calls with a 20 MB body cost 200 MB; small values cost 48 to 80 bytes per refused call. Rust builds the value first too but drops it when `place` refuses.
