@@ -736,9 +736,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-194000
 		- Closed: 20260904-020500
 
-	- 🔘 Item 42: every installer fix since 2.0.0 is on dev only, while the README one-liners fetch `install.bash` and `install.ps1` from main.
+	- ✅ Item 42: every installer fix since 2.0.0 is on dev only, while the README one-liners fetch `install.bash` and `install.ps1` from main.
 		- 424 changed lines across four rounds, including the shell-scope leak and the umask tree, and every user today runs the pre-fix scripts whichever release they get. The next cut resolves it once; the standing question is whether installer fixes count under the docs-only main merge exception, or the one-liners should fetch at a tag.
+		- Decided: the installers count under the docs-only exception. Nothing ships them and the one-liners read them from main as they run, so a fix on dev reaches nobody. Fetching at a tag was rejected - it would freeze an installer's bugs into every release cut with them. Recorded in `design.md` under Branch flow.
+		- Follow-through: the three scripts go to main on their own after this round merges to dev, under the same no-tag, no-bump, no-changelog rule a docs merge gets.
 		- Opened: 20260901-194100
+		- Closed: 20260904-021000
 
 	- 🔘 Item 43: the flamegraph drops 35 to 60% of the profiled CPU time and the report does not say so.
 		- The sampler's library blocklist drops any sample whose leaf is inside libc rather than truncating it, so allocation, copying and write time are invisible and every percentage is over the survivors. Today's graph kept 930 of about 1600 samples. Print the expected count beside the kept one at least.
