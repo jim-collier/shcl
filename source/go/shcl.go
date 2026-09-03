@@ -1578,10 +1578,6 @@ type parser struct {
 	// quadratic time.
 	pendMarks []pendMark
 	sawBlank  bool // a blank line waits to become the next bound node's blankBefore
-	// Nothing has been read yet, so a blank line here leads the file and the
-	// emitter would not re-emit it. Dropping it at parse time is what makes
-	// load(emit(load(x))) equal load(x) on that bit, which a merge relies on.
-	atStart bool
 	// An open stacked list defers its merge-key remap (rebuilding the key per
 	// element is O(list^2) time); (node, key hash, display hash) at deferral
 	// start, flushed before any map lookup and at end of parse.
@@ -1614,7 +1610,6 @@ func newParser() *parser {
 		childMap:  []map[uint64]slot{nil},
 		dispMap:   []map[uint64]int{nil},
 		reentered: map[int]int{},
-		atStart:   true,
 	}
 }
 
@@ -2220,11 +2215,10 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		indent := leadingWS(line)
 		rest := line[len(indent):]
 		if rest == "" {
-			p.sawBlank = !p.atStart
+			p.sawBlank = true
 			i++
 			continue
 		}
-		p.atStart = false
 		// Whole-line comment: hold it for the next line that binds a node.
 		// It consumes a pending blank into its own flag, so a blank between
 		// comment-only regions survives the round-trip.
