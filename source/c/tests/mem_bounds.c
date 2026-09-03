@@ -159,6 +159,41 @@ int main(void) {
 	if (arena_bytes(&d->arena) > held + 4096) fail("a released generation still grew the document");
 	shcl_free(d);
 
+	// A merge rebuilt the parent's child list with a builder growing in the
+	// document arena, so every doubling step was abandoned there; and a string
+	// value climbed from 32 bytes the same way. Both are opened at the size the
+	// caller already knows now.
+	{
+		size_t keys = 20000, cap = keys * 24 + 16, tl = 0;
+		char *txt = (char *)malloc(cap);
+		for (size_t i = 0; i < keys; i++) tl += (size_t)sprintf(txt + tl, "k%zu: %zu\n", i, i);
+		shcl_doc *base = shcl_parse(txt, tl);
+		shcl_doc *over = shcl_parse("k0: 9\n", 6);
+		size_t start = arena_bytes(&base->arena);
+		for (int i = 0; i < 50; i++) shcl_merge(base, over);
+		size_t per = (arena_bytes(&base->arena) - start) / 50;
+		printf("mem_bounds: merge: %zu bytes per merge onto %zu keys (list is %zu)\n", per, keys, keys * sizeof(size_t));
+		if (shcl_get_int_or(base, "k0", 2, -1) != 9) fail("merge: wrong result");
+		// The rebuilt list is unavoidable; a doubling chain beside it is not.
+		if (per > keys * sizeof(size_t) * 3 / 2) fail("a merge abandoned its builder in the document arena");
+		shcl_free(over); shcl_free(base); free(txt);
+	}
+	{
+		size_t big = 4u * 1024 * 1024;
+		char *blob = (char *)malloc(big);
+		memset(blob, 'x', big);
+		d = shcl_parse("a: 1\n", 5);
+		held = arena_bytes(&d->arena);
+		if (!shcl_set_string(d, "a", 1, blob, big)) fail("set_string of a large value failed");
+		size_t grew = arena_bytes(&d->arena) - held;
+		printf("mem_bounds: set_string: %zu bytes for a %zu-byte value\n", grew, big);
+		// The builder is opened at the value's own size, so the only slack is
+		// the arena's block rounding. A doubling climb costs a multiple.
+		if (grew > big + 65536) fail("a string value cost more than its own size");
+		shcl_free(d);
+		free(blob);
+	}
+
 	// A write lands in a bump arena and the value it replaced stays behind, so
 	// a loop rewriting one field grows the document until shcl_free. Compaction
 	// is the way out: the rebuilt document holds what it now contains and no
