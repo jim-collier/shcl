@@ -8,7 +8,7 @@
 //! Every other binding mirrors this file's structure on purpose (parity over
 //! idiom - see style-guide.md), so restructuring here means restructuring all.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -5804,9 +5804,13 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 				continue;
 			};
 			let parent = names_of(&c.segs[..k + 1]);
-			if live
-				.iter()
-				.any(|p| p.len() >= parent.len() && p[..parent.len()] == parent[..])
+			// A wildcard in the last segment needs no other line to
+			// materialize its parent: the line generated from it is that
+			// instance.
+			if k + 1 == c.segs.len()
+				|| live
+					.iter()
+					.any(|p| p.len() >= parent.len() && p[..parent.len()] == parent[..])
 			{
 				fill[i] = true;
 				live.push(names_of(&c.segs));
@@ -5822,18 +5826,39 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// web` followed by `srv.port:` is two `srv` nodes, and the child never
 	// lands where the schema looks. Any line under such a parent selects it
 	// by its value: `srv[web].port:`.
+	// A filled wildcard emits a valued line of its own, so it belongs here too.
 	let parent_values: HashMap<Vec<&str>, &str> = cons
 		.iter()
-		.filter(|c| !has_wild(c) && !unwritable(c) && must_exist(c))
-		.filter_map(|c| c.default_text.as_deref().map(|d| (names_of(&c.segs), d)))
+		.enumerate()
+		.filter(|(i, c)| (!has_wild(c) || fill[*i]) && !unwritable(c) && must_exist(c))
+		.filter_map(|(_, c)| c.default_text.as_deref().map(|d| (names_of(&c.segs), d)))
 		.collect();
 	let mut out = String::new();
 	let mut wild: Vec<(String, String)> = Vec::new();
+	// Dropping a trailing `[*]` can render the same line a concrete sibling
+	// already wrote; the first spelling wins.
+	let mut emitted: HashSet<String> = HashSet::new();
 	let mut first = true;
 	for (i, c) in cons.iter().enumerate() {
 		let tyname = c.ty.clone().unwrap_or_else(|| "any".to_string());
 		if unwritable(c) || (has_wild(c) && !fill[i]) {
 			wild.push((c.path.replace('\n', "\\n"), tyname));
+			continue;
+		}
+		// A filled wildcard emits in dotted form, targeting the materialized
+		// instance - by its value when the materializing line carries one.
+		// Rebuilt from the parsed segments, not by cutting text out of the
+		// path: the same path can be written several ways, and only the
+		// segments say what it means. Otherwise the schema's own spelling.
+		let under_valued_parent = (1..c.segs.len()).any(|k| {
+			c.segs[k - 1].selector.is_none() && parent_values.contains_key(&names_of(&c.segs[..k]))
+		});
+		let path = if fill[i] || under_valued_parent {
+			gen_path_text(&c.segs, &parent_values)
+		} else {
+			c.path.clone()
+		};
+		if !emitted.insert(path.clone()) {
 			continue;
 		}
 		if !first {
@@ -5852,19 +5877,6 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		// string value must not break out of it.
 		out.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
 		out.push('\n');
-		// A filled wildcard emits in dotted form, targeting the materialized
-		// instance - by its value when the materializing line carries one.
-		// Rebuilt from the parsed segments, not by cutting text out of the
-		// path: the same path can be written several ways, and only the
-		// segments say what it means. Otherwise the schema's own spelling.
-		let under_valued_parent = (1..c.segs.len()).any(|k| {
-			c.segs[k - 1].selector.is_none() && parent_values.contains_key(&names_of(&c.segs[..k]))
-		});
-		let path = if fill[i] || under_valued_parent {
-			gen_path_text(&c.segs, &parent_values)
-		} else {
-			c.path.clone()
-		};
 		let prefix = if must_exist(c) { "" } else { "#" };
 		match &c.default_text {
 			Some(v) => out.push_str(&format!("{}{}: {}\n", prefix, path, gen_default_text(v))),
@@ -5991,7 +6003,17 @@ fn gen_selector_text(v: &str) -> String {
 	if v.contains('\n') {
 		return gen_default_text(v);
 	}
-	if v.contains(['[', ']', '\\']) && !quoted_shape(v) {
+	// The scanner reads a bare selector body as an index when it is all digits
+	// (with an optional sign or `#`), and as a wildcard when it is `*`, so a
+	// default of that shape has to be quoted or the line names an instance
+	// that is not there.
+	let body = v.trim();
+	let reads_as_selector = body == "*"
+		|| body.parse::<u64>().is_ok()
+		|| body
+			.strip_prefix('#')
+			.is_some_and(|d| d.parse::<u64>().is_ok());
+	if (v.contains(['[', ']', '\\']) || reads_as_selector) && !quoted_shape(v) {
 		return quote_text(v);
 	}
 	v.to_string()
