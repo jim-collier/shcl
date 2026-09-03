@@ -708,9 +708,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-193600
 		- Closed: 20260904-014500
 
-	- 🔘 Item 38: `install.ps1 -Uninstall -Target system` over a setup.exe install guts it and leaves the Add/Remove Programs entry pointing at nothing, and the reverse leaves a stale version there.
+	- ✅ Item 38: `install.ps1 -Uninstall -Target system` over a setup.exe install guts it and leaves the Add/Remove Programs entry pointing at nothing, and the reverse leaves a stale version there.
 		- Both write the same directory. When `uninstall.exe` is present, run it or say to.
+		- Fixed: an uninstall that finds `uninstall.exe` in the directory refuses and points at it, rather than deleting the files under a registration it cannot remove. An install over one says the Add/Remove entry still names the version the setup put there.
+		- Pinned by source order in `shell-regress`, the way the smoke-run placement is: the whole script refuses to run off windows, so nothing here can reach that branch.
 		- Opened: 20260901-193700
+		- Closed: 20260904-015000
 
 	- 🔘 Item 39: a read-only HOME fails after both downloads, with two raw `mkdir` errors.
 		- The plan step could probe the nearest existing parent for writability before spending the downloads.

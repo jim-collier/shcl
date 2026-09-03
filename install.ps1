@@ -235,6 +235,13 @@ file. Nothing unverified is installed.
 	## binary, the two payload dirs, the install dir if it empties, and the PATH
 	## entry. Never a recursive delete of a path the user may have pointed elsewhere.
 	if ($Uninstall) {
+		## The setup .exe writes this same directory and registers itself with
+		## Add/Remove Programs. Deleting its files here would leave that entry
+		## pointing at nothing, so its own uninstaller has to run instead.
+		$setupUninstaller = Join-Path $dest 'uninstall.exe'
+		if (Test-Path -LiteralPath $setupUninstaller) {
+			Exit-Install "$dest was installed by the shcl setup - remove it from Add/Remove Programs, or run $setupUninstaller"
+		}
 		Write-Output ''
 		Write-Output "removing shcl: $dest (and the $pathScope PATH entry)"
 		if (-not $Yes) {
@@ -372,6 +379,11 @@ file. Nothing unverified is installed.
 
 		Write-Output ''
 		Write-Output "installed shcl $version -> $dest\shcl.exe"
+		## Written over a setup install: its Add/Remove Programs entry still
+		## names the version it put there, which is no longer what is on disk.
+		if (Test-Path -LiteralPath (Join-Path $dest 'uninstall.exe')) {
+			Write-Output "note: $dest came from the shcl setup - its Add/Remove Programs entry still shows the version it installed"
+		}
 		if (-not $haveDropins) { Write-Output "note: this release ships no signed drop-in payload, so $dest\code and $dest\scripts were skipped - take them from the repo if you want them" }
 		$rerun = if ($invokedAsFile) { "& '$scriptPath'" } else { '& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1)))' }
 		Write-Output "to remove it again: $rerun -Uninstall -Target $Target"
