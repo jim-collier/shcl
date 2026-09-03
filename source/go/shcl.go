@@ -5233,7 +5233,9 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 			out = append(out, val)
 			sts = append(sts, cst)
 		}
-		status := Empty
+		// No slots at all means the wildcard's parent is not there, so the
+		// path did not resolve - Empty is for a node that is.
+		status := NotFound
 		if len(sts) > 0 {
 			status = Good
 			for _, s := range sts {

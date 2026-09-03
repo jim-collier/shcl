@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A wildcard read whose parent does not exist reports `NotFound` instead of `Empty`. `x[*]` on a document with no `x` said the path was there and empty, which is the answer for a field written with nothing after the colon; `x` on its own said `NotFound`. The two agree now.
+
 - A wildcard after a wildcard flattens instead of answering `Multiple` for every slot. `server[*].*` reported one unreadable slot per instance, `count` counted instances rather than leaves, and `Remove` on such a path removed nothing. The inner slots now join the outer run, so the result is one slot per resolved leaf and the two wildcards compose the way the spec says they do.
 
 - A float literal past the double range (`1e400`) reads as `BadType` instead of an infinity at `Good`. No double holds the value, and the infinity could not be written back, so a read-modify-write left a field the reader then refused. A literal below the range still reads as zero.

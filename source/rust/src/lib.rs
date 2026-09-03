@@ -4894,8 +4894,10 @@ impl Document {
 						},
 					}
 				}
+				// No slots at all means the wildcard's parent is not there, so
+				// the path did not resolve - Empty is for a node that is.
 				let status = if sts.is_empty() {
-					Status::Empty
+					Status::NotFound
 				} else {
 					sts.iter().copied().max().unwrap_or(Status::Good)
 				};
