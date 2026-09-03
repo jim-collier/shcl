@@ -751,9 +751,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-194200
 		- Closed: 20260904-022000
 
-	- 🔘 Item 44: a third of the parser's visible self-time is freeing the per-line path buffer.
+	- ✅ Item 44: a third of the parser's visible self-time is freeing the per-line path buffer.
 		- Today's profile puts 33% under dropping the path scan's segment vector, which builds two strings per segment per line and frees them per line. Keeping the vector across lines and clearing it would remove most of that. With item 43's blind spot the true share is likely larger.
+		- Fixed: a name with no backslash and no upper case is already its own resolved, folded spelling, so the scanner's own buffer becomes the segment name and nothing else is built. That is nearly every name in a document. `fold_name` returns a `Cow` for the same reason `key_text` does.
+		- Measured: three allocations per segment down to one, which is the segment vector growing. Parse of a flat 6.7 MB document with two segments a line, best of fifteen: 218 ms to 209 ms.
+		- Note: the 33% reading overstated it, and item 43's own caveat is why. What the graph shows there is Rust's drop glue; the free itself lands in libc, whose samples the sampler drops. Timing says four percent, which is real and repeatable and which no wall-clock threshold could gate.
+		- Pinned by an allocation count instead: `mem_caps.rs` parses the same document with one segment a line and with four, and requires the extra segments to cost under two allocations each. Before the change they cost three; the reading is exact and does not care how fast the machine is.
+		- Note: the two measuring helpers in that file had a lock each, so a reading taken while the other test ran counted its allocations too. One lock for both now.
 		- Opened: 20260901-194300
+		- Closed: 20260904-024000
 
 	- 🔘 Item 45: two style-guide gaps.
 		- A Python deviation bullet sits under the C heading. The Python section does not list the iterative walks that replace the reference's recursion, whose reason lives only in a closed backlog item and the function comments.

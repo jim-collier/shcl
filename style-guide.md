@@ -65,6 +65,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Derive (`Debug`, `Clone`, `PartialEq`) rather than hand-roll. Public items get `///` docs. Early returns and `let .. else` over nesting.
 
+- `Cow<str>` where a per-line helper usually has nothing to do: `key_text` when a value has no escape to resolve, `fold_name` when a name has no upper case to fold. The other three allocate freely there, or hand the work to a garbage collector, so there is nothing to mirror - and the parser calls these once per segment per line, where two strings built and freed for the sake of copying bytes onto themselves showed up in a profile.
+
 - The setters are `#[must_use]`. Surface-only, so parity is untouched - the other three have no equivalent and say the same thing in prose. A dropped `false` means the save that follows writes a config missing the edit and reports success, which is the one failure here that leaves no trace anywhere; the compiler catches it for free in the one language that can.
 
 ### Go
