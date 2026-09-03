@@ -59,6 +59,10 @@ printf 'field: "*"\n\ttype: int\n\trepeat: 2\n' > "${tmpDir}/star2.shcl"
 ## limit while its message said past it.
 awk 'BEGIN{ for (i = 0; i < 10000; i++) printf "field: f%d\n", i }' > "${tmpDir}/cap10000.shcl"
 awk 'BEGIN{ for (i = 0; i < 10001; i++) printf "field: f%d\n", i }' > "${tmpDir}/cap10001.shcl"
+## A schema whose own load has something to say: two `field: a` instances merge,
+## so `allowed` repeats as a bare leaf - which is exactly what the V092 under it
+## is about, and it was invisible.
+printf 'field: a\n\tallowed: x\nfield: a\n\tallowed: y\n' > "${tmpDir}/hintschema.shcl"
 ## A must-exist path with nothing to generate from: an index selector needs an
 ## instance that is not there, and a path past the nesting cap would draw E016
 ## on the way back in. Either way the fault names the path rather than reporting
@@ -82,7 +86,8 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %S1%/%S2%
 ##	a nameless must-exist path at repeat 1 and 2, %S3% a schema that does not
 ##	build, %S4% a required path with an index selector, %S5%/%S6% a schema at and
-##	one past the generation field ceiling, %X% an
+##	one past the generation field ceiling, %S7% a schema whose own load hints,
+##	%X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
 ##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
 ##	path with no file at it.
@@ -172,6 +177,19 @@ rows=(
 	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
 	'children-missing|children %T% nope|-|0||-'
 	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	## 20260902 item 41: the schema's own diagnostics were never printed, so the
+	## hint that explains a schema fault could not be seen.
+	'schema-own-hints|check --schema=%S7% %F%|-|6|-|schema line 4: Hint: H001'
+	## 20260902 item 41: extra tab-separated fields were dropped, so a raw whose
+	## content held a literal tab lost everything after it at exit 0.
+	'ops-extra-fields-raw|set %F%|raw\tk\t\tbody\twith\ttabs\n|1|-|raw takes 4 tab-separated'
+	'ops-extra-fields-int|set %F%|int\tk\t1\textra\n|1|-|int takes 3 tab-separated'
+	'ops-array-takes-any|set %F%|int-array\tk\t1\t2\t3\n|0|a: 1\n\nk: 1, 2, 3\n|-'
+	## 20260902 item 41: --default and --on-bad=error each overwrote the other's
+	## mode, so which one applied depended on which was typed last.
+	'default-vs-onbad|get --int --default=7 --on-bad=error %F% nope|-|1|-|--default cannot be combined with --on-bad=error'
+	'onbad-vs-default|get --int --on-bad=error --default=7 %F% nope|-|1|-|--default cannot be combined with --on-bad=error'
+	'default-with-onbad-default|get --int --default=7 --on-bad=default %F% nope|-|0|7|-'
 	## 20260902 item 15: a refused edit returned before the load's diagnostics
 	## were printed, so a damaged file said nothing about the damage.
 	'refused-set-still-reports|get --set=a[*]=1 %B% a|-|1|-|E015 missing colon'
@@ -208,6 +226,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S4%/${tmpDir}/idxreq.shcl}"
 	argv="${argv//%S5%/${tmpDir}/cap10000.shcl}"
 	argv="${argv//%S6%/${tmpDir}/cap10001.shcl}"
+	argv="${argv//%S7%/${tmpDir}/hintschema.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"

@@ -325,6 +325,27 @@ func (k kind) name() string {
 
 type onBad int
 
+// was reports whether an option was given at all, which is not the same as its
+// value being non-empty: `--default=` is a legitimate empty default.
+func (o *opts) was(name string) bool {
+	for _, s := range o.seen {
+		if s == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (b onBad) name() string {
+	switch b {
+	case onBadError:
+		return "error"
+	case onBadDefault:
+		return "default"
+	}
+	return "flag"
+}
+
 const (
 	onBadError onBad = iota
 	onBadDefault
@@ -332,20 +353,25 @@ const (
 )
 
 type opts struct {
-	kind       kind
-	array      bool
-	slots      bool
-	def        string
-	onBad      onBad
-	strictness shcl.Strictness
-	write      bool
-	lossy      bool
-	noBanner   bool
-	schema     string
-	layers     []string // lower-priority layers, in listed order
-	sets       []setOpt // final override layer, in the order given
-	args       []string // positional: FILE [PATH]
-	seen       []string // canonical names of options given, for per-command validation
+	kind  kind
+	array bool
+	slots bool
+	def   string
+	onBad onBad
+	// What an explicit --on-bad asked for, whatever the order. --default sets
+	// onBad too, so without this the two options silently overwrote each other
+	// and which one survived depended on which came last.
+	onBadSet    bool
+	onBadWanted onBad
+	strictness  shcl.Strictness
+	write       bool
+	lossy       bool
+	noBanner    bool
+	schema      string
+	layers      []string // lower-priority layers, in listed order
+	sets        []setOpt // final override layer, in the order given
+	args        []string // positional: FILE [PATH]
+	seen        []string // canonical names of options given, for per-command validation
 }
 
 // askedFor: did the command line ask for one of the informational outputs? Only
@@ -446,6 +472,7 @@ func setValueOpt(o *opts, name, v string) error {
 			return fmt.Errorf("bad --on-bad value: %s", v)
 		}
 		o.seen = append(o.seen, "--on-bad")
+		o.onBadSet, o.onBadWanted = true, o.onBad
 	case "--strictness":
 		s, ok := shcl.StrictnessFromArg(v)
 		if !ok {
@@ -640,6 +667,13 @@ func checkOpts(cmd string, o *opts) int {
 	}
 	if o.write && len(o.sets) > 0 && cmd != "set" {
 		fmt.Fprintf(os.Stderr, "--write cannot be combined with %s (see --help)\n", o.sets[0].opt())
+		return 1
+	}
+	// --default says "substitute this" and --on-bad=error says "fail instead", so
+	// the two together are a contradiction. Each used to overwrite the other's
+	// mode, which made the answer depend on the order they were typed in.
+	if o.was("--default") && o.onBadSet && o.onBadWanted != onBadDefault {
+		fmt.Fprintf(os.Stderr, "--default cannot be combined with --on-bad=%s (see --help)\n", o.onBadWanted.name())
 		return 1
 	}
 	// --lossy only overrides the in-place write's refusal, so on its own it says
@@ -1164,6 +1198,24 @@ func unescapeOps(s string) string {
 
 func applyOp(doc *shcl.Document, line string) error {
 	f := strings.Split(line, "\t")
+	// Every op but the array forms takes a fixed number of tab-separated
+	// fields. Extra ones used to be dropped, so a `raw` whose content held a
+	// literal tab lost everything after it and still reported success; the
+	// escape for a tab inside a value is `\t`.
+	want := 0
+	switch f[0] {
+	case "empty", "remove":
+		want = 2
+	case "raw", "raw-default":
+		want = 4
+	case "int", "float", "bool", "string", "datetime", "literal", "comment",
+		"int-default", "float-default", "bool-default", "string-default",
+		"datetime-default", "literal-default":
+		want = 3
+	}
+	if want != 0 && len(f) > want {
+		return fmt.Errorf("%s takes %d tab-separated field(s), got %d", f[0], want, len(f))
+	}
 	get := func(i int) string {
 		if i < len(f) {
 			return f[i]
@@ -1523,6 +1575,13 @@ func doCheck(o *opts) int {
 					Line: 0, Severity: shcl.SeverityError, Message: "schema failed to load", Code: "V099",
 				})
 			} else {
+				// The schema's own load has something to say too: an H001 on a
+				// repeated `allowed` is what explains the V092 below it. On
+				// stderr with the schema's own line numbers, the way a V099's
+				// are - stdout is the code contract.
+				for _, sd := range sdoc.Diagnostics() {
+					fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", sd.Line, sd.Severity, sd.Code, sd.Message)
+				}
 				diags = append(diags, doc.Validate(sdoc)...)
 				diags = shcl.SuppressDeclaredRepeats(sdoc, diags)
 				diags = shcl.SuppressDeclaredReopens(sdoc, diags)

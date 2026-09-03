@@ -553,9 +553,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-173900
 		- Closed: 20260903-113000
 
-	- 🔘 Item 41: CLI shapes that are consistent across the four and still surprise.
+	- ✅ Item 41: CLI shapes that are consistent across the four and still surprise.
 		- `get --array --default=0` on a missing or empty array prints one line, indistinguishable from a one-element array equal to the default. Extra tab-separated fields on an ops line are dropped silently (`raw` loses everything after a literal tab in its content). `--default` followed by `--on-bad=error` drops the default; the other order keeps it. Schema-side hints are never printed by `check --schema` or `init`, so the `H001` that explains a `V092` from a merged `allowed` is invisible. `children` prints nothing at exit 0 for a missing path, a repeated field and a childless node alike, at the library level too. Each wants a decision, not a fix.
+		- Decided: three are fixed and two are documented. `--default` with a contradicting `--on-bad` is a usage error, since honoring one of the two silently is what surprises and the order dependence made it unpredictable. Extra fields on an ops line are an error: dropping them lost content at exit 0, and a tab inside a value has an escape. The schema's own diagnostics are printed with its own line numbers, on stderr where a V099's already go, so stdout stays the code contract and no golden moves. The array-default ambiguity and `children`'s three silences are inherent to a line-per-element surface, so the man page says what to ask instead.
+		- Fixed: all four CLIs, one behavior at a time; the man page carries the two documented shapes.
+		- Pinned by six `cli-regress` rows: the option conflict in both orders and the consistent pair, extra fields on a `raw` and on an `int` with an array form that still takes any number, and a schema whose own load hints. All fail on the old CLIs.
 		- Opened: 20260902-174000
+		- Closed: 20260903-131500
 
 	- 🔘 Item 42: three spec sentences the ports need.
 		- The Loose float-to-int tie rule (the code rounds half away from zero, `-2.5` to `-3`, while the formatter decision is half-even and Python's `round` is half-even). The aggregate-status ordering for array reads (`Good < Empty < NotFound < BadType < Multiple`, derived from the enum order in all four and written nowhere). And `format_f64`'s doc comment says the CLI uses it, which becomes true with item 1.

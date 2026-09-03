@@ -301,12 +301,26 @@ enum OnBad {
 	Flag,
 }
 
+impl OnBad {
+	fn name(self) -> &'static str {
+		match self {
+			OnBad::Error => "error",
+			OnBad::Default => "default",
+			OnBad::Flag => "flag",
+		}
+	}
+}
+
 struct Opts {
 	kind: Kind,
 	array: bool,
 	slots: bool,
 	default: Option<String>,
 	on_bad: OnBad,
+	// What an explicit --on-bad asked for, whatever the order. --default sets
+	// on_bad too, so without this the two options silently overwrote each other
+	// and which one survived depended on which came last.
+	on_bad_arg: Option<OnBad>,
 	strictness: Strictness,
 	write: bool,
 	lossy: bool,
@@ -386,6 +400,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		slots: false,
 		default: None,
 		on_bad: OnBad::Flag,
+		on_bad_arg: None,
 		strictness: Strictness::Standard,
 		write: false,
 		lossy: false,
@@ -489,6 +504,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 				"flag" => OnBad::Flag,
 				_ => return Err(format!("bad --on-bad value: {}", v)),
 			};
+			o.on_bad_arg = Some(o.on_bad);
 			o.seen.push("--on-bad");
 		}
 		"--strictness" => {
@@ -633,6 +649,19 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		errln!(
 			"--write cannot be combined with {} (see --help)",
 			o.sets[0].opt()
+		);
+		return Err(1);
+	}
+	// --default says "substitute this" and --on-bad=error says "fail instead", so
+	// the two together are a contradiction. Each used to overwrite the other's
+	// mode, which made the answer depend on the order they were typed in.
+	if o.default.is_some()
+		&& let Some(mode) = o.on_bad_arg
+		&& mode != OnBad::Default
+	{
+		errln!(
+			"--default cannot be combined with --on-bad={} (see --help)",
+			mode.name()
 		);
 		return Err(1);
 	}
@@ -1043,6 +1072,27 @@ fn unescape_ops(s: &str) -> String {
 
 fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	let f: Vec<&str> = line.split('\t').collect();
+	// Every op but the array forms takes a fixed number of tab-separated
+	// fields. Extra ones used to be dropped, so a `raw` whose content held a
+	// literal tab lost everything after it and still reported success; the
+	// escape for a tab inside a value is `\t`.
+	let want = match f.first().copied().unwrap_or("") {
+		"empty" | "remove" => 2,
+		"raw" | "raw-default" => 4,
+		"int" | "float" | "bool" | "string" | "datetime" | "literal" | "comment"
+		| "int-default" | "float-default" | "bool-default" | "string-default"
+		| "datetime-default" | "literal-default" => 3,
+		// An array form takes any number of elements; an unknown op is named below.
+		_ => 0,
+	};
+	if want != 0 && f.len() > want {
+		return Err(format!(
+			"{} takes {} tab-separated field(s), got {}",
+			f[0],
+			want,
+			f.len()
+		));
+	}
 	let path = f.get(1).copied().unwrap_or("");
 	let val = || f.get(2).copied().unwrap_or("");
 	let pint = |s: &str| s.parse::<i64>().map_err(|_| format!("bad int: {}", s));
@@ -1304,6 +1354,19 @@ fn do_check(o: &Opts) -> u8 {
 						code: "V099",
 					});
 				} else {
+					// The schema's own load has something to say too: an H001
+					// on a repeated `allowed` is what explains the V092 below
+					// it. On stderr with the schema's own line numbers, the
+					// way a V099's are - stdout is the code contract.
+					for d in sdoc.diagnostics() {
+						errln!(
+							"schema line {}: {:?}: {} {}",
+							d.line,
+							d.severity,
+							d.code,
+							d.message
+						);
+					}
 					diags.extend(doc.validate(&sdoc));
 					suppress_declared_repeats(&sdoc, &mut diags);
 					suppress_declared_reopens(&sdoc, &mut diags);

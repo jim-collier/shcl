@@ -232,7 +232,7 @@ class _SetOpt:
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "strictness", "write", "lossy", "no_banner", "schema", "layers", "sets", "args", "seen")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "on_bad_arg", "strictness", "write", "lossy", "no_banner", "schema", "layers", "sets", "args", "seen")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -240,6 +240,10 @@ class _Opts:
 		self.slots = False
 		self.default = None
 		self.on_bad = "flag"     # error|default|flag
+		# What an explicit --on-bad asked for, whatever the order. --default sets
+		# on_bad too, so without this the two options silently overwrote each
+		# other and which one survived depended on which came last.
+		self.on_bad_arg = None
 		self.strictness = shcl.Strictness.Standard
 		self.schema = None
 		self.write = False
@@ -267,6 +271,7 @@ def _set_value_opt(o, name, v):
 		if low not in ("error", "default", "flag"):
 			raise ValueError(f"bad --on-bad value: {v}")
 		o.on_bad = low
+		o.on_bad_arg = low
 		o.seen.append("--on-bad")
 	elif name == "--strictness":
 		s = shcl.Strictness.from_arg(v)
@@ -552,6 +557,12 @@ def check_opts(cmd, o):
 		sys.stderr.write(f"--write cannot be combined with {o.sets[0].opt()} (see --help)\n")
 		return 1
 	# --lossy only overrides the in-place write's refusal, so on its own it says
+	# --default says "substitute this" and --on-bad=error says "fail instead", so
+	# the two together are a contradiction. Each used to overwrite the other's
+	# mode, which made the answer depend on the order they were typed in.
+	if "--default" in o.seen and o.on_bad_arg is not None and o.on_bad_arg != "default":
+		sys.stderr.write(f"--default cannot be combined with --on-bad={o.on_bad_arg} (see --help)\n")
+		return 1
 	# nothing and would read as protection the command never had.
 	if o.lossy and not o.write:
 		sys.stderr.write("--lossy is only meaningful with --write (see --help)\n")
@@ -868,8 +879,24 @@ def _op_flt(s):
 	return x
 
 
+_OP_FIELDS = {
+	"empty": 2, "remove": 2,
+	"raw": 4, "raw-default": 4,
+	"int": 3, "float": 3, "bool": 3, "string": 3, "datetime": 3, "literal": 3, "comment": 3,
+	"int-default": 3, "float-default": 3, "bool-default": 3, "string-default": 3,
+	"datetime-default": 3, "literal-default": 3,
+}
+
+
 def apply_op(doc, line):
 	f = line.split("\t")
+	# Every op but the array forms takes a fixed number of tab-separated fields.
+	# Extra ones used to be dropped, so a `raw` whose content held a literal tab
+	# lost everything after it and still reported success; the escape for a tab
+	# inside a value is `\t`.
+	want = _OP_FIELDS.get(f[0])
+	if want is not None and len(f) > want:
+		raise ValueError(f"{f[0]} takes {want} tab-separated field(s), got {len(f)}")
 
 	def get(i):
 		return f[i] if i < len(f) else ""
@@ -1048,6 +1075,12 @@ def do_check(o):
 					sys.stderr.write(f"schema line {sd.line}: {sd.severity.name}: {sd.code} {sd.message}\n")
 				diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
 			else:
+				# The schema's own load has something to say too: an H001 on a
+				# repeated `allowed` is what explains the V092 below it. On
+				# stderr with the schema's own line numbers, the way a V099's
+				# are - stdout is the code contract.
+				for sd in sdoc.diagnostics():
+					sys.stderr.write(f"schema line {sd.line}: {sd.severity.name}: {sd.code} {sd.message}\n")
 				diags.extend(doc.validate(sdoc))
 				shcl.suppress_declared_repeats(sdoc, diags)
 				shcl.suppress_declared_reopens(sdoc, diags)
