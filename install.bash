@@ -183,6 +183,23 @@ else
 	asroot=""
 fi
 
+## The payload directories' contents, then the directories - never a recursive
+## delete. The globs have to expand in the shell that can read the directory, so
+## they go inside the privileged one: a system tree only root could list left
+## them unexpanded, nothing was removed, and the run then reported the install
+## directory as holding files it had not put there.
+fRemoveLaidDown(){   ## fRemoveLaidDown DEST
+	local dest="$1"
+	# shellcheck disable=SC2016  ## the positional parameters are the inner shell's
+	${asroot} sh -c '
+		for d in "$@"; do
+			rm -f "${d}"/* 2>/dev/null
+			rmdir "${d}" 2>/dev/null
+		done
+		exit 0
+	' sh "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions"
+}
+
 ## Uninstall: the reverse of what the install lays down, and nothing else - the
 ## symlink, the binary, and the two payload dirs, then the install dir if it is
 ## empty. Never a recursive delete of a path the user may have pointed elsewhere.
@@ -201,8 +218,7 @@ if (( uninstall )); then
 	[[ -L "${link}" && "$(readlink -- "${link}")" == "${dest}/"* ]] && ${asroot} rm -f "${link}"
 	[[ -L "${manlink}" && "$(readlink -- "${manlink}")" == "${dest}/"* ]] && ${asroot} rm -f "${manlink}"
 	${asroot} rm -f "${dest}/shcl"
-	${asroot} rm -f "${dest}/code"/* "${dest}/scripts"/* "${dest}/man"/* "${dest}/completions"/* 2>/dev/null || true
-	${asroot} rmdir "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions" 2>/dev/null || true
+	fRemoveLaidDown "${dest}"
 	## Only an empty dir goes, and say so when it does not: the dir can hold
 	## files this installer never put there (a package's, or someone's own), and
 	## reporting "removed" over the top of them was a lie. Matches what the
@@ -237,13 +253,24 @@ fi
 ## that order within one release object, so the flags that follow a tag belong
 ## to it. sort -V with the first '-' mapped to '~' ranks a pre-release below its
 ## own final (v2.0.0-rc1 < v2.0.0); mapped back afterwards.
+## The three fields are read in the order the API emits them, so a whole release
+## on one line has to be split first: a compact response used to yield no tag at
+## all, and the run said no release was published.
 fPickTag(){
 	local channel="$1" json="$2" tags
 	tags="$(awk -v channel="${channel}" '
-		/"tag_name":/          { t = $0; sub(/.*"tag_name": *"/, "", t); sub(/".*/, "", t) }
-		/"draft": *true/       { t = "" }
-		/"prerelease": *true/  { if (channel != "stable" && t != "") print t; t = "" }
-		/"prerelease": *false/ { if (t != "") print t; t = "" }
+		{ buf = buf $0 "\n" }
+		END {
+			gsub(/"(tag_name|draft|prerelease)":/, "\n&", buf)
+			n = split(buf, line, "\n")
+			for (i = 1; i <= n; i++) {
+				s = line[i]
+				if (s ~ /^"tag_name":/)               { t = s; sub(/^"tag_name": *"/, "", t); sub(/".*/, "", t) }
+				else if (s ~ /^"draft": *true/)       { t = "" }
+				else if (s ~ /^"prerelease": *true/)  { if (channel != "stable" && t != "") print t; t = "" }
+				else if (s ~ /^"prerelease": *false/) { if (t != "") print t; t = "" }
+			}
+		}
 	' "${json}")"
 	printf '%s\n' "${tags}" | sed 's/-/~/' | sort -V | tail -n1 | sed 's/~/-/'
 }

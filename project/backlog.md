@@ -677,9 +677,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-193200
 		- Closed: 20260904-004500
 
-	- 🔘 Item 34: installer behaviors read but not run.
+	- ✅ Item 34: installer behaviors read but not run.
 		- Uninstalling a system tree laid down by the pre-fix installer under a tight umask leaves the four subdirectories and prints a false "files this installer did not put there" note, because the glob does not expand in a root-only directory. `install.ps1` from a 32-bit host lands the 64-bit binary under the x86 program files. The tag picker in `install.bash` returns nothing on compact JSON. On PowerShell 5.1 a native command writing to stderr under `2>&1` throws before the exit code is read.
+		- Fixed, uninstall: the payload globs moved inside the privileged shell, as `fRemoveLaidDown`, so they expand where the directory can be read. Still no recursive delete.
+		- Fixed, program files: a system install reads `ProgramW6432` when it is set, which is only where it differs from `ProgramFiles`.
+		- Fixed, tag picker: the three fields are split out of the response before they are read, so a release on one line works the same as a pretty-printed one.
+		- Fixed, 5.1 stderr: the smoke run drops the Stop preference for the call and puts it straight back.
+		- Pinned by four `shell-regress` blocks. The uninstall one runs the shipped function against a directory the calling shell cannot read and the command it runs can, which is what privilege buys and needs no root. The tag picker gets the same fixture with its whitespace removed. The program files line is evaluated in a pwsh with both variables set, then with only one. The 5.1 rule is source order, since the throw needs a 5.1 that cannot be run here.
 		- Opened: 20260901-193300
+		- Closed: 20260904-011500
 
 	- 🔘 Item 35: the `.rpm` does not own `/usr/share/shcl`, so removal leaves the directory behind. The `.deb` is fine.
 		- Opened: 20260901-193400

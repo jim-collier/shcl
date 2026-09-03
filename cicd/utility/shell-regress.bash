@@ -140,6 +140,41 @@ while IFS= read -r row; do
 done < <(find "${tmpDir}/sys/opt" "${tmpDir}/sys/usr/local/bin" "${tmpDir}/sys/usr/local/share/man" -printf '%m %y %p\n' | sort)
 [[ -L "${tmpDir}/sys/usr/local/share/man/man1/shcl.1" ]] || fBad "install.bash did not link the man page"
 
+##	20260901b item 34: the uninstall's payload globs used to expand in the
+##	unprivileged shell that called sudo, so a system tree only root could list
+##	left them unexpanded - nothing was removed and the run then reported the
+##	install directory as holding files it had not put there. The stand-in below
+##	is what privilege buys: a directory the calling shell cannot read and the
+##	command it runs can.
+eval "$(sed -n '/^fRemoveLaidDown()/,/^}/p' "${repoDir}/install.bash")"
+(
+	udir="${tmpDir}/uninst"
+	mkdir -p "${udir}/code" "${udir}/scripts" "${udir}/man" "${udir}/completions"
+	printf 'x\n' > "${udir}/code/lib.rs"
+	printf 'x\n' > "${udir}/scripts/shcl.bash"
+	printf 'x\n' > "${udir}/man/shcl.1"
+	printf 'x\n' > "${udir}/completions/shcl.bash"
+	export SHCL_TEST_LOCKED="${udir}/code"
+	cat > "${tmpDir}/asroot" <<-'EOS'
+		#!/bin/bash
+		chmod 700 "${SHCL_TEST_LOCKED}"
+		"$@"; rc=$?
+		[[ -d "${SHCL_TEST_LOCKED}" ]] && chmod 000 "${SHCL_TEST_LOCKED}"
+		exit "${rc}"
+	EOS
+	chmod 755 "${tmpDir}/asroot"
+	chmod 000 "${udir}/code"
+	# shellcheck disable=SC2034  ## the lifted function's own global
+	asroot="${tmpDir}/asroot"
+	fRemoveLaidDown "${udir}"
+	chmod 700 "${udir}/code" 2>/dev/null || true
+	for d in code scripts man completions; do
+		[[ -e "${udir}/${d}" ]] && fBad "install.bash uninstall left ${d} behind"
+	done
+	rmdir "${udir}" 2>/dev/null || fBad "install.bash uninstall did not empty the install directory"
+	exit "${nBad}"
+) || nBad=$((nBad + 1))
+
 ##	20260901b item 18: the "not on your PATH" note compared strings against
 ##	`:dir:`, so a PATH element written with a trailing slash was not seen.
 eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
@@ -279,6 +314,16 @@ out="$(fPickTag stable "${tmpDir}/rel.json")"
 out="$(fPickTag dev "${tmpDir}/rel.json")"
 [[ "${out}" == "v2.1.0-alpha.10" ]] || fBad "install.bash dev channel picked ${out@Q}, want v2.1.0-alpha.10"
 
+##	20260901b item 34: the same list with no whitespace. The API is documented
+##	as pretty-printing, and a proxy that does not left the picker reading one
+##	field per release, so it answered nothing and the run said no release was
+##	published at all.
+tr -d ' \t\n' < "${tmpDir}/rel.json" > "${tmpDir}/rel-compact.json"
+out="$(fPickTag stable "${tmpDir}/rel-compact.json")"
+[[ "${out}" == "v2.0.0" ]] || fBad "install.bash stable channel on compact json picked ${out@Q}, want v2.0.0"
+out="$(fPickTag dev "${tmpDir}/rel-compact.json")"
+[[ "${out}" == "v2.1.0-alpha.10" ]] || fBad "install.bash dev channel on compact json picked ${out@Q}, want v2.1.0-alpha.10"
+
 if fHave pwsh; then
 	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
 	{
@@ -291,6 +336,41 @@ if fHave pwsh; then
 	[[ "${out}" == *"stable=v2.0.0"* ]]        || fBad "install.ps1 stable channel: ${out@Q}"
 	[[ "${out}" == *"dev=v2.1.0-alpha.10"* ]]  || fBad "install.ps1 dev channel: ${out@Q}"
 fi
+
+##	20260901b item 34, both windows-only and neither reachable from a linux
+##	pwsh: a 32-bit host reads Program Files (x86) out of ProgramFiles, and
+##	Windows PowerShell 5.1 turns a native command's stderr into error records
+##	under `2>&1`, which the script's own Stop preference then throws on. The
+##	first is an expression a linux pwsh can evaluate; the second is source
+##	order, the way the smoke-run placement below is.
+# shellcheck disable=SC2016  ## PowerShell's own $variable, matched literally
+pfLine="$( { grep -F 'programFiles = if ($env:ProgramW6432)' "${repoDir}/install.ps1" || true; } | head -n1)"
+if [[ -z "${pfLine}" ]]; then
+	fBad "install.ps1 reads ProgramFiles without asking for the 64-bit one"
+elif fHave pwsh; then
+	#  shellcheck disable=2016  ## PowerShell's own $variables.
+	{
+		echo '$env:ProgramFiles = "C:\Program Files (x86)"'
+		echo '$env:ProgramW6432 = "C:\Program Files"'
+		printf '%s\n' "${pfLine}"
+		echo 'Write-Output ("wow=" + $programFiles)'
+		echo 'Remove-Item Env:ProgramW6432'
+		printf '%s\n' "${pfLine}"
+		echo 'Write-Output ("plain=" + $programFiles)'
+	} > "${tmpDir}/pf.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/pf.ps1" 2>&1 || true)"
+	[[ "${out}" == *'wow=C:\Program Files'* && "${out}" != *'wow=C:\Program Files (x86)'* ]] \
+		|| fBad "install.ps1 puts a 64-bit install under the x86 program files: ${out@Q}"
+	[[ "${out}" == *'plain=C:\Program Files (x86)'* ]] \
+		|| fBad "install.ps1 ignores ProgramFiles where there is no 64-bit one: ${out@Q}"
+fi
+eapLine="$( { grep -n "ErrorActionPreference = 'Continue'" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+smokeRun="$( { grep -n "shcl.exe') version 2>&1" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+if [[ -z "${eapLine}" || -z "${smokeRun}" ]] || ((eapLine >= smokeRun)); then
+	fBad "install.ps1 runs the smoke test under its own Stop preference, which 5.1 throws on"
+fi
+grep -q "finally { \$ErrorActionPreference = \$smokeEap }" "${repoDir}/install.ps1" \
+	|| fBad "install.ps1 does not put the caller's error preference back after the smoke run"
 
 ##	20260830b item 8: a prerelease version reached NSIS's four-integer version
 ##	field verbatim, and makensis rejected it under errexit, so the release stage
