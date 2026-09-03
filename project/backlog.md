@@ -84,22 +84,29 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-170300
 		- Closed: 20260902-191500
 
-	- 🔘 Item 5: a valued line generated from a filled wildcard is not in the generator's parent-value map, so its dotted child names the empty instance and a satisfiable schema refuses to generate.
+	- ✅ Item 5: a valued line generated from a filled wildcard is not in the generator's parent-value map, so its dotted child names the empty instance and a satisfiable schema refuses to generate.
 		- Reproduced in all four. `field: a` required, `field: "a[*].b"` required with `default: bee`, `field: "a[*].b[*].c"` required: `init` exits 6 with `V097 required path missing: a[*].b[*].c`. The text behind the refusal is `a:` / `a.b: bee` / `a.b.c:`; the hand-corrected `a.b[bee].c:` validates clean. Same shape through a fragment mount under a valued parent.
 		- Cause: the parent-value map is built only from constraints with no wildcard, so a filled wildcard line with a default never enters it, and `under_valued_parent` consults only that map. 20260901 item 5 covered concrete parents only.
+		- Fixed: the map is built after the fill decision and takes filled wildcards too, so a line generated from `a[*].b` with a default is a valued parent like any other and `a[*].b[*].c` renders `a.b[bee].c:`.
+		- Pinned by corpus `082`, whose schema generates and then validates clean against itself. All four refused it at exit 6 before.
 		- Opened: 20260902-170400
+		- Closed: 20260902-201500
 
-	- 🔘 Item 6: a valued live parent whose default is a bare integer is selected as `[8]`, which the scanner reads as an index, so `init` exits 6.
+	- ✅ Item 6: a valued live parent whose default is a bare integer is selected as `[8]`, which the scanner reads as an index, so `init` exits 6.
 		- Reproduced in all four. `field: num` required `default: 8` plus `field: "num[*].v"` required generates `num: 8` / `num[8].v:`, which loads with `E003 no instance 8 of 'num'`; `init` reports V097. Same with `default: "8"` (emitted bare by the data-format rule) and with `type: int`. `[007]` and `[+3]` fail the same way.
 		- Cause: `gen_selector_text` quotes only a default holding `[`, `]`, `\` or a newline; the spec's index rule (`[0]` bare numeric is an index, `["2020"]` quoted is a value) is not applied.
-		- Note: also quote a default that parses as a bare index. Adjacent to 20260901b item 30 (`E003` reachable).
+		- Fixed: the selector text quotes a default whose trimmed spelling the scanner would read as a selector of its own - all digits with an optional sign, the same with a leading `#`, or a bare `*` - beside the bracket and backslash cases it already quoted. Each binding asks its own scanner's number parser, so the four cannot drift.
+		- Pinned by corpus `082` (`default: 8` under a wildcard child, and a `*` default beside it). All four refused the schema before.
 		- Opened: 20260902-170500
+		- Closed: 20260902-201500
 
-	- 🔘 Item 7: a must-exist path whose only wildcard is its last segment (`w[*]`) is never filled, so `init` exits 6; beside a `field: w` it is emitted twice.
+	- ✅ Item 7: a must-exist path whose only wildcard is its last segment (`w[*]`) is never filled, so `init` exits 6; beside a `field: w` it is emitted twice.
 		- Reproduced in all four. `field: "w[*]"` required `default: v` alone generates only the trailing block and fails V097; `w: v` on its own passes `check --schema`. With `field: w` added the output carries `# any, required` / `w: v` twice.
 		- Cause: the fill loop wants a live line whose name list has the wildcard segment's own chain as a prefix; for a trailing wildcard that is the field's own name, so only a separate `field: w` satisfies it, and then both lines emit.
-		- Note: treat a trailing wildcard as fillable with the root as parent, and skip a fill whose rendering equals a concrete line already emitted.
+		- Fixed: a wildcard in the last segment is always fillable, since the line generated from it is the instance it needs, and no rendered path is emitted twice - the first spelling in schema order wins, so `field: w` beside `field: "w[*]"` produces one line. A duplicate whose default differs loses that default; the two spellings describe one field, and the surviving line still satisfies both.
+		- Pinned by corpus `082` (a `w[*]` alone). All four refused the schema before.
 		- Opened: 20260902-170600
+		- Closed: 20260902-201500
 
 	- 🔘 Item 8: a stdout that cannot be written is reported as success by three CLIs, and as 120 by the fourth.
 		- Reproduced: `fmt f.shcl > /dev/full` exits 0 with an empty stderr in Rust, Go and C; Python exits 120 with an interpreter message. Same for `check`, `get` and `set`. The help and man page say 8 for a stream that could not be written.

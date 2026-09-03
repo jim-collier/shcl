@@ -5885,7 +5885,16 @@ static const ShclStr *parent_value_for(const ShclParentValues *pv, const ShclVec
    quoted spelling finds the bare value). */
 static ShclStr gen_selector_text(ShclArena *a, ShclStr v) {
 	if (memchr(v.p, '\n', v.n)) return g_default_text(a, v);
-	if ((memchr(v.p, '[', v.n) || memchr(v.p, ']', v.n) || memchr(v.p, '\\', v.n)) && !quoted_shape(v)) return quote_text(a, v);
+	// The scanner reads a bare selector body as an index when it is all digits
+	// (with an optional sign or `#`), and as a wildcard when it is `*`, so a
+	// default of that shape has to be quoted or the line names an instance
+	// that is not there.
+	ShclStr body = s_trim(v);
+	uint64_t ix;
+	int reads_as_selector = (body.n == 1 && body.p[0] == '*')
+		|| parse_u64(body, &ix)
+		|| (body.n >= 1 && body.p[0] == '#' && parse_u64(s_slice(body, 1, body.n), &ix));
+	if ((memchr(v.p, '[', v.n) || memchr(v.p, ']', v.n) || memchr(v.p, '\\', v.n) || reads_as_selector) && !quoted_shape(v)) return quote_text(a, v);
 	return v;
 }
 
@@ -6026,6 +6035,10 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 				for (size_t s2 = 0; s2 < plen; s2++) if (!s_eq(live[li].data[s2].name, c->segs.data[s2].name)) { eq = 0; break; }
 				hit = eq;
 			}
+			// A wildcard in the last segment needs no other line to
+			// materialize its parent: the line generated from it is that
+			// instance.
+			if (plen == c->segs.len) hit = 1;
 			if (hit) { fill[i] = 1; LIVE_PUSH(c->segs); changed = 1; }
 		}
 		if (!changed) break;
@@ -6040,10 +6053,16 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	pv.data = (ShclParentValue *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *pv.data);
 	for (size_t i = 0; i < cons.len; i++) {
 		const ShclVCons *c = &cons.data[i];
-		if (!g_has_wild(c) && !g_unwritable(c) && g_must_exist(c) && c->has_default) { pv.data[pv.len].segs = &c->segs; pv.data[pv.len].value = c->default_text; pv.len++; }
+		// A filled wildcard emits a valued line of its own, so it belongs here too.
+		if ((!g_has_wild(c) || fill[i]) && !g_unwritable(c) && g_must_exist(c) && c->has_default) { pv.data[pv.len].segs = &c->segs; pv.data[pv.len].value = c->default_text; pv.len++; }
 	}
 	ShclSB out = {0, 0, 0};
 	ShclVecS wild_path = {0, 0, 0}, wild_type = {0, 0, 0};
+	/* Dropping a trailing `[*]` can render the same line a concrete sibling
+	   already wrote; the first spelling wins. Hash first, bytes only on a
+	   hash hit, so the scan stays cheap at the field cap. */
+	ShclVecS emitted = {0, 0, 0};
+	uint64_t *emitted_hash = (uint64_t *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *emitted_hash);
 	int first = 1;
 	for (size_t i = 0; i < cons.len; i++) {
 		ShclVCons *c = &cons.data[i];
@@ -6053,6 +6072,21 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			ShclVecS_push(a, &wild_path, g_escape_nl(a, c->path)); ShclVecS_push(a, &wild_type, tyname);
 			continue;
 		}
+		// A filled wildcard emits in dotted form, targeting the materialized
+		// instance - by its value when the materializing line carries one.
+		// Rebuilt from the parsed segments, not by cutting text out of the
+		// path: the same path can be written several ways, and only the
+		// segments say what it means. Otherwise the schema's own spelling.
+		int under_valued_parent = 0;
+		for (size_t k = 1; k < c->segs.len && !under_valued_parent; k++)
+			under_valued_parent = c->segs.data[k - 1].sel.tag == SEL_NONE && parent_value_for(&pv, &c->segs, k) != NULL;
+		ShclStr path = (fill[i] || under_valued_parent) ? gen_path_text(a, &c->segs, &pv) : c->path;
+		uint64_t ph = fnv_str(1469598103934665603ull, path);
+		int dup = 0;
+		for (size_t k = 0; k < emitted.len && !dup; k++) dup = emitted_hash[k] == ph && s_eq(emitted.data[k], path);
+		if (dup) continue;
+		emitted_hash[emitted.len] = ph;
+		ShclVecS_push(a, &emitted, path);
 		if (!first) sb_putc(a, &out, '\n');
 		first = 0;
 		if (c->has_desc) {
@@ -6068,16 +6102,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		}
 		sb_puts(a, &out, "# "); sb_putS(a, &out, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &out, '\n');
 		if (!g_must_exist(c)) sb_putc(a, &out, '#');
-		// A filled wildcard emits in dotted form, targeting the materialized
-		// instance - by its value when the materializing line carries one.
-		// Rebuilt from the parsed segments, not by cutting text out of the
-		// path: the same path can be written several ways, and only the
-		// segments say what it means. Otherwise the schema's own spelling.
-		int under_valued_parent = 0;
-		for (size_t k = 1; k < c->segs.len && !under_valued_parent; k++)
-			under_valued_parent = c->segs.data[k - 1].sel.tag == SEL_NONE && parent_value_for(&pv, &c->segs, k) != NULL;
-		if (fill[i] || under_valued_parent) sb_putS(a, &out, gen_path_text(a, &c->segs, &pv));
-		else sb_putS(a, &out, c->path);
+		sb_putS(a, &out, path);
 		if (c->has_default) { sb_puts(a, &out, ": "); sb_putS(a, &out, g_default_text(a, c->default_text)); }
 		else sb_putc(a, &out, ':');
 		sb_putc(a, &out, '\n');

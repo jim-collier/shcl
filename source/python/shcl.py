@@ -4943,7 +4943,9 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 				continue
 			k = next(j for j, s in enumerate(c.segs) if s.selector is not None and s.selector[0] == "wild")
 			parent = names_of(c.segs[: k + 1])
-			if any(len(p) >= len(parent) and p[: len(parent)] == parent for p in live):
+			# A wildcard in the last segment needs no other line to materialize
+			# its parent: the line generated from it is that instance.
+			if k + 1 == len(c.segs) or any(len(p) >= len(parent) and p[: len(parent)] == parent for p in live):
 				fill[i] = True
 				live.append(names_of(c.segs))
 				changed = True
@@ -4954,28 +4956,23 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# web` followed by `srv.port:` is two `srv` nodes, and the child never
 	# lands where the schema looks. Any line under such a parent selects it by
 	# its value: `srv[web].port:`.
+	# A filled wildcard emits a valued line of its own, so it belongs here too.
 	parent_values = {
 		tuple(names_of(c.segs)): c.default_text
-		for c in cons
-		if not has_wild(c) and not unwritable(c) and must_exist(c) and c.default_text is not None
+		for i, c in enumerate(cons)
+		if (not has_wild(c) or fill[i]) and not unwritable(c) and must_exist(c) and c.default_text is not None
 	}
 	out = []
 	wild = []
+	# Dropping a trailing `[*]` can render the same line a concrete sibling
+	# already wrote; the first spelling wins.
+	emitted = set()
 	first = True
 	for i, c in enumerate(cons):
 		tyname = c.ty if c.ty is not None else "any"
 		if unwritable(c) or (has_wild(c) and not fill[i]):
 			wild.append((c.path.replace("\n", "\\n"), tyname))
 			continue
-		if not first:
-			out.append("\n")
-		first = False
-		if c.desc is not None:
-			for line in c.desc.split("\n"):
-				out.append("# " + line + "\n")
-		# The annotation is a comment: a newline smuggled in via an allowed
-		# string value must not break out of it.
-		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
 		# A filled wildcard emits in dotted form, targeting the materialized
 		# instance - by its value when the materializing line carries one.
 		# Rebuilt from the parsed segments, not by cutting text out of the
@@ -4986,6 +4983,18 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 			for k in range(1, len(c.segs))
 		)
 		path = _gen_path_text(c.segs, parent_values) if fill[i] or under_valued_parent else c.path
+		if path in emitted:
+			continue
+		emitted.add(path)
+		if not first:
+			out.append("\n")
+		first = False
+		if c.desc is not None:
+			for line in c.desc.split("\n"):
+				out.append("# " + line + "\n")
+		# The annotation is a comment: a newline smuggled in via an allowed
+		# string value must not break out of it.
+		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
 		prefix = "" if must_exist(c) else "#"
 		if c.default_text is not None:
 			out.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
@@ -5059,7 +5068,13 @@ def _gen_selector_text(v):
 	quoted spelling finds the bare value)."""
 	if "\n" in v:
 		return _gen_default_text(v)
-	if any(ch in v for ch in "[]\\") and not _quoted_shape(v):
+	# The scanner reads a bare selector body as an index when it is all digits
+	# (with an optional sign or `#`), and as a wildcard when it is `*`, so a
+	# default of that shape has to be quoted or the line names an instance that
+	# is not there.
+	body = v.strip()
+	reads_as_selector = body == "*" or _parse_uint(body) is not None or (body[:1] == "#" and _parse_uint(body[1:]) is not None)
+	if (any(ch in v for ch in "[]\\") or reads_as_selector) and not _quoted_shape(v):
 		return _quote_text(v)
 	return v
 

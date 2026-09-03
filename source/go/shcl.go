@@ -6121,6 +6121,15 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 				}
 			}
 			parent := namesOf(c.segs[:k+1])
+			// A wildcard in the last segment needs no other line to
+			// materialize its parent: the line generated from it is that
+			// instance.
+			if k+1 == len(c.segs) {
+				fill[i] = true
+				live = append(live, namesOf(c.segs))
+				changed = true
+				continue
+			}
 			for _, p := range live {
 				if isPrefix(p, parent) {
 					fill[i] = true
@@ -6139,15 +6148,19 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// web` followed by `srv.port:` is two `srv` nodes, and the child never
 	// lands where the schema looks. Any line under such a parent selects it
 	// by its value: `srv[web].port:`.
+	// A filled wildcard emits a valued line of its own, so it belongs here too.
 	parentValues := map[string]string{}
 	for i := range cons {
 		c := &cons[i]
-		if !hasWild(c) && !unwritable(c) && mustExist(c) && c.defaultText != nil {
+		if (!hasWild(c) || fill[i]) && !unwritable(c) && mustExist(c) && c.defaultText != nil {
 			parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
 		}
 	}
 	var b strings.Builder
 	var wild [][2]string
+	// Dropping a trailing `[*]` can render the same line a concrete sibling
+	// already wrote; the first spelling wins.
+	emitted := map[string]bool{}
 	first := true
 	for i := range cons {
 		c := &cons[i]
@@ -6159,22 +6172,6 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			wild = append(wild, [2]string{strings.ReplaceAll(c.path, "\n", "\\n"), tyname})
 			continue
 		}
-		if !first {
-			b.WriteByte('\n')
-		}
-		first = false
-		if c.desc != nil {
-			for _, line := range strings.Split(*c.desc, "\n") {
-				b.WriteString("# ")
-				b.WriteString(line)
-				b.WriteByte('\n')
-			}
-		}
-		b.WriteString("# ")
-		// The annotation is a comment: a newline smuggled in via an allowed
-		// string value must not break out of it.
-		b.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
-		b.WriteByte('\n')
 		// A filled wildcard emits in dotted form, targeting the materialized
 		// instance - by its value when the materializing line carries one.
 		// Rebuilt from the parsed segments, not by cutting text out of the
@@ -6191,6 +6188,26 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		if fill[i] || underValuedParent {
 			path = genPathText(c.segs, parentValues)
 		}
+		if emitted[path] {
+			continue
+		}
+		emitted[path] = true
+		if !first {
+			b.WriteByte('\n')
+		}
+		first = false
+		if c.desc != nil {
+			for _, line := range strings.Split(*c.desc, "\n") {
+				b.WriteString("# ")
+				b.WriteString(line)
+				b.WriteByte('\n')
+			}
+		}
+		b.WriteString("# ")
+		// The annotation is a comment: a newline smuggled in via an allowed
+		// string value must not break out of it.
+		b.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
+		b.WriteByte('\n')
 		prefix := "#"
 		if mustExist(c) {
 			prefix = ""
@@ -6294,7 +6311,17 @@ func genSelectorText(v string) string {
 	if strings.Contains(v, "\n") {
 		return genDefaultText(v)
 	}
-	if strings.ContainsAny(v, "[]\\") && !quotedShape(v) {
+	// The scanner reads a bare selector body as an index when it is all digits
+	// (with an optional sign or `#`), and as a wildcard when it is `*`, so a
+	// default of that shape has to be quoted or the line names an instance
+	// that is not there.
+	body := strings.TrimSpace(v)
+	_, isIndex := parseIndex(body)
+	if !isIndex {
+		_, isIndex = hashIndex(body)
+	}
+	readsAsSelector := body == "*" || isIndex
+	if (strings.ContainsAny(v, "[]\\") || readsAsSelector) && !quotedShape(v) {
 		return quoteText(v)
 	}
 	return v
