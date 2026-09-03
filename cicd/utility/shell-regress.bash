@@ -40,6 +40,15 @@ printf 'a: 1\n' > "${tmpDir}/t.shcl"
 declare -i nBad=0
 fBad(){ echo "shell-regress: $1" >&2; nBad+=1 ;}
 
+##	Is tool $1 here? Under the gate a missing one is a failure rather than a
+##	skipped block: a runner that loses a tool would otherwise report OK forever.
+##	Locally it stays a skip, since a working copy need not carry every tool.
+fHave(){
+	command -v "$1" > /dev/null 2>&1 && return 0
+	[[ -n "${SHCL_GATE_STRICT:-}" ]] && fBad "$1 is missing and the gate requires it"
+	return 1
+}
+
 ##	20260830 item 21: -x is true for a directory, so a directory passed as
 ##	SHCL_BIN got as far as being run.
 out="$(SHCL_BIN="${tmpDir}" bash -c "source '${repoDir}/source/bash/shcl.bash'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
@@ -54,7 +63,7 @@ out="$(SHCL_BIN="${cli}" bash -c "source '${repoDir}/source/bash/shcl.bash'; shc
 out="$(_SHCL_BIN=/nonexistent SHCL_BIN="${cli}" bash -c "source '${repoDir}/source/bash/shcl.bash'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 [[ "${out}" == "1" ]] || fBad "bash wrapper honored an inherited _SHCL_BIN: ${out@Q}"
 
-if command -v pwsh > /dev/null 2>&1; then
+if fHave pwsh; then
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${tmpDir}'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 	[[ "${out}" == *"not executable"* ]] || fBad "PowerShell wrapper took a directory as SHCL_BIN: ${out@Q}"
 
@@ -148,7 +157,7 @@ eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
 ##	that looked finished; and nothing checked the sums file's name against the
 ##	version, or its entries against the files. A throwaway key stands in for
 ##	the wrong one, and every refusal must leave no .sig.
-if command -v openssl >/dev/null 2>&1; then
+if fHave openssl; then
 	sver="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "${repoDir}/source/rust/Cargo.toml" | head -1)"
 	openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${tmpDir}/wrong.pem" 2>/dev/null
 	fSignRun(){   ## fSignRun DIR: run the signer on DIR with the throwaway key; stderr in signOut
@@ -270,7 +279,7 @@ out="$(fPickTag stable "${tmpDir}/rel.json")"
 out="$(fPickTag dev "${tmpDir}/rel.json")"
 [[ "${out}" == "v2.1.0-alpha.10" ]] || fBad "install.bash dev channel picked ${out@Q}, want v2.1.0-alpha.10"
 
-if command -v pwsh > /dev/null 2>&1; then
+if fHave pwsh; then
 	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
 	{
 		sed -n '/^\tfunction Select-ReleaseTag/,/^\t}/p' "${repoDir}/install.ps1"
@@ -287,7 +296,7 @@ fi
 ##	field verbatim, and makensis rejected it under errexit, so the release stage
 ##	died on the first prerelease cut. A fake .exe is enough - the setup never
 ##	runs, it only has to build.
-if command -v makensis > /dev/null 2>&1; then
+if fHave makensis; then
 	pkgDir="${tmpDir}/pkg"; mkdir -p "${pkgDir}"
 	: > "${pkgDir}/shcl-2.1.0-alpha.1-windows-x86_64.exe"
 	if "${repoDir}/cicd/utility/package.bash" "${repoDir}" "${pkgDir}" "2.1.0-alpha.1" > "${tmpDir}/pkg.log" 2>&1; then
@@ -478,6 +487,17 @@ fScanUnguardedGrep(){
 
 ##	The self-test: one file carrying every spelling, so a scan that stops seeing
 ##	one of them fails here rather than going quiet over the repo.
+##	The strict switch itself: under the gate a missing tool has to be a failure,
+##	or a runner that loses one reports OK forever. Locally it stays a skip.
+{
+	strictBad=0
+	( SHCL_GATE_STRICT=1; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || strictBad=$?
+	((strictBad == 7)) || fBad "fHave did not fail on a missing tool under the gate"
+	laxBad=0
+	( unset SHCL_GATE_STRICT; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || laxBad=$?
+	((laxBad == 1)) || fBad "fHave did not skip a missing tool outside the gate (exit ${laxBad})"
+}
+
 ##	The escape is assembled rather than written, so the bait for the second scan
 ##	does not trip that scan when it sweeps this file.
 bs=$'\\'

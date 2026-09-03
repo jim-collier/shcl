@@ -31,6 +31,12 @@ repoDir="${1:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}"
 ##	no locale could be built at all. Loud rather than silent: a gate nobody
 ##	notices has stopped running is worse than one that fails.
 if ! command -v localedef >/dev/null 2>&1 || [[ ! -e /usr/share/i18n/locales/POSIX ]]; then
+	## Under the gate a skip is a failure: a runner that loses a tool would
+	## otherwise report OK forever. Locally it stays a skip.
+	if [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+		echo "check-locale: localedef or the POSIX locale source is missing, and the gate requires it" >&2
+		exit 1
+	fi
 	echo "check-locale: SKIPPED - localedef or the POSIX locale source is missing"
 	exit 0
 fi
