@@ -12,6 +12,17 @@
 #include <string.h>
 #include <time.h>
 
+/* Nested rather than one expression: gcc 12 parses the whole #if line before it
+   short-circuits, and refuses __has_feature(...) where the macro is undefined. */
+#if defined(__has_feature)
+#	if __has_feature(address_sanitizer)
+#		define SHCL_UNDER_ASAN 1
+#	endif
+#endif
+#if defined(__SANITIZE_ADDRESS__)
+#	define SHCL_UNDER_ASAN 1
+#endif
+
 static size_t allocated = 0;
 static void *counting_malloc(size_t n) { allocated += n; return malloc(n); }
 static void *counting_calloc(size_t a, size_t b) { allocated += a * b; return calloc(a, b); }
@@ -179,7 +190,7 @@ int main(void) {
 		/* A ratio between two timings says nothing under a sanitizer, which
 		   costs per allocation rather than per node walked. The plain build in
 		   the test stage is where this is judged. */
-#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+#ifdef SHCL_UNDER_ASAN
 		printf("mem_bounds: index rebuild ratio not judged under a sanitizer\n");
 #else
 		/* A clock too coarse to see the fresh side leaves the ratio with a zero
