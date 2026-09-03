@@ -372,6 +372,37 @@ fi
 grep -q "finally { \$ErrorActionPreference = \$smokeEap }" "${repoDir}/install.ps1" \
 	|| fBad "install.ps1 does not put the caller's error preference back after the smoke run"
 
+##	20260901b item 35: the rpm listed the payload's subdirectories and not their
+##	parent, so removing the package left /usr/share/shcl behind. The package
+##	read-back lives in package.bash, which only runs at release time; building a
+##	stub package here gives it something to fail on every run.
+if fHave nfpm && fHave dpkg-deb && fHave rpm; then
+	pDir="${tmpDir}/nfpm"
+	mkdir -p "${pDir}/payload/code" "${pDir}/payload/scripts" "${pDir}/payload/man" "${pDir}/payload/doc" "${pDir}/payload/completions"
+	printf 'x\n' > "${pDir}/payload/code/lib.rs"
+	printf 'x\n' > "${pDir}/payload/scripts/shcl.bash"
+	printf 'x\n' > "${pDir}/payload/doc/copyright"
+	printf 'x\n' > "${pDir}/payload/completions/shcl.bash"
+	printf 'x\n' > "${pDir}/payload/completions/_shcl"
+	printf 'x\n' | gzip -9nc > "${pDir}/payload/man/shcl.1.gz"
+	printf 'x\n' | gzip -9nc > "${pDir}/payload/doc/changelog.gz"
+	printf 'x\n' > "${pDir}/shcl"
+	sed -e "s|\${SHCL_VERSION}|9.9.9|g" -e "s|\${SHCL_ARCH}|amd64|g" \
+	    -e "s|\${SHCL_BIN}|${pDir}/shcl|g" -e "s|\${SHCL_PAYLOAD}|${pDir}/payload|g" \
+	    -e "s|\${SHCL_GLIBC}|2.34|g" -e "s|\${SHCL_DEB_LIBGCC}||g" -e "s|\${SHCL_RPM_LIBGCC}||g" \
+	    "${repoDir}/cicd/packaging/nfpm.yaml" > "${pDir}/nfpm.yaml"
+	if nfpm package -f "${pDir}/nfpm.yaml" -p deb -t "${pDir}/p.deb" >/dev/null 2>&1 \
+	   && nfpm package -f "${pDir}/nfpm.yaml" -p rpm -t "${pDir}/p.rpm" >/dev/null 2>&1; then
+		##	The shipped read-back, run on the stub packages.
+		eval "$(sed -n '/^fCheckDeps()/,/^}/p' "${repoDir}/cicd/utility/package.bash")"
+		# shellcheck disable=SC2329  ## called from the lifted fCheckDeps
+		( fDie(){ echo "shell-regress: $*" >&2; exit 1; }; fCheckDeps "${pDir}/p" 2.34 "" ) \
+			|| fBad "the packages do not read back the way package.bash requires"
+	else
+		fBad "nfpm could not build a package from cicd/packaging/nfpm.yaml"
+	fi
+fi
+
 ##	20260830b item 8: a prerelease version reached NSIS's four-integer version
 ##	field verbatim, and makensis rejected it under errexit, so the release stage
 ##	died on the first prerelease cut. A fake .exe is enough - the setup never

@@ -687,8 +687,11 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-193300
 		- Closed: 20260904-011500
 
-	- 🔘 Item 35: the `.rpm` does not own `/usr/share/shcl`, so removal leaves the directory behind. The `.deb` is fine.
+	- ✅ Item 35: the `.rpm` does not own `/usr/share/shcl`, so removal leaves the directory behind. The `.deb` is fine.
+		- Fixed: the package definition declares the directory, so both formats own it and both remove it.
+		- Pinned by the package read-back in `package.bash`, which now checks the directory in both formats, and by a `shell-regress` block that builds a stub package on every run and puts it through that same read-back - the release-time check had nothing to fail on until a release.
 		- Opened: 20260901-193400
+		- Closed: 20260904-013000
 
 	- 🔘 Item 36: `install.bash` silently replaces a symlink at the bin path that points somewhere else.
 		- Only a regular file is refused. A link to a cargo-built or hand-built copy is overwritten with no word about it, where the uninstall path already knows how to test "only ours".
