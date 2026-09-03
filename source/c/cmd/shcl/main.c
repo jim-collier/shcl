@@ -1076,7 +1076,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 }
 
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
-	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
+	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag"; o->on_bad_arg = NULL;
 	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->no_banner = 0; o->schema = NULL;
 	o->layers = o->args = NULL; o->sets = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
