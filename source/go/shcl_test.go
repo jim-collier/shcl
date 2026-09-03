@@ -1564,6 +1564,31 @@ func TestLayeredMergeMatchesExpected(t *testing.T) {
 			doc.SetString(line[:eq], line[eq+1:])
 		}
 		got := doc.ToCanonical()
+		// Reads answered by the merged document itself, not just its text: a
+		// merged arena holds dropped nodes, a rebuilt index and cloned child
+		// lists, and only a read walks those. Instances is left out because it
+		// hands back the source spelling, which canonical output may respell.
+		// Same fixture in every runner.
+		back := Parse(got)
+		if !reflect.DeepEqual(doc.Paths(), back.Paths()) {
+			t.Errorf("%s: merged paths differ from a reparse", c.name)
+		}
+		for _, p := range doc.Paths() {
+			if doc.Count(p) != back.Count(p) {
+				t.Errorf("%s: merged count %s", c.name, p)
+			}
+			if !reflect.DeepEqual(doc.Children(p), back.Children(p)) {
+				t.Errorf("%s: merged children %s", c.name, p)
+			}
+			x, y := doc.ReadString(p), back.ReadString(p)
+			if x.Value != y.Value || x.Status != y.Status {
+				t.Errorf("%s: merged read %s", c.name, p)
+			}
+			xa, ya := doc.ReadStringArray(p), back.ReadStringArray(p)
+			if !reflect.DeepEqual(xa.Value, ya.Value) || xa.Status != ya.Status || !reflect.DeepEqual(xa.Slots, ya.Slots) {
+				t.Errorf("%s: merged array read %s", c.name, p)
+			}
+		}
 		if got != c.expectedMerged {
 			t.Errorf("%s: merged output differs from expected-merged.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedMerged)
 			continue

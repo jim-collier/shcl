@@ -599,10 +599,43 @@ int main(int argc, char **argv) {
 			}
 			shcl_str mgot = shcl_to_canonical(md);
 			if (mgot.n != emlen || (emlen && memcmp(mgot.p, em, emlen) != 0)) fail(names[ci], "merged output differs from expected-merged.shcl");
-			shcl_doc *md2 = shcl_parse(mgot.p, mgot.n);
+			/* The canonical text lives in md's read arena, so it is copied out
+			   before md2 is parsed from it. */
+			char *mcopy = (char *)malloc(mgot.n ? mgot.n : 1);
+			if (!mcopy) { fail(names[ci], "out of memory"); return 1; }
+			memcpy(mcopy, mgot.p, mgot.n);
+			shcl_doc *md2 = shcl_parse(mcopy, mgot.n);
 			shcl_str magain = shcl_to_canonical(md2);
-			if (magain.n != mgot.n || (mgot.n && memcmp(magain.p, mgot.p, mgot.n) != 0)) fail(names[ci], "merged output is not a fmt fixpoint");
-			shcl_free(md2); shcl_free(md);
+			if (magain.n != mgot.n || (mgot.n && memcmp(magain.p, mcopy, mgot.n) != 0)) fail(names[ci], "merged output is not a fmt fixpoint");
+			/* Reads answered by the merged document itself, not just its text: a
+			   merged arena holds dropped nodes, a rebuilt index and cloned child
+			   lists, and only a read walks those. shcl_instances is left out
+			   because it hands back the source spelling, which canonical output
+			   may respell. Same fixture in every runner. Results live until
+			   shcl_free here, so nothing has to be copied between reads. */
+			{
+				shcl_str *mp1 = NULL, *mp2 = NULL;
+				size_t mn1 = shcl_paths(md, &mp1), mn2 = shcl_paths(md2, &mp2);
+				int same = mn1 == mn2;
+				for (size_t k = 0; same && k < mn1; k++) same = s_eq(mp1[k], mp2[k]);
+				if (!same) fail(names[ci], "merged paths differ from a reparse");
+				for (size_t k = 0; same && k < mn1; k++) {
+					const char *pp = mp1[k].p; size_t pn = mp1[k].n;
+					if (shcl_count(md, pp, pn) != shcl_count(md2, pp, pn)) fail(names[ci], "merged count differs from a reparse");
+					shcl_str *k1, *k2;
+					size_t kn1 = shcl_children(md, pp, pn, &k1), kn2 = shcl_children(md2, pp, pn, &k2);
+					int ksame = kn1 == kn2;
+					for (size_t x = 0; ksame && x < kn1; x++) ksame = s_eq(k1[x], k2[x]);
+					if (!ksame) fail(names[ci], "merged children differ from a reparse");
+					shcl_read_str r1 = shcl_read_string(md, pp, pn), r2 = shcl_read_string(md2, pp, pn);
+					if (r1.status != r2.status || !s_eq(r1.value, r2.value)) fail(names[ci], "merged read differs from a reparse");
+					shcl_read_str_arr a1 = shcl_read_string_array(md, pp, pn), a2 = shcl_read_string_array(md2, pp, pn);
+					int asame = a1.status == a2.status && a1.n == a2.n;
+					for (size_t x = 0; asame && x < a1.n; x++) asame = a1.statuses[x] == a2.statuses[x] && s_eq(a1.values[x], a2.values[x]);
+					if (!asame) fail(names[ci], "merged array read differs from a reparse");
+				}
+			}
+			shcl_free(md2); shcl_free(md); free(mcopy);
 			for (int li = 0; li < nt; li++) free(ltexts[li]);
 			free(em);
 		}

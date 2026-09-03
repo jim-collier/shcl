@@ -607,6 +607,45 @@ fn layered_merge_matches_expected() {
 			"{}: merged output differs from expected-merged.shcl",
 			case.name
 		);
+		// Reads answered by the merged document itself, not just its text: a
+		// merged arena holds dropped nodes, a rebuilt index and cloned child
+		// lists, and only a read walks those. `instances` is left out because it
+		// hands back the source spelling, which canonical output may respell.
+		// Same fixture in every runner.
+		let back = Document::parse(&got);
+		assert_eq!(doc.paths(), back.paths(), "{}: merged paths", case.name);
+		for p in doc.paths() {
+			assert_eq!(
+				doc.count(&p),
+				back.count(&p),
+				"{}: merged count {}",
+				case.name,
+				p
+			);
+			assert_eq!(
+				doc.children(&p),
+				back.children(&p),
+				"{}: merged children {}",
+				case.name,
+				p
+			);
+			let (x, y) = (doc.read_string(&p), back.read_string(&p));
+			assert_eq!(
+				(x.value, x.status),
+				(y.value, y.status),
+				"{}: merged read {}",
+				case.name,
+				p
+			);
+			let (x, y) = (doc.read_string_array(&p), back.read_string_array(&p));
+			assert_eq!(
+				(x.value, x.status, x.slots),
+				(y.value, y.status, y.slots),
+				"{}: merged array read {}",
+				case.name,
+				p
+			);
+		}
 		// The merged doc must be a formatter fixpoint like any canonical output.
 		let again = Document::parse(&got).to_canonical();
 		assert_eq!(
