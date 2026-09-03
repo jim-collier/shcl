@@ -255,10 +255,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-172400
 		- Closed: 20260903-024000
 
-	- 🔘 Item 26: a one-element array read reports `quoted` false for a quoted element.
+	- ✅ Item 26: a one-element array read reports `quoted` false for a quoted element.
 		- Reproduced in Rust at library level (plausible for the other three by port): `read_int("h")` on `h: "5"` gives `quoted` true, `read_int_array("h")` on the same node gives false, because the array read always ends with `quoted` false. The spec's flag is "true when the read's single scalar element was quoted in the source".
-		- Note: set it from the element when the cell has exactly one, or say in the spec that array reads never report it.
+		- Fixed: the array read takes the flag from the element when the cell holds exactly one, so it agrees with the scalar read of the same node. C needed nothing: `shcl_quoted` is path-based and already answered for a one-element cell.
+		- Pinned by the read-surface fixture in all three runners: a one-element quoted cell reads quoted as an array, a bare one does not, and a two-element cell reports nothing. All three failed the first before.
 		- Opened: 20260902-172500
+		- Closed: 20260903-025500
 
 	- 🔘 Item 27: stale prose in the README, the man page and the spec.
 		- Reproduced by re-running the transcript and reading. `README.md` line 504's `get` transcript omits the `E014` line every loading subcommand has printed since 20260831, while the `check` transcript above it shows its stderr; `README.md` line 830 says raw blocks, set-only-if-absent and removal have no option form, though `--set-default`, `--set-literal-default` and `--remove` exist since 20260830b item 21; the man page's WRITE OPS sentence says the ops script is read when no `--set` or `--set-literal` carries the edits, where the code reads it only when none of the five options is given; `spec.md` line 599 lists the loading subcommands without `children` and `paths`.

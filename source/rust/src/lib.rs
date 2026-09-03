@@ -4943,7 +4943,11 @@ impl Document {
 							sts.push(st);
 						}
 						let status = sts.iter().copied().max().unwrap_or(Status::Good);
-						Read::with_slots(out, status, raw, sts).at(line, false)
+						// A one-element cell has a single scalar element, so
+						// the flag means the same thing here as on the scalar
+						// read of the same node.
+						let quoted = els.len() == 1 && els[0].quoted;
+						Read::with_slots(out, status, raw, sts).at(line, quoted)
 					}
 				}
 			}

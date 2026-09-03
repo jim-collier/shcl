@@ -710,6 +710,17 @@ def main():
 	# Canonical output folds the case, as it always has, and escapes the tab.
 	if sdoc3.to_canonical() != '"ab\\tcd": 2\n':
 		raise SystemExit(f"canonical name spelling got {sdoc3.to_canonical()!r}")
+	# An array read of a one-element cell answers the same as the scalar read of
+	# the same node: there is a single scalar element, which is what the flag is
+	# about. More than one element, and there is none to report. Same fixture in
+	# Rust and Go.
+	qdoc = shcl.Document.parse('a: @null\nb: "@null"\n')
+	if not qdoc.read_string_array("b").quoted:
+		raise SystemExit("a one-element quoted cell reads unquoted as an array")
+	if qdoc.read_string_array("a").quoted:
+		raise SystemExit("a one-element bare cell reads quoted as an array")
+	if shcl.Document.parse('m: "x", "y"\n').read_string_array("m").quoted:
+		raise SystemExit("a two-element cell reported a single element's quoting")
 	# What a read hands out must not be the document's own list: a caller
 	# clearing it used to take the document's diagnostics with it, and a failed
 	# strict load handed out the same list again. Same fixture in Go.

@@ -798,6 +798,18 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	if doc.ReadString("code").Quoted {
 		t.Error("a block reads quoted")
 	}
+	// An array read of the same node answers the same: a one-element cell has a
+	// single scalar element, so the flag means what it does on the scalar read.
+	// More than one element, and there is no single element to report.
+	if !doc.ReadStringArray("b").Quoted {
+		t.Error("a one-element quoted cell reads unquoted as an array")
+	}
+	if doc.ReadStringArray("a").Quoted {
+		t.Error("a one-element bare cell reads quoted as an array")
+	}
+	if Parse("m: \"x\", \"y\"\n").ReadStringArray("m").Quoted {
+		t.Error("a two-element cell reports a single element's quoting")
+	}
 	if doc.ReadString("missing").Quoted {
 		t.Error("a missing path reads quoted")
 	}

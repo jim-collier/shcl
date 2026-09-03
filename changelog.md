@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- An array read of a one-element cell reports the element's quoting, like the scalar read of the same node. `read_int("h")` on `h: "5"` said quoted and `read_int_array("h")` said not, because the array path always answered false. More than one element still reports false: there is no single element to report.
+
 - At Loose, a space after a currency symbol no longer decides whether the value reads. `$ 1200` read as 1200 while `$ 3.14` was `BadType`, because the int path reached a branch that trims and the float path tested the shape on the untrimmed remainder. The space comes off once, for both.
 
 - `shcl_generate` keeps nothing when it refuses, and what it returns can be given back. The output was copied into the schema's own arena before the self-check, so a call that failed kept text it never returned, and a call that succeeded left a copy no `shcl_reads_release` could reclaim - 21.9 KB per call in a loop. The bytes live in the read arena now, and generation faults from an earlier call are dropped rather than stacked up. The C++ veneer's `generate()` releases first, like every other copying wrapper.
