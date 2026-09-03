@@ -183,10 +183,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-171500
 		- Closed: 20260903-001500
 
-	- 🔘 Item 17: the crosscheck's float-spelling dimension writes `0` for every subnormal power of two under gawk, so its "every power of two" claim is false on this box.
+	- ✅ Item 17: the crosscheck's float-spelling dimension writes `0` for every subnormal power of two under gawk, so its "every power of two" claim is false on this box.
 		- Reproduced: `gawk 'BEGIN{printf "%.17g", 2^-1074}'` prints `0` (it computes a negative power as `1/(2^1074)`, which is `1/inf`); mawk prints the subnormal. The generated ops file starts with 52 `float p<n> 0` rows. The hosted runner's default awk decides which rows it exercises there, and `srand(20260902); rand()` differs per awk as well, so the "fixed" random set is not fixed either.
-		- Note: build the powers by exact halving from 1, which every awk does exactly down to `2^-1074`, and generate the random set from a fixed integer LCG.
+		- Fixed: the powers are built by exact halving and doubling from 1, and the random set comes from a fixed integer generator whose every product stays under 2^53. gawk, mawk and busybox awk now write byte-identical ops files, subnormals included.
+		- Pinned by `shell-regress.bash`, which lifts the generator out of `crosscheck.bash` by name, runs it under every awk on the box, and requires no zero-valued power row and identical output. The old generator fails all three ways.
 		- Opened: 20260902-171600
+		- Closed: 20260903-003000
 
 	- 🔘 Item 18: `sanitize-c.bash` never runs the `children` and `paths` commands, against its claim to replay every `reads.tsv` row.
 		- Reproduced: its row replay has no arm for the two, so a `children` row becomes `get --children`, which the C CLI refuses at exit 1 (not 77), and the run counts as clean. Six corpus cases carry such rows. The two enumeration paths in `main.c`, including the quoted-name spelling, run under no sanitizer.

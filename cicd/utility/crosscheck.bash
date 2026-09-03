@@ -394,11 +394,26 @@ fCompareWrite "fmt --write still refuses a missing file" fFixAbsent fmt --write
 # random doubles built as exact m * 2^e so the text reads back to the double
 # it names, through a float write in each binding.
 awk 'BEGIN{
-	for (e = -1074; e <= 1023; e++) printf "float\tp%d\t%.17g\n", e + 1074, 2 ^ e;
-	srand(20260902);
+	## 2^e by exact halving and doubling from 1. `2 ^ e` is not a portable way
+	## to reach a subnormal: gawk computes a negative power as 1/(2^1074),
+	## which is 1/inf, so every subnormal row came out 0 and tested nothing.
+	v = 1;
+	for (e = 0; e <= 1023; e++) { pw[e] = v; v = v * 2 }
+	v = 1;
+	for (e = -1; e >= -1074; e--) { v = v / 2; pw[e] = v }
+	for (e = -1074; e <= 1023; e++) printf "float\tp%d\t%.17g\n", e + 1074, pw[e];
+	## A fixed integer generator rather than srand()/rand(), whose sequence
+	## differs between awks - so the "fixed" random set was a different set on
+	## every runner. Every product here stays under 2^53, so it is exact.
+	s = 20260902;
 	for (i = 0; i < 3000; i++) {
-		m = int(rand() * 9007199254740992); e = int(rand() * 1900) - 1000;
-		printf "float\tr%d\t%.17g\n", i, m * 2 ^ e;
+		s = (16807 * s) % 2147483647; a = s % 131072;
+		s = (16807 * s) % 2147483647; b = s % 131072;
+		s = (16807 * s) % 2147483647; c = s % 131072;
+		s = (16807 * s) % 2147483647;
+		m = (a * 131072 + b) * 131072 + c;
+		e = (s % 1900) - 1000;
+		printf "float\tr%d\t%.17g\n", i, m * pw[e];
 	}
 }' > "${tmpDir}/floats.ops"
 fCompareStdin "float spelling" "${tmpDir}/floats.ops" set -
