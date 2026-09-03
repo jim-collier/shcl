@@ -221,6 +221,7 @@ public:
 	// written last unless no_banner. Not const: a schema that expands past the
 	// generator's field cap records the fault as a diagnostic on this document.
 	std::pair<std::string, bool> generate(bool no_banner = false) {
+		shcl_reads_release(d_.get());
 		int ok = 0;
 		std::string s = to_str(shcl_generate(d_.get(), no_banner ? 1 : 0, &ok));
 		return {std::move(s), ok != 0};

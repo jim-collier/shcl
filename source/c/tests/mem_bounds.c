@@ -140,6 +140,25 @@ int main(void) {
 	shcl_free(d);
 	free(blob);
 
+	// Generation used to copy its output into the schema's own arena before
+	// checking it, so a refused call kept the text it never returned and a
+	// succeeding one could never be released.
+	const char *badschema = "field: server.port\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\tdefault: 99\n";
+	d = shcl_parse(badschema, strlen(badschema));
+	held = arena_bytes(&d->arena);
+	int gok = 1;
+	for (int i = 0; i < 200; i++) { shcl_str t = shcl_generate(d, 1, &gok); if (gok || t.n) fail("refused generation returned something"); }
+	printf("mem_bounds: refused generation: arena %zu -> %zu, %zu diagnostic(s)\n", held, arena_bytes(&d->arena), shcl_diag_count(d));
+	if (arena_bytes(&d->arena) > held + 200 * 256) fail("a refused generation kept its output");
+	if (shcl_diag_count(d) != 1) fail("generation faults accumulated across calls");
+	shcl_free(d);
+	d = shcl_parse("field: a\n\trequired: yes\n", 25);
+	held = arena_bytes(&d->arena);
+	for (int i = 0; i < 200; i++) { shcl_str t = shcl_generate(d, 1, &gok); if (!gok || !t.n) fail("generation failed"); shcl_reads_release(d); }
+	printf("mem_bounds: released generation: arena %zu -> %zu\n", held, arena_bytes(&d->arena));
+	if (arena_bytes(&d->arena) > held + 4096) fail("a released generation still grew the document");
+	shcl_free(d);
+
 	// A write lands in a bump arena and the value it replaced stays behind, so
 	// a loop rewriting one field grows the document until shcl_free. Compaction
 	// is the way out: the rebuilt document holds what it now contains and no
