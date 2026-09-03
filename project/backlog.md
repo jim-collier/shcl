@@ -561,9 +561,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-174000
 		- Closed: 20260903-131500
 
-	- 🔘 Item 42: three spec sentences the ports need.
+	- ✅ Item 42: three spec sentences the ports need.
 		- The Loose float-to-int tie rule (the code rounds half away from zero, `-2.5` to `-3`, while the formatter decision is half-even and Python's `round` is half-even). The aggregate-status ordering for array reads (`Good < Empty < NotFound < BadType < Multiple`, derived from the enum order in all four and written nowhere). And `format_f64`'s doc comment says the CLI uses it, which becomes true with item 1.
+		- Decided: the tie rounds half away from zero, which is what all four already do and what every language's own `round` but Python's does. Half-even is the formatter's rule for choosing a spelling; picking an integer is a different operation, and changing it would move values under every consumer.
+		- Fixed: the coercion table names the direction with both signs, and the aggregate-status rule gives the ordering. `format_f64`'s comment became true with item 1 and needed nothing.
+		- Pinned by `check-docs.bash` for both sentences, and by corpus rows: `003` reads `-2.5` and `3.5` at Loose, and `081` carries a wildcard read whose four slots are Good, Empty, NotFound and Multiple with the worst as the aggregate.
 		- Opened: 20260902-174100
+		- Closed: 20260903-140000
 
 	- 🔘 Item 43: generator gaps the spec does not rule on.
 		- A `desc` that is not one scalar (`desc: a, b`) produces no comment and no fault. `type: raw` with a `default` can never generate (the default is emitted inline, so V097 reports wrong type), and a default carrying a raw block is dropped silently. `init` prints `schema line 0` for V096 and V097, whose line space is the document.

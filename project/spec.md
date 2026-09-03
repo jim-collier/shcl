@@ -390,7 +390,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 - **Choosing `[#i]` vs `[value]` when mapping entities** (a consumer walking instances into its own model): prefer `Count` + `[#i]`. By-value selection matches the display form, so it misreads an entity whose name happens to be numeric (`[2020]` is an index; quote it to force a value match) and collapses two same-named entities into one answer (`Multiple`). A scalar written `"a, b"` and the two-element list `a, b` are distinguishable by spelling - the quoted selector `["a, b"]` is scalar-only, the bare one matches the display form of either - but iteration still wants position, not values. Index selection is positional, total, and collision-free.
 
 - `field[*]` is a wildcard returning every instance's value as an array: `GetIntArray("base[*].metrics.population")`. The result is positionally aligned to the instances - one slot per instance, in file order. If an instance lacks the sub-path, its slot is kept (status `NotFound`, carrying the zero value); slots are never silently dropped, so indices stay aligned with `Instances(field)`/`Count(field)`. A legitimately absent sub-path is not malformed, so it produces no diagnostic.
-	- Every array read carries one status per slot alongside the values (a slot list on the result). Each slot reads like a scalar of the target type: `Good`, `Empty` (empty value), `NotFound` (missing sub-path), `BadType` (uncoercible, raw block, or array where one scalar is expected), or `Multiple` (sub-path ambiguous within that instance). The read's aggregate status is the worst slot, so a partial miss can never report `Good`.
+	- Every array read carries one status per slot alongside the values (a slot list on the result). Each slot reads like a scalar of the target type: `Good`, `Empty` (empty value), `NotFound` (missing sub-path), `BadType` (uncoercible, raw block, or array where one scalar is expected), or `Multiple` (sub-path ambiguous within that instance). The read's aggregate status is the worst slot, ordered `Good` < `Empty` < `NotFound` < `BadType` < `Multiple`, so a partial miss can never report `Good`.
 	- `Instances` on a wildcard path keeps unresolved slots in the enumeration as empty strings, preserving index alignment with the read and with `Count` (which counts slots).
 	- The libraries substitute nothing per slot: the convenience tier's fallback is the whole array, returned only when the read is `Good`. Per-slot substitution is the CLI's `--default`, because a shell caller has no slot list to inspect.
 
@@ -669,7 +669,7 @@ The bundles are normative - a binding implements exactly this table:
 | Malformed line at load | skip + `error` diagnostic | skip + `error` diagnostic | **load fails**
 | Colon-less-path repair | applied + `error` diagnostic | applied + `error` diagnostic | **load fails**
 | `hint` diagnostics (e.g. repeated-leaf) | emitted | emitted | emitted (never fail a load)
-| float -> int | rounds (`3.5` -> 4) | `BadType` | `BadType`
+| float -> int | rounds half away from zero (`3.5` -> 4, `-2.5` -> -3) | `BadType` | `BadType`
 | Leading currency symbol -> number | stripped | `BadType` | `BadType`
 | `50%` -> float | 0.5 | `BadType` | `BadType`
 | Boolean token set | Standard set plus `t`/`f`, `y`/`n`, `enable(d)`/`disable(d)` | `true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0` | `true`/`false` only
