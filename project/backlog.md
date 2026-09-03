@@ -491,9 +491,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-173100
 		- Closed: 20260903-062000
 
-	- 🔘 Item 33: `tests/cli_pipe.rs` cannot see the `out!`-to-`println!` regression on Linux, and its header does not say so.
+	- ✅ Item 33: `tests/cli_pipe.rs` cannot see the `out!`-to-`println!` regression on Linux, and its header does not say so.
 		- With the macros' quiet exit replaced by a panic and `reset_sigpipe` kept, the test passes on Linux because SIGPIPE ends the process first; only the windows job pins the macros. A one-line note in the test header, so nobody reads the linux pass as covering 20260901b item 11.
+		- Fixed: the header says it - a green run on linux says nothing about the macros.
+		- Note: a comment carries no test of its own, and nothing else here is worth pinning; the four `cli-regress` rows added for 20260902 item 8 are what actually exercises the failure branch on linux.
 		- Opened: 20260902-173200
+		- Closed: 20260903-063000
 
 	- 🔘 Item 34: value identity ignores escapes while a selector resolves them, so one selector addresses two instances.
 		- `a: "q\"uote"` and `a: 'q"uote'` are two instances, in one file and across layers, yet `a["q\"uote"]` matches both (`count` 2, `get` exit 5), and writing `a["q\"uote"].j: 2` in an over layer merges into the base's instance while the block spelling appends a second. Names took the resolve-escapes rule on 2026-08-18; the spec's merge sentence says nothing about escapes for values. A spec decision: either the identity key resolves escapes (all four take the resolved string in the key and hash) or the spec says a selector may address several spellings.

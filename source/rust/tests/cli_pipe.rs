@@ -3,6 +3,11 @@
 //! and on windows, which has no such signal, it exits quietly. The release
 //! build used to abort there ("failed printing to stdout"), so piping `fmt`
 //! into `more` or `Select-Object -First` on windows was an abort.
+//!
+//! On linux this passes whether or not the macros handle the error, because
+//! the restored SIGPIPE default ends the process before the write result is
+//! read. Only the windows job pins the macros; a green run here says nothing
+//! about them.
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
