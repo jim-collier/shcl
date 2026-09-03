@@ -1813,7 +1813,14 @@ func (p *parser) hangDeeperPending(newIndent string) {
 					break
 				}
 			}
-			if target >= 0 {
+			// A root node's trailing comment emits at column zero, which is
+			// exactly how the document's own trailing comment is spelled, so
+			// keeping the two apart here made a merge depend on whether the
+			// layer had been formatted first. Let it orphan, the way a reload
+			// of this document's own output reads it. A comment deeper than the
+			// node keeps an indent of its own and comes back where it was, so
+			// it still hangs.
+			if target >= 0 && (!atOwnLevel || p.arena[target].parent != root) {
 				l := lead{text: pn.text, blankBefore: pn.blankBefore}
 				t := p.arena[target].trivMut()
 				if atOwnLevel {

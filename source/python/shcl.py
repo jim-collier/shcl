@@ -1397,7 +1397,14 @@ class _Parser:
 						target = node
 						at_own_level = len(ind) == len(p.indent)
 						break
-				if target is not None:
+				# A root node's trailing comment emits at column zero, which is
+				# exactly how the document's own trailing comment is spelled, so
+				# keeping the two apart here made a merge depend on whether the
+				# layer had been formatted first. Let it orphan, the way a
+				# reload of this document's own output reads it. A comment
+				# deeper than the node keeps an indent of its own and comes back
+				# where it was, so it still hangs.
+				if target is not None and (not at_own_level or self.arena[target].parent != ROOT):
 					lead = _Lead(p.text, p.blank_before)
 					if at_own_level:
 						self.arena[target]._triv().after.append(lead)

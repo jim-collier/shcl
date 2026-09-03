@@ -2193,7 +2193,14 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 				ShclStr ind = P->stack.data[ii].indent; size_t n = P->stack.data[ii].node;
 				if (n != ROOT && n != DEAD && n != UNOPENED && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; at_own_level = ind.n == p.indent.n; break; }
 			}
-			if (target != (size_t)-1) {
+			/* A root node's trailing comment emits at column zero, which is
+			   exactly how the document's own trailing comment is spelled, so
+			   keeping the two apart here made a merge depend on whether the
+			   layer had been formatted first. Let it orphan, the way a reload
+			   of this document's own output reads it. A comment deeper than the
+			   node keeps an indent of its own and comes back where it was, so
+			   it still hangs. */
+			if (target != (size_t)-1 && (!at_own_level || NODE(P->d, target).parent != ROOT)) {
 				ShclLead lead = lead_make(p.text, p.blank_before);
 				ShclTrivia *t = triv_mut(a, &NODE(P->d, target));
 				if (at_own_level) ShclVecLead_push(a, &t->after, lead);
