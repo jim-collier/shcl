@@ -175,6 +175,26 @@ eval "$(sed -n '/^fRemoveLaidDown()/,/^}/p' "${repoDir}/install.bash")"
 	exit "${nBad}"
 ) || nBad=$((nBad + 1))
 
+##	20260901b item 36: only a real file at the bin path was refused, so a
+##	symlink to a cargo-built or hand-built copy was replaced with nothing said.
+eval "$(sed -n '/^fLinkOwner()/,/^}/p' "${repoDir}/install.bash")"
+(
+	odir="${tmpDir}/owner"; mkdir -p "${odir}/dest" "${odir}/bin" "${odir}/other"
+	printf 'x\n' > "${odir}/dest/shcl"; printf 'x\n' > "${odir}/other/shcl"
+	[[ "$(fLinkOwner "${odir}/bin/shcl" "${odir}/dest")" == "free" ]] \
+		|| fBad "install.bash refused a bin path with nothing at it"
+	ln -s "${odir}/dest/shcl" "${odir}/bin/shcl"
+	[[ "$(fLinkOwner "${odir}/bin/shcl" "${odir}/dest")" == "ours" ]] \
+		|| fBad "install.bash refused its own link"
+	ln -sfn "${odir}/other/shcl" "${odir}/bin/shcl"
+	[[ "$(fLinkOwner "${odir}/bin/shcl" "${odir}/dest")" == "elsewhere ${odir}/other/shcl" ]] \
+		|| fBad "install.bash would replace a symlink pointing somewhere else"
+	rm -f "${odir}/bin/shcl"; printf 'x\n' > "${odir}/bin/shcl"
+	[[ "$(fLinkOwner "${odir}/bin/shcl" "${odir}/dest")" == "file" ]] \
+		|| fBad "install.bash would replace a real file at the bin path"
+	exit "${nBad}"
+) || nBad=$((nBad + 1))
+
 ##	20260901b item 18: the "not on your PATH" note compared strings against
 ##	`:dir:`, so a PATH element written with a trailing slash was not seen.
 eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"

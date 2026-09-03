@@ -240,9 +240,28 @@ fi
 ## Never over a real file: a bin/shcl that is not a symlink is a hand-placed
 ## install (the DIY route), and replacing it would throw that work away. Checked
 ## before any download so the refusal costs nothing.
-if [[ -e "${link}" && ! -L "${link}" ]]; then
-	die "${link} exists and is not a symlink - move it aside first, then re-run"
-fi
+## What is at the bin path: nothing, our own link, a real file, or a link
+## somewhere else. A real file is a hand-placed install (the DIY route) and a
+## link to a cargo-built or hand-built copy is as much a working install as
+## that; either used to be replaced with nothing said. The uninstall already
+## declines to remove a link that is not ours.
+fLinkOwner(){   ## fLinkOwner LINK DEST
+	local link="$1" dest="$2" tgt
+	if [[ -L "${link}" ]]; then
+		tgt="$(readlink -- "${link}")"
+		if [[ "${tgt}" == "${dest}/"* ]]; then printf 'ours\n'; else printf 'elsewhere %s\n' "${tgt}"; fi
+	elif [[ -e "${link}" ]]; then
+		printf 'file\n'
+	else
+		printf 'free\n'
+	fi
+}
+owner="$(fLinkOwner "${link}" "${dest}")"
+case "${owner}" in
+	free|ours) ;;
+	file) die "${link} exists and is not a symlink - move it aside first, then re-run" ;;
+	*)    die "${link} is a symlink to ${owner#elsewhere } - move it aside first, then re-run" ;;
+esac
 
 ## Pick the tag out of a /releases listing: highest version wins, never newest
 ## by date. GitHub's /releases/latest is date-ordered, so a patch back-ported to
