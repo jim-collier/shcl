@@ -154,6 +154,8 @@ rows=(
 	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
 	'children-missing|children %T% nope|-|0||-'
 	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	## 20260902 item 14: Go read a non-UTF-8 ops script as a usage error.
+	'ops-not-utf8|set %F%|\xff\n|8|-|-'
 	## 20260902 items 8 and 9: a stdout that could not be written was reported
 	## as success by three CLIs, and a stderr that could not be written aborted
 	## the reference with nothing on stdout at all.
