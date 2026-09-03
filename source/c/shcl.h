@@ -2852,6 +2852,13 @@ static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart
 				else {
 					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest);
 					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
+					else if (r.kind == R_SLOTS) {
+						// A wildcard after a wildcard: the inner slots join the
+						// outer list, so the two compose into one flat run of
+						// leaves rather than one unreadable slot.
+						for (size_t j = 0; j < r.slots.len; j++) ShclVecSlot_push(a, &slots, r.slots.data[j]);
+						continue;
+					}
 					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
 				}
 				ShclVecSlot_push(a, &slots, sl);
@@ -2881,6 +2888,13 @@ static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart
 				else {
 					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest);
 					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
+					else if (r.kind == R_SLOTS) {
+						// A wildcard after a wildcard: the inner slots join the
+						// outer list, so the two compose into one flat run of
+						// leaves rather than one unreadable slot.
+						for (size_t j = 0; j < r.slots.len; j++) ShclVecSlot_push(a, &slots, r.slots.data[j]);
+						continue;
+					}
 					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
 				}
 				ShclVecSlot_push(a, &slots, sl);

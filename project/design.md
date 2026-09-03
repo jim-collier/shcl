@@ -263,6 +263,8 @@ Both open points are settled:
 
 - Suggestions ("did you mean") do not reach below a `*`, since there is no fixed sibling list to suggest from, and a `repeat` on a `*` leaf disavows no `H001`.
 
+- A wildcard after a wildcard flattens. `server[*].*` used to report every slot `Multiple`, because the per-instance sub-resolution collapsed anything that was not exactly one node, and a nested slot list is never one node - so `Remove` on such a path removed nothing and a read of it could not answer. Among the options (call a nested list of one that slot and a nested list of none `NotFound`, or splice the inner slots into the outer run), splicing was decided: it is what "the two compose" already promised, it keeps `count`, `instances` and the read aligned with each other, and it makes the result one slot per resolved leaf, which is what a caller writing `server[*].*` is asking for. A repeated leaf under one instance stays `Multiple`, since that ambiguity is the same one a path with no wildcard has.
+
 **A quoted by-value selector is scalar-only.** By-value matching is against the display form, and an inline array's display joins elements with `, ` - so the scalar `"a, b"` and the list `a, b` met the same selector and a read could only answer Multiple.
 
 - Among the candidates (a scalar-only quoted spelling, an IndexOf companion, leaving it documented) we decided the quoted spelling wins: quoting already forces a value match over an index and already escapes sentinels and formats elsewhere this round, so "quoted selects the scalar spelling only" extends one rule instead of adding a second construct.

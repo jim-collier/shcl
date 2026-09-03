@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A wildcard after a wildcard flattens instead of answering `Multiple` for every slot. `server[*].*` reported one unreadable slot per instance, `count` counted instances rather than leaves, and `Remove` on such a path removed nothing. The inner slots now join the outer run, so the result is one slot per resolved leaf and the two wildcards compose the way the spec says they do.
+
 - A float literal past the double range (`1e400`) reads as `BadType` instead of an infinity at `Good`. No double holds the value, and the infinity could not be written back, so a read-modify-write left a field the reader then refused. A literal below the range still reads as zero.
 
 - `get`, `count` and `instances` print the load's diagnostics to stderr, the way `fmt` and `set` already did. Below strict a damaged file used to read back a correct value at exit 0 with nothing said, so the only way to learn a line had been dropped was a separate `check` run. One report per run; stdout is unchanged.

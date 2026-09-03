@@ -67,11 +67,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-170100
 		- Closed: 20260902-183000
 
-	- 🔘 Item 3: a wildcard followed by another wildcard reports every slot `Multiple`, and `Remove` on it removes nothing.
+	- ✅ Item 3: a wildcard followed by another wildcard reports every slot `Multiple`, and `Remove` on it removes nothing.
 		- Reproduced in all four. `server[*].*` on three servers with two, one and no children gives three `Multiple` slots at exit 5, `count` says 3, `instances` prints three empty lines, and `set --remove='server[*].*'` leaves the document unchanged at exit 0. The spec says the two compose and that `Remove` on a wildcard removes every resolved slot. Same for `*.*` and `a[*].b[*]`.
 		- Cause: `resolve_from` resolves the rest of the path per instance and maps anything that is not exactly one node to `Multiple`, so a nested slot list is `Multiple` whatever its length. Rust `lib.rs` both wildcard arms, Go `resolveFrom`, Python `_resolve_from`, C `resolve_from`.
-		- Decided: needs a shape first. Minimal: a nested list of zero is `NotFound` and of one is that slot. Full: flatten nested lists so `count`, `instances`, `lines` and the read stay aligned. Either way `Remove` then removes the resolved leaves. No corpus case has a wildcard after a wildcard.
+		- Decided: flatten. The inner slots join the outer run, so the result is one slot per resolved leaf and `count`, `instances`, the read and `Remove` all see the same list. A repeated leaf under one instance still reports `Multiple`, since that is the same ambiguity a path with no wildcard has. Reasoning in `design.md` -> open sections; the spec's compose sentence now says so, and there is a changelog line under Changed.
+		- Fixed: the two wildcard arms in all four splice a nested slot list into the outer one. Python's flat sub-walk grew an explicit stack so it can widen the run instead of ending it there; the other three had a recursive call already.
+		- Pinned by corpus `081` (three instances with two, one and no children, plus a repeated leaf and a `*.port` read whose slots straddle two parents; the write dimension removes `server[*].*`). All four failed it before on the reads, the instance list and the removal, and pass now.
 		- Opened: 20260902-170200
+		- Closed: 20260902-190000
 
 	- 🔘 Item 4: a wildcard read over a parent that does not exist reports `Empty` where the path does not resolve.
 		- Reproduced in all four. On a document with no `x`, `get --int --array x[*]` exits 2 and `get --int x` exits 3. The spec defines `Empty` as present but no value, and this is the tri-state the spec advertises.

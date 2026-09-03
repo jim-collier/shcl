@@ -3275,6 +3275,10 @@ impl Document {
 						match self.resolve_from(&[inst], rest) {
 							Resolved::One(x) => slots.push(Ok(x)),
 							Resolved::None => slots.push(Err(Status::NotFound)),
+							// A wildcard after a wildcard: the inner slots join the
+							// outer list, so the two compose into one flat run of
+							// leaves rather than one unreadable slot.
+							Resolved::Slots(inner) => slots.extend(inner),
 							_ => slots.push(Err(Status::Multiple)),
 						}
 					}
@@ -3310,6 +3314,10 @@ impl Document {
 							match self.resolve_from(&[inst], rest) {
 								Resolved::One(x) => slots.push(Ok(x)),
 								Resolved::None => slots.push(Err(Status::NotFound)),
+								// A wildcard after a wildcard: the inner slots join the
+								// outer list, so the two compose into one flat run of
+								// leaves rather than one unreadable slot.
+								Resolved::Slots(inner) => slots.extend(inner),
 								_ => slots.push(Err(Status::Multiple)),
 							}
 						}
