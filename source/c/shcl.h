@@ -4585,21 +4585,38 @@ static int v_single_text(ShclArena *a, const ShclValue *v, ShclStr *out) {
 }
 
 // Field-wise datetime equality (struct compare would read unset fields).
-static int v_dt_equal(const shcl_datetime *x, const shcl_datetime *y) {
+/* Two datetimes naming the same moment, whatever the spelling. The struct
+   mirrors what was written, so 12:00:00Z and 12:00:00+00:00 are different values
+   field by field while naming one time, and 12:00:00 and 12:00:00.0 differ only
+   in written precision. A [value] selector matches on text, but an allowed set
+   is about the value, so it compares here. An absent zone is local and matches
+   no zone at all - that is the one spelling difference that is a real
+   difference. */
+static ShclStr v_frac_key(ShclStr f) {
+	while (f.n && f.p[f.n - 1] == '0') f.n--;
+	return f;
+}
+static int v_same_moment(const shcl_datetime *x, const shcl_datetime *y) {
 	if (x->has_date != y->has_date || x->has_time != y->has_time) return 0;
 	if (x->has_date && (x->year != y->year || x->month != y->month || x->day != y->day)) return 0;
 	if (x->has_time) {
 		if (x->hour != y->hour || x->minute != y->minute || x->has_sec != y->has_sec) return 0;
 		if (x->has_sec && x->sec != y->sec) return 0;
 	}
-	if (x->has_frac != y->has_frac) return 0;
-	if (x->has_frac) {
-		ShclStr a; a.p = x->frac.p; a.n = x->frac.n;
-		ShclStr b; b.p = y->frac.p; b.n = y->frac.n;
-		if (!s_eq(a, b)) return 0;
+	{
+		ShclStr a; a.p = x->has_frac ? x->frac.p : ""; a.n = x->has_frac ? x->frac.n : 0;
+		ShclStr b; b.p = y->has_frac ? y->frac.p : ""; b.n = y->has_frac ? y->frac.n : 0;
+		if (!s_eq(v_frac_key(a), v_frac_key(b))) return 0;
 	}
-	if (x->zone != y->zone) return 0;
-	if (x->zone == SHCL_ZONE_OFFSET && x->off_min != y->off_min) return 0;
+	{
+		int xh = x->zone != SHCL_ZONE_NONE, yh = y->zone != SHCL_ZONE_NONE;
+		if (xh != yh) return 0;
+		if (xh) {
+			int xo = x->zone == SHCL_ZONE_OFFSET ? x->off_min : 0;
+			int yo = y->zone == SHCL_ZONE_OFFSET ? y->off_min : 0;
+			if (xo != yo) return 0;
+		}
+	}
 	return 1;
 }
 
@@ -5060,7 +5077,7 @@ static void v_node(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCons *c,
 		if (c->has_allowed && c->akind == ALLOW_DATES) {
 			for (size_t x = 0; x < nels; x++) {
 				int found = 0;
-				for (size_t y = 0; y < c->a_n; y++) if (v_dt_equal(&c->a_dates[y], &vals[x])) { found = 1; break; }
+				for (size_t y = 0; y < c->a_n; y++) if (v_same_moment(&c->a_dates[y], &vals[x])) { found = 1; break; }
 				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
 			}
 		}

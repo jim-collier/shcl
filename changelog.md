@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A `datetime` `allowed` set compares the moment, not the spelling. `allowed: 12:00:00Z` refused a config saying `12:00:00+00:00`, and `12:00:00` refused `12:00:00.0`, because the value mirrors what was written and the comparison was field by field. A value with no zone is still local and still matches no zoned one - that is the one spelling difference that is a real difference.
+
 - Diagnostics under `--layer` say which file they came from, a strict failure in a layer included. Two layers with a bad line 2 printed the same thing twice with nothing to tell them apart. A single-file load is unchanged.
 
 - Three generation gaps. A `desc` holding a comma is several elements, and the comment came out missing entirely; it carries the whole sentence now. A `default` with no value-line spelling - a raw block, or any default under `type: raw` - is a `V092` fault at its schema line instead of being dropped silently or reported as a wrong type in the output. And `V096`/`V097` are printed as `line 0` rather than `schema line 0`: they are about the generated document, not a line of the schema.

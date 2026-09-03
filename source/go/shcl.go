@@ -5696,14 +5696,31 @@ func singleText(v *value) (string, bool) {
 
 // dtEqual compares datetimes field-wise (Zone is a pointer, so == would
 // compare identity, not value).
-func dtEqual(a, b DateTime) bool {
-	if (a.Zone == nil) != (b.Zone == nil) {
-		return false
+// sameMoment reports two datetimes naming the same moment, whatever the
+// spelling. The struct mirrors what was written, so 12:00:00Z and
+// 12:00:00+00:00 are different values field by field while naming one time, and
+// 12:00:00 and 12:00:00.0 differ only in written precision. A [value] selector
+// matches on text, but an allowed set is about the value, so it compares here.
+// An absent zone is local and matches no zone at all - that is the one spelling
+// difference that is a real difference.
+func sameMoment(a, b DateTime) bool {
+	offset := func(z *Zone) (int, bool) {
+		if z == nil {
+			return 0, false
+		}
+		if z.Kind == ZoneUTC {
+			return 0, true
+		}
+		return z.OffsetMinutes, true
 	}
-	if a.Zone != nil && *a.Zone != *b.Zone {
+	ao, ahas := offset(a.Zone)
+	bo, bhas := offset(b.Zone)
+	if ahas != bhas || (ahas && ao != bo) {
 		return false
 	}
 	a.Zone, b.Zone = nil, nil
+	a.Frac = strings.TrimRight(a.Frac, "0")
+	b.Frac = strings.TrimRight(b.Frac, "0")
 	return a == b
 }
 
@@ -6963,7 +6980,7 @@ func containsBool(xs []bool, v bool) bool {
 
 func containsDate(xs []DateTime, v DateTime) bool {
 	for _, x := range xs {
-		if dtEqual(x, v) {
+		if sameMoment(x, v) {
 			return true
 		}
 	}

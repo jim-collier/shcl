@@ -622,9 +622,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-192500
 		- Closed: 20260903-190000
 
-	- 🔘 Item 27: datetime `allowed` equality is on the written shape, so `-00:00` equals `+00:00` and neither equals `Z`, and `12:00:00` is not `12:00:00.0`.
+	- ✅ Item 27: datetime `allowed` equality is on the written shape, so `-00:00` equals `+00:00` and neither equals `Z`, and `12:00:00` is not `12:00:00.0`.
 		- All four agree. The struct mirrors what was written, so this is arguably by design, but it is not a rule anyone would write down. Either compare on a normalized key or state the as-written rule in the spec.
+		- Decided: compare the moment. The `allowed` row already says the comparison is in the coerced space of `type`, and for a datetime that space is a time, not a spelling - the struct mirroring the source is right for reads and wrong for a set membership test. It only ever admits values that used to be refused, so nothing that passed starts failing.
+		- Fixed: the `allowed` comparison in all four ignores the zone spelling (`Z` and a zero offset are one zone) and trailing zeros in the fraction. An absent zone still matches no zoned value: a floating time is a different thing.
+		- Pinned by corpus `085`, whose schema admits one moment in five spellings and refuses the floating one. All four reported three extra V004s before.
 		- Opened: 20260901-192600
+		- Closed: 20260903-200000
 
 	- 🔘 Item 28: a raw body in a `V004` message embeds its newlines, so one diagnostic spans several stderr lines.
 		- Opened: 20260901-192700
