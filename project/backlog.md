@@ -715,9 +715,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-193700
 		- Closed: 20260904-015000
 
-	- 🔘 Item 39: a read-only HOME fails after both downloads, with two raw `mkdir` errors.
+	- ✅ Item 39: a read-only HOME fails after both downloads, with two raw `mkdir` errors.
 		- The plan step could probe the nearest existing parent for writability before spending the downloads.
+		- Fixed: the three destinations are probed before anything is fetched, each by walking up to whatever exists, and the refusal names the directory that cannot be written. A sudo install skips the probe, since root is what writes there.
+		- Pinned by a `shell-regress` block over the walk-up and a read-only home, plus a source-order check that the probe precedes the first download.
+		- Note: an install and an uninstall were run end to end against a throwaway home, which also exercised items 36 and 37.
 		- Opened: 20260901-193800
+		- Closed: 20260904-015500
 
 	- 🔘 Item 40: `install-dev.bash` leaves a fresh clone on `main` while contributing.md says to branch from `dev`.
 		- Opened: 20260901-193900

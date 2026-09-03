@@ -327,6 +327,24 @@ if (( ! assume_yes )); then
 	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
 fi
 
+## Nothing is downloaded before the destinations are known to be writable: a
+## read-only HOME used to get through both downloads and then fail on a raw
+## mkdir error, twice. A sudo install writes as root, so the question is only
+## about what this shell can reach.
+fNearestExisting(){   ## fNearestExisting PATH
+	local p="$1"
+	while [[ -n "${p}" && "${p}" != "/" && "${p}" != "." && ! -e "${p}" ]]; do
+		p="$(dirname -- "${p}")"
+	done
+	printf '%s\n' "${p}"
+}
+if [[ -z "${asroot}" ]]; then
+	for want in "${dest}" "$(dirname -- "${link}")" "$(dirname -- "${manlink}")"; do
+		near="$(fNearestExisting "${want}")"
+		[[ -d "${near}" && -w "${near}" ]] || die "cannot write ${want}: ${near} is not writable"
+	done
+fi
+
 ## Download and verify the binary.
 echo
 asset="shcl-${version}-linux-${arch}"
