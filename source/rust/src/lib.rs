@@ -654,8 +654,14 @@ fn looks_like_bracket_array(content: &str) -> bool {
 	}
 }
 
-fn fold_name(s: &str) -> String {
-	s.to_ascii_lowercase() // folds A-Z only; non-ASCII passes through untouched
+/// Folds A-Z only; non-ASCII passes through untouched. Borrowed when there is
+/// nothing to fold, the way key_text borrows when there is nothing to resolve.
+fn fold_name(s: &str) -> std::borrow::Cow<'_, str> {
+	if s.bytes().any(|b| b.is_ascii_uppercase()) {
+		std::borrow::Cow::Owned(s.to_ascii_lowercase())
+	} else {
+		std::borrow::Cow::Borrowed(s)
+	}
 }
 
 fn is_bare_name_char(c: char) -> bool {
@@ -1306,12 +1312,25 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 		if star && selector.is_some() {
 			return Err("selector on a name wildcard".into());
 		}
+		// Names resolve escapes, the same rule values follow when they are
+		// compared: two spellings of one name are one name. name_src keeps the
+		// source spelling, which is what `authored_name` hands back - empty
+		// when it matches, the same sentinel NodeData uses.
+		//
+		// A name with no backslash and no upper case is already its own
+		// resolved, folded spelling, so the scanner's buffer becomes the name
+		// and nothing is allocated. That is nearly every name in a document,
+		// and this runs once per segment per line: building and then freeing
+		// two more strings each time was a third of the parse on a flat file.
+		let plain = !name.contains('\\') && !name.bytes().any(|b| b.is_ascii_uppercase());
+		let (seg_name, seg_src) = if plain {
+			(name, String::new())
+		} else {
+			(fold_name(&key_text(&name)).into_owned(), name)
+		};
 		segments.push(Segment {
-			// Names resolve escapes, the same rule values follow when they are
-			// compared: two spellings of one name are one name. name_src keeps
-			// the source spelling, which is what `authored_name` hands back.
-			name: fold_name(&apply_escapes(&name)),
-			name_src: name,
+			name: seg_name,
+			name_src: seg_src,
 			selector,
 			star,
 		});
