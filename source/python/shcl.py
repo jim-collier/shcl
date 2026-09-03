@@ -3725,13 +3725,44 @@ class FileStatus(Enum):
 	Unreadable = 3   # exists but could not be read (permissions, a directory, bad encoding, past a read_file cap)
 
 
+# The attribute bits a publish will not carry across by itself - hidden and
+# system on windows, nothing anywhere else. ReplaceFile's documented preserve
+# list is creation time, short name, object id, DACLs, security attributes,
+# encryption, compression and named streams, and the os.replace fallback carries
+# nothing at all. Read-only is handled separately: it has to come OFF first.
+_CARRIED_ATTRS = 0x2 | 0x4   # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+
+
+def _carried_attrs(st):
+	return getattr(st, "st_file_attributes", 0) & _CARRIED_ATTRS if os.name == "nt" else 0
+
+
+def _restore_attrs(target, bits):
+	import ctypes
+
+	# WinDLL exists only on windows, and mypy checks this file against the
+	# POSIX stubs, where the name is simply absent.
+	k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+	k32.GetFileAttributesW.restype = ctypes.c_ulong
+	k32.GetFileAttributesW.argtypes = [ctypes.c_wchar_p]
+	k32.SetFileAttributesW.restype = ctypes.c_int
+	k32.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_ulong]
+	now = k32.GetFileAttributesW(str(target))
+	if now != 0xFFFFFFFF:
+		k32.SetFileAttributesW(str(target), now | bits)
+
+
 def _publish_file(tmp, target):
 	# Move the finished temp file over the target. On windows that means
 	# ReplaceFile rather than a rename: a rename publishes a brand-new file and
-	# leaves the destination's ACLs, attributes and named streams behind, which
-	# ReplaceFile carries onto the replacement instead. It needs the destination
-	# to exist, and it fails rather than skip a merge it cannot do (no WRITE_DAC,
-	# say), so a create and any failure fall back to os.replace.
+	# leaves the destination's ACLs, security attributes and named streams
+	# behind, which ReplaceFile carries onto the replacement instead. What it
+	# does not carry is the basic attributes - hidden and system - which the save
+	# re-applies by hand. It needs the destination to exist, and it fails rather
+	# than skip a merge it cannot do (no WRITE_DAC, say), so a create and any
+	# failure fall back to os.replace. WRITE_THROUGH is asked for and documented
+	# as unsupported by ReplaceFile, so durability rests on the file's own
+	# fsync.
 	if os.name == "nt" and os.path.exists(target):
 		import ctypes
 
@@ -3863,6 +3894,10 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	# publish and goes back on the new file after it - the same outcome as
 	# POSIX, where the rename never needed the file writable.
 	read_only = os.name == "nt" and existing is not None and not existing.st_mode & stat.S_IWRITE
+	# Hidden and system ride back the same way: ReplaceFile's documented preserve
+	# list does not include the basic attributes, and the os.replace fallback
+	# carries nothing, so a hidden config came back visible.
+	carried = _carried_attrs(existing) if existing is not None else 0
 	born = 0o600 if existing is not None else 0o666
 	f = None
 	tmp = ""
@@ -3912,6 +3947,8 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	try:
 		_publish_file(tmp, target)
 	except OSError as e:
+		if carried:
+			_restore_attrs(target, carried)
 		if read_only:
 			_set_read_only(target, True)
 		try:
@@ -3919,6 +3956,8 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 		except OSError:
 			pass
 		return f"{file}: {e}"
+	if carried:
+		_restore_attrs(target, carried)
 	if read_only:
 		_set_read_only(target, True)
 	_sync_dir(d)

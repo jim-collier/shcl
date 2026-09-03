@@ -269,10 +269,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-172600
 		- Closed: 20260903-032000
 
-	- 🔘 Item 28: the windows publish's durability claim rests on a flag Microsoft documents as unsupported, and "attributes" in the carry-over claim is broader than what `ReplaceFile` preserves.
+	- ✅ Item 28: the windows publish's durability claim rests on a flag Microsoft documents as unsupported, and "attributes" in the carry-over claim is broader than what `ReplaceFile` preserves.
 		- Plausible: `design.md`'s file-tier decision says Windows has no directory sync and `ReplaceFile` is asked to write through instead; the Go comment says the flag means "do not return until the change is on the disk". Microsoft's `ReplaceFileW` reference lists `REPLACEFILE_WRITE_THROUGH` as "This value is not supported", and its preserve list (creation time, short name, object id, DACLs, security attributes, encryption, compression, named streams) does not include the basic attributes. Under wine, hidden and system are lost across a `set --write` in all three bindings; only read-only, which the code handles by hand, survives. Real NTFS could not be checked here.
-		- Note: reword the design entry and the Go comment; either copy hidden and system by hand around the publish the way read-only is, or narrow the spec's "attributes" to Microsoft's list. A hosted-job fixture with `0x2` and `0x4` settles which.
+		- Decided: carry them. Losing hidden on a saved config is a change the author never asked for and cannot prevent except by re-setting it after every write, so the attributes are re-applied rather than the promise narrowed.
+		- Fixed: all four re-apply hidden and system to the target after the publish, alongside the read-only restore that was already there. Go does it through two more hooks in `shcl_windows.go`, so `shcl.go` stays droppable on its own. The wording in `design.md`, `spec.md` and the four publish comments now says security attributes and named streams, says the basic attributes are re-applied by hand, and says the WRITE_THROUGH flag is documented as unsupported so durability rests on the file's own flush.
+		- Pinned by the windows save fixture in all four runners: a file marked hidden and system is saved and must come back with both. Rust, Go and C fail it on the old code under wine; Python's runs on the hosted job, where windows Python is.
 		- Opened: 20260902-172700
+		- Closed: 20260903-041500
 
 - Code review 20260901b:
 

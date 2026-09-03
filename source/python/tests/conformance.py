@@ -1058,6 +1058,22 @@ def main():
 			if [n for n in os.listdir(td) if ".tmp" in n]:
 				raise SystemExit("read-only rewrite left a temp file")
 			os.chmod(ro, stat.S_IREAD | stat.S_IWRITE)
+			# Hidden and system come back too: ReplaceFile's preserve list does
+			# not include the basic attributes and the os.replace fallback
+			# carries none, so a hidden config used to come back visible.
+			import ctypes
+
+			# WinDLL and st_file_attributes exist only on windows, and mypy
+			# checks this file against the POSIX stubs, where both are absent.
+			k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+			k32.SetFileAttributesW(ro, 0x2 | 0x4)
+			shcl.Document.parse("a: 3\n").save_file(ro)
+			after = os.stat(ro).st_file_attributes  # type: ignore[attr-defined]
+			if not after & 0x2:
+				raise SystemExit("file did not come back hidden")
+			if not after & 0x4:
+				raise SystemExit("file did not come back system")
+			k32.SetFileAttributesW(ro, 0x80)
 		# A document holding a lone surrogate has no UTF-8 spelling; the save
 		# fails like any other failed write, and leaves no temp file behind.
 		surdoc = shcl.Document.parse("a: 1\n")

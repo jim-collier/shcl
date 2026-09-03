@@ -1192,6 +1192,18 @@ int main(int argc, char **argv) {
 		if (!rt || rn != 5 || memcmp(rt, "a: 2\n", 5) != 0) fail("readonly", "file not rewritten");
 		free(rt);
 		if (!(GetFileAttributesA(rfile) & FILE_ATTRIBUTE_READONLY)) fail("readonly", "file did not come back read-only");
+		// Hidden and system come back too: ReplaceFile's preserve list does not
+		// include the basic attributes and the fallback move carries none, so a
+		// hidden config used to come back visible.
+		SetFileAttributesA(rfile, (GetFileAttributesA(rfile) & ~(DWORD)FILE_ATTRIBUTE_READONLY) | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+		shcl_doc *hd = shcl_parse("a: 3\n", 5);
+		if (shcl_save_file(hd, rfile) != SHCL_SAVE_OK) fail("attrs", "save over a hidden file failed");
+		DWORD after = GetFileAttributesA(rfile);
+		if (!(after & FILE_ATTRIBUTE_HIDDEN)) fail("attrs", "file did not come back hidden");
+		if (!(after & FILE_ATTRIBUTE_SYSTEM)) fail("attrs", "file did not come back system");
+		shcl_free(hd);
+		SetFileAttributesA(rfile, FILE_ATTRIBUTE_NORMAL);
+		SetFileAttributesA(rfile, GetFileAttributesA(rfile) | FILE_ATTRIBUTE_READONLY);
 		// The temp name starts with a dot, so only the two directory entries
 		// are skipped, not every dotfile.
 		DIR *rdd = opendir(rdir); int left = 0; const struct dirent *re;

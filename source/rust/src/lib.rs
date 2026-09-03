@@ -2880,11 +2880,21 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	// Windows: a read-only file cannot be replaced, and a read-only temp cannot
 	// be removed after a failure, so the attribute comes off the target for the
 	// publish and goes back on the new file after it - the same outcome as
-	// POSIX, where the rename never needed the file writable.
+	// POSIX, where the rename never needed the file writable. Hidden and system
+	// ride back the same way: ReplaceFile's documented preserve list does not
+	// include the basic attributes, and the rename fallback carries nothing, so
+	// a hidden config came back visible.
 	#[cfg(windows)]
 	let read_only = existing
 		.as_ref()
 		.is_some_and(|m| m.permissions().readonly());
+	#[cfg(windows)]
+	let carried = {
+		use std::os::windows::fs::MetadataExt;
+		existing.as_ref().map_or(0, |m| {
+			m.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)
+		})
+	};
 	let mut file_handle = None;
 	let mut tmp = std::path::PathBuf::new();
 	let mut last = String::new();
@@ -2934,6 +2944,10 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	}
 	let published = publish_file(&tmp, &target);
 	#[cfg(windows)]
+	if carried != 0 {
+		set_attributes(&target, carried); // whether or not the publish went through
+	}
+	#[cfg(windows)]
 	if read_only {
 		set_read_only(&target, true); // whether or not the publish went through
 	}
@@ -2981,6 +2995,11 @@ fn resolve_target(file: &str) -> Result<std::path::PathBuf, String> {
 }
 
 #[cfg(windows)]
+const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+#[cfg(windows)]
+const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+
+#[cfg(windows)]
 fn set_read_only(path: &std::path::Path, on: bool) {
 	if let Ok(m) = std::fs::metadata(path) {
 		let mut perms = m.permissions();
@@ -2989,12 +3008,38 @@ fn set_read_only(path: &std::path::Path, on: bool) {
 	}
 }
 
+/// Turn attribute bits back on after a publish. std has no setter for the basic
+/// attributes, so this is a few lines of FFI beside the ReplaceFile ones.
+#[cfg(windows)]
+fn set_attributes(path: &std::path::Path, bits: u32) {
+	use std::os::windows::ffi::OsStrExt;
+	use std::os::windows::fs::MetadataExt;
+	#[link(name = "kernel32")]
+	unsafe extern "system" {
+		fn SetFileAttributesW(name: *const u16, attrs: u32) -> i32;
+	}
+	let Ok(m) = std::fs::metadata(path) else {
+		return;
+	};
+	let wide: Vec<u16> = path
+		.as_os_str()
+		.encode_wide()
+		.chain(std::iter::once(0))
+		.collect();
+	unsafe {
+		SetFileAttributesW(wide.as_ptr(), m.file_attributes() | bits);
+	}
+}
+
 /// Move the finished temp file over the target. On windows that means
 /// ReplaceFile rather than a rename: a rename publishes a brand-new file and
-/// leaves the destination's ACLs, attributes and named streams behind, which
-/// ReplaceFile carries onto the replacement instead. It needs the destination
-/// to exist, and it fails rather than skip a merge it cannot do (no WRITE_DAC,
-/// say), so a create and any failure fall back to the rename.
+/// leaves the destination's ACLs, security attributes and named streams behind,
+/// which ReplaceFile carries onto the replacement instead. What it does not
+/// carry is the basic attributes - hidden and system - which the save re-applies
+/// by hand. It needs the destination to exist, and it fails rather than skip a
+/// merge it cannot do (no WRITE_DAC, say), so a create and any failure fall back
+/// to the rename. WRITE_THROUGH is asked for and documented as unsupported by
+/// ReplaceFile, so the durability here rests on the file's own fsync.
 fn publish_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
 	#[cfg(windows)]
 	if target.exists() && windows_replace_file(tmp, target) {

@@ -5447,12 +5447,15 @@ static int shcl_errno_from_win32(DWORD e) {
 	}
 }
 
-// ReplaceFile carries the destination's ACLs, attributes and named streams
-// onto the replacement; a move publishes a brand-new file and leaves all of it
-// behind. It needs the destination to exist, and it fails rather than skip a
-// merge it cannot do (no WRITE_DAC, say), so a create and any failure fall back
-// to MoveFileEx - which is there regardless because C rename() will not
-// replace an existing file on Windows at all.
+// ReplaceFile carries the destination's ACLs, security attributes and named
+// streams onto the replacement; a move publishes a brand-new file and leaves
+// all of it behind. What it does NOT carry is the basic attributes - hidden and
+// system - which the save re-applies by hand. It needs the destination to
+// exist, and it fails rather than skip a merge it cannot do (no WRITE_DAC,
+// say), so a create and any failure fall back to MoveFileEx - which is there
+// regardless because C rename() will not replace an existing file on Windows at
+// all. WRITE_THROUGH is asked for and documented as unsupported by ReplaceFile;
+// the move's own WRITE_THROUGH is the one that means something.
 static int shcl_publish_file(const wchar_t *tmp, const wchar_t *target) {
 	int ok = (GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES
 			&& ReplaceFileW(target, tmp, NULL, REPLACEFILE_WRITE_THROUGH, NULL, NULL))
@@ -5588,9 +5591,14 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	// A read-only file cannot be replaced, and a read-only temp cannot be
 	// removed after a failure, so the attribute comes off the target for the
 	// publish and goes back on the new file after it - the same outcome as
-	// POSIX, where the rename never needed the file writable.
+	// POSIX, where the rename never needed the file writable. Hidden and system
+	// ride back the same way: ReplaceFile's documented preserve list does not
+	// include the basic attributes, and the fallback move carries nothing, so a
+	// hidden config came back visible.
+	#define SHCL_CARRIED_ATTRS ((DWORD)(FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
 	DWORD attrs = GetFileAttributesW(wtarget);
 	int read_only = attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY) != 0;
+	DWORD carried = attrs == INVALID_FILE_ATTRIBUTES ? 0 : (attrs & SHCL_CARRIED_ATTRS);
 	#define SHCL_FILE_CLEANUP() do { free(wtarget); free(wtmp); } while (0)
 	#define SHCL_FILE_UNLINK() _wremove(wtmp)
 #endif
@@ -5639,10 +5647,12 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #ifdef _WIN32
 	if (read_only) SetFileAttributesW(wtarget, attrs & ~(DWORD)FILE_ATTRIBUTE_READONLY);
 	ok = ok && shcl_publish_file(wtmp, wtarget);
-	if (read_only) {
+	if (read_only || carried) {
 		DWORD now = GetFileAttributesW(wtarget);
-		if (now != INVALID_FILE_ATTRIBUTES) SetFileAttributesW(wtarget, now | FILE_ATTRIBUTE_READONLY);
+		if (now != INVALID_FILE_ATTRIBUTES)
+			SetFileAttributesW(wtarget, now | carried | (read_only ? (DWORD)FILE_ATTRIBUTE_READONLY : 0));
 	}
+	#undef SHCL_CARRIED_ATTRS
 #else
 	ok = ok && rename(tmp, target) == 0;
 	if (ok) shcl_sync_dir(target);

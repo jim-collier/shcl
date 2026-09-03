@@ -1309,8 +1309,39 @@ fn save_rewrites_a_read_only_file() {
 	let mut perms = std::fs::metadata(&f).unwrap().permissions();
 	perms.set_readonly(false);
 	std::fs::set_permissions(&f, perms).unwrap();
+	// Hidden and system come back too: ReplaceFile's preserve list does not
+	// include the basic attributes and the fallback rename carries none, so a
+	// hidden config used to come back visible.
+	set_attrs(&f, 0x2 | 0x4);
+	Document::parse("a: 3\n")
+		.save_file(f.to_str().unwrap())
+		.unwrap();
+	let after = {
+		use std::os::windows::fs::MetadataExt;
+		std::fs::metadata(&f).unwrap().file_attributes()
+	};
+	assert!(after & 0x2 != 0, "file did not come back hidden");
+	assert!(after & 0x4 != 0, "file did not come back system");
+	set_attrs(&f, 0x80); // FILE_ATTRIBUTE_NORMAL, so the cleanup below works
 	let _ = std::fs::remove_file(&f);
 	let _ = std::fs::remove_dir(&dir);
+}
+
+#[cfg(windows)]
+fn set_attrs(path: &std::path::Path, attrs: u32) {
+	use std::os::windows::ffi::OsStrExt;
+	#[link(name = "kernel32")]
+	unsafe extern "system" {
+		fn SetFileAttributesW(name: *const u16, attrs: u32) -> i32;
+	}
+	let wide: Vec<u16> = path
+		.as_os_str()
+		.encode_wide()
+		.chain(std::iter::once(0))
+		.collect();
+	unsafe {
+		SetFileAttributesW(wide.as_ptr(), attrs);
+	}
 }
 
 #[test]
