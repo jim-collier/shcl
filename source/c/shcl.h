@@ -1490,11 +1490,14 @@ static const uint32_t SHCL_CURRENCY[] = {
 	'$', 0xA2, 0xA3, 0xA4, 0xA5, 0x20A9, 0x20AA, 0x20AB, 0x20AC, 0x20AD,
 	0x20AE, 0x20B1, 0x20B2, 0x20B4, 0x20B9, 0x20BA, 0x20BC, 0x20BD, 0x20BE, 0x20BF,
 };
+/* The remainder after a leading currency symbol, with the space a person writes
+   after one taken off - `$ 1200` reached the int path's thousands branch, which
+   trims, and the float path's shape test, which does not. */
 static ShclStr strip_currency(ShclStr t) {
 	if (t.n == 0) return t;
 	uint32_t c; size_t l = utf8_decode(t.p, t.n, 0, &c);
 	for (size_t i = 0; i < sizeof(SHCL_CURRENCY) / sizeof(SHCL_CURRENCY[0]); i++)
-		if (c == SHCL_CURRENCY[i]) return s_slice(t, l, t.n);
+		if (c == SHCL_CURRENCY[i]) return trim_start(s_slice(t, l, t.n));
 	return t;
 }
 
