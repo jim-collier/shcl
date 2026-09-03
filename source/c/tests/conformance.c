@@ -1520,6 +1520,88 @@ int main(int argc, char **argv) {
 		shcl_free(wb); shcl_free(wd);
 	}
 
+#ifdef _WIN32
+	/* Windows-only, and wine cannot show either one: it maps onto a filesystem
+	   with no MAX_PATH and follows a unix symlink before the API ever sees it.
+	   The hosted windows job is where these are judged. */
+	{
+		/* A path past MAX_PATH. The narrow and wide file calls both refuse one
+		   unless it carries the \\?\ prefix, so a save through a deep tree used
+		   to fail on windows and work everywhere else. */
+		char lp[1024], real_short[320]; size_t ln = 0;
+		snprintf(real_short, sizeof real_short, "%s/shcl-short-%ld.shcl", tmp_root(), (long)getpid());
+		size_t lbase = (size_t)snprintf(lp, sizeof lp, "%s/shcl-lp-%ld", tmp_root(), (long)getpid());
+		ln = lbase;
+		_mkdir(lp);
+		for (int i = 0; i < 12 && ln < sizeof lp - 64; i++) {
+			ln += (size_t)snprintf(lp + ln, sizeof lp - ln, "/dddddddddddddddddddddddd%02d", i);
+			_mkdir(lp);
+		}
+		ln += (size_t)snprintf(lp + ln, sizeof lp - ln, "/cfg.shcl");
+		if (ln <= MAX_PATH) fail("longpath", "the fixture path is not past MAX_PATH");
+		/* The prefix is the mechanism, and wine's filesystem has no MAX_PATH to
+		   refuse the path without it, so the spelling is asserted directly. */
+		char *lr = shcl_resolve_target(lp);
+		if (!lr || strncmp(lr, "\\\\?\\", 4) != 0) fail("longpath", "a path past MAX_PATH did not take the long-path prefix");
+		free(lr);
+		char *sr = shcl_resolve_target(real_short);
+		if (!sr || strncmp(sr, "\\\\?\\", 4) == 0) fail("longpath", "a short path took the long-path prefix");
+		free(sr);
+		shcl_doc *ld = shcl_parse("a: 1\n", 5);
+		if (shcl_save_file(ld, lp) != SHCL_SAVE_OK) fail("longpath", "save refused a path past MAX_PATH");
+		size_t rn; char *rt = read_file(lp, &rn);
+		if (!rt || rn != 5 || memcmp(rt, "a: 1\n", 5) != 0) fail("longpath", "the long path did not read back");
+		free(rt);
+		if (shcl_set_int(ld, "a", 1, 2) && shcl_save_file(ld, lp) != SHCL_SAVE_OK)
+			fail("longpath", "a rewrite of a path past MAX_PATH failed");
+		shcl_free(ld);
+		remove(lp);
+		/* Up to the fixture's own root and no further: the walk is what removes
+		   the tree, and one step too many would be someone else's directory. */
+		for (ln = strlen(lp); ln > lbase; ) {
+			while (ln > lbase && lp[ln] != '/') ln--;
+			lp[ln] = '\0';
+			_rmdir(lp);
+			if (ln > lbase) ln--;
+		}
+	}
+	{
+		/* A save through a link replaces what the link points at, not the link.
+		   An unprivileged symlink needs developer mode, so a runner without it
+		   skips rather than failing on the setup. */
+		char sdir[256], real[320], link[320];
+		snprintf(sdir, sizeof sdir, "%s/shcl-link-%ld", tmp_root(), (long)getpid());
+		if (_mkdir(sdir) != 0) fail("winlink", "mkdir failed");
+		snprintf(real, sizeof real, "%s/real.shcl", sdir);
+		snprintf(link, sizeof link, "%s/link.shcl", sdir);
+		FILE *sf = fopen(real, "wb");
+		if (!sf || fputs("a: 1\n", sf) == EOF || fclose(sf) != 0) fail("winlink", "seed write failed");
+		wchar_t *wl = shcl_widen(link), *wr = shcl_widen(real);
+		int made = wl && wr && CreateSymbolicLinkW(wl, wr, 0x2 /* ALLOW_UNPRIVILEGED_CREATE */);
+		/* Wine reports success and creates nothing, so the attribute is what
+		   says a link is really there. Without the privilege, so does windows. */
+		if (made) {
+			DWORD la = GetFileAttributesW(wl);
+			made = la != INVALID_FILE_ATTRIBUTES && (la & FILE_ATTRIBUTE_REPARSE_POINT);
+		}
+		if (!made) printf("conformance: winlink skipped (no symlink)\n");
+		else {
+			shcl_doc *sd = shcl_parse("a: 2\n", 5);
+			if (shcl_save_file(sd, link) != SHCL_SAVE_OK) fail("winlink", "save through the link failed");
+			shcl_free(sd);
+			size_t rn; char *rt = read_file(real, &rn);
+			if (!rt || rn != 5 || memcmp(rt, "a: 2\n", 5) != 0) fail("winlink", "the save did not reach the link's target");
+			free(rt);
+			DWORD a = GetFileAttributesW(wl);
+			if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_REPARSE_POINT))
+				fail("winlink", "the save replaced the link with a regular file");
+			remove(link);
+		}
+		free(wl); free(wr);
+		remove(real); _rmdir(sdir);
+	}
+#endif
+
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }
 	printf("conformance: %zu case(s) pass\n", nn);
 	return 0;

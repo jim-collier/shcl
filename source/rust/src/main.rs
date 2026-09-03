@@ -834,13 +834,30 @@ fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
 /// do with the remedy for a usage error, which keeps 1.
 const EXIT_IO: u8 = 8;
 
+/// No stream on the other end at all, as opposed to one that failed part way
+/// through. POSIX says EBADF; windows has no single answer - a handle a shell
+/// closed comes back as an invalid handle or an invalid function depending on
+/// how it was closed, and the runtimes map those to their own codes.
+fn stdin_unattached(e: &std::io::Error) -> bool {
+	match e.raw_os_error() {
+		Some(9) => cfg!(unix),
+		Some(1) | Some(6) | Some(22) => cfg!(windows),
+		_ => false,
+	}
+}
+
 fn read_input(file: &str) -> Result<String, String> {
 	if file == "-" {
 		let mut s = String::new();
 		use std::io::Read;
-		std::io::stdin()
-			.read_to_string(&mut s)
-			.map_err(|e| format!("stdin: {}", e))?;
+		if let Err(e) = std::io::stdin().read_to_string(&mut s) {
+			// A stdin that is not attached at all reads as an empty document.
+			// POSIX gives EOF for that; windows answers "invalid handle".
+			if !stdin_unattached(&e) {
+				return Err(format!("stdin: {}", e));
+			}
+			s.clear();
+		}
 		Ok(s)
 	} else {
 		// The message for reading a directory is the platform's, and windows

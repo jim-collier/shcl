@@ -40,6 +40,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A `datetime` `allowed` set compares the moment, not the spelling. `allowed: 12:00:00Z` refused a config saying `12:00:00+00:00`, and `12:00:00` refused `12:00:00.0`, because the value mirrors what was written and the comparison was field by field. A value with no zone is still local and still matches no zoned one - that is the one spelling difference that is a real difference.
 
+- A stdin nothing is attached to reads as an empty document in every CLI, on every platform. It always did on Linux; on Windows a closed handle came back as an error and the run exited 8.
+
+- C: a save on Windows follows a symlink or junction to the file it points at, and works on a path past the old 260-character limit. The link used to be replaced by a regular file, and a deep path was refused; the other three bindings already did both.
+
 - Naming a directory as the file says `PATH: Is a directory` in every CLI, on every platform. The message used to be whatever the language handed back from a failed read, which was four different sentences on Linux and a fifth on Windows.
 
 - Diagnostics under `--layer` say which file they came from, a strict failure in a layer included. Two layers with a bad line 2 printed the same thing twice with nothing to tell them apart. A single-file load is unchanged.

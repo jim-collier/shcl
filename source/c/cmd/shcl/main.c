@@ -300,9 +300,11 @@ static char *read_input(const char *file, size_t *len) {
 		memcpy(buf + n, chunk, r); n += r;
 	}
 	int ferr = ferror(f);
-	// A closed stdin reads as an empty document, matching the reference's
-	// stdin handle, which treats EBADF as end of input.
-	if (ferr && is_stdin && errno == EBADF) ferr = 0;
+	// A stdin that is not attached at all reads as an empty document, the way
+	// every binding treats it. POSIX says EBADF; windows reports a handle a
+	// shell closed as an invalid handle or an invalid function, which the C
+	// runtime hands back as EINVAL.
+	if (ferr && is_stdin && (errno == EBADF || errno == EINVAL)) ferr = 0;
 	if (f != stdin) fclose(f);
 	if (ferr) { fprintf(stderr, "%s: %s\n", who, strerror(errno)); free(buf); return NULL; }
 	if (!buf) { buf = (char *)xrealloc(NULL, 1); }

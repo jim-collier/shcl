@@ -667,9 +667,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-193100
 		- Closed: 20260903-234500
 
-	- 🔘 Item 33: three windows behaviors that wine cannot show and the hosted job should verify.
+	- ✅ Item 33: three windows behaviors that wine cannot show and the hosted job should verify.
 		- Go's CLI likely exits 8 on a closed stdin on real Windows where Rust and C exit 0, because only the Go runtime on Linux reopens closed standard fds. The C file tier passes paths over 260 characters through unprefixed where Rust and Go add the long-path prefix. The C file tier on Windows does not resolve a symlinked target, so a save through a link may replace the link. None of the three could be exercised under wine.
+		- Decided: all three are defects, not just gaps in what is checked, so each was fixed rather than only pinned.
+		- Fixed, stdin: a stdin nothing is attached to reads as an empty document in all four CLIs. Windows reports a handle the shell closed as an invalid handle or an invalid function rather than as end of input, and all three windows CLIs exited 8 on it - not only Go.
+		- Fixed, C on windows: the save target is resolved through the final path, so a symlink or junction is followed and the answer carries the long-path prefix. The prefix is kept only where the name plus the temp file's suffix would exceed the old limit.
+		- Pinned by a `win-runners` closed-stdin row across all four, and by two windows-only C runner fixtures: a save and rewrite through a path past 260 characters, and a save through a symlink that has to leave the link in place. The link fixture skips where no link could be made, which is every run under wine and a windows host without the privilege.
+		- Note: wine showed the stdin defect and the long-path prefix directly. The symlink half is judged only on the hosted windows job, since wine reports a symlink as created and creates nothing.
 		- Opened: 20260901-193200
+		- Closed: 20260904-004500
 
 	- 🔘 Item 34: installer behaviors read but not run.
 		- Uninstalling a system tree laid down by the pre-fix installer under a tight umask leaves the four subdirectories and prints a false "files this installer did not put there" note, because the glob does not expand in a root-only directory. `install.ps1` from a 32-bit host lands the 64-bit binary under the x86 program files. The tag picker in `install.bash` returns nothing on compact JSON. On PowerShell 5.1 a native command writing to stderr under `2>&1` throws before the exit code is read.
