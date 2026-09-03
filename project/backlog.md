@@ -232,11 +232,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-172100
 		- Closed: 20260903-020000
 
-	- 🔘 Item 23: the datetime whitelist admits spellings the spec does not list.
+	- ✅ Item 23: the datetime whitelist admits spellings the spec does not list.
 		- Reproduced in all four, all Good: `9:30` (one-digit hour with no meridiem), `2026-7-1` and `2026/7/4` (one-digit month and day), `14:30z` and `2026-07-12t14:30` (lower case), `14:30 Z` and `14:30 +05:00` (space before the zone), `2026-07-12  14:30` (two spaces as the separator). The spec says the formats are a closed whitelist and anything else is BadType. Correctly refused in the same run: `24:00`, `14:30:60`, `2026-02-29`, `12-Jul/2026`, `2026-07-12 T 14:30`, `Jul 12,2026`.
 		- Cause: `parse_num2` takes one or two digits, the zone and meridiem arms trim before matching, and the combined-separator scan trims around it; same functions in all four.
-		- Decided: needs a call: tighten (two-digit fields in the 24-hour and year-first forms, upper-case `Z` and `T`, no whitespace inside the value) with a corpus row per rejection, or list the tolerances in the spec. Status difference at exit 0, not data loss, since `fmt` never rewrites value text.
+		- Decided: list them. Every one is a spelling a person writes by hand and none can be misread, so tightening would turn working configs into `BadType` for nothing - against the forgiving-parser stance the rest of the language takes. The whitelist claim is what was wrong, not the code.
+		- Fixed: spec text only. The datetime section names the tolerances (a one-digit hour, month or day; a lower-case `z` or `t`; whitespace before the meridiem or zone; a run of spaces as the combined separator) and says what is still refused inside a value.
+		- Pinned by corpus `007`: six tolerance rows read Good and the two separator shapes read BadType, so the set cannot drift either way.
 		- Opened: 20260902-172200
+		- Closed: 20260903-021500
 
 	- 🔘 Item 24: at Loose, `$ 1200` reads as 1200 but `$ 3.14` is BadType.
 		- Reproduced in all four: whitespace after the currency symbol is tolerated on the integer path only, because the float path tests the shape on the untrimmed remainder and then falls into the integer path, which trims.
