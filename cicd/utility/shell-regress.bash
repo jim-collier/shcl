@@ -195,6 +195,26 @@ eval "$(sed -n '/^fLinkOwner()/,/^}/p' "${repoDir}/install.bash")"
 	exit "${nBad}"
 ) || nBad=$((nBad + 1))
 
+##	20260901b item 37: the receipt ran the link the installer had just written,
+##	so another shcl earlier on PATH was invisible and the next one the user
+##	typed was someone else's.
+eval "$(sed -n '/^fShadowedBy()/,/^}/p' "${repoDir}/install.bash")"
+(
+	sdir="${tmpDir}/shadow"; mkdir -p "${sdir}/ours" "${sdir}/theirs"
+	printf '#!/bin/sh\necho ours\n' > "${sdir}/ours/shcl"; chmod 755 "${sdir}/ours/shcl"
+	printf '#!/bin/sh\necho theirs\n' > "${sdir}/theirs/shcl"; chmod 755 "${sdir}/theirs/shcl"
+	PATH="${sdir}/ours:${PATH}" fShadowedBy "${sdir}/ours/shcl" >/dev/null \
+		&& fBad "install.bash called its own copy a shadow"
+	out="$(PATH="${sdir}/theirs:${sdir}/ours:${PATH}" fShadowedBy "${sdir}/ours/shcl" || true)"
+	[[ "${out}" == "${sdir}/theirs/shcl" ]] \
+		|| fBad "install.bash did not see the copy shadowing it: ${out@Q}"
+	PATH="${sdir}/nowhere:/nonexistent" fShadowedBy "${sdir}/ours/shcl" >/dev/null \
+		&& fBad "install.bash reported a shadow where there is no shcl at all"
+	exit "${nBad}"
+) || nBad=$((nBad + 1))
+grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1" \
+	|| fBad "install.ps1 never asks what shcl resolves to on PATH"
+
 ##	20260901b item 18: the "not on your PATH" note compared strings against
 ##	`:dir:`, so a PATH element written with a trailing slash was not seen.
 eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
