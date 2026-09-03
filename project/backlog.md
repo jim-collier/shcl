@@ -476,9 +476,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-172900
 		- Closed: 20260903-055000
 
-	- 🔘 Item 31: PSScriptAnalyzer is the one lint tool with no version pin, and `check-pins.bash` holds one direction only.
+	- ✅ Item 31: PSScriptAnalyzer is the one lint tool with no version pin, and `check-pins.bash` holds one direction only.
 		- `ci.yml` installs it with no `-RequiredVersion` and `TOOL_PINS` has no entry, against the comment that the two agree; a new PSSA rule reddens hosted CI while the local gate stays green. Deleting the `ruff` entry from a scratch `config.bash` while `ci.yml` still installs it passes `check-pins`. Pin 1.25.0 in both places and walk `ci.yml`'s install lines the other way.
+		- Fixed: `TOOL_PINS` carries PSScriptAnalyzer at 1.25.0 with a version command the drift warning can read, `ci.yml` installs that exact version, and `check-pins.bash` knows the `-RequiredVersion` joiner. It also walks the other way now: every pip, npm, `go install` and `Install-Module` line that names a version has to have a `TOOL_PINS` entry.
+		- Pinned by the gate itself, both ways: dropping the `ruff` entry from `config.bash` is reported, and taking `-RequiredVersion` off the PSSA line is reported.
 		- Opened: 20260902-173000
+		- Closed: 20260903-060000
 
 	- 🔘 Item 32: five gates exit 0 when a tool they need is missing.
 		- `check-locale.bash` skips without `localedef`, `shell-regress.bash` skips 12 checks without `pwsh`, 6 without `openssl` and the prerelease packaging row without `makensis` (the hosted runner has none, so 20260830b item 8 is pinned on this box only), and `package.bash` skips the rpm read-back without `rpm`. A strict switch under `--ci` that turns a skip into a failure keeps a runner that loses a tool from going quiet.

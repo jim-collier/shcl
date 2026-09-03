@@ -60,6 +60,10 @@ TOOL_PINS=(
 	"staticcheck|2026.1|staticcheck -version"
 	"govulncheck|v1.5.0|govulncheck -version"
 	"cargo-deny|0.19.9|cargo deny --version"
+	## Gating like shellcheck, and its rule set moves between releases, so the
+	## hosted gate installs this exact version rather than whatever the gallery
+	## serves that day.
+	"PSScriptAnalyzer|1.25.0|pwsh -NoProfile -Command \"(Get-Module -ListAvailable PSScriptAnalyzer | Select-Object -First 1).Version.ToString()\""
 	## The Go series ci.yml installs (go-version). One decision with the
 	## staticcheck pin: staticcheck carries its own type checker and cannot read
 	## export data from a Go newer than the release it was cut against, so the
