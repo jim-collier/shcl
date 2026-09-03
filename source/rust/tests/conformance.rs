@@ -1041,6 +1041,16 @@ fn read_surface_line_quoted_children() {
 	assert!(doc.read_string("b").quoted);
 	assert!(!doc.read_string("code").quoted);
 	assert!(!doc.read_string("missing").quoted);
+	// An array read of the same node answers the same: a one-element cell has
+	// a single scalar element, so the flag means what it does on the scalar
+	// read. More than one element, and there is no single element to report.
+	assert!(doc.read_string_array("b").quoted);
+	assert!(!doc.read_string_array("a").quoted);
+	assert!(
+		!Document::parse("m: \"x\", \"y\"\n")
+			.read_string_array("m")
+			.quoted
+	);
 	assert_eq!(doc.read_string("b").line, 2);
 	assert_eq!(doc.line("code.done"), 6);
 	assert_eq!(doc.line("code"), 3);

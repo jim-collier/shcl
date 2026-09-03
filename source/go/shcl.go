@@ -5282,7 +5282,9 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 			status = cst
 		}
 	}
-	return Read[[]T]{Value: out, Status: status, Raw: &raw, Slots: sts}.at(line, false)
+	// A one-element cell has a single scalar element, so the flag means the
+	// same thing here as on the scalar read of the same node.
+	return Read[[]T]{Value: out, Status: status, Raw: &raw, Slots: sts}.at(line, len(v.els) == 1 && v.els[0].quoted)
 }
 
 // ReadIntArray is the full-tier integer-array read at path (per-slot statuses in Slots).

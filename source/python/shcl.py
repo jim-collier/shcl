@@ -3264,7 +3264,10 @@ class Document:
 			out.append(v)
 			sts.append(st)
 		status = max(sts, key=lambda s: s.value) if sts else Status.Good
-		return Read(out, status, raw, sts)._at(line, False)
+		# A one-element cell has a single scalar element, so the flag means the
+		# same thing here as on the scalar read of the same node.
+		quoted = len(value.els) == 1 and value.els[0].quoted
+		return Read(out, status, raw, sts)._at(line, quoted)
 
 	def read_int_array(self, path: str) -> Read:
 		lvl = self._strictness
