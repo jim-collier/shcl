@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- On Windows a save keeps the file's hidden and system attributes. `ReplaceFile`'s documented preserve list stops at security attributes and named streams, and the fallback rename carries nothing, so a hidden config came back visible. They are re-applied after the publish now, the way read-only already was. The `REPLACEFILE_WRITE_THROUGH` flag Microsoft documents as unsupported is no longer described as what makes the write durable; the file's own flush before the publish is.
+
 - An array read of a one-element cell reports the element's quoting, like the scalar read of the same node. `read_int("h")` on `h: "5"` said quoted and `read_int_array("h")` said not, because the array path always answered false. More than one element still reports false: there is no single element to report.
 
 - At Loose, a space after a currency symbol no longer decides whether the value reads. `$ 1200` read as 1200 while `$ 3.14` was `BadType`, because the int path reached a branch that trims and the float path tested the shape on the untrimmed remainder. The space comes off once, for both.

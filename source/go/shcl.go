@@ -2924,8 +2924,15 @@ func WriteFileAtomic(file, data string) error {
 	// Windows: a read-only file cannot be replaced, and a read-only temp cannot
 	// be removed after a failure, so the attribute comes off the target for the
 	// publish and goes back on the new file after it - the same outcome as
-	// POSIX, where the rename never needed the file writable.
+	// POSIX, where the rename never needed the file writable. Hidden and system
+	// ride back the same way: ReplaceFile's documented preserve list does not
+	// include the basic attributes, and the rename fallback carries nothing, so
+	// a hidden config came back visible.
 	readOnly := runtime.GOOS == "windows" && existErr == nil && existing.Mode().Perm()&0o200 == 0
+	var carried uint32
+	if existErr == nil {
+		carried = carriedAttrs(existing)
+	}
 	var f *os.File
 	var tmp string
 	var last error
@@ -2970,6 +2977,9 @@ func WriteFileAtomic(file, data string) error {
 		setReadOnly(target, false)
 	}
 	rerr := publishFile(tmp, target)
+	if carried != 0 {
+		restoreAttrs(target, carried) // whether or not the publish went through
+	}
 	if readOnly {
 		setReadOnly(target, true) // whether or not the publish went through
 	}
@@ -3034,6 +3044,13 @@ func setReadOnly(path string, on bool) {
 // works on its own - the drop-in story is the whole point of the single file,
 // and a tree that took the module gets the better windows publish anyway.
 var publishFile = func(tmp, target string) error { return os.Rename(tmp, target) }
+
+// carriedAttrs is the attribute bits a publish will not carry across by itself
+// - hidden and system on windows, nothing anywhere else - and restoreAttrs
+// turns them back on afterwards. Hooks for the same reason publishFile is.
+var carriedAttrs = func(os.FileInfo) uint32 { return 0 }
+
+var restoreAttrs = func(string, uint32) {}
 
 // syncDir fsyncs the directory a save published into. The Sync on the file only
 // covered the file; the rename is a directory change, so without this a power

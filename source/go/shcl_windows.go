@@ -16,9 +16,43 @@ import (
 	"unsafe"
 )
 
-func init() { publishFile = windowsPublishFile }
+func init() {
+	publishFile = windowsPublishFile
+	carriedAttrs = windowsCarriedAttrs
+	restoreAttrs = windowsRestoreAttrs
+}
 
-// REPLACEFILE_WRITE_THROUGH: do not return until the change is on the disk.
+// ReplaceFile's documented preserve list is creation time, short name, object
+// id, DACLs, security attributes, encryption, compression and named streams -
+// not the basic attributes - and the fallback rename carries nothing at all, so
+// hidden and system are re-applied by hand after the publish. Read-only is
+// handled separately: it has to come OFF before the publish.
+const carriedFileAttrs = syscall.FILE_ATTRIBUTE_HIDDEN | syscall.FILE_ATTRIBUTE_SYSTEM
+
+func windowsCarriedAttrs(fi os.FileInfo) uint32 {
+	d, ok := fi.Sys().(*syscall.Win32FileAttributeData)
+	if !ok {
+		return 0
+	}
+	return d.FileAttributes & carriedFileAttrs
+}
+
+func windowsRestoreAttrs(path string, bits uint32) {
+	p, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return
+	}
+	now, aerr := syscall.GetFileAttributes(p)
+	if aerr != nil {
+		return
+	}
+	_ = syscall.SetFileAttributes(p, now|bits)
+}
+
+// REPLACEFILE_WRITE_THROUGH: asked for, and documented by Microsoft as not
+// supported by ReplaceFile. Durability here rests on the file's own fsync
+// before the publish; the fallback move's own WRITE_THROUGH is the one that
+// means something.
 const replaceFileWriteThrough = 0x1
 
 // kernel32 by name is loaded from the system directory, not the working one -
