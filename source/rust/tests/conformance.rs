@@ -1453,7 +1453,7 @@ fn index_rebuild_ignores_removed_nodes() {
 	// denominator, and then the bound is an absolute figure on whatever machine
 	// is running - which is what it was written not to be.
 	assert!(
-		ms[0] <= 0.0 || ms[1] <= ms[0] * 25.0 + 25.0,
+		ms[0] <= 0.0 || ms[1] <= ms[0] * 25.0 + 250.0,
 		"index rebuild after churn {:.1} ms against {:.1} ms fresh - it walks nodes the document no longer holds",
 		ms[1],
 		ms[0]

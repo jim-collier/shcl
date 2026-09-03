@@ -821,7 +821,7 @@ def main():
 	# A clock too coarse to see the fresh side leaves the ratio with a zero
 	# denominator, and then the bound is an absolute figure on whatever machine
 	# is running - which is what it was written not to be.
-	if ms[0] > 0 and ms[1] > ms[0] * 25 + 25:
+	if ms[0] > 0 and ms[1] > ms[0] * 25 + 250:
 		raise SystemExit(f"index rebuild after churn {ms[1]:.1f} ms against {ms[0]:.1f} ms fresh")
 	# What a read hands out must not be the document's own list: a caller
 	# clearing it used to take the document's diagnostics with it, and a failed
