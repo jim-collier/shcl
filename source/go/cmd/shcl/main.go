@@ -762,13 +762,33 @@ func sayDiagnosticsFrom(file string, diags []shcl.Diagnostic) {
 // nothing to do with the remedy for a usage error, which keeps 1.
 const exitIO = 8
 
+// No stream on the other end at all, as opposed to one that failed part way
+// through. POSIX says EBADF; windows has no single answer - a handle a shell
+// closed comes back as an invalid handle or an invalid function depending on
+// how it was closed, and the runtimes map those to their own codes.
+func stdinUnattached(err error) bool {
+	var errno syscall.Errno
+	if !errors.As(err, &errno) {
+		return false
+	}
+	if errno == syscall.EBADF {
+		return true
+	}
+	return runtime.GOOS == "windows" && (errno == 1 || errno == 6 || errno == syscall.EINVAL)
+}
+
 func readInput(file string) (string, error) {
 	var b []byte
 	var err error
 	if file == "-" {
 		b, err = io.ReadAll(os.Stdin)
 		if err != nil {
-			return "", fmt.Errorf("stdin: %s", err)
+			// A stdin that is not attached at all reads as an empty document.
+			// POSIX gives EOF for that; windows answers "invalid handle".
+			if !stdinUnattached(err) {
+				return "", fmt.Errorf("stdin: %s", err)
+			}
+			b = nil
 		}
 	} else {
 		// The message for reading a directory is the platform's, and windows

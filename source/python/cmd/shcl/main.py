@@ -6,6 +6,7 @@
 # mirror the Rust reference exactly; the cicd cross-binding check compares them
 # byte for byte, so any drift here fails the pipeline.
 
+import errno
 import math
 import os
 import signal
@@ -430,7 +431,15 @@ EXIT_IO = 8
 
 def read_input(file):
 	if file == "-":
-		data = sys.stdin.buffer.read()
+		try:
+			data = sys.stdin.buffer.read()
+		except OSError as e:
+			# A stdin that is not attached at all reads as an empty document.
+			# POSIX says EBADF; windows answers invalid handle or invalid
+			# function depending on how the shell closed it.
+			if e.errno not in (errno.EBADF, errno.EINVAL) and getattr(e, "winerror", None) not in (1, 6):
+				raise
+			data = b""
 	else:
 		# The message for reading a directory is the platform's, and windows
 		# spells it four different ways depending on the binding. Say it here.

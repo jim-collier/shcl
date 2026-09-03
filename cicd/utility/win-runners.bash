@@ -111,6 +111,35 @@ fRunCcli() {
 	grep -q '^x: 1$' "${dir}/ā.shcl" || { echo "win-runners: c cli: ā.shcl was not written" >&2; return 1; }
 }
 
+## A stdin nothing is attached to reads as an empty document, exit 0. POSIX
+## reports that as EOF and every binding already agreed there; windows answers
+## with an invalid handle or an invalid function instead, which each runtime
+## spells its own way, so this is the only place the rule can be judged.
+fRunClosedStdin() {
+	local bad=0
+	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
+		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	cargo build --quiet --manifest-path source/rust/Cargo.toml || return 1
+	go -C source/go/cmd build -o "${work}/shcl-go${exe}" ./shcl || return 1
+	local clis=(
+		"rust|source/rust/target/debug/shcl${exe}"
+		"go|${work}/shcl-go${exe}"
+		"python|${py} source/python/cmd/shcl/main.py"
+		"c|${work}/shcl-c${exe}"
+	)
+	local entry name cmd out rc
+	for entry in "${clis[@]}"; do
+		name="${entry%%|*}"; cmd="${entry#*|}"
+		## Split on purpose: the python entry is an interpreter plus a script.
+		rc=0; out="$(${cmd} fmt - 0<&- 2>&1)" || rc=$?
+		if ((rc != 0)) || [[ -n "${out}" ]]; then
+			echo "win-runners: closed stdin: ${name} exited ${rc} saying ${out@Q}" >&2
+			bad=1
+		fi
+	done
+	((bad == 0))
+}
+
 ## Fuzz iterations stay at the in-test default: the long soak is the Linux gate's
 ## job, and nothing about it is platform-dependent.
 fRun "rust"        cargo test --manifest-path source/rust/Cargo.toml
@@ -123,6 +152,7 @@ fRun "c oom hook"  fRunOom
 fRun "c oom unwind" fRunOomRecover
 fRun "c mem bounds" fRunMemBounds
 fRun "c cli argv"  fRunCcli
+fRun "closed stdin" fRunClosedStdin
 ## The installers' PATH handling needs a real registry, which only exists here:
 ## it edits and restores the runner's own Environment keys, so it stays off
 ## every other host.

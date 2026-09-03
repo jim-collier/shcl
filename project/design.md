@@ -359,6 +359,8 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - **The mode is applied to the temp file again after its data is written.** The kernel clears setuid and setgid on a write by a process without the right capability, so giving the temp file the target's mode before filling it silently dropped those bits - the copied mode has to land last, after write and fsync, before the publish.
 
+- **The write target is resolved on Windows too.** Rust and Go get it from their standard libraries; the C binding used the path as given, so a save through a linked-in config replaced the link with a regular file - the one thing resolving the target exists to prevent. It now asks Windows for the final path, which follows a symlink or junction and comes back long-path-prefixed. The prefix stays only when the name plus the temp file's suffix would otherwise be too long, so an ordinary save writes the plain name it always did and a path past the old limit works at all.
+
 - **A symlink cycle at the write target is an error.** Resolving the target is what makes a linked-in config written through rather than replaced, and a cycle used to fall out of the resolver as "no target", which quietly replaced the link with a regular file. A loop is reported as what it is - too many levels of symbolic links - and nothing is written.
 
 ### Testing

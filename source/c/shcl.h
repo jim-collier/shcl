@@ -5645,6 +5645,70 @@ static const char *shcl_last_sep(const char *target) {
 	return sep;
 }
 
+#ifdef _WIN32
+// The path a save actually rewrites. A symlink or junction is followed, so a
+// save through a linked-in config replaces the file it points at rather than
+// the link - the same thing the POSIX side has always done. The answer comes
+// back \\?\-prefixed, which is also what carries a path past MAX_PATH, so the
+// prefix is kept only where the name would otherwise be too long for the temp
+// file beside it; a short path stays the plain name it was. A file that is not
+// there yet has no final path, so its full path is prefixed by hand. malloc'd
+// UTF-8; NULL with errno saying why.
+static char *shcl_narrow(const wchar_t *w) {
+	int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+	char *s = n > 0 ? (char *)malloc((size_t)n) : NULL;
+	if (s) WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL);
+	else errno = n > 0 ? ENOMEM : EINVAL;
+	return s;
+}
+static char *shcl_resolve_target(const char *file) {
+	wchar_t *w = shcl_widen(file);
+	if (!w) return NULL;
+	wchar_t *full = NULL;
+	HANDLE h = CreateFileW(w, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+	                       NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (h != INVALID_HANDLE_VALUE) {
+		DWORD need = GetFinalPathNameByHandleW(h, NULL, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+		if (need && (full = (wchar_t *)malloc((size_t)need * sizeof *full))
+		    && !GetFinalPathNameByHandleW(h, full, need, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
+			free(full); full = NULL;
+		}
+		CloseHandle(h);
+	}
+	if (!full) {
+		// Not there yet (or not openable): build the long-path spelling from
+		// the full path instead. \\server\share becomes \\?\UNC\server\share.
+		DWORD need = GetFullPathNameW(w, 0, NULL, NULL);
+		if (!need) { free(w); errno = shcl_errno_from_win32(GetLastError()); return NULL; }
+		wchar_t *fp = (wchar_t *)malloc((size_t)need * sizeof *fp);
+		if (!fp) { free(w); errno = ENOMEM; return NULL; }
+		if (!GetFullPathNameW(w, need, fp, NULL)) {
+			DWORD e = GetLastError();
+			free(fp); free(w); errno = shcl_errno_from_win32(e); return NULL;
+		}
+		int unc = fp[0] == L'\\' && fp[1] == L'\\';
+		full = (wchar_t *)malloc((wcslen(fp) + 10) * sizeof *full);
+		if (!full) { free(fp); free(w); errno = ENOMEM; return NULL; }
+		wcscpy(full, unc ? L"\\\\?\\UNC" : L"\\\\?\\");
+		wcscat(full, unc ? fp + 1 : fp);
+		free(fp);
+	}
+	free(w);
+	char *out = shcl_narrow(full);
+	free(full);
+	if (!out) return NULL;
+	// The temp file sits beside the target with a suffix of its own, so the
+	// prefix stays on anything near the limit, not only over it. Below that it
+	// comes off, so an ordinary save writes the plain name it always did.
+	size_t on = strlen(out);
+	if (on + 48 < MAX_PATH) {
+		if (!strncmp(out, "\\\\?\\UNC\\", 8)) { memmove(out + 2, out + 8, on - 8 + 1); }
+		else if (!strncmp(out, "\\\\?\\", 4)) memmove(out, out + 4, on - 4 + 1);
+	}
+	return out;
+}
+#endif
+
 #ifndef _WIN32
 // The path a save actually rewrites. A symlink is followed so the write goes
 // through it; realpath does that but needs the target to exist, so a dangling
@@ -5758,9 +5822,11 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	#define SHCL_FILE_CLEANUP() do { free(real); } while (0)
 	#define SHCL_FILE_UNLINK() remove(tmp)
 #else
-	const char *target = path;
+	char *real = shcl_resolve_target(path);
+	if (!real) return 0;
+	const char *target = real;
 	wchar_t *wtarget = shcl_widen(target), *wtmp = NULL;
-	if (!wtarget) return 0;
+	if (!wtarget) { free(real); return 0; }
 	// A read-only file cannot be replaced, and a read-only temp cannot be
 	// removed after a failure, so the attribute comes off the target for the
 	// publish and goes back on the new file after it - the same outcome as
@@ -5772,7 +5838,7 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	DWORD attrs = GetFileAttributesW(wtarget);
 	int read_only = attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY) != 0;
 	DWORD carried = attrs == INVALID_FILE_ATTRIBUTES ? 0 : (attrs & SHCL_CARRIED_ATTRS);
-	#define SHCL_FILE_CLEANUP() do { free(wtarget); free(wtmp); } while (0)
+	#define SHCL_FILE_CLEANUP() do { free(real); free(wtarget); free(wtmp); } while (0)
 	#define SHCL_FILE_UNLINK() _wremove(wtmp)
 #endif
 	const char *slash = shcl_last_sep(target);
