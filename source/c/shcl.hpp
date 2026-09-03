@@ -215,12 +215,15 @@ public:
 
 	// Schema-driven generation (`shcl init`): a commented, typed starter config
 	// from this document read as a schema, and whether it succeeded - false on
-	// schema faults, with the text then empty; for the fault list, validate()
-	// an empty document against this schema - it reproduces the same V09x
-	// diagnostics. A footer naming the format and pointing at the spec is
-	// written last unless no_banner. Not const: a schema that expands past the
-	// generator's field cap records the fault as a diagnostic on this document.
+	// schema faults, with the text then empty; for the fault list, read
+	// diagnostics() on this document after the call. Validating an empty
+	// document against the schema does not reproduce them: V096 and V097 are
+	// generation-only, and what comes back is the empty document's own V002 and
+	// V007. A footer naming the format and pointing at the spec is written last
+	// unless no_banner. Not const: the faults are recorded as diagnostics on
+	// this document, and an earlier call's are dropped first.
 	std::pair<std::string, bool> generate(bool no_banner = false) {
+		shcl_reads_release(d_.get());
 		int ok = 0;
 		std::string s = to_str(shcl_generate(d_.get(), no_banner ? 1 : 0, &ok));
 		return {std::move(s), ok != 0};

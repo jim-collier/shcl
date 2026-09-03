@@ -239,7 +239,10 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 // the schema document's diagnostics. A footer naming the format and pointing at the spec is
 // written last unless no_banner; the flag is negative so passing 0 writes the
 // footer. *ok is set to 1 on success, 0 if the schema has faults (V09x) - then
-// the returned string is empty. Bytes live in the schema's arena.
+// the returned string is empty and nothing was kept. Bytes live in the schema's
+// read arena; valid until shcl_free, or until shcl_reads_release. Generation
+// faults from an earlier call on the same schema are dropped first, so the list
+// describes this call.
 shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The
@@ -317,7 +320,7 @@ shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t 
 
 // Give back everything the read calls have handed out. Every result from a read
 // - shcl_read_*, shcl_children, shcl_paths, shcl_instances, shcl_lines,
-// shcl_quote_segment, shcl_to_canonical - is invalid after this; the document itself is untouched
+// shcl_quote_segment, shcl_to_canonical, shcl_generate - is invalid after this; the document itself is untouched
 // and stays readable, so the next read works normally. Optional: leave it alone
 // and results live until shcl_free, which is the documented contract and what a
 // read-once consumer wants. A process polling the same document in a loop calls
@@ -550,6 +553,24 @@ static void *arena_grow(ShclArena *a, void *old, size_t oldcap, size_t newcap, s
 // reads never re-malloc. Bump arenas cannot free per-object, so without this
 // every resolver temporary would live until shcl_free - a long-running process
 // doing reads would grow without bound.
+/* A point to roll back to. A bump arena cannot free one allocation, but it can
+   give back everything since a mark, which is what a setter needs when the
+   value it just encoded turns out to be refused. Only sound when nothing
+   allocated after the mark is still referenced. */
+typedef struct { ShclBlock *head; size_t used; void *last; size_t last_n; } ShclMark;
+
+static ShclMark arena_mark(ShclArena *a) {
+	ShclMark m; m.head = a->head; m.used = a->head ? a->head->used : 0;
+	m.last = a->last; m.last_n = a->last_n;
+	return m;
+}
+
+static void arena_release(ShclArena *a, ShclMark m) {
+	while (a->head && a->head != m.head) { ShclBlock *n = a->head->next; free(a->head); a->head = n; }
+	if (a->head) a->head->used = m.used;
+	a->last = m.last; a->last_n = m.last_n;
+}
+
 static void arena_reset(ShclArena *a) {
 	if (!a->head) return;
 	ShclBlock *b = a->head->next;
@@ -1469,11 +1490,14 @@ static const uint32_t SHCL_CURRENCY[] = {
 	'$', 0xA2, 0xA3, 0xA4, 0xA5, 0x20A9, 0x20AA, 0x20AB, 0x20AC, 0x20AD,
 	0x20AE, 0x20B1, 0x20B2, 0x20B4, 0x20B9, 0x20BA, 0x20BC, 0x20BD, 0x20BE, 0x20BF,
 };
+/* The remainder after a leading currency symbol, with the space a person writes
+   after one taken off - `$ 1200` reached the int path's thousands branch, which
+   trims, and the float path's shape test, which does not. */
 static ShclStr strip_currency(ShclStr t) {
 	if (t.n == 0) return t;
 	uint32_t c; size_t l = utf8_decode(t.p, t.n, 0, &c);
 	for (size_t i = 0; i < sizeof(SHCL_CURRENCY) / sizeof(SHCL_CURRENCY[0]); i++)
-		if (c == SHCL_CURRENCY[i]) return s_slice(t, l, t.n);
+		if (c == SHCL_CURRENCY[i]) return trim_start(s_slice(t, l, t.n));
 	return t;
 }
 
@@ -1672,13 +1696,6 @@ static int parse_year4(ShclStr s, int32_t *out) {
 	int32_t v = 0; for (size_t i = 0; i < s.n; i++) v = v * 10 + (s.p[i] - '0');
 	*out = v; return 1;
 }
-static int parse_u32_lenient(ShclStr s, uint32_t *out) {
-	size_t i = 0; if (i < s.n && s.p[i] == '+') i++;
-	if (i >= s.n) return 0;
-	uint64_t v = 0;
-	for (; i < s.n; i++) { unsigned char c = (unsigned char)s.p[i]; if (!is_adigit(c)) return 0; v = v * 10 + (c - '0'); if (v > 0xFFFFFFFFull) return 0; }
-	*out = (uint32_t)v; return 1;
-}
 static void split_ws(ShclArena *a, ShclStr s, ShclVecS *out) {
 	size_t i = 0;
 	while (i < s.n) {
@@ -1705,12 +1722,15 @@ static ShclDatePart parse_date_part(ShclArena *a, ShclStr s) {
 			ShclStr day_tok = toks.data[1];
 			if (day_tok.n > 0 && day_tok.p[day_tok.n - 1] == ',') day_tok = s_slice(day_tok, 0, day_tok.n - 1);
 			uint32_t d; int32_t y;
-			if (parse_u32_lenient(day_tok, &d) && parse_year4(toks.data[2], &y) && valid_date(y, mm, d)) { r.ok = 1; r.y = y; r.m = mm; r.d = d; }
+			/* The day is DD, like every other form's: a plain integer parse
+			   takes a leading '+' and any number of leading zeros, which the
+			   whitelist does not list and the delimited spellings refuse. */
+			if (parse_num2(day_tok, &d) && parse_year4(toks.data[2], &y) && valid_date(y, mm, d)) { r.ok = 1; r.y = y; r.m = mm; r.d = d; }
 			return r;
 		}
 		if ((mm = month_from_name(a, toks.data[1]))) {
 			uint32_t d; int32_t y;
-			if (parse_u32_lenient(toks.data[0], &d) && parse_year4(toks.data[2], &y) && valid_date(y, mm, d)) { r.ok = 1; r.y = y; r.m = mm; r.d = d; }
+			if (parse_num2(toks.data[0], &d) && parse_year4(toks.data[2], &y) && valid_date(y, mm, d)) { r.ok = 1; r.y = y; r.m = mm; r.d = d; }
 			return r;
 		}
 		return r;
@@ -2687,6 +2707,21 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	hang_deeper_pending(&P, s_empty());
 	for (size_t k = 0; k < P.pending.len; k++)
 		ShclVecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before));
+	/* The emitter drops a blank before the first thing it prints, so a document
+	   that kept one there would not survive its own canonical form:
+	   load(emit(load(x))) and load(x) would differ on that bit, and a merge -
+	   where the line is no longer first - would place a blank the author never
+	   wrote. Clear it here, once, wherever output starts. */
+	{
+		ShclVecSize kids = NODE(d, ROOT).children;
+		if (kids.len) {
+			ShclNode *n = &NODE(d, kids.data[0]);
+			if (n->trivia && n->trivia->leading.len) n->trivia->leading.data[0].blank_before = 0;
+			else n->blank_before = 0;
+		} else if (d->orphans.len) {
+			d->orphans.data[0].blank_before = 0;
+		}
+	}
 	/* The one entry past the cap: what was not listed, and whether any of it
 	   was an error, so a consumer scanning the list for errors still finds
 	   one and a strict load still fails. */
@@ -2741,6 +2776,11 @@ static shcl_doc *do_parse(const char *text, size_t len, shcl_strictness strict, 
 	arena_guard(&d->reads, NULL); arena_guard(&d->index_arena, NULL);
 	arena_free(&own->line); arena_free(&own->hints);
 	free(own->cmaps.data); free(own->dmaps.data); free(own);
+	/* The parser borrows scratch for its lines vector, per-parent maps, stack
+	   and pending lists - about ten times the input, dead the moment the parse
+	   ends. Every resolve resets it anyway, so a document nobody reads would
+	   otherwise carry all of it until it was freed. */
+	arena_free(&d->scratch);
 	return d;
 }
 #if defined(__GNUC__) && !defined(__clang__)
@@ -2852,6 +2892,13 @@ static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart
 				else {
 					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest);
 					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
+					else if (r.kind == R_SLOTS) {
+						// A wildcard after a wildcard: the inner slots join the
+						// outer list, so the two compose into one flat run of
+						// leaves rather than one unreadable slot.
+						for (size_t j = 0; j < r.slots.len; j++) ShclVecSlot_push(a, &slots, r.slots.data[j]);
+						continue;
+					}
 					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
 				}
 				ShclVecSlot_push(a, &slots, sl);
@@ -2881,6 +2928,13 @@ static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart
 				else {
 					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest);
 					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
+					else if (r.kind == R_SLOTS) {
+						// A wildcard after a wildcard: the inner slots join the
+						// outer list, so the two compose into one flat run of
+						// leaves rather than one unreadable slot.
+						for (size_t j = 0; j < r.slots.len; j++) ShclVecSlot_push(a, &slots, r.slots.data[j]);
+						continue;
+					}
 					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
 				}
 				ShclVecSlot_push(a, &slots, sl);
@@ -2945,7 +2999,9 @@ static shcl_status array_elements(shcl_doc *d, ShclArena *a, ShclStr path, ShclE
 			else if (v->kind == V_CELL && v->nels == 1) { arr[i] = &v->els[0]; st[i] = SHCL_GOOD; }
 			else st[i] = SHCL_BAD_TYPE; // raw block, or an array is not one scalar
 		}
-		*els = arr; *sts = st; *n = m; return m == 0 ? SHCL_EMPTY : SHCL_GOOD;
+		// No slots at all means the wildcard's parent is not there, so the
+		// path did not resolve - Empty is for a node that is.
+		*els = arr; *sts = st; *n = m; return m == 0 ? SHCL_NOT_FOUND : SHCL_GOOD;
 	}
 	if (r.kind == R_NONE) return SHCL_NOT_FOUND;
 	if (r.kind == R_MANY) return SHCL_MULTIPLE;
@@ -3352,9 +3408,14 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
 	w_fold_dups_below(d, survivor);
 }
 
-static int w_set(shcl_doc *d, ShclStr path, ShclValue v) {
+/* The setters encode into the document arena before the path is validated, and
+   a bump arena never gives that back - a refused 20 MB write used to cost the
+   document 85 MB permanently. w_place allocates only in scratch until its
+   probe passes, so on a refusal nothing but the encoded value sits past the
+   mark. The mark is taken by the caller, before it encodes. */
+static int w_set_marked(shcl_doc *d, ShclStr path, ShclValue v, ShclMark m) {
 	size_t idx;
-	if (!w_place(d, path, &idx)) return 0;
+	if (!w_place(d, path, &idx)) { arena_release(&d->arena, m); return 0; }
 	NODE(d, idx).value = v;
 	w_collapse_dup(d, idx);
 	return 1;
@@ -3419,15 +3480,15 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	return 1;
 }
 
-int shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { ShclStr p; p.p = path; p.n = plen; return w_set(d, p, v_empty()); }
-int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_int_text(a, v))); }
+int shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(&d->arena); return w_set_marked(d, p, v_empty(), m); }
+int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_int_text(a, v)), m); }
 /* An infinity or a NaN has no spelling the reader accepts, and neither does a
    datetime the reader would refuse (month 13, a fraction with no seconds, an
    empty struct): each fails the write rather than binding text that cannot
    read back. */
-int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { if (!isfinite(v)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_float_text(a, v))); }
-int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_bool_text(v))); }
-int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr in; in.p = s; in.n = slen; return w_set(d, p, w_cell1(a, w_encode_string(a, in))); }
+int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { if (!isfinite(v)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_float_text(a, v)), m); }
+int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_bool_text(v)), m); }
+int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr in; in.p = s; in.n = slen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_encode_string(a, in)), m); }
 
 static int literal_value(ShclArena *a, ShclArena *tmp, ShclStr text, ShclValue *out) {
 	for (size_t i = 0; i < text.n; i++) { if (text.p[i] == '\n' || text.p[i] == '\r') return 0; }
@@ -3446,10 +3507,11 @@ static int literal_value(ShclArena *a, ShclArena *tmp, ShclStr text, ShclValue *
 int shcl_set_literal(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr in; in.p = text; in.n = tlen;
 	ShclValue v;
-	if (!literal_value(a, &d->scratch, in, &v)) return 0;
-	return w_set(d, p, v);
+	ShclMark m = arena_mark(a);
+	if (!literal_value(a, &d->scratch, in, &v)) { arena_release(a, m); return 0; }
+	return w_set_marked(d, p, v, m);
 }
-int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!dt_reads_back(&d->scratch, dt)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
+int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!dt_reads_back(&d->scratch, dt)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_dt_text(a, dt)), m); }
 // Bind a raw block at a path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed); one
 // holding a line break or an unquoted `#` has no fence-line spelling (the `#`
@@ -3464,40 +3526,41 @@ int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content
 	if (icomment.n) return 0;
 	for (size_t i = 0; i < clen; i++) if (content[i] == '\r' && (i + 1 == clen || content[i + 1] == '\n')) return 0;
 	it = s_trim(it);
+	ShclMark m = arena_mark(a);
 	ShclStr c = w_dupz(a, content, clen), inf = s_dup(a, it);
 	unsigned char fc; size_t fl; w_choose_fence(c, &fc, &fl);
 	ShclValue v; memset(&v, 0, sizeof v); v.kind = V_RAW;
 	v.raw = (ShclRawVal *)arena_alloc(a, sizeof(ShclRawVal));
 	v.raw->content = c; v.raw->info = inf; v.raw->fence_char = fc; v.raw->fence_len = fl;
-	return w_set(d, p, v);
+	return w_set_marked(d, p, v, m);
 }
 
 int shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) {
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
+	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_int_text(a, v[i]);
-	return w_set(d, p, w_array(a, t, n));
+	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 int shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) {
 	for (size_t i = 0; i < n; i++) if (!isfinite(v[i])) return 0;
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
+	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_float_text(a, v[i]);
-	return w_set(d, p, w_array(a, t, n));
+	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 int shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) {
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
+	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_bool_text(v[i]);
-	return w_set(d, p, w_array(a, t, n));
+	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 int shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) {
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
+	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) { ShclStr in; in.p = v[i]; in.n = lens[i]; t[i] = w_encode_string(a, in); }
-	return w_set(d, p, w_array(a, t, n));
+	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) {
 	for (size_t i = 0; i < n; i++) if (!dt_reads_back(&d->scratch, &v[i])) return 0;
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
+	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_dt_text(a, &v[i]);
-	return w_set(d, p, w_array(a, t, n));
+	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 
 int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) return shcl_set_int(d, path, plen, v); return 1; }
@@ -5379,12 +5442,15 @@ static int shcl_errno_from_win32(DWORD e) {
 	}
 }
 
-// ReplaceFile carries the destination's ACLs, attributes and named streams
-// onto the replacement; a move publishes a brand-new file and leaves all of it
-// behind. It needs the destination to exist, and it fails rather than skip a
-// merge it cannot do (no WRITE_DAC, say), so a create and any failure fall back
-// to MoveFileEx - which is there regardless because C rename() will not
-// replace an existing file on Windows at all.
+// ReplaceFile carries the destination's ACLs, security attributes and named
+// streams onto the replacement; a move publishes a brand-new file and leaves
+// all of it behind. What it does NOT carry is the basic attributes - hidden and
+// system - which the save re-applies by hand. It needs the destination to
+// exist, and it fails rather than skip a merge it cannot do (no WRITE_DAC,
+// say), so a create and any failure fall back to MoveFileEx - which is there
+// regardless because C rename() will not replace an existing file on Windows at
+// all. WRITE_THROUGH is asked for and documented as unsupported by ReplaceFile;
+// the move's own WRITE_THROUGH is the one that means something.
 static int shcl_publish_file(const wchar_t *tmp, const wchar_t *target) {
 	int ok = (GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES
 			&& ReplaceFileW(target, tmp, NULL, REPLACEFILE_WRITE_THROUGH, NULL, NULL))
@@ -5520,9 +5586,14 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	// A read-only file cannot be replaced, and a read-only temp cannot be
 	// removed after a failure, so the attribute comes off the target for the
 	// publish and goes back on the new file after it - the same outcome as
-	// POSIX, where the rename never needed the file writable.
+	// POSIX, where the rename never needed the file writable. Hidden and system
+	// ride back the same way: ReplaceFile's documented preserve list does not
+	// include the basic attributes, and the fallback move carries nothing, so a
+	// hidden config came back visible.
+	#define SHCL_CARRIED_ATTRS ((DWORD)(FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
 	DWORD attrs = GetFileAttributesW(wtarget);
 	int read_only = attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY) != 0;
+	DWORD carried = attrs == INVALID_FILE_ATTRIBUTES ? 0 : (attrs & SHCL_CARRIED_ATTRS);
 	#define SHCL_FILE_CLEANUP() do { free(wtarget); free(wtmp); } while (0)
 	#define SHCL_FILE_UNLINK() _wremove(wtmp)
 #endif
@@ -5571,10 +5642,12 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #ifdef _WIN32
 	if (read_only) SetFileAttributesW(wtarget, attrs & ~(DWORD)FILE_ATTRIBUTE_READONLY);
 	ok = ok && shcl_publish_file(wtmp, wtarget);
-	if (read_only) {
+	if (read_only || carried) {
 		DWORD now = GetFileAttributesW(wtarget);
-		if (now != INVALID_FILE_ATTRIBUTES) SetFileAttributesW(wtarget, now | FILE_ATTRIBUTE_READONLY);
+		if (now != INVALID_FILE_ATTRIBUTES)
+			SetFileAttributesW(wtarget, now | carried | (read_only ? (DWORD)FILE_ATTRIBUTE_READONLY : 0));
 	}
+	#undef SHCL_CARRIED_ATTRS
 #else
 	ok = ok && rename(tmp, target) == 0;
 	if (ok) shcl_sync_dir(target);
@@ -5776,12 +5849,24 @@ static int g_has_wild(const ShclVCons *c) {
 	return 0;
 }
 // `[#N]` needs a pre-existing instance and its `#` would start a comment on a
-// binding line; a path with a literal newline cannot be written at all. A path
-// deeper than a document may nest cannot be generated either: the line would
-// draw E016 on the way back in.
+// binding line; a newline inside a selector has no one-line spelling, since the
+// value emitter never escapes one. A path deeper than a document may nest
+// cannot be generated either: the line would draw E016 on the way back in. A
+// newline in a NAME is writable: names are stored escape-resolved and the name
+// escaper spells one `\n`.
 static int g_unwritable(const ShclVCons *c) {
 	if (c->segs.len > SHCL_MAX_DEPTH) return 1;
-	for (size_t si = 0; si < c->segs.len; si++) if (c->segs.data[si].sel.tag == SEL_INDEX || c->segs.data[si].star) return 1;
+	for (size_t si = 0; si < c->segs.len; si++) {
+		const ShclSegment *sg = &c->segs.data[si];
+		if (sg->sel.tag == SEL_INDEX || sg->star) return 1;
+		if (sg->sel.tag == SEL_VALUE && memchr(sg->sel.value.p, '\n', sg->sel.value.n)) return 1;
+	}
+	return 0;
+}
+// A repeat lower bound of 2 or more is the one documented shortfall - the line
+// is emitted once and the count reported - so it is not the fault below.
+static int g_cannot_satisfy(const ShclVCons *c) { return c->required || (c->has_repeat && c->rep_lo == 1); }
+static int g_path_has_nl(const ShclVCons *c) {
 	for (size_t k = 0; k < c->path.n; k++) if (c->path.p[k] == '\n') return 1;
 	return 0;
 }
@@ -5869,7 +5954,16 @@ static const ShclStr *parent_value_for(const ShclParentValues *pv, const ShclVec
    quoted spelling finds the bare value). */
 static ShclStr gen_selector_text(ShclArena *a, ShclStr v) {
 	if (memchr(v.p, '\n', v.n)) return g_default_text(a, v);
-	if ((memchr(v.p, '[', v.n) || memchr(v.p, ']', v.n) || memchr(v.p, '\\', v.n)) && !quoted_shape(v)) return quote_text(a, v);
+	// The scanner reads a bare selector body as an index when it is all digits
+	// (with an optional sign or `#`), and as a wildcard when it is `*`, so a
+	// default of that shape has to be quoted or the line names an instance
+	// that is not there.
+	ShclStr body = s_trim(v);
+	uint64_t ix;
+	int reads_as_selector = (body.n == 1 && body.p[0] == '*')
+		|| parse_u64(body, &ix)
+		|| (body.n >= 1 && body.p[0] == '#' && parse_u64(s_slice(body, 1, body.n), &ix));
+	if ((memchr(v.p, '[', v.n) || memchr(v.p, ']', v.n) || memchr(v.p, '\\', v.n) || reads_as_selector) && !quoted_shape(v)) return quote_text(a, v);
 	return v;
 }
 
@@ -5919,7 +6013,7 @@ static void g_expand_go(ShclArena *a, const ShclVecVCons *list, const ShclVSchem
 			cc.segs = segs;
 		}
 		ShclStr path = cc.path; ShclVecSeg segs = cc.segs;
-		if (out->len >= GEN_MAX_FIELDS) return;
+		if (out->len > GEN_MAX_FIELDS) return;
 		ShclVecVCons_push(a, out, cc);
 		if (c->inherits.n) {
 			int cycling = 0;
@@ -5954,6 +6048,19 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	ShclArena *a = &tmp;
 	ShclVSchemaDef def; memset(&def, 0, sizeof def);
 	ShclVecDiag faults = {0, 0, 0};
+	/* V096 and V097 can only come from generation, so any on the schema are
+	   this call's predecessors. Drop them, or a caller generating in a loop
+	   collects one copy per attempt and the diagnostic count stops meaning
+	   anything. */
+	{
+		size_t w = 0;
+		for (size_t i = 0; i < schema->diags.len; i++) {
+			const char *c = schema->diags.data[i].code;
+			if (c && (!strcmp(c, "V096") || !strcmp(c, "V097"))) continue;
+			schema->diags.data[w++] = schema->diags.data[i];
+		}
+		schema->diags.len = w;
+	}
 	// Generation lays the whole schema out, so unlike validation it has no
 	// safe partial mode: any fault fails it.
 	v_build_schema(a, schema, &def, &faults);
@@ -5971,7 +6078,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	ShclVecVCons cons = {0, 0, 0};
 	ShclVecS cut_path = {0, 0, 0}, cut_frag = {0, 0, 0};
 	g_expand_mounts(a, &def, &cons, &cut_path, &cut_frag);
-	if (cons.len >= GEN_MAX_FIELDS) {
+	if (cons.len > GEN_MAX_FIELDS) {
 		// Generation-only fault: recorded on the schema document (this
 		// signature has no fault list of its own to return).
 		ShclSB m = {0, 0, 0};
@@ -6010,6 +6117,10 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 				for (size_t s2 = 0; s2 < plen; s2++) if (!s_eq(live[li].data[s2].name, c->segs.data[s2].name)) { eq = 0; break; }
 				hit = eq;
 			}
+			// A wildcard in the last segment needs no other line to
+			// materialize its parent: the line generated from it is that
+			// instance.
+			if (plen == c->segs.len) hit = 1;
 			if (hit) { fill[i] = 1; LIVE_PUSH(c->segs); changed = 1; }
 		}
 		if (!changed) break;
@@ -6024,10 +6135,30 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	pv.data = (ShclParentValue *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *pv.data);
 	for (size_t i = 0; i < cons.len; i++) {
 		const ShclVCons *c = &cons.data[i];
-		if (!g_has_wild(c) && !g_unwritable(c) && g_must_exist(c) && c->has_default) { pv.data[pv.len].segs = &c->segs; pv.data[pv.len].value = c->default_text; pv.len++; }
+		// A filled wildcard emits a valued line of its own, so it belongs here too.
+		if ((!g_has_wild(c) || fill[i]) && !g_unwritable(c) && g_must_exist(c) && c->has_default) { pv.data[pv.len].segs = &c->segs; pv.data[pv.len].value = c->default_text; pv.len++; }
+	}
+	/* A path that cannot be written at all belongs in the trailing note, but one
+	   that must exist can never be satisfied from there: the self-check would
+	   then report the document as missing a path, which points at the config
+	   rather than at the schema line that cannot be generated. */
+	for (size_t i = 0; i < cons.len; i++) {
+		const ShclVCons *c = &cons.data[i];
+		if (!g_cannot_satisfy(c) || !g_unwritable(c) || g_has_wild(c)) continue;
+		ShclSB m = {0, 0, 0};
+		sb_puts(a, &m, "required path cannot be generated: ");
+		sb_putS(a, &m, g_escape_nl(a, c->path));
+		push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+		if (ok) *ok = 0;
+		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
 	}
 	ShclSB out = {0, 0, 0};
 	ShclVecS wild_path = {0, 0, 0}, wild_type = {0, 0, 0};
+	/* Dropping a trailing `[*]` can render the same line a concrete sibling
+	   already wrote; the first spelling wins. Hash first, bytes only on a
+	   hash hit, so the scan stays cheap at the field cap. */
+	ShclVecS emitted = {0, 0, 0};
+	uint64_t *emitted_hash = (uint64_t *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *emitted_hash);
 	int first = 1;
 	for (size_t i = 0; i < cons.len; i++) {
 		ShclVCons *c = &cons.data[i];
@@ -6037,6 +6168,24 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			ShclVecS_push(a, &wild_path, g_escape_nl(a, c->path)); ShclVecS_push(a, &wild_type, tyname);
 			continue;
 		}
+		// A filled wildcard emits in dotted form, targeting the materialized
+		// instance - by its value when the materializing line carries one.
+		// Rebuilt from the parsed segments, not by cutting text out of the
+		// path: the same path can be written several ways, and only the
+		// segments say what it means. Otherwise the schema's own spelling.
+		int under_valued_parent = 0;
+		for (size_t k = 1; k < c->segs.len && !under_valued_parent; k++)
+			under_valued_parent = c->segs.data[k - 1].sel.tag == SEL_NONE && parent_value_for(&pv, &c->segs, k) != NULL;
+		// A name carrying a newline has no verbatim spelling on a binding line;
+		// the segment renderer escapes it, so such a path goes through there
+		// whether or not it was filled.
+		ShclStr path = (fill[i] || under_valued_parent || g_path_has_nl(c)) ? gen_path_text(a, &c->segs, &pv) : c->path;
+		uint64_t ph = fnv_str(1469598103934665603ull, path);
+		int dup = 0;
+		for (size_t k = 0; k < emitted.len && !dup; k++) dup = emitted_hash[k] == ph && s_eq(emitted.data[k], path);
+		if (dup) continue;
+		emitted_hash[emitted.len] = ph;
+		ShclVecS_push(a, &emitted, path);
 		if (!first) sb_putc(a, &out, '\n');
 		first = 0;
 		if (c->has_desc) {
@@ -6052,16 +6201,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		}
 		sb_puts(a, &out, "# "); sb_putS(a, &out, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &out, '\n');
 		if (!g_must_exist(c)) sb_putc(a, &out, '#');
-		// A filled wildcard emits in dotted form, targeting the materialized
-		// instance - by its value when the materializing line carries one.
-		// Rebuilt from the parsed segments, not by cutting text out of the
-		// path: the same path can be written several ways, and only the
-		// segments say what it means. Otherwise the schema's own spelling.
-		int under_valued_parent = 0;
-		for (size_t k = 1; k < c->segs.len && !under_valued_parent; k++)
-			under_valued_parent = c->segs.data[k - 1].sel.tag == SEL_NONE && parent_value_for(&pv, &c->segs, k) != NULL;
-		if (fill[i] || under_valued_parent) sb_putS(a, &out, gen_path_text(a, &c->segs, &pv));
-		else sb_putS(a, &out, c->path);
+		sb_putS(a, &out, path);
 		if (c->has_default) { sb_puts(a, &out, ": "); sb_putS(a, &out, g_default_text(a, c->default_text)); }
 		else sb_putc(a, &out, ':');
 		sb_putc(a, &out, '\n');
@@ -6084,7 +6224,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		if (out.len) sb_putc(a, &out, '\n');
 		sb_puts(a, &out, GEN_BANNER);
 	}
-	ShclStr s = s_dup(&schema->arena, sb_S(&out)); r.p = s.p; r.n = s.n;
+	ShclStr s = sb_S(&out);
 	/* The output promises to validate clean against the schema that produced
 	   it, so check that here rather than trusting each branch above. A
 	   `default` outside its own field's constraints is the schema's fault, and
@@ -6116,6 +6256,11 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			return r;
 		}
 	}
+	/* Only now does the text leave the private arena, and it goes to the read
+	   arena rather than the document's own: a refused call then costs the
+	   schema nothing, and a caller generating in a loop can give the copies
+	   back with shcl_reads_release. */
+	ShclStr kept = s_dup(&schema->reads, s); r.p = kept.p; r.n = kept.n;
 	arena_free(&tmp);
 	return r;
 }

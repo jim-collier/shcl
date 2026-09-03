@@ -2437,6 +2437,21 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore})
 	}
 	p.pending = p.pending[:0]
+	// The emitter drops a blank before the first thing it prints, so a document
+	// that kept one there would not survive its own canonical form:
+	// load(emit(load(x))) and load(x) would differ on that bit, and a merge -
+	// where the line is no longer first - would place a blank the author never
+	// wrote. Clear it here, once, wherever output starts.
+	if kids := p.arena[root].children; len(kids) > 0 {
+		n := &p.arena[kids[0]]
+		if n.trivia != nil && len(n.trivia.leading) > 0 {
+			n.trivia.leading[0].blankBefore = false
+		} else {
+			n.blankBefore = false
+		}
+	} else if len(orphans) > 0 {
+		orphans[0].blankBefore = false
+	}
 	// The one entry past the cap: what was not listed, and whether any of it
 	// was an error, so a consumer scanning the list for errors still finds
 	// one and a Strict load still fails.
@@ -2474,7 +2489,7 @@ func ParseWith(text string, strictness Strictness) (*Document, error) {
 	if strictness == Strict {
 		for _, d := range doc.diags {
 			if d.Severity == SeverityError {
-				return doc, &LoadError{Diagnostics: doc.diags, Document: doc}
+				return doc, &LoadError{Diagnostics: append([]Diagnostic(nil), doc.diags...), Document: doc}
 			}
 		}
 	}
@@ -2505,7 +2520,7 @@ func ParseLimited(text string, strictness Strictness, maxNodes, maxElements, max
 	if strictness == Strict {
 		for _, d := range doc.diags {
 			if d.Severity == SeverityError {
-				return doc, &LoadError{Diagnostics: doc.diags, Document: doc}
+				return doc, &LoadError{Diagnostics: append([]Diagnostic(nil), doc.diags...), Document: doc}
 			}
 		}
 	}
@@ -2903,8 +2918,15 @@ func WriteFileAtomic(file, data string) error {
 	// Windows: a read-only file cannot be replaced, and a read-only temp cannot
 	// be removed after a failure, so the attribute comes off the target for the
 	// publish and goes back on the new file after it - the same outcome as
-	// POSIX, where the rename never needed the file writable.
+	// POSIX, where the rename never needed the file writable. Hidden and system
+	// ride back the same way: ReplaceFile's documented preserve list does not
+	// include the basic attributes, and the rename fallback carries nothing, so
+	// a hidden config came back visible.
 	readOnly := runtime.GOOS == "windows" && existErr == nil && existing.Mode().Perm()&0o200 == 0
+	var carried uint32
+	if existErr == nil {
+		carried = carriedAttrs(existing)
+	}
 	var f *os.File
 	var tmp string
 	var last error
@@ -2949,6 +2971,9 @@ func WriteFileAtomic(file, data string) error {
 		setReadOnly(target, false)
 	}
 	rerr := publishFile(tmp, target)
+	if carried != 0 {
+		restoreAttrs(target, carried) // whether or not the publish went through
+	}
 	if readOnly {
 		setReadOnly(target, true) // whether or not the publish went through
 	}
@@ -3013,6 +3038,13 @@ func setReadOnly(path string, on bool) {
 // works on its own - the drop-in story is the whole point of the single file,
 // and a tree that took the module gets the better windows publish anyway.
 var publishFile = func(tmp, target string) error { return os.Rename(tmp, target) }
+
+// carriedAttrs is the attribute bits a publish will not carry across by itself
+// - hidden and system on windows, nothing anywhere else - and restoreAttrs
+// turns them back on afterwards. Hooks for the same reason publishFile is.
+var carriedAttrs = func(os.FileInfo) uint32 { return 0 }
+
+var restoreAttrs = func(string, uint32) {}
 
 // syncDir fsyncs the directory a save published into. The Sync on the file only
 // covered the file; the rename is a directory change, so without this a power
@@ -3414,6 +3446,11 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 					slots = append(slots, r.one)
 				case resNone:
 					slots = append(slots, -1)
+				case resSlots:
+					// A wildcard after a wildcard: the inner slots join the
+					// outer list, so the two compose into one flat run of
+					// leaves rather than one unreadable slot.
+					slots = append(slots, r.slots...)
 				default:
 					slots = append(slots, -2)
 				}
@@ -3453,6 +3490,11 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 					slots = append(slots, r.one)
 				case resNone:
 					slots = append(slots, -1)
+				case resSlots:
+					// A wildcard after a wildcard: the inner slots join the
+					// outer list, so the two compose into one flat run of
+					// leaves rather than one unreadable slot.
+					slots = append(slots, r.slots...)
 				default:
 					slots = append(slots, -2)
 				}
@@ -4536,11 +4578,15 @@ var currencyRunes = []rune{
 	'$', '¢', '£', '¤', '¥', '₩', '₪', '₫', '€', '₭', '₮', '₱', '₲', '₴', '₹', '₺', '₼', '₽', '₾', '₿',
 }
 
+// stripCurrency is the remainder after a leading currency symbol, with the
+// space a person writes after one taken off - `$ 1200` reached the int path's
+// thousands branch, which trims, and the float path's shape test, which does
+// not.
 func stripCurrency(t string) string {
 	r, size := utf8.DecodeRuneInString(t)
 	for _, c := range currencyRunes {
 		if r == c {
-			return t[size:]
+			return strings.TrimLeftFunc(t[size:], unicode.IsSpace)
 		}
 	}
 	return t
@@ -4753,22 +4799,6 @@ func validDate(y, m, d int) bool {
 	return m >= 1 && m <= 12 && d >= 1 && d <= daysInMonth(y, m)
 }
 
-// parseU32 mirrors the reference's u32 parse: optional '+', digits, 32-bit range.
-func parseU32(s string) (int, bool) {
-	t := s
-	if t != "" && t[0] == '+' {
-		t = t[1:]
-	}
-	if t == "" || !allDigits(t) {
-		return 0, false
-	}
-	v, err := strconv.ParseUint(t, 10, 32)
-	if err != nil {
-		return 0, false
-	}
-	return int(v), true
-}
-
 // The Atoi error discards through this date cluster are safe: every input is
 // length-bounded and allDigits-checked first, so Atoi cannot fail on it.
 func parseYear4(s string) (int, bool) {
@@ -4803,7 +4833,10 @@ func parseDatePart(s string) (y, m, d int, ok bool) {
 	toks := strings.Fields(s)
 	if len(toks) == 3 {
 		if mo, found := monthFromName(toks[0]); found {
-			dv, ok1 := parseU32(strings.TrimSuffix(toks[1], ","))
+			// The day is DD, like every other form's: a plain integer parse
+			// takes a leading '+' and any number of leading zeros, which the
+			// whitelist does not list and the delimited spellings refuse.
+			dv, ok1 := parseNum2(strings.TrimSuffix(toks[1], ","))
 			yv, ok2 := parseYear4(toks[2])
 			if ok1 && ok2 && validDate(yv, mo, dv) {
 				return yv, mo, dv, true
@@ -4811,7 +4844,7 @@ func parseDatePart(s string) (y, m, d int, ok bool) {
 			return 0, 0, 0, false
 		}
 		if mo, found := monthFromName(toks[1]); found {
-			dv, ok1 := parseU32(toks[0])
+			dv, ok1 := parseNum2(toks[0])
 			yv, ok2 := parseYear4(toks[2])
 			if ok1 && ok2 && validDate(yv, mo, dv) {
 				return yv, mo, dv, true
@@ -5223,7 +5256,9 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 			out = append(out, val)
 			sts = append(sts, cst)
 		}
-		status := Empty
+		// No slots at all means the wildcard's parent is not there, so the
+		// path did not resolve - Empty is for a node that is.
+		status := NotFound
 		if len(sts) > 0 {
 			status = Good
 			for _, s := range sts {
@@ -5258,7 +5293,9 @@ func readArray[T any](d *Document, path string, coerce func(*element) (T, bool))
 			status = cst
 		}
 	}
-	return Read[[]T]{Value: out, Status: status, Raw: &raw, Slots: sts}.at(line, false)
+	// A one-element cell has a single scalar element, so the flag means the
+	// same thing here as on the scalar read of the same node.
+	return Read[[]T]{Value: out, Status: status, Raw: &raw, Slots: sts}.at(line, len(v.els) == 1 && v.els[0].quoted)
 }
 
 // ReadIntArray is the full-tier integer-array read at path (per-slot statuses in Slots).
@@ -6034,7 +6071,7 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		return "", faults
 	}
 	cons, cuts := expandMounts(&def)
-	if len(cons) >= genMaxFields {
+	if len(cons) > genMaxFields {
 		msg := fmt.Sprintf("schema expands past %d fields; fragments mounted at more than one path multiply", genMaxFields)
 		return "", []Diagnostic{{Line: 0, Severity: SeverityError, Message: msg, Code: "V096"}}
 	}
@@ -6049,11 +6086,13 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		}
 		return false
 	}
-	// `[#N]` needs a pre-existing instance and its `#` would start a comment
-	// on a binding line; a path with a literal newline cannot be written at
-	// all. Both go to the trailing note instead of emitting a broken line.
-	// A path deeper than a document may nest cannot be generated either: the
-	// line would draw E016 on the way back in.
+	// `[#N]` needs a pre-existing instance and its `#` would start a comment on
+	// a binding line; a newline inside a selector has no one-line spelling,
+	// since the value emitter never escapes one. Both go to the trailing note
+	// instead of emitting a broken line. A path deeper than a document may nest
+	// cannot be generated either: the line would draw E016 on the way back in.
+	// A newline in a NAME is writable: names are stored escape-resolved and the
+	// name escaper spells one `\n`.
 	unwritable := func(c *constraint) bool {
 		if len(c.segs) > MaxDepth {
 			return true
@@ -6062,8 +6101,11 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			if (s.sel != nil && s.sel.kind == selByIndex) || s.star {
 				return true
 			}
+			if s.sel != nil && s.sel.kind == selByValue && strings.Contains(s.sel.value, "\n") {
+				return true
+			}
 		}
-		return strings.Contains(c.path, "\n")
+		return false
 	}
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -6109,6 +6151,15 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 				}
 			}
 			parent := namesOf(c.segs[:k+1])
+			// A wildcard in the last segment needs no other line to
+			// materialize its parent: the line generated from it is that
+			// instance.
+			if k+1 == len(c.segs) {
+				fill[i] = true
+				live = append(live, namesOf(c.segs))
+				changed = true
+				continue
+			}
 			for _, p := range live {
 				if isPrefix(p, parent) {
 					fill[i] = true
@@ -6127,15 +6178,33 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// web` followed by `srv.port:` is two `srv` nodes, and the child never
 	// lands where the schema looks. Any line under such a parent selects it
 	// by its value: `srv[web].port:`.
+	// A filled wildcard emits a valued line of its own, so it belongs here too.
 	parentValues := map[string]string{}
 	for i := range cons {
 		c := &cons[i]
-		if !hasWild(c) && !unwritable(c) && mustExist(c) && c.defaultText != nil {
+		if (!hasWild(c) || fill[i]) && !unwritable(c) && mustExist(c) && c.defaultText != nil {
 			parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
+		}
+	}
+	// A path that cannot be written at all belongs in the trailing note, but one
+	// that must exist can never be satisfied from there: the self-check would
+	// then report the document as missing a path, which points at the config
+	// rather than at the schema line that cannot be generated. A repeat lower
+	// bound of 2 or more is the one documented shortfall - the line is emitted
+	// once and the count reported - so it is not this fault.
+	for i := range cons {
+		c := &cons[i]
+		cannotSatisfy := c.required || (c.repeat != nil && c.repeat[0] == 1)
+		if cannotSatisfy && unwritable(c) && !hasWild(c) {
+			msg := "required path cannot be generated: " + strings.ReplaceAll(c.path, "\n", "\\n")
+			return "", []Diagnostic{{Line: 0, Severity: SeverityError, Message: msg, Code: "V097"}}
 		}
 	}
 	var b strings.Builder
 	var wild [][2]string
+	// Dropping a trailing `[*]` can render the same line a concrete sibling
+	// already wrote; the first spelling wins.
+	emitted := map[string]bool{}
 	first := true
 	for i := range cons {
 		c := &cons[i]
@@ -6147,6 +6216,29 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			wild = append(wild, [2]string{strings.ReplaceAll(c.path, "\n", "\\n"), tyname})
 			continue
 		}
+		// A filled wildcard emits in dotted form, targeting the materialized
+		// instance - by its value when the materializing line carries one.
+		// Rebuilt from the parsed segments, not by cutting text out of the
+		// path: the same path can be written several ways, and only the
+		// segments say what it means. Otherwise the schema's own spelling.
+		underValuedParent := false
+		for k := 1; k < len(c.segs); k++ {
+			if _, ok := parentValues[namesKey(namesOf(c.segs[:k]))]; ok && c.segs[k-1].sel == nil {
+				underValuedParent = true
+				break
+			}
+		}
+		// A name carrying a newline has no verbatim spelling on a binding line;
+		// the segment renderer escapes it, so such a path goes through there
+		// whether or not it was filled.
+		path := c.path
+		if fill[i] || underValuedParent || strings.Contains(c.path, "\n") {
+			path = genPathText(c.segs, parentValues)
+		}
+		if emitted[path] {
+			continue
+		}
+		emitted[path] = true
 		if !first {
 			b.WriteByte('\n')
 		}
@@ -6163,22 +6255,6 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		// string value must not break out of it.
 		b.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
 		b.WriteByte('\n')
-		// A filled wildcard emits in dotted form, targeting the materialized
-		// instance - by its value when the materializing line carries one.
-		// Rebuilt from the parsed segments, not by cutting text out of the
-		// path: the same path can be written several ways, and only the
-		// segments say what it means. Otherwise the schema's own spelling.
-		underValuedParent := false
-		for k := 1; k < len(c.segs); k++ {
-			if _, ok := parentValues[namesKey(namesOf(c.segs[:k]))]; ok && c.segs[k-1].sel == nil {
-				underValuedParent = true
-				break
-			}
-		}
-		path := c.path
-		if fill[i] || underValuedParent {
-			path = genPathText(c.segs, parentValues)
-		}
 		prefix := "#"
 		if mustExist(c) {
 			prefix = ""
@@ -6282,7 +6358,17 @@ func genSelectorText(v string) string {
 	if strings.Contains(v, "\n") {
 		return genDefaultText(v)
 	}
-	if strings.ContainsAny(v, "[]\\") && !quotedShape(v) {
+	// The scanner reads a bare selector body as an index when it is all digits
+	// (with an optional sign or `#`), and as a wildcard when it is `*`, so a
+	// default of that shape has to be quoted or the line names an instance
+	// that is not there.
+	body := strings.TrimSpace(v)
+	_, isIndex := parseIndex(body)
+	if !isIndex {
+		_, isIndex = hashIndex(body)
+	}
+	readsAsSelector := body == "*" || isIndex
+	if (strings.ContainsAny(v, "[]\\") || readsAsSelector) && !quotedShape(v) {
 		return quoteText(v)
 	}
 	return v
@@ -6356,7 +6442,7 @@ func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
 			}
 			path := cc.path
 			segs := cc.segs
-			if len(out) >= genMaxFields {
+			if len(out) > genMaxFields {
 				return
 			}
 			out = append(out, cc)

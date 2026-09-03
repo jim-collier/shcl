@@ -21,6 +21,12 @@ server.host:
 # int, repeat 1-5
 replicas:
 
+# float, 811212085039910.2-1125899906842624.2
+#ratio:
+
+# float, one of: 811212085039910.2, 1125899906842624.2
+#scale:
+
 #
 # This config file format is SHCL.
 # "Simple Hierarchical Config Language"

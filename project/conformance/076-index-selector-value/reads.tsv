@@ -5,3 +5,4 @@ a	int	1	Good
 a	count	1	Good
 c.d	int	4	Good
 -	paths	a|c|c.d	-
+-	lost	2	-

@@ -36,6 +36,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- On Windows a save keeps the file's hidden and system attributes. `ReplaceFile`'s documented preserve list stops at security attributes and named streams, and the fallback rename carries nothing, so a hidden config came back visible. They are re-applied after the publish now, the way read-only already was. The `REPLACEFILE_WRITE_THROUGH` flag Microsoft documents as unsupported is no longer described as what makes the write durable; the file's own flush before the publish is.
+
+- An array read of a one-element cell reports the element's quoting, like the scalar read of the same node. `read_int("h")` on `h: "5"` said quoted and `read_int_array("h")` said not, because the array path always answered false. More than one element still reports false: there is no single element to report.
+
+- At Loose, a space after a currency symbol no longer decides whether the value reads. `$ 1200` read as 1200 while `$ 3.14` was `BadType`, because the int path reached a branch that trims and the float path tested the shape on the untrimmed remainder. The space comes off once, for both.
+
+- `shcl_generate` keeps nothing when it refuses, and what it returns can be given back. The output was copied into the schema's own arena before the self-check, so a call that failed kept text it never returned, and a call that succeeded left a copy no `shcl_reads_release` could reclaim - 21.9 KB per call in a loop. The bytes live in the read arena now, and generation faults from an earlier call are dropped rather than stacked up. The C++ veneer's `generate()` releases first, like every other copying wrapper.
+
+- `init` names the path it cannot generate. A required path with a `[#N]` selector, or one past the nesting cap, went to the trailing comment block and then failed the self-check with "required path missing", which points at the generated config rather than at the schema line nothing can satisfy. It is a `V097` fault naming the path now. A name carrying a newline is generated rather than refused: names have been stored escape-resolved since 2.0 and the name escaper spells one.
+
+- A blank line before the first thing canonical output prints is dropped at load. Canonical output never starts with a blank, so a document that kept the flag did not survive its own canonical form: merging a layer gave a different result from merging its `fmt`, and the fold placed a blank line the author never wrote. Three shapes did it - a file starting with a blank line, a blank after a leading line the load dropped, and a blank on a later instance that merged into the first.
+
+- A refused `--set` or a failing ops line no longer swallows the load's diagnostics. The edit was applied before anything was printed, so a `get --set` on a file with a dropped line reported the refusal and said nothing about the damage. The diagnostics belong to the load and now go out before any edit runs.
+
+- Go's `LoadError` and Python's `diagnostics()` and `LoadError` hand back a copy. Each returned the document's own list, so a caller sorting or clearing what it was given silently changed what the document reported, and the document's next append landed in the caller's slot. Go's `Diagnostics()` was fixed for this in 2.0; these were the ones it missed.
+
+- The named-month date forms hold the day to `DD`. `Jul +12 2026`, `Jul 0012 2026` and `+12 Jul 2026` read as 12 July, because the space-separated spellings parsed the day as a plain integer where every delimited spelling holds it to one or two digits. The spec calls the format list a closed whitelist and spells the day `DD`.
+
+- A stdout that cannot be written exits 8 instead of reporting success. `shcl fmt f.shcl > /dev/full` exited 0 with an empty stderr in three of the four CLIs and killed the Python one with an interpreter message; the help and the man page have said 8 for a stream that could not be written all along. A reader that closed early is still the quiet exit, since nobody is there to read a complaint.
+
+- A stderr that cannot be written no longer costs the document. The reference aborted with nothing on stdout at all when a diagnostic could not be printed, which turned an unwritable log into a lost `fmt`. Diagnostics are best-effort now; the exit code still carries the outcome.
+
+- A wildcard read whose parent does not exist reports `NotFound` instead of `Empty`. `x[*]` on a document with no `x` said the path was there and empty, which is the answer for a field written with nothing after the colon; `x` on its own said `NotFound`. The two agree now.
+
+- A wildcard after a wildcard flattens instead of answering `Multiple` for every slot. `server[*].*` reported one unreadable slot per instance, `count` counted instances rather than leaves, and `Remove` on such a path removed nothing. The inner slots now join the outer run, so the result is one slot per resolved leaf and the two wildcards compose the way the spec says they do.
+
 - A float literal past the double range (`1e400`) reads as `BadType` instead of an infinity at `Good`. No double holds the value, and the infinity could not be written back, so a read-modify-write left a field the reader then refused. A literal below the range still reads as zero.
 
 - `get`, `count` and `instances` print the load's diagnostics to stderr, the way `fmt` and `set` already did. Below strict a damaged file used to read back a correct value at exit 0 with nothing said, so the only way to learn a line had been dropped was a separate `check` run. One report per run; stdout is unchanged.

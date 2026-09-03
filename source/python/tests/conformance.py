@@ -493,6 +493,10 @@ def main():
 				fails.append(f"{at}: load failed but reads.tsv has reads there: {e}")
 				continue
 
+			if kind == "lost":
+				if str(doc.lost_count()) != expected:
+					fails.append(f"{at}: lost got {doc.lost_count()} want {expected}")
+				continue
 			if kind == "count":
 				if str(doc.count(query)) != expected:
 					fails.append(f"{at}: count got {doc.count(query)} want {expected}")
@@ -706,6 +710,34 @@ def main():
 	# Canonical output folds the case, as it always has, and escapes the tab.
 	if sdoc3.to_canonical() != '"ab\\tcd": 2\n':
 		raise SystemExit(f"canonical name spelling got {sdoc3.to_canonical()!r}")
+	# An array read of a one-element cell answers the same as the scalar read of
+	# the same node: there is a single scalar element, which is what the flag is
+	# about. More than one element, and there is none to report. Same fixture in
+	# Rust and Go.
+	qdoc = shcl.Document.parse('a: @null\nb: "@null"\n')
+	if not qdoc.read_string_array("b").quoted:
+		raise SystemExit("a one-element quoted cell reads unquoted as an array")
+	if qdoc.read_string_array("a").quoted:
+		raise SystemExit("a one-element bare cell reads quoted as an array")
+	if shcl.Document.parse('m: "x", "y"\n').read_string_array("m").quoted:
+		raise SystemExit("a two-element cell reported a single element's quoting")
+	# What a read hands out must not be the document's own list: a caller
+	# clearing it used to take the document's diagnostics with it, and a failed
+	# strict load handed out the same list again. Same fixture in Go.
+	adoc = shcl.Document.parse("a: 1\na: 2\n")
+	handed = adoc.diagnostics()
+	if not handed:
+		raise SystemExit("aliasing fixture: want a diagnostic to work with")
+	handed.clear()
+	if not adoc.diagnostics():
+		raise SystemExit("diagnostics() handed out the document's own list")
+	try:
+		shcl.Document.parse_with("a\n", shcl.Strictness.Strict)
+		raise SystemExit("aliasing fixture: want a strict load failure")
+	except shcl.LoadError as e:
+		e.diagnostics.clear()
+		if e.document is not None and not e.document.diagnostics():
+			raise SystemExit("LoadError shares the document's diagnostics list") from None
 	# parse_limited: the caps exist because a document amplifies to many times
 	# its byte size in memory, so read_file's byte cap alone cannot bound a
 	# load. Same fixture in every runner.
@@ -1026,6 +1058,22 @@ def main():
 			if [n for n in os.listdir(td) if ".tmp" in n]:
 				raise SystemExit("read-only rewrite left a temp file")
 			os.chmod(ro, stat.S_IREAD | stat.S_IWRITE)
+			# Hidden and system come back too: ReplaceFile's preserve list does
+			# not include the basic attributes and the os.replace fallback
+			# carries none, so a hidden config used to come back visible.
+			import ctypes
+
+			# WinDLL and st_file_attributes exist only on windows, and mypy
+			# checks this file against the POSIX stubs, where both are absent.
+			k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+			k32.SetFileAttributesW(ro, 0x2 | 0x4)
+			shcl.Document.parse("a: 3\n").save_file(ro)
+			after = os.stat(ro).st_file_attributes  # type: ignore[attr-defined]
+			if not after & 0x2:
+				raise SystemExit("file did not come back hidden")
+			if not after & 0x4:
+				raise SystemExit("file did not come back system")
+			k32.SetFileAttributesW(ro, 0x80)
 		# A document holding a lone surrogate has no UTF-8 spelling; the save
 		# fails like any other failed write, and leaves no temp file behind.
 		surdoc = shcl.Document.parse("a: 1\n")

@@ -1877,6 +1877,20 @@ class _Parser:
 		self._hang_deeper_pending("")
 		orphans = [_Lead(p.text, p.blank_before) for p in self.pending]
 		self.pending = []
+		# The emitter drops a blank before the first thing it prints, so a
+		# document that kept one there would not survive its own canonical form:
+		# load(emit(load(x))) and load(x) would differ on that bit, and a merge -
+		# where the line is no longer first - would place a blank the author
+		# never wrote. Clear it here, once, wherever output starts.
+		kids = self.arena[ROOT].children
+		if kids:
+			n = self.arena[kids[0]]
+			if n.trivia is not None and n.trivia.leading:
+				n.trivia.leading[0].blank_before = False
+			else:
+				n.blank_before = False
+		elif orphans:
+			orphans[0].blank_before = False
 		# The one entry past the cap: what was not listed, and whether any of
 		# it was an error, so a consumer scanning the list for errors still
 		# finds one and a Strict load still fails.
@@ -1989,7 +2003,7 @@ class Document:
 		alongside the diagnostics."""
 		doc = _Parser().parse(text, strictness)
 		if strictness == Strictness.Strict and any(d.severity == Severity.Error for d in doc.diags):
-			raise LoadError(doc.diags, doc)
+			raise LoadError(list(doc.diags), doc)
 		return doc
 
 	@staticmethod
@@ -2018,7 +2032,7 @@ class Document:
 		p.max_diags = max_diags
 		doc = p.parse(text, strictness)
 		if strictness == Strictness.Strict and any(d.severity == Severity.Error for d in doc.diags):
-			raise LoadError(doc.diags, doc)
+			raise LoadError(list(doc.diags), doc)
 		return doc
 
 	@staticmethod
@@ -2066,7 +2080,10 @@ class Document:
 			raise SaveFailed(err)
 
 	def diagnostics(self) -> list[Diagnostic]:
-		return self.diags
+		# A copy: the reference hands out a borrowed view nobody can append to,
+		# and the document's own list would let a caller's edit and the
+		# document's next append overwrite each other.
+		return list(self.diags)
 
 	def lost_count(self) -> int:
 		"""How many lines or values parsing dropped that canonical output cannot
@@ -2275,11 +2292,10 @@ class Document:
 		# A slots entry is a node idx, or the Status saying why the sub-path did
 		# not land on one node (NotFound missing, Multiple ambiguous).
 		# The per-instance sub-resolution behind a wildcard is the same walk
-		# over the remaining segments, run flat (_resolve_slot) rather than one
+		# over the remaining segments, run flat (_resolve_slots) rather than one
 		# frame per wildcard: a path can carry a wildcard per document level,
-		# and the frame budget is small. The sub-walk's answer collapses to one
-		# slot, and a wildcard inside it can only ever answer Multiple, so the
-		# flat walk ends there.
+		# and the frame budget is small. A wildcard inside the sub-walk widens
+		# the run rather than ending it, so the two compose.
 		cur = list(start)
 		for i, seg in enumerate(segs):
 			nxt = []
@@ -2296,7 +2312,7 @@ class Document:
 					if not rest:
 						slots.append(inst)
 					else:
-						slots.append(self._resolve_slot(inst, rest))
+						slots.extend(self._resolve_slots(inst, rest))
 				return ("slots", slots)
 			sel = seg.selector
 			if sel is None:
@@ -2315,7 +2331,7 @@ class Document:
 					if not rest:
 						slots.append(inst)
 					else:
-						slots.append(self._resolve_slot(inst, rest))
+						slots.extend(self._resolve_slots(inst, rest))
 				return ("slots", slots)
 		if len(cur) == 0:
 			return ("none",)
@@ -2323,31 +2339,54 @@ class Document:
 			return ("one", cur[0])
 		return ("many", cur)
 
-	def _resolve_slot(self, inst, rest):
-		# One wildcard slot: _resolve_from's walk from `inst` over `rest`,
-		# collapsed to a node index, NotFound (nothing) or Multiple (several, or
-		# a further wildcard - whose per-instance answer is itself a list).
-		cur = [inst]
-		for seg in rest:
-			sel = seg.selector
-			if seg.star or (sel is not None and sel[0] == "wild"):
-				return Status.Multiple
-			nxt = []
-			for node in cur:
-				nxt.extend(self._children_named(node, seg.name))
-			if sel is None:
-				cur = nxt
-			elif sel[0] == "val":
-				want = _apply_escapes(sel[1])
-				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
+	def _resolve_slots(self, inst, rest):
+		# The slots one wildcard instance contributes: normally one - a node
+		# index, or the Status saying why the sub-path did not land on one node
+		# (NotFound missing, Multiple ambiguous) - but a further wildcard in
+		# `rest` contributes its own slots to the same flat run. Walked with an
+		# explicit stack rather than one frame per wildcard: a path can carry a
+		# wildcard per document level, and the frame budget is small. The stack
+		# is depth-first with children pushed in reverse, so slots come out in
+		# file order.
+		out = []
+		stack = [([inst], rest)]
+		while stack:
+			cur, segs = stack.pop()
+			split = False
+			for i, seg in enumerate(segs):
+				sel = seg.selector
+				nxt = []
+				for node in cur:
+					if seg.star:
+						nxt.extend(self.arena[node].children)
+					else:
+						nxt.extend(self._children_named(node, seg.name))
+				if seg.star or (sel is not None and sel[0] == "wild"):
+					tail = segs[i + 1:]
+					if not tail:
+						out.extend(nxt)
+					else:
+						for c in reversed(nxt):
+							stack.append(([c], tail))
+					split = True
+					break
+				if sel is None:
+					cur = nxt
+				elif sel[0] == "val":
+					want = _apply_escapes(sel[1])
+					cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
+				else:
+					k = sel[1]
+					cur = [nxt[k]] if k < len(nxt) else []
+			if split:
+				continue
+			if len(cur) == 0:
+				out.append(Status.NotFound)
+			elif len(cur) == 1:
+				out.append(cur[0])
 			else:
-				k = sel[1]
-				cur = [nxt[k]] if k < len(nxt) else []
-		if len(cur) == 0:
-			return Status.NotFound
-		if len(cur) == 1:
-			return cur[0]
-		return Status.Multiple
+				out.append(Status.Multiple)
+		return out
 
 	def _resolve(self, path):
 		# Returns a _resolve_from result, or ("err", Status).
@@ -3197,7 +3236,9 @@ class Document:
 				v, st = _coerced(coerce, se[1], default)
 				out.append(v)
 				sts.append(st)
-			status = max(sts, key=lambda s: s.value) if sts else Status.Empty
+			# No slots at all means the wildcard's parent is not there, so the
+			# path did not resolve - Empty is for a node that is.
+			status = max(sts, key=lambda s: s.value) if sts else Status.NotFound
 			return Read(out, status, None, sts)
 		if tag == "none":
 			return Read([], Status.NotFound, None)
@@ -3218,7 +3259,10 @@ class Document:
 			out.append(v)
 			sts.append(st)
 		status = max(sts, key=lambda s: s.value) if sts else Status.Good
-		return Read(out, status, raw, sts)._at(line, False)
+		# A one-element cell has a single scalar element, so the flag means the
+		# same thing here as on the scalar read of the same node.
+		quoted = len(value.els) == 1 and value.els[0].quoted
+		return Read(out, status, raw, sts)._at(line, quoted)
 
 	def read_int_array(self, path: str) -> Read:
 		lvl = self._strictness
@@ -3676,13 +3720,44 @@ class FileStatus(Enum):
 	Unreadable = 3   # exists but could not be read (permissions, a directory, bad encoding, past a read_file cap)
 
 
+# The attribute bits a publish will not carry across by itself - hidden and
+# system on windows, nothing anywhere else. ReplaceFile's documented preserve
+# list is creation time, short name, object id, DACLs, security attributes,
+# encryption, compression and named streams, and the os.replace fallback carries
+# nothing at all. Read-only is handled separately: it has to come OFF first.
+_CARRIED_ATTRS = 0x2 | 0x4   # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+
+
+def _carried_attrs(st):
+	return getattr(st, "st_file_attributes", 0) & _CARRIED_ATTRS if os.name == "nt" else 0
+
+
+def _restore_attrs(target, bits):
+	import ctypes
+
+	# WinDLL exists only on windows, and mypy checks this file against the
+	# POSIX stubs, where the name is simply absent.
+	k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+	k32.GetFileAttributesW.restype = ctypes.c_ulong
+	k32.GetFileAttributesW.argtypes = [ctypes.c_wchar_p]
+	k32.SetFileAttributesW.restype = ctypes.c_int
+	k32.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_ulong]
+	now = k32.GetFileAttributesW(str(target))
+	if now != 0xFFFFFFFF:
+		k32.SetFileAttributesW(str(target), now | bits)
+
+
 def _publish_file(tmp, target):
 	# Move the finished temp file over the target. On windows that means
 	# ReplaceFile rather than a rename: a rename publishes a brand-new file and
-	# leaves the destination's ACLs, attributes and named streams behind, which
-	# ReplaceFile carries onto the replacement instead. It needs the destination
-	# to exist, and it fails rather than skip a merge it cannot do (no WRITE_DAC,
-	# say), so a create and any failure fall back to os.replace.
+	# leaves the destination's ACLs, security attributes and named streams
+	# behind, which ReplaceFile carries onto the replacement instead. What it
+	# does not carry is the basic attributes - hidden and system - which the save
+	# re-applies by hand. It needs the destination to exist, and it fails rather
+	# than skip a merge it cannot do (no WRITE_DAC, say), so a create and any
+	# failure fall back to os.replace. WRITE_THROUGH is asked for and documented
+	# as unsupported by ReplaceFile, so durability rests on the file's own
+	# fsync.
 	if os.name == "nt" and os.path.exists(target):
 		import ctypes
 
@@ -3814,6 +3889,10 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	# publish and goes back on the new file after it - the same outcome as
 	# POSIX, where the rename never needed the file writable.
 	read_only = os.name == "nt" and existing is not None and not existing.st_mode & stat.S_IWRITE
+	# Hidden and system ride back the same way: ReplaceFile's documented preserve
+	# list does not include the basic attributes, and the os.replace fallback
+	# carries nothing, so a hidden config came back visible.
+	carried = _carried_attrs(existing) if existing is not None else 0
 	born = 0o600 if existing is not None else 0o666
 	f = None
 	tmp = ""
@@ -3863,6 +3942,8 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	try:
 		_publish_file(tmp, target)
 	except OSError as e:
+		if carried:
+			_restore_attrs(target, carried)
 		if read_only:
 			_set_read_only(target, True)
 		try:
@@ -3870,6 +3951,8 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 		except OSError:
 			pass
 		return f"{file}: {e}"
+	if carried:
+		_restore_attrs(target, carried)
 	if read_only:
 		_set_read_only(target, True)
 	_sync_dir(d)
@@ -4063,8 +4146,11 @@ _I64_MAX = 2 ** 63 - 1
 
 
 def _strip_currency(t):
+	# The remainder after a leading currency symbol, with the space a person
+	# writes after one taken off - `$ 1200` reached the int path's thousands
+	# branch, which trims, and the float path's shape test, which does not.
 	if t and t[0] in _CURRENCY:
-		return t[1:]
+		return t[1:].lstrip(_WS)
 	return t
 
 
@@ -4258,24 +4344,6 @@ def _valid_date(y, m, d):
 	return 1 <= m <= 12 and d >= 1 and d <= _days_in_month(y, m)
 
 
-def _parse_u32(s):
-	# Rust u32 parse: optional leading '+', ASCII digits, range-checked.
-	if not s:
-		return None
-	body = s[1:] if s[0] == "+" else s
-	if not body or not _all_ascii_digits(body):
-		return None
-	# Length-gate before int(): CPython 3.11+ refuses >4300 decimal digits, but the
-	# reference just overflows. Leading zeros are legal and don't count toward range.
-	digits = body.lstrip("0") or "0"
-	if len(digits) > 10:
-		return None
-	n = int(digits)
-	if n > 2 ** 32 - 1:
-		return None
-	return n
-
-
 def _parse_year4(s):
 	if len(s) == 4 and _all_ascii_digits(s):
 		return int(s)
@@ -4302,14 +4370,17 @@ def _parse_date_part(s):
 		m = _month_from_name(toks[0])
 		if m is not None:
 			day_tok = toks[1][:-1] if toks[1].endswith(",") else toks[1]
-			d = _parse_u32(day_tok)
+			# The day is DD, like every other form's: a plain integer parse takes
+			# a leading '+' and any number of leading zeros, which the whitelist
+			# does not list and the delimited spellings refuse.
+			d = _parse_num2(day_tok)
 			y = _parse_year4(toks[2])
 			if d is None or y is None:
 				return None
 			return (y, m, d) if _valid_date(y, m, d) else None
 		m = _month_from_name(toks[1])
 		if m is not None:
-			d = _parse_u32(toks[0])
+			d = _parse_num2(toks[0])
 			y = _parse_year4(toks[2])
 			if d is None or y is None:
 				return None
@@ -4885,7 +4956,7 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	if faults:
 		return "", faults
 	cons, cuts = _expand_mounts(sdef)
-	if len(cons) >= _GEN_MAX_FIELDS:
+	if len(cons) > _GEN_MAX_FIELDS:
 		faults = []
 		_vdiag(faults, 0, "V096", f"schema expands past {_GEN_MAX_FIELDS} fields; fragments mounted at more than one path multiply")
 		return "", faults
@@ -4896,13 +4967,20 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	def has_wild(c):
 		return any(s.selector is not None and s.selector[0] == "wild" for s in c.segs)
 
-	# `[#N]` needs a pre-existing instance and its `#` would start a comment
-	# on a binding line; a path with a literal newline cannot be written at
-	# all. Both go to the trailing note instead of emitting a broken line.
-	# A path deeper than a document may nest cannot be generated either: the
-	# line would draw E016 on the way back in.
+	# `[#N]` needs a pre-existing instance and its `#` would start a comment on a
+	# binding line; a newline inside a selector has no one-line spelling, since
+	# the value emitter never escapes one. Both go to the trailing note instead
+	# of emitting a broken line. A path deeper than a document may nest cannot be
+	# generated either: the line would draw E016 on the way back in. A newline in
+	# a NAME is writable: names are stored escape-resolved and the name escaper
+	# spells one `\n`.
 	def unwritable(c):
-		return len(c.segs) > MAX_DEPTH or any((s.selector is not None and s.selector[0] == "idx") or s.star for s in c.segs) or "\n" in c.path
+		return len(c.segs) > MAX_DEPTH or any(
+			(s.selector is not None and s.selector[0] == "idx")
+			or s.star
+			or (s.selector is not None and s.selector[0] == "val" and "\n" in s.selector[1])
+			for s in c.segs
+		)
 
 	# Live concrete paths materialize instances; decide which must-exist
 	# wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -4919,7 +4997,9 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 				continue
 			k = next(j for j, s in enumerate(c.segs) if s.selector is not None and s.selector[0] == "wild")
 			parent = names_of(c.segs[: k + 1])
-			if any(len(p) >= len(parent) and p[: len(parent)] == parent for p in live):
+			# A wildcard in the last segment needs no other line to materialize
+			# its parent: the line generated from it is that instance.
+			if k + 1 == len(c.segs) or any(len(p) >= len(parent) and p[: len(parent)] == parent for p in live):
 				fill[i] = True
 				live.append(names_of(c.segs))
 				changed = True
@@ -4930,28 +5010,35 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# web` followed by `srv.port:` is two `srv` nodes, and the child never
 	# lands where the schema looks. Any line under such a parent selects it by
 	# its value: `srv[web].port:`.
+	# A filled wildcard emits a valued line of its own, so it belongs here too.
 	parent_values = {
 		tuple(names_of(c.segs)): c.default_text
-		for c in cons
-		if not has_wild(c) and not unwritable(c) and must_exist(c) and c.default_text is not None
+		for i, c in enumerate(cons)
+		if (not has_wild(c) or fill[i]) and not unwritable(c) and must_exist(c) and c.default_text is not None
 	}
+	# A path that cannot be written at all belongs in the trailing note, but one
+	# that must exist can never be satisfied from there: the self-check would
+	# then report the document as missing a path, which points at the config
+	# rather than at the schema line that cannot be generated. A repeat lower
+	# bound of 2 or more is the one documented shortfall - the line is emitted
+	# once and the count reported - so it is not this fault.
+	for c in cons:
+		cannot_satisfy = c.required or (c.repeat is not None and c.repeat[0] == 1)
+		if cannot_satisfy and unwritable(c) and not has_wild(c):
+			faults = []
+			_vdiag(faults, 0, "V097", "required path cannot be generated: " + c.path.replace("\n", "\\n"))
+			return "", faults
 	out = []
 	wild = []
+	# Dropping a trailing `[*]` can render the same line a concrete sibling
+	# already wrote; the first spelling wins.
+	emitted = set()
 	first = True
 	for i, c in enumerate(cons):
 		tyname = c.ty if c.ty is not None else "any"
 		if unwritable(c) or (has_wild(c) and not fill[i]):
 			wild.append((c.path.replace("\n", "\\n"), tyname))
 			continue
-		if not first:
-			out.append("\n")
-		first = False
-		if c.desc is not None:
-			for line in c.desc.split("\n"):
-				out.append("# " + line + "\n")
-		# The annotation is a comment: a newline smuggled in via an allowed
-		# string value must not break out of it.
-		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
 		# A filled wildcard emits in dotted form, targeting the materialized
 		# instance - by its value when the materializing line carries one.
 		# Rebuilt from the parsed segments, not by cutting text out of the
@@ -4961,7 +5048,22 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 			c.segs[k - 1].selector is None and tuple(names_of(c.segs[:k])) in parent_values
 			for k in range(1, len(c.segs))
 		)
-		path = _gen_path_text(c.segs, parent_values) if fill[i] or under_valued_parent else c.path
+		# A name carrying a newline has no verbatim spelling on a binding line;
+		# the segment renderer escapes it, so such a path goes through there
+		# whether or not it was filled.
+		path = _gen_path_text(c.segs, parent_values) if fill[i] or under_valued_parent or "\n" in c.path else c.path
+		if path in emitted:
+			continue
+		emitted.add(path)
+		if not first:
+			out.append("\n")
+		first = False
+		if c.desc is not None:
+			for line in c.desc.split("\n"):
+				out.append("# " + line + "\n")
+		# The annotation is a comment: a newline smuggled in via an allowed
+		# string value must not break out of it.
+		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
 		prefix = "" if must_exist(c) else "#"
 		if c.default_text is not None:
 			out.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
@@ -5035,7 +5137,13 @@ def _gen_selector_text(v):
 	quoted spelling finds the bare value)."""
 	if "\n" in v:
 		return _gen_default_text(v)
-	if any(ch in v for ch in "[]\\") and not _quoted_shape(v):
+	# The scanner reads a bare selector body as an index when it is all digits
+	# (with an optional sign or `#`), and as a wildcard when it is `*`, so a
+	# default of that shape has to be quoted or the line names an instance that
+	# is not there.
+	body = v.strip()
+	reads_as_selector = body == "*" or _parse_uint(body) is not None or (body[:1] == "#" and _parse_uint(body[1:]) is not None)
+	if (any(ch in v for ch in "[]\\") or reads_as_selector) and not _quoted_shape(v):
 		return _quote_text(v)
 	return v
 
@@ -5091,7 +5199,7 @@ def _expand_mounts(sdef):
 			cc.segs = list(s) + list(c.segs)
 		path = cc.path
 		segs = cc.segs
-		if len(out) >= _GEN_MAX_FIELDS:
+		if len(out) > _GEN_MAX_FIELDS:
 			break
 		out.append(cc)
 		if c.inherits is not None:

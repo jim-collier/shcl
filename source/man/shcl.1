@@ -375,11 +375,14 @@ and
 \- there is one stdin, so two names for it would each read part of a document.
 .SH WRITE OPS
 .B set
-reads a write-ops script on stdin when no
-.B \-\-set
+reads a write-ops script on stdin when none of
+.BR \-\-set ,
+.BR \-\-set\-literal ,
+.BR \-\-set\-default ,
+.B \-\-set\-literal\-default
 or
-.B \-\-set\-literal
-option carries the edits. One op per line, fields separated by tabs:
+.B \-\-remove
+carries the edits. One op per line, fields separated by tabs:
 .PP
 .RS
 .nf

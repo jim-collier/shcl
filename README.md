@@ -502,10 +502,11 @@ line 3: Error: E014 malformed line skipped: unexpected '4' after field
 failed: 1 diagnostic(s), 1 error(s)
 
 $ shcl get server.shcl log-level     # the rest of the file loaded fine
+line 3: Error: E014 malformed line skipped: unexpected '4' after field
 warn
 ```
 
-Both streams carry the code; only stdout is the contract. The stdout line is `line N: Severity: CODE` and nothing else, so a script can match on `E014` without parsing English, while the stderr line adds the prose for a person reading along. `check` exits 6 when it found errors - enough to gate a build.
+Every subcommand that loads the file says what the load dropped, once, on stderr - a read that came back fine is still a file with a line missing. Both streams carry the code; only stdout is the contract. The stdout line is `line N: Severity: CODE` and nothing else, so a script can match on `E014` without parsing English, while the stderr line adds the prose for a person reading along. `check` exits 6 when it found errors - enough to gate a build.
 
 Hand it a schema and it validates against that too. A schema is an ordinary `.shcl` file: one `field:` instance per path, constraints written as its children ([the spec](project/spec.md#schema-validation) has the full vocabulary).
 
@@ -827,7 +828,7 @@ shcl set --write server.shcl \
 
 The two spellings differ in how the value is read. `--set` takes **data**: its type follows the text, so `workers=8` writes an integer, but a comma in it is content - `hosts=a, b` would store one quoted string. `--set-literal` takes **value syntax**, the way a file spells it, so that same text writes a two-element array. Reach for it whenever the value is not a plain scalar.
 
-Raw blocks, set-only-if-absent and removal have no option form; those go in as a write-ops script on stdin, one op per line, fields separated by a literal tab:
+Removal and set-only-if-absent have option forms too - `--remove=PATH`, `--set-default=PATH=VALUE`, `--set-literal-default=PATH=TEXT` - and all five share one ordered list, so two options touching the same path resolve in the order given. Raw blocks are the one edit with no option form; those go in as a write-ops script on stdin, one op per line, fields separated by a literal tab:
 
 ```bash
 shcl set --write server.shcl <<OPS

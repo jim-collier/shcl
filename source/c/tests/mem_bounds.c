@@ -75,6 +75,21 @@ int main(void) {
 	if (dcapped > tlen * 8) fail("a diagnostic-capped parse held its unlisted diagnostics");
 	free(text);
 
+	// The parser borrows the scratch arena for its lines vector, per-parent
+	// maps, stack and pending lists - about ten times the input. It used to sit
+	// there until the first resolve, so a parsed document nobody read carried
+	// all of it.
+	tlen = 0;
+	text = (char *)malloc(reps * 24 + 1);
+	for (size_t i = 0; i < 20000; i++) tlen += (size_t)sprintf(text + tlen, "sect%zu:\n\tk: %zu\n", i, i);
+	d = shcl_parse(text, tlen);
+	size_t leftover = d ? arena_bytes(&d->scratch) : 0;
+	printf("mem_bounds: parse scratch: %zu bytes left for text %zu\n", leftover, tlen);
+	if (!d || shcl_get_int_or(d, "sect19999.k", 11, -1) != 19999) fail("scratch check: wrong result");
+	if (leftover > 4096) fail("a parse left its temporaries in the scratch arena");
+	shcl_free(d);
+	free(text);
+
 	// A read-only loop over a long-lived document, with shcl_reads_release
 	// between passes, must stay flat: every read call, including the two that
 	// take no path and so never pass through the path lookup's scratch reset.
@@ -105,6 +120,43 @@ int main(void) {
 		printf("mem_bounds: read loop %d: %zu bytes over 2000 released passes\n", which, grew);
 		if (grew > 4096) fail("a released read loop grew the document");
 	}
+	shcl_free(d);
+
+	// A setter encodes into the document arena before the path is validated, so
+	// a refused write used to cost the document the whole encoded value, for as
+	// long as it lived.
+	d = shcl_parse("a: 1\n", 5);
+	size_t held = arena_bytes(&d->arena);
+	size_t big = 4u * 1024 * 1024;
+	char *blob = (char *)malloc(big);
+	memset(blob, 'x', big);
+	if (shcl_set_string(d, "a[*]", 4, blob, big)) fail("refused setter: the wildcard write was accepted");
+	for (int i = 0; i < 5; i++) if (shcl_set_raw(d, "a[*]", 4, blob, big, "", 0)) fail("refused setter: the raw write was accepted");
+	for (int i = 0; i < 10000; i++) if (shcl_set_int(d, "a[*]", 4, i)) fail("refused setter: the int write was accepted");
+	size_t after = arena_bytes(&d->arena);
+	printf("mem_bounds: refused writes: arena %zu -> %zu over 24 MB refused\n", held, after);
+	if (after > held + 4096) fail("a refused setter kept the value it encoded");
+	if (shcl_get_int_or(d, "a", 1, -1) != 1) fail("refused setter: the document changed");
+	shcl_free(d);
+	free(blob);
+
+	// Generation used to copy its output into the schema's own arena before
+	// checking it, so a refused call kept the text it never returned and a
+	// succeeding one could never be released.
+	const char *badschema = "field: server.port\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\tdefault: 99\n";
+	d = shcl_parse(badschema, strlen(badschema));
+	held = arena_bytes(&d->arena);
+	int gok = 1;
+	for (int i = 0; i < 200; i++) { shcl_str t = shcl_generate(d, 1, &gok); if (gok || t.n) fail("refused generation returned something"); }
+	printf("mem_bounds: refused generation: arena %zu -> %zu, %zu diagnostic(s)\n", held, arena_bytes(&d->arena), shcl_diag_count(d));
+	if (arena_bytes(&d->arena) > held + 200 * 256) fail("a refused generation kept its output");
+	if (shcl_diag_count(d) != 1) fail("generation faults accumulated across calls");
+	shcl_free(d);
+	d = shcl_parse("field: a\n\trequired: yes\n", 25);
+	held = arena_bytes(&d->arena);
+	for (int i = 0; i < 200; i++) { shcl_str t = shcl_generate(d, 1, &gok); if (!gok || !t.n) fail("generation failed"); shcl_reads_release(d); }
+	printf("mem_bounds: released generation: arena %zu -> %zu\n", held, arena_bytes(&d->arena));
+	if (arena_bytes(&d->arena) > held + 4096) fail("a released generation still grew the document");
 	shcl_free(d);
 
 	// A write lands in a bump arena and the value it replaced stays behind, so

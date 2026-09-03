@@ -5,8 +5,8 @@
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
 use shcl::{
-	Diagnostic, Document, SaveError, Severity, Status, Strictness, generate, parse_datetime,
-	suppress_declared_reopens, suppress_declared_repeats,
+	Diagnostic, Document, SaveError, Severity, Status, Strictness, format_f64, generate,
+	parse_datetime, suppress_declared_reopens, suppress_declared_repeats,
 };
 use std::process::ExitCode;
 
@@ -18,24 +18,41 @@ use std::process::ExitCode;
 macro_rules! out {
 	($($arg:tt)*) => {{
 		use std::io::Write;
-		if write!(std::io::stdout(), $($arg)*).is_err() {
-			broken_pipe();
+		if let Err(e) = write!(std::io::stdout(), $($arg)*) {
+			write_failed(&e);
 		}
 	}};
 }
 macro_rules! outln {
 	($($arg:tt)*) => {{
 		use std::io::Write;
-		if writeln!(std::io::stdout(), $($arg)*).is_err() {
-			broken_pipe();
+		if let Err(e) = writeln!(std::io::stdout(), $($arg)*) {
+			write_failed(&e);
 		}
 	}};
 }
 
-/// Nothing more can be delivered, and nobody is there to read an error
-/// either: leave quietly, the way Go and C do here.
-fn broken_pipe() -> ! {
-	std::process::exit(0)
+// Diagnostics and error messages. A stderr that cannot be written has nowhere
+// to report that fact, and the document on stdout is still good, so the write
+// result is dropped - what the print macros do instead is panic, which the
+// release build turns into an abort with nothing delivered.
+macro_rules! errln {
+	($($arg:tt)*) => {{
+		use std::io::Write;
+		let _ = writeln!(std::io::stderr(), $($arg)*);
+	}};
+}
+
+/// A stdout write that failed. A reader that closed early is nothing to
+/// report, since nobody is there to read it, so that leaves quietly the way Go
+/// and C do. Anything else lost the output, which is the same failure as a
+/// file that could not be written.
+fn write_failed(e: &std::io::Error) -> ! {
+	if e.kind() == std::io::ErrorKind::BrokenPipe {
+		std::process::exit(0);
+	}
+	errln!("stdout: {}", e);
+	std::process::exit(8)
 }
 
 const HELP: &str = "\
@@ -580,12 +597,12 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 	for s in &o.seen {
 		if !allowed.contains(s) {
 			if *s == "--<type>" {
-				eprintln!("type options are not valid for {} (see --help)", cmd);
+				errln!("type options are not valid for {} (see --help)", cmd);
 			} else if cmd == "init" && *s == "--strictness" {
 				// Deliberate, not an oversight: the schema is a program artifact,
 				// so it always loads at Standard - the same rule `check --schema`
 				// follows for the schema half.
-				eprintln!(
+				errln!(
 					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data"
 				);
 			} else if cmd == "check" && matches!(*s, "--layer" | "--set" | "--set-literal") {
@@ -593,12 +610,13 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 				// line numbers, and a merged document has no single file to
 				// number against. Naming the pipeline turns a dead end into a
 				// one-liner.
-				eprintln!(
+				errln!(
 					"option {} not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt {} ... FILE | shcl check --schema=SCHEMA -",
-					s, s
+					s,
+					s
 				);
 			} else {
-				eprintln!("option {} not valid for {} (see --help)", s, cmd);
+				errln!("option {} not valid for {} (see --help)", s, cmd);
 			}
 			return Err(1);
 		}
@@ -608,11 +626,11 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 	// the --set values are edits to the document rather than a layer over it, so
 	// persisting them is the whole point; everywhere else they stay ephemeral.
 	if o.write && !o.layers.is_empty() {
-		eprintln!("--write cannot be combined with --layer (see --help)");
+		errln!("--write cannot be combined with --layer (see --help)");
 		return Err(1);
 	}
 	if o.write && !o.sets.is_empty() && cmd != "set" {
-		eprintln!(
+		errln!(
 			"--write cannot be combined with {} (see --help)",
 			o.sets[0].opt()
 		);
@@ -621,12 +639,12 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 	// --lossy only overrides the in-place write's refusal, so on its own it says
 	// nothing and would read as protection the command never had.
 	if o.lossy && !o.write {
-		eprintln!("--lossy is only meaningful with --write (see --help)");
+		errln!("--lossy is only meaningful with --write (see --help)");
 		return Err(1);
 	}
 	// The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" && o.layers.iter().any(|l| l == "-") {
-		eprintln!("--layer=- is not valid for set (stdin carries the ops script or the document)");
+		errln!("--layer=- is not valid for set (stdin carries the ops script or the document)");
 		return Err(1);
 	}
 	// Stdin reads once; a second '-' would silently get an empty document.
@@ -634,7 +652,7 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		+ usize::from(o.schema.as_deref() == Some("-"))
 		+ usize::from(o.args.first().map(|f| f == "-").unwrap_or(false));
 	if stdin_uses > 1 {
-		eprintln!("'-' (stdin) can be named only once across FILE, --layer and --schema");
+		errln!("'-' (stdin) can be named only once across FILE, --layer and --schema");
 		return Err(1);
 	}
 	Ok(())
@@ -662,9 +680,13 @@ fn say_diagnostics(diags: &[Diagnostic]) {
 		} else {
 			"line"
 		};
-		eprintln!(
+		errln!(
 			"{} {}: {:?}: {} {}",
-			space, d.line, d.severity, d.code, d.message
+			space,
+			d.line,
+			d.severity,
+			d.code,
+			d.message
 		);
 	}
 }
@@ -674,21 +696,23 @@ fn say_diagnostics(diags: &[Diagnostic]) {
 /// requested strictness; a strict-load failure on any layer aborts like a
 /// single-file strict failure (exit 6, nothing printed).
 ///
-/// Returns every layer's diagnostics alongside the merged document, lowest
-/// layer first. A merge does not carry them over, so the merged document only
-/// holds the lowest layer's - reading them off it drops the diagnostics for
-/// FILE itself, which is the one the caller named.
-fn load_layered(o: &Opts, file: &str) -> Result<(Document, Vec<Diagnostic>), u8> {
+/// Prints every layer's diagnostics itself, lowest layer first, before the
+/// `--set` overrides run: they belong to the load, and a refused edit used to
+/// return before anything was said about them. A merge does not carry
+/// diagnostics over, so the merged document only holds the lowest layer's -
+/// reading them off it drops the diagnostics for FILE itself, which is the one
+/// the caller named.
+fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	let mut texts: Vec<String> = Vec::with_capacity(o.layers.len() + 1);
 	for lf in &o.layers {
 		texts.push(read_input(lf).map_err(|e| {
-			eprintln!("{}", e);
+			errln!("{}", e);
 			EXIT_IO
 		})?);
 	}
 	let base_text = read_input(file).map_err(|e| {
-		eprintln!("{}", e);
+		errln!("{}", e);
 		EXIT_IO
 	})?;
 	texts.push(base_text);
@@ -699,9 +723,10 @@ fn load_layered(o: &Opts, file: &str) -> Result<(Document, Vec<Diagnostic>), u8>
 		diags.extend_from_slice(over.diagnostics());
 		doc.merge(&over);
 	}
+	say_diagnostics(&diags);
 	for s in &o.sets {
 		if !s.apply(&mut doc) {
-			eprintln!(
+			errln!(
 				"{}: cannot write {}: {}",
 				s.opt(),
 				s.path,
@@ -710,7 +735,7 @@ fn load_layered(o: &Opts, file: &str) -> Result<(Document, Vec<Diagnostic>), u8>
 			return Err(1);
 		}
 	}
-	Ok((doc, diags))
+	Ok(doc)
 }
 
 /// The in-place half of `fmt`/`set`. Overwriting the source is the one place a
@@ -729,14 +754,15 @@ fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
 		Err(SaveError::Refused { lost, .. }) => {
 			// The rule stays in the library; only the wording is the CLI's,
 			// because the override a user has here is a flag, not a function.
-			eprintln!(
+			errln!(
 				"{}: refusing to rewrite: the load dropped {} line(s)/value(s) this write would delete (--lossy overrides)",
-				file, lost
+				file,
+				lost
 			);
 			7
 		}
 		Err(e) => {
-			eprintln!("{}", e);
+			errln!("{}", e);
 			EXIT_IO
 		}
 	}
@@ -770,7 +796,7 @@ fn load(text: &str, strictness: Strictness) -> Result<Document, u8> {
 				.iter()
 				.filter(|d| d.severity == Severity::Error)
 				.count();
-			eprintln!("strict load failed: {} error diagnostic(s)", errors);
+			errln!("strict load failed: {} error diagnostic(s)", errors);
 			Err(6)
 		}
 	}
@@ -780,17 +806,13 @@ fn load(text: &str, strictness: Strictness) -> Result<Document, u8> {
 /// one element per line.
 fn do_get(o: &Opts) -> u8 {
 	let [file, path] = o.args.as_slice() else {
-		eprintln!("usage: shcl get [type] [options] FILE PATH (see --help)");
+		errln!("usage: shcl get [type] [options] FILE PATH (see --help)");
 		return 1;
 	};
-	let (doc, diags) = match load_layered(o, file) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	// A read reports what the load dropped, the same as fmt and set: below
-	// strict the value comes back fine and the damage is otherwise silent.
-	// One report per invocation, so a read in a loop is one line per call.
-	say_diagnostics(&diags);
 	let (lines, status, slots): (Vec<String>, Status, Vec<Status>) = if o.array {
 		match o.kind {
 			Kind::Int => {
@@ -804,7 +826,7 @@ fn do_get(o: &Opts) -> u8 {
 			Kind::Float => {
 				let r = doc.read_float_array(path);
 				(
-					r.value.iter().map(|v| v.to_string()).collect(),
+					r.value.iter().map(|v| format_f64(*v)).collect(),
 					r.status,
 					r.slots,
 				)
@@ -826,7 +848,7 @@ fn do_get(o: &Opts) -> u8 {
 				)
 			}
 			Kind::Raw | Kind::RawInfo => {
-				eprintln!("--{} has no --array form", o.kind.name());
+				errln!("--{} has no --array form", o.kind.name());
 				return 1;
 			}
 			Kind::String => {
@@ -842,7 +864,7 @@ fn do_get(o: &Opts) -> u8 {
 			}
 			Kind::Float => {
 				let r = doc.read_float(path);
-				(vec![r.value.to_string()], r.status, Vec::new())
+				(vec![format_f64(r.value)], r.status, Vec::new())
 			}
 			Kind::Bool => {
 				let r = doc.read_bool(path);
@@ -903,9 +925,12 @@ fn do_get(o: &Opts) -> u8 {
 			Status::Multiple => "the path matches multiple instances".to_string(),
 			Status::Good => String::new(), // handled above; keep the match total
 		};
-		eprintln!(
+		errln!(
 			"cannot read {} as {}: {} (in {})",
-			path, type_name, reason, file
+			path,
+			type_name,
+			reason,
+			file
 		);
 	}
 	match (status, o.on_bad) {
@@ -974,20 +999,17 @@ fn quoted(s: &str) -> String {
 
 fn do_fmt(o: &Opts) -> u8 {
 	let [file] = o.args.as_slice() else {
-		eprintln!("usage: shcl fmt [--write|-w] [options] FILE (see --help)");
+		errln!("usage: shcl fmt [--write|-w] [options] FILE (see --help)");
 		return 1;
 	};
 	if o.write && file == "-" {
-		eprintln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
+		errln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	let (doc, diags) = match load_layered(o, file) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	// Printing the canonical form drops what the load dropped, the same as a
-	// rewrite does, so the diagnostics go out either way.
-	say_diagnostics(&diags);
 	if o.write {
 		return write_back(&doc, file, o);
 	}
@@ -1134,11 +1156,11 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 
 fn do_set(o: &Opts) -> u8 {
 	let [file] = o.args.as_slice() else {
-		eprintln!("usage: shcl set [--write|-w] [options] FILE (see --help)");
+		errln!("usage: shcl set [--write|-w] [options] FILE (see --help)");
 		return 1;
 	};
 	if o.write && file == "-" {
-		eprintln!("set --write cannot rewrite stdin; drop --write to print, or pass a FILE");
+		errln!("set --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
 	// Base doc: with the edits given as options no ops script is read, so a '-'
@@ -1151,7 +1173,7 @@ fn do_set(o: &Opts) -> u8 {
 		match read_input(lf) {
 			Ok(t) => layer_texts.push(t),
 			Err(e) => {
-				eprintln!("{}", e);
+				errln!("{}", e);
 				return EXIT_IO;
 			}
 		}
@@ -1168,7 +1190,7 @@ fn do_set(o: &Opts) -> u8 {
 		match read_input(file) {
 			Ok(t) => t,
 			Err(e) => {
-				eprintln!("{}", e);
+				errln!("{}", e);
 				return EXIT_IO;
 			}
 		}
@@ -1188,9 +1210,12 @@ fn do_set(o: &Opts) -> u8 {
 			Err(code) => return code,
 		}
 	}
+	// The load's diagnostics belong to the load, so they go out before any edit
+	// runs: a refused --set or a failing op used to return with nothing said.
+	say_diagnostics(&diags);
 	for s in &o.sets {
 		if !s.apply(&mut doc) {
-			eprintln!(
+			errln!(
 				"{}: cannot write {}: {}",
 				s.opt(),
 				s.path,
@@ -1208,11 +1233,9 @@ fn do_set(o: &Opts) -> u8 {
 		// silently, which reads as a hang rather than as a prompt; the note is
 		// unconditional so a pipeline and a terminal behave identically. The
 		// program-name prefix marks it as a notice; errors carry none.
-		eprintln!(
-			"shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)"
-		);
+		errln!("shcl: reading write-ops from stdin (one op per line, tab-separated; end with EOF)");
 		if let Err(e) = std::io::stdin().read_to_string(&mut ops) {
-			eprintln!("stdin: {}", e);
+			errln!("stdin: {}", e);
 			return EXIT_IO;
 		}
 	}
@@ -1222,11 +1245,10 @@ fn do_set(o: &Opts) -> u8 {
 			continue;
 		}
 		if let Err(e) = apply_op(&mut doc, line) {
-			eprintln!("op line {}: {}", n + 1, e);
+			errln!("op line {}: {}", n + 1, e);
 			return 1;
 		}
 	}
-	say_diagnostics(&diags);
 	if o.write {
 		return write_back(&doc, file, o);
 	}
@@ -1236,13 +1258,13 @@ fn do_set(o: &Opts) -> u8 {
 
 fn do_check(o: &Opts) -> u8 {
 	let [file] = o.args.as_slice() else {
-		eprintln!("usage: shcl check [options] FILE (see --help)");
+		errln!("usage: shcl check [options] FILE (see --help)");
 		return 1;
 	};
 	let text = match read_input(file) {
 		Ok(t) => t,
 		Err(e) => {
-			eprintln!("{}", e);
+			errln!("{}", e);
 			return EXIT_IO;
 		}
 	};
@@ -1256,7 +1278,7 @@ fn do_check(o: &Opts) -> u8 {
 				let stext = match read_input(schema_file) {
 					Ok(t) => t,
 					Err(e) => {
-						eprintln!("{}", e);
+						errln!("{}", e);
 						return EXIT_IO;
 					}
 				};
@@ -1267,9 +1289,12 @@ fn do_check(o: &Opts) -> u8 {
 					.any(|d| d.severity == Severity::Error)
 				{
 					for d in sdoc.diagnostics() {
-						eprintln!(
+						errln!(
 							"schema line {}: {:?}: {} {}",
-							d.line, d.severity, d.code, d.message
+							d.line,
+							d.severity,
+							d.code,
+							d.message
 						);
 					}
 					diags.push(Diagnostic {
@@ -1315,17 +1340,17 @@ fn do_check(o: &Opts) -> u8 {
 
 fn do_init(o: &Opts) -> u8 {
 	if !o.args.is_empty() {
-		eprintln!("init takes no file argument (see --help)");
+		errln!("init takes no file argument (see --help)");
 		return 1;
 	}
 	let Some(schema_file) = &o.schema else {
-		eprintln!("init needs --schema=FILE (see --help)");
+		errln!("init needs --schema=FILE (see --help)");
 		return 1;
 	};
 	let stext = match read_input(schema_file) {
 		Ok(t) => t,
 		Err(e) => {
-			eprintln!("{}", e);
+			errln!("{}", e);
 			return EXIT_IO;
 		}
 	};
@@ -1337,12 +1362,15 @@ fn do_init(o: &Opts) -> u8 {
 		.any(|d| d.severity == Severity::Error)
 	{
 		for d in sdoc.diagnostics() {
-			eprintln!(
+			errln!(
 				"schema line {}: {:?}: {} {}",
-				d.line, d.severity, d.code, d.message
+				d.line,
+				d.severity,
+				d.code,
+				d.message
 			);
 		}
-		eprintln!("init: schema failed to load");
+		errln!("init: schema failed to load");
 		// A broken schema is a config-semantics failure, not a usage error:
 		// same exit as `check --schema` reporting it.
 		return 6;
@@ -1354,12 +1382,15 @@ fn do_init(o: &Opts) -> u8 {
 		}
 		Err(faults) => {
 			for d in &faults {
-				eprintln!(
+				errln!(
 					"schema line {}: {:?}: {} {}",
-					d.line, d.severity, d.code, d.message
+					d.line,
+					d.severity,
+					d.code,
+					d.message
 				);
 			}
-			eprintln!("init: schema has faults");
+			errln!("init: schema has faults");
 			6
 		}
 	}
@@ -1368,17 +1399,13 @@ fn do_init(o: &Opts) -> u8 {
 fn do_enum(o: &Opts, want_count: bool) -> u8 {
 	let [file, path] = o.args.as_slice() else {
 		let name = if want_count { "count" } else { "instances" };
-		eprintln!("usage: shcl {} [options] FILE PATH (see --help)", name);
+		errln!("usage: shcl {} [options] FILE PATH (see --help)", name);
 		return 1;
 	};
-	let (doc, diags) = match load_layered(o, file) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	// A read reports what the load dropped, the same as fmt and set: below
-	// strict the value comes back fine and the damage is otherwise silent.
-	// One report per invocation, so a read in a loop is one line per call.
-	say_diagnostics(&diags);
 	if want_count {
 		outln!("{}", doc.count(path));
 	} else {
@@ -1398,15 +1425,14 @@ fn do_children(o: &Opts) -> u8 {
 		[file] => (file.as_str(), ""),
 		[file, path] => (file.as_str(), path.as_str()),
 		_ => {
-			eprintln!("usage: shcl children [options] FILE [PATH] (see --help)");
+			errln!("usage: shcl children [options] FILE [PATH] (see --help)");
 			return 1;
 		}
 	};
-	let (doc, diags) = match load_layered(o, file) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	say_diagnostics(&diags);
 	for name in doc.children(path) {
 		outln!("{}", shcl::quote_segment(&name));
 	}
@@ -1417,14 +1443,13 @@ fn do_children(o: &Opts) -> u8 {
 /// deduplicated - the whole-document counterpart of `children`.
 fn do_paths(o: &Opts) -> u8 {
 	let [file] = o.args.as_slice() else {
-		eprintln!("usage: shcl paths [options] FILE (see --help)");
+		errln!("usage: shcl paths [options] FILE (see --help)");
 		return 1;
 	};
-	let (doc, diags) = match load_layered(o, file) {
+	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
-	say_diagnostics(&diags);
 	for p in doc.paths() {
 		outln!("{}", p);
 	}
@@ -1463,7 +1488,7 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 		"children" => do_children(o),
 		"paths" => do_paths(o),
 		other => {
-			eprintln!("{}: no dispatch arm (see --help)", other);
+			errln!("{}: no dispatch arm (see --help)", other);
 			1
 		}
 	}
@@ -1496,7 +1521,7 @@ fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
 	report
 		.flamegraph(file)
 		.expect("pprof: failed to write flamegraph");
-	eprintln!("shcl: wrote flamegraph -> {}", out);
+	errln!("shcl: wrote flamegraph -> {}", out);
 	code
 }
 
@@ -1519,6 +1544,16 @@ fn reset_sigpipe() {
 fn reset_sigpipe() {}
 
 fn main() -> ExitCode {
+	let code = run_cli();
+	// A tail still sitting in the buffer when the work is done fails the same
+	// way a write does.
+	if let Err(e) = std::io::Write::flush(&mut std::io::stdout()) {
+		write_failed(&e);
+	}
+	ExitCode::from(code)
+}
+
+fn run_cli() -> u8 {
 	reset_sigpipe();
 	let argv: Vec<String> = match std::env::args_os()
 		.skip(1)
@@ -1527,8 +1562,8 @@ fn main() -> ExitCode {
 	{
 		Ok(v) => v,
 		Err(_) => {
-			eprintln!("invalid argument encoding (expected UTF-8)");
-			return ExitCode::from(1);
+			errln!("invalid argument encoding (expected UTF-8)");
+			return 1;
 		}
 	};
 	let first = argv.first().map(|s| s.as_str());
@@ -1539,41 +1574,41 @@ fn main() -> ExitCode {
 	// text unpadded and exit 1, which read as neither a help nor an error.
 	if asked == Some("help") || first == Some("help") || argv.is_empty() {
 		out!("\n{}\n", HELP);
-		return ExitCode::from(0);
+		return 0;
 	}
 	if asked == Some("version") || first == Some("version") {
 		outln!("shcl {}", env!("CARGO_PKG_VERSION"));
-		return ExitCode::from(0);
+		return 0;
 	}
 	if asked == Some("about") || first == Some("about") {
 		out!("\n{}\n", ABOUT);
-		return ExitCode::from(0);
+		return 0;
 	}
 	if asked == Some("donate") || first == Some("donate") {
 		out!("\n{}\n", DONATE);
-		return ExitCode::from(0);
+		return 0;
 	}
 	let cmd = argv[0].clone();
 	if !COMMANDS.contains(&cmd.as_str()) {
 		// Before the options are judged, so a typo in the command is reported
 		// as that and not as an option the wrong command cannot take.
 		if cmd.starts_with('-') && cmd != "--" {
-			eprintln!("unknown option: {} (see --help)", cmd);
+			errln!("unknown option: {} (see --help)", cmd);
 		} else {
-			eprintln!("unknown command: {} (see --help)", cmd);
+			errln!("unknown command: {} (see --help)", cmd);
 		}
-		return ExitCode::from(1);
+		return 1;
 	}
 	let o = match parse_opts(&argv[1..]) {
 		Ok(o) => o,
 		Err(e) => {
-			eprintln!("{}", e);
-			return ExitCode::from(1);
+			errln!("{}", e);
+			return 1;
 		}
 	};
 	#[cfg(feature = "profiling")]
 	if let Ok(out) = std::env::var("SHCL_PROFILE_OUT") {
-		return ExitCode::from(run_profiled(&cmd, &o, &out));
+		return run_profiled(&cmd, &o, &out);
 	}
-	ExitCode::from(run(&cmd, &o))
+	run(&cmd, &o)
 }

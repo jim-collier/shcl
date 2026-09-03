@@ -1,0 +1,13 @@
+query	type	expected	status
+-	load	ok	-
+server[*].*	string[]	8080|a.example|9090	Good
+server[*].*	count	3	-
+server[*].*	instances	8080|a.example|9090	-
+pool[*].*	int[]	1|2	Good
+*.port	int[]	8080|9090|0|0	NotFound	standard	Good|Good|NotFound|NotFound
+*.port	count	4	-
+server[*].*[0]	string[]		NotFound
+nosuch[*]	int[]		NotFound
+nosuch[*].deeper	string[]		NotFound
+nosuch[*]	count	0	-
+-	lost	0	-

@@ -798,6 +798,18 @@ func TestReadSurfaceLineQuotedChildren(t *testing.T) {
 	if doc.ReadString("code").Quoted {
 		t.Error("a block reads quoted")
 	}
+	// An array read of the same node answers the same: a one-element cell has a
+	// single scalar element, so the flag means what it does on the scalar read.
+	// More than one element, and there is no single element to report.
+	if !doc.ReadStringArray("b").Quoted {
+		t.Error("a one-element quoted cell reads unquoted as an array")
+	}
+	if doc.ReadStringArray("a").Quoted {
+		t.Error("a one-element bare cell reads quoted as an array")
+	}
+	if Parse("m: \"x\", \"y\"\n").ReadStringArray("m").Quoted {
+		t.Error("a two-element cell reports a single element's quoting")
+	}
 	if doc.ReadString("missing").Quoted {
 		t.Error("a missing path reads quoted")
 	}
@@ -1567,6 +1579,17 @@ func TestSuppressLeavesTheCallersDiagnosticsAlone(t *testing.T) {
 			t.Fatalf("%s: returned the caller's or the document's own backing array", name)
 		}
 	}
+	// A failed strict load hands out the same list, and used to hand out the
+	// document's own: writing through it changed what the document reports.
+	_, err := ParseWith("a\n", Strict)
+	var le *LoadError
+	if !errors.As(err, &le) || len(le.Diagnostics) == 0 {
+		t.Fatal("want a strict load failure carrying diagnostics")
+	}
+	le.Diagnostics[0].Message = "rewritten by the caller"
+	if bad := le.Document.Diagnostics(); bad[0].Message == "rewritten by the caller" {
+		t.Fatal("LoadError shares the document's diagnostics list")
+	}
 }
 
 func TestConvenienceTierFallsBackOnlyOnGood(t *testing.T) {
@@ -1653,6 +1676,16 @@ func TestReadsMatchExpected(t *testing.T) {
 			}
 
 			doc := docFor(t, &c, level)
+			if kind == "lost" {
+				want, err := strconv.Atoi(expected)
+				if err != nil {
+					t.Fatalf("%s: bad lost count", at)
+				}
+				if got := doc.LostCount(); got != want {
+					t.Errorf("%s: lost: got %d want %d", at, got, want)
+				}
+				continue
+			}
 			if kind == "count" {
 				want, err := strconv.Atoi(expected)
 				if err != nil {
