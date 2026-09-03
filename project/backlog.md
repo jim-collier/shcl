@@ -644,9 +644,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-192800
 		- Closed: 20260903-220000
 
-	- 🔘 Item 30: `E003` is reachable from a file after all, and the spec, the backlog and the corpus all say it is not.
+	- ✅ Item 30: `E003` is reachable from a file after all, and the spec, the backlog and the corpus all say it is not.
 		- `a[5].b: 2` with one `a` reports it in all four. The spec's "unreachable" reasoning covers only the `[#N]` spelling; the bare `[N]` index is documented and reaches it. Reword the row and add a corpus row.
+		- Fixed: the code row says which spelling cannot reach it and which does, instead of telling a reader the code never fires.
+		- Pinned by corpus `086` (a bare index past the end, and a valid one beside it) and by `check-docs.bash`, which refuses the old wording.
 		- Opened: 20260901-192900
+		- Closed: 20260903-224500
 
 	- 🔘 Item 31: the hosted windows job runs one of the three C memory tests.
 		- `oom_recover.c`, the setjmp unwind and the most platform-sensitive test in the suite, and `mem_bounds.c` are built on Linux only. Both pass under wine, so it is two lines in `win-runners.bash`.

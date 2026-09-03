@@ -245,6 +245,12 @@ grep -B 3 -F 'shcl_str shcl_authored_name(shcl_doc *d' "${repoDir}/source/c/shcl
 	| grep -q "document's own arena" \
 	|| fBad "shcl.h: shcl_authored_name does not say its result lives in the document's arena"
 
+##	E003 was listed as unreachable from a file. The `[#N]` spelling is - the `#`
+##	opens a comment first - but the bare index spelling is documented and does
+##	reach it, so the row must not tell a reader to ignore the code.
+grep -q 'E003.*Unreachable in practice' "${repoDir}/project/spec.md" \
+	&& fBad "spec.md: the E003 row still calls the code unreachable from a file"
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1
