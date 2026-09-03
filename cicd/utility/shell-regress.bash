@@ -404,6 +404,17 @@ elif fHave pwsh; then
 	[[ "${out}" == *'plain=C:\Program Files (x86)'* ]] \
 		|| fBad "install.ps1 ignores ProgramFiles where there is no 64-bit one: ${out@Q}"
 fi
+##	20260901b item 38: the setup .exe writes the same directory and registers
+##	itself with Add/Remove Programs, so deleting its files from here left that
+##	entry pointing at nothing. Windows-only, so the check is source order.
+setupTest="$( { grep -n "uninstall.exe'" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+setupWipe="$( { grep -n "Remove-Item -Force -LiteralPath (Join-Path \$dest 'shcl.exe')" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+if [[ -z "${setupTest}" || -z "${setupWipe}" ]] || ((setupTest >= setupWipe)); then
+	fBad "install.ps1 removes a setup install's files without deferring to its uninstaller"
+fi
+grep -q 'Add/Remove Programs entry still shows the version it installed' "${repoDir}/install.ps1" \
+	|| fBad "install.ps1 does not say a setup install's Add/Remove entry goes stale when it writes over one"
+
 eapLine="$( { grep -n "ErrorActionPreference = 'Continue'" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
 smokeRun="$( { grep -n "shcl.exe') version 2>&1" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
 if [[ -z "${eapLine}" || -z "${smokeRun}" ]] || ((eapLine >= smokeRun)); then
