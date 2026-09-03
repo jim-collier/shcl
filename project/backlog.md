@@ -605,6 +605,11 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-025000
 		- Closed: 20260904-034000
 
+	- 🔘 Item 48: the C allocation-failure unwind crashes on a real windows host.
+		- `oom_recover.c` segfaults on the hosted windows runner (mingw gcc, `-O2`), and passes on linux and under wine with the same source and the same compiler family. The recovery point is a `setjmp`, and on x86_64 mingw a `longjmp` unwinds through SEH, which wine's runtime and the real one do not implement alike - so the two disagree about a stack the library builds identically.
+		- Until it is understood, the test runs on linux (in the test stage, the compiler sweep and under the sanitizers) and not on the windows job; `mem_bounds.c` does run there. A consumer building the header with mingw is the one this would reach.
+		- Opened: 20260904-052000
+
 - Code review 20260901b:
 
 	- The enhancement half of the round whose bugs are under Bugs. Test gaps, decisions the spec leaves open, and the smaller installer and tooling items.
@@ -663,7 +668,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- ✅ Item 31: the hosted windows job runs one of the three C memory tests.
 		- `oom_recover.c`, the setjmp unwind and the most platform-sensitive test in the suite, and `mem_bounds.c` are built on Linux only. Both pass under wine, so it is two lines in `win-runners.bash`.
-		- Fixed: `win-runners.bash` builds and runs both, so all three C memory tests now run on windows.
+		- Fixed: `win-runners.bash` builds and runs `mem_bounds.c` there. `oom_recover.c` is not on that job after all - it crashes on a real windows host, which is item 48.
 		- Found doing it: `mem_bounds` failed on the windows build. The index-rebuild check is a ratio against a fresh document, and windows counts whole milliseconds, so the fresh side reads 0.0 and the ratio turns into an absolute figure that says nothing about the machine it ran on. The ratio is skipped where the clock cannot see the fresh side, the way it is already skipped under a sanitizer; every allocation bound in the file still runs there.
 		- Pinned by the two new rows. The ratio still catches an index rebuild that walks every node the document ever held, unchanged.
 		- Opened: 20260901-193000
@@ -684,7 +689,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Fixed, C on windows: the save target is resolved through the final path, so a symlink or junction is followed and the answer carries the long-path prefix. The prefix is kept only where the name plus the temp file's suffix would exceed the old limit.
 		- Pinned by a `win-runners` closed-stdin row across all four, and by two windows-only C runner fixtures: a save and rewrite through a path past 260 characters, and a save through a symlink that has to leave the link in place. The link fixture skips where no link could be made, which is every run under wine and a windows host without the privilege.
 		- The long-path fixture found a second half on the hosted job: the read side went through the plain wide open, so a path past the limit could be written and not read. Reads take the same resolver now.
-		- Note: the symlink half is judged only on the hosted windows job. Nothing else here can make a windows symlink: wine reports one as created and creates nothing.
+		- Note: the symlink half is judged only on the hosted windows job. Nothing else here can make a windows symlink: wine reports one as created and creates nothing. Both windows fixtures pass there.
 		- Opened: 20260901-193200
 		- Closed: 20260904-004500
 
