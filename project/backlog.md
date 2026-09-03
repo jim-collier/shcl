@@ -669,7 +669,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- ✅ Item 31: the hosted windows job runs one of the three C memory tests.
 		- `oom_recover.c`, the setjmp unwind and the most platform-sensitive test in the suite, and `mem_bounds.c` are built on Linux only. Both pass under wine, so it is two lines in `win-runners.bash`.
 		- Fixed: `win-runners.bash` builds and runs `mem_bounds.c` there. `oom_recover.c` is not on that job after all - it crashes on a real windows host, which is item 48.
-		- Found doing it: `mem_bounds` failed on the windows build. The index-rebuild check is a ratio against a fresh document, and windows counts whole milliseconds, so the fresh side reads 0.0 and the ratio turns into an absolute figure that says nothing about the machine it ran on. The ratio is skipped where the clock cannot see the fresh side, the way it is already skipped under a sanitizer; every allocation bound in the file still runs there.
+		- The index-rebuild check is a ratio against a fresh document, and it went wrong two ways once it ran off this box. Windows counts whole milliseconds, so the fresh side reads one tick or none and the ratio rests on nothing; it is skipped now where the clock cannot resolve that side, the way it is already skipped under a sanitizer. And the constant term was tight enough that a shared runner's descheduling crossed it, so all four bindings' copies carry a wider one - the factor is what catches the defect, which is orders rather than a fraction. Every allocation bound in the file still runs on windows.
 		- Pinned by the two new rows. The ratio still catches an index rebuild that walks every node the document ever held, unchanged.
 		- Opened: 20260901-193000
 		- Closed: 20260903-231500
