@@ -75,6 +75,21 @@ int main(void) {
 	if (dcapped > tlen * 8) fail("a diagnostic-capped parse held its unlisted diagnostics");
 	free(text);
 
+	// The parser borrows the scratch arena for its lines vector, per-parent
+	// maps, stack and pending lists - about ten times the input. It used to sit
+	// there until the first resolve, so a parsed document nobody read carried
+	// all of it.
+	tlen = 0;
+	text = (char *)malloc(reps * 24 + 1);
+	for (size_t i = 0; i < 20000; i++) tlen += (size_t)sprintf(text + tlen, "sect%zu:\n\tk: %zu\n", i, i);
+	d = shcl_parse(text, tlen);
+	size_t leftover = d ? arena_bytes(&d->scratch) : 0;
+	printf("mem_bounds: parse scratch: %zu bytes left for text %zu\n", leftover, tlen);
+	if (!d || shcl_get_int_or(d, "sect19999.k", 11, -1) != 19999) fail("scratch check: wrong result");
+	if (leftover > 4096) fail("a parse left its temporaries in the scratch arena");
+	shcl_free(d);
+	free(text);
+
 	// A read-only loop over a long-lived document, with shcl_reads_release
 	// between passes, must stay flat: every read call, including the two that
 	// take no path and so never pass through the path lookup's scratch reset.
