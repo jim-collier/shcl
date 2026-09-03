@@ -868,6 +868,14 @@ func unterminatedQuote(text string) bool {
 // backslash are ASCII, and UTF-8 never puts an ASCII byte inside a multibyte
 // sequence, so the first byte, the last byte and the escape parity are the
 // same answers the decoded form gives.
+// oneLine is value text for a diagnostic message: line breaks and tabs escaped,
+// so one diagnostic is one line. A raw block's body is the value that made this
+// necessary - it carries its own newlines.
+func oneLine(s string) string {
+	r := strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\r", "\\r", "\t", "\\t")
+	return r.Replace(s)
+}
+
 func quotedShape(t string) bool {
 	if t == "" {
 		return false
@@ -6835,7 +6843,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 		}
 		if c.allowed != nil && c.allowed.kind == allowStrings {
 			if !containsString(c.allowed.strs, node.value.raw.content) {
-				vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, node.value.raw.content))
+				vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(node.value.raw.content)))
 			}
 		}
 	case vCell:
@@ -6864,7 +6872,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowInts {
 				for i, v := range vals {
 					if !containsInt(c.allowed.ints, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
 						break
 					}
 				}
@@ -6888,7 +6896,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowFloats {
 				for i, v := range vals {
 					if !containsFloat(c.allowed.floats, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
 						break
 					}
 				}
@@ -6912,7 +6920,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowBools {
 				for i, v := range vals {
 					if !containsBool(c.allowed.bools, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
 						break
 					}
 				}
@@ -6930,7 +6938,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowDates {
 				for i, v := range vals {
 					if !containsDate(c.allowed.dates, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
 						break
 					}
 				}
@@ -6942,7 +6950,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 				for i := range els {
 					s := applyEscapes(els[i].text)
 					if !containsString(c.allowed.strs, s) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, s))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(s)))
 						break
 					}
 				}

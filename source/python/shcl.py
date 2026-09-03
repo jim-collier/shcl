@@ -829,6 +829,13 @@ def _unterminated_quote(text):
 	return False
 
 
+def _one_line(s):
+	# Value text for a diagnostic message: line breaks and tabs escaped, so one
+	# diagnostic is one line. A raw block's body is the value that made this
+	# necessary - it carries its own newlines.
+	return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
 def _quoted_shape(t):
 	"""True when the text is one quote pair: a quote char at both ends, the last
 	one not escaped (a trailing backslash run of odd length escapes it)."""
@@ -3576,7 +3583,7 @@ class Document:
 				return
 			if c.allowed is not None and c.allowed[0] == "strings":
 				if node.value.content not in c.allowed[1]:
-					_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {node.value.content}")
+					_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(node.value.content)}")
 			return
 		els = node.value.els
 		if base == "raw":
@@ -3596,7 +3603,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "ints":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
 						break
 			if c.min_i is not None and any(v < c.min_i for v in vals):
 				_vdiag(out, line, "V005", f"value below min at '{c.path}'")
@@ -3610,7 +3617,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "floats":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
 						break
 			if c.min_f is not None and any(v < c.min_f for v in vals):
 				_vdiag(out, line, "V005", f"value below min at '{c.path}'")
@@ -3624,7 +3631,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "bools":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
 						break
 		elif base == "datetime":
 			vals = [parse_datetime(e.text) for e in els]
@@ -3634,7 +3641,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "dates":
 				for i, v in enumerate(vals):
 					if not any(_same_moment(v, a) for a in c.allowed[1]):
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
 						break
 		else:
 			# string kind or untyped: every element coerces; only the allowed
@@ -3643,7 +3650,7 @@ class Document:
 				for e in els:
 					s = _apply_escapes(e.text)
 					if s not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {s}")
+						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(s)}")
 						break
 
 	def _v_unknown(self, sdef, out):

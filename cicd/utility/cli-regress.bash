@@ -78,6 +78,11 @@ printf 'field: a\n\tdesc: one, two\n\trequired: yes\n' > "${tmpDir}/commadesc.sh
 mkdir -p "${tmpDir}/nowrite"
 printf 'a: 1\n' > "${tmpDir}/nowrite/f.shcl"
 chmod 500 "${tmpDir}/nowrite"
+## A raw block against a string `allowed`: the body carries its own newlines, so
+## one diagnostic used to span several stderr lines.
+#  shellcheck disable=2016  ## the backticks are the fence the fixture needs.
+printf 'b:\n\t```\n\tline one\n\tline two\n\t```\n' > "${tmpDir}/rawval.shcl"
+printf 'field: b\n\ttype: string\n\tallowed: nope\n' > "${tmpDir}/rawvalschema.shcl"
 ## A schema whose own load has something to say: two `field: a` instances merge,
 ## so `allowed` repeats as a bare leaf - which is exactly what the V092 under it
 ## is about, and it was invisible.
@@ -108,7 +113,7 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	build, %S4% a required path with an index selector, %S5%/%S6% a schema at and
 ##	one past the generation field ceiling, %S7% a schema whose own load hints,
 ##	%S8% a raw default, %S9% a desc with a comma, %N% a file in a directory that
-##	takes no temp file, %X% an
+##	takes no temp file, %R%/%SA% a raw block and a schema that refuses it, %X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
 ##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
 ##	path with no file at it.
@@ -204,6 +209,8 @@ rows=(
 	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
 	'children-missing|children %T% nope|-|0||-'
 	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	## 20260901b item 28: a value with newlines in it stays on one line.
+	'diag-value-one-line|check --schema=%SA% %R%|-|6|-|not allowed at .b.: line one.nline two'
 	## 20260901b item 24: two layers with a bad line 2 printed the same thing
 	## twice, with nothing to say which file each came from.
 	'layer-diags-named|fmt --layer=%B% %B2%|-|0|-|bad2.shcl line 2: Error: E014'
@@ -267,6 +274,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S7%/${tmpDir}/hintschema.shcl}"
 	argv="${argv//%S8%/${tmpDir}/rawdef.shcl}"
 	argv="${argv//%S9%/${tmpDir}/commadesc.shcl}"
+	argv="${argv//%SA%/${tmpDir}/rawvalschema.shcl}"
+	argv="${argv//%R%/${tmpDir}/rawval.shcl}"
 	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"

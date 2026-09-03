@@ -4995,10 +4995,27 @@ static void v_wrong_type(ShclArena *a, ShclVecDiag *out, size_t line, const Shcl
 	sb_puts(a, &s, "': value is not a valid "); sb_puts(a, &s, c->ty ? c->ty : "string");
 	v_diag(a, out, line, "V003", sb_S(&s));
 }
+/* Value text for a diagnostic message: line breaks and tabs escaped, so one
+   diagnostic is one line. A raw block's body is the value that made this
+   necessary - it carries its own newlines. */
+static ShclStr v_one_line(ShclArena *a, ShclStr t) {
+	ShclSB o = {0, 0, 0};
+	sb_reserve(a, &o, t.n);
+	for (size_t i = 0; i < t.n; i++) {
+		switch (t.p[i]) {
+		case '\\': sb_puts(a, &o, "\\\\"); break;
+		case '\n': sb_puts(a, &o, "\\n"); break;
+		case '\r': sb_puts(a, &o, "\\r"); break;
+		case '\t': sb_puts(a, &o, "\\t"); break;
+		default: sb_putc(a, &o, t.p[i]); break;
+		}
+	}
+	return sb_S(&o);
+}
 static void v_not_allowed(ShclArena *a, ShclVecDiag *out, size_t line, const ShclVCons *c, ShclStr text) {
 	ShclSB s = {0, 0, 0};
 	sb_puts(a, &s, "value not allowed at '"); sb_putS(a, &s, c->path);
-	sb_puts(a, &s, "': "); sb_putS(a, &s, text);
+	sb_puts(a, &s, "': "); sb_putS(a, &s, v_one_line(a, text));
 	v_diag(a, out, line, "V004", sb_S(&s));
 }
 
