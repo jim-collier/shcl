@@ -513,9 +513,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-173400
 		- Closed: 20260903-073000
 
-	- 🔘 Item 36: the C merge grows the document by the parent's whole child list per merge, and `w_encode_string` amplifies a string value about four times.
+	- ✅ Item 36: the C merge grows the document by the parent's whole child list per merge, and `w_encode_string` amplifies a string value about four times.
 		- A one-leaf over onto a 40k-key document costs 1 MB of arena per merge (100 merges, 100 MB), because `w_overlay` rebuilds the parent's children into a fresh doubling vector in the document arena and the abandoned copies are never reused. `set_string` of a 20 MB value grows the arena by 85 MB, from the 32-byte builder doubling through blocks of twice each request. Build the rebuilt list in scratch and copy it exactly sized; reserve the builder up front.
+		- Fixed: the rebuilt child list is built in scratch and copied into the document arena at exactly its size, and the string builder opens at the value's own length. A bump arena abandons every step of a doubling climb, which is what both were paying for.
+		- Measured: 100 merges onto a 40000-key base cost 786 KB each and cost 320 KB now, which is the list itself; a 20 MB `set_string` cost 55 MB and costs 20 MB.
+		- Pinned by `mem_bounds.c`: a merge may cost no more than half again the list it rebuilds, and a string value no more than its own size plus a block. Both fail on the old header.
 		- Opened: 20260902-173500
+		- Closed: 20260903-081500
 
 	- 🔘 Item 37: the name index rebuild walks every node ever created, removed subtrees included.
 		- After 100k set-and-remove cycles a document with 1000 live nodes holds 400k, and every rebuild (the first read after any merge) indexes the dead ones too: 48 ms per read against 0 on a fresh document; `shcl_compact` cures it in C and the other three have no compact. Rust's `name_index` iterates the arena the same way. Build the index by walking from the root in all four.

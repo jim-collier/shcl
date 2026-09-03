@@ -625,6 +625,13 @@ static void sb_put(ShclArena *a, ShclSB *s, const char *p, size_t n) {
 		s->data = (char *)arena_grow(a, s->data, s->cap, nc, 1); s->cap = nc; }
 	memcpy(s->data + s->len, p, n); s->len += n;
 }
+/* Open the builder at a size the caller already knows. A bump arena abandons
+   every step of a doubling climb, so a 20 MB value built from 32 bytes cost
+   about four times its own size. */
+static void sb_reserve(ShclArena *a, ShclSB *s, size_t n) {
+	if (n <= s->cap) return;
+	s->data = (char *)arena_grow(a, s->data, s->cap, n, 1); s->cap = n;
+}
 static void sb_putc(ShclArena *a, ShclSB *s, char c) { sb_put(a, s, &c, 1); }
 static void sb_puts(ShclArena *a, ShclSB *s, const char *z) { sb_put(a, s, z, strlen(z)); }
 static void sb_putS(ShclArena *a, ShclSB *s, ShclStr x) { sb_put(a, s, x.p, x.n); }
@@ -3239,6 +3246,7 @@ static int dt_reads_back(ShclArena *scratch, const shcl_datetime *dt) {
 // tab need encoding; emit_element wraps quote/reserved chars, reparse strips it.
 static ShclStr w_encode_string(ShclArena *a, ShclStr s) {
 	ShclSB b = {0};
+	sb_reserve(a, &b, s.n);   /* the common value has nothing to escape */
 	for (size_t i = 0; i < s.n; i++) {
 		char c = s.p[i];
 		if (c == '\\') sb_puts(a, &b, "\\\\");
@@ -3836,6 +3844,9 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 	// per group, flagged on the group itself.
 	int *spliced = (int *)arena_alloc(t, (nb ? nb : 1) * sizeof(int));
 	for (size_t gi = 0; gi < nb; gi++) spliced[gi] = 0;
+	/* Built in scratch and copied out exactly sized below: a builder growing in
+	   the document arena abandons its doubling chain there, which cost about a
+	   megabyte per merge on a 40000-child parent. */
 	ShclVecSize nw = {0};
 	for (size_t i = 0; i < base.len; i++) {
 		size_t b = base.data[i]; ShclStr nm = NODE(d, b).name;
@@ -3846,14 +3857,18 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 		if (g != (size_t)-1 && is_rep[g]) {
 			if (!spliced[g]) {
 				spliced[g] = 1;
-				for (size_t k = 0; k < rep[g].len; k++) ShclVecSize_push(a, &nw, rep[g].data[k]);
+				for (size_t k = 0; k < rep[g].len; k++) ShclVecSize_push(t, &nw, rep[g].data[k]);
 			}
 		} else {
-			ShclVecSize_push(a, &nw, b);
+			ShclVecSize_push(t, &nw, b);
 		}
 	}
-	for (size_t k = 0; k < okids.len; k++) if (app_at[k] != (size_t)-1) ShclVecSize_push(a, &nw, app_at[k]);
-	NODE(d, bp).children = nw;
+	for (size_t k = 0; k < okids.len; k++) if (app_at[k] != (size_t)-1) ShclVecSize_push(t, &nw, app_at[k]);
+	ShclVecSize kept = {0};
+	kept.data = (size_t *)arena_alloc(a, (nw.len ? nw.len : 1) * sizeof(size_t));
+	for (size_t k = 0; k < nw.len; k++) kept.data[k] = nw.data[k];
+	kept.len = nw.len; kept.cap = nw.len ? nw.len : 1;
+	NODE(d, bp).children = kept;
 }
 
 void shcl_merge(shcl_doc *d, const shcl_doc *over) {
