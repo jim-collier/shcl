@@ -469,9 +469,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-172800
 		- Closed: 20260903-053000
 
-	- 🔘 Item 30: `shell-regress.bash`'s two static scans miss the ordinary spellings of what they scan for.
+	- ✅ Item 30: `shell-regress.bash`'s two static scans miss the ordinary spellings of what they scan for.
 		- The unguarded-grep scan finds `a=$(grep`, `b="$(grep` and `c=$( grep` and misses `local x="$(grep ...)"`, `declare`, `export`, `readonly`, backticks, `+=`, an array element, and a `$(` whose `grep` is on the next line; it also skips every `set -e` script without a `.bash` extension, which is the pre-push hook and the publish script. The `\t`-in-ERE scan reads single-quoted patterns under `cicd/` only, so a double-quoted pattern, `--`, `--extended-regexp` and the installers are outside it. No live instance today. Allow the keyword prefixes and both quotes, and drive the file list off `git ls-files` plus a shebang test.
+		- Fixed: the assignment scan takes a keyword prefix, an array element, `+=` and backticks; the escape scan takes either quote style and the long option spelling; and both sweep every tracked or untracked-but-not-ignored file that is named `*.bash` or carries a shell shebang, which brings in the pre-push hook, the publish script and the installers.
+		- Pinned by a self-test inside the gate: one synthetic file carries all nine spellings plus two that must not match, and each scan has to find its own. The old scans find none of the seven assignment shapes and one of the two escape shapes.
 		- Opened: 20260902-172900
+		- Closed: 20260903-055000
 
 	- 🔘 Item 31: PSScriptAnalyzer is the one lint tool with no version pin, and `check-pins.bash` holds one direction only.
 		- `ci.yml` installs it with no `-RequiredVersion` and `TOOL_PINS` has no entry, against the comment that the two agree; a new PSSA rule reddens hosted CI while the local gate stays green. Deleting the `ruff` entry from a scratch `config.bash` while `ci.yml` still installs it passes `check-pins`. Pin 1.25.0 in both places and walk `ci.yml`'s install lines the other way.
