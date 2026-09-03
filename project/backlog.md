@@ -51,159 +51,232 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- A fresh adversarial pass started from scratch, aimed at ground no earlier round had read: the C writer, resolver, generator and file tier; the generator bodies in all four bindings; the reference's read, coercion, datetime and validation code judged against the spec rather than against the other bindings; the CLI against its own help and man page; the Go and Python writers and file tiers; the merge code at library level; every gate under fault injection; and the windows builds run under wine. Twenty-eight defects here, seventeen enhancements under Features and enhancements. Everything marked confirmed was reproduced on this box; the two marked plausible rest on vendor documentation or a library-level probe in one binding.
 	- Eighteen of the defects are shapes all four bindings share, so the four-way check cannot see them. Four are C or C++ only. Three are gates or fixtures that assert less than they claim. The fix round before this one (20260901b) cost nothing measurable: parse, fmt, bulk read, bulk write, absent defaults and float writes are unchanged against `b49501d`, and the did-you-mean workload went from 24 s to 0.09 s. A thousand structurally generated documents (bad dedents, fences and `*` lines at bad columns, content beneath skipped lines, bracket arrays, mixed indent) agree four-way and hold every fixpoint and write-gate property, so the E012/E013 change from that round held up.
 
-	- 🔘 Item 1: the reference CLI's `get --float` and the Rust generator's annotation line never got the round-half-even rule, so the distributed CLI prints a tie differently from the other three.
+	- ✅ Item 1: the reference CLI's `get --float` and the Rust generator's annotation line never got the round-half-even rule, so the distributed CLI prints a tie differently from the other three.
 		- Reproduced: `f: 1125899906842624.2` through `get --float` prints `...624.3` from the reference and `...624.2` from Go, Python and C; same on `--array`, and same digit in `init`'s `# float, <lo>-<hi>` and `one of:` text for a tie-valued bound. The `set` path is right in all four, which is what 20260901b item 10 verified.
 		- Cause: `main.rs` formats reads with `to_string()` at both `Kind::Float` arms, and `allowed_join` and `gen_annotation` in `lib.rs` do the same; `format_f64` is public and unused by either. The crosscheck's float dimension replays `set` only and corpus `080` reads one int, so nothing compared a float read.
-		- Note: fix all four sites through `format_f64`, then add float reads of the tie values to `080/reads.tsv` so the corpus replay pins the read side too.
+		- Fixed: every float the reference prints goes through `format_f64` - both CLI read arms, the generator's `one of:` list and its numeric bound line, and the corpus runner's own float rows, which formatted reads the same wrong way.
+		- Pinned by corpus `080` (four scalar float reads and a three-element array over the tie values, replayed through `get --float` by the crosscheck) and `026` (a float bound pair and a float `allowed` set, both tie-valued, in the generated annotation). Both diverged on the old reference and agree now.
 		- Opened: 20260902-170000
+		- Closed: 20260902-181500
 
-	- 🔘 Item 2: nothing pins the "counted as lost" half of 20260901b item 3, and the corpus has no way to pin any lost count.
+	- ✅ Item 2: nothing pins the "counted as lost" half of 20260901b item 3, and the corpus has no way to pin any lost count.
 		- Reproduced: with the one `lost += 1` after the index arm's `E002` deleted in a scratch build, the Rust corpus stays green (33 of 33), the crosscheck on `076` agrees, and `fmt --write` on `a: 1` / `a[0]: 2` exits 0 and deletes the second line. `project/conformance/README.md` and the backlog both say `076` pins it.
 		- Cause: `expected-diags.txt` pins codes only, the write dimension exercises the save gate through its own BOM fixture and never through a corpus input, and the four runners assert `lost_count()` only in hand-written fixtures, none for the selector shape. The same gap covers every other "counted as lost" rule (items 1 and 2 of that round included).
-		- Note: give the corpus a lost column (a `lost N` line in `expected-diags.txt`, or a pseudo-row in `reads.tsv`) that all four runners assert, and run `fmt --write` over every corpus input with error diagnostics in the crosscheck's write dimension, where a refusal leaves the tree byte-identical.
+		- Fixed: `reads.tsv` takes a `lost` pseudo-call, asserted by all four runners, and every case that drops content carries one; two cases that report errors while losing nothing carry a zero. The crosscheck now copies each corpus input into a fresh tree and runs `fmt --write` over it, comparing the exit code and the resulting bytes across the four, so the save gate is exercised by real inputs rather than by one hand-built fixture.
+		- Pinned by the ten nonzero `lost` rows plus the per-case write comparison. With the increment deleted, the corpus fails on `076` and the crosscheck reports the file rewritten with two lines gone at exit 0.
 		- Opened: 20260902-170100
+		- Closed: 20260902-183000
 
-	- 🔘 Item 3: a wildcard followed by another wildcard reports every slot `Multiple`, and `Remove` on it removes nothing.
+	- ✅ Item 3: a wildcard followed by another wildcard reports every slot `Multiple`, and `Remove` on it removes nothing.
 		- Reproduced in all four. `server[*].*` on three servers with two, one and no children gives three `Multiple` slots at exit 5, `count` says 3, `instances` prints three empty lines, and `set --remove='server[*].*'` leaves the document unchanged at exit 0. The spec says the two compose and that `Remove` on a wildcard removes every resolved slot. Same for `*.*` and `a[*].b[*]`.
 		- Cause: `resolve_from` resolves the rest of the path per instance and maps anything that is not exactly one node to `Multiple`, so a nested slot list is `Multiple` whatever its length. Rust `lib.rs` both wildcard arms, Go `resolveFrom`, Python `_resolve_from`, C `resolve_from`.
-		- Decided: needs a shape first. Minimal: a nested list of zero is `NotFound` and of one is that slot. Full: flatten nested lists so `count`, `instances`, `lines` and the read stay aligned. Either way `Remove` then removes the resolved leaves. No corpus case has a wildcard after a wildcard.
+		- Decided: flatten. The inner slots join the outer run, so the result is one slot per resolved leaf and `count`, `instances`, the read and `Remove` all see the same list. A repeated leaf under one instance still reports `Multiple`, since that is the same ambiguity a path with no wildcard has. Reasoning in `design.md` -> open sections; the spec's compose sentence now says so, and there is a changelog line under Changed.
+		- Fixed: the two wildcard arms in all four splice a nested slot list into the outer one. Python's flat sub-walk grew an explicit stack so it can widen the run instead of ending it there; the other three had a recursive call already.
+		- Pinned by corpus `081` (three instances with two, one and no children, plus a repeated leaf and a `*.port` read whose slots straddle two parents; the write dimension removes `server[*].*`). All four failed it before on the reads, the instance list and the removal, and pass now.
 		- Opened: 20260902-170200
+		- Closed: 20260902-190000
 
-	- 🔘 Item 4: a wildcard read over a parent that does not exist reports `Empty` where the path does not resolve.
+	- ✅ Item 4: a wildcard read over a parent that does not exist reports `Empty` where the path does not resolve.
 		- Reproduced in all four. On a document with no `x`, `get --int --array x[*]` exits 2 and `get --int x` exits 3. The spec defines `Empty` as present but no value, and this is the tri-state the spec advertises.
 		- Cause: the array read maps an empty slot list to `Empty` in all four (Rust `read_array`, Go `readArray`, Python `_read_array`, C `array_elements`).
-		- Note: an empty slot list is `NotFound`. No corpus row has a wildcard read with zero slots.
+		- Fixed: an empty slot list is `NotFound` in all four, so a wildcard whose parent is absent answers the same as the bare path.
+		- Pinned by corpus `081` (`nosuch[*]` and `nosuch[*].deeper`, plus a count of zero). All four reported `Empty` before and `NotFound` now.
 		- Opened: 20260902-170300
+		- Closed: 20260902-191500
 
-	- 🔘 Item 5: a valued line generated from a filled wildcard is not in the generator's parent-value map, so its dotted child names the empty instance and a satisfiable schema refuses to generate.
+	- ✅ Item 5: a valued line generated from a filled wildcard is not in the generator's parent-value map, so its dotted child names the empty instance and a satisfiable schema refuses to generate.
 		- Reproduced in all four. `field: a` required, `field: "a[*].b"` required with `default: bee`, `field: "a[*].b[*].c"` required: `init` exits 6 with `V097 required path missing: a[*].b[*].c`. The text behind the refusal is `a:` / `a.b: bee` / `a.b.c:`; the hand-corrected `a.b[bee].c:` validates clean. Same shape through a fragment mount under a valued parent.
 		- Cause: the parent-value map is built only from constraints with no wildcard, so a filled wildcard line with a default never enters it, and `under_valued_parent` consults only that map. 20260901 item 5 covered concrete parents only.
+		- Fixed: the map is built after the fill decision and takes filled wildcards too, so a line generated from `a[*].b` with a default is a valued parent like any other and `a[*].b[*].c` renders `a.b[bee].c:`.
+		- Pinned by corpus `082`, whose schema generates and then validates clean against itself. All four refused it at exit 6 before.
 		- Opened: 20260902-170400
+		- Closed: 20260902-201500
 
-	- 🔘 Item 6: a valued live parent whose default is a bare integer is selected as `[8]`, which the scanner reads as an index, so `init` exits 6.
+	- ✅ Item 6: a valued live parent whose default is a bare integer is selected as `[8]`, which the scanner reads as an index, so `init` exits 6.
 		- Reproduced in all four. `field: num` required `default: 8` plus `field: "num[*].v"` required generates `num: 8` / `num[8].v:`, which loads with `E003 no instance 8 of 'num'`; `init` reports V097. Same with `default: "8"` (emitted bare by the data-format rule) and with `type: int`. `[007]` and `[+3]` fail the same way.
 		- Cause: `gen_selector_text` quotes only a default holding `[`, `]`, `\` or a newline; the spec's index rule (`[0]` bare numeric is an index, `["2020"]` quoted is a value) is not applied.
-		- Note: also quote a default that parses as a bare index. Adjacent to 20260901b item 30 (`E003` reachable).
+		- Fixed: the selector text quotes a default whose trimmed spelling the scanner would read as a selector of its own - all digits with an optional sign, the same with a leading `#`, or a bare `*` - beside the bracket and backslash cases it already quoted. Each binding asks its own scanner's number parser, so the four cannot drift.
+		- Pinned by corpus `082` (`default: 8` under a wildcard child, and a `*` default beside it). All four refused the schema before.
 		- Opened: 20260902-170500
+		- Closed: 20260902-201500
 
-	- 🔘 Item 7: a must-exist path whose only wildcard is its last segment (`w[*]`) is never filled, so `init` exits 6; beside a `field: w` it is emitted twice.
+	- ✅ Item 7: a must-exist path whose only wildcard is its last segment (`w[*]`) is never filled, so `init` exits 6; beside a `field: w` it is emitted twice.
 		- Reproduced in all four. `field: "w[*]"` required `default: v` alone generates only the trailing block and fails V097; `w: v` on its own passes `check --schema`. With `field: w` added the output carries `# any, required` / `w: v` twice.
 		- Cause: the fill loop wants a live line whose name list has the wildcard segment's own chain as a prefix; for a trailing wildcard that is the field's own name, so only a separate `field: w` satisfies it, and then both lines emit.
-		- Note: treat a trailing wildcard as fillable with the root as parent, and skip a fill whose rendering equals a concrete line already emitted.
+		- Fixed: a wildcard in the last segment is always fillable, since the line generated from it is the instance it needs, and no rendered path is emitted twice - the first spelling in schema order wins, so `field: w` beside `field: "w[*]"` produces one line. A duplicate whose default differs loses that default; the two spellings describe one field, and the surviving line still satisfies both.
+		- Pinned by corpus `082` (a `w[*]` alone). All four refused the schema before.
 		- Opened: 20260902-170600
+		- Closed: 20260902-201500
 
-	- 🔘 Item 8: a stdout that cannot be written is reported as success by three CLIs, and as 120 by the fourth.
+	- ✅ Item 8: a stdout that cannot be written is reported as success by three CLIs, and as 120 by the fourth.
 		- Reproduced: `fmt f.shcl > /dev/full` exits 0 with an empty stderr in Rust, Go and C; Python exits 120 with an interpreter message. Same for `check`, `get` and `set`. The help and man page say 8 for a stream that could not be written.
 		- Cause: the reference's `out!`/`outln!` treat every write error as a broken pipe and exit 0 (on unix SIGPIPE is restored, so EPIPE never reaches the branch and every error that does is not a broken pipe); Go drops `fmt.Print` results; C never checks `ferror(stdout)`; Python never flushes inside `main`.
-		- Note: `BrokenPipe` stays the quiet exit; anything else is exit 8 with the OS message. Flush stdout before returning the code. Same shape in all four.
+		- Fixed: every stdout write in all four goes through one pair of helpers that exit 8 with the OS message on a write error, and the buffered tail is flushed before the exit code is returned so a failure there is caught too. A broken pipe stays the quiet exit. The C CLI also points a standard stream that was closed before the start at the null device, which the other three runtimes already do - without it every write failed with EBADF and the next file opened landed on the closed descriptor.
+		- Pinned by four `cli-regress` rows (`fmt`, `check`, `get` and `set` with stdout on a device that is always full). All four reported success before; the rows skip out loud where there is no such device.
 		- Opened: 20260902-170700
+		- Closed: 20260902-213000
 
-	- 🔘 Item 9: the reference aborts with nothing on stdout when stderr cannot be written.
+	- ✅ Item 9: the reference aborts with nothing on stdout when stderr cannot be written.
 		- Reproduced: `fmt bad.shcl 2>/dev/full` on a document with one diagnostic exits 134 (SIGABRT) with an empty stdout; Go and C exit 0 with the document; Python exits 120 with nothing. A single hint is enough, since every loading subcommand prints its diagnostics.
 		- Cause: `eprintln!` panics on a write error and the release profile has `panic = "abort"`, so the abort lands before `out!` has printed anything. A closed stderr is fine (EBADF is discarded); a full or failing one is not.
-		- Note: an `err!`/`errln!` pair beside `out!` that ignores the write result, or exits 8 on a non-EPIPE error; Python the same.
+		- Decided: a diagnostic that cannot be printed is dropped. There is nowhere to report the failure, the document on stdout is still good, and the exit code already carries the outcome - Go and C did this already.
+		- Fixed: the reference's diagnostics go through an `errln!` that ignores the write result, and Python's stderr is wrapped so a failed write is dropped instead of raising.
+		- Pinned by a `cli-regress` row that runs `fmt` on a document with a diagnostic, stderr on a full device, and requires the canonical text on stdout at exit 0. The reference exited 101 and Python 120 before, both with an empty stdout.
 		- Opened: 20260902-170800
+		- Closed: 20260902-213000
 
-	- 🔘 Item 10: a C parse leaves its temporaries in the scratch arena until the first resolve, so a parsed document holds about ten times its input in dead memory.
+	- ✅ Item 10: a C parse leaves its temporaries in the scratch arena until the first resolve, so a parsed document holds about ten times its input in dead memory.
 		- Reproduced: a 49 MiB input parses to 970 MB RSS with 487 MB of it in `d->scratch`; 10 MiB gives 204 MB with 97 MB dead. One `arena_free(&d->scratch)` at the end of `do_parse` gives 766 MB and 157 MB with parse time unchanged, and 46,600 writer, merge and compact operations under ASan and UBSan with that free applied show nothing live pointed into it.
 		- Cause: `parse_body` takes `P.tmp = &d->scratch` for its lines vector, per-parent maps, stack and pending lists, and `do_parse` frees only the two `own` arenas on exit. The header describes `scratch` as per-resolve temporaries reset on entry to each resolve, and says nothing about the parser using it. The 20260901 round's C amplification numbers were measured after a read and so did not see it.
+		- Fixed: `do_parse` gives the scratch arena back at its single exit. Every resolve resets it anyway, so nothing else changes.
+		- Measured: a 15 MB document holds 398 MB after the parse instead of 569 MB; peak is unchanged, since the scratch is live while the parse runs.
+		- Pinned by `mem_bounds.c`, which parses 20000 sections and requires the scratch arena to be empty afterwards. It held 12.3 MB against a 398 KB input before. The sanitizer run is clean, so nothing handed out points into it.
 		- Opened: 20260902-170900
+		- Closed: 20260902-215000
 
-	- 🔘 Item 11: a refused C setter still consumes document arena, against the header's "nothing is created on failure".
+	- ✅ Item 11: a refused C setter still consumes document arena, against the header's "nothing is created on failure".
 		- Reproduced: a refused 20 MB `set_string` on a wildcard path costs 85 MB of arena, permanently; ten refused `set_raw` calls with a 20 MB body cost 200 MB; small values cost 48 to 80 bytes per refused call. Rust builds the value first too but drops it when `place` refuses.
 		- Cause: every setter encodes the value into `d->arena` before `w_set` validates the path. Only `shcl_compact` gives it back.
-		- Note: probe the path first (`w_write_reason`), or encode into scratch and copy into the arena on success.
+		- Fixed: the arena takes a mark and a release, and every setter marks before it encodes; a refusal rolls the arena back to the mark. `w_place` allocates only in scratch until its own probe passes, so nothing but the encoded value sits past the mark. No extra path walk, which a probe-first fix would have cost every successful write.
+		- Measured: a refused 20 MB `set_string` costs nothing where it cost 55 MB; ten refused 20 MB `set_raw` calls cost nothing where they cost 265 MB; 10000 refused `set_int` calls cost nothing where they cost 480 KB.
+		- Pinned by `mem_bounds.c`, which refuses 24 MB of writes on a wildcard path and requires the arena not to grow. It grew 27 MB before. Sanitizers, the compiler sweep and cppcheck are clean.
 		- Opened: 20260902-171000
+		- Closed: 20260902-222000
 
-	- 🔘 Item 12: the named-month space forms accept a day token that is not `DD`.
+	- ✅ Item 12: the named-month space forms accept a day token that is not `DD`.
 		- Reproduced in all four. `Jul +12 2026`, `+12 Jul 2026`, `Jul 0012 2026` and `Jul 00000000000000012 2026` all read Good as `2026-07-12`, while `Jul-012-2026` is refused and `Jul 12 +2026` is refused because the year is held to four digits. The spec calls the format list a closed whitelist and spells the day `DD`.
 		- Cause: the space forms parse the day token with a full unsigned parse (Rust `u32` from_str, which takes a leading `+` and any leading zeros), mirrored deliberately by Python's `_parse_u32`, Go's `parseU32` and C's `parse_u32_lenient`; the delimited form uses the 1-2 digit `parse_num2`.
-		- Note: use `parse_num2` for the day in both space forms; corpus rows for `Jul +12 2026` and `Jul 012 2026` as BadType.
+		- Fixed: both space forms read the day with the same one-or-two-digit parse the delimited forms use. The lenient u32 parse had no other caller and is gone from all three ports.
+		- Pinned by corpus `007` (`Jul +12 2026`, `Jul 0012 2026`, `+12 Jul 2026`, all BadType). All four read them as 12 July before.
 		- Opened: 20260902-171100
+		- Closed: 20260902-224500
 
-	- 🔘 Item 13: Go's `LoadError.Diagnostics` and Python's `diagnostics()` and `LoadError` hand out the document's own list.
+	- ✅ Item 13: Go's `LoadError.Diagnostics` and Python's `diagnostics()` and `LoadError` hand out the document's own list.
 		- Reproduced: in Go, setting `le.Diagnostics[0].Message` on a strict-load error changes `doc.Diagnostics()[0].Message`; in Python `doc.diagnostics().clear()` takes `error_count()` to 0, and `LoadError.diagnostics` is the same list object. 20260901b item 23 fixed Go's `Diagnostics()` and the two suppressors and did not reach the third hand-out; Python was not looked at.
-		- Note: Go copies into the error the way `Diagnostics()` now does; Python returns `list(self.diags)` from `diagnostics()` and gives `LoadError` a copy. The suppressors keep their in-place contract, which mirrors Rust's `&mut Vec`.
+		- Fixed: Go's `LoadError` and Python's `diagnostics()` and `LoadError` each hand back a copy. The suppressors keep their in-place contract, which mirrors the reference's `&mut Vec`.
+		- Pinned by the Go aliasing test, extended to write through a `LoadError`, and by a new fixture in the Python runner that clears both what `diagnostics()` returned and what a failed strict load carried. Both fail on the old code.
 		- Opened: 20260902-171200
+		- Closed: 20260902-230000
 
-	- 🔘 Item 14: the Go CLI exits 1 where the other three exit 8 on an ops script that is not UTF-8.
+	- ✅ Item 14: the Go CLI exits 1 where the other three exit 8 on an ops script that is not UTF-8.
 		- Reproduced: `printf '\xff\n' | shcl set f.shcl` exits 8 in Rust, C and Python and 1 in Go. The same bytes as a document exit 8 in all four. The standing decision makes 1 the usage code alone.
 		- Cause: `main.go`'s ops read returns 1 after `utf8.Valid` fails; its `readInput` already takes the exit-8 path for a document.
+		- Fixed: the ops read takes the same exit-8 path its document read does.
+		- Pinned by a `cli-regress` row feeding a lone `0xff` to `set`. Go exited 1 before.
 		- Opened: 20260902-171300
+		- Closed: 20260902-231000
 
-	- 🔘 Item 15: a refused `--set` or a failing op suppresses the load's diagnostics.
+	- ✅ Item 15: a refused `--set` or a failing op suppresses the load's diagnostics.
 		- Reproduced in all four. On a document with an `E014` line, `get --set='a[*]=1' f a` prints only the refusal at exit 1 and never the `E014`; same for an ops line the writer refuses. The help says every subcommand that loads a document prints the load's diagnostics once per run.
 		- Cause: `load_layered` returns the refusal before the caller's `say_diagnostics`, and `do_set` returns from the `--set` refusal and the op failure before its own call to it.
-		- Note: print the load's diagnostics before applying the edit list; they belong to the load, not to the edits.
+		- Fixed: the layered load prints its own diagnostics, before the edit list runs, in all four; the five callers that printed them afterwards no longer do, so a run still reports once. `set` does the same before its option edits and its ops script.
+		- Pinned by two `cli-regress` rows: a refused `--set` and a refused ops line on a document with an `E015`, each of which must still report it. All four printed only the refusal before.
 		- Opened: 20260902-171400
+		- Closed: 20260902-234500
 
-	- 🔘 Item 16: a layer's leading blank line survives the load but not the canonical form, so a merge of a file and a merge of its `fmt` differ.
+	- ✅ Item 16: a layer's leading blank line survives the load but not the canonical form, so a merge of a file and a merge of its `fmt` differ.
 		- Reproduced in all four. With `A` holding `a: 1` and `B` holding a blank line then `b: 2`, `fmt --layer=A B` prints `a: 1`, a blank, `b: 2`, while `fmt --layer=A <(fmt B)` prints no blank. Same with a leading comment and with a comment-only layer. In a 700-seed soak, 129 seeds (every layer beginning with a blank line) gave a different result with an in-memory merged document as `over` than with its reparse; as `base` it never differed.
 		- Cause: the parser sets the pending blank on the first bound node like any other and the emitter suppresses it only at output start, so `load(emit(load(B)))` differs from `load(B)` on that one bit and `merge` copies it unchanged.
-		- Note: drop the blank at parse time when nothing precedes it, in all four, so no emitter or merge special case is needed; a corpus case whose layer starts with a blank line pins it.
+		- Fixed: the parse clears the blank on whatever canonical output would print first - the first root child, its first leading comment, or the first footer line - in all four. One place, so no emitter or merge special case is needed.
+		- Note: the property found two more shapes of the same defect that the finding did not name: a blank after a leading line the load dropped (a BOM-led one), and a blank on a later instance that merged into the first. Clearing at the emitted-first position covers all three; dropping it only at the start of the file covered one.
+		- Pinned by corpus `083` (a layer leading with two blank lines, plus a comment-only layer leading with one) and by a new fuzz property: merging a layer must equal merging its canonical form. Both failed in all four before; the property fails within 30000 iterations on each of the three shapes.
+		- Note: the three ports first got a parse-time version of this as well, and keeping both made `a.b: 1` under a leading blank drop a blank the reference kept. The crosscheck's fuzz dimension caught it. One place decides it now, in all four.
 		- Opened: 20260902-171500
+		- Closed: 20260903-001500
 
-	- 🔘 Item 17: the crosscheck's float-spelling dimension writes `0` for every subnormal power of two under gawk, so its "every power of two" claim is false on this box.
+	- ✅ Item 17: the crosscheck's float-spelling dimension writes `0` for every subnormal power of two under gawk, so its "every power of two" claim is false on this box.
 		- Reproduced: `gawk 'BEGIN{printf "%.17g", 2^-1074}'` prints `0` (it computes a negative power as `1/(2^1074)`, which is `1/inf`); mawk prints the subnormal. The generated ops file starts with 52 `float p<n> 0` rows. The hosted runner's default awk decides which rows it exercises there, and `srand(20260902); rand()` differs per awk as well, so the "fixed" random set is not fixed either.
-		- Note: build the powers by exact halving from 1, which every awk does exactly down to `2^-1074`, and generate the random set from a fixed integer LCG.
+		- Fixed: the powers are built by exact halving and doubling from 1, and the random set comes from a fixed integer generator whose every product stays under 2^53. gawk, mawk and busybox awk now write byte-identical ops files, subnormals included.
+		- Pinned by `shell-regress.bash`, which lifts the generator out of `crosscheck.bash` by name, runs it under every awk on the box, and requires no zero-valued power row and identical output. The old generator fails all three ways.
 		- Opened: 20260902-171600
+		- Closed: 20260903-003000
 
-	- 🔘 Item 18: `sanitize-c.bash` never runs the `children` and `paths` commands, against its claim to replay every `reads.tsv` row.
+	- ✅ Item 18: `sanitize-c.bash` never runs the `children` and `paths` commands, against its claim to replay every `reads.tsv` row.
 		- Reproduced: its row replay has no arm for the two, so a `children` row becomes `get --children`, which the C CLI refuses at exit 1 (not 77), and the run counts as clean. Six corpus cases carry such rows. The two enumeration paths in `main.c`, including the quoted-name spelling, run under no sanitizer.
-		- Note: copy the two arms from `crosscheck.bash`'s `fReadRow`.
+		- Fixed: the two arms are there, and a row type with no arm is now an error in both replays instead of a `get --<type>` every binding refuses the same way.
+		- Note: found while working it, and fixed with it - both replays split a row with `IFS=$'\t' read`, and tab is IFS whitespace whatever IFS is set to, so a leading or doubled tab disappeared and every later column shifted. The top-level `children` row (empty query) arrived as a type nothing had an arm for, and had never been replayed by either gate. Both split by hand now.
+		- Pinned by `shell-regress.bash`: the splitter is lifted out of `crosscheck.bash` by name and must keep a leading and a middle empty field, and the unknown-type guard fires with the arms removed.
 		- Opened: 20260902-171700
+		- Closed: 20260903-005000
 
-	- 🔘 Item 19: a must-exist path with a `[#N]` selector, one past the depth cap, or one carrying a literal newline gets V097 where the spec describes the trailing block.
+	- ✅ Item 19: a must-exist path with a `[#N]` selector, one past the depth cap, or one carrying a literal newline gets V097 where the spec describes the trailing block.
 		- Reproduced in all four. `field: "srv[#1].port"` required (alone or beside a live `field: srv`) exits 6 with `V097 required path missing`; same for a 513-segment required path and for `field: "\"a\nb\""` required. The spec's trailing-block sentence lists all three as "collected into a trailing comment block", and its self-check sentence requires the output to validate, and a must-exist path in the trailing block can never satisfy both.
 		- Cause: `unwritable` sends them to the trailing block and the self-check then reports the missing path. The newline clause is also stale on its own: names resolve escapes since 2026-08-18, `emit_name` spells a newline as `\n`, and `gen_path_text` already goes through it, so the path is writable.
-		- Decided: needs a call on which sentence wins. Refuse with a message naming the ungenerable path, or drop the must-exist requirement from the trailing block. Render newline-in-name paths through `gen_path_text` either way.
+		- Decided: refuse, naming the path. The trailing block can never satisfy a must-exist path, so the self-check's "required path missing" points a reader at the generated config when the problem is the schema line. A `repeat` lower bound of 2 or more keeps its documented shortfall and still generates.
+		- Fixed: a must-exist path that cannot be written is a `V097` fault carrying the path, in all four, before anything is emitted. The newline clause is gone from the unwritable test - only a newline inside a selector is unwritable now - and a path whose text holds one renders through the segment renderer, which escapes it.
+		- Pinned by a `cli-regress` row (`field: "srv[#1].port"` required, message and exit) and corpus `082`, whose schema now carries a quoted escaped name. All four gave the old message before.
+		- Note: a literal newline in a schema path is unreachable from a file - a schema value holding one is an unterminated quote - so the newline half of the fix is defensive and has no case of its own. Its old clause never fired either, which is why the escaped spelling already worked.
 		- Opened: 20260902-171800
+		- Closed: 20260903-011500
 
-	- 🔘 Item 20: V096 fires at exactly 10000 fields with a message that says the schema expands past 10000.
+	- ✅ Item 20: V096 fires at exactly 10000 fields with a message that says the schema expands past 10000.
 		- Reproduced in all four: 9999 plain `field:` lines generate, 10000 give `V096 schema expands past 10000 fields; fragments mounted at more than one path multiply`, on a schema with no fragments.
 		- Cause: `cons.len() >= GEN_MAX_FIELDS` in `generate` and inside each `expand_mounts`.
+		- Fixed: the ceiling means at most that many, in all four. The expander stops one past it so `generate` can tell the two apart.
+		- Pinned by two `cli-regress` rows, a schema of exactly 10000 fields and one of 10001. The first exited 6 before.
 		- Opened: 20260902-171900
+		- Closed: 20260903-013000
 
-	- 🔘 Item 21: `shcl_generate` keeps the output of a V097-failing call in the schema's arena, and a succeeding call's output can never be released.
+	- ✅ Item 21: `shcl_generate` keeps the output of a V097-failing call in the schema's arena, and a succeeding call's output can never be released.
 		- Reproduced: 1000 calls on a schema whose default fails its own constraint grow the heap by 21.9 KB per call while returning nothing, and leave 1001 copies of the same diagnostic on the schema; 1000 succeeding calls grow it by one output each, and `shcl_reads_release` cannot reclaim them because the output goes to `schema->arena`, not `schema->reads`. The header's own comment says everything but the returned bytes dies inside the call.
 		- Cause: the output is copied into the schema arena before the self-check, and the failure path returns empty without reclaiming it; faults are appended to the schema on every call.
-		- Note: self-check the private-arena text and copy into the arena only on success; place the output in `reads` and list it under `shcl_reads_release`; replace rather than append earlier generation faults, or document that a schema should not be regenerated from after it has reported.
+		- Fixed: the self-check runs on the private-arena text and the bytes are copied into the schema's read arena only on success, so a refusal keeps nothing and a caller can reclaim what it got. V096 and V097 come from nowhere else, so any left on the schema are dropped before generating - the list describes this call. The header says both, `shcl_reads_release` lists generation, and the veneer's `generate()` releases first like every other copying wrapper.
+		- Measured: 200 refused calls grow the schema by 19.5 KB of diagnostic text (it was 49 KB plus 200 stacked diagnostics), and 200 succeeding calls with a release between leave the document exactly as it started (it grew 6.4 KB).
+		- Pinned by `mem_bounds.c`, which fails both ways on the old header.
 		- Opened: 20260902-172000
+		- Closed: 20260903-015000
 
-	- 🔘 Item 22: `shcl.hpp` tells the veneer user to recover generation faults by validating an empty document, which cannot reproduce them.
+	- ✅ Item 22: `shcl.hpp` tells the veneer user to recover generation faults by validating an empty document, which cannot reproduce them.
 		- Reproduced: `validate(empty, schema)` after a failed `generate()` gives `V002`, never the `V097` the generator recorded. V096 and V097 are generation-only codes. The C CLI made the same mistake and was fixed in the 20260830b round; the veneer comment kept the old recipe.
-		- Note: "read `diagnostics()` on this document after the call".
+		- Fixed: the comment says to read `diagnostics()` on the schema after the call, and says why validating cannot answer it.
+		- Pinned by `check-docs.bash`, which refuses the old sentence, and by `veneer_smoke.cpp`, which requires the V097 to be on the schema and absent from validating an empty document against it.
 		- Opened: 20260902-172100
+		- Closed: 20260903-020000
 
-	- 🔘 Item 23: the datetime whitelist admits spellings the spec does not list.
+	- ✅ Item 23: the datetime whitelist admits spellings the spec does not list.
 		- Reproduced in all four, all Good: `9:30` (one-digit hour with no meridiem), `2026-7-1` and `2026/7/4` (one-digit month and day), `14:30z` and `2026-07-12t14:30` (lower case), `14:30 Z` and `14:30 +05:00` (space before the zone), `2026-07-12  14:30` (two spaces as the separator). The spec says the formats are a closed whitelist and anything else is BadType. Correctly refused in the same run: `24:00`, `14:30:60`, `2026-02-29`, `12-Jul/2026`, `2026-07-12 T 14:30`, `Jul 12,2026`.
 		- Cause: `parse_num2` takes one or two digits, the zone and meridiem arms trim before matching, and the combined-separator scan trims around it; same functions in all four.
-		- Decided: needs a call: tighten (two-digit fields in the 24-hour and year-first forms, upper-case `Z` and `T`, no whitespace inside the value) with a corpus row per rejection, or list the tolerances in the spec. Status difference at exit 0, not data loss, since `fmt` never rewrites value text.
+		- Decided: list them. Every one is a spelling a person writes by hand and none can be misread, so tightening would turn working configs into `BadType` for nothing - against the forgiving-parser stance the rest of the language takes. The whitelist claim is what was wrong, not the code.
+		- Fixed: spec text only. The datetime section names the tolerances (a one-digit hour, month or day; a lower-case `z` or `t`; whitespace before the meridiem or zone; a run of spaces as the combined separator) and says what is still refused inside a value.
+		- Pinned by corpus `007`: six tolerance rows read Good and the two separator shapes read BadType, so the set cannot drift either way.
 		- Opened: 20260902-172200
+		- Closed: 20260903-021500
 
-	- 🔘 Item 24: at Loose, `$ 1200` reads as 1200 but `$ 3.14` is BadType.
+	- ✅ Item 24: at Loose, `$ 1200` reads as 1200 but `$ 3.14` is BadType.
 		- Reproduced in all four: whitespace after the currency symbol is tolerated on the integer path only, because the float path tests the shape on the untrimmed remainder and then falls into the integer path, which trims.
-		- Note: trim after `strip_currency` in both paths, or refuse the space in both; one corpus row at Loose.
+		- Fixed: the currency strip takes the space with the symbol, in all four, so both paths see the same remainder.
+		- Pinned by corpus `003` (`"$ 3.14"` reading 3.14 as a float and 3 as an int at Loose, and BadType at Standard). All four read BadType before.
 		- Opened: 20260902-172300
+		- Closed: 20260903-023000
 
-	- 🔘 Item 25: `Jul 12, 2026` is listed as an admitted date spelling, and bare in a file the comma splits it into a two-element array.
+	- ✅ Item 25: `Jul 12, 2026` is listed as an admitted date spelling, and bare in a file the comma splits it into a two-element array.
 		- Reproduced in all four: `b: Jul 12, 2026` reads BadType (two elements, `Jul 12` and `2026`) while the quoted spelling reads `2026-07-12`. The code is right by the array rule; the Integers section says "only inside quotes, since `,` is reserved bare" and the datetime bullet says nothing.
-		- Note: spec text only: add the quoting clause to the `Mon DD YYYY` bullet.
+		- Fixed: spec text only. The bullet says the comma spelling works only inside quotes, and what a bare one reads as instead.
+		- Pinned by `check-docs.bash` (the bullet must carry the clause) and corpus `007`, where the bare spelling reads BadType as a date and two elements as a string array.
 		- Opened: 20260902-172400
+		- Closed: 20260903-024000
 
-	- 🔘 Item 26: a one-element array read reports `quoted` false for a quoted element.
+	- ✅ Item 26: a one-element array read reports `quoted` false for a quoted element.
 		- Reproduced in Rust at library level (plausible for the other three by port): `read_int("h")` on `h: "5"` gives `quoted` true, `read_int_array("h")` on the same node gives false, because the array read always ends with `quoted` false. The spec's flag is "true when the read's single scalar element was quoted in the source".
-		- Note: set it from the element when the cell has exactly one, or say in the spec that array reads never report it.
+		- Fixed: the array read takes the flag from the element when the cell holds exactly one, so it agrees with the scalar read of the same node. C needed nothing: `shcl_quoted` is path-based and already answered for a one-element cell.
+		- Pinned by the read-surface fixture in all three runners: a one-element quoted cell reads quoted as an array, a bare one does not, and a two-element cell reports nothing. All three failed the first before.
 		- Opened: 20260902-172500
+		- Closed: 20260903-025500
 
-	- 🔘 Item 27: stale prose in the README, the man page and the spec.
+	- ✅ Item 27: stale prose in the README, the man page and the spec.
 		- Reproduced by re-running the transcript and reading. `README.md` line 504's `get` transcript omits the `E014` line every loading subcommand has printed since 20260831, while the `check` transcript above it shows its stderr; `README.md` line 830 says raw blocks, set-only-if-absent and removal have no option form, though `--set-default`, `--set-literal-default` and `--remove` exist since 20260830b item 21; the man page's WRITE OPS sentence says the ops script is read when no `--set` or `--set-literal` carries the edits, where the code reads it only when none of the five options is given; `spec.md` line 599 lists the loading subcommands without `children` and `paths`.
+		- Fixed: all four, with the transcript re-run rather than edited by hand. Raw blocks are named as the one edit with no option form.
+		- Pinned by `check-docs.bash`, driven off the CLI rather than off a copy of any list: an edit option in the help must appear in the README paragraph and the man page, the WRITE OPS sentence must name all five, every subcommand that accepts `--layer` must be in the spec's list of them, and the README's `get` transcript on the damaged file must show a load diagnostic. Six checks fail on the old text.
 		- Opened: 20260902-172600
+		- Closed: 20260903-032000
 
-	- 🔘 Item 28: the windows publish's durability claim rests on a flag Microsoft documents as unsupported, and "attributes" in the carry-over claim is broader than what `ReplaceFile` preserves.
+	- ✅ Item 28: the windows publish's durability claim rests on a flag Microsoft documents as unsupported, and "attributes" in the carry-over claim is broader than what `ReplaceFile` preserves.
 		- Plausible: `design.md`'s file-tier decision says Windows has no directory sync and `ReplaceFile` is asked to write through instead; the Go comment says the flag means "do not return until the change is on the disk". Microsoft's `ReplaceFileW` reference lists `REPLACEFILE_WRITE_THROUGH` as "This value is not supported", and its preserve list (creation time, short name, object id, DACLs, security attributes, encryption, compression, named streams) does not include the basic attributes. Under wine, hidden and system are lost across a `set --write` in all three bindings; only read-only, which the code handles by hand, survives. Real NTFS could not be checked here.
-		- Note: reword the design entry and the Go comment; either copy hidden and system by hand around the publish the way read-only is, or narrow the spec's "attributes" to Microsoft's list. A hosted-job fixture with `0x2` and `0x4` settles which.
+		- Decided: carry them. Losing hidden on a saved config is a change the author never asked for and cannot prevent except by re-setting it after every write, so the attributes are re-applied rather than the promise narrowed.
+		- Fixed: all four re-apply hidden and system to the target after the publish, alongside the read-only restore that was already there. Go does it through two more hooks in `shcl_windows.go`, so `shcl.go` stays droppable on its own. The wording in `design.md`, `spec.md` and the four publish comments now says security attributes and named streams, says the basic attributes are re-applied by hand, and says the WRITE_THROUGH flag is documented as unsupported so durability rests on the file's own flush.
+		- Pinned by the windows save fixture in all four runners: a file marked hidden and system is saved and must come back with both. Rust, Go and C fail it on the old code under wine; Python's runs on the hosted job, where windows Python is.
 		- Opened: 20260902-172700
+		- Closed: 20260903-041500
 
 - Code review 20260901b:
 

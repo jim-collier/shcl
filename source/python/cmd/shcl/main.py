@@ -16,6 +16,44 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 import shcl
 
+class _BestEffort:
+	"""stderr, wrapped so a write that fails is dropped. A stream that cannot
+	be written has nowhere to report that fact, and the document on stdout is
+	still good - where an uncaught OSError would lose that too."""
+
+	def __init__(self, stream):
+		self._stream = stream
+
+	def write(self, text):
+		try:
+			self._stream.write(text)
+		except OSError:
+			pass
+		return len(text)
+
+	def flush(self):
+		try:
+			self._stream.flush()
+		except OSError:
+			pass
+
+	def __getattr__(self, name):
+		return getattr(self._stream, name)
+
+
+def write_failed(e):
+	"""A stdout write that failed. A reader that closed early is nothing to
+	report - nobody is there to read it - so that leaves quietly; anything
+	else lost the output, which is the same failure as a file that could not
+	be written. The stream is swapped for a sink so the interpreter's own
+	exit-time flush does not fail again over the top of the exit code."""
+	sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+	if isinstance(e, BrokenPipeError):
+		return 0
+	sys.stderr.write(f"stdout: {e.strerror or e}\n")
+	return 8
+
+
 # Keep in step with source/rust/Cargo.toml, the canonical version source.
 VERSION = "2.0.0"
 
@@ -435,29 +473,32 @@ def load_layered(o, file):
 	# Load file with o's lower-priority --layer files underneath and its --set
 	# overrides on top - the layered-load fold. Every layer parses at the
 	# requested strictness; a strict-load failure on any layer aborts like a
-	# single-file strict failure. Returns (doc, diags, None) or (None, None, code).
-	# The diagnostics come back per layer, lowest first: a merge does not carry
-	# them over, so reading them off the merged document drops the ones for FILE
-	# itself, which is the one the caller named.
+	# single-file strict failure. Returns (doc, None) or (None, code).
+	# It prints every layer's diagnostics itself, lowest first, before the --set
+	# overrides run: they belong to the load, and a refused edit used to return
+	# with nothing said about them. A merge does not carry diagnostics over, so
+	# reading them off the merged document drops the ones for FILE itself, which
+	# is the one the caller named.
 	texts = []
 	for lf in o.layers:
 		texts.append(read_input(lf))
 	texts.append(read_input(file))
 	doc, code = load_doc(texts[0], o.strictness)
 	if doc is None:
-		return None, None, code
+		return None, code
 	diags = list(doc.diagnostics())
 	for t in texts[1:]:
 		over, c = load_doc(t, o.strictness)
 		if over is None:
-			return None, None, c
+			return None, c
 		diags.extend(over.diagnostics())
 		doc.merge(over)
+	say_diagnostics(diags)
 	for st in o.sets:
 		if not st.apply(doc):
 			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {describe_refusal(doc, st.path)}\n")
-			return None, None, 1
-	return doc, diags, None
+			return None, 1
+	return doc, None
 
 
 def check_opts(cmd, o):
@@ -569,16 +610,12 @@ def do_get(o):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		doc, diags, code = load_layered(o, file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
-	# A read reports what the load dropped, the same as fmt and set: below
-	# strict the value comes back fine and the damage is otherwise silent.
-	# One report per invocation, so a read in a loop is one line per call.
-	say_diagnostics(diags)
 	if o.array:
 		if o.kind == "int":
 			r = doc.read_int_array(path)
@@ -716,15 +753,12 @@ def do_fmt(o):
 		sys.stderr.write("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
 	try:
-		doc, diags, code = load_layered(o, file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
-	# Printing the canonical form drops what the load dropped, the same as a
-	# rewrite does, so the diagnostics go out either way.
-	say_diagnostics(diags)
 	if o.write:
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
@@ -940,6 +974,9 @@ def do_set(o):
 			return c
 		diags.extend(over.diagnostics())
 		doc.merge(over)
+	# The load's diagnostics belong to the load, so they go out before any edit
+	# runs: a refused --set or a failing op used to return with nothing said.
+	say_diagnostics(diags)
 	for st in o.sets:
 		if not st.apply(doc):
 			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {describe_refusal(doc, st.path)}\n")
@@ -977,7 +1014,6 @@ def do_set(o):
 		except ValueError as e:
 			sys.stderr.write(f"op line {n + 1}: {e}\n")
 			return 1
-	say_diagnostics(diags)
 	if o.write:
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
@@ -1075,16 +1111,12 @@ def do_enum(o, want_count):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		doc, diags, code = load_layered(o, file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
-	# A read reports what the load dropped, the same as fmt and set: below
-	# strict the value comes back fine and the damage is otherwise silent.
-	# One report per invocation, so a read in a loop is one line per call.
-	say_diagnostics(diags)
 	if want_count:
 		print(doc.count(path))
 	else:
@@ -1106,13 +1138,12 @@ def do_children(o):
 		sys.stderr.write("usage: shcl children [options] FILE [PATH] (see --help)\n")
 		return 1
 	try:
-		doc, diags, code = load_layered(o, file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
-	say_diagnostics(diags)
 	for name in doc.children(path):
 		print(shcl.quote_segment(name))
 	return 0
@@ -1125,13 +1156,12 @@ def do_paths(o):
 		sys.stderr.write("usage: shcl paths [options] FILE (see --help)\n")
 		return 1
 	try:
-		doc, diags, code = load_layered(o, o.args[0])
+		doc, code = load_layered(o, o.args[0])
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
-	say_diagnostics(diags)
 	for p in doc.paths():
 		print(p)
 	return 0
@@ -1242,7 +1272,15 @@ def main():
 				reconfigure(encoding="utf-8", newline="\n")
 			except (ValueError, OSError):
 				pass
-	return run(sys.argv[1:])
+	sys.stderr = _BestEffort(sys.stderr)
+	try:
+		code = run(sys.argv[1:])
+		# A tail still sitting in the buffer when the work is done fails the
+		# same way a write does.
+		sys.stdout.flush()
+	except OSError as e:
+		return write_failed(e)
+	return code
 
 
 if __name__ == "__main__":

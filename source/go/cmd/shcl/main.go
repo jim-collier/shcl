@@ -12,12 +12,55 @@ import (
 	"io"
 	"math"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	shcl "github.com/jim-collier/shcl/source/go/v2"
 )
+
+// Every stdout write goes through these. A reader that closed early is not an
+// error worth reporting - nobody is there to read one - so that leaves
+// quietly; anything else lost the output, which is the same failure as a file
+// that could not be written.
+func outf(format string, a ...any) {
+	if _, err := fmt.Fprintf(os.Stdout, format, a...); err != nil {
+		writeFailed(err)
+	}
+}
+
+func outln(a ...any) {
+	if _, err := fmt.Fprintln(os.Stdout, a...); err != nil {
+		writeFailed(err)
+	}
+}
+
+func outs(a ...any) {
+	if _, err := fmt.Fprint(os.Stdout, a...); err != nil {
+		writeFailed(err)
+	}
+}
+
+// EPIPE on unix, where the SIGPIPE default usually ends the process before the
+// error is seen at all; on windows a closed reader arrives as
+// ERROR_BROKEN_PIPE, which Go surfaces as errno 109 rather than mapping it.
+func brokenPipe(err error) bool {
+	if errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var errno syscall.Errno
+	return runtime.GOOS == "windows" && errors.As(err, &errno) && errno == 109
+}
+
+func writeFailed(err error) {
+	if brokenPipe(err) {
+		os.Exit(0)
+	}
+	fmt.Fprintf(os.Stderr, "stdout: %v\n", err)
+	os.Exit(8)
+}
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
 const version = "2.0.0"
@@ -743,47 +786,50 @@ func writeBack(doc *shcl.Document, file string, o *opts) int {
 // loadLayered loads file with o's lower-priority --layer files underneath and
 // its --set overrides on top - the layered-load fold. Every layer parses at the
 // requested strictness; a strict-load failure on any layer aborts like a
-// single-file strict failure (exit 6). Returns (doc, diags, 0) or (nil, nil, code).
+// single-file strict failure (exit 6). Returns (doc, 0) or (nil, code).
 //
-// The diagnostics come back per layer, lowest first: a merge does not carry
-// them over, so reading them off the merged document drops the ones for FILE
-// itself, which is the one the caller named.
-func loadLayered(o *opts, file string) (*shcl.Document, []shcl.Diagnostic, int) {
+// It prints every layer's diagnostics itself, lowest first, before the --set
+// overrides run: they belong to the load, and a refused edit used to return
+// with nothing said about them. A merge does not carry diagnostics over, so
+// reading them off the merged document drops the ones for FILE itself, which
+// is the one the caller named.
+func loadLayered(o *opts, file string) (*shcl.Document, int) {
 	texts := make([]string, 0, len(o.layers)+1)
 	for _, lf := range o.layers {
 		t, err := readInput(lf)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return nil, nil, exitIO
+			return nil, exitIO
 		}
 		texts = append(texts, t)
 	}
 	base, err := readInput(file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return nil, nil, exitIO
+		return nil, exitIO
 	}
 	texts = append(texts, base)
 	doc, code := loadDoc(texts[0], o.strictness)
 	if code != 0 {
-		return nil, nil, code
+		return nil, code
 	}
 	diags := append([]shcl.Diagnostic(nil), doc.Diagnostics()...)
 	for _, t := range texts[1:] {
 		over, c := loadDoc(t, o.strictness)
 		if c != 0 {
-			return nil, nil, c
+			return nil, c
 		}
 		diags = append(diags, over.Diagnostics()...)
 		doc.Merge(over)
 	}
+	sayDiagnostics(diags)
 	for _, s := range o.sets {
 		if !s.apply(doc) {
 			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path))
-			return nil, nil, 1
+			return nil, 1
 		}
 	}
-	return doc, diags, 0
+	return doc, 0
 }
 
 // doGet: one value read, formatted for the shell: scalars print as one line,
@@ -794,14 +840,10 @@ func doGet(o *opts) int {
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
-	doc, diags, code := loadLayered(o, file)
+	doc, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
-	// A read reports what the load dropped, the same as fmt and set: below
-	// strict the value comes back fine and the damage is otherwise silent.
-	// One report per invocation, so a read in a loop is one line per call.
-	sayDiagnostics(diags)
 	var lines []string
 	var status shcl.Status
 	var slots []shcl.Status
@@ -886,9 +928,9 @@ func doGet(o *opts) int {
 	emit := func(lines []string) {
 		for i, l := range lines {
 			if o.slots {
-				fmt.Printf("%s\t%s\n", slotAt(i), l)
+				outf("%s\t%s\n", slotAt(i), l)
 			} else {
-				fmt.Println(l)
+				outln(l)
 			}
 		}
 	}
@@ -938,9 +980,9 @@ func doGet(o *opts) int {
 			}
 			emit(subbed)
 		} else if o.slots {
-			fmt.Printf("%s\t%s\n", status, o.def)
+			outf("%s\t%s\n", status, o.def)
 		} else {
-			fmt.Println(o.def)
+			outln(o.def)
 		}
 		return 0
 	case o.onBad == onBadError:
@@ -992,17 +1034,14 @@ func doFmt(o *opts) int {
 		fmt.Fprintln(os.Stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
-	doc, diags, code := loadLayered(o, file)
+	doc, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
-	// Printing the canonical form drops what the load dropped, the same as a
-	// rewrite does, so the diagnostics go out either way.
-	sayDiagnostics(diags)
 	if o.write {
 		return writeBack(doc, file, o)
 	}
-	fmt.Print(doc.ToCanonical())
+	outs(doc.ToCanonical())
 	return 0
 }
 
@@ -1393,6 +1432,9 @@ func doSet(o *opts) int {
 		diags = append(diags, over.Diagnostics()...)
 		doc.Merge(over)
 	}
+	// The load's diagnostics belong to the load, so they go out before any edit
+	// runs: a refused --set or a failing op used to return with nothing said.
+	sayDiagnostics(diags)
 	for _, s := range o.sets {
 		if !s.apply(doc) {
 			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path))
@@ -1414,10 +1456,11 @@ func doSet(o *opts) int {
 			fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
 			return exitIO
 		}
-		// The reference reads ops via read_to_string; mirror its UTF-8 failure.
+		// The reference reads ops via read_to_string; mirror its UTF-8 failure,
+		// which is a stream that could not be read, not a usage error.
 		if !utf8.Valid(ops) {
 			fmt.Fprintln(os.Stderr, "stdin: invalid UTF-8")
-			return 1
+			return exitIO
 		}
 	}
 	for n, line := range strings.Split(string(ops), "\n") {
@@ -1430,11 +1473,10 @@ func doSet(o *opts) int {
 			return 1
 		}
 	}
-	sayDiagnostics(diags)
 	if o.write {
 		return writeBack(doc, file, o)
 	}
-	fmt.Print(doc.ToCanonical())
+	outs(doc.ToCanonical())
 	return 0
 }
 
@@ -1493,7 +1535,7 @@ func doCheck(o *opts) int {
 	// prose names the file so the two number spaces cannot be confused.
 	errorCount := 0
 	for _, d := range diags {
-		fmt.Printf("line %d: %s: %s\n", d.Line, d.Severity, d.Code)
+		outf("line %d: %s: %s\n", d.Line, d.Severity, d.Code)
 		if d.Severity == shcl.SeverityError {
 			errorCount++
 		}
@@ -1501,14 +1543,14 @@ func doCheck(o *opts) int {
 	sayDiagnostics(diags)
 	switch {
 	case strictFailed:
-		fmt.Printf("strict load failed: %d diagnostic(s)\n", len(diags))
+		outf("strict load failed: %d diagnostic(s)\n", len(diags))
 		return 6
 	case errorCount > 0:
 		// Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
-		fmt.Printf("failed: %d diagnostic(s), %d error(s)\n", len(diags), errorCount)
+		outf("failed: %d diagnostic(s), %d error(s)\n", len(diags), errorCount)
 		return 6
 	default:
-		fmt.Printf("ok (%d diagnostic(s))\n", len(diags))
+		outf("ok (%d diagnostic(s))\n", len(diags))
 		return 0
 	}
 }
@@ -1552,7 +1594,7 @@ func doInit(o *opts) int {
 		fmt.Fprintln(os.Stderr, "init: schema has faults")
 		return 6
 	}
-	fmt.Print(text)
+	outs(text)
 	return 0
 }
 
@@ -1566,19 +1608,15 @@ func doEnum(o *opts, wantCount bool) int {
 		return 1
 	}
 	file, path := o.args[0], o.args[1]
-	doc, diags, code := loadLayered(o, file)
+	doc, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
-	// A read reports what the load dropped, the same as fmt and set: below
-	// strict the value comes back fine and the damage is otherwise silent.
-	// One report per invocation, so a read in a loop is one line per call.
-	sayDiagnostics(diags)
 	if wantCount {
-		fmt.Println(doc.Count(path))
+		outln(doc.Count(path))
 	} else {
 		for _, v := range doc.Instances(path) {
-			fmt.Println(v)
+			outln(v)
 		}
 	}
 	return 0
@@ -1599,13 +1637,12 @@ func doChildren(o *opts) int {
 		fmt.Fprintln(os.Stderr, "usage: shcl children [options] FILE [PATH] (see --help)")
 		return 1
 	}
-	doc, diags, code := loadLayered(o, file)
+	doc, code := loadLayered(o, file)
 	if doc == nil {
 		return code
 	}
-	sayDiagnostics(diags)
 	for _, name := range doc.Children(path) {
-		fmt.Println(shcl.QuoteSegment(name))
+		outln(shcl.QuoteSegment(name))
 	}
 	return 0
 }
@@ -1617,13 +1654,12 @@ func doPaths(o *opts) int {
 		fmt.Fprintln(os.Stderr, "usage: shcl paths [options] FILE (see --help)")
 		return 1
 	}
-	doc, diags, code := loadLayered(o, o.args[0])
+	doc, code := loadLayered(o, o.args[0])
 	if doc == nil {
 		return code
 	}
-	sayDiagnostics(diags)
 	for _, p := range doc.Paths() {
-		fmt.Println(p)
+		outln(p)
 	}
 	return 0
 }
@@ -1644,23 +1680,23 @@ func run() int {
 	// block from the surrounding prompts. A bare run used to print the same
 	// text unpadded and exit 1, which read as neither a help nor an error.
 	if len(argv) == 0 {
-		fmt.Printf("\n%s\n", help)
+		outf("\n%s\n", help)
 		return 0
 	}
 	if asked == "help" || argv[0] == "help" {
-		fmt.Printf("\n%s\n", help)
+		outf("\n%s\n", help)
 		return 0
 	}
 	if asked == "version" || argv[0] == "version" {
-		fmt.Printf("shcl %s\n", version)
+		outf("shcl %s\n", version)
 		return 0
 	}
 	if asked == "about" || argv[0] == "about" {
-		fmt.Printf("\n%s\n", about)
+		outf("\n%s\n", about)
 		return 0
 	}
 	if asked == "donate" || argv[0] == "donate" {
-		fmt.Printf("\n%s\n", donate)
+		outf("\n%s\n", donate)
 		return 0
 	}
 	cmd := argv[0]

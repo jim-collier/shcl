@@ -8,7 +8,7 @@
 //! Every other binding mirrors this file's structure on purpose (parity over
 //! idiom - see style-guide.md), so restructuring here means restructuring all.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -2346,7 +2346,7 @@ impl Parser {
 		self.emit_repeated_leaf_hints();
 		// Indented tail comments keep their block; only top-level ones orphan.
 		self.hang_deeper_pending("");
-		let orphans = self
+		let mut orphans: Vec<Lead> = self
 			.pending
 			.drain(..)
 			.map(|p| Lead {
@@ -2354,6 +2354,20 @@ impl Parser {
 				blank_before: p.blank_before,
 			})
 			.collect();
+		// The emitter drops a blank before the first thing it prints, so a
+		// document that kept one there would not survive its own canonical
+		// form: `load(emit(load(x)))` and `load(x)` would differ on that bit,
+		// and a merge - where the line is no longer first - would place a blank
+		// the author never wrote. Clear it here, once, wherever output starts.
+		if let Some(&first) = self.arena[ROOT].children.first() {
+			let n = &mut self.arena[first];
+			match n.trivia.as_mut().and_then(|t| t.leading.first_mut()) {
+				Some(c) => c.blank_before = false,
+				None => n.blank_before = false,
+			}
+		} else if let Some(c) = orphans.first_mut() {
+			c.blank_before = false;
+		}
 		// The one entry past the cap: what was not listed, and whether any
 		// of it was an error, so a consumer scanning the list for errors
 		// still finds one and a Strict load still fails.
@@ -2866,11 +2880,21 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	// Windows: a read-only file cannot be replaced, and a read-only temp cannot
 	// be removed after a failure, so the attribute comes off the target for the
 	// publish and goes back on the new file after it - the same outcome as
-	// POSIX, where the rename never needed the file writable.
+	// POSIX, where the rename never needed the file writable. Hidden and system
+	// ride back the same way: ReplaceFile's documented preserve list does not
+	// include the basic attributes, and the rename fallback carries nothing, so
+	// a hidden config came back visible.
 	#[cfg(windows)]
 	let read_only = existing
 		.as_ref()
 		.is_some_and(|m| m.permissions().readonly());
+	#[cfg(windows)]
+	let carried = {
+		use std::os::windows::fs::MetadataExt;
+		existing.as_ref().map_or(0, |m| {
+			m.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)
+		})
+	};
 	let mut file_handle = None;
 	let mut tmp = std::path::PathBuf::new();
 	let mut last = String::new();
@@ -2920,6 +2944,10 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	}
 	let published = publish_file(&tmp, &target);
 	#[cfg(windows)]
+	if carried != 0 {
+		set_attributes(&target, carried); // whether or not the publish went through
+	}
+	#[cfg(windows)]
 	if read_only {
 		set_read_only(&target, true); // whether or not the publish went through
 	}
@@ -2967,6 +2995,11 @@ fn resolve_target(file: &str) -> Result<std::path::PathBuf, String> {
 }
 
 #[cfg(windows)]
+const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+#[cfg(windows)]
+const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+
+#[cfg(windows)]
 fn set_read_only(path: &std::path::Path, on: bool) {
 	if let Ok(m) = std::fs::metadata(path) {
 		let mut perms = m.permissions();
@@ -2975,12 +3008,38 @@ fn set_read_only(path: &std::path::Path, on: bool) {
 	}
 }
 
+/// Turn attribute bits back on after a publish. std has no setter for the basic
+/// attributes, so this is a few lines of FFI beside the ReplaceFile ones.
+#[cfg(windows)]
+fn set_attributes(path: &std::path::Path, bits: u32) {
+	use std::os::windows::ffi::OsStrExt;
+	use std::os::windows::fs::MetadataExt;
+	#[link(name = "kernel32")]
+	unsafe extern "system" {
+		fn SetFileAttributesW(name: *const u16, attrs: u32) -> i32;
+	}
+	let Ok(m) = std::fs::metadata(path) else {
+		return;
+	};
+	let wide: Vec<u16> = path
+		.as_os_str()
+		.encode_wide()
+		.chain(std::iter::once(0))
+		.collect();
+	unsafe {
+		SetFileAttributesW(wide.as_ptr(), m.file_attributes() | bits);
+	}
+}
+
 /// Move the finished temp file over the target. On windows that means
 /// ReplaceFile rather than a rename: a rename publishes a brand-new file and
-/// leaves the destination's ACLs, attributes and named streams behind, which
-/// ReplaceFile carries onto the replacement instead. It needs the destination
-/// to exist, and it fails rather than skip a merge it cannot do (no WRITE_DAC,
-/// say), so a create and any failure fall back to the rename.
+/// leaves the destination's ACLs, security attributes and named streams behind,
+/// which ReplaceFile carries onto the replacement instead. What it does not
+/// carry is the basic attributes - hidden and system - which the save re-applies
+/// by hand. It needs the destination to exist, and it fails rather than skip a
+/// merge it cannot do (no WRITE_DAC, say), so a create and any failure fall back
+/// to the rename. WRITE_THROUGH is asked for and documented as unsupported by
+/// ReplaceFile, so the durability here rests on the file's own fsync.
 fn publish_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
 	#[cfg(windows)]
 	if target.exists() && windows_replace_file(tmp, target) {
@@ -3275,6 +3334,10 @@ impl Document {
 						match self.resolve_from(&[inst], rest) {
 							Resolved::One(x) => slots.push(Ok(x)),
 							Resolved::None => slots.push(Err(Status::NotFound)),
+							// A wildcard after a wildcard: the inner slots join the
+							// outer list, so the two compose into one flat run of
+							// leaves rather than one unreadable slot.
+							Resolved::Slots(inner) => slots.extend(inner),
 							_ => slots.push(Err(Status::Multiple)),
 						}
 					}
@@ -3310,6 +3373,10 @@ impl Document {
 							match self.resolve_from(&[inst], rest) {
 								Resolved::One(x) => slots.push(Ok(x)),
 								Resolved::None => slots.push(Err(Status::NotFound)),
+								// A wildcard after a wildcard: the inner slots join the
+								// outer list, so the two compose into one flat run of
+								// leaves rather than one unreadable slot.
+								Resolved::Slots(inner) => slots.extend(inner),
 								_ => slots.push(Err(Status::Multiple)),
 							}
 						}
@@ -4291,10 +4358,13 @@ const CURRENCY: &[char] = &[
 	'₿',
 ];
 
+/// The remainder after a leading currency symbol, with the space a person
+/// writes after one taken off - `$ 1200` reached the int path's thousands
+/// branch, which trims, and the float path's shape test, which does not.
 fn strip_currency(t: &str) -> &str {
 	let mut it = t.chars();
 	match it.next() {
-		Some(c) if CURRENCY.contains(&c) => it.as_str(),
+		Some(c) if CURRENCY.contains(&c) => it.as_str().trim_start(),
 		_ => t,
 	}
 }
@@ -4510,14 +4580,17 @@ fn parse_date_part(s: &str) -> Option<(i32, u32, u32)> {
 	// Space-separated named-month forms; a comma may follow the day in "Mon DD, YYYY".
 	let toks: Vec<&str> = s.split_whitespace().collect();
 	if toks.len() == 3 {
+		// The day is DD, like every other form's: a plain integer parse takes a
+		// leading '+' and any number of leading zeros, which the whitelist does
+		// not list and the delimited spellings already refuse.
 		if let Some(m) = month_from_name(toks[0]) {
 			let day_tok = toks[1].strip_suffix(',').unwrap_or(toks[1]);
-			let d: u32 = day_tok.parse().ok()?;
+			let d: u32 = parse_num2(day_tok)?;
 			let y: i32 = parse_year4(toks[2])?;
 			return valid_date(y, m, d).then_some((y, m, d));
 		}
 		if let Some(m) = month_from_name(toks[1]) {
-			let d: u32 = toks[0].parse().ok()?;
+			let d: u32 = parse_num2(toks[0])?;
 			let y: i32 = parse_year4(toks[2])?;
 			return valid_date(y, m, d).then_some((y, m, d));
 		}
@@ -4886,8 +4959,10 @@ impl Document {
 						},
 					}
 				}
+				// No slots at all means the wildcard's parent is not there, so
+				// the path did not resolve - Empty is for a node that is.
 				let status = if sts.is_empty() {
-					Status::Empty
+					Status::NotFound
 				} else {
 					sts.iter().copied().max().unwrap_or(Status::Good)
 				};
@@ -4913,7 +4988,11 @@ impl Document {
 							sts.push(st);
 						}
 						let status = sts.iter().copied().max().unwrap_or(Status::Good);
-						Read::with_slots(out, status, raw, sts).at(line, false)
+						// A one-element cell has a single scalar element, so
+						// the flag means the same thing here as on the scalar
+						// read of the same node.
+						let quoted = els.len() == 1 && els[0].quoted;
+						Read::with_slots(out, status, raw, sts).at(line, quoted)
 					}
 				}
 			}
@@ -5637,7 +5716,7 @@ fn allowed_join(a: &AllowedSet) -> String {
 			.join(", "),
 		AllowedSet::Floats(v) => v
 			.iter()
-			.map(|x| x.to_string())
+			.map(|x| format_f64(*x))
 			.collect::<Vec<_>>()
 			.join(", "),
 		AllowedSet::Bools(v) => v
@@ -5668,9 +5747,9 @@ fn gen_annotation(c: &Constraint, tyname: &str) -> String {
 		});
 	} else if c.min_f.is_some() || c.max_f.is_some() {
 		parts.push(match (c.min_f, c.max_f) {
-			(Some(lo), Some(hi)) => format!("{}-{}", lo, hi),
-			(Some(lo), None) => format!(">= {}", lo),
-			(None, Some(hi)) => format!("<= {}", hi),
+			(Some(lo), Some(hi)) => format!("{}-{}", format_f64(lo), format_f64(hi)),
+			(Some(lo), None) => format!(">= {}", format_f64(lo)),
+			(None, Some(hi)) => format!("<= {}", format_f64(hi)),
 			(None, None) => String::new(), // guarded above; keep the map total
 		});
 	}
@@ -5742,7 +5821,7 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		return Err(faults);
 	}
 	let (cons, cuts) = expand_mounts(&def);
-	if cons.len() >= GEN_MAX_FIELDS {
+	if cons.len() > GEN_MAX_FIELDS {
 		return Err(vec![Diagnostic {
 			line: 0,
 			severity: Severity::Error,
@@ -5759,17 +5838,19 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			.iter()
 			.any(|s| matches!(s.selector, Some(Selector::Wildcard)))
 	};
-	// `[#N]` needs a pre-existing instance and its `#` would start a comment
-	// on a binding line; a path with a literal newline cannot be written at
-	// all. Both go to the trailing note instead of emitting a broken line.
-	// A path deeper than a document may nest cannot be generated either: the
-	// line would draw E016 on the way back in.
+	// `[#N]` needs a pre-existing instance and its `#` would start a comment on
+	// a binding line; a newline inside a selector has no one-line spelling,
+	// since the value emitter never escapes one. Both go to the trailing note
+	// instead of emitting a broken line. A path deeper than a document may nest
+	// cannot be generated either: the line would draw E016 on the way back in.
+	// A newline in a NAME is writable: names are stored escape-resolved and the
+	// name escaper spells one `\n`.
 	let unwritable = |c: &Constraint| {
 		c.segs.len() > MAX_DEPTH
-			|| c.segs
-				.iter()
-				.any(|s| matches!(s.selector, Some(Selector::ByIndex(_))) || s.star)
-			|| c.path.contains('\n')
+			|| c.segs.iter().any(|s| {
+				matches!(s.selector, Some(Selector::ByIndex(_)))
+					|| s.star || matches!(&s.selector, Some(Selector::ByValue { text, .. }) if text.contains('\n'))
+			})
 	};
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -5794,9 +5875,13 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 				continue;
 			};
 			let parent = names_of(&c.segs[..k + 1]);
-			if live
-				.iter()
-				.any(|p| p.len() >= parent.len() && p[..parent.len()] == parent[..])
+			// A wildcard in the last segment needs no other line to
+			// materialize its parent: the line generated from it is that
+			// instance.
+			if k + 1 == c.segs.len()
+				|| live
+					.iter()
+					.any(|p| p.len() >= parent.len() && p[..parent.len()] == parent[..])
 			{
 				fill[i] = true;
 				live.push(names_of(&c.segs));
@@ -5812,18 +5897,64 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// web` followed by `srv.port:` is two `srv` nodes, and the child never
 	// lands where the schema looks. Any line under such a parent selects it
 	// by its value: `srv[web].port:`.
+	// A filled wildcard emits a valued line of its own, so it belongs here too.
 	let parent_values: HashMap<Vec<&str>, &str> = cons
 		.iter()
-		.filter(|c| !has_wild(c) && !unwritable(c) && must_exist(c))
-		.filter_map(|c| c.default_text.as_deref().map(|d| (names_of(&c.segs), d)))
+		.enumerate()
+		.filter(|(i, c)| (!has_wild(c) || fill[*i]) && !unwritable(c) && must_exist(c))
+		.filter_map(|(_, c)| c.default_text.as_deref().map(|d| (names_of(&c.segs), d)))
 		.collect();
+	// A path that cannot be written at all belongs in the trailing note, but one
+	// that must exist can never be satisfied from there: the self-check would
+	// then report the document as missing a path, which points at the config
+	// rather than at the schema line that cannot be generated.
+	// A repeat lower bound of 2 or more is the one documented shortfall - the
+	// line is emitted once and the count reported - so it is not this fault.
+	let cannot_satisfy =
+		|c: &Constraint| c.required || matches!(c.repeat, Some((lo, _)) if lo == 1);
+	if let Some(c) = cons
+		.iter()
+		.find(|c| cannot_satisfy(c) && unwritable(c) && !has_wild(c))
+	{
+		return Err(vec![Diagnostic {
+			line: 0,
+			severity: Severity::Error,
+			code: "V097",
+			message: format!(
+				"required path cannot be generated: {}",
+				c.path.replace('\n', "\\n")
+			),
+		}]);
+	}
 	let mut out = String::new();
 	let mut wild: Vec<(String, String)> = Vec::new();
+	// Dropping a trailing `[*]` can render the same line a concrete sibling
+	// already wrote; the first spelling wins.
+	let mut emitted: HashSet<String> = HashSet::new();
 	let mut first = true;
 	for (i, c) in cons.iter().enumerate() {
 		let tyname = c.ty.clone().unwrap_or_else(|| "any".to_string());
 		if unwritable(c) || (has_wild(c) && !fill[i]) {
 			wild.push((c.path.replace('\n', "\\n"), tyname));
+			continue;
+		}
+		// A filled wildcard emits in dotted form, targeting the materialized
+		// instance - by its value when the materializing line carries one.
+		// Rebuilt from the parsed segments, not by cutting text out of the
+		// path: the same path can be written several ways, and only the
+		// segments say what it means. Otherwise the schema's own spelling.
+		let under_valued_parent = (1..c.segs.len()).any(|k| {
+			c.segs[k - 1].selector.is_none() && parent_values.contains_key(&names_of(&c.segs[..k]))
+		});
+		// A name carrying a newline has no verbatim spelling on a binding line;
+		// the segment renderer escapes it, so such a path goes through there
+		// whether or not it was filled.
+		let path = if fill[i] || under_valued_parent || c.path.contains('\n') {
+			gen_path_text(&c.segs, &parent_values)
+		} else {
+			c.path.clone()
+		};
+		if !emitted.insert(path.clone()) {
 			continue;
 		}
 		if !first {
@@ -5842,19 +5973,6 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		// string value must not break out of it.
 		out.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
 		out.push('\n');
-		// A filled wildcard emits in dotted form, targeting the materialized
-		// instance - by its value when the materializing line carries one.
-		// Rebuilt from the parsed segments, not by cutting text out of the
-		// path: the same path can be written several ways, and only the
-		// segments say what it means. Otherwise the schema's own spelling.
-		let under_valued_parent = (1..c.segs.len()).any(|k| {
-			c.segs[k - 1].selector.is_none() && parent_values.contains_key(&names_of(&c.segs[..k]))
-		});
-		let path = if fill[i] || under_valued_parent {
-			gen_path_text(&c.segs, &parent_values)
-		} else {
-			c.path.clone()
-		};
 		let prefix = if must_exist(c) { "" } else { "#" };
 		match &c.default_text {
 			Some(v) => out.push_str(&format!("{}{}: {}\n", prefix, path, gen_default_text(v))),
@@ -5981,7 +6099,17 @@ fn gen_selector_text(v: &str) -> String {
 	if v.contains('\n') {
 		return gen_default_text(v);
 	}
-	if v.contains(['[', ']', '\\']) && !quoted_shape(v) {
+	// The scanner reads a bare selector body as an index when it is all digits
+	// (with an optional sign or `#`), and as a wildcard when it is `*`, so a
+	// default of that shape has to be quoted or the line names an instance
+	// that is not there.
+	let body = v.trim();
+	let reads_as_selector = body == "*"
+		|| body.parse::<u64>().is_ok()
+		|| body
+			.strip_prefix('#')
+			.is_some_and(|d| d.parse::<u64>().is_ok());
+	if (v.contains(['[', ']', '\\']) || reads_as_selector) && !quoted_shape(v) {
 		return quote_text(v);
 	}
 	v.to_string()
@@ -6014,7 +6142,7 @@ fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
 			}
 			let path = cc.path.clone();
 			let segs = cc.segs.clone();
-			if out.len() >= GEN_MAX_FIELDS {
+			if out.len() > GEN_MAX_FIELDS {
 				return;
 			}
 			out.push(cc);

@@ -155,6 +155,65 @@ while IFS= read -r hit; do
 	fBad "backlog.md: says how it was found rather than what changed: ${hit}"
 done < <(grep -nE '^[[:space:]]*- Found (by|while) ' "${backlog}" || true)
 
+##	V096 and V097 come only from generation, so validating anything against the
+##	schema cannot reproduce them - the veneer header used to send a reader that
+##	way for the fault list, which returns the validated document's own V002 and
+##	V007 instead. The C CLI made the same mistake and was fixed in 20260830b.
+while IFS= read -r hit; do
+	fBad "shcl.hpp: sends a reader to validate() for generation faults: ${hit}"
+done < <(grep -nE 'for the fault list, validate\(\)' "${repoDir}/source/c/shcl.hpp" || true)
+
+##	A bare `Mon DD, YYYY` is two array elements, not a date: the comma splits
+##	first. The bullet listing that spelling has to say so, or a reader copies it
+##	unquoted out of the spec and gets a BadType.
+grep -q 'in the space form a comma may follow the day .*only inside quotes' "${repoDir}/project/spec.md" \
+	|| fBad "spec.md: the Mon DD, YYYY bullet does not say the comma spelling needs quotes"
+
+##	Prose that names the CLI's edit options, or the subcommands that take a
+##	layer, goes stale the moment one is added. Each claim is checked against the
+##	shipped help text rather than against a copy of the list.
+help="$("${repoDir}/source/rust/target/debug/shcl" help 2>/dev/null || true)"
+if [[ -n "${help}" ]]; then
+	for opt in --remove --set-default --set-literal-default; do
+		grep -q -- "${opt}" <<<"${help}" || continue
+		grep -q -- "\`${opt}" "${repoDir}/README.md" \
+			|| fBad "README.md: ${opt} is in the help and not in the edit-options paragraph"
+		grep -qF -- "${opt//-/\\-}" "${repoDir}/source/man/shcl.1" \
+			|| fBad "shcl.1: ${opt} is in the help and not in the man page"
+	done
+	##	The man page's WRITE OPS sentence lists the options that stop stdin
+	##	being read; the CLI reads it only when none of the five is given.
+	writeops="$(sed -n '/^\.SH WRITE OPS/,/One op per line/p' "${repoDir}/source/man/shcl.1")"
+	for opt in '\-\-set' '\-\-set\-literal' '\-\-set\-default' '\-\-set\-literal\-default' '\-\-remove'; do
+		grep -qF -- "${opt}" <<<"${writeops}" \
+			|| fBad "shcl.1: WRITE OPS does not name ${opt//\\/} among the options that carry the edits"
+	done
+fi
+
+##	Every subcommand that takes a layer has to be in the spec's list of them.
+##	Driven off the CLI rather than off a copy: the list went stale twice.
+if [[ -n "${help}" ]]; then
+	#  shellcheck disable=2016  ## the backticks are the document's own markdown.
+	layerLine="$(grep -n 'takes repeated `--layer=FILE`' "${repoDir}/project/spec.md" | head -1 || true)"
+	[[ -n "${layerLine}" ]] || fBad "spec.md: no sentence listing the subcommands that take --layer"
+	tmpErr="$(mktemp)"
+	for cmd in get fmt count instances children paths set check; do
+		"${repoDir}/source/rust/target/debug/shcl" "${cmd}" --layer=/dev/null /dev/null a < /dev/null > /dev/null 2>"${tmpErr}" || true
+		grep -qE 'unknown option|not valid for' "${tmpErr}" && continue
+		grep -qF -- "\`${cmd}\`" <<<"${layerLine}" \
+			|| fBad "spec.md: ${cmd} takes --layer and is not in the list of subcommands that do"
+	done
+	rm -f "${tmpErr}"
+fi
+
+##	Every subcommand that loads a document prints the load's diagnostics, so a
+##	README transcript reading a damaged file has to show them - the get example
+##	sat under a check example that showed the same file's diagnostic and said
+##	nothing itself.
+readmeGet="$(sed -n '/shcl get server.shcl log-level/,/^```$/p' "${repoDir}/README.md")"
+grep -q 'E014' <<<"${readmeGet}" \
+	|| fBad "README.md: the get transcript on the damaged file shows no load diagnostic"
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

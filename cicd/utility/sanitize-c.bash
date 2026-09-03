@@ -9,7 +9,7 @@
 ##		fails here. The test programs run as they are; the CLI is driven the way
 ##		crosscheck.bash drives it, over every dimension the corpus has: fmt,
 ##		check, check --schema, the write-ops and bad-ops scripts, the layered
-##		load, init --schema, and every reads.tsv row as get/count/instances.
+##		load, init --schema, and every reads.tsv row as the CLI call it names.
 ##	Syntax:
 ##		sanitize-c.bash [CORPUS_DIR]
 ##		  CORPUS_DIR  conformance corpus root (default project/conformance)
@@ -78,6 +78,17 @@ fCli(){
 ## One reads.tsv row as the CLI calls crosscheck.bash makes of it. Columns:
 ## query, type, expected, status, optional level; only the invocation matters
 ## here, so expected and status are not read.
+##	Split a row on tabs, keeping empty fields. `IFS=$'\t' read` cannot: tab is
+##	IFS whitespace whatever IFS is set to, so a leading or doubled tab
+##	disappears and every column after it shifts - which silently turned the
+##	top-level `children` row into a type nothing had an arm for.
+fSplitTabs(){
+	local rest="$1"
+	cols=()
+	while [[ "$rest" == *$'\t'* ]]; do cols+=("${rest%%$'\t'*}"); rest="${rest#*$'\t'}"; done
+	cols+=("$rest")
+}
+
 fReadRow(){
 	local input="$1" query="$2" type="$3" level="$4"
 	local -a strictArg=()
@@ -87,11 +98,20 @@ fReadRow(){
 		              fCli fmt "${strictArg[@]}" "$input" ;;
 		count)        fCli count "${strictArg[@]}" "$input" "$query" ;;
 		instances)    fCli instances "${strictArg[@]}" "$input" "$query" ;;
-		*'[]')        fCli get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
+		children)     fCli children "${strictArg[@]}" "$input" "$query" ;;
+		paths)        fCli paths "${strictArg[@]}" "$input" ;;
+		lost)         : ;;   ## no CLI surface, like crosscheck.bash's own arm
+		int'[]'|float'[]'|bool'[]'|datetime'[]'|string'[]')
+		              fCli get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
 		              fCli get "--${type%[]}" --array --slots "${strictArg[@]}" "$input" "$query" ;;
-		*)            fCli get "--${type}" "${strictArg[@]}" "$input" "$query"
+		int|float|bool|datetime|string|raw|rawinfo)
+		              fCli get "--${type}" "${strictArg[@]}" "$input" "$query"
 		              fCli get "--${type}" --on-bad=error "${strictArg[@]}" "$input" "$query"
 		              fCli get "--${type}" "--default=<x>" "${strictArg[@]}" "$input" "$query" ;;
+		## A row type with no arm used to fall through to `get --<type>`, which
+		## the CLI refuses at exit 1 - so the row ran nothing and the case still
+		## counted as clean.
+		*)            echo "sanitize-c: unknown reads.tsv type: ${type}" >&2; exit 2 ;;
 	esac
 }
 for caseDir in "${corpus}"/*/; do
@@ -135,8 +155,10 @@ for caseDir in "${corpus}"/*/; do
 		fCli init --no-banner "--schema=${caseDir}init-schema.shcl"
 	fi
 	if [[ -f "${caseDir}reads.tsv" ]]; then
-		while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do
-			[[ -z "$query" || "$query" == "query" ]] && continue
+		while IFS= read -r row || [[ -n "$row" ]]; do
+			[[ -z "$row" || "$row" == query$'\t'* ]] && continue
+			fSplitTabs "$row"
+			query="${cols[0]}"; type="${cols[1]}"; level="${cols[4]:-}"
 			fReadRow "${input}" "$query" "$type" "${level:-}"
 		done < "${caseDir}reads.tsv"
 	fi

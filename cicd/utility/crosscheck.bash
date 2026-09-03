@@ -210,6 +210,11 @@ fFixDangling(){ mkdir -p "$1/real"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.sh
 ##	Nothing at the path at all - the create case. The tree it leaves behind is
 ##	the whole point, so the fixture deliberately builds nothing.
 fFixAbsent(){  echo "$1/c.shcl"; }
+##	The corpus case's own input, copied in so the write has something real to
+##	refuse or rewrite. The fixture protocol takes only the root, so the source
+##	arrives in caseSrc.
+caseSrc=""
+fFixCase(){    cp "$caseSrc" "$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
 ##	A load that dropped a line canonical output cannot re-emit (a BOM-led one),
 ##	so the in-place write is the destructive case the save gate exists for.
 fFixLost(){    printf 'a:  1\n\xef\xbb\xbfb: 2\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
@@ -218,6 +223,17 @@ fFixLost(){    printf 'a:  1\n\xef\xbb\xbfb: 2\n' >"$1/c.shcl"; chmod 600 "$1/c.
 ##	optional level. expected/status are the corpus contract (each binding's own
 ##	conformance runner asserts those); here only binding-vs-binding agreement
 ##	matters, so the row is just a recipe for an invocation.
+##	Split a row on tabs, keeping empty fields. `IFS=$'\t' read` cannot: tab is
+##	IFS whitespace whatever IFS is set to, so a leading or doubled tab
+##	disappears and every column after it shifts - which silently turned the
+##	top-level `children` row into a type nothing had an arm for.
+fSplitTabs(){
+	local rest="$1"
+	cols=()
+	while [[ "$rest" == *$'\t'* ]]; do cols+=("${rest%%$'\t'*}"); rest="${rest#*$'\t'}"; done
+	cols+=("$rest")
+}
+
 fReadRow(){
 	local input="$1" query="$2" type="$3" level="$4"
 	local -a strictArg=()
@@ -229,14 +245,20 @@ fReadRow(){
 		instances)    fCompare "instances ${query}" instances "${strictArg[@]}" "$input" "$query" ;;
 		children)     fCompare "children ${query}" children "${strictArg[@]}" "$input" "$query" ;;
 		paths)        fCompare "paths" paths "${strictArg[@]}" "$input" ;;
-		*'[]')        fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
+		lost)         : ;;   ## no CLI surface; the in-place write below is what it reaches
+		int'[]'|float'[]'|bool'[]'|datetime'[]'|string'[]')
+		              fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
 		              fCompare "get ${query} ${type} slots" get "--${type%[]}" --array --slots "${strictArg[@]}" "$input" "$query" ;;
-		*)            fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query"
+		int|float|bool|datetime|string|raw|rawinfo)
+		              fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query"
 		              # on-bad=error (exit-code differential; message goes to dropped stderr)
 		              # and a default substitution (stdout differential) - the accessor
 		              # policy surface, where hand-written ports diverge most easily.
 		              fCompare "get ${query} ${type} on-bad=error" get "--${type}" --on-bad=error "${strictArg[@]}" "$input" "$query"
 		              fCompare "get ${query} ${type} default" get "--${type}" "--default=<x>" "${strictArg[@]}" "$input" "$query" ;;
+		## A row type with no arm used to fall through to `get --<type>`, which
+		## every binding refuses the same way - so the row compared nothing.
+		*)            echo "crosscheck: unknown reads.tsv type: ${type}" >&2; exit 2 ;;
 	esac
 }
 
@@ -256,6 +278,11 @@ for caseDir in "$corpus"/*/; do
 		continue
 	fi
 	fCompare "fmt ${caseName}" fmt "$input"
+	# The save gate over real inputs: a case whose load dropped something must
+	# refuse the in-place write and leave the file byte-identical, and one that
+	# dropped nothing must rewrite it. Nothing else replays a corpus input
+	# through --write, so a lost count that stops being kept goes unseen.
+	caseSrc="$input"; fCompareWrite "fmt --write ${caseName}" fFixCase fmt --write
 	# Write dimension: apply the case's ops script and compare canonical output.
 	ops="${caseDir}write.ops"
 	[[ -f "$ops" ]] && fCompareStdin "set ${caseName}" "$ops" set "$input"
@@ -300,8 +327,10 @@ for caseDir in "$corpus"/*/; do
 	fi
 	tsv="${caseDir}reads.tsv"
 	if [[ -f "$tsv" ]]; then
-		while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do
-			[[ -z "$query" || "$query" == "query" ]] && continue
+		while IFS= read -r row || [[ -n "$row" ]]; do
+			[[ -z "$row" || "$row" == query$'\t'* ]] && continue
+			fSplitTabs "$row"
+			query="${cols[0]}"; type="${cols[1]}"; level="${cols[4]:-}"
 			fReadRow "$input" "$query" "$type" "${level:-}"
 		done < "$tsv"
 	fi
@@ -383,11 +412,26 @@ fCompareWrite "fmt --write still refuses a missing file" fFixAbsent fmt --write
 # random doubles built as exact m * 2^e so the text reads back to the double
 # it names, through a float write in each binding.
 awk 'BEGIN{
-	for (e = -1074; e <= 1023; e++) printf "float\tp%d\t%.17g\n", e + 1074, 2 ^ e;
-	srand(20260902);
+	## 2^e by exact halving and doubling from 1. `2 ^ e` is not a portable way
+	## to reach a subnormal: gawk computes a negative power as 1/(2^1074),
+	## which is 1/inf, so every subnormal row came out 0 and tested nothing.
+	v = 1;
+	for (e = 0; e <= 1023; e++) { pw[e] = v; v = v * 2 }
+	v = 1;
+	for (e = -1; e >= -1074; e--) { v = v / 2; pw[e] = v }
+	for (e = -1074; e <= 1023; e++) printf "float\tp%d\t%.17g\n", e + 1074, pw[e];
+	## A fixed integer generator rather than srand()/rand(), whose sequence
+	## differs between awks - so the "fixed" random set was a different set on
+	## every runner. Every product here stays under 2^53, so it is exact.
+	s = 20260902;
 	for (i = 0; i < 3000; i++) {
-		m = int(rand() * 9007199254740992); e = int(rand() * 1900) - 1000;
-		printf "float\tr%d\t%.17g\n", i, m * 2 ^ e;
+		s = (16807 * s) % 2147483647; a = s % 131072;
+		s = (16807 * s) % 2147483647; b = s % 131072;
+		s = (16807 * s) % 2147483647; c = s % 131072;
+		s = (16807 * s) % 2147483647;
+		m = (a * 131072 + b) * 131072 + c;
+		e = (s % 1900) - 1000;
+		printf "float\tr%d\t%.17g\n", i, m * pw[e];
 	}
 }' > "${tmpDir}/floats.ops"
 fCompareStdin "float spelling" "${tmpDir}/floats.ops" set -

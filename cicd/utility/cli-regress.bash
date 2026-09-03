@@ -55,6 +55,15 @@ printf 'field: server.port\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\
 ## documented shortfall and generates.
 printf 'field: "*"\n\ttype: int\n\trepeat: 1\n' > "${tmpDir}/star1.shcl"
 printf 'field: "*"\n\ttype: int\n\trepeat: 2\n' > "${tmpDir}/star2.shcl"
+## The generation field ceiling, either side of it: the cap used to fire AT the
+## limit while its message said past it.
+awk 'BEGIN{ for (i = 0; i < 10000; i++) printf "field: f%d\n", i }' > "${tmpDir}/cap10000.shcl"
+awk 'BEGIN{ for (i = 0; i < 10001; i++) printf "field: f%d\n", i }' > "${tmpDir}/cap10001.shcl"
+## A must-exist path with nothing to generate from: an index selector needs an
+## instance that is not there, and a path past the nesting cap would draw E016
+## on the way back in. Either way the fault names the path rather than reporting
+## the generated config as missing it.
+printf 'field: "srv[#1].port"\n\trequired: yes\n' > "${tmpDir}/idxreq.shcl"
 ## A schema that does not build: the report is the build faults alone, not the
 ## faults plus what an empty document would owe the schema.
 printf 'field: a\n\ttype: int\n\trequired: yes\nfield: b\n\ttype: nope\n' > "${tmpDir}/nobuild.shcl"
@@ -72,11 +81,13 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %S1%/%S2%
 ##	a nameless must-exist path at repeat 1 and 2, %S3% a schema that does not
-##	build, %X% an
+##	build, %S4% a required path with an index selector, %S5%/%S6% a schema at and
+##	one past the generation field ceiling, %X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
 ##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
 ##	path with no file at it.
-##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that stream.
+##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
+##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	A stderr regex starting with '!' must match NO line.
 ##	Each row names the round and item it pins.
@@ -106,8 +117,16 @@ rows=(
 	## 20260901 item 5: the self-check waved every V007 through, so a repeat
 	## lower bound of 1 - a must-exist path - went out as a config that fails
 	## its own schema at exit 0.
-	'init-star-repeat1|init --schema=%S1%|-|6||V097 .*not in 1\.\.1'
+	'init-star-repeat1|init --schema=%S1%|-|6||V097 required path cannot be generated'
 	'init-star-repeat2|init --schema=%S2%|-|0|-|^$'
+	## 20260902 item 19: an index selector or a path past the cap got the
+	## self-check's "required path missing", which points at the config rather
+	## than at the schema line nothing can generate.
+	'init-index-required|init --schema=%S4%|-|6||V097 required path cannot be generated: srv\[#1\].port'
+	## 20260902 item 20: V096 fired at exactly the ceiling, on a schema with no
+	## fragments, saying the schema expands past it.
+	'init-cap-at-limit|init --no-banner --schema=%S5%|-|0|-|^$'
+	'init-cap-over|init --no-banner --schema=%S6%|-|6||V096 schema expands past 10000 fields'
 	'init-build-fault|init --schema=%S3%|-|6||V091 unknown schema type'
 	'init-build-fault-only|init --schema=%S3%|-|6||!V002'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
@@ -153,6 +172,20 @@ rows=(
 	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
 	'children-missing|children %T% nope|-|0||-'
 	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	## 20260902 item 15: a refused edit returned before the load's diagnostics
+	## were printed, so a damaged file said nothing about the damage.
+	'refused-set-still-reports|get --set=a[*]=1 %B% a|-|1|-|E015 missing colon'
+	'refused-op-still-reports|set %B%|int\ta[*]\t1\n|1|-|E015 missing colon'
+	## 20260902 item 14: Go read a non-UTF-8 ops script as a usage error.
+	'ops-not-utf8|set %F%|\xff\n|8|-|-'
+	## 20260902 items 8 and 9: a stdout that could not be written was reported
+	## as success by three CLIs, and a stderr that could not be written aborted
+	## the reference with nothing on stdout at all.
+	'full-stdout-fmt|fmt %F%|@fullout|8|-|[Nn]o space left'
+	'full-stdout-check|check %F%|@fullout|8|-|-'
+	'full-stdout-get|get %F% a|@fullout|8|-|-'
+	'full-stdout-set|set --set=a=2 %F%|@fullout|8|-|-'
+	'full-stderr-keeps-stdout|fmt %B%|@fullerr|0|a: 1\n\tbad:\nb 2\n|-'
 	## Found working 20260830b item 18: a merge does not carry diagnostics, so
 	## reading them off the merged doc reported the lowest layer and stayed
 	## silent about FILE - the one file the caller actually named.
@@ -172,10 +205,19 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S1%/${tmpDir}/star1.shcl}"
 	argv="${argv//%S2%/${tmpDir}/star2.shcl}"
 	argv="${argv//%S3%/${tmpDir}/nobuild.shcl}"
+	argv="${argv//%S4%/${tmpDir}/idxreq.shcl}"
+	argv="${argv//%S5%/${tmpDir}/cap10000.shcl}"
+	argv="${argv//%S6%/${tmpDir}/cap10001.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
 	argv="${argv//%M%/${tmpDir}/not-there.shcl}"
+	## A device that is always full exists on linux and not on windows; the
+	## rows that need one are skipped out loud rather than passing vacuously.
+	if [[ "${stdinSpec}" == @full* && ! -w /dev/full ]]; then
+		echo "cli-regress: skipping ${id} (no /dev/full here)"
+		continue
+	fi
 	read -r -a args <<<"${argv}"
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
@@ -183,6 +225,8 @@ for row in "${rows[@]}"; do
 		case "${stdinSpec}" in
 			@closedin)  "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" 0<&- || rc=$? ;;
 			@closedout) "${cli}" "${args[@]}" 2>"${tmpDir}/err" >&- || rc=$?; : >"${tmpDir}/out" ;;
+			@fullout)   "${cli}" "${args[@]}" 2>"${tmpDir}/err" >/dev/full || rc=$?; : >"${tmpDir}/out" ;;
+			@fullerr)   "${cli}" "${args[@]}" >"${tmpDir}/out" 2>/dev/full || rc=$?; : >"${tmpDir}/err" ;;
 			-)          "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" </dev/null || rc=$? ;;
 			*)          printf '%b' "${stdinSpec}" | "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" || rc=$? ;;
 		esac
