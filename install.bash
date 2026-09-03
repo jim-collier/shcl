@@ -80,45 +80,46 @@ die() { printf 'install.bash: %s\n' "$*" >&2; exit 1; }
 ## `curl | bash -s -- --help` pipe, $0 is just "bash" and sed reads the wrong
 ## file (or a stray one named "bash" in the cwd).
 usage() {
+	echo
 	cat <<'EOF'
-## install.bash
-##
-##	Release installer for shcl (Simple Hierarchical Config Language) on Linux.
-##	Downloads the latest release from GitHub, checks the sha256sums file against
-##	the release signing key before trusting a checksum out of it, and lays out
-##	the binary plus the drop-in source files and shell wrappers. Idempotent:
-##	re-running updates an existing install in place.
-##
-##	Needs curl or wget, plus openssl for the signature check.
-##
-##	Usage (one-liner):
-##		curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
-##		wget -qO- https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
-##	With options:
-##		curl -fsSL .../install.bash | bash -s -- --target=user --yes
-##
-##	Options (both --opt=VALUE and --opt VALUE work):
-##		--release <dev|stable>   dev = newest release including pre-releases
-##		                         (default); stable = newest full release.
-##		--target <user|system>   system (default): /opt/shcl + a symlink at
-##		                         /usr/local/bin/shcl (sudo if not root).
-##		                         user: ~/.local/share/shcl + a symlink at
-##		                         ~/.local/bin/shcl. No sudo.
-##		--yes | -y               skip the confirmation prompt.
-##		--uninstall              remove what an install of the same --target
-##		                         laid down (binary, symlinks, code/, scripts/,
-##		                         man/, completions/), and nothing else.
-##
-##	Layout under the install dir:
-##		shcl         the CLI binary
-##		code/        drop-in single-file bindings (lib.rs, shcl.go, shcl.py,
-##		             shcl.h, shcl.hpp)
-##		scripts/     shell wrappers (shcl.bash, shcl.ps1)
-##		man/         the man page, symlinked into the target's man1 dir
-##		completions/ bash and zsh completions, enabled by hand (see the note the
-##		             install prints - the .deb/.rpm put these in place for you)
-##
+install.bash - release installer for shcl on Linux
+
+Downloads the latest release from GitHub, checks the sha256sums file against the
+release signing key before trusting a checksum out of it, and lays out the binary
+plus the drop-in source files and shell wrappers. Idempotent: re-running updates
+an existing install in place.
+
+Needs curl or wget, plus openssl for the signature check.
+
+Usage (one-liner):
+  curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+  wget -qO- https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+
+With options:
+  curl -fsSL .../install.bash | bash -s -- --target=user --yes
+
+Options (both --opt=VALUE and --opt VALUE work):
+  --release <dev|stable>   dev = newest release including pre-releases
+                           (default); stable = newest full release.
+  --target <user|system>   system (default): /opt/shcl plus a symlink at
+                           /usr/local/bin/shcl (sudo if not root).
+                           user: ~/.local/share/shcl plus a symlink at
+                           ~/.local/bin/shcl. No sudo.
+  --yes, -y                skip the confirmation prompt.
+  --uninstall              remove what an install of the same --target laid
+                           down (binary, symlinks, code/, scripts/, man/,
+                           completions/), and nothing else.
+
+Layout under the install dir:
+  shcl          the CLI binary
+  code/         drop-in single-file bindings (lib.rs, shcl.go, shcl.py,
+                shcl.h, shcl.hpp)
+  scripts/      shell wrappers (shcl.bash, shcl.ps1)
+  man/          the man page, symlinked into the target's man1 dir
+  completions/  bash and zsh completions, enabled by hand (see the note the
+                install prints - the .deb/.rpm put these in place for you)
 EOF
+	echo
 }
 
 ## Value options accept --opt=VALUE and --opt VALUE, like the shcl CLI.
@@ -150,9 +151,11 @@ esac
 ## curl or wget, whichever is present. https is pinned through redirects and
 ## TLS floored at 1.2, so a bounced download can't silently downgrade.
 if command -v curl >/dev/null; then
-	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1"; }
+	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 ${GITHUB_TOKEN:+-H "Authorization: Bearer ${GITHUB_TOKEN}"} -o "$2" "$1"; }
+	fApiStatus() { curl -fsS -o /dev/null -w '%{http_code}' --proto '=https' --tlsv1.2 ${GITHUB_TOKEN:+-H "Authorization: Bearer ${GITHUB_TOKEN}"} "$1" 2>/dev/null || true; }
 elif command -v wget >/dev/null; then
-	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"; }
+	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 ${GITHUB_TOKEN:+--header="Authorization: Bearer ${GITHUB_TOKEN}"} -O "$2" "$1"; }
+	fApiStatus() { wget -q --https-only --secure-protocol=TLSv1_2 --server-response -O /dev/null "$1" 2>&1 | awk '/^  HTTP/ { code = $2 } END { print code }'; }
 else
 	die "need curl or wget"
 fi
@@ -182,6 +185,23 @@ else
 	asroot=""
 fi
 
+## The payload directories' contents, then the directories - never a recursive
+## delete. The globs have to expand in the shell that can read the directory, so
+## they go inside the privileged one: a system tree only root could list left
+## them unexpanded, nothing was removed, and the run then reported the install
+## directory as holding files it had not put there.
+fRemoveLaidDown(){   ## fRemoveLaidDown DEST
+	local dest="$1"
+	# shellcheck disable=SC2016  ## the positional parameters are the inner shell's
+	${asroot} sh -c '
+		for d in "$@"; do
+			rm -f "${d}"/* 2>/dev/null
+			rmdir "${d}" 2>/dev/null
+		done
+		exit 0
+	' sh "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions"
+}
+
 ## Uninstall: the reverse of what the install lays down, and nothing else - the
 ## symlink, the binary, and the two payload dirs, then the install dir if it is
 ## empty. Never a recursive delete of a path the user may have pointed elsewhere.
@@ -190,41 +210,111 @@ if (( uninstall )); then
 	printf 'removing shcl: %s, %s and %s\n' "${dest}" "${link}" "${manlink}"
 	if (( ! assume_yes )); then
 		reply=""
-		if ! read -r -p "Proceed? [y/N] " reply </dev/tty 2>/dev/null; then
+		if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
 			die "no terminal to confirm on - pass --yes"
 		fi
 		case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
 	fi
-	[[ -L "${link}" || -e "${link}" ]] && ${asroot} rm -f "${link}"
-	## Only ours: a man1/shcl.1 that is not a symlink into dest belongs to a
-	## package manager, and removing it would break a perfectly good install.
+	## Only ours: a bin/shcl or man1/shcl.1 that is not a symlink into dest was
+	## put there by hand or by a package, and removing it would break that install.
+	[[ -L "${link}" && "$(readlink -- "${link}")" == "${dest}/"* ]] && ${asroot} rm -f "${link}"
 	[[ -L "${manlink}" && "$(readlink -- "${manlink}")" == "${dest}/"* ]] && ${asroot} rm -f "${manlink}"
 	${asroot} rm -f "${dest}/shcl"
-	${asroot} rm -f "${dest}/code"/* "${dest}/scripts"/* "${dest}/man"/* "${dest}/completions"/* 2>/dev/null || true
-	${asroot} rmdir "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions" "${dest}" 2>/dev/null || true
-	echo "removed"
+	fRemoveLaidDown "${dest}"
+	## Only an empty dir goes, and say so when it does not: the dir can hold
+	## files this installer never put there (a package's, or someone's own), and
+	## reporting "removed" over the top of them was a lie. Matches what the
+	## PowerShell installer already said.
+	if [[ -d "${dest}" ]]; then
+		if ${asroot} rmdir "${dest}" 2>/dev/null; then
+			echo "removed"
+		else
+			echo "removed what this installer laid down"
+			printf 'left %s in place: it holds files this installer did not put there\n' "${dest}"
+		fi
+	else
+		echo "removed"
+	fi
 	echo
 	exit 0
 fi
 
-## Resolve the tag. GitHub's /releases/latest is exactly "newest non-prerelease";
-## dev lists everything and takes the highest version. The list endpoint orders by
-## publish date, so a maintenance release cut on an older line would otherwise win.
-## sort -V with '-' mapped to '~' ranks a pre-release below its own final
-## (v2.0.0-rc1 < v2.0.0); mapped back afterwards.
-if [[ "${release}" == "stable" ]]; then
-	api="https://api.github.com/repos/${REPO}/releases/latest"
-else
-	api="https://api.github.com/repos/${REPO}/releases?per_page=100"
-fi
+## Never over a real file: a bin/shcl that is not a symlink is a hand-placed
+## install (the DIY route), and replacing it would throw that work away. Checked
+## before any download so the refusal costs nothing.
+## What is at the bin path: nothing, our own link, a real file, or a link
+## somewhere else. A real file is a hand-placed install (the DIY route) and a
+## link to a cargo-built or hand-built copy is as much a working install as
+## that; either used to be replaced with nothing said. The uninstall already
+## declines to remove a link that is not ours.
+fLinkOwner(){   ## fLinkOwner LINK DEST
+	local link="$1" dest="$2" tgt
+	if [[ -L "${link}" ]]; then
+		tgt="$(readlink -- "${link}")"
+		if [[ "${tgt}" == "${dest}/"* ]]; then printf 'ours\n'; else printf 'elsewhere %s\n' "${tgt}"; fi
+	elif [[ -e "${link}" ]]; then
+		printf 'file\n'
+	else
+		printf 'free\n'
+	fi
+}
+owner="$(fLinkOwner "${link}" "${dest}")"
+case "${owner}" in
+	free|ours) ;;
+	file) die "${link} exists and is not a symlink - move it aside first, then re-run" ;;
+	*)    die "${link} is a symlink to ${owner#elsewhere } - move it aside first, then re-run" ;;
+esac
+
+## Pick the tag out of a /releases listing: highest version wins, never newest
+## by date. GitHub's /releases/latest is date-ordered, so a patch back-ported to
+## an older line after a newer one shipped would be handed out as "stable" - the
+## same hazard the list endpoint has, and the reason both channels sort here.
+## A draft has no published assets, so neither channel can install one; stable
+## drops pre-releases on top of that. tag_name, draft and prerelease arrive in
+## that order within one release object, so the flags that follow a tag belong
+## to it. sort -V with the first '-' mapped to '~' ranks a pre-release below its
+## own final (v2.0.0-rc1 < v2.0.0); mapped back afterwards.
+## The three fields are read in the order the API emits them, so a whole release
+## on one line has to be split first: a compact response used to yield no tag at
+## all, and the run said no release was published.
+fPickTag(){
+	local channel="$1" json="$2" tags
+	tags="$(awk -v channel="${channel}" '
+		{ buf = buf $0 "\n" }
+		END {
+			gsub(/"(tag_name|draft|prerelease)":/, "\n&", buf)
+			n = split(buf, line, "\n")
+			for (i = 1; i <= n; i++) {
+				s = line[i]
+				if (s ~ /^"tag_name":/)               { t = s; sub(/^"tag_name": *"/, "", t); sub(/".*/, "", t) }
+				else if (s ~ /^"draft": *true/)       { t = "" }
+				else if (s ~ /^"prerelease": *true/)  { if (channel != "stable" && t != "") print t; t = "" }
+				else if (s ~ /^"prerelease": *false/) { if (t != "") print t; t = "" }
+			}
+		}
+	' "${json}")"
+	printf '%s\n' "${tags}" | sed 's/-/~/' | sort -V | tail -n1 | sed 's/~/-/'
+}
+
+api="https://api.github.com/repos/${REPO}/releases?per_page=100"
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
-fetch "${api}" "${tmp}/rel.json" || die "cannot fetch the ${release} release (none published yet, or network down)"
-if [[ "${release}" == "stable" ]]; then
-	tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | head -n1 | sed 's/.*"\(v[^"]*\)"/\1/')"
-else
-	tag="$(grep -o '"tag_name": *"[^"]*"' "${tmp}/rel.json" | sed 's/.*"\(v[^"]*\)"/\1/; s/-/~/' | sort -V | tail -n1 | sed 's/~/-/')"
-fi
+## A 403 from an unauthenticated request is the API's rate limit, and behind a
+## shared address it is common - "none published yet, or network down" sent
+## people looking in the wrong place. GITHUB_TOKEN is used when it is set.
+fApiFailure(){   ## fApiFailure STATUS RELEASE
+	case "$1" in
+		403|429) printf "GitHub's API refused the request (rate limit). Wait, or set GITHUB_TOKEN to a token with public read access and re-run\n" ;;
+		401)     printf 'GitHub rejected the credentials in GITHUB_TOKEN - unset it, or replace it with one that has public read access\n' ;;
+		*)       printf 'cannot fetch the %s release (none published yet, or network down)\n' "$2" ;;
+	esac
+}
+fetch "${api}" "${tmp}/rel.json" || die "$(fApiFailure "$(fApiStatus "${api}")" "${release}")"
+## Every grep below may legitimately match nothing (no release, no such asset,
+## a release cut before the drop-in payload existed). Under pipefail that is a
+## failed substitution, which would end the script here instead of at the check
+## that reports it - so each one swallows its own status.
+tag="$(fPickTag "${release}" "${tmp}/rel.json")"
 [[ -n "${tag}" && "${tag}" != null ]] || die "no ${release} release found"
 version="${tag#v}"
 
@@ -243,10 +333,28 @@ if (( ! assume_yes )); then
 	## /dev/tty for readability was not the same question: it passes in plenty of
 	## unattended contexts where the read then dies on a raw shell error.
 	reply=""
-	if ! read -r -p "Proceed? [y/N] " reply </dev/tty 2>/dev/null; then
+	if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
 		die "no terminal to confirm on - pass --yes"
 	fi
 	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
+fi
+
+## Nothing is downloaded before the destinations are known to be writable: a
+## read-only HOME used to get through both downloads and then fail on a raw
+## mkdir error, twice. A sudo install writes as root, so the question is only
+## about what this shell can reach.
+fNearestExisting(){   ## fNearestExisting PATH
+	local p="$1"
+	while [[ -n "${p}" && "${p}" != "/" && "${p}" != "." && ! -e "${p}" ]]; do
+		p="$(dirname -- "${p}")"
+	done
+	printf '%s\n' "${p}"
+}
+if [[ -z "${asroot}" ]]; then
+	for want in "${dest}" "$(dirname -- "${link}")" "$(dirname -- "${manlink}")"; do
+		near="$(fNearestExisting "${want}")"
+		[[ -d "${near}" && -w "${near}" ]] || die "cannot write ${want}: ${near} is not writable"
+	done
 fi
 
 ## Download and verify the binary.
@@ -264,7 +372,7 @@ printf '%s\n' "${SIGNING_KEY}" > "${tmp}/signing.pub"
 openssl dgst -sha256 -verify "${tmp}/signing.pub" -signature "${tmp}/sums.sig" "${tmp}/sums" >/dev/null 2>&1 \
 	|| die "signature check failed on sha256sums - refusing to install"
 
-want="$(grep " ${asset}\$" "${tmp}/sums" | cut -d' ' -f1)"
+want="$(grep " ${asset}\$" "${tmp}/sums" | cut -d' ' -f1 || true)"
 got="$(sha256sum "${tmp}/shcl" | cut -d' ' -f1)"
 [[ -n "${want}" && "${got}" == "${want}" ]] || die "sha256 mismatch on ${asset}"
 
@@ -274,8 +382,30 @@ got="$(sha256sum "${tmp}/shcl" | cut -d' ' -f1)"
 ## payload we made executable was the one nothing had verified. Releases before
 ## the asset existed simply install the binary and say what was skipped.
 chmod 755 "${tmp}/shcl"
+
+## Run the verified binary where it sits before anything is written: on an
+## older glibc (or musl) the failure would otherwise surface as a raw loader
+## error after the install, with the broken install left in place. The floor
+## differs per build: the x86_64 binary is linked against glibc 2.34 and needs
+## libgcc_s, the arm64 one against 2.30 with no libgcc_s. Exit 126 is the temp
+## dir refusing to execute at all (a noexec mount), which is not the binary's
+## fault.
+case "${arch}" in
+	x86_64) needs="glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9, or later) plus libgcc_s.so.1" ;;
+	*)      needs="glibc 2.30 or newer (Ubuntu 20.04, Debian 11, RHEL 9, or later)" ;;
+esac
+smoke_status=0
+"${tmp}/shcl" version >/dev/null 2>"${tmp}/smoke.err" || smoke_status=$?
+if [[ "${smoke_status}" != 0 ]]; then
+	if [[ "${smoke_status}" == 126 ]]; then
+		die "cannot execute from ${tmp} (noexec mount?) - set TMPDIR to a directory that allows execution and re-run"
+	fi
+	head -n1 "${tmp}/smoke.err" >&2
+	die "the prebuilt linux-${arch} binary does not run here: it needs ${needs} and does not run on musl. Install from source instead: cargo install shcl"
+fi
+
 dropins="shcl-${version}-dropins.tar.gz"
-want_src="$(grep " ${dropins}\$" "${tmp}/sums" | cut -d' ' -f1)"
+want_src="$(grep " ${dropins}\$" "${tmp}/sums" | cut -d' ' -f1 || true)"
 have_dropins=0
 have_docs=0
 if [[ -n "${want_src}" ]]; then
@@ -299,26 +429,71 @@ if [[ -n "${want_src}" ]]; then
 	have_dropins=1
 fi
 
-## Install. The binary goes in via a hidden temp + mv in the same dir, so a
-## running copy only ever sees the complete old or new file.
-${asroot} mkdir -p "${dest}" "$(dirname "${link}")"
-${asroot} cp "${tmp}/shcl" "${dest}/.shcl.new"
-${asroot} mv -f "${dest}/.shcl.new" "${dest}/shcl"
-if (( have_dropins )); then
-	${asroot} mkdir -p "${dest}/code" "${dest}/scripts"
-	${asroot} cp "${tmp}"/code/* "${dest}/code/"
-	${asroot} cp "${tmp}"/scripts/* "${dest}/scripts/"
-fi
-if (( have_docs )); then
-	${asroot} mkdir -p "${dest}/man" "${dest}/completions" "$(dirname "${manlink}")"
-	${asroot} cp "${tmp}"/man/* "${dest}/man/"
-	${asroot} cp "${tmp}"/completions/* "${dest}/completions/"
-	## Never over a real file: a man1/shcl.1 that is not ours came from a package.
-	if [[ -L "${manlink}" || ! -e "${manlink}" ]]; then
-		${asroot} ln -sfn "${dest}/man/shcl.1" "${manlink}"
+## A system install has to be readable and runnable by every user, and the modes
+## cannot come from whoever happened to run the script: sudo keeps the caller's
+## umask unless sudoers overrides it, and 077 left /opt/shcl, the launcher and
+## the man page root-only. `a+rX` gives what the .deb and .rpm set - directories
+## and the binary 755, data 644 - and repairs a tree an earlier run wrote too
+## tightly. A user install keeps the caller's umask: it is one user's copy.
+fWidenModes(){
+	local run="${1}"; shift
+	${run} chmod -R a+rX "$@"
+}
+
+## The shallowest directory `mkdir -p DIR` will have to create, or nothing
+## when DIR exists. The bin and man1 directories are usually there already
+## on a system; when they are not, they are ours to widen too, and a system
+## directory that was already there is left alone.
+fTopMissing(){
+	local dir="${1}" top=""
+	while [[ "${dir}" != "/" && "${dir}" != "." && ! -d "${dir}" ]]; do top="${dir}"; dir="$(dirname "${dir}")"; done
+	printf '%s' "${top}"
+}
+
+## Lay the payload in ${tmp} down under ${dest} and link it. The binary goes
+## in via a hidden temp + mv in the same dir, so a running copy only ever sees
+## the complete old or new file. A function so the same steps run on a staged
+## payload without the downloads in front of them.
+fLayDown(){
+	local desttop linkdir mandir
+	desttop="$(fTopMissing "${dest}")"
+	linkdir="$(fTopMissing "$(dirname "${link}")")"
+	${asroot} mkdir -p "${dest}" "$(dirname "${link}")"
+	${asroot} cp "${tmp}/shcl" "${dest}/.shcl.new"
+	${asroot} mv -f "${dest}/.shcl.new" "${dest}/shcl"
+	if (( have_dropins )); then
+		${asroot} mkdir -p "${dest}/code" "${dest}/scripts"
+		${asroot} cp "${tmp}"/code/* "${dest}/code/"
+		${asroot} cp "${tmp}"/scripts/* "${dest}/scripts/"
 	fi
-fi
-${asroot} ln -sfn "${dest}/shcl" "${link}"
+	mandir=""
+	if (( have_docs )); then
+		mandir="$(fTopMissing "$(dirname "${manlink}")")"
+		${asroot} mkdir -p "${dest}/man" "${dest}/completions" "$(dirname "${manlink}")"
+		${asroot} cp "${tmp}"/man/* "${dest}/man/"
+		${asroot} cp "${tmp}"/completions/* "${dest}/completions/"
+		## Never over a real file: a man1/shcl.1 that is not ours came from a package.
+		if [[ -L "${manlink}" || ! -e "${manlink}" ]]; then
+			${asroot} ln -sfn "${dest}/man/shcl.1" "${manlink}"
+		fi
+	fi
+	${asroot} ln -sfn "${dest}/shcl" "${link}"
+	if [[ "${target}" == "system" ]]; then
+		fWidenModes "${asroot}" "${desttop:-${dest}}" ${linkdir:+"${linkdir}"} ${mandir:+"${mandir}"}
+	fi
+}
+
+## Is DIR on the PATH? By element, with a trailing slash ignored on either
+## side: the shell resolves `bin/` fine, and a plain string compare did not.
+fOnPath(){
+	local dir="${1%/}" elem
+	while IFS= read -r -d: elem || [[ -n "${elem}" ]]; do
+		[[ "${elem%/}" == "${dir}" ]] && return 0
+	done <<<"${PATH}:"
+	return 1
+}
+
+fLayDown
 
 echo
 printf 'installed shcl %s -> %s\n' "${version}" "${link}"
@@ -336,15 +511,31 @@ if (( have_docs )); then
 elif (( have_dropins )); then
 	printf 'note: this release ships no man page or completions - they arrived after it was cut\n'
 fi
-printf 'to remove it again: %s --uninstall --target %s\n' "${0##*/}" "${target}"
+## Under the documented pipe $0 is "bash" (or a /dev/fd path), so the hint
+## names the one-liner unless this really is a file on disk.
+rerun="curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash -s --"
+[[ -f "$0" ]] && rerun="$0"
+printf 'to remove it again: %s --uninstall --target=%s\n' "${rerun}" "${target}"
 ## Both targets: an install nobody can invoke by name looks fine to the version
 ## check below, so say something when the symlink dir is off the PATH. It costs
 ## the man page too - man derives its search dirs from the bin dirs on PATH.
 linkdir="$(dirname "${link}")"
-if [[ ":${PATH}:" != *":${linkdir}:"* ]]; then
+if ! fOnPath "${linkdir}"; then
 	# The PATH expansion is for the user to paste, not for us to expand here.
 	# shellcheck disable=SC2016
 	printf 'note: %s is not on your PATH, so neither shcl nor "man shcl" will be found - add it with:\n  export PATH="%s:$PATH"\n(put that line in your shell profile to make it stick)\n' "${linkdir}" "${linkdir}"
+fi
+## And what `shcl` actually resolves to: the receipt below runs the link we just
+## wrote, so another copy earlier on PATH used to be invisible here and the next
+## `shcl` the user typed was someone else's.
+fShadowedBy(){   ## fShadowedBy LINK
+	local link="$1" onpath
+	onpath="$(command -v shcl 2>/dev/null || true)"
+	[[ -z "${onpath}" || "${onpath}" -ef "${link}" ]] && return 1
+	printf '%s\n' "${onpath}"
+}
+if shadow="$(fShadowedBy "${link}")"; then
+	printf 'note: shcl on your PATH is %s, not the copy just installed - it comes first on PATH\n' "${shadow}"
 fi
 "${link}" version 2>/dev/null || "${dest}/shcl" version
 echo
