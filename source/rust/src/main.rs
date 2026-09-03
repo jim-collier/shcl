@@ -5,8 +5,8 @@
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
 use shcl::{
-	Diagnostic, Document, SaveError, Severity, Status, Strictness, generate, parse_datetime,
-	suppress_declared_reopens, suppress_declared_repeats,
+	Diagnostic, Document, SaveError, Severity, Status, Strictness, format_f64, generate,
+	parse_datetime, suppress_declared_reopens, suppress_declared_repeats,
 };
 use std::process::ExitCode;
 
@@ -804,7 +804,7 @@ fn do_get(o: &Opts) -> u8 {
 			Kind::Float => {
 				let r = doc.read_float_array(path);
 				(
-					r.value.iter().map(|v| v.to_string()).collect(),
+					r.value.iter().map(|v| format_f64(*v)).collect(),
 					r.status,
 					r.slots,
 				)
@@ -842,7 +842,7 @@ fn do_get(o: &Opts) -> u8 {
 			}
 			Kind::Float => {
 				let r = doc.read_float(path);
-				(vec![r.value.to_string()], r.status, Vec::new())
+				(vec![format_f64(r.value)], r.status, Vec::new())
 			}
 			Kind::Bool => {
 				let r = doc.read_bool(path);
