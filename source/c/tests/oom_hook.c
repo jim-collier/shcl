@@ -36,7 +36,7 @@ static int oom_hits = 0;
 // fired, -1 when they fit but read wrong. Its own function so nothing main
 // holds is live across the longjmp.
 static int write_under(shcl_doc *d, long b) {
-	if (setjmp(oom_jmp)) return 0;
+	if (SHCL_SETJMP(oom_jmp)) return 0;
 	budget = b;
 	for (int i = 0; i < 40; i++) {
 		char path[32]; int n = snprintf(path, sizeof path, "group.added%d", i);
