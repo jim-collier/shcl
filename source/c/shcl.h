@@ -20,6 +20,7 @@
 //                    default prints and exits 70, which suits the CLI and
 //                    nothing else. A parse or a validate never reaches it:
 //                    those unwind and return NULL.
+// A hook that longjmps out arms its recovery point with SHCL_SETJMP, below.
 
 // The file tier calls POSIX (fdopen, fileno, fchmod, open, fsync, getpid). Those
 // prototypes are feature-gated, and a feature request only counts before the
@@ -35,6 +36,22 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+// Arm a setjmp recovery point that a longjmp from inside this library has to
+// reach. mingw's setjmp hands longjmp a target frame, and longjmp then unwinds
+// through SEH to get there. gcc's unwind info for a function that has both a
+// frame pointer and saved xmm registers puts those save slots at offsets the
+// real unwinder resolves past the top of the stack, and the read faults. Wine
+// resolves them from a different base and never sees it, which is why the same
+// binary passes there. A NULL frame makes longjmp restore the context without
+// unwinding at all, and a C recovery point needs nothing more, since nothing in
+// between has a destructor or a __finally. Include <setjmp.h> before using it.
+// The full shape is in style-guide.md under the C deviations.
+#if defined(__MINGW32__) && defined(__x86_64__) && defined(__SEH__)
+	#define SHCL_SETJMP(buf) _setjmp((buf), NULL)
+#else
+	#define SHCL_SETJMP(buf) setjmp(buf)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -489,25 +506,10 @@ static const char *dec_point(void) {
 // the implementation to longjmp out, log, or abort on its own terms. Nothing is
 // unwound first, so a hook that returns leaks whatever was being built - and
 // then aborts, because the allocation it was called for still failed. A hook
-// that longjmps wants the NULL-frame setjmp below, for the reason given there:
-// the unwind it starts crosses this library's frames, not just its own.
+// that longjmps arms its recovery point with SHCL_SETJMP, for the reason given
+// there: the unwind it starts crosses this library's frames, not just its own.
 #ifndef SHCL_OOM
 	#define SHCL_OOM() do { fprintf(stderr, "shcl: out of memory\n"); exit(70); } while (0)
-#endif
-
-// mingw's setjmp hands longjmp a target frame, and longjmp then unwinds
-// through SEH to reach it. gcc's unwind info for a function that has both a
-// frame pointer and saved xmm registers puts those save slots at offsets the
-// real unwinder resolves past the top of the stack, and the read faults. Wine
-// resolves them from a different base and never sees it, which is why the same
-// binary passes there. A NULL frame makes longjmp restore the context without
-// unwinding at all, and a C recovery point needs nothing more - there is no
-// destructor and no __finally between the failed allocation and the arrival.
-// The full shape is in style-guide.md under the C deviations.
-#if defined(__MINGW32__) && defined(__x86_64__) && defined(__SEH__)
-	#define SHCL_SETJMP(buf) _setjmp((buf), NULL)
-#else
-	#define SHCL_SETJMP(buf) setjmp(buf)
 #endif
 
 /* Unwind to the recovery point `panic` names, or fall back to the macro when

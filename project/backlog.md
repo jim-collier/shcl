@@ -613,6 +613,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Fixed: both recovery points arm with `_setjmp(buf, NULL)` on mingw x86_64, which makes `longjmp` restore the context without unwinding at all. That is all a C recovery point needs - nothing in between has a destructor or a `__finally`. Recorded as a C deviation in `style-guide.md`, and the `SHCL_OOM` docs now point an embedder whose hook longjmps at the same thing, since that unwind crosses these frames too.
 		- Pinned by a `win-runners.bash` step that builds and runs the test at `-O0`, `-O1`, `-O2`, `-O3` and `-Os`. The shape needs both a frame pointer and saved xmm registers, which gcc decides per level: backed out, three of the five crash and two do not, so a single-level gate could have gone either way.
 		- Fixed on the way: the load half wrote its fixture to a hardcoded `/tmp`, which a mingw binary does not translate. The new gate would have rested on the runner happening to have a `C:\tmp`.
+		- Follow-on: the macro is `SHCL_SETJMP` and now sits in the public half of the header, since the embedder the `SHCL_OOM` docs point at arms the recovery point in their own translation unit and could not reach it. `oom_hook.c` arms with it too, and the gate sweeps both oom tests across the five levels rather than only the recovery one - the hook's recovery point is the same shape, one inlining decision from the same fault.
 		- Opened: 20260904-052000
 		- Closed: 20260904-070000
 
