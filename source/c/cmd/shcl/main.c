@@ -191,6 +191,10 @@ typedef struct {
 	int slots;
 	const char *deflt;        // NULL if unset
 	const char *on_bad;       // error|default|flag
+	// What an explicit --on-bad asked for, whatever the order. --default sets
+	// on_bad too, so without this the two options silently overwrote each other
+	// and which one survived depended on which came last.
+	const char *on_bad_arg;   // NULL if --on-bad was not given
 	shcl_strictness strictness;
 	int write;
 	int lossy;
@@ -711,6 +715,30 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno
 	const char **fp = (const char **)xrealloc(NULL, nf * sizeof *fp);
 	size_t *fn = (size_t *)xrealloc(NULL, nf * sizeof *fn);
 	{ size_t k = 0, start = 0; for (size_t i = 0; i <= linelen; i++) if (i == linelen || line[i] == '\t') { fp[k] = line + start; fn[k] = i - start; k++; start = i + 1; } }
+	// Every op but the array forms takes a fixed number of tab-separated
+	// fields. Extra ones used to be dropped, so a `raw` whose content held a
+	// literal tab lost everything after it and still reported success; the
+	// escape for a tab inside a value is `\t`.
+	{
+		int bad = 0;
+		static const struct { const char *op; size_t want; } counts[] = {
+			{ "empty", 2 }, { "remove", 2 }, { "raw", 4 }, { "raw-default", 4 },
+			{ "int", 3 }, { "float", 3 }, { "bool", 3 }, { "string", 3 },
+			{ "datetime", 3 }, { "literal", 3 }, { "comment", 3 },
+			{ "int-default", 3 }, { "float-default", 3 }, { "bool-default", 3 },
+			{ "string-default", 3 }, { "datetime-default", 3 }, { "literal-default", 3 },
+		};
+		for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
+			if (strlen(counts[i].op) != fn[0] || memcmp(counts[i].op, fp[0], fn[0]) != 0) continue;
+			if (nf > counts[i].want) {
+				fprintf(stderr, "op line %zu: %s takes %zu tab-separated field(s), got %zu\n",
+					lineno, counts[i].op, counts[i].want, nf);
+				bad = 1;
+			}
+			break;
+		}
+		if (bad) { free(fp); free(fn); return 1; }
+	}
 	const char *path = nf > 1 ? fp[1] : ""; size_t plen = nf > 1 ? fn[1] : 0;
 	const char *v = nf > 2 ? fp[2] : ""; size_t vn = nf > 2 ? fn[2] : 0;
 	int rc = 0, wrote = 1;
@@ -872,6 +900,16 @@ static int do_check(const Opts *o) {
 				fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 			}
 		} else {
+			/* The schema's own load has something to say too: an H001 on a
+			   repeated `allowed` is what explains the V092 below it. On stderr
+			   with the schema's own line numbers, the way a V099's are -
+			   stdout is the code contract. */
+			for (size_t i = 0; i < sn; i++) {
+				const char *sev = shcl_diag_severity(sd, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+				shcl_str m = shcl_diag_message(sd, i);
+				fprintf(stderr, "schema line %zu: %s: %s ", shcl_diag_line(sd, i), sev, shcl_diag_code(sd, i));
+				fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
+			}
 			val = xdoc(shcl_validate(d, sd));
 			shcl_suppress_declared_repeats(sd, d);
 			shcl_suppress_declared_reopens(sd, d);
@@ -1016,6 +1054,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 		else if (g_ci_eq(v, strlen(v), "default")) o->on_bad = "default";
 		else if (g_ci_eq(v, strlen(v), "flag")) o->on_bad = "flag";
 		else { fprintf(stderr, "bad --on-bad value: %s\n", v); return 1; }
+		o->on_bad_arg = o->on_bad;
 		opt_seen(o, "--on-bad");
 	} else if (!strcmp(name, "--strictness")) {
 		if (!shcl_strictness_from_arg(v, strlen(v), &o->strictness)) { fprintf(stderr, "bad --strictness value: %s\n", v); return 1; }
@@ -1161,6 +1200,14 @@ static int check_opts(const char *cmd, const Opts *o) {
 		return 1;
 	}
 	// --lossy only overrides the in-place write's refusal, so on its own it says
+	// --default says "substitute this" and --on-bad=error says "fail instead",
+	// so the two together are a contradiction. Each used to overwrite the
+	// other's mode, which made the answer depend on the order they were typed
+	// in.
+	if (o->deflt && o->on_bad_arg && strcmp(o->on_bad_arg, "default") != 0) {
+		fprintf(stderr, "--default cannot be combined with --on-bad=%s (see --help)\n", o->on_bad_arg);
+		return 1;
+	}
 	// nothing and would read as protection the command never had.
 	if (o->lossy && !o->write) {
 		fprintf(stderr, "--lossy is only meaningful with --write (see --help)\n");

@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Three CLI shapes that surprised. `--default` together with an explicit `--on-bad=error` is a usage error instead of a silent win for whichever came last. An ops line with more tab-separated fields than its op takes is an error instead of having the extras dropped - a `raw` whose content held a literal tab lost everything after it and reported success. And `check --schema` prints the schema's own load diagnostics, so the `H001` that explains a `V092` on a repeated `allowed` is visible rather than invisible.
+
 - A save through a path that names a directory is refused everywhere. `save_file("f/")` rewrote `f` in the reference, and `f/.` did in Go, because the path cleanup drops the trailing separator before the OS ever sees it. Go's string setters also refuse text that is not valid UTF-8 instead of storing a replacement character per bad byte and reporting success.
 
 - Python's typed array setters take a list of their type rather than any iterable. `set_string_array("k", "abc")` wrote three elements, because a `str` is a sequence of one-character strings, and a generator was consumed by the type check before the setter read it - an empty value written and `True` returned. `set_comment`, `set_raw` and `set_literal` gate their arguments now too, instead of raising from somewhere inside.
