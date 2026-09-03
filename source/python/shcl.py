@@ -2939,7 +2939,14 @@ class Document:
 		and raw blocks get real override while a bare section header merges
 		instead of wiping. over-only nodes are appended. Comment trivia rides
 		with each node. Load(defaults, site, user) is a left fold of this: each
-		later file overlaid on the earlier ones."""
+		later file overlaid on the earlier ones.
+
+		The fold is not associative: (A+B)+C and A+(B+C) differ where a bare
+		header meets an overridden leaf, so a cached upper pair is not the same
+		document the CLI's left fold produces. self keeps its own strictness, so
+		a value from a stricter layer reads with self's coercion. And a replaced
+		node is kept until the document is dropped: this costs a pass over the
+		touched scopes plus an index rebuild on the next read."""
 		self._index = None
 		self._lost += over._lost
 		self._overlay(ROOT, over, ROOT)

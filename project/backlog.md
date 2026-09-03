@@ -506,9 +506,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-173300
 		- Closed: 20260903-071500
 
-	- 🔘 Item 35: three merge facts the spec should state.
+	- ✅ Item 35: three merge facts the spec should state.
 		- The fold is not associative: with `p: 1`, `p: 2` and `p:` over `x: 1`, `(A+B)+C` overrides the leaf and `A+(B+C)` keeps `p: 1` as a wrapper-mention peer; 56 of 300 generated triples differ the same way, so a consumer caching a pre-merged upper pair gets a different document from the CLI fold. A merged document keeps the base's strictness, so a value from a stricter layer reads with the base's coercion (library only). And a merge costs a pass over the base's touched scopes plus an index rebuild on the next read, with replaced nodes kept until the document is dropped (measured in all four: 40k-key base plus a 3-line over is 5 to 66 ms, the next read 2 to 17 ms, 500 merges of an 8-node over grow the process by 0.5 to 1.5 MB). One sentence each in Layered loading and the merge doc comments.
+		- Fixed: the spec's Layered loading section states all three with the measured shape of the cost, and every binding's merge doc comment says the same three.
+		- Pinned by `check-docs.bash`, which requires the sentence in the spec and in all four merge comments.
 		- Opened: 20260902-173400
+		- Closed: 20260903-073000
 
 	- 🔘 Item 36: the C merge grows the document by the parent's whole child list per merge, and `w_encode_string` amplifies a string value about four times.
 		- A one-leaf over onto a 40k-key document costs 1 MB of arena per merge (100 merges, 100 MB), because `w_overlay` rebuilds the parent's children into a fresh doubling vector in the document arena and the abandoned copies are never reused. `set_string` of a 20 MB value grows the arena by 85 MB, from the 32-byte builder doubling through blocks of twice each request. Build the rebuilt list in scratch and copy it exactly sized; reserve the builder up front.

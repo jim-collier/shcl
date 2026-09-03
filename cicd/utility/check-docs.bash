@@ -214,6 +214,18 @@ readmeGet="$(sed -n '/shcl get server.shcl log-level/,/^```$/p' "${repoDir}/READ
 grep -q 'E014' <<<"${readmeGet}" \
 	|| fBad "README.md: the get transcript on the damaged file shows no load diagnostic"
 
+##	Three merge facts a consumer folding layers itself has to know, and that
+##	nothing in the code or the corpus can tell them: the fold is not
+##	associative, the merged document keeps the base's strictness, and a
+##	replaced node is kept. The spec says them, and so does every binding's
+##	merge doc comment - a port that loses one leaves its own users guessing.
+grep -q 'fold is not associative' "${repoDir}/project/spec.md" \
+	|| fBad "spec.md: Layered loading does not say the fold is not associative"
+for src in source/rust/src/lib.rs source/go/shcl.go source/python/shcl.py source/c/shcl.h; do
+	grep -q 'fold is not associative' "${repoDir}/${src}" \
+		|| fBad "${src}: the merge doc comment does not say the fold is not associative"
+done
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

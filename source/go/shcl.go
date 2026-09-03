@@ -4358,6 +4358,13 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 // wiping. over-only nodes are appended. Comment trivia rides with each node.
 // Load(defaults, site, user) is a left fold of this: each later file overlaid
 // on the earlier ones.
+//
+// The fold is not associative: (A+B)+C and A+(B+C) differ where a bare header
+// meets an overridden leaf, so a cached upper pair is not the same document the
+// CLI's left fold produces. d keeps its own strictness, so a value from a
+// stricter layer reads with d's coercion. And a replaced node is kept until the
+// document is dropped: this costs a pass over the touched scopes plus an index
+// rebuild on the next read.
 func (d *Document) Merge(over *Document) {
 	d.index.Store(nil)
 	d.lost += over.lost
