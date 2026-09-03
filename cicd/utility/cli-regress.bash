@@ -129,14 +129,17 @@ rows=(
 	## 20260830 item 10: the reference kept a trailing CR on an ops line, the ports stripped it.
 	'ops-line-cr|set %F%|int\tx\t1\r|0|a: 1\n\nx: 1\n|-'
 	'ops-lone-cr|set %F%|int\tx\t1\n\r|0|a: 1\n\nx: 1\n|-'
-	## 20260830 item 14: Python raised a traceback, C exited nonzero.
+	## 20260830 item 14: Python raised a traceback, C exited nonzero. POSIX-only:
+	## the row closes fd 0, and windows has no equivalent a shell can set up.
 	'closed-stdin|fmt -|@closedin|0||^$'
 	'closed-stdout|fmt %F%|@closedout|0|-|^$'
 	## 20260830 item 16: C dropped the line number and the offending op.
 	'bad-op-unknown|set %F%|bogus\ta\t1\n|1|-|op line 1: unknown op: bogus'
 	## 20260830 item 18: C answered a directory with a bare "read error". Exit 8
-	## since 20260830b item 22 split I/O out of the usage code.
-	'read-dir-names-error|fmt %D%|-|8|-|[Ii]s a directory'
+	## since 20260830b item 22 split I/O out of the usage code. The wording is
+	## the CLIs' own, from a stat ahead of the read, so the row can expect one
+	## spelling rather than four platforms' worth (20260901b item 32).
+	'read-dir-names-error|fmt %D%|-|8|-|^[^ ]*adir: Is a directory$'
 	## 20260830 item 17: C printed a bare count instead of naming the diagnostics.
 	'strict-load-list|fmt --strictness=strict %B%|-|6|-|strict load failed: 2 error diagnostic'
 	## 20260830 round: an unknown command is judged before its options.

@@ -771,6 +771,11 @@ func readInput(file string) (string, error) {
 			return "", fmt.Errorf("stdin: %s", err)
 		}
 	} else {
+		// The message for reading a directory is the platform's, and windows
+		// spells it four different ways depending on the binding. Say it here.
+		if fi, serr := os.Stat(file); serr == nil && fi.IsDir() {
+			return "", fmt.Errorf("%s: Is a directory", file)
+		}
 		b, err = os.ReadFile(file)
 		if err != nil {
 			return "", fmt.Errorf("%s: %s", file, err)

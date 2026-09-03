@@ -843,6 +843,11 @@ fn read_input(file: &str) -> Result<String, String> {
 			.map_err(|e| format!("stdin: {}", e))?;
 		Ok(s)
 	} else {
+		// The message for reading a directory is the platform's, and windows
+		// spells it four different ways depending on the binding. Say it here.
+		if std::fs::metadata(file).map(|m| m.is_dir()).unwrap_or(false) {
+			return Err(format!("{}: Is a directory", file));
+		}
 		std::fs::read_to_string(file).map_err(|e| format!("{}: {}", file, e))
 	}
 }

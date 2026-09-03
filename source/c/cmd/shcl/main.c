@@ -271,10 +271,26 @@ static int path_absent(const char *file) {
 	return errno == ENOENT;
 }
 
+// The message for reading a directory is the platform's, and windows spells it
+// four different ways depending on the binding. Say it here.
+static int is_a_directory(const char *file) {
+#ifdef _WIN32
+	wchar_t *w = shcl_widen(file);
+	if (!w) return 0;
+	DWORD a = GetFileAttributesW(w);
+	free(w);
+	return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+#else
+	struct stat st;
+	return stat(file, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
 static char *read_input(const char *file, size_t *len) {
 	char *buf = NULL; size_t cap = 0, n = 0;
 	int is_stdin = strcmp(file, "-") == 0;
 	const char *who = is_stdin ? "stdin" : file;
+	if (!is_stdin && is_a_directory(file)) { fprintf(stderr, "%s: Is a directory\n", who); return NULL; }
 	FILE *f = is_stdin ? stdin : open_rb(file);
 	if (!f) { fprintf(stderr, "%s: %s\n", who, strerror(errno)); return NULL; }
 	char chunk[65536]; size_t r;
