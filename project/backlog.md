@@ -134,11 +134,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-170900
 		- Closed: 20260902-215000
 
-	- 🔘 Item 11: a refused C setter still consumes document arena, against the header's "nothing is created on failure".
+	- ✅ Item 11: a refused C setter still consumes document arena, against the header's "nothing is created on failure".
 		- Reproduced: a refused 20 MB `set_string` on a wildcard path costs 85 MB of arena, permanently; ten refused `set_raw` calls with a 20 MB body cost 200 MB; small values cost 48 to 80 bytes per refused call. Rust builds the value first too but drops it when `place` refuses.
 		- Cause: every setter encodes the value into `d->arena` before `w_set` validates the path. Only `shcl_compact` gives it back.
-		- Note: probe the path first (`w_write_reason`), or encode into scratch and copy into the arena on success.
+		- Fixed: the arena takes a mark and a release, and every setter marks before it encodes; a refusal rolls the arena back to the mark. `w_place` allocates only in scratch until its own probe passes, so nothing but the encoded value sits past the mark. No extra path walk, which a probe-first fix would have cost every successful write.
+		- Measured: a refused 20 MB `set_string` costs nothing where it cost 55 MB; ten refused 20 MB `set_raw` calls cost nothing where they cost 265 MB; 10000 refused `set_int` calls cost nothing where they cost 480 KB.
+		- Pinned by `mem_bounds.c`, which refuses 24 MB of writes on a wildcard path and requires the arena not to grow. It grew 27 MB before. Sanitizers, the compiler sweep and cppcheck are clean.
 		- Opened: 20260902-171000
+		- Closed: 20260902-222000
 
 	- 🔘 Item 12: the named-month space forms accept a day token that is not `DD`.
 		- Reproduced in all four. `Jul +12 2026`, `+12 Jul 2026`, `Jul 0012 2026` and `Jul 00000000000000012 2026` all read Good as `2026-07-12`, while `Jul-012-2026` is refused and `Jul 12 +2026` is refused because the year is held to four digits. The spec calls the format list a closed whitelist and spells the day `DD`.

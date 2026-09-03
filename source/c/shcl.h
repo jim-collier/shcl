@@ -550,6 +550,24 @@ static void *arena_grow(ShclArena *a, void *old, size_t oldcap, size_t newcap, s
 // reads never re-malloc. Bump arenas cannot free per-object, so without this
 // every resolver temporary would live until shcl_free - a long-running process
 // doing reads would grow without bound.
+/* A point to roll back to. A bump arena cannot free one allocation, but it can
+   give back everything since a mark, which is what a setter needs when the
+   value it just encoded turns out to be refused. Only sound when nothing
+   allocated after the mark is still referenced. */
+typedef struct { ShclBlock *head; size_t used; void *last; size_t last_n; } ShclMark;
+
+static ShclMark arena_mark(ShclArena *a) {
+	ShclMark m; m.head = a->head; m.used = a->head ? a->head->used : 0;
+	m.last = a->last; m.last_n = a->last_n;
+	return m;
+}
+
+static void arena_release(ShclArena *a, ShclMark m) {
+	while (a->head && a->head != m.head) { ShclBlock *n = a->head->next; free(a->head); a->head = n; }
+	if (a->head) a->head->used = m.used;
+	a->last = m.last; a->last_n = m.last_n;
+}
+
 static void arena_reset(ShclArena *a) {
 	if (!a->head) return;
 	ShclBlock *b = a->head->next;
@@ -3373,9 +3391,14 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
 	w_fold_dups_below(d, survivor);
 }
 
-static int w_set(shcl_doc *d, ShclStr path, ShclValue v) {
+/* The setters encode into the document arena before the path is validated, and
+   a bump arena never gives that back - a refused 20 MB write used to cost the
+   document 85 MB permanently. w_place allocates only in scratch until its
+   probe passes, so on a refusal nothing but the encoded value sits past the
+   mark. The mark is taken by the caller, before it encodes. */
+static int w_set_marked(shcl_doc *d, ShclStr path, ShclValue v, ShclMark m) {
 	size_t idx;
-	if (!w_place(d, path, &idx)) return 0;
+	if (!w_place(d, path, &idx)) { arena_release(&d->arena, m); return 0; }
 	NODE(d, idx).value = v;
 	w_collapse_dup(d, idx);
 	return 1;
@@ -3440,15 +3463,15 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	return 1;
 }
 
-int shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { ShclStr p; p.p = path; p.n = plen; return w_set(d, p, v_empty()); }
-int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_int_text(a, v))); }
+int shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(&d->arena); return w_set_marked(d, p, v_empty(), m); }
+int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_int_text(a, v)), m); }
 /* An infinity or a NaN has no spelling the reader accepts, and neither does a
    datetime the reader would refuse (month 13, a fraction with no seconds, an
    empty struct): each fails the write rather than binding text that cannot
    read back. */
-int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { if (!isfinite(v)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_float_text(a, v))); }
-int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_bool_text(v))); }
-int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr in; in.p = s; in.n = slen; return w_set(d, p, w_cell1(a, w_encode_string(a, in))); }
+int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { if (!isfinite(v)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_float_text(a, v)), m); }
+int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_bool_text(v)), m); }
+int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr in; in.p = s; in.n = slen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_encode_string(a, in)), m); }
 
 static int literal_value(ShclArena *a, ShclArena *tmp, ShclStr text, ShclValue *out) {
 	for (size_t i = 0; i < text.n; i++) { if (text.p[i] == '\n' || text.p[i] == '\r') return 0; }
@@ -3467,10 +3490,11 @@ static int literal_value(ShclArena *a, ShclArena *tmp, ShclStr text, ShclValue *
 int shcl_set_literal(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr in; in.p = text; in.n = tlen;
 	ShclValue v;
-	if (!literal_value(a, &d->scratch, in, &v)) return 0;
-	return w_set(d, p, v);
+	ShclMark m = arena_mark(a);
+	if (!literal_value(a, &d->scratch, in, &v)) { arena_release(a, m); return 0; }
+	return w_set_marked(d, p, v, m);
 }
-int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!dt_reads_back(&d->scratch, dt)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; return w_set(d, p, w_cell1(a, w_dt_text(a, dt))); }
+int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!dt_reads_back(&d->scratch, dt)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_dt_text(a, dt)), m); }
 // Bind a raw block at a path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed); one
 // holding a line break or an unquoted `#` has no fence-line spelling (the `#`
@@ -3485,40 +3509,41 @@ int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content
 	if (icomment.n) return 0;
 	for (size_t i = 0; i < clen; i++) if (content[i] == '\r' && (i + 1 == clen || content[i + 1] == '\n')) return 0;
 	it = s_trim(it);
+	ShclMark m = arena_mark(a);
 	ShclStr c = w_dupz(a, content, clen), inf = s_dup(a, it);
 	unsigned char fc; size_t fl; w_choose_fence(c, &fc, &fl);
 	ShclValue v; memset(&v, 0, sizeof v); v.kind = V_RAW;
 	v.raw = (ShclRawVal *)arena_alloc(a, sizeof(ShclRawVal));
 	v.raw->content = c; v.raw->info = inf; v.raw->fence_char = fc; v.raw->fence_len = fl;
-	return w_set(d, p, v);
+	return w_set_marked(d, p, v, m);
 }
 
 int shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) {
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
+	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_int_text(a, v[i]);
-	return w_set(d, p, w_array(a, t, n));
+	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 int shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) {
 	for (size_t i = 0; i < n; i++) if (!isfinite(v[i])) return 0;
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
+	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_float_text(a, v[i]);
-	return w_set(d, p, w_array(a, t, n));
+	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 int shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) {
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
+	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_bool_text(v[i]);
-	return w_set(d, p, w_array(a, t, n));
+	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 int shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) {
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
+	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) { ShclStr in; in.p = v[i]; in.n = lens[i]; t[i] = w_encode_string(a, in); }
-	return w_set(d, p, w_array(a, t, n));
+	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) {
 	for (size_t i = 0; i < n; i++) if (!dt_reads_back(&d->scratch, &v[i])) return 0;
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
+	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_dt_text(a, &v[i]);
-	return w_set(d, p, w_array(a, t, n));
+	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 
 int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) return shcl_set_int(d, path, plen, v); return 1; }
