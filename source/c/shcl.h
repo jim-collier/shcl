@@ -413,6 +413,13 @@ int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, 
 // a bare section header merges instead of wiping); over-only nodes are
 // appended. `over`'s content is deep-copied into d's arena, so d stays valid
 // after `over` is freed.
+//
+// The fold is not associative: (A+B)+C and A+(B+C) differ where a bare header
+// meets an overridden leaf, so a cached upper pair is not the same document the
+// CLI's left fold produces. d keeps its own strictness, so a value from a
+// stricter layer reads with d's coercion. And a replaced node is kept until
+// shcl_free or shcl_compact: this costs a pass over the touched scopes plus an
+// index rebuild on the next read.
 void shcl_merge(shcl_doc *d, const shcl_doc *over);
 
 // CLI/aliases: 1|2|3 or loose|standard|strict. Returns 1 on success.
