@@ -158,10 +158,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-171200
 		- Closed: 20260902-230000
 
-	- 🔘 Item 14: the Go CLI exits 1 where the other three exit 8 on an ops script that is not UTF-8.
+	- ✅ Item 14: the Go CLI exits 1 where the other three exit 8 on an ops script that is not UTF-8.
 		- Reproduced: `printf '\xff\n' | shcl set f.shcl` exits 8 in Rust, C and Python and 1 in Go. The same bytes as a document exit 8 in all four. The standing decision makes 1 the usage code alone.
 		- Cause: `main.go`'s ops read returns 1 after `utf8.Valid` fails; its `readInput` already takes the exit-8 path for a document.
+		- Fixed: the ops read takes the same exit-8 path its document read does.
+		- Pinned by a `cli-regress` row feeding a lone `0xff` to `set`. Go exited 1 before.
 		- Opened: 20260902-171300
+		- Closed: 20260902-231000
 
 	- 🔘 Item 15: a refused `--set` or a failing op suppresses the load's diagnostics.
 		- Reproduced in all four. On a document with an `E014` line, `get --set='a[*]=1' f a` prints only the refusal at exit 1 and never the `E014`; same for an ops line the writer refuses. The help says every subcommand that loads a document prints the load's diagnostics once per run.

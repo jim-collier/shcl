@@ -1457,10 +1457,11 @@ func doSet(o *opts) int {
 			fmt.Fprintf(os.Stderr, "stdin: %s\n", err)
 			return exitIO
 		}
-		// The reference reads ops via read_to_string; mirror its UTF-8 failure.
+		// The reference reads ops via read_to_string; mirror its UTF-8 failure,
+		// which is a stream that could not be read, not a usage error.
 		if !utf8.Valid(ops) {
 			fmt.Fprintln(os.Stderr, "stdin: invalid UTF-8")
-			return 1
+			return exitIO
 		}
 	}
 	for n, line := range strings.Split(string(ops), "\n") {
