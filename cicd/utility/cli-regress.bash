@@ -55,6 +55,10 @@ printf 'field: server.port\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\
 ## documented shortfall and generates.
 printf 'field: "*"\n\ttype: int\n\trepeat: 1\n' > "${tmpDir}/star1.shcl"
 printf 'field: "*"\n\ttype: int\n\trepeat: 2\n' > "${tmpDir}/star2.shcl"
+## The generation field ceiling, either side of it: the cap used to fire AT the
+## limit while its message said past it.
+awk 'BEGIN{ for (i = 0; i < 10000; i++) printf "field: f%d\n", i }' > "${tmpDir}/cap10000.shcl"
+awk 'BEGIN{ for (i = 0; i < 10001; i++) printf "field: f%d\n", i }' > "${tmpDir}/cap10001.shcl"
 ## A must-exist path with nothing to generate from: an index selector needs an
 ## instance that is not there, and a path past the nesting cap would draw E016
 ## on the way back in. Either way the fault names the path rather than reporting
@@ -77,7 +81,8 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %S1%/%S2%
 ##	a nameless must-exist path at repeat 1 and 2, %S3% a schema that does not
-##	build, %S4% a required path with an index selector, %X% an
+##	build, %S4% a required path with an index selector, %S5%/%S6% a schema at and
+##	one past the generation field ceiling, %X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
 ##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
 ##	path with no file at it.
@@ -118,6 +123,10 @@ rows=(
 	## self-check's "required path missing", which points at the config rather
 	## than at the schema line nothing can generate.
 	'init-index-required|init --schema=%S4%|-|6||V097 required path cannot be generated: srv\[#1\].port'
+	## 20260902 item 20: V096 fired at exactly the ceiling, on a schema with no
+	## fragments, saying the schema expands past it.
+	'init-cap-at-limit|init --no-banner --schema=%S5%|-|0|-|^$'
+	'init-cap-over|init --no-banner --schema=%S6%|-|6||V096 schema expands past 10000 fields'
 	'init-build-fault|init --schema=%S3%|-|6||V091 unknown schema type'
 	'init-build-fault-only|init --schema=%S3%|-|6||!V002'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
@@ -197,6 +206,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S2%/${tmpDir}/star2.shcl}"
 	argv="${argv//%S3%/${tmpDir}/nobuild.shcl}"
 	argv="${argv//%S4%/${tmpDir}/idxreq.shcl}"
+	argv="${argv//%S5%/${tmpDir}/cap10000.shcl}"
+	argv="${argv//%S6%/${tmpDir}/cap10001.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"

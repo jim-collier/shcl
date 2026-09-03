@@ -208,10 +208,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-171800
 		- Closed: 20260903-011500
 
-	- 🔘 Item 20: V096 fires at exactly 10000 fields with a message that says the schema expands past 10000.
+	- ✅ Item 20: V096 fires at exactly 10000 fields with a message that says the schema expands past 10000.
 		- Reproduced in all four: 9999 plain `field:` lines generate, 10000 give `V096 schema expands past 10000 fields; fragments mounted at more than one path multiply`, on a schema with no fragments.
 		- Cause: `cons.len() >= GEN_MAX_FIELDS` in `generate` and inside each `expand_mounts`.
+		- Fixed: the ceiling means at most that many, in all four. The expander stops one past it so `generate` can tell the two apart.
+		- Pinned by two `cli-regress` rows, a schema of exactly 10000 fields and one of 10001. The first exited 6 before.
 		- Opened: 20260902-171900
+		- Closed: 20260903-013000
 
 	- 🔘 Item 21: `shcl_generate` keeps the output of a V097-failing call in the schema's arena, and a succeeding call's output can never be released.
 		- Reproduced: 1000 calls on a schema whose default fails its own constraint grow the heap by 21.9 KB per call while returning nothing, and leave 1001 copies of the same diagnostic on the schema; 1000 succeeding calls grow it by one output each, and `shcl_reads_release` cannot reclaim them because the output goes to `schema->arena`, not `schema->reads`. The header's own comment says everything but the returned bytes dies inside the call.

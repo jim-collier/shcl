@@ -6054,7 +6054,7 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		return "", faults
 	}
 	cons, cuts := expandMounts(&def)
-	if len(cons) >= genMaxFields {
+	if len(cons) > genMaxFields {
 		msg := fmt.Sprintf("schema expands past %d fields; fragments mounted at more than one path multiply", genMaxFields)
 		return "", []Diagnostic{{Line: 0, Severity: SeverityError, Message: msg, Code: "V096"}}
 	}
@@ -6425,7 +6425,7 @@ func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
 			}
 			path := cc.path
 			segs := cc.segs
-			if len(out) >= genMaxFields {
+			if len(out) > genMaxFields {
 				return
 			}
 			out = append(out, cc)
