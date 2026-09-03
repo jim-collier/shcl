@@ -743,9 +743,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-194100
 		- Closed: 20260904-021000
 
-	- 🔘 Item 43: the flamegraph drops 35 to 60% of the profiled CPU time and the report does not say so.
+	- ✅ Item 43: the flamegraph drops 35 to 60% of the profiled CPU time and the report does not say so.
 		- The sampler's library blocklist drops any sample whose leaf is inside libc rather than truncating it, so allocation, copying and write time are invisible and every percentage is over the survivors. Today's graph kept 930 of about 1600 samples. Print the expected count beside the kept one at least.
+		- Decided: the blocklist stays. It keeps the signal handler out of libc's own unwinder, which is what it is for; what it cannot do is go unsaid.
+		- Fixed: the profiler writes the kept and expected counts beside the SVG, and the report leads with them and with what the missing samples were. Measured on a fresh run: 762 of about 1194.
+		- Pinned by `shell-regress` rows over a graph with the counts beside it and one without, plus a check that the profiler still records them.
 		- Opened: 20260901-194200
+		- Closed: 20260904-022000
 
 	- 🔘 Item 44: a third of the parser's visible self-time is freeing the per-line path buffer.
 		- Today's profile puts 33% under dropping the path scan's segment vector, which builds two strings per segment per line and frees them per line. Keeping the vector across lines and clearing it would remove most of that. With item 43's blind spot the true share is likely larger.
