@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Three generation gaps. A `desc` holding a comma is several elements, and the comment came out missing entirely; it carries the whole sentence now. A `default` with no value-line spelling - a raw block, or any default under `type: raw` - is a `V092` fault at its schema line instead of being dropped silently or reported as a wrong type in the output. And `V096`/`V097` are printed as `line 0` rather than `schema line 0`: they are about the generated document, not a line of the schema.
+
 - Three CLI shapes that surprised. `--default` together with an explicit `--on-bad=error` is a usage error instead of a silent win for whichever came last. An ops line with more tab-separated fields than its op takes is an error instead of having the extras dropped - a `raw` whose content held a literal tab lost everything after it and reported success. And `check --schema` prints the schema's own load diagnostics, so the `H001` that explains a `V092` on a repeated `allowed` is visible rather than invisible.
 
 - A save through a path that names a directory is refused everywhere. `save_file("f/")` rewrote `f` in the reference, and `f/.` did in Go, because the path cleanup drops the trailing separator before the OS ever sees it. Go's string setters also refuse text that is not valid UTF-8 instead of storing a replacement character per bad byte and reporting success.

@@ -4622,7 +4622,7 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 	// Deferred so `min: 1` may precede `type: int` in the file.
 	int required = -1;
 	int reopen_seen = 0;
-	size_t allowed_at = (size_t)-1, min_at = (size_t)-1, max_at = (size_t)-1;
+	size_t allowed_at = (size_t)-1, min_at = (size_t)-1, max_at = (size_t)-1, default_at = (size_t)-1;
 	ShclVecSize kids = NODE(schema, f).children;
 	for (size_t ki = 0; ki < kids.len; ki++) {
 		ShclNode *kid = &NODE(schema, kids.data[ki]);
@@ -4686,19 +4686,37 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 			}
 		} else if (s_eq(kid->name, s_lit("desc"))) {
 			// Generator-only (`shcl init`); validation ignores it. First wins.
-			ShclStr t;
-			if (!c.has_desc && v_single_text(a, &kid->value, &t)) { c.has_desc = 1; c.desc = t; }
-		} else if (s_eq(kid->name, s_lit("default"))) {
-			if (!c.has_default && kid->value.kind == V_CELL) {
+			// A comma in a sentence makes the value several elements, and the
+			// comment is prose: take them all, spelled as written.
+			if (!c.has_desc && kid->value.kind == V_CELL) {
 				ShclSB s = {0, 0, 0};
-				for (size_t x = 0; x < kid->value.nels; x++) { if (x) sb_puts(a, &s, ", "); sb_putS(a, &s, emit_element(a, &kid->value.els[x])); }
-				c.has_default = 1; c.default_text = sb_S(&s);
+				for (size_t x = 0; x < kid->value.nels; x++) { if (x) sb_puts(a, &s, ", "); sb_putS(a, &s, apply_escapes(a, kid->value.els[x].text)); }
+				c.has_desc = 1; c.desc = sb_S(&s);
+			}
+		} else if (s_eq(kid->name, s_lit("default"))) {
+			if (!c.has_default) {
+				if (kid->value.kind == V_CELL) {
+					ShclSB s = {0, 0, 0};
+					for (size_t x = 0; x < kid->value.nels; x++) { if (x) sb_puts(a, &s, ", "); sb_putS(a, &s, emit_element(a, &kid->value.els[x])); }
+					c.has_default = 1; c.default_text = sb_S(&s);
+				}
+				default_at = kids.data[ki];
 			}
 		} else {
 			v_diag(a, faults, kid->line, "V090", v_msg3(a, "unknown schema key '", kid->name, "'"));
 		}
 	}
 	c.required = required > 0;
+	/* A raw block has no inline spelling, so a `default` that is one cannot
+	   reach a generated line - it used to be dropped and the field emitted with
+	   no value at all - and a `default` under `type: raw` goes out inline and
+	   then fails its own type check. */
+	if (default_at != (size_t)-1) {
+		const ShclNode *dkid = &schema->nodes.data[default_at];
+		int raw_typed = c.ty && !strcmp(c.ty, "raw");
+		if (dkid->value.kind == V_RAW || (raw_typed && c.has_default))
+			v_diag(a, faults, dkid->line, "V092", v_msg_key(a, "default"));
+	}
 	const char *base = c.ty ? c.ty : "string";
 	size_t blen = strlen(base);
 	if (blen > 6 && memcmp(base + blen - 6, "-array", 6) == 0) {

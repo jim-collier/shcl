@@ -4786,6 +4786,7 @@ def _parse_field(schema, f, faults):
 	required = None
 	reopen_seen = False
 	allowed_at = None
+	default_at = None
 	min_at = None
 	max_at = None
 	for k in schema.arena[f].children:
@@ -4857,15 +4858,26 @@ def _parse_field(schema, f, faults):
 				_vdiag(faults, kid.line, "V092", "bad schema constraint 'inherits'")
 		elif kid.name == "desc":
 			# Generator-only (`shcl init`); validation ignores it. First wins.
-			if c.desc is None:
-				c.desc = _single_text(kid.value)
+			# A comma in a sentence makes the value several elements, and the
+			# comment is prose: take them all, spelled as written.
+			if c.desc is None and kid.value.kind == "cell":
+				c.desc = ", ".join(_apply_escapes(e.text) for e in kid.value.els)
 		elif kid.name == "default":
 			if c.default_text is None:
 				c.default_text = _emit_value_inline(kid.value)
+				default_at = k
 		else:
 			_vdiag(faults, kid.line, "V090", f"unknown schema key '{kid.name}'")
 	if required is not None:
 		c.required = required
+	# A raw block has no inline spelling, so a `default` that is one cannot reach
+	# a generated line - it used to be dropped and the field emitted with no
+	# value at all - and a `default` under `type: raw` goes out inline and then
+	# fails its own type check.
+	if default_at is not None:
+		dkid = schema.arena[default_at]
+		if dkid.value.kind == "raw" or (c.ty == "raw" and c.default_text is not None):
+			_vdiag(faults, dkid.line, "V092", "bad schema constraint 'default'")
 	base = c.ty[:-6] if c.ty is not None and c.ty.endswith("-array") else c.ty
 	if base is None:
 		base = "string"

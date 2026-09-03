@@ -600,7 +600,10 @@ def describe_refusal(doc, path):
 def say_diagnostics(diags):
 	# The load's diagnostics, one line each, in the shape every command uses.
 	for d in diags:
-		space = "schema line" if d.code.startswith("V09") and d.code != "V099" else "line"
+		# V090-V095 carry a schema line; V096 and V097 are about generation as a
+		# whole and carry line 0, so "schema line 0" named a line space they are
+		# not in. V099 stands for a schema that did not load and is line 0 too.
+		space = "schema line" if d.code.startswith("V09") and d.code not in ("V096", "V097", "V099") else "line"
 		sys.stderr.write(f"{space} {d.line}: {d.severity.name}: {d.code} {d.message}\n")
 
 
@@ -1129,8 +1132,7 @@ def do_init(o):
 		return 6
 	text, faults = shcl.generate(sdoc, o.no_banner)
 	if faults:
-		for d in faults:
-			sys.stderr.write(f"schema line {d.line}: {d.severity.name}: {d.code} {d.message}\n")
+		say_diagnostics(faults)
 		sys.stderr.write("init: schema has faults\n")
 		return 6
 	sys.stdout.write(text)

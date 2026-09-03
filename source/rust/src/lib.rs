@@ -5526,6 +5526,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 	let mut required: Option<bool> = None;
 	let mut reopen_seen = false;
 	let mut allowed_at: Option<usize> = None;
+	let mut default_at: Option<usize> = None;
 	let mut min_at: Option<usize> = None;
 	let mut max_at: Option<usize> = None;
 	for &k in &schema.arena[f].children {
@@ -5657,13 +5658,24 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 			// Generator-only (`shcl init`); validation ignores both. First
 			// occurrence wins (a merged schema could carry two).
 			"desc" => {
+				// A comma in a sentence makes the value several elements, and
+				// the comment is prose: take them all, spelled as written.
 				if c.desc.is_none() {
-					c.desc = single_text(&kid.value);
+					c.desc = match &kid.value {
+						Value::Cell(els) => Some(
+							els.iter()
+								.map(|e| apply_escapes(&e.text))
+								.collect::<Vec<_>>()
+								.join(", "),
+						),
+						_ => None,
+					};
 				}
 			}
 			"default" => {
 				if c.default_text.is_none() {
 					c.default_text = emit_value_inline(&kid.value);
+					default_at = Some(k);
 				}
 			}
 			other => vdiag(
@@ -5675,6 +5687,23 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 		}
 	}
 	c.required = required.unwrap_or(false);
+	// A raw block has no inline spelling, so a `default` that is one cannot
+	// reach a generated line - it used to be dropped and the field emitted with
+	// no value at all - and a `default` under `type: raw` goes out inline and
+	// then fails its own type check.
+	if let Some(dk) = default_at {
+		let kid = &schema.arena[dk];
+		let raw_default = matches!(kid.value, Value::Raw(_));
+		let raw_typed = c.ty.as_deref().is_some_and(|t| t == "raw");
+		if raw_default || (raw_typed && c.default_text.is_some()) {
+			vdiag(
+				faults,
+				kid.line,
+				"V092",
+				"bad schema constraint 'default'".to_string(),
+			);
+		}
+	}
 	let base =
 		c.ty.as_deref()
 			.map(|t| t.strip_suffix("-array").unwrap_or(t))

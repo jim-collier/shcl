@@ -734,8 +734,11 @@ func describeRefusal(doc *shcl.Document, path string) string {
 // every command uses.
 func sayDiagnostics(diags []shcl.Diagnostic) {
 	for _, d := range diags {
+		// V090-V095 carry a schema line; V096 and V097 are about generation as a
+		// whole and carry line 0, so "schema line 0" named a line space they are
+		// not in. V099 stands for a schema that did not load and is line 0 too.
 		space := "line"
-		if strings.HasPrefix(d.Code, "V09") && d.Code != "V099" {
+		if strings.HasPrefix(d.Code, "V09") && d.Code != "V096" && d.Code != "V097" && d.Code != "V099" {
 			space = "schema line"
 		}
 		fmt.Fprintf(os.Stderr, "%s %d: %s: %s %s\n", space, d.Line, d.Severity, d.Code, d.Message)
@@ -1647,9 +1650,7 @@ func doInit(o *opts) int {
 	}
 	text, faults := shcl.Generate(sdoc, o.noBanner)
 	if faults != nil {
-		for _, d := range faults {
-			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", d.Line, d.Severity, d.Code, d.Message)
-		}
+		sayDiagnostics(faults)
 		fmt.Fprintln(os.Stderr, "init: schema has faults")
 		return 6
 	}
