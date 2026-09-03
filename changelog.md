@@ -128,6 +128,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- An allocation failure inside a C parse or validate crashed the process on Windows instead of returning NULL, on any binary built with mingw at `-O1`, `-O2` or `-Os`. The recovery unwinds through SEH there, and it was reading off the top of the stack on the way. The whole point of the recovery is that a config problem does not take the application down with it, so on Windows it had been doing the opposite of what it promised.
+
 - A line whose indent matches no open level (`E012`) and a `*` line with no space after it (`E013`) now hold their indent level, so what is written under them is skipped with them (`E018`) instead of attaching one level up, a fence line at a bad indent takes its whole body with it instead of parsing it as top-level bindings, and a second line at the same bad indent is refused the same way rather than binding.
 
 - A value after an index selector on the last segment (`a[0]: 2`) was dropped with no diagnostic and no lost count, so an in-place write deleted it at exit 0. It is reported (`E002`) and counted as lost now, as a value after a value selector always was.

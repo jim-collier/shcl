@@ -605,10 +605,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-025000
 		- Closed: 20260904-034000
 
-	- 🔘 Item 48: the C allocation-failure unwind crashes on a real windows host.
+	- ✅ Item 48: the C allocation-failure unwind crashes on a real windows host.
 		- `oom_recover.c` segfaults on the hosted windows runner (mingw gcc, `-O2`), and passes on linux and under wine with the same source and the same compiler family. The recovery point is a `setjmp`, and on x86_64 mingw a `longjmp` unwinds through SEH, which wine's runtime and the real one do not implement alike - so the two disagree about a stack the library builds identically.
 		- Until it is understood, the test runs on linux (in the test stage, the compiler sweep and under the sanitizers) and not on the windows job; `mem_bounds.c` does run there. A consumer building the header with mingw is the one this would reach.
+		- Reproduced on a real windows host, first run and every run. The fault is a read past the top of the stack from inside `RtlVirtualUnwind`, on the first budget tight enough to reach the `longjmp` at all - so every recovery was crashing, not an edge case among them.
+		- Cause: mingw's `setjmp` hands `longjmp` a target frame, so `longjmp` runs a full `RtlUnwindEx` to get there. Taking that frame address forces a frame pointer, and gcc then puts a vectorized function's xmm save slots at offsets from the post-prologue rsp while `UWOP_SET_FPREG` in the same unwind info tells the unwinder to take them from rbp, which sits above the whole frame. The difference is the frame's own size and it lands off the end of the stack. Wine derives rsp differently and never reads there.
+		- Fixed: both recovery points arm with `_setjmp(buf, NULL)` on mingw x86_64, which makes `longjmp` restore the context without unwinding at all. That is all a C recovery point needs - nothing in between has a destructor or a `__finally`. Recorded as a C deviation in `style-guide.md`, and the `SHCL_OOM` docs now point an embedder whose hook longjmps at the same thing, since that unwind crosses these frames too.
+		- Pinned by a `win-runners.bash` step that builds and runs the test at `-O0`, `-O1`, `-O2`, `-O3` and `-Os`. The shape needs both a frame pointer and saved xmm registers, which gcc decides per level: backed out, three of the five crash and two do not, so a single-level gate could have gone either way.
+		- Fixed on the way: the load half wrote its fixture to a hardcoded `/tmp`, which a mingw binary does not translate. The new gate would have rested on the runner happening to have a `C:\tmp`.
 		- Opened: 20260904-052000
+		- Closed: 20260904-070000
 
 - Code review 20260901b:
 
