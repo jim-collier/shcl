@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `init` names the path it cannot generate. A required path with a `[#N]` selector, or one past the nesting cap, went to the trailing comment block and then failed the self-check with "required path missing", which points at the generated config rather than at the schema line nothing can satisfy. It is a `V097` fault naming the path now. A name carrying a newline is generated rather than refused: names have been stored escape-resolved since 2.0 and the name escaper spells one.
+
 - A blank line before the first thing canonical output prints is dropped at load. Canonical output never starts with a blank, so a document that kept the flag did not survive its own canonical form: merging a layer gave a different result from merging its `fmt`, and the fold placed a blank line the author never wrote. Three shapes did it - a file starting with a blank line, a blank after a leading line the load dropped, and a blank on a later instance that merged into the first.
 
 - A refused `--set` or a failing ops line no longer swallows the load's diagnostics. The edit was applied before anything was printed, so a `get --set` on a file with a dropped line reported the refusal and said nothing about the damage. The diagnostics belong to the load and now go out before any edit runs.

@@ -5786,17 +5786,19 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			.iter()
 			.any(|s| matches!(s.selector, Some(Selector::Wildcard)))
 	};
-	// `[#N]` needs a pre-existing instance and its `#` would start a comment
-	// on a binding line; a path with a literal newline cannot be written at
-	// all. Both go to the trailing note instead of emitting a broken line.
-	// A path deeper than a document may nest cannot be generated either: the
-	// line would draw E016 on the way back in.
+	// `[#N]` needs a pre-existing instance and its `#` would start a comment on
+	// a binding line; a newline inside a selector has no one-line spelling,
+	// since the value emitter never escapes one. Both go to the trailing note
+	// instead of emitting a broken line. A path deeper than a document may nest
+	// cannot be generated either: the line would draw E016 on the way back in.
+	// A newline in a NAME is writable: names are stored escape-resolved and the
+	// name escaper spells one `\n`.
 	let unwritable = |c: &Constraint| {
 		c.segs.len() > MAX_DEPTH
-			|| c.segs
-				.iter()
-				.any(|s| matches!(s.selector, Some(Selector::ByIndex(_))) || s.star)
-			|| c.path.contains('\n')
+			|| c.segs.iter().any(|s| {
+				matches!(s.selector, Some(Selector::ByIndex(_)))
+					|| s.star || matches!(&s.selector, Some(Selector::ByValue { text, .. }) if text.contains('\n'))
+			})
 	};
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -5850,6 +5852,28 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		.filter(|(i, c)| (!has_wild(c) || fill[*i]) && !unwritable(c) && must_exist(c))
 		.filter_map(|(_, c)| c.default_text.as_deref().map(|d| (names_of(&c.segs), d)))
 		.collect();
+	// A path that cannot be written at all belongs in the trailing note, but one
+	// that must exist can never be satisfied from there: the self-check would
+	// then report the document as missing a path, which points at the config
+	// rather than at the schema line that cannot be generated.
+	// A repeat lower bound of 2 or more is the one documented shortfall - the
+	// line is emitted once and the count reported - so it is not this fault.
+	let cannot_satisfy =
+		|c: &Constraint| c.required || matches!(c.repeat, Some((lo, _)) if lo == 1);
+	if let Some(c) = cons
+		.iter()
+		.find(|c| cannot_satisfy(c) && unwritable(c) && !has_wild(c))
+	{
+		return Err(vec![Diagnostic {
+			line: 0,
+			severity: Severity::Error,
+			code: "V097",
+			message: format!(
+				"required path cannot be generated: {}",
+				c.path.replace('\n', "\\n")
+			),
+		}]);
+	}
 	let mut out = String::new();
 	let mut wild: Vec<(String, String)> = Vec::new();
 	// Dropping a trailing `[*]` can render the same line a concrete sibling
@@ -5870,7 +5894,10 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		let under_valued_parent = (1..c.segs.len()).any(|k| {
 			c.segs[k - 1].selector.is_none() && parent_values.contains_key(&names_of(&c.segs[..k]))
 		});
-		let path = if fill[i] || under_valued_parent {
+		// A name carrying a newline has no verbatim spelling on a binding line;
+		// the segment renderer escapes it, so such a path goes through there
+		// whether or not it was filled.
+		let path = if fill[i] || under_valued_parent || c.path.contains('\n') {
 			gen_path_text(&c.segs, &parent_values)
 		} else {
 			c.path.clone()

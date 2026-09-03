@@ -5838,12 +5838,24 @@ static int g_has_wild(const ShclVCons *c) {
 	return 0;
 }
 // `[#N]` needs a pre-existing instance and its `#` would start a comment on a
-// binding line; a path with a literal newline cannot be written at all. A path
-// deeper than a document may nest cannot be generated either: the line would
-// draw E016 on the way back in.
+// binding line; a newline inside a selector has no one-line spelling, since the
+// value emitter never escapes one. A path deeper than a document may nest
+// cannot be generated either: the line would draw E016 on the way back in. A
+// newline in a NAME is writable: names are stored escape-resolved and the name
+// escaper spells one `\n`.
 static int g_unwritable(const ShclVCons *c) {
 	if (c->segs.len > SHCL_MAX_DEPTH) return 1;
-	for (size_t si = 0; si < c->segs.len; si++) if (c->segs.data[si].sel.tag == SEL_INDEX || c->segs.data[si].star) return 1;
+	for (size_t si = 0; si < c->segs.len; si++) {
+		const ShclSegment *sg = &c->segs.data[si];
+		if (sg->sel.tag == SEL_INDEX || sg->star) return 1;
+		if (sg->sel.tag == SEL_VALUE && memchr(sg->sel.value.p, '\n', sg->sel.value.n)) return 1;
+	}
+	return 0;
+}
+// A repeat lower bound of 2 or more is the one documented shortfall - the line
+// is emitted once and the count reported - so it is not the fault below.
+static int g_cannot_satisfy(const ShclVCons *c) { return c->required || (c->has_repeat && c->rep_lo == 1); }
+static int g_path_has_nl(const ShclVCons *c) {
 	for (size_t k = 0; k < c->path.n; k++) if (c->path.p[k] == '\n') return 1;
 	return 0;
 }
@@ -6102,6 +6114,20 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		// A filled wildcard emits a valued line of its own, so it belongs here too.
 		if ((!g_has_wild(c) || fill[i]) && !g_unwritable(c) && g_must_exist(c) && c->has_default) { pv.data[pv.len].segs = &c->segs; pv.data[pv.len].value = c->default_text; pv.len++; }
 	}
+	/* A path that cannot be written at all belongs in the trailing note, but one
+	   that must exist can never be satisfied from there: the self-check would
+	   then report the document as missing a path, which points at the config
+	   rather than at the schema line that cannot be generated. */
+	for (size_t i = 0; i < cons.len; i++) {
+		const ShclVCons *c = &cons.data[i];
+		if (!g_cannot_satisfy(c) || !g_unwritable(c) || g_has_wild(c)) continue;
+		ShclSB m = {0, 0, 0};
+		sb_puts(a, &m, "required path cannot be generated: ");
+		sb_putS(a, &m, g_escape_nl(a, c->path));
+		push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+		if (ok) *ok = 0;
+		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
+	}
 	ShclSB out = {0, 0, 0};
 	ShclVecS wild_path = {0, 0, 0}, wild_type = {0, 0, 0};
 	/* Dropping a trailing `[*]` can render the same line a concrete sibling
@@ -6126,7 +6152,10 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		int under_valued_parent = 0;
 		for (size_t k = 1; k < c->segs.len && !under_valued_parent; k++)
 			under_valued_parent = c->segs.data[k - 1].sel.tag == SEL_NONE && parent_value_for(&pv, &c->segs, k) != NULL;
-		ShclStr path = (fill[i] || under_valued_parent) ? gen_path_text(a, &c->segs, &pv) : c->path;
+		// A name carrying a newline has no verbatim spelling on a binding line;
+		// the segment renderer escapes it, so such a path goes through there
+		// whether or not it was filled.
+		ShclStr path = (fill[i] || under_valued_parent || g_path_has_nl(c)) ? gen_path_text(a, &c->segs, &pv) : c->path;
 		uint64_t ph = fnv_str(1469598103934665603ull, path);
 		int dup = 0;
 		for (size_t k = 0; k < emitted.len && !dup; k++) dup = emitted_hash[k] == ph && s_eq(emitted.data[k], path);
