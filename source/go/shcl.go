@@ -3414,6 +3414,11 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 					slots = append(slots, r.one)
 				case resNone:
 					slots = append(slots, -1)
+				case resSlots:
+					// A wildcard after a wildcard: the inner slots join the
+					// outer list, so the two compose into one flat run of
+					// leaves rather than one unreadable slot.
+					slots = append(slots, r.slots...)
 				default:
 					slots = append(slots, -2)
 				}
@@ -3453,6 +3458,11 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 					slots = append(slots, r.one)
 				case resNone:
 					slots = append(slots, -1)
+				case resSlots:
+					// A wildcard after a wildcard: the inner slots join the
+					// outer list, so the two compose into one flat run of
+					// leaves rather than one unreadable slot.
+					slots = append(slots, r.slots...)
 				default:
 					slots = append(slots, -2)
 				}

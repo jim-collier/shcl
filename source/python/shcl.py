@@ -2275,11 +2275,10 @@ class Document:
 		# A slots entry is a node idx, or the Status saying why the sub-path did
 		# not land on one node (NotFound missing, Multiple ambiguous).
 		# The per-instance sub-resolution behind a wildcard is the same walk
-		# over the remaining segments, run flat (_resolve_slot) rather than one
+		# over the remaining segments, run flat (_resolve_slots) rather than one
 		# frame per wildcard: a path can carry a wildcard per document level,
-		# and the frame budget is small. The sub-walk's answer collapses to one
-		# slot, and a wildcard inside it can only ever answer Multiple, so the
-		# flat walk ends there.
+		# and the frame budget is small. A wildcard inside the sub-walk widens
+		# the run rather than ending it, so the two compose.
 		cur = list(start)
 		for i, seg in enumerate(segs):
 			nxt = []
@@ -2296,7 +2295,7 @@ class Document:
 					if not rest:
 						slots.append(inst)
 					else:
-						slots.append(self._resolve_slot(inst, rest))
+						slots.extend(self._resolve_slots(inst, rest))
 				return ("slots", slots)
 			sel = seg.selector
 			if sel is None:
@@ -2315,7 +2314,7 @@ class Document:
 					if not rest:
 						slots.append(inst)
 					else:
-						slots.append(self._resolve_slot(inst, rest))
+						slots.extend(self._resolve_slots(inst, rest))
 				return ("slots", slots)
 		if len(cur) == 0:
 			return ("none",)
@@ -2323,31 +2322,54 @@ class Document:
 			return ("one", cur[0])
 		return ("many", cur)
 
-	def _resolve_slot(self, inst, rest):
-		# One wildcard slot: _resolve_from's walk from `inst` over `rest`,
-		# collapsed to a node index, NotFound (nothing) or Multiple (several, or
-		# a further wildcard - whose per-instance answer is itself a list).
-		cur = [inst]
-		for seg in rest:
-			sel = seg.selector
-			if seg.star or (sel is not None and sel[0] == "wild"):
-				return Status.Multiple
-			nxt = []
-			for node in cur:
-				nxt.extend(self._children_named(node, seg.name))
-			if sel is None:
-				cur = nxt
-			elif sel[0] == "val":
-				want = _apply_escapes(sel[1])
-				cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
+	def _resolve_slots(self, inst, rest):
+		# The slots one wildcard instance contributes: normally one - a node
+		# index, or the Status saying why the sub-path did not land on one node
+		# (NotFound missing, Multiple ambiguous) - but a further wildcard in
+		# `rest` contributes its own slots to the same flat run. Walked with an
+		# explicit stack rather than one frame per wildcard: a path can carry a
+		# wildcard per document level, and the frame budget is small. The stack
+		# is depth-first with children pushed in reverse, so slots come out in
+		# file order.
+		out = []
+		stack = [([inst], rest)]
+		while stack:
+			cur, segs = stack.pop()
+			split = False
+			for i, seg in enumerate(segs):
+				sel = seg.selector
+				nxt = []
+				for node in cur:
+					if seg.star:
+						nxt.extend(self.arena[node].children)
+					else:
+						nxt.extend(self._children_named(node, seg.name))
+				if seg.star or (sel is not None and sel[0] == "wild"):
+					tail = segs[i + 1:]
+					if not tail:
+						out.extend(nxt)
+					else:
+						for c in reversed(nxt):
+							stack.append(([c], tail))
+					split = True
+					break
+				if sel is None:
+					cur = nxt
+				elif sel[0] == "val":
+					want = _apply_escapes(sel[1])
+					cur = [c for c in nxt if _disp_key(self.arena[c].value) == want and (not sel[2] or _single_scalar(self.arena[c].value))]
+				else:
+					k = sel[1]
+					cur = [nxt[k]] if k < len(nxt) else []
+			if split:
+				continue
+			if len(cur) == 0:
+				out.append(Status.NotFound)
+			elif len(cur) == 1:
+				out.append(cur[0])
 			else:
-				k = sel[1]
-				cur = [nxt[k]] if k < len(nxt) else []
-		if len(cur) == 0:
-			return Status.NotFound
-		if len(cur) == 1:
-			return cur[0]
-		return Status.Multiple
+				out.append(Status.Multiple)
+		return out
 
 	def _resolve(self, path):
 		# Returns a _resolve_from result, or ("err", Status).
