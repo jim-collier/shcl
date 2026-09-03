@@ -659,9 +659,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-193000
 		- Closed: 20260903-231500
 
-	- 🔘 Item 32: two `cli-regress` rows are Linux-only and nothing says so.
+	- ✅ Item 32: two `cli-regress` rows are Linux-only and nothing says so.
 		- A directory as the input expects "is a directory"; Windows says access denied, invalid function or permission denied depending on the binding, because none of the three stats the path first. The closed-stdin row cannot be judged under wine at all. Either give the rows a per-platform expectation or report the directory case from a stat.
+		- Decided: stat the path. A per-platform expectation would only have written down four spellings of the same thing, and the four CLIs disagreed with each other on Linux too - `Is a directory (os error 21)`, `read PATH: is a directory`, `[Errno 21] Is a directory: 'PATH'` and `PATH: Is a directory`.
+		- Fixed: all four CLIs answer `PATH: Is a directory` before the open, on every platform.
+		- Pinned by the `read-dir-names-error` row, which now expects that one line anchored rather than a loose match on three words. The closed-stdin row says in a comment that it is POSIX-only, since closing fd 0 has no windows equivalent.
 		- Opened: 20260901-193100
+		- Closed: 20260903-234500
 
 	- 🔘 Item 33: three windows behaviors that wine cannot show and the hosted job should verify.
 		- Go's CLI likely exits 8 on a closed stdin on real Windows where Rust and C exit 0, because only the Go runtime on Linux reopens closed standard fds. The C file tier passes paths over 260 characters through unprefixed where Rust and Go add the long-path prefix. The C file tier on Windows does not resolve a symlinked target, so a save through a link may replace the link. None of the three could be exercised under wine.

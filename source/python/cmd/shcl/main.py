@@ -432,6 +432,10 @@ def read_input(file):
 	if file == "-":
 		data = sys.stdin.buffer.read()
 	else:
+		# The message for reading a directory is the platform's, and windows
+		# spells it four different ways depending on the binding. Say it here.
+		if os.path.isdir(file):
+			raise OSError(f"{file}: Is a directory")
 		with open(file, "rb") as f:
 			data = f.read()
 	# The reference reads as UTF-8 and fails on bad bytes; match its exit path.
