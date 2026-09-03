@@ -180,6 +180,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Fixed: the parse clears the blank on whatever canonical output would print first - the first root child, its first leading comment, or the first footer line - in all four. One place, so no emitter or merge special case is needed.
 		- Note: the property found two more shapes of the same defect that the finding did not name: a blank after a leading line the load dropped (a BOM-led one), and a blank on a later instance that merged into the first. Clearing at the emitted-first position covers all three; dropping it only at the start of the file covered one.
 		- Pinned by corpus `083` (a layer leading with two blank lines, plus a comment-only layer leading with one) and by a new fuzz property: merging a layer must equal merging its canonical form. Both failed in all four before; the property fails within 30000 iterations on each of the three shapes.
+		- Note: the three ports first got a parse-time version of this as well, and keeping both made `a.b: 1` under a leading blank drop a blank the reference kept. The crosscheck's fuzz dimension caught it. One place decides it now, in all four.
 		- Opened: 20260902-171500
 		- Closed: 20260903-001500
 
