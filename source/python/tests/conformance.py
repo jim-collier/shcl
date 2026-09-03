@@ -376,6 +376,25 @@ def main():
 				raise SystemExit(f"{case['name']}: bad merge.sets line: {line}")
 			doc.set_string(line[:eq], line[eq + 1:])
 		got = doc.to_canonical()
+		# Reads answered by the merged document itself, not just its text: a
+		# merged arena holds dropped nodes, a rebuilt index and cloned child
+		# lists, and only a read walks those. instances() is left out because it
+		# hands back the source spelling, which canonical output may respell.
+		# Same fixture in every runner.
+		mback = shcl.Document.parse(got)
+		if doc.paths() != mback.paths():
+			fails.append(f"{case['name']}: merged paths differ from a reparse")
+		for mp in doc.paths():
+			if doc.count(mp) != mback.count(mp):
+				fails.append(f"{case['name']}: merged count {mp}")
+			if doc.children(mp) != mback.children(mp):
+				fails.append(f"{case['name']}: merged children {mp}")
+			mx, my = doc.read_string(mp), mback.read_string(mp)
+			if (mx.value, mx.status) != (my.value, my.status):
+				fails.append(f"{case['name']}: merged read {mp}")
+			mx, my = doc.read_string_array(mp), mback.read_string_array(mp)
+			if (mx.value, mx.status, mx.slots) != (my.value, my.status, my.slots):
+				fails.append(f"{case['name']}: merged array read {mp}")
 		if got != case["expected_merged"]:
 			fails.append(f"{case['name']}: merged output differs from expected-merged.shcl")
 		if shcl.Document.parse(got).to_canonical() != got:

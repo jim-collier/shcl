@@ -606,9 +606,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-192300
 		- Closed: 20260903-171500
 
-	- 🔘 Item 25: nothing in the suite reads from a merged in-memory document; only the merged text is compared.
+	- ✅ Item 25: nothing in the suite reads from a merged in-memory document; only the merged text is compared.
 		- Every read path through a merged arena (dropped nodes, rebuilt index, cloned lists, wildcard slots) is uncovered. A property run found them all correct today, so this is a gap, not a defect. A `reads-merged.tsv` per case, replayed with the layer arguments, would close it.
+		- Decided: a property, not a golden. Every read of the merged document has to agree with the same read on a reparse of its text, which is an oracle the suite already trusts - and it needs no new corpus files, so it covers every merged case there is and every shape the fuzz generates rather than the rows somebody thought to write.
+		- Fixed: all four runners compare `paths`, `count`, `children`, a string read and a string-array read with its slots between the merged document and a reparse of its canonical form, over every merged case; the reference's merge fuzz does the same every eighth iteration.
+		- Note: `instances` is deliberately not compared. It hands back the source spelling, and canonical output legitimately respells a value - escaping a quote to keep it on one line - so the two differ for a reason that has nothing to do with merging. The property found that difference on an input carrying both quote kinds behind an `E017`, and it is the documented behavior of that call, not a defect.
 		- Opened: 20260901-192400
+		- Closed: 20260903-180000
 
 	- 🔘 Item 26: merge behaviors the spec does not state, needing a decision each.
 		- `Line(path)` after a merge cites a line of whichever file the node came from, unlabeled. A leaf override drops the base leaf's comments and its blank-line grouping, where the in-file fold keeps both. Merging a document over itself doubles its leading comments. `lost` sums across layers, so a library consumer that merges then saves to a fresh path is refused for a line a layer dropped. A strict failure in a lower layer prints only that layer's diagnostics. All four bindings agree on every one.
