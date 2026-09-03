@@ -59,11 +59,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-170000
 		- Closed: 20260902-181500
 
-	- 🔘 Item 2: nothing pins the "counted as lost" half of 20260901b item 3, and the corpus has no way to pin any lost count.
+	- ✅ Item 2: nothing pins the "counted as lost" half of 20260901b item 3, and the corpus has no way to pin any lost count.
 		- Reproduced: with the one `lost += 1` after the index arm's `E002` deleted in a scratch build, the Rust corpus stays green (33 of 33), the crosscheck on `076` agrees, and `fmt --write` on `a: 1` / `a[0]: 2` exits 0 and deletes the second line. `project/conformance/README.md` and the backlog both say `076` pins it.
 		- Cause: `expected-diags.txt` pins codes only, the write dimension exercises the save gate through its own BOM fixture and never through a corpus input, and the four runners assert `lost_count()` only in hand-written fixtures, none for the selector shape. The same gap covers every other "counted as lost" rule (items 1 and 2 of that round included).
-		- Note: give the corpus a lost column (a `lost N` line in `expected-diags.txt`, or a pseudo-row in `reads.tsv`) that all four runners assert, and run `fmt --write` over every corpus input with error diagnostics in the crosscheck's write dimension, where a refusal leaves the tree byte-identical.
+		- Fixed: `reads.tsv` takes a `lost` pseudo-call, asserted by all four runners, and every case that drops content carries one; two cases that report errors while losing nothing carry a zero. The crosscheck now copies each corpus input into a fresh tree and runs `fmt --write` over it, comparing the exit code and the resulting bytes across the four, so the save gate is exercised by real inputs rather than by one hand-built fixture.
+		- Pinned by the ten nonzero `lost` rows plus the per-case write comparison. With the increment deleted, the corpus fails on `076` and the crosscheck reports the file rewritten with two lines gone at exit 0.
 		- Opened: 20260902-170100
+		- Closed: 20260902-183000
 
 	- 🔘 Item 3: a wildcard followed by another wildcard reports every slot `Multiple`, and `Remove` on it removes nothing.
 		- Reproduced in all four. `server[*].*` on three servers with two, one and no children gives three `Multiple` slots at exit 5, `count` says 3, `instances` prints three empty lines, and `set --remove='server[*].*'` leaves the document unchanged at exit 0. The spec says the two compose and that `Remove` on a wildcard removes every resolved slot. Same for `*.*` and `a[*].b[*]`.

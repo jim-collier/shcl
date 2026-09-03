@@ -14,3 +14,4 @@ p.j	count	0	Good
 a	children	b	-
 p	children	q	-
 -	paths	a|a.b|p|p.q|z	-
+-	lost	7	-

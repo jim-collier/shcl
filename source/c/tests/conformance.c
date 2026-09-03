@@ -427,6 +427,11 @@ int main(int argc, char **argv) {
 				}
 				shcl_doc *rd = shcl_parse_with(input, ilen, level);
 				if (shcl_strict_failed(rd)) { fail(at, "load failed but reads.tsv has reads there"); shcl_free(rd); continue; }
+				if (!strcmp(kind, "lost")) {
+					char nb[32]; snprintf(nb, sizeof nb, "%zu", shcl_lost_count(rd));
+					if (strcmp(nb, exp)) fail(at, "lost mismatch");
+					shcl_free(rd); continue;
+				}
 				if (!strcmp(kind, "count")) {
 					char nb[32]; snprintf(nb, sizeof nb, "%zu", shcl_count(rd, query, qn));
 					if (strcmp(nb, exp)) fail(at, "count mismatch");

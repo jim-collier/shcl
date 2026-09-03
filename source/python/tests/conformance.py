@@ -493,6 +493,10 @@ def main():
 				fails.append(f"{at}: load failed but reads.tsv has reads there: {e}")
 				continue
 
+			if kind == "lost":
+				if str(doc.lost_count()) != expected:
+					fails.append(f"{at}: lost got {doc.lost_count()} want {expected}")
+				continue
 			if kind == "count":
 				if str(doc.count(query)) != expected:
 					fails.append(f"{at}: count got {doc.count(query)} want {expected}")

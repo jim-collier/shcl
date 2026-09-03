@@ -5,3 +5,4 @@ sizes	string	small	Good
 sizes.color	string	red	Good
 shape	string	-	Empty
 shape.side	int	4	Good
+-	lost	2	-
