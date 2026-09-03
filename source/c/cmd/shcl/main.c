@@ -562,23 +562,31 @@ static int do_get(Opts *o) {
 // disagree about which rewrites are safe.
 // Whether the directory holding `file` can take a new entry - the probe
 // behind the temp-create wording on a failed save.
-static int dir_writable(const char *file) {
+// Can the target's directory take a temp file? Asked by creating one, because
+// that is what the library's write does: _waccess reports every existing
+// directory writable on windows, so an ACL-protected one got the bare errno
+// where the other three name the phase. Only ever called on the failure path,
+// and the probe is removed immediately.
+static int dir_takes_a_temp(const char *file) {
 	const char *slash = strrchr(file, '/');
 #ifdef _WIN32
 	const char *bs = strrchr(file, '\\');
 	if (bs && (!slash || bs > slash)) slash = bs;
 #endif
-	char dir[4096];
-	if (!slash) snprintf(dir, sizeof dir, ".");
-	else if (slash == file) snprintf(dir, sizeof dir, "/");
-	else snprintf(dir, sizeof dir, "%.*s", (int)(slash - file), file);
+	char probe[4096];
+	if (!slash) snprintf(probe, sizeof probe, ".shcl-probe%ld", (long)getpid());
+	else if (slash == file) snprintf(probe, sizeof probe, "/.shcl-probe%ld", (long)getpid());
+	else snprintf(probe, sizeof probe, "%.*s/.shcl-probe%ld", (int)(slash - file), file, (long)getpid());
 #ifdef _WIN32
-	wchar_t *w = shcl_widen(dir);
-	int ok = w && _waccess(w, 2) == 0;
+	wchar_t *w = shcl_widen(probe);
+	int fd = w ? _wopen(w, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE) : -1;
+	if (fd >= 0) { _close(fd); _wunlink(w); }
 	free(w);
-	return ok;
+	return fd >= 0;
 #else
-	return access(dir, W_OK) == 0;
+	int fd = open(probe, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	if (fd >= 0) { close(fd); unlink(probe); }
+	return fd >= 0;
 #endif
 }
 
@@ -595,7 +603,7 @@ static int write_back(shcl_doc *d, const char *file, Opts *o) {
 	// naming is the temp-file create, which is what failed when the target's
 	// directory cannot take one.
 	int e = errno;
-	if (!dir_writable(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
+	if (!dir_takes_a_temp(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
 	else fprintf(stderr, "%s: %s\n", file, strerror(e));
 	return EXIT_IO;
 }

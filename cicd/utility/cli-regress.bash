@@ -37,7 +37,9 @@ for b in "${bindings[@]}"; do
 	[[ -x "${cli}" ]] || { echo "cli-regress: binding CLI not executable: ${cli}" >&2; exit 2; }
 done
 
-tmpDir="$(mktemp -d)"; trap 'rm -rf "${tmpDir}"' EXIT
+##	The unwritable directory below has to be made writable again or the cleanup
+##	cannot empty it.
+tmpDir="$(mktemp -d)"; trap 'chmod -R u+w "${tmpDir}" 2>/dev/null; rm -rf "${tmpDir}"' EXIT
 printf 'a: 1\n'          > "${tmpDir}/ok.shcl"
 printf 'a: 1\n  bad\nb 2\n' > "${tmpDir}/bad.shcl"
 mkdir -p "${tmpDir}/adir"
@@ -67,6 +69,13 @@ printf 'field: b\n\ttype: raw\n\tdefault: hello\n\trequired: yes\n' > "${tmpDir}
 ## A `desc` with a comma in it: the value is several elements, and the comment
 ## used to come out missing rather than carrying the sentence.
 printf 'field: a\n\tdesc: one, two\n\trequired: yes\n' > "${tmpDir}/commadesc.shcl"
+## A directory a write cannot create a temp file in. The phase is worth naming -
+## it is the difference between "fix the file" and "fix its directory" - and the
+## C CLI used to guess it from an access() that answers yes for every existing
+## directory on windows.
+mkdir -p "${tmpDir}/nowrite"
+printf 'a: 1\n' > "${tmpDir}/nowrite/f.shcl"
+chmod 500 "${tmpDir}/nowrite"
 ## A schema whose own load has something to say: two `field: a` instances merge,
 ## so `allowed` repeats as a bare leaf - which is exactly what the V092 under it
 ## is about, and it was invisible.
@@ -95,7 +104,8 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	a nameless must-exist path at repeat 1 and 2, %S3% a schema that does not
 ##	build, %S4% a required path with an index selector, %S5%/%S6% a schema at and
 ##	one past the generation field ceiling, %S7% a schema whose own load hints,
-##	%S8% a raw default, %S9% a desc with a comma, %X% an
+##	%S8% a raw default, %S9% a desc with a comma, %N% a file in a directory that
+##	takes no temp file, %X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
 ##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
 ##	path with no file at it.
@@ -191,6 +201,8 @@ rows=(
 	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
 	'children-missing|children %T% nope|-|0||-'
 	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	## 20260902 item 44: the failing phase is named, not guessed.
+	'write-names-the-phase|set --write --set=a=2 %N%|-|8|-|cannot create temporary file'
 	## 20260902 item 41: the schema's own diagnostics were never printed, so the
 	## hint that explains a schema fault could not be seen.
 	'schema-own-hints|check --schema=%S7% %F%|-|6|-|schema line 4: Hint: H001'
@@ -244,6 +256,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S7%/${tmpDir}/hintschema.shcl}"
 	argv="${argv//%S8%/${tmpDir}/rawdef.shcl}"
 	argv="${argv//%S9%/${tmpDir}/commadesc.shcl}"
+	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"

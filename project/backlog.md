@@ -578,9 +578,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-174200
 		- Closed: 20260903-152000
 
-	- 🔘 Item 44: the C CLI's "cannot create temporary file" phase wording is decided by `_waccess`, which on Windows reports every existing directory writable.
+	- ✅ Item 44: the C CLI's "cannot create temporary file" phase wording is decided by `_waccess`, which on Windows reports every existing directory writable.
 		- The C library reports errno alone and the CLI guesses the phase from `_waccess(dir, 2)`; on real Windows an ACL-protected directory gets the bare errno where Rust and Go name the temp-create phase. Cosmetic under wine, which follows the unix mode bits. Record the failing phase in the library's write, or probe with an exclusive create.
+		- Decided: probe. Recording the phase means an out-parameter or a per-thread last-error on a call that returns errno today, which is API growth for a message; creating a file is what the write itself does, so it answers for the platform it is on.
+		- Fixed: the CLI creates a uniquely named file in the target's directory and removes it, instead of asking `access`. Only on the failure path.
+		- Pinned by a `cli-regress` row: a file in a directory with no write permission must name the temp-create phase in all four.
+		- Note: the row cannot fail on the old C here - `access(dir, W_OK)` is right on linux, and it is `_waccess` on windows that answers yes for every existing directory. Said plainly rather than papered over; the hosted windows job runs the row, but an ACL-protected directory is not something the runner can be given portably.
 		- Opened: 20260902-174300
+		- Closed: 20260903-160000
 
 	- 🔘 Item 45: `shcl_authored_name`'s comment says its result lives in the read arena; it lives in the document arena.
 		- The real lifetime is longer than stated (until `shcl_free` or `shcl_compact`), so no caller is hurt; `shcl_children` hands back the same kind of pointer and says so correctly. Fix the sentence.
