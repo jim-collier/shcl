@@ -198,11 +198,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-171700
 		- Closed: 20260903-005000
 
-	- 🔘 Item 19: a must-exist path with a `[#N]` selector, one past the depth cap, or one carrying a literal newline gets V097 where the spec describes the trailing block.
+	- ✅ Item 19: a must-exist path with a `[#N]` selector, one past the depth cap, or one carrying a literal newline gets V097 where the spec describes the trailing block.
 		- Reproduced in all four. `field: "srv[#1].port"` required (alone or beside a live `field: srv`) exits 6 with `V097 required path missing`; same for a 513-segment required path and for `field: "\"a\nb\""` required. The spec's trailing-block sentence lists all three as "collected into a trailing comment block", and its self-check sentence requires the output to validate, and a must-exist path in the trailing block can never satisfy both.
 		- Cause: `unwritable` sends them to the trailing block and the self-check then reports the missing path. The newline clause is also stale on its own: names resolve escapes since 2026-08-18, `emit_name` spells a newline as `\n`, and `gen_path_text` already goes through it, so the path is writable.
-		- Decided: needs a call on which sentence wins. Refuse with a message naming the ungenerable path, or drop the must-exist requirement from the trailing block. Render newline-in-name paths through `gen_path_text` either way.
+		- Decided: refuse, naming the path. The trailing block can never satisfy a must-exist path, so the self-check's "required path missing" points a reader at the generated config when the problem is the schema line. A `repeat` lower bound of 2 or more keeps its documented shortfall and still generates.
+		- Fixed: a must-exist path that cannot be written is a `V097` fault carrying the path, in all four, before anything is emitted. The newline clause is gone from the unwritable test - only a newline inside a selector is unwritable now - and a path whose text holds one renders through the segment renderer, which escapes it.
+		- Pinned by a `cli-regress` row (`field: "srv[#1].port"` required, message and exit) and corpus `082`, whose schema now carries a quoted escaped name. All four gave the old message before.
+		- Note: a literal newline in a schema path is unreachable from a file - a schema value holding one is an unterminated quote - so the newline half of the fix is defensive and has no case of its own. Its old clause never fired either, which is why the escaped spelling already worked.
 		- Opened: 20260902-171800
+		- Closed: 20260903-011500
 
 	- 🔘 Item 20: V096 fires at exactly 10000 fields with a message that says the schema expands past 10000.
 		- Reproduced in all four: 9999 plain `field:` lines generate, 10000 give `V096 schema expands past 10000 fields; fragments mounted at more than one path multiply`, on a schema with no fragments.

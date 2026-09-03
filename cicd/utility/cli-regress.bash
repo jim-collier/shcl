@@ -55,6 +55,11 @@ printf 'field: server.port\n\ttype: int\n\trequired: yes\n\tmin: 1\n\tmax: 10\n\
 ## documented shortfall and generates.
 printf 'field: "*"\n\ttype: int\n\trepeat: 1\n' > "${tmpDir}/star1.shcl"
 printf 'field: "*"\n\ttype: int\n\trepeat: 2\n' > "${tmpDir}/star2.shcl"
+## A must-exist path with nothing to generate from: an index selector needs an
+## instance that is not there, and a path past the nesting cap would draw E016
+## on the way back in. Either way the fault names the path rather than reporting
+## the generated config as missing it.
+printf 'field: "srv[#1].port"\n\trequired: yes\n' > "${tmpDir}/idxreq.shcl"
 ## A schema that does not build: the report is the build faults alone, not the
 ## faults plus what an empty document would owe the schema.
 printf 'field: a\n\ttype: int\n\trequired: yes\nfield: b\n\ttype: nope\n' > "${tmpDir}/nobuild.shcl"
@@ -72,7 +77,7 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %S1%/%S2%
 ##	a nameless must-exist path at repeat 1 and 2, %S3% a schema that does not
-##	build, %X% an
+##	build, %S4% a required path with an index selector, %X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
 ##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
 ##	path with no file at it.
@@ -107,8 +112,12 @@ rows=(
 	## 20260901 item 5: the self-check waved every V007 through, so a repeat
 	## lower bound of 1 - a must-exist path - went out as a config that fails
 	## its own schema at exit 0.
-	'init-star-repeat1|init --schema=%S1%|-|6||V097 .*not in 1\.\.1'
+	'init-star-repeat1|init --schema=%S1%|-|6||V097 required path cannot be generated'
 	'init-star-repeat2|init --schema=%S2%|-|0|-|^$'
+	## 20260902 item 19: an index selector or a path past the cap got the
+	## self-check's "required path missing", which points at the config rather
+	## than at the schema line nothing can generate.
+	'init-index-required|init --schema=%S4%|-|6||V097 required path cannot be generated: srv\[#1\].port'
 	'init-build-fault|init --schema=%S3%|-|6||V091 unknown schema type'
 	'init-build-fault-only|init --schema=%S3%|-|6||!V002'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
@@ -187,6 +196,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S1%/${tmpDir}/star1.shcl}"
 	argv="${argv//%S2%/${tmpDir}/star2.shcl}"
 	argv="${argv//%S3%/${tmpDir}/nobuild.shcl}"
+	argv="${argv//%S4%/${tmpDir}/idxreq.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"

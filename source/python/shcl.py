@@ -4927,13 +4927,20 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	def has_wild(c):
 		return any(s.selector is not None and s.selector[0] == "wild" for s in c.segs)
 
-	# `[#N]` needs a pre-existing instance and its `#` would start a comment
-	# on a binding line; a path with a literal newline cannot be written at
-	# all. Both go to the trailing note instead of emitting a broken line.
-	# A path deeper than a document may nest cannot be generated either: the
-	# line would draw E016 on the way back in.
+	# `[#N]` needs a pre-existing instance and its `#` would start a comment on a
+	# binding line; a newline inside a selector has no one-line spelling, since
+	# the value emitter never escapes one. Both go to the trailing note instead
+	# of emitting a broken line. A path deeper than a document may nest cannot be
+	# generated either: the line would draw E016 on the way back in. A newline in
+	# a NAME is writable: names are stored escape-resolved and the name escaper
+	# spells one `\n`.
 	def unwritable(c):
-		return len(c.segs) > MAX_DEPTH or any((s.selector is not None and s.selector[0] == "idx") or s.star for s in c.segs) or "\n" in c.path
+		return len(c.segs) > MAX_DEPTH or any(
+			(s.selector is not None and s.selector[0] == "idx")
+			or s.star
+			or (s.selector is not None and s.selector[0] == "val" and "\n" in s.selector[1])
+			for s in c.segs
+		)
 
 	# Live concrete paths materialize instances; decide which must-exist
 	# wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -4969,6 +4976,18 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		for i, c in enumerate(cons)
 		if (not has_wild(c) or fill[i]) and not unwritable(c) and must_exist(c) and c.default_text is not None
 	}
+	# A path that cannot be written at all belongs in the trailing note, but one
+	# that must exist can never be satisfied from there: the self-check would
+	# then report the document as missing a path, which points at the config
+	# rather than at the schema line that cannot be generated. A repeat lower
+	# bound of 2 or more is the one documented shortfall - the line is emitted
+	# once and the count reported - so it is not this fault.
+	for c in cons:
+		cannot_satisfy = c.required or (c.repeat is not None and c.repeat[0] == 1)
+		if cannot_satisfy and unwritable(c) and not has_wild(c):
+			faults = []
+			_vdiag(faults, 0, "V097", "required path cannot be generated: " + c.path.replace("\n", "\\n"))
+			return "", faults
 	out = []
 	wild = []
 	# Dropping a trailing `[*]` can render the same line a concrete sibling
@@ -4989,7 +5008,10 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 			c.segs[k - 1].selector is None and tuple(names_of(c.segs[:k])) in parent_values
 			for k in range(1, len(c.segs))
 		)
-		path = _gen_path_text(c.segs, parent_values) if fill[i] or under_valued_parent else c.path
+		# A name carrying a newline has no verbatim spelling on a binding line;
+		# the segment renderer escapes it, so such a path goes through there
+		# whether or not it was filled.
+		path = _gen_path_text(c.segs, parent_values) if fill[i] or under_valued_parent or "\n" in c.path else c.path
 		if path in emitted:
 			continue
 		emitted.add(path)

@@ -22,6 +22,9 @@ star: "*"
 # any, required
 star["*"].leaf:
 
+# any, required
+"a\nb": v
+
 #
 # This config file format is SHCL.
 # "Simple Hierarchical Config Language"

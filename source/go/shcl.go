@@ -6069,11 +6069,13 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		}
 		return false
 	}
-	// `[#N]` needs a pre-existing instance and its `#` would start a comment
-	// on a binding line; a path with a literal newline cannot be written at
-	// all. Both go to the trailing note instead of emitting a broken line.
-	// A path deeper than a document may nest cannot be generated either: the
-	// line would draw E016 on the way back in.
+	// `[#N]` needs a pre-existing instance and its `#` would start a comment on
+	// a binding line; a newline inside a selector has no one-line spelling,
+	// since the value emitter never escapes one. Both go to the trailing note
+	// instead of emitting a broken line. A path deeper than a document may nest
+	// cannot be generated either: the line would draw E016 on the way back in.
+	// A newline in a NAME is writable: names are stored escape-resolved and the
+	// name escaper spells one `\n`.
 	unwritable := func(c *constraint) bool {
 		if len(c.segs) > MaxDepth {
 			return true
@@ -6082,8 +6084,11 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			if (s.sel != nil && s.sel.kind == selByIndex) || s.star {
 				return true
 			}
+			if s.sel != nil && s.sel.kind == selByValue && strings.Contains(s.sel.value, "\n") {
+				return true
+			}
 		}
-		return strings.Contains(c.path, "\n")
+		return false
 	}
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -6164,6 +6169,20 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
 		}
 	}
+	// A path that cannot be written at all belongs in the trailing note, but one
+	// that must exist can never be satisfied from there: the self-check would
+	// then report the document as missing a path, which points at the config
+	// rather than at the schema line that cannot be generated. A repeat lower
+	// bound of 2 or more is the one documented shortfall - the line is emitted
+	// once and the count reported - so it is not this fault.
+	for i := range cons {
+		c := &cons[i]
+		cannotSatisfy := c.required || (c.repeat != nil && c.repeat[0] == 1)
+		if cannotSatisfy && unwritable(c) && !hasWild(c) {
+			msg := "required path cannot be generated: " + strings.ReplaceAll(c.path, "\n", "\\n")
+			return "", []Diagnostic{{Line: 0, Severity: SeverityError, Message: msg, Code: "V097"}}
+		}
+	}
 	var b strings.Builder
 	var wild [][2]string
 	// Dropping a trailing `[*]` can render the same line a concrete sibling
@@ -6192,8 +6211,11 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 				break
 			}
 		}
+		// A name carrying a newline has no verbatim spelling on a binding line;
+		// the segment renderer escapes it, so such a path goes through there
+		// whether or not it was filled.
 		path := c.path
-		if fill[i] || underValuedParent {
+		if fill[i] || underValuedParent || strings.Contains(c.path, "\n") {
 			path = genPathText(c.segs, parentValues)
 		}
 		if emitted[path] {
