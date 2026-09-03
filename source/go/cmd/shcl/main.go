@@ -784,12 +784,18 @@ func readInput(file string) (string, error) {
 }
 
 func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
+	return loadDocFrom("", text, strictness)
+}
+
+// loadDocFrom is the same, labelled with the file the text came from, so a
+// strict failure in one layer of a fold says which layer.
+func loadDocFrom(file, text string, strictness shcl.Strictness) (*shcl.Document, int) {
 	doc, err := shcl.ParseWith(text, strictness)
 	if err != nil {
 		// Checked form: this is the top-level error path, so a future error type
 		// here has to report rather than panic.
 		if le, ok := err.(*shcl.LoadError); ok {
-			sayDiagnostics(le.Diagnostics)
+			sayDiagnosticsFrom(file, le.Diagnostics)
 			errorCount := 0
 			for _, d := range le.Diagnostics {
 				if d.Severity == shcl.SeverityError {
@@ -868,13 +874,13 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 		}
 		return ""
 	}
-	doc, code := loadDoc(texts[0], o.strictness)
+	doc, code := loadDocFrom(label(0), texts[0], o.strictness)
 	if code != 0 {
 		return nil, code
 	}
 	sayDiagnosticsFrom(label(0), doc.Diagnostics())
 	for i, t := range texts[1:] {
-		over, c := loadDoc(t, o.strictness)
+		over, c := loadDocFrom(label(i+1), t, o.strictness)
 		if c != 0 {
 			return nil, c
 		}

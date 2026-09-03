@@ -208,6 +208,9 @@ rows=(
 	## twice, with nothing to say which file each came from.
 	'layer-diags-named|fmt --layer=%B% %B2%|-|0|-|bad2.shcl line 2: Error: E014'
 	'single-file-diags-unnamed|fmt %B%|-|0|-|^line 3: Error: E014'
+	## 20260901b item 26: a strict failure in a lower layer ends the fold there,
+	## and says which layer it was.
+	'layer-strict-names-the-layer|fmt --strictness=strict --layer=%B% %B2%|-|6|-|bad.shcl line 2: Error: E015'
 	## 20260902 item 44: the failing phase is named, not guessed.
 	'write-names-the-phase|set --write --set=a=2 %N%|-|8|-|cannot create temporary file'
 	## 20260902 item 41: the schema's own diagnostics were never printed, so the

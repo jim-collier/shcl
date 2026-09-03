@@ -778,10 +778,10 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 		.chain(std::iter::once(file))
 		.collect();
 	let label = |i: usize| if names.len() > 1 { names[i] } else { "" };
-	let mut doc = load(&texts[0], o.strictness)?;
+	let mut doc = load_from(label(0), &texts[0], o.strictness)?;
 	say_diagnostics_from(label(0), doc.diagnostics());
 	for (i, t) in texts[1..].iter().enumerate() {
-		let over = load(t, o.strictness)?;
+		let over = load_from(label(i + 1), t, o.strictness)?;
 		say_diagnostics_from(label(i + 1), over.diagnostics());
 		doc.merge(&over);
 	}
@@ -848,10 +848,16 @@ fn read_input(file: &str) -> Result<String, String> {
 }
 
 fn load(text: &str, strictness: Strictness) -> Result<Document, u8> {
+	load_from("", text, strictness)
+}
+
+/// The same, labelled with the file the text came from, so a strict failure in
+/// one layer of a fold says which layer.
+fn load_from(file: &str, text: &str, strictness: Strictness) -> Result<Document, u8> {
 	match Document::parse_with(text, strictness) {
 		Ok(d) => Ok(d),
 		Err(e) => {
-			say_diagnostics(&e.diagnostics);
+			say_diagnostics_from(file, &e.diagnostics);
 			let errors = e
 				.diagnostics
 				.iter()
