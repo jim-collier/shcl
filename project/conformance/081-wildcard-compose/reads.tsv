@@ -4,10 +4,11 @@ server[*].*	string[]	8080|a.example|9090	Good
 server[*].*	count	3	-
 server[*].*	instances	8080|a.example|9090	-
 pool[*].*	int[]	1|2	Good
-*.port	int[]	8080|9090|0|0	NotFound	standard	Good|Good|NotFound|NotFound
-*.port	count	4	-
+*.port	int[]	8080|9090|0|0|0|0|0|0	NotFound	standard	Good|Good|NotFound|NotFound|NotFound|NotFound|NotFound|NotFound
+*.port	count	8	-
 server[*].*[0]	string[]		NotFound
 nosuch[*]	int[]		NotFound
 nosuch[*].deeper	string[]		NotFound
 nosuch[*]	count	0	-
+agg[*].v	int[]	1|0|0|0	Multiple	standard	Good|Empty|NotFound|Multiple
 -	lost	0	-

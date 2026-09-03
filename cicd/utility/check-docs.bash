@@ -226,6 +226,16 @@ for src in source/rust/src/lib.rs source/go/shcl.go source/python/shcl.py source
 		|| fBad "${src}: the merge doc comment does not say the fold is not associative"
 done
 
+##	Two rules every port has to implement identically and that lived only in the
+##	code: which way a float-to-int tie rounds at Loose, and the order the
+##	aggregate status of an array read takes its worst slot in.
+#  shellcheck disable=2016  ## the backticks are the document's own markdown.
+grep -q 'rounds half away from zero' "${repoDir}/project/spec.md" \
+	|| fBad "spec.md: the coercion table does not say which way a float-to-int tie rounds"
+#  shellcheck disable=2016  ## the backticks are the document's own markdown.
+grep -qF -- '`Good` < `Empty` < `NotFound` < `BadType` < `Multiple`' "${repoDir}/project/spec.md" \
+	|| fBad "spec.md: the aggregate status rule does not give the ordering"
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

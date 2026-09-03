@@ -5,3 +5,5 @@ threshold: 3.5
 answer: yes
 switch: enabled
 spaced: "$ 3.14"
+tiedown: -2.5
+tieup: 3.5
