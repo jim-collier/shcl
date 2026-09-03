@@ -599,9 +599,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- The enhancement half of the round whose bugs are under Bugs. Test gaps, decisions the spec leaves open, and the smaller installer and tooling items.
 
-	- 🔘 Item 24: diagnostics printed under `--layer` do not say which file they came from.
+	- ✅ Item 24: diagnostics printed under `--layer` do not say which file they came from.
 		- Two layers with a bad line 2 print `line 2: ...` twice, indistinguishable. Schema diagnostics already carry a `schema line N` prefix for the same reason.
+		- Fixed: each layer's diagnostics carry its own file name, in all four, and only when more than one file is loaded - a single-file run prints exactly what it did.
+		- Pinned by two `cli-regress` rows: a layered load must name the second file, and a single-file load must not name anything.
 		- Opened: 20260901-192300
+		- Closed: 20260903-171500
 
 	- 🔘 Item 25: nothing in the suite reads from a merged in-memory document; only the merged text is compared.
 		- Every read path through a merged arena (dropped nodes, rebuilt index, cloned lists, wildcard slots) is uncovered. A property run found them all correct today, so this is a gap, not a defect. A `reads-merged.tsv` per case, replayed with the layer arguments, would close it.
