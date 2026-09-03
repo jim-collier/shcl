@@ -10,6 +10,7 @@ import math
 import os
 import stat
 import sys
+import tempfile
 import time
 import tracemalloc
 import types
@@ -722,6 +723,26 @@ def main():
 		raise SystemExit("a one-element bare cell reads quoted as an array")
 	if shcl.Document.parse('m: "x", "y"\n').read_string_array("m").quoted:
 		raise SystemExit("a two-element cell reported a single element's quoting")
+	# A path that names a directory - it ends in a separator, or its last
+	# component is `.` or `..` - is not a document. A path cleanup drops the
+	# trailing separator first, so a save through `f/.` used to rewrite `f` in
+	# some bindings. Same fixture in every runner.
+	with tempfile.TemporaryDirectory() as dtd:
+		dfile = os.path.join(dtd, "f.shcl")
+		with open(dfile, "w", encoding="utf-8", newline="") as fh:
+			fh.write("a: 1\n")
+		ddoc = shcl.Document.parse("a: 2\n")
+		for suffix in ("/", "/.", "/.."):
+			try:
+				ddoc.save_file(dfile + suffix)
+				raise SystemExit(f"save through {dfile + suffix} was accepted")
+			except shcl.SaveFailed:
+				pass
+		if _read(dfile) != "a: 1\n":
+			raise SystemExit("a refused save changed the file")
+		ddoc.save_file(dfile)
+		if _read(dfile) != "a: 2\n":
+			raise SystemExit("the plain path did not save")
 	# A typed array setter takes a list of its type, not any iterable: a str is a
 	# sequence of one-character strings, so set_string_array("abc") wrote three
 	# elements, and a generator was consumed by the type check before the setter
@@ -729,7 +750,7 @@ def main():
 	# from inside on a non-string; they gate like their typed siblings now.
 	# Python-only: the other three bindings are statically typed here.
 	gdoc = shcl.Document.new()
-	for call, args in (
+	for setter, args in (
 		("set_string_array", ("k", "abc")),
 		("set_int_array", ("k", b"12")),
 		("set_comment", ("k", 5)),
@@ -737,11 +758,12 @@ def main():
 		("set_literal", ("k", 5)),
 	):
 		try:
-			getattr(gdoc, call)(*args)
-			raise SystemExit(f"{call} accepted the wrong type")
+			getattr(gdoc, setter)(*args)
+			raise SystemExit(f"{setter} accepted the wrong type")
 		except TypeError:
 			pass
-	if not gdoc.set_int_array("k", (x for x in [1, 2, 3])) or gdoc.to_canonical() != "k: 1, 2, 3\n":
+	gen = (x for x in [1, 2, 3])   # not a list on purpose: that is the fixture
+	if not gdoc.set_int_array("k", gen) or gdoc.to_canonical() != "k: 1, 2, 3\n":  # type: ignore[arg-type]
 		raise SystemExit(f"a generator wrote {gdoc.to_canonical()!r}")
 	# A written value carrying both quote kinds is stored the way its own reload
 	# stores it, so instances() and a read's raw text agree across a save. The
@@ -916,7 +938,6 @@ def main():
 	# load_file/save_file: the status separates absent / unreadable / parsed
 	# with errors / clean, and a save round-trips through the atomic write.
 	# Same fixture in every runner.
-	import tempfile
 	with tempfile.TemporaryDirectory() as td:
 		fpath = os.path.join(td, "t.shcl")
 		_, fst = shcl.Document.load_file(fpath)

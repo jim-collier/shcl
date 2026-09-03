@@ -5669,7 +5669,25 @@ static void shcl_sync_dir(const char *target) {
 // as an editor's rewrite would carry it - is copied onto the temp file; other
 // hard links to the old inode keep the old content (inherent to rename).
 // Returns 1 on success, 0 on failure with errno left describing it.
+/* A path that names a directory rather than a file: it ends in a separator, or
+   its last component is `.` or `..`. The OS refuses to open such a path as a
+   regular file, but a path cleanup drops the trailing separator first, so a
+   save through `f/.` used to rewrite `f` in some bindings. */
+static int shcl_names_a_directory(const char *path) {
+	size_t n = strlen(path);
+	if (!n) return 0;
+	char lastc = path[n - 1];
+	if (lastc == '/') return 1;
+#ifdef _WIN32
+	if (lastc == '\\') return 1;
+#endif
+	const char *last = shcl_last_sep(path);
+	last = last ? last + 1 : path;
+	return !strcmp(last, ".") || !strcmp(last, "..");
+}
+
 int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
+	if (shcl_names_a_directory(path)) { errno = EISDIR; return 0; }
 #ifndef _WIN32
 	char *real = shcl_resolve_target(path);
 	if (!real) return 0;

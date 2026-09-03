@@ -3919,6 +3919,13 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	# that touches the filesystem instead, so every one of them below has to
 	# carry the same guard.
 	file = os.fspath(file)   # an int is a TypeError here, not a descriptor (see read_file)
+	# A path that names a directory rather than a file: it ends in a separator,
+	# or its last component is `.` or `..`. The OS refuses to open such a path as
+	# a regular file, but a path cleanup drops the trailing separator first, so a
+	# save through `f/.` used to rewrite `f` in some bindings.
+	last = file.replace("\\", "/").rsplit("/", 1)[-1] if os.name == "nt" else file.rsplit("/", 1)[-1]
+	if file and (file[-1] in ("/", "\\" if os.name == "nt" else "/") or last in (".", "..")):
+		return f"{file}: is a directory"
 	try:
 		target = _resolve_target(file)
 	except (OSError, ValueError) as e:

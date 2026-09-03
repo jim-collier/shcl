@@ -1189,6 +1189,51 @@ func TestSaveRewritesAReadOnlyFile(t *testing.T) {
 	}
 }
 
+// A path that names a directory - it ends in a separator, or its last component
+// is `.` or `..` - is not a document. A path cleanup drops the trailing
+// separator first, so a save through `f/.` used to rewrite `f`. Same fixture in
+// every runner.
+func TestSaveRefusesADirectoryShapedPath(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "f.shcl")
+	if err := os.WriteFile(f, []byte("a: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc := Parse("a: 2\n")
+	for _, suffix := range []string{"/", "/.", "/.."} {
+		if err := doc.SaveFile(f + suffix); err == nil {
+			t.Errorf("save through %q was accepted", f+suffix)
+		}
+	}
+	if got, _ := os.ReadFile(f); string(got) != "a: 1\n" {
+		t.Errorf("a refused save changed the file: %q", got)
+	}
+	if err := doc.SaveFile(f); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A Go string can hold any bytes; a document is UTF-8. Text that is not valid
+// UTF-8 fails the write rather than storing a replacement character per bad
+// byte and reporting success. Go-only: the other three cannot hold such a
+// string in the first place.
+func TestSetStringRefusesInvalidUTF8(t *testing.T) {
+	d := Parse("a: 1\n")
+	bad := string([]byte{0x61, 0xff, 0x62})
+	if d.SetString("k", bad) {
+		t.Error("SetString accepted text that is not UTF-8")
+	}
+	if d.SetStringArray("k", []string{"ok", bad}) {
+		t.Error("SetStringArray accepted an element that is not UTF-8")
+	}
+	if d.ToCanonical() != "a: 1\n" {
+		t.Errorf("a refused write changed the document: %q", d.ToCanonical())
+	}
+	if !d.SetString("k", "fine") {
+		t.Error("SetString refused valid text")
+	}
+}
+
 // A written value carrying both quote kinds is stored the way its own reload
 // stores it, so Instances and a read's raw text agree across a save. The
 // emitter escapes the double quotes; the writer used to keep them bare. Same

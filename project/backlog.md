@@ -545,9 +545,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-173800
 		- Closed: 20260903-103000
 
-	- 🔘 Item 40: two library-level parity points in the file tier and the Go writer.
+	- ✅ Item 40: two library-level parity points in the file tier and the Go writer.
 		- Rust alone writes through a trailing `/` on a regular-file path (`save_file("f/")` succeeds where POSIX refuses `open("f/")`); Go refuses `f/` but writes `f/.`; Python refuses both. Go's `SetString` of a string that is not UTF-8 stores U+FFFD per bad byte and reports success, so the value does not read back verbatim; return false from the string setters on invalid input, or say so in the Go doc comment.
+		- Decided: refuse in both cases. A document is not a directory, and a value that cannot read back verbatim is what every other setter already refuses.
+		- Fixed: all four refuse a path that ends in a separator or whose last component is `.` or `..`, before the path is resolved; the spec's save section says so. Go's `SetString` and `SetStringArray` refuse text that is not valid UTF-8.
+		- Pinned by a save fixture in all four runners (three directory-shaped spellings refused, the file unchanged, the plain path still saving) and a Go test for the UTF-8 refusal. The reference took `f/` and Go took `f/.`; Python and C already refused both, which the fixture now holds them to.
 		- Opened: 20260902-173900
+		- Closed: 20260903-113000
 
 	- 🔘 Item 41: CLI shapes that are consistent across the four and still surprise.
 		- `get --array --default=0` on a missing or empty array prints one line, indistinguishable from a one-element array equal to the default. Extra tab-separated fields on an ops line are dropped silently (`raw` loses everything after a literal tab in its content). `--default` followed by `--on-bad=error` drops the default; the other order keeps it. Schema-side hints are never printed by `check --schema` or `init`, so the `H001` that explains a `V092` from a merged `allowed` is invisible. `children` prints nothing at exit 0 for a missing path, a repeated field and a childless node alike, at the library level too. Each wants a decision, not a fix.

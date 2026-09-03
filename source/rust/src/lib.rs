@@ -2876,6 +2876,9 @@ pub fn read_file(path: &str, max_bytes: usize) -> Result<String, FileStatus> {
 /// links to the old inode cannot survive a rename and keep the old content.
 pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	use std::io::Write;
+	if names_a_directory(file) {
+		return Err(format!("{}: Is a directory", file));
+	}
 	let target = resolve_target(file).map_err(|e| format!("{}: {}", file, e))?;
 	let dir = match target.parent() {
 		Some(d) if !d.as_os_str().is_empty() => d,
@@ -2983,6 +2986,22 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 /// A path that is no link at all is a plain create at the path as given.
 /// A link cycle is an error: silently creating a regular file in its place
 /// would be the exact replacement the symlink walk exists to avoid.
+/// A path that names a directory rather than a file: it ends in a separator, or
+/// its last component is `.` or `..`. POSIX refuses to open such a path as a
+/// regular file, but a canonicalize drops the trailing separator first, so a
+/// save through `f/` used to rewrite `f`.
+fn names_a_directory(file: &str) -> bool {
+	let sep = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+	if file.is_empty() {
+		return false;
+	}
+	if file.ends_with(sep) {
+		return true;
+	}
+	let last = file.rsplit(sep).next().unwrap_or("");
+	last == "." || last == ".."
+}
+
 fn resolve_target(file: &str) -> Result<std::path::PathBuf, String> {
 	if let Ok(p) = std::fs::canonicalize(file) {
 		return Ok(p);

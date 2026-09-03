@@ -1344,6 +1344,32 @@ fn set_attrs(path: &std::path::Path, attrs: u32) {
 	}
 }
 
+/// A path that names a directory - it ends in a separator, or its last
+/// component is `.` or `..` - is not a document. A canonicalize drops the
+/// trailing separator first, so `save_file("f/")` used to rewrite `f`. Same
+/// fixture in every runner.
+#[test]
+fn save_refuses_a_directory_shaped_path() {
+	let dir = std::env::temp_dir().join(format!("shcl-dirpath-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let f = dir.join("f.shcl");
+	std::fs::write(&f, "a: 1\n").unwrap();
+	let doc = Document::parse("a: 2\n");
+	for suffix in ["/", "/.", "/.."] {
+		let p = format!("{}{}", f.display(), suffix);
+		assert!(
+			doc.save_file(&p).is_err(),
+			"save through {:?} was accepted",
+			p
+		);
+	}
+	assert_eq!(std::fs::read_to_string(&f).unwrap(), "a: 1\n");
+	assert!(doc.save_file(f.to_str().unwrap()).is_ok());
+	assert_eq!(std::fs::read_to_string(&f).unwrap(), "a: 2\n");
+	let _ = std::fs::remove_file(&f);
+	let _ = std::fs::remove_dir(&dir);
+}
+
 /// A written value carrying both quote kinds is stored the way its own reload
 /// stores it, so `instances` and a read's raw text agree across a save. The
 /// emitter escapes the double quotes; the writer used to keep them bare. Same
@@ -1365,11 +1391,11 @@ fn written_spelling_matches_its_reload() {
 #[test]
 fn index_rebuild_ignores_removed_nodes() {
 	let mut ms = [0.0f64; 2];
-	for churned in 0..2 {
+	for (churned, slot) in ms.iter_mut().enumerate() {
 		let mut d = Document::parse("g:\n\tk: 1\n");
 		if churned == 1 {
 			for i in 0..100_000 {
-				d.set_int("g.tmp", i);
+				assert!(d.set_int("g.tmp", i));
 				d.remove("g.tmp");
 			}
 		}
@@ -1379,7 +1405,7 @@ fn index_rebuild_ignores_removed_nodes() {
 			d.merge(&other);
 			assert_eq!(d.get_int_or("g.k", -1), 1);
 		}
-		ms[churned] = t0.elapsed().as_secs_f64() * 1000.0;
+		*slot = t0.elapsed().as_secs_f64() * 1000.0;
 	}
 	// A generous ratio on purpose: the chain array is still sized by the arena,
 	// which is a memset the walk cannot avoid. What the bound catches is the

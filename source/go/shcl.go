@@ -2909,6 +2909,9 @@ func ReadFile(path string, maxBytes int) (string, FileStatus) {
 // The i/o failures wrap rather than flatten, so a caller can tell a permission
 // failure from a full disk with errors.Is instead of matching on prose.
 func WriteFileAtomic(file, data string) error {
+	if namesADirectory(file) {
+		return fmt.Errorf("%s: is a directory", file)
+	}
 	target, terr := resolveTarget(file)
 	if terr != nil {
 		return fmt.Errorf("%s: %w", file, terr)
@@ -3005,6 +3008,26 @@ func WriteFileAtomic(file, data string) error {
 // points. A path that is no link at all is a plain create at the path as given.
 // A link cycle is an error: silently creating a regular file in its place
 // would be the exact replacement the symlink walk exists to avoid.
+// namesADirectory reports a path that names a directory rather than a file: it
+// ends in a separator, or its last component is `.` or `..`. The OS refuses to
+// open such a path as a regular file, but a path cleanup drops the trailing
+// separator first, so a save through `f/.` used to rewrite `f`.
+func namesADirectory(file string) bool {
+	if file == "" {
+		return false
+	}
+	sep := func(c byte) bool { return c == '/' || (runtime.GOOS == "windows" && c == '\\') }
+	if sep(file[len(file)-1]) {
+		return true
+	}
+	i := len(file)
+	for i > 0 && !sep(file[i-1]) {
+		i--
+	}
+	last := file[i:]
+	return last == "." || last == ".."
+}
+
 func resolveTarget(file string) (string, error) {
 	if p, err := filepath.EvalSymlinks(file); err == nil {
 		return p, nil
@@ -4171,8 +4194,15 @@ func (d *Document) SetBool(path string, v bool) bool {
 	return d.setValue(path, cellOf(boolText(v)))
 }
 
-// SetString binds a string at path, escaped so it reads back exactly.
+// SetString binds a string at path, escaped so it reads back exactly. A Go
+// string can hold any bytes, and a document is UTF-8, so text that is not
+// valid UTF-8 fails the write rather than being stored with a replacement
+// character per bad byte and reported as written - the same refusal SetFloat
+// gives an infinity and SetDateTime a month of 13.
 func (d *Document) SetString(path, v string) bool {
+	if !utf8.ValidString(v) {
+		return false
+	}
 	return d.setValue(path, cellOf(encodeString(v)))
 }
 
@@ -4248,6 +4278,9 @@ func (d *Document) SetBoolArray(path string, v []bool) bool {
 func (d *Document) SetStringArray(path string, v []string) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
+		if !utf8.ValidString(x) {
+			return false
+		}
 		texts[i] = encodeString(x)
 	}
 	return d.setValue(path, arrayCell(texts))
