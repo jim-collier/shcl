@@ -4763,22 +4763,6 @@ func validDate(y, m, d int) bool {
 	return m >= 1 && m <= 12 && d >= 1 && d <= daysInMonth(y, m)
 }
 
-// parseU32 mirrors the reference's u32 parse: optional '+', digits, 32-bit range.
-func parseU32(s string) (int, bool) {
-	t := s
-	if t != "" && t[0] == '+' {
-		t = t[1:]
-	}
-	if t == "" || !allDigits(t) {
-		return 0, false
-	}
-	v, err := strconv.ParseUint(t, 10, 32)
-	if err != nil {
-		return 0, false
-	}
-	return int(v), true
-}
-
 // The Atoi error discards through this date cluster are safe: every input is
 // length-bounded and allDigits-checked first, so Atoi cannot fail on it.
 func parseYear4(s string) (int, bool) {
@@ -4813,7 +4797,10 @@ func parseDatePart(s string) (y, m, d int, ok bool) {
 	toks := strings.Fields(s)
 	if len(toks) == 3 {
 		if mo, found := monthFromName(toks[0]); found {
-			dv, ok1 := parseU32(strings.TrimSuffix(toks[1], ","))
+			// The day is DD, like every other form's: a plain integer parse
+			// takes a leading '+' and any number of leading zeros, which the
+			// whitelist does not list and the delimited spellings refuse.
+			dv, ok1 := parseNum2(strings.TrimSuffix(toks[1], ","))
 			yv, ok2 := parseYear4(toks[2])
 			if ok1 && ok2 && validDate(yv, mo, dv) {
 				return yv, mo, dv, true
@@ -4821,7 +4808,7 @@ func parseDatePart(s string) (y, m, d int, ok bool) {
 			return 0, 0, 0, false
 		}
 		if mo, found := monthFromName(toks[1]); found {
-			dv, ok1 := parseU32(toks[0])
+			dv, ok1 := parseNum2(toks[0])
 			yv, ok2 := parseYear4(toks[2])
 			if ok1 && ok2 && validDate(yv, mo, dv) {
 				return yv, mo, dv, true

@@ -17,3 +17,6 @@ bad2: 2026-02-30
 bad3: "25:00"
 bad4: "July twelfth"
 bad5: "12:30+€ab"
+bad6: "Jul +12 2026"
+bad7: "Jul 0012 2026"
+bad8: "+12 Jul 2026"

@@ -1690,13 +1690,6 @@ static int parse_year4(ShclStr s, int32_t *out) {
 	int32_t v = 0; for (size_t i = 0; i < s.n; i++) v = v * 10 + (s.p[i] - '0');
 	*out = v; return 1;
 }
-static int parse_u32_lenient(ShclStr s, uint32_t *out) {
-	size_t i = 0; if (i < s.n && s.p[i] == '+') i++;
-	if (i >= s.n) return 0;
-	uint64_t v = 0;
-	for (; i < s.n; i++) { unsigned char c = (unsigned char)s.p[i]; if (!is_adigit(c)) return 0; v = v * 10 + (c - '0'); if (v > 0xFFFFFFFFull) return 0; }
-	*out = (uint32_t)v; return 1;
-}
 static void split_ws(ShclArena *a, ShclStr s, ShclVecS *out) {
 	size_t i = 0;
 	while (i < s.n) {
@@ -1723,12 +1716,15 @@ static ShclDatePart parse_date_part(ShclArena *a, ShclStr s) {
 			ShclStr day_tok = toks.data[1];
 			if (day_tok.n > 0 && day_tok.p[day_tok.n - 1] == ',') day_tok = s_slice(day_tok, 0, day_tok.n - 1);
 			uint32_t d; int32_t y;
-			if (parse_u32_lenient(day_tok, &d) && parse_year4(toks.data[2], &y) && valid_date(y, mm, d)) { r.ok = 1; r.y = y; r.m = mm; r.d = d; }
+			/* The day is DD, like every other form's: a plain integer parse
+			   takes a leading '+' and any number of leading zeros, which the
+			   whitelist does not list and the delimited spellings refuse. */
+			if (parse_num2(day_tok, &d) && parse_year4(toks.data[2], &y) && valid_date(y, mm, d)) { r.ok = 1; r.y = y; r.m = mm; r.d = d; }
 			return r;
 		}
 		if ((mm = month_from_name(a, toks.data[1]))) {
 			uint32_t d; int32_t y;
-			if (parse_u32_lenient(toks.data[0], &d) && parse_year4(toks.data[2], &y) && valid_date(y, mm, d)) { r.ok = 1; r.y = y; r.m = mm; r.d = d; }
+			if (parse_num2(toks.data[0], &d) && parse_year4(toks.data[2], &y) && valid_date(y, mm, d)) { r.ok = 1; r.y = y; r.m = mm; r.d = d; }
 			return r;
 		}
 		return r;
