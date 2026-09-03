@@ -3304,9 +3304,16 @@ impl Document {
 				last: HashMap::new(),
 				next_same: vec![NIL; self.arena.len()],
 			};
-			for (p, node) in self.arena.iter().enumerate() {
-				for &c in &node.children {
+			// From the root, not across the arena: a removed subtree's nodes
+			// are still there with their child lists intact, so an arena walk
+			// indexes every node the document ever held. Chains stay in file
+			// order - a chain is one parent's same-named children, and each
+			// parent's are appended in its own list order.
+			let mut stack = vec![ROOT];
+			while let Some(p) = stack.pop() {
+				for &c in &self.arena[p].children {
 					idx.append(name_key(p, &self.arena[c].name), c);
+					stack.push(c);
 				}
 			}
 			Box::new(idx)

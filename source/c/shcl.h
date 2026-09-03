@@ -2901,10 +2901,20 @@ static void index_unlink(shcl_doc *d, uint64_t key, size_t node) {
 static void name_index(shcl_doc *d) {
 	if (d->index_built) return;
 	index_reserve(d, d->nodes.len ? d->nodes.len : 1);
-	for (size_t p = 0; p < d->nodes.len; p++) {
+	/* From the root, not across the arena: a removed subtree's nodes are still
+	   there with their child lists intact, so an arena walk indexes every node
+	   the document ever held. Chains stay in file order - a chain is one
+	   parent's same-named children, and each parent's are appended in order.
+	   The stack rides in the index arena, which this call owns. */
+	ShclVecSize stack = {0};
+	ShclVecSize_push(&d->index_arena, &stack, ROOT);
+	while (stack.len) {
+		size_t p = stack.data[--stack.len];
 		ShclVecSize ch = NODE(d, p).children;
-		for (size_t k = 0; k < ch.len; k++)
+		for (size_t k = 0; k < ch.len; k++) {
 			index_append(d, name_key(p, NODE(d, ch.data[k]).name), ch.data[k]);
+			ShclVecSize_push(&d->index_arena, &stack, ch.data[k]);
+		}
 	}
 	d->index_built = 1;
 }

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func corpusDir() string {
@@ -1185,6 +1186,39 @@ func TestSaveRewritesAReadOnlyFile(t *testing.T) {
 	}
 	if err := os.Chmod(f, 0o666); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The name index used to be rebuilt by walking the arena, which still holds
+// every node a set-and-remove cycle ever made - so the first read after a merge
+// grew with the number of edits, not with the document. Timed against the same
+// document with no dead nodes; the ratio is what matters, since an absolute
+// figure would be a machine constant. Same fixture in every runner.
+func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
+	var ms [2]float64
+	for churned := 0; churned < 2; churned++ {
+		d := Parse("g:\n\tk: 1\n")
+		if churned == 1 {
+			for i := 0; i < 100000; i++ {
+				d.SetInt("g.tmp", int64(i))
+				d.Remove("g.tmp")
+			}
+		}
+		other := Parse("g:\n\tk: 1\n")
+		t0 := time.Now()
+		for i := 0; i < 200; i++ {
+			d.Merge(other)
+			if got := d.GetIntOr("g.k", -1); got != 1 {
+				t.Fatalf("index walk: got %d", got)
+			}
+		}
+		ms[churned] = float64(time.Since(t0).Microseconds()) / 1000.0
+	}
+	// A generous ratio on purpose: the chain slice is still sized by the arena,
+	// which is a fill the walk cannot avoid. What the bound catches is the walk
+	// itself going over every dead node.
+	if ms[1] > ms[0]*25+25 {
+		t.Errorf("index rebuild after churn %.1f ms against %.1f ms fresh - it walks nodes the document no longer holds", ms[1], ms[0])
 	}
 }
 

@@ -10,6 +10,7 @@ import math
 import os
 import stat
 import sys
+import time
 import tracemalloc
 import types
 from pathlib import Path
@@ -721,6 +722,30 @@ def main():
 		raise SystemExit("a one-element bare cell reads quoted as an array")
 	if shcl.Document.parse('m: "x", "y"\n').read_string_array("m").quoted:
 		raise SystemExit("a two-element cell reported a single element's quoting")
+	# The name index used to be rebuilt by walking the arena, which still holds
+	# every node a set-and-remove cycle ever made - so the first read after a
+	# merge grew with the number of edits, not with the document. Timed against
+	# the same document with no dead nodes; the ratio is what matters, since an
+	# absolute figure would be a machine constant. Same fixture in every runner.
+	ms = []
+	for churned in (False, True):
+		idoc = shcl.Document.parse("g:\n\tk: 1\n")
+		if churned:
+			for i in range(20000):
+				idoc.set_int("g.tmp", i)
+				idoc.remove("g.tmp")
+		iother = shcl.Document.parse("g:\n\tk: 1\n")
+		t0 = time.perf_counter()
+		for _ in range(50):
+			idoc.merge(iother)
+			if idoc.get_int_or("g.k", -1) != 1:
+				raise SystemExit("index walk: wrong result")
+		ms.append((time.perf_counter() - t0) * 1000.0)
+	# A generous ratio on purpose: the chain list is still sized by the arena,
+	# which is a fill the walk cannot avoid. What the bound catches is the walk
+	# itself going over every dead node.
+	if ms[1] > ms[0] * 25 + 25:
+		raise SystemExit(f"index rebuild after churn {ms[1]:.1f} ms against {ms[0]:.1f} ms fresh")
 	# What a read hands out must not be the document's own list: a caller
 	# clearing it used to take the document's diagnostics with it, and a failed
 	# strict load handed out the same list again. Same fixture in Go.

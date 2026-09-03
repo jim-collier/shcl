@@ -521,9 +521,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-173500
 		- Closed: 20260903-081500
 
-	- 🔘 Item 37: the name index rebuild walks every node ever created, removed subtrees included.
+	- ✅ Item 37: the name index rebuild walks every node ever created, removed subtrees included.
 		- After 100k set-and-remove cycles a document with 1000 live nodes holds 400k, and every rebuild (the first read after any merge) indexes the dead ones too: 48 ms per read against 0 on a fresh document; `shcl_compact` cures it in C and the other three have no compact. Rust's `name_index` iterates the arena the same way. Build the index by walking from the root in all four.
+		- Fixed: the rebuild walks from the root in all four. Chains keep file order, since a chain is one parent's same-named children and each parent's are appended in its own list order.
+		- Measured: 200 rebuild-and-read cycles behind 100000 set-and-remove pairs took 68 ms in C and take 2.6 ms; the same shape in the reference went from 269 ms to 3 ms.
+		- Pinned by a fixture in all four runners: the same document timed with and without the churn, bounded by a ratio rather than a wall-clock constant. All four fail it on the old code.
+		- Note: the chain array is still sized by the arena, which is a fill the walk cannot avoid; the bound is loose enough to leave that alone and tight enough to catch the walk.
 		- Opened: 20260902-173600
+		- Closed: 20260903-090000
 
 	- 🔘 Item 38: `instances()` shows a writer-built string differently from its reparse when the text holds both quote kinds.
 		- `set_string("k", "q\"q'")` stores `q"q'`, canonical output is `k: "q\"q'"`, and a reparse stores `q\"q'` with the escape intact; reads and selectors agree on both sides, `instances()` returns display text and so differs. All four. The one observable where `set(x)` and `load(emit(set(x)))` disagree; either spell `\"` in the encoders when both quote kinds are present, or leave it documented.

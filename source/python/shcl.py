@@ -2281,9 +2281,17 @@ class Document:
 		idx = self._index
 		if idx is None:
 			idx = _NameIndex({}, {}, [NIL] * len(self.arena))
-			for p, node in enumerate(self.arena):
-				for c in node.children:
+			# From the root, not across the arena: a removed subtree's nodes are
+			# still there with their child lists intact, so an arena walk
+			# indexes every node the document ever held. Chains stay in file
+			# order - a chain is one parent's same-named children, and each
+			# parent's are appended in order.
+			stack = [ROOT]
+			while stack:
+				p = stack.pop()
+				for c in self.arena[p].children:
 					idx.append(_name_key(p, self.arena[c].name), c)
+					stack.append(c)
 			self._index = idx
 		return idx
 
