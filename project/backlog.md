@@ -651,9 +651,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-192900
 		- Closed: 20260903-224500
 
-	- 🔘 Item 31: the hosted windows job runs one of the three C memory tests.
+	- ✅ Item 31: the hosted windows job runs one of the three C memory tests.
 		- `oom_recover.c`, the setjmp unwind and the most platform-sensitive test in the suite, and `mem_bounds.c` are built on Linux only. Both pass under wine, so it is two lines in `win-runners.bash`.
+		- Fixed: `win-runners.bash` builds and runs both, so all three C memory tests now run on windows.
+		- Found doing it: `mem_bounds` failed on the windows build. The index-rebuild check is a ratio against a fresh document, and windows counts whole milliseconds, so the fresh side reads 0.0 and the ratio turns into an absolute figure that says nothing about the machine it ran on. The ratio is skipped where the clock cannot see the fresh side, the way it is already skipped under a sanitizer; every allocation bound in the file still runs there.
+		- Pinned by the two new rows. The ratio still catches an index rebuild that walks every node the document ever held, unchanged.
 		- Opened: 20260901-193000
+		- Closed: 20260903-231500
 
 	- 🔘 Item 32: two `cli-regress` rows are Linux-only and nothing says so.
 		- A directory as the input expects "is a directory"; Windows says access denied, invalid function or permission denied depending on the binding, because none of the three stats the path first. The closed-stdin row cannot be judged under wine at all. Either give the rows a per-platform expectation or report the directory case from a stat.

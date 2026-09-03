@@ -182,6 +182,11 @@ int main(void) {
 #if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
 		printf("mem_bounds: index rebuild ratio not judged under a sanitizer\n");
 #else
+		/* A clock too coarse to see the fresh side leaves the ratio with a zero
+		   denominator, and then the bound is an absolute figure on whatever
+		   machine is running - which is what it was written not to be. Windows
+		   counts in whole milliseconds and reports 0.0 here. */
+		if (t[0] <= 0.0) printf("mem_bounds: index rebuild ratio not judged (clock too coarse)\n"); else
 		/* A generous ratio on purpose: the chain array is still sized by the
 		   arena, which is a memset the walk cannot avoid. What the bound
 		   catches is the walk itself going over every dead node. */

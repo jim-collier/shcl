@@ -78,6 +78,19 @@ fRunOom() {
 		source/c/tests/oom_hook.c -o "${work}/oom_hook${exe}" -lm \
 		&& "${work}/oom_hook${exe}"
 }
+## The unwind out of a failed allocation is the most platform-sensitive thing in
+## the C binding, and the allocation bounds move with the allocator, so both
+## belong here rather than on linux alone.
+fRunOomRecover() {
+	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
+		source/c/tests/oom_recover.c -o "${work}/oom_recover${exe}" -lm \
+		&& "${work}/oom_recover${exe}"
+}
+fRunMemBounds() {
+	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
+		source/c/tests/mem_bounds.c -o "${work}/mem_bounds${exe}" -lm \
+		&& "${work}/mem_bounds${exe}"
+}
 ## The C CLI's argv: the narrow one arrives in the active code page, best-fit
 ## mapped, so a name the page cannot spell reached a different file. The two
 ## names here are the shapes that went wrong: one outside the page, one the
@@ -107,6 +120,8 @@ fRun "python"      "${py}" source/python/tests/conformance.py
 fRun "c"           fRunC
 fRun "c++ veneer"  fRunCxx
 fRun "c oom hook"  fRunOom
+fRun "c oom unwind" fRunOomRecover
+fRun "c mem bounds" fRunMemBounds
 fRun "c cli argv"  fRunCcli
 ## The installers' PATH handling needs a real registry, which only exists here:
 ## it edits and restores the runner's own Environment keys, so it stays off
