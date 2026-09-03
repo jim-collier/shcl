@@ -209,7 +209,7 @@ Recognized when a value is read as a date/time. The formats are a closed whiteli
 
 - `DD Mon YYYY` - space or a delimiter between components: `12 Jul 2026`, `12-Jul-2026`, `12.July.2026`.
 
-- `Mon DD YYYY` - likewise: `Jul 12 2026`, `Jul/12/2026`; in the space form a comma may follow the day (`Jul 12, 2026`).
+- `Mon DD YYYY` - likewise: `Jul 12 2026`, `Jul/12/2026`; in the space form a comma may follow the day (`Jul 12, 2026`), but only inside quotes, since a bare `,` splits array elements - `b: Jul 12, 2026` is the two-element array `Jul 12` and `2026`.
 
 Month names are the fixed English set only - 3-letter abbreviation or full name, case-insensitive (`jan`, `Jan`, `JANUARY`), no trailing dot, no other languages (a locale table is how bindings drift).
 

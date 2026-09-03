@@ -163,6 +163,12 @@ while IFS= read -r hit; do
 	fBad "shcl.hpp: sends a reader to validate() for generation faults: ${hit}"
 done < <(grep -nE 'for the fault list, validate\(\)' "${repoDir}/source/c/shcl.hpp" || true)
 
+##	A bare `Mon DD, YYYY` is two array elements, not a date: the comma splits
+##	first. The bullet listing that spelling has to say so, or a reader copies it
+##	unquoted out of the spec and gets a BadType.
+grep -q 'in the space form a comma may follow the day .*only inside quotes' "${repoDir}/project/spec.md" \
+	|| fBad "spec.md: the Mon DD, YYYY bullet does not say the comma spelling needs quotes"
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

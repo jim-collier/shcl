@@ -248,10 +248,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-172300
 		- Closed: 20260903-023000
 
-	- 🔘 Item 25: `Jul 12, 2026` is listed as an admitted date spelling, and bare in a file the comma splits it into a two-element array.
+	- ✅ Item 25: `Jul 12, 2026` is listed as an admitted date spelling, and bare in a file the comma splits it into a two-element array.
 		- Reproduced in all four: `b: Jul 12, 2026` reads BadType (two elements, `Jul 12` and `2026`) while the quoted spelling reads `2026-07-12`. The code is right by the array rule; the Integers section says "only inside quotes, since `,` is reserved bare" and the datetime bullet says nothing.
-		- Note: spec text only: add the quoting clause to the `Mon DD YYYY` bullet.
+		- Fixed: spec text only. The bullet says the comma spelling works only inside quotes, and what a bare one reads as instead.
+		- Pinned by `check-docs.bash` (the bullet must carry the clause) and corpus `007`, where the bare spelling reads BadType as a date and two elements as a string array.
 		- Opened: 20260902-172400
+		- Closed: 20260903-024000
 
 	- 🔘 Item 26: a one-element array read reports `quoted` false for a quoted element.
 		- Reproduced in Rust at library level (plausible for the other three by port): `read_int("h")` on `h: "5"` gives `quoted` true, `read_int_array("h")` on the same node gives false, because the array read always ends with `quoted` false. The spec's flag is "true when the read's single scalar element was quoted in the source".
