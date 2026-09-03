@@ -363,9 +363,10 @@ class _Value:
 			# legal in a quoted string), silently merging them.
 			parts = ["c:"]
 			for e in self.els:
-				parts.append(str(len(e.text)))
+				t = _key_text(e.text)
+				parts.append(str(len(t)))
 				parts.append(":")
-				parts.append(e.text)
+				parts.append(t)
 			return "".join(parts)
 		# Info-string is part of identity (a `sql` and a `python` block are
 		# different values even with equal bodies); fence style is not. Info is
@@ -866,6 +867,15 @@ def _parse_cell(text):
 	return _cell(els) if els else _empty()
 
 
+def _key_text(s):
+	"""The identity spelling of an element's text: escapes resolved, so two
+	spellings of one string are one instance. Names have followed that rule
+	since 2.0, and a `[value]` selector matches on the resolved text already -
+	without this, one selector addressed two instances. The common case has
+	nothing to resolve and returns the input."""
+	return _apply_escapes(s) if "\\" in s else s
+
+
 def _apply_escapes(s):
 	"""Escape processing (string reads): \\t \\n \\\\ \\" \\'; unknown escapes stay literal."""
 	# Fast path: every non-backslash char passes through verbatim, so with no
@@ -922,8 +932,8 @@ def _merge_key(name, v):
 	if k == "cell":
 		els = v.els
 		if len(els) == 1:
-			return (name, "c", (els[0].text,))
-		return (name, "c", tuple(e.text for e in els))
+			return (name, "c", (_key_text(els[0].text),))
+		return (name, "c", tuple(_key_text(e.text) for e in els))
 	if k == "empty":
 		return (name, "e")
 	return (name, "r", v.info, v.content)

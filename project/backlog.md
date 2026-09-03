@@ -498,9 +498,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-173200
 		- Closed: 20260903-063000
 
-	- 🔘 Item 34: value identity ignores escapes while a selector resolves them, so one selector addresses two instances.
+	- ✅ Item 34: value identity ignores escapes while a selector resolves them, so one selector addresses two instances.
 		- `a: "q\"uote"` and `a: 'q"uote'` are two instances, in one file and across layers, yet `a["q\"uote"]` matches both (`count` 2, `get` exit 5), and writing `a["q\"uote"].j: 2` in an over layer merges into the base's instance while the block spelling appends a second. Names took the resolve-escapes rule on 2026-08-18; the spec's merge sentence says nothing about escapes for values. A spec decision: either the identity key resolves escapes (all four take the resolved string in the key and hash) or the spec says a selector may address several spellings.
+		- Decided: the identity key resolves escapes. The selector already matched on the resolved text, names have followed that rule since 2.0, and quoting was never part of identity either (`a: x` and `a: "x"` have always been one instance), so this is the spelling-is-not-identity rule finished rather than started. Recorded in `design.md`; the spec's merge bullet says it.
+		- Fixed: the merge key, its hash and the equality behind a hash hit all take the escape-resolved element text, in all four. An element with no backslash is keyed on its own bytes, so the parse pays nothing for it - C resolves through the streaming hash it already had and compares a byte at a time, with neither side built.
+		- Pinned by corpus `084` (two escape spellings of one value, a tab escape, and a bare-versus-quoted pair, with selector reads in both spellings and a layer that merges into the same instance). All four reported two instances before.
 		- Opened: 20260902-173300
+		- Closed: 20260903-071500
 
 	- 🔘 Item 35: three merge facts the spec should state.
 		- The fold is not associative: with `p: 1`, `p: 2` and `p:` over `x: 1`, `(A+B)+C` overrides the leaf and `A+(B+C)` keeps `p: 1` as a wrapper-mention peer; 56 of 300 generated triples differ the same way, so a consumer caching a pre-merged upper pair gets a different document from the CLI fold. A merged document keeps the base's strictness, so a value from a stricter layer reads with the base's coercion (library only). And a merge costs a pass over the base's touched scopes plus an index rebuild on the next read, with replaced nodes kept until the document is dropped (measured in all four: 40k-key base plus a 3-line over is 5 to 66 ms, the next read 2 to 17 ms, 500 merges of an 8-node over grow the process by 0.5 to 1.5 MB). One sentence each in Layered loading and the merge doc comments.
