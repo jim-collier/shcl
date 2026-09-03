@@ -18,7 +18,8 @@
 ##		port="$(shcl_int app.shcl server.port)"            ## same, typed helper
 ##		host="$(shcl_get app.shcl server.host)"
 ##		[[ "$(shcl_bool app.shcl features.debug)" == true ]] && enable_debug
-##		hosts=(); while IFS= read -r h; do hosts+=("$h"); done < <(shcl_array --string app.shcl cluster.hosts)
+##		hosts=(); while IFS= read -r h; do hosts+=("$h"); done \
+##		            < <(shcl_array --string app.shcl cluster.hosts)
 ##
 ##	A "$(...)" drops every trailing newline, so a raw block read that way loses
 ##	its trailing blank lines; read it into a file, or through a loop, when the
