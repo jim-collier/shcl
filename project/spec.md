@@ -598,7 +598,7 @@ The overlay rule, per parent scope:
 
 Comment trivia rides with the nodes that carry it, and the merged document is a formatter fixpoint like any other. Where an `over` instance matches a `base` one, the `base` node survives and takes on the `over` node's comments under the in-file rule: leading comments concatenate in layer order, and the first trailing comment wins. End-of-file comments are carried over once each, so a footer several layers share is not repeated per layer. `over`'s content is copied into `base`, so `base` stays valid after `over` is released.
 
-On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `set`) takes repeated `--layer=FILE` and repeated `--set=PATH=VALUE`. `check` does not: its diagnostics are inherently single-file.
+On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `children`, `paths`, `set`) takes repeated `--layer=FILE` and repeated `--set=PATH=VALUE`. `check` does not: its diagnostics are inherently single-file.
 
 - Precedence runs low to high: the `--layer` files in listed order, then the positional `FILE`, then the `--set` values. `fmt` with layers prints the merged canonical document, so it doubles as the merge command.
 
