@@ -151,10 +151,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-171100
 		- Closed: 20260902-224500
 
-	- 🔘 Item 13: Go's `LoadError.Diagnostics` and Python's `diagnostics()` and `LoadError` hand out the document's own list.
+	- ✅ Item 13: Go's `LoadError.Diagnostics` and Python's `diagnostics()` and `LoadError` hand out the document's own list.
 		- Reproduced: in Go, setting `le.Diagnostics[0].Message` on a strict-load error changes `doc.Diagnostics()[0].Message`; in Python `doc.diagnostics().clear()` takes `error_count()` to 0, and `LoadError.diagnostics` is the same list object. 20260901b item 23 fixed Go's `Diagnostics()` and the two suppressors and did not reach the third hand-out; Python was not looked at.
-		- Note: Go copies into the error the way `Diagnostics()` now does; Python returns `list(self.diags)` from `diagnostics()` and gives `LoadError` a copy. The suppressors keep their in-place contract, which mirrors Rust's `&mut Vec`.
+		- Fixed: Go's `LoadError` and Python's `diagnostics()` and `LoadError` each hand back a copy. The suppressors keep their in-place contract, which mirrors the reference's `&mut Vec`.
+		- Pinned by the Go aliasing test, extended to write through a `LoadError`, and by a new fixture in the Python runner that clears both what `diagnostics()` returned and what a failed strict load carried. Both fail on the old code.
 		- Opened: 20260902-171200
+		- Closed: 20260902-230000
 
 	- 🔘 Item 14: the Go CLI exits 1 where the other three exit 8 on an ops script that is not UTF-8.
 		- Reproduced: `printf '\xff\n' | shcl set f.shcl` exits 8 in Rust, C and Python and 1 in Go. The same bytes as a document exit 8 in all four. The standing decision makes 1 the usage code alone.

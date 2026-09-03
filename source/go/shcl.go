@@ -2474,7 +2474,7 @@ func ParseWith(text string, strictness Strictness) (*Document, error) {
 	if strictness == Strict {
 		for _, d := range doc.diags {
 			if d.Severity == SeverityError {
-				return doc, &LoadError{Diagnostics: doc.diags, Document: doc}
+				return doc, &LoadError{Diagnostics: append([]Diagnostic(nil), doc.diags...), Document: doc}
 			}
 		}
 	}
@@ -2505,7 +2505,7 @@ func ParseLimited(text string, strictness Strictness, maxNodes, maxElements, max
 	if strictness == Strict {
 		for _, d := range doc.diags {
 			if d.Severity == SeverityError {
-				return doc, &LoadError{Diagnostics: doc.diags, Document: doc}
+				return doc, &LoadError{Diagnostics: append([]Diagnostic(nil), doc.diags...), Document: doc}
 			}
 		}
 	}

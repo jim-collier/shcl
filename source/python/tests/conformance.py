@@ -710,6 +710,23 @@ def main():
 	# Canonical output folds the case, as it always has, and escapes the tab.
 	if sdoc3.to_canonical() != '"ab\\tcd": 2\n':
 		raise SystemExit(f"canonical name spelling got {sdoc3.to_canonical()!r}")
+	# What a read hands out must not be the document's own list: a caller
+	# clearing it used to take the document's diagnostics with it, and a failed
+	# strict load handed out the same list again. Same fixture in Go.
+	adoc = shcl.Document.parse("a: 1\na: 2\n")
+	handed = adoc.diagnostics()
+	if not handed:
+		raise SystemExit("aliasing fixture: want a diagnostic to work with")
+	handed.clear()
+	if not adoc.diagnostics():
+		raise SystemExit("diagnostics() handed out the document's own list")
+	try:
+		shcl.Document.parse_with("a\n", shcl.Strictness.Strict)
+		raise SystemExit("aliasing fixture: want a strict load failure")
+	except shcl.LoadError as e:
+		e.diagnostics.clear()
+		if e.document is not None and not e.document.diagnostics():
+			raise SystemExit("LoadError shares the document's diagnostics list") from None
 	# parse_limited: the caps exist because a document amplifies to many times
 	# its byte size in memory, so read_file's byte cap alone cannot bound a
 	# load. Same fixture in every runner.
