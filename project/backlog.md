@@ -767,12 +767,17 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-194300
 		- Closed: 20260904-024000
 
-	- 🔘 Item 45: two style-guide gaps.
+	- ✅ Item 45: two style-guide gaps.
 		- A Python deviation bullet sits under the C heading. The Python section does not list the iterative walks that replace the reference's recursion, whose reason lives only in a closed backlog item and the function comments.
+		- Fixed: the misplaced bullet is under Python, and the iterative emit, overlay and clone walks are listed there with their reason - CPython's recursion limit sits below the depth cap the spec allows, and raising it would trade a traceback for a stack overflow.
 		- Opened: 20260901-194400
+		- Closed: 20260904-030000
 
-	- 🔘 Item 46: the PowerShell wrapper's header carries one ragged 126-column line where its bash twin wraps.
+	- ✅ Item 46: the PowerShell wrapper's header carries one ragged 126-column line where its bash twin wraps.
+		- Fixed: it wraps. The bash wrapper had one too, an array example at 106 columns, found by the check written for this.
+		- Pinned by a `shell-regress` row over both wrappers' comment lines. Code lines are left out: both carry a long one on purpose.
 		- Opened: 20260901-194500
+		- Closed: 20260904-030200
 
 ### Done
 

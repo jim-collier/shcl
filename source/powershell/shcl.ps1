@@ -39,7 +39,8 @@
 ##	Exit codes (straight from the binary): 0 good, 1 usage error, 2 empty,
 ##	3 not found, 4 bad type, 5 multiple instances, 6 check failed, strict
 ##	load failure, or a faulty init schema, 7 in-place write refused
-##	(--lossy overrides), 8 a file or stream could not be read or written. A nonzero code is not an error to PowerShell - unless
+##	(--lossy overrides), 8 a file or stream could not be read or written. A
+##	nonzero code is not an error to PowerShell - unless
 ##	$PSNativeCommandUseErrorActionPreference is on under an ErrorActionPreference
 ##	of Stop, where a not-found read throws instead of returning 3.
 ##

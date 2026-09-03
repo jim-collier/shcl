@@ -93,6 +93,10 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Deliberate deviation: the parser's child/display accelerator maps key on exact tuples of the strings already in hand, where the other three bindings stream an FNV hash and verify hits against the arena. CPython's dict and tuple machinery runs at C speed while a hand-rolled per-byte hash loop does not, and the tuple keys are exactly as injective - same first-wins semantics, same behavior.
 
+- Deliberate deviation: Python carries three hot-path shortcuts the other bindings do not need - a length-one branch in the value display and the merge key, an identity test before the source-attach guard's key compare, and the path scanner's two helpers at module level rather than nested. Rust and Go stream these fields through a hash and build nothing, and a closure per call costs nothing there. The shortcuts change no output and are asserted structurally in the Python runner, not by a clock.
+
+- Deliberate deviation: the emit, overlay and clone walks are iterative where the reference recurses. CPython's own recursion limit sits far below the 512-level depth cap the spec allows, so a document the reference formats without complaint raised RecursionError here; raising the interpreter's limit would have moved the failure to a stack overflow with no traceback. The walks carry their own explicit stacks and visit nodes in the same order, so the output is unchanged.
+
 - The public surface is type-hinted (every public method, function and attribute); private helpers are hinted where it pays, and mypy strict is not a gate.
 
 ### C (and the C++ veneer)
@@ -104,8 +108,6 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - Strings are length-delimited byte spans with explicit UTF-8 iteration helpers, because the reference iterates `char`s and byte-wise shortcuts mis-handle multibyte input.
 
 - The C++ veneer (`shcl.hpp`) is a thin typed wrapper over the C core - not a second parser, and kept intentionally small. C++17 (the gate's pin, for broad compiler reach), no exceptions: it returns the same `Status` values the core does.
-
-- Deliberate deviation: Python carries three hot-path shortcuts the other bindings do not need - a length-one branch in the value display and the merge key, an identity test before the source-attach guard's key compare, and the path scanner's two helpers at module level rather than nested. Rust and Go stream these fields through a hash and build nothing, and a closure per call costs nothing there. The shortcuts change no output and are asserted structurally in the Python runner, not by a clock.
 
 - Deliberate deviation: the convenience read tier covers only the value types (`shcl_get_int`/`_float`/`_bool` and the `_or` spelling of each; `get_or<T>` for the veneer's four `get<T>` types). String, raw, raw-info, datetime, and array reads hand back borrowed memory or lengths that a value-or-default signature cannot express, so those stay on the full `shcl_read_*` tier. The spec's ergonomic-tier section says the same. The other three bindings do carry all of them, raw-info included.
 

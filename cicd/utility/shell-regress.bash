@@ -281,6 +281,14 @@ grep -q 'rate limit' "${repoDir}/install.ps1"  || fBad "install.ps1 does not nam
 grep -q 'GITHUB_TOKEN' "${repoDir}/install.bash" || fBad "install.bash ignores GITHUB_TOKEN"
 grep -q 'GITHUB_TOKEN' "${repoDir}/install.ps1"  || fBad "install.ps1 ignores GITHUB_TOKEN"
 
+##	20260901b item 46: the PowerShell wrapper's header ran one line out to 126
+##	columns where its bash twin wraps. Comment lines only - the code in both
+##	carries a couple of long ones on purpose.
+for wrapper in source/bash/shcl.bash source/powershell/shcl.ps1; do
+	long="$(awk '/^#{2}/ && length > 100 { print NR": "length }' "${repoDir}/${wrapper}")"
+	[[ -z "${long}" ]] || fBad "${wrapper}: header comment runs past 100 columns at ${long//$'\n'/, }"
+done
+
 ##	20260901b item 18: the "not on your PATH" note compared strings against
 ##	`:dir:`, so a PATH element written with a trailing slash was not seen.
 eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
