@@ -1150,47 +1150,6 @@ static uint64_t name_key(size_t parent, ShclStr name) {
 /* Hash of the (name, merge-key) pair, spelling the merge-key byte sequence -
    'e', or each cell element (and the raw info-string) length-prefixed so the
    sequence is injective - without building it as a string. */
-static uint64_t merge_hash(ShclStr name, const ShclValue *v) {
-	uint64_t h = 1469598103934665603ull;
-	h = fnv_str(h, name);
-	h = fnv_byte(h, 0xFFu);
-	if (v->kind == V_EMPTY) return fnv_byte(h, 'e');
-	if (v->kind == V_CELL) {
-		h = fnv_byte(h, 'c'); h = fnv_byte(h, ':');
-		for (size_t i = 0; i < v->nels; i++) {
-			h = fnv_dec(h, v->els[i].text.n);
-			h = fnv_byte(h, ':');
-			h = fnv_str(h, v->els[i].text);
-		}
-		return h;
-	}
-	/* Info-string is part of identity (a `sql` and a `python` block are
-	   different values even with equal bodies); fence style is not. */
-	h = fnv_byte(h, 'r'); h = fnv_byte(h, ':');
-	h = fnv_dec(h, v->raw->info.n);
-	h = fnv_byte(h, ':');
-	h = fnv_str(h, v->raw->info);
-	return fnv_str(h, v->raw->content);
-}
-
-/* The exact (name, merge-key) equality a hashed hit is verified with -
-   compares what the two key strings would have held, element by element. The
-   quoted flag is not part of the key, same as the strings never carried it. */
-static int value_eq(const ShclValue *a, const ShclValue *b) {
-	if (a->kind != b->kind) return 0;
-	if (a->kind == V_EMPTY) return 1;
-	if (a->kind == V_CELL) {
-		if (a->nels != b->nels) return 0;
-		for (size_t i = 0; i < a->nels; i++)
-			if (!s_eq(a->els[i].text, b->els[i].text)) return 0;
-		return 1;
-	}
-	return s_eq(a->raw->info, b->raw->info) && s_eq(a->raw->content, b->raw->content);
-}
-static int merge_eq(ShclStr name_a, const ShclValue *va, ShclStr name_b, const ShclValue *vb) {
-	return s_eq(name_a, name_b) && value_eq(va, vb);
-}
-
 /* apply_escapes as a streaming feed into the hash - the same state machine,
    one byte at a time, no intermediate string. Bytes suffice: every special
    character is ASCII and UTF-8 never puts an ASCII byte inside a multibyte
@@ -1221,6 +1180,95 @@ static uint64_t esc_finish(ShclEscHash *e) {
 	if (e->pending) { e->pending = 0; e->h = fnv_byte(e->h, '\\'); }
 	return e->h;
 }
+
+/* The escape-resolved length of s, so a merge key can length-prefix an element
+   without building the resolved text. Mirrors apply_escapes exactly: five
+   escapes collapse two bytes to one, any other backslash pair keeps both, and
+   a trailing lone backslash stands. */
+static size_t esc_len(ShclStr s) {
+	size_t n = 0;
+	for (size_t i = 0; i < s.n; i++) {
+		if (s.p[i] != '\\' || i + 1 >= s.n) { n++; continue; }
+		unsigned char d = (unsigned char)s.p[i + 1];
+		n++;
+		if (d == 't' || d == 'n' || d == '\\' || d == '"' || d == '\'') i++;
+	}
+	return n;
+}
+
+/* One resolved byte at a time, so two texts compare with escapes applied and
+   nothing built. */
+static int esc_next(ShclStr s, size_t *i, unsigned char *out) {
+	if (*i >= s.n) return 0;
+	unsigned char c = (unsigned char)s.p[(*i)++];
+	if (c != '\\' || *i >= s.n) { *out = c; return 1; }
+	unsigned char d = (unsigned char)s.p[*i];
+	switch (d) {
+	case 't':  *out = '\t'; (*i)++; return 1;
+	case 'n':  *out = '\n'; (*i)++; return 1;
+	case '\\': *out = '\\'; (*i)++; return 1;
+	case '"':  *out = '"';  (*i)++; return 1;
+	case '\'': *out = '\''; (*i)++; return 1;
+	default:   *out = '\\'; return 1;   /* the backslash stands; d comes next */
+	}
+}
+
+/* Escape-resolved equality: two spellings of one string are one instance.
+   Names have followed that rule since 2.0, and a `[value]` selector matches on
+   the resolved text already - without this, one selector addressed two
+   instances. */
+static int esc_eq(ShclStr a, ShclStr b) {
+	size_t i = 0, j = 0; unsigned char x = 0, y = 0;
+	for (;;) {
+		int ha = esc_next(a, &i, &x), hb = esc_next(b, &j, &y);
+		if (!ha || !hb) return ha == hb;
+		if (x != y) return 0;
+	}
+}
+
+static uint64_t merge_hash(ShclStr name, const ShclValue *v) {
+	uint64_t h = 1469598103934665603ull;
+	h = fnv_str(h, name);
+	h = fnv_byte(h, 0xFFu);
+	if (v->kind == V_EMPTY) return fnv_byte(h, 'e');
+	if (v->kind == V_CELL) {
+		h = fnv_byte(h, 'c'); h = fnv_byte(h, ':');
+		for (size_t i = 0; i < v->nels; i++) {
+			h = fnv_dec(h, esc_len(v->els[i].text));
+			h = fnv_byte(h, ':');
+			ShclEscHash e; e.h = h; e.pending = 0;
+			esc_str(&e, v->els[i].text);
+			h = esc_finish(&e);
+		}
+		return h;
+	}
+	/* Info-string is part of identity (a `sql` and a `python` block are
+	   different values even with equal bodies); fence style is not. */
+	h = fnv_byte(h, 'r'); h = fnv_byte(h, ':');
+	h = fnv_dec(h, v->raw->info.n);
+	h = fnv_byte(h, ':');
+	h = fnv_str(h, v->raw->info);
+	return fnv_str(h, v->raw->content);
+}
+
+/* The exact (name, merge-key) equality a hashed hit is verified with -
+   compares what the two key strings would have held, element by element. The
+   quoted flag is not part of the key, same as the strings never carried it. */
+static int value_eq(const ShclValue *a, const ShclValue *b) {
+	if (a->kind != b->kind) return 0;
+	if (a->kind == V_EMPTY) return 1;
+	if (a->kind == V_CELL) {
+		if (a->nels != b->nels) return 0;
+		for (size_t i = 0; i < a->nels; i++)
+			if (!esc_eq(a->els[i].text, b->els[i].text)) return 0;
+		return 1;
+	}
+	return s_eq(a->raw->info, b->raw->info) && s_eq(a->raw->content, b->raw->content);
+}
+static int merge_eq(ShclStr name_a, const ShclValue *va, ShclStr name_b, const ShclValue *vb) {
+	return s_eq(name_a, name_b) && value_eq(va, vb);
+}
+
 
 /* Hash of the (name, display-with-escapes-applied) pair a `[value]` selector
    matches with - what disp_key spells, streamed instead of built. */

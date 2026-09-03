@@ -323,6 +323,19 @@ struct RawVal {
 	fence_len: usize,
 }
 
+/// The identity spelling of an element's text: escapes resolved, so two
+/// spellings of one string are one instance. Names have followed that rule
+/// since 2.0, and a `[value]` selector matches on the resolved text already -
+/// without this, one selector addressed two instances. Borrowed when there is
+/// nothing to resolve, which is nearly every element.
+fn key_text(s: &str) -> std::borrow::Cow<'_, str> {
+	if s.contains('\\') {
+		std::borrow::Cow::Owned(apply_escapes(s))
+	} else {
+		std::borrow::Cow::Borrowed(s)
+	}
+}
+
 impl Value {
 	/// Merge key: nodes with equal (name, key) collapse into one.
 	fn key(&self) -> String {
@@ -334,9 +347,10 @@ impl Value {
 				// "a\0b" (NUL is legal in a quoted string), silently merging them.
 				let mut k = String::from("c:");
 				for e in els {
-					k.push_str(&e.text.len().to_string());
+					let t = key_text(&e.text);
+					k.push_str(&t.len().to_string());
 					k.push(':');
-					k.push_str(&e.text);
+					k.push_str(&t);
 				}
 				k
 			}
@@ -882,9 +896,10 @@ fn merge_hash(name: &str, v: &Value) -> u64 {
 		Value::Cell(els) => {
 			h.bytes(b"c:");
 			for e in els {
-				h.dec(e.text.len());
+				let t = key_text(&e.text);
+				h.dec(t.len());
 				h.byte(b':');
-				h.bytes(e.text.as_bytes());
+				h.bytes(t.as_bytes());
 			}
 		}
 		Value::Raw(r) => {
@@ -912,7 +927,10 @@ fn merge_eq(name_a: &str, va: &Value, name_b: &str, vb: &Value) -> bool {
 	match (va, vb) {
 		(Value::Empty, Value::Empty) => true,
 		(Value::Cell(a), Value::Cell(b)) => {
-			a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.text == y.text)
+			a.len() == b.len()
+				&& a.iter()
+					.zip(b)
+					.all(|(x, y)| key_text(&x.text) == key_text(&y.text))
 		}
 		(Value::Raw(a), Value::Raw(b)) => a.info == b.info && a.content == b.content,
 		_ => false,

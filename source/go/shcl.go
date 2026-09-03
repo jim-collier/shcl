@@ -378,6 +378,18 @@ type value struct {
 	raw  *rawValue // behind a pointer: inline, its four fields would ride on every node
 }
 
+// keyText is the identity spelling of an element's text: escapes resolved, so
+// two spellings of one string are one instance. Names have followed that rule
+// since 2.0, and a `[value]` selector matches on the resolved text already -
+// without this, one selector addressed two instances. The common case has
+// nothing to resolve and returns the input.
+func keyText(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	return applyEscapes(s)
+}
+
 // key is the merge key: nodes with equal (name, key) collapse into one.
 func (v *value) key() string {
 	switch v.kind {
@@ -390,9 +402,10 @@ func (v *value) key() string {
 		var b strings.Builder
 		b.WriteString("c:")
 		for _, e := range v.els {
-			b.WriteString(strconv.Itoa(len(e.text)))
+			t := keyText(e.text)
+			b.WriteString(strconv.Itoa(len(t)))
 			b.WriteByte(':')
-			b.WriteString(e.text)
+			b.WriteString(t)
 		}
 		return b.String()
 	}
@@ -1043,9 +1056,10 @@ func mergeHash(name string, v *value) uint64 {
 	case vCell:
 		f.bytes("c:")
 		for i := range v.els {
-			f.dec(len(v.els[i].text))
+			t := keyText(v.els[i].text)
+			f.dec(len(t))
 			f.byte(':')
-			f.bytes(v.els[i].text)
+			f.bytes(t)
 		}
 	default:
 		f.bytes("r:")
@@ -1076,7 +1090,7 @@ func mergeEq(nameA string, va *value, nameB string, vb *value) bool {
 			return false
 		}
 		for i := range va.els {
-			if va.els[i].text != vb.els[i].text {
+			if keyText(va.els[i].text) != keyText(vb.els[i].text) {
 				return false
 			}
 		}

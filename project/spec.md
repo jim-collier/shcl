@@ -141,7 +141,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 ### Merging and instances
 
-- Occurrences with the same `(field-name, value)` merge; their children combine. This is how redundant paths collapse and how you add fields to an existing instance later in the file.
+- Occurrences with the same `(field-name, value)` merge; their children combine. This is how redundant paths collapse and how you add fields to an existing instance later in the file. Identity is on the *resolved* value, escapes applied, so `a: "q\"uote"` and `a: 'q"uote'` are one instance - the same text a `[value]` selector matches on, and the rule names follow too. Quoting is not part of it: `a: x` and `a: "x"` are one instance.
 
 - Occurrences of a field with **different** values are distinct instances, kept in file order.
 
