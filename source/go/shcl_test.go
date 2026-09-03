@@ -1280,7 +1280,13 @@ func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
 	// A generous ratio on purpose: the chain slice is still sized by the arena,
 	// which is a fill the walk cannot avoid. What the bound catches is the walk
 	// itself going over every dead node.
-	if ms[1] > ms[0]*25+25 {
+	// A clock too coarse to see the fresh side leaves the ratio with a zero
+	// denominator, and then the bound is an absolute figure on whatever machine
+	// is running - which is what it was written not to be. Windows counts in
+	// whole milliseconds and reports 0.0 here.
+	if ms[0] <= 0 {
+		t.Logf("index rebuild ratio not judged: the clock cannot see the fresh side")
+	} else if ms[1] > ms[0]*25+25 {
 		t.Errorf("index rebuild after churn %.1f ms against %.1f ms fresh - it walks nodes the document no longer holds", ms[1], ms[0])
 	}
 }

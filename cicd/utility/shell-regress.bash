@@ -516,7 +516,10 @@ grep -q "finally { \$ErrorActionPreference = \$smokeEap }" "${repoDir}/install.p
 ##	parent, so removing the package left /usr/share/shcl behind. The package
 ##	read-back lives in package.bash, which only runs at release time; building a
 ##	stub package here gives it something to fail on every run.
-if fHave nfpm && fHave dpkg-deb && fHave rpm; then
+## Not through fHave: the package read-back's own home is package.bash, which
+## runs at release time on a box that has these. This is the same check with
+## something to fail on every run, and the hosted gate installs no packager.
+if command -v nfpm >/dev/null 2>&1 && command -v dpkg-deb >/dev/null 2>&1 && command -v rpm >/dev/null 2>&1; then
 	pDir="${tmpDir}/nfpm"
 	mkdir -p "${pDir}/payload/code" "${pDir}/payload/scripts" "${pDir}/payload/man" "${pDir}/payload/doc" "${pDir}/payload/completions"
 	printf 'x\n' > "${pDir}/payload/code/lib.rs"

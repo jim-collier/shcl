@@ -683,6 +683,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Fixed, stdin: a stdin nothing is attached to reads as an empty document in all four CLIs. Windows reports a handle the shell closed as an invalid handle or an invalid function rather than as end of input, and all three windows CLIs exited 8 on it - not only Go.
 		- Fixed, C on windows: the save target is resolved through the final path, so a symlink or junction is followed and the answer carries the long-path prefix. The prefix is kept only where the name plus the temp file's suffix would exceed the old limit.
 		- Pinned by a `win-runners` closed-stdin row across all four, and by two windows-only C runner fixtures: a save and rewrite through a path past 260 characters, and a save through a symlink that has to leave the link in place. The link fixture skips where no link could be made, which is every run under wine and a windows host without the privilege.
+		- The long-path fixture found a second half on the hosted job: the read side went through the plain wide open, so a path past the limit could be written and not read. Reads take the same resolver now.
 		- Note: the symlink half is judged only on the hosted windows job. Nothing else here can make a windows symlink: wine reports one as created and creates nothing.
 		- Opened: 20260901-193200
 		- Closed: 20260904-004500
@@ -699,7 +700,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- ✅ Item 35: the `.rpm` does not own `/usr/share/shcl`, so removal leaves the directory behind. The `.deb` is fine.
 		- Fixed: the package definition declares the directory, so both formats own it and both remove it.
-		- Pinned by the package read-back in `package.bash`, which now checks the directory in both formats, and by a `shell-regress` block that builds a stub package on every run and puts it through that same read-back - the release-time check had nothing to fail on until a release.
+		- Pinned by the package read-back in `package.bash`, which now checks the directory in both formats, and by a `shell-regress` block that builds a stub package and puts it through that same read-back - the release-time check had nothing to fail on until a release. That block needs a packager, so it runs where one is and stays out of the hosted gate, which installs none.
 		- Opened: 20260901-193400
 		- Closed: 20260904-013000
 

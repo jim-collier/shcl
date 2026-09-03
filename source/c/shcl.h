@@ -5627,9 +5627,18 @@ static int shcl_publish_file(const wchar_t *tmp, const wchar_t *target) {
 }
 #endif
 
+#ifdef _WIN32
+static char *shcl_resolve_target(const char *file);
+#endif
 static FILE *shcl_fopen_rb(const char *path) {
 #ifdef _WIN32
-	wchar_t *w = shcl_widen(path);
+	// Through the same resolver the write side uses, so a read past MAX_PATH
+	// works too: the narrow and wide file calls both refuse such a path unless
+	// it carries the long-path prefix. A path the resolver cannot spell is
+	// opened as given, which is what it did before.
+	char *real = shcl_resolve_target(path);
+	wchar_t *w = shcl_widen(real ? real : path);
+	free(real);
 	FILE *f = w ? _wfopen(w, L"rb") : NULL;
 	int e = errno; free(w); errno = e;
 	return f;

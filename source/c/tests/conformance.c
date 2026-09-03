@@ -40,6 +40,30 @@ static const char *tmp_root(void) {
 	return "/tmp";
 }
 
+#ifdef _WIN32
+/* The fixture's own tree goes past MAX_PATH, and the narrow calls refuse such a
+   path the same way the library used to - so its setup and teardown carry the
+   long-path prefix too. Forward slashes are not allowed after it. */
+static wchar_t *long_wide(const char *p) {
+	char buf[1200];
+	int n = snprintf(buf, sizeof buf, "\\\\?\\%s", p);
+	for (int i = 4; i < n; i++) if (buf[i] == '/') buf[i] = '\\';
+	return shcl_widen(buf);
+}
+static void mkdir_long(const char *p) {
+	wchar_t *w = long_wide(p);
+	if (w) { CreateDirectoryW(w, NULL); free(w); }
+}
+static void remove_long(const char *p) {
+	wchar_t *w = long_wide(p);
+	if (w) { DeleteFileW(w); free(w); }
+}
+static void rmdir_long(const char *p) {
+	wchar_t *w = long_wide(p);
+	if (w) { RemoveDirectoryW(w); free(w); }
+}
+#endif
+
 static int nfail = 0;
 static void fail(const char *at, const char *msg) { fprintf(stderr, "FAIL %s: %s\n", at, msg); nfail++; }
 
@@ -1532,10 +1556,10 @@ int main(int argc, char **argv) {
 		snprintf(real_short, sizeof real_short, "%s/shcl-short-%ld.shcl", tmp_root(), (long)getpid());
 		size_t lbase = (size_t)snprintf(lp, sizeof lp, "%s/shcl-lp-%ld", tmp_root(), (long)getpid());
 		ln = lbase;
-		_mkdir(lp);
+		mkdir_long(lp);
 		for (int i = 0; i < 12 && ln < sizeof lp - 64; i++) {
 			ln += (size_t)snprintf(lp + ln, sizeof lp - ln, "/dddddddddddddddddddddddd%02d", i);
-			_mkdir(lp);
+			mkdir_long(lp);
 		}
 		ln += (size_t)snprintf(lp + ln, sizeof lp - ln, "/cfg.shcl");
 		if (ln <= MAX_PATH) fail("longpath", "the fixture path is not past MAX_PATH");
@@ -1549,19 +1573,22 @@ int main(int argc, char **argv) {
 		free(sr);
 		shcl_doc *ld = shcl_parse("a: 1\n", 5);
 		if (shcl_save_file(ld, lp) != SHCL_SAVE_OK) fail("longpath", "save refused a path past MAX_PATH");
-		size_t rn; char *rt = read_file(lp, &rn);
-		if (!rt || rn != 5 || memcmp(rt, "a: 1\n", 5) != 0) fail("longpath", "the long path did not read back");
+		/* Through the library, which is what has to carry the prefix: the
+		   runner's own reader is plain fopen and would refuse the path. */
+		size_t rn = 0; shcl_file_status lst; char *rt = shcl_read_file(lp, 0, &rn, &lst);
+		if (!rt || lst != SHCL_FILE_CLEAN || rn != 5 || memcmp(rt, "a: 1\n", 5) != 0)
+			fail("longpath", "the long path did not read back");
 		free(rt);
 		if (shcl_set_int(ld, "a", 1, 2) && shcl_save_file(ld, lp) != SHCL_SAVE_OK)
 			fail("longpath", "a rewrite of a path past MAX_PATH failed");
 		shcl_free(ld);
-		remove(lp);
+		remove_long(lp);
 		/* Up to the fixture's own root and no further: the walk is what removes
 		   the tree, and one step too many would be someone else's directory. */
 		for (ln = strlen(lp); ln > lbase; ) {
 			while (ln > lbase && lp[ln] != '/') ln--;
 			lp[ln] = '\0';
-			_rmdir(lp);
+			rmdir_long(lp);
 			if (ln > lbase) ln--;
 		}
 	}
