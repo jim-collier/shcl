@@ -262,9 +262,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-172500
 		- Closed: 20260903-025500
 
-	- 🔘 Item 27: stale prose in the README, the man page and the spec.
+	- ✅ Item 27: stale prose in the README, the man page and the spec.
 		- Reproduced by re-running the transcript and reading. `README.md` line 504's `get` transcript omits the `E014` line every loading subcommand has printed since 20260831, while the `check` transcript above it shows its stderr; `README.md` line 830 says raw blocks, set-only-if-absent and removal have no option form, though `--set-default`, `--set-literal-default` and `--remove` exist since 20260830b item 21; the man page's WRITE OPS sentence says the ops script is read when no `--set` or `--set-literal` carries the edits, where the code reads it only when none of the five options is given; `spec.md` line 599 lists the loading subcommands without `children` and `paths`.
+		- Fixed: all four, with the transcript re-run rather than edited by hand. Raw blocks are named as the one edit with no option form.
+		- Pinned by `check-docs.bash`, driven off the CLI rather than off a copy of any list: an edit option in the help must appear in the README paragraph and the man page, the WRITE OPS sentence must name all five, every subcommand that accepts `--layer` must be in the spec's list of them, and the README's `get` transcript on the damaged file must show a load diagnostic. Six checks fail on the old text.
 		- Opened: 20260902-172600
+		- Closed: 20260903-032000
 
 	- 🔘 Item 28: the windows publish's durability claim rests on a flag Microsoft documents as unsupported, and "attributes" in the carry-over claim is broader than what `ReplaceFile` preserves.
 		- Plausible: `design.md`'s file-tier decision says Windows has no directory sync and `ReplaceFile` is asked to write through instead; the Go comment says the flag means "do not return until the change is on the disk". Microsoft's `ReplaceFileW` reference lists `REPLACEFILE_WRITE_THROUGH` as "This value is not supported", and its preserve list (creation time, short name, object id, DACLs, security attributes, encryption, compression, named streams) does not include the basic attributes. Under wine, hidden and system are lost across a `set --write` in all three bindings; only read-only, which the code handles by hand, survives. Real NTFS could not be checked here.
