@@ -595,11 +595,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-174400
 		- Closed: 20260903-163000
 
-	- 🔘 Item 47: merging a layer differs from merging the same layer's canonical form.
+	- ✅ Item 47: merging a layer differs from merging the same layer's canonical form.
 		- Found while working item 44, by a 200,000-iteration fuzz soak; the gate runs 20,000 and had never reached it. Present before this round's changes.
 		- Reproduced with a base of one refused line (a name carrying a vertical tab, kept as trivia) and a layer whose trailing comment sits inside a stacked element's raw body. The layer and its own canonical form emit the same text, so the fixpoint property holds for the layer alone; they disagree about where the comment is attached, and only a merge shows it. The base's trivia comes out before the layer's comment one way and after it the other.
 		- Base `t<VT>o: 5`, layer `*<tab>```` / `  line1` / `  #` / `` `` ``. Direct gives `line1: / # / t<VT>o: 5`; through the canonical form, `line1: / t<VT>o: 5 / #`.
+		- Cause: a comment trailing a field at the field's own indent is kept as that field's, and a document's own trailing comment is kept separately and emitted after everything. For a top-level field the two are spelled the same - column zero - so a reload cannot tell them apart, and a merge, where the field's comment travels with the field and the document's is appended, puts them in different orders. An error-repaired document is what makes the two spellings meet: the field was written indented and ended up at the top level.
+		- Fixed: a comment trailing a top-level field is the document's. One written deeper than its field still belongs to the field, since that has an indent to come back to. All four bindings.
+		- Pinned by corpus `087`, which every binding failed before the change, and by the merge fuzz property that found it - clean over 200,000 iterations now, where it failed at 44,208.
 		- Opened: 20260904-025000
+		- Closed: 20260904-034000
 
 - Code review 20260901b:
 

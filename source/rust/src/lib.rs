@@ -1672,7 +1672,16 @@ impl Parser {
 							&& p.indent.starts_with(ind.as_str())
 					})
 					.map(|(ind, n)| (*n, ind.len() == p.indent.len()));
-				if let Some((n, at_own_level)) = target {
+				// A root node's trailing comment emits at column zero, which
+				// is exactly how the document's own trailing comment is
+				// spelled, so keeping the two apart here made a merge depend on
+				// whether the layer had been formatted first. Let it orphan,
+				// the way a reload of this document's own output reads it. A
+				// comment deeper than the node keeps an indent of its own and
+				// comes back where it was, so it still hangs.
+				let expressible =
+					target.is_some_and(|(n, own)| !own || self.arena[n].parent != ROOT);
+				if let (Some((n, at_own_level)), true) = (target, expressible) {
 					let lead = Lead {
 						text: p.text,
 						blank_before: p.blank_before,
