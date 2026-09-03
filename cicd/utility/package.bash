@@ -81,6 +81,11 @@ fCheckDeps(){
 	local listing; listing="$(dpkg-deb -c "${stem}.deb")"
 	grep -q ' ./usr/share/doc/shcl/copyright$' <<<"${listing}" || fDie "$(basename "${stem}").deb: no copyright file"
 	grep -q ' ./usr/share/doc/shcl/changelog.gz$' <<<"${listing}" || fDie "$(basename "${stem}").deb: no changelog"
+	if ! command -v rpm >/dev/null 2>&1 && [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+		## Under the gate a skipped read-back is a failure: the check exists to
+		## catch a package that declares nothing, and it cannot do that silently.
+		fDie "rpm is missing and the gate requires it to read the package back"
+	fi
 	if command -v rpm >/dev/null 2>&1; then
 		deps="$(rpm -qp --requires "${stem}.rpm" 2>/dev/null)"
 		[[ "${deps}" == *"glibc >= ${glibc}"* ]] || fDie "$(basename "${stem}").rpm: Requires ${deps@Q} lacks glibc >= ${glibc}"

@@ -483,9 +483,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-173000
 		- Closed: 20260903-060000
 
-	- 🔘 Item 32: five gates exit 0 when a tool they need is missing.
+	- ✅ Item 32: five gates exit 0 when a tool they need is missing.
 		- `check-locale.bash` skips without `localedef`, `shell-regress.bash` skips 12 checks without `pwsh`, 6 without `openssl` and the prerelease packaging row without `makensis` (the hosted runner has none, so 20260830b item 8 is pinned on this box only), and `package.bash` skips the rpm read-back without `rpm`. A strict switch under `--ci` that turns a skip into a failure keeps a runner that loses a tool from going quiet.
+		- Fixed: `--ci` exports `SHCL_GATE_STRICT`, and all five skips read it - a missing tool is a failure under the gate and still a skip in a working copy, which need not carry every tool.
+		- Pinned by `shell-regress.bash` itself, which exercises its own `fHave` both ways; flattening the helper back to a bare `command -v` fails it.
+		- Note: the hosted runner had no NSIS compiler, so the strict switch would have failed it on the prerelease packaging row; the workflow installs `nsis` now, which also means that row - 20260830b item 8's pin - runs somewhere other than this box for the first time.
 		- Opened: 20260902-173100
+		- Closed: 20260903-062000
 
 	- 🔘 Item 33: `tests/cli_pipe.rs` cannot see the `out!`-to-`println!` regression on Linux, and its header does not say so.
 		- With the macros' quiet exit replaced by a panic and `reset_sigpipe` kept, the test passes on Linux because SIGPIPE ends the process first; only the windows job pins the macros. A one-line note in the test header, so nobody reads the linux pass as covering 20260901b item 11.
