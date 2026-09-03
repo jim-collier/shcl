@@ -703,6 +703,14 @@ fn describe_refusal(doc: &Document, path: &str) -> &'static str {
 
 /// The load's diagnostics, one line each, in the shape every command uses.
 fn say_diagnostics(diags: &[Diagnostic]) {
+	say_diagnostics_from("", diags);
+}
+
+/// The same, labelled with the file the diagnostics came from. Under `--layer`
+/// several files are loaded and their line numbers share one space on the
+/// screen, so two layers with a bad line 2 printed the same thing twice with
+/// nothing to tell them apart.
+fn say_diagnostics_from(file: &str, diags: &[Diagnostic]) {
 	for d in diags {
 		// V090-V095 carry a schema line; V096 and V097 are about generation as a
 		// whole and carry line 0, so "schema line 0" named a line space they are
@@ -712,14 +720,26 @@ fn say_diagnostics(diags: &[Diagnostic]) {
 		} else {
 			"line"
 		};
-		errln!(
-			"{} {}: {:?}: {} {}",
-			space,
-			d.line,
-			d.severity,
-			d.code,
-			d.message
-		);
+		if file.is_empty() {
+			errln!(
+				"{} {}: {:?}: {} {}",
+				space,
+				d.line,
+				d.severity,
+				d.code,
+				d.message
+			);
+		} else {
+			errln!(
+				"{} {} {}: {:?}: {} {}",
+				file,
+				space,
+				d.line,
+				d.severity,
+				d.code,
+				d.message
+			);
+		}
 	}
 }
 
@@ -748,14 +768,23 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 		EXIT_IO
 	})?;
 	texts.push(base_text);
+	// Lowest layer first, each labelled with its own file when there is more
+	// than one: the line numbers share a space on the screen otherwise, and two
+	// layers with a bad line 2 printed the same thing twice.
+	let names: Vec<&str> = o
+		.layers
+		.iter()
+		.map(String::as_str)
+		.chain(std::iter::once(file))
+		.collect();
+	let label = |i: usize| if names.len() > 1 { names[i] } else { "" };
 	let mut doc = load(&texts[0], o.strictness)?;
-	let mut diags = doc.diagnostics().to_vec();
-	for t in &texts[1..] {
+	say_diagnostics_from(label(0), doc.diagnostics());
+	for (i, t) in texts[1..].iter().enumerate() {
 		let over = load(t, o.strictness)?;
-		diags.extend_from_slice(over.diagnostics());
+		say_diagnostics_from(label(i + 1), over.diagnostics());
 		doc.merge(&over);
 	}
-	say_diagnostics(&diags);
 	for s in &o.sets {
 		if !s.apply(&mut doc) {
 			errln!(

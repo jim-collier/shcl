@@ -311,21 +311,32 @@ static const char *describe_refusal(shcl_doc *d, const char *path, size_t plen) 
 
 // One diagnostic line in the shape every command uses: `line N: Severity:
 // CODE message` (`schema line` for the V090-V093 schema-fault codes).
+static void say_diag_from(const char *file, size_t line, shcl_severity sev, const char *code, shcl_str msg);
 static void say_diag(size_t line, shcl_severity sev, const char *code, shcl_str msg) {
+	say_diag_from("", line, sev, code, msg);
+}
+
+// The same, labelled with the file the diagnostic came from. Under --layer
+// several files are loaded and their line numbers share one space on the
+// screen, so two layers with a bad line 2 printed the same thing twice with
+// nothing to tell them apart.
+static void say_diag_from(const char *file, size_t line, shcl_severity sev, const char *code, shcl_str msg) {
 	/* V090-V095 carry a schema line; V096 and V097 are about generation as a
 	   whole and carry line 0, so "schema line 0" named a line space they are not
 	   in. V099 stands for a schema that did not load and is line 0 too. */
 	const char *space = (!strncmp(code, "V09", 3) && strcmp(code, "V096") && strcmp(code, "V097")
 		&& strcmp(code, "V099")) ? "schema line" : "line";
+	if (*file) fprintf(stderr, "%s ", file);
 	fprintf(stderr, "%s %zu: %s: %s ", space, line, sev == SHCL_SEV_ERROR ? "Error" : "Hint", code);
 	fwrite(msg.p, 1, msg.n, stderr); fputc('\n', stderr);
 }
 // The load's diagnostics, one line each.
-static void say_diagnostics(const shcl_doc *d) {
+static void say_diagnostics_from(const char *file, const shcl_doc *d) {
 	size_t n = shcl_diag_count(d);
 	for (size_t i = 0; i < n; i++)
-		say_diag(shcl_diag_line(d, i), shcl_diag_severity(d, i), shcl_diag_code(d, i), shcl_diag_message(d, i));
+		say_diag_from(file, shcl_diag_line(d, i), shcl_diag_severity(d, i), shcl_diag_code(d, i), shcl_diag_message(d, i));
 }
+static void say_diagnostics(const shcl_doc *d) { say_diagnostics_from("", d); }
 
 // Prints diagnostics to stderr and returns 6 on strict load failure, else 0.
 static int strict_gate(const shcl_doc *d) {
@@ -341,7 +352,8 @@ static int strict_gate(const shcl_doc *d) {
 // layer's node strings are not dup'd off its text). The over-layers are kept
 // too: a merge does not carry diagnostics over, so their docs are the only
 // place the layers' own diagnostics live. Free everything with layered_free.
-typedef struct { shcl_doc *doc; shcl_doc **overs; int novers; char **texts; int ntexts; } LayeredDoc;
+typedef struct { shcl_doc *doc; shcl_doc **overs; int novers; char **texts; int ntexts;
+	const char **names; int nnames; } LayeredDoc;
 
 static void layered_push_text(LayeredDoc *L, char *t) {
 	L->texts = (char **)xrealloc(L->texts, ((size_t)L->ntexts + 1) * sizeof *L->texts);
@@ -357,6 +369,7 @@ static void layered_push_doc(LayeredDoc *L, shcl_doc *dd) {
 }
 
 static void layered_free(LayeredDoc *L) {
+	free((void *)L->names); L->names = NULL; L->nnames = 0;
 	if (L->doc) shcl_free(L->doc);
 	for (int i = 0; i < L->novers; i++) shcl_free(L->overs[i]);
 	free(L->overs);
@@ -368,8 +381,12 @@ static void layered_free(LayeredDoc *L) {
 // Every layer's diagnostics, lowest first. Reading them off the merged doc
 // alone would drop the ones for FILE itself, which is the one the caller named.
 static void say_layered_diagnostics(const LayeredDoc *L) {
-	say_diagnostics(L->doc);
-	for (int i = 0; i < L->novers; i++) say_diagnostics(L->overs[i]);
+	// Each labelled with its own file when there is more than one: the line
+	// numbers share a space on the screen otherwise.
+	int lbl = L->nnames > 1;
+	say_diagnostics_from(lbl ? L->names[0] : "", L->doc);
+	for (int i = 0; i < L->novers; i++)
+		say_diagnostics_from(lbl && i + 1 < L->nnames ? L->names[i + 1] : "", L->overs[i]);
 }
 
 // Load `file` with o's lower-priority --layer files underneath it and its --set
@@ -414,9 +431,12 @@ static int set_apply(shcl_doc *d, const SetOpt *s) {
 
 static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 	out->doc = NULL; out->overs = NULL; out->novers = 0; out->texts = NULL; out->ntexts = 0;
+	out->names = (const char **)xrealloc(NULL, (size_t)(o->nlayers + 1) * sizeof *out->names);
+	out->nnames = 0;
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	for (int i = 0; i <= o->nlayers; i++) {
 		const char *fname = i < o->nlayers ? o->layers[i] : file;
+		out->names[out->nnames++] = fname;
 		size_t len; char *t = read_input(fname, &len);
 		if (!t) { layered_free(out); return EXIT_IO; }
 		layered_push_text(out, t);
@@ -818,7 +838,10 @@ static int do_set(Opts *o) {
 	// The base layer's node strings are not dup'd off its text, so keep all
 	// buffers.
 	LayeredDoc L; L.doc = NULL; L.overs = NULL; L.novers = 0; L.texts = NULL; L.ntexts = 0;
+	L.names = (const char **)xrealloc(NULL, (size_t)(o->nlayers + 1) * sizeof *L.names);
+	L.nnames = 0;
 	for (int i = 0; i < o->nlayers; i++) {
+		L.names[L.nnames++] = o->layers[i];
 		size_t llen; char *lt = read_input(o->layers[i], &llen);
 		if (!lt) { layered_free(&L); return EXIT_IO; }
 		layered_push_text(&L, lt);
@@ -839,6 +862,7 @@ static int do_set(Opts *o) {
 	if (creating || (!strcmp(file, "-") && o->nsets == 0)) { text = (char *)xrealloc(NULL, 1); len = 0; }
 	else { text = read_input(file, &len); if (!text) { layered_free(&L); return EXIT_IO; } }
 	layered_push_text(&L, text);
+	L.names[L.nnames++] = file;
 	{
 		shcl_doc *dd = xdoc(shcl_parse_with(text, len, o->strictness));
 		int gate = strict_gate(dd);

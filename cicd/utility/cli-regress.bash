@@ -42,6 +42,8 @@ done
 tmpDir="$(mktemp -d)"; trap 'chmod -R u+w "${tmpDir}" 2>/dev/null; rm -rf "${tmpDir}"' EXIT
 printf 'a: 1\n'          > "${tmpDir}/ok.shcl"
 printf 'a: 1\n  bad\nb 2\n' > "${tmpDir}/bad.shcl"
+## A second damaged file, so a layered load has two to tell apart.
+printf 'c: 1\nalso bad\n' > "${tmpDir}/bad2.shcl"
 mkdir -p "${tmpDir}/adir"
 ## The deepest a document can legally go: one level under the 512 cap. Python
 ## was the binding still recursing a frame per level, so this is the shape that
@@ -99,7 +101,8 @@ printf 'db:\n\thost: h\n\t"odd.key": 2\nweb:\n\tport: 1\n' > "${tmpDir}/tree.shc
 printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
-##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
+##	argv placeholders: %F% the good file, %B% the two-error file, %B2% a second
+##	damaged file for a layered load, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %S1%/%S2%
 ##	a nameless must-exist path at repeat 1 and 2, %S3% a schema that does not
 ##	build, %S4% a required path with an index selector, %S5%/%S6% a schema at and
@@ -201,6 +204,10 @@ rows=(
 	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
 	'children-missing|children %T% nope|-|0||-'
 	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	## 20260901b item 24: two layers with a bad line 2 printed the same thing
+	## twice, with nothing to say which file each came from.
+	'layer-diags-named|fmt --layer=%B% %B2%|-|0|-|bad2.shcl line 2: Error: E014'
+	'single-file-diags-unnamed|fmt %B%|-|0|-|^line 3: Error: E014'
 	## 20260902 item 44: the failing phase is named, not guessed.
 	'write-names-the-phase|set --write --set=a=2 %N%|-|8|-|cannot create temporary file'
 	## 20260902 item 41: the schema's own diagnostics were never printed, so the
@@ -243,6 +250,7 @@ declare -i nRun=0 nBad=0
 for row in "${rows[@]}"; do
 	IFS='|' read -r id argv stdinSpec wantRc wantOut wantErr <<<"${row}"
 	argv="${argv//%F%/${tmpDir}/ok.shcl}"
+	argv="${argv//%B2%/${tmpDir}/bad2.shcl}"
 	argv="${argv//%B%/${tmpDir}/bad.shcl}"
 	argv="${argv//%D%/${tmpDir}/adir}"
 	argv="${argv//%P%/${tmpDir}/deep.shcl}"

@@ -733,6 +733,14 @@ func describeRefusal(doc *shcl.Document, path string) string {
 // sayDiagnostics prints the load's diagnostics, one line each, in the shape
 // every command uses.
 func sayDiagnostics(diags []shcl.Diagnostic) {
+	sayDiagnosticsFrom("", diags)
+}
+
+// sayDiagnosticsFrom is the same, labelled with the file the diagnostics came
+// from. Under --layer several files are loaded and their line numbers share one
+// space on the screen, so two layers with a bad line 2 printed the same thing
+// twice with nothing to tell them apart.
+func sayDiagnosticsFrom(file string, diags []shcl.Diagnostic) {
 	for _, d := range diags {
 		// V090-V095 carry a schema line; V096 and V097 are about generation as a
 		// whole and carry line 0, so "schema line 0" named a line space they are
@@ -741,7 +749,11 @@ func sayDiagnostics(diags []shcl.Diagnostic) {
 		if strings.HasPrefix(d.Code, "V09") && d.Code != "V096" && d.Code != "V097" && d.Code != "V099" {
 			space = "schema line"
 		}
-		fmt.Fprintf(os.Stderr, "%s %d: %s: %s %s\n", space, d.Line, d.Severity, d.Code, d.Message)
+		if file == "" {
+			fmt.Fprintf(os.Stderr, "%s %d: %s: %s %s\n", space, d.Line, d.Severity, d.Code, d.Message)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s %s %d: %s: %s %s\n", file, space, d.Line, d.Severity, d.Code, d.Message)
+		}
 	}
 }
 
@@ -846,20 +858,29 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 		return nil, exitIO
 	}
 	texts = append(texts, base)
+	// Lowest layer first, each labelled with its own file when there is more
+	// than one: the line numbers share a space on the screen otherwise, and two
+	// layers with a bad line 2 printed the same thing twice.
+	names := append(append([]string(nil), o.layers...), file)
+	label := func(i int) string {
+		if len(names) > 1 {
+			return names[i]
+		}
+		return ""
+	}
 	doc, code := loadDoc(texts[0], o.strictness)
 	if code != 0 {
 		return nil, code
 	}
-	diags := append([]shcl.Diagnostic(nil), doc.Diagnostics()...)
-	for _, t := range texts[1:] {
+	sayDiagnosticsFrom(label(0), doc.Diagnostics())
+	for i, t := range texts[1:] {
 		over, c := loadDoc(t, o.strictness)
 		if c != 0 {
 			return nil, c
 		}
-		diags = append(diags, over.Diagnostics()...)
+		sayDiagnosticsFrom(label(i+1), over.Diagnostics())
 		doc.Merge(over)
 	}
-	sayDiagnostics(diags)
 	for _, s := range o.sets {
 		if !s.apply(doc) {
 			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path))
