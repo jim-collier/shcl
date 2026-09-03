@@ -216,7 +216,11 @@ file. Nothing unverified is installed.
 		if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
 			Exit-Install 'a system install needs an elevated shell (or pass -Target user)'
 		}
-		$dest = Join-Path $env:ProgramFiles 'Shcl'
+		## A 32-bit host reads Program Files (x86) out of ProgramFiles, which is
+		## the wrong home for a 64-bit binary. ProgramW6432 is the 64-bit one and
+		## is only set where the two differ.
+		$programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+		$dest = Join-Path $programFiles 'Shcl'
 		$pathScope = 'Machine'
 		$pathDir = $dest
 	} else {
@@ -329,7 +333,14 @@ file. Nothing unverified is installed.
 		## since a nonzero exit from a native command throws under this script's
 		## own error preference on 7.4 and later - which used to mean a success
 		## message followed by an exception, with the install left in place.
-		$smokeOut = & (Join-Path $tmp 'shcl.exe') version 2>&1
+		## Windows PowerShell 5.1 turns a native command's stderr into error
+		## records under this redirect, and the script's own Stop preference
+		## then throws before the exit code is read - so the preference comes
+		## off for the call and goes straight back on.
+		$smokeEap = $ErrorActionPreference
+		$ErrorActionPreference = 'Continue'
+		try { $smokeOut = & (Join-Path $tmp 'shcl.exe') version 2>&1 }
+		finally { $ErrorActionPreference = $smokeEap }
 		if ($LASTEXITCODE -ne 0) {
 			Exit-Install "the downloaded shcl.exe does not run here: $($smokeOut -join ' ')"
 		}
