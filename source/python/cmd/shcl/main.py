@@ -444,10 +444,16 @@ def read_input(file):
 def load_doc(text, strictness):
 	# Returns (doc, None) or (None, code). On strict load failure, prints the
 	# reference's diagnostic lines to stderr and reports code 6.
+	return load_doc_from("", text, strictness)
+
+
+def load_doc_from(file, text, strictness):
+	# The same, labelled with the file the text came from, so a strict failure
+	# in one layer of a fold says which layer.
 	try:
 		return shcl.Document.parse_with(text, strictness), None
 	except shcl.LoadError as le:
-		say_diagnostics(le.diagnostics)
+		say_diagnostics_from(file, le.diagnostics)
 		errors = sum(1 for d in le.diagnostics if d.severity == shcl.Severity.Error)
 		sys.stderr.write(f"strict load failed: {errors} error diagnostic(s)\n")
 		return None, 6
@@ -494,12 +500,12 @@ def load_layered(o, file):
 	names = list(o.layers) + [file]
 	def label(i):
 		return names[i] if len(names) > 1 else ""
-	doc, code = load_doc(texts[0], o.strictness)
+	doc, code = load_doc_from(label(0), texts[0], o.strictness)
 	if doc is None:
 		return None, code
 	say_diagnostics_from(label(0), doc.diagnostics())
 	for i, t in enumerate(texts[1:]):
-		over, c = load_doc(t, o.strictness)
+		over, c = load_doc_from(label(i + 1), t, o.strictness)
 		if over is None:
 			return None, c
 		say_diagnostics_from(label(i + 1), over.diagnostics())

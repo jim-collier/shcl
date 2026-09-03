@@ -336,12 +336,16 @@ static void say_diagnostics_from(const char *file, const shcl_doc *d) {
 	for (size_t i = 0; i < n; i++)
 		say_diag_from(file, shcl_diag_line(d, i), shcl_diag_severity(d, i), shcl_diag_code(d, i), shcl_diag_message(d, i));
 }
-static void say_diagnostics(const shcl_doc *d) { say_diagnostics_from("", d); }
 
 // Prints diagnostics to stderr and returns 6 on strict load failure, else 0.
-static int strict_gate(const shcl_doc *d) {
+static int strict_gate_from(const char *file, const shcl_doc *d);
+static int strict_gate(const shcl_doc *d) { return strict_gate_from("", d); }
+
+// The same, labelled with the file the document came from, so a strict failure
+// in one layer of a fold says which layer.
+static int strict_gate_from(const char *file, const shcl_doc *d) {
 	if (!shcl_strict_failed(d)) return 0;
-	say_diagnostics(d);
+	say_diagnostics_from(file, d);
 	size_t n = shcl_diag_count(d), nerr = 0;
 	for (size_t i = 0; i < n; i++) if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
 	fprintf(stderr, "strict load failed: %zu error diagnostic(s)\n", nerr);
@@ -441,7 +445,7 @@ static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 		if (!t) { layered_free(out); return EXIT_IO; }
 		layered_push_text(out, t);
 		shcl_doc *dd = xdoc(shcl_parse_with(t, len, o->strictness));
-		int g = strict_gate(dd);
+		int g = strict_gate_from(o->nlayers ? fname : "", dd);
 		if (g) { shcl_free(dd); layered_free(out); return g; }
 		layered_push_doc(out, dd);
 	}
