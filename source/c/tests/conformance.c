@@ -1434,6 +1434,35 @@ int main(int argc, char **argv) {
 		pthread_attr_destroy(&at);
 	}
 #endif
+	/* A path that names a directory - it ends in a separator, or its last
+	   component is `.` or `..` - is not a document. A path cleanup drops the
+	   trailing separator first, so a save through `f/.` used to rewrite `f` in
+	   some bindings. Same fixture in every runner. */
+	{
+		char ddir[256], dfile[320], dpath[336];
+		snprintf(ddir, sizeof ddir, "%s/shcl-dirpath-%ld", tmp_root(), (long)getpid());
+		snprintf(dfile, sizeof dfile, "%s/f.shcl", ddir);
+#ifdef _WIN32
+		if (_mkdir(ddir) != 0) fail("dirpath", "mkdir failed");
+#else
+		if (mkdir(ddir, 0700) != 0) fail("dirpath", "mkdir failed");
+#endif
+		FILE *df = fopen(dfile, "wb");
+		if (!df || fputs("a: 1\n", df) == EOF || fclose(df) != 0) fail("dirpath", "seed write failed");
+		shcl_doc *dd = shcl_parse("a: 2\n", 5);
+		static const char *sfx[] = { "/", "/.", "/.." };
+		for (size_t si = 0; si < sizeof sfx / sizeof sfx[0]; si++) {
+			snprintf(dpath, sizeof dpath, "%s%s", dfile, sfx[si]);
+			if (shcl_save_file(dd, dpath) == SHCL_SAVE_OK) fail("dirpath", "a directory-shaped path was accepted");
+		}
+		size_t dn; char *dt = read_file(dfile, &dn);
+		if (!dt || dn != 5 || memcmp(dt, "a: 1\n", 5) != 0) fail("dirpath", "a refused save changed the file");
+		free(dt);
+		if (shcl_save_file(dd, dfile) != SHCL_SAVE_OK) fail("dirpath", "the plain path did not save");
+		shcl_free(dd);
+		remove(dfile); rmdir(ddir);
+	}
+
 	/* A written value carrying both quote kinds is stored the way its own
 	   reload stores it, so shcl_instances and a read's raw text agree across a
 	   save. The emitter escapes the double quotes; the writer used to keep them
