@@ -578,8 +578,8 @@ Diagnostic codes ride the existing structure (line, severity, stable code, prose
 | `V093` | bad schema path | schema file
 | `V094` | bad fragment declaration (no name, duplicate, or a non-`field` key inside) | schema file
 | `V095` | `inherits` names no declared fragment | schema file
-| `V096` | schema expands to more fields than generation allows | 0
-| `V097` | generated output fails the schema that produced it (a `default` outside its own field's constraints, say), or a must-exist path nothing can generate | 0
+| `V096` | schema expands to more fields than generation allows | 0 (a document line space, not a schema one)
+| `V097` | generated output fails the schema that produced it (a `default` outside its own field's constraints, say), or a must-exist path nothing can generate | 0 (a document line space, not a schema one)
 | `V099` | schema failed to load (schema had error diagnostics) | 0
 
 A schema fault (`V090`+) does not silence the rest of the result: the constraints that parsed cleanly still check the document (a broken key drops that key, a broken `field:` drops that field), so a typo in one constraint cannot hide a real violation of another. The unknown-field sweep needs the complete declared vocabulary of *names*, and a key-level fault keeps its entry's path - so the sweep still runs; it turns off only when a fault cost a path spelling outright (an unreadable `field:` path, or a mount naming no declared fragment). Generation (`shcl init`) still requires a fault-free schema - a partial starter config would be worse than an error. `check --schema` folds validation diagnostics into `check`'s existing output: same `line N: severity: CODE` stdout lines, the same line plus its prose on stderr, same summary line and exit-6-on-any-error rule. Both streams carry the code; only stdout is the contract. A `V090`-`V093` line number is a schema-file line (the table above says which); the stderr prose spells those `schema line N` so the two number spaces cannot be confused, while the compared stdout keeps the uniform `line N` shape - the code already names the space.
@@ -631,6 +631,8 @@ The output, per schema field in schema order:
 - A `desc` line becomes a leading `# ` comment.
 
 - A generated annotation line summarizes the type and constraints, ASCII only: `# <type>[, one of: v1, v2, ...][, <lo>-<hi> | >= <lo> | <= <hi>][, repeat <lo>[-<hi>]][, required]`. An untyped field shows `any`. Allowed values and numeric bounds are rendered in the type's canonical text (the same float formatter reads use); a newline inside a rendered value is escaped to `\n` so it cannot break out of the comment. This annotation is part of the generated file, so it is a byte-for-byte cross-binding contract, not free prose.
+
+- `desc` is prose and takes the whole value: a comma in a sentence makes it several elements, and all of them go in the comment, spelled as written. A `default` that has no spelling on a value line - a raw block, or any default under `type: raw` - is a `V092` schema fault at that line rather than a silently dropped value.
 
 - The field line itself: fields that **must exist** (`required`, or a `repeat` lower bound of 1 or more) are live (`path: <default>`, or `path:` with an empty value when there is no `default`; a quoted plain-string `default` keeps its quotes, and one containing a newline is written in its quoted escaped spelling); **optional** fields are the same line commented out (`#path: ...`), so the starter is valid and minimal as-is.
 

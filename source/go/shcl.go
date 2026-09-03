@@ -5797,6 +5797,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 	var required *bool
 	reopenSeen := false
 	allowedAt := -1
+	defaultAt := -1
 	minAt := -1
 	maxAt := -1
 	for _, k := range schema.arena[f].children {
@@ -5888,19 +5889,36 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 		// Generator-only (`shcl init`); validation ignores both. First
 		// occurrence wins (a merged schema could carry two).
 		case "desc":
-			if c.desc == nil {
-				if t, ok := singleText(&kid.value); ok {
-					c.desc = &t
+			// A comma in a sentence makes the value several elements, and the
+			// comment is prose: take them all, spelled as written.
+			if c.desc == nil && kid.value.kind == vCell {
+				parts := make([]string, len(kid.value.els))
+				for i := range kid.value.els {
+					parts[i] = applyEscapes(kid.value.els[i].text)
 				}
+				t := strings.Join(parts, ", ")
+				c.desc = &t
 			}
 		case "default":
 			if c.defaultText == nil {
 				if t, ok := emitValueInline(&kid.value); ok {
 					c.defaultText = &t
 				}
+				defaultAt = k
 			}
 		default:
 			vdiag(faults, kid.line, "V090", fmt.Sprintf("unknown schema key '%s'", kid.name))
+		}
+	}
+	// A raw block has no inline spelling, so a `default` that is one cannot reach
+	// a generated line - it used to be dropped and the field emitted with no
+	// value at all - and a `default` under `type: raw` goes out inline and then
+	// fails its own type check.
+	if defaultAt >= 0 {
+		kid := &schema.arena[defaultAt]
+		rawTyped := c.ty == "raw"
+		if kid.value.kind == vRaw || (rawTyped && c.defaultText != nil) {
+			vdiag(faults, kid.line, "V092", "bad schema constraint 'default'")
 		}
 	}
 	if required != nil {

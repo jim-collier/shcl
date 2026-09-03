@@ -59,6 +59,14 @@ printf 'field: "*"\n\ttype: int\n\trepeat: 2\n' > "${tmpDir}/star2.shcl"
 ## limit while its message said past it.
 awk 'BEGIN{ for (i = 0; i < 10000; i++) printf "field: f%d\n", i }' > "${tmpDir}/cap10000.shcl"
 awk 'BEGIN{ for (i = 0; i < 10001; i++) printf "field: f%d\n", i }' > "${tmpDir}/cap10001.shcl"
+## A generator-only `default` the schema cannot spell on a value line: a raw
+## block has no inline form, and a `type: raw` field's default goes out inline
+## and then fails its own type check. Both used to be dropped or reported as a
+## wrong type in the generated output.
+printf 'field: b\n\ttype: raw\n\tdefault: hello\n\trequired: yes\n' > "${tmpDir}/rawdef.shcl"
+## A `desc` with a comma in it: the value is several elements, and the comment
+## used to come out missing rather than carrying the sentence.
+printf 'field: a\n\tdesc: one, two\n\trequired: yes\n' > "${tmpDir}/commadesc.shcl"
 ## A schema whose own load has something to say: two `field: a` instances merge,
 ## so `allowed` repeats as a bare leaf - which is exactly what the V092 under it
 ## is about, and it was invisible.
@@ -87,7 +95,7 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	a nameless must-exist path at repeat 1 and 2, %S3% a schema that does not
 ##	build, %S4% a required path with an index selector, %S5%/%S6% a schema at and
 ##	one past the generation field ceiling, %S7% a schema whose own load hints,
-##	%X% an
+##	%S8% a raw default, %S9% a desc with a comma, %X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
 ##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
 ##	path with no file at it.
@@ -132,6 +140,12 @@ rows=(
 	## fragments, saying the schema expands past it.
 	'init-cap-at-limit|init --no-banner --schema=%S5%|-|0|-|^$'
 	'init-cap-over|init --no-banner --schema=%S6%|-|6||V096 schema expands past 10000 fields'
+	## 20260902 item 43: a raw default was dropped or misreported, a desc with a
+	## comma produced no comment, and V096/V097 named a schema line space they
+	## are not in.
+	'init-raw-default|init --schema=%S8%|-|6||schema line 3: Error: V092'
+	'init-comma-desc|init --no-banner --schema=%S9%|-|0|# one, two\n# any, required\na:\n|-'
+	'init-genfault-line-space|init --schema=%S4%|-|6||^line 0: Error: V097'
 	'init-build-fault|init --schema=%S3%|-|6||V091 unknown schema type'
 	'init-build-fault-only|init --schema=%S3%|-|6||!V002'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
@@ -228,6 +242,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S5%/${tmpDir}/cap10000.shcl}"
 	argv="${argv//%S6%/${tmpDir}/cap10001.shcl}"
 	argv="${argv//%S7%/${tmpDir}/hintschema.shcl}"
+	argv="${argv//%S8%/${tmpDir}/rawdef.shcl}"
+	argv="${argv//%S9%/${tmpDir}/commadesc.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"

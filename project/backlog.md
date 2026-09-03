@@ -570,9 +570,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-174100
 		- Closed: 20260903-140000
 
-	- 🔘 Item 43: generator gaps the spec does not rule on.
+	- ✅ Item 43: generator gaps the spec does not rule on.
 		- A `desc` that is not one scalar (`desc: a, b`) produces no comment and no fault. `type: raw` with a `default` can never generate (the default is emitted inline, so V097 reports wrong type), and a default carrying a raw block is dropped silently. `init` prints `schema line 0` for V096 and V097, whose line space is the document.
+		- Decided: `desc` takes the whole value, since a comma in a sentence is what an author types and a comment has room for it. A `default` with no value-line spelling is a schema fault, not a dropped value: the alternative is a starter config missing a field's default with nothing said. And V096/V097 print as `line 0`, since neither is at a schema line.
+		- Fixed: all four read `desc` as every element joined as written, fault a raw-valued `default` and a `default` under `type: raw` with `V092` at its own line, and print the two generation-only codes in the document's line space. `init`'s fault printer goes through the shared diagnostic line now instead of hard-coding the schema prefix.
+		- Pinned by three `cli-regress` rows (a raw default, a comma `desc` with its whole generated output, and the V097 line space), each failing in all four before. The spec's generation section says both rules and the code table names the line space.
 		- Opened: 20260902-174200
+		- Closed: 20260903-152000
 
 	- 🔘 Item 44: the C CLI's "cannot create temporary file" phase wording is decided by `_waccess`, which on Windows reports every existing directory writable.
 		- The C library reports errno alone and the CLI guesses the phase from `_waccess(dir, 2)`; on real Windows an ACL-protected directory gets the bare errno where Rust and Go name the temp-create phase. Cosmetic under wine, which follows the unix mode bits. Record the failing phase in the library's write, or probe with an exclusive create.

@@ -704,7 +704,10 @@ fn describe_refusal(doc: &Document, path: &str) -> &'static str {
 /// The load's diagnostics, one line each, in the shape every command uses.
 fn say_diagnostics(diags: &[Diagnostic]) {
 	for d in diags {
-		let space = if d.code.starts_with("V09") && d.code != "V099" {
+		// V090-V095 carry a schema line; V096 and V097 are about generation as a
+		// whole and carry line 0, so "schema line 0" named a line space they are
+		// not in. V099 stands for a schema that did not load and is line 0 too.
+		let space = if d.code.starts_with("V09") && !matches!(d.code, "V096" | "V097" | "V099") {
 			"schema line"
 		} else {
 			"line"
@@ -1444,15 +1447,10 @@ fn do_init(o: &Opts) -> u8 {
 			0
 		}
 		Err(faults) => {
-			for d in &faults {
-				errln!(
-					"schema line {}: {:?}: {} {}",
-					d.line,
-					d.severity,
-					d.code,
-					d.message
-				);
-			}
+			// V090-V095 carry a schema line; V096 and V097 are about generation
+			// as a whole and carry line 0, so "schema line 0" named a line space
+			// they are not in.
+			say_diagnostics(&faults);
 			errln!("init: schema has faults");
 			6
 		}

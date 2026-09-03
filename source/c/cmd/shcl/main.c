@@ -312,7 +312,11 @@ static const char *describe_refusal(shcl_doc *d, const char *path, size_t plen) 
 // One diagnostic line in the shape every command uses: `line N: Severity:
 // CODE message` (`schema line` for the V090-V093 schema-fault codes).
 static void say_diag(size_t line, shcl_severity sev, const char *code, shcl_str msg) {
-	const char *space = (!strncmp(code, "V09", 3) && strcmp(code, "V099")) ? "schema line" : "line";
+	/* V090-V095 carry a schema line; V096 and V097 are about generation as a
+	   whole and carry line 0, so "schema line 0" named a line space they are not
+	   in. V099 stands for a schema that did not load and is line 0 too. */
+	const char *space = (!strncmp(code, "V09", 3) && strcmp(code, "V096") && strcmp(code, "V097")
+		&& strcmp(code, "V099")) ? "schema line" : "line";
 	fprintf(stderr, "%s %zu: %s: %s ", space, line, sev == SHCL_SEV_ERROR ? "Error" : "Hint", code);
 	fwrite(msg.p, 1, msg.n, stderr); fputc('\n', stderr);
 }
@@ -984,12 +988,8 @@ static int do_init(const Opts *o) {
 	shcl_str text = shcl_generate(sd, o->no_banner, &ok);
 	if (!ok) {
 		size_t nd = shcl_diag_count(sd);
-		for (size_t i = diagMark; i < nd; i++) {
-			const char *sev = shcl_diag_severity(sd, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
-			shcl_str m = shcl_diag_message(sd, i);
-			fprintf(stderr, "schema line %zu: %s: %s ", shcl_diag_line(sd, i), sev, shcl_diag_code(sd, i));
-			fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
-		}
+		for (size_t i = diagMark; i < nd; i++)
+			say_diag(shcl_diag_line(sd, i), shcl_diag_severity(sd, i), shcl_diag_code(sd, i), shcl_diag_message(sd, i));
 		fprintf(stderr, "init: schema has faults\n");
 		shcl_free(sd); free(stext); return 6;
 	}
