@@ -30,3 +30,12 @@ field: "server[*].host"
 field: replicas
 	type: int
 	repeat: 1, 5
+
+field: ratio
+	type: float
+	min: 811212085039910.2
+	max: 1125899906842624.2
+
+field: scale
+	type: float
+	allowed: 811212085039910.2, 1125899906842624.2

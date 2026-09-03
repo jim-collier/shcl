@@ -5637,7 +5637,7 @@ fn allowed_join(a: &AllowedSet) -> String {
 			.join(", "),
 		AllowedSet::Floats(v) => v
 			.iter()
-			.map(|x| x.to_string())
+			.map(|x| format_f64(*x))
 			.collect::<Vec<_>>()
 			.join(", "),
 		AllowedSet::Bools(v) => v
@@ -5668,9 +5668,9 @@ fn gen_annotation(c: &Constraint, tyname: &str) -> String {
 		});
 	} else if c.min_f.is_some() || c.max_f.is_some() {
 		parts.push(match (c.min_f, c.max_f) {
-			(Some(lo), Some(hi)) => format!("{}-{}", lo, hi),
-			(Some(lo), None) => format!(">= {}", lo),
-			(None, Some(hi)) => format!("<= {}", hi),
+			(Some(lo), Some(hi)) => format!("{}-{}", format_f64(lo), format_f64(hi)),
+			(Some(lo), None) => format!(">= {}", format_f64(lo)),
+			(None, Some(hi)) => format!("<= {}", format_f64(hi)),
 			(None, None) => String::new(), // guarded above; keep the map total
 		});
 	}

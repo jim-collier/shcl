@@ -422,7 +422,7 @@ fn reads_match_expected() {
 					}
 					"float" => {
 						let r = doc.read_float(query);
-						(r.value.to_string(), r.status, r.slots)
+						(shcl::format_f64(r.value), r.status, r.slots)
 					}
 					"bool" => {
 						let r = doc.read_bool(query);
@@ -461,7 +461,7 @@ fn reads_match_expected() {
 						(
 							r.value
 								.iter()
-								.map(|v| v.to_string())
+								.map(|v| shcl::format_f64(*v))
 								.collect::<Vec<_>>()
 								.join("|"),
 							r.status,
