@@ -122,6 +122,24 @@ int main(void) {
 	}
 	shcl_free(d);
 
+	// A setter encodes into the document arena before the path is validated, so
+	// a refused write used to cost the document the whole encoded value, for as
+	// long as it lived.
+	d = shcl_parse("a: 1\n", 5);
+	size_t held = arena_bytes(&d->arena);
+	size_t big = 4u * 1024 * 1024;
+	char *blob = (char *)malloc(big);
+	memset(blob, 'x', big);
+	if (shcl_set_string(d, "a[*]", 4, blob, big)) fail("refused setter: the wildcard write was accepted");
+	for (int i = 0; i < 5; i++) if (shcl_set_raw(d, "a[*]", 4, blob, big, "", 0)) fail("refused setter: the raw write was accepted");
+	for (int i = 0; i < 10000; i++) if (shcl_set_int(d, "a[*]", 4, i)) fail("refused setter: the int write was accepted");
+	size_t after = arena_bytes(&d->arena);
+	printf("mem_bounds: refused writes: arena %zu -> %zu over 24 MB refused\n", held, after);
+	if (after > held + 4096) fail("a refused setter kept the value it encoded");
+	if (shcl_get_int_or(d, "a", 1, -1) != 1) fail("refused setter: the document changed");
+	shcl_free(d);
+	free(blob);
+
 	// A write lands in a bump arena and the value it replaced stays behind, so
 	// a loop rewriting one field grows the document until shcl_free. Compaction
 	// is the way out: the rebuilt document holds what it now contains and no
