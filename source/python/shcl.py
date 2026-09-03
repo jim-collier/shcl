@@ -3633,7 +3633,7 @@ class Document:
 				return
 			if c.allowed is not None and c.allowed[0] == "dates":
 				for i, v in enumerate(vals):
-					if not any(_dt_equal(v, a) for a in c.allowed[1]):
+					if not any(_same_moment(v, a) for a in c.allowed[1]):
 						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {els[i].text}")
 						break
 		else:
@@ -4710,9 +4710,25 @@ def _single_text(v):
 	return None
 
 
-def _dt_equal(a, b):
-	# Field-wise; tuples/None compare by value already.
-	return a.date == b.date and a.time == b.time and a.frac == b.frac and a.zone == b.zone
+def _same_moment(a, b):
+	# Two datetimes naming the same moment, whatever the spelling. The struct
+	# mirrors what was written, so 12:00:00Z and 12:00:00+00:00 are different
+	# values field by field while naming one time, and 12:00:00 and 12:00:00.0
+	# differ only in written precision. A [value] selector matches on text, but
+	# an allowed set is about the value, so it compares here. An absent zone is
+	# local and matches no zone at all - that is the one spelling difference
+	# that is a real difference.
+	def offset(z):
+		if z is None:
+			return None
+		return 0 if z[0] == "utc" else z[1]
+
+	return (
+		a.date == b.date
+		and a.time == b.time
+		and (a.frac or "").rstrip("0") == (b.frac or "").rstrip("0")
+		and offset(a.zone) == offset(b.zone)
+	)
 
 
 def _build_schema(schema):

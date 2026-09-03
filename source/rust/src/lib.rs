@@ -230,6 +230,29 @@ pub struct ShclDateTime {
 /// The name the Go binding uses for the same type; either spelling works.
 pub type DateTime = ShclDateTime;
 
+/// Two datetimes name the same moment, whatever the spelling. The struct
+/// mirrors what was written, so `12:00:00Z` and `12:00:00+00:00` are different
+/// values field by field while naming one time, and `12:00:00` and
+/// `12:00:00.0` differ only in written precision. A `[value]` selector matches
+/// on text, but an `allowed` set is about the value, so it compares here. An
+/// absent zone is local and matches no zone at all - that is the one spelling
+/// difference that is a real difference.
+fn same_moment(a: &ShclDateTime, b: &ShclDateTime) -> bool {
+	let frac = |f: &Option<String>| {
+		f.as_deref()
+			.map_or(String::new(), |d| d.trim_end_matches('0').to_string())
+	};
+	let zone = |z: &Option<ZoneSpec>| match z {
+		Some(ZoneSpec::Utc) | Some(ZoneSpec::OffsetMinutes(0)) => Some(0),
+		Some(ZoneSpec::OffsetMinutes(m)) => Some(*m),
+		None => None,
+	};
+	a.date == b.date
+		&& a.time == b.time
+		&& frac(&a.frac) == frac(&b.frac)
+		&& zone(&a.zone) == zone(&b.zone)
+}
+
 /// A datetime's zone suffix as written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZoneSpec {
@@ -6628,7 +6651,9 @@ impl Document {
 							return;
 						};
 						if let Some(AllowedSet::Dates(set)) = &c.allowed
-							&& let Some(i) = vals.iter().position(|v| !set.contains(v))
+							&& let Some(i) = vals
+								.iter()
+								.position(|v| !set.iter().any(|s| same_moment(s, v)))
 						{
 							vdiag(
 								out,
