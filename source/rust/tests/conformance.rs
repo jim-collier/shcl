@@ -391,6 +391,13 @@ fn reads_match_expected() {
 			}
 
 			let doc = doc_for(&case, level);
+			if kind == "lost" {
+				let want: usize = expected
+					.parse()
+					.unwrap_or_else(|_| panic!("{}: bad lost count", at));
+				assert_eq!(doc.lost_count(), want, "{}", at);
+				continue;
+			}
 			if kind == "count" {
 				let want: usize = expected
 					.parse()

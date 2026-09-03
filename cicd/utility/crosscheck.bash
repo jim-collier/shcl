@@ -210,6 +210,11 @@ fFixDangling(){ mkdir -p "$1/real"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.sh
 ##	Nothing at the path at all - the create case. The tree it leaves behind is
 ##	the whole point, so the fixture deliberately builds nothing.
 fFixAbsent(){  echo "$1/c.shcl"; }
+##	The corpus case's own input, copied in so the write has something real to
+##	refuse or rewrite. The fixture protocol takes only the root, so the source
+##	arrives in caseSrc.
+caseSrc=""
+fFixCase(){    cp "$caseSrc" "$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
 ##	A load that dropped a line canonical output cannot re-emit (a BOM-led one),
 ##	so the in-place write is the destructive case the save gate exists for.
 fFixLost(){    printf 'a:  1\n\xef\xbb\xbfb: 2\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
@@ -229,6 +234,7 @@ fReadRow(){
 		instances)    fCompare "instances ${query}" instances "${strictArg[@]}" "$input" "$query" ;;
 		children)     fCompare "children ${query}" children "${strictArg[@]}" "$input" "$query" ;;
 		paths)        fCompare "paths" paths "${strictArg[@]}" "$input" ;;
+		lost)         : ;;   ## no CLI surface; the in-place write below is what it reaches
 		*'[]')        fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
 		              fCompare "get ${query} ${type} slots" get "--${type%[]}" --array --slots "${strictArg[@]}" "$input" "$query" ;;
 		*)            fCompare "get ${query} ${type}" get "--${type}" "${strictArg[@]}" "$input" "$query"
@@ -256,6 +262,11 @@ for caseDir in "$corpus"/*/; do
 		continue
 	fi
 	fCompare "fmt ${caseName}" fmt "$input"
+	# The save gate over real inputs: a case whose load dropped something must
+	# refuse the in-place write and leave the file byte-identical, and one that
+	# dropped nothing must rewrite it. Nothing else replays a corpus input
+	# through --write, so a lost count that stops being kept goes unseen.
+	caseSrc="$input"; fCompareWrite "fmt --write ${caseName}" fFixCase fmt --write
 	# Write dimension: apply the case's ops script and compare canonical output.
 	ops="${caseDir}write.ops"
 	[[ -f "$ops" ]] && fCompareStdin "set ${caseName}" "$ops" set "$input"

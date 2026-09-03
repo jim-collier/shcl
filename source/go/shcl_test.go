@@ -1653,6 +1653,16 @@ func TestReadsMatchExpected(t *testing.T) {
 			}
 
 			doc := docFor(t, &c, level)
+			if kind == "lost" {
+				want, err := strconv.Atoi(expected)
+				if err != nil {
+					t.Fatalf("%s: bad lost count", at)
+				}
+				if got := doc.LostCount(); got != want {
+					t.Errorf("%s: lost: got %d want %d", at, got, want)
+				}
+				continue
+			}
 			if kind == "count" {
 				want, err := strconv.Atoi(expected)
 				if err != nil {
