@@ -225,6 +225,8 @@ Month names are the fixed English set only - 3-letter abbreviation or full name,
 
 **Combined:** `<date><sep><time>[zone]`. The separator is `T`, a single space, `_`, or one of `-` `/` `.` where it does not create ambiguity - the time's `:` ends the date reading, so `2026-07-12-14:30` and `20260712.14:30` are fine, and the separator need not match the date's internal delimiter. Date-only and time-only values are each valid alone. Without a zone suffix the value is a *local* (floating) date/time - each binding returns its idiomatic local type; it is never silently assumed UTC.
 
+**Tolerances the whitelist allows,** because a hand-written config uses them and none of them can be misread: a one-digit hour, month or day where the shape has room for two (`9:30`, `2026-7-1`), a lower-case `z` or `t` where the shape says `Z` or `T`, whitespace before the meridiem or the zone (`14:30 Z`, `2:30 pm`), and a run of spaces where the combined form takes one. A stricter reading would turn working configs into `BadType` for no gain. What is still refused inside a value is a separator that changes the shape: `2026-07-12 T 14:30` and `Jul 12,2026` are `BadType`, and a comma-bearing `Mon DD, YYYY` has to be quoted, since a bare comma splits array elements.
+
 **Rejected by decision, not omission:** `MM/DD/YYYY` and `DD/MM/YYYY` (the motivating ambiguity) and every other all-numeric date that is not year-first; 2-digit years; Unix epoch numbers (a consumer wanting epoch reads the integer and converts); fully-written-out prose dates ("July twelfth"). Because typing is accessor-driven, a bare 8-digit number is tried as `YYYYMMDD` only when a date is requested; otherwise `20260712` is the ordinary integer 20260712.
 
 ### Arrays
