@@ -2959,7 +2959,9 @@ static shcl_status array_elements(shcl_doc *d, ShclArena *a, ShclStr path, ShclE
 			else if (v->kind == V_CELL && v->nels == 1) { arr[i] = &v->els[0]; st[i] = SHCL_GOOD; }
 			else st[i] = SHCL_BAD_TYPE; // raw block, or an array is not one scalar
 		}
-		*els = arr; *sts = st; *n = m; return m == 0 ? SHCL_EMPTY : SHCL_GOOD;
+		// No slots at all means the wildcard's parent is not there, so the
+		// path did not resolve - Empty is for a node that is.
+		*els = arr; *sts = st; *n = m; return m == 0 ? SHCL_NOT_FOUND : SHCL_GOOD;
 	}
 	if (r.kind == R_NONE) return SHCL_NOT_FOUND;
 	if (r.kind == R_MANY) return SHCL_MULTIPLE;

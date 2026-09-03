@@ -3219,7 +3219,9 @@ class Document:
 				v, st = _coerced(coerce, se[1], default)
 				out.append(v)
 				sts.append(st)
-			status = max(sts, key=lambda s: s.value) if sts else Status.Empty
+			# No slots at all means the wildcard's parent is not there, so the
+			# path did not resolve - Empty is for a node that is.
+			status = max(sts, key=lambda s: s.value) if sts else Status.NotFound
 			return Read(out, status, None, sts)
 		if tag == "none":
 			return Read([], Status.NotFound, None)

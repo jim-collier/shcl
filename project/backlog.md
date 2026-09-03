@@ -76,11 +76,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-170200
 		- Closed: 20260902-190000
 
-	- 🔘 Item 4: a wildcard read over a parent that does not exist reports `Empty` where the path does not resolve.
+	- ✅ Item 4: a wildcard read over a parent that does not exist reports `Empty` where the path does not resolve.
 		- Reproduced in all four. On a document with no `x`, `get --int --array x[*]` exits 2 and `get --int x` exits 3. The spec defines `Empty` as present but no value, and this is the tri-state the spec advertises.
 		- Cause: the array read maps an empty slot list to `Empty` in all four (Rust `read_array`, Go `readArray`, Python `_read_array`, C `array_elements`).
-		- Note: an empty slot list is `NotFound`. No corpus row has a wildcard read with zero slots.
+		- Fixed: an empty slot list is `NotFound` in all four, so a wildcard whose parent is absent answers the same as the bare path.
+		- Pinned by corpus `081` (`nosuch[*]` and `nosuch[*].deeper`, plus a count of zero). All four reported `Empty` before and `NotFound` now.
 		- Opened: 20260902-170300
+		- Closed: 20260902-191500
 
 	- 🔘 Item 5: a valued line generated from a filled wildcard is not in the generator's parent-value map, so its dotted child names the empty instance and a satisfiable schema refuses to generate.
 		- Reproduced in all four. `field: a` required, `field: "a[*].b"` required with `default: bee`, `field: "a[*].b[*].c"` required: `init` exits 6 with `V097 required path missing: a[*].b[*].c`. The text behind the refusal is `a:` / `a.b: bee` / `a.b.c:`; the hand-corrected `a.b[bee].c:` validates clean. Same shape through a fragment mount under a valued parent.
