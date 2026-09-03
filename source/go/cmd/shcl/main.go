@@ -12,12 +12,55 @@ import (
 	"io"
 	"math"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	shcl "github.com/jim-collier/shcl/source/go/v2"
 )
+
+// Every stdout write goes through these. A reader that closed early is not an
+// error worth reporting - nobody is there to read one - so that leaves
+// quietly; anything else lost the output, which is the same failure as a file
+// that could not be written.
+func outf(format string, a ...any) {
+	if _, err := fmt.Fprintf(os.Stdout, format, a...); err != nil {
+		writeFailed(err)
+	}
+}
+
+func outln(a ...any) {
+	if _, err := fmt.Fprintln(os.Stdout, a...); err != nil {
+		writeFailed(err)
+	}
+}
+
+func outs(a ...any) {
+	if _, err := fmt.Fprint(os.Stdout, a...); err != nil {
+		writeFailed(err)
+	}
+}
+
+// EPIPE on unix, where the SIGPIPE default usually ends the process before the
+// error is seen at all; on windows a closed reader arrives as
+// ERROR_BROKEN_PIPE, which Go surfaces as errno 109 rather than mapping it.
+func brokenPipe(err error) bool {
+	if errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var errno syscall.Errno
+	return runtime.GOOS == "windows" && errors.As(err, &errno) && errno == 109
+}
+
+func writeFailed(err error) {
+	if brokenPipe(err) {
+		os.Exit(0)
+	}
+	fmt.Fprintf(os.Stderr, "stdout: %v\n", err)
+	os.Exit(8)
+}
 
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
 const version = "2.0.0"
@@ -886,9 +929,9 @@ func doGet(o *opts) int {
 	emit := func(lines []string) {
 		for i, l := range lines {
 			if o.slots {
-				fmt.Printf("%s\t%s\n", slotAt(i), l)
+				outf("%s\t%s\n", slotAt(i), l)
 			} else {
-				fmt.Println(l)
+				outln(l)
 			}
 		}
 	}
@@ -938,9 +981,9 @@ func doGet(o *opts) int {
 			}
 			emit(subbed)
 		} else if o.slots {
-			fmt.Printf("%s\t%s\n", status, o.def)
+			outf("%s\t%s\n", status, o.def)
 		} else {
-			fmt.Println(o.def)
+			outln(o.def)
 		}
 		return 0
 	case o.onBad == onBadError:
@@ -1002,7 +1045,7 @@ func doFmt(o *opts) int {
 	if o.write {
 		return writeBack(doc, file, o)
 	}
-	fmt.Print(doc.ToCanonical())
+	outs(doc.ToCanonical())
 	return 0
 }
 
@@ -1434,7 +1477,7 @@ func doSet(o *opts) int {
 	if o.write {
 		return writeBack(doc, file, o)
 	}
-	fmt.Print(doc.ToCanonical())
+	outs(doc.ToCanonical())
 	return 0
 }
 
@@ -1493,7 +1536,7 @@ func doCheck(o *opts) int {
 	// prose names the file so the two number spaces cannot be confused.
 	errorCount := 0
 	for _, d := range diags {
-		fmt.Printf("line %d: %s: %s\n", d.Line, d.Severity, d.Code)
+		outf("line %d: %s: %s\n", d.Line, d.Severity, d.Code)
 		if d.Severity == shcl.SeverityError {
 			errorCount++
 		}
@@ -1501,14 +1544,14 @@ func doCheck(o *opts) int {
 	sayDiagnostics(diags)
 	switch {
 	case strictFailed:
-		fmt.Printf("strict load failed: %d diagnostic(s)\n", len(diags))
+		outf("strict load failed: %d diagnostic(s)\n", len(diags))
 		return 6
 	case errorCount > 0:
 		// Loaded, but lines were dropped: nonzero so a CI gate on check catches it.
-		fmt.Printf("failed: %d diagnostic(s), %d error(s)\n", len(diags), errorCount)
+		outf("failed: %d diagnostic(s), %d error(s)\n", len(diags), errorCount)
 		return 6
 	default:
-		fmt.Printf("ok (%d diagnostic(s))\n", len(diags))
+		outf("ok (%d diagnostic(s))\n", len(diags))
 		return 0
 	}
 }
@@ -1552,7 +1595,7 @@ func doInit(o *opts) int {
 		fmt.Fprintln(os.Stderr, "init: schema has faults")
 		return 6
 	}
-	fmt.Print(text)
+	outs(text)
 	return 0
 }
 
@@ -1575,10 +1618,10 @@ func doEnum(o *opts, wantCount bool) int {
 	// One report per invocation, so a read in a loop is one line per call.
 	sayDiagnostics(diags)
 	if wantCount {
-		fmt.Println(doc.Count(path))
+		outln(doc.Count(path))
 	} else {
 		for _, v := range doc.Instances(path) {
-			fmt.Println(v)
+			outln(v)
 		}
 	}
 	return 0
@@ -1605,7 +1648,7 @@ func doChildren(o *opts) int {
 	}
 	sayDiagnostics(diags)
 	for _, name := range doc.Children(path) {
-		fmt.Println(shcl.QuoteSegment(name))
+		outln(shcl.QuoteSegment(name))
 	}
 	return 0
 }
@@ -1623,7 +1666,7 @@ func doPaths(o *opts) int {
 	}
 	sayDiagnostics(diags)
 	for _, p := range doc.Paths() {
-		fmt.Println(p)
+		outln(p)
 	}
 	return 0
 }
@@ -1644,23 +1687,23 @@ func run() int {
 	// block from the surrounding prompts. A bare run used to print the same
 	// text unpadded and exit 1, which read as neither a help nor an error.
 	if len(argv) == 0 {
-		fmt.Printf("\n%s\n", help)
+		outf("\n%s\n", help)
 		return 0
 	}
 	if asked == "help" || argv[0] == "help" {
-		fmt.Printf("\n%s\n", help)
+		outf("\n%s\n", help)
 		return 0
 	}
 	if asked == "version" || argv[0] == "version" {
-		fmt.Printf("shcl %s\n", version)
+		outf("shcl %s\n", version)
 		return 0
 	}
 	if asked == "about" || argv[0] == "about" {
-		fmt.Printf("\n%s\n", about)
+		outf("\n%s\n", about)
 		return 0
 	}
 	if asked == "donate" || argv[0] == "donate" {
-		fmt.Printf("\n%s\n", donate)
+		outf("\n%s\n", donate)
 		return 0
 	}
 	cmd := argv[0]

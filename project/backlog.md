@@ -108,17 +108,22 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-170600
 		- Closed: 20260902-201500
 
-	- 🔘 Item 8: a stdout that cannot be written is reported as success by three CLIs, and as 120 by the fourth.
+	- ✅ Item 8: a stdout that cannot be written is reported as success by three CLIs, and as 120 by the fourth.
 		- Reproduced: `fmt f.shcl > /dev/full` exits 0 with an empty stderr in Rust, Go and C; Python exits 120 with an interpreter message. Same for `check`, `get` and `set`. The help and man page say 8 for a stream that could not be written.
 		- Cause: the reference's `out!`/`outln!` treat every write error as a broken pipe and exit 0 (on unix SIGPIPE is restored, so EPIPE never reaches the branch and every error that does is not a broken pipe); Go drops `fmt.Print` results; C never checks `ferror(stdout)`; Python never flushes inside `main`.
-		- Note: `BrokenPipe` stays the quiet exit; anything else is exit 8 with the OS message. Flush stdout before returning the code. Same shape in all four.
+		- Fixed: every stdout write in all four goes through one pair of helpers that exit 8 with the OS message on a write error, and the buffered tail is flushed before the exit code is returned so a failure there is caught too. A broken pipe stays the quiet exit. The C CLI also points a standard stream that was closed before the start at the null device, which the other three runtimes already do - without it every write failed with EBADF and the next file opened landed on the closed descriptor.
+		- Pinned by four `cli-regress` rows (`fmt`, `check`, `get` and `set` with stdout on a device that is always full). All four reported success before; the rows skip out loud where there is no such device.
 		- Opened: 20260902-170700
+		- Closed: 20260902-213000
 
-	- 🔘 Item 9: the reference aborts with nothing on stdout when stderr cannot be written.
+	- ✅ Item 9: the reference aborts with nothing on stdout when stderr cannot be written.
 		- Reproduced: `fmt bad.shcl 2>/dev/full` on a document with one diagnostic exits 134 (SIGABRT) with an empty stdout; Go and C exit 0 with the document; Python exits 120 with nothing. A single hint is enough, since every loading subcommand prints its diagnostics.
 		- Cause: `eprintln!` panics on a write error and the release profile has `panic = "abort"`, so the abort lands before `out!` has printed anything. A closed stderr is fine (EBADF is discarded); a full or failing one is not.
-		- Note: an `err!`/`errln!` pair beside `out!` that ignores the write result, or exits 8 on a non-EPIPE error; Python the same.
+		- Decided: a diagnostic that cannot be printed is dropped. There is nowhere to report the failure, the document on stdout is still good, and the exit code already carries the outcome - Go and C did this already.
+		- Fixed: the reference's diagnostics go through an `errln!` that ignores the write result, and Python's stderr is wrapped so a failed write is dropped instead of raising.
+		- Pinned by a `cli-regress` row that runs `fmt` on a document with a diagnostic, stderr on a full device, and requires the canonical text on stdout at exit 0. The reference exited 101 and Python 120 before, both with an empty stdout.
 		- Opened: 20260902-170800
+		- Closed: 20260902-213000
 
 	- 🔘 Item 10: a C parse leaves its temporaries in the scratch arena until the first resolve, so a parsed document holds about ten times its input in dead memory.
 		- Reproduced: a 49 MiB input parses to 970 MB RSS with 487 MB of it in `d->scratch`; 10 MiB gives 204 MB with 97 MB dead. One `arena_free(&d->scratch)` at the end of `do_parse` gives 766 MB and 157 MB with parse time unchanged, and 46,600 writer, merge and compact operations under ASan and UBSan with that free applied show nothing live pointed into it.

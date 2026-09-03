@@ -36,6 +36,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A stdout that cannot be written exits 8 instead of reporting success. `shcl fmt f.shcl > /dev/full` exited 0 with an empty stderr in three of the four CLIs and killed the Python one with an interpreter message; the help and the man page have said 8 for a stream that could not be written all along. A reader that closed early is still the quiet exit, since nobody is there to read a complaint.
+
+- A stderr that cannot be written no longer costs the document. The reference aborted with nothing on stdout at all when a diagnostic could not be printed, which turned an unwritable log into a lost `fmt`. Diagnostics are best-effort now; the exit code still carries the outcome.
+
 - A wildcard read whose parent does not exist reports `NotFound` instead of `Empty`. `x[*]` on a document with no `x` said the path was there and empty, which is the answer for a field written with nothing after the colon; `x` on its own said `NotFound`. The two agree now.
 
 - A wildcard after a wildcard flattens instead of answering `Multiple` for every slot. `server[*].*` reported one unreadable slot per instance, `count` counted instances rather than leaves, and `Remove` on such a path removed nothing. The inner slots now join the outer run, so the result is one slot per resolved leaf and the two wildcards compose the way the spec says they do.
