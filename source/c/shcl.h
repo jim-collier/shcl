@@ -275,8 +275,8 @@ int shcl_quoted(shcl_doc *d, const char *path, size_t plen);
 // Resolution mirrors shcl_line: empty when the path does not resolve to
 // exactly one node. Merged instances keep the first binding's spelling; a
 // writer-built node keeps the spelling the setter's path used.
-// Borrowed from the document's read arena; valid until shcl_free, or until
-// shcl_reads_release.
+// Borrowed from the document's own arena, so it outlives shcl_reads_release and
+// is valid until shcl_free or shcl_compact - the name is stored, not built.
 shcl_str shcl_authored_name(shcl_doc *d, const char *path, size_t plen);
 // The plural shcl_line: 1-based source lines at a path, in file order, so a
 // repeated field - the case that most wants a citable line - yields every

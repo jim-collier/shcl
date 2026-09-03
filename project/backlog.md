@@ -587,9 +587,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-174300
 		- Closed: 20260903-160000
 
-	- 🔘 Item 45: `shcl_authored_name`'s comment says its result lives in the read arena; it lives in the document arena.
+	- ✅ Item 45: `shcl_authored_name`'s comment says its result lives in the read arena; it lives in the document arena.
 		- The real lifetime is longer than stated (until `shcl_free` or `shcl_compact`), so no caller is hurt; `shcl_children` hands back the same kind of pointer and says so correctly. Fix the sentence.
+		- Fixed: the comment says the document's own arena, and why - the name is stored rather than built.
+		- Pinned by `check-docs.bash` for the sentence and by `mem_bounds.c`, which reads an authored name, releases the read arena and requires the bytes to still be there.
+		- Note: `mem_bounds`'s index-rebuild timing check is skipped under a sanitizer, which costs per allocation rather than per node walked; it was marginal there and would have been a flaky gate. The plain build in the test stage is where the ratio is judged.
 		- Opened: 20260902-174400
+		- Closed: 20260903-163000
 
 - Code review 20260901b:
 
