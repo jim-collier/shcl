@@ -1449,8 +1449,11 @@ fn index_rebuild_ignores_removed_nodes() {
 	// A generous ratio on purpose: the chain array is still sized by the arena,
 	// which is a memset the walk cannot avoid. What the bound catches is the
 	// walk itself going over every dead node, which is orders larger.
+	// A clock too coarse to see the fresh side leaves the ratio with a zero
+	// denominator, and then the bound is an absolute figure on whatever machine
+	// is running - which is what it was written not to be.
 	assert!(
-		ms[1] <= ms[0] * 25.0 + 25.0,
+		ms[0] <= 0.0 || ms[1] <= ms[0] * 25.0 + 25.0,
 		"index rebuild after churn {:.1} ms against {:.1} ms fresh - it walks nodes the document no longer holds",
 		ms[1],
 		ms[0]
