@@ -203,7 +203,23 @@ file. Nothing unverified is installed.
 	## suffix compares with its digit runs zero-padded, so rc2 < rc10 - the same
 	## order install.bash gets from sort -V.
 	$api = "https://api.github.com/repos/$repo/releases?per_page=100"
-	try { $rel = Invoke-RestMethod -Uri $api -UseBasicParsing } catch { Exit-Install "cannot fetch the $Release release (none published yet, or network down)" }
+	## A 403 from an unauthenticated request is the API's rate limit, and behind
+	## a shared address it is common - "none published yet, or network down"
+	## sent people looking in the wrong place. GITHUB_TOKEN is used when set.
+	$apiHeaders = @{}
+	if ($env:GITHUB_TOKEN) { $apiHeaders['Authorization'] = "Bearer $($env:GITHUB_TOKEN)" }
+	try {
+		$rel = Invoke-RestMethod -Uri $api -UseBasicParsing -Headers $apiHeaders
+	} catch {
+		$status = [int]$_.Exception.Response.StatusCode
+		if ($status -eq 403 -or $status -eq 429) {
+			Exit-Install "GitHub's API refused the request (rate limit). Wait, or set GITHUB_TOKEN to a token with public read access and re-run"
+		}
+		if ($status -eq 401) {
+			Exit-Install 'GitHub rejected the credentials in GITHUB_TOKEN - unset it, or replace it with one that has public read access'
+		}
+		Exit-Install "cannot fetch the $Release release (none published yet, or network down)"
+	}
 	$rel = Select-ReleaseTag $Release $rel
 	if (-not $rel -or -not $rel.tag_name) { Exit-Install "no $Release release found" }
 	$tag = $rel.tag_name

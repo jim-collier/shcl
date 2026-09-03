@@ -238,6 +238,49 @@ if [[ -z "${downloadLine}" || -z "${probeLine}" ]] || ((probeLine >= downloadLin
 	fBad "install.bash downloads before it knows the destination can be written"
 fi
 
+##	20260901b item 40: a fresh clone was left on main while contributing.md says
+##	to branch from dev. The lifted function decides; an existing checkout or an
+##	edited tree is left where it is.
+eval "$(sed -n '/^fStartOnDev()/,/^}/p' "${repoDir}/install-dev.bash")"
+(
+	gdir="${tmpDir}/devclone"; mkdir -p "${gdir}/origin"
+	git -C "${gdir}/origin" init -q --initial-branch=main
+	git -C "${gdir}/origin" -c user.email=t@t -c user.name=t commit -q --allow-empty -m first
+	git -C "${gdir}/origin" branch dev
+	git clone -q --no-hardlinks "${gdir}/origin" "${gdir}/a" 2>/dev/null
+	fStartOnDev "${gdir}/a"
+	[[ "$(git -C "${gdir}/a" branch --show-current)" == "dev" ]] \
+		|| fBad "install-dev.bash left a fresh clone on main"
+	git clone -q --no-hardlinks "${gdir}/origin" "${gdir}/b" 2>/dev/null
+	printf 'x\n' > "${gdir}/b/edited"
+	git -C "${gdir}/b" add edited
+	fStartOnDev "${gdir}/b"
+	[[ "$(git -C "${gdir}/b" branch --show-current)" == "main" ]] \
+		|| fBad "install-dev.bash moved a clone with work already in it"
+	mkdir -p "${gdir}/mainonly"
+	git -C "${gdir}/mainonly" init -q --initial-branch=main
+	git -C "${gdir}/mainonly" -c user.email=t@t -c user.name=t commit -q --allow-empty -m first
+	git clone -q --no-hardlinks "${gdir}/mainonly" "${gdir}/c" 2>/dev/null
+	fStartOnDev "${gdir}/c"
+	[[ "$(git -C "${gdir}/c" branch --show-current)" == "main" ]] \
+		|| fBad "install-dev.bash moved a clone of a repo with no dev branch"
+	exit "${nBad}"
+) || nBad=$((nBad + 1))
+
+##	20260901b item 41: an unauthenticated 403 is the API's rate limit and both
+##	installers called it "none published yet, or network down". The status
+##	itself comes from curl; what is checked here is what each status is called.
+eval "$(sed -n '/^fApiFailure()/,/^}/p' "${repoDir}/install.bash")"
+[[ "$(fApiFailure 403 stable)" == *"rate limit"* ]] || fBad "install.bash does not call a 403 a rate limit"
+[[ "$(fApiFailure 429 stable)" == *"rate limit"* ]] || fBad "install.bash does not call a 429 a rate limit"
+[[ "$(fApiFailure 401 stable)" == *"GITHUB_TOKEN"* ]] || fBad "install.bash does not blame the token for a 401"
+[[ "$(fApiFailure 404 stable)" == *"none published yet"* ]] || fBad "install.bash calls a 404 a rate limit"
+[[ "$(fApiFailure 000 dev)" == *"dev release"* ]] || fBad "install.bash does not name the channel when it cannot reach the API"
+grep -q 'rate limit' "${repoDir}/install.bash" || fBad "install.bash does not name a rate limit"
+grep -q 'rate limit' "${repoDir}/install.ps1"  || fBad "install.ps1 does not name a rate limit"
+grep -q 'GITHUB_TOKEN' "${repoDir}/install.bash" || fBad "install.bash ignores GITHUB_TOKEN"
+grep -q 'GITHUB_TOKEN' "${repoDir}/install.ps1"  || fBad "install.ps1 ignores GITHUB_TOKEN"
+
 ##	20260901b item 18: the "not on your PATH" note compared strings against
 ##	`:dir:`, so a PATH element written with a trailing slash was not seen.
 eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"

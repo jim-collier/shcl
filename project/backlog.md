@@ -723,12 +723,18 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-193800
 		- Closed: 20260904-015500
 
-	- 🔘 Item 40: `install-dev.bash` leaves a fresh clone on `main` while contributing.md says to branch from `dev`.
+	- ✅ Item 40: `install-dev.bash` leaves a fresh clone on `main` while contributing.md says to branch from `dev`.
+		- Fixed: a fresh clone is put on `dev` when the remote has one. A checkout that is already on another branch, or has edits in it, is left where it is.
+		- Pinned by a `shell-regress` block over three clones: fresh, one with staged work, and one of a repo with no dev branch.
 		- Opened: 20260901-193900
+		- Closed: 20260904-020000
 
-	- 🔘 Item 41: both installers report a GitHub API rate limit as "none published yet, or network down".
+	- ✅ Item 41: both installers report a GitHub API rate limit as "none published yet, or network down".
 		- An unauthenticated 403 is common behind a shared address. Honor `GITHUB_TOKEN` when set and name a 403.
+		- Fixed: both send `GITHUB_TOKEN` when it is set, and both name a 403 or 429 as the rate limit it is. A 401 blames the token rather than the network, which is what a wrong token gets.
+		- Pinned by a `shell-regress` block over the four statuses. The status itself comes from curl's own reporting, which was checked against a live 401.
 		- Opened: 20260901-194000
+		- Closed: 20260904-020500
 
 	- 🔘 Item 42: every installer fix since 2.0.0 is on dev only, while the README one-liners fetch `install.bash` and `install.ps1` from main.
 		- 424 changed lines across four rounds, including the shell-scope leak and the umask tree, and every user today runs the pre-fix scripts whichever release they get. The next cut resolves it once; the standing question is whether installer fixes count under the docs-only main merge exception, or the one-liners should fetch at a tag.

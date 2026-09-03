@@ -151,9 +151,11 @@ esac
 ## curl or wget, whichever is present. https is pinned through redirects and
 ## TLS floored at 1.2, so a bounced download can't silently downgrade.
 if command -v curl >/dev/null; then
-	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1"; }
+	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 ${GITHUB_TOKEN:+-H "Authorization: Bearer ${GITHUB_TOKEN}"} -o "$2" "$1"; }
+	fApiStatus() { curl -fsS -o /dev/null -w '%{http_code}' --proto '=https' --tlsv1.2 ${GITHUB_TOKEN:+-H "Authorization: Bearer ${GITHUB_TOKEN}"} "$1" 2>/dev/null || true; }
 elif command -v wget >/dev/null; then
-	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"; }
+	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 ${GITHUB_TOKEN:+--header="Authorization: Bearer ${GITHUB_TOKEN}"} -O "$2" "$1"; }
+	fApiStatus() { wget -q --https-only --secure-protocol=TLSv1_2 --server-response -O /dev/null "$1" 2>&1 | awk '/^  HTTP/ { code = $2 } END { print code }'; }
 else
 	die "need curl or wget"
 fi
@@ -297,7 +299,17 @@ fPickTag(){
 api="https://api.github.com/repos/${REPO}/releases?per_page=100"
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
-fetch "${api}" "${tmp}/rel.json" || die "cannot fetch the ${release} release (none published yet, or network down)"
+## A 403 from an unauthenticated request is the API's rate limit, and behind a
+## shared address it is common - "none published yet, or network down" sent
+## people looking in the wrong place. GITHUB_TOKEN is used when it is set.
+fApiFailure(){   ## fApiFailure STATUS RELEASE
+	case "$1" in
+		403|429) printf "GitHub's API refused the request (rate limit). Wait, or set GITHUB_TOKEN to a token with public read access and re-run\n" ;;
+		401)     printf 'GitHub rejected the credentials in GITHUB_TOKEN - unset it, or replace it with one that has public read access\n' ;;
+		*)       printf 'cannot fetch the %s release (none published yet, or network down)\n' "$2" ;;
+	esac
+}
+fetch "${api}" "${tmp}/rel.json" || die "$(fApiFailure "$(fApiStatus "${api}")" "${release}")"
 ## Every grep below may legitimately match nothing (no release, no such asset,
 ## a release cut before the drop-in payload existed). Under pipefail that is a
 ## failed substitution, which would end the script here instead of at the check
