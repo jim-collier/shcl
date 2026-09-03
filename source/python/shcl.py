@@ -4916,7 +4916,7 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	if faults:
 		return "", faults
 	cons, cuts = _expand_mounts(sdef)
-	if len(cons) >= _GEN_MAX_FIELDS:
+	if len(cons) > _GEN_MAX_FIELDS:
 		faults = []
 		_vdiag(faults, 0, "V096", f"schema expands past {_GEN_MAX_FIELDS} fields; fragments mounted at more than one path multiply")
 		return "", faults
@@ -5159,7 +5159,7 @@ def _expand_mounts(sdef):
 			cc.segs = list(s) + list(c.segs)
 		path = cc.path
 		segs = cc.segs
-		if len(out) >= _GEN_MAX_FIELDS:
+		if len(out) > _GEN_MAX_FIELDS:
 			break
 		out.append(cc)
 		if c.inherits is not None:

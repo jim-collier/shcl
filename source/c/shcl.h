@@ -6002,7 +6002,7 @@ static void g_expand_go(ShclArena *a, const ShclVecVCons *list, const ShclVSchem
 			cc.segs = segs;
 		}
 		ShclStr path = cc.path; ShclVecSeg segs = cc.segs;
-		if (out->len >= GEN_MAX_FIELDS) return;
+		if (out->len > GEN_MAX_FIELDS) return;
 		ShclVecVCons_push(a, out, cc);
 		if (c->inherits.n) {
 			int cycling = 0;
@@ -6054,7 +6054,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	ShclVecVCons cons = {0, 0, 0};
 	ShclVecS cut_path = {0, 0, 0}, cut_frag = {0, 0, 0};
 	g_expand_mounts(a, &def, &cons, &cut_path, &cut_frag);
-	if (cons.len >= GEN_MAX_FIELDS) {
+	if (cons.len > GEN_MAX_FIELDS) {
 		// Generation-only fault: recorded on the schema document (this
 		// signature has no fault list of its own to return).
 		ShclSB m = {0, 0, 0};

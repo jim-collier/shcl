@@ -5769,7 +5769,7 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		return Err(faults);
 	}
 	let (cons, cuts) = expand_mounts(&def);
-	if cons.len() >= GEN_MAX_FIELDS {
+	if cons.len() > GEN_MAX_FIELDS {
 		return Err(vec![Diagnostic {
 			line: 0,
 			severity: Severity::Error,
@@ -6090,7 +6090,7 @@ fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
 			}
 			let path = cc.path.clone();
 			let segs = cc.segs.clone();
-			if out.len() >= GEN_MAX_FIELDS {
+			if out.len() > GEN_MAX_FIELDS {
 				return;
 			}
 			out.push(cc);
