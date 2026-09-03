@@ -190,10 +190,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-171600
 		- Closed: 20260903-003000
 
-	- 🔘 Item 18: `sanitize-c.bash` never runs the `children` and `paths` commands, against its claim to replay every `reads.tsv` row.
+	- ✅ Item 18: `sanitize-c.bash` never runs the `children` and `paths` commands, against its claim to replay every `reads.tsv` row.
 		- Reproduced: its row replay has no arm for the two, so a `children` row becomes `get --children`, which the C CLI refuses at exit 1 (not 77), and the run counts as clean. Six corpus cases carry such rows. The two enumeration paths in `main.c`, including the quoted-name spelling, run under no sanitizer.
-		- Note: copy the two arms from `crosscheck.bash`'s `fReadRow`.
+		- Fixed: the two arms are there, and a row type with no arm is now an error in both replays instead of a `get --<type>` every binding refuses the same way.
+		- Note: found while working it, and fixed with it - both replays split a row with `IFS=$'\t' read`, and tab is IFS whitespace whatever IFS is set to, so a leading or doubled tab disappeared and every later column shifted. The top-level `children` row (empty query) arrived as a type nothing had an arm for, and had never been replayed by either gate. Both split by hand now.
+		- Pinned by `shell-regress.bash`: the splitter is lifted out of `crosscheck.bash` by name and must keep a leading and a middle empty field, and the unknown-type guard fires with the arms removed.
 		- Opened: 20260902-171700
+		- Closed: 20260903-005000
 
 	- 🔘 Item 19: a must-exist path with a `[#N]` selector, one past the depth cap, or one carrying a literal newline gets V097 where the spec describes the trailing block.
 		- Reproduced in all four. `field: "srv[#1].port"` required (alone or beside a live `field: srv`) exits 6 with `V097 required path missing`; same for a 513-segment required path and for `field: "\"a\nb\""` required. The spec's trailing-block sentence lists all three as "collected into a trailing comment block", and its self-check sentence requires the output to validate, and a must-exist path in the trailing block can never satisfy both.
