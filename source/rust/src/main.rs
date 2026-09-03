@@ -1621,8 +1621,9 @@ fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
 		.ok()
 		.and_then(|v| v.parse().ok())
 		.unwrap_or(8);
+	const FREQ: i32 = 199;
 	let guard = pprof::ProfilerGuardBuilder::default()
-		.frequency(199)
+		.frequency(FREQ)
 		.blocklist(&["libc", "libpthread", "vdso", "libgcc"])
 		.build()
 		.expect("pprof: failed to start profiler");
@@ -1639,7 +1640,25 @@ fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
 	report
 		.flamegraph(file)
 		.expect("pprof: failed to write flamegraph");
-	errln!("shcl: wrote flamegraph -> {}", out);
+	// The blocklist above drops a sample whose leaf is inside libc rather than
+	// truncating it, so allocation, copying and write time never reach the
+	// graph and every percentage in it is a share of what survived. It is there
+	// to keep the signal handler out of libc's own unwinder, so the drop stays;
+	// what it cannot do is go unsaid. The count rides beside the SVG so the
+	// report can repeat it.
+	let kept: isize = report.data.values().sum();
+	let expected = secs as isize * FREQ as isize;
+	std::fs::write(
+		format!("{}.samples", out),
+		format!("{} {}\n", kept, expected),
+	)
+	.ok();
+	errln!(
+		"shcl: wrote flamegraph -> {} ({} of about {} samples; the rest had a leaf inside libc)",
+		out,
+		kept,
+		expected
+	);
 	code
 }
 

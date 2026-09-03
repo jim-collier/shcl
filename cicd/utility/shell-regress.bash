@@ -360,6 +360,21 @@ for bad in gap cut junk; do
 	[[ "${flameRc}" == 2 ]] || fBad "flame-report.py accepted a ${bad} graph (rc ${flameRc}): ${flameOut@Q}"
 	[[ "${flameOut}" != *Traceback* ]] || fBad "flame-report.py tracebacked on a ${bad} graph"
 done
+##	20260901b item 43: the sampler drops a sample whose leaf is inside libc
+##	rather than truncating it, so a third to half the profiled time never
+##	reaches the graph and every percentage in the report is a share of what
+##	survived. The profiler writes the two counts beside the SVG; the report has
+##	to say them, and has to stay quiet where an older graph has no such file.
+printf '640 1600\n' > "${tmpDir}/flame/flame_20260101-000000_whole.svg.samples"
+fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
+[[ "${flameOut}" == *"640 of about 1600 samples reached the graph (40%)"* ]] \
+	|| fBad "flame-report.py does not say how much of the profile the graph is missing: ${flameOut@Q}"
+rm -f "${tmpDir}/flame/flame_20260101-000000_whole.svg.samples"
+fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
+[[ "${flameOut}" != *"reached the graph"* ]] \
+	|| fBad "flame-report.py invented a sample count for a graph that carries none"
+grep -q '{}.samples' "${repoDir}/source/rust/src/main.rs" \
+	|| fBad "the profiler does not record how many samples reached the graph"
 
 ##	20260901b item 21: lint-report.bash counted the `-D warnings` in the clippy
 ##	command line the pre-push gate's nested run echoes as a warning, so every
