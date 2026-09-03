@@ -46,6 +46,165 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Bugs
 
+- Code review 20260902:
+
+	- A fresh adversarial pass started from scratch, aimed at ground no earlier round had read: the C writer, resolver, generator and file tier; the generator bodies in all four bindings; the reference's read, coercion, datetime and validation code judged against the spec rather than against the other bindings; the CLI against its own help and man page; the Go and Python writers and file tiers; the merge code at library level; every gate under fault injection; and the windows builds run under wine. Twenty-eight defects here, seventeen enhancements under Features and enhancements. Everything marked confirmed was reproduced on this box; the two marked plausible rest on vendor documentation or a library-level probe in one binding.
+	- Eighteen of the defects are shapes all four bindings share, so the four-way check cannot see them. Four are C or C++ only. Three are gates or fixtures that assert less than they claim. The fix round before this one (20260901b) cost nothing measurable: parse, fmt, bulk read, bulk write, absent defaults and float writes are unchanged against `b49501d`, and the did-you-mean workload went from 24 s to 0.09 s. A thousand structurally generated documents (bad dedents, fences and `*` lines at bad columns, content beneath skipped lines, bracket arrays, mixed indent) agree four-way and hold every fixpoint and write-gate property, so the E012/E013 change from that round held up.
+
+	- 🔘 Item 1: the reference CLI's `get --float` and the Rust generator's annotation line never got the round-half-even rule, so the distributed CLI prints a tie differently from the other three.
+		- Reproduced: `f: 1125899906842624.2` through `get --float` prints `...624.3` from the reference and `...624.2` from Go, Python and C; same on `--array`, and same digit in `init`'s `# float, <lo>-<hi>` and `one of:` text for a tie-valued bound. The `set` path is right in all four, which is what 20260901b item 10 verified.
+		- Cause: `main.rs` formats reads with `to_string()` at both `Kind::Float` arms, and `allowed_join` and `gen_annotation` in `lib.rs` do the same; `format_f64` is public and unused by either. The crosscheck's float dimension replays `set` only and corpus `080` reads one int, so nothing compared a float read.
+		- Note: fix all four sites through `format_f64`, then add float reads of the tie values to `080/reads.tsv` so the corpus replay pins the read side too.
+		- Opened: 20260902-170000
+
+	- 🔘 Item 2: nothing pins the "counted as lost" half of 20260901b item 3, and the corpus has no way to pin any lost count.
+		- Reproduced: with the one `lost += 1` after the index arm's `E002` deleted in a scratch build, the Rust corpus stays green (33 of 33), the crosscheck on `076` agrees, and `fmt --write` on `a: 1` / `a[0]: 2` exits 0 and deletes the second line. `project/conformance/README.md` and the backlog both say `076` pins it.
+		- Cause: `expected-diags.txt` pins codes only, the write dimension exercises the save gate through its own BOM fixture and never through a corpus input, and the four runners assert `lost_count()` only in hand-written fixtures, none for the selector shape. The same gap covers every other "counted as lost" rule (items 1 and 2 of that round included).
+		- Note: give the corpus a lost column (a `lost N` line in `expected-diags.txt`, or a pseudo-row in `reads.tsv`) that all four runners assert, and run `fmt --write` over every corpus input with error diagnostics in the crosscheck's write dimension, where a refusal leaves the tree byte-identical.
+		- Opened: 20260902-170100
+
+	- 🔘 Item 3: a wildcard followed by another wildcard reports every slot `Multiple`, and `Remove` on it removes nothing.
+		- Reproduced in all four. `server[*].*` on three servers with two, one and no children gives three `Multiple` slots at exit 5, `count` says 3, `instances` prints three empty lines, and `set --remove='server[*].*'` leaves the document unchanged at exit 0. The spec says the two compose and that `Remove` on a wildcard removes every resolved slot. Same for `*.*` and `a[*].b[*]`.
+		- Cause: `resolve_from` resolves the rest of the path per instance and maps anything that is not exactly one node to `Multiple`, so a nested slot list is `Multiple` whatever its length. Rust `lib.rs` both wildcard arms, Go `resolveFrom`, Python `_resolve_from`, C `resolve_from`.
+		- Decided: needs a shape first. Minimal: a nested list of zero is `NotFound` and of one is that slot. Full: flatten nested lists so `count`, `instances`, `lines` and the read stay aligned. Either way `Remove` then removes the resolved leaves. No corpus case has a wildcard after a wildcard.
+		- Opened: 20260902-170200
+
+	- 🔘 Item 4: a wildcard read over a parent that does not exist reports `Empty` where the path does not resolve.
+		- Reproduced in all four. On a document with no `x`, `get --int --array x[*]` exits 2 and `get --int x` exits 3. The spec defines `Empty` as present but no value, and this is the tri-state the spec advertises.
+		- Cause: the array read maps an empty slot list to `Empty` in all four (Rust `read_array`, Go `readArray`, Python `_read_array`, C `array_elements`).
+		- Note: an empty slot list is `NotFound`. No corpus row has a wildcard read with zero slots.
+		- Opened: 20260902-170300
+
+	- 🔘 Item 5: a valued line generated from a filled wildcard is not in the generator's parent-value map, so its dotted child names the empty instance and a satisfiable schema refuses to generate.
+		- Reproduced in all four. `field: a` required, `field: "a[*].b"` required with `default: bee`, `field: "a[*].b[*].c"` required: `init` exits 6 with `V097 required path missing: a[*].b[*].c`. The text behind the refusal is `a:` / `a.b: bee` / `a.b.c:`; the hand-corrected `a.b[bee].c:` validates clean. Same shape through a fragment mount under a valued parent.
+		- Cause: the parent-value map is built only from constraints with no wildcard, so a filled wildcard line with a default never enters it, and `under_valued_parent` consults only that map. 20260901 item 5 covered concrete parents only.
+		- Opened: 20260902-170400
+
+	- 🔘 Item 6: a valued live parent whose default is a bare integer is selected as `[8]`, which the scanner reads as an index, so `init` exits 6.
+		- Reproduced in all four. `field: num` required `default: 8` plus `field: "num[*].v"` required generates `num: 8` / `num[8].v:`, which loads with `E003 no instance 8 of 'num'`; `init` reports V097. Same with `default: "8"` (emitted bare by the data-format rule) and with `type: int`. `[007]` and `[+3]` fail the same way.
+		- Cause: `gen_selector_text` quotes only a default holding `[`, `]`, `\` or a newline; the spec's index rule (`[0]` bare numeric is an index, `["2020"]` quoted is a value) is not applied.
+		- Note: also quote a default that parses as a bare index. Adjacent to 20260901b item 30 (`E003` reachable).
+		- Opened: 20260902-170500
+
+	- 🔘 Item 7: a must-exist path whose only wildcard is its last segment (`w[*]`) is never filled, so `init` exits 6; beside a `field: w` it is emitted twice.
+		- Reproduced in all four. `field: "w[*]"` required `default: v` alone generates only the trailing block and fails V097; `w: v` on its own passes `check --schema`. With `field: w` added the output carries `# any, required` / `w: v` twice.
+		- Cause: the fill loop wants a live line whose name list has the wildcard segment's own chain as a prefix; for a trailing wildcard that is the field's own name, so only a separate `field: w` satisfies it, and then both lines emit.
+		- Note: treat a trailing wildcard as fillable with the root as parent, and skip a fill whose rendering equals a concrete line already emitted.
+		- Opened: 20260902-170600
+
+	- 🔘 Item 8: a stdout that cannot be written is reported as success by three CLIs, and as 120 by the fourth.
+		- Reproduced: `fmt f.shcl > /dev/full` exits 0 with an empty stderr in Rust, Go and C; Python exits 120 with an interpreter message. Same for `check`, `get` and `set`. The help and man page say 8 for a stream that could not be written.
+		- Cause: the reference's `out!`/`outln!` treat every write error as a broken pipe and exit 0 (on unix SIGPIPE is restored, so EPIPE never reaches the branch and every error that does is not a broken pipe); Go drops `fmt.Print` results; C never checks `ferror(stdout)`; Python never flushes inside `main`.
+		- Note: `BrokenPipe` stays the quiet exit; anything else is exit 8 with the OS message. Flush stdout before returning the code. Same shape in all four.
+		- Opened: 20260902-170700
+
+	- 🔘 Item 9: the reference aborts with nothing on stdout when stderr cannot be written.
+		- Reproduced: `fmt bad.shcl 2>/dev/full` on a document with one diagnostic exits 134 (SIGABRT) with an empty stdout; Go and C exit 0 with the document; Python exits 120 with nothing. A single hint is enough, since every loading subcommand prints its diagnostics.
+		- Cause: `eprintln!` panics on a write error and the release profile has `panic = "abort"`, so the abort lands before `out!` has printed anything. A closed stderr is fine (EBADF is discarded); a full or failing one is not.
+		- Note: an `err!`/`errln!` pair beside `out!` that ignores the write result, or exits 8 on a non-EPIPE error; Python the same.
+		- Opened: 20260902-170800
+
+	- 🔘 Item 10: a C parse leaves its temporaries in the scratch arena until the first resolve, so a parsed document holds about ten times its input in dead memory.
+		- Reproduced: a 49 MiB input parses to 970 MB RSS with 487 MB of it in `d->scratch`; 10 MiB gives 204 MB with 97 MB dead. One `arena_free(&d->scratch)` at the end of `do_parse` gives 766 MB and 157 MB with parse time unchanged, and 46,600 writer, merge and compact operations under ASan and UBSan with that free applied show nothing live pointed into it.
+		- Cause: `parse_body` takes `P.tmp = &d->scratch` for its lines vector, per-parent maps, stack and pending lists, and `do_parse` frees only the two `own` arenas on exit. The header describes `scratch` as per-resolve temporaries reset on entry to each resolve, and says nothing about the parser using it. The 20260901 round's C amplification numbers were measured after a read and so did not see it.
+		- Opened: 20260902-170900
+
+	- 🔘 Item 11: a refused C setter still consumes document arena, against the header's "nothing is created on failure".
+		- Reproduced: a refused 20 MB `set_string` on a wildcard path costs 85 MB of arena, permanently; ten refused `set_raw` calls with a 20 MB body cost 200 MB; small values cost 48 to 80 bytes per refused call. Rust builds the value first too but drops it when `place` refuses.
+		- Cause: every setter encodes the value into `d->arena` before `w_set` validates the path. Only `shcl_compact` gives it back.
+		- Note: probe the path first (`w_write_reason`), or encode into scratch and copy into the arena on success.
+		- Opened: 20260902-171000
+
+	- 🔘 Item 12: the named-month space forms accept a day token that is not `DD`.
+		- Reproduced in all four. `Jul +12 2026`, `+12 Jul 2026`, `Jul 0012 2026` and `Jul 00000000000000012 2026` all read Good as `2026-07-12`, while `Jul-012-2026` is refused and `Jul 12 +2026` is refused because the year is held to four digits. The spec calls the format list a closed whitelist and spells the day `DD`.
+		- Cause: the space forms parse the day token with a full unsigned parse (Rust `u32` from_str, which takes a leading `+` and any leading zeros), mirrored deliberately by Python's `_parse_u32`, Go's `parseU32` and C's `parse_u32_lenient`; the delimited form uses the 1-2 digit `parse_num2`.
+		- Note: use `parse_num2` for the day in both space forms; corpus rows for `Jul +12 2026` and `Jul 012 2026` as BadType.
+		- Opened: 20260902-171100
+
+	- 🔘 Item 13: Go's `LoadError.Diagnostics` and Python's `diagnostics()` and `LoadError` hand out the document's own list.
+		- Reproduced: in Go, setting `le.Diagnostics[0].Message` on a strict-load error changes `doc.Diagnostics()[0].Message`; in Python `doc.diagnostics().clear()` takes `error_count()` to 0, and `LoadError.diagnostics` is the same list object. 20260901b item 23 fixed Go's `Diagnostics()` and the two suppressors and did not reach the third hand-out; Python was not looked at.
+		- Note: Go copies into the error the way `Diagnostics()` now does; Python returns `list(self.diags)` from `diagnostics()` and gives `LoadError` a copy. The suppressors keep their in-place contract, which mirrors Rust's `&mut Vec`.
+		- Opened: 20260902-171200
+
+	- 🔘 Item 14: the Go CLI exits 1 where the other three exit 8 on an ops script that is not UTF-8.
+		- Reproduced: `printf '\xff\n' | shcl set f.shcl` exits 8 in Rust, C and Python and 1 in Go. The same bytes as a document exit 8 in all four. The standing decision makes 1 the usage code alone.
+		- Cause: `main.go`'s ops read returns 1 after `utf8.Valid` fails; its `readInput` already takes the exit-8 path for a document.
+		- Opened: 20260902-171300
+
+	- 🔘 Item 15: a refused `--set` or a failing op suppresses the load's diagnostics.
+		- Reproduced in all four. On a document with an `E014` line, `get --set='a[*]=1' f a` prints only the refusal at exit 1 and never the `E014`; same for an ops line the writer refuses. The help says every subcommand that loads a document prints the load's diagnostics once per run.
+		- Cause: `load_layered` returns the refusal before the caller's `say_diagnostics`, and `do_set` returns from the `--set` refusal and the op failure before its own call to it.
+		- Note: print the load's diagnostics before applying the edit list; they belong to the load, not to the edits.
+		- Opened: 20260902-171400
+
+	- 🔘 Item 16: a layer's leading blank line survives the load but not the canonical form, so a merge of a file and a merge of its `fmt` differ.
+		- Reproduced in all four. With `A` holding `a: 1` and `B` holding a blank line then `b: 2`, `fmt --layer=A B` prints `a: 1`, a blank, `b: 2`, while `fmt --layer=A <(fmt B)` prints no blank. Same with a leading comment and with a comment-only layer. In a 700-seed soak, 129 seeds (every layer beginning with a blank line) gave a different result with an in-memory merged document as `over` than with its reparse; as `base` it never differed.
+		- Cause: the parser sets the pending blank on the first bound node like any other and the emitter suppresses it only at output start, so `load(emit(load(B)))` differs from `load(B)` on that one bit and `merge` copies it unchanged.
+		- Note: drop the blank at parse time when nothing precedes it, in all four, so no emitter or merge special case is needed; a corpus case whose layer starts with a blank line pins it.
+		- Opened: 20260902-171500
+
+	- 🔘 Item 17: the crosscheck's float-spelling dimension writes `0` for every subnormal power of two under gawk, so its "every power of two" claim is false on this box.
+		- Reproduced: `gawk 'BEGIN{printf "%.17g", 2^-1074}'` prints `0` (it computes a negative power as `1/(2^1074)`, which is `1/inf`); mawk prints the subnormal. The generated ops file starts with 52 `float p<n> 0` rows. The hosted runner's default awk decides which rows it exercises there, and `srand(20260902); rand()` differs per awk as well, so the "fixed" random set is not fixed either.
+		- Note: build the powers by exact halving from 1, which every awk does exactly down to `2^-1074`, and generate the random set from a fixed integer LCG.
+		- Opened: 20260902-171600
+
+	- 🔘 Item 18: `sanitize-c.bash` never runs the `children` and `paths` commands, against its claim to replay every `reads.tsv` row.
+		- Reproduced: its row replay has no arm for the two, so a `children` row becomes `get --children`, which the C CLI refuses at exit 1 (not 77), and the run counts as clean. Six corpus cases carry such rows. The two enumeration paths in `main.c`, including the quoted-name spelling, run under no sanitizer.
+		- Note: copy the two arms from `crosscheck.bash`'s `fReadRow`.
+		- Opened: 20260902-171700
+
+	- 🔘 Item 19: a must-exist path with a `[#N]` selector, one past the depth cap, or one carrying a literal newline gets V097 where the spec describes the trailing block.
+		- Reproduced in all four. `field: "srv[#1].port"` required (alone or beside a live `field: srv`) exits 6 with `V097 required path missing`; same for a 513-segment required path and for `field: "\"a\nb\""` required. The spec's trailing-block sentence lists all three as "collected into a trailing comment block", and its self-check sentence requires the output to validate, and a must-exist path in the trailing block can never satisfy both.
+		- Cause: `unwritable` sends them to the trailing block and the self-check then reports the missing path. The newline clause is also stale on its own: names resolve escapes since 2026-08-18, `emit_name` spells a newline as `\n`, and `gen_path_text` already goes through it, so the path is writable.
+		- Decided: needs a call on which sentence wins. Refuse with a message naming the ungenerable path, or drop the must-exist requirement from the trailing block. Render newline-in-name paths through `gen_path_text` either way.
+		- Opened: 20260902-171800
+
+	- 🔘 Item 20: V096 fires at exactly 10000 fields with a message that says the schema expands past 10000.
+		- Reproduced in all four: 9999 plain `field:` lines generate, 10000 give `V096 schema expands past 10000 fields; fragments mounted at more than one path multiply`, on a schema with no fragments.
+		- Cause: `cons.len() >= GEN_MAX_FIELDS` in `generate` and inside each `expand_mounts`.
+		- Opened: 20260902-171900
+
+	- 🔘 Item 21: `shcl_generate` keeps the output of a V097-failing call in the schema's arena, and a succeeding call's output can never be released.
+		- Reproduced: 1000 calls on a schema whose default fails its own constraint grow the heap by 21.9 KB per call while returning nothing, and leave 1001 copies of the same diagnostic on the schema; 1000 succeeding calls grow it by one output each, and `shcl_reads_release` cannot reclaim them because the output goes to `schema->arena`, not `schema->reads`. The header's own comment says everything but the returned bytes dies inside the call.
+		- Cause: the output is copied into the schema arena before the self-check, and the failure path returns empty without reclaiming it; faults are appended to the schema on every call.
+		- Note: self-check the private-arena text and copy into the arena only on success; place the output in `reads` and list it under `shcl_reads_release`; replace rather than append earlier generation faults, or document that a schema should not be regenerated from after it has reported.
+		- Opened: 20260902-172000
+
+	- 🔘 Item 22: `shcl.hpp` tells the veneer user to recover generation faults by validating an empty document, which cannot reproduce them.
+		- Reproduced: `validate(empty, schema)` after a failed `generate()` gives `V002`, never the `V097` the generator recorded. V096 and V097 are generation-only codes. The C CLI made the same mistake and was fixed in the 20260830b round; the veneer comment kept the old recipe.
+		- Note: "read `diagnostics()` on this document after the call".
+		- Opened: 20260902-172100
+
+	- 🔘 Item 23: the datetime whitelist admits spellings the spec does not list.
+		- Reproduced in all four, all Good: `9:30` (one-digit hour with no meridiem), `2026-7-1` and `2026/7/4` (one-digit month and day), `14:30z` and `2026-07-12t14:30` (lower case), `14:30 Z` and `14:30 +05:00` (space before the zone), `2026-07-12  14:30` (two spaces as the separator). The spec says the formats are a closed whitelist and anything else is BadType. Correctly refused in the same run: `24:00`, `14:30:60`, `2026-02-29`, `12-Jul/2026`, `2026-07-12 T 14:30`, `Jul 12,2026`.
+		- Cause: `parse_num2` takes one or two digits, the zone and meridiem arms trim before matching, and the combined-separator scan trims around it; same functions in all four.
+		- Decided: needs a call: tighten (two-digit fields in the 24-hour and year-first forms, upper-case `Z` and `T`, no whitespace inside the value) with a corpus row per rejection, or list the tolerances in the spec. Status difference at exit 0, not data loss, since `fmt` never rewrites value text.
+		- Opened: 20260902-172200
+
+	- 🔘 Item 24: at Loose, `$ 1200` reads as 1200 but `$ 3.14` is BadType.
+		- Reproduced in all four: whitespace after the currency symbol is tolerated on the integer path only, because the float path tests the shape on the untrimmed remainder and then falls into the integer path, which trims.
+		- Note: trim after `strip_currency` in both paths, or refuse the space in both; one corpus row at Loose.
+		- Opened: 20260902-172300
+
+	- 🔘 Item 25: `Jul 12, 2026` is listed as an admitted date spelling, and bare in a file the comma splits it into a two-element array.
+		- Reproduced in all four: `b: Jul 12, 2026` reads BadType (two elements, `Jul 12` and `2026`) while the quoted spelling reads `2026-07-12`. The code is right by the array rule; the Integers section says "only inside quotes, since `,` is reserved bare" and the datetime bullet says nothing.
+		- Note: spec text only: add the quoting clause to the `Mon DD YYYY` bullet.
+		- Opened: 20260902-172400
+
+	- 🔘 Item 26: a one-element array read reports `quoted` false for a quoted element.
+		- Reproduced in Rust at library level (plausible for the other three by port): `read_int("h")` on `h: "5"` gives `quoted` true, `read_int_array("h")` on the same node gives false, because the array read always ends with `quoted` false. The spec's flag is "true when the read's single scalar element was quoted in the source".
+		- Note: set it from the element when the cell has exactly one, or say in the spec that array reads never report it.
+		- Opened: 20260902-172500
+
+	- 🔘 Item 27: stale prose in the README, the man page and the spec.
+		- Reproduced by re-running the transcript and reading. `README.md` line 504's `get` transcript omits the `E014` line every loading subcommand has printed since 20260831, while the `check` transcript above it shows its stderr; `README.md` line 830 says raw blocks, set-only-if-absent and removal have no option form, though `--set-default`, `--set-literal-default` and `--remove` exist since 20260830b item 21; the man page's WRITE OPS sentence says the ops script is read when no `--set` or `--set-literal` carries the edits, where the code reads it only when none of the five options is given; `spec.md` line 599 lists the loading subcommands without `children` and `paths`.
+		- Opened: 20260902-172600
+
+	- 🔘 Item 28: the windows publish's durability claim rests on a flag Microsoft documents as unsupported, and "attributes" in the carry-over claim is broader than what `ReplaceFile` preserves.
+		- Plausible: `design.md`'s file-tier decision says Windows has no directory sync and `ReplaceFile` is asked to write through instead; the Go comment says the flag means "do not return until the change is on the disk". Microsoft's `ReplaceFileW` reference lists `REPLACEFILE_WRITE_THROUGH` as "This value is not supported", and its preserve list (creation time, short name, object id, DACLs, security attributes, encryption, compression, named streams) does not include the basic attributes. Under wine, hidden and system are lost across a `set --write` in all three bindings; only read-only, which the code handles by hand, survives. Real NTFS could not be checked here.
+		- Note: reword the design entry and the Go comment; either copy hidden and system by hand around the publish the way read-only is, or narrow the spec's "attributes" to Microsoft's list. A hosted-job fixture with `0x2` and `0x4` settles which.
+		- Opened: 20260902-172700
+
 - Code review 20260901b:
 
 	- The areas the 20260901 round recorded as not reached: the C parser and emitter read line by line, Go's validation walk, Python's validator, `v_suggest`, a full run under mingw and wine, the installers and packaging, `--layer` and merge semantics, and the three tooling scripts nobody had opened. Twenty-three defects here, the rest under Features and enhancements. Everything below was reproduced, not read off the code.
@@ -225,6 +384,78 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Closed: 20260902-163000
 
 ### Features and enhancements
+
+- Code review 20260902:
+
+	- The enhancement half of the round whose defects are under Bugs. Gate soundness, spec sentences the code needs, and library-level shapes no document rules on.
+
+	- 🔘 Item 29: `perf-gate.bash` passes a CLI that fails every workload instantly.
+		- A stub that prints a usage error and exits 1 gets `OK: within 3x their own parse baseline`; the timer discards the exit status and nothing checks that the workload did anything. Today's workloads do run (an uncapped `edit_distance` blows the suggest budget by 20x), so the gate measures what it says and cannot tell when it stops. Require exit 0 (6 for `suggest`) and a non-empty stdout of the expected size per run.
+		- Opened: 20260902-172800
+
+	- 🔘 Item 30: `shell-regress.bash`'s two static scans miss the ordinary spellings of what they scan for.
+		- The unguarded-grep scan finds `a=$(grep`, `b="$(grep` and `c=$( grep` and misses `local x="$(grep ...)"`, `declare`, `export`, `readonly`, backticks, `+=`, an array element, and a `$(` whose `grep` is on the next line; it also skips every `set -e` script without a `.bash` extension, which is the pre-push hook and the publish script. The `\t`-in-ERE scan reads single-quoted patterns under `cicd/` only, so a double-quoted pattern, `--`, `--extended-regexp` and the installers are outside it. No live instance today. Allow the keyword prefixes and both quotes, and drive the file list off `git ls-files` plus a shebang test.
+		- Opened: 20260902-172900
+
+	- 🔘 Item 31: PSScriptAnalyzer is the one lint tool with no version pin, and `check-pins.bash` holds one direction only.
+		- `ci.yml` installs it with no `-RequiredVersion` and `TOOL_PINS` has no entry, against the comment that the two agree; a new PSSA rule reddens hosted CI while the local gate stays green. Deleting the `ruff` entry from a scratch `config.bash` while `ci.yml` still installs it passes `check-pins`. Pin 1.25.0 in both places and walk `ci.yml`'s install lines the other way.
+		- Opened: 20260902-173000
+
+	- 🔘 Item 32: five gates exit 0 when a tool they need is missing.
+		- `check-locale.bash` skips without `localedef`, `shell-regress.bash` skips 12 checks without `pwsh`, 6 without `openssl` and the prerelease packaging row without `makensis` (the hosted runner has none, so 20260830b item 8 is pinned on this box only), and `package.bash` skips the rpm read-back without `rpm`. A strict switch under `--ci` that turns a skip into a failure keeps a runner that loses a tool from going quiet.
+		- Opened: 20260902-173100
+
+	- 🔘 Item 33: `tests/cli_pipe.rs` cannot see the `out!`-to-`println!` regression on Linux, and its header does not say so.
+		- With the macros' quiet exit replaced by a panic and `reset_sigpipe` kept, the test passes on Linux because SIGPIPE ends the process first; only the windows job pins the macros. A one-line note in the test header, so nobody reads the linux pass as covering 20260901b item 11.
+		- Opened: 20260902-173200
+
+	- 🔘 Item 34: value identity ignores escapes while a selector resolves them, so one selector addresses two instances.
+		- `a: "q\"uote"` and `a: 'q"uote'` are two instances, in one file and across layers, yet `a["q\"uote"]` matches both (`count` 2, `get` exit 5), and writing `a["q\"uote"].j: 2` in an over layer merges into the base's instance while the block spelling appends a second. Names took the resolve-escapes rule on 2026-08-18; the spec's merge sentence says nothing about escapes for values. A spec decision: either the identity key resolves escapes (all four take the resolved string in the key and hash) or the spec says a selector may address several spellings.
+		- Opened: 20260902-173300
+
+	- 🔘 Item 35: three merge facts the spec should state.
+		- The fold is not associative: with `p: 1`, `p: 2` and `p:` over `x: 1`, `(A+B)+C` overrides the leaf and `A+(B+C)` keeps `p: 1` as a wrapper-mention peer; 56 of 300 generated triples differ the same way, so a consumer caching a pre-merged upper pair gets a different document from the CLI fold. A merged document keeps the base's strictness, so a value from a stricter layer reads with the base's coercion (library only). And a merge costs a pass over the base's touched scopes plus an index rebuild on the next read, with replaced nodes kept until the document is dropped (measured in all four: 40k-key base plus a 3-line over is 5 to 66 ms, the next read 2 to 17 ms, 500 merges of an 8-node over grow the process by 0.5 to 1.5 MB). One sentence each in Layered loading and the merge doc comments.
+		- Opened: 20260902-173400
+
+	- 🔘 Item 36: the C merge grows the document by the parent's whole child list per merge, and `w_encode_string` amplifies a string value about four times.
+		- A one-leaf over onto a 40k-key document costs 1 MB of arena per merge (100 merges, 100 MB), because `w_overlay` rebuilds the parent's children into a fresh doubling vector in the document arena and the abandoned copies are never reused. `set_string` of a 20 MB value grows the arena by 85 MB, from the 32-byte builder doubling through blocks of twice each request. Build the rebuilt list in scratch and copy it exactly sized; reserve the builder up front.
+		- Opened: 20260902-173500
+
+	- 🔘 Item 37: the name index rebuild walks every node ever created, removed subtrees included.
+		- After 100k set-and-remove cycles a document with 1000 live nodes holds 400k, and every rebuild (the first read after any merge) indexes the dead ones too: 48 ms per read against 0 on a fresh document; `shcl_compact` cures it in C and the other three have no compact. Rust's `name_index` iterates the arena the same way. Build the index by walking from the root in all four.
+		- Opened: 20260902-173600
+
+	- 🔘 Item 38: `instances()` shows a writer-built string differently from its reparse when the text holds both quote kinds.
+		- `set_string("k", "q\"q'")` stores `q"q'`, canonical output is `k: "q\"q'"`, and a reparse stores `q\"q'` with the escape intact; reads and selectors agree on both sides, `instances()` returns display text and so differs. All four. The one observable where `set(x)` and `load(emit(set(x)))` disagree; either spell `\"` in the encoders when both quote kinds are present, or leave it documented.
+		- Opened: 20260902-173700
+
+	- 🔘 Item 39: Python's array setters take any iterable, so a string or a generator writes the wrong value at `True`.
+		- `set_string_array("k", "abc")` writes `k: a, b, c`; `set_int_array("k", (x for x in [1, 2, 3]))` writes an empty value and returns `True`, because the type gate consumes the generator before the setter reads it. `set_comment`, `set_raw` and `set_literal` have no type gate at all and raise from inside on a non-string. The module's own comment says a typed setter takes exactly the type its name says. Refuse `str` and `bytes`, materialize the iterable once, and gate the three.
+		- Opened: 20260902-173800
+
+	- 🔘 Item 40: two library-level parity points in the file tier and the Go writer.
+		- Rust alone writes through a trailing `/` on a regular-file path (`save_file("f/")` succeeds where POSIX refuses `open("f/")`); Go refuses `f/` but writes `f/.`; Python refuses both. Go's `SetString` of a string that is not UTF-8 stores U+FFFD per bad byte and reports success, so the value does not read back verbatim; return false from the string setters on invalid input, or say so in the Go doc comment.
+		- Opened: 20260902-173900
+
+	- 🔘 Item 41: CLI shapes that are consistent across the four and still surprise.
+		- `get --array --default=0` on a missing or empty array prints one line, indistinguishable from a one-element array equal to the default. Extra tab-separated fields on an ops line are dropped silently (`raw` loses everything after a literal tab in its content). `--default` followed by `--on-bad=error` drops the default; the other order keeps it. Schema-side hints are never printed by `check --schema` or `init`, so the `H001` that explains a `V092` from a merged `allowed` is invisible. `children` prints nothing at exit 0 for a missing path, a repeated field and a childless node alike, at the library level too. Each wants a decision, not a fix.
+		- Opened: 20260902-174000
+
+	- 🔘 Item 42: three spec sentences the ports need.
+		- The Loose float-to-int tie rule (the code rounds half away from zero, `-2.5` to `-3`, while the formatter decision is half-even and Python's `round` is half-even). The aggregate-status ordering for array reads (`Good < Empty < NotFound < BadType < Multiple`, derived from the enum order in all four and written nowhere). And `format_f64`'s doc comment says the CLI uses it, which becomes true with item 1.
+		- Opened: 20260902-174100
+
+	- 🔘 Item 43: generator gaps the spec does not rule on.
+		- A `desc` that is not one scalar (`desc: a, b`) produces no comment and no fault. `type: raw` with a `default` can never generate (the default is emitted inline, so V097 reports wrong type), and a default carrying a raw block is dropped silently. `init` prints `schema line 0` for V096 and V097, whose line space is the document.
+		- Opened: 20260902-174200
+
+	- 🔘 Item 44: the C CLI's "cannot create temporary file" phase wording is decided by `_waccess`, which on Windows reports every existing directory writable.
+		- The C library reports errno alone and the CLI guesses the phase from `_waccess(dir, 2)`; on real Windows an ACL-protected directory gets the bare errno where Rust and Go name the temp-create phase. Cosmetic under wine, which follows the unix mode bits. Record the failing phase in the library's write, or probe with an exclusive create.
+		- Opened: 20260902-174300
+
+	- 🔘 Item 45: `shcl_authored_name`'s comment says its result lives in the read arena; it lives in the document arena.
+		- The real lifetime is longer than stated (until `shcl_free` or `shcl_compact`), so no caller is hurt; `shcl_children` hands back the same kind of pointer and says so correctly. Fix the sentence.
+		- Opened: 20260902-174400
 
 - Code review 20260901b:
 
