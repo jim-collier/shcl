@@ -596,7 +596,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Closed: 20260903-163000
 
 	- ✅ Item 47: merging a layer differs from merging the same layer's canonical form.
-		- Found while working item 44, by a 200,000-iteration fuzz soak; the gate runs 20,000 and had never reached it. Present before this round's changes.
+		- Present before this round's changes. The merge fuzz property covers it but only reaches the shape past 40,000 iterations, and the gate stops at 20,000.
 		- Reproduced with a base of one refused line (a name carrying a vertical tab, kept as trivia) and a layer whose trailing comment sits inside a stacked element's raw body. The layer and its own canonical form emit the same text, so the fixpoint property holds for the layer alone; they disagree about where the comment is attached, and only a merge shows it. The base's trivia comes out before the layer's comment one way and after it the other.
 		- Base `t<VT>o: 5`, layer `*<tab>```` / `  line1` / `  #` / `` `` ``. Direct gives `line1: / # / t<VT>o: 5`; through the canonical form, `line1: / t<VT>o: 5 / #`.
 		- Cause: a comment trailing a field at the field's own indent is kept as that field's, and a document's own trailing comment is kept separately and emitted after everything. For a top-level field the two are spelled the same - column zero - so a reload cannot tell them apart, and a merge, where the field's comment travels with the field and the document's is appended, puts them in different orders. An error-repaired document is what makes the two spellings meet: the field was written indented and ended up at the top level.
@@ -683,7 +683,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Fixed, stdin: a stdin nothing is attached to reads as an empty document in all four CLIs. Windows reports a handle the shell closed as an invalid handle or an invalid function rather than as end of input, and all three windows CLIs exited 8 on it - not only Go.
 		- Fixed, C on windows: the save target is resolved through the final path, so a symlink or junction is followed and the answer carries the long-path prefix. The prefix is kept only where the name plus the temp file's suffix would exceed the old limit.
 		- Pinned by a `win-runners` closed-stdin row across all four, and by two windows-only C runner fixtures: a save and rewrite through a path past 260 characters, and a save through a symlink that has to leave the link in place. The link fixture skips where no link could be made, which is every run under wine and a windows host without the privilege.
-		- Note: wine showed the stdin defect and the long-path prefix directly. The symlink half is judged only on the hosted windows job, since wine reports a symlink as created and creates nothing.
+		- Note: the symlink half is judged only on the hosted windows job. Nothing else here can make a windows symlink: wine reports one as created and creates nothing.
 		- Opened: 20260901-193200
 		- Closed: 20260904-004500
 
@@ -729,7 +729,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- The plan step could probe the nearest existing parent for writability before spending the downloads.
 		- Fixed: the three destinations are probed before anything is fetched, each by walking up to whatever exists, and the refusal names the directory that cannot be written. A sudo install skips the probe, since root is what writes there.
 		- Pinned by a `shell-regress` block over the walk-up and a read-only home, plus a source-order check that the probe precedes the first download.
-		- Note: an install and an uninstall were run end to end against a throwaway home, which also exercised items 36 and 37.
 		- Opened: 20260901-193800
 		- Closed: 20260904-015500
 
@@ -742,7 +741,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- ✅ Item 41: both installers report a GitHub API rate limit as "none published yet, or network down".
 		- An unauthenticated 403 is common behind a shared address. Honor `GITHUB_TOKEN` when set and name a 403.
 		- Fixed: both send `GITHUB_TOKEN` when it is set, and both name a 403 or 429 as the rate limit it is. A 401 blames the token rather than the network, which is what a wrong token gets.
-		- Pinned by a `shell-regress` block over the four statuses. The status itself comes from curl's own reporting, which was checked against a live 401.
+		- Pinned by a `shell-regress` block over the four statuses. The status itself is curl's own reporting.
 		- Opened: 20260901-194000
 		- Closed: 20260904-020500
 
@@ -778,7 +777,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Closed: 20260904-030000
 
 	- ✅ Item 46: the PowerShell wrapper's header carries one ragged 126-column line where its bash twin wraps.
-		- Fixed: it wraps. The bash wrapper had one too, an array example at 106 columns, found by the check written for this.
+		- Fixed: it wraps, and so does the bash wrapper's array example, which ran to 106 columns.
 		- Pinned by a `shell-regress` row over both wrappers' comment lines. Code lines are left out: both carry a long one on purpose.
 		- Opened: 20260901-194500
 		- Closed: 20260904-030200
