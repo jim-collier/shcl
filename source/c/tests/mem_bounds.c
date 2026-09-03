@@ -176,10 +176,29 @@ int main(void) {
 			shcl_free(cd);
 		}
 		printf("mem_bounds: index rebuild: %.1f ms fresh, %.1f ms after 100k set+remove\n", t[0], t[1]);
+		/* A ratio between two timings says nothing under a sanitizer, which
+		   costs per allocation rather than per node walked. The plain build in
+		   the test stage is where this is judged. */
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+		printf("mem_bounds: index rebuild ratio not judged under a sanitizer\n");
+#else
 		/* A generous ratio on purpose: the chain array is still sized by the
 		   arena, which is a memset the walk cannot avoid. What the bound
 		   catches is the walk itself going over every dead node. */
 		if (t[1] > t[0] * 25 + 25) fail("the index rebuild walks nodes the document no longer holds");
+#endif
+	}
+
+	// shcl_authored_name hands back the stored spelling, which lives in the
+	// document's own arena - so it outlives shcl_reads_release, where the header
+	// used to promise the shorter read-arena lifetime.
+	{
+		shcl_doc *ad = shcl_parse("SYMBOLS: 3\n", 11);
+		shcl_str an = shcl_authored_name(ad, "symbols", 7);
+		if (an.n != 7 || memcmp(an.p, "SYMBOLS", 7) != 0) fail("authored_name: wrong spelling");
+		shcl_reads_release(ad);
+		if (an.n != 7 || memcmp(an.p, "SYMBOLS", 7) != 0) fail("authored_name did not survive a read release");
+		shcl_free(ad);
 	}
 
 	// A merge rebuilt the parent's child list with a builder growing in the

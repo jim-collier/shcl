@@ -236,6 +236,15 @@ grep -q 'rounds half away from zero' "${repoDir}/project/spec.md" \
 grep -qF -- '`Good` < `Empty` < `NotFound` < `BadType` < `Multiple`' "${repoDir}/project/spec.md" \
 	|| fBad "spec.md: the aggregate status rule does not give the ordering"
 
+##	shcl_authored_name hands back the stored spelling, which lives in the
+##	document's arena and survives shcl_reads_release. The header used to promise
+##	the shorter read-arena lifetime, which no caller was hurt by and every
+##	caller would have believed.
+sed -n '/^shcl_str shcl_authored_name/,$p;' "${repoDir}/source/c/shcl.h" > /dev/null
+grep -B 3 -F 'shcl_str shcl_authored_name(shcl_doc *d' "${repoDir}/source/c/shcl.h" \
+	| grep -q "document's own arena" \
+	|| fBad "shcl.h: shcl_authored_name does not say its result lives in the document's arena"
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1
