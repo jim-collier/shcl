@@ -525,8 +525,8 @@ The constraint vocabulary is closed - nothing joins it without a spec change:
 | :-- | :-- | :--
 | `type` | `int` `float` `bool` `string` `datetime` `raw`, or `<scalar>-array` (no `raw-array`) | every value at the path must coerce to this type, at the *document's* strictness
 | `required` | boolean | the path must resolve (see wildcard rule below)
-| `allowed` | inline array | closed set of permitted element values, compared in the coerced space of `type` (for `datetime` that means the moment, so `12:00:00Z`, `12:00:00+00:00` and `12:00:00-00:00` are one value, and `12:00:00` and `12:00:00.0` are too - but a value with no zone is local and matches no zoned one)
-| `min` / `max` | number | inclusive bounds, `int`/`float` kinds only, checked per element on arrays
+| `allowed` | inline array | closed set of permitted **element** values, compared in the coerced space of `type`. Every element of a multi-element value has to be in the set, so `allowed: "x, y, z"` is one element and admits none of the three in `c: x, y, z` even though `GetString` returns the joined form. For `datetime` the coerced space is the moment: `12:00:00Z`, `12:00:00+00:00` and `12:00:00-00:00` are one value, and so are `12:00:00` and `12:00:00.0`, while a value with no zone is local and matches no zoned one
+| `min` / `max` | number | inclusive bounds, `int`/`float` kinds only, checked per element on arrays. A `min` above its `max` admits nothing, so it is a schema fault and the field is dropped rather than every value being told off twice
 | `repeat` | one integer (exact) or two (min, max) | bounds the instance count at the path, per resolution context
 | `inherits` | fragment name | the subtree at this path has the named fragment's shape (see Fragments below)
 | `reopen` | boolean | the section at this path is meant to be written in parts; `true` disavows `H002` for its leaf name (validation itself ignores it)

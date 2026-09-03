@@ -5825,6 +5825,22 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 			),
 		}
 	}
+	// A lower bound above the upper one admits nothing, so every value fails
+	// twice and the schema, not the config, is what has to change. Reported at
+	// the `max` line, which is the one a reader has to look at with `min`.
+	let crossed = matches!((c.min_i, c.max_i), (Some(lo), Some(hi)) if lo > hi)
+		|| matches!((c.min_f, c.max_f), (Some(lo), Some(hi)) if lo > hi);
+	if crossed {
+		vdiag(
+			faults,
+			max_at.map_or(schema.arena[f].line, |m| schema.arena[m].line),
+			"V092",
+			"bad schema constraint 'max'".to_string(),
+		);
+		// Dropped like any other broken field, so the document is not told off
+		// twice per value for a range it could never have satisfied.
+		return None;
+	}
 	Some(c)
 }
 
