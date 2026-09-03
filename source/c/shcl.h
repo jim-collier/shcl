@@ -1971,7 +1971,11 @@ DEFINE_VEC(ShclVecPendMark, ShclPendMark)
    do_parse's frame: the recovery path is reached by longjmp, which leaves a
    local the parse has written to indeterminate. */
 typedef struct { ShclArena line, hints; ShclVecMapPtr cmaps, dmaps; } ShclParseOwn;
-typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; ShclVecPendMark pend_marks; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line;
+typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; ShclVecPendMark pend_marks; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank;
+	/* Nothing has been read yet, so a blank line here leads the file and the
+	   emitter would not re-emit it. Dropping it at parse time is what makes
+	   load(emit(load(x))) equal load(x) on that bit, which a merge relies on. */
+	int at_start; ShclVecSize reent_node; ShclVecSize reent_line;
 	/* shcl_parse_limited's caps, 0 = uncapped: nodes counted against the
 	   arena (root excluded), elements against a single value's cell. */
 	size_t max_nodes, max_elements;
@@ -2500,7 +2504,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	   for the whole parse. Everything a node keeps is dup'd into the document
 	   arena before the next reset. */
 	ShclParser P; P.d = d; P.tmp = &d->scratch; P.line = &own->line; P.hints = &own->hints; P.cmaps = &own->cmaps; P.dmaps = &own->dmaps; memset(&P.stack, 0, sizeof P.stack); memset(&P.pending, 0, sizeof P.pending); memset(&P.pend_marks, 0, sizeof P.pend_marks);
-	P.star_open = 0; P.star_node = 0; P.star_key = 0; P.star_disp = 0; P.saw_blank = 0;
+	P.star_open = 0; P.star_node = 0; P.star_key = 0; P.star_disp = 0; P.saw_blank = 0; P.at_start = 1;
 	P.max_nodes = max_nodes; P.max_elements = max_elements; P.max_diags = max_diags; P.unlisted_errors = 0; P.unlisted_hints = 0;
 	memset(&P.reent_node, 0, sizeof P.reent_node); memset(&P.reent_line, 0, sizeof P.reent_line);
 	ShclStackEnt e0; e0.indent = s_empty(); e0.node = ROOT; ShclVecStack_push(P.tmp, &P.stack, e0);
@@ -2550,7 +2554,8 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		size_t ind = 0; while (ind < line.n && (line.p[ind] == ' ' || line.p[ind] == '\t')) ind++;
 		ShclStr indent = s_slice(line, 0, ind);
 		ShclStr rest = s_slice(line, ind, line.n);
-		if (rest.n == 0) { P.saw_blank = 1; i++; continue; }
+		if (rest.n == 0) { P.saw_blank = !P.at_start; i++; continue; }
+		P.at_start = 0;
 		/* Whole-line comment: hold it for the next line that binds a node. It
 		   consumes a pending blank into its own flag, so a blank between
 		   comment-only regions survives the round-trip. Text and indent are
@@ -2701,6 +2706,21 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	hang_deeper_pending(&P, s_empty());
 	for (size_t k = 0; k < P.pending.len; k++)
 		ShclVecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before));
+	/* The emitter drops a blank before the first thing it prints, so a document
+	   that kept one there would not survive its own canonical form:
+	   load(emit(load(x))) and load(x) would differ on that bit, and a merge -
+	   where the line is no longer first - would place a blank the author never
+	   wrote. Clear it here, once, wherever output starts. */
+	{
+		ShclVecSize kids = NODE(d, ROOT).children;
+		if (kids.len) {
+			ShclNode *n = &NODE(d, kids.data[0]);
+			if (n->trivia && n->trivia->leading.len) n->trivia->leading.data[0].blank_before = 0;
+			else n->blank_before = 0;
+		} else if (d->orphans.len) {
+			d->orphans.data[0].blank_before = 0;
+		}
+	}
 	/* The one entry past the cap: what was not listed, and whether any of it
 	   was an error, so a consumer scanning the list for errors still finds
 	   one and a strict load still fails. */

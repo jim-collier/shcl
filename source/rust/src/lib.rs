@@ -2346,7 +2346,7 @@ impl Parser {
 		self.emit_repeated_leaf_hints();
 		// Indented tail comments keep their block; only top-level ones orphan.
 		self.hang_deeper_pending("");
-		let orphans = self
+		let mut orphans: Vec<Lead> = self
 			.pending
 			.drain(..)
 			.map(|p| Lead {
@@ -2354,6 +2354,20 @@ impl Parser {
 				blank_before: p.blank_before,
 			})
 			.collect();
+		// The emitter drops a blank before the first thing it prints, so a
+		// document that kept one there would not survive its own canonical
+		// form: `load(emit(load(x)))` and `load(x)` would differ on that bit,
+		// and a merge - where the line is no longer first - would place a blank
+		// the author never wrote. Clear it here, once, wherever output starts.
+		if let Some(&first) = self.arena[ROOT].children.first() {
+			let n = &mut self.arena[first];
+			match n.trivia.as_mut().and_then(|t| t.leading.first_mut()) {
+				Some(c) => c.blank_before = false,
+				None => n.blank_before = false,
+			}
+		} else if let Some(c) = orphans.first_mut() {
+			c.blank_before = false;
+		}
 		// The one entry past the cap: what was not listed, and whether any
 		// of it was an error, so a consumer scanning the list for errors
 		// still finds one and a Strict load still fails.

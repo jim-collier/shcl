@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A blank line before the first thing canonical output prints is dropped at load. Canonical output never starts with a blank, so a document that kept the flag did not survive its own canonical form: merging a layer gave a different result from merging its `fmt`, and the fold placed a blank line the author never wrote. Three shapes did it - a file starting with a blank line, a blank after a leading line the load dropped, and a blank on a later instance that merged into the first.
+
 - A refused `--set` or a failing ops line no longer swallows the load's diagnostics. The edit was applied before anything was printed, so a `get --set` on a file with a dropped line reported the refusal and said nothing about the damage. The diagnostics belong to the load and now go out before any edit runs.
 
 - Go's `LoadError` and Python's `diagnostics()` and `LoadError` hand back a copy. Each returned the document's own list, so a caller sorting or clearing what it was given silently changed what the document reported, and the document's next append landed in the caller's slot. Go's `Diagnostics()` was fixed for this in 2.0; these were the ones it missed.
