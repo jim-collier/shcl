@@ -154,6 +154,10 @@ rows=(
 	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
 	'children-missing|children %T% nope|-|0||-'
 	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	## 20260902 item 15: a refused edit returned before the load's diagnostics
+	## were printed, so a damaged file said nothing about the damage.
+	'refused-set-still-reports|get --set=a[*]=1 %B% a|-|1|-|E015 missing colon'
+	'refused-op-still-reports|set %B%|int\ta[*]\t1\n|1|-|E015 missing colon'
 	## 20260902 item 14: Go read a non-UTF-8 ops script as a usage error.
 	'ops-not-utf8|set %F%|\xff\n|8|-|-'
 	## 20260902 items 8 and 9: a stdout that could not be written was reported

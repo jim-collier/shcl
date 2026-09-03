@@ -166,11 +166,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260902-171300
 		- Closed: 20260902-231000
 
-	- 🔘 Item 15: a refused `--set` or a failing op suppresses the load's diagnostics.
+	- ✅ Item 15: a refused `--set` or a failing op suppresses the load's diagnostics.
 		- Reproduced in all four. On a document with an `E014` line, `get --set='a[*]=1' f a` prints only the refusal at exit 1 and never the `E014`; same for an ops line the writer refuses. The help says every subcommand that loads a document prints the load's diagnostics once per run.
 		- Cause: `load_layered` returns the refusal before the caller's `say_diagnostics`, and `do_set` returns from the `--set` refusal and the op failure before its own call to it.
-		- Note: print the load's diagnostics before applying the edit list; they belong to the load, not to the edits.
+		- Fixed: the layered load prints its own diagnostics, before the edit list runs, in all four; the five callers that printed them afterwards no longer do, so a run still reports once. `set` does the same before its option edits and its ops script.
+		- Pinned by two `cli-regress` rows: a refused `--set` and a refused ops line on a document with an `E015`, each of which must still report it. All four printed only the refusal before.
 		- Opened: 20260902-171400
+		- Closed: 20260902-234500
 
 	- 🔘 Item 16: a layer's leading blank line survives the load but not the canonical form, so a merge of a file and a merge of its `fmt` differ.
 		- Reproduced in all four. With `A` holding `a: 1` and `B` holding a blank line then `b: 2`, `fmt --layer=A B` prints `a: 1`, a blank, `b: 2`, while `fmt --layer=A <(fmt B)` prints no blank. Same with a leading comment and with a comment-only layer. In a 700-seed soak, 129 seeds (every layer beginning with a blank line) gave a different result with an in-memory merged document as `over` than with its reparse; as `base` it never differed.

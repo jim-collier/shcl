@@ -473,29 +473,32 @@ def load_layered(o, file):
 	# Load file with o's lower-priority --layer files underneath and its --set
 	# overrides on top - the layered-load fold. Every layer parses at the
 	# requested strictness; a strict-load failure on any layer aborts like a
-	# single-file strict failure. Returns (doc, diags, None) or (None, None, code).
-	# The diagnostics come back per layer, lowest first: a merge does not carry
-	# them over, so reading them off the merged document drops the ones for FILE
-	# itself, which is the one the caller named.
+	# single-file strict failure. Returns (doc, None) or (None, code).
+	# It prints every layer's diagnostics itself, lowest first, before the --set
+	# overrides run: they belong to the load, and a refused edit used to return
+	# with nothing said about them. A merge does not carry diagnostics over, so
+	# reading them off the merged document drops the ones for FILE itself, which
+	# is the one the caller named.
 	texts = []
 	for lf in o.layers:
 		texts.append(read_input(lf))
 	texts.append(read_input(file))
 	doc, code = load_doc(texts[0], o.strictness)
 	if doc is None:
-		return None, None, code
+		return None, code
 	diags = list(doc.diagnostics())
 	for t in texts[1:]:
 		over, c = load_doc(t, o.strictness)
 		if over is None:
-			return None, None, c
+			return None, c
 		diags.extend(over.diagnostics())
 		doc.merge(over)
+	say_diagnostics(diags)
 	for st in o.sets:
 		if not st.apply(doc):
 			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {describe_refusal(doc, st.path)}\n")
-			return None, None, 1
-	return doc, diags, None
+			return None, 1
+	return doc, None
 
 
 def check_opts(cmd, o):
@@ -607,16 +610,12 @@ def do_get(o):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		doc, diags, code = load_layered(o, file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
-	# A read reports what the load dropped, the same as fmt and set: below
-	# strict the value comes back fine and the damage is otherwise silent.
-	# One report per invocation, so a read in a loop is one line per call.
-	say_diagnostics(diags)
 	if o.array:
 		if o.kind == "int":
 			r = doc.read_int_array(path)
@@ -754,15 +753,12 @@ def do_fmt(o):
 		sys.stderr.write("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
 	try:
-		doc, diags, code = load_layered(o, file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
-	# Printing the canonical form drops what the load dropped, the same as a
-	# rewrite does, so the diagnostics go out either way.
-	say_diagnostics(diags)
 	if o.write:
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
@@ -978,6 +974,9 @@ def do_set(o):
 			return c
 		diags.extend(over.diagnostics())
 		doc.merge(over)
+	# The load's diagnostics belong to the load, so they go out before any edit
+	# runs: a refused --set or a failing op used to return with nothing said.
+	say_diagnostics(diags)
 	for st in o.sets:
 		if not st.apply(doc):
 			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {describe_refusal(doc, st.path)}\n")
@@ -1015,7 +1014,6 @@ def do_set(o):
 		except ValueError as e:
 			sys.stderr.write(f"op line {n + 1}: {e}\n")
 			return 1
-	say_diagnostics(diags)
 	if o.write:
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
@@ -1113,16 +1111,12 @@ def do_enum(o, want_count):
 		return 1
 	file, path = o.args[0], o.args[1]
 	try:
-		doc, diags, code = load_layered(o, file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
-	# A read reports what the load dropped, the same as fmt and set: below
-	# strict the value comes back fine and the damage is otherwise silent.
-	# One report per invocation, so a read in a loop is one line per call.
-	say_diagnostics(diags)
 	if want_count:
 		print(doc.count(path))
 	else:
@@ -1144,13 +1138,12 @@ def do_children(o):
 		sys.stderr.write("usage: shcl children [options] FILE [PATH] (see --help)\n")
 		return 1
 	try:
-		doc, diags, code = load_layered(o, file)
+		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
-	say_diagnostics(diags)
 	for name in doc.children(path):
 		print(shcl.quote_segment(name))
 	return 0
@@ -1163,13 +1156,12 @@ def do_paths(o):
 		sys.stderr.write("usage: shcl paths [options] FILE (see --help)\n")
 		return 1
 	try:
-		doc, diags, code = load_layered(o, o.args[0])
+		doc, code = load_layered(o, o.args[0])
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
-	say_diagnostics(diags)
 	for p in doc.paths():
 		print(p)
 	return 0
