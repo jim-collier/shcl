@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Python's typed array setters take a list of their type rather than any iterable. `set_string_array("k", "abc")` wrote three elements, because a `str` is a sequence of one-character strings, and a generator was consumed by the type check before the setter read it - an empty value written and `True` returned. `set_comment`, `set_raw` and `set_literal` gate their arguments now too, instead of raising from somewhere inside.
+
 - A written value carrying both quote kinds is stored the way its own reload stores it. `SetString("k", "q\"q'")` kept the quote bare while the emitter escaped it, so `Instances` and a read's raw text differed between a written document and a reload of the same text - the one place `set(x)` and `load(emit(set(x)))` disagreed. The value read back the same either way; only the source spelling differed.
 
 - The name index is rebuilt by walking the document rather than the arena. A set-and-remove cycle leaves its nodes behind, and the rebuild indexed every one of them, so the first read after a merge grew with the number of edits ever made instead of with the document - 1000 live nodes behind 400000 dead ones cost 48 ms a read. C's merge and its string setter also stop abandoning a doubling chain in the document arena: a merge onto a 40000-key base cost 786 KB and costs 320 KB, and a 20 MB string value cost 55 MB and costs 20 MB.
