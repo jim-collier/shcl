@@ -4959,6 +4959,18 @@ def _parse_field(schema, f, faults):
 				c.max_f = v
 		else:
 			_vdiag(faults, kid.line, "V092", f"bad schema constraint '{key}'")
+	# A lower bound above the upper one admits nothing, so every value fails
+	# twice and the schema, not the config, is what has to change. Reported at
+	# the max line, and the field is dropped like any other broken one so the
+	# document is not told off twice per value for a range it could never have
+	# satisfied.
+	crossed = (c.min_i is not None and c.max_i is not None and c.min_i > c.max_i) or (
+		c.min_f is not None and c.max_f is not None and c.min_f > c.max_f
+	)
+	if crossed:
+		line = schema.arena[max_at].line if max_at is not None else schema.arena[f].line
+		_vdiag(faults, line, "V092", "bad schema constraint 'max'")
+		return None
 	return c
 
 

@@ -15,3 +15,7 @@ field: motd
 	allowed: hi
 field: count
 	repeat: 5, 1
+field: span
+	type: int
+	min: 10
+	max: 1

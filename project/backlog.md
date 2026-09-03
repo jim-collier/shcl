@@ -636,9 +636,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260901-192700
 		- Closed: 20260903-210000
 
-	- 🔘 Item 29: validation questions the spec leaves open.
+	- ✅ Item 29: validation questions the spec leaves open.
 		- `type: string` on a multi-element value checks type against the joined string and `allowed` per element, so `allowed: "x, y, z"` fails on `c: x, y, z` while `get --string` returns the joined form. `min` above `max` is not a schema fault. Both consistent across the four.
+		- Decided: the `allowed` interaction is the documented rule met head-on - the row already says element values, and `allowed: "x, y, z"` is one element - so it is written down rather than changed. A crossed `min`/`max` is a schema fault: the range admits nothing, so the config was told off twice per value for something only the schema can fix.
+		- Fixed: a `min` above its `max` reports `V092` at the `max` line and drops the field, in all four. The spec's `allowed` and `min`/`max` rows say both rules.
+		- Pinned by corpus `023`, which gained a crossed range; all four reported two per-value errors and no fault before.
 		- Opened: 20260901-192800
+		- Closed: 20260903-220000
 
 	- 🔘 Item 30: `E003` is reachable from a file after all, and the spec, the backlog and the corpus all say it is not.
 		- `a[5].b: 2` with one `a` reports it in all four. The spec's "unreachable" reasoning covers only the `[#N]` spelling; the bare `[N]` index is documented and reaches it. Reword the row and add a corpus row.
