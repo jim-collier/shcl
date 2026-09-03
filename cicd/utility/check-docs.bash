@@ -214,6 +214,43 @@ readmeGet="$(sed -n '/shcl get server.shcl log-level/,/^```$/p' "${repoDir}/READ
 grep -q 'E014' <<<"${readmeGet}" \
 	|| fBad "README.md: the get transcript on the damaged file shows no load diagnostic"
 
+##	Three merge facts a consumer folding layers itself has to know, and that
+##	nothing in the code or the corpus can tell them: the fold is not
+##	associative, the merged document keeps the base's strictness, and a
+##	replaced node is kept. The spec says them, and so does every binding's
+##	merge doc comment - a port that loses one leaves its own users guessing.
+grep -q 'fold is not associative' "${repoDir}/project/spec.md" \
+	|| fBad "spec.md: Layered loading does not say the fold is not associative"
+for src in source/rust/src/lib.rs source/go/shcl.go source/python/shcl.py source/c/shcl.h; do
+	grep -q 'fold is not associative' "${repoDir}/${src}" \
+		|| fBad "${src}: the merge doc comment does not say the fold is not associative"
+done
+
+##	Two rules every port has to implement identically and that lived only in the
+##	code: which way a float-to-int tie rounds at Loose, and the order the
+##	aggregate status of an array read takes its worst slot in.
+#  shellcheck disable=2016  ## the backticks are the document's own markdown.
+grep -q 'rounds half away from zero' "${repoDir}/project/spec.md" \
+	|| fBad "spec.md: the coercion table does not say which way a float-to-int tie rounds"
+#  shellcheck disable=2016  ## the backticks are the document's own markdown.
+grep -qF -- '`Good` < `Empty` < `NotFound` < `BadType` < `Multiple`' "${repoDir}/project/spec.md" \
+	|| fBad "spec.md: the aggregate status rule does not give the ordering"
+
+##	shcl_authored_name hands back the stored spelling, which lives in the
+##	document's arena and survives shcl_reads_release. The header used to promise
+##	the shorter read-arena lifetime, which no caller was hurt by and every
+##	caller would have believed.
+sed -n '/^shcl_str shcl_authored_name/,$p;' "${repoDir}/source/c/shcl.h" > /dev/null
+grep -B 3 -F 'shcl_str shcl_authored_name(shcl_doc *d' "${repoDir}/source/c/shcl.h" \
+	| grep -q "document's own arena" \
+	|| fBad "shcl.h: shcl_authored_name does not say its result lives in the document's arena"
+
+##	E003 was listed as unreachable from a file. The `[#N]` spelling is - the `#`
+##	opens a comment first - but the bare index spelling is documented and does
+##	reach it, so the row must not tell a reader to ignore the code.
+grep -q 'E003.*Unreachable in practice' "${repoDir}/project/spec.md" \
+	&& fBad "spec.md: the E003 row still calls the code unreachable from a file"
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

@@ -1,0 +1,5 @@
+# A bare index selector naming an instance that is not there.
+a: 1
+c: x
+c: y
+	d: 3

@@ -378,6 +378,18 @@ type value struct {
 	raw  *rawValue // behind a pointer: inline, its four fields would ride on every node
 }
 
+// keyText is the identity spelling of an element's text: escapes resolved, so
+// two spellings of one string are one instance. Names have followed that rule
+// since 2.0, and a `[value]` selector matches on the resolved text already -
+// without this, one selector addressed two instances. The common case has
+// nothing to resolve and returns the input.
+func keyText(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	return applyEscapes(s)
+}
+
 // key is the merge key: nodes with equal (name, key) collapse into one.
 func (v *value) key() string {
 	switch v.kind {
@@ -390,9 +402,10 @@ func (v *value) key() string {
 		var b strings.Builder
 		b.WriteString("c:")
 		for _, e := range v.els {
-			b.WriteString(strconv.Itoa(len(e.text)))
+			t := keyText(e.text)
+			b.WriteString(strconv.Itoa(len(t)))
 			b.WriteByte(':')
-			b.WriteString(e.text)
+			b.WriteString(t)
 		}
 		return b.String()
 	}
@@ -855,6 +868,14 @@ func unterminatedQuote(text string) bool {
 // backslash are ASCII, and UTF-8 never puts an ASCII byte inside a multibyte
 // sequence, so the first byte, the last byte and the escape parity are the
 // same answers the decoded form gives.
+// oneLine is value text for a diagnostic message: line breaks and tabs escaped,
+// so one diagnostic is one line. A raw block's body is the value that made this
+// necessary - it carries its own newlines.
+func oneLine(s string) string {
+	r := strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\r", "\\r", "\t", "\\t")
+	return r.Replace(s)
+}
+
 func quotedShape(t string) bool {
 	if t == "" {
 		return false
@@ -1043,9 +1064,10 @@ func mergeHash(name string, v *value) uint64 {
 	case vCell:
 		f.bytes("c:")
 		for i := range v.els {
-			f.dec(len(v.els[i].text))
+			t := keyText(v.els[i].text)
+			f.dec(len(t))
 			f.byte(':')
-			f.bytes(v.els[i].text)
+			f.bytes(t)
 		}
 	default:
 		f.bytes("r:")
@@ -1076,7 +1098,7 @@ func mergeEq(nameA string, va *value, nameB string, vb *value) bool {
 			return false
 		}
 		for i := range va.els {
-			if va.els[i].text != vb.els[i].text {
+			if keyText(va.els[i].text) != keyText(vb.els[i].text) {
 				return false
 			}
 		}
@@ -1791,7 +1813,14 @@ func (p *parser) hangDeeperPending(newIndent string) {
 					break
 				}
 			}
-			if target >= 0 {
+			// A root node's trailing comment emits at column zero, which is
+			// exactly how the document's own trailing comment is spelled, so
+			// keeping the two apart here made a merge depend on whether the
+			// layer had been formatted first. Let it orphan, the way a reload
+			// of this document's own output reads it. A comment deeper than the
+			// node keeps an indent of its own and comes back where it was, so
+			// it still hangs.
+			if target >= 0 && (!atOwnLevel || p.arena[target].parent != root) {
 				l := lead{text: pn.text, blankBefore: pn.blankBefore}
 				t := p.arena[target].trivMut()
 				if atOwnLevel {
@@ -2895,6 +2924,9 @@ func ReadFile(path string, maxBytes int) (string, FileStatus) {
 // The i/o failures wrap rather than flatten, so a caller can tell a permission
 // failure from a full disk with errors.Is instead of matching on prose.
 func WriteFileAtomic(file, data string) error {
+	if namesADirectory(file) {
+		return fmt.Errorf("%s: is a directory", file)
+	}
 	target, terr := resolveTarget(file)
 	if terr != nil {
 		return fmt.Errorf("%s: %w", file, terr)
@@ -2991,6 +3023,26 @@ func WriteFileAtomic(file, data string) error {
 // points. A path that is no link at all is a plain create at the path as given.
 // A link cycle is an error: silently creating a regular file in its place
 // would be the exact replacement the symlink walk exists to avoid.
+// namesADirectory reports a path that names a directory rather than a file: it
+// ends in a separator, or its last component is `.` or `..`. The OS refuses to
+// open such a path as a regular file, but a path cleanup drops the trailing
+// separator first, so a save through `f/.` used to rewrite `f`.
+func namesADirectory(file string) bool {
+	if file == "" {
+		return false
+	}
+	sep := func(c byte) bool { return c == '/' || (runtime.GOOS == "windows" && c == '\\') }
+	if sep(file[len(file)-1]) {
+		return true
+	}
+	i := len(file)
+	for i > 0 && !sep(file[i-1]) {
+		i--
+	}
+	last := file[i:]
+	return last == "." || last == ".."
+}
+
 func resolveTarget(file string) (string, error) {
 	if p, err := filepath.EvalSymlinks(file); err == nil {
 		return p, nil
@@ -3394,9 +3446,17 @@ func (d *Document) nameIndex() *nameIndex {
 	for i := range idx.nextSame {
 		idx.nextSame[i] = nilNode
 	}
-	for p := range d.arena {
+	// From the root, not across the arena: a removed subtree's nodes are still
+	// there with their child lists intact, so an arena walk indexes every node
+	// the document ever held. Chains stay in file order - a chain is one
+	// parent's same-named children, and each parent's are appended in order.
+	stack := []int{root}
+	for len(stack) > 0 {
+		p := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
 		for _, c := range d.arena[p].children {
 			idx.append(nameKey(p, d.arena[c].name), c)
+			stack = append(stack, c)
 		}
 	}
 	d.index.Store(idx)
@@ -3740,7 +3800,31 @@ func encodeString(s string) string {
 			b.WriteRune(c)
 		}
 	}
-	return b.String()
+	out := b.String()
+	// The emitter escapes a bare double quote when both quote kinds appear, so
+	// a reparse of the written line stores the escaped spelling. Store it here
+	// too, or Instances and a read's raw text differ between a written document
+	// and its own reload.
+	dq, sq := bareQuoteCounts(out)
+	if dq > 0 && sq > 0 {
+		var e strings.Builder
+		for i := 0; i < len(out); i++ {
+			switch out[i] {
+			case '\\':
+				e.WriteByte(out[i])
+				if i+1 < len(out) {
+					i++
+					e.WriteByte(out[i])
+				}
+			case '"':
+				e.WriteString("\\\"")
+			default:
+				e.WriteByte(out[i])
+			}
+		}
+		return e.String()
+	}
+	return out
 }
 
 // chooseFence picks a backtick fence long enough that no content line closes it.
@@ -4125,8 +4209,15 @@ func (d *Document) SetBool(path string, v bool) bool {
 	return d.setValue(path, cellOf(boolText(v)))
 }
 
-// SetString binds a string at path, escaped so it reads back exactly.
+// SetString binds a string at path, escaped so it reads back exactly. A Go
+// string can hold any bytes, and a document is UTF-8, so text that is not
+// valid UTF-8 fails the write rather than being stored with a replacement
+// character per bad byte and reported as written - the same refusal SetFloat
+// gives an infinity and SetDateTime a month of 13.
 func (d *Document) SetString(path, v string) bool {
+	if !utf8.ValidString(v) {
+		return false
+	}
 	return d.setValue(path, cellOf(encodeString(v)))
 }
 
@@ -4202,6 +4293,9 @@ func (d *Document) SetBoolArray(path string, v []bool) bool {
 func (d *Document) SetStringArray(path string, v []string) bool {
 	texts := make([]string, len(v))
 	for i, x := range v {
+		if !utf8.ValidString(x) {
+			return false
+		}
 		texts[i] = encodeString(x)
 	}
 	return d.setValue(path, arrayCell(texts))
@@ -4344,6 +4438,13 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 // wiping. over-only nodes are appended. Comment trivia rides with each node.
 // Load(defaults, site, user) is a left fold of this: each later file overlaid
 // on the earlier ones.
+//
+// The fold is not associative: (A+B)+C and A+(B+C) differ where a bare header
+// meets an overridden leaf, so a cached upper pair is not the same document the
+// CLI's left fold produces. d keeps its own strictness, so a value from a
+// stricter layer reads with d's coercion. And a replaced node is kept until the
+// document is dropped: this costs a pass over the touched scopes plus an index
+// rebuild on the next read.
 func (d *Document) Merge(over *Document) {
 	d.index.Store(nil)
 	d.lost += over.lost
@@ -5610,14 +5711,31 @@ func singleText(v *value) (string, bool) {
 
 // dtEqual compares datetimes field-wise (Zone is a pointer, so == would
 // compare identity, not value).
-func dtEqual(a, b DateTime) bool {
-	if (a.Zone == nil) != (b.Zone == nil) {
-		return false
+// sameMoment reports two datetimes naming the same moment, whatever the
+// spelling. The struct mirrors what was written, so 12:00:00Z and
+// 12:00:00+00:00 are different values field by field while naming one time, and
+// 12:00:00 and 12:00:00.0 differ only in written precision. A [value] selector
+// matches on text, but an allowed set is about the value, so it compares here.
+// An absent zone is local and matches no zone at all - that is the one spelling
+// difference that is a real difference.
+func sameMoment(a, b DateTime) bool {
+	offset := func(z *Zone) (int, bool) {
+		if z == nil {
+			return 0, false
+		}
+		if z.Kind == ZoneUTC {
+			return 0, true
+		}
+		return z.OffsetMinutes, true
 	}
-	if a.Zone != nil && *a.Zone != *b.Zone {
+	ao, ahas := offset(a.Zone)
+	bo, bhas := offset(b.Zone)
+	if ahas != bhas || (ahas && ao != bo) {
 		return false
 	}
 	a.Zone, b.Zone = nil, nil
+	a.Frac = strings.TrimRight(a.Frac, "0")
+	b.Frac = strings.TrimRight(b.Frac, "0")
 	return a == b
 }
 
@@ -5711,6 +5829,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 	var required *bool
 	reopenSeen := false
 	allowedAt := -1
+	defaultAt := -1
 	minAt := -1
 	maxAt := -1
 	for _, k := range schema.arena[f].children {
@@ -5802,19 +5921,36 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 		// Generator-only (`shcl init`); validation ignores both. First
 		// occurrence wins (a merged schema could carry two).
 		case "desc":
-			if c.desc == nil {
-				if t, ok := singleText(&kid.value); ok {
-					c.desc = &t
+			// A comma in a sentence makes the value several elements, and the
+			// comment is prose: take them all, spelled as written.
+			if c.desc == nil && kid.value.kind == vCell {
+				parts := make([]string, len(kid.value.els))
+				for i := range kid.value.els {
+					parts[i] = applyEscapes(kid.value.els[i].text)
 				}
+				t := strings.Join(parts, ", ")
+				c.desc = &t
 			}
 		case "default":
 			if c.defaultText == nil {
 				if t, ok := emitValueInline(&kid.value); ok {
 					c.defaultText = &t
 				}
+				defaultAt = k
 			}
 		default:
 			vdiag(faults, kid.line, "V090", fmt.Sprintf("unknown schema key '%s'", kid.name))
+		}
+	}
+	// A raw block has no inline spelling, so a `default` that is one cannot reach
+	// a generated line - it used to be dropped and the field emitted with no
+	// value at all - and a `default` under `type: raw` goes out inline and then
+	// fails its own type check.
+	if defaultAt >= 0 {
+		kid := &schema.arena[defaultAt]
+		rawTyped := c.ty == "raw"
+		if kid.value.kind == vRaw || (rawTyped && c.defaultText != nil) {
+			vdiag(faults, kid.line, "V092", "bad schema constraint 'default'")
 		}
 	}
 	if required != nil {
@@ -5923,6 +6059,21 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 		default:
 			vdiag(faults, kid.line, "V092", fmt.Sprintf("bad schema constraint '%s'", key))
 		}
+	}
+	// A lower bound above the upper one admits nothing, so every value fails
+	// twice and the schema, not the config, is what has to change. Reported at
+	// the max line, and the field is dropped like any other broken one so the
+	// document is not told off twice per value for a range it could never have
+	// satisfied.
+	crossed := (c.minI != nil && c.maxI != nil && *c.minI > *c.maxI) ||
+		(c.minF != nil && c.maxF != nil && *c.minF > *c.maxF)
+	if crossed {
+		line := schema.arena[f].line
+		if maxAt >= 0 {
+			line = schema.arena[maxAt].line
+		}
+		vdiag(faults, line, "V092", "bad schema constraint 'max'")
+		return c, false
 	}
 	return c, true
 }
@@ -6714,7 +6865,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 		}
 		if c.allowed != nil && c.allowed.kind == allowStrings {
 			if !containsString(c.allowed.strs, node.value.raw.content) {
-				vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, node.value.raw.content))
+				vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(node.value.raw.content)))
 			}
 		}
 	case vCell:
@@ -6743,7 +6894,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowInts {
 				for i, v := range vals {
 					if !containsInt(c.allowed.ints, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
 						break
 					}
 				}
@@ -6767,7 +6918,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowFloats {
 				for i, v := range vals {
 					if !containsFloat(c.allowed.floats, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
 						break
 					}
 				}
@@ -6791,7 +6942,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowBools {
 				for i, v := range vals {
 					if !containsBool(c.allowed.bools, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
 						break
 					}
 				}
@@ -6809,7 +6960,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowDates {
 				for i, v := range vals {
 					if !containsDate(c.allowed.dates, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, els[i].text))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
 						break
 					}
 				}
@@ -6821,7 +6972,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 				for i := range els {
 					s := applyEscapes(els[i].text)
 					if !containsString(c.allowed.strs, s) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, s))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(s)))
 						break
 					}
 				}
@@ -6859,7 +7010,7 @@ func containsBool(xs []bool, v bool) bool {
 
 func containsDate(xs []DateTime, v DateTime) bool {
 	for _, x := range xs {
-		if dtEqual(x, v) {
+		if sameMoment(x, v) {
 			return true
 		}
 	}

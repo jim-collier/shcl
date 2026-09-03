@@ -325,6 +325,27 @@ func (k kind) name() string {
 
 type onBad int
 
+// was reports whether an option was given at all, which is not the same as its
+// value being non-empty: `--default=` is a legitimate empty default.
+func (o *opts) was(name string) bool {
+	for _, s := range o.seen {
+		if s == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (b onBad) name() string {
+	switch b {
+	case onBadError:
+		return "error"
+	case onBadDefault:
+		return "default"
+	}
+	return "flag"
+}
+
 const (
 	onBadError onBad = iota
 	onBadDefault
@@ -332,20 +353,25 @@ const (
 )
 
 type opts struct {
-	kind       kind
-	array      bool
-	slots      bool
-	def        string
-	onBad      onBad
-	strictness shcl.Strictness
-	write      bool
-	lossy      bool
-	noBanner   bool
-	schema     string
-	layers     []string // lower-priority layers, in listed order
-	sets       []setOpt // final override layer, in the order given
-	args       []string // positional: FILE [PATH]
-	seen       []string // canonical names of options given, for per-command validation
+	kind  kind
+	array bool
+	slots bool
+	def   string
+	onBad onBad
+	// What an explicit --on-bad asked for, whatever the order. --default sets
+	// onBad too, so without this the two options silently overwrote each other
+	// and which one survived depended on which came last.
+	onBadSet    bool
+	onBadWanted onBad
+	strictness  shcl.Strictness
+	write       bool
+	lossy       bool
+	noBanner    bool
+	schema      string
+	layers      []string // lower-priority layers, in listed order
+	sets        []setOpt // final override layer, in the order given
+	args        []string // positional: FILE [PATH]
+	seen        []string // canonical names of options given, for per-command validation
 }
 
 // askedFor: did the command line ask for one of the informational outputs? Only
@@ -446,6 +472,7 @@ func setValueOpt(o *opts, name, v string) error {
 			return fmt.Errorf("bad --on-bad value: %s", v)
 		}
 		o.seen = append(o.seen, "--on-bad")
+		o.onBadSet, o.onBadWanted = true, o.onBad
 	case "--strictness":
 		s, ok := shcl.StrictnessFromArg(v)
 		if !ok {
@@ -642,6 +669,13 @@ func checkOpts(cmd string, o *opts) int {
 		fmt.Fprintf(os.Stderr, "--write cannot be combined with %s (see --help)\n", o.sets[0].opt())
 		return 1
 	}
+	// --default says "substitute this" and --on-bad=error says "fail instead", so
+	// the two together are a contradiction. Each used to overwrite the other's
+	// mode, which made the answer depend on the order they were typed in.
+	if o.was("--default") && o.onBadSet && o.onBadWanted != onBadDefault {
+		fmt.Fprintf(os.Stderr, "--default cannot be combined with --on-bad=%s (see --help)\n", o.onBadWanted.name())
+		return 1
+	}
 	// --lossy only overrides the in-place write's refusal, so on its own it says
 	// nothing and would read as protection the command never had.
 	if o.lossy && !o.write {
@@ -699,12 +733,27 @@ func describeRefusal(doc *shcl.Document, path string) string {
 // sayDiagnostics prints the load's diagnostics, one line each, in the shape
 // every command uses.
 func sayDiagnostics(diags []shcl.Diagnostic) {
+	sayDiagnosticsFrom("", diags)
+}
+
+// sayDiagnosticsFrom is the same, labelled with the file the diagnostics came
+// from. Under --layer several files are loaded and their line numbers share one
+// space on the screen, so two layers with a bad line 2 printed the same thing
+// twice with nothing to tell them apart.
+func sayDiagnosticsFrom(file string, diags []shcl.Diagnostic) {
 	for _, d := range diags {
+		// V090-V095 carry a schema line; V096 and V097 are about generation as a
+		// whole and carry line 0, so "schema line 0" named a line space they are
+		// not in. V099 stands for a schema that did not load and is line 0 too.
 		space := "line"
-		if strings.HasPrefix(d.Code, "V09") && d.Code != "V099" {
+		if strings.HasPrefix(d.Code, "V09") && d.Code != "V096" && d.Code != "V097" && d.Code != "V099" {
 			space = "schema line"
 		}
-		fmt.Fprintf(os.Stderr, "%s %d: %s: %s %s\n", space, d.Line, d.Severity, d.Code, d.Message)
+		if file == "" {
+			fmt.Fprintf(os.Stderr, "%s %d: %s: %s %s\n", space, d.Line, d.Severity, d.Code, d.Message)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s %s %d: %s: %s %s\n", file, space, d.Line, d.Severity, d.Code, d.Message)
+		}
 	}
 }
 
@@ -713,15 +762,45 @@ func sayDiagnostics(diags []shcl.Diagnostic) {
 // nothing to do with the remedy for a usage error, which keeps 1.
 const exitIO = 8
 
+// No stream on the other end at all, as opposed to one that failed part way
+// through. POSIX says EBADF; windows has no single answer - a handle a shell
+// closed comes back as an invalid handle or an invalid function depending on
+// how it was closed, and the runtimes map those to their own codes.
+func stdinUnattached(err error) bool {
+	// Windows hands back a handle that is not a handle, and the runtime answers
+	// with its own "invalid argument" rather than a system error number.
+	if errors.Is(err, os.ErrInvalid) || errors.Is(err, os.ErrClosed) {
+		return true
+	}
+	var errno syscall.Errno
+	if !errors.As(err, &errno) {
+		return false
+	}
+	if errno == syscall.EBADF {
+		return true
+	}
+	return runtime.GOOS == "windows" && (errno == 1 || errno == 6 || errno == syscall.EINVAL)
+}
+
 func readInput(file string) (string, error) {
 	var b []byte
 	var err error
 	if file == "-" {
 		b, err = io.ReadAll(os.Stdin)
 		if err != nil {
-			return "", fmt.Errorf("stdin: %s", err)
+			// A stdin that is not attached at all reads as an empty document.
+			// POSIX gives EOF for that; windows answers "invalid handle".
+			if !stdinUnattached(err) {
+				return "", fmt.Errorf("stdin: %s", err)
+			}
+			b = nil
 		}
 	} else {
+		// The message for reading a directory is the platform's, and windows
+		// spells it four different ways depending on the binding. Say it here.
+		if fi, serr := os.Stat(file); serr == nil && fi.IsDir() {
+			return "", fmt.Errorf("%s: Is a directory", file)
+		}
 		b, err = os.ReadFile(file)
 		if err != nil {
 			return "", fmt.Errorf("%s: %s", file, err)
@@ -735,12 +814,18 @@ func readInput(file string) (string, error) {
 }
 
 func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
+	return loadDocFrom("", text, strictness)
+}
+
+// loadDocFrom is the same, labelled with the file the text came from, so a
+// strict failure in one layer of a fold says which layer.
+func loadDocFrom(file, text string, strictness shcl.Strictness) (*shcl.Document, int) {
 	doc, err := shcl.ParseWith(text, strictness)
 	if err != nil {
 		// Checked form: this is the top-level error path, so a future error type
 		// here has to report rather than panic.
 		if le, ok := err.(*shcl.LoadError); ok {
-			sayDiagnostics(le.Diagnostics)
+			sayDiagnosticsFrom(file, le.Diagnostics)
 			errorCount := 0
 			for _, d := range le.Diagnostics {
 				if d.Severity == shcl.SeverityError {
@@ -809,20 +894,29 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 		return nil, exitIO
 	}
 	texts = append(texts, base)
-	doc, code := loadDoc(texts[0], o.strictness)
+	// Lowest layer first, each labelled with its own file when there is more
+	// than one: the line numbers share a space on the screen otherwise, and two
+	// layers with a bad line 2 printed the same thing twice.
+	names := append(append([]string(nil), o.layers...), file)
+	label := func(i int) string {
+		if len(names) > 1 {
+			return names[i]
+		}
+		return ""
+	}
+	doc, code := loadDocFrom(label(0), texts[0], o.strictness)
 	if code != 0 {
 		return nil, code
 	}
-	diags := append([]shcl.Diagnostic(nil), doc.Diagnostics()...)
-	for _, t := range texts[1:] {
-		over, c := loadDoc(t, o.strictness)
+	sayDiagnosticsFrom(label(0), doc.Diagnostics())
+	for i, t := range texts[1:] {
+		over, c := loadDocFrom(label(i+1), t, o.strictness)
 		if c != 0 {
 			return nil, c
 		}
-		diags = append(diags, over.Diagnostics()...)
+		sayDiagnosticsFrom(label(i+1), over.Diagnostics())
 		doc.Merge(over)
 	}
-	sayDiagnostics(diags)
 	for _, s := range o.sets {
 		if !s.apply(doc) {
 			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path))
@@ -1164,6 +1258,24 @@ func unescapeOps(s string) string {
 
 func applyOp(doc *shcl.Document, line string) error {
 	f := strings.Split(line, "\t")
+	// Every op but the array forms takes a fixed number of tab-separated
+	// fields. Extra ones used to be dropped, so a `raw` whose content held a
+	// literal tab lost everything after it and still reported success; the
+	// escape for a tab inside a value is `\t`.
+	want := 0
+	switch f[0] {
+	case "empty", "remove":
+		want = 2
+	case "raw", "raw-default":
+		want = 4
+	case "int", "float", "bool", "string", "datetime", "literal", "comment",
+		"int-default", "float-default", "bool-default", "string-default",
+		"datetime-default", "literal-default":
+		want = 3
+	}
+	if want != 0 && len(f) > want {
+		return fmt.Errorf("%s takes %d tab-separated field(s), got %d", f[0], want, len(f))
+	}
 	get := func(i int) string {
 		if i < len(f) {
 			return f[i]
@@ -1523,6 +1635,13 @@ func doCheck(o *opts) int {
 					Line: 0, Severity: shcl.SeverityError, Message: "schema failed to load", Code: "V099",
 				})
 			} else {
+				// The schema's own load has something to say too: an H001 on a
+				// repeated `allowed` is what explains the V092 below it. On
+				// stderr with the schema's own line numbers, the way a V099's
+				// are - stdout is the code contract.
+				for _, sd := range sdoc.Diagnostics() {
+					fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", sd.Line, sd.Severity, sd.Code, sd.Message)
+				}
 				diags = append(diags, doc.Validate(sdoc)...)
 				diags = shcl.SuppressDeclaredRepeats(sdoc, diags)
 				diags = shcl.SuppressDeclaredReopens(sdoc, diags)
@@ -1588,9 +1707,7 @@ func doInit(o *opts) int {
 	}
 	text, faults := shcl.Generate(sdoc, o.noBanner)
 	if faults != nil {
-		for _, d := range faults {
-			fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", d.Line, d.Severity, d.Code, d.Message)
-		}
+		sayDiagnostics(faults)
 		fmt.Fprintln(os.Stderr, "init: schema has faults")
 		return 6
 	}

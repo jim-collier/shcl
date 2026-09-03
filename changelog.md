@@ -36,6 +36,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A `min` above its `max` is a schema fault. The range admits nothing, so every value drew both a below-min and an above-max error and the config looked wrong when the schema was. The field is dropped and reported once, like any other broken one.
+
+- A `datetime` `allowed` set compares the moment, not the spelling. `allowed: 12:00:00Z` refused a config saying `12:00:00+00:00`, and `12:00:00` refused `12:00:00.0`, because the value mirrors what was written and the comparison was field by field. A value with no zone is still local and still matches no zoned one - that is the one spelling difference that is a real difference.
+
+- The installers say more about what went wrong and refuse more of what would go wrong. A GitHub rate limit is named as one instead of "none published yet, or network down", and `GITHUB_TOKEN` is used when set. A destination that cannot be written is found before the downloads, not after them. A symlink at the bin path pointing at someone else's build is refused like a real file there. Both say when another `shcl` earlier on PATH will win. A Windows uninstall leaves a setup.exe install to its own uninstaller. `install-dev.bash` puts a fresh clone on `dev`.
+
+- A comment trailing a top-level field is the document's, not the field's. Both spellings emit at column zero, so the distinction had nothing to come back to on a reload - and it made merging a layer differ from merging that same layer after formatting it. A comment written deeper than its field still belongs to it.
+
+- A stdin nothing is attached to reads as an empty document in every CLI, on every platform. It always did on Linux; on Windows a closed handle came back as an error and the run exited 8.
+
+- C: a save on Windows follows a symlink or junction to the file it points at, and works on a path past the old 260-character limit. The link used to be replaced by a regular file, and a deep path was refused; the other three bindings already did both.
+
+- Naming a directory as the file says `PATH: Is a directory` in every CLI, on every platform. The message used to be whatever the language handed back from a failed read, which was four different sentences on Linux and a fifth on Windows.
+
+- Diagnostics under `--layer` say which file they came from, a strict failure in a layer included. Two layers with a bad line 2 printed the same thing twice with nothing to tell them apart. A single-file load is unchanged.
+
+- Three generation gaps. A `desc` holding a comma is several elements, and the comment came out missing entirely; it carries the whole sentence now. A `default` with no value-line spelling - a raw block, or any default under `type: raw` - is a `V092` fault at its schema line instead of being dropped silently or reported as a wrong type in the output. And `V096`/`V097` are printed as `line 0` rather than `schema line 0`: they are about the generated document, not a line of the schema.
+
+- Three CLI shapes that surprised. `--default` together with an explicit `--on-bad=error` is a usage error instead of a silent win for whichever came last. An ops line with more tab-separated fields than its op takes is an error instead of having the extras dropped - a `raw` whose content held a literal tab lost everything after it and reported success. And `check --schema` prints the schema's own load diagnostics, so the `H001` that explains a `V092` on a repeated `allowed` is visible rather than invisible.
+
+- A save through a path that names a directory is refused everywhere. `save_file("f/")` rewrote `f` in the reference, and `f/.` did in Go, because the path cleanup drops the trailing separator before the OS ever sees it. Go's string setters also refuse text that is not valid UTF-8 instead of storing a replacement character per bad byte and reporting success.
+
+- Python's typed array setters take a list of their type rather than any iterable. `set_string_array("k", "abc")` wrote three elements, because a `str` is a sequence of one-character strings, and a generator was consumed by the type check before the setter read it - an empty value written and `True` returned. `set_comment`, `set_raw` and `set_literal` gate their arguments now too, instead of raising from somewhere inside.
+
+- A written value carrying both quote kinds is stored the way its own reload stores it. `SetString("k", "q\"q'")` kept the quote bare while the emitter escaped it, so `Instances` and a read's raw text differed between a written document and a reload of the same text - the one place `set(x)` and `load(emit(set(x)))` disagreed. The value read back the same either way; only the source spelling differed.
+
+- The name index is rebuilt by walking the document rather than the arena. A set-and-remove cycle leaves its nodes behind, and the rebuild indexed every one of them, so the first read after a merge grew with the number of edits ever made instead of with the document - 1000 live nodes behind 400000 dead ones cost 48 ms a read. C's merge and its string setter also stop abandoning a doubling chain in the document arena: a merge onto a 40000-key base cost 786 KB and costs 320 KB, and a 20 MB string value cost 55 MB and costs 20 MB.
+
+- Two spellings of one value are one instance. `a: "q\"uote"` and `a: 'q"uote'` were two, while `a["q\"uote"]` matched both - so one selector addressed two nodes, `count` said 2 and a read could only answer `Multiple`. Identity resolves escapes now, the way a selector already did and the way names have since 2.0. Quoting was never part of identity and still is not.
+
 - On Windows a save keeps the file's hidden and system attributes. `ReplaceFile`'s documented preserve list stops at security attributes and named streams, and the fallback rename carries nothing, so a hidden config came back visible. They are re-applied after the publish now, the way read-only already was. The `REPLACEFILE_WRITE_THROUGH` flag Microsoft documents as unsupported is no longer described as what makes the write durable; the file's own flush before the publish is.
 
 - An array read of a one-element cell reports the element's quoting, like the scalar read of the same node. `read_int("h")` on `h: "5"` said quoted and `read_int_array("h")` said not, because the array path always answered false. More than one element still reports false: there is no single element to report.

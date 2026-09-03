@@ -301,12 +301,26 @@ enum OnBad {
 	Flag,
 }
 
+impl OnBad {
+	fn name(self) -> &'static str {
+		match self {
+			OnBad::Error => "error",
+			OnBad::Default => "default",
+			OnBad::Flag => "flag",
+		}
+	}
+}
+
 struct Opts {
 	kind: Kind,
 	array: bool,
 	slots: bool,
 	default: Option<String>,
 	on_bad: OnBad,
+	// What an explicit --on-bad asked for, whatever the order. --default sets
+	// on_bad too, so without this the two options silently overwrote each other
+	// and which one survived depended on which came last.
+	on_bad_arg: Option<OnBad>,
 	strictness: Strictness,
 	write: bool,
 	lossy: bool,
@@ -386,6 +400,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		slots: false,
 		default: None,
 		on_bad: OnBad::Flag,
+		on_bad_arg: None,
 		strictness: Strictness::Standard,
 		write: false,
 		lossy: false,
@@ -489,6 +504,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 				"flag" => OnBad::Flag,
 				_ => return Err(format!("bad --on-bad value: {}", v)),
 			};
+			o.on_bad_arg = Some(o.on_bad);
 			o.seen.push("--on-bad");
 		}
 		"--strictness" => {
@@ -636,6 +652,19 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		);
 		return Err(1);
 	}
+	// --default says "substitute this" and --on-bad=error says "fail instead", so
+	// the two together are a contradiction. Each used to overwrite the other's
+	// mode, which made the answer depend on the order they were typed in.
+	if o.default.is_some()
+		&& let Some(mode) = o.on_bad_arg
+		&& mode != OnBad::Default
+	{
+		errln!(
+			"--default cannot be combined with --on-bad={} (see --help)",
+			mode.name()
+		);
+		return Err(1);
+	}
 	// --lossy only overrides the in-place write's refusal, so on its own it says
 	// nothing and would read as protection the command never had.
 	if o.lossy && !o.write {
@@ -674,20 +703,43 @@ fn describe_refusal(doc: &Document, path: &str) -> &'static str {
 
 /// The load's diagnostics, one line each, in the shape every command uses.
 fn say_diagnostics(diags: &[Diagnostic]) {
+	say_diagnostics_from("", diags);
+}
+
+/// The same, labelled with the file the diagnostics came from. Under `--layer`
+/// several files are loaded and their line numbers share one space on the
+/// screen, so two layers with a bad line 2 printed the same thing twice with
+/// nothing to tell them apart.
+fn say_diagnostics_from(file: &str, diags: &[Diagnostic]) {
 	for d in diags {
-		let space = if d.code.starts_with("V09") && d.code != "V099" {
+		// V090-V095 carry a schema line; V096 and V097 are about generation as a
+		// whole and carry line 0, so "schema line 0" named a line space they are
+		// not in. V099 stands for a schema that did not load and is line 0 too.
+		let space = if d.code.starts_with("V09") && !matches!(d.code, "V096" | "V097" | "V099") {
 			"schema line"
 		} else {
 			"line"
 		};
-		errln!(
-			"{} {}: {:?}: {} {}",
-			space,
-			d.line,
-			d.severity,
-			d.code,
-			d.message
-		);
+		if file.is_empty() {
+			errln!(
+				"{} {}: {:?}: {} {}",
+				space,
+				d.line,
+				d.severity,
+				d.code,
+				d.message
+			);
+		} else {
+			errln!(
+				"{} {} {}: {:?}: {} {}",
+				file,
+				space,
+				d.line,
+				d.severity,
+				d.code,
+				d.message
+			);
+		}
 	}
 }
 
@@ -716,14 +768,23 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 		EXIT_IO
 	})?;
 	texts.push(base_text);
-	let mut doc = load(&texts[0], o.strictness)?;
-	let mut diags = doc.diagnostics().to_vec();
-	for t in &texts[1..] {
-		let over = load(t, o.strictness)?;
-		diags.extend_from_slice(over.diagnostics());
+	// Lowest layer first, each labelled with its own file when there is more
+	// than one: the line numbers share a space on the screen otherwise, and two
+	// layers with a bad line 2 printed the same thing twice.
+	let names: Vec<&str> = o
+		.layers
+		.iter()
+		.map(String::as_str)
+		.chain(std::iter::once(file))
+		.collect();
+	let label = |i: usize| if names.len() > 1 { names[i] } else { "" };
+	let mut doc = load_from(label(0), &texts[0], o.strictness)?;
+	say_diagnostics_from(label(0), doc.diagnostics());
+	for (i, t) in texts[1..].iter().enumerate() {
+		let over = load_from(label(i + 1), t, o.strictness)?;
+		say_diagnostics_from(label(i + 1), over.diagnostics());
 		doc.merge(&over);
 	}
-	say_diagnostics(&diags);
 	for s in &o.sets {
 		if !s.apply(&mut doc) {
 			errln!(
@@ -773,24 +834,52 @@ fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
 /// do with the remedy for a usage error, which keeps 1.
 const EXIT_IO: u8 = 8;
 
+/// No stream on the other end at all, as opposed to one that failed part way
+/// through. POSIX says EBADF; windows has no single answer - a handle a shell
+/// closed comes back as an invalid handle or an invalid function depending on
+/// how it was closed, and the runtimes map those to their own codes.
+fn stdin_unattached(e: &std::io::Error) -> bool {
+	match e.raw_os_error() {
+		Some(9) => cfg!(unix),
+		Some(1) | Some(6) | Some(22) => cfg!(windows),
+		_ => false,
+	}
+}
+
 fn read_input(file: &str) -> Result<String, String> {
 	if file == "-" {
 		let mut s = String::new();
 		use std::io::Read;
-		std::io::stdin()
-			.read_to_string(&mut s)
-			.map_err(|e| format!("stdin: {}", e))?;
+		if let Err(e) = std::io::stdin().read_to_string(&mut s) {
+			// A stdin that is not attached at all reads as an empty document.
+			// POSIX gives EOF for that; windows answers "invalid handle".
+			if !stdin_unattached(&e) {
+				return Err(format!("stdin: {}", e));
+			}
+			s.clear();
+		}
 		Ok(s)
 	} else {
+		// The message for reading a directory is the platform's, and windows
+		// spells it four different ways depending on the binding. Say it here.
+		if std::fs::metadata(file).map(|m| m.is_dir()).unwrap_or(false) {
+			return Err(format!("{}: Is a directory", file));
+		}
 		std::fs::read_to_string(file).map_err(|e| format!("{}: {}", file, e))
 	}
 }
 
 fn load(text: &str, strictness: Strictness) -> Result<Document, u8> {
+	load_from("", text, strictness)
+}
+
+/// The same, labelled with the file the text came from, so a strict failure in
+/// one layer of a fold says which layer.
+fn load_from(file: &str, text: &str, strictness: Strictness) -> Result<Document, u8> {
 	match Document::parse_with(text, strictness) {
 		Ok(d) => Ok(d),
 		Err(e) => {
-			say_diagnostics(&e.diagnostics);
+			say_diagnostics_from(file, &e.diagnostics);
 			let errors = e
 				.diagnostics
 				.iter()
@@ -1043,6 +1132,27 @@ fn unescape_ops(s: &str) -> String {
 
 fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	let f: Vec<&str> = line.split('\t').collect();
+	// Every op but the array forms takes a fixed number of tab-separated
+	// fields. Extra ones used to be dropped, so a `raw` whose content held a
+	// literal tab lost everything after it and still reported success; the
+	// escape for a tab inside a value is `\t`.
+	let want = match f.first().copied().unwrap_or("") {
+		"empty" | "remove" => 2,
+		"raw" | "raw-default" => 4,
+		"int" | "float" | "bool" | "string" | "datetime" | "literal" | "comment"
+		| "int-default" | "float-default" | "bool-default" | "string-default"
+		| "datetime-default" | "literal-default" => 3,
+		// An array form takes any number of elements; an unknown op is named below.
+		_ => 0,
+	};
+	if want != 0 && f.len() > want {
+		return Err(format!(
+			"{} takes {} tab-separated field(s), got {}",
+			f[0],
+			want,
+			f.len()
+		));
+	}
 	let path = f.get(1).copied().unwrap_or("");
 	let val = || f.get(2).copied().unwrap_or("");
 	let pint = |s: &str| s.parse::<i64>().map_err(|_| format!("bad int: {}", s));
@@ -1304,6 +1414,19 @@ fn do_check(o: &Opts) -> u8 {
 						code: "V099",
 					});
 				} else {
+					// The schema's own load has something to say too: an H001
+					// on a repeated `allowed` is what explains the V092 below
+					// it. On stderr with the schema's own line numbers, the
+					// way a V099's are - stdout is the code contract.
+					for d in sdoc.diagnostics() {
+						errln!(
+							"schema line {}: {:?}: {} {}",
+							d.line,
+							d.severity,
+							d.code,
+							d.message
+						);
+					}
 					diags.extend(doc.validate(&sdoc));
 					suppress_declared_repeats(&sdoc, &mut diags);
 					suppress_declared_reopens(&sdoc, &mut diags);
@@ -1381,15 +1504,10 @@ fn do_init(o: &Opts) -> u8 {
 			0
 		}
 		Err(faults) => {
-			for d in &faults {
-				errln!(
-					"schema line {}: {:?}: {} {}",
-					d.line,
-					d.severity,
-					d.code,
-					d.message
-				);
-			}
+			// V090-V095 carry a schema line; V096 and V097 are about generation
+			// as a whole and carry line 0, so "schema line 0" named a line space
+			// they are not in.
+			say_diagnostics(&faults);
 			errln!("init: schema has faults");
 			6
 		}
@@ -1503,8 +1621,9 @@ fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
 		.ok()
 		.and_then(|v| v.parse().ok())
 		.unwrap_or(8);
+	const FREQ: i32 = 199;
 	let guard = pprof::ProfilerGuardBuilder::default()
-		.frequency(199)
+		.frequency(FREQ)
 		.blocklist(&["libc", "libpthread", "vdso", "libgcc"])
 		.build()
 		.expect("pprof: failed to start profiler");
@@ -1521,7 +1640,25 @@ fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
 	report
 		.flamegraph(file)
 		.expect("pprof: failed to write flamegraph");
-	errln!("shcl: wrote flamegraph -> {}", out);
+	// The blocklist above drops a sample whose leaf is inside libc rather than
+	// truncating it, so allocation, copying and write time never reach the
+	// graph and every percentage in it is a share of what survived. It is there
+	// to keep the signal handler out of libc's own unwinder, so the drop stays;
+	// what it cannot do is go unsaid. The count rides beside the SVG so the
+	// report can repeat it.
+	let kept: isize = report.data.values().sum();
+	let expected = secs as isize * FREQ as isize;
+	std::fs::write(
+		format!("{}.samples", out),
+		format!("{} {}\n", kept, expected),
+	)
+	.ok();
+	errln!(
+		"shcl: wrote flamegraph -> {} ({} of about {} samples; the rest had a leaf inside libc)",
+		out,
+		kept,
+		expected
+	);
 	code
 }
 

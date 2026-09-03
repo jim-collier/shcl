@@ -43,9 +43,10 @@ declare -p TOOL_PINS &>/dev/null || { echo "check-pins: config.bash has no TOOL_
 notInCi=(cargo-zigbuild)
 
 ## Does ci.yml name tool $1 at version $2 as one token? The name is bounded on
-## the left, then the joiner ci.yml uses (==, @, -, /, or setup-go's
-## `-version: "`), an optional v, the version, and nothing digit-like after.
-fNamesAt(){ grep -qE -- "(^|[^A-Za-z0-9_-])${1}(==|@|-|/|-version: \")v?${2//./\\.}([^0-9]|$)" "${ciFile}"; }
+## the left, then the joiner ci.yml uses (==, @, -, /, setup-go's `-version: "`,
+## or Install-Module's ` -RequiredVersion `), an optional v, the version, and
+## nothing digit-like after.
+fNamesAt(){ grep -qE -- "(^|[^A-Za-z0-9_-])${1}(==|@|-|/|-version: \"| -RequiredVersion )v?${2//./\\.}([^0-9]|$)" "${ciFile}"; }
 
 rc=0
 for pin in "${TOOL_PINS[@]}"; do
@@ -81,7 +82,31 @@ while IFS= read -r target; do
 	fi
 done < <(grep -oE -- '-o[[:space:]]+/[^[:space:]]+' "${ciFile}" | sed 's/^-o[[:space:]]*//' | sort -u)
 
-((rc)) || echo "check-pins: OK: every TOOL_PINS entry the hosted gate installs matches ci.yml, and every download it fetches is hashed"
+## The other direction. The checks above pass when a pin is DELETED from
+## config.bash while ci.yml still installs the tool, which is how the one lint
+## tool with no pin stayed unpinned. Every version-bearing install line in
+## ci.yml has to name a tool TOOL_PINS knows.
+while IFS= read -r named; do
+	found=0
+	for pin in "${TOOL_PINS[@]}"; do
+		[[ "${pin%%|*}" == "${named}" ]] && found=1
+	done
+	((found)) || { echo "check-pins: ci.yml installs ${named} at a pinned version and config.bash has no TOOL_PINS entry for it" >&2; rc=1; }
+done < <(
+	{
+		## pip and npm: name==version, name@version.
+		grep -oE -- '(pip|npm) install[^|;]*' "${ciFile}" \
+			| grep -oE -- '[A-Za-z][A-Za-z0-9_.-]*(==|@)[0-9]' | sed -E 's/(==|@)[0-9]$//'
+		## go install module/path/cmd/NAME@version.
+		grep -oE -- 'go install [^[:space:]]+@[^[:space:]]+' "${ciFile}" \
+			| sed -E 's#.*/([^/@]+)@.*#\1#'
+		## PowerShell modules.
+		grep -oE -- 'Install-Module [A-Za-z][A-Za-z0-9_.-]* -RequiredVersion' "${ciFile}" \
+			| sed -E 's/Install-Module ([^ ]+).*/\1/'
+	} | sort -u
+)
+
+((rc)) || echo "check-pins: OK: every TOOL_PINS entry the hosted gate installs matches ci.yml, every tool ci.yml pins has an entry, and every download it fetches is hashed"
 exit "${rc}"
 
 

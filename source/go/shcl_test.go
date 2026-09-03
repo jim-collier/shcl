@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func corpusDir() string {
@@ -1188,6 +1189,113 @@ func TestSaveRewritesAReadOnlyFile(t *testing.T) {
 	}
 }
 
+// A path that names a directory - it ends in a separator, or its last component
+// is `.` or `..` - is not a document. A path cleanup drops the trailing
+// separator first, so a save through `f/.` used to rewrite `f`. Same fixture in
+// every runner.
+func TestSaveRefusesADirectoryShapedPath(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "f.shcl")
+	if err := os.WriteFile(f, []byte("a: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc := Parse("a: 2\n")
+	for _, suffix := range []string{"/", "/.", "/.."} {
+		if err := doc.SaveFile(f + suffix); err == nil {
+			t.Errorf("save through %q was accepted", f+suffix)
+		}
+	}
+	if got, _ := os.ReadFile(f); string(got) != "a: 1\n" {
+		t.Errorf("a refused save changed the file: %q", got)
+	}
+	if err := doc.SaveFile(f); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A Go string can hold any bytes; a document is UTF-8. Text that is not valid
+// UTF-8 fails the write rather than storing a replacement character per bad
+// byte and reporting success. Go-only: the other three cannot hold such a
+// string in the first place.
+func TestSetStringRefusesInvalidUTF8(t *testing.T) {
+	d := Parse("a: 1\n")
+	bad := string([]byte{0x61, 0xff, 0x62})
+	if d.SetString("k", bad) {
+		t.Error("SetString accepted text that is not UTF-8")
+	}
+	if d.SetStringArray("k", []string{"ok", bad}) {
+		t.Error("SetStringArray accepted an element that is not UTF-8")
+	}
+	if d.ToCanonical() != "a: 1\n" {
+		t.Errorf("a refused write changed the document: %q", d.ToCanonical())
+	}
+	if !d.SetString("k", "fine") {
+		t.Error("SetString refused valid text")
+	}
+}
+
+// A written value carrying both quote kinds is stored the way its own reload
+// stores it, so Instances and a read's raw text agree across a save. The
+// emitter escapes the double quotes; the writer used to keep them bare. Same
+// fixture in every runner.
+func TestWrittenSpellingMatchesItsReload(t *testing.T) {
+	d := Parse("x: 1\n")
+	if !d.SetString("k", "q\"q'") {
+		t.Fatal("set_string refused")
+	}
+	back := Parse(d.ToCanonical())
+	if got, want := strings.Join(back.Instances("k"), "|"), strings.Join(d.Instances("k"), "|"); got != want {
+		t.Errorf("instances after a reload %q, written %q", got, want)
+	}
+	if got := d.GetStringOr("k", ""); got != "q\"q'" {
+		t.Errorf("read back %q", got)
+	}
+}
+
+// The name index used to be rebuilt by walking the arena, which still holds
+// every node a set-and-remove cycle ever made - so the first read after a merge
+// grew with the number of edits, not with the document. Timed against the same
+// document with no dead nodes; the ratio is what matters, since an absolute
+// figure would be a machine constant. Same fixture in every runner.
+func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
+	var ms [2]float64
+	for churned := 0; churned < 2; churned++ {
+		d := Parse("g:\n\tk: 1\n")
+		if churned == 1 {
+			for i := 0; i < 100000; i++ {
+				d.SetInt("g.tmp", int64(i))
+				d.Remove("g.tmp")
+			}
+		}
+		other := Parse("g:\n\tk: 1\n")
+		t0 := time.Now()
+		for i := 0; i < 200; i++ {
+			d.Merge(other)
+			if got := d.GetIntOr("g.k", -1); got != 1 {
+				t.Fatalf("index walk: got %d", got)
+			}
+		}
+		ms[churned] = float64(time.Since(t0).Microseconds()) / 1000.0
+	}
+	// A generous ratio on purpose: the chain slice is still sized by the arena,
+	// which is a fill the walk cannot avoid. What the bound catches is the walk
+	// itself going over every dead node.
+	// A shared runner is where a tight bound flakes: the churned side is real
+	// work and gets descheduled, the fresh side is under a millisecond and does
+	// not. The factor is what catches the defect - the rebuild used to grow
+	// with the number of edits, which is orders rather than a fraction - so the
+	// constant can absorb a slow machine.
+	// A clock too coarse to see the fresh side leaves the ratio with a zero
+	// denominator, and then the bound is an absolute figure on whatever machine
+	// is running - which is what it was written not to be. Windows counts in
+	// whole milliseconds and reports 0.0 here.
+	if ms[0] <= 0 {
+		t.Logf("index rebuild ratio not judged: the clock cannot see the fresh side")
+	} else if ms[1] > ms[0]*25+250 {
+		t.Errorf("index rebuild after churn %.1f ms against %.1f ms fresh - it walks nodes the document no longer holds", ms[1], ms[0])
+	}
+}
+
 func TestLostAndSaveGate(t *testing.T) {
 	// Content-malformed lines are retained as trivia (LostCount 0, the line
 	// survives a save); position-dependent drops count as lost and make
@@ -1467,6 +1575,31 @@ func TestLayeredMergeMatchesExpected(t *testing.T) {
 			doc.SetString(line[:eq], line[eq+1:])
 		}
 		got := doc.ToCanonical()
+		// Reads answered by the merged document itself, not just its text: a
+		// merged arena holds dropped nodes, a rebuilt index and cloned child
+		// lists, and only a read walks those. Instances is left out because it
+		// hands back the source spelling, which canonical output may respell.
+		// Same fixture in every runner.
+		back := Parse(got)
+		if !reflect.DeepEqual(doc.Paths(), back.Paths()) {
+			t.Errorf("%s: merged paths differ from a reparse", c.name)
+		}
+		for _, p := range doc.Paths() {
+			if doc.Count(p) != back.Count(p) {
+				t.Errorf("%s: merged count %s", c.name, p)
+			}
+			if !reflect.DeepEqual(doc.Children(p), back.Children(p)) {
+				t.Errorf("%s: merged children %s", c.name, p)
+			}
+			x, y := doc.ReadString(p), back.ReadString(p)
+			if x.Value != y.Value || x.Status != y.Status {
+				t.Errorf("%s: merged read %s", c.name, p)
+			}
+			xa, ya := doc.ReadStringArray(p), back.ReadStringArray(p)
+			if !reflect.DeepEqual(xa.Value, ya.Value) || xa.Status != ya.Status || !reflect.DeepEqual(xa.Slots, ya.Slots) {
+				t.Errorf("%s: merged array read %s", c.name, p)
+			}
+		}
 		if got != c.expectedMerged {
 			t.Errorf("%s: merged output differs from expected-merged.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedMerged)
 			continue

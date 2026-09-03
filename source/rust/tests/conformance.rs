@@ -607,6 +607,45 @@ fn layered_merge_matches_expected() {
 			"{}: merged output differs from expected-merged.shcl",
 			case.name
 		);
+		// Reads answered by the merged document itself, not just its text: a
+		// merged arena holds dropped nodes, a rebuilt index and cloned child
+		// lists, and only a read walks those. `instances` is left out because it
+		// hands back the source spelling, which canonical output may respell.
+		// Same fixture in every runner.
+		let back = Document::parse(&got);
+		assert_eq!(doc.paths(), back.paths(), "{}: merged paths", case.name);
+		for p in doc.paths() {
+			assert_eq!(
+				doc.count(&p),
+				back.count(&p),
+				"{}: merged count {}",
+				case.name,
+				p
+			);
+			assert_eq!(
+				doc.children(&p),
+				back.children(&p),
+				"{}: merged children {}",
+				case.name,
+				p
+			);
+			let (x, y) = (doc.read_string(&p), back.read_string(&p));
+			assert_eq!(
+				(x.value, x.status),
+				(y.value, y.status),
+				"{}: merged read {}",
+				case.name,
+				p
+			);
+			let (x, y) = (doc.read_string_array(&p), back.read_string_array(&p));
+			assert_eq!(
+				(x.value, x.status, x.slots),
+				(y.value, y.status, y.slots),
+				"{}: merged array read {}",
+				case.name,
+				p
+			);
+		}
 		// The merged doc must be a formatter fixpoint like any canonical output.
 		let again = Document::parse(&got).to_canonical();
 		assert_eq!(
@@ -1342,6 +1381,83 @@ fn set_attrs(path: &std::path::Path, attrs: u32) {
 	unsafe {
 		SetFileAttributesW(wide.as_ptr(), attrs);
 	}
+}
+
+/// A path that names a directory - it ends in a separator, or its last
+/// component is `.` or `..` - is not a document. A canonicalize drops the
+/// trailing separator first, so `save_file("f/")` used to rewrite `f`. Same
+/// fixture in every runner.
+#[test]
+fn save_refuses_a_directory_shaped_path() {
+	let dir = std::env::temp_dir().join(format!("shcl-dirpath-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let f = dir.join("f.shcl");
+	std::fs::write(&f, "a: 1\n").unwrap();
+	let doc = Document::parse("a: 2\n");
+	for suffix in ["/", "/.", "/.."] {
+		let p = format!("{}{}", f.display(), suffix);
+		assert!(
+			doc.save_file(&p).is_err(),
+			"save through {:?} was accepted",
+			p
+		);
+	}
+	assert_eq!(std::fs::read_to_string(&f).unwrap(), "a: 1\n");
+	assert!(doc.save_file(f.to_str().unwrap()).is_ok());
+	assert_eq!(std::fs::read_to_string(&f).unwrap(), "a: 2\n");
+	let _ = std::fs::remove_file(&f);
+	let _ = std::fs::remove_dir(&dir);
+}
+
+/// A written value carrying both quote kinds is stored the way its own reload
+/// stores it, so `instances` and a read's raw text agree across a save. The
+/// emitter escapes the double quotes; the writer used to keep them bare. Same
+/// fixture in every runner.
+#[test]
+fn written_spelling_matches_its_reload() {
+	let mut d = Document::parse("x: 1\n");
+	assert!(d.set_string("k", "q\"q'"));
+	let back = Document::parse(&d.to_canonical());
+	assert_eq!(back.instances("k"), d.instances("k"));
+	assert_eq!(d.get_string_or("k", String::new()), "q\"q'");
+}
+
+/// The name index used to be rebuilt by walking the arena, which still holds
+/// every node a set-and-remove cycle ever made - so the first read after a
+/// merge grew with the number of edits, not with the document. Timed against
+/// the same document with no dead nodes; the ratio is what matters, since an
+/// absolute figure would be a machine constant. Same fixture in every runner.
+#[test]
+fn index_rebuild_ignores_removed_nodes() {
+	let mut ms = [0.0f64; 2];
+	for (churned, slot) in ms.iter_mut().enumerate() {
+		let mut d = Document::parse("g:\n\tk: 1\n");
+		if churned == 1 {
+			for i in 0..100_000 {
+				assert!(d.set_int("g.tmp", i));
+				d.remove("g.tmp");
+			}
+		}
+		let other = Document::parse("g:\n\tk: 1\n");
+		let t0 = std::time::Instant::now();
+		for _ in 0..200 {
+			d.merge(&other);
+			assert_eq!(d.get_int_or("g.k", -1), 1);
+		}
+		*slot = t0.elapsed().as_secs_f64() * 1000.0;
+	}
+	// A generous ratio on purpose: the chain array is still sized by the arena,
+	// which is a memset the walk cannot avoid. What the bound catches is the
+	// walk itself going over every dead node, which is orders larger.
+	// A clock too coarse to see the fresh side leaves the ratio with a zero
+	// denominator, and then the bound is an absolute figure on whatever machine
+	// is running - which is what it was written not to be.
+	assert!(
+		ms[0] <= 0.0 || ms[1] <= ms[0] * 25.0 + 250.0,
+		"index rebuild after churn {:.1} ms against {:.1} ms fresh - it walks nodes the document no longer holds",
+		ms[1],
+		ms[0]
+	);
 }
 
 #[test]

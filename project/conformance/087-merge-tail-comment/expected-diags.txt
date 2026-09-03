@@ -1,0 +1,4 @@
+line 1: Error: E007
+line 2: Error: E015
+line 4: Error: E012
+failed: 3 diagnostic(s), 3 error(s)

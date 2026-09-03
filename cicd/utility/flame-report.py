@@ -46,6 +46,18 @@ def fSkip(msg: str) -> NoReturn:
 	sys.exit(2)
 
 
+def fKept(path: Path) -> tuple[int, int] | None:
+	##	The profiler writes what it kept beside the SVG, because the sampler
+	##	drops a sample whose leaf is inside libc rather than truncating it and
+	##	the graph itself carries no trace of that. An older graph has no such
+	##	file, and says nothing rather than guessing.
+	try:
+		got, want = Path(f"{path}.samples").read_text().split()[:2]
+		return int(got), int(want)
+	except (OSError, ValueError):
+		return None
+
+
 def fNewest(pdir: Path) -> tuple[str, str] | None:
 	##	Sort on the timestamp, NOT the role suffix: GFS rotation retags the role
 	##	(frequent -> latest -> hour/day/...) as time passes, but the timestamp in
@@ -241,6 +253,13 @@ def main() -> None:
 
 	total, frames = fParse(path)
 	print(f"{'NEW' if a.check else 'FLAME'} {name}  ({ts or 'n/a'}, {total} samples)")
+	kept = fKept(path)
+	if kept:
+		got, want = kept
+		share = 100.0 * got / want if want else 0.0
+		print(f"  {got} of about {want} samples reached the graph ({share:.0f}%); the rest had a leaf")
+		print("  inside libc and were dropped, so allocation, copying and write time are not here")
+		print("  and every percentage below is a share of what survived")
 	print()
 	fAnalyze(total, frames, a.top)
 

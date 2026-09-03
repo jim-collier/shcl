@@ -203,7 +203,23 @@ file. Nothing unverified is installed.
 	## suffix compares with its digit runs zero-padded, so rc2 < rc10 - the same
 	## order install.bash gets from sort -V.
 	$api = "https://api.github.com/repos/$repo/releases?per_page=100"
-	try { $rel = Invoke-RestMethod -Uri $api -UseBasicParsing } catch { Exit-Install "cannot fetch the $Release release (none published yet, or network down)" }
+	## A 403 from an unauthenticated request is the API's rate limit, and behind
+	## a shared address it is common - "none published yet, or network down"
+	## sent people looking in the wrong place. GITHUB_TOKEN is used when set.
+	$apiHeaders = @{}
+	if ($env:GITHUB_TOKEN) { $apiHeaders['Authorization'] = "Bearer $($env:GITHUB_TOKEN)" }
+	try {
+		$rel = Invoke-RestMethod -Uri $api -UseBasicParsing -Headers $apiHeaders
+	} catch {
+		$status = [int]$_.Exception.Response.StatusCode
+		if ($status -eq 403 -or $status -eq 429) {
+			Exit-Install "GitHub's API refused the request (rate limit). Wait, or set GITHUB_TOKEN to a token with public read access and re-run"
+		}
+		if ($status -eq 401) {
+			Exit-Install 'GitHub rejected the credentials in GITHUB_TOKEN - unset it, or replace it with one that has public read access'
+		}
+		Exit-Install "cannot fetch the $Release release (none published yet, or network down)"
+	}
 	$rel = Select-ReleaseTag $Release $rel
 	if (-not $rel -or -not $rel.tag_name) { Exit-Install "no $Release release found" }
 	$tag = $rel.tag_name
@@ -216,7 +232,11 @@ file. Nothing unverified is installed.
 		if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
 			Exit-Install 'a system install needs an elevated shell (or pass -Target user)'
 		}
-		$dest = Join-Path $env:ProgramFiles 'Shcl'
+		## A 32-bit host reads Program Files (x86) out of ProgramFiles, which is
+		## the wrong home for a 64-bit binary. ProgramW6432 is the 64-bit one and
+		## is only set where the two differ.
+		$programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+		$dest = Join-Path $programFiles 'Shcl'
 		$pathScope = 'Machine'
 		$pathDir = $dest
 	} else {
@@ -231,6 +251,13 @@ file. Nothing unverified is installed.
 	## binary, the two payload dirs, the install dir if it empties, and the PATH
 	## entry. Never a recursive delete of a path the user may have pointed elsewhere.
 	if ($Uninstall) {
+		## The setup .exe writes this same directory and registers itself with
+		## Add/Remove Programs. Deleting its files here would leave that entry
+		## pointing at nothing, so its own uninstaller has to run instead.
+		$setupUninstaller = Join-Path $dest 'uninstall.exe'
+		if (Test-Path -LiteralPath $setupUninstaller) {
+			Exit-Install "$dest was installed by the shcl setup - remove it from Add/Remove Programs, or run $setupUninstaller"
+		}
 		Write-Output ''
 		Write-Output "removing shcl: $dest (and the $pathScope PATH entry)"
 		if (-not $Yes) {
@@ -329,7 +356,14 @@ file. Nothing unverified is installed.
 		## since a nonzero exit from a native command throws under this script's
 		## own error preference on 7.4 and later - which used to mean a success
 		## message followed by an exception, with the install left in place.
-		$smokeOut = & (Join-Path $tmp 'shcl.exe') version 2>&1
+		## Windows PowerShell 5.1 turns a native command's stderr into error
+		## records under this redirect, and the script's own Stop preference
+		## then throws before the exit code is read - so the preference comes
+		## off for the call and goes straight back on.
+		$smokeEap = $ErrorActionPreference
+		$ErrorActionPreference = 'Continue'
+		try { $smokeOut = & (Join-Path $tmp 'shcl.exe') version 2>&1 }
+		finally { $ErrorActionPreference = $smokeEap }
 		if ($LASTEXITCODE -ne 0) {
 			Exit-Install "the downloaded shcl.exe does not run here: $($smokeOut -join ' ')"
 		}
@@ -361,9 +395,23 @@ file. Nothing unverified is installed.
 
 		Write-Output ''
 		Write-Output "installed shcl $version -> $dest\shcl.exe"
+		## Written over a setup install: its Add/Remove Programs entry still
+		## names the version it put there, which is no longer what is on disk.
+		if (Test-Path -LiteralPath (Join-Path $dest 'uninstall.exe')) {
+			Write-Output "note: $dest came from the shcl setup - its Add/Remove Programs entry still shows the version it installed"
+		}
 		if (-not $haveDropins) { Write-Output "note: this release ships no signed drop-in payload, so $dest\code and $dest\scripts were skipped - take them from the repo if you want them" }
 		$rerun = if ($invokedAsFile) { "& '$scriptPath'" } else { '& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1)))' }
 		Write-Output "to remove it again: $rerun -Uninstall -Target $Target"
+		## And what `shcl` actually resolves to: the receipt below runs the copy
+		## just written, so another one earlier on PATH used to be invisible
+		## here. A user install cannot get ahead of a machine one - windows puts
+		## the machine entries first - so a setup.exe install shadows it until
+		## that one is removed, and saying so is all this can do.
+		$onPath = (Get-Command shcl -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+		if ($onPath -and $onPath -ne "$dest\shcl.exe") {
+			Write-Output "note: shcl on your PATH is $onPath, not the copy just installed - it comes first on PATH"
+		}
 		## Already proved above, from the temp dir; this line is the receipt.
 		Write-Output $smokeOut
 		Write-Output ''

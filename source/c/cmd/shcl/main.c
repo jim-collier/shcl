@@ -191,6 +191,10 @@ typedef struct {
 	int slots;
 	const char *deflt;        // NULL if unset
 	const char *on_bad;       // error|default|flag
+	// What an explicit --on-bad asked for, whatever the order. --default sets
+	// on_bad too, so without this the two options silently overwrote each other
+	// and which one survived depended on which came last.
+	const char *on_bad_arg;   // NULL if --on-bad was not given
 	shcl_strictness strictness;
 	int write;
 	int lossy;
@@ -267,10 +271,26 @@ static int path_absent(const char *file) {
 	return errno == ENOENT;
 }
 
+// The message for reading a directory is the platform's, and windows spells it
+// four different ways depending on the binding. Say it here.
+static int is_a_directory(const char *file) {
+#ifdef _WIN32
+	wchar_t *w = shcl_widen(file);
+	if (!w) return 0;
+	DWORD a = GetFileAttributesW(w);
+	free(w);
+	return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+#else
+	struct stat st;
+	return stat(file, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
 static char *read_input(const char *file, size_t *len) {
 	char *buf = NULL; size_t cap = 0, n = 0;
 	int is_stdin = strcmp(file, "-") == 0;
 	const char *who = is_stdin ? "stdin" : file;
+	if (!is_stdin && is_a_directory(file)) { fprintf(stderr, "%s: Is a directory\n", who); return NULL; }
 	FILE *f = is_stdin ? stdin : open_rb(file);
 	if (!f) { fprintf(stderr, "%s: %s\n", who, strerror(errno)); return NULL; }
 	char chunk[65536]; size_t r;
@@ -280,9 +300,11 @@ static char *read_input(const char *file, size_t *len) {
 		memcpy(buf + n, chunk, r); n += r;
 	}
 	int ferr = ferror(f);
-	// A closed stdin reads as an empty document, matching the reference's
-	// stdin handle, which treats EBADF as end of input.
-	if (ferr && is_stdin && errno == EBADF) ferr = 0;
+	// A stdin that is not attached at all reads as an empty document, the way
+	// every binding treats it. POSIX says EBADF; windows reports a handle a
+	// shell closed as an invalid handle or an invalid function, which the C
+	// runtime hands back as EINVAL.
+	if (ferr && is_stdin && (errno == EBADF || errno == EINVAL)) ferr = 0;
 	if (f != stdin) fclose(f);
 	if (ferr) { fprintf(stderr, "%s: %s\n", who, strerror(errno)); free(buf); return NULL; }
 	if (!buf) { buf = (char *)xrealloc(NULL, 1); }
@@ -307,22 +329,41 @@ static const char *describe_refusal(shcl_doc *d, const char *path, size_t plen) 
 
 // One diagnostic line in the shape every command uses: `line N: Severity:
 // CODE message` (`schema line` for the V090-V093 schema-fault codes).
+static void say_diag_from(const char *file, size_t line, shcl_severity sev, const char *code, shcl_str msg);
 static void say_diag(size_t line, shcl_severity sev, const char *code, shcl_str msg) {
-	const char *space = (!strncmp(code, "V09", 3) && strcmp(code, "V099")) ? "schema line" : "line";
+	say_diag_from("", line, sev, code, msg);
+}
+
+// The same, labelled with the file the diagnostic came from. Under --layer
+// several files are loaded and their line numbers share one space on the
+// screen, so two layers with a bad line 2 printed the same thing twice with
+// nothing to tell them apart.
+static void say_diag_from(const char *file, size_t line, shcl_severity sev, const char *code, shcl_str msg) {
+	/* V090-V095 carry a schema line; V096 and V097 are about generation as a
+	   whole and carry line 0, so "schema line 0" named a line space they are not
+	   in. V099 stands for a schema that did not load and is line 0 too. */
+	const char *space = (!strncmp(code, "V09", 3) && strcmp(code, "V096") && strcmp(code, "V097")
+		&& strcmp(code, "V099")) ? "schema line" : "line";
+	if (*file) fprintf(stderr, "%s ", file);
 	fprintf(stderr, "%s %zu: %s: %s ", space, line, sev == SHCL_SEV_ERROR ? "Error" : "Hint", code);
 	fwrite(msg.p, 1, msg.n, stderr); fputc('\n', stderr);
 }
 // The load's diagnostics, one line each.
-static void say_diagnostics(const shcl_doc *d) {
+static void say_diagnostics_from(const char *file, const shcl_doc *d) {
 	size_t n = shcl_diag_count(d);
 	for (size_t i = 0; i < n; i++)
-		say_diag(shcl_diag_line(d, i), shcl_diag_severity(d, i), shcl_diag_code(d, i), shcl_diag_message(d, i));
+		say_diag_from(file, shcl_diag_line(d, i), shcl_diag_severity(d, i), shcl_diag_code(d, i), shcl_diag_message(d, i));
 }
 
 // Prints diagnostics to stderr and returns 6 on strict load failure, else 0.
-static int strict_gate(const shcl_doc *d) {
+static int strict_gate_from(const char *file, const shcl_doc *d);
+static int strict_gate(const shcl_doc *d) { return strict_gate_from("", d); }
+
+// The same, labelled with the file the document came from, so a strict failure
+// in one layer of a fold says which layer.
+static int strict_gate_from(const char *file, const shcl_doc *d) {
 	if (!shcl_strict_failed(d)) return 0;
-	say_diagnostics(d);
+	say_diagnostics_from(file, d);
 	size_t n = shcl_diag_count(d), nerr = 0;
 	for (size_t i = 0; i < n; i++) if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
 	fprintf(stderr, "strict load failed: %zu error diagnostic(s)\n", nerr);
@@ -333,7 +374,8 @@ static int strict_gate(const shcl_doc *d) {
 // layer's node strings are not dup'd off its text). The over-layers are kept
 // too: a merge does not carry diagnostics over, so their docs are the only
 // place the layers' own diagnostics live. Free everything with layered_free.
-typedef struct { shcl_doc *doc; shcl_doc **overs; int novers; char **texts; int ntexts; } LayeredDoc;
+typedef struct { shcl_doc *doc; shcl_doc **overs; int novers; char **texts; int ntexts;
+	const char **names; int nnames; } LayeredDoc;
 
 static void layered_push_text(LayeredDoc *L, char *t) {
 	L->texts = (char **)xrealloc(L->texts, ((size_t)L->ntexts + 1) * sizeof *L->texts);
@@ -349,6 +391,7 @@ static void layered_push_doc(LayeredDoc *L, shcl_doc *dd) {
 }
 
 static void layered_free(LayeredDoc *L) {
+	free((void *)L->names); L->names = NULL; L->nnames = 0;
 	if (L->doc) shcl_free(L->doc);
 	for (int i = 0; i < L->novers; i++) shcl_free(L->overs[i]);
 	free(L->overs);
@@ -360,8 +403,12 @@ static void layered_free(LayeredDoc *L) {
 // Every layer's diagnostics, lowest first. Reading them off the merged doc
 // alone would drop the ones for FILE itself, which is the one the caller named.
 static void say_layered_diagnostics(const LayeredDoc *L) {
-	say_diagnostics(L->doc);
-	for (int i = 0; i < L->novers; i++) say_diagnostics(L->overs[i]);
+	// Each labelled with its own file when there is more than one: the line
+	// numbers share a space on the screen otherwise.
+	int lbl = L->nnames > 1;
+	say_diagnostics_from(lbl ? L->names[0] : "", L->doc);
+	for (int i = 0; i < L->novers; i++)
+		say_diagnostics_from(lbl && i + 1 < L->nnames ? L->names[i + 1] : "", L->overs[i]);
 }
 
 // Load `file` with o's lower-priority --layer files underneath it and its --set
@@ -406,14 +453,17 @@ static int set_apply(shcl_doc *d, const SetOpt *s) {
 
 static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
 	out->doc = NULL; out->overs = NULL; out->novers = 0; out->texts = NULL; out->ntexts = 0;
+	out->names = (const char **)xrealloc(NULL, (size_t)(o->nlayers + 1) * sizeof *out->names);
+	out->nnames = 0;
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	for (int i = 0; i <= o->nlayers; i++) {
 		const char *fname = i < o->nlayers ? o->layers[i] : file;
+		out->names[out->nnames++] = fname;
 		size_t len; char *t = read_input(fname, &len);
 		if (!t) { layered_free(out); return EXIT_IO; }
 		layered_push_text(out, t);
 		shcl_doc *dd = xdoc(shcl_parse_with(t, len, o->strictness));
-		int g = strict_gate(dd);
+		int g = strict_gate_from(o->nlayers ? fname : "", dd);
 		if (g) { shcl_free(dd); layered_free(out); return g; }
 		layered_push_doc(out, dd);
 	}
@@ -554,23 +604,31 @@ static int do_get(Opts *o) {
 // disagree about which rewrites are safe.
 // Whether the directory holding `file` can take a new entry - the probe
 // behind the temp-create wording on a failed save.
-static int dir_writable(const char *file) {
+// Can the target's directory take a temp file? Asked by creating one, because
+// that is what the library's write does: _waccess reports every existing
+// directory writable on windows, so an ACL-protected one got the bare errno
+// where the other three name the phase. Only ever called on the failure path,
+// and the probe is removed immediately.
+static int dir_takes_a_temp(const char *file) {
 	const char *slash = strrchr(file, '/');
 #ifdef _WIN32
 	const char *bs = strrchr(file, '\\');
 	if (bs && (!slash || bs > slash)) slash = bs;
 #endif
-	char dir[4096];
-	if (!slash) snprintf(dir, sizeof dir, ".");
-	else if (slash == file) snprintf(dir, sizeof dir, "/");
-	else snprintf(dir, sizeof dir, "%.*s", (int)(slash - file), file);
+	char probe[4096];
+	if (!slash) snprintf(probe, sizeof probe, ".shcl-probe%ld", (long)getpid());
+	else if (slash == file) snprintf(probe, sizeof probe, "/.shcl-probe%ld", (long)getpid());
+	else snprintf(probe, sizeof probe, "%.*s/.shcl-probe%ld", (int)(slash - file), file, (long)getpid());
 #ifdef _WIN32
-	wchar_t *w = shcl_widen(dir);
-	int ok = w && _waccess(w, 2) == 0;
+	wchar_t *w = shcl_widen(probe);
+	int fd = w ? _wopen(w, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE) : -1;
+	if (fd >= 0) { _close(fd); _wunlink(w); }
 	free(w);
-	return ok;
+	return fd >= 0;
 #else
-	return access(dir, W_OK) == 0;
+	int fd = open(probe, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	if (fd >= 0) { close(fd); unlink(probe); }
+	return fd >= 0;
 #endif
 }
 
@@ -587,7 +645,7 @@ static int write_back(shcl_doc *d, const char *file, Opts *o) {
 	// naming is the temp-file create, which is what failed when the target's
 	// directory cannot take one.
 	int e = errno;
-	if (!dir_writable(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
+	if (!dir_takes_a_temp(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
 	else fprintf(stderr, "%s: %s\n", file, strerror(e));
 	return EXIT_IO;
 }
@@ -711,6 +769,30 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno
 	const char **fp = (const char **)xrealloc(NULL, nf * sizeof *fp);
 	size_t *fn = (size_t *)xrealloc(NULL, nf * sizeof *fn);
 	{ size_t k = 0, start = 0; for (size_t i = 0; i <= linelen; i++) if (i == linelen || line[i] == '\t') { fp[k] = line + start; fn[k] = i - start; k++; start = i + 1; } }
+	// Every op but the array forms takes a fixed number of tab-separated
+	// fields. Extra ones used to be dropped, so a `raw` whose content held a
+	// literal tab lost everything after it and still reported success; the
+	// escape for a tab inside a value is `\t`.
+	{
+		int bad = 0;
+		static const struct { const char *op; size_t want; } counts[] = {
+			{ "empty", 2 }, { "remove", 2 }, { "raw", 4 }, { "raw-default", 4 },
+			{ "int", 3 }, { "float", 3 }, { "bool", 3 }, { "string", 3 },
+			{ "datetime", 3 }, { "literal", 3 }, { "comment", 3 },
+			{ "int-default", 3 }, { "float-default", 3 }, { "bool-default", 3 },
+			{ "string-default", 3 }, { "datetime-default", 3 }, { "literal-default", 3 },
+		};
+		for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
+			if (strlen(counts[i].op) != fn[0] || memcmp(counts[i].op, fp[0], fn[0]) != 0) continue;
+			if (nf > counts[i].want) {
+				fprintf(stderr, "op line %zu: %s takes %zu tab-separated field(s), got %zu\n",
+					lineno, counts[i].op, counts[i].want, nf);
+				bad = 1;
+			}
+			break;
+		}
+		if (bad) { free(fp); free(fn); return 1; }
+	}
 	const char *path = nf > 1 ? fp[1] : ""; size_t plen = nf > 1 ? fn[1] : 0;
 	const char *v = nf > 2 ? fp[2] : ""; size_t vn = nf > 2 ? fn[2] : 0;
 	int rc = 0, wrote = 1;
@@ -778,7 +860,10 @@ static int do_set(Opts *o) {
 	// The base layer's node strings are not dup'd off its text, so keep all
 	// buffers.
 	LayeredDoc L; L.doc = NULL; L.overs = NULL; L.novers = 0; L.texts = NULL; L.ntexts = 0;
+	L.names = (const char **)xrealloc(NULL, (size_t)(o->nlayers + 1) * sizeof *L.names);
+	L.nnames = 0;
 	for (int i = 0; i < o->nlayers; i++) {
+		L.names[L.nnames++] = o->layers[i];
 		size_t llen; char *lt = read_input(o->layers[i], &llen);
 		if (!lt) { layered_free(&L); return EXIT_IO; }
 		layered_push_text(&L, lt);
@@ -799,6 +884,7 @@ static int do_set(Opts *o) {
 	if (creating || (!strcmp(file, "-") && o->nsets == 0)) { text = (char *)xrealloc(NULL, 1); len = 0; }
 	else { text = read_input(file, &len); if (!text) { layered_free(&L); return EXIT_IO; } }
 	layered_push_text(&L, text);
+	L.names[L.nnames++] = file;
 	{
 		shcl_doc *dd = xdoc(shcl_parse_with(text, len, o->strictness));
 		int gate = strict_gate(dd);
@@ -872,6 +958,16 @@ static int do_check(const Opts *o) {
 				fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
 			}
 		} else {
+			/* The schema's own load has something to say too: an H001 on a
+			   repeated `allowed` is what explains the V092 below it. On stderr
+			   with the schema's own line numbers, the way a V099's are -
+			   stdout is the code contract. */
+			for (size_t i = 0; i < sn; i++) {
+				const char *sev = shcl_diag_severity(sd, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
+				shcl_str m = shcl_diag_message(sd, i);
+				fprintf(stderr, "schema line %zu: %s: %s ", shcl_diag_line(sd, i), sev, shcl_diag_code(sd, i));
+				fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
+			}
 			val = xdoc(shcl_validate(d, sd));
 			shcl_suppress_declared_repeats(sd, d);
 			shcl_suppress_declared_reopens(sd, d);
@@ -946,12 +1042,8 @@ static int do_init(const Opts *o) {
 	shcl_str text = shcl_generate(sd, o->no_banner, &ok);
 	if (!ok) {
 		size_t nd = shcl_diag_count(sd);
-		for (size_t i = diagMark; i < nd; i++) {
-			const char *sev = shcl_diag_severity(sd, i) == SHCL_SEV_ERROR ? "Error" : "Hint";
-			shcl_str m = shcl_diag_message(sd, i);
-			fprintf(stderr, "schema line %zu: %s: %s ", shcl_diag_line(sd, i), sev, shcl_diag_code(sd, i));
-			fwrite(m.p, 1, m.n, stderr); fputc('\n', stderr);
-		}
+		for (size_t i = diagMark; i < nd; i++)
+			say_diag(shcl_diag_line(sd, i), shcl_diag_severity(sd, i), shcl_diag_code(sd, i), shcl_diag_message(sd, i));
 		fprintf(stderr, "init: schema has faults\n");
 		shcl_free(sd); free(stext); return 6;
 	}
@@ -1016,6 +1108,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 		else if (g_ci_eq(v, strlen(v), "default")) o->on_bad = "default";
 		else if (g_ci_eq(v, strlen(v), "flag")) o->on_bad = "flag";
 		else { fprintf(stderr, "bad --on-bad value: %s\n", v); return 1; }
+		o->on_bad_arg = o->on_bad;
 		opt_seen(o, "--on-bad");
 	} else if (!strcmp(name, "--strictness")) {
 		if (!shcl_strictness_from_arg(v, strlen(v), &o->strictness)) { fprintf(stderr, "bad --strictness value: %s\n", v); return 1; }
@@ -1037,7 +1130,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 }
 
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
-	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag";
+	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag"; o->on_bad_arg = NULL;
 	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->no_banner = 0; o->schema = NULL;
 	o->layers = o->args = NULL; o->sets = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
@@ -1161,6 +1254,14 @@ static int check_opts(const char *cmd, const Opts *o) {
 		return 1;
 	}
 	// --lossy only overrides the in-place write's refusal, so on its own it says
+	// --default says "substitute this" and --on-bad=error says "fail instead",
+	// so the two together are a contradiction. Each used to overwrite the
+	// other's mode, which made the answer depend on the order they were typed
+	// in.
+	if (o->deflt && o->on_bad_arg && strcmp(o->on_bad_arg, "default") != 0) {
+		fprintf(stderr, "--default cannot be combined with --on-bad=%s (see --help)\n", o->on_bad_arg);
+		return 1;
+	}
 	// nothing and would read as protection the command never had.
 	if (o->lossy && !o->write) {
 		fprintf(stderr, "--lossy is only meaningful with --write (see --help)\n");

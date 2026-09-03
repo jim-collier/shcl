@@ -10,6 +10,8 @@ import math
 import os
 import stat
 import sys
+import tempfile
+import time
 import tracemalloc
 import types
 from pathlib import Path
@@ -374,6 +376,25 @@ def main():
 				raise SystemExit(f"{case['name']}: bad merge.sets line: {line}")
 			doc.set_string(line[:eq], line[eq + 1:])
 		got = doc.to_canonical()
+		# Reads answered by the merged document itself, not just its text: a
+		# merged arena holds dropped nodes, a rebuilt index and cloned child
+		# lists, and only a read walks those. instances() is left out because it
+		# hands back the source spelling, which canonical output may respell.
+		# Same fixture in every runner.
+		mback = shcl.Document.parse(got)
+		if doc.paths() != mback.paths():
+			fails.append(f"{case['name']}: merged paths differ from a reparse")
+		for mp in doc.paths():
+			if doc.count(mp) != mback.count(mp):
+				fails.append(f"{case['name']}: merged count {mp}")
+			if doc.children(mp) != mback.children(mp):
+				fails.append(f"{case['name']}: merged children {mp}")
+			mx, my = doc.read_string(mp), mback.read_string(mp)
+			if (mx.value, mx.status) != (my.value, my.status):
+				fails.append(f"{case['name']}: merged read {mp}")
+			mx, my = doc.read_string_array(mp), mback.read_string_array(mp)
+			if (mx.value, mx.status, mx.slots) != (my.value, my.status, my.slots):
+				fails.append(f"{case['name']}: merged array read {mp}")
 		if got != case["expected_merged"]:
 			fails.append(f"{case['name']}: merged output differs from expected-merged.shcl")
 		if shcl.Document.parse(got).to_canonical() != got:
@@ -721,6 +742,87 @@ def main():
 		raise SystemExit("a one-element bare cell reads quoted as an array")
 	if shcl.Document.parse('m: "x", "y"\n').read_string_array("m").quoted:
 		raise SystemExit("a two-element cell reported a single element's quoting")
+	# A path that names a directory - it ends in a separator, or its last
+	# component is `.` or `..` - is not a document. A path cleanup drops the
+	# trailing separator first, so a save through `f/.` used to rewrite `f` in
+	# some bindings. Same fixture in every runner.
+	with tempfile.TemporaryDirectory() as dtd:
+		dfile = os.path.join(dtd, "f.shcl")
+		with open(dfile, "w", encoding="utf-8", newline="") as fh:
+			fh.write("a: 1\n")
+		ddoc = shcl.Document.parse("a: 2\n")
+		for suffix in ("/", "/.", "/.."):
+			try:
+				ddoc.save_file(dfile + suffix)
+				raise SystemExit(f"save through {dfile + suffix} was accepted")
+			except shcl.SaveFailed:
+				pass
+		if _read(dfile) != "a: 1\n":
+			raise SystemExit("a refused save changed the file")
+		ddoc.save_file(dfile)
+		if _read(dfile) != "a: 2\n":
+			raise SystemExit("the plain path did not save")
+	# A typed array setter takes a list of its type, not any iterable: a str is a
+	# sequence of one-character strings, so set_string_array("abc") wrote three
+	# elements, and a generator was consumed by the type check before the setter
+	# read it - an empty value written at True. The three untyped setters raised
+	# from inside on a non-string; they gate like their typed siblings now.
+	# Python-only: the other three bindings are statically typed here.
+	gdoc = shcl.Document.new()
+	for setter, args in (
+		("set_string_array", ("k", "abc")),
+		("set_int_array", ("k", b"12")),
+		("set_comment", ("k", 5)),
+		("set_raw", ("k", 5, "")),
+		("set_literal", ("k", 5)),
+	):
+		try:
+			getattr(gdoc, setter)(*args)
+			raise SystemExit(f"{setter} accepted the wrong type")
+		except TypeError:
+			pass
+	gen = (x for x in [1, 2, 3])   # not a list on purpose: that is the fixture
+	if not gdoc.set_int_array("k", gen) or gdoc.to_canonical() != "k: 1, 2, 3\n":  # type: ignore[arg-type]
+		raise SystemExit(f"a generator wrote {gdoc.to_canonical()!r}")
+	# A written value carrying both quote kinds is stored the way its own reload
+	# stores it, so instances() and a read's raw text agree across a save. The
+	# emitter escapes the double quotes; the writer used to keep them bare. Same
+	# fixture in every runner.
+	wdoc = shcl.Document.parse("x: 1\n")
+	if not wdoc.set_string("k", "q\"q'"):
+		raise SystemExit("set_string refused")
+	wback = shcl.Document.parse(wdoc.to_canonical())
+	if wback.instances("k") != wdoc.instances("k"):
+		raise SystemExit(f"instances after a reload {wback.instances('k')}, written {wdoc.instances('k')}")
+	if wdoc.get_string_or("k", "") != "q\"q'":
+		raise SystemExit("written value did not read back")
+	# The name index used to be rebuilt by walking the arena, which still holds
+	# every node a set-and-remove cycle ever made - so the first read after a
+	# merge grew with the number of edits, not with the document. Timed against
+	# the same document with no dead nodes; the ratio is what matters, since an
+	# absolute figure would be a machine constant. Same fixture in every runner.
+	ms = []
+	for churned in (False, True):
+		idoc = shcl.Document.parse("g:\n\tk: 1\n")
+		if churned:
+			for i in range(20000):
+				idoc.set_int("g.tmp", i)
+				idoc.remove("g.tmp")
+		iother = shcl.Document.parse("g:\n\tk: 1\n")
+		t0 = time.perf_counter()
+		for _ in range(50):
+			idoc.merge(iother)
+			if idoc.get_int_or("g.k", -1) != 1:
+				raise SystemExit("index walk: wrong result")
+		ms.append((time.perf_counter() - t0) * 1000.0)
+	# A generous ratio on purpose: the chain list is still sized by the arena,
+	# which is a fill the walk cannot avoid. What the bound catches is the walk
+	# itself going over every dead node.
+	# A clock too coarse to see the fresh side leaves the ratio with a zero
+	# denominator, and then the bound is an absolute figure on whatever machine
+	# is running - which is what it was written not to be.
+	if ms[0] > 0 and ms[1] > ms[0] * 25 + 250:
+		raise SystemExit(f"index rebuild after churn {ms[1]:.1f} ms against {ms[0]:.1f} ms fresh")
 	# What a read hands out must not be the document's own list: a caller
 	# clearing it used to take the document's diagnostics with it, and a failed
 	# strict load handed out the same list again. Same fixture in Go.
@@ -858,7 +960,6 @@ def main():
 	# load_file/save_file: the status separates absent / unreadable / parsed
 	# with errors / clean, and a save round-trips through the atomic write.
 	# Same fixture in every runner.
-	import tempfile
 	with tempfile.TemporaryDirectory() as td:
 		fpath = os.path.join(td, "t.shcl")
 		_, fst = shcl.Document.load_file(fpath)

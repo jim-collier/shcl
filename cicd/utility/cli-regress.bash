@@ -37,9 +37,13 @@ for b in "${bindings[@]}"; do
 	[[ -x "${cli}" ]] || { echo "cli-regress: binding CLI not executable: ${cli}" >&2; exit 2; }
 done
 
-tmpDir="$(mktemp -d)"; trap 'rm -rf "${tmpDir}"' EXIT
+##	The unwritable directory below has to be made writable again or the cleanup
+##	cannot empty it.
+tmpDir="$(mktemp -d)"; trap 'chmod -R u+w "${tmpDir}" 2>/dev/null; rm -rf "${tmpDir}"' EXIT
 printf 'a: 1\n'          > "${tmpDir}/ok.shcl"
 printf 'a: 1\n  bad\nb 2\n' > "${tmpDir}/bad.shcl"
+## A second damaged file, so a layered load has two to tell apart.
+printf 'c: 1\nalso bad\n' > "${tmpDir}/bad2.shcl"
 mkdir -p "${tmpDir}/adir"
 ## The deepest a document can legally go: one level under the 512 cap. Python
 ## was the binding still recursing a frame per level, so this is the shape that
@@ -59,6 +63,30 @@ printf 'field: "*"\n\ttype: int\n\trepeat: 2\n' > "${tmpDir}/star2.shcl"
 ## limit while its message said past it.
 awk 'BEGIN{ for (i = 0; i < 10000; i++) printf "field: f%d\n", i }' > "${tmpDir}/cap10000.shcl"
 awk 'BEGIN{ for (i = 0; i < 10001; i++) printf "field: f%d\n", i }' > "${tmpDir}/cap10001.shcl"
+## A generator-only `default` the schema cannot spell on a value line: a raw
+## block has no inline form, and a `type: raw` field's default goes out inline
+## and then fails its own type check. Both used to be dropped or reported as a
+## wrong type in the generated output.
+printf 'field: b\n\ttype: raw\n\tdefault: hello\n\trequired: yes\n' > "${tmpDir}/rawdef.shcl"
+## A `desc` with a comma in it: the value is several elements, and the comment
+## used to come out missing rather than carrying the sentence.
+printf 'field: a\n\tdesc: one, two\n\trequired: yes\n' > "${tmpDir}/commadesc.shcl"
+## A directory a write cannot create a temp file in. The phase is worth naming -
+## it is the difference between "fix the file" and "fix its directory" - and the
+## C CLI used to guess it from an access() that answers yes for every existing
+## directory on windows.
+mkdir -p "${tmpDir}/nowrite"
+printf 'a: 1\n' > "${tmpDir}/nowrite/f.shcl"
+chmod 500 "${tmpDir}/nowrite"
+## A raw block against a string `allowed`: the body carries its own newlines, so
+## one diagnostic used to span several stderr lines.
+#  shellcheck disable=2016  ## the backticks are the fence the fixture needs.
+printf 'b:\n\t```\n\tline one\n\tline two\n\t```\n' > "${tmpDir}/rawval.shcl"
+printf 'field: b\n\ttype: string\n\tallowed: nope\n' > "${tmpDir}/rawvalschema.shcl"
+## A schema whose own load has something to say: two `field: a` instances merge,
+## so `allowed` repeats as a bare leaf - which is exactly what the V092 under it
+## is about, and it was invisible.
+printf 'field: a\n\tallowed: x\nfield: a\n\tallowed: y\n' > "${tmpDir}/hintschema.shcl"
 ## A must-exist path with nothing to generate from: an index selector needs an
 ## instance that is not there, and a path past the nesting cap would draw E016
 ## on the way back in. Either way the fault names the path rather than reporting
@@ -78,11 +106,14 @@ printf 'db:\n\thost: h\n\t"odd.key": 2\nweb:\n\tport: 1\n' > "${tmpDir}/tree.shc
 printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
-##	argv placeholders: %F% the good file, %B% the two-error file, %D% a directory,
+##	argv placeholders: %F% the good file, %B% the two-error file, %B2% a second
+##	damaged file for a layered load, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %S1%/%S2%
 ##	a nameless must-exist path at repeat 1 and 2, %S3% a schema that does not
 ##	build, %S4% a required path with an index selector, %S5%/%S6% a schema at and
-##	one past the generation field ceiling, %X% an
+##	one past the generation field ceiling, %S7% a schema whose own load hints,
+##	%S8% a raw default, %S9% a desc with a comma, %N% a file in a directory that
+##	takes no temp file, %R%/%SA% a raw block and a schema that refuses it, %X% an
 ##	instance whose discriminator holds an '=', %T% a document with a name that
 ##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
 ##	path with no file at it.
@@ -98,14 +129,17 @@ rows=(
 	## 20260830 item 10: the reference kept a trailing CR on an ops line, the ports stripped it.
 	'ops-line-cr|set %F%|int\tx\t1\r|0|a: 1\n\nx: 1\n|-'
 	'ops-lone-cr|set %F%|int\tx\t1\n\r|0|a: 1\n\nx: 1\n|-'
-	## 20260830 item 14: Python raised a traceback, C exited nonzero.
+	## 20260830 item 14: Python raised a traceback, C exited nonzero. POSIX-only:
+	## the row closes fd 0, and windows has no equivalent a shell can set up.
 	'closed-stdin|fmt -|@closedin|0||^$'
 	'closed-stdout|fmt %F%|@closedout|0|-|^$'
 	## 20260830 item 16: C dropped the line number and the offending op.
 	'bad-op-unknown|set %F%|bogus\ta\t1\n|1|-|op line 1: unknown op: bogus'
 	## 20260830 item 18: C answered a directory with a bare "read error". Exit 8
-	## since 20260830b item 22 split I/O out of the usage code.
-	'read-dir-names-error|fmt %D%|-|8|-|[Ii]s a directory'
+	## since 20260830b item 22 split I/O out of the usage code. The wording is
+	## the CLIs' own, from a stat ahead of the read, so the row can expect one
+	## spelling rather than four platforms' worth (20260901b item 32).
+	'read-dir-names-error|fmt %D%|-|8|-|^[^ ]*adir: Is a directory$'
 	## 20260830 item 17: C printed a bare count instead of naming the diagnostics.
 	'strict-load-list|fmt --strictness=strict %B%|-|6|-|strict load failed: 2 error diagnostic'
 	## 20260830 round: an unknown command is judged before its options.
@@ -127,6 +161,12 @@ rows=(
 	## fragments, saying the schema expands past it.
 	'init-cap-at-limit|init --no-banner --schema=%S5%|-|0|-|^$'
 	'init-cap-over|init --no-banner --schema=%S6%|-|6||V096 schema expands past 10000 fields'
+	## 20260902 item 43: a raw default was dropped or misreported, a desc with a
+	## comma produced no comment, and V096/V097 named a schema line space they
+	## are not in.
+	'init-raw-default|init --schema=%S8%|-|6||schema line 3: Error: V092'
+	'init-comma-desc|init --no-banner --schema=%S9%|-|0|# one, two\n# any, required\na:\n|-'
+	'init-genfault-line-space|init --schema=%S4%|-|6||^line 0: Error: V097'
 	'init-build-fault|init --schema=%S3%|-|6||V091 unknown schema type'
 	'init-build-fault-only|init --schema=%S3%|-|6||!V002'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
@@ -172,6 +212,31 @@ rows=(
 	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
 	'children-missing|children %T% nope|-|0||-'
 	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	## 20260901b item 28: a value with newlines in it stays on one line.
+	'diag-value-one-line|check --schema=%SA% %R%|-|6|-|not allowed at .b.: line one.nline two'
+	## 20260901b item 24: two layers with a bad line 2 printed the same thing
+	## twice, with nothing to say which file each came from.
+	'layer-diags-named|fmt --layer=%B% %B2%|-|0|-|bad2.shcl line 2: Error: E014'
+	'single-file-diags-unnamed|fmt %B%|-|0|-|^line 3: Error: E014'
+	## 20260901b item 26: a strict failure in a lower layer ends the fold there,
+	## and says which layer it was.
+	'layer-strict-names-the-layer|fmt --strictness=strict --layer=%B% %B2%|-|6|-|bad.shcl line 2: Error: E015'
+	## 20260902 item 44: the failing phase is named, not guessed.
+	'write-names-the-phase|set --write --set=a=2 %N%|-|8|-|cannot create temporary file'
+	## 20260902 item 41: the schema's own diagnostics were never printed, so the
+	## hint that explains a schema fault could not be seen.
+	'schema-own-hints|check --schema=%S7% %F%|-|6|-|schema line 4: Hint: H001'
+	## 20260902 item 41: extra tab-separated fields were dropped, so a raw whose
+	## content held a literal tab lost everything after it at exit 0.
+	'ops-extra-fields-raw|set %F%|raw\tk\t\tbody\twith\ttabs\n|1|-|raw takes 4 tab-separated'
+	'ops-extra-fields-int|set %F%|int\tk\t1\textra\n|1|-|int takes 3 tab-separated'
+	'ops-array-takes-any|set %F%|int-array\tk\t1\t2\t3\n|0|a: 1\n\nk: 1, 2, 3\n|-'
+	## 20260902 item 41: --default and --on-bad=error each overwrote the other's
+	## mode, so which one applied depended on which was typed last.
+	'default-vs-onbad|get --int --default=7 --on-bad=error %F% nope|-|1|-|--default cannot be combined with --on-bad=error'
+	'onbad-vs-default|get --int --on-bad=error --default=7 %F% nope|-|1|-|--default cannot be combined with --on-bad=error'
+	'default-with-onbad-default|get --int --default=7 --on-bad=default %F% nope|-|0|7|-'
+	'default-alone|get --int --default=7 %F% nope|-|0|7|-'
 	## 20260902 item 15: a refused edit returned before the load's diagnostics
 	## were printed, so a damaged file said nothing about the damage.
 	'refused-set-still-reports|get --set=a[*]=1 %B% a|-|1|-|E015 missing colon'
@@ -198,6 +263,7 @@ declare -i nRun=0 nBad=0
 for row in "${rows[@]}"; do
 	IFS='|' read -r id argv stdinSpec wantRc wantOut wantErr <<<"${row}"
 	argv="${argv//%F%/${tmpDir}/ok.shcl}"
+	argv="${argv//%B2%/${tmpDir}/bad2.shcl}"
 	argv="${argv//%B%/${tmpDir}/bad.shcl}"
 	argv="${argv//%D%/${tmpDir}/adir}"
 	argv="${argv//%P%/${tmpDir}/deep.shcl}"
@@ -208,6 +274,12 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S4%/${tmpDir}/idxreq.shcl}"
 	argv="${argv//%S5%/${tmpDir}/cap10000.shcl}"
 	argv="${argv//%S6%/${tmpDir}/cap10001.shcl}"
+	argv="${argv//%S7%/${tmpDir}/hintschema.shcl}"
+	argv="${argv//%S8%/${tmpDir}/rawdef.shcl}"
+	argv="${argv//%S9%/${tmpDir}/commadesc.shcl}"
+	argv="${argv//%SA%/${tmpDir}/rawvalschema.shcl}"
+	argv="${argv//%R%/${tmpDir}/rawval.shcl}"
+	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
