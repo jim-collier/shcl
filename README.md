@@ -198,7 +198,7 @@ Far past anything anyone edits by hand: one array of 302,230 records.
 
 Every number above comes from one Rust library per format. A slow library and a slow format are not the same thing, so the same files are read again in Python. Most Python parsers are C underneath (`json`, `ElementTree` and PyYAML all are), while SHCL's Python binding is pure Python. That leaves `tomllib`, also pure Python, as the only fair match. In Python, SHCL reads 3.5 times slower than `tomllib`; in Rust, 2.1 times slower than `toml`. Two languages, two separate implementations, the same few-fold gap.
 
-TLDR: If you are moving a lot of machine-generated data over a high-bandwidth connection, use JSON. If you want to save developer and user time (and sanity), use SHCL.
+TLDR: If you are moving a lot of machine-generated data over a high-bandwidth connection, use JSON. If you want to save developer time, and respect end-user sanity, use SHCL.
 
 > *How it was measured: [`cicd/utility/comparison/`](cicd/utility/comparison/) writes the same data in all five formats, then reads each file back with its own ecosystem's parser - same compiler, same flags, one process per measurement. Method and caveats are in [design.md](project/design.md#format-comparison); every number, including the other shapes and the Python tier, is in [results.shcl](cicd/utility/comparison/results.shcl).*
 
