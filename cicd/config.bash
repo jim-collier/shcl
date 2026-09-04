@@ -122,6 +122,7 @@ LINT_EXTRA=(
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/packaging/shclpath.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/winpath-regress.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/winpath-sandbox.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'cicd/utility/check-completions.bash'
 	'cicd/utility/check-wheel.bash'
 	## The README's C example is the first thing a C consumer copies, and it is
