@@ -15,8 +15,9 @@
 ##		  ROOT   repo root (default: two levels up from this script)
 ##		CC, CXX and PYTHON override the tools it reaches for. WINRUN_PARTIAL
 ##		runs the rows a box has the tools for instead of refusing the lot, and
-##		leaves out the registry row; it is for a developer machine, and the
-##		hosted job does not set it.
+##		takes the registry row through a sandbox rather than this box's own
+##		registry; it is for a developer machine, and the hosted job does not
+##		set it.
 ##	Exit: 0 = every runner passed, 1 = at least one did not, 2 = a tool is missing.
 ##	History: At bottom of script.
 
@@ -173,6 +174,21 @@ fRunClosedStdin() {
 	((bad == 0))
 }
 
+## Its own row rather than an fRun one, because a host that cannot give us a
+## sandbox is a skip and not a failure - no feature installed, or somebody's own
+## sandbox already up. Exit 2 from the wrapper is that case; 0 and 1 are a result.
+fRunWinpathSandbox() {
+	local status=0
+	echo
+	echo "[ windows path (sandbox) ]"
+	powershell -NoProfile -ExecutionPolicy Bypass -File cicd/utility/winpath-sandbox.ps1 || status=$?
+	case "${status}" in
+		0) echo "win-runners: windows path (sandbox): OK" ;;
+		2) echo "win-runners: windows path (sandbox): SKIPPED"; skipped+=("windows path (sandbox)") ;;
+		*) echo "win-runners: windows path (sandbox): FAILED" >&2; failed+=("windows path (sandbox)") ;;
+	esac
+}
+
 ## Fuzz iterations stay at the in-test default: the long soak is the Linux gate's
 ## job, and nothing about it is platform-dependent.
 fRun "rust"        "cargo"          cargo test --manifest-path source/rust/Cargo.toml
@@ -186,19 +202,14 @@ fRun "c oom recover" "${cc}"        fRunOomSweep oom_recover
 fRun "c mem bounds" "${cc}"         fRunMemBounds
 fRun "c cli argv"  "${cc}"          fRunCcli
 fRun "closed stdin" "${cc}"         fRunClosedStdin
-## The installers' PATH handling needs a real registry, which only exists here:
-## it edits and restores the runner's own Environment keys, so it stays off
-## every other host - and off a developer box, which WINRUN_PARTIAL names. It
-## overwrites the machine PATH for the length of the run, which is fine on a
-## throwaway runner and not on a workstation.
+## The installers' PATH handling needs a real registry, which only exists here.
+## It overwrites the machine PATH for the length of the run - fine on a throwaway
+## runner, not on a workstation, so a developer box gets the same test inside a
+## sandbox, whose registry is thrown away with it.
 case "$(uname -s 2>/dev/null || true)" in
 	MINGW*|MSYS*|CYGWIN*)
-		if [[ -n "${WINRUN_PARTIAL:-}" ]]; then
-			echo; echo "[ windows path ]"
-			echo "win-runners: windows path: SKIPPED, it rewrites this box's PATH"
-			skipped+=("windows path")
-		else
-			fRun "windows path" "" powershell -NoProfile -ExecutionPolicy Bypass -File cicd/utility/winpath-regress.ps1
+		if [[ -n "${WINRUN_PARTIAL:-}" ]]; then fRunWinpathSandbox
+		else fRun "windows path" "" powershell -NoProfile -ExecutionPolicy Bypass -File cicd/utility/winpath-regress.ps1
 		fi
 		;;
 esac
@@ -223,3 +234,5 @@ fi
 ##		  is a real SEH unwind only here.
 ##		- 20260903: WINRUN_PARTIAL runs what a developer box has rather than
 ##		  refusing the lot over one absent toolchain. Skipped rows are named.
+##		- 20260903: The registry row runs on a developer box too, inside a
+##		  sandbox, instead of being skipped there.
