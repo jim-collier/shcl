@@ -13,7 +13,10 @@
 ##	Syntax:
 ##		win-runners.bash [ROOT]
 ##		  ROOT   repo root (default: two levels up from this script)
-##		CC, CXX and PYTHON override the tools it reaches for.
+##		CC, CXX and PYTHON override the tools it reaches for. WINRUN_PARTIAL
+##		runs the rows a box has the tools for instead of refusing the lot, and
+##		leaves out the registry row; it is for a developer machine, and the
+##		hosted job does not set it.
 ##	Exit: 0 = every runner passed, 1 = at least one did not, 2 = a tool is missing.
 ##	History: At bottom of script.
 
@@ -41,10 +44,27 @@ exe=""
 case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) exe=".exe" ;; esac
 
 ## A missing compiler otherwise surfaces as an unreadable build error three
-## stages later; say which tool and stop.
+## stages later; say which tool and stop. WINRUN_PARTIAL runs what the box does
+## have instead, for a developer machine missing one toolchain - the hosted job
+## never sets it, and a skipped row is named in the summary either way.
+missing=()
 for tool in cargo go "${py}" "${cc}" "${cxx}"; do
-	command -v "${tool}" >/dev/null 2>&1 || { echo "win-runners: not found: ${tool}" >&2; exit 2; }
+	command -v "${tool}" >/dev/null 2>&1 || missing+=("${tool}")
 done
+if ((${#missing[@]} > 0)); then
+	echo "win-runners: not found: ${missing[*]}" >&2
+	[[ -n "${WINRUN_PARTIAL:-}" ]] || exit 2
+	echo "win-runners: WINRUN_PARTIAL set; the rows needing those are skipped" >&2
+fi
+fHave() {   ## fHave TOOL [TOOL ...] - false if any is in the missing list
+	local want have
+	for want in "$@"; do
+		for have in ${missing[@]+"${missing[@]}"}; do
+			[[ "${want}" == "${have}" ]] && return 1
+		done
+	done
+	return 0
+}
 
 work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
@@ -53,10 +73,15 @@ echo "win-runners: root ${root}"
 echo "win-runners: $(uname -s 2>/dev/null || echo unknown), cc=${cc} cxx=${cxx} py=${py}"
 
 failed=()
-fRun() {   ## fRun NAME COMMAND [ARG ...]
-	local name="$1"; shift
+skipped=()
+fRun() {   ## fRun NAME TOOLS COMMAND [ARG ...]   TOOLS is space-separated
+	local name="$1" tools="$2"; shift 2
 	echo
 	echo "[ ${name} ]"
+	# shellcheck disable=2086  ## the tool list is meant to split
+	if ! fHave ${tools}; then
+		echo "win-runners: ${name}: SKIPPED"; skipped+=("${name}"); return 0
+	fi
 	if "$@"; then echo "win-runners: ${name}: OK"
 	else echo "win-runners: ${name}: FAILED" >&2; failed+=("${name}"); fi
 }
@@ -73,22 +98,18 @@ fRunCxx() {
 		source/c/tests/veneer_smoke.cpp -o "${work}/veneer${exe}" -lm \
 		&& "${work}/veneer${exe}"
 }
-fRunOom() {
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/tests/oom_hook.c -o "${work}/oom_hook${exe}" -lm \
-		&& "${work}/oom_hook${exe}"
-}
-## The recovery point unwinds through SEH on this host and through nothing much
-## on linux or under wine, so windows is the only place the arrival can be
-## judged. It also has to hold at every optimization level: the shape that broke
-## it needs both a frame pointer and saved xmm registers, which is a decision
-## gcc makes per level, so -O2 alone would have missed -O1.
-fRunOomRecover() {
-	local opt
+## Both oom tests land on a setjmp recovery point, which unwinds through SEH on
+## this host and through nothing much on linux or under wine, so windows is the
+## only place the arrival can be judged. It also has to hold at every
+## optimization level: the shape that broke it needs both a frame pointer and
+## saved xmm registers, which is a decision gcc makes per level, so -O2 alone
+## would have missed -O1.
+fRunOomSweep() {   ## fRunOomSweep NAME
+	local name="$1" opt
 	for opt in -O0 -O1 -O2 -O3 -Os; do
 		"${cc}" -std=c11 "${opt}" -Wall -Wextra -Werror -Isource/c \
-			source/c/tests/oom_recover.c -o "${work}/oom_recover${exe}" -lm || return 1
-		"${work}/oom_recover${exe}" || { echo "win-runners: oom_recover: ${opt}: exit $?" >&2; return 1; }
+			"source/c/tests/${name}.c" -o "${work}/${name}${exe}" -lm || return 1
+		"${work}/${name}${exe}" || { echo "win-runners: ${name}: ${opt}: exit $?" >&2; return 1; }
 	done
 }
 ## The allocation bounds move with the allocator, so they belong here rather
@@ -124,16 +145,21 @@ fRunCcli() {
 ## spells its own way, so this is the only place the rule can be judged.
 fRunClosedStdin() {
 	local bad=0
+	local clis=()
 	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
 		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
-	cargo build --quiet --manifest-path source/rust/Cargo.toml || return 1
-	go -C source/go/cmd build -o "${work}/shcl-go${exe}" ./shcl || return 1
-	local clis=(
-		"rust|source/rust/target/debug/shcl${exe}"
-		"go|${work}/shcl-go${exe}"
-		"python|${py} source/python/cmd/shcl/main.py"
-		"c|${work}/shcl-c${exe}"
-	)
+	clis+=("c|${work}/shcl-c${exe}")
+	## Each CLI drops out on its own rather than taking the row with it, so a box
+	## short one toolchain still judges the other three.
+	if fHave cargo; then
+		cargo build --quiet --manifest-path source/rust/Cargo.toml || return 1
+		clis+=("rust|source/rust/target/debug/shcl${exe}")
+	fi
+	if fHave go; then
+		go -C source/go/cmd build -o "${work}/shcl-go${exe}" ./shcl || return 1
+		clis+=("go|${work}/shcl-go${exe}")
+	fi
+	if fHave "${py}"; then clis+=("python|${py} source/python/cmd/shcl/main.py"); fi
 	local entry name cmd out rc
 	for entry in "${clis[@]}"; do
 		name="${entry%%|*}"; cmd="${entry#*|}"
@@ -149,27 +175,36 @@ fRunClosedStdin() {
 
 ## Fuzz iterations stay at the in-test default: the long soak is the Linux gate's
 ## job, and nothing about it is platform-dependent.
-fRun "rust"        cargo test --manifest-path source/rust/Cargo.toml
-fRun "go library"  go -C source/go test ./...
-fRun "go cli"      go -C source/go/cmd test ./...
-fRun "python"      "${py}" source/python/tests/conformance.py
-fRun "c"           fRunC
-fRun "c++ veneer"  fRunCxx
-fRun "c oom hook"  fRunOom
-fRun "c oom recover" fRunOomRecover
-fRun "c mem bounds" fRunMemBounds
-fRun "c cli argv"  fRunCcli
-fRun "closed stdin" fRunClosedStdin
+fRun "rust"        "cargo"          cargo test --manifest-path source/rust/Cargo.toml
+fRun "go library"  "go"             go -C source/go test ./...
+fRun "go cli"      "go"             go -C source/go/cmd test ./...
+fRun "python"      "${py}"          "${py}" source/python/tests/conformance.py
+fRun "c"           "${cc}"          fRunC
+fRun "c++ veneer"  "${cxx}"         fRunCxx
+fRun "c oom hook"  "${cc}"          fRunOomSweep oom_hook
+fRun "c oom recover" "${cc}"        fRunOomSweep oom_recover
+fRun "c mem bounds" "${cc}"         fRunMemBounds
+fRun "c cli argv"  "${cc}"          fRunCcli
+fRun "closed stdin" "${cc}"         fRunClosedStdin
 ## The installers' PATH handling needs a real registry, which only exists here:
 ## it edits and restores the runner's own Environment keys, so it stays off
-## every other host.
+## every other host - and off a developer box, which WINRUN_PARTIAL names. It
+## overwrites the machine PATH for the length of the run, which is fine on a
+## throwaway runner and not on a workstation.
 case "$(uname -s 2>/dev/null || true)" in
 	MINGW*|MSYS*|CYGWIN*)
-		fRun "windows path" powershell -NoProfile -ExecutionPolicy Bypass -File cicd/utility/winpath-regress.ps1
+		if [[ -n "${WINRUN_PARTIAL:-}" ]]; then
+			echo; echo "[ windows path ]"
+			echo "win-runners: windows path: SKIPPED, it rewrites this box's PATH"
+			skipped+=("windows path")
+		else
+			fRun "windows path" "" powershell -NoProfile -ExecutionPolicy Bypass -File cicd/utility/winpath-regress.ps1
+		fi
 		;;
 esac
 
 echo
+((${#skipped[@]} == 0)) || echo "win-runners: SKIPPED: ${skipped[*]}"
 if ((${#failed[@]} == 0)); then
 	echo "win-runners: OK"
 else
@@ -183,5 +218,8 @@ fi
 ##		  where the file tier's publish step is a different code path in all four.
 ##		- 20260901: The installers' PATH handling joins, windows hosts only - it
 ##		  needs a real registry.
-##		- 20260903: The allocation-failure recovery joins, swept across five
-##		  optimization levels. Its unwind is a real SEH unwind only here.
+##		- 20260903: The allocation-failure recovery joins, and the oom hook it
+##		  sits beside now sweeps the same five optimization levels. Their unwind
+##		  is a real SEH unwind only here.
+##		- 20260903: WINRUN_PARTIAL runs what a developer box has rather than
+##		  refusing the lot over one absent toolchain. Skipped rows are named.

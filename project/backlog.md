@@ -613,6 +613,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Fixed: both recovery points arm with `_setjmp(buf, NULL)` on mingw x86_64, which makes `longjmp` restore the context without unwinding at all. That is all a C recovery point needs - nothing in between has a destructor or a `__finally`. Recorded as a C deviation in `style-guide.md`, and the `SHCL_OOM` docs now point an embedder whose hook longjmps at the same thing, since that unwind crosses these frames too.
 		- Pinned by a `win-runners.bash` step that builds and runs the test at `-O0`, `-O1`, `-O2`, `-O3` and `-Os`. The shape needs both a frame pointer and saved xmm registers, which gcc decides per level: backed out, three of the five crash and two do not, so a single-level gate could have gone either way.
 		- Fixed on the way: the load half wrote its fixture to a hardcoded `/tmp`, which a mingw binary does not translate. The new gate would have rested on the runner happening to have a `C:\tmp`.
+		- Follow-on: the macro is `SHCL_SETJMP` and now sits in the public half of the header, since the embedder the `SHCL_OOM` docs point at arms the recovery point in their own translation unit and could not reach it. `oom_hook.c` arms with it too, and the gate sweeps both oom tests across the five levels rather than only the recovery one - the hook's recovery point is the same shape, one inlining decision from the same fault.
 		- Opened: 20260904-052000
 		- Closed: 20260904-070000
 
@@ -674,7 +675,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- ✅ Item 31: the hosted windows job runs one of the three C memory tests.
 		- `oom_recover.c`, the setjmp unwind and the most platform-sensitive test in the suite, and `mem_bounds.c` are built on Linux only. Both pass under wine, so it is two lines in `win-runners.bash`.
-		- Fixed: `win-runners.bash` builds and runs `mem_bounds.c` there. `oom_recover.c` is not on that job after all - it crashes on a real windows host, which is item 48.
+		- Fixed: `win-runners.bash` builds and runs `mem_bounds.c` there. `oom_recover.c` was held off that job at the time because it crashed on a real windows host; item 48 fixed the crash and put it on, swept across five optimization levels.
 		- The index-rebuild check is a ratio against a fresh document, and it went wrong two ways once it ran off this box. Windows counts whole milliseconds, so the fresh side reads one tick or none and the ratio rests on nothing; it is skipped now where the clock cannot resolve that side, the way it is already skipped under a sanitizer. And the constant term was tight enough that a shared runner's descheduling crossed it, so all four bindings' copies carry a wider one - the factor is what catches the defect, which is orders rather than a fraction. Every allocation bound in the file still runs on windows.
 		- Pinned by the two new rows. The ratio still catches an index rebuild that walks every node the document ever held, unchanged.
 		- Opened: 20260901-193000
@@ -2304,7 +2305,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 - ✅ The Windows installers' PATH handling is tested against a real registry.
 	- Noted as still ungated when the test-gap round closed: it needs a registry, which only the hosted windows job has.
 	- Fixed on the way in: `install.ps1`'s two PATH edits are one function now, and the setup's PATH script is a real file (`cicd/packaging/shclpath.ps1`) packed into the installer instead of line-by-line writes from the .nsi - so the text that ships is the text the gate runs.
-	- Pinned by: `winpath-regress.ps1`, run by `win-runners.bash` on the hosted windows job against the runner's own Environment keys, saved first and restored after. What it holds: `%VAR%` references survive unexpanded, the value stays REG_EXPAND_SZ, segments compare whole (a superstring dir still appends), add is idempotent, and remove takes exactly its own segment.
+	- Pinned by: `winpath-regress.ps1`, run by `win-runners.bash` on the hosted windows job against the runner's own Environment keys, saved first and restored after. What it holds: `%VAR%` references survive unexpanded, the value stays REG_EXPAND_SZ, segments compare whole (a superstring dir still appends), add is idempotent, and remove takes exactly its own segment. Later widened to a PATH ending in `;` (the add does not double it, the remove drops it) and an empty one (the add leaves no leading `;`).
 	- Opened: 20260901-114703
 	- Closed: 20260901-114703
 
