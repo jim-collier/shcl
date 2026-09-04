@@ -75,6 +75,17 @@ try {
 	Test-Check ((Get-RawPath $cu) -eq "$seed;${dir}2") 'remove takes its segment alone'
 	Test-Check ((Get-PathKind $cu) -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) 'remove keeps REG_EXPAND_SZ'
 	Test-Check (-not (Update-ShclPath -Scope User -Dir 'C:\never-there' -Remove)) 'removing an absent segment writes nothing'
+	## A user PATH ending in ';' is common enough to pin. The add must not double
+	## it, and the remove drops it, which is a rewrite of a segment nobody owns.
+	$cu.SetValue('Path', "$seed;", [Microsoft.Win32.RegistryValueKind]::ExpandString)
+	Test-Check (Update-ShclPath -Scope User -Dir $dir) 'add onto a trailing semicolon reports a write'
+	Test-Check ((Get-RawPath $cu) -eq "$seed;$dir") 'add onto a trailing semicolon does not double it'
+	Test-Check (Update-ShclPath -Scope User -Dir $dir -Remove) 'remove from a trailing semicolon reports a write'
+	Test-Check ((Get-RawPath $cu) -eq $seed) 'remove drops the trailing semicolon'
+	## A fresh profile has no user PATH at all.
+	$cu.SetValue('Path', '', [Microsoft.Win32.RegistryValueKind]::ExpandString)
+	Test-Check (Update-ShclPath -Scope User -Dir $dir) 'add onto an empty PATH reports a write'
+	Test-Check ((Get-RawPath $cu) -eq $dir) 'add onto an empty PATH leaves no leading semicolon'
 } finally {
 	Restore-PathValue $cu $savedCu $savedCuKind
 	$cu.Close()
