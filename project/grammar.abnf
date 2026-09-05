@@ -36,6 +36,10 @@ field-line      = indent path *wsp ":" *wsp [ value ] *wsp [ comment ]
                 ; Semantic likewise: the wildcard selector [*] is query-only. On
                 ; a binding line it is grammar-legal but reported (Error,
                 ; "wildcard selector is query-only") and the whole line skipped.
+                ; And index-sel is query-only the same way: a binding line
+                ; carrying one (a[#0].b: 1) is reported (Error E014) and skipped,
+                ; since an instance is named by its value in a file, never by a
+                ; position that the next edit could move.
 
 indent          = *( SP / HTAB )              ; one kind per subtree (see spec)
 
@@ -146,6 +150,7 @@ raw-content-line= *non-newline                 ; verbatim; only while a fence is
 
 wsp             = SP / HTAB
 non-newline     = %x00-09 / %x0B-10FFFF        ; any char except LF
-newline         = [ CR ] LF / %xEOF            ; LF or CRLF; last line may lack newline
+newline         = *CR LF / %xEOF               ; LF or CRLF; a line's whole trailing CR run
+                                               ; is removed; last line may lack newline
 DQUOTE          = %x22
 SQUOTE          = %x27

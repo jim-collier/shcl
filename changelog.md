@@ -154,6 +154,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The C binding keeps an `H001` hint for a repeated field whose name is empty even when the schema disavows it with `repeat`, where the other three drop it. Dropped in C too.
 
+- An all-digit selector too large for a 64-bit index (`a[99999999999999999999]`) is an index that names no instance, in every binding. It used to fall through to a value selector, so a write through it created an instance whose value was the number, and Python and the other three disagreed on the document line.
+
+- A trailing comment on a `*` element line at the top level (an `E007` line) is kept as a document comment instead of being discarded with the element.
+
 - Merging a layer over a leaf no longer deletes a malformed line the parser had retained above or under that leaf. The line stays in the merged document, where a save writes it back out, instead of vanishing with the base leaf's comments and a lost count of zero.
 
 - A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, and the save gate refuses like it does for the plain spelling.

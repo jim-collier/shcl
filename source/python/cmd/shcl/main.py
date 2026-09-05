@@ -65,7 +65,7 @@ Usage:
   shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
                                          print canonical (or rewrite FILE in
                                          place with --write)
-  shcl fmt [--write|-w] FILE             print the canonical form (or rewrite
+  shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite
                                          FILE in place with --write)
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE

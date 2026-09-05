@@ -1467,6 +1467,16 @@ DEFINE_VEC(ShclVecSeg, ShclSegment)
 typedef struct { int ok; ShclVecSeg segs; int has_value; ShclStr value_text; ShclStr err; } ShclPathScan;
 
 // usize parse: optional single leading '+', >=1 digit, no overflow.
+/* The spelling of an index selector - an optional `#`, an optional `+`, then
+   digits - whatever its size. The grammar says 1*DIGIT, with no upper bound. */
+static int index_shape(ShclStr body) {
+	size_t i = 0;
+	if (i < body.n && body.p[i] == '#') i++;
+	if (i < body.n && body.p[i] == '+') i++;
+	if (i >= body.n) return 0;
+	for (; i < body.n; i++) if (!is_adigit((unsigned char)body.p[i])) return 0;
+	return 1;
+}
 static int parse_u64(ShclStr s, uint64_t *out) {
 	size_t i = 0;
 	if (i < s.n && s.p[i] == '+') i++;
@@ -1577,6 +1587,10 @@ static ShclPathScan scan_path_ex(ShclArena *a, ShclStr input, int stars) {
 					sel.tag = SEL_INDEX; sel.index = idx;
 				} else if (parse_u64(body, &idx)) {
 					sel.tag = SEL_INDEX; sel.index = idx;
+				} else if (index_shape(body)) {
+					/* All digits but past u64: an index no instance can have,
+					   not a value selector that would create one on a write. */
+					sel.tag = SEL_INDEX; sel.index = UINT64_MAX;
 				} else if (body.n == 0) {
 					ps.err = s_lit("empty selector"); return ps;
 				} else {
@@ -2815,8 +2829,11 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
 				if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
 				ShclStr ecomment; ShclStr body = split_value_comment(after, &ecomment);
-				/* Elements have no node of their own; trivia rides the field. */
+				/* Elements have no node of their own; trivia rides the field. At the
+				   root there is no field (E007), so the comment rides the document
+				   like any other pending one. */
 				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
+				else if (ecomment.n) { ShclPend pd; pd.text = ecomment; pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n; ShclVecPend_push(P.tmp, &P.pending, pd); }
 				/* A dropped element holds its indent level like any skipped line,
 				   so what is written under it is skipped with it (E018) rather
 				   than re-parenting to the field. */
