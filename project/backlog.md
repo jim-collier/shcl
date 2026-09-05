@@ -254,11 +254,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-172100
 		- Closed: 20260905-101319
 
-	- 🔘 Item 23: `check-c-compilers.bash` reports OK with a single compiler and never reads `SHCL_GATE_STRICT`.
+	- ✅ Item 23: `check-c-compilers.bash` reports OK with a single compiler and never reads `SHCL_GATE_STRICT`.
 		- Reproduced: with gcc-12 to gcc-15 and clang hidden from `PATH`, the gate prints "OK: 5 build(s) across 1 compiler(s)" and exits 0 under `SHCL_GATE_STRICT=1`.
 		- Cause: the compiler list is whatever `command -v` finds, with no floor, and the script does not read the flag three other gates do. The engine's own comment says "A gate that quietly skips what it cannot run is a gate that stops checking when a runner loses a tool. The gates read this and fail on a skip instead".
 		- Note: the disagreement it exists for is real. Removing the `-Wclobbered` suppression around `do_parse` makes gcc-12 and gcc-13 refuse the file while 14, 15, clang and this box's default `cc` all build it clean.
+		- Fixed: under `SHCL_GATE_STRICT` the sweep needs two versioned gccs and clang before it builds anything, and says what it found otherwise; off the gate it checks what is installed and names it, as before.
+		- Pinned by: `shell-regress.bash`, the gate run against a PATH holding one gcc. The old script reports OK there.
 		- Opened: 20260904-172200
+		- Closed: 20260905-101319
 
 	- 🔘 Item 24: the publish stage aborts before doing anything in a repository with no git identity.
 		- Reproduced as its own source lines under the script's shell options: `git config user.name` as a bare statement exits 1 when the key is unset, and `set -e` plus the script's own ERR trap end the run there. It happens before the backup and before any git action, and arrives as a trap dump naming a line rather than a message about identity.

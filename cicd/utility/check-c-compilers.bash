@@ -32,6 +32,22 @@ for c in gcc-12 gcc-13 gcc-14 gcc-15 gcc-16 gcc clang; do
 done
 ((${#compilers[@]})) || { echo "check-c-compilers: no C compiler found" >&2; exit 2 ;}
 
+## Under the gate a thin sweep is a failure, not a pass: the disagreement this
+## exists for (gcc 12 and 13 against 14 and 15 over -Wclobbered) cannot show
+## with one compiler, and a runner that lost one would otherwise report OK for
+## good. Locally, what is installed is what is checked, and the summary says
+## which.
+if [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+	declare -i nGcc=0
+	for c in "${compilers[@]}"; do
+		if [[ "${c}" == gcc-* ]]; then nGcc+=1; fi
+	done
+	if ((nGcc < 2)) || [[ " ${compilers[*]} " != *" clang "* ]]; then
+		echo "check-c-compilers: the gate needs two versioned gccs and clang; found: ${compilers[*]}" >&2
+		exit 1
+	fi
+fi
+
 ## Same flags the build and test stages use, so a disagreement here is a
 ## disagreement there.
 for cc in "${compilers[@]}"; do
@@ -61,3 +77,4 @@ echo "check-c-compilers: OK: ${nRun} build(s) across ${#compilers[@]} compiler(s
 ##		2026-08-31  Created, after gcc 13 on the hosted runner rejected what the
 ##		            local gcc 14 accepted.
 ##		2026-08-31  The two OOM tests, for -Wclobbered around the setjmp.
+##		2026-09-05  A floor on the compiler set under SHCL_GATE_STRICT.
