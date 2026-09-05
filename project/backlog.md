@@ -101,11 +101,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-170400
 		- Closed: 20260905-091652
 
-	- 🔘 Item 6: `Set<T>Default` reports success on a wildcard path, which is the one path shape every setter is supposed to refuse.
+	- ✅ Item 6: `Set<T>Default` reports success on a wildcard path, which is the one path shape every setter is supposed to refuse.
 		- Reproduced in all four, library and CLI. `--set-default='srv[*].port=99'` exits 0 with nothing written when the path resolves, and exits 1 when it does not. Plain `--set` on the same path exits 1 either way. All twelve default forms are affected.
 		- Cause: each `_default` form is `if !exists(path) { return set_X(...) } true`, and `exists` is true for a wildcard whose slots resolve, so the refusal is never reached. Whether an unusable path passes now depends on the document's contents.
 		- Note: it also disagrees with `write_reason`, whose doc comment says "`Writable` means the same validation `place()` runs would pass". `write_reason` correctly says `Wildcard` on the same path.
+		- Fixed: every default form answers `write_reason` when the path already resolves, so a present path reports what a write there would. The C CLI's and C runner's op scripts carried their own present-check instead of the library's default forms; both take the same answer now.
+		- Pinned by: corpus `092-default-wildcard`, five default ops on resolving wildcard paths under `write-bad.ops`. The old code accepts every one.
 		- Opened: 20260904-170500
+		- Closed: 20260905-092040
 
 	- 🔘 Item 7: the index-rebuild timing test cannot reliably fail on the defect it names, and Python's copy can never fail.
 		- Reproduced by backing the fix out: the Rust test passed on two of five runs, with the churned side landing either side of the bound. Go fails by under 2x. Python's fixture is 20000 churn iterations and 50 merges where Rust and Go use 100000 and 200, so the whole cost of the defect is about 52 ms against a 250 ms constant term - it cannot fail on any machine.
