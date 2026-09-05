@@ -2211,29 +2211,30 @@ func (p *parser) bindBlock(parent int, v value, line int) int {
 
 // addStarElement: one stacked-list element (`* scalar`) appends to the
 // parent's array.
-func (p *parser) addStarElement(parent int, body string, line int) {
+// True when the element was added, false when the line was dropped.
+func (p *parser) addStarElement(parent int, body string, line int) bool {
 	if parent == root {
 		p.err(line, "E007", "list element with no parent field")
 		p.lost++
-		return
+		return false
 	}
 	// Uniform-or-nothing (spec): a mix with field children is not a block array.
 	if len(p.arena[parent].children) != 0 {
 		p.err(line, "E008", "list element mixed with field children; ignored")
 		p.lost++
-		return
+		return false
 	}
 	trimmed := trimWsp(body)
 	if trimmed == "" {
 		p.err(line, "E009", "empty list element")
 		p.lost++
-		return
+		return false
 	}
 	// One scalar per line; a bare comma is an error, not a second element.
 	if len(splitUnquotedCommas(trimmed)) > 1 {
 		p.err(line, "E010", "bare comma in list element (one element per line)")
 		p.lost++
-		return
+		return false
 	}
 	if unterminatedQuote(trimmed) {
 		p.err(line, "E017", "unterminated quote in value")
@@ -2242,14 +2243,14 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 	if !ok {
 		p.err(line, "E009", "empty list element")
 		p.lost++
-		return
+		return false
 	}
 	// Element cap: each element line past it is refused on its own, the way
 	// any other bad element line is.
 	if p.maxElements != 0 && p.arena[parent].value.kind == vCell && len(p.arena[parent].value.els) >= p.maxElements {
 		p.err(line, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements))
 		p.lost++
-		return
+		return false
 	}
 	switch {
 	case p.arena[parent].value.isEmpty():
@@ -2278,7 +2279,9 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 	default:
 		p.err(line, "E011", "field already has a value; list element ignored")
 		p.lost++
+		return false
 	}
+	return true
 }
 
 // emitRepeatedLeafHints flags legal input that looks like a common mistake: a
@@ -2417,7 +2420,14 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// Stacked-list element: colon-less by construction ('*' can't begin a name).
 		if strings.HasPrefix(rest, "*") {
 			after := rest[1:]
-			if strings.HasPrefix(after, " ") || strings.HasPrefix(after, "\t") {
+			// A `*` alone after the trim: whether a space followed it decides
+			// between an empty element and a malformed line, and only the
+			// untrimmed line still knows.
+			spaced := strings.HasPrefix(after, " ") || strings.HasPrefix(after, "\t")
+			if after == "" && len(lines[i]) > len(indent)+1 {
+				spaced = lines[i][len(indent)+1] == ' ' || lines[i][len(indent)+1] == '\t'
+			}
+			if spaced {
 				parent, okp := p.resolveParent(indent)
 				if !okp {
 					p.err(lineno, "E012", "indentation matches no open level")
@@ -2435,7 +2445,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				if parent != root {
 					p.attachTrivia(parent, comment)
 				}
-				p.addStarElement(parent, body, lineno)
+				// A dropped element holds its indent level like any skipped line, so
+				// what is written under it is skipped with it (E018) rather than
+				// re-parenting to the field.
+				if !p.addStarElement(parent, body, lineno) {
+					p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+				}
 				i++
 				continue
 			}

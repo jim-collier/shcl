@@ -171,17 +171,24 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-171200
 		- Closed: 20260905-095502
 
-	- 🔘 Item 14: `*` followed by a space and nothing else reports `E013` with a message its own input disproves, and kills the block beneath it.
+	- ✅ Item 14: `*` followed by a space and nothing else reports `E013` with a message its own input disproves, and kills the block beneath it.
 		- Reproduced in all four. `* ` gives `E013 malformed line: '*' must be followed by a space` - the line does have a space - and the child line under it is dropped as `E018`. The same empty element spelled `* #c` takes the `E009` path and keeps its block.
 		- Cause: the line trim removes the trailing space before the marker check, so the marker is a bare `*`. The spec's code table gives this shape `E009`.
 		- Note: `E013` pushes a dead level and `E009` does not, so the wrong code costs the block as well as the message.
+		- Fixed: when the trimmed line is a bare `*`, the untrimmed line decides whether a space followed it, so `* ` is an empty element (`E009`) in all four. Under item 15 an empty element takes its block with it too, so the block is skipped either way; what changed is the code and the message.
+		- Pinned by: corpus `095-dropped-element-block`, line 8. The old code reports `E013` there.
 		- Opened: 20260904-171300
+		- Closed: 20260905-095502
 
-	- 🔘 Item 15: a dropped stacked-`*` element does not take its indented block with it, while the malformed spelling of the same mistake does.
+	- ✅ Item 15: a dropped stacked-`*` element does not take its indented block with it, while the malformed spelling of the same mistake does.
 		- Reproduced in all four. Under `sizes:` with a `k: 1` sibling, `* small` with `n: 5` beneath it gives `E008` and `paths` reports `sizes.n` - the child re-parented one level up. Spelled `*small` the same document gives `E013` plus `E018` and the child is gone. `E007` and `E011` behave like `E008`.
 		- Note: the spec says of `E018` that a skipped line's block "never re-parents one level up", and says the same of a dedent to a bad column. What is not defensible either way is that two spellings of one mistake give the reader two different answers - the same reasoning that settled the `E012` sentinel in the 20260901b round.
 		- Decided: needs a call on whether a dropped element opens a block at all. `E001` already keeps a field among list elements at the parent, so keeping the child is arguable; giving the same mistake two answers is not.
+		- Decided: a dropped element is a skipped line and holds its indent level, so what is written under it is `E018` and counts lost, the same as under the malformed spelling. Re-parenting moved content to a place the author did not write it; skipping it is counted, so a save refuses. Recorded in `design.md` beside the retained-line rule and on the spec's `E018` row.
+		- Fixed: `add_star_element` reports whether the element was added, and the caller pushes the dead level when it was not, for `E007` to `E011` and the element cap, in all four.
+		- Pinned by: corpus `095-dropped-element-block`: a line under an `E008` element, under an `E009` one and under an `E011` one, each `E018`, with `sizes.n` and `full.deep` NotFound and a lost count of six. The old code re-parents the first and third. Case `087-merge-tail-comment` reached its top-level field only through that re-parenting, so its input now spells the field directly; it pins the same merged-comment order.
 		- Opened: 20260904-171400
+		- Closed: 20260905-095502
 
 	- 🔘 Item 16: the PowerShell wrapper drops a bare `--` when it is dot-sourced, which is the mode its own header documents.
 		- Reproduced on pwsh 7.6. `. ./shcl.ps1; shcl get -- t.shcl '-dash'` gives `unknown option: -dash` at exit 1; quoting the token as `'--'` works; the bash wrapper is correct in both modes.

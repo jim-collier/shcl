@@ -2142,11 +2142,12 @@ impl Parser {
 	}
 
 	/// One stacked-list element (`* scalar`) appends to the parent's array.
-	fn add_star_element(&mut self, parent: usize, body: &str, line: usize) {
+	/// True when the element was added; false when the line was dropped.
+	fn add_star_element(&mut self, parent: usize, body: &str, line: usize) -> bool {
 		if parent == ROOT {
 			self.err(line, "E007", "list element with no parent field");
 			self.lost += 1;
-			return;
+			return false;
 		}
 		// Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if !self.arena[parent].children.is_empty() {
@@ -2156,13 +2157,13 @@ impl Parser {
 				"list element mixed with field children; ignored",
 			);
 			self.lost += 1;
-			return;
+			return false;
 		}
 		let trimmed = trim_wsp(body);
 		if trimmed.is_empty() {
 			self.err(line, "E009", "empty list element");
 			self.lost += 1;
-			return;
+			return false;
 		}
 		// One scalar per line; a bare comma is an error, not a second element.
 		if split_unquoted_commas(trimmed).len() > 1 {
@@ -2172,7 +2173,7 @@ impl Parser {
 				"bare comma in list element (one element per line)",
 			);
 			self.lost += 1;
-			return;
+			return false;
 		}
 		if unterminated_quote(trimmed) {
 			self.err(line, "E017", "unterminated quote in value");
@@ -2180,7 +2181,7 @@ impl Parser {
 		let Some(el) = parse_element(trimmed) else {
 			self.err(line, "E009", "empty list element");
 			self.lost += 1;
-			return;
+			return false;
 		};
 		// Element cap: each element line past it is refused on its own, the way
 		// any other bad element line is.
@@ -2197,7 +2198,7 @@ impl Parser {
 				),
 			);
 			self.lost += 1;
-			return;
+			return false;
 		}
 		if self.arena[parent].value.is_empty() {
 			let old_key = merge_hash(&self.arena[parent].name, &self.arena[parent].value);
@@ -2230,7 +2231,9 @@ impl Parser {
 				"field already has a value; list element ignored",
 			);
 			self.lost += 1;
+			return false;
 		}
+		true
 	}
 
 	/// Legal input that looks like a common mistake: a field repeating as a bare
@@ -2372,7 +2375,13 @@ impl Parser {
 			}
 			// Stacked-list element: colon-less by construction ('*' can't begin a name).
 			if let Some(after) = rest.strip_prefix('*') {
-				if after.starts_with(' ') || after.starts_with('\t') {
+				// A `*` alone after the trim: whether a space followed it
+				// decides between an empty element and a malformed line, and
+				// only the untrimmed line still knows.
+				let spaced = after.starts_with([' ', '\t'])
+					|| (after.is_empty()
+						&& matches!(lines[i].as_bytes().get(ilen + 1), Some(b' ' | b'\t')));
+				if spaced {
 					let Some(parent) = self.resolve_parent(indent) else {
 						self.err(lineno, "E012", "indentation matches no open level");
 						self.lost += 1;
@@ -2389,7 +2398,12 @@ impl Parser {
 					if parent != ROOT {
 						self.attach_trivia(parent, comment);
 					}
-					self.add_star_element(parent, body, lineno);
+					// A dropped element holds its indent level like any
+					// skipped line, so what is written under it is skipped
+					// with it (E018) rather than re-parenting to the field.
+					if !self.add_star_element(parent, body, lineno) {
+						self.stack.push((indent.to_string(), DEAD));
+					}
 					i += 1;
 					continue;
 				}

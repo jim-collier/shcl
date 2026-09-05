@@ -436,7 +436,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 | `E015` | missing colon (repaired as an empty value)
 | `E016` | nesting deeper than the 512-level cap (line skipped)
 | `E017` | a value (or array element) opens a quote it never closes - the piece is kept literally, including any `#` comment the open quote swallowed
-| `E018` | line written under a line that was skipped (indented beneath it); skipped with it, so a skipped line's block never re-parents one level up
+| `E018` | line written under a line that was skipped (indented beneath it); skipped with it, so a skipped line's block never re-parents one level up. A `*` element line whose element was dropped (`E007` to `E011`, `E021`) is a skipped line for this purpose
 | `E019` | a value spelled with brackets, the way JSON, TOML and YAML spell an array. The brackets do not survive the load, so this counts as lost content and an in-place rewrite refuses (`--lossy` overrides) rather than baking the changed value in
 | `E020` | node cap exceeded (fires only under a caller-supplied cap, see Limits): the parse stopped, and the unparsed remainder counts as lost content
 | `E021` | array longer than the caller-supplied element cap (see Limits); the line is skipped whole rather than truncated to a value the author never wrote

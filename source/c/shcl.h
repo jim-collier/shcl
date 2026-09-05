@@ -2554,24 +2554,25 @@ static size_t bind_block(ShclParser *P, size_t parent, ShclValue value, size_t l
 	return select_or_create(P, gp, name, name_src, value, line);
 }
 
-static void add_star_element(ShclParser *P, size_t parent, ShclStr body, size_t line) {
+/* 1 when the element was added, 0 when the line was dropped. */
+static int add_star_element(ShclParser *P, size_t parent, ShclStr body, size_t line) {
 	ShclArena *a = &P->d->arena;
-	if (parent == ROOT) { p_err(P, line, "E007", s_lit("list element with no parent field")); P->d->lost++; return; }
+	if (parent == ROOT) { p_err(P, line, "E007", s_lit("list element with no parent field")); P->d->lost++; return 0; }
 	/* Uniform-or-nothing (spec): a mix with field children is not a block array. */
-	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, "E008", s_lit("list element mixed with field children; ignored")); P->d->lost++; return; }
+	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, "E008", s_lit("list element mixed with field children; ignored")); P->d->lost++; return 0; }
 	ShclStr trimmed = s_trim_wsp(body);
-	if (trimmed.n == 0) { p_err(P, line, "E009", s_lit("empty list element")); P->d->lost++; return; }
-	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, "E010", s_lit("bare comma in list element (one element per line)")); P->d->lost++; return; }
+	if (trimmed.n == 0) { p_err(P, line, "E009", s_lit("empty list element")); P->d->lost++; return 0; }
+	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, "E010", s_lit("bare comma in list element (one element per line)")); P->d->lost++; return 0; }
 	if (unterminated_quote(P->line, trimmed)) p_err(P, line, "E017", s_lit("unterminated quote in value"));
 	ShclElement el;
-	if (!parse_element(a, trimmed, &el)) { p_err(P, line, "E009", s_lit("empty list element")); P->d->lost++; return; }
+	if (!parse_element(a, trimmed, &el)) { p_err(P, line, "E009", s_lit("empty list element")); P->d->lost++; return 0; }
 	/* Element cap: each element line past it is refused on its own, the way
 	   any other bad element line is. */
 	if (P->max_elements && NODE(P->d, parent).value.kind == V_CELL && NODE(P->d, parent).value.nels >= P->max_elements) {
 		ShclSB m = {0}; sb_puts(P->line, &m, "array longer than "); sb_put_u64(P->line, &m, P->max_elements); sb_puts(P->line, &m, " elements; line skipped");
 		p_err(P, line, "E021", sb_S(&m));
 		P->d->lost++;
-		return;
+		return 0;
 	}
 	ShclNode *node = &NODE(P->d, parent);
 	if (node->value.kind == V_EMPTY) {
@@ -2602,7 +2603,9 @@ static void add_star_element(ShclParser *P, size_t parent, ShclStr body, size_t 
 	} else {
 		p_err(P, line, "E011", s_lit("field already has a value; list element ignored"));
 		P->d->lost++;
+		return 0;
 	}
+	return 1;
 }
 
 /* The single H001 wording site: the hint builder and the schema suppressor
@@ -2769,14 +2772,23 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		}
 		if (rest.n >= 1 && rest.p[0] == '*') {
 			ShclStr after = s_slice(rest, 1, rest.n);
-			if (after.n >= 1 && (after.p[0] == ' ' || after.p[0] == '\t')) {
+			/* A `*` alone after the trim: whether a space followed it decides
+			   between an empty element and a malformed line, and only the
+			   untrimmed line still knows. */
+			int spaced = after.n >= 1 && (after.p[0] == ' ' || after.p[0] == '\t');
+			if (after.n == 0 && lines.data[i].n > indent.n + 1) spaced = lines.data[i].p[indent.n + 1] == ' ' || lines.data[i].p[indent.n + 1] == '\t';
+			if (spaced) {
 				size_t parent;
 				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
 				if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
 				ShclStr ecomment; ShclStr body = split_value_comment(after, &ecomment);
 				/* Elements have no node of their own; trivia rides the field. */
 				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
-				add_star_element(&P, parent, body, lineno); i++; continue;
+				/* A dropped element holds its indent level like any skipped line,
+				   so what is written under it is skipped with it (E018) rather
+				   than re-parenting to the field. */
+				if (!add_star_element(&P, parent, body, lineno)) { ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se); }
+				i++; continue;
 			}
 			{
 				size_t parent;

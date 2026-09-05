@@ -1712,33 +1712,34 @@ class _Parser:
 		return self._select_or_create(grandparent, name, name_src, value, line)
 
 	def _add_star_element(self, parent, body, line):
+		"""True when the element was added, False when the line was dropped."""
 		"""One stacked-list element (`* scalar`) appends to the parent's array."""
 		if parent == ROOT:
 			self._err(line, "E007", "list element with no parent field")
 			self.lost += 1
-			return
+			return False
 		# Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if self.arena[parent].children:
 			self._err(line, "E008", "list element mixed with field children; ignored")
 			self.lost += 1
-			return
+			return False
 		trimmed = _trim_wsp(body)
 		if not trimmed:
 			self._err(line, "E009", "empty list element")
 			self.lost += 1
-			return
+			return False
 		# One scalar per line; a bare comma is an error, not a second element.
 		if len(_split_unquoted_commas(trimmed)) > 1:
 			self._err(line, "E010", "bare comma in list element (one element per line)")
 			self.lost += 1
-			return
+			return False
 		if _unterminated_quote(trimmed):
 			self._err(line, "E017", "unterminated quote in value")
 		el = _parse_element(trimmed)
 		if el is None:
 			self._err(line, "E009", "empty list element")
 			self.lost += 1
-			return
+			return False
 		# Element cap: each element line past it is refused on its own, the way
 		# any other bad element line is.
 		if (
@@ -1748,7 +1749,7 @@ class _Parser:
 		):
 			self._err(line, "E021", f"array longer than {self.max_elements} elements; line skipped")
 			self.lost += 1
-			return
+			return False
 		node = self.arena[parent]
 		if node.value.kind == "empty":
 			old_key = _merge_key(node.name, node.value)
@@ -1773,6 +1774,8 @@ class _Parser:
 		else:
 			self._err(line, "E011", "field already has a value; list element ignored")
 			self.lost += 1
+			return False
+		return True
 
 	def _emit_repeated_leaf_hints(self):
 		"""Legal input that looks like a common mistake: a field repeating as a bare
@@ -1880,7 +1883,13 @@ class _Parser:
 			# Stacked-list element: colon-less by construction ('*' can't begin a name).
 			if rest.startswith("*"):
 				after = rest[1:]
-				if after.startswith(" ") or after.startswith("\t"):
+				# A `*` alone after the trim: whether a space followed it
+				# decides between an empty element and a malformed line, and
+				# only the untrimmed line still knows.
+				spaced = after.startswith(" ") or after.startswith("\t")
+				if not after:
+					spaced = lines[i][len(indent) + 1:len(indent) + 2] in (" ", "\t")
+				if spaced:
 					parent = self._resolve_parent(indent)
 					if parent is None:
 						self._err(lineno, "E012", "indentation matches no open level")
@@ -1895,7 +1904,11 @@ class _Parser:
 					# Elements have no node of their own; trivia rides the field.
 					if parent != ROOT:
 						self._attach_trivia(parent, comment)
-					self._add_star_element(parent, body, lineno)
+					# A dropped element holds its indent level like any skipped line, so
+					# what is written under it is skipped with it (E018) rather than
+					# re-parenting to the field.
+					if not self._add_star_element(parent, body, lineno):
+						self.stack.append((indent, DEAD))
 					i += 1
 					continue
 				parent = self._resolve_parent(indent)
