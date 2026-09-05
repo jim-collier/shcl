@@ -1644,6 +1644,10 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 					sel = &selector{kind: selByIndex, index: n}
 				} else if n, ok := parseIndex(body); ok {
 					sel = &selector{kind: selByIndex, index: n}
+				} else if indexShape(body) {
+					// All digits but past uint64: an index no instance can have,
+					// not a value selector that would create one on a write.
+					sel = &selector{kind: selByIndex, index: math.MaxUint64}
 				} else if body == "" {
 					return pathScan{}, errors.New("empty selector")
 				} else {
@@ -1679,6 +1683,15 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 			return pathScan{}, fmt.Errorf("unexpected '%c' after field", c)
 		}
 	}
+}
+
+// indexShape is the spelling of an index selector - an optional `#`, an
+// optional `+`, then digits - whatever its size. The grammar says 1*DIGIT,
+// with no upper bound.
+func indexShape(body string) bool {
+	b := strings.TrimPrefix(body, "#")
+	b = strings.TrimPrefix(b, "+")
+	return b != "" && allDigits(b)
 }
 
 func hashIndex(body string) (uint64, bool) {
@@ -2441,9 +2454,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 					continue
 				}
 				body, comment := splitValueComment(after)
-				// Elements have no node of their own; trivia rides the field.
+				// Elements have no node of their own; trivia rides the field. At the
+				// root there is no field (E007), so the comment rides the document like
+				// any other pending one.
 				if parent != root {
 					p.attachTrivia(parent, comment)
+				} else if comment != "" {
+					p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 				}
 				// A dropped element holds its indent level like any skipped line, so
 				// what is written under it is skipped with it (E018) rather than

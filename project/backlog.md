@@ -320,13 +320,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-172900
 		- Closed: 20260905-102409
 
-	- 🔘 Item 31: four documents disagree with the code or with each other.
+	- ✅ Item 31: four documents disagree with the code or with each other.
 		- The `fmt` synopsis omits `[options]` in the help and in the man page's SYNOPSIS, while the same binaries' usage-error line spells it correctly and `fmt` accepts seven of them. `-w` is missing from the man SYNOPSIS too.
 		- The spec says `--set` and `--set-literal` "share one ordered list"; the help, man page and README all say five options share it, which is what the CLI does. The spec never mentions `--remove`, `--set-default`, `--set-literal-default` or `--slots` at all.
 		- The spec's worked example of a non-associative fold does not exhibit one: with `p: 1`, `p: 2` and a bare `p:` over an `x: 1` base, every grouping gives the same result, because a bare header is a wrapper mention only against a container instance and neither `p` has children. The general claim is true and the bindings' own doc comments state the right condition.
 		- `grammar.abnf` puts `index-sel` inside `field-line` with no query-only carve-out, so it documents `a[#0].b: 1` as legal where all four say `E014`; and its `newline = [ CR ] LF` contradicts the spec's "a line's entire trailing carriage-return run is removed", which is what the code does.
 		- Note: also here because it is one sweep - a bare numeric selector past u64 silently becomes a value selector rather than an index, against `1*DIGIT`, and a trailing comment on a root-level `*` element line is discarded, against "Comments are never discarded". The second is contained by the save gate at exit 7.
+		- Fixed, one per sub-item. The `fmt` synopsis carries `[options]` in all four helps and the man page, and both `set` and `fmt` spell `-w` there. The spec names the five edit options as sharing the ordered list, and `--slots`. Its worked example is now one that is non-associative: a base `p:` holding `q: 1`, then `p: 2`, then a bare `p:`. The grammar carries the same query-only note for `index-sel` that the wildcard has, and its newline rule is `*CR LF`. An all-digit selector past u64 is an index that names no instance in all four - Python had it as a value selector too - and a root-level `*` line's trailing comment rides the document instead of vanishing.
+		- Pinned by: corpus `103-huge-index` (the line is `E003`, a write through it is refused, a read is NotFound) and `104-root-element-comment`; `check-docs.bash` already reads the help's synopsis against the man page.
 		- Opened: 20260904-173000
+		- Closed: 20260905-102409
 
 	- 🔘 Item 32: `package.bash` uses the pipeline shape the same file documents as wrong forty-nine lines earlier.
 		- The file states the rule at the deb listing: "Into a variable first: `grep -q` quitting early would kill the tar behind `dpkg-deb` with SIGPIPE and fail the pipeline for the wrong reason." The libgcc dependency probe then spells it `readelf -d "${bin}" | grep -q 'NEEDED.*libgcc_s'` under `pipefail`.

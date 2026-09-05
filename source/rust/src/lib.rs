@@ -1320,6 +1320,14 @@ struct PathScan {
 	value_text: Option<String>, // text after the separator colon, trimmed
 }
 
+/// The spelling of an index selector - an optional `#`, an optional `+`, then
+/// digits - whatever its size. The grammar says `1*DIGIT`, with no upper bound.
+fn index_shape(body: &str) -> bool {
+	let b = body.strip_prefix('#').unwrap_or(body);
+	let b = b.strip_prefix('+').unwrap_or(b);
+	!b.is_empty() && b.bytes().all(|c| c.is_ascii_digit())
+}
+
 /// usize view of a selector index: None when it does not fit the target's
 /// pointer width. An index that big can only mean "no such instance"; a bare
 /// `as` cast would wrap into a live element on a 32-bit build.
@@ -1447,6 +1455,10 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 					Selector::ByIndex(n)
 				} else if let Ok(n) = body.parse::<u64>() {
 					Selector::ByIndex(n)
+				} else if index_shape(&body) {
+					// All digits but past u64: an index no instance can have,
+					// not a value selector that would create one on a write.
+					Selector::ByIndex(u64::MAX)
 				} else if body.is_empty() {
 					return Err("empty selector".into());
 				} else {
@@ -2395,8 +2407,17 @@ impl Parser {
 					}
 					let (body, comment) = split_value_comment(after);
 					// Elements have no node of their own; trivia rides the field.
+					// At the root there is no field (E007), so the comment rides
+					// the document like any other pending one.
 					if parent != ROOT {
 						self.attach_trivia(parent, comment);
+					} else if let Some(c) = comment {
+						self.pending.push(Pend {
+							text: c.to_string(),
+							indent: indent.to_string(),
+							blank_before: had_blank,
+							ceiling: indent.len(),
+						});
 					}
 					// A dropped element holds its indent level like any
 					// skipped line, so what is written under it is skipped

@@ -1085,6 +1085,14 @@ class _PathError(Exception):
 	pass
 
 
+def _index_shape(body):
+	# The spelling of an index selector - an optional `#`, an optional `+`, then
+	# digits - whatever its size. The grammar says 1*DIGIT, with no upper bound.
+	b = body[1:] if body[:1] == "#" else body
+	b = b[1:] if b[:1] == "+" else b
+	return bool(b) and _all_ascii_digits(b)
+
+
 def _parse_uint(s):
 	# Rust usize::from_str: an optional leading '+', then ASCII digits, no underscores.
 	if not s:
@@ -1283,6 +1291,10 @@ def _scan_path_ex(inp, stars):
 					selector = ("idx", _parse_uint(body[1:]))
 				elif _parse_uint(body) is not None:
 					selector = ("idx", _parse_uint(body))
+				elif _index_shape(body):
+					# All digits but past u64: an index no instance can have,
+					# not a value selector that would create one on a write.
+					selector = ("idx", 2**64 - 1)
 				elif body == "":
 					raise _PathError("empty selector")
 				else:
@@ -1901,9 +1913,13 @@ class _Parser:
 						i += 1
 						continue
 					body, comment = _split_value_comment(after)
-					# Elements have no node of their own; trivia rides the field.
+					# Elements have no node of their own; trivia rides the field. At the
+					# root there is no field (E007), so the comment rides the document
+					# like any other pending one.
 					if parent != ROOT:
 						self._attach_trivia(parent, comment)
+					elif comment:
+						self.pending.append(_Pend(comment, indent, had_blank))
 					# A dropped element holds its indent level like any skipped line, so
 					# what is written under it is skipped with it (E018) rather than
 					# re-parenting to the field.

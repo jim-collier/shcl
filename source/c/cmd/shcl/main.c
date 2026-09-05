@@ -48,7 +48,7 @@ static const char *HELP =
 	"  shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);\n"
 	"                                         print canonical (or rewrite FILE in\n"
 	"                                         place with --write)\n"
-	"  shcl fmt [--write|-w] FILE             print the canonical form (or rewrite\n"
+	"  shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite\n"
 	"                                         FILE in place with --write)\n"
 	"  shcl check [options] FILE              load and print diagnostics\n"
 	"                                         (--schema=SCHEMA also validates FILE\n"
