@@ -20,6 +20,12 @@
 ##		if ((shcl_bool app.shcl features.debug) -eq 'true') { Enable-Debug }
 ##		$hosts = shcl_array --string app.shcl cluster.hosts
 ##
+##	One difference from the binary in dot-sourced use: PowerShell reads a bare
+##	`--` as its own end-of-parameters token and drops it before a function
+##	sees its arguments, so `shcl get -- app.shcl -x` reaches the binary without
+##	the `--`. Quote it (`shcl get '--' app.shcl -x`) and it goes through.
+##	The script forms and the binary itself take a bare `--` as documented.
+##
 ##	Functions defined when dot-sourced (each mirrors the CLI, sets $LASTEXITCODE):
 ##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances|
 ##		                     children|paths ...

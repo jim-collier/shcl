@@ -861,6 +861,8 @@ $ops = "remove`tsite[old.example.com]",
 $ops | shcl set --write server.shcl
 ```
 
+One PowerShell wrinkle: a bare `--` never reaches the dot-sourced `shcl` function, because PowerShell reads it as its own end-of-parameters token first. Quote it when a FILE or PATH begins with a dash: `shcl get '--' server.shcl -x`. The script form and the binary itself take a bare `--` the way the help describes.
+
 ### What saving does
 
 Three behaviors of the write half are easy to miss, and they are the same in every binding.

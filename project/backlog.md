@@ -190,11 +190,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-171400
 		- Closed: 20260905-095502
 
-	- 🔘 Item 16: the PowerShell wrapper drops a bare `--` when it is dot-sourced, which is the mode its own header documents.
+	- ✅ Item 16: the PowerShell wrapper drops a bare `--` when it is dot-sourced, which is the mode its own header documents.
 		- Reproduced on pwsh 7.6. `. ./shcl.ps1; shcl get -- t.shcl '-dash'` gives `unknown option: -dash` at exit 1; quoting the token as `'--'` works; the bash wrapper is correct in both modes.
 		- Cause: PowerShell's own parser consumes a bare `--` as its end-of-parameters token before `@args` is built, so the wrapper never sees it. The script forms are unaffected.
 		- Note: help and the man page both say "Use `--` to end the options when a FILE or PATH begins with a dash", and the wrapper's header says both modes "take the same arguments". The workaround is written down nowhere.
+		- Decided: this is PowerShell's own parsing and no function body can see the token, so the wrapper documents the quoted spelling instead of pretending to take the bare one. The binary and the script forms take a bare `--` as before.
+		- Fixed: the wrapper header and the README's PowerShell section say that a dot-sourced `shcl` needs `'--'` quoted, and why.
+		- Pinned by: `shell-regress.bash`, both halves - a bare `--` is dropped and the quoted one goes through - so a PowerShell release that changes either shows up. There is no code to back out here; the block guards the note.
 		- Opened: 20260904-171500
+		- Closed: 20260905-100356
 
 	- 🔘 Item 17: `raw-default` is an accepted write op in all four CLIs and appears in no document.
 		- Reproduced in all four: a `raw-default` ops line writes the block and exits 0. It is in none of the help's op list, the man page, the README, the spec, the changelog or either completion.
