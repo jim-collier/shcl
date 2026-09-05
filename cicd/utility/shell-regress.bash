@@ -695,6 +695,11 @@ while IFS= read -r t; do
 	grep -qxF -- "${t}" <<<"${arms}" || fBad "sanitize-c.bash has no arm for reads.tsv type ${t}"
 done < <(cut -f2 "${repoDir}"/project/conformance/*/reads.tsv | sort -u)
 
+##	20260904 item 32: `cmd | grep -q` under pipefail reads a SIGPIPE'd writer as
+##	"no match"; package.bash states the rule at its deb listing and broke it at
+##	the libgcc probe. No readelf may feed grep -q directly.
+grep -nE 'readelf[^|]*\|\s*grep -q' "${repoDir}/cicd/utility/package.bash" && fBad "package.bash pipes readelf into grep -q"
+
 ##	20260904 item 23: check-c-compilers.bash reported OK with one compiler and
 ##	never read the gate flag, so a runner that lost its compilers would have
 ##	kept passing. Under the flag a thin sweep has to fail before it builds.
