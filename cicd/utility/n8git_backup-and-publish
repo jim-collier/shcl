@@ -185,8 +185,10 @@ fMain(){
 		git branch --show-current
 		fEcho_Clean
 		fEcho_Clean "git user info:"
-		git config user.name
-		git config user.email
+		## Unset is a plain answer here, not a fatal error: git config exits 1 on
+		## a missing key, and set -e would end the run before anything happened.
+		git config user.name  || echo "(user.name not set)"
+		git config user.email || echo "(user.email not set)"
 		fEcho_Clean
 		fEcho_Clean "SSH key being used"
 		## Test the repo's actual remote host, not a hardcoded one, so the
@@ -195,7 +197,7 @@ fMain(){
 		## Handle every remote form: ssh:// scheme, scp-style git@host:path,
 		## and a bare alias:path with no user@ (the ssh-config Host supplies
 		## it) - the old '.*@' pattern silently failed on that last one.
-		local sshHost; sshHost="$(git remote get-url origin 2>/dev/null | sed -E 's|^[a-z][a-z0-9+.-]*://||; s|^[^@/]*@||; s|[:/].*$||')"
+		local sshHost; sshHost="$(git remote get-url origin 2>/dev/null | sed -E 's|^[a-z][a-z0-9+.-]*://||; s|^[^@/]*@||; s|[:/].*$||' || true)"
 		ssh -nTv git@${sshHost:-github.com} 2>&1 | grep -iE "offering|successfully authenticated" | sed 's/debug1: //' || true  ## -n: don't read stdin, else it eats the next prompt's input
 		fIntroPromptToContinue  ""
 		fEcho_Clean

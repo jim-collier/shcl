@@ -263,11 +263,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-172200
 		- Closed: 20260905-101319
 
-	- 🔘 Item 24: the publish stage aborts before doing anything in a repository with no git identity.
+	- ✅ Item 24: the publish stage aborts before doing anything in a repository with no git identity.
 		- Reproduced as its own source lines under the script's shell options: `git config user.name` as a bare statement exits 1 when the key is unset, and `set -e` plus the script's own ERR trap end the run there. It happens before the backup and before any git action, and arrives as a trap dump naming a line rather than a message about identity.
 		- Note: git identity on this box comes from three `includeIf gitdir:` rules, so a repository outside those paths has none, and a bare runner has none either. The block runs on every non-quiet publish.
 		- Note: the same file's ssh probe assigns from a pipeline in its own statement, so the `${sshHost:-github.com}` fallback on the next line can never fire - the only way the variable ends up empty is git failing, which kills the script at the assignment first.
+		- Fixed: the two identity reads print "not set" instead of ending the run, and the ssh-host probe's assignment carries the fallback its next line always meant to have. This project's copy only; the canonical copy under the synced tree and the other projects' copies need the same two-line patch.
+		- Pinned by: `shell-regress.bash`, which requires both identity lines and the host assignment to carry a fallback.
 		- Opened: 20260904-172300
+		- Closed: 20260905-101319
 
 	- 🔘 Item 25: `largedoc.bash --mib 1` fails on a healthy tree.
 		- Reproduced: at 1 MiB python peaks at 71 MiB against a 65 MiB budget and the gate reports FAILED. At 2 MiB rust reads 58 against 64, one line from the same false failure.
