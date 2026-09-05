@@ -661,6 +661,19 @@ fi
 ##	lint failure blaming the completions on the day such a subcommand is added.
 ##	The fixture is the real files with one added, so the check runs against the
 ##	extractors as shipped rather than a hand-written stand-in.
+##	20260904 item 23: check-c-compilers.bash reported OK with one compiler and
+##	never read the gate flag, so a runner that lost its compilers would have
+##	kept passing. Under the flag a thin sweep has to fail before it builds.
+##	The PATH keeps every tool but the compilers, with one gcc put back.
+mkdir -p "${tmpDir}/onecc"
+for f in /usr/bin/* /bin/*; do
+	if [[ -x "${f}" ]]; then ln -sf "${f}" "${tmpDir}/onecc/" 2>/dev/null || true; fi
+done
+rm -f "${tmpDir}"/onecc/gcc-* "${tmpDir}/onecc/clang" "${tmpDir}/onecc/cc" "${tmpDir}/onecc/gcc"
+ln -sf "$(command -v gcc || command -v cc)" "${tmpDir}/onecc/gcc"
+out="$(PATH="${tmpDir}/onecc" SHCL_GATE_STRICT=1 "${BASH}" "${repoDir}/cicd/utility/check-c-compilers.bash" "${repoDir}" 2>&1 || true)"
+[[ "${out}" == *"needs two versioned gccs and clang"* ]] || fBad "check-c-compilers passed the gate with one compiler: ${out@Q}"
+
 gate="${repoDir}/cicd/utility/check-completions.bash"
 if [[ -x "${gate}" ]]; then
 	fix="${tmpDir}/optless"
