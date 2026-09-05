@@ -331,11 +331,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-173000
 		- Closed: 20260905-102409
 
-	- 🔘 Item 32: `package.bash` uses the pipeline shape the same file documents as wrong forty-nine lines earlier.
+	- ✅ Item 32: `package.bash` uses the pipeline shape the same file documents as wrong forty-nine lines earlier.
 		- The file states the rule at the deb listing: "Into a variable first: `grep -q` quitting early would kill the tar behind `dpkg-deb` with SIGPIPE and fail the pipeline for the wrong reason." The libgcc dependency probe then spells it `readelf -d "${bin}" | grep -q 'NEEDED.*libgcc_s'` under `pipefail`.
 		- Reproduced as a shape, not as a failure: the same construct with a writer that outgrows the pipe buffer returns 141, which the `if` reads as "no match". Today `readelf -d` output fits the buffer, so the dependency is added correctly.
 		- Note: this is the defect 20260901b item 15 fixed, re-entering the same file. Correct today, wrong the day the probe widens - and the consequence is a shipped package silently declaring no libgcc dependency.
+		- Fixed: the probe reads `readelf` into a variable first and greps that, as the deb listing already did.
+		- Pinned by: `shell-regress.bash`, which fails on any `readelf` piped straight into `grep -q` in `package.bash`.
 		- Opened: 20260904-175100
+		- Closed: 20260905-102409
 
 ### Features and enhancements
 
