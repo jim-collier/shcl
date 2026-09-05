@@ -683,6 +683,14 @@ pub="${repoDir}/cicd/utility/n8git_backup-and-publish"
 [[ "$(grep -cE 'git config user\.(name|email)[^|]*\|\|' "${pub}" || true)" == 2 ]] || fBad "n8git_backup-and-publish reads the git identity without a fallback"
 grep -qE 'sshHost="\$\(git remote get-url origin[^)]*\|\| true\)"' "${pub}" || fBad "n8git_backup-and-publish assigns sshHost without a fallback"
 
+##	20260904 item 25: largedoc's memory ceilings were strictly per input MiB, so
+##	at one MiB the runtime's own footprint failed a healthy tree. Run the gate
+##	small, which is exactly the size a developer shrinks it to.
+if [[ -x "${cli}" && -x "${repoDir}/source/go/shcl" && -x "${repoDir}/source/c/shcl" ]]; then
+	out="$(bash "${repoDir}/cicd/utility/largedoc.bash" --mib 1 "rust|${cli}" "go|${repoDir}/source/go/shcl" "python|${repoDir}/source/python/cmd/shcl/main.py" "c|${repoDir}/source/c/shcl" 2>&1 || true)"
+	[[ "${out}" == *"OK"* && "${out}" != *"TOO BIG"* ]] || fBad "largedoc --mib 1 fails on a healthy tree: $(tail -n 3 <<<"${out}")"
+fi
+
 gate="${repoDir}/cicd/utility/check-completions.bash"
 if [[ -x "${gate}" ]]; then
 	fix="${tmpDir}/optless"
