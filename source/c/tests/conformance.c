@@ -249,7 +249,9 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 		only_absent = 1;
 		op[oplen - 8] = '\0';
 	}
-	#define PRESENT (only_absent && shcl_exists(d, path, plen))
+	// A present path still answers what a write there would, like the library's
+	// default forms: a wildcard is refused whether or not its slots resolve.
+	#define PRESENT (only_absent && shcl_exists(d, path, plen) && ((wrote = shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE), 1))
 	if (!strcmp(op, "int")) { int64_t x; if (!cf_i64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
 	else if (!strcmp(op, "float")) { double x; if (!cf_f64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
 	else if (!strcmp(op, "bool")) { int x; if (!cf_bool(v, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_bool(d, path, plen, x); }

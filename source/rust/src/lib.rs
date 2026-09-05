@@ -4255,13 +4255,15 @@ impl Document {
 	}
 
 	// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+	// A path that already resolves reports what a write there would, so a
+	// wildcard is refused whether or not its slots happen to resolve.
 	/// `set_int` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int_default(&mut self, path: &str, v: i64) -> bool {
 		if !self.exists(path) {
 			return self.set_int(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_float` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4269,7 +4271,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_float(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_bool` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4277,7 +4279,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_bool(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_string` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4285,7 +4287,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_string(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// Write TEXT as value syntax rather than as data: `80, 443` becomes a
 	/// two-element array where `set_string` would store one string that has to
@@ -4305,7 +4307,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_literal(path, text);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_datetime` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4313,7 +4315,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_datetime(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_raw` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4321,7 +4323,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_raw(path, content, info);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_int_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4329,7 +4331,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_int_array(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_float_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4337,7 +4339,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_float_array(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_bool_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4345,7 +4347,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_bool_array(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_string_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4353,7 +4355,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_string_array(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_datetime_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4361,7 +4363,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_datetime_array(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 }
 

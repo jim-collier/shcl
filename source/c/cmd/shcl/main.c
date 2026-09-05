@@ -803,7 +803,9 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno
 		fn[0] -= 8; // strip suffix; the base op handles the actual write
 	}
 	#define OP(s) (fn[0] == strlen(s) && memcmp(fp[0], s, fn[0]) == 0)
-	#define PRESENT (only_absent && shcl_exists(d, path, plen))
+	// A present path still answers what a write there would, like the library's
+	// default forms: a wildcard is refused whether or not its slots resolve.
+	#define PRESENT (only_absent && shcl_exists(d, path, plen) && ((wrote = shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE), 1))
 	size_t an = nf > 2 ? nf - 2 : 0; // array element count (fields from index 2)
 	if (OP("int")) { int64_t x; if (!g_i64(v, vn, &x)) { op_err(lineno, "bad int: %.*s", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
 	else if (OP("float")) { double x; if (!g_f64(v, vn, &x)) { op_err(lineno, "bad float: %.*s", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }

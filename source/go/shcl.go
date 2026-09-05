@@ -4428,13 +4428,15 @@ func (d *Document) SetDateTimeArray(path string, v []DateTime) bool {
 }
 
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+// A path that already resolves reports what a write there would, so a
+// wildcard is refused whether or not its slots happen to resolve.
 
 // SetIntDefault is SetInt only when path has no node yet.
 func (d *Document) SetIntDefault(path string, v int64) bool {
 	if !d.Exists(path) {
 		return d.SetInt(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetFloatDefault is SetFloat only when path has no node yet.
@@ -4442,7 +4444,7 @@ func (d *Document) SetFloatDefault(path string, v float64) bool {
 	if !d.Exists(path) {
 		return d.SetFloat(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetBoolDefault is SetBool only when path has no node yet.
@@ -4450,7 +4452,7 @@ func (d *Document) SetBoolDefault(path string, v bool) bool {
 	if !d.Exists(path) {
 		return d.SetBool(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetLiteral binds text at path as value syntax rather than as data: "80, 443"
@@ -4471,7 +4473,7 @@ func (d *Document) SetLiteralDefault(path, text string) bool {
 	if !d.Exists(path) {
 		return d.SetLiteral(path, text)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetStringDefault is SetString only when path has no node yet.
@@ -4479,7 +4481,7 @@ func (d *Document) SetStringDefault(path, v string) bool {
 	if !d.Exists(path) {
 		return d.SetString(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetDateTimeDefault is SetDateTime only when path has no node yet.
@@ -4487,7 +4489,7 @@ func (d *Document) SetDateTimeDefault(path string, v DateTime) bool {
 	if !d.Exists(path) {
 		return d.SetDateTime(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetRawDefault is SetRaw only when path has no node yet.
@@ -4495,7 +4497,7 @@ func (d *Document) SetRawDefault(path, content, info string) bool {
 	if !d.Exists(path) {
 		return d.SetRaw(path, content, info)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetIntArrayDefault is SetIntArray only when path has no node yet.
@@ -4503,7 +4505,7 @@ func (d *Document) SetIntArrayDefault(path string, v []int64) bool {
 	if !d.Exists(path) {
 		return d.SetIntArray(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetFloatArrayDefault is SetFloatArray only when path has no node yet.
@@ -4511,7 +4513,7 @@ func (d *Document) SetFloatArrayDefault(path string, v []float64) bool {
 	if !d.Exists(path) {
 		return d.SetFloatArray(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetBoolArrayDefault is SetBoolArray only when path has no node yet.
@@ -4519,7 +4521,7 @@ func (d *Document) SetBoolArrayDefault(path string, v []bool) bool {
 	if !d.Exists(path) {
 		return d.SetBoolArray(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetStringArrayDefault is SetStringArray only when path has no node yet.
@@ -4527,7 +4529,7 @@ func (d *Document) SetStringArrayDefault(path string, v []string) bool {
 	if !d.Exists(path) {
 		return d.SetStringArray(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetDateTimeArrayDefault is SetDateTimeArray only when path has no node yet.
@@ -4535,7 +4537,7 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 	if !d.Exists(path) {
 		return d.SetDateTimeArray(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // ---------------------------------------------------------------------------

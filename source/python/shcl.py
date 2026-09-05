@@ -2982,24 +2982,26 @@ class Document:
 
 	# Default (only-if-absent) forms - the "emit defaults" half of the Writer.
 	# The type gate runs whether or not the path exists, so a wrong-typed call
-	# fails the same way on every document.
+	# fails the same way on every document. A path that already resolves
+	# reports what a write there would, so a wildcard is refused whether or not
+	# its slots happen to resolve.
 	def set_int_default(self, path: str, v: int) -> bool:
 		_want("set_int_default", v, "int")
 		if not self.exists(path):
 			return self.set_int(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_float_default(self, path: str, v: float) -> bool:
 		_want("set_float_default", v, "float")
 		if not self.exists(path):
 			return self.set_float(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_bool_default(self, path: str, v: bool) -> bool:
 		_want("set_bool_default", v, "bool")
 		if not self.exists(path):
 			return self.set_bool(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_literal(self, path: str, text: str) -> bool:
 		"""Bind text at path as value syntax rather than as data.
@@ -3018,54 +3020,54 @@ class Document:
 	def set_literal_default(self, path: str, text: str) -> bool:
 		if not self.exists(path):
 			return self.set_literal(path, text)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_string_default(self, path: str, v: str) -> bool:
 		_want("set_string_default", v, "str")
 		if not self.exists(path):
 			return self.set_string(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_datetime_default(self, path: str, v: ShclDateTime) -> bool:
 		_want("set_datetime_default", v, "datetime")
 		if not self.exists(path):
 			return self.set_datetime(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_raw_default(self, path: str, content: str, info: str) -> bool:
 		if not self.exists(path):
 			return self.set_raw(path, content, info)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_int_array_default(self, path: str, v: list[int]) -> bool:
 		_want_all("set_int_array_default", v, "int")
 		if not self.exists(path):
 			return self.set_int_array(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_float_array_default(self, path: str, v: list[float]) -> bool:
 		_want_all("set_float_array_default", v, "float")
 		if not self.exists(path):
 			return self.set_float_array(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_bool_array_default(self, path: str, v: list[bool]) -> bool:
 		_want_all("set_bool_array_default", v, "bool")
 		if not self.exists(path):
 			return self.set_bool_array(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_string_array_default(self, path: str, v: list[str]) -> bool:
 		_want_all("set_string_array_default", v, "str")
 		if not self.exists(path):
 			return self.set_string_array(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_datetime_array_default(self, path: str, v: list[ShclDateTime]) -> bool:
 		_want_all("set_datetime_array_default", v, "datetime")
 		if not self.exists(path):
 			return self.set_datetime_array(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	# Layered loading: overlay a higher-priority document
 
