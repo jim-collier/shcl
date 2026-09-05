@@ -765,43 +765,49 @@ func leadingWS(s string) string {
 	return s[:i]
 }
 
-// splitComment splits off an unquoted trailing comment: (content, comment from
-// `#` on, "" = none). A `\` shields the next char throughout. Comments are
-// kept as trivia.
+// splitComment splits off an unquoted trailing comment from a field line:
+// (content, comment from `#` on, "" = none). The name half is read the
+// scanner's way and the value half the value's way (see valueCommentAt).
+// Comments are kept as trivia.
 func splitComment(s string) (string, string) {
 	if strings.IndexByte(s, '#') < 0 {
 		return s, ""
 	}
-	var inQuote rune
-	skip := false
-	for i, c := range s {
-		if skip {
-			skip = false
-			continue
-		}
-		if c == '\\' {
-			skip = true
-			continue
-		}
-		switch {
-		case inQuote != 0 && c == inQuote:
-			inQuote = 0
-		case inQuote == 0 && (c == '"' || c == '\''):
-			inQuote = c
-		case inQuote == 0 && c == '#':
-			return s[:i], s[i:]
-		}
+	hash := -1
+	switch kind, i := nameHalf(s, true); kind {
+	case nameHash:
+		hash = i
+	case nameColon:
+		hash = valueCommentAt(s, i+1)
 	}
-	return s, ""
+	if hash < 0 {
+		return s, ""
+	}
+	return s[:hash], s[hash:]
 }
 
-// splitUnquotedCommas splits on unquoted commas; `\` shields the next char.
+// splitValueComment is the same for value text alone: a list element, or a
+// setter's argument.
+func splitValueComment(s string) (string, string) {
+	if strings.IndexByte(s, '#') < 0 {
+		return s, ""
+	}
+	hash := valueCommentAt(s, 0)
+	if hash < 0 {
+		return s, ""
+	}
+	return s[:hash], s[hash:]
+}
+
+// splitUnquotedCommas splits on unquoted commas; a quote opens only at the
+// start of a piece (see valueCommentAt), and `\` shields the next char.
 func splitUnquotedCommas(s string) []string {
 	if strings.IndexByte(s, ',') < 0 {
 		return []string{s}
 	}
 	var parts []string
 	var inQuote rune
+	atStart := true
 	skip := false
 	start := 0
 	for i, c := range s {
@@ -811,16 +817,26 @@ func splitUnquotedCommas(s string) []string {
 		}
 		if c == '\\' {
 			skip = true
+			atStart = false
 			continue
 		}
-		switch {
-		case inQuote != 0 && c == inQuote:
-			inQuote = 0
-		case inQuote == 0 && (c == '"' || c == '\''):
-			inQuote = c
-		case inQuote == 0 && c == ',':
-			parts = append(parts, s[start:i])
-			start = i + 1
+		if inQuote != 0 {
+			if c == inQuote {
+				inQuote = 0
+			}
+		} else {
+			switch {
+			case (c == '"' || c == '\'') && atStart:
+				inQuote = c
+			case c == ',':
+				parts = append(parts, s[start:i])
+				start = i + 1
+				atStart = true
+				continue
+			}
+		}
+		if !unicode.IsSpace(c) {
+			atStart = false
 		}
 	}
 	return append(parts, s[start:])
@@ -925,7 +941,7 @@ func cellExceeds(text string, max int) bool {
 		switch {
 		case inQuote != 0 && c == inQuote:
 			inQuote = 0
-		case inQuote == 0 && (c == '"' || c == '\''):
+		case inQuote == 0 && (c == '"' || c == '\'') && !hasContent:
 			inQuote = c
 		case inQuote == 0 && c == ',':
 			if hasContent {
@@ -1383,13 +1399,109 @@ func parseIndex(s string) (uint64, bool) {
 // looksLikeBracketArray: a value spelled the way JSON, TOML and YAML spell an
 // array. The path scanner reads the brackets as a selector, so the line arrives
 // with no value text and the old repair blamed a colon that is plainly there.
+// The colon that counts is the field's own: one inside a quoted name or a
+// selector is not it.
 func looksLikeBracketArray(content string) bool {
-	colon := strings.IndexByte(content, ':')
-	if colon < 0 {
+	kind, colon := nameHalf(content, false)
+	if kind != nameColon {
 		return false
 	}
 	rest := strings.TrimSpace(content[colon+1:])
 	return strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]")
+}
+
+// How the name half of a field line ends.
+const (
+	nameEnd   = iota // no separator colon
+	nameColon        // the field's own colon
+	nameHash         // an unquoted `#` first: a comment, or a malformed name
+)
+
+// nameHalf scans a field line's name half the way the path scanner reads it: a
+// quote opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
+// selector, and with sugar a colon followed by `[` is selector sugar rather
+// than the separator. `\` shields the next char. Returns the kind and the
+// byte offset it ended at.
+func nameHalf(s string, sugar bool) (int, int) {
+	var inQuote rune
+	inSel := false
+	skip := false
+	for i, c := range s {
+		if skip {
+			skip = false
+			continue
+		}
+		if c == '\\' {
+			skip = true
+			continue
+		}
+		if inQuote != 0 {
+			if c == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inQuote = c
+		case '#':
+			return nameHash, i
+		case '[':
+			inSel = true
+		case ']':
+			inSel = false
+		case ':':
+			if !inSel {
+				rest := strings.TrimLeft(s[i+1:], " \t")
+				if !(sugar && strings.HasPrefix(rest, "[")) {
+					return nameColon, i
+				}
+			}
+		}
+	}
+	return nameEnd, 0
+}
+
+// valueCommentAt is the offset of the `#` that starts a comment in value text,
+// scanning from `from`; -1 when there is none. A quote opens a quoted piece
+// only at the start of a piece - the start of the value, or after an unquoted
+// comma - which is the spec's rule: a piece is quoted only when it begins with
+// one. So an apostrophe in prose (don't panic  # keep) hides nothing. `\`
+// shields the next char.
+func valueCommentAt(s string, from int) int {
+	var inQuote rune
+	atStart := true
+	skip := false
+	for i, c := range s[from:] {
+		if skip {
+			skip = false
+			continue
+		}
+		if c == '\\' {
+			skip = true
+			atStart = false
+			continue
+		}
+		if inQuote != 0 {
+			if c == inQuote {
+				inQuote = 0
+			}
+		} else {
+			switch {
+			case (c == '"' || c == '\'') && atStart:
+				inQuote = c
+			case c == '#':
+				return from + i
+			case c == ',':
+				atStart = true
+				continue
+			}
+		}
+		if !unicode.IsSpace(c) {
+			atStart = false
+		}
+	}
+	return -1
 }
 
 func scanPath(input string) (pathScan, error) {
@@ -2300,7 +2412,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 					i++
 					continue
 				}
-				body, comment := splitComment(after)
+				body, comment := splitValueComment(after)
 				// Elements have no node of their own; trivia rides the field.
 				if parent != root {
 					p.attachTrivia(parent, comment)
@@ -3768,7 +3880,7 @@ func literalValue(text string) (value, bool) {
 	if strings.ContainsAny(text, "\n\r") {
 		return value{}, false
 	}
-	v, _ := splitComment(text)
+	v, _ := splitValueComment(text)
 	v = strings.TrimFunc(v, unicode.IsSpace)
 	// Bracket-array text is refused too: in a file it is E019 and the line is
 	// lost, so writing it as a two-element array holding `[1` and `2]` would

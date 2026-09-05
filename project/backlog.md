@@ -63,17 +63,23 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-170000
 		- Closed: 20260905-090331
 
-	- 🔘 Item 2: a quote anywhere in a bare value swallows the rest of the line, so a trailing comment is destroyed on the next write at exit 0.
+	- ✅ Item 2: a quote anywhere in a bare value swallows the rest of the line, so a trailing comment is destroyed on the next write at exit 0.
 		- Reproduced in all four. `note: don't panic  # keep this` loads with zero diagnostics and `fmt --write` leaves `note: "don't panic  # keep this"`. The comment is gone and the result is a fixpoint, so nothing will ever notice. The same apostrophe stops comma splitting: `b: it's fine, ok` is one element where `b: it is fine, ok` is two.
 		- Cause: `split_comment`, `split_unquoted_commas` and `cell_exceeds` enter quote state on any `"` or `'`, wherever it sits. The spec says a piece is quoted only when it begins with one, and the grammar agrees. `unterminated_quote` already implements the correct rule, so the helpers disagree with each other.
 		- Note: this violates two spec sentences at once - "a value *beginning* with a quote opens a quoted element" with "mid-text whitespace, `:`, `'`, `]`, even a `"`, all pass through", and "Comments are never discarded". An English apostrophe in a config value is about as common as input gets.
+		- Fixed: the comment split, the comma split and the element count open a quote only at the start of a piece. A field line's name half still opens a quote anywhere, the way the path scanner reads a quoted name or selector value, and the value half switches to the piece rule after the field's own colon. List elements and setter arguments are value text from the first character.
+		- Pinned by: corpus `088-mid-text-quote`, apostrophes and mid-text quotes beside trailing comments, in every runner. The old code turns the comment into value text on line 2.
 		- Opened: 20260904-170100
+		- Closed: 20260905-091206
 
-	- 🔘 Item 3: bracket-array detection looks at the first colon on the line, so any earlier colon hides the array and `fmt --write` bakes it in at exit 0.
+	- ✅ Item 3: bracket-array detection looks at the first colon on the line, so any earlier colon hides the array and `fmt --write` bakes it in at exit 0.
 		- Reproduced in all four. `"a:b": [80, 443]` reports `E015 missing colon` on a line that has one, and `fmt --write` leaves `"a:b": "80, 443"` at exit 0. A selector holding a colon does it too: `srv[db:5432].ports: [80, 443]`.
 		- Cause: `looks_like_bracket_array` uses `content.find(':')`, which lands inside the quoted name or the selector rather than at the field separator, so the line falls through to `E015`. `E015` counts no lost content, so the save gate never fires.
 		- Note: the spec says of `E019` that it "counts as lost content and an in-place rewrite refuses (`--lossy` overrides) rather than baking the changed value in". That promise is exactly what fails here. The `E015` diagnostic is also wrong on its own terms.
+		- Fixed: the check finds the field's own colon with the same name-half scan the comment split uses, so a quoted name or a selector holding one no longer stands in for it.
+		- Pinned by: corpus `089-bracket-behind-colon`, four bracket arrays behind a quoted name, a value selector, nothing, and selector sugar, all `E019` with a lost count of four. The old code reports `E015` and counts nothing lost on lines 2 and 3.
 		- Opened: 20260904-170200
+		- Closed: 20260905-091206
 
 	- 🔘 Item 4: one reversed `min`/`max` range turns off the unknown-field sweep for the whole document.
 		- Reproduced in all four. A sound schema reports both unknown fields; changing `min: 1` to `min: 70000` on an unrelated field reports one `V092` and neither unknown field. The check still exits 6, so it looks like it is working.

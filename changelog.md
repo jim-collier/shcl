@@ -128,6 +128,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A quote in the middle of a bare value no longer swallows the rest of the line. `note: don't panic  # keep this` used to load as the string `don't panic  # keep this` with no diagnostic, and the next `fmt --write` baked that in at exit 0, comment gone for good; `b: it's fine, ok` read as one element where the same words without the apostrophe read as two. A piece is quoted only when it begins with a quote, which is what the spec and the grammar always said.
+
+- A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, and the save gate refuses like it does for the plain spelling.
+
 - An allocation failure inside a C parse or validate crashed the process on Windows instead of returning NULL, on any binary built with mingw at `-O1`, `-O2` or `-Os`. The recovery unwinds through SEH there, and it was reading off the top of the stack on the way. The whole point of the recovery is that a config problem does not take the application down with it, so on Windows it had been doing the opposite of what it promised. An embedder whose `SHCL_OOM()` hook longjmps out is exposed to the same thing, since the unwind crosses these frames too, so the header now carries `SHCL_SETJMP(buf)` for arming that recovery point.
 
 - A line whose indent matches no open level (`E012`) and a `*` line with no space after it (`E013`) now hold their indent level, so what is written under them is skipped with them (`E018`) instead of attaching one level up, a fence line at a bad indent takes its whole body with it instead of parsing it as top-level bindings, and a second line at the same bad indent is refused the same way rather than binding.

@@ -967,48 +967,106 @@ static ShclStr value_display(ShclArena *a, const ShclValue *v) {
 
 // --- lexical helpers ---------------------------------------------------------
 
-// Split off an unquoted trailing comment: returns the content, *comment gets
-// the tail from `#` on (n == 0 = none). A backslash shields the next char.
-// Comments are kept as trivia.
-static ShclStr split_comment(ShclStr s, ShclStr *comment) {
-	uint32_t inq = 0; // 0 = none, else the open quote codepoint
-	size_t i = 0;
-	*comment = s_empty();
-	if (!s.n || !memchr(s.p, '#', s.n)) return s;
+// How the name half of a field line ends.
+enum { NAME_END, NAME_COLON, NAME_HASH };
+/* Scan a field line's name half the way the path scanner reads it: a quote
+   opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
+   selector, and with `sugar` a colon followed by `[` is selector sugar rather
+   than the separator. A backslash shields the next char. *at gets the byte
+   offset it ended at. */
+static int name_half(ShclStr s, int sugar, size_t *at) {
+	uint32_t inq = 0; int in_sel = 0; size_t i = 0;
+	*at = 0;
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
 		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
 		if (inq) { if (c == inq) inq = 0; }
 		else if (c == '"' || c == '\'') inq = c;
-		else if (c == '#') { *comment = s_slice(s, i, s.n); return s_slice(s, 0, i); }
+		else if (c == '#') { *at = i; return NAME_HASH; }
+		else if (c == '[') in_sel = 1;
+		else if (c == ']') in_sel = 0;
+		else if (c == ':' && !in_sel) {
+			size_t r = i + 1;
+			while (r < s.n && (s.p[r] == ' ' || s.p[r] == '\t')) r++;
+			if (!(sugar && r < s.n && s.p[r] == '[')) { *at = i; return NAME_COLON; }
+		}
 		i += l;
 	}
-	return s;
+	return NAME_END;
 }
-// Split on unquoted commas; backslash shields the next char. Emits byte offsets.
+/* Byte offset of the `#` that starts a comment in value text, scanning from
+   `from`; s.n when there is none. A quote opens a quoted piece only at the
+   start of a piece - the start of the value, or after an unquoted comma -
+   which is the spec's rule: a piece is quoted only when it begins with one.
+   So an apostrophe in prose (don't panic  # keep) hides nothing. A backslash
+   shields the next char. */
+static size_t value_comment_at(ShclStr s, size_t from) {
+	uint32_t inq = 0; int at_start = 1; size_t i = from;
+	while (i < s.n) {
+		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
+		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } at_start = 0; continue; }
+		if (inq) { if (c == inq) inq = 0; }
+		else if ((c == '"' || c == '\'') && at_start) inq = c;
+		else if (c == '#') return i;
+		else if (c == ',') { at_start = 1; i += l; continue; }
+		if (!is_ws(c)) at_start = 0;
+		i += l;
+	}
+	return s.n;
+}
+// Split off an unquoted trailing comment from a field line: returns the
+// content, *comment gets the tail from `#` on (n == 0 = none). The name half
+// is read the scanner's way and the value half the value's way (see
+// value_comment_at). Comments are kept as trivia.
+static ShclStr split_comment(ShclStr s, ShclStr *comment) {
+	size_t at, hash = s.n;
+	*comment = s_empty();
+	if (!s.n || !memchr(s.p, '#', s.n)) return s;
+	switch (name_half(s, 1, &at)) {
+	case NAME_HASH: hash = at; break;
+	case NAME_COLON: hash = value_comment_at(s, at + 1); break;
+	default: break;
+	}
+	if (hash == s.n) return s;
+	*comment = s_slice(s, hash, s.n);
+	return s_slice(s, 0, hash);
+}
+// The same for value text alone: a list element, or a setter's argument.
+static ShclStr split_value_comment(ShclStr s, ShclStr *comment) {
+	*comment = s_empty();
+	if (!s.n || !memchr(s.p, '#', s.n)) return s;
+	size_t hash = value_comment_at(s, 0);
+	if (hash == s.n) return s;
+	*comment = s_slice(s, hash, s.n);
+	return s_slice(s, 0, hash);
+}
+// Split on unquoted commas; a quote opens only at the start of a piece (see
+// value_comment_at), and a backslash shields the next char. Emits byte offsets.
 static void split_unquoted_commas(ShclArena *a, ShclStr s, ShclVecSize *offs_start, ShclVecSize *offs_end) {
-	uint32_t inq = 0; size_t i = 0, start = 0;
+	uint32_t inq = 0; int at_start = 1; size_t i = 0, start = 0;
 	if (!s.n || !memchr(s.p, ',', s.n)) { ShclVecSize_push(a, offs_start, 0); ShclVecSize_push(a, offs_end, s.n); return; }
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
-		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
-		if (inq) { if (c == inq) inq = 0; i += l; continue; }
-		if (c == '"' || c == '\'') { inq = c; i += l; continue; }
-		if (c == ',') { ShclVecSize_push(a, offs_start, start); ShclVecSize_push(a, offs_end, i); start = i + l; i += l; continue; }
+		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } at_start = 0; continue; }
+		if (inq) { if (c == inq) inq = 0; }
+		else if ((c == '"' || c == '\'') && at_start) inq = c;
+		else if (c == ',') { ShclVecSize_push(a, offs_start, start); ShclVecSize_push(a, offs_end, i); start = i + l; at_start = 1; i += l; continue; }
+		if (!is_ws(c)) at_start = 0;
 		i += l;
 	}
 	ShclVecSize_push(a, offs_start, start); ShclVecSize_push(a, offs_end, s.n);
 }
 // Count of comma-split pieces (used where the reference only needs .len()).
 static size_t count_unquoted_pieces(ShclStr s) {
-	uint32_t inq = 0; size_t i = 0, n = 1;
+	uint32_t inq = 0; int at_start = 1; size_t i = 0, n = 1;
 	if (!s.n || !memchr(s.p, ',', s.n)) return 1;
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
-		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
-		if (inq) { if (c == inq) inq = 0; i += l; continue; }
-		if (c == '"' || c == '\'') { inq = c; i += l; continue; }
-		if (c == ',') { n++; i += l; continue; }
+		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } at_start = 0; continue; }
+		if (inq) { if (c == inq) inq = 0; }
+		else if ((c == '"' || c == '\'') && at_start) inq = c;
+		else if (c == ',') { n++; at_start = 1; i += l; continue; }
+		if (!is_ws(c)) at_start = 0;
 		i += l;
 	}
 	return n;
@@ -1090,7 +1148,7 @@ static int cell_exceeds(ShclStr text, size_t max) {
 		uint32_t c; size_t l = utf8_decode(text.p, text.n, i, &c); i += l;
 		if (c == '\\') { has_content = 1; if (i < text.n) i += utf8_decode(text.p, text.n, i, &c); continue; }
 		if (in_quote) { if (c == in_quote) in_quote = 0; }
-		else if (c == '"' || c == '\'') in_quote = c;
+		else if ((c == '"' || c == '\'') && !has_content) in_quote = c;
 		else if (c == ',') {
 			if (has_content && ++count > max) return 1;
 			has_content = 0; continue;
@@ -1532,11 +1590,11 @@ static ShclPathScan scan_path(ShclArena *a, ShclStr input) { return scan_path_ex
 
 /* A value spelled the way JSON, TOML and YAML spell an array. The path scanner
    reads the brackets as a selector, so the line arrives with no value text and
-   the old repair blamed a colon that is plainly there. */
+   the old repair blamed a colon that is plainly there. The colon that counts
+   is the field's own: one inside a quoted name or a selector is not it. */
 static int looks_like_bracket_array(ShclStr content) {
-	size_t colon = 0;
-	while (colon < content.n && content.p[colon] != ':') colon++;
-	if (colon == content.n) return 0;
+	size_t colon;
+	if (name_half(content, 0, &colon) != NAME_COLON) return 0;
 	size_t b = colon + 1, e = content.n;
 	while (b < e && (unsigned char)content.p[b] <= ' ') b++;
 	while (e > b && (unsigned char)content.p[e - 1] <= ' ') e--;
@@ -2685,7 +2743,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 				size_t parent;
 				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
 				if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
-				ShclStr ecomment; ShclStr body = split_comment(after, &ecomment);
+				ShclStr ecomment; ShclStr body = split_value_comment(after, &ecomment);
 				/* Elements have no node of their own; trivia rides the field. */
 				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
 				add_star_element(&P, parent, body, lineno); i++; continue;
@@ -3617,7 +3675,7 @@ int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, s
 
 static int literal_value(ShclArena *a, ShclArena *tmp, ShclStr text, ShclValue *out) {
 	for (size_t i = 0; i < text.n; i++) { if (text.p[i] == '\n' || text.p[i] == '\r') return 0; }
-	ShclStr comment; ShclStr v = s_trim(split_comment(text, &comment));
+	ShclStr comment; ShclStr v = s_trim(split_value_comment(text, &comment));
 	if (unterminated_quote(tmp, v)) return 0;
 	/* Bracket-array text is refused too: in a file it is E019 and the line is
 	   lost, so writing it as a two-element array holding `[1` and `2]` would
