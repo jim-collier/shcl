@@ -297,10 +297,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-172600
 		- Closed: 20260905-102409
 
-	- 🔘 Item 28: `SHCL_GATE_STRICT` is asserted nowhere, so deleting the one line that arms it disarms five gate skips silently.
+	- ✅ Item 28: `SHCL_GATE_STRICT` is asserted nowhere, so deleting the one line that arms it disarms five gate skips silently.
 		- Reproduced by reading: `cicd.bash` exports it, `check-locale.bash` and `package.bash` read it, and `shell-regress.bash` exercises only its own `fHave` helper. Removing the export changes no gate's result.
 		- Note: that is the failure 20260902 item 32 was filed against, one level up.
+		- Fixed: `shell-regress.bash` requires the export line in `cicd.bash` and a read of the flag in each of the four gates that skip on a missing tool.
 		- Opened: 20260904-172700
+		- Closed: 20260905-102409
 
 	- 🔘 Item 29: three fixes from the last two rounds are guarded by nothing, in a way that lets each come back quietly.
 		- 20260902 item 18: `shell-regress.bash` pins the `fSplitTabs` half by lifting it out of `crosscheck.bash` by name, but nothing asserts `sanitize-c.bash` carries its new `children` and `paths` arms. Reverting the item leaves the gate silently replaying `get --children`. The unknown-type arm added by the same fix narrows the recurrence path but does not close it.

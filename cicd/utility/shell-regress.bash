@@ -677,6 +677,13 @@ out="$(bash "${repoDir}/cicd/utility/perf-gate.bash" --keys 500 "wrong|${tmpDir}
 ##	against origin/main after a dev publish. The line has to be there.
 grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev.bash' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer compares the installers against origin/main after a publish"
 
+##	20260904 item 28: SHCL_GATE_STRICT is armed by one line in cicd.bash and read
+##	by the gates; deleting the line disarmed every skip-as-failure silently.
+grep -qE '^\s*export SHCL_GATE_STRICT=1' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer exports SHCL_GATE_STRICT under --ci"
+for g in check-c-compilers.bash check-locale.bash package.bash shell-regress.bash; do
+	grep -q 'SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
+done
+
 ##	20260904 item 23: check-c-compilers.bash reported OK with one compiler and
 ##	never read the gate flag, so a runner that lost its compilers would have
 ##	kept passing. Under the flag a thin sweep has to fail before it builds.
