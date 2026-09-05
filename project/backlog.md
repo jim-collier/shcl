@@ -209,11 +209,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-171600
 		- Closed: 20260905-100356
 
-	- 🔘 Item 18: `SetComment` leaves the blank separator between the new comment and its node when the node already carries a comment.
+	- ✅ Item 18: `SetComment` leaves the blank separator between the new comment and its node when the node already carries a comment.
 		- Reproduced in all four. On `a: 1` / `# note` / blank / `b: 2`, adding a comment to `b` gives `# note` / `# new` / blank / `b: 2`. With no pre-existing comment the rule works.
 		- Cause: the blank is only moved above the comment when the node's leading list is empty. The spec says the call places "a node's blank separator line above the comment so the comment sits against its node", with no such condition, and the code's own comment says the same.
 		- Note: cosmetic - the result is still a fixpoint.
+		- Fixed: the blank moves above the first leading comment already there when there is one, and onto the new comment otherwise, in all four.
+		- Pinned by: corpus `098-set-comment-blank`, a comment added to a node that already carries one. The old code leaves the blank between the two comments and the node.
 		- Opened: 20260904-171700
+		- Closed: 20260905-100356
 
 	- ✅ Item 19: `SetLiteral` accepts text a file line would not read as one value.
 		- Reproduced in all four. `--set-literal='x=```sql'` stores `"```sql"` at exit 0 where the file line `x: ```sql` is `E005`; `--set-literal='y=[80'` stores `"[80"` where the file line is `E014`.

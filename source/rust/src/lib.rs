@@ -4203,11 +4203,15 @@ impl Document {
 				let c = trim_wsp_end(&c).to_string();
 				// The node's own blank moves above its first comment; otherwise
 				// the blank would separate the comment from what it annotates.
+				// Above the first one already there, when there is one.
 				let nd = &mut self.arena[node];
 				let mut lead = Lead::plain(c);
-				if nd.blank_before && nd.leading().is_empty() {
-					lead.blank_before = true;
+				if nd.blank_before {
 					nd.blank_before = false;
+					match nd.triv_mut().leading.first_mut() {
+						Some(first) => first.blank_before = true,
+						None => lead.blank_before = true,
+					}
 				}
 				nd.triv_mut().leading.push(lead);
 				true
