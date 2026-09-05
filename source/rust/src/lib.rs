@@ -2289,7 +2289,14 @@ impl Parser {
 		// content untrimmed, so a line left ending in CR would be written back as
 		// CRLF and read as neither - the one shape where the count is visible.
 		let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-		let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+		let mut lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+		// A newline-terminated text splits into one more piece than it has
+		// lines. An unterminated raw block took that empty tail as a body
+		// line, so the same last line read differently with and without its
+		// newline, which the grammar says are one document.
+		if text.ends_with('\n') {
+			lines.pop();
+		}
 		let mut i = 0usize;
 		let mut node_capped = false;
 		while i < lines.len() {

@@ -2345,6 +2345,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	for j, l := range lines {
 		lines[j] = strings.TrimRight(l, "\r")
 	}
+	// A newline-terminated text splits into one more piece than it has lines.
+	// An unterminated raw block took that empty tail as a body line, so the
+	// same last line read differently with and without its newline, which
+	// the grammar says are one document.
+	if strings.HasSuffix(text, "\n") {
+		lines = lines[:len(lines)-1]
+	}
 	i := 0
 	nodeCapped := false
 	for i < len(lines) {

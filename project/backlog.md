@@ -163,10 +163,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-171100
 		- Closed: 20260905-094221
 
-	- 🔘 Item 13: an unterminated raw block in a newline-terminated file gains a trailing empty line the file never had.
+	- ✅ Item 13: an unterminated raw block in a newline-terminated file gains a trailing empty line the file never had.
 		- Reproduced in all four. `x: ```sql` then `body` with a final newline reads back `body\n\n`; the same two lines without the final newline read back `body\n`. `fmt` writes the fabricated line out.
 		- Cause: splitting the text on `\n` yields a phantom final element, which `consume_raw` takes as a body line. The grammar says the last line may lack a newline, so the two spellings are the same document.
+		- Fixed: the line list drops that final empty piece when the text ends in a newline, in all four, so nothing downstream ever sees a line the file does not have.
+		- Pinned by: corpus `096-raw-unterminated-eof` and `097-raw-unterminated-noeol`, the same two lines with and without the final newline, both reading `body`. The old code reads the first as `body` plus an empty line. Case `059-raw-errors` had pinned the extra line and moved with the fix.
 		- Opened: 20260904-171200
+		- Closed: 20260905-095502
 
 	- 🔘 Item 14: `*` followed by a space and nothing else reports `E013` with a message its own input disproves, and kills the block beneath it.
 		- Reproduced in all four. `* ` gives `E013 malformed line: '*' must be followed by a space` - the line does have a space - and the child line under it is dropped as `E018`. The same empty element spelled `* #c` takes the `E009` path and keeps its block.

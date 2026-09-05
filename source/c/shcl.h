@@ -2701,6 +2701,11 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		size_t start = 0;
 		for (size_t i = 0; i <= full.n; i++) {
 			if (i == full.n || full.p[i] == '\n') {
+				/* A newline-terminated text splits into one more piece than it
+				   has lines. An unterminated raw block took that empty tail as
+				   a body line, so the same last line read differently with and
+				   without its newline, which the grammar says are one document. */
+				if (i == full.n && start == full.n && full.n) break;
 				ShclStr l = s_slice(full, start, i);
 				/* The whole trailing CR run goes, not just one: a raw block keeps its
 				   content untrimmed, so a line left ending in CR would be written back
