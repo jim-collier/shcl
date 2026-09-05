@@ -155,10 +155,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-171000
 		- Closed: 20260905-093433
 
-	- 🔘 Item 12: a trailing non-breaking space or line separator in a bare value is deleted with no diagnostic and no lost count.
+	- ✅ Item 12: a trailing non-breaking space or line separator in a bare value is deleted with no diagnostic and no lost count.
 		- Reproduced in all four. A line spelled `a: val` with a U+00A0 after the value loads clean, and `fmt --write` leaves `a: val`. Same for U+2028, VT and FF.
 		- Cause: the line trim uses the language's Unicode whitespace set where the grammar says `wsp = SP / HTAB` and puts those characters in the bare value alphabet.
+		- Fixed: every parser-side trim - the line end, a pending comment or retained line, a value, a selector body, a list element, the piece walkers, the fence lines and the raw-fence picker - trims a space or a tab and nothing else, in all four. `SetComment` and `SetLiteral` follow, since they read text the parser's way. Coercion keeps its wider trim: that is a read of a stored value, not the line. The line-end trim also takes a carriage return, which the load strips off a line end anyway; the fuzz found a retained line that kept one and lost it on the next load.
+		- Pinned by: corpus `094-unicode-space`, a no-break space, a line separator, a vertical tab and a form feed after bare values, one before a value and one inside an element, all kept and quoted on output. The old code deletes every one. Two fixtures that had pinned the old trim moved with it: the element-cap table now counts a U+3000 piece as an element, and case 066 keeps a no-break space on a comment.
 		- Opened: 20260904-171100
+		- Closed: 20260905-094221
 
 	- 🔘 Item 13: an unterminated raw block in a newline-terminated file gains a trailing empty line the file never had.
 		- Reproduced in all four. `x: ```sql` then `body` with a final newline reads back `body\n\n`; the same two lines without the final newline read back `body\n`. `fmt` writes the fabricated line out.

@@ -733,6 +733,31 @@ static ShclStr trim_end(ShclStr s) {
 }
 static ShclStr s_trim(ShclStr s) { return trim_end(trim_start(s)); }
 
+/* The grammar's wsp: a space or a tab. The parser trims with this and nothing
+   wider - a no-break space or a line separator after a value is content, and
+   a Unicode trim used to delete it with no diagnostic. */
+static int is_wsp(uint32_t c) { return c == ' ' || c == '\t'; }
+static ShclStr trim_wsp_start(ShclStr s) {
+	size_t i = 0;
+	while (i < s.n && is_wsp((unsigned char)s.p[i])) i++;
+	return s_slice(s, i, s.n);
+}
+/* The end of a line, or of a line's content before its comment: wsp, plus a
+   carriage return, which the load takes off a line end anyway - so a retained
+   line or a comment written back never ends in one the next load would strip.
+   A CR followed by content stays content. */
+static ShclStr trim_wsp_end(ShclStr s) {
+	while (s.n && (is_wsp((unsigned char)s.p[s.n - 1]) || s.p[s.n - 1] == '\r')) s.n--;
+	return s;
+}
+/* Both ends, wsp only: a value or element keeps a carriage return, which is
+   content anywhere but at a line end. */
+static ShclStr s_trim_wsp(ShclStr s) {
+	s = trim_wsp_start(s);
+	while (s.n && is_wsp((unsigned char)s.p[s.n - 1])) s.n--;
+	return s;
+}
+
 static int is_adigit(uint32_t c) { return c >= '0' && c <= '9'; }
 static int is_ahex(uint32_t c) { return is_adigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 static int is_aalnum(uint32_t c) {
@@ -1009,7 +1034,7 @@ static size_t value_comment_at(ShclStr s, size_t from) {
 		else if ((c == '"' || c == '\'') && at_start) inq = c;
 		else if (c == '#') return i;
 		else if (c == ',') { at_start = 1; i += l; continue; }
-		if (!is_ws(c)) at_start = 0;
+		if (!is_wsp(c)) at_start = 0;
 		i += l;
 	}
 	return s.n;
@@ -1051,7 +1076,7 @@ static void split_unquoted_commas(ShclArena *a, ShclStr s, ShclVecSize *offs_sta
 		if (inq) { if (c == inq) inq = 0; }
 		else if ((c == '"' || c == '\'') && at_start) inq = c;
 		else if (c == ',') { ShclVecSize_push(a, offs_start, start); ShclVecSize_push(a, offs_end, i); start = i + l; at_start = 1; i += l; continue; }
-		if (!is_ws(c)) at_start = 0;
+		if (!is_wsp(c)) at_start = 0;
 		i += l;
 	}
 	ShclVecSize_push(a, offs_start, start); ShclVecSize_push(a, offs_end, s.n);
@@ -1066,7 +1091,7 @@ static size_t count_unquoted_pieces(ShclStr s) {
 		if (inq) { if (c == inq) inq = 0; }
 		else if ((c == '"' || c == '\'') && at_start) inq = c;
 		else if (c == ',') { n++; at_start = 1; i += l; continue; }
-		if (!is_ws(c)) at_start = 0;
+		if (!is_wsp(c)) at_start = 0;
 		i += l;
 	}
 	return n;
@@ -1098,7 +1123,7 @@ static int unterminated_quote(ShclArena *a, ShclStr text) {
 	split_unquoted_commas(a, text, &starts, &ends);
 	for (size_t i = 0; i < starts.len; i++) {
 		ShclStr piece; piece.p = text.p + starts.data[i]; piece.n = ends.data[i] - starts.data[i];
-		ShclStr t = s_trim(piece);
+		ShclStr t = s_trim_wsp(piece);
 		if (!quoted_shape(t)) {
 			if (t.n == 0) continue;
 			unsigned char first = (unsigned char)t.p[0];
@@ -1124,7 +1149,7 @@ static int quoted_shape(ShclStr t) {
 // The text is stored raw (escapes NOT applied), so both shapes are exact source
 // slices - only a dangling-backslash bare element builds a new string.
 static int parse_element(ShclArena *a, ShclStr piece, ShclElement *out) {
-	ShclStr t = s_trim(piece);
+	ShclStr t = s_trim_wsp(piece);
 	if (t.n == 0) return 0;
 	if (quoted_shape(t)) {
 		out->text = s_slice(t, 1, t.n - 1);
@@ -1153,7 +1178,7 @@ static int cell_exceeds(ShclStr text, size_t max) {
 			if (has_content && ++count > max) return 1;
 			has_content = 0; continue;
 		}
-		if (!is_ws(c)) has_content = 1;
+		if (!is_wsp(c)) has_content = 1;
 	}
 	if (has_content) count++;
 	return count > max;
@@ -1400,14 +1425,14 @@ static ShclFence fence_open(ShclStr rest) {
 	while (run < rest.n && (unsigned char)rest.p[run] == first) run++;
 	if (run < 3) return f;
 	f.ok = 1; f.ch = first; f.len = run;
-	f.info = s_trim(s_slice(rest, run, rest.n));
+	f.info = s_trim_wsp(s_slice(rest, run, rest.n));
 	return f;
 }
 /* min_len is the opening fence's length, which the grammar puts at three or
    more, so the length test already rules out the empty line the loop below
    would otherwise accept. */
 static int is_fence_close(ShclStr line, unsigned char ch, size_t min_len) {
-	ShclStr t = s_trim(line);
+	ShclStr t = s_trim_wsp(line);
 	if (t.n < min_len) return 0;
 	for (size_t i = 0; i < t.n; i++) if ((unsigned char)t.p[i] != ch) return 0;
 	return 1;
@@ -1544,7 +1569,7 @@ static ShclPathScan scan_path_ex(ShclArena *a, ShclStr input, int stars) {
 					if (bc == ']') break;
 					pos += bl;
 				}
-				ShclStr body = s_trim(s_slice(input, start, pos));
+				ShclStr body = s_trim_wsp(s_slice(input, start, pos));
 				uint64_t idx;
 				if (body.n == 1 && body.p[0] == '*') {
 					sel.tag = SEL_WILDCARD;
@@ -1579,7 +1604,7 @@ static ShclPathScan scan_path_ex(ShclArena *a, ShclStr input, int stars) {
 		if (dc == ':') {
 			pos += dl;
 			ps.ok = 1; ps.has_value = 1;
-			ps.value_text = s_trim(s_slice(input, pos, input.n));
+			ps.value_text = s_trim_wsp(s_slice(input, pos, input.n));
 			return ps;
 		}
 		{ ShclSB e = {0}; sb_puts(a, &e, "unexpected '"); sb_put_cp(a, &e, dc); sb_puts(a, &e, "' after field"); ps.err = sb_S(&e); return ps; }
@@ -2534,7 +2559,7 @@ static void add_star_element(ShclParser *P, size_t parent, ShclStr body, size_t 
 	if (parent == ROOT) { p_err(P, line, "E007", s_lit("list element with no parent field")); P->d->lost++; return; }
 	/* Uniform-or-nothing (spec): a mix with field children is not a block array. */
 	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, "E008", s_lit("list element mixed with field children; ignored")); P->d->lost++; return; }
-	ShclStr trimmed = s_trim(body);
+	ShclStr trimmed = s_trim_wsp(body);
 	if (trimmed.n == 0) { p_err(P, line, "E009", s_lit("empty list element")); P->d->lost++; return; }
 	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, "E010", s_lit("bare comma in list element (one element per line)")); P->d->lost++; return; }
 	if (unterminated_quote(P->line, trimmed)) p_err(P, line, "E017", s_lit("unterminated quote in value"));
@@ -2696,13 +2721,13 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		if (P.max_nodes && d->nodes.len - 1 > P.max_nodes) {
 			ShclSB m = {0}; sb_puts(P.line, &m, "node cap of "); sb_put_u64(P.line, &m, P.max_nodes); sb_puts(P.line, &m, " exceeded; parse stopped");
 			p_err(&P, i + 1, "E020", sb_S(&m));
-			for (size_t r = i; r < lines.len; r++) if (s_trim(lines.data[r]).n) d->lost++;
+			for (size_t r = i; r < lines.len; r++) if (s_trim_wsp(lines.data[r]).n) d->lost++;
 			node_capped = 1;
 			break;
 		}
 		arena_reset(&own->line);
 		size_t lineno = i + 1;
-		ShclStr line = trim_end(lines.data[i]);
+		ShclStr line = trim_wsp_end(lines.data[i]);
 		size_t ind = 0; while (ind < line.n && (line.p[ind] == ' ' || line.p[ind] == '\t')) ind++;
 		ShclStr indent = s_slice(line, 0, ind);
 		ShclStr rest = s_slice(line, ind, line.n);
@@ -2761,7 +2786,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			   sibling site below carries cannot apply here: this line starts
 			   with the '*' that brought us in. */
 			{
-				ShclPend pd; pd.text = trim_end(rest); pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n;
+				ShclPend pd; pd.text = trim_wsp_end(rest); pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n;
 				ShclVecPend_push(P.tmp, &P.pending, pd);
 				ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);
 			}
@@ -2774,10 +2799,10 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		   assumes it. Without this, `a: ```c#` loses the `#`. The cheap test
 		   comes first so an ordinary commented line is not scanned twice. */
 		if (comment.n && s_has_fence_run(before)) {
-			ShclPathScan pre = scan_path(&own->line, trim_end(before));
+			ShclPathScan pre = scan_path(&own->line, trim_wsp_end(before));
 			if (pre.ok && pre.has_value && fence_open(pre.value_text).ok) { before = rest; comment.p = NULL; comment.n = 0; }
 		}
-		ShclStr content = trim_end(before);
+		ShclStr content = trim_wsp_end(before);
 		if (content.n == 0) {
 			/* Only a comment survived (e.g. an escaped lead-in); keep it. */
 			if (comment.n) {
@@ -2796,7 +2821,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			   rationale (and same BOM exception) as the bad '*' line above. */
 			if (rest.n >= 3 && (unsigned char)rest.p[0] == 0xEF && (unsigned char)rest.p[1] == 0xBB && (unsigned char)rest.p[2] == 0xBF) d->lost++;
 			else {
-				ShclPend pd; pd.text = trim_end(rest); pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n;
+				ShclPend pd; pd.text = trim_wsp_end(rest); pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n;
 				ShclVecPend_push(P.tmp, &P.pending, pd);
 			}
 			ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);
@@ -3382,7 +3407,7 @@ static void w_choose_fence(ShclStr content, unsigned char *fc, size_t *fl) {
 	size_t maxrun = 0, start = 0;
 	for (size_t i = 0;; i++) {
 		if (i == content.n || content.p[i] == '\n') {
-			ShclStr t = s_trim(s_slice(content, start, i));
+			ShclStr t = s_trim_wsp(s_slice(content, start, i));
 			if (t.n > 0) {
 				int all = 1;
 				for (size_t k = 0; k < t.n; k++) if (t.p[k] != '`') { all = 0; break; }
@@ -3650,7 +3675,7 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	else out = s_dup(a, line);
 	/* Without this the load trims what was written and the writer's output
 	   stops being a fmt fixpoint. Blank text leaves a bare `#`. */
-	out = trim_end(out);
+	out = trim_wsp_end(out);
 	/* The node's own blank moves above its first comment; otherwise the blank
 	   would separate the comment from what it annotates. */
 	ShclNode *nd = &NODE(d, idx);
@@ -3675,7 +3700,7 @@ int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, s
 
 static int literal_value(ShclArena *a, ShclArena *tmp, ShclStr text, ShclValue *out) {
 	for (size_t i = 0; i < text.n; i++) { if (text.p[i] == '\n' || text.p[i] == '\r') return 0; }
-	ShclStr comment; ShclStr v = s_trim(split_value_comment(text, &comment));
+	ShclStr comment; ShclStr v = s_trim_wsp(split_value_comment(text, &comment));
 	if (unterminated_quote(tmp, v)) return 0;
 	/* Bracket-array text is refused too: in a file it is E019 and the line is
 	   lost, so writing it as a two-element array holding `[1` and `2]` would

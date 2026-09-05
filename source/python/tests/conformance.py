@@ -869,12 +869,12 @@ def main():
 	if sum(1 for g in ldoc.diagnostics() if g.code == "E021") != 1 or ldoc.get_int_array("arr") != [1, 2]:
 		raise SystemExit("element cap: a stacked array keeps what fit")
 	# The count the cap judges is the count the array reads back as, spelling
-	# by spelling: quoted and escaped commas, empty and blank slots, Unicode
-	# blanks, a quote that never closes. Refused at one under, kept at exact.
+	# by spelling: quoted and escaped commas, empty and blank slots, a Unicode
+	# blank (content: only a space or a tab is blank), a quote that never closes. Refused at one under, kept at exact.
 	counts = [
 		("1, 2, 3", 3), ('"a, b", c', 2), ("a\\, b, c", 2), ("a,,b", 2),
 		("a, , b", 2), (" a ", 1), ("\"\", ''", 2), ("'a\", b'", 1),
-		('"open, b', 1), ("\\", 1), ("x,\u3000", 1), ("x, \u00a0y", 2), (", , ,", 0),
+		('"open, b', 1), ("\\", 1), ("x,\u3000", 2), ("x, \u00a0y", 2), (", , ,", 0),
 	]
 	for spelling, n in counts:
 		text = f"v: {spelling}\n"
