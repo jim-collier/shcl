@@ -304,11 +304,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-172700
 		- Closed: 20260905-102409
 
-	- 🔘 Item 29: three fixes from the last two rounds are guarded by nothing, in a way that lets each come back quietly.
+	- ✅ Item 29: three fixes from the last two rounds are guarded by nothing, in a way that lets each come back quietly.
 		- 20260902 item 18: `shell-regress.bash` pins the `fSplitTabs` half by lifting it out of `crosscheck.bash` by name, but nothing asserts `sanitize-c.bash` carries its new `children` and `paths` arms. Reverting the item leaves the gate silently replaying `get --children`. The unknown-type arm added by the same fix narrows the recurrence path but does not close it.
 		- 20260902 items 23 and 35 and 20260901b item 26: each shipped as prose in the spec, and `check-docs.bash` asserts one sentence of the three groups. The datetime tolerance paragraph, the five merge behaviors and two of the three merge facts can all be deleted with every gate green.
 		- 20260902 item 44: the fix is windows-only and the `cli-regress.bash` row that pins it never runs on windows, because `win-runners.bash` carries no cli-regress row. On linux the pre-fix code was already correct, so the row passes either way.
+		- Fixed, one per sub-item. `shell-regress.bash` reads every row type the corpus uses and requires `sanitize-c.bash` to carry an arm for it. `check-docs.bash` requires the five merge behaviors, the two remaining merge facts and the datetime tolerance paragraph by phrase. `win-runners.bash` gained a `cli regress` row over the C, Rust and Go CLIs it builds, so the windows-only fix runs where it matters; Python's CLI is a script with no executable bit there and stays out of that row.
 		- Opened: 20260904-172800
+		- Closed: 20260905-102409
 
 	- 🔘 Item 30: two doc comments merged onto one function in Rust and Go, leaving the next one undocumented.
 		- Reproduced by reading: `quoted_shape`'s description sits above `one_line` in the reference, and Go's is worse - the text begins "quotedShape is true when ..." directly above `func oneLine`. C and Python have it right.

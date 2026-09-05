@@ -684,6 +684,17 @@ for g in check-c-compilers.bash check-locale.bash package.bash shell-regress.bas
 	grep -q 'SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
 done
 
+##	20260904 item 29: sanitize-c.bash replays every reads.tsv row type through
+##	its own case arms; a type with no arm is an error there now, but a corpus
+##	type the arms forgot would only show once the sanitizer run hit it. Every
+##	type the corpus uses has to have an arm.
+# shellcheck disable=SC2016  ## the \$ is for sed, not the shell
+arms="$(sed -n '/^	case "\$type" in/,/^	esac/p' "${repoDir}/cicd/utility/sanitize-c.bash" | grep -oE "^[[:space:]]*[][a-z'|]+\)" | tr -d " \t')" | tr '|' '\n' | sort -u || true)"
+while IFS= read -r t; do
+	[[ -n "${t}" && "${t}" != "type" ]] || continue
+	grep -qxF -- "${t}" <<<"${arms}" || fBad "sanitize-c.bash has no arm for reads.tsv type ${t}"
+done < <(cut -f2 "${repoDir}"/project/conformance/*/reads.tsv | sort -u)
+
 ##	20260904 item 23: check-c-compilers.bash reported OK with one compiler and
 ##	never read the gate flag, so a runner that lost its compilers would have
 ##	kept passing. Under the flag a thin sweep has to fail before it builds.

@@ -174,6 +174,26 @@ fRunClosedStdin() {
 	((bad == 0))
 }
 
+## The CLI rows the corpus cannot reach - closed streams, a bare CR ending an
+## ops line, the message a failed write names. One of them pins a windows-only
+## fix, and until now no cli-regress ran here at all. Python's CLI is a script
+## with no executable bit on windows, so the three built CLIs are judged.
+fRunCliRegress() {
+	local clis=()
+	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
+		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	clis+=("c|${work}/shcl-c${exe}")
+	if fHave cargo; then
+		cargo build --quiet --manifest-path source/rust/Cargo.toml || return 1
+		clis+=("rust|source/rust/target/debug/shcl${exe}")
+	fi
+	if fHave go; then
+		go -C source/go/cmd build -o "${work}/shcl-go${exe}" ./shcl || return 1
+		clis+=("go|${work}/shcl-go${exe}")
+	fi
+	bash cicd/utility/cli-regress.bash "${clis[@]}"
+}
+
 ## Its own row rather than an fRun one, because a host that cannot give us a
 ## sandbox is a skip and not a failure - no feature installed, or somebody's own
 ## sandbox already up. Exit 2 from the wrapper is that case; 0 and 1 are a result.
@@ -202,6 +222,7 @@ fRun "c oom recover" "${cc}"        fRunOomSweep oom_recover
 fRun "c mem bounds" "${cc}"         fRunMemBounds
 fRun "c cli argv"  "${cc}"          fRunCcli
 fRun "closed stdin" "${cc}"         fRunClosedStdin
+fRun "cli regress"  "${cc}"         fRunCliRegress
 ## The installers' PATH handling needs a real registry, which only exists here.
 ## It overwrites the machine PATH for the length of the run - fine on a throwaway
 ## runner, not on a workstation, so a developer box gets the same test inside a
