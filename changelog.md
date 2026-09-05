@@ -142,6 +142,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - An unterminated raw block at the end of a newline-terminated file no longer gains an empty last line. The same lines with and without the file's final newline are one document, as the grammar says.
 
+- A `*` with a space after it and nothing else is an empty list element (`E009`), as the spec's table says, rather than a malformed line whose message claimed the space was missing.
+
+- A stacked `*` element that is dropped (`E007` to `E011`, or the element cap) now holds its indent level, so a line written under it is skipped with it (`E018`) and counts as lost. It used to re-parent to the field above, so `* small` with a line under it, under a parent with field children, moved that line up a level while the malformed spelling `*small` skipped it.
+
 - Merging a layer over a leaf no longer deletes a malformed line the parser had retained above or under that leaf. The line stays in the merged document, where a save writes it back out, instead of vanishing with the base leaf's comments and a lost count of zero.
 
 - A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, and the save gate refuses like it does for the plain spelling.
