@@ -245,11 +245,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-172000
 		- Closed: 20260905-101318
 
-	- 🔘 Item 22: C alone keeps an `H001`/`H002` hint for a field whose declared leaf name is empty.
+	- ✅ Item 22: C alone keeps an `H001`/`H002` hint for a field whose declared leaf name is empty.
 		- Reproduced: a document of two `"": 1` lines under a schema declaring `field: '""'` with `repeat: 1, 5` gives one hint in C and none in the other three.
 		- Cause: the C suppressor carries an extra `&& last->name.n` the other three do not. The spec's only stated exception is the name wildcard.
 		- Note: a stdout divergence the crosscheck could see - the corpus just has no empty-named field under a schema.
+		- Fixed: the C suppressor takes the leaf name whatever its length, as the other three do.
+		- Pinned by: corpus `101-empty-name-hint`, two empty-named leaves under a schema that declares the field with `repeat: 1, 5`: no hint under the schema, one without it. The old C reports the hint under the schema.
 		- Opened: 20260904-172100
+		- Closed: 20260905-101319
 
 	- 🔘 Item 23: `check-c-compilers.bash` reports OK with a single compiler and never reads `SHCL_GATE_STRICT`.
 		- Reproduced: with gcc-12 to gcc-15 and clang hidden from `PATH`, the gate prints "OK: 5 build(s) across 1 compiler(s)" and exits 0 under `SHCL_GATE_STRICT=1`.

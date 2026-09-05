@@ -5666,7 +5666,7 @@ static ShclVecS v_disavowed_names(shcl_doc *schema, ShclArena *tmp, int (*pick)(
 			if (!pick(c) || c->segs.len == 0) continue;
 			/* Name wildcard: no single leaf name to disavow. */
 			const ShclSegment *last = &c->segs.data[c->segs.len - 1];
-			if (!last->star && last->name.n) ShclVecS_push(tmp, &names, last->name);
+			if (!last->star) ShclVecS_push(tmp, &names, last->name);
 		}
 	}
 	return names;

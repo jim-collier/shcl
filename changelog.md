@@ -150,6 +150,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - An integer past the i64 range reads as a float whatever its spelling. `0xFFFFFFFFFFFFFFFF` and a quoted `"18,446,744,073,709,551,615"` through `get --float` used to exit 4, where the same numbers in plain decimal read fine; the float read is bounded by the double now, as the spec says.
 
+- A merge in the C binding no longer retains a copy of every rebuilt parent's whole child list. Two hundred merges of an eight-leaf overlay on a 40000-key base grew the process by 84 MB, against the spec's "about a megabyte" for five hundred; the list is rewritten in place now, and a merge costs its cloned nodes.
+
+- The C binding keeps an `H001` hint for a repeated field whose name is empty even when the schema disavows it with `repeat`, where the other three drop it. Dropped in C too.
+
 - Merging a layer over a leaf no longer deletes a malformed line the parser had retained above or under that leaf. The line stays in the merged document, where a save writes it back out, instead of vanishing with the base leaf's comments and a lost count of zero.
 
 - A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, and the save gate refuses like it does for the plain spelling.
