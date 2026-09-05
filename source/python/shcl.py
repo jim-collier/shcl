@@ -3173,6 +3173,22 @@ class Document:
 			if over_leafy and not base_container:
 				clones = [(pos, self._clone_subtree(over, ok, base_parent)) for pos, ok in group]
 				if in_base:
+					# The replaced leaf's comments go with it, which the spec
+					# allows; a content-malformed line retained on it is content
+					# the parser promised to keep, so those move onto the
+					# replacement. A comment starts with `#`, a retained line
+					# never does.
+					kept = []
+					for b in base_kids:
+						if self.arena[b].name != name:
+							continue
+						nd = self.arena[b]
+						for lead in nd.leading() + nd.inside() + nd.after():
+							if not lead.text.startswith("#"):
+								kept.append(_Lead(lead.text, lead.blank_before))
+					if kept:
+						t = self.arena[clones[0][1]]._triv()
+						t.leading = kept + t.leading
 					replace[name] = [c for _, c in clones]
 				else:
 					appended.extend(clones)

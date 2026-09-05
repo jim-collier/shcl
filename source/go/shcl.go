@@ -4661,6 +4661,29 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 				clones[i] = d.cloneSubtree(over, ok.node, baseParent)
 			}
 			if inBase {
+				// The replaced leaf's comments go with it, which the spec
+				// allows; a content-malformed line retained on it is content
+				// the parser promised to keep, so those move onto the
+				// replacement. A comment starts with `#`, a retained line
+				// never does.
+				var kept []lead
+				for _, b := range baseKids {
+					if d.arena[b].name != name {
+						continue
+					}
+					nd := &d.arena[b]
+					for _, list := range [][]lead{nd.leading(), nd.inside(), nd.after()} {
+						for _, l := range list {
+							if !strings.HasPrefix(l.text, "#") {
+								kept = append(kept, l)
+							}
+						}
+					}
+				}
+				if len(kept) > 0 {
+					t := d.arena[clones[0]].trivMut()
+					t.leading = append(kept, t.leading...)
+				}
 				replace[name] = clones
 			} else {
 				for i, ok := range group {

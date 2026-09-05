@@ -4475,6 +4475,25 @@ impl Document {
 					.map(|&(pos, ok)| (pos, self.clone_subtree(over, ok, base_parent)))
 					.collect();
 				if in_base {
+					// The replaced leaf's comments go with it, which the spec
+					// allows; a content-malformed line retained on it is
+					// content the parser promised to keep, so those move
+					// onto the replacement. A comment starts with `#`, a
+					// retained line never does.
+					let mut kept: Vec<Lead> = Vec::new();
+					for &b in base_kids.iter().filter(|&&b| self.arena[b].name == *name) {
+						let nd = &self.arena[b];
+						for l in nd.leading().iter().chain(nd.inside()).chain(nd.after()) {
+							if !l.text.starts_with('#') {
+								kept.push(l.clone());
+							}
+						}
+					}
+					if !kept.is_empty() {
+						let t = self.arena[clones[0].1].triv_mut();
+						kept.append(&mut t.leading);
+						t.leading = kept;
+					}
 					replace.insert(name.clone(), clones.into_iter().map(|(_, c)| c).collect());
 				} else {
 					appended.extend(clones);
