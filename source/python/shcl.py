@@ -414,7 +414,7 @@ def _literal_value(text):
 	# array holding `[1` and `2]` would be a different wrong answer.
 	if "\n" in text or "\r" in text:
 		return None
-	v = _trim(_split_comment(text)[0])
+	v = _trim_wsp(_split_value_comment(text)[0])
 	if _unterminated_quote(v) or (v.startswith("[") and v.endswith("]")):
 		return None
 	return _parse_cell(v)
@@ -524,7 +524,7 @@ def _choose_fence(content):
 	"""Pick a backtick fence long enough that no content line closes it early."""
 	maxrun = 0
 	for line in content.split("\n"):
-		t = _trim(line)
+		t = _trim_wsp(line)
 		if t and all(ch == "`" for ch in t):
 			maxrun = max(maxrun, len(t))
 	return ("`", max(3, maxrun + 1))
@@ -693,6 +693,24 @@ def _trim(s):
 	return s.strip(_WS)
 
 
+# The grammar's wsp: a space or a tab. The parser trims with this and nothing
+# wider - a no-break space or a line separator after a value is content, and a
+# Unicode trim used to delete it with no diagnostic.
+_WSP = " \t"
+
+
+def _trim_wsp(s):
+	return s.strip(_WSP)
+
+
+def _trim_wsp_end(s):
+	# The end of a line, or of a line's content before its comment: wsp, plus a
+	# carriage return, which the load takes off a line end anyway - so a
+	# retained line or a comment written back never ends in one the next load
+	# would strip. A CR followed by content stays content.
+	return s.rstrip(_WSP + "\r")
+
+
 def _trim_end(s):
 	return s.rstrip(_WS)
 
@@ -740,36 +758,40 @@ _BARE_NAME_CHARS = frozenset(
 
 
 def _split_comment(s):
-	"""Split off an unquoted trailing comment: (content, comment from `#` on,
-	"" = none). A `\\` shields the next char throughout. Comments are kept as
-	trivia."""
-	# Fast path: the loop's quote/backslash state only decides whether a `#`
-	# counts, and its lone early return fires on `#` - so with no `#` at all the
-	# answer is (s, "") whatever the state. `in` scans at C speed; the char loop
-	# below is the cost, and comment-free lines dominate real documents.
+	"""Split off an unquoted trailing comment from a field line: (content,
+	comment from `#` on, "" = none). The name half is read the scanner's way
+	and the value half the value's way (see _value_comment_at). Comments are
+	kept as trivia."""
+	# Fast path: the scans only decide whether a `#` counts, so with no `#` at
+	# all the answer is (s, "") whatever the state. `in` scans at C speed; the
+	# char loops are the cost, and comment-free lines dominate real documents.
 	if "#" not in s:
 		return s, ""
-	in_quote = None
-	i = 0
-	n = len(s)
-	while i < n:
-		c = s[i]
-		if c == "\\":
-			i += 2
-			continue
-		if in_quote is not None:
-			if c == in_quote:
-				in_quote = None
-		elif c == '"' or c == "'":
-			in_quote = c
-		elif c == "#":
-			return s[:i], s[i:]
-		i += 1
-	return s, ""
+	kind, i = _name_half(s, True)
+	if kind == _NAME_HASH:
+		hash_at = i
+	elif kind == _NAME_COLON:
+		hash_at = _value_comment_at(s, i + 1)
+	else:
+		hash_at = -1
+	if hash_at < 0:
+		return s, ""
+	return s[:hash_at], s[hash_at:]
+
+
+def _split_value_comment(s):
+	"""The same for value text alone: a list element, or a setter's argument."""
+	if "#" not in s:
+		return s, ""
+	hash_at = _value_comment_at(s, 0)
+	if hash_at < 0:
+		return s, ""
+	return s[:hash_at], s[hash_at:]
 
 
 def _split_unquoted_commas(s):
-	"""Split on unquoted commas; `\\` shields the next char."""
+	"""Split on unquoted commas; a quote opens only at the start of a piece (see
+	_value_comment_at), and `\\` shields the next char."""
 	# Fast paths: parts are cut only at commas, so with no comma the result is
 	# [s] no matter what the quote/backslash state did (a shield can only make
 	# a comma NOT split, never conjure one). And with no quote or backslash
@@ -780,6 +802,7 @@ def _split_unquoted_commas(s):
 		return s.split(",")
 	parts = []
 	in_quote = None
+	at_start = True
 	start = 0
 	i = 0
 	n = len(s)
@@ -787,16 +810,21 @@ def _split_unquoted_commas(s):
 		c = s[i]
 		if c == "\\":
 			i += 2
+			at_start = False
 			continue
+		i += 1
 		if in_quote is not None:
 			if c == in_quote:
 				in_quote = None
-		elif c == '"' or c == "'":
+		elif (c == '"' or c == "'") and at_start:
 			in_quote = c
 		elif c == ",":
-			parts.append(s[start:i])
-			start = i + 1
-		i += 1
+			parts.append(s[start:i - 1])
+			start = i
+			at_start = True
+			continue
+		if c not in _WSP:
+			at_start = False
 	parts.append(s[start:])
 	return parts
 
@@ -819,7 +847,7 @@ def _unterminated_quote(text):
 	if '"' not in text and "'" not in text:
 		return False
 	for piece in _split_unquoted_commas(text):
-		t = _trim(piece)
+		t = _trim_wsp(piece)
 		if not _quoted_shape(t):
 			if not t:
 				continue
@@ -851,7 +879,7 @@ def _quoted_shape(t):
 def _parse_element(piece):
 	"""Trim, then strip one matching outer quote pair if present. Unquoted empty
 	slots return None (dropped, never an error)."""
-	t = _trim(piece)
+	t = _trim_wsp(piece)
 	if not t:
 		return None
 	if _quoted_shape(t):
@@ -878,7 +906,7 @@ def _cell_exceeds(text, max_elements):
 		if in_quote is not None:
 			if c == in_quote:
 				in_quote = None
-		elif c == '"' or c == "'":
+		elif (c == '"' or c == "'") and not has_content:
 			in_quote = c
 		elif c == ",":
 			if has_content:
@@ -887,7 +915,7 @@ def _cell_exceeds(text, max_elements):
 					return True
 			has_content = False
 			continue
-		if c not in _WS_SET:
+		if c not in _WSP:
 			has_content = True
 	if has_content:
 		count += 1
@@ -1004,14 +1032,14 @@ def _fence_open(rest):
 			break
 	if run < 3:
 		return None
-	return (first, run, _trim(rest[run:]))
+	return (first, run, _trim_wsp(rest[run:]))
 
 
 def _is_fence_close(line, ch, min_len):
 	# min_len is the opening fence's length, which the grammar puts at three or
 	# more, so the length test already rules out the empty line all() would
 	# otherwise accept.
-	t = _trim(line)
+	t = _trim_wsp(line)
 	return len(t) >= min_len and all(c == ch for c in t)
 
 
@@ -1057,6 +1085,14 @@ class _PathError(Exception):
 	pass
 
 
+def _index_shape(body):
+	# The spelling of an index selector - an optional `#`, an optional `+`, then
+	# digits - whatever its size. The grammar says 1*DIGIT, with no upper bound.
+	b = body[1:] if body[:1] == "#" else body
+	b = b[1:] if b[:1] == "+" else b
+	return bool(b) and _all_ascii_digits(b)
+
+
 def _parse_uint(s):
 	# Rust usize::from_str: an optional leading '+', then ASCII digits, no underscores.
 	if not s:
@@ -1078,12 +1114,85 @@ def _parse_uint(s):
 def _looks_like_bracket_array(content):
 	"""A value spelled the way JSON, TOML and YAML spell an array. The path scanner
 	reads the brackets as a selector, so the line arrives with no value text and the
-	old repair blamed a colon that is plainly there."""
-	colon = content.find(":")
-	if colon < 0:
+	old repair blamed a colon that is plainly there. The colon that counts is the
+	field's own: one inside a quoted name or a selector is not it."""
+	kind, colon = _name_half(content, False)
+	if kind != _NAME_COLON:
 		return False
 	rest = content[colon + 1:].strip()
 	return rest.startswith("[") and rest.endswith("]")
+
+
+# How the name half of a field line ends.
+_NAME_END = 0  # no separator colon
+_NAME_COLON = 1  # the field's own colon
+_NAME_HASH = 2  # an unquoted `#` first: a comment, or a malformed name
+
+
+def _name_half(s, sugar):
+	"""Scan a field line's name half the way the path scanner reads it: a quote
+	opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
+	selector, and with sugar a colon followed by `[` is selector sugar rather
+	than the separator. `\\` shields the next char. Returns (kind, offset)."""
+	in_quote = None
+	in_sel = False
+	i = 0
+	n = len(s)
+	while i < n:
+		c = s[i]
+		if c == "\\":
+			i += 2
+			continue
+		if in_quote is not None:
+			if c == in_quote:
+				in_quote = None
+		elif c == '"' or c == "'":
+			in_quote = c
+		elif c == "#":
+			return _NAME_HASH, i
+		elif c == "[":
+			in_sel = True
+		elif c == "]":
+			in_sel = False
+		elif c == ":" and not in_sel:
+			rest = s[i + 1:].lstrip(" \t")
+			if not (sugar and rest.startswith("[")):
+				return _NAME_COLON, i
+		i += 1
+	return _NAME_END, 0
+
+
+def _value_comment_at(s, from_):
+	"""Offset of the `#` that starts a comment in value text, scanning from
+	from_; -1 when there is none. A quote opens a quoted piece only at the start
+	of a piece - the start of the value, or after an unquoted comma - which is
+	the spec's rule: a piece is quoted only when it begins with one. So an
+	apostrophe in prose (don't panic  # keep) hides nothing. `\\` shields the
+	next char."""
+	in_quote = None
+	at_start = True
+	i = from_
+	n = len(s)
+	while i < n:
+		c = s[i]
+		if c == "\\":
+			i += 2
+			at_start = False
+			continue
+		i += 1
+		if in_quote is not None:
+			if c == in_quote:
+				in_quote = None
+		elif (c == '"' or c == "'") and at_start:
+			in_quote = c
+		elif c == "#":
+			return i - 1
+		elif c == ",":
+			at_start = True
+			continue
+		if c not in _WSP:
+			at_start = False
+	return -1
 
 
 def _scan_path(inp):
@@ -1175,13 +1284,17 @@ def _scan_path_ex(inp, stars):
 				start = pos
 				while pos < n and chars[pos] != "]":
 					pos += 1
-				body = _trim(chars[start:pos])
+				body = _trim_wsp(chars[start:pos])
 				if body == "*":
 					selector = ("wild", None)
 				elif body.startswith("#") and _parse_uint(body[1:]) is not None:
 					selector = ("idx", _parse_uint(body[1:]))
 				elif _parse_uint(body) is not None:
 					selector = ("idx", _parse_uint(body))
+				elif _index_shape(body):
+					# All digits but past u64: an index no instance can have,
+					# not a value selector that would create one on a write.
+					selector = ("idx", 2**64 - 1)
 				elif body == "":
 					raise _PathError("empty selector")
 				else:
@@ -1203,7 +1316,7 @@ def _scan_path_ex(inp, stars):
 			pos += 1
 		elif c == ":":
 			pos += 1
-			return segments, _trim(chars[pos:])
+			return segments, _trim_wsp(chars[pos:])
 		else:
 			raise _PathError(f"unexpected '{c}' after field")
 
@@ -1611,33 +1724,34 @@ class _Parser:
 		return self._select_or_create(grandparent, name, name_src, value, line)
 
 	def _add_star_element(self, parent, body, line):
+		"""True when the element was added, False when the line was dropped."""
 		"""One stacked-list element (`* scalar`) appends to the parent's array."""
 		if parent == ROOT:
 			self._err(line, "E007", "list element with no parent field")
 			self.lost += 1
-			return
+			return False
 		# Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if self.arena[parent].children:
 			self._err(line, "E008", "list element mixed with field children; ignored")
 			self.lost += 1
-			return
-		trimmed = _trim(body)
+			return False
+		trimmed = _trim_wsp(body)
 		if not trimmed:
 			self._err(line, "E009", "empty list element")
 			self.lost += 1
-			return
+			return False
 		# One scalar per line; a bare comma is an error, not a second element.
 		if len(_split_unquoted_commas(trimmed)) > 1:
 			self._err(line, "E010", "bare comma in list element (one element per line)")
 			self.lost += 1
-			return
+			return False
 		if _unterminated_quote(trimmed):
 			self._err(line, "E017", "unterminated quote in value")
 		el = _parse_element(trimmed)
 		if el is None:
 			self._err(line, "E009", "empty list element")
 			self.lost += 1
-			return
+			return False
 		# Element cap: each element line past it is refused on its own, the way
 		# any other bad element line is.
 		if (
@@ -1647,7 +1761,7 @@ class _Parser:
 		):
 			self._err(line, "E021", f"array longer than {self.max_elements} elements; line skipped")
 			self.lost += 1
-			return
+			return False
 		node = self.arena[parent]
 		if node.value.kind == "empty":
 			old_key = _merge_key(node.name, node.value)
@@ -1672,6 +1786,8 @@ class _Parser:
 		else:
 			self._err(line, "E011", "field already has a value; list element ignored")
 			self.lost += 1
+			return False
+		return True
 
 	def _emit_repeated_leaf_hints(self):
 		"""Legal input that looks like a common mistake: a field repeating as a bare
@@ -1714,6 +1830,12 @@ class _Parser:
 		# content untrimmed, so a line left ending in CR would be written back as
 		# CRLF and read as neither - the one shape where the count is visible.
 		lines = [ln.rstrip("\r") for ln in text.split("\n")]
+		# A newline-terminated text splits into one more piece than it has
+		# lines. An unterminated raw block took that empty tail as a body line,
+		# so the same last line read differently with and without its newline,
+		# which the grammar says are one document.
+		if text.endswith("\n"):
+			lines.pop()
 		i = 0
 		nlines = len(lines)
 		node_capped = False
@@ -1724,11 +1846,11 @@ class _Parser:
 			# silently truncated document.
 			if self.max_nodes and len(self.arena) - 1 > self.max_nodes:
 				self._err(i + 1, "E020", f"node cap of {self.max_nodes} exceeded; parse stopped")
-				self.lost += sum(1 for ln in lines[i:] if ln.strip())
+				self.lost += sum(1 for ln in lines[i:] if _trim_wsp(ln))
 				node_capped = True
 				break
 			lineno = i + 1
-			line = _trim_end(lines[i])
+			line = _trim_wsp_end(lines[i])
 			rest = line.lstrip(" \t")
 			indent = line[:len(line) - len(rest)]
 			if not rest:
@@ -1773,7 +1895,13 @@ class _Parser:
 			# Stacked-list element: colon-less by construction ('*' can't begin a name).
 			if rest.startswith("*"):
 				after = rest[1:]
-				if after.startswith(" ") or after.startswith("\t"):
+				# A `*` alone after the trim: whether a space followed it
+				# decides between an empty element and a malformed line, and
+				# only the untrimmed line still knows.
+				spaced = after.startswith(" ") or after.startswith("\t")
+				if not after:
+					spaced = lines[i][len(indent) + 1:len(indent) + 2] in (" ", "\t")
+				if spaced:
 					parent = self._resolve_parent(indent)
 					if parent is None:
 						self._err(lineno, "E012", "indentation matches no open level")
@@ -1784,11 +1912,19 @@ class _Parser:
 						self._skip_under_dead(lineno, indent)
 						i += 1
 						continue
-					body, comment = _split_comment(after)
-					# Elements have no node of their own; trivia rides the field.
+					body, comment = _split_value_comment(after)
+					# Elements have no node of their own; trivia rides the field. At the
+					# root there is no field (E007), so the comment rides the document
+					# like any other pending one.
 					if parent != ROOT:
 						self._attach_trivia(parent, comment)
-					self._add_star_element(parent, body, lineno)
+					elif comment:
+						self.pending.append(_Pend(comment, indent, had_blank))
+					# A dropped element holds its indent level like any skipped line, so
+					# what is written under it is skipped with it (E018) rather than
+					# re-parenting to the field.
+					if not self._add_star_element(parent, body, lineno):
+						self.stack.append((indent, DEAD))
 					i += 1
 					continue
 				parent = self._resolve_parent(indent)
@@ -1808,7 +1944,7 @@ class _Parser:
 				# vanishes on the consumer's next save. The BOM exception the
 				# sibling site below carries cannot apply here: this line
 				# starts with the '*' that brought us in.
-				self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
+				self.pending.append(_Pend(_trim_wsp_end(rest), indent, had_blank))
 				self.stack.append((indent, DEAD))
 				i += 1
 				continue
@@ -1822,12 +1958,12 @@ class _Parser:
 			# twice.
 			if comment and ("```" in before or "~~~" in before):
 				try:
-					_, vt = _scan_path(_trim_end(before))
+					_, vt = _scan_path(_trim_wsp_end(before))
 				except _PathError:
 					vt = None
 				if vt is not None and _fence_open(vt) is not None:
 					before, comment = rest, ""
-			content = _trim_end(before)
+			content = _trim_wsp_end(before)
 			if not content:
 				# Only a comment survived (e.g. an escaped lead-in); keep it.
 				if comment:
@@ -1853,7 +1989,7 @@ class _Parser:
 				if rest.startswith("\ufeff"):
 					self.lost += 1
 				else:
-					self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
+					self.pending.append(_Pend(_trim_wsp_end(rest), indent, had_blank))
 				self.stack.append((indent, DEAD))
 				i += 1
 				continue
@@ -2794,15 +2930,20 @@ class Document:
 			line = "# " + line
 		# Without this the load trims what was written and the writer's output
 		# stops being a fmt fixpoint.
-		line = _trim_end(line)
+		line = _trim_wsp_end(line)
 		# The node's own blank moves above its first comment; otherwise the
-		# blank would separate the comment from what it annotates.
+		# blank would separate the comment from what it annotates. Above the
+		# first one already there, when there is one.
 		nd = self.arena[idx]
 		lead = _Lead(line, False)
-		if nd.blank_before and not nd.leading():
-			lead.blank_before = True
+		t = nd._triv()
+		if nd.blank_before:
 			nd.blank_before = False
-		nd._triv().leading.append(lead)
+			if t.leading:
+				t.leading[0].blank_before = True
+			else:
+				lead.blank_before = True
+		t.leading.append(lead)
 		return True
 
 	def set_int(self, path: str, v: int) -> bool:
@@ -2899,24 +3040,26 @@ class Document:
 
 	# Default (only-if-absent) forms - the "emit defaults" half of the Writer.
 	# The type gate runs whether or not the path exists, so a wrong-typed call
-	# fails the same way on every document.
+	# fails the same way on every document. A path that already resolves
+	# reports what a write there would, so a wildcard is refused whether or not
+	# its slots happen to resolve.
 	def set_int_default(self, path: str, v: int) -> bool:
 		_want("set_int_default", v, "int")
 		if not self.exists(path):
 			return self.set_int(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_float_default(self, path: str, v: float) -> bool:
 		_want("set_float_default", v, "float")
 		if not self.exists(path):
 			return self.set_float(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_bool_default(self, path: str, v: bool) -> bool:
 		_want("set_bool_default", v, "bool")
 		if not self.exists(path):
 			return self.set_bool(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_literal(self, path: str, text: str) -> bool:
 		"""Bind text at path as value syntax rather than as data.
@@ -2935,54 +3078,54 @@ class Document:
 	def set_literal_default(self, path: str, text: str) -> bool:
 		if not self.exists(path):
 			return self.set_literal(path, text)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_string_default(self, path: str, v: str) -> bool:
 		_want("set_string_default", v, "str")
 		if not self.exists(path):
 			return self.set_string(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_datetime_default(self, path: str, v: ShclDateTime) -> bool:
 		_want("set_datetime_default", v, "datetime")
 		if not self.exists(path):
 			return self.set_datetime(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_raw_default(self, path: str, content: str, info: str) -> bool:
 		if not self.exists(path):
 			return self.set_raw(path, content, info)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_int_array_default(self, path: str, v: list[int]) -> bool:
 		_want_all("set_int_array_default", v, "int")
 		if not self.exists(path):
 			return self.set_int_array(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_float_array_default(self, path: str, v: list[float]) -> bool:
 		_want_all("set_float_array_default", v, "float")
 		if not self.exists(path):
 			return self.set_float_array(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_bool_array_default(self, path: str, v: list[bool]) -> bool:
 		_want_all("set_bool_array_default", v, "bool")
 		if not self.exists(path):
 			return self.set_bool_array(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_string_array_default(self, path: str, v: list[str]) -> bool:
 		_want_all("set_string_array_default", v, "str")
 		if not self.exists(path):
 			return self.set_string_array(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	def set_datetime_array_default(self, path: str, v: list[ShclDateTime]) -> bool:
 		_want_all("set_datetime_array_default", v, "datetime")
 		if not self.exists(path):
 			return self.set_datetime_array(path, v)
-		return True
+		return self.write_reason(path) == WriteReason.Writable
 
 	# Layered loading: overlay a higher-priority document
 
@@ -3090,6 +3233,22 @@ class Document:
 			if over_leafy and not base_container:
 				clones = [(pos, self._clone_subtree(over, ok, base_parent)) for pos, ok in group]
 				if in_base:
+					# The replaced leaf's comments go with it, which the spec
+					# allows; a content-malformed line retained on it is content
+					# the parser promised to keep, so those move onto the
+					# replacement. A comment starts with `#`, a retained line
+					# never does.
+					kept = []
+					for b in base_kids:
+						if self.arena[b].name != name:
+							continue
+						nd = self.arena[b]
+						for lead in nd.leading() + nd.inside() + nd.after():
+							if not lead.text.startswith("#"):
+								kept.append(_Lead(lead.text, lead.blank_before))
+					if kept:
+						t = self.arena[clones[0][1]]._triv()
+						t.leading = kept + t.leading
 					replace[name] = [c for _, c in clones]
 				else:
 					appended.extend(clones)
@@ -4361,10 +4520,52 @@ def _parse_float_text(e, level):
 	else:
 		# An integer is a valid float on read (incl. hex and quoted thousands).
 		iv = _parse_int_text_no_loose(_Element(t, e.quoted))
-		if iv is None:
-			return None
-		v = float(iv)
+		if iv is not None:
+			v = float(iv)
+		else:
+			w = _parse_int_text_wide(_Element(t, e.quoted))
+			if w is None:
+				return None
+			v = w
 	return v / 100.0 if percent else v
+
+
+def _parse_int_text_wide(e):
+	# The two integer spellings the plain float parse does not read - hex, and
+	# quoted thousands - past the i64 range, as a double: a float read is
+	# bounded by the double, not by the integer type. Hex goes in digit by digit
+	# in the double, so every binding rounds the same way; the spellings mirror
+	# _parse_int_text.
+	t = _trim(e.text)
+	neg = t.startswith("-")
+	body = t[1:] if t[:1] in ("-", "+") else t
+	if body[:2] in ("0x", "0X"):
+		h = body[2:]
+		if not h or not all(c in "0123456789abcdefABCDEF" for c in h):
+			return None
+		v = 0.0
+		for c in h:
+			v = v * 16.0 + float(int(c, 16))
+	elif e.quoted and "," in body:
+		groups = body.split(",")
+		well_formed = (
+			len(groups) > 1
+			and groups[0] != ""
+			and len(groups[0]) <= 3
+			and _all_ascii_digits(groups[0])
+			and all(len(g) == 3 and _all_ascii_digits(g) for g in groups[1:])
+		)
+		if not well_formed:
+			return None
+		try:
+			v = float(body.replace(",", ""))
+		except ValueError:
+			return None
+	else:
+		return None
+	if not math.isfinite(v):
+		return None
+	return -v if neg else v
 
 
 def _parse_int_text_no_loose(e):
@@ -4737,12 +4938,36 @@ def _same_moment(a, b):
 			return None
 		return 0 if z[0] == "utc" else z[1]
 
-	return (
-		a.date == b.date
-		and a.time == b.time
-		and (a.frac or "").rstrip("0") == (b.frac or "").rstrip("0")
-		and offset(a.zone) == offset(b.zone)
-	)
+	ao, bo = offset(a.zone), offset(b.zone)
+	if (ao is None) != (bo is None) or (a.date is None) != (b.date is None) or (a.time is None) != (b.time is None):
+		return False
+	if (a.time[2] if a.time else None) != (b.time[2] if b.time else None):
+		return False
+	if (a.frac or "").rstrip("0") != (b.frac or "").rstrip("0"):
+		return False
+	if ao is None:
+		return a.date == b.date and a.time == b.time
+
+	# Zoned values are instants: the written clock less its offset, the date
+	# carrying the day wrap. A time alone lives on a 24-hour cycle.
+	def minutes(dt, off):
+		hm = (dt.time[0] * 60 + dt.time[1] if dt.time else 0) - off
+		if dt.date:
+			return _days_from_civil(*dt.date) * 1440 + hm
+		return hm % 1440
+
+	return minutes(a, ao) == minutes(b, bo)
+
+
+def _days_from_civil(y, m, d):
+	# Days since 1970-01-01, negative before it.
+	if m <= 2:
+		y -= 1
+	era = y // 400
+	yoe = y - era * 400
+	doy = (153 * ((m + 9) % 12) + 2) // 5 + d - 1
+	doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+	return era * 146097 + doe - 719468
 
 
 def _build_schema(schema):
@@ -4968,16 +5193,17 @@ def _parse_field(schema, f, faults):
 			_vdiag(faults, kid.line, "V092", f"bad schema constraint '{key}'")
 	# A lower bound above the upper one admits nothing, so every value fails
 	# twice and the schema, not the config, is what has to change. Reported at
-	# the max line, and the field is dropped like any other broken one so the
-	# document is not told off twice per value for a range it could never have
-	# satisfied.
+	# the max line. The range goes, not the field: a key-level fault keeps its
+	# entry, so the path still legalizes its name chain for the unknown-field
+	# sweep, and the document is not told off twice per value for a range it
+	# could never have satisfied.
 	crossed = (c.min_i is not None and c.max_i is not None and c.min_i > c.max_i) or (
 		c.min_f is not None and c.max_f is not None and c.min_f > c.max_f
 	)
 	if crossed:
 		line = schema.arena[max_at].line if max_at is not None else schema.arena[f].line
 		_vdiag(faults, line, "V092", "bad schema constraint 'max'")
-		return None
+		c.min_i = c.max_i = c.min_f = c.max_f = None
 	return c
 
 

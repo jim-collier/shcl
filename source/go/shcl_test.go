@@ -1269,7 +1269,7 @@ func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
 		}
 		other := Parse("g:\n\tk: 1\n")
 		t0 := time.Now()
-		for i := 0; i < 200; i++ {
+		for i := 0; i < 2000; i++ {
 			d.Merge(other)
 			if got := d.GetIntOr("g.k", -1); got != 1 {
 				t.Fatalf("index walk: got %d", got)
@@ -1284,7 +1284,8 @@ func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
 	// work and gets descheduled, the fresh side is under a millisecond and does
 	// not. The factor is what catches the defect - the rebuild used to grow
 	// with the number of edits, which is orders rather than a fraction - so the
-	// constant can absorb a slow machine.
+	// constant can absorb a slow machine. Two thousand merges put the defect
+	// well past that constant; at two hundred it could hide under it.
 	// A clock too coarse to see the fresh side leaves the ratio with a zero
 	// denominator, and then the bound is an absolute figure on whatever machine
 	// is running - which is what it was written not to be. Windows counts in
@@ -1433,15 +1434,15 @@ func TestParseLimitedCaps(t *testing.T) {
 		t.Fatalf("star array: %v %v", v, st)
 	}
 	// The count the cap judges is the count the array reads back as, spelling
-	// by spelling: quoted and escaped commas, empty and blank slots, Unicode
-	// blanks, a quote that never closes. Refused at one under, kept at exact.
+	// by spelling: quoted and escaped commas, empty and blank slots, a Unicode
+	// blank (content: only a space or a tab is blank), a quote that never closes. Refused at one under, kept at exact.
 	counts := []struct {
 		spelling string
 		n        int
 	}{
 		{"1, 2, 3", 3}, {"\"a, b\", c", 2}, {"a\\, b, c", 2}, {"a,,b", 2},
 		{"a, , b", 2}, {" a ", 1}, {"\"\", ''", 2}, {"'a\", b'", 1},
-		{"\"open, b", 1}, {"\\", 1}, {"x,\u3000", 1}, {"x, \u00a0y", 2}, {", , ,", 0},
+		{"\"open, b", 1}, {"\\", 1}, {"x,\u3000", 2}, {"x, \u00a0y", 2}, {", , ,", 0},
 	}
 	for _, c := range counts {
 		text := "v: " + c.spelling + "\n"

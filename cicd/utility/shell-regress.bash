@@ -63,7 +63,68 @@ out="$(SHCL_BIN="${cli}" bash -c "source '${repoDir}/source/bash/shcl.bash'; shc
 out="$(_SHCL_BIN=/nonexistent SHCL_BIN="${cli}" bash -c "source '${repoDir}/source/bash/shcl.bash'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 [[ "${out}" == "1" ]] || fBad "bash wrapper honored an inherited _SHCL_BIN: ${out@Q}"
 
+##	20260904 items 10 and 11: bash cuts `--opt=value` at the `=` before a
+##	completion function runs, and the three value options added in 20260830b
+##	were missing from the lists that skip a value, so the FILE slot went to
+##	the value. Driven the way readline hands the words over, both with
+##	bash-completion's word joining and with the completion's own fallback.
+mkdir -p "${tmpDir}/comp" && touch "${tmpDir}/comp/alpha.shcl" "${tmpDir}/comp/beta.txt"
+fComplete(){
+	## $1 = lib|bare, $2 = the command line as typed (a trailing space means a
+	## fresh word). Prints COMPREPLY space-joined.
+	## With the library, its file completer is replaced by a plain compgen: what
+	## the lib half tests is the word joining, and _filedir's answer outside a
+	## live readline session differs between bash-completion releases. The
+	## words come back sorted, since compgen -f follows directory order.
+	local setup=":"
+	# shellcheck disable=SC2016  ## the ${cur} is for the inner bash
+	[[ "$1" == lib ]] && setup='source /usr/share/bash-completion/bash_completion; _filedir(){ mapfile -t COMPREPLY < <(compgen -f -- "${cur}"); }'
+	bash -c '
+		'"${setup}"'; source '"'${repoDir}/source/completions/shcl.bash'"'
+		line="$1"; COMP_WORDS=()
+		for t in ${line}; do
+			if [[ "${t}" == --*=* ]]; then COMP_WORDS+=("${t%%=*}" "="); v="${t#*=}"; [[ -n "${v}" ]] && COMP_WORDS+=("${v}")
+			else COMP_WORDS+=("${t}"); fi
+		done
+		[[ "${line}" == *" " ]] && COMP_WORDS+=("")
+		COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMP_LINE="${line}"; COMP_POINT=${#line}
+		cd '"'${tmpDir}/comp'"'; COMPREPLY=(); _shcl; printf "%s\n" "${COMPREPLY[@]}" | sort | paste -sd" " | sed "s/^ $//"
+	' _ "$2" 2>/dev/null || true
+}
+compModes=(bare)
+[[ -r /usr/share/bash-completion/bash_completion ]] && compModes+=(lib)
+for mode in "${compModes[@]}"; do
+	out="$(fComplete "${mode}" "shcl check --strictness=st")"
+	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on --strictness=st: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl check --strictness=")"
+	[[ "${out}" == *standard* ]] || fBad "bash completion (${mode}) on --strictness=: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl check --strictness=standard al")"
+	[[ "${out}" == "alpha.shcl" ]] || fBad "bash completion (${mode}) lost the FILE slot after --strictness=standard: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl get --on-bad=fl")"
+	[[ "${out}" == "flag" ]] || fBad "bash completion (${mode}) on --on-bad=fl: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl fmt --schema=al")"
+	[[ "${out}" == "alpha.shcl" ]] || fBad "bash completion (${mode}) on --schema=al: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl fmt --remove ")"
+	[[ -z "${out}" ]] || fBad "bash completion (${mode}) offered files where --remove takes a PATH: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl fmt --remove x ")"
+	[[ "${out}" == "alpha.shcl beta.txt" ]] || fBad "bash completion (${mode}) lost the FILE slot after --remove x: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl fmt --set-default=x=1 ")"
+	[[ "${out}" == "alpha.shcl beta.txt" ]] || fBad "bash completion (${mode}) lost the FILE slot after --set-default=x=1: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl check --strictness st")"
+	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on the space form: ${out@Q}"
+done
+
 if fHave pwsh; then
+	##	20260904 item 16: PowerShell reads a bare `--` as its own token and drops
+	##	it before a dot-sourced function sees its arguments; the quoted spelling
+	##	is the documented way through. Both halves are pinned, so a PowerShell
+	##	release that changes either shows up here.
+	printf -- '-dash: 5\n' > "${tmpDir}/dash.shcl"
+	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${cli}'; shcl get -- '${tmpDir}/dash.shcl' '-dash'" 2>&1 || true)"
+	[[ "${out}" == *"unknown option"* ]] || fBad "pwsh now hands a bare -- to the sourced function; the wrapper note is stale: ${out@Q}"
+	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${cli}'; shcl get '--' '${tmpDir}/dash.shcl' '-dash'" 2>&1 || true)"
+	[[ "${out}" == "5" ]] || fBad "pwsh dot-sourced shcl did not take a quoted --: ${out@Q}"
+
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${tmpDir}'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 	[[ "${out}" == *"not executable"* ]] || fBad "PowerShell wrapper took a directory as SHCL_BIN: ${out@Q}"
 
@@ -605,6 +666,75 @@ fi
 ##	lint failure blaming the completions on the day such a subcommand is added.
 ##	The fixture is the real files with one added, so the check runs against the
 ##	extractors as shipped rather than a hand-written stand-in.
+##	20260904 item 26: perf-gate's exit-code and line-count checks had never been
+##	fed a CLI that does no work, so deleting them changed nothing. Two stubs:
+##	one that prints nothing and one that exits wrong.
+mkdir -p "${tmpDir}/stubs"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${tmpDir}/stubs/quiet"
+printf '#!/usr/bin/env bash\necho x\nexit 1\n' > "${tmpDir}/stubs/wrong"
+chmod +x "${tmpDir}/stubs/quiet" "${tmpDir}/stubs/wrong"
+out="$(bash "${repoDir}/cicd/utility/perf-gate.bash" --keys 500 "quiet|${tmpDir}/stubs/quiet" 2>&1 || true)"
+[[ "${out}" == *"printed 0 line(s)"* ]] || fBad "perf-gate accepted a CLI that printed nothing: $(tail -n 2 <<<"${out}")"
+out="$(bash "${repoDir}/cicd/utility/perf-gate.bash" --keys 500 "wrong|${tmpDir}/stubs/wrong" 2>&1 || true)"
+[[ "${out}" == *"did not do the work"* ]] || fBad "perf-gate accepted a CLI that exited wrong: $(tail -n 2 <<<"${out}")"
+
+##	20260904 item 26: the installers ship from main, so cicd.bash compares them
+##	against origin/main after a dev publish. The line has to be there.
+grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev.bash' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer compares the installers against origin/main after a publish"
+
+##	20260904 item 28: SHCL_GATE_STRICT is armed by one line in cicd.bash and read
+##	by the gates; deleting the line disarmed every skip-as-failure silently.
+grep -qE '^\s*export SHCL_GATE_STRICT=1' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer exports SHCL_GATE_STRICT under --ci"
+for g in check-c-compilers.bash check-locale.bash package.bash shell-regress.bash; do
+	grep -q 'SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
+done
+
+##	20260904 item 29: sanitize-c.bash replays every reads.tsv row type through
+##	its own case arms; a type with no arm is an error there now, but a corpus
+##	type the arms forgot would only show once the sanitizer run hit it. Every
+##	type the corpus uses has to have an arm.
+# shellcheck disable=SC2016  ## the \$ is for sed, not the shell
+arms="$(sed -n '/^	case "\$type" in/,/^	esac/p' "${repoDir}/cicd/utility/sanitize-c.bash" | grep -oE "^[[:space:]]*[][a-z'|]+\)" | tr -d " \t')" | tr '|' '\n' | sort -u || true)"
+while IFS= read -r t; do
+	[[ -n "${t}" && "${t}" != "type" ]] || continue
+	grep -qxF -- "${t}" <<<"${arms}" || fBad "sanitize-c.bash has no arm for reads.tsv type ${t}"
+done < <(cut -f2 "${repoDir}"/project/conformance/*/reads.tsv | sort -u)
+
+##	20260904 item 32: `cmd | grep -q` under pipefail reads a SIGPIPE'd writer as
+##	"no match"; package.bash states the rule at its deb listing and broke it at
+##	the libgcc probe. No readelf may feed grep -q directly.
+grep -nE 'readelf[^|]*\|\s*grep -q' "${repoDir}/cicd/utility/package.bash" && fBad "package.bash pipes readelf into grep -q"
+
+##	20260904 item 23: check-c-compilers.bash reported OK with one compiler and
+##	never read the gate flag, so a runner that lost its compilers would have
+##	kept passing. Under the flag a thin sweep has to fail before it builds.
+##	The PATH keeps every tool but the compilers, with one gcc put back.
+mkdir -p "${tmpDir}/onecc"
+for f in /usr/bin/* /bin/*; do
+	if [[ -x "${f}" ]]; then ln -sf "${f}" "${tmpDir}/onecc/" 2>/dev/null || true; fi
+done
+rm -f "${tmpDir}"/onecc/gcc-* "${tmpDir}/onecc/clang" "${tmpDir}/onecc/cc" "${tmpDir}/onecc/gcc"
+ln -sf "$(command -v gcc || command -v cc)" "${tmpDir}/onecc/gcc"
+out="$(PATH="${tmpDir}/onecc" SHCL_GATE_STRICT=1 "${BASH}" "${repoDir}/cicd/utility/check-c-compilers.bash" "${repoDir}" 2>&1 || true)"
+[[ "${out}" == *"needs two versioned gccs and clang"* ]] || fBad "check-c-compilers passed the gate with one compiler: ${out@Q}"
+
+##	20260904 item 24: the publish script ran `git config user.name` as a bare
+##	statement under set -e, so a repository with no identity died in the trap
+##	before doing anything; and its ssh-host probe assigned from a pipeline
+##	whose failure killed the script ahead of the fallback on the next line.
+##	Both lines have to carry their fallback.
+pub="${repoDir}/cicd/utility/n8git_backup-and-publish"
+[[ "$(grep -cE 'git config user\.(name|email)[^|]*\|\|' "${pub}" || true)" == 2 ]] || fBad "n8git_backup-and-publish reads the git identity without a fallback"
+grep -qE 'sshHost="\$\(git remote get-url origin[^)]*\|\| true\)"' "${pub}" || fBad "n8git_backup-and-publish assigns sshHost without a fallback"
+
+##	20260904 item 25: largedoc's memory ceilings were strictly per input MiB, so
+##	at one MiB the runtime's own footprint failed a healthy tree. Run the gate
+##	small, which is exactly the size a developer shrinks it to.
+if [[ -x "${cli}" && -x "${repoDir}/source/go/shcl" && -x "${repoDir}/source/c/shcl" ]]; then
+	out="$(bash "${repoDir}/cicd/utility/largedoc.bash" --mib 1 "rust|${cli}" "go|${repoDir}/source/go/shcl" "python|${repoDir}/source/python/cmd/shcl/main.py" "c|${repoDir}/source/c/shcl" 2>&1 || true)"
+	[[ "${out}" == *"OK"* && "${out}" != *"TOO BIG"* ]] || fBad "largedoc --mib 1 fails on a healthy tree: $(tail -n 3 <<<"${out}")"
+fi
+
 gate="${repoDir}/cicd/utility/check-completions.bash"
 if [[ -x "${gate}" ]]; then
 	fix="${tmpDir}/optless"

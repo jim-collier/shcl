@@ -752,11 +752,22 @@ func stripSign(s string) string {
 	return s
 }
 
+// trimEndWS trims the end of a line, or of a line's content before its
+// comment: wsp, plus a carriage return, which the load takes off a line end
+// anyway - so a retained line or a comment written back never ends in one the
+// next load would strip. A CR followed by content stays content.
 func trimEndWS(s string) string {
-	return strings.TrimRightFunc(s, unicode.IsSpace)
+	return strings.TrimRightFunc(s, func(c rune) bool { return isWsp(c) || c == '\r' })
 }
 
 // leadingWS is the leading space/tab run of a line (the indent).
+// isWsp is the grammar's wsp: a space or a tab. The parser trims with this and
+// nothing wider - a no-break space or a line separator after a value is
+// content, and a Unicode trim used to delete it with no diagnostic.
+func isWsp(c rune) bool { return c == ' ' || c == '\t' }
+
+func trimWsp(s string) string { return strings.TrimFunc(s, isWsp) }
+
 func leadingWS(s string) string {
 	i := 0
 	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
@@ -765,43 +776,49 @@ func leadingWS(s string) string {
 	return s[:i]
 }
 
-// splitComment splits off an unquoted trailing comment: (content, comment from
-// `#` on, "" = none). A `\` shields the next char throughout. Comments are
-// kept as trivia.
+// splitComment splits off an unquoted trailing comment from a field line:
+// (content, comment from `#` on, "" = none). The name half is read the
+// scanner's way and the value half the value's way (see valueCommentAt).
+// Comments are kept as trivia.
 func splitComment(s string) (string, string) {
 	if strings.IndexByte(s, '#') < 0 {
 		return s, ""
 	}
-	var inQuote rune
-	skip := false
-	for i, c := range s {
-		if skip {
-			skip = false
-			continue
-		}
-		if c == '\\' {
-			skip = true
-			continue
-		}
-		switch {
-		case inQuote != 0 && c == inQuote:
-			inQuote = 0
-		case inQuote == 0 && (c == '"' || c == '\''):
-			inQuote = c
-		case inQuote == 0 && c == '#':
-			return s[:i], s[i:]
-		}
+	hash := -1
+	switch kind, i := nameHalf(s, true); kind {
+	case nameHash:
+		hash = i
+	case nameColon:
+		hash = valueCommentAt(s, i+1)
 	}
-	return s, ""
+	if hash < 0 {
+		return s, ""
+	}
+	return s[:hash], s[hash:]
 }
 
-// splitUnquotedCommas splits on unquoted commas; `\` shields the next char.
+// splitValueComment is the same for value text alone: a list element, or a
+// setter's argument.
+func splitValueComment(s string) (string, string) {
+	if strings.IndexByte(s, '#') < 0 {
+		return s, ""
+	}
+	hash := valueCommentAt(s, 0)
+	if hash < 0 {
+		return s, ""
+	}
+	return s[:hash], s[hash:]
+}
+
+// splitUnquotedCommas splits on unquoted commas; a quote opens only at the
+// start of a piece (see valueCommentAt), and `\` shields the next char.
 func splitUnquotedCommas(s string) []string {
 	if strings.IndexByte(s, ',') < 0 {
 		return []string{s}
 	}
 	var parts []string
 	var inQuote rune
+	atStart := true
 	skip := false
 	start := 0
 	for i, c := range s {
@@ -811,16 +828,26 @@ func splitUnquotedCommas(s string) []string {
 		}
 		if c == '\\' {
 			skip = true
+			atStart = false
 			continue
 		}
-		switch {
-		case inQuote != 0 && c == inQuote:
-			inQuote = 0
-		case inQuote == 0 && (c == '"' || c == '\''):
-			inQuote = c
-		case inQuote == 0 && c == ',':
-			parts = append(parts, s[start:i])
-			start = i + 1
+		if inQuote != 0 {
+			if c == inQuote {
+				inQuote = 0
+			}
+		} else {
+			switch {
+			case (c == '"' || c == '\'') && atStart:
+				inQuote = c
+			case c == ',':
+				parts = append(parts, s[start:i])
+				start = i + 1
+				atStart = true
+				continue
+			}
+		}
+		if !isWsp(c) {
+			atStart = false
 		}
 	}
 	return append(parts, s[start:])
@@ -850,7 +877,7 @@ func unterminatedQuote(text string) bool {
 		return false
 	}
 	for _, piece := range splitUnquotedCommas(text) {
-		t := strings.TrimSpace(piece)
+		t := trimWsp(piece)
 		if !quotedShape(t) {
 			if t == "" {
 				continue
@@ -863,11 +890,6 @@ func unterminatedQuote(text string) bool {
 	return false
 }
 
-// quotedShape is true when the text is one quote pair: a quote char at both
-// ends, the last one not escaped. Bytes, not runes: both quotes and the
-// backslash are ASCII, and UTF-8 never puts an ASCII byte inside a multibyte
-// sequence, so the first byte, the last byte and the escape parity are the
-// same answers the decoded form gives.
 // oneLine is value text for a diagnostic message: line breaks and tabs escaped,
 // so one diagnostic is one line. A raw block's body is the value that made this
 // necessary - it carries its own newlines.
@@ -876,6 +898,11 @@ func oneLine(s string) string {
 	return r.Replace(s)
 }
 
+// quotedShape is true when the text is one quote pair: a quote char at both
+// ends, the last one not escaped. Bytes, not runes: both quotes and the
+// backslash are ASCII, and UTF-8 never puts an ASCII byte inside a multibyte
+// sequence, so the first byte, the last byte and the escape parity are the
+// same answers the decoded form gives.
 func quotedShape(t string) bool {
 	if t == "" {
 		return false
@@ -894,7 +921,7 @@ func quotedShape(t string) bool {
 // parseElement trims, then strips one matching outer quote pair if present.
 // Unquoted empty slots return ok=false (dropped, never an error).
 func parseElement(piece string) (element, bool) {
-	t := strings.TrimSpace(piece)
+	t := trimWsp(piece)
 	if t == "" {
 		return element{}, false
 	}
@@ -925,7 +952,7 @@ func cellExceeds(text string, max int) bool {
 		switch {
 		case inQuote != 0 && c == inQuote:
 			inQuote = 0
-		case inQuote == 0 && (c == '"' || c == '\''):
+		case inQuote == 0 && (c == '"' || c == '\'') && !hasContent:
 			inQuote = c
 		case inQuote == 0 && c == ',':
 			if hasContent {
@@ -937,7 +964,7 @@ func cellExceeds(text string, max int) bool {
 			hasContent = false
 			continue
 		}
-		if !unicode.IsSpace(c) {
+		if !isWsp(c) {
 			hasContent = true
 		}
 	}
@@ -1294,14 +1321,14 @@ func fenceOpen(rest string) (ch byte, length int, info string, ok bool) {
 	if run < 3 {
 		return 0, 0, "", false
 	}
-	return first, run, strings.TrimSpace(rest[run:]), true
+	return first, run, trimWsp(rest[run:]), true
 }
 
 // minLen is the opening fence's length, which the grammar puts at three or
 // more, so the length test already rules out the empty line the loop below
 // would otherwise accept.
 func isFenceClose(line string, ch byte, minLen int) bool {
-	t := strings.TrimSpace(line)
+	t := trimWsp(line)
 	if len(t) < minLen {
 		return false
 	}
@@ -1383,13 +1410,109 @@ func parseIndex(s string) (uint64, bool) {
 // looksLikeBracketArray: a value spelled the way JSON, TOML and YAML spell an
 // array. The path scanner reads the brackets as a selector, so the line arrives
 // with no value text and the old repair blamed a colon that is plainly there.
+// The colon that counts is the field's own: one inside a quoted name or a
+// selector is not it.
 func looksLikeBracketArray(content string) bool {
-	colon := strings.IndexByte(content, ':')
-	if colon < 0 {
+	kind, colon := nameHalf(content, false)
+	if kind != nameColon {
 		return false
 	}
 	rest := strings.TrimSpace(content[colon+1:])
 	return strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]")
+}
+
+// How the name half of a field line ends.
+const (
+	nameEnd   = iota // no separator colon
+	nameColon        // the field's own colon
+	nameHash         // an unquoted `#` first: a comment, or a malformed name
+)
+
+// nameHalf scans a field line's name half the way the path scanner reads it: a
+// quote opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
+// selector, and with sugar a colon followed by `[` is selector sugar rather
+// than the separator. `\` shields the next char. Returns the kind and the
+// byte offset it ended at.
+func nameHalf(s string, sugar bool) (int, int) {
+	var inQuote rune
+	inSel := false
+	skip := false
+	for i, c := range s {
+		if skip {
+			skip = false
+			continue
+		}
+		if c == '\\' {
+			skip = true
+			continue
+		}
+		if inQuote != 0 {
+			if c == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inQuote = c
+		case '#':
+			return nameHash, i
+		case '[':
+			inSel = true
+		case ']':
+			inSel = false
+		case ':':
+			if !inSel {
+				rest := strings.TrimLeft(s[i+1:], " \t")
+				if !(sugar && strings.HasPrefix(rest, "[")) {
+					return nameColon, i
+				}
+			}
+		}
+	}
+	return nameEnd, 0
+}
+
+// valueCommentAt is the offset of the `#` that starts a comment in value text,
+// scanning from `from`; -1 when there is none. A quote opens a quoted piece
+// only at the start of a piece - the start of the value, or after an unquoted
+// comma - which is the spec's rule: a piece is quoted only when it begins with
+// one. So an apostrophe in prose (don't panic  # keep) hides nothing. `\`
+// shields the next char.
+func valueCommentAt(s string, from int) int {
+	var inQuote rune
+	atStart := true
+	skip := false
+	for i, c := range s[from:] {
+		if skip {
+			skip = false
+			continue
+		}
+		if c == '\\' {
+			skip = true
+			atStart = false
+			continue
+		}
+		if inQuote != 0 {
+			if c == inQuote {
+				inQuote = 0
+			}
+		} else {
+			switch {
+			case (c == '"' || c == '\'') && atStart:
+				inQuote = c
+			case c == '#':
+				return from + i
+			case c == ',':
+				atStart = true
+				continue
+			}
+		}
+		if !isWsp(c) {
+			atStart = false
+		}
+	}
+	return -1
 }
 
 func scanPath(input string) (pathScan, error) {
@@ -1514,13 +1637,17 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 				for pos < len(input) && input[pos] != ']' {
 					pos++
 				}
-				body := strings.TrimSpace(spanString(input[start:pos]))
+				body := trimWsp(spanString(input[start:pos]))
 				if body == "*" {
 					sel = &selector{kind: selWildcard}
 				} else if n, ok := hashIndex(body); ok {
 					sel = &selector{kind: selByIndex, index: n}
 				} else if n, ok := parseIndex(body); ok {
 					sel = &selector{kind: selByIndex, index: n}
+				} else if indexShape(body) {
+					// All digits but past uint64: an index no instance can have,
+					// not a value selector that would create one on a write.
+					sel = &selector{kind: selByIndex, index: math.MaxUint64}
 				} else if body == "" {
 					return pathScan{}, errors.New("empty selector")
 				} else {
@@ -1549,13 +1676,22 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 			pos++
 		case ':':
 			pos++
-			rest := strings.TrimSpace(spanString(input[pos:]))
+			rest := trimWsp(spanString(input[pos:]))
 			return pathScan{segments: segments, valueText: &rest}, nil
 		default:
 			c, _ := utf8.DecodeRuneInString(input[pos:])
 			return pathScan{}, fmt.Errorf("unexpected '%c' after field", c)
 		}
 	}
+}
+
+// indexShape is the spelling of an index selector - an optional `#`, an
+// optional `+`, then digits - whatever its size. The grammar says 1*DIGIT,
+// with no upper bound.
+func indexShape(body string) bool {
+	b := strings.TrimPrefix(body, "#")
+	b = strings.TrimPrefix(b, "+")
+	return b != "" && allDigits(b)
 }
 
 func hashIndex(body string) (uint64, bool) {
@@ -2088,29 +2224,30 @@ func (p *parser) bindBlock(parent int, v value, line int) int {
 
 // addStarElement: one stacked-list element (`* scalar`) appends to the
 // parent's array.
-func (p *parser) addStarElement(parent int, body string, line int) {
+// True when the element was added, false when the line was dropped.
+func (p *parser) addStarElement(parent int, body string, line int) bool {
 	if parent == root {
 		p.err(line, "E007", "list element with no parent field")
 		p.lost++
-		return
+		return false
 	}
 	// Uniform-or-nothing (spec): a mix with field children is not a block array.
 	if len(p.arena[parent].children) != 0 {
 		p.err(line, "E008", "list element mixed with field children; ignored")
 		p.lost++
-		return
+		return false
 	}
-	trimmed := strings.TrimSpace(body)
+	trimmed := trimWsp(body)
 	if trimmed == "" {
 		p.err(line, "E009", "empty list element")
 		p.lost++
-		return
+		return false
 	}
 	// One scalar per line; a bare comma is an error, not a second element.
 	if len(splitUnquotedCommas(trimmed)) > 1 {
 		p.err(line, "E010", "bare comma in list element (one element per line)")
 		p.lost++
-		return
+		return false
 	}
 	if unterminatedQuote(trimmed) {
 		p.err(line, "E017", "unterminated quote in value")
@@ -2119,14 +2256,14 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 	if !ok {
 		p.err(line, "E009", "empty list element")
 		p.lost++
-		return
+		return false
 	}
 	// Element cap: each element line past it is refused on its own, the way
 	// any other bad element line is.
 	if p.maxElements != 0 && p.arena[parent].value.kind == vCell && len(p.arena[parent].value.els) >= p.maxElements {
 		p.err(line, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements))
 		p.lost++
-		return
+		return false
 	}
 	switch {
 	case p.arena[parent].value.isEmpty():
@@ -2155,7 +2292,9 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 	default:
 		p.err(line, "E011", "field already has a value; list element ignored")
 		p.lost++
+		return false
 	}
+	return true
 }
 
 // emitRepeatedLeafHints flags legal input that looks like a common mistake: a
@@ -2222,6 +2361,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	for j, l := range lines {
 		lines[j] = strings.TrimRight(l, "\r")
 	}
+	// A newline-terminated text splits into one more piece than it has lines.
+	// An unterminated raw block took that empty tail as a body line, so the
+	// same last line read differently with and without its newline, which
+	// the grammar says are one document.
+	if strings.HasSuffix(text, "\n") {
+		lines = lines[:len(lines)-1]
+	}
 	i := 0
 	nodeCapped := false
 	for i < len(lines) {
@@ -2232,7 +2378,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		if p.maxNodes != 0 && len(p.arena)-1 > p.maxNodes {
 			p.err(i+1, "E020", fmt.Sprintf("node cap of %d exceeded; parse stopped", p.maxNodes))
 			for _, l := range lines[i:] {
-				if strings.TrimSpace(l) != "" {
+				if trimWsp(l) != "" {
 					p.lost++
 				}
 			}
@@ -2287,7 +2433,14 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// Stacked-list element: colon-less by construction ('*' can't begin a name).
 		if strings.HasPrefix(rest, "*") {
 			after := rest[1:]
-			if strings.HasPrefix(after, " ") || strings.HasPrefix(after, "\t") {
+			// A `*` alone after the trim: whether a space followed it decides
+			// between an empty element and a malformed line, and only the
+			// untrimmed line still knows.
+			spaced := strings.HasPrefix(after, " ") || strings.HasPrefix(after, "\t")
+			if after == "" && len(lines[i]) > len(indent)+1 {
+				spaced = lines[i][len(indent)+1] == ' ' || lines[i][len(indent)+1] == '\t'
+			}
+			if spaced {
 				parent, okp := p.resolveParent(indent)
 				if !okp {
 					p.err(lineno, "E012", "indentation matches no open level")
@@ -2300,12 +2453,21 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 					i++
 					continue
 				}
-				body, comment := splitComment(after)
-				// Elements have no node of their own; trivia rides the field.
+				body, comment := splitValueComment(after)
+				// Elements have no node of their own; trivia rides the field. At the
+				// root there is no field (E007), so the comment rides the document like
+				// any other pending one.
 				if parent != root {
 					p.attachTrivia(parent, comment)
+				} else if comment != "" {
+					p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 				}
-				p.addStarElement(parent, body, lineno)
+				// A dropped element holds its indent level like any skipped line, so
+				// what is written under it is skipped with it (E018) rather than
+				// re-parenting to the field.
+				if !p.addStarElement(parent, body, lineno) {
+					p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+				}
 				i++
 				continue
 			}
@@ -3768,8 +3930,8 @@ func literalValue(text string) (value, bool) {
 	if strings.ContainsAny(text, "\n\r") {
 		return value{}, false
 	}
-	v, _ := splitComment(text)
-	v = strings.TrimFunc(v, unicode.IsSpace)
+	v, _ := splitValueComment(text)
+	v = trimWsp(v)
 	// Bracket-array text is refused too: in a file it is E019 and the line is
 	// lost, so writing it as a two-element array holding `[1` and `2]` would
 	// be a different wrong answer.
@@ -3831,7 +3993,7 @@ func encodeString(s string) string {
 func chooseFence(content string) (byte, int) {
 	maxrun := 0
 	for _, line := range strings.Split(content, "\n") {
-		t := strings.TrimSpace(line)
+		t := trimWsp(line)
 		if t != "" && strings.Trim(t, "`") == "" && len(t) > maxrun {
 			maxrun = len(t)
 		}
@@ -4174,14 +4336,19 @@ func (d *Document) SetComment(path, text string) bool {
 	// stops being a fmt fixpoint.
 	line = trimEndWS(line)
 	// The node's own blank moves above its first comment; otherwise the blank
-	// would separate the comment from what it annotates.
+	// would separate the comment from what it annotates. Above the first one
+	// already there, when there is one.
 	nd := &d.arena[idx]
 	l := plainLead(line)
-	if nd.blankBefore && len(nd.leading()) == 0 {
-		l.blankBefore = true
-		nd.blankBefore = false
-	}
 	t := nd.trivMut()
+	if nd.blankBefore {
+		nd.blankBefore = false
+		if len(t.leading) > 0 {
+			t.leading[0].blankBefore = true
+		} else {
+			l.blankBefore = true
+		}
+	}
 	t.leading = append(t.leading, l)
 	return true
 }
@@ -4316,13 +4483,15 @@ func (d *Document) SetDateTimeArray(path string, v []DateTime) bool {
 }
 
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+// A path that already resolves reports what a write there would, so a
+// wildcard is refused whether or not its slots happen to resolve.
 
 // SetIntDefault is SetInt only when path has no node yet.
 func (d *Document) SetIntDefault(path string, v int64) bool {
 	if !d.Exists(path) {
 		return d.SetInt(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetFloatDefault is SetFloat only when path has no node yet.
@@ -4330,7 +4499,7 @@ func (d *Document) SetFloatDefault(path string, v float64) bool {
 	if !d.Exists(path) {
 		return d.SetFloat(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetBoolDefault is SetBool only when path has no node yet.
@@ -4338,7 +4507,7 @@ func (d *Document) SetBoolDefault(path string, v bool) bool {
 	if !d.Exists(path) {
 		return d.SetBool(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetLiteral binds text at path as value syntax rather than as data: "80, 443"
@@ -4359,7 +4528,7 @@ func (d *Document) SetLiteralDefault(path, text string) bool {
 	if !d.Exists(path) {
 		return d.SetLiteral(path, text)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetStringDefault is SetString only when path has no node yet.
@@ -4367,7 +4536,7 @@ func (d *Document) SetStringDefault(path, v string) bool {
 	if !d.Exists(path) {
 		return d.SetString(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetDateTimeDefault is SetDateTime only when path has no node yet.
@@ -4375,7 +4544,7 @@ func (d *Document) SetDateTimeDefault(path string, v DateTime) bool {
 	if !d.Exists(path) {
 		return d.SetDateTime(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetRawDefault is SetRaw only when path has no node yet.
@@ -4383,7 +4552,7 @@ func (d *Document) SetRawDefault(path, content, info string) bool {
 	if !d.Exists(path) {
 		return d.SetRaw(path, content, info)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetIntArrayDefault is SetIntArray only when path has no node yet.
@@ -4391,7 +4560,7 @@ func (d *Document) SetIntArrayDefault(path string, v []int64) bool {
 	if !d.Exists(path) {
 		return d.SetIntArray(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetFloatArrayDefault is SetFloatArray only when path has no node yet.
@@ -4399,7 +4568,7 @@ func (d *Document) SetFloatArrayDefault(path string, v []float64) bool {
 	if !d.Exists(path) {
 		return d.SetFloatArray(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetBoolArrayDefault is SetBoolArray only when path has no node yet.
@@ -4407,7 +4576,7 @@ func (d *Document) SetBoolArrayDefault(path string, v []bool) bool {
 	if !d.Exists(path) {
 		return d.SetBoolArray(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetStringArrayDefault is SetStringArray only when path has no node yet.
@@ -4415,7 +4584,7 @@ func (d *Document) SetStringArrayDefault(path string, v []string) bool {
 	if !d.Exists(path) {
 		return d.SetStringArray(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // SetDateTimeArrayDefault is SetDateTimeArray only when path has no node yet.
@@ -4423,7 +4592,7 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 	if !d.Exists(path) {
 		return d.SetDateTimeArray(path, v)
 	}
-	return true
+	return d.WriteReason(path) == Writable
 }
 
 // ---------------------------------------------------------------------------
@@ -4549,6 +4718,29 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 				clones[i] = d.cloneSubtree(over, ok.node, baseParent)
 			}
 			if inBase {
+				// The replaced leaf's comments go with it, which the spec
+				// allows; a content-malformed line retained on it is content
+				// the parser promised to keep, so those move onto the
+				// replacement. A comment starts with `#`, a retained line
+				// never does.
+				var kept []lead
+				for _, b := range baseKids {
+					if d.arena[b].name != name {
+						continue
+					}
+					nd := &d.arena[b]
+					for _, list := range [][]lead{nd.leading(), nd.inside(), nd.after()} {
+						for _, l := range list {
+							if !strings.HasPrefix(l.text, "#") {
+								kept = append(kept, l)
+							}
+						}
+					}
+				}
+				if len(kept) > 0 {
+					t := d.arena[clones[0]].trivMut()
+					t.leading = append(kept, t.leading...)
+				}
 				replace[name] = clones
 			} else {
 				for i, ok := range group {
@@ -4819,11 +5011,13 @@ func parseFloatText(e *element, level Strictness) (float64, bool) {
 	} else {
 		// An integer is a valid float on read (incl. hex and quoted thousands).
 		el := element{text: t, quoted: e.quoted}
-		n, ok := parseIntTextNoLoose(&el)
-		if !ok {
+		if n, ok := parseIntTextNoLoose(&el); ok {
+			v = float64(n)
+		} else if w, ok := parseIntTextWide(&el); ok {
+			v = w
+		} else {
 			return 0, false
 		}
-		v = float64(n)
 	}
 	if percent {
 		v /= 100.0
@@ -4835,6 +5029,80 @@ func parseFloatText(e *element, level Strictness) (float64, bool) {
 // the float path so the two can't recurse into each other.
 func parseIntTextNoLoose(e *element) (int64, bool) {
 	return parseIntText(e, Standard)
+}
+
+// parseIntTextWide reads the two integer spellings the plain float parse does
+// not - hex, and quoted thousands - past the int64 range, as a double: a float
+// read is bounded by the double, not by the integer type. Hex goes in digit by
+// digit in the double, so every binding rounds the same way; the spellings
+// mirror parseIntText.
+func parseIntTextWide(e *element) (float64, bool) {
+	t := strings.TrimSpace(e.text)
+	neg := false
+	body := t
+	if strings.HasPrefix(t, "-") {
+		neg = true
+		body = t[1:]
+	} else if strings.HasPrefix(t, "+") {
+		body = t[1:]
+	}
+	var v float64
+	if h, ok := strings.CutPrefix(body, "0x"); ok || strings.HasPrefix(body, "0X") {
+		if !ok {
+			h = body[2:]
+		}
+		if h == "" {
+			return 0, false
+		}
+		for i := 0; i < len(h); i++ {
+			d := hexDigit(h[i])
+			if d < 0 {
+				return 0, false
+			}
+			v = v*16 + float64(d)
+		}
+	} else if e.quoted && strings.Contains(body, ",") {
+		groups := strings.Split(body, ",")
+		wellFormed := len(groups) > 1 && groups[0] != "" && len(groups[0]) <= 3 && allDigits(groups[0])
+		if wellFormed {
+			for _, g := range groups[1:] {
+				if len(g) != 3 || !allDigits(g) {
+					wellFormed = false
+					break
+				}
+			}
+		}
+		if !wellFormed {
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(strings.ReplaceAll(body, ",", ""), 64)
+		if err != nil {
+			return 0, false
+		}
+		v = f
+	} else {
+		return 0, false
+	}
+	if math.IsInf(v, 0) || math.IsNaN(v) {
+		return 0, false
+	}
+	if neg {
+		v = -v
+	}
+	return v, true
+}
+
+// hexDigit is the value of one ASCII hex digit, or -1.
+func hexDigit(b byte) int {
+	switch {
+	case b >= '0' && b <= '9':
+		return int(b - '0')
+	case b >= 'a' && b <= 'f':
+		return int(b-'a') + 10
+	case b >= 'A' && b <= 'F':
+		return int(b-'A') + 10
+	}
+	return -1
 }
 
 func parseBoolText(t string, level Strictness) (bool, bool) {
@@ -5730,13 +5998,46 @@ func sameMoment(a, b DateTime) bool {
 	}
 	ao, ahas := offset(a.Zone)
 	bo, bhas := offset(b.Zone)
-	if ahas != bhas || (ahas && ao != bo) {
+	if ahas != bhas || a.HasDate != b.HasDate || a.HasTime != b.HasTime {
 		return false
 	}
-	a.Zone, b.Zone = nil, nil
-	a.Frac = strings.TrimRight(a.Frac, "0")
-	b.Frac = strings.TrimRight(b.Frac, "0")
-	return a == b
+	if a.HasSeconds != b.HasSeconds || a.Second != b.Second {
+		return false
+	}
+	if strings.TrimRight(a.Frac, "0") != strings.TrimRight(b.Frac, "0") {
+		return false
+	}
+	if !ahas {
+		a.Zone, b.Zone = nil, nil
+		a.Frac, b.Frac = "", ""
+		return a == b
+	}
+	// Zoned values are instants: the written clock less its offset, the date
+	// carrying the day wrap. A time alone lives on a 24-hour cycle.
+	minutes := func(dt DateTime, off int) int64 {
+		hm := int64(dt.Hour*60 + dt.Minute - off)
+		if dt.HasDate {
+			return daysFromCivil(dt.Year, dt.Month, dt.Day)*1440 + hm
+		}
+		return ((hm % 1440) + 1440) % 1440
+	}
+	return minutes(a, ao) == minutes(b, bo)
+}
+
+// daysFromCivil is the day count since 1970-01-01, negative before it.
+func daysFromCivil(y, m, d int) int64 {
+	if m <= 2 {
+		y--
+	}
+	yy := int64(y)
+	era := yy / 400
+	if yy < 0 && yy%400 != 0 {
+		era--
+	}
+	yoe := yy - era*400
+	doy := (153*int64((m+9)%12)+2)/5 + int64(d) - 1
+	doe := yoe*365 + yoe/4 - yoe/100 + doy
+	return era*146097 + doe - 719468
 }
 
 // buildSchema interprets a parsed schema document into constraints and
@@ -6062,9 +6363,10 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 	}
 	// A lower bound above the upper one admits nothing, so every value fails
 	// twice and the schema, not the config, is what has to change. Reported at
-	// the max line, and the field is dropped like any other broken one so the
-	// document is not told off twice per value for a range it could never have
-	// satisfied.
+	// the max line. The range goes, not the field: a key-level fault keeps its
+	// entry, so the path still legalizes its name chain for the unknown-field
+	// sweep, and the document is not told off twice per value for a range it
+	// could never have satisfied.
 	crossed := (c.minI != nil && c.maxI != nil && *c.minI > *c.maxI) ||
 		(c.minF != nil && c.maxF != nil && *c.minF > *c.maxF)
 	if crossed {
@@ -6073,7 +6375,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 			line = schema.arena[maxAt].line
 		}
 		vdiag(faults, line, "V092", "bad schema constraint 'max'")
-		return c, false
+		c.minI, c.maxI, c.minF, c.maxF = nil, nil, nil, nil
 	}
 	return c, true
 }

@@ -65,7 +65,7 @@ Usage:
   shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
                                          print canonical (or rewrite FILE in
                                          place with --write)
-  shcl fmt [--write|-w] FILE             print the canonical form (or rewrite
+  shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite
                                          FILE in place with --write)
   shcl check [options] FILE              load and print diagnostics
                                          (--schema=SCHEMA also validates FILE
@@ -97,7 +97,7 @@ quotes and brackets, so a selector may hold one. Ops:
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
   literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax
-  raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block
+  raw[-default]<TAB>PATH<TAB>INFO<TAB>CONTENT             set a raw block
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 

@@ -75,6 +75,19 @@ fRustTop() {
 	} | tr -d '"' | sort -u | paste -sd' '
 }
 
+## The CLI's value-taking options: the arms asked_for() steps over. Flattened
+## first, since rustfmt puts one name per line.
+fRustValOpts() {
+	sed -n '/^fn asked_for/,/^}/p' "${mainRs}" | tr '\n\t' '  ' | tr -s ' ' \
+	| { grep -oE '("--[a-z-]+" [|] )*"--[a-z-]+" => i [+]= 1' || true ;} \
+	| { grep -o '"--[a-z-]*"' || true ;} | tr -d '"' | sort -u | paste -sd' '
+}
+
+## The same list out of a completion file.
+fCompValOpts() {
+	sed -n "s/^_shcl_valopts='\([^']*\)'.*/\1/p" "$1" | tr ' ' '\n' | sed '/^$/d' | sort -u | paste -sd' '
+}
+
 ## The reference's dispatch arms, one name per line. Matched on the arm arrow
 ## rather than on indentation: `\t` is not an escape in POSIX ERE, so a pattern
 ## carrying one matches nothing under the grep a script gets.
@@ -130,6 +143,20 @@ for cf in "${compFiles[@]}"; do
 	fi
 done
 
+## The value-option lists: an option that takes a value and is missing here
+## has its value counted as a positional, which eats the FILE slot.
+rustVal="$(fRustValOpts)"
+[[ -n "${rustVal}" ]] || { echo "check-completions: no value-option list found in ${mainRs}" >&2; exit 1; }
+for cf in "${compFiles[@]}"; do
+	compVal="$(fCompValOpts "${cf}")"
+	if [[ "${rustVal}" != "${compVal}" ]]; then
+		echo "check-completions: $(basename "${cf}") value-option list disagrees with the CLI:" >&2
+		echo "  CLI:        ${rustVal}" >&2
+		echo "  completion: ${compVal}" >&2
+		rc=1
+	fi
+done
+
 ## Every command the CLI accepts must have a dispatch arm of its own. One
 ## without used to fall through to whichever command the catch-all named - no
 ## compile error, no message.
@@ -142,10 +169,11 @@ if [[ "${rustCmds}" != "${rustArms}" ]]; then
 	rc=1
 fi
 
-((rc)) || echo "check-completions: OK ($(wc -l <<<"${rustTable}") subcommands + top-level offer + dispatch, ${#compFiles[@]} completion files)"
+((rc)) || echo "check-completions: OK ($(wc -l <<<"${rustTable}") subcommands + top-level offer + value options + dispatch, ${#compFiles[@]} completion files)"
 exit "${rc}"
 
 
 ##	Script history:
 ##		- 20260818: Created.
 ##		- 20260830: Also diff the top-level offers.
+##		- 20260905: Also diff the value-option lists.

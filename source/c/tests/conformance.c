@@ -249,7 +249,9 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 		only_absent = 1;
 		op[oplen - 8] = '\0';
 	}
-	#define PRESENT (only_absent && shcl_exists(d, path, plen))
+	// A present path still answers what a write there would, like the library's
+	// default forms: a wildcard is refused whether or not its slots resolve.
+	#define PRESENT (only_absent && shcl_exists(d, path, plen) && ((wrote = shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE), 1))
 	if (!strcmp(op, "int")) { int64_t x; if (!cf_i64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
 	else if (!strcmp(op, "float")) { double x; if (!cf_f64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
 	else if (!strcmp(op, "bool")) { int x; if (!cf_bool(v, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_bool(d, path, plen, x); }
@@ -892,12 +894,12 @@ int main(int argc, char **argv) {
 		shcl_free(ld);
 		// The count the cap judges is the count the array reads back as,
 		// spelling by spelling: quoted and escaped commas, empty and blank
-		// slots, Unicode blanks, a quote that never closes. Refused at one
+		// slots, a Unicode blank (content: only a space or a tab is blank), a quote that never closes. Refused at one
 		// under, kept at exact.
 		static const struct { const char *spelling; size_t n; } counts[] = {
 			{"1, 2, 3", 3}, {"\"a, b\", c", 2}, {"a\\, b, c", 2}, {"a,,b", 2},
 			{"a, , b", 2}, {" a ", 1}, {"\"\", ''", 2}, {"'a\", b'", 1},
-			{"\"open, b", 1}, {"\\", 1}, {"x,\xe3\x80\x80", 1}, {"x, \xc2\xa0y", 2}, {", , ,", 0},
+			{"\"open, b", 1}, {"\\", 1}, {"x,\xe3\x80\x80", 2}, {"x, \xc2\xa0y", 2}, {", , ,", 0},
 		};
 		for (size_t ci = 0; ci < sizeof counts / sizeof counts[0]; ci++) {
 			char ctext[64]; snprintf(ctext, sizeof ctext, "v: %s\n", counts[ci].spelling);
@@ -1262,11 +1264,16 @@ int main(int argc, char **argv) {
 		SetFileAttributesA(rfile, FILE_ATTRIBUTE_NORMAL);
 		SetFileAttributesA(rfile, GetFileAttributesA(rfile) | FILE_ATTRIBUTE_READONLY);
 		// The temp name starts with a dot, so only the two directory entries
-		// are skipped, not every dotfile.
+		// are skipped, not every dotfile. A planted lookalike proves the count
+		// can see one: a filter that skipped every dotfile passed with nothing
+		// to count, and nothing planted it.
+		char planted[320]; snprintf(planted, sizeof planted, "%s/.ro.shcl.tmp999.0", rdir);
+		FILE *pf = fopen(planted, "wb"); if (!pf || fclose(pf) != 0) fail("readonly", "planting a dot-named file failed");
 		DIR *rdd = opendir(rdir); int left = 0; const struct dirent *re;
 		while (rdd && (re = readdir(rdd))) if (strcmp(re->d_name, ".") != 0 && strcmp(re->d_name, "..") != 0) left++;
 		if (rdd) closedir(rdd);
-		if (left != 1) fail("readonly", "a temp file was left behind");
+		if (left != 2) fail("readonly", left == 1 ? "the leftover count cannot see a dot-named file" : "a temp file was left behind");
+		remove(planted);
 		shcl_free(rd);
 		SetFileAttributesA(rfile, FILE_ATTRIBUTE_NORMAL);
 		remove(rfile); rmdir(rdir);

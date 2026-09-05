@@ -22,6 +22,19 @@ repoDir="${1:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}"
 declare -i nBad=0
 fBad(){ echo "check-docs: $1" >&2; nBad+=1 ;}
 
+##	Every write op the CLI dispatches with a -default form has to be spelled in
+##	the help's op table, either by its own `name[-default]` entry or by the
+##	`<type>[-array]-default` line that covers the typed scalars and arrays.
+##	`raw-default` was accepted for a year and named nowhere.
+mainRs="${repoDir}/source/rust/src/main.rs"
+while IFS= read -r op; do
+	base="${op%-default}"
+	case "${base}" in
+		int|float|bool|string|datetime|*-array) continue ;;
+	esac
+	grep -qF -- "  ${base}[-default]<TAB>" "${mainRs}" || fBad "write op ${op} is dispatched but the help's op table never spells ${base}[-default]"
+done < <(sed -n '/^fn apply_op/,/^}/p' "${mainRs}" | { grep -oE '"[a-z-]+-default" =>' || true ;} | tr -d '"=> ' | sort -u)
+
 ##	A disclaimer that says the opposite of what it means is worse than none, and
 ##	these documents invite verbatim reuse, so the error travels. One negation in
 ##	the sentence is the disclaimer; two is "None of this is not legal advice".
@@ -221,6 +234,22 @@ grep -q 'E014' <<<"${readmeGet}" \
 ##	merge doc comment - a port that loses one leaves its own users guessing.
 grep -q 'fold is not associative' "${repoDir}/project/spec.md" \
 	|| fBad "spec.md: Layered loading does not say the fold is not associative"
+##	The other two facts of that paragraph, the five deliberate merge behaviors
+##	before it, and the datetime tolerance paragraph: each went in as prose alone
+##	in the 20260901b and 20260902 rounds, and each could be deleted with every
+##	gate green.
+for phrase in "keeps the base's strictness" "merge is not free" \
+	"cites the line of whichever file the node came from" \
+	"drops the base leaf's comments and its blank-line grouping" \
+	"doubles a container's leading comments" "sums across layers" \
+	"strict failure in a lower layer" "Tolerances the whitelist allows"; do
+	grep -qF -- "${phrase}" "${repoDir}/project/spec.md" || fBad "spec.md no longer says: ${phrase}"
+done
+##	20260901b item 45: the Python section owns the iterative-walk deviation and
+##	its reason; it sat under the C heading once.
+pySection="$(sed -n '/^### Python/,/^### C/p' "${repoDir}/style-guide.md")"
+grep -qF 'emit, overlay and clone walks are iterative' <<<"${pySection}" || fBad "style-guide.md: the Python section does not list the iterative walks"
+grep -qF 'recursion limit' <<<"${pySection}" || fBad "style-guide.md: the Python section does not say why the walks are iterative"
 for src in source/rust/src/lib.rs source/go/shcl.go source/python/shcl.py source/c/shcl.h; do
 	grep -q 'fold is not associative' "${repoDir}/${src}" \
 		|| fBad "${src}: the merge doc comment does not say the fold is not associative"

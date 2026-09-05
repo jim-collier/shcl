@@ -15,13 +15,14 @@ shcl \- read, edit, validate and format Simple Hierarchical Config Language file
 .YS
 .SY shcl
 .B set
-.RB [ \-\-write ]
+.RB [ \-\-write | \-w ]
 .RI [ options ]
 .I FILE
 .YS
 .SY shcl
 .B fmt
-.RB [ \-\-write ]
+.RB [ \-\-write | \-w ]
+.RI [ options ]
 .I FILE
 .YS
 .SY shcl
@@ -404,7 +405,7 @@ int|float|bool|string|datetime<TAB>PATH<TAB>VALUE
 <type>\-array<TAB>PATH<TAB>V1<TAB>V2...
 <type>[\-array]\-default<TAB>...
 literal[\-default]<TAB>PATH<TAB>TEXT
-raw<TAB>PATH<TAB>INFO<TAB>CONTENT
+raw[\-default]<TAB>PATH<TAB>INFO<TAB>CONTENT
 empty<TAB>PATH
 comment<TAB>PATH<TAB>TEXT
 remove<TAB>PATH

@@ -128,6 +128,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A quote in the middle of a bare value no longer swallows the rest of the line. `note: don't panic  # keep this` used to load as the string `don't panic  # keep this` with no diagnostic, and the next `fmt --write` baked that in at exit 0, comment gone for good; `b: it's fine, ok` read as one element where the same words without the apostrophe read as two. A piece is quoted only when it begins with a quote, which is what the spec and the grammar always said.
+
+- A schema with one crossed range (`min` above `max`) no longer switches off the unknown-field check for the whole document. The fault is still reported at the `max` line; the range is dropped, the field keeps its other constraints, and unknown fields are reported as they are under a sound schema.
+
+- `Set<T>Default` and `--set-default` refuse a wildcard path whether or not its slots resolve. They used to report success and write nothing when the wildcard matched something, and refuse when it did not, so the same call passed or failed on the document's contents.
+
+- `allowed` on a `datetime` field compares moments, as the spec says, rather than written clocks. `2026-01-01T13:00:00+01:00` against `allowed: 2026-01-01T12:00:00Z` used to be `V004`; only the three offset-zero spellings agreed with each other.
+
+- The bash completion completes the `--option=value` spelling, which it used to answer with nothing, and no longer loses the FILE slot after one. Both completions know that `--remove`, `--set-default` and `--set-literal-default` take a value.
+
+- A no-break space, a line separator, a vertical tab or a form feed at the end of a bare value is content and survives a load. Only a space or a tab is trimmed off a line now, as the grammar has always said; every binding used its language's Unicode whitespace set and deleted the character with no diagnostic, so `fmt --write` dropped it at exit 0. An element that is one such character is an element, not an empty slot, and `SetComment` keeps one at the end of its text.
+
+- An unterminated raw block at the end of a newline-terminated file no longer gains an empty last line. The same lines with and without the file's final newline are one document, as the grammar says.
+
+- A `*` with a space after it and nothing else is an empty list element (`E009`), as the spec's table says, rather than a malformed line whose message claimed the space was missing.
+
+- A stacked `*` element that is dropped (`E007` to `E011`, or the element cap) now holds its indent level, so a line written under it is skipped with it (`E018`) and counts as lost. It used to re-parent to the field above, so `* small` with a line under it, under a parent with field children, moved that line up a level while the malformed spelling `*small` skipped it.
+
+- `SetComment` on a node that already carries a comment moves the node's blank separator line above the first comment, as it does for a first comment, instead of leaving it between the comments and the node.
+
+- An integer past the i64 range reads as a float whatever its spelling. `0xFFFFFFFFFFFFFFFF` and a quoted `"18,446,744,073,709,551,615"` through `get --float` used to exit 4, where the same numbers in plain decimal read fine; the float read is bounded by the double now, as the spec says.
+
+- A merge in the C binding no longer retains a copy of every rebuilt parent's whole child list. Two hundred merges of an eight-leaf overlay on a 40000-key base grew the process by 84 MB, against the spec's "about a megabyte" for five hundred; the list is rewritten in place now, and a merge costs its cloned nodes.
+
+- The C binding keeps an `H001` hint for a repeated field whose name is empty even when the schema disavows it with `repeat`, where the other three drop it. Dropped in C too.
+
+- An all-digit selector too large for a 64-bit index (`a[99999999999999999999]`) is an index that names no instance, in every binding. It used to fall through to a value selector, so a write through it created an instance whose value was the number, and Python and the other three disagreed on the document line.
+
+- A trailing comment on a `*` element line at the top level (an `E007` line) is kept as a document comment instead of being discarded with the element.
+
+- Merging a layer over a leaf no longer deletes a malformed line the parser had retained above or under that leaf. The line stays in the merged document, where a save writes it back out, instead of vanishing with the base leaf's comments and a lost count of zero.
+
+- A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, and the save gate refuses like it does for the plain spelling.
+
 - An allocation failure inside a C parse or validate crashed the process on Windows instead of returning NULL, on any binary built with mingw at `-O1`, `-O2` or `-Os`. The recovery unwinds through SEH there, and it was reading off the top of the stack on the way. The whole point of the recovery is that a config problem does not take the application down with it, so on Windows it had been doing the opposite of what it promised. An embedder whose `SHCL_OOM()` hook longjmps out is exposed to the same thing, since the unwind crosses these frames too, so the header now carries `SHCL_SETJMP(buf)` for arming that recovery point.
 
 - A line whose indent matches no open level (`E012`) and a `*` line with no space after it (`E013`) now hold their indent level, so what is written under them is skipped with them (`E018`) instead of attaching one level up, a fence line at a bad indent takes its whole body with it instead of parsing it as top-level bindings, and a second line at the same bad indent is refused the same way rather than binding.
