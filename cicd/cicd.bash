@@ -571,6 +571,14 @@ if ((${#GIT_PUBLISH[@]})); then
 		"${GIT_PUBLISH[@]}" "${publish_flag}"
 	fi
 	fEcho "OK: published"
+	## An installer fix reaches nobody until it is on main: the README's
+	## one-liners fetch the scripts from there as they run, so a fix that stays
+	## on dev is the one drift every user meets. Judged after the publish so a
+	## dev run that carries one goes red until the docs-only merge to main.
+	if [[ "$(git branch --show-current)" == dev ]] && git rev-parse -q --verify origin/main >/dev/null 2>&1; then
+		installerDrift="$(git diff --stat origin/main -- install.bash install.ps1 install-dev.bash || true)"
+		[[ -z "${installerDrift}" ]] || fDie "the installers differ from origin/main; merge them to main under the docs-only rule:"$'\n'"${installerDrift}"
+	fi
 else
 	fEcho_Clean "publish skipped"
 fi
