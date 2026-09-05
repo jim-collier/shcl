@@ -1807,7 +1807,7 @@ static int parse_int_text_wide(ShclArena *a, const ShclElement *e, double *out) 
 		for (size_t i = 0; i < body.n; i++) if (body.p[i] != ',') sb_putc(a, &b, body.p[i]);
 		if (!strtod_full(a, sb_S(&b), &v)) return 0;
 	} else return 0;
-	if (!(v == v) || v > 1.7976931348623157e308 || v < -1.7976931348623157e308) return 0;
+	if (!isfinite(v)) return 0;
 	*out = neg ? -v : v; return 1;
 }
 static int parse_int_text(ShclArena *a, const ShclElement *e, shcl_strictness level, int64_t *out) {
