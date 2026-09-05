@@ -1264,11 +1264,16 @@ int main(int argc, char **argv) {
 		SetFileAttributesA(rfile, FILE_ATTRIBUTE_NORMAL);
 		SetFileAttributesA(rfile, GetFileAttributesA(rfile) | FILE_ATTRIBUTE_READONLY);
 		// The temp name starts with a dot, so only the two directory entries
-		// are skipped, not every dotfile.
+		// are skipped, not every dotfile. A planted lookalike proves the count
+		// can see one: a filter that skipped every dotfile passed with nothing
+		// to count, and nothing planted it.
+		char planted[320]; snprintf(planted, sizeof planted, "%s/.ro.shcl.tmp999.0", rdir);
+		FILE *pf = fopen(planted, "wb"); if (!pf || fclose(pf) != 0) fail("readonly", "planting a dot-named file failed");
 		DIR *rdd = opendir(rdir); int left = 0; const struct dirent *re;
 		while (rdd && (re = readdir(rdd))) if (strcmp(re->d_name, ".") != 0 && strcmp(re->d_name, "..") != 0) left++;
 		if (rdd) closedir(rdd);
-		if (left != 1) fail("readonly", "a temp file was left behind");
+		if (left != 2) fail("readonly", left == 1 ? "the leftover count cannot see a dot-named file" : "a temp file was left behind");
+		remove(planted);
 		shcl_free(rd);
 		SetFileAttributesA(rfile, FILE_ATTRIBUTE_NORMAL);
 		remove(rfile); rmdir(rdir);
