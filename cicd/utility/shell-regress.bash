@@ -72,8 +72,13 @@ mkdir -p "${tmpDir}/comp" && touch "${tmpDir}/comp/alpha.shcl" "${tmpDir}/comp/b
 fComplete(){
 	## $1 = lib|bare, $2 = the command line as typed (a trailing space means a
 	## fresh word). Prints COMPREPLY space-joined.
+	## With the library, its file completer is replaced by a plain compgen: what
+	## the lib half tests is the word joining, and _filedir's answer outside a
+	## live readline session differs between bash-completion releases. The
+	## words come back sorted, since compgen -f follows directory order.
 	local setup=":"
-	[[ "$1" == lib ]] && setup="source /usr/share/bash-completion/bash_completion"
+	# shellcheck disable=SC2016  ## the ${cur} is for the inner bash
+	[[ "$1" == lib ]] && setup='source /usr/share/bash-completion/bash_completion; _filedir(){ mapfile -t COMPREPLY < <(compgen -f -- "${cur}"); }'
 	bash -c '
 		'"${setup}"'; source '"'${repoDir}/source/completions/shcl.bash'"'
 		line="$1"; COMP_WORDS=()
@@ -83,7 +88,7 @@ fComplete(){
 		done
 		[[ "${line}" == *" " ]] && COMP_WORDS+=("")
 		COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMP_LINE="${line}"; COMP_POINT=${#line}
-		cd '"'${tmpDir}/comp'"'; COMPREPLY=(); _shcl; printf "%s" "${COMPREPLY[*]}"
+		cd '"'${tmpDir}/comp'"'; COMPREPLY=(); _shcl; printf "%s\n" "${COMPREPLY[@]}" | sort | paste -sd" " | sed "s/^ $//"
 	' _ "$2" 2>/dev/null || true
 }
 compModes=(bare)

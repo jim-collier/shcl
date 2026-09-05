@@ -122,6 +122,7 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	A stderr regex starting with '!' must match NO line.
 ##	Each row names the round and item it pins.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) onWindows=1 ;; *) onWindows=0 ;; esac
 rows=(
 	## 20260830 item 15: a second '-' read an empty document that looked like an answer.
 	'dup-stdin-schema|check --schema=- -|a: 1\n|1||named only once'
@@ -286,8 +287,16 @@ for row in "${rows[@]}"; do
 	argv="${argv//%M%/${tmpDir}/not-there.shcl}"
 	## A device that is always full exists on linux and not on windows; the
 	## rows that need one are skipped out loud rather than passing vacuously.
+	## On windows the msys layer answers for /dev/full and takes the write, a
+	## closed stdout is an invalid handle each runtime spells its own way, and
+	## a chmod does not make a directory unwritable - so those rows are POSIX
+	## rows and say so there.
 	if [[ "${stdinSpec}" == @full* && ! -w /dev/full ]]; then
 		echo "cli-regress: skipping ${id} (no /dev/full here)"
+		continue
+	fi
+	if [[ "${onWindows}" == 1 && ( "${stdinSpec}" == @full* || "${stdinSpec}" == @closedout || "${id}" == write-names-the-phase ) ]]; then
+		echo "cli-regress: skipping ${id} (POSIX fixture; not judged on windows)"
 		continue
 	fi
 	read -r -a args <<<"${argv}"
