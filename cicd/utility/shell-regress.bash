@@ -110,6 +110,16 @@ for mode in "${compModes[@]}"; do
 done
 
 if fHave pwsh; then
+	##	20260904 item 16: PowerShell reads a bare `--` as its own token and drops
+	##	it before a dot-sourced function sees its arguments; the quoted spelling
+	##	is the documented way through. Both halves are pinned, so a PowerShell
+	##	release that changes either shows up here.
+	printf -- '-dash: 5\n' > "${tmpDir}/dash.shcl"
+	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${cli}'; shcl get -- '${tmpDir}/dash.shcl' '-dash'" 2>&1 || true)"
+	[[ "${out}" == *"unknown option"* ]] || fBad "pwsh now hands a bare -- to the sourced function; the wrapper note is stale: ${out@Q}"
+	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${cli}'; shcl get '--' '${tmpDir}/dash.shcl' '-dash'" 2>&1 || true)"
+	[[ "${out}" == "5" ]] || fBad "pwsh dot-sourced shcl did not take a quoted --: ${out@Q}"
+
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${tmpDir}'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 	[[ "${out}" == *"not executable"* ]] || fBad "PowerShell wrapper took a directory as SHCL_BIN: ${out@Q}"
 
