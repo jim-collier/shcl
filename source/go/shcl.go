@@ -890,11 +890,6 @@ func unterminatedQuote(text string) bool {
 	return false
 }
 
-// quotedShape is true when the text is one quote pair: a quote char at both
-// ends, the last one not escaped. Bytes, not runes: both quotes and the
-// backslash are ASCII, and UTF-8 never puts an ASCII byte inside a multibyte
-// sequence, so the first byte, the last byte and the escape parity are the
-// same answers the decoded form gives.
 // oneLine is value text for a diagnostic message: line breaks and tabs escaped,
 // so one diagnostic is one line. A raw block's body is the value that made this
 // necessary - it carries its own newlines.
@@ -903,6 +898,11 @@ func oneLine(s string) string {
 	return r.Replace(s)
 }
 
+// quotedShape is true when the text is one quote pair: a quote char at both
+// ends, the last one not escaped. Bytes, not runes: both quotes and the
+// backslash are ASCII, and UTF-8 never puts an ASCII byte inside a multibyte
+// sequence, so the first byte, the last byte and the escape parity are the
+// same answers the decoded form gives.
 func quotedShape(t string) bool {
 	if t == "" {
 		return false
