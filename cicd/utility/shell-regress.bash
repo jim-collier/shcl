@@ -674,6 +674,15 @@ ln -sf "$(command -v gcc || command -v cc)" "${tmpDir}/onecc/gcc"
 out="$(PATH="${tmpDir}/onecc" SHCL_GATE_STRICT=1 "${BASH}" "${repoDir}/cicd/utility/check-c-compilers.bash" "${repoDir}" 2>&1 || true)"
 [[ "${out}" == *"needs two versioned gccs and clang"* ]] || fBad "check-c-compilers passed the gate with one compiler: ${out@Q}"
 
+##	20260904 item 24: the publish script ran `git config user.name` as a bare
+##	statement under set -e, so a repository with no identity died in the trap
+##	before doing anything; and its ssh-host probe assigned from a pipeline
+##	whose failure killed the script ahead of the fallback on the next line.
+##	Both lines have to carry their fallback.
+pub="${repoDir}/cicd/utility/n8git_backup-and-publish"
+[[ "$(grep -cE 'git config user\.(name|email)[^|]*\|\|' "${pub}" || true)" == 2 ]] || fBad "n8git_backup-and-publish reads the git identity without a fallback"
+grep -qE 'sshHost="\$\(git remote get-url origin[^)]*\|\| true\)"' "${pub}" || fBad "n8git_backup-and-publish assigns sshHost without a fallback"
+
 gate="${repoDir}/cicd/utility/check-completions.bash"
 if [[ -x "${gate}" ]]; then
 	fix="${tmpDir}/optless"
