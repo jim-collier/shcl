@@ -4714,13 +4714,25 @@ static ShclStr v_frac_key(ShclStr f) {
 	while (f.n && f.p[f.n - 1] == '0') f.n--;
 	return f;
 }
+/* Days since 1970-01-01 for a civil date, negative before it. */
+static int64_t v_days_from_civil(int32_t y, uint32_t m, uint32_t d) {
+	int64_t yy = m <= 2 ? (int64_t)y - 1 : (int64_t)y;
+	int64_t era = (yy >= 0 ? yy : yy - 399) / 400;
+	int64_t yoe = yy - era * 400;
+	int64_t doy = (153 * (int64_t)((m + 9) % 12) + 2) / 5 + (int64_t)d - 1;
+	int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	return era * 146097 + doe - 719468;
+}
+/* A zoned value as an instant: the written clock less its offset, the date
+   carrying the day wrap. A time alone lives on a 24-hour cycle. */
+static int64_t v_moment_minutes(const shcl_datetime *x, int32_t off) {
+	int64_t hm = (x->has_time ? (int64_t)x->hour * 60 + x->minute : 0) - off;
+	if (x->has_date) return v_days_from_civil(x->year, x->month, x->day) * 1440 + hm;
+	return ((hm % 1440) + 1440) % 1440;
+}
 static int v_same_moment(const shcl_datetime *x, const shcl_datetime *y) {
 	if (x->has_date != y->has_date || x->has_time != y->has_time) return 0;
-	if (x->has_date && (x->year != y->year || x->month != y->month || x->day != y->day)) return 0;
-	if (x->has_time) {
-		if (x->hour != y->hour || x->minute != y->minute || x->has_sec != y->has_sec) return 0;
-		if (x->has_sec && x->sec != y->sec) return 0;
-	}
+	if (x->has_time && (x->has_sec != y->has_sec || (x->has_sec && x->sec != y->sec))) return 0;
 	{
 		ShclStr a; a.p = x->has_frac ? x->frac.p : ""; a.n = x->has_frac ? x->frac.n : 0;
 		ShclStr b; b.p = y->has_frac ? y->frac.p : ""; b.n = y->has_frac ? y->frac.n : 0;
@@ -4729,13 +4741,15 @@ static int v_same_moment(const shcl_datetime *x, const shcl_datetime *y) {
 	{
 		int xh = x->zone != SHCL_ZONE_NONE, yh = y->zone != SHCL_ZONE_NONE;
 		if (xh != yh) return 0;
-		if (xh) {
-			int xo = x->zone == SHCL_ZONE_OFFSET ? x->off_min : 0;
-			int yo = y->zone == SHCL_ZONE_OFFSET ? y->off_min : 0;
-			if (xo != yo) return 0;
+		if (!xh) {
+			if (x->has_date && (x->year != y->year || x->month != y->month || x->day != y->day)) return 0;
+			if (x->has_time && (x->hour != y->hour || x->minute != y->minute)) return 0;
+			return 1;
 		}
+		int xo = x->zone == SHCL_ZONE_OFFSET ? x->off_min : 0;
+		int yo = y->zone == SHCL_ZONE_OFFSET ? y->off_min : 0;
+		return v_moment_minutes(x, xo) == v_moment_minutes(y, yo);
 	}
-	return 1;
 }
 
 // One `field:` instance (top-level or inside a fragment) -> a constraint into

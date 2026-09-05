@@ -5867,13 +5867,46 @@ func sameMoment(a, b DateTime) bool {
 	}
 	ao, ahas := offset(a.Zone)
 	bo, bhas := offset(b.Zone)
-	if ahas != bhas || (ahas && ao != bo) {
+	if ahas != bhas || a.HasDate != b.HasDate || a.HasTime != b.HasTime {
 		return false
 	}
-	a.Zone, b.Zone = nil, nil
-	a.Frac = strings.TrimRight(a.Frac, "0")
-	b.Frac = strings.TrimRight(b.Frac, "0")
-	return a == b
+	if a.HasSeconds != b.HasSeconds || a.Second != b.Second {
+		return false
+	}
+	if strings.TrimRight(a.Frac, "0") != strings.TrimRight(b.Frac, "0") {
+		return false
+	}
+	if !ahas {
+		a.Zone, b.Zone = nil, nil
+		a.Frac, b.Frac = "", ""
+		return a == b
+	}
+	// Zoned values are instants: the written clock less its offset, the date
+	// carrying the day wrap. A time alone lives on a 24-hour cycle.
+	minutes := func(dt DateTime, off int) int64 {
+		hm := int64(dt.Hour*60 + dt.Minute - off)
+		if dt.HasDate {
+			return daysFromCivil(dt.Year, dt.Month, dt.Day)*1440 + hm
+		}
+		return ((hm % 1440) + 1440) % 1440
+	}
+	return minutes(a, ao) == minutes(b, bo)
+}
+
+// daysFromCivil is the day count since 1970-01-01, negative before it.
+func daysFromCivil(y, m, d int) int64 {
+	if m <= 2 {
+		y--
+	}
+	yy := int64(y)
+	era := yy / 400
+	if yy < 0 && yy%400 != 0 {
+		era--
+	}
+	yoe := yy - era*400
+	doy := (153*int64((m+9)%12)+2)/5 + int64(d) - 1
+	doe := yoe*365 + yoe/4 - yoe/100 + doy
+	return era*146097 + doe - 719468
 }
 
 // buildSchema interprets a parsed schema document into constraints and

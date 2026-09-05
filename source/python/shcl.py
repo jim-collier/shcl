@@ -4838,12 +4838,36 @@ def _same_moment(a, b):
 			return None
 		return 0 if z[0] == "utc" else z[1]
 
-	return (
-		a.date == b.date
-		and a.time == b.time
-		and (a.frac or "").rstrip("0") == (b.frac or "").rstrip("0")
-		and offset(a.zone) == offset(b.zone)
-	)
+	ao, bo = offset(a.zone), offset(b.zone)
+	if (ao is None) != (bo is None) or (a.date is None) != (b.date is None) or (a.time is None) != (b.time is None):
+		return False
+	if (a.time[2] if a.time else None) != (b.time[2] if b.time else None):
+		return False
+	if (a.frac or "").rstrip("0") != (b.frac or "").rstrip("0"):
+		return False
+	if ao is None:
+		return a.date == b.date and a.time == b.time
+
+	# Zoned values are instants: the written clock less its offset, the date
+	# carrying the day wrap. A time alone lives on a 24-hour cycle.
+	def minutes(dt, off):
+		hm = (dt.time[0] * 60 + dt.time[1] if dt.time else 0) - off
+		if dt.date:
+			return _days_from_civil(*dt.date) * 1440 + hm
+		return hm % 1440
+
+	return minutes(a, ao) == minutes(b, bo)
+
+
+def _days_from_civil(y, m, d):
+	# Days since 1970-01-01, negative before it.
+	if m <= 2:
+		y -= 1
+	era = y // 400
+	yoe = y - era * 400
+	doy = (153 * ((m + 9) % 12) + 2) // 5 + d - 1
+	doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+	return era * 146097 + doe - 719468
 
 
 def _build_schema(schema):
