@@ -290,10 +290,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-172500
 		- Closed: 20260905-102409
 
-	- 🔘 Item 27: 20260901b item 14 records a manual check as though it were committed.
+	- ✅ Item 27: 20260901b item 14 records a manual check as though it were committed.
 		- Reproduced: the item says "Pinned by planting `.ro.shcl.tmp999.0` in the fixture's directory". Nothing in the tree plants that file, and a correct run leaves no temp for either filter to see, so restoring the old dirent filter passes the whole suite.
 		- Note: the fixture is now capable of catching a regression it could not catch before, which is worth having. The "Pinned by" line is what makes an unpinned item look pinned to the next review.
+		- Fixed: the fixture plants `.ro.shcl.tmp999.0` in its directory before counting what the write left, and requires exactly two entries; a filter that skipped every dotfile sees one and fails with its own message. The fixture is windows-only, so the hosted windows job is where it runs.
 		- Opened: 20260904-172600
+		- Closed: 20260905-102409
 
 	- 🔘 Item 28: `SHCL_GATE_STRICT` is asserted nowhere, so deleting the one line that arms it disarms five gate skips silently.
 		- Reproduced by reading: `cicd.bash` exports it, `check-locale.bash` and `package.bash` read it, and `shell-regress.bash` exercises only its own `fHave` helper. Removing the export changes no gate's result.
