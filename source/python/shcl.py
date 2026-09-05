@@ -414,7 +414,7 @@ def _literal_value(text):
 	# array holding `[1` and `2]` would be a different wrong answer.
 	if "\n" in text or "\r" in text:
 		return None
-	v = _trim(_split_comment(text)[0])
+	v = _trim(_split_value_comment(text)[0])
 	if _unterminated_quote(v) or (v.startswith("[") and v.endswith("]")):
 		return None
 	return _parse_cell(v)
@@ -740,36 +740,40 @@ _BARE_NAME_CHARS = frozenset(
 
 
 def _split_comment(s):
-	"""Split off an unquoted trailing comment: (content, comment from `#` on,
-	"" = none). A `\\` shields the next char throughout. Comments are kept as
-	trivia."""
-	# Fast path: the loop's quote/backslash state only decides whether a `#`
-	# counts, and its lone early return fires on `#` - so with no `#` at all the
-	# answer is (s, "") whatever the state. `in` scans at C speed; the char loop
-	# below is the cost, and comment-free lines dominate real documents.
+	"""Split off an unquoted trailing comment from a field line: (content,
+	comment from `#` on, "" = none). The name half is read the scanner's way
+	and the value half the value's way (see _value_comment_at). Comments are
+	kept as trivia."""
+	# Fast path: the scans only decide whether a `#` counts, so with no `#` at
+	# all the answer is (s, "") whatever the state. `in` scans at C speed; the
+	# char loops are the cost, and comment-free lines dominate real documents.
 	if "#" not in s:
 		return s, ""
-	in_quote = None
-	i = 0
-	n = len(s)
-	while i < n:
-		c = s[i]
-		if c == "\\":
-			i += 2
-			continue
-		if in_quote is not None:
-			if c == in_quote:
-				in_quote = None
-		elif c == '"' or c == "'":
-			in_quote = c
-		elif c == "#":
-			return s[:i], s[i:]
-		i += 1
-	return s, ""
+	kind, i = _name_half(s, True)
+	if kind == _NAME_HASH:
+		hash_at = i
+	elif kind == _NAME_COLON:
+		hash_at = _value_comment_at(s, i + 1)
+	else:
+		hash_at = -1
+	if hash_at < 0:
+		return s, ""
+	return s[:hash_at], s[hash_at:]
+
+
+def _split_value_comment(s):
+	"""The same for value text alone: a list element, or a setter's argument."""
+	if "#" not in s:
+		return s, ""
+	hash_at = _value_comment_at(s, 0)
+	if hash_at < 0:
+		return s, ""
+	return s[:hash_at], s[hash_at:]
 
 
 def _split_unquoted_commas(s):
-	"""Split on unquoted commas; `\\` shields the next char."""
+	"""Split on unquoted commas; a quote opens only at the start of a piece (see
+	_value_comment_at), and `\\` shields the next char."""
 	# Fast paths: parts are cut only at commas, so with no comma the result is
 	# [s] no matter what the quote/backslash state did (a shield can only make
 	# a comma NOT split, never conjure one). And with no quote or backslash
@@ -780,6 +784,7 @@ def _split_unquoted_commas(s):
 		return s.split(",")
 	parts = []
 	in_quote = None
+	at_start = True
 	start = 0
 	i = 0
 	n = len(s)
@@ -787,16 +792,21 @@ def _split_unquoted_commas(s):
 		c = s[i]
 		if c == "\\":
 			i += 2
+			at_start = False
 			continue
+		i += 1
 		if in_quote is not None:
 			if c == in_quote:
 				in_quote = None
-		elif c == '"' or c == "'":
+		elif (c == '"' or c == "'") and at_start:
 			in_quote = c
 		elif c == ",":
-			parts.append(s[start:i])
-			start = i + 1
-		i += 1
+			parts.append(s[start:i - 1])
+			start = i
+			at_start = True
+			continue
+		if c not in _WS_SET:
+			at_start = False
 	parts.append(s[start:])
 	return parts
 
@@ -878,7 +888,7 @@ def _cell_exceeds(text, max_elements):
 		if in_quote is not None:
 			if c == in_quote:
 				in_quote = None
-		elif c == '"' or c == "'":
+		elif (c == '"' or c == "'") and not has_content:
 			in_quote = c
 		elif c == ",":
 			if has_content:
@@ -1078,12 +1088,85 @@ def _parse_uint(s):
 def _looks_like_bracket_array(content):
 	"""A value spelled the way JSON, TOML and YAML spell an array. The path scanner
 	reads the brackets as a selector, so the line arrives with no value text and the
-	old repair blamed a colon that is plainly there."""
-	colon = content.find(":")
-	if colon < 0:
+	old repair blamed a colon that is plainly there. The colon that counts is the
+	field's own: one inside a quoted name or a selector is not it."""
+	kind, colon = _name_half(content, False)
+	if kind != _NAME_COLON:
 		return False
 	rest = content[colon + 1:].strip()
 	return rest.startswith("[") and rest.endswith("]")
+
+
+# How the name half of a field line ends.
+_NAME_END = 0  # no separator colon
+_NAME_COLON = 1  # the field's own colon
+_NAME_HASH = 2  # an unquoted `#` first: a comment, or a malformed name
+
+
+def _name_half(s, sugar):
+	"""Scan a field line's name half the way the path scanner reads it: a quote
+	opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
+	selector, and with sugar a colon followed by `[` is selector sugar rather
+	than the separator. `\\` shields the next char. Returns (kind, offset)."""
+	in_quote = None
+	in_sel = False
+	i = 0
+	n = len(s)
+	while i < n:
+		c = s[i]
+		if c == "\\":
+			i += 2
+			continue
+		if in_quote is not None:
+			if c == in_quote:
+				in_quote = None
+		elif c == '"' or c == "'":
+			in_quote = c
+		elif c == "#":
+			return _NAME_HASH, i
+		elif c == "[":
+			in_sel = True
+		elif c == "]":
+			in_sel = False
+		elif c == ":" and not in_sel:
+			rest = s[i + 1:].lstrip(" \t")
+			if not (sugar and rest.startswith("[")):
+				return _NAME_COLON, i
+		i += 1
+	return _NAME_END, 0
+
+
+def _value_comment_at(s, from_):
+	"""Offset of the `#` that starts a comment in value text, scanning from
+	from_; -1 when there is none. A quote opens a quoted piece only at the start
+	of a piece - the start of the value, or after an unquoted comma - which is
+	the spec's rule: a piece is quoted only when it begins with one. So an
+	apostrophe in prose (don't panic  # keep) hides nothing. `\\` shields the
+	next char."""
+	in_quote = None
+	at_start = True
+	i = from_
+	n = len(s)
+	while i < n:
+		c = s[i]
+		if c == "\\":
+			i += 2
+			at_start = False
+			continue
+		i += 1
+		if in_quote is not None:
+			if c == in_quote:
+				in_quote = None
+		elif (c == '"' or c == "'") and at_start:
+			in_quote = c
+		elif c == "#":
+			return i - 1
+		elif c == ",":
+			at_start = True
+			continue
+		if c not in _WS_SET:
+			at_start = False
+	return -1
 
 
 def _scan_path(inp):
@@ -1784,7 +1867,7 @@ class _Parser:
 						self._skip_under_dead(lineno, indent)
 						i += 1
 						continue
-					body, comment = _split_comment(after)
+					body, comment = _split_value_comment(after)
 					# Elements have no node of their own; trivia rides the field.
 					if parent != ROOT:
 						self._attach_trivia(parent, comment)

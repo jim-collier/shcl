@@ -643,15 +643,98 @@ pub const MAX_DEPTH: usize = 512;
 
 /// A value spelled the way JSON, TOML and YAML spell an array. The path scanner
 /// reads the brackets as a selector, so the line arrives with no value text and
-/// the old repair blamed a colon that is plainly there.
+/// the old repair blamed a colon that is plainly there. The colon that counts
+/// is the field's own: one inside a quoted name or a selector is not it.
 fn looks_like_bracket_array(content: &str) -> bool {
-	match content.find(':') {
-		Some(colon) => {
+	match name_half(content, false) {
+		NameHalf::Colon(colon) => {
 			let rest = content[colon + 1..].trim();
 			rest.starts_with('[') && rest.ends_with(']')
 		}
-		None => false,
+		_ => false,
 	}
+}
+
+/// How the name half of a field line ends.
+enum NameHalf {
+	Colon(usize), // the field's own colon, byte offset
+	Hash(usize),  // an unquoted `#` first: a comment, or a malformed name
+	End,
+}
+
+/// Scan a field line's name half the way the path scanner reads it: a quote
+/// opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
+/// selector, and with `sugar` a colon followed by `[` is selector sugar rather
+/// than the separator. `\` shields the next char.
+fn name_half(s: &str, sugar: bool) -> NameHalf {
+	let mut in_quote: Option<char> = None;
+	let mut in_sel = false;
+	let mut it = s.char_indices();
+	while let Some((byte, c)) = it.next() {
+		if c == '\\' {
+			it.next();
+			continue;
+		}
+		match in_quote {
+			Some(q) => {
+				if c == q {
+					in_quote = None;
+				}
+			}
+			None => match c {
+				'"' | '\'' => in_quote = Some(c),
+				'#' => return NameHalf::Hash(byte),
+				'[' => in_sel = true,
+				']' => in_sel = false,
+				':' if !in_sel => {
+					let rest = s[byte + 1..].trim_start_matches([' ', '\t']);
+					if !(sugar && rest.starts_with('[')) {
+						return NameHalf::Colon(byte);
+					}
+				}
+				_ => {}
+			},
+		}
+	}
+	NameHalf::End
+}
+
+/// Offset of the `#` that starts a comment in value text, scanning from
+/// `from`. A quote opens a quoted piece only at the start of a piece - the
+/// start of the value, or after an unquoted comma - which is the spec's rule:
+/// a piece is quoted only when it begins with one. So an apostrophe in prose
+/// (`don't panic  # keep`) hides nothing. `\` shields the next char.
+fn value_comment_at(s: &str, from: usize) -> Option<usize> {
+	let mut in_quote: Option<char> = None;
+	let mut at_start = true;
+	let mut it = s[from..].char_indices();
+	while let Some((off, c)) = it.next() {
+		if c == '\\' {
+			it.next();
+			at_start = false;
+			continue;
+		}
+		match in_quote {
+			Some(q) => {
+				if c == q {
+					in_quote = None;
+				}
+			}
+			None => match c {
+				'"' | '\'' if at_start => in_quote = Some(c),
+				'#' => return Some(from + off),
+				',' => {
+					at_start = true;
+					continue;
+				}
+				_ => {}
+			},
+		}
+		if !c.is_whitespace() {
+			at_start = false;
+		}
+	}
+	None
 }
 
 /// Folds A-Z only; non-ASCII passes through untouched. Borrowed when there is
@@ -668,51 +751,71 @@ fn is_bare_name_char(c: char) -> bool {
 	c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
-/// Split off an unquoted trailing comment: (content, comment from `#` on).
-/// A `\` shields the next char throughout. Comments are kept as trivia.
+/// Split off an unquoted trailing comment from a field line: (content, comment
+/// from `#` on). The name half is read the scanner's way and the value half
+/// the value's way (see value_comment_at). Comments are kept as trivia.
 fn split_comment(s: &str) -> (&str, Option<&str>) {
 	if !s.contains('#') {
 		return (s, None);
 	}
-	let mut in_quote: Option<char> = None;
-	let mut it = s.char_indices();
-	while let Some((byte, c)) = it.next() {
-		if c == '\\' {
-			it.next();
-			continue;
-		}
-		match in_quote {
-			Some(q) if c == q => in_quote = None,
-			None if c == '"' || c == '\'' => in_quote = Some(c),
-			None if c == '#' => return (&s[..byte], Some(&s[byte..])),
-			_ => {}
-		}
+	let hash = match name_half(s, true) {
+		NameHalf::Hash(i) => Some(i),
+		NameHalf::Colon(i) => value_comment_at(s, i + 1),
+		NameHalf::End => None,
+	};
+	match hash {
+		Some(i) => (&s[..i], Some(&s[i..])),
+		None => (s, None),
 	}
-	(s, None)
 }
 
-/// Split on unquoted commas; `\` shields the next char.
+/// The same for value text alone: a list element, or a setter's argument.
+fn split_value_comment(s: &str) -> (&str, Option<&str>) {
+	if !s.contains('#') {
+		return (s, None);
+	}
+	match value_comment_at(s, 0) {
+		Some(i) => (&s[..i], Some(&s[i..])),
+		None => (s, None),
+	}
+}
+
+/// Split on unquoted commas; a quote opens only at the start of a piece (see
+/// value_comment_at), and `\` shields the next char.
 fn split_unquoted_commas(s: &str) -> Vec<&str> {
 	if !s.contains(',') {
 		return vec![s];
 	}
 	let mut parts = Vec::new();
 	let mut in_quote: Option<char> = None;
+	let mut at_start = true;
 	let mut start = 0usize;
 	let mut it = s.char_indices();
 	while let Some((byte, c)) = it.next() {
 		if c == '\\' {
 			it.next();
+			at_start = false;
 			continue;
 		}
 		match in_quote {
-			Some(q) if c == q => in_quote = None,
-			None if c == '"' || c == '\'' => in_quote = Some(c),
-			None if c == ',' => {
-				parts.push(&s[start..byte]);
-				start = byte + 1;
+			Some(q) => {
+				if c == q {
+					in_quote = None;
+				}
 			}
-			_ => {}
+			None => match c {
+				'"' | '\'' if at_start => in_quote = Some(c),
+				',' => {
+					parts.push(&s[start..byte]);
+					start = byte + 1;
+					at_start = true;
+					continue;
+				}
+				_ => {}
+			},
+		}
+		if !c.is_whitespace() {
+			at_start = false;
 		}
 	}
 	parts.push(&s[start..]);
@@ -814,7 +917,7 @@ fn cell_exceeds(text: &str, max: usize) -> bool {
 		}
 		match in_quote {
 			Some(q) if c == q => in_quote = None,
-			None if c == '"' || c == '\'' => in_quote = Some(c),
+			None if (c == '"' || c == '\'') && !has_content => in_quote = Some(c),
 			None if c == ',' => {
 				if has_content {
 					count += 1;
@@ -2220,7 +2323,7 @@ impl Parser {
 						i += 1;
 						continue;
 					}
-					let (body, comment) = split_comment(after);
+					let (body, comment) = split_value_comment(after);
 					// Elements have no node of their own; trivia rides the field.
 					if parent != ROOT {
 						self.attach_trivia(parent, comment);
@@ -3649,7 +3752,7 @@ fn literal_value(text: &str) -> Option<Value> {
 	if text.contains('\n') || text.contains('\r') {
 		return None;
 	}
-	let (v, _) = split_comment(text);
+	let (v, _) = split_value_comment(text);
 	let v = v.trim();
 	if unterminated_quote(v) || (v.starts_with('[') && v.ends_with(']')) {
 		return None;
