@@ -129,11 +129,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-170700
 		- Closed: 20260905-092825
 
-	- 🔘 Item 9: `check-install-dev.bash` passes with the guard it exists to test removed.
+	- ✅ Item 9: `check-install-dev.bash` passes with the guard it exists to test removed.
 		- Reproduced: replacing the clone check in `install-dev.bash` with a no-op leaves the gate green. Its negative fixture is a bare directory that is not a git repository, so the nonzero exit it reads comes from `git config` refusing a non-repository, not from the script.
 		- Note: the guardless script then sets `core.hooksPath` and rewrites `core.sshCommand` on any unrelated git repository named with `--dir`. The gate's own comment also promises "nothing created" and nothing checks that.
 		- Note: the fixture has to be a git repository that is not an shcl clone, plus one that is an shcl tree and not a repository, and the assertion should read the config back rather than only the exit status.
+		- Fixed: the gate's refusal fixture is a fresh repository that is not an shcl clone, and it reads `core.hooksPath` and `core.sshCommand` back off it afterwards; an shcl-shaped tree that is not a repository is refused too.
+		- Pinned by: the gate itself. With the guard replaced by a no-op it reports three failures; the shipped script passes.
 		- Opened: 20260904-170800
+		- Closed: 20260905-093007
 
 	- 🔘 Item 10: the bash completion cannot see the `--opt=VALUE` form at all, so the spelling every document uses loses the FILE slot.
 		- Reproduced in an interactive bash over a pty. `shcl check --strictness=<TAB>` offers nothing, and `shcl check --strictness=standard al<TAB>` offers nothing where `alpha.shcl` belongs. The space form works.
