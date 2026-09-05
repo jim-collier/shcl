@@ -200,11 +200,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-171500
 		- Closed: 20260905-100356
 
-	- 🔘 Item 17: `raw-default` is an accepted write op in all four CLIs and appears in no document.
+	- ✅ Item 17: `raw-default` is an accepted write op in all four CLIs and appears in no document.
 		- Reproduced in all four: a `raw-default` ops line writes the block and exits 0. It is in none of the help's op list, the man page, the README, the spec, the changelog or either completion.
 		- Note: the help's op table positively implies it does not exist - it spells `<type>[-array]-default` over a `<type>` set of `int|float|bool|string|datetime` and puts `raw` on its own line with no `[-default]`. The README sends a reader wanting raw edits to exactly that list.
 		- Decided: the library contract already covers it, since the spec documents `Set<T>Default` generically over a `<T>` set that includes `SetRaw`. So this is a documentation gap, not a surface to remove.
+		- Fixed: the help's op table in all four CLIs and the man page's WRITE OPS spell `raw[-default]`, and the spec's `Set<T>Default` sentence says every typed setter has one, `SetRaw` and `SetLiteral` included. The corpus README already listed it.
+		- Pinned by: `check-docs.bash`, which reads every `-default` arm the reference CLI dispatches and requires the help's table to spell it. The old help fails it on `raw-default`.
 		- Opened: 20260904-171600
+		- Closed: 20260905-100356
 
 	- 🔘 Item 18: `SetComment` leaves the blank separator between the new comment and its node when the node already carries a comment.
 		- Reproduced in all four. On `a: 1` / `# note` / blank / `b: 2`, adding a comment to `b` gives `# note` / `# new` / blank / `b: 2`. With no pre-existing comment the rule works.
@@ -212,12 +215,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Note: cosmetic - the result is still a fixpoint.
 		- Opened: 20260904-171700
 
-	- 🔘 Item 19: `SetLiteral` accepts text a file line would not read as one value.
+	- ✅ Item 19: `SetLiteral` accepts text a file line would not read as one value.
 		- Reproduced in all four. `--set-literal='x=```sql'` stores `"```sql"` at exit 0 where the file line `x: ```sql` is `E005`; `--set-literal='y=[80'` stores `"[80"` where the file line is `E014`.
 		- Cause: `literal_value` refuses a line break, an unterminated quote and complete bracket text, and nothing else. The spec says the call "reads its argument the way the parser reads the half of a line after the colon", rejecting "only" those three.
 		- Note: the refusal list is also wider than the spec in one direction - a bare CR is refused, where a file keeps it as content mid-line and `set_string` accepts it.
 		- Decided: the spec sentence is the half to fix. Refusing a fence opener now would change a released API for no gain, so the "only" list should say what the code does.
+		- Fixed: the spec sentence now says what the call refuses - a line break or a carriage return, a piece that opens a quote it never closes, bracket-array text - and that text a file line would not read as a value at all, a fence opener or a lone `[`, is stored as the string it spells, since the call reads a value half rather than a line.
+		- Pinned by: corpus `099-literal-text`: a fence opener and a lone `[` stored as quoted strings, an unclosed quote refused in both the first and a later piece.
 		- Opened: 20260904-171800
+		- Closed: 20260905-100356
 
 	- 🔘 Item 20: a hexadecimal integer above the i64 range is `BadType` as a float, while the same number in decimal reads fine.
 		- Reproduced in all four. `0x8000000000000000` and `0xFFFFFFFFFFFFFFFF` through `get --float` exit 4; `9223372036854775808` and `18446744073709551615` exit 0. Quoted thousands separators have the same hole.
