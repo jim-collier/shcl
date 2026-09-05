@@ -4892,14 +4892,15 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 	}
 	/* A lower bound above the upper one admits nothing, so every value fails
 	   twice and the schema, not the config, is what has to change. Reported at
-	   the max line, and the field is dropped like any other broken one so the
-	   document is not told off twice per value for a range it could never have
-	   satisfied. */
+	   the max line. The range goes, not the field: a key-level fault keeps its
+	   entry, so the path still legalizes its name chain for the unknown-field
+	   sweep, and the document is not told off twice per value for a range it
+	   could never have satisfied. */
 	if ((c.has_min_i && c.has_max_i && c.min_i > c.max_i)
 	    || (c.has_min_f && c.has_max_f && c.min_f > c.max_f)) {
 		size_t line = max_at != (size_t)-1 ? NODE(schema, max_at).line : node->line;
 		v_diag(a, faults, line, "V092", v_msg_key(a, "max"));
-		return 0;
+		c.has_min_i = c.has_max_i = c.has_min_f = c.has_max_f = 0;
 	}
 	*out = c;
 	return 1;

@@ -5968,9 +5968,14 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 			"V092",
 			"bad schema constraint 'max'".to_string(),
 		);
-		// Dropped like any other broken field, so the document is not told off
-		// twice per value for a range it could never have satisfied.
-		return None;
+		// The range goes, not the field: a key-level fault keeps its entry, so
+		// the path still legalizes its name chain for the unknown-field sweep,
+		// and the document is not told off twice per value for a range it
+		// could never have satisfied.
+		c.min_i = None;
+		c.max_i = None;
+		c.min_f = None;
+		c.max_f = None;
 	}
 	Some(c)
 }
