@@ -867,7 +867,11 @@ struct shcl_doc {
 	   unlinks); only a merge drops it. Without it every lookup scans the
 	   parent's children, so a flat document read or written key by key was
 	   quadratic. Its own arena, freed on drop: the document arena cannot
-	   give it back. */
+	   give it back.
+	   index_built: 0 none, 1 built, 2 in flux. The build and every append
+	   allocate, and an SHCL_OOM hook that longjmps leaves whatever they were
+	   in the middle of; a lookup that finds 2 drops the lot and rebuilds,
+	   because a half-built chain can loop and a walk over it never ends. */
 	ShclArena index_arena;
 	int index_built;
 	ShclCMap index_first;    /* name_key -> first child */
@@ -2893,11 +2897,14 @@ static void index_reserve(shcl_doc *d, size_t need) {
 }
 static void index_append(shcl_doc *d, uint64_t key, size_t node) {
 	ShclArena *a = &d->index_arena;
+	int was = d->index_built;
+	d->index_built = 2;
 	index_reserve(d, node + 1);
 	d->index_next[node] = NIL;
 	ShclCMapEnt *prev = cmap_first(&d->index_last, key);
 	if (prev) { d->index_next[prev->val] = node; prev->val = node; }
 	else { cmap_put(a, &d->index_first, key, node); cmap_put(a, &d->index_last, key, node); }
+	d->index_built = was;
 }
 /* Walks the chain to find the predecessor; a chain is one name's siblings. */
 static void index_unlink(shcl_doc *d, uint64_t key, size_t node) {
@@ -2924,8 +2931,19 @@ static void index_unlink(shcl_doc *d, uint64_t key, size_t node) {
 	}
 	d->index_next[node] = NIL;
 }
+/* A merge drops the index, and so does a lookup that finds a cut-short one; the next lookup rebuilds it. */
+static void index_drop(shcl_doc *d) {
+	arena_free(&d->index_arena);
+	memset(&d->index_first, 0, sizeof d->index_first);
+	memset(&d->index_last, 0, sizeof d->index_last);
+	d->index_next = NULL;
+	d->index_next_cap = 0;
+	d->index_built = 0;
+}
 static void name_index(shcl_doc *d) {
-	if (d->index_built) return;
+	if (d->index_built == 1) return;
+	if (d->index_built) index_drop(d);
+	d->index_built = 2;
 	index_reserve(d, d->nodes.len ? d->nodes.len : 1);
 	/* From the root, not across the arena: a removed subtree's nodes are still
 	   there with their child lists intact, so an arena walk indexes every node
@@ -2943,15 +2961,6 @@ static void name_index(shcl_doc *d) {
 		}
 	}
 	d->index_built = 1;
-}
-/* Only a merge drops the index now; the next lookup rebuilds it. */
-static void index_drop(shcl_doc *d) {
-	arena_free(&d->index_arena);
-	memset(&d->index_first, 0, sizeof d->index_first);
-	memset(&d->index_last, 0, sizeof d->index_last);
-	d->index_next = NULL;
-	d->index_next_cap = 0;
-	d->index_built = 0;
 }
 
 static void children_named(shcl_doc *d, ShclArena *a, size_t parent, ShclStr name, ShclVecSize *out) {
@@ -3352,7 +3361,7 @@ static size_t w_new_child(shcl_doc *d, size_t parent, ShclStr name, ShclStr name
 	n.blank_before = (parent == ROOT);
 	nodes_push(d, n);
 	ShclVecSize_push(a, &NODE(d, parent).children, idx);
-	if (d->index_built) index_append(d, name_key(parent, name), idx);
+	if (d->index_built == 1) index_append(d, name_key(parent, name), idx);
 	return idx;
 }
 
@@ -3470,7 +3479,7 @@ static void w_fold_dups_below(shcl_doc *d, size_t start) {
 			if (survivor != (size_t)-1) {
 				ShclVecSize moved = NODE(d, c).children;
 				fold_node_into(d, survivor, c);
-				if (d->index_built) {
+				if (d->index_built == 1) {
 					index_unlink(d, name_key(parent, NODE(d, c).name), c);
 					for (size_t m = 0; m < moved.len; m++) {
 						ShclStr nm = NODE(d, moved.data[m]).name;
@@ -3513,7 +3522,7 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
 	size_t w = 0;
 	for (size_t k = 0; k < pk->len; k++) if (pk->data[k] != loser) pk->data[w++] = pk->data[k];
 	pk->len = w;
-	if (d->index_built) {
+	if (d->index_built == 1) {
 		index_unlink(d, name_key(parent, NODE(d, loser).name), loser);
 		for (size_t k = 0; k < moved.len; k++) {
 			ShclStr nm = NODE(d, moved.data[k]).name;
@@ -3560,7 +3569,7 @@ size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
 		size_t w = 0;
 		for (size_t k = 0; k < kids->len; k++) if (kids->data[k] != t) kids->data[w++] = kids->data[k];
 		kids->len = w;
-		if (d->index_built) index_unlink(d, name_key(pn, NODE(d, t).name), t);
+		if (d->index_built == 1) index_unlink(d, name_key(pn, NODE(d, t).name), t);
 	}
 	return targets.len;
 }

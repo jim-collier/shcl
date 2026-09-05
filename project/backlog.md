@@ -52,13 +52,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Nineteen of the defects are shapes all four bindings share, so the four-way check cannot see any of them. Three are C only. Six are gates, fixtures or documents that assert less than they claim. Item 1 is the round's worst: the recovery path the C header tells an embedder to use turns an allocation failure into a hang that cannot be interrupted.
 	- The last two rounds cost nothing measurable except one deliberate trade. Rust, Go and Python are flat on parse, fmt, bulk writes, absent defaults, bulk reads, `check --schema`, `init` and merge. The C parse of a 20 MiB document is 2-7% slower because a parse now gives back its scratch arena instead of leaving it, and the memory that buys is real: `check --schema` peak RSS down 19%, merge down 13%.
 
-	- 🔘 Item 1: an allocation failure inside the lazy name-index build leaves the document in a state where the next lookup never returns.
+	- ✅ Item 1: an allocation failure inside the lazy name-index build leaves the document in a state where the next lookup never returns.
 		- Reproduced in C with the documented longjmp-ing `SHCL_OOM` hook: a 50000-child document, a failing allocator, then the same public `shcl_children` call again. It never returns, and no signal short of a watchdog gets the process back. Two allocations in is enough.
 		- Cause: `name_index` sets `index_built` only after the whole walk, so a hook that unwinds mid-walk leaves the flag at 0 and the chains half built. The next lookup re-walks over them, `index_append` re-appends a node already on its chain, and `index_next[node]` ends up pointing at `node`. `children_named` then walks that chain forever.
 		- Note: `shcl_validate` already guards exactly this, and says why - "the name index is the only thing on the document this call builds, and half of one is worse than none". Every other path through `name_index` has no such guard, because there the unwind belongs to the embedder. The header's own `SHCL_OOM` text is what points an embedder at this.
 		- Note: read but not reproduced, in `index_append`'s second arm the first `cmap_put` can succeed and the second fail, leaving a key in `index_first` with none in `index_last`. A later append then adds a second `index_first` entry and a lookup can return the wrong chain head.
 		- Note: `oom_hook.c` does the right thing but its fixture is three lines, so the index build never spans two allocations.
+		- Fixed: the index flag has a third state, in flux, that the build and every append hold while they allocate. A lookup that finds it drops the index and rebuilds; the writer only touches a fully built one. That covers the second `cmap_put` arm too.
+		- Pinned by: `oom_hook.c`, a 20000-child lookup cut short by the hook and then repeated, at every budget up to the one it completes under. Fails on the old header, passes on the new.
 		- Opened: 20260904-170000
+		- Closed: 20260905-090331
 
 	- 🔘 Item 2: a quote anywhere in a bare value swallows the rest of the line, so a trailing comment is destroyed on the next write at exit 0.
 		- Reproduced in all four. `note: don't panic  # keep this` loads with zero diagnostics and `fmt --write` leaves `note: "don't panic  # keep this"`. The comment is gone and the result is a fixpoint, so nothing will ever notice. The same apostrophe stops comma splitting: `b: it's fine, ok` is one element where `b: it is fine, ok` is two.
