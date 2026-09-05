@@ -1815,6 +1815,12 @@ class _Parser:
 		# content untrimmed, so a line left ending in CR would be written back as
 		# CRLF and read as neither - the one shape where the count is visible.
 		lines = [ln.rstrip("\r") for ln in text.split("\n")]
+		# A newline-terminated text splits into one more piece than it has
+		# lines. An unterminated raw block took that empty tail as a body line,
+		# so the same last line read differently with and without its newline,
+		# which the grammar says are one document.
+		if text.endswith("\n"):
+			lines.pop()
 		i = 0
 		nlines = len(lines)
 		node_capped = False

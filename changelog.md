@@ -140,6 +140,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A no-break space, a line separator, a vertical tab or a form feed at the end of a bare value is content and survives a load. Only a space or a tab is trimmed off a line now, as the grammar has always said; every binding used its language's Unicode whitespace set and deleted the character with no diagnostic, so `fmt --write` dropped it at exit 0. An element that is one such character is an element, not an empty slot, and `SetComment` keeps one at the end of its text.
 
+- An unterminated raw block at the end of a newline-terminated file no longer gains an empty last line. The same lines with and without the file's final newline are one document, as the grammar says.
+
 - Merging a layer over a leaf no longer deletes a malformed line the parser had retained above or under that leaf. The line stays in the merged document, where a save writes it back out, instead of vanishing with the base leaf's comments and a lost count of zero.
 
 - A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, and the save gate refuses like it does for the plain spelling.
