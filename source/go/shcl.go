@@ -4319,14 +4319,19 @@ func (d *Document) SetComment(path, text string) bool {
 	// stops being a fmt fixpoint.
 	line = trimEndWS(line)
 	// The node's own blank moves above its first comment; otherwise the blank
-	// would separate the comment from what it annotates.
+	// would separate the comment from what it annotates. Above the first one
+	// already there, when there is one.
 	nd := &d.arena[idx]
 	l := plainLead(line)
-	if nd.blankBefore && len(nd.leading()) == 0 {
-		l.blankBefore = true
-		nd.blankBefore = false
-	}
 	t := nd.trivMut()
+	if nd.blankBefore {
+		nd.blankBefore = false
+		if len(t.leading) > 0 {
+			t.leading[0].blankBefore = true
+		} else {
+			l.blankBefore = true
+		}
+	}
 	t.leading = append(t.leading, l)
 	return true
 }

@@ -3694,14 +3694,17 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	   stops being a fmt fixpoint. Blank text leaves a bare `#`. */
 	out = trim_wsp_end(out);
 	/* The node's own blank moves above its first comment; otherwise the blank
-	   would separate the comment from what it annotates. */
+	   would separate the comment from what it annotates. Above the first one
+	   already there, when there is one. */
 	ShclNode *nd = &NODE(d, idx);
 	ShclLead lead = lead_plain(out);
-	if (nd->blank_before && triv_leading(nd).len == 0) {
-		lead.blank_before = 1;
+	ShclTrivia *t = triv_mut(a, nd);
+	if (nd->blank_before) {
 		nd->blank_before = 0;
+		if (t->leading.len) t->leading.data[0].blank_before = 1;
+		else lead.blank_before = 1;
 	}
-	ShclVecLead_push(a, &triv_mut(a, nd)->leading, lead);
+	ShclVecLead_push(a, &t->leading, lead);
 	return 1;
 }
 
