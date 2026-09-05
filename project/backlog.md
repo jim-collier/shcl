@@ -312,10 +312,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-172800
 		- Closed: 20260905-102409
 
-	- 🔘 Item 30: two doc comments merged onto one function in Rust and Go, leaving the next one undocumented.
+	- ✅ Item 30: two doc comments merged onto one function in Rust and Go, leaving the next one undocumented.
 		- Reproduced by reading: `quoted_shape`'s description sits above `one_line` in the reference, and Go's is worse - the text begins "quotedShape is true when ..." directly above `func oneLine`. C and Python have it right.
 		- Note: exactly the class the release recipe lists as a mechanical pre-release check, and it says to compare comment inventory across bindings rather than code. Present since the functions were written.
+		- Fixed: each function carries its own comment in Rust and Go, matching C and Python.
+		- Pinned by: nothing mechanical - a stranded doc comment is a reading check, listed in the release recipe. Said plainly rather than a gate that greps comment shapes.
 		- Opened: 20260904-172900
+		- Closed: 20260905-102409
 
 	- 🔘 Item 31: four documents disagree with the code or with each other.
 		- The `fmt` synopsis omits `[options]` in the help and in the man page's SYNOPSIS, while the same binaries' usage-error line spells it correctly and `fmt` accepts seven of them. `-w` is missing from the man SYNOPSIS too.

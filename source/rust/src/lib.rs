@@ -906,8 +906,6 @@ fn unterminated_quote(text: &str) -> bool {
 	false
 }
 
-/// True when the text is one quote pair: a quote char at both ends, the last
-/// one not escaped. Quotes and the backslash are ASCII, so bytes suffice.
 /// Value text for a diagnostic message: line breaks and tabs escaped, so one
 /// diagnostic is one line. A raw block's body is the value that made this
 /// necessary - it carries its own newlines.
@@ -918,6 +916,8 @@ fn one_line(s: &str) -> String {
 		.replace('\t', "\\t")
 }
 
+/// True when the text is one quote pair: a quote char at both ends, the last
+/// one not escaped. Quotes and the backslash are ASCII, so bytes suffice.
 fn quoted_shape(t: &str) -> bool {
 	let b = t.as_bytes();
 	let Some(&first) = b.first() else {
