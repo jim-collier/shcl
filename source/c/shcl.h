@@ -604,6 +604,19 @@ static void arena_reset(ShclArena *a) {
 	a->head->next = NULL; a->head->used = 0;
 	a->last = NULL; a->last_n = 0;
 }
+/* Like arena_reset, but the block kept is the largest rather than the newest.
+   The name index's chain array is one block sized by the node arena, and a
+   consumer merging once a second rebuilds it every time; freed, windows hands
+   the block back to the system and faults it in again on the next build, a
+   quarter of a millisecond per merge there. Kept, the rebuild reuses it. */
+static void arena_reset_largest(ShclArena *a) {
+	ShclBlock *best = NULL, *b;
+	for (b = a->head; b; b = b->next) if (!best || b->cap > best->cap) best = b;
+	for (b = a->head; b;) { ShclBlock *n = b->next; if (b != best) free(b); b = n; }
+	a->head = best;
+	if (best) { best->next = NULL; best->used = 0; }
+	a->last = NULL; a->last_n = 0; a->growing = 0;
+}
 
 #define DEFINE_VEC(Name, T) \
 	typedef struct { T *data; size_t len, cap; } Name; \
@@ -3083,7 +3096,7 @@ static void index_unlink(shcl_doc *d, uint64_t key, size_t node) {
 }
 /* A merge drops the index, and so does a lookup that finds a cut-short one; the next lookup rebuilds it. */
 static void index_drop(shcl_doc *d) {
-	arena_free(&d->index_arena);
+	arena_reset_largest(&d->index_arena);
 	memset(&d->index_first, 0, sizeof d->index_first);
 	memset(&d->index_last, 0, sizeof d->index_last);
 	d->index_next = NULL;
