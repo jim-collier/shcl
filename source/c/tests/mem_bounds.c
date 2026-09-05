@@ -223,8 +223,12 @@ int main(void) {
 		   arena, which is a memset the walk cannot avoid. What the bound
 		   catches is the walk itself going over every dead node. Two thousand
 		   merges put that cost well past the constant term a shared runner
-		   needs. */
-		if (t[1] > t[0] * 25 + 250) fail("the index rebuild walks nodes the document no longer holds");
+		   needs. The constant is wider here than in the other three: on windows
+		   the allocator hands a freed 800 KB block back to the system and
+		   faults it in again on the next rebuild, which the hosted runner
+		   measured at half a second over two thousand merges; the defect is
+		   tens of seconds. */
+		if (t[1] > t[0] * 25 + 600) fail("the index rebuild walks nodes the document no longer holds");
 #endif
 	}
 
