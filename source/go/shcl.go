@@ -4994,11 +4994,13 @@ func parseFloatText(e *element, level Strictness) (float64, bool) {
 	} else {
 		// An integer is a valid float on read (incl. hex and quoted thousands).
 		el := element{text: t, quoted: e.quoted}
-		n, ok := parseIntTextNoLoose(&el)
-		if !ok {
+		if n, ok := parseIntTextNoLoose(&el); ok {
+			v = float64(n)
+		} else if w, ok := parseIntTextWide(&el); ok {
+			v = w
+		} else {
 			return 0, false
 		}
-		v = float64(n)
 	}
 	if percent {
 		v /= 100.0
@@ -5010,6 +5012,80 @@ func parseFloatText(e *element, level Strictness) (float64, bool) {
 // the float path so the two can't recurse into each other.
 func parseIntTextNoLoose(e *element) (int64, bool) {
 	return parseIntText(e, Standard)
+}
+
+// parseIntTextWide reads the two integer spellings the plain float parse does
+// not - hex, and quoted thousands - past the int64 range, as a double: a float
+// read is bounded by the double, not by the integer type. Hex goes in digit by
+// digit in the double, so every binding rounds the same way; the spellings
+// mirror parseIntText.
+func parseIntTextWide(e *element) (float64, bool) {
+	t := strings.TrimSpace(e.text)
+	neg := false
+	body := t
+	if strings.HasPrefix(t, "-") {
+		neg = true
+		body = t[1:]
+	} else if strings.HasPrefix(t, "+") {
+		body = t[1:]
+	}
+	var v float64
+	if h, ok := strings.CutPrefix(body, "0x"); ok || strings.HasPrefix(body, "0X") {
+		if !ok {
+			h = body[2:]
+		}
+		if h == "" {
+			return 0, false
+		}
+		for i := 0; i < len(h); i++ {
+			d := hexDigit(h[i])
+			if d < 0 {
+				return 0, false
+			}
+			v = v*16 + float64(d)
+		}
+	} else if e.quoted && strings.Contains(body, ",") {
+		groups := strings.Split(body, ",")
+		wellFormed := len(groups) > 1 && groups[0] != "" && len(groups[0]) <= 3 && allDigits(groups[0])
+		if wellFormed {
+			for _, g := range groups[1:] {
+				if len(g) != 3 || !allDigits(g) {
+					wellFormed = false
+					break
+				}
+			}
+		}
+		if !wellFormed {
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(strings.ReplaceAll(body, ",", ""), 64)
+		if err != nil {
+			return 0, false
+		}
+		v = f
+	} else {
+		return 0, false
+	}
+	if math.IsInf(v, 0) || math.IsNaN(v) {
+		return 0, false
+	}
+	if neg {
+		v = -v
+	}
+	return v, true
+}
+
+// hexDigit is the value of one ASCII hex digit, or -1.
+func hexDigit(b byte) int {
+	switch {
+	case b >= '0' && b <= '9':
+		return int(b - '0')
+	case b >= 'a' && b <= 'f':
+		return int(b-'a') + 10
+	case b >= 'A' && b <= 'F':
+		return int(b-'A') + 10
+	}
+	return -1
 }
 
 func parseBoolText(t string, level Strictness) (bool, bool) {

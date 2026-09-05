@@ -1709,6 +1709,7 @@ static void split_byte(ShclArena *a, ShclStr s, char sep, ShclVecS *out) {
 
 static int parse_int_text(ShclArena *a, const ShclElement *e, shcl_strictness level, int64_t *out);
 static int parse_float_text(ShclArena *a, const ShclElement *e, shcl_strictness level, double *out);
+static int parse_int_text_wide(ShclArena *a, const ShclElement *e, double *out);
 
 static int float_shape_ok(ShclStr t) {
 	ShclStr body = t;
@@ -1758,10 +1759,42 @@ static int parse_float_text(ShclArena *a, const ShclElement *e, shcl_strictness 
 	} else {
 		ShclElement el; el.text = t; el.quoted = e->quoted;
 		int64_t iv;
-		if (!parse_int_text(a, &el, SHCL_STANDARD, &iv)) return 0;
-		v = (double)iv;
+		if (parse_int_text(a, &el, SHCL_STANDARD, &iv)) v = (double)iv;
+		else if (!parse_int_text_wide(a, &el, &v)) return 0;
 	}
 	*out = percent ? v / 100.0 : v; return 1;
+}
+/* The two integer spellings the plain float parse does not read - hex, and
+   quoted thousands - past the i64 range, as a double: a float read is bounded
+   by the double, not by the integer type. Hex goes in digit by digit in the
+   double, so every binding rounds the same way; the spellings mirror
+   parse_int_text. */
+static int parse_int_text_wide(ShclArena *a, const ShclElement *e, double *out) {
+	ShclStr t = s_trim(e->text);
+	int neg = 0; ShclStr body = t;
+	if (t.n > 0 && t.p[0] == '-') { neg = 1; body = s_slice(t, 1, t.n); }
+	else if (t.n > 0 && t.p[0] == '+') body = s_slice(t, 1, t.n);
+	double v = 0.0;
+	if (s_starts(body, "0x") || s_starts(body, "0X")) {
+		ShclStr h = s_slice(body, 2, body.n);
+		if (h.n == 0 || !all_ahex(h)) return 0;
+		for (size_t i = 0; i < h.n; i++) {
+			unsigned char c = (unsigned char)h.p[i];
+			int d = c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
+			v = v * 16.0 + (double)d;
+		}
+	} else if (e->quoted && s_contains_char(body, ',')) {
+		ShclVecS groups = {0}; split_byte(a, body, ',', &groups);
+		int wf = groups.len > 1 && groups.data[0].n > 0 && groups.data[0].n <= 3 && all_adigit0(groups.data[0]);
+		if (wf) for (size_t k = 1; k < groups.len; k++)
+			if (groups.data[k].n != 3 || !all_adigit0(groups.data[k])) { wf = 0; break; }
+		if (!wf) return 0;
+		ShclSB b = {0};
+		for (size_t i = 0; i < body.n; i++) if (body.p[i] != ',') sb_putc(a, &b, body.p[i]);
+		if (!strtod_full(a, sb_S(&b), &v)) return 0;
+	} else return 0;
+	if (!(v == v) || v > 1.7976931348623157e308 || v < -1.7976931348623157e308) return 0;
+	*out = neg ? -v : v; return 1;
 }
 static int parse_int_text(ShclArena *a, const ShclElement *e, shcl_strictness level, int64_t *out) {
 	ShclStr t = s_trim(e->text);

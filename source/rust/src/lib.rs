@@ -4820,7 +4820,10 @@ fn parse_float_text(e: &Element, level: Strictness) -> Option<f64> {
 			text: t.to_string(),
 			quoted: e.quoted,
 		};
-		parse_int_text_no_loose(&el)? as f64
+		match parse_int_text_no_loose(&el) {
+			Some(i) => i as f64,
+			None => parse_int_text_wide(&el)?,
+		}
 	};
 	Some(if percent { v / 100.0 } else { v })
 }
@@ -4829,6 +4832,46 @@ fn parse_float_text(e: &Element, level: Strictness) -> Option<f64> {
 /// two can't recurse into each other.
 fn parse_int_text_no_loose(e: &Element) -> Option<i64> {
 	parse_int_text(e, Strictness::Standard)
+}
+
+/// The two integer spellings the plain float parse does not read - hex, and
+/// quoted thousands - past the i64 range, as a double: a float read is bounded
+/// by the double, not by the integer type. Hex goes in digit by digit in the
+/// double, so every binding rounds the same way; the spellings mirror
+/// parse_int_text.
+fn parse_int_text_wide(e: &Element) -> Option<f64> {
+	let t = e.text.trim();
+	let (neg, body) = match t.strip_prefix('-') {
+		Some(r) => (true, r),
+		None => (false, t.strip_prefix('+').unwrap_or(t)),
+	};
+	let v = if let Some(h) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X"))
+		&& !h.is_empty()
+		&& h.bytes().all(|b| b.is_ascii_hexdigit())
+	{
+		h.bytes().fold(0.0f64, |v, b| {
+			v * 16.0 + f64::from((b as char).to_digit(16).unwrap_or(0))
+		})
+	} else if e.quoted && body.contains(',') {
+		let groups: Vec<&str> = body.split(',').collect();
+		let well_formed = groups.len() > 1
+			&& !groups[0].is_empty()
+			&& groups[0].len() <= 3
+			&& groups[0].bytes().all(|b| b.is_ascii_digit())
+			&& groups[1..]
+				.iter()
+				.all(|g| g.len() == 3 && g.bytes().all(|b| b.is_ascii_digit()));
+		if !well_formed {
+			return None;
+		}
+		body.replace(',', "").parse::<f64>().ok()?
+	} else {
+		return None;
+	};
+	if !v.is_finite() {
+		return None;
+	}
+	Some(if neg { -v } else { v })
 }
 
 fn parse_bool_text(t: &str, level: Strictness) -> Option<bool> {

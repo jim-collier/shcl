@@ -228,10 +228,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-171800
 		- Closed: 20260905-100356
 
-	- 🔘 Item 20: a hexadecimal integer above the i64 range is `BadType` as a float, while the same number in decimal reads fine.
+	- ✅ Item 20: a hexadecimal integer above the i64 range is `BadType` as a float, while the same number in decimal reads fine.
 		- Reproduced in all four. `0x8000000000000000` and `0xFFFFFFFFFFFFFFFF` through `get --float` exit 4; `9223372036854775808` and `18446744073709551615` exit 0. Quoted thousands separators have the same hole.
 		- Cause: the float read recognizes a decimal integer by its own shape test but reaches a hex one only through the i64 integer parse, so the i64 bound leaks into a read the spec bounds by the double range - "An integer is a valid float on read" and "The value must fit a double".
+		- Fixed: when the i64 read of a hex or quoted-thousands spelling fails, the float read takes it again as a double - hex digit by digit in the double so every binding rounds alike, thousands through the correctly rounded decimal parse - and refuses only what does not fit a double. Plain decimal already went through the float parse.
+		- Pinned by: corpus `100-hex-float`, seven spellings across the i64 boundary read as floats and refused as ints. The old code exits 4 on five of them.
 		- Opened: 20260904-171900
+		- Closed: 20260905-100356
 
 	- 🔘 Item 21: every C merge retains a whole children array per parent it rebuilds, so the merge cost the spec states is wrong by two orders of magnitude in C.
 		- Measured: 200 merges of an eight-leaf overlay on a 40000-key base grow the C process by 419,687 bytes per merge - 84 MB - where Python grows 4,958 and Rust and Go stay near a kilobyte. At the spec's own 500 merges that is about 210 MB against the stated "about a megabyte".

@@ -2916,13 +2916,18 @@ class Document:
 		# stops being a fmt fixpoint.
 		line = _trim_wsp_end(line)
 		# The node's own blank moves above its first comment; otherwise the
-		# blank would separate the comment from what it annotates.
+		# blank would separate the comment from what it annotates. Above the
+		# first one already there, when there is one.
 		nd = self.arena[idx]
 		lead = _Lead(line, False)
-		if nd.blank_before and not nd.leading():
-			lead.blank_before = True
+		t = nd._triv()
+		if nd.blank_before:
 			nd.blank_before = False
-		nd._triv().leading.append(lead)
+			if t.leading:
+				t.leading[0].blank_before = True
+			else:
+				lead.blank_before = True
+		t.leading.append(lead)
 		return True
 
 	def set_int(self, path: str, v: int) -> bool:
@@ -4499,10 +4504,52 @@ def _parse_float_text(e, level):
 	else:
 		# An integer is a valid float on read (incl. hex and quoted thousands).
 		iv = _parse_int_text_no_loose(_Element(t, e.quoted))
-		if iv is None:
-			return None
-		v = float(iv)
+		if iv is not None:
+			v = float(iv)
+		else:
+			w = _parse_int_text_wide(_Element(t, e.quoted))
+			if w is None:
+				return None
+			v = w
 	return v / 100.0 if percent else v
+
+
+def _parse_int_text_wide(e):
+	# The two integer spellings the plain float parse does not read - hex, and
+	# quoted thousands - past the i64 range, as a double: a float read is
+	# bounded by the double, not by the integer type. Hex goes in digit by digit
+	# in the double, so every binding rounds the same way; the spellings mirror
+	# _parse_int_text.
+	t = _trim(e.text)
+	neg = t.startswith("-")
+	body = t[1:] if t[:1] in ("-", "+") else t
+	if body[:2] in ("0x", "0X"):
+		h = body[2:]
+		if not h or not all(c in "0123456789abcdefABCDEF" for c in h):
+			return None
+		v = 0.0
+		for c in h:
+			v = v * 16.0 + float(int(c, 16))
+	elif e.quoted and "," in body:
+		groups = body.split(",")
+		well_formed = (
+			len(groups) > 1
+			and groups[0] != ""
+			and len(groups[0]) <= 3
+			and _all_ascii_digits(groups[0])
+			and all(len(g) == 3 and _all_ascii_digits(g) for g in groups[1:])
+		)
+		if not well_formed:
+			return None
+		try:
+			v = float(body.replace(",", ""))
+		except ValueError:
+			return None
+	else:
+		return None
+	if not math.isfinite(v):
+		return None
+	return -v if neg else v
 
 
 def _parse_int_text_no_loose(e):
