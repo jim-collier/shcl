@@ -125,7 +125,11 @@ if command -v nfpm >/dev/null 2>&1; then
 		glibc="$(objdump -T "${bin}" | { grep -o 'GLIBC_[0-9.]*' || true; } | sed 's/GLIBC_//' | sort -uV | tail -1)"
 		[[ -n "${glibc}" ]] || fDie "no GLIBC_ symbol version in ${bin}"
 		debGcc=""; rpmGcc=""
-		if readelf -d "${bin}" | grep -q 'NEEDED.*libgcc_s'; then debGcc=$'\n      - libgcc-s1'; rpmGcc=$'\n      - libgcc'; fi
+		## Into a variable first, for the same reason as the deb listing above:
+		## a grep -q that quits early kills the writer with SIGPIPE under
+		## pipefail, and the probe then reads as "no libgcc".
+		needed="$(readelf -d "${bin}" || true)"
+		if grep -q 'NEEDED.*libgcc_s' <<<"${needed}"; then debGcc=$'\n      - libgcc-s1'; rpmGcc=$'\n      - libgcc'; fi
 		sed -e "s|\${SHCL_VERSION}|${ver}|g" -e "s|\${SHCL_ARCH}|${goarch}|g" \
 		    -e "s|\${SHCL_BIN}|${bin}|g" -e "s|\${SHCL_PAYLOAD}|${payload}|g" \
 		    -e "s|\${SHCL_GLIBC}|${glibc}|g" -e "s|\${SHCL_DEB_LIBGCC}|${debGcc//$'\n'/\\n}|g" -e "s|\${SHCL_RPM_LIBGCC}|${rpmGcc//$'\n'/\\n}|g" \

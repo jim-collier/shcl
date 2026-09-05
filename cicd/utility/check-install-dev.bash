@@ -52,10 +52,22 @@ git -C "${work}/clone" config --unset core.hooksPath
 ( cd "${work}/clone" && bash "${script}" --hooks-only >/dev/null )
 [[ "$(git -C "${work}/clone" config core.hooksPath)" == "cicd/hooks" ]] || fail "in-clone run did not set hooksPath"
 
-## Not a clone: refused, nothing created.
-mkdir "${work}/empty"
-if ( cd "${work}" && bash "${script}" --hooks-only --dir empty >/dev/null 2>&1 ); then
-	fail "--hooks-only accepted a directory that is not a clone"
+## Not a clone: refused, and nothing written. The fixture is a repository that
+## is not an shcl clone, since that is what the guard is for - a bare directory
+## fails inside git config whether the guard is there or not, and the config
+## is read back because the exit status alone proved nothing either way.
+git init -q "${work}/other"
+if ( cd "${work}" && bash "${script}" --hooks-only --dir other >/dev/null 2>&1 ); then
+	fail "--hooks-only accepted a repository that is not an shcl clone"
+fi
+[[ -z "$(git -C "${work}/other" config --local core.hooksPath || true)" ]] || fail "a refused run set hooksPath on a foreign repository"
+[[ -z "$(git -C "${work}/other" config --local core.sshCommand || true)" ]] || fail "a refused run set sshCommand on a foreign repository"
+
+## An shcl-shaped tree that is not a repository: refused too.
+mkdir -p "${work}/tree/cicd"
+cp "${root}/cicd/cicd.bash" "${work}/tree/cicd/"
+if ( cd "${work}" && bash "${script}" --hooks-only --dir tree >/dev/null 2>&1 ); then
+	fail "--hooks-only accepted a tree that is not a repository"
 fi
 
 (( rc == 0 )) && echo "check-install-dev: OK: --hooks-only sets the hooks path and keepalive, idempotently, and refuses a non-clone"

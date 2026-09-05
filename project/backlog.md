@@ -46,205 +46,6 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Bugs
 
-- Code review 20260904:
-
-	- A from-scratch adversarial pass over ground the earlier rounds recorded as unread: the parser judged against `grammar.abnf` and the spec rather than against the other bindings; the C validator body and `shcl_load_and_validate`; `SHCL_OOM` under a failing allocator for the writer, merge and generator; the reference's write side judged against the spec; the Go and Python read, coercion, datetime and validation bodies judged against the spec; the merge and generator items the last two rounds listed as not reached; the shell completions, the two wrappers and the documents against each other; the gates nobody had injected into; and every fix of the last two rounds, including what those fixes cost. Thirty-two defects here, twenty-one enhancements under Features and enhancements. Every item below was reproduced on this box, with two stated exceptions: item 32 reproduces as a shape rather than as a failure, and items 24 and 32 were reproduced as their own source lines under the script's shell options rather than by running the publish stage.
-	- Nineteen of the defects are shapes all four bindings share, so the four-way check cannot see any of them. Three are C only. Six are gates, fixtures or documents that assert less than they claim. Item 1 is the round's worst: the recovery path the C header tells an embedder to use turns an allocation failure into a hang that cannot be interrupted.
-	- The last two rounds cost nothing measurable except one deliberate trade. Rust, Go and Python are flat on parse, fmt, bulk writes, absent defaults, bulk reads, `check --schema`, `init` and merge. The C parse of a 20 MiB document is 2-7% slower because a parse now gives back its scratch arena instead of leaving it, and the memory that buys is real: `check --schema` peak RSS down 19%, merge down 13%.
-
-	- 🔘 Item 1: an allocation failure inside the lazy name-index build leaves the document in a state where the next lookup never returns.
-		- Reproduced in C with the documented longjmp-ing `SHCL_OOM` hook: a 50000-child document, a failing allocator, then the same public `shcl_children` call again. It never returns, and no signal short of a watchdog gets the process back. Two allocations in is enough.
-		- Cause: `name_index` sets `index_built` only after the whole walk, so a hook that unwinds mid-walk leaves the flag at 0 and the chains half built. The next lookup re-walks over them, `index_append` re-appends a node already on its chain, and `index_next[node]` ends up pointing at `node`. `children_named` then walks that chain forever.
-		- Note: `shcl_validate` already guards exactly this, and says why - "the name index is the only thing on the document this call builds, and half of one is worse than none". Every other path through `name_index` has no such guard, because there the unwind belongs to the embedder. The header's own `SHCL_OOM` text is what points an embedder at this.
-		- Note: read but not reproduced, in `index_append`'s second arm the first `cmap_put` can succeed and the second fail, leaving a key in `index_first` with none in `index_last`. A later append then adds a second `index_first` entry and a lookup can return the wrong chain head.
-		- Note: `oom_hook.c` does the right thing but its fixture is three lines, so the index build never spans two allocations.
-		- Opened: 20260904-170000
-
-	- 🔘 Item 2: a quote anywhere in a bare value swallows the rest of the line, so a trailing comment is destroyed on the next write at exit 0.
-		- Reproduced in all four. `note: don't panic  # keep this` loads with zero diagnostics and `fmt --write` leaves `note: "don't panic  # keep this"`. The comment is gone and the result is a fixpoint, so nothing will ever notice. The same apostrophe stops comma splitting: `b: it's fine, ok` is one element where `b: it is fine, ok` is two.
-		- Cause: `split_comment`, `split_unquoted_commas` and `cell_exceeds` enter quote state on any `"` or `'`, wherever it sits. The spec says a piece is quoted only when it begins with one, and the grammar agrees. `unterminated_quote` already implements the correct rule, so the helpers disagree with each other.
-		- Note: this violates two spec sentences at once - "a value *beginning* with a quote opens a quoted element" with "mid-text whitespace, `:`, `'`, `]`, even a `"`, all pass through", and "Comments are never discarded". An English apostrophe in a config value is about as common as input gets.
-		- Opened: 20260904-170100
-
-	- 🔘 Item 3: bracket-array detection looks at the first colon on the line, so any earlier colon hides the array and `fmt --write` bakes it in at exit 0.
-		- Reproduced in all four. `"a:b": [80, 443]` reports `E015 missing colon` on a line that has one, and `fmt --write` leaves `"a:b": "80, 443"` at exit 0. A selector holding a colon does it too: `srv[db:5432].ports: [80, 443]`.
-		- Cause: `looks_like_bracket_array` uses `content.find(':')`, which lands inside the quoted name or the selector rather than at the field separator, so the line falls through to `E015`. `E015` counts no lost content, so the save gate never fires.
-		- Note: the spec says of `E019` that it "counts as lost content and an in-place rewrite refuses (`--lossy` overrides) rather than baking the changed value in". That promise is exactly what fails here. The `E015` diagnostic is also wrong on its own terms.
-		- Opened: 20260904-170200
-
-	- 🔘 Item 4: one reversed `min`/`max` range turns off the unknown-field sweep for the whole document.
-		- Reproduced in all four. A sound schema reports both unknown fields; changing `min: 1` to `min: 70000` on an unrelated field reports one `V092` and neither unknown field. The check still exits 6, so it looks like it is working.
-		- Cause: `parse_field` treats a crossed range as an entry-level failure and `build_schema` clears the paths-complete flag, which the sweep reads. The spec says the sweep "turns off only when a fault cost a path spelling outright (an unreadable `field:` path, or a mount naming no declared fragment)". A crossed range is neither - the spec's own constraint table says the field is dropped, not that its name is lost.
-		- Note: the dropped field also loses its `repeat`-based `H001` disavowal, for the same reason.
-		- Note: the 20260902 clean list records "`min > max` no fault" for Python. That is wrong twice - there is a fault, and this is its side effect.
-		- Opened: 20260904-170300
-
-	- 🔘 Item 5: a merge deletes a retained content-malformed line without counting it lost, so a save writes the truncated file instead of refusing.
-		- Reproduced in all four and in the veneer. Base `square-miles 300` plus `ok: 1`, overlay `ok: 2`: the merged canonical is `ok: 2` alone, `lost_count()` is 0, and `save_file` returns Ok. The malformed line is gone from the file the consumer writes back.
-		- Cause: a content-malformed line is stored in the same trivia slot as a comment, and a leaf override drops the base leaf's trivia. The spec sanctions dropping the base leaf's comments; it does not sanction dropping content it promised to retain "so a hand-typo in a config survives the consumer loading, editing, and writing the file back".
-		- Note: library-only, because `--write` refuses `--layer`. A consumer folding layers and saving is the exact case the lost gate exists for.
-		- Opened: 20260904-170400
-
-	- 🔘 Item 6: `Set<T>Default` reports success on a wildcard path, which is the one path shape every setter is supposed to refuse.
-		- Reproduced in all four, library and CLI. `--set-default='srv[*].port=99'` exits 0 with nothing written when the path resolves, and exits 1 when it does not. Plain `--set` on the same path exits 1 either way. All twelve default forms are affected.
-		- Cause: each `_default` form is `if !exists(path) { return set_X(...) } true`, and `exists` is true for a wildcard whose slots resolve, so the refusal is never reached. Whether an unusable path passes now depends on the document's contents.
-		- Note: it also disagrees with `write_reason`, whose doc comment says "`Writable` means the same validation `place()` runs would pass". `write_reason` correctly says `Wildcard` on the same path.
-		- Opened: 20260904-170500
-
-	- 🔘 Item 7: the index-rebuild timing test cannot reliably fail on the defect it names, and Python's copy can never fail.
-		- Reproduced by backing the fix out: the Rust test passed on two of five runs, with the churned side landing either side of the bound. Go fails by under 2x. Python's fixture is 20000 churn iterations and 50 merges where Rust and Go use 100000 and 200, so the whole cost of the defect is about 52 ms against a 250 ms constant term - it cannot fail on any machine.
-		- Cause: widening the constant from 25 to 250 ms for a shared runner made the constant larger than the defect. The factor was meant to be what catches it; the constant now absorbs the whole thing.
-		- Note: the C copy is still at +25 and does bite, by 12%. On windows it does not run at all - the clock-coarseness guard needs a fresh side over 20 ms and windows measures it at 0.1.
-		- Note: a count is the right measure here, not a clock. The defect is how many nodes were walked, which is exact.
-		- Opened: 20260904-170600
-
-	- 🔘 Item 8: `allowed` on `type: datetime` compares the written clock rather than the moment.
-		- Reproduced in all four. A document value of `2026-01-01T13:00:00+01:00` against `allowed: 2026-01-01T12:00:00Z` is `V004`. The same instant written at the same offset passes.
-		- Cause: the comparison is field-wise and then requires equal offsets, which makes the three offset-zero spellings agree and nothing else. The spec says "For `datetime` the coerced space is the moment".
-		- Note: normalize a zoned value to its instant before comparing, and keep the field-wise path for zone-less values so "a value with no zone is local and matches no zoned one" still holds.
-		- Opened: 20260904-170700
-
-	- 🔘 Item 9: `check-install-dev.bash` passes with the guard it exists to test removed.
-		- Reproduced: replacing the clone check in `install-dev.bash` with a no-op leaves the gate green. Its negative fixture is a bare directory that is not a git repository, so the nonzero exit it reads comes from `git config` refusing a non-repository, not from the script.
-		- Note: the guardless script then sets `core.hooksPath` and rewrites `core.sshCommand` on any unrelated git repository named with `--dir`. The gate's own comment also promises "nothing created" and nothing checks that.
-		- Note: the fixture has to be a git repository that is not an shcl clone, plus one that is an shcl tree and not a repository, and the assertion should read the config back rather than only the exit status.
-		- Opened: 20260904-170800
-
-	- 🔘 Item 10: the bash completion cannot see the `--opt=VALUE` form at all, so the spelling every document uses loses the FILE slot.
-		- Reproduced in an interactive bash over a pty. `shcl check --strictness=<TAB>` offers nothing, and `shcl check --strictness=standard al<TAB>` offers nothing where `alpha.shcl` belongs. The space form works.
-		- Cause: `COMP_WORDBREAKS` contains `=`, so bash has already split the word into three before `_shcl` runs, and the file calls neither `_init_completion` nor `_get_comp_words_by_ref` to re-join them. The four `=VALUE` arms are dead code, and the value is then counted as a positional, which is what eats the FILE slot.
-		- Note: the zsh completion is right here - it uses `compset -P` and zsh does not split on `=`.
-		- Opened: 20260904-170900
-
-	- 🔘 Item 11: both completions omit `--remove`, `--set-default` and `--set-literal-default` from the value-option lists.
-		- Reproduced in both. `shcl fmt --remove <TAB>` offers filenames where a PATH belongs, and `shcl fmt --remove x <TAB>` offers nothing where the FILE belongs. `--set` is listed and behaves correctly, which is the control.
-		- Cause: the CLI has ten value-taking options; the space-form dispatch and the positional-skip list each carry seven. The round that added the three options updated the option table, which `check-completions.bash` diffs, and not the two lists it does not read.
-		- Opened: 20260904-171000
-
-	- 🔘 Item 12: a trailing non-breaking space or line separator in a bare value is deleted with no diagnostic and no lost count.
-		- Reproduced in all four. A line spelled `a: val` with a U+00A0 after the value loads clean, and `fmt --write` leaves `a: val`. Same for U+2028, VT and FF.
-		- Cause: the line trim uses the language's Unicode whitespace set where the grammar says `wsp = SP / HTAB` and puts those characters in the bare value alphabet.
-		- Opened: 20260904-171100
-
-	- 🔘 Item 13: an unterminated raw block in a newline-terminated file gains a trailing empty line the file never had.
-		- Reproduced in all four. `x: ```sql` then `body` with a final newline reads back `body\n\n`; the same two lines without the final newline read back `body\n`. `fmt` writes the fabricated line out.
-		- Cause: splitting the text on `\n` yields a phantom final element, which `consume_raw` takes as a body line. The grammar says the last line may lack a newline, so the two spellings are the same document.
-		- Opened: 20260904-171200
-
-	- 🔘 Item 14: `*` followed by a space and nothing else reports `E013` with a message its own input disproves, and kills the block beneath it.
-		- Reproduced in all four. `* ` gives `E013 malformed line: '*' must be followed by a space` - the line does have a space - and the child line under it is dropped as `E018`. The same empty element spelled `* #c` takes the `E009` path and keeps its block.
-		- Cause: the line trim removes the trailing space before the marker check, so the marker is a bare `*`. The spec's code table gives this shape `E009`.
-		- Note: `E013` pushes a dead level and `E009` does not, so the wrong code costs the block as well as the message.
-		- Opened: 20260904-171300
-
-	- 🔘 Item 15: a dropped stacked-`*` element does not take its indented block with it, while the malformed spelling of the same mistake does.
-		- Reproduced in all four. Under `sizes:` with a `k: 1` sibling, `* small` with `n: 5` beneath it gives `E008` and `paths` reports `sizes.n` - the child re-parented one level up. Spelled `*small` the same document gives `E013` plus `E018` and the child is gone. `E007` and `E011` behave like `E008`.
-		- Note: the spec says of `E018` that a skipped line's block "never re-parents one level up", and says the same of a dedent to a bad column. What is not defensible either way is that two spellings of one mistake give the reader two different answers - the same reasoning that settled the `E012` sentinel in the 20260901b round.
-		- Decided: needs a call on whether a dropped element opens a block at all. `E001` already keeps a field among list elements at the parent, so keeping the child is arguable; giving the same mistake two answers is not.
-		- Opened: 20260904-171400
-
-	- 🔘 Item 16: the PowerShell wrapper drops a bare `--` when it is dot-sourced, which is the mode its own header documents.
-		- Reproduced on pwsh 7.6. `. ./shcl.ps1; shcl get -- t.shcl '-dash'` gives `unknown option: -dash` at exit 1; quoting the token as `'--'` works; the bash wrapper is correct in both modes.
-		- Cause: PowerShell's own parser consumes a bare `--` as its end-of-parameters token before `@args` is built, so the wrapper never sees it. The script forms are unaffected.
-		- Note: help and the man page both say "Use `--` to end the options when a FILE or PATH begins with a dash", and the wrapper's header says both modes "take the same arguments". The workaround is written down nowhere.
-		- Opened: 20260904-171500
-
-	- 🔘 Item 17: `raw-default` is an accepted write op in all four CLIs and appears in no document.
-		- Reproduced in all four: a `raw-default` ops line writes the block and exits 0. It is in none of the help's op list, the man page, the README, the spec, the changelog or either completion.
-		- Note: the help's op table positively implies it does not exist - it spells `<type>[-array]-default` over a `<type>` set of `int|float|bool|string|datetime` and puts `raw` on its own line with no `[-default]`. The README sends a reader wanting raw edits to exactly that list.
-		- Decided: the library contract already covers it, since the spec documents `Set<T>Default` generically over a `<T>` set that includes `SetRaw`. So this is a documentation gap, not a surface to remove.
-		- Opened: 20260904-171600
-
-	- 🔘 Item 18: `SetComment` leaves the blank separator between the new comment and its node when the node already carries a comment.
-		- Reproduced in all four. On `a: 1` / `# note` / blank / `b: 2`, adding a comment to `b` gives `# note` / `# new` / blank / `b: 2`. With no pre-existing comment the rule works.
-		- Cause: the blank is only moved above the comment when the node's leading list is empty. The spec says the call places "a node's blank separator line above the comment so the comment sits against its node", with no such condition, and the code's own comment says the same.
-		- Note: cosmetic - the result is still a fixpoint.
-		- Opened: 20260904-171700
-
-	- 🔘 Item 19: `SetLiteral` accepts text a file line would not read as one value.
-		- Reproduced in all four. `--set-literal='x=```sql'` stores `"```sql"` at exit 0 where the file line `x: ```sql` is `E005`; `--set-literal='y=[80'` stores `"[80"` where the file line is `E014`.
-		- Cause: `literal_value` refuses a line break, an unterminated quote and complete bracket text, and nothing else. The spec says the call "reads its argument the way the parser reads the half of a line after the colon", rejecting "only" those three.
-		- Note: the refusal list is also wider than the spec in one direction - a bare CR is refused, where a file keeps it as content mid-line and `set_string` accepts it.
-		- Decided: the spec sentence is the half to fix. Refusing a fence opener now would change a released API for no gain, so the "only" list should say what the code does.
-		- Opened: 20260904-171800
-
-	- 🔘 Item 20: a hexadecimal integer above the i64 range is `BadType` as a float, while the same number in decimal reads fine.
-		- Reproduced in all four. `0x8000000000000000` and `0xFFFFFFFFFFFFFFFF` through `get --float` exit 4; `9223372036854775808` and `18446744073709551615` exit 0. Quoted thousands separators have the same hole.
-		- Cause: the float read recognizes a decimal integer by its own shape test but reaches a hex one only through the i64 integer parse, so the i64 bound leaks into a read the spec bounds by the double range - "An integer is a valid float on read" and "The value must fit a double".
-		- Opened: 20260904-171900
-
-	- 🔘 Item 21: every C merge retains a whole children array per parent it rebuilds, so the merge cost the spec states is wrong by two orders of magnitude in C.
-		- Measured: 200 merges of an eight-leaf overlay on a 40000-key base grow the C process by 419,687 bytes per merge - 84 MB - where Python grows 4,958 and Rust and Go stay near a kilobyte. At the spec's own 500 merges that is about 210 MB against the stated "about a megabyte".
-		- Cause: `w_overlay` allocates the replacement children array in the document arena, sized by the parent's whole child count, and abandons the old one. The comment three lines above records the same fight already won for the builder's doubling chain, which was moved to scratch; the exact-sized copy was not.
-		- Note: `shcl_compact` does reclaim it - 84 MB back to 2.9 MB in use - but nothing tells a repeatedly-merging C consumer that. The `shcl_compact` header comment is written for repeated writes, "a few dozen bytes per write".
-		- Opened: 20260904-172000
-
-	- 🔘 Item 22: C alone keeps an `H001`/`H002` hint for a field whose declared leaf name is empty.
-		- Reproduced: a document of two `"": 1` lines under a schema declaring `field: '""'` with `repeat: 1, 5` gives one hint in C and none in the other three.
-		- Cause: the C suppressor carries an extra `&& last->name.n` the other three do not. The spec's only stated exception is the name wildcard.
-		- Note: a stdout divergence the crosscheck could see - the corpus just has no empty-named field under a schema.
-		- Opened: 20260904-172100
-
-	- 🔘 Item 23: `check-c-compilers.bash` reports OK with a single compiler and never reads `SHCL_GATE_STRICT`.
-		- Reproduced: with gcc-12 to gcc-15 and clang hidden from `PATH`, the gate prints "OK: 5 build(s) across 1 compiler(s)" and exits 0 under `SHCL_GATE_STRICT=1`.
-		- Cause: the compiler list is whatever `command -v` finds, with no floor, and the script does not read the flag three other gates do. The engine's own comment says "A gate that quietly skips what it cannot run is a gate that stops checking when a runner loses a tool. The gates read this and fail on a skip instead".
-		- Note: the disagreement it exists for is real. Removing the `-Wclobbered` suppression around `do_parse` makes gcc-12 and gcc-13 refuse the file while 14, 15, clang and this box's default `cc` all build it clean.
-		- Opened: 20260904-172200
-
-	- 🔘 Item 24: the publish stage aborts before doing anything in a repository with no git identity.
-		- Reproduced as its own source lines under the script's shell options: `git config user.name` as a bare statement exits 1 when the key is unset, and `set -e` plus the script's own ERR trap end the run there. It happens before the backup and before any git action, and arrives as a trap dump naming a line rather than a message about identity.
-		- Note: git identity on this box comes from three `includeIf gitdir:` rules, so a repository outside those paths has none, and a bare runner has none either. The block runs on every non-quiet publish.
-		- Note: the same file's ssh probe assigns from a pipeline in its own statement, so the `${sshHost:-github.com}` fallback on the next line can never fire - the only way the variable ends up empty is git failing, which kills the script at the assignment first.
-		- Opened: 20260904-172300
-
-	- 🔘 Item 25: `largedoc.bash --mib 1` fails on a healthy tree.
-		- Reproduced: at 1 MiB python peaks at 71 MiB against a 65 MiB budget and the gate reports FAILED. At 2 MiB rust reads 58 against 64, one line from the same false failure.
-		- Cause: the per-binding ceilings are strictly per input MiB with no constant term, so at small sizes the fixed interpreter and runtime baseline dominates. `--mib N` is a documented option.
-		- Note: the pipeline only ever runs it at 100 MiB, so it does not bite there. A developer shrinking it to iterate gets a defect report that is arithmetic.
-		- Opened: 20260904-172400
-
-	- 🔘 Item 26: four items from the last two rounds closed with nothing pinning them.
-		- 20260902 item 29: `perf-gate.bash`'s exit-code and output-size checks exist, but nothing ever feeds the gate a broken CLI. `grep -rn perf-gate cicd/` finds only the shellcheck target and the real invocation. Delete both checks and nothing fails.
-		- 20260901b item 42: nothing compares main's `install.bash`, `install.ps1` and `install-dev.bash` against dev's. The three are byte-identical today, so it is holding - but this is the one class of drift that reaches every user the moment it happens, since the README one-liners fetch from main as they run.
-		- 20260901b item 45: no gate reads `style-guide.md` at all. The corrections can be reverted and nothing fails.
-		- 20260902 item 7, second half: no test anywhere covers a rendered path being emitted once when a schema spells the same name twice. The behavior is right and agrees four-way; the corpus has no schema carrying both spellings. The first half is pinned by case 082.
-		- Opened: 20260904-172500
-
-	- 🔘 Item 27: 20260901b item 14 records a manual check as though it were committed.
-		- Reproduced: the item says "Pinned by planting `.ro.shcl.tmp999.0` in the fixture's directory". Nothing in the tree plants that file, and a correct run leaves no temp for either filter to see, so restoring the old dirent filter passes the whole suite.
-		- Note: the fixture is now capable of catching a regression it could not catch before, which is worth having. The "Pinned by" line is what makes an unpinned item look pinned to the next review.
-		- Opened: 20260904-172600
-
-	- 🔘 Item 28: `SHCL_GATE_STRICT` is asserted nowhere, so deleting the one line that arms it disarms five gate skips silently.
-		- Reproduced by reading: `cicd.bash` exports it, `check-locale.bash` and `package.bash` read it, and `shell-regress.bash` exercises only its own `fHave` helper. Removing the export changes no gate's result.
-		- Note: that is the failure 20260902 item 32 was filed against, one level up.
-		- Opened: 20260904-172700
-
-	- 🔘 Item 29: three fixes from the last two rounds are guarded by nothing, in a way that lets each come back quietly.
-		- 20260902 item 18: `shell-regress.bash` pins the `fSplitTabs` half by lifting it out of `crosscheck.bash` by name, but nothing asserts `sanitize-c.bash` carries its new `children` and `paths` arms. Reverting the item leaves the gate silently replaying `get --children`. The unknown-type arm added by the same fix narrows the recurrence path but does not close it.
-		- 20260902 items 23 and 35 and 20260901b item 26: each shipped as prose in the spec, and `check-docs.bash` asserts one sentence of the three groups. The datetime tolerance paragraph, the five merge behaviors and two of the three merge facts can all be deleted with every gate green.
-		- 20260902 item 44: the fix is windows-only and the `cli-regress.bash` row that pins it never runs on windows, because `win-runners.bash` carries no cli-regress row. On linux the pre-fix code was already correct, so the row passes either way.
-		- Opened: 20260904-172800
-
-	- 🔘 Item 30: two doc comments merged onto one function in Rust and Go, leaving the next one undocumented.
-		- Reproduced by reading: `quoted_shape`'s description sits above `one_line` in the reference, and Go's is worse - the text begins "quotedShape is true when ..." directly above `func oneLine`. C and Python have it right.
-		- Note: exactly the class the release recipe lists as a mechanical pre-release check, and it says to compare comment inventory across bindings rather than code. Present since the functions were written.
-		- Opened: 20260904-172900
-
-	- 🔘 Item 31: four documents disagree with the code or with each other.
-		- The `fmt` synopsis omits `[options]` in the help and in the man page's SYNOPSIS, while the same binaries' usage-error line spells it correctly and `fmt` accepts seven of them. `-w` is missing from the man SYNOPSIS too.
-		- The spec says `--set` and `--set-literal` "share one ordered list"; the help, man page and README all say five options share it, which is what the CLI does. The spec never mentions `--remove`, `--set-default`, `--set-literal-default` or `--slots` at all.
-		- The spec's worked example of a non-associative fold does not exhibit one: with `p: 1`, `p: 2` and a bare `p:` over an `x: 1` base, every grouping gives the same result, because a bare header is a wrapper mention only against a container instance and neither `p` has children. The general claim is true and the bindings' own doc comments state the right condition.
-		- `grammar.abnf` puts `index-sel` inside `field-line` with no query-only carve-out, so it documents `a[#0].b: 1` as legal where all four say `E014`; and its `newline = [ CR ] LF` contradicts the spec's "a line's entire trailing carriage-return run is removed", which is what the code does.
-		- Note: also here because it is one sweep - a bare numeric selector past u64 silently becomes a value selector rather than an index, against `1*DIGIT`, and a trailing comment on a root-level `*` element line is discarded, against "Comments are never discarded". The second is contained by the save gate at exit 7.
-		- Opened: 20260904-173000
-
-	- 🔘 Item 32: `package.bash` uses the pipeline shape the same file documents as wrong forty-nine lines earlier.
-		- The file states the rule at the deb listing: "Into a variable first: `grep -q` quitting early would kill the tar behind `dpkg-deb` with SIGPIPE and fail the pipeline for the wrong reason." The libgcc dependency probe then spells it `readelf -d "${bin}" | grep -q 'NEEDED.*libgcc_s'` under `pipefail`.
-		- Reproduced as a shape, not as a failure: the same construct with a writer that outgrows the pipe buffer returns 141, which the `if` reads as "no match". Today `readelf -d` output fits the buffer, so the dependency is added correctly.
-		- Note: this is the defect 20260901b item 15 fixed, re-entering the same file. Correct today, wrong the day the probe widens - and the consequence is a shipped package silently declaring no libgcc dependency.
-		- Opened: 20260904-175100
-
 ### Features and enhancements
 
 - Code review 20260904:
@@ -500,6 +301,300 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260904:
+
+	- A from-scratch adversarial pass over ground the earlier rounds recorded as unread: the parser judged against `grammar.abnf` and the spec rather than against the other bindings; the C validator body and `shcl_load_and_validate`; `SHCL_OOM` under a failing allocator for the writer, merge and generator; the reference's write side judged against the spec; the Go and Python read, coercion, datetime and validation bodies judged against the spec; the merge and generator items the last two rounds listed as not reached; the shell completions, the two wrappers and the documents against each other; the gates nobody had injected into; and every fix of the last two rounds, including what those fixes cost. Thirty-two defects here, twenty-one enhancements under Features and enhancements. Every item below was reproduced on this box, with two stated exceptions: item 32 reproduces as a shape rather than as a failure, and items 24 and 32 were reproduced as their own source lines under the script's shell options rather than by running the publish stage.
+	- Nineteen of the defects are shapes all four bindings share, so the four-way check cannot see any of them. Three are C only. Six are gates, fixtures or documents that assert less than they claim. Item 1 is the round's worst: the recovery path the C header tells an embedder to use turns an allocation failure into a hang that cannot be interrupted.
+	- The last two rounds cost nothing measurable except one deliberate trade. Rust, Go and Python are flat on parse, fmt, bulk writes, absent defaults, bulk reads, `check --schema`, `init` and merge. The C parse of a 20 MiB document is 2-7% slower because a parse now gives back its scratch arena instead of leaving it, and the memory that buys is real: `check --schema` peak RSS down 19%, merge down 13%.
+
+	- ✅ Item 1: an allocation failure inside the lazy name-index build leaves the document in a state where the next lookup never returns.
+		- Reproduced in C with the documented longjmp-ing `SHCL_OOM` hook: a 50000-child document, a failing allocator, then the same public `shcl_children` call again. It never returns, and no signal short of a watchdog gets the process back. Two allocations in is enough.
+		- Cause: `name_index` sets `index_built` only after the whole walk, so a hook that unwinds mid-walk leaves the flag at 0 and the chains half built. The next lookup re-walks over them, `index_append` re-appends a node already on its chain, and `index_next[node]` ends up pointing at `node`. `children_named` then walks that chain forever.
+		- Note: `shcl_validate` already guards exactly this, and says why - "the name index is the only thing on the document this call builds, and half of one is worse than none". Every other path through `name_index` has no such guard, because there the unwind belongs to the embedder. The header's own `SHCL_OOM` text is what points an embedder at this.
+		- Note: read but not reproduced, in `index_append`'s second arm the first `cmap_put` can succeed and the second fail, leaving a key in `index_first` with none in `index_last`. A later append then adds a second `index_first` entry and a lookup can return the wrong chain head.
+		- Note: `oom_hook.c` does the right thing but its fixture is three lines, so the index build never spans two allocations.
+		- Fixed: the index flag has a third state, in flux, that the build and every append hold while they allocate. A lookup that finds it drops the index and rebuilds; the writer only touches a fully built one. That covers the second `cmap_put` arm too.
+		- Pinned by: `oom_hook.c`, a 20000-child lookup cut short by the hook and then repeated, at every budget up to the one it completes under. Fails on the old header, passes on the new.
+		- Opened: 20260904-170000
+		- Closed: 20260905-090331
+
+	- ✅ Item 2: a quote anywhere in a bare value swallows the rest of the line, so a trailing comment is destroyed on the next write at exit 0.
+		- Reproduced in all four. `note: don't panic  # keep this` loads with zero diagnostics and `fmt --write` leaves `note: "don't panic  # keep this"`. The comment is gone and the result is a fixpoint, so nothing will ever notice. The same apostrophe stops comma splitting: `b: it's fine, ok` is one element where `b: it is fine, ok` is two.
+		- Cause: `split_comment`, `split_unquoted_commas` and `cell_exceeds` enter quote state on any `"` or `'`, wherever it sits. The spec says a piece is quoted only when it begins with one, and the grammar agrees. `unterminated_quote` already implements the correct rule, so the helpers disagree with each other.
+		- Note: this violates two spec sentences at once - "a value *beginning* with a quote opens a quoted element" with "mid-text whitespace, `:`, `'`, `]`, even a `"`, all pass through", and "Comments are never discarded". An English apostrophe in a config value is about as common as input gets.
+		- Fixed: the comment split, the comma split and the element count open a quote only at the start of a piece. A field line's name half still opens a quote anywhere, the way the path scanner reads a quoted name or selector value, and the value half switches to the piece rule after the field's own colon. List elements and setter arguments are value text from the first character.
+		- Pinned by: corpus `088-mid-text-quote`, apostrophes and mid-text quotes beside trailing comments, in every runner. The old code turns the comment into value text on line 2.
+		- Opened: 20260904-170100
+		- Closed: 20260905-091206
+
+	- ✅ Item 3: bracket-array detection looks at the first colon on the line, so any earlier colon hides the array and `fmt --write` bakes it in at exit 0.
+		- Reproduced in all four. `"a:b": [80, 443]` reports `E015 missing colon` on a line that has one, and `fmt --write` leaves `"a:b": "80, 443"` at exit 0. A selector holding a colon does it too: `srv[db:5432].ports: [80, 443]`.
+		- Cause: `looks_like_bracket_array` uses `content.find(':')`, which lands inside the quoted name or the selector rather than at the field separator, so the line falls through to `E015`. `E015` counts no lost content, so the save gate never fires.
+		- Note: the spec says of `E019` that it "counts as lost content and an in-place rewrite refuses (`--lossy` overrides) rather than baking the changed value in". That promise is exactly what fails here. The `E015` diagnostic is also wrong on its own terms.
+		- Fixed: the check finds the field's own colon with the same name-half scan the comment split uses, so a quoted name or a selector holding one no longer stands in for it.
+		- Pinned by: corpus `089-bracket-behind-colon`, four bracket arrays behind a quoted name, a value selector, nothing, and selector sugar, all `E019` with a lost count of four. The old code reports `E015` and counts nothing lost on lines 2 and 3.
+		- Opened: 20260904-170200
+		- Closed: 20260905-091206
+
+	- ✅ Item 4: one reversed `min`/`max` range turns off the unknown-field sweep for the whole document.
+		- Reproduced in all four. A sound schema reports both unknown fields; changing `min: 1` to `min: 70000` on an unrelated field reports one `V092` and neither unknown field. The check still exits 6, so it looks like it is working.
+		- Cause: `parse_field` treats a crossed range as an entry-level failure and `build_schema` clears the paths-complete flag, which the sweep reads. The spec says the sweep "turns off only when a fault cost a path spelling outright (an unreadable `field:` path, or a mount naming no declared fragment)". A crossed range is neither - the spec's own constraint table says the field is dropped, not that its name is lost.
+		- Note: the dropped field also loses its `repeat`-based `H001` disavowal, for the same reason.
+		- Note: the 20260902 clean list records "`min > max` no fault" for Python. That is wrong twice - there is a fault, and this is its side effect.
+		- Decided: a crossed range is a key-level fault like a bad `min:` value on its own. The range is dropped and the entry stays, so `type`, `allowed`, `required` and `repeat` still apply and the path still legalizes its name chain. The spec's constraint table now says the range is dropped rather than the field.
+		- Fixed: `parse_field` clears both bounds and returns the constraint instead of dropping it, in all four.
+		- Pinned by: corpus `090-crossed-range`, two crossed ranges beside two unknown fields and a value the surviving `allowed` refuses. The old code reports neither unknown field.
+		- Opened: 20260904-170300
+		- Closed: 20260905-091652
+
+	- ✅ Item 5: a merge deletes a retained content-malformed line without counting it lost, so a save writes the truncated file instead of refusing.
+		- Reproduced in all four and in the veneer. Base `square-miles 300` plus `ok: 1`, overlay `ok: 2`: the merged canonical is `ok: 2` alone, `lost_count()` is 0, and `save_file` returns Ok. The malformed line is gone from the file the consumer writes back.
+		- Cause: a content-malformed line is stored in the same trivia slot as a comment, and a leaf override drops the base leaf's trivia. The spec sanctions dropping the base leaf's comments; it does not sanction dropping content it promised to retain "so a hand-typo in a config survives the consumer loading, editing, and writing the file back".
+		- Note: library-only, because `--write` refuses `--layer`. A consumer folding layers and saving is the exact case the lost gate exists for.
+		- Fixed: a leaf override moves every retained line off the replaced base leaves onto the first replacement, ahead of its own leading comments. Comments still go with the leaf, as the spec allows. A retained line is told from a comment by its first character.
+		- Pinned by: corpus `091-merge-keeps-malformed`, a bad line above an overridden leaf and a bad `*` line under one, both present in the merged golden. The old code writes neither.
+		- Opened: 20260904-170400
+		- Closed: 20260905-091652
+
+	- ✅ Item 6: `Set<T>Default` reports success on a wildcard path, which is the one path shape every setter is supposed to refuse.
+		- Reproduced in all four, library and CLI. `--set-default='srv[*].port=99'` exits 0 with nothing written when the path resolves, and exits 1 when it does not. Plain `--set` on the same path exits 1 either way. All twelve default forms are affected.
+		- Cause: each `_default` form is `if !exists(path) { return set_X(...) } true`, and `exists` is true for a wildcard whose slots resolve, so the refusal is never reached. Whether an unusable path passes now depends on the document's contents.
+		- Note: it also disagrees with `write_reason`, whose doc comment says "`Writable` means the same validation `place()` runs would pass". `write_reason` correctly says `Wildcard` on the same path.
+		- Fixed: every default form answers `write_reason` when the path already resolves, so a present path reports what a write there would. The C CLI's and C runner's op scripts carried their own present-check instead of the library's default forms; both take the same answer now.
+		- Pinned by: corpus `092-default-wildcard`, five default ops on resolving wildcard paths under `write-bad.ops`. The old code accepts every one.
+		- Opened: 20260904-170500
+		- Closed: 20260905-092040
+
+	- ✅ Item 7: the index-rebuild timing test cannot reliably fail on the defect it names, and Python's copy can never fail.
+		- Reproduced by backing the fix out: the Rust test passed on two of five runs, with the churned side landing either side of the bound. Go fails by under 2x. Python's fixture is 20000 churn iterations and 50 merges where Rust and Go use 100000 and 200, so the whole cost of the defect is about 52 ms against a 250 ms constant term - it cannot fail on any machine.
+		- Cause: widening the constant from 25 to 250 ms for a shared runner made the constant larger than the defect. The factor was meant to be what catches it; the constant now absorbs the whole thing.
+		- Note: the C copy is still at +25 and does bite, by 12%. On windows it does not run at all - the clock-coarseness guard needs a fresh side over 20 ms and windows measures it at 0.1.
+		- Note: a count is the right measure here, not a clock. The defect is how many nodes were walked, which is exact.
+		- Fixed: the fixture is the same in all four now - 100000 churn, 2000 merges, factor 25, constant 250 ms - so the defect costs tens of seconds against a bound under a second, and the constant absorbs a slow runner without absorbing the walk. C times the block on the wall clock instead of `clock()`, so the ratio is judged on windows too. A walked-node count would need a test-only hook in every binding; the work was scaled instead, and the injected defect fails by forty times in Rust and Python.
+		- Left alone: the 25x factor and the 250 ms constant. Python's healthy churned side is already ten times its fresh side, because the chain list is sized by the arena, so a tighter factor would fail a sound build.
+		- Opened: 20260904-170600
+		- Closed: 20260905-092615
+
+	- ✅ Item 8: `allowed` on `type: datetime` compares the written clock rather than the moment.
+		- Reproduced in all four. A document value of `2026-01-01T13:00:00+01:00` against `allowed: 2026-01-01T12:00:00Z` is `V004`. The same instant written at the same offset passes.
+		- Cause: the comparison is field-wise and then requires equal offsets, which makes the three offset-zero spellings agree and nothing else. The spec says "For `datetime` the coerced space is the moment".
+		- Note: normalize a zoned value to its instant before comparing, and keep the field-wise path for zone-less values so "a value with no zone is local and matches no zoned one" still holds.
+		- Fixed: two zoned values compare as minutes since the epoch, the written clock less its offset with the date carrying the day wrap; a time alone compares on a 24-hour cycle. Seconds, their presence and the fraction still have to agree, and zone-less values still compare field by field.
+		- Pinned by: corpus `093-datetime-allowed-offset`, the same instant at four offsets including two day wraps, two wrong clocks at the right offset, a midnight wrap and a fraction. The old code fails all eight.
+		- Opened: 20260904-170700
+		- Closed: 20260905-092825
+
+	- ✅ Item 9: `check-install-dev.bash` passes with the guard it exists to test removed.
+		- Reproduced: replacing the clone check in `install-dev.bash` with a no-op leaves the gate green. Its negative fixture is a bare directory that is not a git repository, so the nonzero exit it reads comes from `git config` refusing a non-repository, not from the script.
+		- Note: the guardless script then sets `core.hooksPath` and rewrites `core.sshCommand` on any unrelated git repository named with `--dir`. The gate's own comment also promises "nothing created" and nothing checks that.
+		- Note: the fixture has to be a git repository that is not an shcl clone, plus one that is an shcl tree and not a repository, and the assertion should read the config back rather than only the exit status.
+		- Fixed: the gate's refusal fixture is a fresh repository that is not an shcl clone, and it reads `core.hooksPath` and `core.sshCommand` back off it afterwards; an shcl-shaped tree that is not a repository is refused too.
+		- Pinned by: the gate itself. With the guard replaced by a no-op it reports three failures; the shipped script passes.
+		- Opened: 20260904-170800
+		- Closed: 20260905-093007
+
+	- ✅ Item 10: the bash completion cannot see the `--opt=VALUE` form at all, so the spelling every document uses loses the FILE slot.
+		- Reproduced in an interactive bash over a pty. `shcl check --strictness=<TAB>` offers nothing, and `shcl check --strictness=standard al<TAB>` offers nothing where `alpha.shcl` belongs. The space form works.
+		- Cause: `COMP_WORDBREAKS` contains `=`, so bash has already split the word into three before `_shcl` runs, and the file calls neither `_init_completion` nor `_get_comp_words_by_ref` to re-join them. The four `=VALUE` arms are dead code, and the value is then counted as a positional, which is what eats the FILE slot.
+		- Note: the zsh completion is right here - it uses `compset -P` and zsh does not split on `=`.
+		- Fixed: the function joins the words back through `_init_completion -s` where bash-completion is present, and by hand where it is not, so both spellings reach the one dispatch and a `--opt=value` word never counts as a positional. The dead `=VALUE` arms are gone.
+		- Pinned by: `shell-regress.bash`, nine command lines handed over the way readline cuts them, with the library and with the fallback. The old completion fails fourteen of the eighteen checks.
+		- Opened: 20260904-170900
+		- Closed: 20260905-093433
+
+	- ✅ Item 11: both completions omit `--remove`, `--set-default` and `--set-literal-default` from the value-option lists.
+		- Reproduced in both. `shcl fmt --remove <TAB>` offers filenames where a PATH belongs, and `shcl fmt --remove x <TAB>` offers nothing where the FILE belongs. `--set` is listed and behaves correctly, which is the control.
+		- Cause: the CLI has ten value-taking options; the space-form dispatch and the positional-skip list each carry seven. The round that added the three options updated the option table, which `check-completions.bash` diffs, and not the two lists it does not read.
+		- Fixed: both files carry one `_shcl_valopts` list that the dispatch, the positional count and zsh's `=` arms all read, so there is one place to add an option.
+		- Pinned by: `check-completions.bash` diffs that list against the options `asked_for()` steps over in the CLI; the old files fail it. The `--remove` rows in the `shell-regress.bash` block above cover the behavior.
+		- Opened: 20260904-171000
+		- Closed: 20260905-093433
+
+	- ✅ Item 12: a trailing non-breaking space or line separator in a bare value is deleted with no diagnostic and no lost count.
+		- Reproduced in all four. A line spelled `a: val` with a U+00A0 after the value loads clean, and `fmt --write` leaves `a: val`. Same for U+2028, VT and FF.
+		- Cause: the line trim uses the language's Unicode whitespace set where the grammar says `wsp = SP / HTAB` and puts those characters in the bare value alphabet.
+		- Fixed: every parser-side trim - the line end, a pending comment or retained line, a value, a selector body, a list element, the piece walkers, the fence lines and the raw-fence picker - trims a space or a tab and nothing else, in all four. `SetComment` and `SetLiteral` follow, since they read text the parser's way. Coercion keeps its wider trim: that is a read of a stored value, not the line. The line-end trim also takes a carriage return, which the load strips off a line end anyway; the fuzz found a retained line that kept one and lost it on the next load.
+		- Pinned by: corpus `094-unicode-space`, a no-break space, a line separator, a vertical tab and a form feed after bare values, one before a value and one inside an element, all kept and quoted on output. The old code deletes every one. Two fixtures that had pinned the old trim moved with it: the element-cap table now counts a U+3000 piece as an element, and case 066 keeps a no-break space on a comment.
+		- Opened: 20260904-171100
+		- Closed: 20260905-094221
+
+	- ✅ Item 13: an unterminated raw block in a newline-terminated file gains a trailing empty line the file never had.
+		- Reproduced in all four. `x: ```sql` then `body` with a final newline reads back `body\n\n`; the same two lines without the final newline read back `body\n`. `fmt` writes the fabricated line out.
+		- Cause: splitting the text on `\n` yields a phantom final element, which `consume_raw` takes as a body line. The grammar says the last line may lack a newline, so the two spellings are the same document.
+		- Fixed: the line list drops that final empty piece when the text ends in a newline, in all four, so nothing downstream ever sees a line the file does not have.
+		- Pinned by: corpus `096-raw-unterminated-eof` and `097-raw-unterminated-noeol`, the same two lines with and without the final newline, both reading `body`. The old code reads the first as `body` plus an empty line. Case `059-raw-errors` had pinned the extra line and moved with the fix.
+		- Opened: 20260904-171200
+		- Closed: 20260905-095502
+
+	- ✅ Item 14: `*` followed by a space and nothing else reports `E013` with a message its own input disproves, and kills the block beneath it.
+		- Reproduced in all four. `* ` gives `E013 malformed line: '*' must be followed by a space` - the line does have a space - and the child line under it is dropped as `E018`. The same empty element spelled `* #c` takes the `E009` path and keeps its block.
+		- Cause: the line trim removes the trailing space before the marker check, so the marker is a bare `*`. The spec's code table gives this shape `E009`.
+		- Note: `E013` pushes a dead level and `E009` does not, so the wrong code costs the block as well as the message.
+		- Fixed: when the trimmed line is a bare `*`, the untrimmed line decides whether a space followed it, so `* ` is an empty element (`E009`) in all four. Under item 15 an empty element takes its block with it too, so the block is skipped either way; what changed is the code and the message.
+		- Pinned by: corpus `095-dropped-element-block`, line 8. The old code reports `E013` there.
+		- Opened: 20260904-171300
+		- Closed: 20260905-095502
+
+	- ✅ Item 15: a dropped stacked-`*` element does not take its indented block with it, while the malformed spelling of the same mistake does.
+		- Reproduced in all four. Under `sizes:` with a `k: 1` sibling, `* small` with `n: 5` beneath it gives `E008` and `paths` reports `sizes.n` - the child re-parented one level up. Spelled `*small` the same document gives `E013` plus `E018` and the child is gone. `E007` and `E011` behave like `E008`.
+		- Note: the spec says of `E018` that a skipped line's block "never re-parents one level up", and says the same of a dedent to a bad column. What is not defensible either way is that two spellings of one mistake give the reader two different answers - the same reasoning that settled the `E012` sentinel in the 20260901b round.
+		- Decided: needs a call on whether a dropped element opens a block at all. `E001` already keeps a field among list elements at the parent, so keeping the child is arguable; giving the same mistake two answers is not.
+		- Decided: a dropped element is a skipped line and holds its indent level, so what is written under it is `E018` and counts lost, the same as under the malformed spelling. Re-parenting moved content to a place the author did not write it; skipping it is counted, so a save refuses. Recorded in `design.md` beside the retained-line rule and on the spec's `E018` row.
+		- Fixed: `add_star_element` reports whether the element was added, and the caller pushes the dead level when it was not, for `E007` to `E011` and the element cap, in all four.
+		- Pinned by: corpus `095-dropped-element-block`: a line under an `E008` element, under an `E009` one and under an `E011` one, each `E018`, with `sizes.n` and `full.deep` NotFound and a lost count of six. The old code re-parents the first and third. Case `087-merge-tail-comment` reached its top-level field only through that re-parenting, so its input now spells the field directly; it pins the same merged-comment order.
+		- Opened: 20260904-171400
+		- Closed: 20260905-095502
+
+	- ✅ Item 16: the PowerShell wrapper drops a bare `--` when it is dot-sourced, which is the mode its own header documents.
+		- Reproduced on pwsh 7.6. `. ./shcl.ps1; shcl get -- t.shcl '-dash'` gives `unknown option: -dash` at exit 1; quoting the token as `'--'` works; the bash wrapper is correct in both modes.
+		- Cause: PowerShell's own parser consumes a bare `--` as its end-of-parameters token before `@args` is built, so the wrapper never sees it. The script forms are unaffected.
+		- Note: help and the man page both say "Use `--` to end the options when a FILE or PATH begins with a dash", and the wrapper's header says both modes "take the same arguments". The workaround is written down nowhere.
+		- Decided: this is PowerShell's own parsing and no function body can see the token, so the wrapper documents the quoted spelling instead of pretending to take the bare one. The binary and the script forms take a bare `--` as before.
+		- Fixed: the wrapper header and the README's PowerShell section say that a dot-sourced `shcl` needs `'--'` quoted, and why.
+		- Pinned by: `shell-regress.bash`, both halves - a bare `--` is dropped and the quoted one goes through - so a PowerShell release that changes either shows up. There is no code to back out here; the block guards the note.
+		- Opened: 20260904-171500
+		- Closed: 20260905-100356
+
+	- ✅ Item 17: `raw-default` is an accepted write op in all four CLIs and appears in no document.
+		- Reproduced in all four: a `raw-default` ops line writes the block and exits 0. It is in none of the help's op list, the man page, the README, the spec, the changelog or either completion.
+		- Note: the help's op table positively implies it does not exist - it spells `<type>[-array]-default` over a `<type>` set of `int|float|bool|string|datetime` and puts `raw` on its own line with no `[-default]`. The README sends a reader wanting raw edits to exactly that list.
+		- Decided: the library contract already covers it, since the spec documents `Set<T>Default` generically over a `<T>` set that includes `SetRaw`. So this is a documentation gap, not a surface to remove.
+		- Fixed: the help's op table in all four CLIs and the man page's WRITE OPS spell `raw[-default]`, and the spec's `Set<T>Default` sentence says every typed setter has one, `SetRaw` and `SetLiteral` included. The corpus README already listed it.
+		- Pinned by: `check-docs.bash`, which reads every `-default` arm the reference CLI dispatches and requires the help's table to spell it. The old help fails it on `raw-default`.
+		- Opened: 20260904-171600
+		- Closed: 20260905-100356
+
+	- ✅ Item 18: `SetComment` leaves the blank separator between the new comment and its node when the node already carries a comment.
+		- Reproduced in all four. On `a: 1` / `# note` / blank / `b: 2`, adding a comment to `b` gives `# note` / `# new` / blank / `b: 2`. With no pre-existing comment the rule works.
+		- Cause: the blank is only moved above the comment when the node's leading list is empty. The spec says the call places "a node's blank separator line above the comment so the comment sits against its node", with no such condition, and the code's own comment says the same.
+		- Note: cosmetic - the result is still a fixpoint.
+		- Fixed: the blank moves above the first leading comment already there when there is one, and onto the new comment otherwise, in all four.
+		- Pinned by: corpus `098-set-comment-blank`, a comment added to a node that already carries one. The old code leaves the blank between the two comments and the node.
+		- Opened: 20260904-171700
+		- Closed: 20260905-100356
+
+	- ✅ Item 19: `SetLiteral` accepts text a file line would not read as one value.
+		- Reproduced in all four. `--set-literal='x=```sql'` stores `"```sql"` at exit 0 where the file line `x: ```sql` is `E005`; `--set-literal='y=[80'` stores `"[80"` where the file line is `E014`.
+		- Cause: `literal_value` refuses a line break, an unterminated quote and complete bracket text, and nothing else. The spec says the call "reads its argument the way the parser reads the half of a line after the colon", rejecting "only" those three.
+		- Note: the refusal list is also wider than the spec in one direction - a bare CR is refused, where a file keeps it as content mid-line and `set_string` accepts it.
+		- Decided: the spec sentence is the half to fix. Refusing a fence opener now would change a released API for no gain, so the "only" list should say what the code does.
+		- Fixed: the spec sentence now says what the call refuses - a line break or a carriage return, a piece that opens a quote it never closes, bracket-array text - and that text a file line would not read as a value at all, a fence opener or a lone `[`, is stored as the string it spells, since the call reads a value half rather than a line.
+		- Pinned by: corpus `099-literal-text`: a fence opener and a lone `[` stored as quoted strings, an unclosed quote refused in both the first and a later piece.
+		- Opened: 20260904-171800
+		- Closed: 20260905-100356
+
+	- ✅ Item 20: a hexadecimal integer above the i64 range is `BadType` as a float, while the same number in decimal reads fine.
+		- Reproduced in all four. `0x8000000000000000` and `0xFFFFFFFFFFFFFFFF` through `get --float` exit 4; `9223372036854775808` and `18446744073709551615` exit 0. Quoted thousands separators have the same hole.
+		- Cause: the float read recognizes a decimal integer by its own shape test but reaches a hex one only through the i64 integer parse, so the i64 bound leaks into a read the spec bounds by the double range - "An integer is a valid float on read" and "The value must fit a double".
+		- Fixed: when the i64 read of a hex or quoted-thousands spelling fails, the float read takes it again as a double - hex digit by digit in the double so every binding rounds alike, thousands through the correctly rounded decimal parse - and refuses only what does not fit a double. Plain decimal already went through the float parse.
+		- Pinned by: corpus `100-hex-float`, seven spellings across the i64 boundary read as floats and refused as ints. The old code exits 4 on five of them.
+		- Opened: 20260904-171900
+		- Closed: 20260905-100356
+
+	- ✅ Item 21: every C merge retains a whole children array per parent it rebuilds, so the merge cost the spec states is wrong by two orders of magnitude in C.
+		- Measured: 200 merges of an eight-leaf overlay on a 40000-key base grow the C process by 419,687 bytes per merge - 84 MB - where Python grows 4,958 and Rust and Go stay near a kilobyte. At the spec's own 500 merges that is about 210 MB against the stated "about a megabyte".
+		- Cause: `w_overlay` allocates the replacement children array in the document arena, sized by the parent's whole child count, and abandons the old one. The comment three lines above records the same fight already won for the builder's doubling chain, which was moved to scratch; the exact-sized copy was not.
+		- Note: `shcl_compact` does reclaim it - 84 MB back to 2.9 MB in use - but nothing tells a repeatedly-merging C consumer that. The `shcl_compact` header comment is written for repeated writes, "a few dozen bytes per write".
+		- Fixed: the rebuilt child list is written into the parent's own array when it fits, which a leaf override always does, and an append that outgrows it gets room to double. A merge of eight leaves onto a 20000-key parent costs 512 bytes now, against 160512.
+		- Pinned by: `mem_bounds.c`, that merge two hundred times with a 4 KB per-merge bound. The old header fails it by forty times.
+		- Opened: 20260904-172000
+		- Closed: 20260905-101318
+
+	- ✅ Item 22: C alone keeps an `H001`/`H002` hint for a field whose declared leaf name is empty.
+		- Reproduced: a document of two `"": 1` lines under a schema declaring `field: '""'` with `repeat: 1, 5` gives one hint in C and none in the other three.
+		- Cause: the C suppressor carries an extra `&& last->name.n` the other three do not. The spec's only stated exception is the name wildcard.
+		- Note: a stdout divergence the crosscheck could see - the corpus just has no empty-named field under a schema.
+		- Fixed: the C suppressor takes the leaf name whatever its length, as the other three do.
+		- Pinned by: corpus `101-empty-name-hint`, two empty-named leaves under a schema that declares the field with `repeat: 1, 5`: no hint under the schema, one without it. The old C reports the hint under the schema.
+		- Opened: 20260904-172100
+		- Closed: 20260905-101319
+
+	- ✅ Item 23: `check-c-compilers.bash` reports OK with a single compiler and never reads `SHCL_GATE_STRICT`.
+		- Reproduced: with gcc-12 to gcc-15 and clang hidden from `PATH`, the gate prints "OK: 5 build(s) across 1 compiler(s)" and exits 0 under `SHCL_GATE_STRICT=1`.
+		- Cause: the compiler list is whatever `command -v` finds, with no floor, and the script does not read the flag three other gates do. The engine's own comment says "A gate that quietly skips what it cannot run is a gate that stops checking when a runner loses a tool. The gates read this and fail on a skip instead".
+		- Note: the disagreement it exists for is real. Removing the `-Wclobbered` suppression around `do_parse` makes gcc-12 and gcc-13 refuse the file while 14, 15, clang and this box's default `cc` all build it clean.
+		- Fixed: under `SHCL_GATE_STRICT` the sweep needs two versioned gccs and clang before it builds anything, and says what it found otherwise; off the gate it checks what is installed and names it, as before.
+		- Pinned by: `shell-regress.bash`, the gate run against a PATH holding one gcc. The old script reports OK there.
+		- Opened: 20260904-172200
+		- Closed: 20260905-101319
+
+	- ✅ Item 24: the publish stage aborts before doing anything in a repository with no git identity.
+		- Reproduced as its own source lines under the script's shell options: `git config user.name` as a bare statement exits 1 when the key is unset, and `set -e` plus the script's own ERR trap end the run there. It happens before the backup and before any git action, and arrives as a trap dump naming a line rather than a message about identity.
+		- Note: git identity on this box comes from three `includeIf gitdir:` rules, so a repository outside those paths has none, and a bare runner has none either. The block runs on every non-quiet publish.
+		- Note: the same file's ssh probe assigns from a pipeline in its own statement, so the `${sshHost:-github.com}` fallback on the next line can never fire - the only way the variable ends up empty is git failing, which kills the script at the assignment first.
+		- Fixed: the two identity reads print "not set" instead of ending the run, and the ssh-host probe's assignment carries the fallback its next line always meant to have. This project's copy only; the canonical copy under the synced tree and the other projects' copies need the same two-line patch.
+		- Pinned by: `shell-regress.bash`, which requires both identity lines and the host assignment to carry a fallback.
+		- Opened: 20260904-172300
+		- Closed: 20260905-101319
+
+	- ✅ Item 25: `largedoc.bash --mib 1` fails on a healthy tree.
+		- Reproduced: at 1 MiB python peaks at 71 MiB against a 65 MiB budget and the gate reports FAILED. At 2 MiB rust reads 58 against 64, one line from the same false failure.
+		- Cause: the per-binding ceilings are strictly per input MiB with no constant term, so at small sizes the fixed interpreter and runtime baseline dominates. `--mib N` is a documented option.
+		- Note: the pipeline only ever runs it at 100 MiB, so it does not bite there. A developer shrinking it to iterate gets a defect report that is arithmetic.
+		- Fixed: each ceiling carries a constant term for the runtime's own footprint - rust 16, go 24, c 8, python 48 MiB - added to the per-MiB budget. At 100 MiB it is noise; at 1 MiB it is most of what is measured.
+		- Pinned by: `shell-regress.bash` runs `largedoc.bash --mib 1` across the four bindings when their CLIs are built. The old limits fail python there.
+		- Opened: 20260904-172400
+		- Closed: 20260905-101319
+
+	- ✅ Item 26: four items from the last two rounds closed with nothing pinning them.
+		- 20260902 item 29: `perf-gate.bash`'s exit-code and output-size checks exist, but nothing ever feeds the gate a broken CLI. `grep -rn perf-gate cicd/` finds only the shellcheck target and the real invocation. Delete both checks and nothing fails.
+		- 20260901b item 42: nothing compares main's `install.bash`, `install.ps1` and `install-dev.bash` against dev's. The three are byte-identical today, so it is holding - but this is the one class of drift that reaches every user the moment it happens, since the README one-liners fetch from main as they run.
+		- 20260901b item 45: no gate reads `style-guide.md` at all. The corrections can be reverted and nothing fails.
+		- 20260902 item 7, second half: no test anywhere covers a rendered path being emitted once when a schema spells the same name twice. The behavior is right and agrees four-way; the corpus has no schema carrying both spellings. The first half is pinned by case 082.
+		- Fixed, one per sub-item. `perf-gate`: `shell-regress.bash` feeds it a CLI that prints nothing and one that exits wrong, and requires the two refusals by name. Installers: `cicd.bash` compares the three against `origin/main` after a dev publish and fails the run on a difference, so an installer fix left on dev goes red until the docs-only merge; a hard gate anywhere earlier would have blocked the dev push that carries the fix, and `shell-regress.bash` pins the line. Style guide: `check-docs.bash` requires the iterative-walks bullet and its reason inside the Python section. Duplicate spelling: corpus `102-init-dup-path`, `field: w` beside `field: "w[*]"` generating one line.
+		- Opened: 20260904-172500
+		- Closed: 20260905-102409
+
+	- ✅ Item 27: 20260901b item 14 records a manual check as though it were committed.
+		- Reproduced: the item says "Pinned by planting `.ro.shcl.tmp999.0` in the fixture's directory". Nothing in the tree plants that file, and a correct run leaves no temp for either filter to see, so restoring the old dirent filter passes the whole suite.
+		- Note: the fixture is now capable of catching a regression it could not catch before, which is worth having. The "Pinned by" line is what makes an unpinned item look pinned to the next review.
+		- Fixed: the fixture plants `.ro.shcl.tmp999.0` in its directory before counting what the write left, and requires exactly two entries; a filter that skipped every dotfile sees one and fails with its own message. The fixture is windows-only, so the hosted windows job is where it runs.
+		- Opened: 20260904-172600
+		- Closed: 20260905-102409
+
+	- ✅ Item 28: `SHCL_GATE_STRICT` is asserted nowhere, so deleting the one line that arms it disarms five gate skips silently.
+		- Reproduced by reading: `cicd.bash` exports it, `check-locale.bash` and `package.bash` read it, and `shell-regress.bash` exercises only its own `fHave` helper. Removing the export changes no gate's result.
+		- Note: that is the failure 20260902 item 32 was filed against, one level up.
+		- Fixed: `shell-regress.bash` requires the export line in `cicd.bash` and a read of the flag in each of the four gates that skip on a missing tool.
+		- Opened: 20260904-172700
+		- Closed: 20260905-102409
+
+	- ✅ Item 29: three fixes from the last two rounds are guarded by nothing, in a way that lets each come back quietly.
+		- 20260902 item 18: `shell-regress.bash` pins the `fSplitTabs` half by lifting it out of `crosscheck.bash` by name, but nothing asserts `sanitize-c.bash` carries its new `children` and `paths` arms. Reverting the item leaves the gate silently replaying `get --children`. The unknown-type arm added by the same fix narrows the recurrence path but does not close it.
+		- 20260902 items 23 and 35 and 20260901b item 26: each shipped as prose in the spec, and `check-docs.bash` asserts one sentence of the three groups. The datetime tolerance paragraph, the five merge behaviors and two of the three merge facts can all be deleted with every gate green.
+		- 20260902 item 44: the fix is windows-only and the `cli-regress.bash` row that pins it never runs on windows, because `win-runners.bash` carries no cli-regress row. On linux the pre-fix code was already correct, so the row passes either way.
+		- Fixed, one per sub-item. `shell-regress.bash` reads every row type the corpus uses and requires `sanitize-c.bash` to carry an arm for it. `check-docs.bash` requires the five merge behaviors, the two remaining merge facts and the datetime tolerance paragraph by phrase. `win-runners.bash` gained a `cli regress` row over the C, Rust and Go CLIs it builds; Python's CLI is a script with no executable bit there and stays out of that row. The rows built on `/dev/full`, a closed stdout or an unwritable directory are POSIX fixtures and are skipped out loud on windows, which leaves the windows-only fix of 20260902 item 44 pinned only by the C runner's held-open fixture for its errno half; the message row needs a windows way to make a directory unwritable, which this round did not build.
+		- Opened: 20260904-172800
+		- Closed: 20260905-102409
+
+	- ✅ Item 30: two doc comments merged onto one function in Rust and Go, leaving the next one undocumented.
+		- Reproduced by reading: `quoted_shape`'s description sits above `one_line` in the reference, and Go's is worse - the text begins "quotedShape is true when ..." directly above `func oneLine`. C and Python have it right.
+		- Note: exactly the class the release recipe lists as a mechanical pre-release check, and it says to compare comment inventory across bindings rather than code. Present since the functions were written.
+		- Fixed: each function carries its own comment in Rust and Go, matching C and Python.
+		- Pinned by: nothing mechanical - a stranded doc comment is a reading check, listed in the release recipe. Said plainly rather than a gate that greps comment shapes.
+		- Opened: 20260904-172900
+		- Closed: 20260905-102409
+
+	- ✅ Item 31: four documents disagree with the code or with each other.
+		- The `fmt` synopsis omits `[options]` in the help and in the man page's SYNOPSIS, while the same binaries' usage-error line spells it correctly and `fmt` accepts seven of them. `-w` is missing from the man SYNOPSIS too.
+		- The spec says `--set` and `--set-literal` "share one ordered list"; the help, man page and README all say five options share it, which is what the CLI does. The spec never mentions `--remove`, `--set-default`, `--set-literal-default` or `--slots` at all.
+		- The spec's worked example of a non-associative fold does not exhibit one: with `p: 1`, `p: 2` and a bare `p:` over an `x: 1` base, every grouping gives the same result, because a bare header is a wrapper mention only against a container instance and neither `p` has children. The general claim is true and the bindings' own doc comments state the right condition.
+		- `grammar.abnf` puts `index-sel` inside `field-line` with no query-only carve-out, so it documents `a[#0].b: 1` as legal where all four say `E014`; and its `newline = [ CR ] LF` contradicts the spec's "a line's entire trailing carriage-return run is removed", which is what the code does.
+		- Note: also here because it is one sweep - a bare numeric selector past u64 silently becomes a value selector rather than an index, against `1*DIGIT`, and a trailing comment on a root-level `*` element line is discarded, against "Comments are never discarded". The second is contained by the save gate at exit 7.
+		- Fixed, one per sub-item. The `fmt` synopsis carries `[options]` in all four helps and the man page, and both `set` and `fmt` spell `-w` there. The spec names the five edit options as sharing the ordered list, and `--slots`. Its worked example is now one that is non-associative: a base `p:` holding `q: 1`, then `p: 2`, then a bare `p:`. The grammar carries the same query-only note for `index-sel` that the wildcard has, and its newline rule is `*CR LF`. An all-digit selector past u64 is an index that names no instance in all four - Python had it as a value selector too - and a root-level `*` line's trailing comment rides the document instead of vanishing.
+		- Pinned by: corpus `103-huge-index` (the line is `E003`, a write through it is refused, a read is NotFound) and `104-root-element-comment`; `check-docs.bash` already reads the help's synopsis against the man page.
+		- Opened: 20260904-173000
+		- Closed: 20260905-102409
+
+	- ✅ Item 32: `package.bash` uses the pipeline shape the same file documents as wrong forty-nine lines earlier.
+		- The file states the rule at the deb listing: "Into a variable first: `grep -q` quitting early would kill the tar behind `dpkg-deb` with SIGPIPE and fail the pipeline for the wrong reason." The libgcc dependency probe then spells it `readelf -d "${bin}" | grep -q 'NEEDED.*libgcc_s'` under `pipefail`.
+		- Reproduced as a shape, not as a failure: the same construct with a writer that outgrows the pipe buffer returns 141, which the `if` reads as "no match". Today `readelf -d` output fits the buffer, so the dependency is added correctly.
+		- Note: this is the defect 20260901b item 15 fixed, re-entering the same file. Correct today, wrong the day the probe widens - and the consequence is a shipped package silently declaring no libgcc dependency.
+		- Fixed: the probe reads `readelf` into a variable first and greps that, as the deb listing already did.
+		- Pinned by: `shell-regress.bash`, which fails on any `readelf` piped straight into `grep -q` in `package.bash`.
+		- Opened: 20260904-175100
+		- Closed: 20260905-102409
 
 - Code review 20260902:
 

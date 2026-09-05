@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <setjmp.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 static long budget = 1L << 30;
 static void *failing_malloc(size_t n) { if (--budget < 0) return NULL; return malloc(n); }
@@ -46,6 +49,28 @@ static int write_under(shcl_doc *d, long b) {
 	return shcl_get_int_or(d, "group.added39", 13, -1) == 39 ? 1 : -1;
 }
 
+// The first lookup builds the name index, which spans many allocations on a
+// wide document. 1 when the lookup fits in B allocations and answers right,
+// 0 when the hook fired, -1 when it fit but answered wrong.
+static int lookup_under(shcl_doc *d, long b, size_t want) {
+	if (SHCL_SETJMP(oom_jmp)) return 0;
+	budget = b;
+	shcl_str *kids = NULL;
+	size_t got = shcl_children(d, "group", 5, &kids);
+	budget = 1L << 30;
+	return got == want ? 1 : -1;
+}
+
+static shcl_doc *wide_doc(size_t n) {
+	size_t cap = n * 16 + 16;
+	char *text = (char *)malloc(cap);
+	size_t at = (size_t)snprintf(text, cap, "group:\n");
+	for (size_t i = 0; i < n; i++) at += (size_t)snprintf(text + at, cap - at, "\tk%zu: %zu\n", i, i);
+	shcl_doc *d = shcl_parse(text, at);
+	free(text);
+	return d;
+}
+
 int main(void) {
 	const char *text = "group:\n\tkey: value\n\tother: 12\n";
 	int wrote = 0, failures = 0;
@@ -60,6 +85,31 @@ int main(void) {
 		shcl_free(d);
 	}
 	if (!wrote) { fprintf(stderr, "FAIL oom_hook: no budget under 512 allocations completed 40 writes\n"); failures++; }
+
+	// A lookup the hook cut short must not poison the next one: the same call
+	// again, unbudgeted, has to come back with the right answer. The half-built
+	// index used to chain a node to itself, and the retry never returned.
+	const size_t wide = 20000;
+	int found = 0;
+	for (long b = 0; b < 512 && !found; b++) {
+		shcl_doc *d = wide_doc(wide);
+		if (!d) { fprintf(stderr, "FAIL oom_hook: the wide parse failed\n"); failures++; break; }
+		found = lookup_under(d, b, wide);
+		budget = 1L << 30;
+		if (found < 0) { fprintf(stderr, "FAIL oom_hook: lookup under budget %ld answered wrong\n", b); failures++; }
+		if (found == 0) {
+#ifndef _WIN32
+			alarm(20);
+#endif
+			int again = lookup_under(d, 1L << 30, wide);
+#ifndef _WIN32
+			alarm(0);
+#endif
+			if (again != 1) { fprintf(stderr, "FAIL oom_hook: lookup after a cut-short one under budget %ld: %d\n", b, again); failures++; }
+		}
+		shcl_free(d);
+	}
+	if (!found) { fprintf(stderr, "FAIL oom_hook: no budget under 512 allocations completed the wide lookup\n"); failures++; }
 	if (oom_hits == 0) { fprintf(stderr, "FAIL oom_hook: the hook never fired\n"); failures++; }
 	if (failures == 0) printf("oom_hook: ok (%d hook hits)\n", oom_hits);
 	return failures ? 1 : 0;

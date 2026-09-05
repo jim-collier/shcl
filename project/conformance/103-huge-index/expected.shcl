@@ -1,0 +1,4 @@
+# An all-digit selector past u64 is an index that names no instance, not a value.
+a: 1
+a: 2
+c: x

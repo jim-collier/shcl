@@ -247,10 +247,42 @@ fn same_moment(a: &ShclDateTime, b: &ShclDateTime) -> bool {
 		Some(ZoneSpec::OffsetMinutes(m)) => Some(*m),
 		None => None,
 	};
-	a.date == b.date
-		&& a.time == b.time
-		&& frac(&a.frac) == frac(&b.frac)
-		&& zone(&a.zone) == zone(&b.zone)
+	if a.date.is_some() != b.date.is_some()
+		|| a.time.is_some() != b.time.is_some()
+		|| a.time.map(|t| t.2) != b.time.map(|t| t.2)
+		|| frac(&a.frac) != frac(&b.frac)
+	{
+		return false;
+	}
+	match (zone(&a.zone), zone(&b.zone)) {
+		(None, None) => a.date == b.date && a.time == b.time,
+		// Zoned values are instants: the written clock less its offset, the
+		// date carrying the day wrap. A time alone lives on a 24-hour cycle.
+		(Some(ao), Some(bo)) => {
+			let minutes = |dt: &ShclDateTime, off: i32| {
+				let hm = dt
+					.time
+					.map_or(0, |(h, m, _)| i64::from(h) * 60 + i64::from(m))
+					- i64::from(off);
+				match dt.date {
+					Some((y, m, d)) => days_from_civil(y, m, d) * 1440 + hm,
+					None => hm.rem_euclid(1440),
+				}
+			};
+			minutes(a, ao) == minutes(b, bo)
+		}
+		_ => false,
+	}
+}
+
+/// Days since 1970-01-01 for a civil date, negative before it.
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+	let y = i64::from(if m <= 2 { y - 1 } else { y });
+	let era = y.div_euclid(400);
+	let yoe = y - era * 400;
+	let doy = (153 * i64::from((m + 9) % 12) + 2) / 5 + i64::from(d) - 1;
+	let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	era * 146_097 + doe - 719_468
 }
 
 /// A datetime's zone suffix as written.
@@ -643,15 +675,98 @@ pub const MAX_DEPTH: usize = 512;
 
 /// A value spelled the way JSON, TOML and YAML spell an array. The path scanner
 /// reads the brackets as a selector, so the line arrives with no value text and
-/// the old repair blamed a colon that is plainly there.
+/// the old repair blamed a colon that is plainly there. The colon that counts
+/// is the field's own: one inside a quoted name or a selector is not it.
 fn looks_like_bracket_array(content: &str) -> bool {
-	match content.find(':') {
-		Some(colon) => {
+	match name_half(content, false) {
+		NameHalf::Colon(colon) => {
 			let rest = content[colon + 1..].trim();
 			rest.starts_with('[') && rest.ends_with(']')
 		}
-		None => false,
+		_ => false,
 	}
+}
+
+/// How the name half of a field line ends.
+enum NameHalf {
+	Colon(usize), // the field's own colon, byte offset
+	Hash(usize),  // an unquoted `#` first: a comment, or a malformed name
+	End,
+}
+
+/// Scan a field line's name half the way the path scanner reads it: a quote
+/// opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
+/// selector, and with `sugar` a colon followed by `[` is selector sugar rather
+/// than the separator. `\` shields the next char.
+fn name_half(s: &str, sugar: bool) -> NameHalf {
+	let mut in_quote: Option<char> = None;
+	let mut in_sel = false;
+	let mut it = s.char_indices();
+	while let Some((byte, c)) = it.next() {
+		if c == '\\' {
+			it.next();
+			continue;
+		}
+		match in_quote {
+			Some(q) => {
+				if c == q {
+					in_quote = None;
+				}
+			}
+			None => match c {
+				'"' | '\'' => in_quote = Some(c),
+				'#' => return NameHalf::Hash(byte),
+				'[' => in_sel = true,
+				']' => in_sel = false,
+				':' if !in_sel => {
+					let rest = s[byte + 1..].trim_start_matches([' ', '\t']);
+					if !(sugar && rest.starts_with('[')) {
+						return NameHalf::Colon(byte);
+					}
+				}
+				_ => {}
+			},
+		}
+	}
+	NameHalf::End
+}
+
+/// Offset of the `#` that starts a comment in value text, scanning from
+/// `from`. A quote opens a quoted piece only at the start of a piece - the
+/// start of the value, or after an unquoted comma - which is the spec's rule:
+/// a piece is quoted only when it begins with one. So an apostrophe in prose
+/// (`don't panic  # keep`) hides nothing. `\` shields the next char.
+fn value_comment_at(s: &str, from: usize) -> Option<usize> {
+	let mut in_quote: Option<char> = None;
+	let mut at_start = true;
+	let mut it = s[from..].char_indices();
+	while let Some((off, c)) = it.next() {
+		if c == '\\' {
+			it.next();
+			at_start = false;
+			continue;
+		}
+		match in_quote {
+			Some(q) => {
+				if c == q {
+					in_quote = None;
+				}
+			}
+			None => match c {
+				'"' | '\'' if at_start => in_quote = Some(c),
+				'#' => return Some(from + off),
+				',' => {
+					at_start = true;
+					continue;
+				}
+				_ => {}
+			},
+		}
+		if !is_wsp(c) {
+			at_start = false;
+		}
+	}
+	None
 }
 
 /// Folds A-Z only; non-ASCII passes through untouched. Borrowed when there is
@@ -668,51 +783,90 @@ fn is_bare_name_char(c: char) -> bool {
 	c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
-/// Split off an unquoted trailing comment: (content, comment from `#` on).
-/// A `\` shields the next char throughout. Comments are kept as trivia.
+/// The grammar's `wsp`: a space or a tab. The parser trims with this and
+/// nothing wider - a no-break space or a line separator after a value is
+/// content, and a Unicode trim used to delete it with no diagnostic.
+fn is_wsp(c: char) -> bool {
+	c == ' ' || c == '\t'
+}
+
+fn trim_wsp(s: &str) -> &str {
+	s.trim_matches(is_wsp)
+}
+
+/// The end of a line, or of a line's content before its comment: `wsp`, plus
+/// a carriage return, which the load takes off a line end anyway - so a
+/// retained line or a comment written back never ends in one the next load
+/// would strip. A CR followed by content stays content.
+fn trim_wsp_end(s: &str) -> &str {
+	s.trim_end_matches(|c| is_wsp(c) || c == '\r')
+}
+
+/// Split off an unquoted trailing comment from a field line: (content, comment
+/// from `#` on). The name half is read the scanner's way and the value half
+/// the value's way (see value_comment_at). Comments are kept as trivia.
 fn split_comment(s: &str) -> (&str, Option<&str>) {
 	if !s.contains('#') {
 		return (s, None);
 	}
-	let mut in_quote: Option<char> = None;
-	let mut it = s.char_indices();
-	while let Some((byte, c)) = it.next() {
-		if c == '\\' {
-			it.next();
-			continue;
-		}
-		match in_quote {
-			Some(q) if c == q => in_quote = None,
-			None if c == '"' || c == '\'' => in_quote = Some(c),
-			None if c == '#' => return (&s[..byte], Some(&s[byte..])),
-			_ => {}
-		}
+	let hash = match name_half(s, true) {
+		NameHalf::Hash(i) => Some(i),
+		NameHalf::Colon(i) => value_comment_at(s, i + 1),
+		NameHalf::End => None,
+	};
+	match hash {
+		Some(i) => (&s[..i], Some(&s[i..])),
+		None => (s, None),
 	}
-	(s, None)
 }
 
-/// Split on unquoted commas; `\` shields the next char.
+/// The same for value text alone: a list element, or a setter's argument.
+fn split_value_comment(s: &str) -> (&str, Option<&str>) {
+	if !s.contains('#') {
+		return (s, None);
+	}
+	match value_comment_at(s, 0) {
+		Some(i) => (&s[..i], Some(&s[i..])),
+		None => (s, None),
+	}
+}
+
+/// Split on unquoted commas; a quote opens only at the start of a piece (see
+/// value_comment_at), and `\` shields the next char.
 fn split_unquoted_commas(s: &str) -> Vec<&str> {
 	if !s.contains(',') {
 		return vec![s];
 	}
 	let mut parts = Vec::new();
 	let mut in_quote: Option<char> = None;
+	let mut at_start = true;
 	let mut start = 0usize;
 	let mut it = s.char_indices();
 	while let Some((byte, c)) = it.next() {
 		if c == '\\' {
 			it.next();
+			at_start = false;
 			continue;
 		}
 		match in_quote {
-			Some(q) if c == q => in_quote = None,
-			None if c == '"' || c == '\'' => in_quote = Some(c),
-			None if c == ',' => {
-				parts.push(&s[start..byte]);
-				start = byte + 1;
+			Some(q) => {
+				if c == q {
+					in_quote = None;
+				}
 			}
-			_ => {}
+			None => match c {
+				'"' | '\'' if at_start => in_quote = Some(c),
+				',' => {
+					parts.push(&s[start..byte]);
+					start = byte + 1;
+					at_start = true;
+					continue;
+				}
+				_ => {}
+			},
+		}
+		if !is_wsp(c) {
+			at_start = false;
 		}
 	}
 	parts.push(&s[start..]);
@@ -739,7 +893,7 @@ fn unterminated_quote(text: &str) -> bool {
 		return false;
 	}
 	for piece in split_unquoted_commas(text) {
-		let t = piece.trim();
+		let t = trim_wsp(piece);
 		if !quoted_shape(t) {
 			let Some(&first) = t.as_bytes().first() else {
 				continue;
@@ -752,8 +906,6 @@ fn unterminated_quote(text: &str) -> bool {
 	false
 }
 
-/// True when the text is one quote pair: a quote char at both ends, the last
-/// one not escaped. Quotes and the backslash are ASCII, so bytes suffice.
 /// Value text for a diagnostic message: line breaks and tabs escaped, so one
 /// diagnostic is one line. A raw block's body is the value that made this
 /// necessary - it carries its own newlines.
@@ -764,6 +916,8 @@ fn one_line(s: &str) -> String {
 		.replace('\t', "\\t")
 }
 
+/// True when the text is one quote pair: a quote char at both ends, the last
+/// one not escaped. Quotes and the backslash are ASCII, so bytes suffice.
 fn quoted_shape(t: &str) -> bool {
 	let b = t.as_bytes();
 	let Some(&first) = b.first() else {
@@ -782,7 +936,7 @@ fn quoted_shape(t: &str) -> bool {
 /// Trim, then strip one matching outer quote pair if present. Unquoted empty
 /// slots return None (dropped, never an error).
 fn parse_element(piece: &str) -> Option<Element> {
-	let t = piece.trim();
+	let t = trim_wsp(piece);
 	if t.is_empty() {
 		return None;
 	}
@@ -814,7 +968,7 @@ fn cell_exceeds(text: &str, max: usize) -> bool {
 		}
 		match in_quote {
 			Some(q) if c == q => in_quote = None,
-			None if c == '"' || c == '\'' => in_quote = Some(c),
+			None if (c == '"' || c == '\'') && !has_content => in_quote = Some(c),
 			None if c == ',' => {
 				if has_content {
 					count += 1;
@@ -827,7 +981,7 @@ fn cell_exceeds(text: &str, max: usize) -> bool {
 			}
 			_ => {}
 		}
-		if !c.is_whitespace() {
+		if !is_wsp(c) {
 			has_content = true;
 		}
 	}
@@ -1104,14 +1258,14 @@ fn fence_open(rest: &str) -> Option<(u8, usize, String)> {
 	if run < 3 {
 		return None;
 	}
-	Some((first, run, rest[run..].trim().to_string()))
+	Some((first, run, trim_wsp(&rest[run..]).to_string()))
 }
 
 // `min_len` is the opening fence's length, which the grammar puts at three or
 // more, so the length test already rules out the empty line that `all` would
 // otherwise accept.
 fn is_fence_close(line: &str, ch: u8, min_len: usize) -> bool {
-	let t = line.trim();
+	let t = trim_wsp(line);
 	t.len() >= min_len && t.bytes().all(|b| b == ch)
 }
 
@@ -1164,6 +1318,14 @@ struct Segment {
 struct PathScan {
 	segments: Vec<Segment>,
 	value_text: Option<String>, // text after the separator colon, trimmed
+}
+
+/// The spelling of an index selector - an optional `#`, an optional `+`, then
+/// digits - whatever its size. The grammar says `1*DIGIT`, with no upper bound.
+fn index_shape(body: &str) -> bool {
+	let b = body.strip_prefix('#').unwrap_or(body);
+	let b = b.strip_prefix('+').unwrap_or(b);
+	!b.is_empty() && b.bytes().all(|c| c.is_ascii_digit())
 }
 
 /// usize view of a selector index: None when it does not fit the target's
@@ -1286,13 +1448,17 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 				while pos < bytes.len() && bytes[pos] != b']' {
 					pos += 1;
 				}
-				let body: String = input[start..pos].trim().to_string();
+				let body: String = trim_wsp(&input[start..pos]).to_string();
 				selector = Some(if body == "*" {
 					Selector::Wildcard
 				} else if let Some(n) = body.strip_prefix('#').and_then(|d| d.parse::<u64>().ok()) {
 					Selector::ByIndex(n)
 				} else if let Ok(n) = body.parse::<u64>() {
 					Selector::ByIndex(n)
+				} else if index_shape(&body) {
+					// All digits but past u64: an index no instance can have,
+					// not a value selector that would create one on a write.
+					Selector::ByIndex(u64::MAX)
 				} else if body.is_empty() {
 					return Err("empty selector".into());
 				} else {
@@ -1348,7 +1514,7 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 				pos += 1;
 				return Ok(PathScan {
 					segments,
-					value_text: Some(input[pos..].trim().to_string()),
+					value_text: Some(trim_wsp(&input[pos..]).to_string()),
 				});
 			}
 			_ => return Err(format!("unexpected '{}' after field", char_at(input, pos))),
@@ -1988,11 +2154,12 @@ impl Parser {
 	}
 
 	/// One stacked-list element (`* scalar`) appends to the parent's array.
-	fn add_star_element(&mut self, parent: usize, body: &str, line: usize) {
+	/// True when the element was added; false when the line was dropped.
+	fn add_star_element(&mut self, parent: usize, body: &str, line: usize) -> bool {
 		if parent == ROOT {
 			self.err(line, "E007", "list element with no parent field");
 			self.lost += 1;
-			return;
+			return false;
 		}
 		// Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if !self.arena[parent].children.is_empty() {
@@ -2002,13 +2169,13 @@ impl Parser {
 				"list element mixed with field children; ignored",
 			);
 			self.lost += 1;
-			return;
+			return false;
 		}
-		let trimmed = body.trim();
+		let trimmed = trim_wsp(body);
 		if trimmed.is_empty() {
 			self.err(line, "E009", "empty list element");
 			self.lost += 1;
-			return;
+			return false;
 		}
 		// One scalar per line; a bare comma is an error, not a second element.
 		if split_unquoted_commas(trimmed).len() > 1 {
@@ -2018,7 +2185,7 @@ impl Parser {
 				"bare comma in list element (one element per line)",
 			);
 			self.lost += 1;
-			return;
+			return false;
 		}
 		if unterminated_quote(trimmed) {
 			self.err(line, "E017", "unterminated quote in value");
@@ -2026,7 +2193,7 @@ impl Parser {
 		let Some(el) = parse_element(trimmed) else {
 			self.err(line, "E009", "empty list element");
 			self.lost += 1;
-			return;
+			return false;
 		};
 		// Element cap: each element line past it is refused on its own, the way
 		// any other bad element line is.
@@ -2043,7 +2210,7 @@ impl Parser {
 				),
 			);
 			self.lost += 1;
-			return;
+			return false;
 		}
 		if self.arena[parent].value.is_empty() {
 			let old_key = merge_hash(&self.arena[parent].name, &self.arena[parent].value);
@@ -2076,7 +2243,9 @@ impl Parser {
 				"field already has a value; list element ignored",
 			);
 			self.lost += 1;
+			return false;
 		}
+		true
 	}
 
 	/// Legal input that looks like a common mistake: a field repeating as a bare
@@ -2135,7 +2304,14 @@ impl Parser {
 		// content untrimmed, so a line left ending in CR would be written back as
 		// CRLF and read as neither - the one shape where the count is visible.
 		let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-		let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+		let mut lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+		// A newline-terminated text splits into one more piece than it has
+		// lines. An unterminated raw block took that empty tail as a body
+		// line, so the same last line read differently with and without its
+		// newline, which the grammar says are one document.
+		if text.ends_with('\n') {
+			lines.pop();
+		}
 		let mut i = 0usize;
 		let mut node_capped = false;
 		while i < lines.len() {
@@ -2149,12 +2325,15 @@ impl Parser {
 					"E020",
 					format!("node cap of {} exceeded; parse stopped", self.max_nodes),
 				);
-				self.lost += lines[i..].iter().filter(|l| !l.trim().is_empty()).count();
+				self.lost += lines[i..]
+					.iter()
+					.filter(|l| !trim_wsp(l).is_empty())
+					.count();
 				node_capped = true;
 				break;
 			}
 			let lineno = i + 1;
-			let line = lines[i].trim_end();
+			let line = trim_wsp_end(lines[i]);
 			// Indent chars are ASCII space/tab, so a byte scan slices the same run.
 			let ilen = line
 				.bytes()
@@ -2208,7 +2387,13 @@ impl Parser {
 			}
 			// Stacked-list element: colon-less by construction ('*' can't begin a name).
 			if let Some(after) = rest.strip_prefix('*') {
-				if after.starts_with(' ') || after.starts_with('\t') {
+				// A `*` alone after the trim: whether a space followed it
+				// decides between an empty element and a malformed line, and
+				// only the untrimmed line still knows.
+				let spaced = after.starts_with([' ', '\t'])
+					|| (after.is_empty()
+						&& matches!(lines[i].as_bytes().get(ilen + 1), Some(b' ' | b'\t')));
+				if spaced {
 					let Some(parent) = self.resolve_parent(indent) else {
 						self.err(lineno, "E012", "indentation matches no open level");
 						self.lost += 1;
@@ -2220,12 +2405,26 @@ impl Parser {
 						i += 1;
 						continue;
 					}
-					let (body, comment) = split_comment(after);
+					let (body, comment) = split_value_comment(after);
 					// Elements have no node of their own; trivia rides the field.
+					// At the root there is no field (E007), so the comment rides
+					// the document like any other pending one.
 					if parent != ROOT {
 						self.attach_trivia(parent, comment);
+					} else if let Some(c) = comment {
+						self.pending.push(Pend {
+							text: c.to_string(),
+							indent: indent.to_string(),
+							blank_before: had_blank,
+							ceiling: indent.len(),
+						});
 					}
-					self.add_star_element(parent, body, lineno);
+					// A dropped element holds its indent level like any
+					// skipped line, so what is written under it is skipped
+					// with it (E018) rather than re-parenting to the field.
+					if !self.add_star_element(parent, body, lineno) {
+						self.stack.push((indent.to_string(), DEAD));
+					}
 					i += 1;
 					continue;
 				}
@@ -2252,7 +2451,7 @@ impl Parser {
 				// sibling site below carries cannot apply here: this line
 				// starts with the '*' that brought us in.
 				self.pending.push(Pend {
-					text: rest.trim_end().to_string(),
+					text: trim_wsp_end(rest).to_string(),
 					indent: indent.to_string(),
 					blank_before: had_blank,
 					ceiling: indent.len(),
@@ -2271,13 +2470,13 @@ impl Parser {
 			// twice.
 			if comment.is_some()
 				&& (before.contains("```") || before.contains("~~~"))
-				&& scan_path(before.trim_end())
+				&& scan_path(trim_wsp_end(before))
 					.is_ok_and(|s| s.value_text.is_some_and(|v| fence_open(&v).is_some()))
 			{
 				before = rest;
 				comment = None;
 			}
-			let content = before.trim_end();
+			let content = trim_wsp_end(before);
 			if content.is_empty() {
 				// Only a comment survived (e.g. an escaped lead-in); keep it.
 				if let Some(c) = comment {
@@ -2317,7 +2516,7 @@ impl Parser {
 						self.lost += 1;
 					} else {
 						self.pending.push(Pend {
-							text: rest.trim_end().to_string(),
+							text: trim_wsp_end(rest).to_string(),
 							indent: indent.to_string(),
 							blank_before: had_blank,
 							ceiling: indent.len(),
@@ -3649,8 +3848,8 @@ fn literal_value(text: &str) -> Option<Value> {
 	if text.contains('\n') || text.contains('\r') {
 		return None;
 	}
-	let (v, _) = split_comment(text);
-	let v = v.trim();
+	let (v, _) = split_value_comment(text);
+	let v = trim_wsp(v);
 	if unterminated_quote(v) || (v.starts_with('[') && v.ends_with(']')) {
 		return None;
 	}
@@ -3708,7 +3907,7 @@ fn encode_string(s: &str) -> String {
 fn choose_fence(content: &str) -> (u8, usize) {
 	let mut maxrun = 0usize;
 	for line in content.split('\n') {
-		let t = line.trim();
+		let t = trim_wsp(line);
 		if !t.is_empty() && t.bytes().all(|b| b == b'`') {
 			maxrun = maxrun.max(t.len());
 		}
@@ -4022,14 +4221,18 @@ impl Document {
 				};
 				// Without this the load trims what was written and the writer's
 				// output stops being a fmt fixpoint.
-				let c = c.trim_end().to_string();
+				let c = trim_wsp_end(&c).to_string();
 				// The node's own blank moves above its first comment; otherwise
 				// the blank would separate the comment from what it annotates.
+				// Above the first one already there, when there is one.
 				let nd = &mut self.arena[node];
 				let mut lead = Lead::plain(c);
-				if nd.blank_before && nd.leading().is_empty() {
-					lead.blank_before = true;
+				if nd.blank_before {
 					nd.blank_before = false;
+					match nd.triv_mut().leading.first_mut() {
+						Some(first) => first.blank_before = true,
+						None => lead.blank_before = true,
+					}
 				}
 				nd.triv_mut().leading.push(lead);
 				true
@@ -4152,13 +4355,15 @@ impl Document {
 	}
 
 	// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
+	// A path that already resolves reports what a write there would, so a
+	// wildcard is refused whether or not its slots happen to resolve.
 	/// `set_int` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int_default(&mut self, path: &str, v: i64) -> bool {
 		if !self.exists(path) {
 			return self.set_int(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_float` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4166,7 +4371,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_float(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_bool` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4174,7 +4379,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_bool(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_string` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4182,7 +4387,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_string(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// Write TEXT as value syntax rather than as data: `80, 443` becomes a
 	/// two-element array where `set_string` would store one string that has to
@@ -4202,7 +4407,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_literal(path, text);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_datetime` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4210,7 +4415,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_datetime(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_raw` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4218,7 +4423,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_raw(path, content, info);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_int_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4226,7 +4431,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_int_array(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_float_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4234,7 +4439,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_float_array(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_bool_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4242,7 +4447,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_bool_array(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_string_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4250,7 +4455,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_string_array(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 	/// `set_datetime_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -4258,7 +4463,7 @@ impl Document {
 		if !self.exists(path) {
 			return self.set_datetime_array(path, v);
 		}
-		true
+		self.write_reason(path) == WriteReason::Writable
 	}
 }
 
@@ -4372,6 +4577,25 @@ impl Document {
 					.map(|&(pos, ok)| (pos, self.clone_subtree(over, ok, base_parent)))
 					.collect();
 				if in_base {
+					// The replaced leaf's comments go with it, which the spec
+					// allows; a content-malformed line retained on it is
+					// content the parser promised to keep, so those move
+					// onto the replacement. A comment starts with `#`, a
+					// retained line never does.
+					let mut kept: Vec<Lead> = Vec::new();
+					for &b in base_kids.iter().filter(|&&b| self.arena[b].name == *name) {
+						let nd = &self.arena[b];
+						for l in nd.leading().iter().chain(nd.inside()).chain(nd.after()) {
+							if !l.text.starts_with('#') {
+								kept.push(l.clone());
+							}
+						}
+					}
+					if !kept.is_empty() {
+						let t = self.arena[clones[0].1].triv_mut();
+						kept.append(&mut t.leading);
+						t.leading = kept;
+					}
 					replace.insert(name.clone(), clones.into_iter().map(|(_, c)| c).collect());
 				} else {
 					appended.extend(clones);
@@ -4617,7 +4841,10 @@ fn parse_float_text(e: &Element, level: Strictness) -> Option<f64> {
 			text: t.to_string(),
 			quoted: e.quoted,
 		};
-		parse_int_text_no_loose(&el)? as f64
+		match parse_int_text_no_loose(&el) {
+			Some(i) => i as f64,
+			None => parse_int_text_wide(&el)?,
+		}
 	};
 	Some(if percent { v / 100.0 } else { v })
 }
@@ -4626,6 +4853,46 @@ fn parse_float_text(e: &Element, level: Strictness) -> Option<f64> {
 /// two can't recurse into each other.
 fn parse_int_text_no_loose(e: &Element) -> Option<i64> {
 	parse_int_text(e, Strictness::Standard)
+}
+
+/// The two integer spellings the plain float parse does not read - hex, and
+/// quoted thousands - past the i64 range, as a double: a float read is bounded
+/// by the double, not by the integer type. Hex goes in digit by digit in the
+/// double, so every binding rounds the same way; the spellings mirror
+/// parse_int_text.
+fn parse_int_text_wide(e: &Element) -> Option<f64> {
+	let t = e.text.trim();
+	let (neg, body) = match t.strip_prefix('-') {
+		Some(r) => (true, r),
+		None => (false, t.strip_prefix('+').unwrap_or(t)),
+	};
+	let v = if let Some(h) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X"))
+		&& !h.is_empty()
+		&& h.bytes().all(|b| b.is_ascii_hexdigit())
+	{
+		h.bytes().fold(0.0f64, |v, b| {
+			v * 16.0 + f64::from((b as char).to_digit(16).unwrap_or(0))
+		})
+	} else if e.quoted && body.contains(',') {
+		let groups: Vec<&str> = body.split(',').collect();
+		let well_formed = groups.len() > 1
+			&& !groups[0].is_empty()
+			&& groups[0].len() <= 3
+			&& groups[0].bytes().all(|b| b.is_ascii_digit())
+			&& groups[1..]
+				.iter()
+				.all(|g| g.len() == 3 && g.bytes().all(|b| b.is_ascii_digit()));
+		if !well_formed {
+			return None;
+		}
+		body.replace(',', "").parse::<f64>().ok()?
+	} else {
+		return None;
+	};
+	if !v.is_finite() {
+		return None;
+	}
+	Some(if neg { -v } else { v })
 }
 
 fn parse_bool_text(t: &str, level: Strictness) -> Option<bool> {
@@ -5865,9 +6132,14 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 			"V092",
 			"bad schema constraint 'max'".to_string(),
 		);
-		// Dropped like any other broken field, so the document is not told off
-		// twice per value for a range it could never have satisfied.
-		return None;
+		// The range goes, not the field: a key-level fault keeps its entry, so
+		// the path still legalizes its name chain for the unknown-field sweep,
+		// and the document is not told off twice per value for a range it
+		// could never have satisfied.
+		c.min_i = None;
+		c.max_i = None;
+		c.min_f = None;
+		c.max_f = None;
 	}
 	Some(c)
 }

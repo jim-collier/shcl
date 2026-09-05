@@ -805,19 +805,21 @@ def main():
 	for churned in (False, True):
 		idoc = shcl.Document.parse("g:\n\tk: 1\n")
 		if churned:
-			for i in range(20000):
+			for i in range(100000):
 				idoc.set_int("g.tmp", i)
 				idoc.remove("g.tmp")
 		iother = shcl.Document.parse("g:\n\tk: 1\n")
 		t0 = time.perf_counter()
-		for _ in range(50):
+		for _ in range(2000):
 			idoc.merge(iother)
 			if idoc.get_int_or("g.k", -1) != 1:
 				raise SystemExit("index walk: wrong result")
 		ms.append((time.perf_counter() - t0) * 1000.0)
 	# A generous ratio on purpose: the chain list is still sized by the arena,
 	# which is a fill the walk cannot avoid. What the bound catches is the walk
-	# itself going over every dead node.
+	# itself going over every dead node. Two thousand merges put that cost well
+	# past the constant term a shared runner needs; the smaller fixture this
+	# used to run could not fail on any machine.
 	# A clock too coarse to see the fresh side leaves the ratio with a zero
 	# denominator, and then the bound is an absolute figure on whatever machine
 	# is running - which is what it was written not to be.
@@ -867,12 +869,12 @@ def main():
 	if sum(1 for g in ldoc.diagnostics() if g.code == "E021") != 1 or ldoc.get_int_array("arr") != [1, 2]:
 		raise SystemExit("element cap: a stacked array keeps what fit")
 	# The count the cap judges is the count the array reads back as, spelling
-	# by spelling: quoted and escaped commas, empty and blank slots, Unicode
-	# blanks, a quote that never closes. Refused at one under, kept at exact.
+	# by spelling: quoted and escaped commas, empty and blank slots, a Unicode
+	# blank (content: only a space or a tab is blank), a quote that never closes. Refused at one under, kept at exact.
 	counts = [
 		("1, 2, 3", 3), ('"a, b", c', 2), ("a\\, b, c", 2), ("a,,b", 2),
 		("a, , b", 2), (" a ", 1), ("\"\", ''", 2), ("'a\", b'", 1),
-		('"open, b', 1), ("\\", 1), ("x,\u3000", 1), ("x, \u00a0y", 2), (", , ,", 0),
+		('"open, b', 1), ("\\", 1), ("x,\u3000", 2), ("x, \u00a0y", 2), (", , ,", 0),
 	]
 	for spelling, n in counts:
 		text = f"v: {spelling}\n"

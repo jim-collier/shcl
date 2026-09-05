@@ -44,6 +44,24 @@ static size_t arena_bytes(const ShclArena *a) {
 }
 
 static int failures = 0;
+// Wall time in milliseconds: clock() is CPU time, and on windows it ticks in
+// whole milliseconds, too coarse for a ratio of two runs.
+#ifdef _WIN32
+#include <windows.h>
+static double wall_ms(void) {
+	LARGE_INTEGER f, c;
+	QueryPerformanceFrequency(&f);
+	QueryPerformanceCounter(&c);
+	return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
+}
+#else
+static double wall_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+#endif
+
 static void fail(const char *what) { fprintf(stderr, "FAIL mem_bounds: %s\n", what); failures++; }
 
 int main(void) {
@@ -181,9 +199,9 @@ int main(void) {
 		for (int churned = 0; churned < 2; churned++) {
 			shcl_doc *cd = shcl_parse("g:\n\tk: 1\n", 9);
 			if (churned) for (int i = 0; i < 100000; i++) { shcl_set_int(cd, "g.tmp", 5, i); shcl_remove(cd, "g.tmp", 5); }
-			clock_t c0 = clock();
-			for (int i = 0; i < 200; i++) { shcl_merge(cd, cd); if (shcl_get_int_or(cd, "g.k", 3, -1) != 1) fail("index walk: wrong result"); }
-			t[churned] = (double)(clock() - c0) / CLOCKS_PER_SEC * 1000.0;
+			double c0 = wall_ms();
+			for (int i = 0; i < 2000; i++) { shcl_merge(cd, cd); if (shcl_get_int_or(cd, "g.k", 3, -1) != 1) fail("index walk: wrong result"); }
+			t[churned] = wall_ms() - c0;
 			shcl_free(cd);
 		}
 		printf("mem_bounds: index rebuild: %.1f ms fresh, %.1f ms after 100k set+remove\n", t[0], t[1]);
@@ -196,15 +214,21 @@ int main(void) {
 		/* A clock that cannot resolve the fresh side leaves the ratio resting on
 		   one or two ticks, and then the bound is an absolute figure on
 		   whatever machine is running - which is what it was written not to be.
-		   glibc counts in microseconds and the fresh side is a hundred ticks;
-		   windows counts in whole milliseconds and it is one. */
-		if (t[0] < 20.0 * (1000.0 / (double)CLOCKS_PER_SEC))
+		   wall_ms resolves well under a millisecond on every runner; clock()
+		   on windows counted whole ones and left this unjudged there. */
+		if (t[0] < 0.02)
 			printf("mem_bounds: index rebuild ratio not judged (clock too coarse)\n");
 		else
 		/* A generous ratio on purpose: the chain array is still sized by the
 		   arena, which is a memset the walk cannot avoid. What the bound
-		   catches is the walk itself going over every dead node. */
-		if (t[1] > t[0] * 25 + 25) fail("the index rebuild walks nodes the document no longer holds");
+		   catches is the walk itself going over every dead node. Two thousand
+		   merges put that cost well past the constant term a shared runner
+		   needs. The constant is wider here than in the other three: on windows
+		   the allocator hands a freed 800 KB block back to the system and
+		   faults it in again on the next rebuild, which the hosted runner
+		   measured at half a second over two thousand merges; the defect is
+		   tens of seconds. */
+		if (t[1] > t[0] * 25 + 600) fail("the index rebuild walks nodes the document no longer holds");
 #endif
 	}
 
@@ -220,23 +244,26 @@ int main(void) {
 		shcl_free(ad);
 	}
 
-	// A merge rebuilt the parent's child list with a builder growing in the
-	// document arena, so every doubling step was abandoned there; and a string
-	// value climbed from 32 bytes the same way. Both are opened at the size the
-	// caller already knows now.
+	// A merge rebuilt the parent's child list in the document arena: first with
+	// a builder whose every doubling step was abandoned there, then with an
+	// exact-sized copy that still left the whole old list behind - 420 KB per
+	// merge on a 40000-key parent, against the spec's "about a megabyte" for
+	// five hundred. The list is rewritten in place now when it fits, so a leaf
+	// override costs its cloned node and little else. A string value climbed
+	// from 32 bytes the same way once; it is opened at its own size.
 	{
 		size_t keys = 20000, cap = keys * 24 + 16, tl = 0;
 		char *txt = (char *)malloc(cap);
 		for (size_t i = 0; i < keys; i++) tl += (size_t)sprintf(txt + tl, "k%zu: %zu\n", i, i);
 		shcl_doc *base = shcl_parse(txt, tl);
-		shcl_doc *over = shcl_parse("k0: 9\n", 6);
+		shcl_doc *over = shcl_parse("k0: 9\nk1: 8\nk2: 7\nk3: 6\nk4: 5\nk5: 4\nk6: 3\nk7: 2\n", 48);
 		size_t start = arena_bytes(&base->arena);
-		for (int i = 0; i < 50; i++) shcl_merge(base, over);
-		size_t per = (arena_bytes(&base->arena) - start) / 50;
-		printf("mem_bounds: merge: %zu bytes per merge onto %zu keys (list is %zu)\n", per, keys, keys * sizeof(size_t));
-		if (shcl_get_int_or(base, "k0", 2, -1) != 9) fail("merge: wrong result");
-		// The rebuilt list is unavoidable; a doubling chain beside it is not.
-		if (per > keys * sizeof(size_t) * 3 / 2) fail("a merge abandoned its builder in the document arena");
+		for (int i = 0; i < 200; i++) shcl_merge(base, over);
+		size_t per = (arena_bytes(&base->arena) - start) / 200;
+		printf("mem_bounds: merge: %zu bytes per merge of 8 leaves onto %zu keys (list is %zu)\n", per, keys, keys * sizeof(size_t));
+		if (shcl_get_int_or(base, "k0", 2, -1) != 9 || shcl_get_int_or(base, "k7", 2, -1) != 2) fail("merge: wrong result");
+		// Eight cloned nodes and their values, nothing list-sized.
+		if (per > 4096) fail("a merge retained the parent's whole child list");
 		shcl_free(over); shcl_free(base); free(txt);
 	}
 	{

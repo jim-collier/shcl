@@ -810,13 +810,14 @@ fn parse_limited_caps() {
 	);
 	assert_eq!(doc.get_int_array("arr"), Ok(vec![1, 2]));
 	// The count the cap judges is the count the array reads back as, spelling
-	// by spelling: quoted and escaped commas, empty and blank slots, Unicode
-	// blanks, a quote that never closes. Refused at one under, kept at exact.
+	// by spelling: quoted and escaped commas, empty and blank slots, a Unicode
+	// blank (content: only a space or a tab is blank), a quote that never
+	// closes. Refused at one under, kept at exact.
 	#[rustfmt::skip]
 	let counts: &[(&str, usize)] = &[
 		("1, 2, 3", 3), ("\"a, b\", c", 2), ("a\\, b, c", 2), ("a,,b", 2),
 		("a, , b", 2), (" a ", 1), ("\"\", ''", 2), ("'a\", b'", 1),
-		("\"open, b", 1), ("\\", 1), ("x,\u{3000}", 1), ("x, \u{a0}y", 2), (", , ,", 0),
+		("\"open, b", 1), ("\\", 1), ("x,\u{3000}", 2), ("x, \u{a0}y", 2), (", , ,", 0),
 	];
 	for &(spelling, n) in counts {
 		let text = format!("v: {spelling}\n");
@@ -1440,7 +1441,7 @@ fn index_rebuild_ignores_removed_nodes() {
 		}
 		let other = Document::parse("g:\n\tk: 1\n");
 		let t0 = std::time::Instant::now();
-		for _ in 0..200 {
+		for _ in 0..2000 {
 			d.merge(&other);
 			assert_eq!(d.get_int_or("g.k", -1), 1);
 		}
@@ -1448,7 +1449,9 @@ fn index_rebuild_ignores_removed_nodes() {
 	}
 	// A generous ratio on purpose: the chain array is still sized by the arena,
 	// which is a memset the walk cannot avoid. What the bound catches is the
-	// walk itself going over every dead node, which is orders larger.
+	// walk itself going over every dead node, which is orders larger. Two
+	// thousand merges put that cost well past the constant term a shared
+	// runner needs; at two hundred the constant could absorb the defect.
 	// A clock too coarse to see the fresh side leaves the ratio with a zero
 	// denominator, and then the bound is an absolute figure on whatever machine
 	// is running - which is what it was written not to be.

@@ -1,0 +1,7 @@
+query	type	expected	status
+-	load	ok	-
+nbsp	string	val 	Good
+lead	string	 val	Good
+tail	string	val	Good
+list	string[]	a |b	Good
+-	lost	0	-

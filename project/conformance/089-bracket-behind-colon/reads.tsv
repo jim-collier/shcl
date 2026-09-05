@@ -1,0 +1,5 @@
+query	type	expected	status
+-	load	ok	-
+"a:b"	string	80, 443	Good
+srv[db:5432].ports	string	80, 443	Good
+-	lost	4	-

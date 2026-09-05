@@ -1,0 +1,10 @@
+# Only a space or a tab is trimmed off a line: anything else after a bare
+# value is content.
+nbsp: val 
+lsep: val 
+vt: val
+ff: val
+lead:  val
+tail: val 	
+list: a , b
+cr: x , y
