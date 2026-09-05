@@ -247,10 +247,40 @@ fn same_moment(a: &ShclDateTime, b: &ShclDateTime) -> bool {
 		Some(ZoneSpec::OffsetMinutes(m)) => Some(*m),
 		None => None,
 	};
-	a.date == b.date
-		&& a.time == b.time
-		&& frac(&a.frac) == frac(&b.frac)
-		&& zone(&a.zone) == zone(&b.zone)
+	if a.date.is_some() != b.date.is_some()
+		|| a.time.is_some() != b.time.is_some()
+		|| a.time.map(|t| t.2) != b.time.map(|t| t.2)
+		|| frac(&a.frac) != frac(&b.frac)
+	{
+		return false;
+	}
+	match (zone(&a.zone), zone(&b.zone)) {
+		(None, None) => a.date == b.date && a.time == b.time,
+		// Zoned values are instants: the written clock less its offset, the
+		// date carrying the day wrap. A time alone lives on a 24-hour cycle.
+		(Some(ao), Some(bo)) => {
+			let minutes = |dt: &ShclDateTime, off: i32| {
+				let hm = dt.time.map_or(0, |(h, m, _)| i64::from(h) * 60 + i64::from(m))
+					- i64::from(off);
+				match dt.date {
+					Some((y, m, d)) => days_from_civil(y, m, d) * 1440 + hm,
+					None => hm.rem_euclid(1440),
+				}
+			};
+			minutes(a, ao) == minutes(b, bo)
+		}
+		_ => false,
+	}
+}
+
+/// Days since 1970-01-01 for a civil date, negative before it.
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+	let y = i64::from(if m <= 2 { y - 1 } else { y });
+	let era = y.div_euclid(400);
+	let yoe = y - era * 400;
+	let doy = (153 * i64::from((m + 9) % 12) + 2) / 5 + i64::from(d) - 1;
+	let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	era * 146_097 + doe - 719_468
 }
 
 /// A datetime's zone suffix as written.

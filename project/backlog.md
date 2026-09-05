@@ -120,11 +120,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-170600
 		- Closed: 20260905-092615
 
-	- 🔘 Item 8: `allowed` on `type: datetime` compares the written clock rather than the moment.
+	- ✅ Item 8: `allowed` on `type: datetime` compares the written clock rather than the moment.
 		- Reproduced in all four. A document value of `2026-01-01T13:00:00+01:00` against `allowed: 2026-01-01T12:00:00Z` is `V004`. The same instant written at the same offset passes.
 		- Cause: the comparison is field-wise and then requires equal offsets, which makes the three offset-zero spellings agree and nothing else. The spec says "For `datetime` the coerced space is the moment".
 		- Note: normalize a zoned value to its instant before comparing, and keep the field-wise path for zone-less values so "a value with no zone is local and matches no zoned one" still holds.
+		- Fixed: two zoned values compare as minutes since the epoch, the written clock less its offset with the date carrying the day wrap; a time alone compares on a 24-hour cycle. Seconds, their presence and the fraction still have to agree, and zone-less values still compare field by field.
+		- Pinned by: corpus `093-datetime-allowed-offset`, the same instant at four offsets including two day wraps, two wrong clocks at the right offset, a midnight wrap and a fraction. The old code fails all eight.
 		- Opened: 20260904-170700
+		- Closed: 20260905-092825
 
 	- 🔘 Item 9: `check-install-dev.bash` passes with the guard it exists to test removed.
 		- Reproduced: replacing the clone check in `install-dev.bash` with a no-op leaves the gate green. Its negative fixture is a bare directory that is not a git repository, so the nonzero exit it reads comes from `git config` refusing a non-repository, not from the script.
