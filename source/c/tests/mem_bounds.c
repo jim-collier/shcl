@@ -44,6 +44,24 @@ static size_t arena_bytes(const ShclArena *a) {
 }
 
 static int failures = 0;
+// Wall time in milliseconds: clock() is CPU time, and on windows it ticks in
+// whole milliseconds, too coarse for a ratio of two runs.
+#ifdef _WIN32
+#include <windows.h>
+static double wall_ms(void) {
+	LARGE_INTEGER f, c;
+	QueryPerformanceFrequency(&f);
+	QueryPerformanceCounter(&c);
+	return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
+}
+#else
+static double wall_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+#endif
+
 static void fail(const char *what) { fprintf(stderr, "FAIL mem_bounds: %s\n", what); failures++; }
 
 int main(void) {
@@ -181,9 +199,9 @@ int main(void) {
 		for (int churned = 0; churned < 2; churned++) {
 			shcl_doc *cd = shcl_parse("g:\n\tk: 1\n", 9);
 			if (churned) for (int i = 0; i < 100000; i++) { shcl_set_int(cd, "g.tmp", 5, i); shcl_remove(cd, "g.tmp", 5); }
-			clock_t c0 = clock();
-			for (int i = 0; i < 200; i++) { shcl_merge(cd, cd); if (shcl_get_int_or(cd, "g.k", 3, -1) != 1) fail("index walk: wrong result"); }
-			t[churned] = (double)(clock() - c0) / CLOCKS_PER_SEC * 1000.0;
+			double c0 = wall_ms();
+			for (int i = 0; i < 2000; i++) { shcl_merge(cd, cd); if (shcl_get_int_or(cd, "g.k", 3, -1) != 1) fail("index walk: wrong result"); }
+			t[churned] = wall_ms() - c0;
 			shcl_free(cd);
 		}
 		printf("mem_bounds: index rebuild: %.1f ms fresh, %.1f ms after 100k set+remove\n", t[0], t[1]);
@@ -196,15 +214,17 @@ int main(void) {
 		/* A clock that cannot resolve the fresh side leaves the ratio resting on
 		   one or two ticks, and then the bound is an absolute figure on
 		   whatever machine is running - which is what it was written not to be.
-		   glibc counts in microseconds and the fresh side is a hundred ticks;
-		   windows counts in whole milliseconds and it is one. */
-		if (t[0] < 20.0 * (1000.0 / (double)CLOCKS_PER_SEC))
+		   wall_ms resolves well under a millisecond on every runner; clock()
+		   on windows counted whole ones and left this unjudged there. */
+		if (t[0] < 0.02)
 			printf("mem_bounds: index rebuild ratio not judged (clock too coarse)\n");
 		else
 		/* A generous ratio on purpose: the chain array is still sized by the
 		   arena, which is a memset the walk cannot avoid. What the bound
-		   catches is the walk itself going over every dead node. */
-		if (t[1] > t[0] * 25 + 25) fail("the index rebuild walks nodes the document no longer holds");
+		   catches is the walk itself going over every dead node. Two thousand
+		   merges put that cost well past the constant term a shared runner
+		   needs. */
+		if (t[1] > t[0] * 25 + 250) fail("the index rebuild walks nodes the document no longer holds");
 #endif
 	}
 
