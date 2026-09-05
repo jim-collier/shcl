@@ -4087,10 +4087,18 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 		}
 	}
 	for (size_t k = 0; k < okids.len; k++) if (app_at[k] != (size_t)-1) ShclVecSize_push(t, &nw, app_at[k]);
-	ShclVecSize kept = {0};
-	kept.data = (size_t *)arena_alloc(a, (nw.len ? nw.len : 1) * sizeof(size_t));
+	/* Into the parent's own array when it fits, which a leaf override always
+	   does: an exact-sized copy per merge abandoned the whole list in the
+	   document arena each time - 420 KB per merge on a 40000-key parent, where
+	   the spec promises about a megabyte for five hundred. Appends that outgrow
+	   it get room to double, so a stack of them amortizes. */
+	ShclVecSize kept = NODE(d, bp).children;
+	if (!kept.data || nw.len > kept.cap) {
+		kept.cap = nw.len ? nw.len * 2 : 1;
+		kept.data = (size_t *)arena_alloc(a, kept.cap * sizeof(size_t));
+	}
 	for (size_t k = 0; k < nw.len; k++) kept.data[k] = nw.data[k];
-	kept.len = nw.len; kept.cap = nw.len ? nw.len : 1;
+	kept.len = nw.len;
 	NODE(d, bp).children = kept;
 }
 
