@@ -236,11 +236,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-171900
 		- Closed: 20260905-100356
 
-	- 🔘 Item 21: every C merge retains a whole children array per parent it rebuilds, so the merge cost the spec states is wrong by two orders of magnitude in C.
+	- ✅ Item 21: every C merge retains a whole children array per parent it rebuilds, so the merge cost the spec states is wrong by two orders of magnitude in C.
 		- Measured: 200 merges of an eight-leaf overlay on a 40000-key base grow the C process by 419,687 bytes per merge - 84 MB - where Python grows 4,958 and Rust and Go stay near a kilobyte. At the spec's own 500 merges that is about 210 MB against the stated "about a megabyte".
 		- Cause: `w_overlay` allocates the replacement children array in the document arena, sized by the parent's whole child count, and abandons the old one. The comment three lines above records the same fight already won for the builder's doubling chain, which was moved to scratch; the exact-sized copy was not.
 		- Note: `shcl_compact` does reclaim it - 84 MB back to 2.9 MB in use - but nothing tells a repeatedly-merging C consumer that. The `shcl_compact` header comment is written for repeated writes, "a few dozen bytes per write".
+		- Fixed: the rebuilt child list is written into the parent's own array when it fits, which a leaf override always does, and an append that outgrows it gets room to double. A merge of eight leaves onto a 20000-key parent costs 512 bytes now, against 160512.
+		- Pinned by: `mem_bounds.c`, that merge two hundred times with a 4 KB per-merge bound. The old header fails it by forty times.
 		- Opened: 20260904-172000
+		- Closed: 20260905-101318
 
 	- 🔘 Item 22: C alone keeps an `H001`/`H002` hint for a field whose declared leaf name is empty.
 		- Reproduced: a document of two `"": 1` lines under a schema declaring `field: '""'` with `repeat: 1, 5` gives one hint in C and none in the other three.

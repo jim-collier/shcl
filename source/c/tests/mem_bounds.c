@@ -240,23 +240,26 @@ int main(void) {
 		shcl_free(ad);
 	}
 
-	// A merge rebuilt the parent's child list with a builder growing in the
-	// document arena, so every doubling step was abandoned there; and a string
-	// value climbed from 32 bytes the same way. Both are opened at the size the
-	// caller already knows now.
+	// A merge rebuilt the parent's child list in the document arena: first with
+	// a builder whose every doubling step was abandoned there, then with an
+	// exact-sized copy that still left the whole old list behind - 420 KB per
+	// merge on a 40000-key parent, against the spec's "about a megabyte" for
+	// five hundred. The list is rewritten in place now when it fits, so a leaf
+	// override costs its cloned node and little else. A string value climbed
+	// from 32 bytes the same way once; it is opened at its own size.
 	{
 		size_t keys = 20000, cap = keys * 24 + 16, tl = 0;
 		char *txt = (char *)malloc(cap);
 		for (size_t i = 0; i < keys; i++) tl += (size_t)sprintf(txt + tl, "k%zu: %zu\n", i, i);
 		shcl_doc *base = shcl_parse(txt, tl);
-		shcl_doc *over = shcl_parse("k0: 9\n", 6);
+		shcl_doc *over = shcl_parse("k0: 9\nk1: 8\nk2: 7\nk3: 6\nk4: 5\nk5: 4\nk6: 3\nk7: 2\n", 48);
 		size_t start = arena_bytes(&base->arena);
-		for (int i = 0; i < 50; i++) shcl_merge(base, over);
-		size_t per = (arena_bytes(&base->arena) - start) / 50;
-		printf("mem_bounds: merge: %zu bytes per merge onto %zu keys (list is %zu)\n", per, keys, keys * sizeof(size_t));
-		if (shcl_get_int_or(base, "k0", 2, -1) != 9) fail("merge: wrong result");
-		// The rebuilt list is unavoidable; a doubling chain beside it is not.
-		if (per > keys * sizeof(size_t) * 3 / 2) fail("a merge abandoned its builder in the document arena");
+		for (int i = 0; i < 200; i++) shcl_merge(base, over);
+		size_t per = (arena_bytes(&base->arena) - start) / 200;
+		printf("mem_bounds: merge: %zu bytes per merge of 8 leaves onto %zu keys (list is %zu)\n", per, keys, keys * sizeof(size_t));
+		if (shcl_get_int_or(base, "k0", 2, -1) != 9 || shcl_get_int_or(base, "k7", 2, -1) != 2) fail("merge: wrong result");
+		// Eight cloned nodes and their values, nothing list-sized.
+		if (per > 4096) fail("a merge retained the parent's whole child list");
 		shcl_free(over); shcl_free(base); free(txt);
 	}
 	{
