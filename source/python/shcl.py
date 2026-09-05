@@ -414,7 +414,7 @@ def _literal_value(text):
 	# array holding `[1` and `2]` would be a different wrong answer.
 	if "\n" in text or "\r" in text:
 		return None
-	v = _trim(_split_value_comment(text)[0])
+	v = _trim_wsp(_split_value_comment(text)[0])
 	if _unterminated_quote(v) or (v.startswith("[") and v.endswith("]")):
 		return None
 	return _parse_cell(v)
@@ -524,7 +524,7 @@ def _choose_fence(content):
 	"""Pick a backtick fence long enough that no content line closes it early."""
 	maxrun = 0
 	for line in content.split("\n"):
-		t = _trim(line)
+		t = _trim_wsp(line)
 		if t and all(ch == "`" for ch in t):
 			maxrun = max(maxrun, len(t))
 	return ("`", max(3, maxrun + 1))
@@ -693,6 +693,24 @@ def _trim(s):
 	return s.strip(_WS)
 
 
+# The grammar's wsp: a space or a tab. The parser trims with this and nothing
+# wider - a no-break space or a line separator after a value is content, and a
+# Unicode trim used to delete it with no diagnostic.
+_WSP = " \t"
+
+
+def _trim_wsp(s):
+	return s.strip(_WSP)
+
+
+def _trim_wsp_end(s):
+	# The end of a line, or of a line's content before its comment: wsp, plus a
+	# carriage return, which the load takes off a line end anyway - so a
+	# retained line or a comment written back never ends in one the next load
+	# would strip. A CR followed by content stays content.
+	return s.rstrip(_WSP + "\r")
+
+
 def _trim_end(s):
 	return s.rstrip(_WS)
 
@@ -805,7 +823,7 @@ def _split_unquoted_commas(s):
 			start = i
 			at_start = True
 			continue
-		if c not in _WS_SET:
+		if c not in _WSP:
 			at_start = False
 	parts.append(s[start:])
 	return parts
@@ -829,7 +847,7 @@ def _unterminated_quote(text):
 	if '"' not in text and "'" not in text:
 		return False
 	for piece in _split_unquoted_commas(text):
-		t = _trim(piece)
+		t = _trim_wsp(piece)
 		if not _quoted_shape(t):
 			if not t:
 				continue
@@ -861,7 +879,7 @@ def _quoted_shape(t):
 def _parse_element(piece):
 	"""Trim, then strip one matching outer quote pair if present. Unquoted empty
 	slots return None (dropped, never an error)."""
-	t = _trim(piece)
+	t = _trim_wsp(piece)
 	if not t:
 		return None
 	if _quoted_shape(t):
@@ -897,7 +915,7 @@ def _cell_exceeds(text, max_elements):
 					return True
 			has_content = False
 			continue
-		if c not in _WS_SET:
+		if c not in _WSP:
 			has_content = True
 	if has_content:
 		count += 1
@@ -1014,14 +1032,14 @@ def _fence_open(rest):
 			break
 	if run < 3:
 		return None
-	return (first, run, _trim(rest[run:]))
+	return (first, run, _trim_wsp(rest[run:]))
 
 
 def _is_fence_close(line, ch, min_len):
 	# min_len is the opening fence's length, which the grammar puts at three or
 	# more, so the length test already rules out the empty line all() would
 	# otherwise accept.
-	t = _trim(line)
+	t = _trim_wsp(line)
 	return len(t) >= min_len and all(c == ch for c in t)
 
 
@@ -1164,7 +1182,7 @@ def _value_comment_at(s, from_):
 		elif c == ",":
 			at_start = True
 			continue
-		if c not in _WS_SET:
+		if c not in _WSP:
 			at_start = False
 	return -1
 
@@ -1258,7 +1276,7 @@ def _scan_path_ex(inp, stars):
 				start = pos
 				while pos < n and chars[pos] != "]":
 					pos += 1
-				body = _trim(chars[start:pos])
+				body = _trim_wsp(chars[start:pos])
 				if body == "*":
 					selector = ("wild", None)
 				elif body.startswith("#") and _parse_uint(body[1:]) is not None:
@@ -1286,7 +1304,7 @@ def _scan_path_ex(inp, stars):
 			pos += 1
 		elif c == ":":
 			pos += 1
-			return segments, _trim(chars[pos:])
+			return segments, _trim_wsp(chars[pos:])
 		else:
 			raise _PathError(f"unexpected '{c}' after field")
 
@@ -1704,7 +1722,7 @@ class _Parser:
 			self._err(line, "E008", "list element mixed with field children; ignored")
 			self.lost += 1
 			return
-		trimmed = _trim(body)
+		trimmed = _trim_wsp(body)
 		if not trimmed:
 			self._err(line, "E009", "empty list element")
 			self.lost += 1
@@ -1807,11 +1825,11 @@ class _Parser:
 			# silently truncated document.
 			if self.max_nodes and len(self.arena) - 1 > self.max_nodes:
 				self._err(i + 1, "E020", f"node cap of {self.max_nodes} exceeded; parse stopped")
-				self.lost += sum(1 for ln in lines[i:] if ln.strip())
+				self.lost += sum(1 for ln in lines[i:] if _trim_wsp(ln))
 				node_capped = True
 				break
 			lineno = i + 1
-			line = _trim_end(lines[i])
+			line = _trim_wsp_end(lines[i])
 			rest = line.lstrip(" \t")
 			indent = line[:len(line) - len(rest)]
 			if not rest:
@@ -1891,7 +1909,7 @@ class _Parser:
 				# vanishes on the consumer's next save. The BOM exception the
 				# sibling site below carries cannot apply here: this line
 				# starts with the '*' that brought us in.
-				self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
+				self.pending.append(_Pend(_trim_wsp_end(rest), indent, had_blank))
 				self.stack.append((indent, DEAD))
 				i += 1
 				continue
@@ -1905,12 +1923,12 @@ class _Parser:
 			# twice.
 			if comment and ("```" in before or "~~~" in before):
 				try:
-					_, vt = _scan_path(_trim_end(before))
+					_, vt = _scan_path(_trim_wsp_end(before))
 				except _PathError:
 					vt = None
 				if vt is not None and _fence_open(vt) is not None:
 					before, comment = rest, ""
-			content = _trim_end(before)
+			content = _trim_wsp_end(before)
 			if not content:
 				# Only a comment survived (e.g. an escaped lead-in); keep it.
 				if comment:
@@ -1936,7 +1954,7 @@ class _Parser:
 				if rest.startswith("\ufeff"):
 					self.lost += 1
 				else:
-					self.pending.append(_Pend(_trim_end(rest), indent, had_blank))
+					self.pending.append(_Pend(_trim_wsp_end(rest), indent, had_blank))
 				self.stack.append((indent, DEAD))
 				i += 1
 				continue
@@ -2877,7 +2895,7 @@ class Document:
 			line = "# " + line
 		# Without this the load trims what was written and the writer's output
 		# stops being a fmt fixpoint.
-		line = _trim_end(line)
+		line = _trim_wsp_end(line)
 		# The node's own blank moves above its first comment; otherwise the
 		# blank would separate the comment from what it annotates.
 		nd = self.arena[idx]

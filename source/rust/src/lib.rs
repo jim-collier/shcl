@@ -260,7 +260,9 @@ fn same_moment(a: &ShclDateTime, b: &ShclDateTime) -> bool {
 		// date carrying the day wrap. A time alone lives on a 24-hour cycle.
 		(Some(ao), Some(bo)) => {
 			let minutes = |dt: &ShclDateTime, off: i32| {
-				let hm = dt.time.map_or(0, |(h, m, _)| i64::from(h) * 60 + i64::from(m))
+				let hm = dt
+					.time
+					.map_or(0, |(h, m, _)| i64::from(h) * 60 + i64::from(m))
 					- i64::from(off);
 				match dt.date {
 					Some((y, m, d)) => days_from_civil(y, m, d) * 1440 + hm,
@@ -760,7 +762,7 @@ fn value_comment_at(s: &str, from: usize) -> Option<usize> {
 				_ => {}
 			},
 		}
-		if !c.is_whitespace() {
+		if !is_wsp(c) {
 			at_start = false;
 		}
 	}
@@ -779,6 +781,25 @@ fn fold_name(s: &str) -> std::borrow::Cow<'_, str> {
 
 fn is_bare_name_char(c: char) -> bool {
 	c.is_ascii_alphanumeric() || c == '-' || c == '_'
+}
+
+/// The grammar's `wsp`: a space or a tab. The parser trims with this and
+/// nothing wider - a no-break space or a line separator after a value is
+/// content, and a Unicode trim used to delete it with no diagnostic.
+fn is_wsp(c: char) -> bool {
+	c == ' ' || c == '\t'
+}
+
+fn trim_wsp(s: &str) -> &str {
+	s.trim_matches(is_wsp)
+}
+
+/// The end of a line, or of a line's content before its comment: `wsp`, plus
+/// a carriage return, which the load takes off a line end anyway - so a
+/// retained line or a comment written back never ends in one the next load
+/// would strip. A CR followed by content stays content.
+fn trim_wsp_end(s: &str) -> &str {
+	s.trim_end_matches(|c| is_wsp(c) || c == '\r')
 }
 
 /// Split off an unquoted trailing comment from a field line: (content, comment
@@ -844,7 +865,7 @@ fn split_unquoted_commas(s: &str) -> Vec<&str> {
 				_ => {}
 			},
 		}
-		if !c.is_whitespace() {
+		if !is_wsp(c) {
 			at_start = false;
 		}
 	}
@@ -872,7 +893,7 @@ fn unterminated_quote(text: &str) -> bool {
 		return false;
 	}
 	for piece in split_unquoted_commas(text) {
-		let t = piece.trim();
+		let t = trim_wsp(piece);
 		if !quoted_shape(t) {
 			let Some(&first) = t.as_bytes().first() else {
 				continue;
@@ -915,7 +936,7 @@ fn quoted_shape(t: &str) -> bool {
 /// Trim, then strip one matching outer quote pair if present. Unquoted empty
 /// slots return None (dropped, never an error).
 fn parse_element(piece: &str) -> Option<Element> {
-	let t = piece.trim();
+	let t = trim_wsp(piece);
 	if t.is_empty() {
 		return None;
 	}
@@ -960,7 +981,7 @@ fn cell_exceeds(text: &str, max: usize) -> bool {
 			}
 			_ => {}
 		}
-		if !c.is_whitespace() {
+		if !is_wsp(c) {
 			has_content = true;
 		}
 	}
@@ -1237,14 +1258,14 @@ fn fence_open(rest: &str) -> Option<(u8, usize, String)> {
 	if run < 3 {
 		return None;
 	}
-	Some((first, run, rest[run..].trim().to_string()))
+	Some((first, run, trim_wsp(&rest[run..]).to_string()))
 }
 
 // `min_len` is the opening fence's length, which the grammar puts at three or
 // more, so the length test already rules out the empty line that `all` would
 // otherwise accept.
 fn is_fence_close(line: &str, ch: u8, min_len: usize) -> bool {
-	let t = line.trim();
+	let t = trim_wsp(line);
 	t.len() >= min_len && t.bytes().all(|b| b == ch)
 }
 
@@ -1419,7 +1440,7 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 				while pos < bytes.len() && bytes[pos] != b']' {
 					pos += 1;
 				}
-				let body: String = input[start..pos].trim().to_string();
+				let body: String = trim_wsp(&input[start..pos]).to_string();
 				selector = Some(if body == "*" {
 					Selector::Wildcard
 				} else if let Some(n) = body.strip_prefix('#').and_then(|d| d.parse::<u64>().ok()) {
@@ -1481,7 +1502,7 @@ fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
 				pos += 1;
 				return Ok(PathScan {
 					segments,
-					value_text: Some(input[pos..].trim().to_string()),
+					value_text: Some(trim_wsp(&input[pos..]).to_string()),
 				});
 			}
 			_ => return Err(format!("unexpected '{}' after field", char_at(input, pos))),
@@ -2137,7 +2158,7 @@ impl Parser {
 			self.lost += 1;
 			return;
 		}
-		let trimmed = body.trim();
+		let trimmed = trim_wsp(body);
 		if trimmed.is_empty() {
 			self.err(line, "E009", "empty list element");
 			self.lost += 1;
@@ -2282,12 +2303,15 @@ impl Parser {
 					"E020",
 					format!("node cap of {} exceeded; parse stopped", self.max_nodes),
 				);
-				self.lost += lines[i..].iter().filter(|l| !l.trim().is_empty()).count();
+				self.lost += lines[i..]
+					.iter()
+					.filter(|l| !trim_wsp(l).is_empty())
+					.count();
 				node_capped = true;
 				break;
 			}
 			let lineno = i + 1;
-			let line = lines[i].trim_end();
+			let line = trim_wsp_end(lines[i]);
 			// Indent chars are ASCII space/tab, so a byte scan slices the same run.
 			let ilen = line
 				.bytes()
@@ -2385,7 +2409,7 @@ impl Parser {
 				// sibling site below carries cannot apply here: this line
 				// starts with the '*' that brought us in.
 				self.pending.push(Pend {
-					text: rest.trim_end().to_string(),
+					text: trim_wsp_end(rest).to_string(),
 					indent: indent.to_string(),
 					blank_before: had_blank,
 					ceiling: indent.len(),
@@ -2404,13 +2428,13 @@ impl Parser {
 			// twice.
 			if comment.is_some()
 				&& (before.contains("```") || before.contains("~~~"))
-				&& scan_path(before.trim_end())
+				&& scan_path(trim_wsp_end(before))
 					.is_ok_and(|s| s.value_text.is_some_and(|v| fence_open(&v).is_some()))
 			{
 				before = rest;
 				comment = None;
 			}
-			let content = before.trim_end();
+			let content = trim_wsp_end(before);
 			if content.is_empty() {
 				// Only a comment survived (e.g. an escaped lead-in); keep it.
 				if let Some(c) = comment {
@@ -2450,7 +2474,7 @@ impl Parser {
 						self.lost += 1;
 					} else {
 						self.pending.push(Pend {
-							text: rest.trim_end().to_string(),
+							text: trim_wsp_end(rest).to_string(),
 							indent: indent.to_string(),
 							blank_before: had_blank,
 							ceiling: indent.len(),
@@ -3783,7 +3807,7 @@ fn literal_value(text: &str) -> Option<Value> {
 		return None;
 	}
 	let (v, _) = split_value_comment(text);
-	let v = v.trim();
+	let v = trim_wsp(v);
 	if unterminated_quote(v) || (v.starts_with('[') && v.ends_with(']')) {
 		return None;
 	}
@@ -3841,7 +3865,7 @@ fn encode_string(s: &str) -> String {
 fn choose_fence(content: &str) -> (u8, usize) {
 	let mut maxrun = 0usize;
 	for line in content.split('\n') {
-		let t = line.trim();
+		let t = trim_wsp(line);
 		if !t.is_empty() && t.bytes().all(|b| b == b'`') {
 			maxrun = maxrun.max(t.len());
 		}
@@ -4155,7 +4179,7 @@ impl Document {
 				};
 				// Without this the load trims what was written and the writer's
 				// output stops being a fmt fixpoint.
-				let c = c.trim_end().to_string();
+				let c = trim_wsp_end(&c).to_string();
 				// The node's own blank moves above its first comment; otherwise
 				// the blank would separate the comment from what it annotates.
 				let nd = &mut self.arena[node];

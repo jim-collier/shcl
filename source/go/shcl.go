@@ -752,11 +752,22 @@ func stripSign(s string) string {
 	return s
 }
 
+// trimEndWS trims the end of a line, or of a line's content before its
+// comment: wsp, plus a carriage return, which the load takes off a line end
+// anyway - so a retained line or a comment written back never ends in one the
+// next load would strip. A CR followed by content stays content.
 func trimEndWS(s string) string {
-	return strings.TrimRightFunc(s, unicode.IsSpace)
+	return strings.TrimRightFunc(s, func(c rune) bool { return isWsp(c) || c == '\r' })
 }
 
 // leadingWS is the leading space/tab run of a line (the indent).
+// isWsp is the grammar's wsp: a space or a tab. The parser trims with this and
+// nothing wider - a no-break space or a line separator after a value is
+// content, and a Unicode trim used to delete it with no diagnostic.
+func isWsp(c rune) bool { return c == ' ' || c == '\t' }
+
+func trimWsp(s string) string { return strings.TrimFunc(s, isWsp) }
+
 func leadingWS(s string) string {
 	i := 0
 	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
@@ -835,7 +846,7 @@ func splitUnquotedCommas(s string) []string {
 				continue
 			}
 		}
-		if !unicode.IsSpace(c) {
+		if !isWsp(c) {
 			atStart = false
 		}
 	}
@@ -866,7 +877,7 @@ func unterminatedQuote(text string) bool {
 		return false
 	}
 	for _, piece := range splitUnquotedCommas(text) {
-		t := strings.TrimSpace(piece)
+		t := trimWsp(piece)
 		if !quotedShape(t) {
 			if t == "" {
 				continue
@@ -910,7 +921,7 @@ func quotedShape(t string) bool {
 // parseElement trims, then strips one matching outer quote pair if present.
 // Unquoted empty slots return ok=false (dropped, never an error).
 func parseElement(piece string) (element, bool) {
-	t := strings.TrimSpace(piece)
+	t := trimWsp(piece)
 	if t == "" {
 		return element{}, false
 	}
@@ -953,7 +964,7 @@ func cellExceeds(text string, max int) bool {
 			hasContent = false
 			continue
 		}
-		if !unicode.IsSpace(c) {
+		if !isWsp(c) {
 			hasContent = true
 		}
 	}
@@ -1310,14 +1321,14 @@ func fenceOpen(rest string) (ch byte, length int, info string, ok bool) {
 	if run < 3 {
 		return 0, 0, "", false
 	}
-	return first, run, strings.TrimSpace(rest[run:]), true
+	return first, run, trimWsp(rest[run:]), true
 }
 
 // minLen is the opening fence's length, which the grammar puts at three or
 // more, so the length test already rules out the empty line the loop below
 // would otherwise accept.
 func isFenceClose(line string, ch byte, minLen int) bool {
-	t := strings.TrimSpace(line)
+	t := trimWsp(line)
 	if len(t) < minLen {
 		return false
 	}
@@ -1497,7 +1508,7 @@ func valueCommentAt(s string, from int) int {
 				continue
 			}
 		}
-		if !unicode.IsSpace(c) {
+		if !isWsp(c) {
 			atStart = false
 		}
 	}
@@ -1626,7 +1637,7 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 				for pos < len(input) && input[pos] != ']' {
 					pos++
 				}
-				body := strings.TrimSpace(spanString(input[start:pos]))
+				body := trimWsp(spanString(input[start:pos]))
 				if body == "*" {
 					sel = &selector{kind: selWildcard}
 				} else if n, ok := hashIndex(body); ok {
@@ -1661,7 +1672,7 @@ func scanPathEx(input string, stars bool) (pathScan, error) {
 			pos++
 		case ':':
 			pos++
-			rest := strings.TrimSpace(spanString(input[pos:]))
+			rest := trimWsp(spanString(input[pos:]))
 			return pathScan{segments: segments, valueText: &rest}, nil
 		default:
 			c, _ := utf8.DecodeRuneInString(input[pos:])
@@ -2212,7 +2223,7 @@ func (p *parser) addStarElement(parent int, body string, line int) {
 		p.lost++
 		return
 	}
-	trimmed := strings.TrimSpace(body)
+	trimmed := trimWsp(body)
 	if trimmed == "" {
 		p.err(line, "E009", "empty list element")
 		p.lost++
@@ -2344,7 +2355,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		if p.maxNodes != 0 && len(p.arena)-1 > p.maxNodes {
 			p.err(i+1, "E020", fmt.Sprintf("node cap of %d exceeded; parse stopped", p.maxNodes))
 			for _, l := range lines[i:] {
-				if strings.TrimSpace(l) != "" {
+				if trimWsp(l) != "" {
 					p.lost++
 				}
 			}
@@ -3881,7 +3892,7 @@ func literalValue(text string) (value, bool) {
 		return value{}, false
 	}
 	v, _ := splitValueComment(text)
-	v = strings.TrimFunc(v, unicode.IsSpace)
+	v = trimWsp(v)
 	// Bracket-array text is refused too: in a file it is E019 and the line is
 	// lost, so writing it as a two-element array holding `[1` and `2]` would
 	// be a different wrong answer.
@@ -3943,7 +3954,7 @@ func encodeString(s string) string {
 func chooseFence(content string) (byte, int) {
 	maxrun := 0
 	for _, line := range strings.Split(content, "\n") {
-		t := strings.TrimSpace(line)
+		t := trimWsp(line)
 		if t != "" && strings.Trim(t, "`") == "" && len(t) > maxrun {
 			maxrun = len(t)
 		}
