@@ -272,11 +272,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-172300
 		- Closed: 20260905-101319
 
-	- 🔘 Item 25: `largedoc.bash --mib 1` fails on a healthy tree.
+	- ✅ Item 25: `largedoc.bash --mib 1` fails on a healthy tree.
 		- Reproduced: at 1 MiB python peaks at 71 MiB against a 65 MiB budget and the gate reports FAILED. At 2 MiB rust reads 58 against 64, one line from the same false failure.
 		- Cause: the per-binding ceilings are strictly per input MiB with no constant term, so at small sizes the fixed interpreter and runtime baseline dominates. `--mib N` is a documented option.
 		- Note: the pipeline only ever runs it at 100 MiB, so it does not bite there. A developer shrinking it to iterate gets a defect report that is arithmetic.
+		- Fixed: each ceiling carries a constant term for the runtime's own footprint - rust 16, go 24, c 8, python 48 MiB - added to the per-MiB budget. At 100 MiB it is noise; at 1 MiB it is most of what is measured.
+		- Pinned by: `shell-regress.bash` runs `largedoc.bash --mib 1` across the four bindings when their CLIs are built. The old limits fail python there.
 		- Opened: 20260904-172400
+		- Closed: 20260905-101319
 
 	- 🔘 Item 26: four items from the last two rounds closed with nothing pinning them.
 		- 20260902 item 29: `perf-gate.bash`'s exit-code and output-size checks exist, but nothing ever feeds the gate a broken CLI. `grep -rn perf-gate cicd/` finds only the shellcheck target and the real invocation. Delete both checks and nothing fails.

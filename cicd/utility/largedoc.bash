@@ -42,8 +42,10 @@ esac; done
 ((${#bindings[@]})) || { echo "largedoc: no bindings given" >&2; exit 2; }
 if ! [[ "${mib}" =~ ^[1-9][0-9]*$ ]]; then echo "largedoc: --mib wants a positive integer" >&2; exit 2; fi
 
-## Per-binding ceilings, "name|seconds per input MiB|peak RSS MiB per input MiB".
-## Expressed per-MiB so they follow --mib instead of being pinned to one size.
+## Per-binding ceilings, "name|seconds per input MiB|peak RSS MiB per input MiB|
+## peak RSS MiB floor". Expressed per-MiB so they follow --mib instead of being
+## pinned to one size; the floor is the runtime's own footprint, which does not
+## scale with the input and at one or two MiB is most of what is measured.
 ## Time carries wide headroom - the pipeline runs the reference unoptimized (about
 ## six times slower than a release build), and a shared CI runner is slower again;
 ## the target is a growth-rate regression, not a stopwatch. Memory is held much
@@ -52,13 +54,13 @@ if ! [[ "${mib}" =~ ^[1-9][0-9]*$ ]]; then echo "largedoc: --mib wants a positiv
 ## and 33-41 (concurrent GC moves it run to run, so its ceiling carries more
 ## slack), c 0.04 and 30, python 1.11 and 47.
 limits=(
-	"rust|3.00|32"
-	"go|1.00|55"
-	"c|1.00|45"
-	"python|4.00|65"
+	"rust|3.00|32|16"
+	"go|1.00|55|24"
+	"c|1.00|45|8"
+	"python|4.00|65|48"
 )
 
-fLimit() {   ## $1 = binding name, $2 = field (2=secs, 3=rss); empty when unlisted
+fLimit() {   ## $1 = binding name, $2 = field (2=secs, 3=rss, 4=rss floor); empty when unlisted
 	local e
 	for e in "${limits[@]}"; do [[ "${e%%|*}" == "$1" ]] && { cut -d'|' -f"$2" <<<"${e}"; return 0; }; done
 	return 0   ## an unlisted binding is measured and reported, just not gated
@@ -132,12 +134,12 @@ for entry in "${bindings[@]}"; do
 
 		maxSecs="$(fLimit "${name}" 2)"
 		if [[ -n "${maxSecs}" ]]; then
-			maxRss="$(fLimit "${name}" 3)"
+			maxRss="$(fLimit "${name}" 3)"; rssFloor="$(fLimit "${name}" 4)"
 			if awk -v s="${runSecs}" -v m="${maxSecs}" -v n="${actualMib}" 'BEGIN{exit !(s > m*n)}'; then
 				note="${note}; TOO SLOW (over $(awk -v m="${maxSecs}" -v n="${actualMib}" 'BEGIN{printf "%.0f", m*n}')s)"; rc=1
 			fi
-			if ((runRssMib > maxRss * actualMib)); then
-				note="${note}; TOO BIG (over $((maxRss * actualMib)) MiB)"; rc=1
+			if ((runRssMib > maxRss * actualMib + rssFloor)); then
+				note="${note}; TOO BIG (over $((maxRss * actualMib + rssFloor)) MiB)"; rc=1
 			fi
 		fi
 	fi
