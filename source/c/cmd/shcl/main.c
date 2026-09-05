@@ -80,7 +80,7 @@ static const char *HELP =
 	"  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array\n"
 	"  <type>[-array]-default<TAB>...                          set only if absent\n"
 	"  literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax\n"
-	"  raw<TAB>PATH<TAB>INFO<TAB>CONTENT                       set a raw block\n"
+	"  raw[-default]<TAB>PATH<TAB>INFO<TAB>CONTENT             set a raw block\n"
 	"  empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH\n"
 	"string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.\n"
 	"\n"

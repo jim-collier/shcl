@@ -276,6 +276,7 @@ Both open points are settled:
 **Hand-edited configs are structurally safe across a round trip: retain what can be retained, gate the save on the rest.** A malformed line used to be diagnosed and dropped, so a stray typo plus one settings change equaled a silently vanished hand-written line.
 
 - The full fix splits by what is provably safe. A content-malformed line (unreadable at any position) is retained as inert trivia and re-emitted in place; it re-diagnoses identically and can never read as a live binding. A line the parser could read but not apply (bad indent, unusable selector, depth cap) cannot be made inert: re-emitted, it might parse as live content and invent data, which the fuzzer confirmed for BOM-led lines.
+
 - A skipped line holds its indent level, so the lines written under it are skipped with it rather than re-parenting one level up. That covers a `*` element line whose element was dropped as much as a malformed one: `* small` under a parent with field children and `*small` are two spellings of one mistake, and giving them different answers (one re-parenting its block, the other losing it) was decided against in favor of the one rule.
 
 - Those instead count into `LostCount`, and the file tier's save refuses while it is nonzero, with an explicit lossy variant as the override - so deleting a user's line is always a stated choice. We considered retaining everything verbatim and rejected it on the invented-content risk.
