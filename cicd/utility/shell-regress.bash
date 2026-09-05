@@ -661,6 +661,22 @@ fi
 ##	lint failure blaming the completions on the day such a subcommand is added.
 ##	The fixture is the real files with one added, so the check runs against the
 ##	extractors as shipped rather than a hand-written stand-in.
+##	20260904 item 26: perf-gate's exit-code and line-count checks had never been
+##	fed a CLI that does no work, so deleting them changed nothing. Two stubs:
+##	one that prints nothing and one that exits wrong.
+mkdir -p "${tmpDir}/stubs"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${tmpDir}/stubs/quiet"
+printf '#!/usr/bin/env bash\necho x\nexit 1\n' > "${tmpDir}/stubs/wrong"
+chmod +x "${tmpDir}/stubs/quiet" "${tmpDir}/stubs/wrong"
+out="$(bash "${repoDir}/cicd/utility/perf-gate.bash" --keys 500 "quiet|${tmpDir}/stubs/quiet" 2>&1 || true)"
+[[ "${out}" == *"printed 0 line(s)"* ]] || fBad "perf-gate accepted a CLI that printed nothing: $(tail -n 2 <<<"${out}")"
+out="$(bash "${repoDir}/cicd/utility/perf-gate.bash" --keys 500 "wrong|${tmpDir}/stubs/wrong" 2>&1 || true)"
+[[ "${out}" == *"did not do the work"* ]] || fBad "perf-gate accepted a CLI that exited wrong: $(tail -n 2 <<<"${out}")"
+
+##	20260904 item 26: the installers ship from main, so cicd.bash compares them
+##	against origin/main after a dev publish. The line has to be there.
+grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev.bash' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer compares the installers against origin/main after a publish"
+
 ##	20260904 item 23: check-c-compilers.bash reported OK with one compiler and
 ##	never read the gate flag, so a runner that lost its compilers would have
 ##	kept passing. Under the flag a thin sweep has to fail before it builds.
