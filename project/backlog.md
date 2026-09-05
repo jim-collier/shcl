@@ -138,16 +138,22 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-170800
 		- Closed: 20260905-093007
 
-	- 🔘 Item 10: the bash completion cannot see the `--opt=VALUE` form at all, so the spelling every document uses loses the FILE slot.
+	- ✅ Item 10: the bash completion cannot see the `--opt=VALUE` form at all, so the spelling every document uses loses the FILE slot.
 		- Reproduced in an interactive bash over a pty. `shcl check --strictness=<TAB>` offers nothing, and `shcl check --strictness=standard al<TAB>` offers nothing where `alpha.shcl` belongs. The space form works.
 		- Cause: `COMP_WORDBREAKS` contains `=`, so bash has already split the word into three before `_shcl` runs, and the file calls neither `_init_completion` nor `_get_comp_words_by_ref` to re-join them. The four `=VALUE` arms are dead code, and the value is then counted as a positional, which is what eats the FILE slot.
 		- Note: the zsh completion is right here - it uses `compset -P` and zsh does not split on `=`.
+		- Fixed: the function joins the words back through `_init_completion -s` where bash-completion is present, and by hand where it is not, so both spellings reach the one dispatch and a `--opt=value` word never counts as a positional. The dead `=VALUE` arms are gone.
+		- Pinned by: `shell-regress.bash`, nine command lines handed over the way readline cuts them, with the library and with the fallback. The old completion fails fourteen of the eighteen checks.
 		- Opened: 20260904-170900
+		- Closed: 20260905-093433
 
-	- 🔘 Item 11: both completions omit `--remove`, `--set-default` and `--set-literal-default` from the value-option lists.
+	- ✅ Item 11: both completions omit `--remove`, `--set-default` and `--set-literal-default` from the value-option lists.
 		- Reproduced in both. `shcl fmt --remove <TAB>` offers filenames where a PATH belongs, and `shcl fmt --remove x <TAB>` offers nothing where the FILE belongs. `--set` is listed and behaves correctly, which is the control.
 		- Cause: the CLI has ten value-taking options; the space-form dispatch and the positional-skip list each carry seven. The round that added the three options updated the option table, which `check-completions.bash` diffs, and not the two lists it does not read.
+		- Fixed: both files carry one `_shcl_valopts` list that the dispatch, the positional count and zsh's `=` arms all read, so there is one place to add an option.
+		- Pinned by: `check-completions.bash` diffs that list against the options `asked_for()` steps over in the CLI; the old files fail it. The `--remove` rows in the `shell-regress.bash` block above cover the behavior.
 		- Opened: 20260904-171000
+		- Closed: 20260905-093433
 
 	- 🔘 Item 12: a trailing non-breaking space or line separator in a bare value is deleted with no diagnostic and no lost count.
 		- Reproduced in all four. A line spelled `a: val` with a U+00A0 after the value loads clean, and `fmt --write` leaves `a: val`. Same for U+2028, VT and FF.

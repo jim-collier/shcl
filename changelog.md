@@ -136,6 +136,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `allowed` on a `datetime` field compares moments, as the spec says, rather than written clocks. `2026-01-01T13:00:00+01:00` against `allowed: 2026-01-01T12:00:00Z` used to be `V004`; only the three offset-zero spellings agreed with each other.
 
+- The bash completion completes the `--option=value` spelling, which it used to answer with nothing, and no longer loses the FILE slot after one. Both completions know that `--remove`, `--set-default` and `--set-literal-default` take a value.
+
 - Merging a layer over a leaf no longer deletes a malformed line the parser had retained above or under that leaf. The line stays in the merged document, where a save writes it back out, instead of vanishing with the base leaf's comments and a lost count of zero.
 
 - A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, and the save gate refuses like it does for the plain spelling.
