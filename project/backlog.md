@@ -81,18 +81,25 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-170200
 		- Closed: 20260905-091206
 
-	- 🔘 Item 4: one reversed `min`/`max` range turns off the unknown-field sweep for the whole document.
+	- ✅ Item 4: one reversed `min`/`max` range turns off the unknown-field sweep for the whole document.
 		- Reproduced in all four. A sound schema reports both unknown fields; changing `min: 1` to `min: 70000` on an unrelated field reports one `V092` and neither unknown field. The check still exits 6, so it looks like it is working.
 		- Cause: `parse_field` treats a crossed range as an entry-level failure and `build_schema` clears the paths-complete flag, which the sweep reads. The spec says the sweep "turns off only when a fault cost a path spelling outright (an unreadable `field:` path, or a mount naming no declared fragment)". A crossed range is neither - the spec's own constraint table says the field is dropped, not that its name is lost.
 		- Note: the dropped field also loses its `repeat`-based `H001` disavowal, for the same reason.
 		- Note: the 20260902 clean list records "`min > max` no fault" for Python. That is wrong twice - there is a fault, and this is its side effect.
+		- Decided: a crossed range is a key-level fault like a bad `min:` value on its own. The range is dropped and the entry stays, so `type`, `allowed`, `required` and `repeat` still apply and the path still legalizes its name chain. The spec's constraint table now says the range is dropped rather than the field.
+		- Fixed: `parse_field` clears both bounds and returns the constraint instead of dropping it, in all four.
+		- Pinned by: corpus `090-crossed-range`, two crossed ranges beside two unknown fields and a value the surviving `allowed` refuses. The old code reports neither unknown field.
 		- Opened: 20260904-170300
+		- Closed: 20260905-091652
 
-	- 🔘 Item 5: a merge deletes a retained content-malformed line without counting it lost, so a save writes the truncated file instead of refusing.
+	- ✅ Item 5: a merge deletes a retained content-malformed line without counting it lost, so a save writes the truncated file instead of refusing.
 		- Reproduced in all four and in the veneer. Base `square-miles 300` plus `ok: 1`, overlay `ok: 2`: the merged canonical is `ok: 2` alone, `lost_count()` is 0, and `save_file` returns Ok. The malformed line is gone from the file the consumer writes back.
 		- Cause: a content-malformed line is stored in the same trivia slot as a comment, and a leaf override drops the base leaf's trivia. The spec sanctions dropping the base leaf's comments; it does not sanction dropping content it promised to retain "so a hand-typo in a config survives the consumer loading, editing, and writing the file back".
 		- Note: library-only, because `--write` refuses `--layer`. A consumer folding layers and saving is the exact case the lost gate exists for.
+		- Fixed: a leaf override moves every retained line off the replaced base leaves onto the first replacement, ahead of its own leading comments. Comments still go with the leaf, as the spec allows. A retained line is told from a comment by its first character.
+		- Pinned by: corpus `091-merge-keeps-malformed`, a bad line above an overridden leaf and a bad `*` line under one, both present in the merged golden. The old code writes neither.
 		- Opened: 20260904-170400
+		- Closed: 20260905-091652
 
 	- 🔘 Item 6: `Set<T>Default` reports success on a wildcard path, which is the one path shape every setter is supposed to refuse.
 		- Reproduced in all four, library and CLI. `--set-default='srv[*].port=99'` exits 0 with nothing written when the path resolves, and exits 1 when it does not. Plain `--set` on the same path exits 1 either way. All twelve default forms are affected.

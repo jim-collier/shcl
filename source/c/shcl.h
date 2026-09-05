@@ -3923,7 +3923,32 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 				if (inb) ShclVecSize_push(t, &rep[gi], c);
 				else { app_at[pos] = c; nappended++; }
 			}
-			if (inb) { is_rep[gi] = 1; any_rep = 1; }
+			if (inb) {
+				is_rep[gi] = 1; any_rep = 1;
+				/* The replaced leaf's comments go with it, which the spec
+				   allows; a content-malformed line retained on it is content
+				   the parser promised to keep, so those move onto the
+				   replacement. A comment starts with `#`, a retained line
+				   never does. The texts already live in the document arena. */
+				ShclVecLead kept = {0};
+				for (size_t i = 0; i < base.len; i++) {
+					size_t b = base.data[i];
+					if (!s_eq(NODE(d, b).name, name)) continue;
+					const ShclTrivia *bt = NODE(d, b).trivia;
+					if (!bt) continue;
+					const ShclVecLead *lists[3] = { &bt->leading, &bt->inside, &bt->after };
+					for (size_t li = 0; li < 3; li++)
+						for (size_t k = 0; k < lists[li]->len; k++)
+							if (!(lists[li]->data[k].text.n && lists[li]->data[k].text.p[0] == '#')) ShclVecLead_push(t, &kept, lists[li]->data[k]);
+				}
+				if (kept.len) {
+					ShclTrivia *ct = triv_mut(a, &NODE(d, rep[gi].data[0]));
+					ShclVecLead lead = {0};
+					for (size_t k = 0; k < kept.len; k++) ShclVecLead_push(a, &lead, kept.data[k]);
+					for (size_t k = 0; k < ct->leading.len; k++) ShclVecLead_push(a, &lead, ct->leading.data[k]);
+					ct->leading = lead;
+				}
+			}
 		} else {
 			for (size_t i = 0; i < grp.len; i++) {
 				size_t pos = grp.data[i];
