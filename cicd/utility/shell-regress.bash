@@ -63,6 +63,52 @@ out="$(SHCL_BIN="${cli}" bash -c "source '${repoDir}/source/bash/shcl.bash'; shc
 out="$(_SHCL_BIN=/nonexistent SHCL_BIN="${cli}" bash -c "source '${repoDir}/source/bash/shcl.bash'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 [[ "${out}" == "1" ]] || fBad "bash wrapper honored an inherited _SHCL_BIN: ${out@Q}"
 
+##	20260904 items 10 and 11: bash cuts `--opt=value` at the `=` before a
+##	completion function runs, and the three value options added in 20260830b
+##	were missing from the lists that skip a value, so the FILE slot went to
+##	the value. Driven the way readline hands the words over, both with
+##	bash-completion's word joining and with the completion's own fallback.
+mkdir -p "${tmpDir}/comp" && touch "${tmpDir}/comp/alpha.shcl" "${tmpDir}/comp/beta.txt"
+fComplete(){
+	## $1 = lib|bare, $2 = the command line as typed (a trailing space means a
+	## fresh word). Prints COMPREPLY space-joined.
+	local setup=":"
+	[[ "$1" == lib ]] && setup="source /usr/share/bash-completion/bash_completion"
+	bash -c '
+		'"${setup}"'; source '"'${repoDir}/source/completions/shcl.bash'"'
+		line="$1"; COMP_WORDS=()
+		for t in ${line}; do
+			if [[ "${t}" == --*=* ]]; then COMP_WORDS+=("${t%%=*}" "="); v="${t#*=}"; [[ -n "${v}" ]] && COMP_WORDS+=("${v}")
+			else COMP_WORDS+=("${t}"); fi
+		done
+		[[ "${line}" == *" " ]] && COMP_WORDS+=("")
+		COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMP_LINE="${line}"; COMP_POINT=${#line}
+		cd '"'${tmpDir}/comp'"'; COMPREPLY=(); _shcl; printf "%s" "${COMPREPLY[*]}"
+	' _ "$2" 2>/dev/null || true
+}
+compModes=(bare)
+[[ -r /usr/share/bash-completion/bash_completion ]] && compModes+=(lib)
+for mode in "${compModes[@]}"; do
+	out="$(fComplete "${mode}" "shcl check --strictness=st")"
+	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on --strictness=st: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl check --strictness=")"
+	[[ "${out}" == *standard* ]] || fBad "bash completion (${mode}) on --strictness=: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl check --strictness=standard al")"
+	[[ "${out}" == "alpha.shcl" ]] || fBad "bash completion (${mode}) lost the FILE slot after --strictness=standard: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl get --on-bad=fl")"
+	[[ "${out}" == "flag" ]] || fBad "bash completion (${mode}) on --on-bad=fl: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl fmt --schema=al")"
+	[[ "${out}" == "alpha.shcl" ]] || fBad "bash completion (${mode}) on --schema=al: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl fmt --remove ")"
+	[[ -z "${out}" ]] || fBad "bash completion (${mode}) offered files where --remove takes a PATH: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl fmt --remove x ")"
+	[[ "${out}" == "alpha.shcl beta.txt" ]] || fBad "bash completion (${mode}) lost the FILE slot after --remove x: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl fmt --set-default=x=1 ")"
+	[[ "${out}" == "alpha.shcl beta.txt" ]] || fBad "bash completion (${mode}) lost the FILE slot after --set-default=x=1: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl check --strictness st")"
+	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on the space form: ${out@Q}"
+done
+
 if fHave pwsh; then
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${tmpDir}'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 	[[ "${out}" == *"not executable"* ]] || fBad "PowerShell wrapper took a directory as SHCL_BIN: ${out@Q}"
