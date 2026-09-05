@@ -110,12 +110,15 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260904-170500
 		- Closed: 20260905-092040
 
-	- 🔘 Item 7: the index-rebuild timing test cannot reliably fail on the defect it names, and Python's copy can never fail.
+	- ✅ Item 7: the index-rebuild timing test cannot reliably fail on the defect it names, and Python's copy can never fail.
 		- Reproduced by backing the fix out: the Rust test passed on two of five runs, with the churned side landing either side of the bound. Go fails by under 2x. Python's fixture is 20000 churn iterations and 50 merges where Rust and Go use 100000 and 200, so the whole cost of the defect is about 52 ms against a 250 ms constant term - it cannot fail on any machine.
 		- Cause: widening the constant from 25 to 250 ms for a shared runner made the constant larger than the defect. The factor was meant to be what catches it; the constant now absorbs the whole thing.
 		- Note: the C copy is still at +25 and does bite, by 12%. On windows it does not run at all - the clock-coarseness guard needs a fresh side over 20 ms and windows measures it at 0.1.
 		- Note: a count is the right measure here, not a clock. The defect is how many nodes were walked, which is exact.
+		- Fixed: the fixture is the same in all four now - 100000 churn, 2000 merges, factor 25, constant 250 ms - so the defect costs tens of seconds against a bound under a second, and the constant absorbs a slow runner without absorbing the walk. C times the block on the wall clock instead of `clock()`, so the ratio is judged on windows too. A walked-node count would need a test-only hook in every binding; the work was scaled instead, and the injected defect fails by forty times in Rust and Python.
+		- Left alone: the 25x factor and the 250 ms constant. Python's healthy churned side is already ten times its fresh side, because the chain list is sized by the arena, so a tighter factor would fail a sound build.
 		- Opened: 20260904-170600
+		- Closed: 20260905-092615
 
 	- 🔘 Item 8: `allowed` on `type: datetime` compares the written clock rather than the moment.
 		- Reproduced in all four. A document value of `2026-01-01T13:00:00+01:00` against `allowed: 2026-01-01T12:00:00Z` is `V004`. The same instant written at the same offset passes.

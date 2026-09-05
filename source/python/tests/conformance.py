@@ -805,19 +805,21 @@ def main():
 	for churned in (False, True):
 		idoc = shcl.Document.parse("g:\n\tk: 1\n")
 		if churned:
-			for i in range(20000):
+			for i in range(100000):
 				idoc.set_int("g.tmp", i)
 				idoc.remove("g.tmp")
 		iother = shcl.Document.parse("g:\n\tk: 1\n")
 		t0 = time.perf_counter()
-		for _ in range(50):
+		for _ in range(2000):
 			idoc.merge(iother)
 			if idoc.get_int_or("g.k", -1) != 1:
 				raise SystemExit("index walk: wrong result")
 		ms.append((time.perf_counter() - t0) * 1000.0)
 	# A generous ratio on purpose: the chain list is still sized by the arena,
 	# which is a fill the walk cannot avoid. What the bound catches is the walk
-	# itself going over every dead node.
+	# itself going over every dead node. Two thousand merges put that cost well
+	# past the constant term a shared runner needs; the smaller fixture this
+	# used to run could not fail on any machine.
 	# A clock too coarse to see the fresh side leaves the ratio with a zero
 	# denominator, and then the bound is an absolute figure on whatever machine
 	# is running - which is what it was written not to be.

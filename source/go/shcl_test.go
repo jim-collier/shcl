@@ -1269,7 +1269,7 @@ func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
 		}
 		other := Parse("g:\n\tk: 1\n")
 		t0 := time.Now()
-		for i := 0; i < 200; i++ {
+		for i := 0; i < 2000; i++ {
 			d.Merge(other)
 			if got := d.GetIntOr("g.k", -1); got != 1 {
 				t.Fatalf("index walk: got %d", got)
@@ -1284,7 +1284,8 @@ func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
 	// work and gets descheduled, the fresh side is under a millisecond and does
 	// not. The factor is what catches the defect - the rebuild used to grow
 	// with the number of edits, which is orders rather than a fraction - so the
-	// constant can absorb a slow machine.
+	// constant can absorb a slow machine. Two thousand merges put the defect
+	// well past that constant; at two hundred it could hide under it.
 	// A clock too coarse to see the fresh side leaves the ratio with a zero
 	// denominator, and then the bound is an absolute figure on whatever machine
 	// is running - which is what it was written not to be. Windows counts in
