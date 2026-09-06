@@ -94,7 +94,7 @@ fn structural(rng: &mut Rng) -> String {
 		};
 		// Shapes 11 to 13 carry a `# k` comment behind a selector holding a
 		// quote, a backslash or a quoted `]`; see comments_behind_selectors.
-		let line = match rng.below(17) {
+		let line = match rng.below(18) {
 			0 => format!("{indent}# comment {}", rng.below(3)),
 			1 => String::new(),
 			2 => format!("{indent}no colon here"),
@@ -109,6 +109,13 @@ fn structural(rng: &mut Rng) -> String {
 			11 => format!("{indent}{name}[O'x].{name}: {}  # k", rng.below(9)),
 			12 => format!("{indent}{name}[C:\\].{name}: it's  # k"),
 			13 => format!("{indent}{name}[ \"q]v\" ].{name}: {}  # k", rng.below(9)),
+			// One bracketed value, and the sugar spelling of a selector: neither
+			// loses anything, unlike shape 4.
+			14 => format!(
+				"{indent}{name}:{}[v{}]",
+				if rng.below(2) == 0 { " " } else { "" },
+				rng.below(3)
+			),
 			_ => format!("{indent}{name}{sel}: {}", rng.below(9)),
 		};
 		out.push_str(&line);

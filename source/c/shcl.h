@@ -1654,17 +1654,22 @@ static ShclPathScan scan_path_ex(ShclArena *a, ShclStr input, int stars) {
 
 static ShclPathScan scan_path(ShclArena *a, ShclStr input) { return scan_path_ex(a, input, 0); }
 
-/* A value spelled the way JSON, TOML and YAML spell an array. The path scanner
-   reads the brackets as a selector, so the line arrives with no value text and
-   the old repair blamed a colon that is plainly there. The colon that counts
-   is the field's own: one inside a quoted name or a selector is not it. */
-static int looks_like_bracket_array(ShclStr content) {
+/* The text between the brackets of a value spelled the way JSON, TOML and YAML
+   spell an array; 0 when the line is not that shape. The path scanner reads
+   the brackets as a selector, so the line arrives with no value text and the
+   old repair blamed a colon that is plainly there. The colon that counts is
+   the field's own: one inside a quoted name or a selector is not it. Selector
+   sugar (base:[Boston]) is spelled the same way and is legal, so the caller
+   decides by what the brackets hold. */
+static int bracket_array_body(ShclStr content, ShclStr *body) {
 	size_t colon;
 	if (name_half(content, 0, &colon) != NAME_COLON) return 0;
 	size_t b = colon + 1, e = content.n;
 	while (b < e && (unsigned char)content.p[b] <= ' ') b++;
 	while (e > b && (unsigned char)content.p[e - 1] <= ' ') e--;
-	return e > b && content.p[b] == '[' && content.p[e - 1] == ']';
+	if (e < b + 2 || content.p[b] != '[' || content.p[e - 1] != ']') return 0;
+	body->p = content.p + b + 1; body->n = e - b - 2;
+	return 1;
 }
 // Query spelling of scan_path: also accepts a bare `*` segment (the name
 // wildcard - any child name). Document lines never take it; only lookups
@@ -2924,12 +2929,24 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		size_t next = i + 1;
 		ShclValue value;
 		if (!scan.has_value) {
-			if (looks_like_bracket_array(content)) {
-				/* The brackets never survive the load, so a rewrite would bake
-				   the changed value in and the file would check clean forever
-				   after. Count it lost so the save gate stops that. */
-				p_err(&P, lineno, "E019", s_lit("bracket array syntax; an array is comma-separated, without brackets"));
-				P.d->lost++;
+			ShclStr body;
+			if (bracket_array_body(content, &body)) {
+				ShclVecSize starts = {0}, ends = {0};
+				split_unquoted_commas(P.line, body, &starts, &ends);
+				if (starts.len > 1) {
+					/* Two or more elements folded into one string. The brackets
+					   never survive the load, so a rewrite would bake the changed
+					   value in and the file would check clean forever after.
+					   Count it lost so the save gate stops that. */
+					p_err(&P, lineno, "E019", s_lit("bracket array syntax; an array is comma-separated, without brackets"));
+					P.d->lost++;
+				} else {
+					/* One element reads as the selector the scanner made of it -
+					   [Boston] is Boston - and field:[disc] is documented sugar,
+					   so nothing is lost. A hint, for the JSON habit; same code,
+					   like E022. */
+					p_diag(&P, lineno, SHCL_SEV_HINT, "E019", s_lit("bracket array syntax; read as a selector, the same value without the brackets"));
+				}
 			} else p_err(&P, lineno, "E015", s_lit("missing colon; repaired as an empty value"));
 			value = v_empty();
 		}
