@@ -694,39 +694,64 @@ enum NameHalf {
 	End,
 }
 
-/// Scan a field line's name half the way the path scanner reads it: a quote
-/// opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
-/// selector, and with `sugar` a colon followed by `[` is selector sugar rather
-/// than the separator. `\` shields the next char.
+/// Scan a field line's name half the way the path scanner reads it. A quote
+/// opens only where the scanner opens one - as a segment's first char (a
+/// quoted name) or a selector body's first char (a quoted discriminator) - so
+/// `O'Brien` in a bare selector is text, not an open quote hiding the `#`
+/// after it. `\` shields the next char inside quotes only; a bare selector
+/// body runs to the first `]` unescaped, as it does in the scanner. With
+/// `sugar` a colon followed by `[` is selector sugar rather than the
+/// separator. An unquoted `#` ends the half wherever it sits: a comment, or a
+/// malformed name.
 fn name_half(s: &str, sugar: bool) -> NameHalf {
 	let mut in_quote: Option<char> = None;
 	let mut in_sel = false;
+	let mut at_start = true; // first char of a segment, or of a selector body
 	let mut it = s.char_indices();
 	while let Some((byte, c)) = it.next() {
-		if c == '\\' {
-			it.next();
+		if let Some(q) = in_quote {
+			if c == '\\' {
+				it.next();
+			} else if c == q {
+				in_quote = None;
+			}
 			continue;
 		}
-		match in_quote {
-			Some(q) => {
-				if c == q {
-					in_quote = None;
+		if is_wsp(c) {
+			continue;
+		}
+		if c == '#' {
+			return NameHalf::Hash(byte);
+		}
+		if in_sel {
+			if c == ']' {
+				in_sel = false;
+			} else if at_start && (c == '"' || c == '\'') {
+				in_quote = Some(c);
+			}
+			at_start = false;
+			continue;
+		}
+		match c {
+			'"' | '\'' if at_start => in_quote = Some(c),
+			'[' => {
+				in_sel = true;
+				at_start = true;
+				continue;
+			}
+			'.' => {
+				at_start = true;
+				continue;
+			}
+			':' => {
+				let rest = s[byte + 1..].trim_start_matches([' ', '\t']);
+				if !(sugar && rest.starts_with('[')) {
+					return NameHalf::Colon(byte);
 				}
 			}
-			None => match c {
-				'"' | '\'' => in_quote = Some(c),
-				'#' => return NameHalf::Hash(byte),
-				'[' => in_sel = true,
-				']' => in_sel = false,
-				':' if !in_sel => {
-					let rest = s[byte + 1..].trim_start_matches([' ', '\t']);
-					if !(sugar && rest.starts_with('[')) {
-						return NameHalf::Colon(byte);
-					}
-				}
-				_ => {}
-			},
+			_ => {}
 		}
+		at_start = false;
 	}
 	NameHalf::End
 }

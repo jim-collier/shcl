@@ -1130,34 +1130,59 @@ _NAME_HASH = 2  # an unquoted `#` first: a comment, or a malformed name
 
 
 def _name_half(s, sugar):
-	"""Scan a field line's name half the way the path scanner reads it: a quote
-	opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
-	selector, and with sugar a colon followed by `[` is selector sugar rather
-	than the separator. `\\` shields the next char. Returns (kind, offset)."""
+	"""Scan a field line's name half the way the path scanner reads it. A quote
+	opens only where the scanner opens one - as a segment's first char (a quoted
+	name) or a selector body's first char (a quoted discriminator) - so
+	`O'Brien` in a bare selector is text, not an open quote hiding the `#` after
+	it. `\\` shields the next char inside quotes only; a bare selector body runs
+	to the first `]` unescaped, as it does in the scanner. With sugar a colon
+	followed by `[` is selector sugar rather than the separator. An unquoted `#`
+	ends the half wherever it sits: a comment, or a malformed name. Returns
+	(kind, offset)."""
 	in_quote = None
 	in_sel = False
+	at_start = True  # first char of a segment, or of a selector body
 	i = 0
 	n = len(s)
 	while i < n:
 		c = s[i]
-		if c == "\\":
-			i += 2
-			continue
 		if in_quote is not None:
+			if c == "\\":
+				i += 2
+				continue
 			if c == in_quote:
 				in_quote = None
-		elif c == '"' or c == "'":
-			in_quote = c
-		elif c == "#":
+			i += 1
+			continue
+		if c == " " or c == "\t":
+			i += 1
+			continue
+		if c == "#":
 			return _NAME_HASH, i
+		if in_sel:
+			if c == "]":
+				in_sel = False
+			elif at_start and (c == '"' or c == "'"):
+				in_quote = c
+			at_start = False
+			i += 1
+			continue
+		if (c == '"' or c == "'") and at_start:
+			in_quote = c
 		elif c == "[":
 			in_sel = True
-		elif c == "]":
-			in_sel = False
-		elif c == ":" and not in_sel:
+			at_start = True
+			i += 1
+			continue
+		elif c == ".":
+			at_start = True
+			i += 1
+			continue
+		elif c == ":":
 			rest = s[i + 1:].lstrip(" \t")
 			if not (sugar and rest.startswith("[")):
 				return _NAME_COLON, i
+		at_start = False
 		i += 1
 	return _NAME_END, 0
 

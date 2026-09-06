@@ -61,19 +61,25 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Decision needed: `E019` cannot tell a bracket array from selector sugar, because they are spelled the same. It does not have to: count lost only where something is really dropped. A comma in the brackets changes the value's reading, a numeric or `*` body already drops the line under its own code, and `[x]` reads exactly as `x` does.
 		- Opened: 20260905-141600
 
-	- 🔘 Item 2: a quote inside a bare selector swallows the trailing comment into the value.
+	- ✅ Item 2: a quote inside a bare selector swallows the trailing comment into the value.
 		- Reproduced in all four. `srv[O'Brien].port: 8080  # main` loads with zero diagnostics and reads `port` as the string `8080  # main`, so `get --int` is `BadType` where it should be 8080. `fmt --write` leaves `port: "8080  # main"` at exit 0 with nothing lost, and that output is a fixpoint, so nothing will ever notice. `a[St."Paul].pop: 700  # why` does the same.
 		- Cause: `name_half` enters quote state on any `"` or `'`, wherever it sits, so a quote in a bare selector body hides the `#` that follows. The path scanner it is supposed to mirror opens a quoted selector only when a quote is the first non-space character after the `[`, and `grammar.abnf` says the same on `sel-char`: quotes mid-text pass through verbatim.
 		- Note: a backslash immediately before the closing `]` reaches the same place by another route. `name_half` treats `\` as an escape inside a selector and eats the `]`, so the field's own colon is skipped and the value half is then scanned by the name rules; `a[C:\].b: it's fine  # note` stores the comment in the value. The path scanner runs a bare selector to the first `]` with no escape handling, which is what the spec says ("to embed a `]` itself, quote the discriminator").
 		- Note: this is the half of 20260904 item 2 that fix did not reach. That round moved `value_comment_at`, `split_unquoted_commas` and `cell_exceeds` onto the start-of-piece rule and left `name_half` opening a quote anywhere. Sites: `lib.rs:717`, `shcl.go:1456`, `shcl.py:1132`, `shcl.h:1015`.
 		- Note: an apostrophe in a discriminator is ordinary input - `O'Brien`, `St. John's`, a windows path ending in a separator.
+		- Fixed: the name-half scan opens a quote only where the path scanner does - as a segment's first character or a selector body's first character - and shields a backslash inside quotes only, so a bare selector runs to its first `]`. One rule in all four bindings. The spec's selector paragraph now says where a quote opens.
+		- Pinned by: corpus `105-quote-in-selector` (an apostrophe, a mid-text quote, a trailing backslash, and two quoted discriminators, each with a trailing comment; the reads and a lost count of 0), and a fuzz property over the structural soup: a line carrying a known comment behind such a selector must come back with the comment still a comment. Both fail on the old code in every binding and pass now.
 		- Opened: 20260905-141700
+		- Closed: 20260905-191617
 
-	- 🔘 Item 3: the `--set` family refuses a path the read side accepts.
+	- ✅ Item 3: the `--set` family refuses a path the read side accepts.
 		- Reproduced in all four. `set --set="srv[O'Brien].port=8080"` exits 1 with "bad --set value (want PATH=VALUE, quotes and brackets balanced)", while `get --int f "srv[O'Brien].port"` returns the value and the same path through the tab-separated ops script writes it. `--set-literal`, `--set-default` and `--set-literal-default` refuse it too; `--remove=PATH` takes it, because it splits nothing.
 		- Cause: `split_set` opens quote state on any `"` or `'`, so an unpaired one anywhere in the path leaves every later `=` looking quoted and the split fails. Same rule as item 2, in the CLI. Sites: `main.rs:369`, `cmd/shcl/main.go:407`, `cmd/shcl/main.py:302`, `cmd/shcl/main.c:421`.
 		- Note: the help says "PATH ends at the first '=' outside quotes and brackets, so a selector may hold one", which is the contract this breaks.
+		- Fixed: the four CLIs' PATH=VALUE split follows the same rule as item 2: a quote opens only at a segment's or a selector body's first character, and a bare selector body runs to its first `]`.
+		- Pinned by: four `cli-regress` rows - `--set` and `--set-default` through `srv[O'Brien].port`, a quoted discriminator holding `]` and `=`, and an unclosed quote still refused at exit 1. The first two exit 1 on the old CLIs.
 		- Opened: 20260905-141800
+		- Closed: 20260905-191617
 
 	- 🔘 Item 4: validating a deep document against a recursive schema hangs, in the half of validation the 20260802 fix did not reach.
 		- Reproduced in all four. A four-line schema - a fragment whose `child` and `child.child` both mount it - against a 35-line document ending in one unknown field: rust 5.5 s, go 0.42 s, c 0.47 s, python 13.2 s. Every two levels of document depth multiply that by about 2.6, so depth 42 is minutes in rust and the 512 cap never finishes. The same document with no unknown field is 3 ms at any depth.

@@ -128,7 +128,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- A quote in the middle of a bare value no longer swallows the rest of the line. `note: don't panic  # keep this` used to load as the string `don't panic  # keep this` with no diagnostic, and the next `fmt --write` baked that in at exit 0, comment gone for good; `b: it's fine, ok` read as one element where the same words without the apostrophe read as two. A piece is quoted only when it begins with a quote, which is what the spec and the grammar always said.
+- A quote in the middle of a bare value no longer swallows the rest of the line. `note: don't panic  # keep this` used to load as the string `don't panic  # keep this` with no diagnostic, and the next `fmt --write` baked that in at exit 0, comment gone for good; `b: it's fine, ok` read as one element where the same words without the apostrophe read as two. A piece is quoted only when it begins with a quote, which is what the spec and the grammar always said. The same rule now holds in a selector: `srv[O'Brien].port: 8080  # main` used to read the port as the string `8080  # main` with the comment gone on the next write, and `--set="srv[O'Brien].port=8080"` was refused as unbalanced while `get` on that path worked. A quote opens a quoted discriminator only as the selector's first character, and a bare selector runs to the first `]`.
 
 - A schema with one crossed range (`min` above `max`) no longer switches off the unknown-field check for the whole document. The fault is still reported at the `max` line; the range is dropped, the field keeps its other constraints, and unknown fields are reported as they are under a sound schema.
 

@@ -1428,47 +1428,67 @@ const (
 	nameHash         // an unquoted `#` first: a comment, or a malformed name
 )
 
-// nameHalf scans a field line's name half the way the path scanner reads it: a
-// quote opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
-// selector, and with sugar a colon followed by `[` is selector sugar rather
-// than the separator. `\` shields the next char. Returns the kind and the
-// byte offset it ended at.
+// nameHalf scans a field line's name half the way the path scanner reads it. A
+// quote opens only where the scanner opens one - as a segment's first char (a
+// quoted name) or a selector body's first char (a quoted discriminator) - so
+// `O'Brien` in a bare selector is text, not an open quote hiding the `#` after
+// it. `\` shields the next char inside quotes only; a bare selector body runs
+// to the first `]` unescaped, as it does in the scanner. With sugar a colon
+// followed by `[` is selector sugar rather than the separator. An unquoted `#`
+// ends the half wherever it sits: a comment, or a malformed name. Returns the
+// kind and the byte offset it ended at.
 func nameHalf(s string, sugar bool) (int, int) {
 	var inQuote rune
 	inSel := false
+	atStart := true // first char of a segment, or of a selector body
 	skip := false
 	for i, c := range s {
 		if skip {
 			skip = false
 			continue
 		}
-		if c == '\\' {
-			skip = true
-			continue
-		}
 		if inQuote != 0 {
-			if c == inQuote {
+			if c == '\\' {
+				skip = true
+			} else if c == inQuote {
 				inQuote = 0
 			}
 			continue
 		}
+		if isWsp(c) {
+			continue
+		}
+		if c == '#' {
+			return nameHash, i
+		}
+		if inSel {
+			if c == ']' {
+				inSel = false
+			} else if atStart && (c == '"' || c == '\'') {
+				inQuote = c
+			}
+			atStart = false
+			continue
+		}
 		switch c {
 		case '"', '\'':
-			inQuote = c
-		case '#':
-			return nameHash, i
+			if atStart {
+				inQuote = c
+			}
 		case '[':
 			inSel = true
-		case ']':
-			inSel = false
+			atStart = true
+			continue
+		case '.':
+			atStart = true
+			continue
 		case ':':
-			if !inSel {
-				rest := strings.TrimLeft(s[i+1:], " \t")
-				if !(sugar && strings.HasPrefix(rest, "[")) {
-					return nameColon, i
-				}
+			rest := strings.TrimLeft(s[i+1:], " \t")
+			if !(sugar && strings.HasPrefix(rest, "[")) {
+				return nameColon, i
 			}
 		}
+		atStart = false
 	}
 	return nameEnd, 0
 }
