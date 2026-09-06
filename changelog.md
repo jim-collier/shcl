@@ -36,7 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- A `min` above its `max` is a schema fault. The range admits nothing, so every value drew both a below-min and an above-max error and the config looked wrong when the schema was. The field is dropped and reported once, like any other broken one.
+- A `min` above its `max` is a schema fault. The range admits nothing, so every value drew both a below-min and an above-max error and the config looked wrong when the schema was. The range is dropped and reported once, at the `max` line; the field keeps its other constraints.
 
 - A `datetime` `allowed` set compares the moment, not the spelling. `allowed: 12:00:00Z` refused a config saying `12:00:00+00:00`, and `12:00:00` refused `12:00:00.0`, because the value mirrors what was written and the comparison was field by field. A value with no zone is still local and still matches no zoned one - that is the one spelling difference that is a real difference.
 
@@ -132,7 +132,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Validating a deep document against a fragment that mounts itself by more than one path no longer takes time exponential in the document's depth. A four-line schema against a 35-line document with one unknown field at the bottom took seconds, and the parse cap's depth would never have finished; the unknown-field sweep now remembers which (fragment, depth) it has already ruled out, so the same check is milliseconds at any depth.
 
-- A schema with one crossed range (`min` above `max`) no longer switches off the unknown-field check for the whole document. The fault is still reported at the `max` line; the range is dropped, the field keeps its other constraints, and unknown fields are reported as they are under a sound schema.
+- A schema with one crossed range (`min` above `max`) no longer switches off the unknown-field check for the whole document. The fault is still reported at the `max` line, and unknown fields are reported as they are under a sound schema.
 
 - `Set<T>Default` and `--set-default` refuse a wildcard path whether or not its slots resolve. They used to report success and write nothing when the wildcard matched something, and refuse when it did not, so the same call passed or failed on the document's contents.
 

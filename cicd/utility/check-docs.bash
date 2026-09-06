@@ -280,6 +280,15 @@ grep -B 3 -F 'shcl_str shcl_authored_name(shcl_doc *d' "${repoDir}/source/c/shcl
 grep -q 'E003.*Unreachable in practice' "${repoDir}/project/spec.md" \
 	&& fBad "spec.md: the E003 row still calls the code unreachable from a file"
 
+##	A crossed `min`/`max` range drops the range and keeps the field's other
+##	constraints (the spec's schema table). The changelog once said both that
+##	and that the field is dropped, in two entries under one Unreleased heading,
+##	because a later round amended the entry by appending a second one.
+grep -qF 'the range is dropped (the field keeps its other constraints)' "${repoDir}/project/spec.md" \
+	|| fBad "spec.md: the crossed-range row no longer says the range is dropped and the field kept"
+grep -q 'The field is dropped' "${repoDir}/changelog.md" \
+	&& fBad "changelog.md: a crossed min/max range drops the range, not the field"
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1
@@ -289,3 +298,4 @@ echo "check-docs: OK"
 ##	History:
 ##		2026-08-30  Created, after a double negative reversed the legal-advice
 ##		            disclaimer in a document that invites verbatim reuse.
+##		2026-09-05  The crossed-range entry must agree with the spec's table.
