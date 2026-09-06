@@ -96,11 +96,14 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260905-141900
 		- Closed: 20260905-193329
 
-	- 🔘 Item 5: the changelog contradicts itself and the spec on a crossed `min`/`max` range.
+	- ✅ Item 5: the changelog contradicts itself and the spec on a crossed `min`/`max` range.
 		- Reproduced by reading. `changelog.md:39` says "The field is dropped and reported once, like any other broken one"; `changelog.md:133`, added by the last round, says "the range is dropped, the field keeps its other constraints". Both sit in the same `## Unreleased` section, so the 2.1.0 release notes carry both.
 		- Note: the shipped behavior is the second one, and `spec.md:529` agrees. Confirmed against the CLI: a crossed range on one field still leaves that field's path legal for the unknown-field sweep.
 		- Note: this is what the last round's item 4 changed. The entry it superseded was amended by adding a second entry rather than by editing the first.
+		- Fixed: the Changed entry says what the code does - the range is dropped and reported once at the `max` line, the field keeps its other constraints - and the Fixed entry no longer restates it.
+		- Pinned by: `check-docs` requires the spec's crossed-range row and refuses a changelog that says the field is dropped. Fails on the previous changelog.
 		- Opened: 20260905-142000
+		- Closed: 20260905-193603
 
 ### Features and enhancements
 
