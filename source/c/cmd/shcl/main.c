@@ -416,18 +416,29 @@ static void say_layered_diagnostics(const LayeredDoc *L) {
 // strictness; a strict-load failure on any aborts (exit 6). Returns 0 and fills
 // *out on success, else an exit code (nothing to free on failure).
 // PATH=VALUE at the first `=` outside quotes and brackets, so a selector
-// holding one (`x[a=b].c=1`) still addresses its instance. Returns 0 when
-// there is no such `=`.
+// holding one (`x[a=b].c=1`) still addresses its instance. A quote opens only
+// where the path scanner opens one - a segment's or a selector body's first
+// char - so `srv[O'Brien].port=8080` splits at its `=`, and a bare selector
+// body runs to the first `]`. Returns 0 when there is no such `=`.
 static int split_set(const char *arg, size_t *plen, const char **val) {
-	char in_quote = 0; size_t depth = 0;
+	char in_quote = 0; int in_sel = 0, at_start = 1;
 	for (size_t i = 0; arg[i]; i++) {
 		char b = arg[i];
-		if (b == '\\') { if (arg[i + 1]) i++; continue; }
-		if (in_quote) { if (b == in_quote) in_quote = 0; continue; }
-		if (b == '"' || b == '\'') in_quote = b;
-		else if (b == '[') depth++;
-		else if (b == ']') { if (depth) depth--; }
-		else if (b == '=' && depth == 0) { *plen = i; *val = arg + i + 1; return 1; }
+		if (in_quote) {
+			if (b == '\\') { if (arg[i + 1]) i++; }
+			else if (b == in_quote) in_quote = 0;
+			continue;
+		}
+		if (b == ' ' || b == '\t') continue;
+		if (in_sel) {
+			if (b == ']') in_sel = 0;
+			else if (at_start && (b == '"' || b == '\'')) in_quote = b;
+		}
+		else if ((b == '"' || b == '\'') && at_start) in_quote = b;
+		else if (b == '[') { in_sel = 1; at_start = 1; continue; }
+		else if (b == '.') { at_start = 1; continue; }
+		else if (b == '=') { *plen = i; *val = arg + i + 1; return 1; }
+		at_start = 0;
 	}
 	return 0;
 }

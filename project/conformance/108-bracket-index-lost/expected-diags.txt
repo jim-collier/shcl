@@ -1,0 +1,5 @@
+line 1: Hint: E019
+line 1: Error: E003
+line 2: Hint: E019
+line 2: Error: E004
+failed: 4 diagnostic(s), 2 error(s)

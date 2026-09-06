@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `V097`: `init` checks its own output against the schema that produced it before returning it. A field typed `int` with `min: 1`, `max: 10` and `default: 99` used to generate the comment `# int, 1-10, required` and then `server.port: 99` on the next line, so the starter config failed the schema it came from. The schema is faulted now, naming the field.
 
-- `E019`: a value spelled with brackets, the way JSON, TOML and YAML spell an array. It used to be reported as a missing colon on a line that plainly has one, and the brackets were dropped so silently that an in-place `fmt --write` rewrote `ports: [80, 443]` to `ports: "80, 443"` and the file checked clean from then on. The load counts it as lost content now, so an in-place rewrite refuses unless `--lossy` is passed.
+- `E019`: a value spelled with brackets, the way JSON, TOML and YAML spell an array. It used to be reported as a missing colon on a line that plainly has one, and the brackets were dropped so silently that an in-place `fmt --write` rewrote `ports: [80, 443]` to `ports: "80, 443"` and the file checked clean from then on. The load counts it as lost content now, so an in-place rewrite refuses unless `--lossy` is passed. That holds where the brackets hold an unquoted comma, which is where elements fold into one string. A single bracketed value (`tags: [prod]`) reads the same as `tags: prod`, and `base:[Boston]` is the documented selector sugar, so those are a hint under the same code and nothing is counted lost: `check` exits 0, a strict load passes, and the rewrite goes through.
 
 - `E018`: a line indented under a line that was skipped is now skipped with it, with its own diagnostic, instead of re-parenting one level up. A skipped header used to hand its children to its parent, so the document gained structure the author never wrote.
 
@@ -36,7 +36,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- A `min` above its `max` is a schema fault. The range admits nothing, so every value drew both a below-min and an above-max error and the config looked wrong when the schema was. The field is dropped and reported once, like any other broken one.
+- `init` lays the generated lines out in tree order: a path's parent comes before its children and siblings keep the schema's order, where the lines used to follow the schema's order alone. A schema listing `a.host.srv` before `a` used to generate `a: x` after another field, re-opening `a`, and the starter config hinted `H002` on its own first lines. A schema already written in tree order generates the same text as before.
+
+- A `min` above its `max` is a schema fault. The range admits nothing, so every value drew both a below-min and an above-max error and the config looked wrong when the schema was. The range is dropped and reported once, at the `max` line; the field keeps its other constraints.
 
 - A `datetime` `allowed` set compares the moment, not the spelling. `allowed: 12:00:00Z` refused a config saying `12:00:00+00:00`, and `12:00:00` refused `12:00:00.0`, because the value mirrors what was written and the comparison was field by field. A value with no zone is still local and still matches no zoned one - that is the one spelling difference that is a real difference.
 
@@ -128,9 +130,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- A quote in the middle of a bare value no longer swallows the rest of the line. `note: don't panic  # keep this` used to load as the string `don't panic  # keep this` with no diagnostic, and the next `fmt --write` baked that in at exit 0, comment gone for good; `b: it's fine, ok` read as one element where the same words without the apostrophe read as two. A piece is quoted only when it begins with a quote, which is what the spec and the grammar always said.
+- A quote in the middle of a bare value no longer swallows the rest of the line. `note: don't panic  # keep this` used to load as the string `don't panic  # keep this` with no diagnostic, and the next `fmt --write` baked that in at exit 0, comment gone for good; `b: it's fine, ok` read as one element where the same words without the apostrophe read as two. A piece is quoted only when it begins with a quote, which is what the spec and the grammar always said. The same rule now holds in a selector: `srv[O'Brien].port: 8080  # main` used to read the port as the string `8080  # main` with the comment gone on the next write, and `--set="srv[O'Brien].port=8080"` was refused as unbalanced while `get` on that path worked. A quote opens a quoted discriminator only as the selector's first character, and a bare selector runs to the first `]`.
 
-- A schema with one crossed range (`min` above `max`) no longer switches off the unknown-field check for the whole document. The fault is still reported at the `max` line; the range is dropped, the field keeps its other constraints, and unknown fields are reported as they are under a sound schema.
+- Validating a deep document against a fragment that mounts itself by more than one path no longer takes time exponential in the document's depth. A four-line schema against a 35-line document with one unknown field at the bottom took seconds, and the parse cap's depth would never have finished; the unknown-field sweep now remembers which (fragment, depth) it has already ruled out, so the same check is milliseconds at any depth.
+
+- A schema with one crossed range (`min` above `max`) no longer switches off the unknown-field check for the whole document. The fault is still reported at the `max` line, and unknown fields are reported as they are under a sound schema.
 
 - `Set<T>Default` and `--set-default` refuse a wildcard path whether or not its slots resolve. They used to report success and write nothing when the wildcard matched something, and refuse when it did not, so the same call passed or failed on the document's contents.
 

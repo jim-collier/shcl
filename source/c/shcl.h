@@ -1007,27 +1007,41 @@ static ShclStr value_display(ShclArena *a, const ShclValue *v) {
 
 // How the name half of a field line ends.
 enum { NAME_END, NAME_COLON, NAME_HASH };
-/* Scan a field line's name half the way the path scanner reads it: a quote
-   opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
-   selector, and with `sugar` a colon followed by `[` is selector sugar rather
-   than the separator. A backslash shields the next char. *at gets the byte
-   offset it ended at. */
+/* Scan a field line's name half the way the path scanner reads it. A quote
+   opens only where the scanner opens one - as a segment's first char (a quoted
+   name) or a selector body's first char (a quoted discriminator) - so O'Brien
+   in a bare selector is text, not an open quote hiding the `#` after it. A
+   backslash shields the next char inside quotes only; a bare selector body
+   runs to the first `]` unescaped, as it does in the scanner. With `sugar` a
+   colon followed by `[` is selector sugar rather than the separator. An
+   unquoted `#` ends the half wherever it sits: a comment, or a malformed name.
+   *at gets the byte offset it ended at. */
 static int name_half(ShclStr s, int sugar, size_t *at) {
-	uint32_t inq = 0; int in_sel = 0; size_t i = 0;
+	uint32_t inq = 0; int in_sel = 0, at_start = 1; size_t i = 0;
 	*at = 0;
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
-		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
-		if (inq) { if (c == inq) inq = 0; }
-		else if (c == '"' || c == '\'') inq = c;
-		else if (c == '#') { *at = i; return NAME_HASH; }
-		else if (c == '[') in_sel = 1;
-		else if (c == ']') in_sel = 0;
-		else if (c == ':' && !in_sel) {
+		if (inq) {
+			if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
+			if (c == inq) inq = 0;
+			i += l; continue;
+		}
+		if (is_wsp(c)) { i += l; continue; }
+		if (c == '#') { *at = i; return NAME_HASH; }
+		if (in_sel) {
+			if (c == ']') in_sel = 0;
+			else if (at_start && (c == '"' || c == '\'')) inq = c;
+			at_start = 0; i += l; continue;
+		}
+		if ((c == '"' || c == '\'') && at_start) inq = c;
+		else if (c == '[') { in_sel = 1; at_start = 1; i += l; continue; }
+		else if (c == '.') { at_start = 1; i += l; continue; }
+		else if (c == ':') {
 			size_t r = i + 1;
 			while (r < s.n && (s.p[r] == ' ' || s.p[r] == '\t')) r++;
 			if (!(sugar && r < s.n && s.p[r] == '[')) { *at = i; return NAME_COLON; }
 		}
+		at_start = 0;
 		i += l;
 	}
 	return NAME_END;
@@ -1640,17 +1654,22 @@ static ShclPathScan scan_path_ex(ShclArena *a, ShclStr input, int stars) {
 
 static ShclPathScan scan_path(ShclArena *a, ShclStr input) { return scan_path_ex(a, input, 0); }
 
-/* A value spelled the way JSON, TOML and YAML spell an array. The path scanner
-   reads the brackets as a selector, so the line arrives with no value text and
-   the old repair blamed a colon that is plainly there. The colon that counts
-   is the field's own: one inside a quoted name or a selector is not it. */
-static int looks_like_bracket_array(ShclStr content) {
+/* The text between the brackets of a value spelled the way JSON, TOML and YAML
+   spell an array; 0 when the line is not that shape. The path scanner reads
+   the brackets as a selector, so the line arrives with no value text and the
+   old repair blamed a colon that is plainly there. The colon that counts is
+   the field's own: one inside a quoted name or a selector is not it. Selector
+   sugar (base:[Boston]) is spelled the same way and is legal, so the caller
+   decides by what the brackets hold. */
+static int bracket_array_body(ShclStr content, ShclStr *body) {
 	size_t colon;
 	if (name_half(content, 0, &colon) != NAME_COLON) return 0;
 	size_t b = colon + 1, e = content.n;
 	while (b < e && (unsigned char)content.p[b] <= ' ') b++;
 	while (e > b && (unsigned char)content.p[e - 1] <= ' ') e--;
-	return e > b && content.p[b] == '[' && content.p[e - 1] == ']';
+	if (e < b + 2 || content.p[b] != '[' || content.p[e - 1] != ']') return 0;
+	body->p = content.p + b + 1; body->n = e - b - 2;
+	return 1;
 }
 // Query spelling of scan_path: also accepts a bare `*` segment (the name
 // wildcard - any child name). Document lines never take it; only lookups
@@ -2910,12 +2929,24 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		size_t next = i + 1;
 		ShclValue value;
 		if (!scan.has_value) {
-			if (looks_like_bracket_array(content)) {
-				/* The brackets never survive the load, so a rewrite would bake
-				   the changed value in and the file would check clean forever
-				   after. Count it lost so the save gate stops that. */
-				p_err(&P, lineno, "E019", s_lit("bracket array syntax; an array is comma-separated, without brackets"));
-				P.d->lost++;
+			ShclStr body;
+			if (bracket_array_body(content, &body)) {
+				ShclVecSize starts = {0}, ends = {0};
+				split_unquoted_commas(P.line, body, &starts, &ends);
+				if (starts.len > 1) {
+					/* Two or more elements folded into one string. The brackets
+					   never survive the load, so a rewrite would bake the changed
+					   value in and the file would check clean forever after.
+					   Count it lost so the save gate stops that. */
+					p_err(&P, lineno, "E019", s_lit("bracket array syntax; an array is comma-separated, without brackets"));
+					P.d->lost++;
+				} else {
+					/* One element reads as the selector the scanner made of it -
+					   [Boston] is Boston - and field:[disc] is documented sugar,
+					   so nothing is lost. A hint, for the JSON habit; same code,
+					   like E022. */
+					p_diag(&P, lineno, SHCL_SEV_HINT, "E019", s_lit("bracket array syntax; read as a selector, the same value without the brackets"));
+				}
 			} else p_err(&P, lineno, "E015", s_lit("missing colon; repaired as an empty value"));
 			value = v_empty();
 		}
@@ -5483,8 +5514,18 @@ static int star_legal(const ShclVecSeg *pats, size_t npats, ShclStr chain) {
 // Chain legality through fragment mounts: the general matcher - element-wise
 // like star_legal (stars wild, prefixes legal), and when a mount's whole path
 // matched with chain left over, the remainder is retried against the mounted
-// fragment's fields. Terminates: every descent consumes >= 1 part.
-static int chain_parts_legal(const ShclVecVCons *cons, const ShclVSchemaDef *def, ShclStr chain, size_t from) {
+// fragment's fields. Terminates: every descent consumes >= 1 part. A state is
+// (fragment, parts consumed), one byte each in `dead` - row 0 the top-level
+// constraints, row k+1 fragment k - and one that has failed is not walked
+// again: two mounts of the same fragment at the same depth used to be walked
+// both, which is 2^depth on a chain that ends unknown.
+static size_t v_frag_index(const ShclVSchemaDef *def, ShclStr name) {
+	for (size_t i = 0; i < def->frags.len; i++)
+		if (s_eq(def->frags.data[i].name, name)) return i;
+	return SIZE_MAX;
+}
+static int chain_parts_legal(const ShclVecVCons *cons, size_t set, const ShclVSchemaDef *def, ShclStr chain, size_t from, size_t at, size_t nparts, unsigned char *dead) {
+	if (dead[set * (nparts + 1) + at]) return 0;
 	for (size_t ci = 0; ci < cons->len; ci++) {
 		const ShclVCons *c = &cons->data[ci];
 		size_t n = c->segs.len;
@@ -5501,14 +5542,21 @@ static int chain_parts_legal(const ShclVecVCons *cons, const ShclVSchemaDef *def
 		if (!match) continue;
 		if (part <= n) return 1; // a prefix of a legal path
 		if (c->inherits.n) {
-			const ShclVecVCons *fcs = v_frag_get(def, c->inherits);
-			if (fcs && chain_parts_legal(fcs, def, chain, rem)) return 1;
+			size_t fi = v_frag_index(def, c->inherits);
+			if (fi != SIZE_MAX && chain_parts_legal(&def->frags.data[fi].fields, fi + 1, def, chain, rem, at + n, nparts, dead)) return 1;
 		}
 	}
+	dead[set * (nparts + 1) + at] = 1;
 	return 0;
 }
-static int chain_legal(const ShclVSchemaDef *def, ShclStr chain) {
-	return chain_parts_legal(&def->cons, def, chain, 0);
+static int chain_legal(ShclArena *tmp, const ShclVSchemaDef *def, ShclStr chain) {
+	size_t nparts = 0, i = 0;
+	ShclStr nm;
+	while (chain_next(chain, &i, &nm)) nparts++;
+	size_t cells = (def->frags.len + 1) * (nparts + 1);
+	unsigned char *dead = (unsigned char *)arena_alloc(tmp, cells);
+	memset(dead, 0, cells);
+	return chain_parts_legal(&def->cons, 0, def, chain, 0, 0, nparts, dead);
 }
 
 // Unknown-field sweep: a schema path legalizes its name chain and every prefix
@@ -5592,7 +5640,7 @@ static void v_unknown(ShclArena *a, ShclArena *tmp, shcl_doc *d, const ShclVSche
 			for (ShclCMapEnt *e = cmap_first(&legal, hc); e; e = cmap_next(e, hc))
 				if (s_eq(legal_chains.data[e->val], chain)) { found = 1; break; }
 		}
-		if (!found && !star_legal(star_pats, nstar, chain) && !(has_mounts && chain_legal(def, chain))) {
+		if (!found && !star_legal(star_pats, nstar, chain) && !(has_mounts && chain_legal(tmp, def, chain))) {
 			ShclSB msg = {0, 0, 0};
 			sb_puts(a, &msg, "unknown field '"); sb_putS(a, &msg, shown); sb_puts(a, &msg, "'");
 			size_t sg = (size_t)-1;
@@ -6661,7 +6709,11 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	   hash hit, so the scan stays cheap at the field cap. */
 	ShclVecS emitted = {0, 0, 0};
 	uint64_t *emitted_hash = (uint64_t *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *emitted_hash);
-	int first = 1;
+	/* One block per generated line - its desc, annotation and binding - and the
+	   constraint it came from, so the blocks can be laid out in tree order
+	   below. */
+	ShclVecS block_text = {0, 0, 0};
+	ShclVecSize block_cons = {0, 0, 0};
 	for (size_t i = 0; i < cons.len; i++) {
 		ShclVCons *c = &cons.data[i];
 		ShclStr tyname;
@@ -6688,25 +6740,80 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		if (dup) continue;
 		emitted_hash[emitted.len] = ph;
 		ShclVecS_push(a, &emitted, path);
-		if (!first) sb_putc(a, &out, '\n');
-		first = 0;
+		ShclSB blk = {0};
 		if (c->has_desc) {
 			size_t start = 0;
 			for (size_t k = 0; k <= c->desc.n; k++) {
 				if (k == c->desc.n || c->desc.p[k] == '\n') {
-					sb_puts(a, &out, "# ");
-					ShclStr ln; ln.p = c->desc.p + start; ln.n = k - start; sb_putS(a, &out, ln);
-					sb_putc(a, &out, '\n');
+					sb_puts(a, &blk, "# ");
+					ShclStr ln; ln.p = c->desc.p + start; ln.n = k - start; sb_putS(a, &blk, ln);
+					sb_putc(a, &blk, '\n');
 					start = k + 1;
 				}
 			}
 		}
-		sb_puts(a, &out, "# "); sb_putS(a, &out, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &out, '\n');
-		if (!g_must_exist(c)) sb_putc(a, &out, '#');
-		sb_putS(a, &out, path);
-		if (c->has_default) { sb_puts(a, &out, ": "); sb_putS(a, &out, g_default_text(a, c->default_text)); }
-		else sb_putc(a, &out, ':');
-		sb_putc(a, &out, '\n');
+		sb_puts(a, &blk, "# "); sb_putS(a, &blk, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &blk, '\n');
+		if (!g_must_exist(c)) sb_putc(a, &blk, '#');
+		sb_putS(a, &blk, path);
+		if (c->has_default) { sb_puts(a, &blk, ": "); sb_putS(a, &blk, g_default_text(a, c->default_text)); }
+		else sb_putc(a, &blk, ':');
+		sb_putc(a, &blk, '\n');
+		ShclVecS_push(a, &block_text, sb_S(&blk));
+		ShclVecSize_push(a, &block_cons, i);
+	}
+	/* Tree order, first appearance first. A schema may list a.host.srv before
+	   a, and emitted as listed with another field between them, `a: x` re-opens
+	   a and the load hints it (H002) - in the one file meant to show the format
+	   at its cleanest. Every prefix is ranked by where it first appears (a hash
+	   of its length-prefixed names stands for the prefix), so a parent's block
+	   comes before its children's, siblings keep schema order, and a schema
+	   already in tree order is unchanged. A parent's key is a prefix of its
+	   children's and a shorter key sorts first; the merge sort is stable, so
+	   two blocks on one path keep their order. */
+	size_t nblk = block_text.len, total = 0;
+	for (size_t b = 0; b < nblk; b++) total += cons.data[block_cons.data[b]].segs.len;
+	size_t *keys = (size_t *)arena_alloc(a, (total ? total : 1) * sizeof *keys);
+	size_t *key_at = (size_t *)arena_alloc(a, (nblk + 1) * sizeof *key_at);
+	ShclCMap rank = {0, 0, 0};
+	size_t pos = 0;
+	for (size_t b = 0; b < nblk; b++) {
+		const ShclVecSeg *segs = &cons.data[block_cons.data[b]].segs;
+		key_at[b] = pos;
+		uint64_t h = 1469598103934665603ull;
+		for (size_t k = 0; k < segs->len; k++) {
+			h = fnv_str(fnv_dec(h, segs->data[k].name.n), segs->data[k].name);
+			ShclCMapEnt *e = cmap_first(&rank, h);
+			size_t r = e ? e->val : rank.len;
+			if (!e) cmap_put(a, &rank, h, r);
+			keys[pos++] = r;
+		}
+	}
+	key_at[nblk] = pos;
+	size_t *order = (size_t *)arena_alloc(a, (nblk ? nblk : 1) * sizeof *order);
+	size_t *merged = (size_t *)arena_alloc(a, (nblk ? nblk : 1) * sizeof *merged);
+	for (size_t b = 0; b < nblk; b++) order[b] = b;
+	for (size_t width = 1; width < nblk; width *= 2) {
+		for (size_t lo = 0; lo < nblk; lo += 2 * width) {
+			size_t mid = lo + width < nblk ? lo + width : nblk, hi = lo + 2 * width < nblk ? lo + 2 * width : nblk;
+			size_t i = lo, j = mid, o = lo;
+			while (i < mid && j < hi) {
+				size_t x = order[i], y = order[j], xs = key_at[x], ys = key_at[y];
+				int le = 1;
+				for (;; xs++, ys++) {
+					if (xs == key_at[x + 1]) break;              // x is a prefix of y, or equal
+					if (ys == key_at[y + 1]) { le = 0; break; }  // y is a proper prefix of x
+					if (keys[xs] != keys[ys]) { le = keys[xs] < keys[ys]; break; }
+				}
+				if (le) merged[o++] = order[i++]; else merged[o++] = order[j++];
+			}
+			while (i < mid) merged[o++] = order[i++];
+			while (j < hi) merged[o++] = order[j++];
+		}
+		memcpy(order, merged, nblk * sizeof *order);
+	}
+	for (size_t n = 0; n < nblk; n++) {
+		if (n) sb_putc(a, &out, '\n');
+		sb_putS(a, &out, block_text.data[order[n]]);
 	}
 	// Cycle-cut mounts last: their "type" column names the fragment that
 	// belongs at the path.
@@ -6715,7 +6822,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		ShclVecS_push(a, &wild_type, cut_frag.data[i]);
 	}
 	if (wild_path.len) {
-		if (!first) sb_putc(a, &out, '\n');
+		if (nblk) sb_putc(a, &out, '\n');
 		sb_puts(a, &out, "# Paths needing an instance name (not generated):\n");
 		for (size_t i = 0; i < wild_path.len; i++) {
 			sb_puts(a, &out, "#   "); sb_putS(a, &out, wild_path.data[i]);

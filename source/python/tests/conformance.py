@@ -418,9 +418,12 @@ def main():
 			fails.append(f"{case['name']}: --no-banner output is not a prefix of the default")
 		elif "This config file format is SHCL." not in text[len(bare):]:
 			fails.append(f"{case['name']}: default init output is missing the format footer")
+		# Valid SHCL, and not so much as a hint: a starter that hints on its own
+		# first lines (H002 from a parent re-opened after another field) teaches
+		# a reader to ignore them.
 		gdoc = shcl.Document.parse(text)
-		if any(d.severity == shcl.Severity.Error for d in gdoc.diagnostics()):
-			fails.append(f"{case['name']}: generated starter does not load cleanly")
+		if gdoc.diagnostics():
+			fails.append(f"{case['name']}: generated starter does not load cleanly: {gdoc.diagnostics()}")
 		# And it must satisfy the very schema that produced it - case 026's
 		# golden once failed its own schema (repeat lower bound and a
 		# materialized wildcard were ignored).

@@ -1407,18 +1407,23 @@ func parseIndex(s string) (uint64, bool) {
 // brackets is insignificant. A colon is a selector colon only when the next
 // non-ws char is `[`; otherwise it separates the value. An error means
 // genuinely ambiguous input, which the caller skips with a diagnostic.
-// looksLikeBracketArray: a value spelled the way JSON, TOML and YAML spell an
-// array. The path scanner reads the brackets as a selector, so the line arrives
-// with no value text and the old repair blamed a colon that is plainly there.
-// The colon that counts is the field's own: one inside a quoted name or a
-// selector is not it.
-func looksLikeBracketArray(content string) bool {
+// bracketArrayBody: the text between the brackets of a value spelled the way
+// JSON, TOML and YAML spell an array, or false when the line is not that shape.
+// The path scanner reads the brackets as a selector, so the line arrives with
+// no value text and the old repair blamed a colon that is plainly there. The
+// colon that counts is the field's own: one inside a quoted name or a selector
+// is not it. Selector sugar (`base:[Boston]`) is spelled the same way and is
+// legal, so the caller decides by what the brackets hold.
+func bracketArrayBody(content string) (string, bool) {
 	kind, colon := nameHalf(content, false)
 	if kind != nameColon {
-		return false
+		return "", false
 	}
 	rest := strings.TrimSpace(content[colon+1:])
-	return strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]")
+	if len(rest) < 2 || !strings.HasPrefix(rest, "[") || !strings.HasSuffix(rest, "]") {
+		return "", false
+	}
+	return rest[1 : len(rest)-1], true
 }
 
 // How the name half of a field line ends.
@@ -1428,47 +1433,67 @@ const (
 	nameHash         // an unquoted `#` first: a comment, or a malformed name
 )
 
-// nameHalf scans a field line's name half the way the path scanner reads it: a
-// quote opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
-// selector, and with sugar a colon followed by `[` is selector sugar rather
-// than the separator. `\` shields the next char. Returns the kind and the
-// byte offset it ended at.
+// nameHalf scans a field line's name half the way the path scanner reads it. A
+// quote opens only where the scanner opens one - as a segment's first char (a
+// quoted name) or a selector body's first char (a quoted discriminator) - so
+// `O'Brien` in a bare selector is text, not an open quote hiding the `#` after
+// it. `\` shields the next char inside quotes only; a bare selector body runs
+// to the first `]` unescaped, as it does in the scanner. With sugar a colon
+// followed by `[` is selector sugar rather than the separator. An unquoted `#`
+// ends the half wherever it sits: a comment, or a malformed name. Returns the
+// kind and the byte offset it ended at.
 func nameHalf(s string, sugar bool) (int, int) {
 	var inQuote rune
 	inSel := false
+	atStart := true // first char of a segment, or of a selector body
 	skip := false
 	for i, c := range s {
 		if skip {
 			skip = false
 			continue
 		}
-		if c == '\\' {
-			skip = true
-			continue
-		}
 		if inQuote != 0 {
-			if c == inQuote {
+			if c == '\\' {
+				skip = true
+			} else if c == inQuote {
 				inQuote = 0
 			}
 			continue
 		}
+		if isWsp(c) {
+			continue
+		}
+		if c == '#' {
+			return nameHash, i
+		}
+		if inSel {
+			if c == ']' {
+				inSel = false
+			} else if atStart && (c == '"' || c == '\'') {
+				inQuote = c
+			}
+			atStart = false
+			continue
+		}
 		switch c {
 		case '"', '\'':
-			inQuote = c
-		case '#':
-			return nameHash, i
+			if atStart {
+				inQuote = c
+			}
 		case '[':
 			inSel = true
-		case ']':
-			inSel = false
+			atStart = true
+			continue
+		case '.':
+			atStart = true
+			continue
 		case ':':
-			if !inSel {
-				rest := strings.TrimLeft(s[i+1:], " \t")
-				if !(sugar && strings.HasPrefix(rest, "[")) {
-					return nameColon, i
-				}
+			rest := strings.TrimLeft(s[i+1:], " \t")
+			if !(sugar && strings.HasPrefix(rest, "[")) {
+				return nameColon, i
 			}
 		}
+		atStart = false
 	}
 	return nameEnd, 0
 }
@@ -2551,12 +2576,21 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		var v value
 		switch {
 		case scan.valueText == nil:
-			if looksLikeBracketArray(content) {
-				// The brackets never survive the load, so a rewrite would bake
-				// the changed value in and the file would check clean forever
-				// after. Count it lost so the save gate stops that.
-				p.err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
-				p.lost++
+			if body, ok := bracketArrayBody(content); ok {
+				if len(splitUnquotedCommas(body)) > 1 {
+					// Two or more elements folded into one string. The brackets
+					// never survive the load, so a rewrite would bake the
+					// changed value in and the file would check clean forever
+					// after. Count it lost so the save gate stops that.
+					p.err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
+					p.lost++
+				} else {
+					// One element reads as the selector the scanner made of it -
+					// `[Boston]` is `Boston` - and `field:[disc]` is documented
+					// sugar, so nothing is lost. A hint, for the JSON habit;
+					// same code, like E022.
+					p.diag(Diagnostic{Line: lineno, Severity: SeverityHint, Message: "bracket array syntax; read as a selector, the same value without the brackets", Code: "E019"})
+				}
 			} else {
 				// A clean path with no colon is the one defined repair:
 				// the obvious intent is that path with an empty value.
@@ -6658,7 +6692,13 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// Dropping a trailing `[*]` can render the same line a concrete sibling
 	// already wrote; the first spelling wins.
 	emitted := map[string]bool{}
-	first := true
+	// One block per generated line - its desc, annotation and binding - with
+	// the path's names, so the blocks can be laid out in tree order below.
+	type genBlock struct {
+		names []string
+		text  string
+	}
+	var blocks []genBlock
 	for i := range cons {
 		c := &cons[i]
 		tyname := c.ty
@@ -6692,37 +6732,77 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			continue
 		}
 		emitted[path] = true
-		if !first {
-			b.WriteByte('\n')
-		}
-		first = false
+		var block strings.Builder
 		if c.desc != nil {
 			for _, line := range strings.Split(*c.desc, "\n") {
-				b.WriteString("# ")
-				b.WriteString(line)
-				b.WriteByte('\n')
+				block.WriteString("# ")
+				block.WriteString(line)
+				block.WriteByte('\n')
 			}
 		}
-		b.WriteString("# ")
+		block.WriteString("# ")
 		// The annotation is a comment: a newline smuggled in via an allowed
 		// string value must not break out of it.
-		b.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
-		b.WriteByte('\n')
+		block.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
+		block.WriteByte('\n')
 		prefix := "#"
 		if mustExist(c) {
 			prefix = ""
 		}
 		if c.defaultText != nil {
-			fmt.Fprintf(&b, "%s%s: %s\n", prefix, path, genDefaultText(*c.defaultText))
+			fmt.Fprintf(&block, "%s%s: %s\n", prefix, path, genDefaultText(*c.defaultText))
 		} else {
-			fmt.Fprintf(&b, "%s%s:\n", prefix, path)
+			fmt.Fprintf(&block, "%s%s:\n", prefix, path)
 		}
+		blocks = append(blocks, genBlock{namesOf(c.segs), block.String()})
+	}
+	// Tree order, first appearance first. A schema may list `a.host.srv`
+	// before `a`, and emitted as listed with another field between them,
+	// `a: x` re-opens `a` and the load hints it (H002) - in the one file meant
+	// to show the format at its cleanest. Every prefix is ranked by where it
+	// first appears, so a parent's block comes before its children's, siblings
+	// keep schema order, and a schema already in tree order is unchanged.
+	rank := map[string]int{}
+	for _, bl := range blocks {
+		for k := 1; k <= len(bl.names); k++ {
+			key := namesKey(bl.names[:k])
+			if _, ok := rank[key]; !ok {
+				rank[key] = len(rank)
+			}
+		}
+	}
+	// A parent's key is a prefix of its children's, and a shorter key sorts
+	// first; the sort is stable, so two blocks on one path keep their order.
+	keys := make([][]int, len(blocks))
+	for i, bl := range blocks {
+		for k := 1; k <= len(bl.names); k++ {
+			keys[i] = append(keys[i], rank[namesKey(bl.names[:k])])
+		}
+	}
+	order := make([]int, len(blocks))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(x, y int) bool {
+		kx, ky := keys[order[x]], keys[order[y]]
+		for j := 0; j < len(kx) && j < len(ky); j++ {
+			if kx[j] != ky[j] {
+				return kx[j] < ky[j]
+			}
+		}
+		return len(kx) < len(ky)
+	})
+	for n, i := range order {
+		if n > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(blocks[i].text)
 	}
 	// Cycle-cut mounts last: their "type" column names the fragment that
 	// belongs at the path.
 	wild = append(wild, cuts...)
 	if len(wild) > 0 {
-		if !first {
+		if len(blocks) > 0 {
 			b.WriteByte('\n')
 		}
 		b.WriteString("# Paths needing an instance name (not generated):\n")
@@ -7486,20 +7566,33 @@ func starLegal(pats [][]segment, chain string) bool {
 // the mounted fragment's fields. Terminates: every descent consumes >= 1 part.
 func chainLegal(cons []constraint, frags map[string][]constraint, chain string) bool {
 	parts := chainParts(chain)
-	return chainPartsLegal(cons, frags, parts)
+	dead := map[chainState]bool{}
+	return chainPartsLegal(cons, "", frags, parts, 0, dead)
 }
 
-func chainPartsLegal(cons []constraint, frags map[string][]constraint, parts []string) bool {
+// chainState: a fragment and how many parts are consumed on entry. One that
+// has failed is not walked again - two mounts of the same fragment at the same
+// depth used to be walked both, which is 2^depth on a chain that ends unknown.
+type chainState struct {
+	set string
+	at  int
+}
+
+func chainPartsLegal(cons []constraint, set string, frags map[string][]constraint, parts []string, at int, dead map[chainState]bool) bool {
+	if dead[chainState{set, at}] {
+		return false
+	}
+	rest := parts[at:]
 	for i := range cons {
 		c := &cons[i]
 		n := len(c.segs)
-		k := len(parts)
+		k := len(rest)
 		if n < k {
 			k = n
 		}
 		matched := true
 		for j := 0; j < k; j++ {
-			if !c.segs[j].star && c.segs[j].name != parts[j] {
+			if !c.segs[j].star && c.segs[j].name != rest[j] {
 				matched = false
 				break
 			}
@@ -7507,15 +7600,16 @@ func chainPartsLegal(cons []constraint, frags map[string][]constraint, parts []s
 		if !matched {
 			continue
 		}
-		if len(parts) <= n {
+		if len(rest) <= n {
 			return true
 		}
 		if c.inherits != "" {
-			if fcs, ok := frags[c.inherits]; ok && chainPartsLegal(fcs, frags, parts[n:]) {
+			if fcs, ok := frags[c.inherits]; ok && chainPartsLegal(fcs, c.inherits, frags, parts, at+n, dead) {
 				return true
 			}
 		}
 	}
+	dead[chainState{set, at}] = true
 	return false
 }
 

@@ -403,31 +403,51 @@ func askedFor(argv []string) string {
 }
 
 // splitSet: PATH=VALUE at the first `=` outside quotes and brackets, so a
-// selector holding one (`x[a=b].c=1`) still addresses its instance.
+// selector holding one (`x[a=b].c=1`) still addresses its instance. A quote
+// opens only where the path scanner opens one - a segment's or a selector
+// body's first char - so `srv[O'Brien].port=8080` splits at its `=`, and a
+// bare selector body runs to the first `]`.
 func splitSet(arg string) (string, string, bool) {
 	var inQuote byte
-	depth := 0
+	inSel := false
+	atStart := true
 	for i := 0; i < len(arg); i++ {
 		b := arg[i]
-		if b == '\\' {
-			i++
+		if inQuote != 0 {
+			if b == '\\' {
+				i++
+			} else if b == inQuote {
+				inQuote = 0
+			}
 			continue
 		}
-		switch {
-		case inQuote != 0 && b == inQuote:
-			inQuote = 0
-		case inQuote != 0:
-		case b == '"' || b == '\'':
-			inQuote = b
-		case b == '[':
-			depth++
-		case b == ']':
-			if depth > 0 {
-				depth--
-			}
-		case b == '=' && depth == 0:
-			return arg[:i], arg[i+1:], true
+		if b == ' ' || b == '\t' {
+			continue
 		}
+		if inSel {
+			if b == ']' {
+				inSel = false
+			} else if atStart && (b == '"' || b == '\'') {
+				inQuote = b
+			}
+		} else {
+			switch b {
+			case '"', '\'':
+				if atStart {
+					inQuote = b
+				}
+			case '[':
+				inSel = true
+				atStart = true
+				continue
+			case '.':
+				atStart = true
+				continue
+			case '=':
+				return arg[:i], arg[i+1:], true
+			}
+		}
+		atStart = false
 	}
 	return "", "", false
 }

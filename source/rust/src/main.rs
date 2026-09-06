@@ -365,29 +365,56 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 }
 
 /// PATH=VALUE at the first `=` outside quotes and brackets, so a selector
-/// holding one (`x[a=b].c=1`) still addresses its instance.
+/// holding one (`x[a=b].c=1`) still addresses its instance. A quote opens
+/// only where the path scanner opens one - a segment's or a selector body's
+/// first char - so `srv[O'Brien].port=8080` splits at its `=`, and a bare
+/// selector body runs to the first `]`.
 fn split_set(arg: &str) -> Option<(&str, &str)> {
 	let bytes = arg.as_bytes();
 	let mut in_quote: Option<u8> = None;
-	let mut depth = 0usize;
+	let mut in_sel = false;
+	let mut at_start = true;
 	let mut i = 0;
 	while i < bytes.len() {
 		let b = bytes[i];
-		if b == b'\\' {
-			i += 2;
+		if let Some(q) = in_quote {
+			if b == b'\\' {
+				i += 1;
+			} else if b == q {
+				in_quote = None;
+			}
+			i += 1;
 			continue;
 		}
-		match in_quote {
-			Some(q) if b == q => in_quote = None,
-			Some(_) => {}
-			None => match b {
-				b'"' | b'\'' => in_quote = Some(b),
-				b'[' => depth += 1,
-				b']' => depth = depth.saturating_sub(1),
-				b'=' if depth == 0 => return Some((&arg[..i], &arg[i + 1..])),
-				_ => {}
-			},
+		if b == b' ' || b == b'\t' {
+			i += 1;
+			continue;
 		}
+		if in_sel {
+			if b == b']' {
+				in_sel = false;
+			} else if at_start && (b == b'"' || b == b'\'') {
+				in_quote = Some(b);
+			}
+		} else {
+			match b {
+				b'"' | b'\'' if at_start => in_quote = Some(b),
+				b'[' => {
+					in_sel = true;
+					at_start = true;
+					i += 1;
+					continue;
+				}
+				b'.' => {
+					at_start = true;
+					i += 1;
+					continue;
+				}
+				b'=' => return Some((&arg[..i], &arg[i + 1..])),
+				_ => {}
+			}
+		}
+		at_start = false;
 		i += 1;
 	}
 	None
