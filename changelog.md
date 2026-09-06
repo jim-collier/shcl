@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `init` lays the generated lines out in tree order: a path's parent comes before its children and siblings keep the schema's order, where the lines used to follow the schema's order alone. A schema listing `a.host.srv` before `a` used to generate `a: x` after another field, re-opening `a`, and the starter config hinted `H002` on its own first lines. A schema already written in tree order generates the same text as before.
+
 - A `min` above its `max` is a schema fault. The range admits nothing, so every value drew both a below-min and an above-max error and the config looked wrong when the schema was. The range is dropped and reported once, at the `max` line; the field keeps its other constraints.
 
 - A `datetime` `allowed` set compares the moment, not the spelling. `allowed: 12:00:00Z` refused a config saying `12:00:00+00:00`, and `12:00:00` refused `12:00:00.0`, because the value mirrors what was written and the comparison was field by field. A value with no zone is still local and still matches no zoned one - that is the one spelling difference that is a real difference.

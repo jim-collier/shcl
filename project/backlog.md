@@ -134,10 +134,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260905-142300
 		- Closed: 20260905-193849
 
-	- 🔘 Item 9: `init` output can carry `H002` hints of its own.
+	- ✅ Item 9: `init` output can carry `H002` hints of its own.
 		- Reproduced: a schema whose fragment mounts under a field generates `opt.srv:` and then `opt.srv.a:` as separate flat lines, so the second re-opens `opt` and the load hints `H002`. The spec promises generated output "loads with no error diagnostics", which holds - a hint is not an error - but a starter config that hints on its own first line trains a reader to ignore hints.
 		- Note: the flat dotted form is deliberate and `reopen:` is the declared way to disavow the hint, so the fix is probably a `reopen` on what generation re-opens rather than a change of shape.
+		- Fixed: the generator lays its blocks out in tree order in all four bindings - every path prefix ranked by first appearance, a parent before its children, siblings in schema order - so a parent listed after its child is never re-opened behind another field. A schema already in tree order generates the same text; corpus `026`'s golden regrouped its `server` lines. Not `reopen`: that key disavows the hint under validation and does nothing for the file loaded on its own.
+		- Pinned by: corpus `110-init-tree-order` (the shape from the review, a parent listed after its child with a field between), and every runner now requires a generated starter to load with no diagnostics at all, hints included, where it used to allow anything short of an error.
 		- Opened: 20260905-142400
+		- Closed: 20260905-194914
 
 - Code review 20260904:
 

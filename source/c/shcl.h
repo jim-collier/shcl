@@ -6709,7 +6709,11 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	   hash hit, so the scan stays cheap at the field cap. */
 	ShclVecS emitted = {0, 0, 0};
 	uint64_t *emitted_hash = (uint64_t *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *emitted_hash);
-	int first = 1;
+	/* One block per generated line - its desc, annotation and binding - and the
+	   constraint it came from, so the blocks can be laid out in tree order
+	   below. */
+	ShclVecS block_text = {0, 0, 0};
+	ShclVecSize block_cons = {0, 0, 0};
 	for (size_t i = 0; i < cons.len; i++) {
 		ShclVCons *c = &cons.data[i];
 		ShclStr tyname;
@@ -6736,25 +6740,80 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		if (dup) continue;
 		emitted_hash[emitted.len] = ph;
 		ShclVecS_push(a, &emitted, path);
-		if (!first) sb_putc(a, &out, '\n');
-		first = 0;
+		ShclSB blk = {0};
 		if (c->has_desc) {
 			size_t start = 0;
 			for (size_t k = 0; k <= c->desc.n; k++) {
 				if (k == c->desc.n || c->desc.p[k] == '\n') {
-					sb_puts(a, &out, "# ");
-					ShclStr ln; ln.p = c->desc.p + start; ln.n = k - start; sb_putS(a, &out, ln);
-					sb_putc(a, &out, '\n');
+					sb_puts(a, &blk, "# ");
+					ShclStr ln; ln.p = c->desc.p + start; ln.n = k - start; sb_putS(a, &blk, ln);
+					sb_putc(a, &blk, '\n');
 					start = k + 1;
 				}
 			}
 		}
-		sb_puts(a, &out, "# "); sb_putS(a, &out, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &out, '\n');
-		if (!g_must_exist(c)) sb_putc(a, &out, '#');
-		sb_putS(a, &out, path);
-		if (c->has_default) { sb_puts(a, &out, ": "); sb_putS(a, &out, g_default_text(a, c->default_text)); }
-		else sb_putc(a, &out, ':');
-		sb_putc(a, &out, '\n');
+		sb_puts(a, &blk, "# "); sb_putS(a, &blk, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &blk, '\n');
+		if (!g_must_exist(c)) sb_putc(a, &blk, '#');
+		sb_putS(a, &blk, path);
+		if (c->has_default) { sb_puts(a, &blk, ": "); sb_putS(a, &blk, g_default_text(a, c->default_text)); }
+		else sb_putc(a, &blk, ':');
+		sb_putc(a, &blk, '\n');
+		ShclVecS_push(a, &block_text, sb_S(&blk));
+		ShclVecSize_push(a, &block_cons, i);
+	}
+	/* Tree order, first appearance first. A schema may list a.host.srv before
+	   a, and emitted as listed with another field between them, `a: x` re-opens
+	   a and the load hints it (H002) - in the one file meant to show the format
+	   at its cleanest. Every prefix is ranked by where it first appears (a hash
+	   of its length-prefixed names stands for the prefix), so a parent's block
+	   comes before its children's, siblings keep schema order, and a schema
+	   already in tree order is unchanged. A parent's key is a prefix of its
+	   children's and a shorter key sorts first; the merge sort is stable, so
+	   two blocks on one path keep their order. */
+	size_t nblk = block_text.len, total = 0;
+	for (size_t b = 0; b < nblk; b++) total += cons.data[block_cons.data[b]].segs.len;
+	size_t *keys = (size_t *)arena_alloc(a, (total ? total : 1) * sizeof *keys);
+	size_t *key_at = (size_t *)arena_alloc(a, (nblk + 1) * sizeof *key_at);
+	ShclCMap rank = {0, 0, 0};
+	size_t pos = 0;
+	for (size_t b = 0; b < nblk; b++) {
+		const ShclVecSeg *segs = &cons.data[block_cons.data[b]].segs;
+		key_at[b] = pos;
+		uint64_t h = 1469598103934665603ull;
+		for (size_t k = 0; k < segs->len; k++) {
+			h = fnv_str(fnv_dec(h, segs->data[k].name.n), segs->data[k].name);
+			ShclCMapEnt *e = cmap_first(&rank, h);
+			size_t r = e ? e->val : rank.len;
+			if (!e) cmap_put(a, &rank, h, r);
+			keys[pos++] = r;
+		}
+	}
+	key_at[nblk] = pos;
+	size_t *order = (size_t *)arena_alloc(a, (nblk ? nblk : 1) * sizeof *order);
+	size_t *merged = (size_t *)arena_alloc(a, (nblk ? nblk : 1) * sizeof *merged);
+	for (size_t b = 0; b < nblk; b++) order[b] = b;
+	for (size_t width = 1; width < nblk; width *= 2) {
+		for (size_t lo = 0; lo < nblk; lo += 2 * width) {
+			size_t mid = lo + width < nblk ? lo + width : nblk, hi = lo + 2 * width < nblk ? lo + 2 * width : nblk;
+			size_t i = lo, j = mid, o = lo;
+			while (i < mid && j < hi) {
+				size_t x = order[i], y = order[j], xs = key_at[x], ys = key_at[y];
+				int le = 1;
+				for (;; xs++, ys++) {
+					if (xs == key_at[x + 1]) break;              // x is a prefix of y, or equal
+					if (ys == key_at[y + 1]) { le = 0; break; }  // y is a proper prefix of x
+					if (keys[xs] != keys[ys]) { le = keys[xs] < keys[ys]; break; }
+				}
+				if (le) merged[o++] = order[i++]; else merged[o++] = order[j++];
+			}
+			while (i < mid) merged[o++] = order[i++];
+			while (j < hi) merged[o++] = order[j++];
+		}
+		memcpy(order, merged, nblk * sizeof *order);
+	}
+	for (size_t n = 0; n < nblk; n++) {
+		if (n) sb_putc(a, &out, '\n');
+		sb_putS(a, &out, block_text.data[order[n]]);
 	}
 	// Cycle-cut mounts last: their "type" column names the fragment that
 	// belongs at the path.
@@ -6763,7 +6822,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		ShclVecS_push(a, &wild_type, cut_frag.data[i]);
 	}
 	if (wild_path.len) {
-		if (!first) sb_putc(a, &out, '\n');
+		if (nblk) sb_putc(a, &out, '\n');
 		sb_puts(a, &out, "# Paths needing an instance name (not generated):\n");
 		for (size_t i = 0; i < wild_path.len; i++) {
 			sb_puts(a, &out, "#   "); sb_putS(a, &out, wild_path.data[i]);

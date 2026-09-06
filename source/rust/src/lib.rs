@@ -6419,12 +6419,13 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			),
 		}]);
 	}
-	let mut out = String::new();
 	let mut wild: Vec<(String, String)> = Vec::new();
 	// Dropping a trailing `[*]` can render the same line a concrete sibling
 	// already wrote; the first spelling wins.
 	let mut emitted: HashSet<String> = HashSet::new();
-	let mut first = true;
+	// One block per generated line - its desc, annotation and binding - with
+	// the path's names, so the blocks can be laid out in tree order below.
+	let mut blocks: Vec<(Vec<String>, String)> = Vec::new();
 	for (i, c) in cons.iter().enumerate() {
 		let tyname = c.ty.clone().unwrap_or_else(|| "any".to_string());
 		if unwritable(c) || (has_wild(c) && !fill[i]) {
@@ -6450,33 +6451,61 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		if !emitted.insert(path.clone()) {
 			continue;
 		}
-		if !first {
-			out.push('\n');
-		}
-		first = false;
+		let mut block = String::new();
 		if let Some(d) = &c.desc {
 			for line in d.split('\n') {
-				out.push_str("# ");
-				out.push_str(line);
-				out.push('\n');
+				block.push_str("# ");
+				block.push_str(line);
+				block.push('\n');
 			}
 		}
-		out.push_str("# ");
+		block.push_str("# ");
 		// The annotation is a comment: a newline smuggled in via an allowed
 		// string value must not break out of it.
-		out.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
-		out.push('\n');
+		block.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
+		block.push('\n');
 		let prefix = if must_exist(c) { "" } else { "#" };
 		match &c.default_text {
-			Some(v) => out.push_str(&format!("{}{}: {}\n", prefix, path, gen_default_text(v))),
-			None => out.push_str(&format!("{}{}:\n", prefix, path)),
+			Some(v) => block.push_str(&format!("{}{}: {}\n", prefix, path, gen_default_text(v))),
+			None => block.push_str(&format!("{}{}:\n", prefix, path)),
 		}
+		let names: Vec<String> = names_of(&c.segs).iter().map(|s| s.to_string()).collect();
+		blocks.push((names, block));
+	}
+	// Tree order, first appearance first. A schema may list `a.host.srv`
+	// before `a`, and emitted as listed with another field between them,
+	// `a: x` re-opens `a` and the load hints it (H002) - in the one file meant
+	// to show the format at its cleanest. Every prefix is ranked by where it
+	// first appears, so a parent's block comes before its children's, siblings
+	// keep schema order, and a schema already in tree order is unchanged.
+	let mut rank: HashMap<&[String], usize> = HashMap::new();
+	for (names, _) in &blocks {
+		for k in 1..=names.len() {
+			let next = rank.len();
+			rank.entry(&names[..k]).or_insert(next);
+		}
+	}
+	// A parent's key is a prefix of its children's, and a shorter key sorts
+	// first; the sort is stable, so two blocks on one path keep their order.
+	let mut order: Vec<usize> = (0..blocks.len()).collect();
+	order.sort_by_cached_key(|&i| {
+		let names = &blocks[i].0;
+		(1..=names.len())
+			.map(|k| rank[&names[..k]])
+			.collect::<Vec<usize>>()
+	});
+	let mut out = String::new();
+	for (n, &i) in order.iter().enumerate() {
+		if n > 0 {
+			out.push('\n');
+		}
+		out.push_str(&blocks[i].1);
 	}
 	// Cycle-cut mounts last: their "type" column names the fragment that
 	// belongs at the path.
 	wild.extend(cuts);
 	if !wild.is_empty() {
-		if !first {
+		if !blocks.is_empty() {
 			out.push('\n');
 		}
 		out.push_str("# Paths needing an instance name (not generated):\n");

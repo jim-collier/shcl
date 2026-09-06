@@ -2,21 +2,21 @@
 # int, 1-65535, required
 server.port: 8080
 
-# Log verbosity.
-# string, one of: debug, info, warn
-#log.level: info
-
 # Request timeout in seconds.
 # float, >= 0.5
 #server.timeout:
 
-# Enabled feature flags.
-# string-array
-#features:
-
 # Hostname per server.
 # string, required
 server.host:
+
+# Log verbosity.
+# string, one of: debug, info, warn
+#log.level: info
+
+# Enabled feature flags.
+# string-array
+#features:
 
 # int, repeat 1-5
 replicas:

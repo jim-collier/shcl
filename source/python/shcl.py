@@ -5419,7 +5419,9 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# Dropping a trailing `[*]` can render the same line a concrete sibling
 	# already wrote; the first spelling wins.
 	emitted = set()
-	first = True
+	# One block per generated line - its desc, annotation and binding - with
+	# the path's names, so the blocks can be laid out in tree order below.
+	blocks = []
 	for i, c in enumerate(cons):
 		tyname = c.ty if c.ty is not None else "any"
 		if unwritable(c) or (has_wild(c) and not fill[i]):
@@ -5441,25 +5443,41 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		if path in emitted:
 			continue
 		emitted.add(path)
-		if not first:
-			out.append("\n")
-		first = False
+		block = []
 		if c.desc is not None:
 			for line in c.desc.split("\n"):
-				out.append("# " + line + "\n")
+				block.append("# " + line + "\n")
 		# The annotation is a comment: a newline smuggled in via an allowed
 		# string value must not break out of it.
-		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
+		block.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
 		prefix = "" if must_exist(c) else "#"
 		if c.default_text is not None:
-			out.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
+			block.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
 		else:
-			out.append(f"{prefix}{path}:\n")
+			block.append(f"{prefix}{path}:\n")
+		blocks.append((tuple(names_of(c.segs)), "".join(block)))
+	# Tree order, first appearance first. A schema may list `a.host.srv`
+	# before `a`, and emitted as listed with another field between them,
+	# `a: x` re-opens `a` and the load hints it (H002) - in the one file meant
+	# to show the format at its cleanest. Every prefix is ranked by where it
+	# first appears, so a parent's block comes before its children's, siblings
+	# keep schema order, and a schema already in tree order is unchanged.
+	rank: dict[tuple[str, ...], int] = {}
+	for names, _ in blocks:
+		for k in range(1, len(names) + 1):
+			rank.setdefault(names[:k], len(rank))
+	# A parent's key is a prefix of its children's, and a shorter key sorts
+	# first; the sort is stable, so two blocks on one path keep their order.
+	blocks.sort(key=lambda b: tuple(rank[b[0][:k]] for k in range(1, len(b[0]) + 1)))
+	for n, (_, text) in enumerate(blocks):
+		if n > 0:
+			out.append("\n")
+		out.append(text)
 	# Cycle-cut mounts last: their "type" column names the fragment that
 	# belongs at the path.
 	wild.extend(cuts)
 	if wild:
-		if not first:
+		if blocks:
 			out.append("\n")
 		out.append("# Paths needing an instance name (not generated):\n")
 		for path, tyname in wild:

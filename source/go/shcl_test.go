@@ -1636,12 +1636,12 @@ func TestInitGenerationMatchesExpected(t *testing.T) {
 		if !strings.Contains(got[len(bare):], "This config file format is SHCL.") {
 			t.Errorf("%s: default init output is missing the format footer", c.name)
 		}
+		// Valid SHCL, and not so much as a hint: a starter that hints on its own
+		// first lines (H002 from a parent re-opened after another field) teaches
+		// a reader to ignore them.
 		doc := Parse(got)
-		for _, d := range doc.Diagnostics() {
-			if d.Severity == SeverityError {
-				t.Errorf("%s: generated starter does not load cleanly", c.name)
-				break
-			}
+		if len(doc.Diagnostics()) > 0 {
+			t.Errorf("%s: generated starter does not load cleanly: %v", c.name, doc.Diagnostics())
 		}
 		// And it must satisfy the very schema that produced it - case 026's
 		// golden once failed its own schema (repeat lower bound and a
