@@ -127,10 +127,12 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260905-142200
 		- Closed: 20260905-193823
 
-	- 🔘 Item 8: an unterminated quote recovers two ways depending on which half of the line it is in.
+	- 🚫 Item 8: an unterminated quote recovers two ways depending on which half of the line it is in.
 		- A value keeps the piece literally and says `E017`, so `a: 'open` loads and reads back as `'open`. A selector body throws the whole line away with `E014 empty selector`, so `a['open]: 1` binds nothing. `grammar.abnf` reads a bare selector as "any char but `]`", which would make `'open` an ordinary discriminator.
 		- Note: a call to make rather than a rule broken. The value side's answer is the more forgiving one and matches the never-bail philosophy.
+		- Declined: nothing is lost either way. The `E014` line is kept verbatim as trivia, `fmt --write` writes it back unchanged at exit 0 and the lost count stays 0, so the only difference from the value side is that no node is bound for a line no legal document has. Keeping the quote as text would need a second scan rule in the path scanner, the name-half scan and the CLI's split, in every binding, which is the shape that has cost this project two regressions this week. The grammar's `bare-sel` is read with `quoted` tried first, as the rule order says.
 		- Opened: 20260905-142300
+		- Closed: 20260905-193849
 
 	- 🔘 Item 9: `init` output can carry `H002` hints of its own.
 		- Reproduced: a schema whose fragment mounts under a field generates `opt.srv:` and then `opt.srv.a:` as separate flat lines, so the second re-opens `opt` and the load hints `H002`. The spec promises generated output "loads with no error diagnostics", which holds - a hint is not an error - but a starter config that hints on its own first line trains a reader to ignore hints.
