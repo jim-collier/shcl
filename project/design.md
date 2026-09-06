@@ -102,7 +102,7 @@ Other points
 	- Escapes are processed inside double quotes only. Single quotes are literal and bare text never processes a backslash, which is TOML's and YAML's rule.
 	- `#` opens a comment only when first on the line or preceded by a space or tab, YAML's rule. A fence line can carry a trailing comment again in both spellings.
 	- The trailing carriage-return run comes off every line at load, raw bodies included, and a CR is special nowhere else.
-	- The cost, said once: a bare `\n` or `\t` and a single-quoted escape change meaning. The last 2.x formatter migrates a file in one pass, and a 2.x reader is unaffected by the migrated file.
+	- The cost, said once: a bare `\n` or `\t` and a single-quoted escape change meaning. A `migrate` command in 3.0 rewrites a file in one pass, and a 2.x reader is unaffected by the migrated file. There is no 2.1.0; everything since 2.0.0 goes out in 3.0.0.
 
 The itemized decisions are recorded in this file as they are made; `spec.md` is their normative form.
 
