@@ -98,6 +98,9 @@ printf 'field: a\n\ttype: int\n\trequired: yes\nfield: b\n\ttype: nope\n' > "${t
 ## An instance whose discriminator holds an '=', which is what made --set's own
 ## split ambiguous.
 printf 'x[a=b]:\n\tc: 0\n' > "${tmpDir}/sel.shcl"
+## An instance whose discriminator holds an apostrophe: ordinary text in a bare
+## selector, which the split used to read as an open quote.
+printf "srv[O'Brien]:\n\tport: 0\n" > "${tmpDir}/quote.shcl"
 ## A name a path cannot hold bare, for the traversal commands: enumerating keys
 ## is only useful if what comes back can be read straight back.
 printf 'db:\n\thost: h\n\t"odd.key": 2\nweb:\n\tport: 1\n' > "${tmpDir}/tree.shcl"
@@ -114,9 +117,9 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	one past the generation field ceiling, %S7% a schema whose own load hints,
 ##	%S8% a raw default, %S9% a desc with a comma, %N% a file in a directory that
 ##	takes no temp file, %R%/%SA% a raw block and a schema that refuses it, %X% an
-##	instance whose discriminator holds an '=', %T% a document with a name that
-##	needs quoting in a path, %F2% a two-key file for the edit options, %M% a
-##	path with no file at it.
+##	instance whose discriminator holds an '=', %Q% one whose discriminator holds
+##	an apostrophe, %T% a document with a name that needs quoting in a path,
+##	%F2% a two-key file for the edit options, %M% a path with no file at it.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
@@ -182,6 +185,13 @@ rows=(
 	## 20260829 item 6: --set split PATH from VALUE at the first '=' anywhere, so
 	## a selector holding one could not be addressed at all.
 	'set-eq-in-selector|set --set=x[a=b].c=1 %X%|-|0|x: a=b\n\tc: 1\n|-'
+	## 20260905 item 3: a quote anywhere in the path was read as opening a quoted
+	## piece, so an apostrophe in a bare selector left every later '=' looking
+	## quoted and the option was refused while get on the same path worked.
+	"set-quote-in-selector|set --set=srv[O'Brien].port=9 %Q%|-|0|srv: \"O'Brien\"\n\tport: 9\n|-"
+	"set-default-quote-in-selector|set --set-default=srv[O'Brien].port=9 %Q%|-|0|srv: \"O'Brien\"\n\tport: 0\n|-"
+	"set-quoted-selector-eq|set --set=x[\"k]=v\"].d=2 %X%|-|0|x: a=b\n\tc: 0\n\nx: \"k]=v\"\n\td: 2\n|-"
+	"set-open-quote-refused|set --set=a[\"open=1 %X%|-|1|-|bad --set value"
 	## 20260830b item 18: a read below strict returned the value and said nothing
 	## about a line the load had dropped, so a damaged file read clean at exit 0.
 	'get-diags|get %B% a|-|0|1|E015 missing colon'
@@ -282,6 +292,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%R%/${tmpDir}/rawval.shcl}"
 	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
+	argv="${argv//%Q%/${tmpDir}/quote.shcl}"
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
 	argv="${argv//%M%/${tmpDir}/not-there.shcl}"

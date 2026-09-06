@@ -1007,27 +1007,41 @@ static ShclStr value_display(ShclArena *a, const ShclValue *v) {
 
 // How the name half of a field line ends.
 enum { NAME_END, NAME_COLON, NAME_HASH };
-/* Scan a field line's name half the way the path scanner reads it: a quote
-   opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
-   selector, and with `sugar` a colon followed by `[` is selector sugar rather
-   than the separator. A backslash shields the next char. *at gets the byte
-   offset it ended at. */
+/* Scan a field line's name half the way the path scanner reads it. A quote
+   opens only where the scanner opens one - as a segment's first char (a quoted
+   name) or a selector body's first char (a quoted discriminator) - so O'Brien
+   in a bare selector is text, not an open quote hiding the `#` after it. A
+   backslash shields the next char inside quotes only; a bare selector body
+   runs to the first `]` unescaped, as it does in the scanner. With `sugar` a
+   colon followed by `[` is selector sugar rather than the separator. An
+   unquoted `#` ends the half wherever it sits: a comment, or a malformed name.
+   *at gets the byte offset it ended at. */
 static int name_half(ShclStr s, int sugar, size_t *at) {
-	uint32_t inq = 0; int in_sel = 0; size_t i = 0;
+	uint32_t inq = 0; int in_sel = 0, at_start = 1; size_t i = 0;
 	*at = 0;
 	while (i < s.n) {
 		uint32_t c; size_t l = utf8_decode(s.p, s.n, i, &c);
-		if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
-		if (inq) { if (c == inq) inq = 0; }
-		else if (c == '"' || c == '\'') inq = c;
-		else if (c == '#') { *at = i; return NAME_HASH; }
-		else if (c == '[') in_sel = 1;
-		else if (c == ']') in_sel = 0;
-		else if (c == ':' && !in_sel) {
+		if (inq) {
+			if (c == '\\') { i += l; if (i < s.n) { uint32_t d; i += utf8_decode(s.p, s.n, i, &d); } continue; }
+			if (c == inq) inq = 0;
+			i += l; continue;
+		}
+		if (is_wsp(c)) { i += l; continue; }
+		if (c == '#') { *at = i; return NAME_HASH; }
+		if (in_sel) {
+			if (c == ']') in_sel = 0;
+			else if (at_start && (c == '"' || c == '\'')) inq = c;
+			at_start = 0; i += l; continue;
+		}
+		if ((c == '"' || c == '\'') && at_start) inq = c;
+		else if (c == '[') { in_sel = 1; at_start = 1; i += l; continue; }
+		else if (c == '.') { at_start = 1; i += l; continue; }
+		else if (c == ':') {
 			size_t r = i + 1;
 			while (r < s.n && (s.p[r] == ' ' || s.p[r] == '\t')) r++;
 			if (!(sugar && r < s.n && s.p[r] == '[')) { *at = i; return NAME_COLON; }
 		}
+		at_start = 0;
 		i += l;
 	}
 	return NAME_END;
