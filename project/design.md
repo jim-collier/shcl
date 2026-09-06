@@ -251,7 +251,7 @@ Both open points are settled:
 
 - Naming: `use` was rejected as overloaded English (verb-directive or "purpose"); `parent` collides with the parent/child vocabulary of a nesting language; `inherits` reads as a single plain word beside `type`/`required`/`allowed` and is accurate - the mount inherits the fragment's fields and can add its own.
 
-- Design properties worth keeping true: expansion is demand-driven (a mount is followed only where the document has nodes), so recursion has no depth limit, needs no cycle detection, and costs document-proportional time and memory; the generator is the one place expansion could run away, and it cuts exactly where a fragment would re-enter itself.
+- Design properties worth keeping true: expansion is demand-driven (a mount is followed only where the document has nodes), so recursion has no depth limit, needs no cycle detection, and costs document-proportional time and memory; the generator is the one place expansion could run away, and it cuts exactly where a fragment would re-enter itself. Two places had to be taught not to walk the same mount twice: the mount evaluation, where two constraint paths matching one node both mount the same fragment, and the unknown-field sweep's chain matcher, where a fragment mounted by two paths offers two ways to consume the same chain. Each remembers the (fragment, depth) states it has finished, so a chain that ends unknown costs the schema's size per level rather than doubling per level.
 
 - Suggestions do not descend mounts, same rationale as below stars.
 

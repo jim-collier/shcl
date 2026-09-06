@@ -5514,8 +5514,18 @@ static int star_legal(const ShclVecSeg *pats, size_t npats, ShclStr chain) {
 // Chain legality through fragment mounts: the general matcher - element-wise
 // like star_legal (stars wild, prefixes legal), and when a mount's whole path
 // matched with chain left over, the remainder is retried against the mounted
-// fragment's fields. Terminates: every descent consumes >= 1 part.
-static int chain_parts_legal(const ShclVecVCons *cons, const ShclVSchemaDef *def, ShclStr chain, size_t from) {
+// fragment's fields. Terminates: every descent consumes >= 1 part. A state is
+// (fragment, parts consumed), one byte each in `dead` - row 0 the top-level
+// constraints, row k+1 fragment k - and one that has failed is not walked
+// again: two mounts of the same fragment at the same depth used to be walked
+// both, which is 2^depth on a chain that ends unknown.
+static size_t v_frag_index(const ShclVSchemaDef *def, ShclStr name) {
+	for (size_t i = 0; i < def->frags.len; i++)
+		if (s_eq(def->frags.data[i].name, name)) return i;
+	return SIZE_MAX;
+}
+static int chain_parts_legal(const ShclVecVCons *cons, size_t set, const ShclVSchemaDef *def, ShclStr chain, size_t from, size_t at, size_t nparts, unsigned char *dead) {
+	if (dead[set * (nparts + 1) + at]) return 0;
 	for (size_t ci = 0; ci < cons->len; ci++) {
 		const ShclVCons *c = &cons->data[ci];
 		size_t n = c->segs.len;
@@ -5532,14 +5542,21 @@ static int chain_parts_legal(const ShclVecVCons *cons, const ShclVSchemaDef *def
 		if (!match) continue;
 		if (part <= n) return 1; // a prefix of a legal path
 		if (c->inherits.n) {
-			const ShclVecVCons *fcs = v_frag_get(def, c->inherits);
-			if (fcs && chain_parts_legal(fcs, def, chain, rem)) return 1;
+			size_t fi = v_frag_index(def, c->inherits);
+			if (fi != SIZE_MAX && chain_parts_legal(&def->frags.data[fi].fields, fi + 1, def, chain, rem, at + n, nparts, dead)) return 1;
 		}
 	}
+	dead[set * (nparts + 1) + at] = 1;
 	return 0;
 }
-static int chain_legal(const ShclVSchemaDef *def, ShclStr chain) {
-	return chain_parts_legal(&def->cons, def, chain, 0);
+static int chain_legal(ShclArena *tmp, const ShclVSchemaDef *def, ShclStr chain) {
+	size_t nparts = 0, i = 0;
+	ShclStr nm;
+	while (chain_next(chain, &i, &nm)) nparts++;
+	size_t cells = (def->frags.len + 1) * (nparts + 1);
+	unsigned char *dead = (unsigned char *)arena_alloc(tmp, cells);
+	memset(dead, 0, cells);
+	return chain_parts_legal(&def->cons, 0, def, chain, 0, 0, nparts, dead);
 }
 
 // Unknown-field sweep: a schema path legalizes its name chain and every prefix
@@ -5623,7 +5640,7 @@ static void v_unknown(ShclArena *a, ShclArena *tmp, shcl_doc *d, const ShclVSche
 			for (ShclCMapEnt *e = cmap_first(&legal, hc); e; e = cmap_next(e, hc))
 				if (s_eq(legal_chains.data[e->val], chain)) { found = 1; break; }
 		}
-		if (!found && !star_legal(star_pats, nstar, chain) && !(has_mounts && chain_legal(def, chain))) {
+		if (!found && !star_legal(star_pats, nstar, chain) && !(has_mounts && chain_legal(tmp, def, chain))) {
 			ShclSB msg = {0, 0, 0};
 			sb_puts(a, &msg, "unknown field '"); sb_putS(a, &msg, shown); sb_puts(a, &msg, "'");
 			size_t sg = (size_t)-1;
