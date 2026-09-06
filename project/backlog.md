@@ -119,10 +119,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260905-142100
 		- Closed: 20260905-193735
 
-	- 🔘 Item 7: `grammar.abnf` lists `#` as a legal selector character and the spec says it opens a comment.
+	- ✅ Item 7: `grammar.abnf` lists `#` as a legal selector character and the spec says it opens a comment.
 		- The `sel-char` range is "any char but `]`", which includes `#`, and its note names quotes and non-ASCII as passing through verbatim without mentioning `#`. The spec's `E003` row says the opposite and describes the real behavior: "the `#` opens a comment before the selector is read". `a[x#y].b: 1` is `E014`.
 		- Note: worth settling alongside item 2, since both are about how far a bare selector body runs.
+		- Fixed: the grammar. `sel-char` excludes `#` and its note says an unquoted `#` opens a comment wherever it sits, a bare selector included, which is what the spec's `E003` row and every binding already did. Settled with item 2: a bare selector runs to the first `]`, quotes mid-text are text, and `#` is the one character that ends it early.
+		- Pinned by: corpus `109-hash-in-selector` - `a[x#y].b: 1` and `b[#5].c: x` are `E014`, retained, lost 0.
 		- Opened: 20260905-142200
+		- Closed: 20260905-193823
 
 	- 🔘 Item 8: an unterminated quote recovers two ways depending on which half of the line it is in.
 		- A value keeps the piece literally and says `E017`, so `a: 'open` loads and reads back as `'open`. A selector body throws the whole line away with `E014 empty selector`, so `a['open]: 1` binds nothing. `grammar.abnf` reads a bare selector as "any char but `]`", which would make `'open` an ordinary discriminator.
