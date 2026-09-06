@@ -1,0 +1,5 @@
+query	type	expected	status
+-	load	ok	-
+a	string	-	NotFound
+ok	int	2	Good
+-	lost	0	-

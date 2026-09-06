@@ -57,11 +57,14 @@ index-sel       = "#" [ "+" ] 1*DIGIT         ; explicit index
                 ; "-" is not an index sign - [-1] is a value selector.
 value-sel       = quoted / bare-sel           ; non-numeric bare, or quoted (forces value)
 bare-sel        = 1*sel-char
-sel-char        = %x00-09 / %x0B-5C / %x5E-10FFFF
-                ; any char but "]" - a bare selector's scan runs to the first
-                ; "]", so ".", quotes mid-text, and non-ASCII all pass through
-                ; verbatim (base[St.Paul].p resolves). To embed a "]" itself,
-                ; quote the discriminator: base["a]b"].
+sel-char        = %x00-09 / %x0B-22 / %x24-5C / %x5E-10FFFF
+                ; any char but "]" and "#" - a bare selector's scan runs to the
+                ; first "]", so ".", quotes mid-text (base[O'Brien]), and
+                ; non-ASCII all pass through verbatim (base[St.Paul].p
+                ; resolves). An unquoted "#" opens a comment wherever it sits
+                ; on a line, a bare selector included, which is what makes the
+                ; "[#N]" index spelling unreachable from a file. To embed a "]"
+                ; or a "#", quote the discriminator: base["a]b"].
 
 field-name      = quoted / bare-name
 bare-name       = 1*name-char
