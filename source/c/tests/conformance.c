@@ -687,10 +687,11 @@ int main(int argc, char **argv) {
 						fail(names[ci], "--no-banner output is not a prefix of the default");
 					else if (!contains(it.p + bare.n, it.n - bare.n, "This config file format is SHCL."))
 						fail(names[ci], "default init output is missing the format footer");
+					// Valid SHCL, and not so much as a hint: a starter that hints
+					// on its own first lines (H002 from a parent re-opened after
+					// another field) teaches a reader to ignore them.
 					shcl_doc *gd = shcl_parse(it.p, it.n);
-					int cln = 1;
-					for (size_t i = 0; i < shcl_diag_count(gd); i++) if (shcl_diag_severity(gd, i) == SHCL_SEV_ERROR) cln = 0;
-					if (!cln) fail(names[ci], "generated starter does not load cleanly");
+					if (shcl_diag_count(gd)) fail(names[ci], "generated starter does not load cleanly");
 					// And it must satisfy the very schema that produced it.
 					shcl_validation *gv = shcl_validate(gd, isd);
 					for (size_t i = 0; i < shcl_validation_count(gv); i++)

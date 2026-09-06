@@ -46,74 +46,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Bugs
 
-- Code review 20260905:
-
-	- A from-scratch pass, aimed first at what the 20260904 round changed and then at ground its coverage list named as unread. The parser was driven from a generator written off `grammar.abnf` rather than off the other bindings, with two oracles no earlier round has used: a legal document must load with no error diagnostics, and a line whose intended element list is known must read back as that list. Also run: fixpoint and read-preservation over 3,000 structural documents, 1,500 merge pairs, the normative strictness table in full, the raw-block indent rule against known bodies, the parse caps at library level, the windows builds of rust, go and C under wine, the two wrappers against the binary, and an A/B of every workload against the pre-round build. Five defects here, four enhancements under Features and enhancements. Every item was reproduced on this box.
-	- All five defects are shapes every binding shares, so the four-way check cannot see any of them. Three of the five are a scanner disagreeing with the path scanner about where a field line's parts begin and end, and two of those three are the quote rule specifically - the one the last round fixed in three call sites and left in two. That is the round's one structural observation: the rule was fixed per call site rather than once.
-	- The last round cost nothing measurable. Rust, Go and C are flat on parse, bulk writes, absent defaults, bulk reads, `check --schema`, merge, a 300-layer fold and `paths`, against the pre-round build at the same optimization level. Go's merge peak RSS moves about 10% run to run in both builds, which is its collector, not the round.
-
-	- 🔘 Item 1: a document written with the documented `field:[disc]` sugar cannot be saved, and fails `check`.
-		- Reproduced in all four. `base:[Boston]` on a line of its own reports `E019 bracket array syntax` and counts one lost, so `check` exits 6, a Strict load fails, and `fmt --write` and `set --write` refuse at exit 7. Nothing is lost: `--lossy` writes `base: Boston`, the reads are unchanged, and the result is the same document the no-colon spelling produces.
-		- Cause: `looks_like_bracket_array` reads the sugar colon as the field's own separator, so the selector that follows looks like bracket text. The colon-less spelling `base[Boston]` takes the `E015` repair path instead and loses nothing.
-		- Note: the spec says "the `:` before a selector is optional sugar, so `field[disc]` and `field:[disc]` are the same", and `grammar.abnf` says it again on the `segment` rule. Two spellings the documents call identical get different codes and different save outcomes.
-		- Note: half of this is a regression from 20260904 item 3. Before that fix `"a:b":[x]` and `srv[db:5432].x:[y]` were `E015` and wrote clean at exit 0; both are `E019` and refuse at exit 7 now. The bare `base:[Boston]` spelling has behaved this way since `E019` arrived.
-		- Note: corpus `089` pins `x: [a].y: [1, 2]`, which is a real bracket array after a sugar colon, so it does not cover this and does not have to change.
-		- Decision needed: `E019` cannot tell a bracket array from selector sugar, because they are spelled the same. It does not have to: count lost only where something is really dropped. A comma in the brackets changes the value's reading, a numeric or `*` body already drops the line under its own code, and `[x]` reads exactly as `x` does.
-		- Opened: 20260905-141600
-
-	- 🔘 Item 2: a quote inside a bare selector swallows the trailing comment into the value.
-		- Reproduced in all four. `srv[O'Brien].port: 8080  # main` loads with zero diagnostics and reads `port` as the string `8080  # main`, so `get --int` is `BadType` where it should be 8080. `fmt --write` leaves `port: "8080  # main"` at exit 0 with nothing lost, and that output is a fixpoint, so nothing will ever notice. `a[St."Paul].pop: 700  # why` does the same.
-		- Cause: `name_half` enters quote state on any `"` or `'`, wherever it sits, so a quote in a bare selector body hides the `#` that follows. The path scanner it is supposed to mirror opens a quoted selector only when a quote is the first non-space character after the `[`, and `grammar.abnf` says the same on `sel-char`: quotes mid-text pass through verbatim.
-		- Note: a backslash immediately before the closing `]` reaches the same place by another route. `name_half` treats `\` as an escape inside a selector and eats the `]`, so the field's own colon is skipped and the value half is then scanned by the name rules; `a[C:\].b: it's fine  # note` stores the comment in the value. The path scanner runs a bare selector to the first `]` with no escape handling, which is what the spec says ("to embed a `]` itself, quote the discriminator").
-		- Note: this is the half of 20260904 item 2 that fix did not reach. That round moved `value_comment_at`, `split_unquoted_commas` and `cell_exceeds` onto the start-of-piece rule and left `name_half` opening a quote anywhere. Sites: `lib.rs:717`, `shcl.go:1456`, `shcl.py:1132`, `shcl.h:1015`.
-		- Note: an apostrophe in a discriminator is ordinary input - `O'Brien`, `St. John's`, a windows path ending in a separator.
-		- Opened: 20260905-141700
-
-	- 🔘 Item 3: the `--set` family refuses a path the read side accepts.
-		- Reproduced in all four. `set --set="srv[O'Brien].port=8080"` exits 1 with "bad --set value (want PATH=VALUE, quotes and brackets balanced)", while `get --int f "srv[O'Brien].port"` returns the value and the same path through the tab-separated ops script writes it. `--set-literal`, `--set-default` and `--set-literal-default` refuse it too; `--remove=PATH` takes it, because it splits nothing.
-		- Cause: `split_set` opens quote state on any `"` or `'`, so an unpaired one anywhere in the path leaves every later `=` looking quoted and the split fails. Same rule as item 2, in the CLI. Sites: `main.rs:369`, `cmd/shcl/main.go:407`, `cmd/shcl/main.py:302`, `cmd/shcl/main.c:421`.
-		- Note: the help says "PATH ends at the first '=' outside quotes and brackets, so a selector may hold one", which is the contract this breaks.
-		- Opened: 20260905-141800
-
-	- 🔘 Item 4: validating a deep document against a recursive schema hangs, in the half of validation the 20260802 fix did not reach.
-		- Reproduced in all four. A four-line schema - a fragment whose `child` and `child.child` both mount it - against a 35-line document ending in one unknown field: rust 5.5 s, go 0.42 s, c 0.47 s, python 13.2 s. Every two levels of document depth multiply that by about 2.6, so depth 42 is minutes in rust and the 512 cap never finishes. The same document with no unknown field is 3 ms at any depth.
-		- Cause: `chain_parts_legal` walks the mounts to decide whether a name chain is declared, and memoizes nothing. A schema offering two ways to consume the same chain prefix explores both to the bottom, and a chain that ends unknown has to explore all of them before it can say so.
-		- Note: this is the shape 20260802 item 4 was closed on - "when two constraint paths match the same node and both mount the same fragment, the work doubles per level of the document. A file around thirty lines deep takes over a minute". That fix memoized the mount evaluation, which still holds: adding mount paths to a schema over a 300-level document leaves the time flat at 21 ms. The unknown-field sweep's own matcher was left as it was; it predates the fix.
-		- Note: the spec claims the bound this breaks - "termination is structural and cost is proportional to the document, never the schema's unfolding".
-		- Note: the document is the attacker-controlled half in a consumer calling `LoadAndValidate` on user config, and 35 lines is enough.
-		- Opened: 20260905-141900
-
-	- 🔘 Item 5: the changelog contradicts itself and the spec on a crossed `min`/`max` range.
-		- Reproduced by reading. `changelog.md:39` says "The field is dropped and reported once, like any other broken one"; `changelog.md:133`, added by the last round, says "the range is dropped, the field keeps its other constraints". Both sit in the same `## Unreleased` section, so the 2.1.0 release notes carry both.
-		- Note: the shipped behavior is the second one, and `spec.md:529` agrees. Confirmed against the CLI: a crossed range on one field still leaves that field's path legal for the unknown-field sweep.
-		- Note: this is what the last round's item 4 changed. The entry it superseded was amended by adding a second entry rather than by editing the first.
-		- Opened: 20260905-142000
-
 ### Features and enhancements
-
-- Code review 20260905:
-
-	- The enhancement half of the round filed under Bugs above. Four items. Nothing here violates a stated rule; two are documents that disagree with the code, one is a recovery shape that differs between two halves of the same language, and one is a count that overstates.
-
-	- 🔘 Item 6: one line can be counted lost twice.
-		- Measured: `a: [80]` reports `E019` and then `E003`, and the lost count is 2 for one line. `a: [*]` does the same with `E019` and `E004`. `LostCount()` is documented as "how many lines or values were dropped", so a consumer showing the number to a user overstates it.
-		- Note: nothing keys on the exact number today - the save gate only asks whether it is nonzero - so this is a number worth correcting rather than a behavior to change.
-		- Opened: 20260905-142100
-
-	- 🔘 Item 7: `grammar.abnf` lists `#` as a legal selector character and the spec says it opens a comment.
-		- The `sel-char` range is "any char but `]`", which includes `#`, and its note names quotes and non-ASCII as passing through verbatim without mentioning `#`. The spec's `E003` row says the opposite and describes the real behavior: "the `#` opens a comment before the selector is read". `a[x#y].b: 1` is `E014`.
-		- Note: worth settling alongside item 2, since both are about how far a bare selector body runs.
-		- Opened: 20260905-142200
-
-	- 🔘 Item 8: an unterminated quote recovers two ways depending on which half of the line it is in.
-		- A value keeps the piece literally and says `E017`, so `a: 'open` loads and reads back as `'open`. A selector body throws the whole line away with `E014 empty selector`, so `a['open]: 1` binds nothing. `grammar.abnf` reads a bare selector as "any char but `]`", which would make `'open` an ordinary discriminator.
-		- Note: a call to make rather than a rule broken. The value side's answer is the more forgiving one and matches the never-bail philosophy.
-		- Opened: 20260905-142300
-
-	- 🔘 Item 9: `init` output can carry `H002` hints of its own.
-		- Reproduced: a schema whose fragment mounts under a field generates `opt.srv:` and then `opt.srv.a:` as separate flat lines, so the second re-opens `opt` and the load hints `H002`. The spec promises generated output "loads with no error diagnostics", which holds - a hint is not an error - but a starter config that hints on its own first line trains a reader to ignore hints.
-		- Note: the flat dotted form is deliberate and `reopen:` is the declared way to disavow the hint, so the fix is probably a `reopen` on what generation re-opens rather than a change of shape.
-		- Opened: 20260905-142400
 
 - Code review 20260904:
 
@@ -368,6 +301,65 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260905:
+
+	- A from-scratch pass, aimed first at what the 20260904 round changed and then at ground its coverage list named as unread. The parser was driven from a generator written off `grammar.abnf` rather than off the other bindings, with two oracles no earlier round has used: a legal document must load with no error diagnostics, and a line whose intended element list is known must read back as that list. Also run: fixpoint and read-preservation over 3,000 structural documents, 1,500 merge pairs, the normative strictness table in full, the raw-block indent rule against known bodies, the parse caps at library level, the windows builds of rust, go and C under wine, the two wrappers against the binary, and an A/B of every workload against the pre-round build. Five defects here, four enhancements under Features and enhancements. Every item was reproduced on this box.
+	- All five defects are shapes every binding shares, so the four-way check cannot see any of them. Three of the five are a scanner disagreeing with the path scanner about where a field line's parts begin and end, and two of those three are the quote rule specifically - the one the last round fixed in three call sites and left in two. That is the round's one structural observation: the rule was fixed per call site rather than once.
+	- The last round cost nothing measurable. Rust, Go and C are flat on parse, bulk writes, absent defaults, bulk reads, `check --schema`, merge, a 300-layer fold and `paths`, against the pre-round build at the same optimization level. Go's merge peak RSS moves about 10% run to run in both builds, which is its collector, not the round.
+
+	- ✅ Item 1: a document written with the documented `field:[disc]` sugar cannot be saved, and fails `check`.
+		- Reproduced in all four. `base:[Boston]` on a line of its own reports `E019 bracket array syntax` and counts one lost, so `check` exits 6, a Strict load fails, and `fmt --write` and `set --write` refuse at exit 7. Nothing is lost: `--lossy` writes `base: Boston`, the reads are unchanged, and the result is the same document the no-colon spelling produces.
+		- Cause: `looks_like_bracket_array` reads the sugar colon as the field's own separator, so the selector that follows looks like bracket text. The colon-less spelling `base[Boston]` takes the `E015` repair path instead and loses nothing.
+		- Note: the spec says "the `:` before a selector is optional sugar, so `field[disc]` and `field:[disc]` are the same", and `grammar.abnf` says it again on the `segment` rule. Two spellings the documents call identical get different codes and different save outcomes.
+		- Note: half of this is a regression from 20260904 item 3. Before that fix `"a:b":[x]` and `srv[db:5432].x:[y]` were `E015` and wrote clean at exit 0; both are `E019` and refuse at exit 7 now. The bare `base:[Boston]` spelling has behaved this way since `E019` arrived.
+		- Note: corpus `089` pins `x: [a].y: [1, 2]`, which is a real bracket array after a sugar colon, so it does not cover this and does not have to change.
+		- Decision needed: `E019` cannot tell a bracket array from selector sugar, because they are spelled the same. It does not have to: count lost only where something is really dropped. A comma in the brackets changes the value's reading, a numeric or `*` body already drops the line under its own code, and `[x]` reads exactly as `x` does.
+		- Decided: the comma decides. `E019` is an error that counts lost when the brackets hold an unquoted comma, since that is where two elements fold into one string; otherwise it is a hint under the same code (the `E022` precedent) and counts nothing, so `check` exits 0, a strict load passes and the rewrite goes through. Recorded in `design.md` under Saving a file, and on the `E019` row of the spec.
+		- Fixed: the bracket-array site in all four bindings splits the bracket body on unquoted commas and picks the level by the count.
+		- Pinned by: corpus `106-bracket-sugar` (four sugar shapes, a strict load, the reads, lost 0) and five `cli-regress` rows: a bracket array at `check` exit 6 and `fmt --write` exit 7, the sugar file at `check` exit 0 in both strictnesses and `fmt --write` exit 0 on a fresh copy per binding. Corpus `089` is unchanged, since every line there carries a comma. The case and the three sugar rows fail on the old code in every binding.
+		- Opened: 20260905-141600
+		- Closed: 20260905-192521
+
+	- ✅ Item 2: a quote inside a bare selector swallows the trailing comment into the value.
+		- Reproduced in all four. `srv[O'Brien].port: 8080  # main` loads with zero diagnostics and reads `port` as the string `8080  # main`, so `get --int` is `BadType` where it should be 8080. `fmt --write` leaves `port: "8080  # main"` at exit 0 with nothing lost, and that output is a fixpoint, so nothing will ever notice. `a[St."Paul].pop: 700  # why` does the same.
+		- Cause: `name_half` enters quote state on any `"` or `'`, wherever it sits, so a quote in a bare selector body hides the `#` that follows. The path scanner it is supposed to mirror opens a quoted selector only when a quote is the first non-space character after the `[`, and `grammar.abnf` says the same on `sel-char`: quotes mid-text pass through verbatim.
+		- Note: a backslash immediately before the closing `]` reaches the same place by another route. `name_half` treats `\` as an escape inside a selector and eats the `]`, so the field's own colon is skipped and the value half is then scanned by the name rules; `a[C:\].b: it's fine  # note` stores the comment in the value. The path scanner runs a bare selector to the first `]` with no escape handling, which is what the spec says ("to embed a `]` itself, quote the discriminator").
+		- Note: this is the half of 20260904 item 2 that fix did not reach. That round moved `value_comment_at`, `split_unquoted_commas` and `cell_exceeds` onto the start-of-piece rule and left `name_half` opening a quote anywhere. Sites: `lib.rs:717`, `shcl.go:1456`, `shcl.py:1132`, `shcl.h:1015`.
+		- Note: an apostrophe in a discriminator is ordinary input - `O'Brien`, `St. John's`, a windows path ending in a separator.
+		- Fixed: the name-half scan opens a quote only where the path scanner does - as a segment's first character or a selector body's first character - and shields a backslash inside quotes only, so a bare selector runs to its first `]`. One rule in all four bindings. The spec's selector paragraph now says where a quote opens.
+		- Pinned by: corpus `105-quote-in-selector` (an apostrophe, a mid-text quote, a trailing backslash, and two quoted discriminators, each with a trailing comment; the reads and a lost count of 0), and a fuzz property over the structural soup: a line carrying a known comment behind such a selector must come back with the comment still a comment. Both fail on the old code in every binding and pass now.
+		- Opened: 20260905-141700
+		- Closed: 20260905-191617
+
+	- ✅ Item 3: the `--set` family refuses a path the read side accepts.
+		- Reproduced in all four. `set --set="srv[O'Brien].port=8080"` exits 1 with "bad --set value (want PATH=VALUE, quotes and brackets balanced)", while `get --int f "srv[O'Brien].port"` returns the value and the same path through the tab-separated ops script writes it. `--set-literal`, `--set-default` and `--set-literal-default` refuse it too; `--remove=PATH` takes it, because it splits nothing.
+		- Cause: `split_set` opens quote state on any `"` or `'`, so an unpaired one anywhere in the path leaves every later `=` looking quoted and the split fails. Same rule as item 2, in the CLI. Sites: `main.rs:369`, `cmd/shcl/main.go:407`, `cmd/shcl/main.py:302`, `cmd/shcl/main.c:421`.
+		- Note: the help says "PATH ends at the first '=' outside quotes and brackets, so a selector may hold one", which is the contract this breaks.
+		- Fixed: the four CLIs' PATH=VALUE split follows the same rule as item 2: a quote opens only at a segment's or a selector body's first character, and a bare selector body runs to its first `]`.
+		- Pinned by: four `cli-regress` rows - `--set` and `--set-default` through `srv[O'Brien].port`, a quoted discriminator holding `]` and `=`, and an unclosed quote still refused at exit 1. The first two exit 1 on the old CLIs.
+		- Opened: 20260905-141800
+		- Closed: 20260905-191617
+
+	- ✅ Item 4: validating a deep document against a recursive schema hangs, in the half of validation the 20260802 fix did not reach.
+		- Reproduced in all four. A four-line schema - a fragment whose `child` and `child.child` both mount it - against a 35-line document ending in one unknown field: rust 5.5 s, go 0.42 s, c 0.47 s, python 13.2 s. Every two levels of document depth multiply that by about 2.6, so depth 42 is minutes in rust and the 512 cap never finishes. The same document with no unknown field is 3 ms at any depth.
+		- Cause: `chain_parts_legal` walks the mounts to decide whether a name chain is declared, and memoizes nothing. A schema offering two ways to consume the same chain prefix explores both to the bottom, and a chain that ends unknown has to explore all of them before it can say so.
+		- Note: this is the shape 20260802 item 4 was closed on - "when two constraint paths match the same node and both mount the same fragment, the work doubles per level of the document. A file around thirty lines deep takes over a minute". That fix memoized the mount evaluation, which still holds: adding mount paths to a schema over a 300-level document leaves the time flat at 21 ms. The unknown-field sweep's own matcher was left as it was; it predates the fix.
+		- Note: the spec claims the bound this breaks - "termination is structural and cost is proportional to the document, never the schema's unfolding".
+		- Note: the document is the attacker-controlled half in a consumer calling `LoadAndValidate` on user config, and 35 lines is enough.
+		- Fixed: the chain matcher in all four bindings remembers each (fragment, parts consumed) state it has ruled out, so two mounts of one fragment at one depth are walked once. Depth 34 went from seconds to about 2 ms; depth 400 is under 60 ms in every binding.
+		- Pinned by: a `perf-gate` workload (`recurse`: the two-mount fragment against a 60-level document ending in an unknown field, judged against the binding's own parse baseline like the other five), which the old reference does not finish, and corpus `107-schema-recursive-mounts`, which pins that the memo prunes nothing it should not: a type fault seven mounts down, a star path through a mount, one unknown leaf at the bottom.
+		- Opened: 20260905-141900
+		- Closed: 20260905-193329
+
+	- ✅ Item 5: the changelog contradicts itself and the spec on a crossed `min`/`max` range.
+		- Reproduced by reading. `changelog.md:39` says "The field is dropped and reported once, like any other broken one"; `changelog.md:133`, added by the last round, says "the range is dropped, the field keeps its other constraints". Both sit in the same `## Unreleased` section, so the 2.1.0 release notes carry both.
+		- Note: the shipped behavior is the second one, and `spec.md:529` agrees. Confirmed against the CLI: a crossed range on one field still leaves that field's path legal for the unknown-field sweep.
+		- Note: this is what the last round's item 4 changed. The entry it superseded was amended by adding a second entry rather than by editing the first.
+		- Fixed: the Changed entry says what the code does - the range is dropped and reported once at the `max` line, the field keeps its other constraints - and the Fixed entry no longer restates it.
+		- Pinned by: `check-docs` requires the spec's crossed-range row and refuses a changelog that says the field is dropped. Fails on the previous changelog.
+		- Opened: 20260905-142000
+		- Closed: 20260905-193603
 
 - Code review 20260904:
 
@@ -2926,6 +2918,41 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260905:
+
+	- The enhancement half of the round filed under Bugs above. Four items. Nothing here violates a stated rule; two are documents that disagree with the code, one is a recovery shape that differs between two halves of the same language, and one is a count that overstates.
+
+	- ✅ Item 6: one line can be counted lost twice.
+		- Measured: `a: [80]` reports `E019` and then `E003`, and the lost count is 2 for one line. `a: [*]` does the same with `E019` and `E004`. `LostCount()` is documented as "how many lines or values were dropped", so a consumer showing the number to a user overstates it.
+		- Note: nothing keys on the exact number today - the save gate only asks whether it is nonzero - so this is a number worth correcting rather than a behavior to change.
+		- Fixed: by item 1's rule. A bracket body with no unquoted comma is a hint that counts nothing, so `a: [80]` and `a: [*]` are counted once each, by `E003` and `E004`.
+		- Pinned by: corpus `108-bracket-index-lost` - the two lines, the hint and error each reports, and a lost count of 2. The count read 4 before this round.
+		- Opened: 20260905-142100
+		- Closed: 20260905-193735
+
+	- ✅ Item 7: `grammar.abnf` lists `#` as a legal selector character and the spec says it opens a comment.
+		- The `sel-char` range is "any char but `]`", which includes `#`, and its note names quotes and non-ASCII as passing through verbatim without mentioning `#`. The spec's `E003` row says the opposite and describes the real behavior: "the `#` opens a comment before the selector is read". `a[x#y].b: 1` is `E014`.
+		- Note: worth settling alongside item 2, since both are about how far a bare selector body runs.
+		- Fixed: the grammar. `sel-char` excludes `#` and its note says an unquoted `#` opens a comment wherever it sits, a bare selector included, which is what the spec's `E003` row and every binding already did. Settled with item 2: a bare selector runs to the first `]`, quotes mid-text are text, and `#` is the one character that ends it early.
+		- Pinned by: corpus `109-hash-in-selector` - `a[x#y].b: 1` and `b[#5].c: x` are `E014`, retained, lost 0.
+		- Opened: 20260905-142200
+		- Closed: 20260905-193823
+
+	- 🚫 Item 8: an unterminated quote recovers two ways depending on which half of the line it is in.
+		- A value keeps the piece literally and says `E017`, so `a: 'open` loads and reads back as `'open`. A selector body throws the whole line away with `E014 empty selector`, so `a['open]: 1` binds nothing. `grammar.abnf` reads a bare selector as "any char but `]`", which would make `'open` an ordinary discriminator.
+		- Note: a call to make rather than a rule broken. The value side's answer is the more forgiving one and matches the never-bail philosophy.
+		- Declined: nothing is lost either way. The `E014` line is kept verbatim as trivia, `fmt --write` writes it back unchanged at exit 0 and the lost count stays 0, so the only difference from the value side is that no node is bound for a line no legal document has. Keeping the quote as text would need a second scan rule in the path scanner, the name-half scan and the CLI's split, in every binding, which is the shape that has cost this project two regressions this week. The grammar's `bare-sel` is read with `quoted` tried first, as the rule order says.
+		- Opened: 20260905-142300
+		- Closed: 20260905-193849
+
+	- ✅ Item 9: `init` output can carry `H002` hints of its own.
+		- Reproduced: a schema whose fragment mounts under a field generates `opt.srv:` and then `opt.srv.a:` as separate flat lines, so the second re-opens `opt` and the load hints `H002`. The spec promises generated output "loads with no error diagnostics", which holds - a hint is not an error - but a starter config that hints on its own first line trains a reader to ignore hints.
+		- Note: the flat dotted form is deliberate and `reopen:` is the declared way to disavow the hint, so the fix is probably a `reopen` on what generation re-opens rather than a change of shape.
+		- Fixed: the generator lays its blocks out in tree order in all four bindings - every path prefix ranked by first appearance, a parent before its children, siblings in schema order - so a parent listed after its child is never re-opened behind another field. A schema already in tree order generates the same text; corpus `026`'s golden regrouped its `server` lines. Not `reopen`: that key disavows the hint under validation and does nothing for the file loaded on its own.
+		- Pinned by: corpus `110-init-tree-order` (the shape from the review, a parent listed after its child with a field between), and every runner now requires a generated starter to load with no diagnostics at all, hints included, where it used to allow anything short of an error.
+		- Opened: 20260905-142400
+		- Closed: 20260905-194914
 
 - Code review 20260902:
 

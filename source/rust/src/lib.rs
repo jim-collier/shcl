@@ -673,17 +673,20 @@ pub const MAX_DEPTH: usize = 512;
 // Lexical helpers
 // ---------------------------------------------------------------------------
 
-/// A value spelled the way JSON, TOML and YAML spell an array. The path scanner
-/// reads the brackets as a selector, so the line arrives with no value text and
-/// the old repair blamed a colon that is plainly there. The colon that counts
-/// is the field's own: one inside a quoted name or a selector is not it.
-fn looks_like_bracket_array(content: &str) -> bool {
+/// The text between the brackets of a value spelled the way JSON, TOML and
+/// YAML spell an array, or None when the line is not that shape. The path
+/// scanner reads the brackets as a selector, so the line arrives with no value
+/// text and the old repair blamed a colon that is plainly there. The colon
+/// that counts is the field's own: one inside a quoted name or a selector is
+/// not it. Selector sugar (`base:[Boston]`) is spelled the same way and is
+/// legal, so the caller decides by what the brackets hold.
+fn bracket_array_body(content: &str) -> Option<&str> {
 	match name_half(content, false) {
 		NameHalf::Colon(colon) => {
 			let rest = content[colon + 1..].trim();
-			rest.starts_with('[') && rest.ends_with(']')
+			rest.strip_prefix('[').and_then(|r| r.strip_suffix(']'))
 		}
-		_ => false,
+		_ => None,
 	}
 }
 
@@ -694,39 +697,64 @@ enum NameHalf {
 	End,
 }
 
-/// Scan a field line's name half the way the path scanner reads it: a quote
-/// opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
-/// selector, and with `sugar` a colon followed by `[` is selector sugar rather
-/// than the separator. `\` shields the next char.
+/// Scan a field line's name half the way the path scanner reads it. A quote
+/// opens only where the scanner opens one - as a segment's first char (a
+/// quoted name) or a selector body's first char (a quoted discriminator) - so
+/// `O'Brien` in a bare selector is text, not an open quote hiding the `#`
+/// after it. `\` shields the next char inside quotes only; a bare selector
+/// body runs to the first `]` unescaped, as it does in the scanner. With
+/// `sugar` a colon followed by `[` is selector sugar rather than the
+/// separator. An unquoted `#` ends the half wherever it sits: a comment, or a
+/// malformed name.
 fn name_half(s: &str, sugar: bool) -> NameHalf {
 	let mut in_quote: Option<char> = None;
 	let mut in_sel = false;
+	let mut at_start = true; // first char of a segment, or of a selector body
 	let mut it = s.char_indices();
 	while let Some((byte, c)) = it.next() {
-		if c == '\\' {
-			it.next();
+		if let Some(q) = in_quote {
+			if c == '\\' {
+				it.next();
+			} else if c == q {
+				in_quote = None;
+			}
 			continue;
 		}
-		match in_quote {
-			Some(q) => {
-				if c == q {
-					in_quote = None;
+		if is_wsp(c) {
+			continue;
+		}
+		if c == '#' {
+			return NameHalf::Hash(byte);
+		}
+		if in_sel {
+			if c == ']' {
+				in_sel = false;
+			} else if at_start && (c == '"' || c == '\'') {
+				in_quote = Some(c);
+			}
+			at_start = false;
+			continue;
+		}
+		match c {
+			'"' | '\'' if at_start => in_quote = Some(c),
+			'[' => {
+				in_sel = true;
+				at_start = true;
+				continue;
+			}
+			'.' => {
+				at_start = true;
+				continue;
+			}
+			':' => {
+				let rest = s[byte + 1..].trim_start_matches([' ', '\t']);
+				if !(sugar && rest.starts_with('[')) {
+					return NameHalf::Colon(byte);
 				}
 			}
-			None => match c {
-				'"' | '\'' => in_quote = Some(c),
-				'#' => return NameHalf::Hash(byte),
-				'[' => in_sel = true,
-				']' => in_sel = false,
-				':' if !in_sel => {
-					let rest = s[byte + 1..].trim_start_matches([' ', '\t']);
-					if !(sugar && rest.starts_with('[')) {
-						return NameHalf::Colon(byte);
-					}
-				}
-				_ => {}
-			},
+			_ => {}
 		}
+		at_start = false;
 	}
 	NameHalf::End
 }
@@ -2533,17 +2561,31 @@ impl Parser {
 			let mut src_text: Option<&str> = None;
 			let value = match &scan.value_text {
 				None => {
-					if looks_like_bracket_array(content) {
-						// The brackets never survive the load, so a rewrite
-						// would bake the changed value in and the file would
-						// check clean forever after. Count it lost so the save
-						// gate stops that.
-						self.err(
-							lineno,
-							"E019",
-							"bracket array syntax; an array is comma-separated, without brackets",
-						);
-						self.lost += 1;
+					if let Some(body) = bracket_array_body(content) {
+						if split_unquoted_commas(body).len() > 1 {
+							// Two or more elements folded into one string. The
+							// brackets never survive the load, so a rewrite
+							// would bake the changed value in and the file
+							// would check clean forever after. Count it lost so
+							// the save gate stops that.
+							self.err(
+								lineno,
+								"E019",
+								"bracket array syntax; an array is comma-separated, without brackets",
+							);
+							self.lost += 1;
+						} else {
+							// One element reads as the selector the scanner made
+							// of it - `[Boston]` is `Boston` - and `field:[disc]`
+							// is documented sugar, so nothing is lost. A hint,
+							// for the JSON habit; same code, like E022.
+							self.diag(Diagnostic {
+								line: lineno,
+								severity: Severity::Hint,
+								message: "bracket array syntax; read as a selector, the same value without the brackets".into(),
+								code: "E019",
+							});
+						}
 					} else {
 						// A clean path with no colon is the one defined repair:
 						// the obvious intent is that path with an empty value.
@@ -6377,12 +6419,13 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			),
 		}]);
 	}
-	let mut out = String::new();
 	let mut wild: Vec<(String, String)> = Vec::new();
 	// Dropping a trailing `[*]` can render the same line a concrete sibling
 	// already wrote; the first spelling wins.
 	let mut emitted: HashSet<String> = HashSet::new();
-	let mut first = true;
+	// One block per generated line - its desc, annotation and binding - with
+	// the path's names, so the blocks can be laid out in tree order below.
+	let mut blocks: Vec<(Vec<String>, String)> = Vec::new();
 	for (i, c) in cons.iter().enumerate() {
 		let tyname = c.ty.clone().unwrap_or_else(|| "any".to_string());
 		if unwritable(c) || (has_wild(c) && !fill[i]) {
@@ -6408,33 +6451,61 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		if !emitted.insert(path.clone()) {
 			continue;
 		}
-		if !first {
-			out.push('\n');
-		}
-		first = false;
+		let mut block = String::new();
 		if let Some(d) = &c.desc {
 			for line in d.split('\n') {
-				out.push_str("# ");
-				out.push_str(line);
-				out.push('\n');
+				block.push_str("# ");
+				block.push_str(line);
+				block.push('\n');
 			}
 		}
-		out.push_str("# ");
+		block.push_str("# ");
 		// The annotation is a comment: a newline smuggled in via an allowed
 		// string value must not break out of it.
-		out.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
-		out.push('\n');
+		block.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
+		block.push('\n');
 		let prefix = if must_exist(c) { "" } else { "#" };
 		match &c.default_text {
-			Some(v) => out.push_str(&format!("{}{}: {}\n", prefix, path, gen_default_text(v))),
-			None => out.push_str(&format!("{}{}:\n", prefix, path)),
+			Some(v) => block.push_str(&format!("{}{}: {}\n", prefix, path, gen_default_text(v))),
+			None => block.push_str(&format!("{}{}:\n", prefix, path)),
 		}
+		let names: Vec<String> = names_of(&c.segs).iter().map(|s| s.to_string()).collect();
+		blocks.push((names, block));
+	}
+	// Tree order, first appearance first. A schema may list `a.host.srv`
+	// before `a`, and emitted as listed with another field between them,
+	// `a: x` re-opens `a` and the load hints it (H002) - in the one file meant
+	// to show the format at its cleanest. Every prefix is ranked by where it
+	// first appears, so a parent's block comes before its children's, siblings
+	// keep schema order, and a schema already in tree order is unchanged.
+	let mut rank: HashMap<&[String], usize> = HashMap::new();
+	for (names, _) in &blocks {
+		for k in 1..=names.len() {
+			let next = rank.len();
+			rank.entry(&names[..k]).or_insert(next);
+		}
+	}
+	// A parent's key is a prefix of its children's, and a shorter key sorts
+	// first; the sort is stable, so two blocks on one path keep their order.
+	let mut order: Vec<usize> = (0..blocks.len()).collect();
+	order.sort_by_cached_key(|&i| {
+		let names = &blocks[i].0;
+		(1..=names.len())
+			.map(|k| rank[&names[..k]])
+			.collect::<Vec<usize>>()
+	});
+	let mut out = String::new();
+	for (n, &i) in order.iter().enumerate() {
+		if n > 0 {
+			out.push('\n');
+		}
+		out.push_str(&blocks[i].1);
 	}
 	// Cycle-cut mounts last: their "type" column names the fragment that
 	// belongs at the path.
 	wild.extend(cuts);
 	if !wild.is_empty() {
-		if !first {
+		if !blocks.is_empty() {
 			out.push('\n');
 		}
 		out.push_str("# Paths needing an instance name (not generated):\n");
@@ -7147,32 +7218,44 @@ fn star_legal(pats: &[&[Segment]], chain: &str) -> bool {
 /// Chain legality through fragment mounts: the general matcher - element-wise
 /// like star_legal (stars wild, prefixes legal), and when a mount's whole path
 /// matched with chain left over, the remainder is retried against the mounted
-/// fragment's fields. Terminates: every descent consumes >= 1 part.
+/// fragment's fields. Terminates: every descent consumes >= 1 part. A state
+/// is (fragment, parts consumed), and one that has failed is not walked again:
+/// two mounts of the same fragment at the same depth used to be walked both,
+/// which is 2^depth on a chain that ends unknown.
 fn chain_legal(cons: &[Constraint], frags: &HashMap<String, Vec<Constraint>>, chain: &str) -> bool {
 	let parts: Vec<&str> = chain_parts(chain);
-	chain_parts_legal(cons, frags, &parts)
+	let mut dead: std::collections::HashSet<(&str, usize)> = std::collections::HashSet::new();
+	chain_parts_legal(cons, "", frags, &parts, 0, &mut dead)
 }
 
-fn chain_parts_legal(
-	cons: &[Constraint],
-	frags: &HashMap<String, Vec<Constraint>>,
+fn chain_parts_legal<'a>(
+	cons: &'a [Constraint],
+	set: &'a str,
+	frags: &'a HashMap<String, Vec<Constraint>>,
 	parts: &[&str],
+	at: usize,
+	dead: &mut std::collections::HashSet<(&'a str, usize)>,
 ) -> bool {
+	if dead.contains(&(set, at)) {
+		return false;
+	}
+	let rest = &parts[at..];
 	for c in cons {
 		let n = c.segs.len();
-		let k = parts.len().min(n);
-		if (0..k).all(|i| c.segs[i].star || c.segs[i].name == parts[i]) {
-			if parts.len() <= n {
+		let k = rest.len().min(n);
+		if (0..k).all(|i| c.segs[i].star || c.segs[i].name == rest[i]) {
+			if rest.len() <= n {
 				return true;
 			}
 			if let Some(fr) = &c.inherits
 				&& let Some(fcs) = frags.get(fr)
-				&& chain_parts_legal(fcs, frags, &parts[n..])
+				&& chain_parts_legal(fcs, fr, frags, parts, at + n, dead)
 			{
 				return true;
 			}
 		}
 	}
+	dead.insert((set, at));
 	false
 }
 

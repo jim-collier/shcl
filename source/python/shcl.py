@@ -1111,16 +1111,21 @@ def _parse_uint(s):
 	return n
 
 
-def _looks_like_bracket_array(content):
-	"""A value spelled the way JSON, TOML and YAML spell an array. The path scanner
+def _bracket_array_body(content):
+	"""The text between the brackets of a value spelled the way JSON, TOML and
+	YAML spell an array, or None when the line is not that shape. The path scanner
 	reads the brackets as a selector, so the line arrives with no value text and the
 	old repair blamed a colon that is plainly there. The colon that counts is the
-	field's own: one inside a quoted name or a selector is not it."""
+	field's own: one inside a quoted name or a selector is not it. Selector sugar
+	(`base:[Boston]`) is spelled the same way and is legal, so the caller decides
+	by what the brackets hold."""
 	kind, colon = _name_half(content, False)
 	if kind != _NAME_COLON:
-		return False
+		return None
 	rest = content[colon + 1:].strip()
-	return rest.startswith("[") and rest.endswith("]")
+	if len(rest) < 2 or not rest.startswith("[") or not rest.endswith("]"):
+		return None
+	return rest[1:-1]
 
 
 # How the name half of a field line ends.
@@ -1130,34 +1135,59 @@ _NAME_HASH = 2  # an unquoted `#` first: a comment, or a malformed name
 
 
 def _name_half(s, sugar):
-	"""Scan a field line's name half the way the path scanner reads it: a quote
-	opens anywhere (a quoted name, a quoted selector value), `[`..`]` is a
-	selector, and with sugar a colon followed by `[` is selector sugar rather
-	than the separator. `\\` shields the next char. Returns (kind, offset)."""
+	"""Scan a field line's name half the way the path scanner reads it. A quote
+	opens only where the scanner opens one - as a segment's first char (a quoted
+	name) or a selector body's first char (a quoted discriminator) - so
+	`O'Brien` in a bare selector is text, not an open quote hiding the `#` after
+	it. `\\` shields the next char inside quotes only; a bare selector body runs
+	to the first `]` unescaped, as it does in the scanner. With sugar a colon
+	followed by `[` is selector sugar rather than the separator. An unquoted `#`
+	ends the half wherever it sits: a comment, or a malformed name. Returns
+	(kind, offset)."""
 	in_quote = None
 	in_sel = False
+	at_start = True  # first char of a segment, or of a selector body
 	i = 0
 	n = len(s)
 	while i < n:
 		c = s[i]
-		if c == "\\":
-			i += 2
-			continue
 		if in_quote is not None:
+			if c == "\\":
+				i += 2
+				continue
 			if c == in_quote:
 				in_quote = None
-		elif c == '"' or c == "'":
-			in_quote = c
-		elif c == "#":
+			i += 1
+			continue
+		if c == " " or c == "\t":
+			i += 1
+			continue
+		if c == "#":
 			return _NAME_HASH, i
+		if in_sel:
+			if c == "]":
+				in_sel = False
+			elif at_start and (c == '"' or c == "'"):
+				in_quote = c
+			at_start = False
+			i += 1
+			continue
+		if (c == '"' or c == "'") and at_start:
+			in_quote = c
 		elif c == "[":
 			in_sel = True
-		elif c == "]":
-			in_sel = False
-		elif c == ":" and not in_sel:
+			at_start = True
+			i += 1
+			continue
+		elif c == ".":
+			at_start = True
+			i += 1
+			continue
+		elif c == ":":
 			rest = s[i + 1:].lstrip(" \t")
 			if not (sugar and rest.startswith("[")):
 				return _NAME_COLON, i
+		at_start = False
 		i += 1
 	return _NAME_END, 0
 
@@ -1998,12 +2028,23 @@ class _Parser:
 			# scalar/inline-array case has a one-line source spelling).
 			src_text = None
 			if value_text is None:
-				if _looks_like_bracket_array(content):
-					# The brackets never survive the load, so a rewrite would
-					# bake the changed value in and the file would check clean
-					# forever after. Count it lost so the save gate stops that.
-					self._err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
-					self.lost += 1
+				body = _bracket_array_body(content)
+				if body is not None:
+					if len(_split_unquoted_commas(body)) > 1:
+						# Two or more elements folded into one string. The
+						# brackets never survive the load, so a rewrite would
+						# bake the changed value in and the file would check
+						# clean forever after. Count it lost so the save gate
+						# stops that.
+						self._err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
+						self.lost += 1
+					else:
+						# One element reads as the selector the scanner made of
+						# it - `[Boston]` is `Boston` - and `field:[disc]` is
+						# documented sugar, so nothing is lost. A hint, for the
+						# JSON habit; same code, like E022.
+						self._diag(Diagnostic(lineno, Severity.Hint,
+							"bracket array syntax; read as a selector, the same value without the brackets", "E019"))
 				else:
 					# A clean path with no colon is the one defined repair:
 					# the obvious intent is that path with an empty value.
@@ -5378,7 +5419,9 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# Dropping a trailing `[*]` can render the same line a concrete sibling
 	# already wrote; the first spelling wins.
 	emitted = set()
-	first = True
+	# One block per generated line - its desc, annotation and binding - with
+	# the path's names, so the blocks can be laid out in tree order below.
+	blocks = []
 	for i, c in enumerate(cons):
 		tyname = c.ty if c.ty is not None else "any"
 		if unwritable(c) or (has_wild(c) and not fill[i]):
@@ -5400,25 +5443,41 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		if path in emitted:
 			continue
 		emitted.add(path)
-		if not first:
-			out.append("\n")
-		first = False
+		block = []
 		if c.desc is not None:
 			for line in c.desc.split("\n"):
-				out.append("# " + line + "\n")
+				block.append("# " + line + "\n")
 		# The annotation is a comment: a newline smuggled in via an allowed
 		# string value must not break out of it.
-		out.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
+		block.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
 		prefix = "" if must_exist(c) else "#"
 		if c.default_text is not None:
-			out.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
+			block.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
 		else:
-			out.append(f"{prefix}{path}:\n")
+			block.append(f"{prefix}{path}:\n")
+		blocks.append((tuple(names_of(c.segs)), "".join(block)))
+	# Tree order, first appearance first. A schema may list `a.host.srv`
+	# before `a`, and emitted as listed with another field between them,
+	# `a: x` re-opens `a` and the load hints it (H002) - in the one file meant
+	# to show the format at its cleanest. Every prefix is ranked by where it
+	# first appears, so a parent's block comes before its children's, siblings
+	# keep schema order, and a schema already in tree order is unchanged.
+	rank: dict[tuple[str, ...], int] = {}
+	for names, _ in blocks:
+		for k in range(1, len(names) + 1):
+			rank.setdefault(names[:k], len(rank))
+	# A parent's key is a prefix of its children's, and a shorter key sorts
+	# first; the sort is stable, so two blocks on one path keep their order.
+	blocks.sort(key=lambda b: tuple(rank[b[0][:k]] for k in range(1, len(b[0]) + 1)))
+	for n, (_, text) in enumerate(blocks):
+		if n > 0:
+			out.append("\n")
+		out.append(text)
 	# Cycle-cut mounts last: their "type" column names the fragment that
 	# belongs at the path.
 	wild.extend(cuts)
 	if wild:
-		if not first:
+		if blocks:
 			out.append("\n")
 		out.append("# Paths needing an instance name (not generated):\n")
 		for path, tyname in wild:
@@ -5642,21 +5701,29 @@ def _chain_legal(cons, frags, chain):
 
 
 def _chain_parts_legal(cons, frags, parts):
-	# Explicit stack of (constraints, remaining parts) rather than one frame
-	# per mount: a chain at the depth cap descends that many mounts.
-	stack = [(cons, parts)]
+	# Explicit stack of (fragment, constraints, parts consumed) rather than one
+	# frame per mount: a chain at the depth cap descends that many mounts. A
+	# state seen once is not walked again - two mounts of the same fragment at
+	# the same depth used to be walked both, which is 2^depth on a chain that
+	# ends unknown.
+	stack = [("", cons, 0)]
+	seen = set()
 	while stack:
-		cons, parts = stack.pop()
+		name, cons, at = stack.pop()
+		if (name, at) in seen:
+			continue
+		seen.add((name, at))
+		rest = parts[at:]
 		for c in cons:
 			n = len(c.segs)
-			k = min(len(parts), n)
-			if all(c.segs[i].star or c.segs[i].name == parts[i] for i in range(k)):
-				if len(parts) <= n:
+			k = min(len(rest), n)
+			if all(c.segs[i].star or c.segs[i].name == rest[i] for i in range(k)):
+				if len(rest) <= n:
 					return True
 				if c.inherits is not None:
 					fcs = frags.get(c.inherits)
 					if fcs is not None:
-						stack.append((fcs, parts[n:]))
+						stack.append((c.inherits, fcs, at + n))
 	return False
 
 

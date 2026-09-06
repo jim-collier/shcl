@@ -301,27 +301,47 @@ def _set_value_opt(o, name, v):
 
 def split_set(arg):
 	# PATH=VALUE at the first `=` outside quotes and brackets, so a selector
-	# holding one (`x[a=b].c=1`) still addresses its instance.
+	# holding one (`x[a=b].c=1`) still addresses its instance. A quote opens
+	# only where the path scanner opens one - a segment's or a selector body's
+	# first char - so `srv[O'Brien].port=8080` splits at its `=`, and a bare
+	# selector body runs to the first `]`.
 	in_quote = None
-	depth = 0
+	in_sel = False
+	at_start = True
 	i = 0
 	n = len(arg)
 	while i < n:
 		c = arg[i]
-		if c == "\\":
-			i += 2
-			continue
 		if in_quote is not None:
+			if c == "\\":
+				i += 2
+				continue
 			if c == in_quote:
 				in_quote = None
-		elif c == '"' or c == "'":
+			i += 1
+			continue
+		if c == " " or c == "\t":
+			i += 1
+			continue
+		if in_sel:
+			if c == "]":
+				in_sel = False
+			elif at_start and (c == '"' or c == "'"):
+				in_quote = c
+		elif (c == '"' or c == "'") and at_start:
 			in_quote = c
 		elif c == "[":
-			depth += 1
-		elif c == "]":
-			depth = max(depth - 1, 0)
-		elif c == "=" and depth == 0:
+			in_sel = True
+			at_start = True
+			i += 1
+			continue
+		elif c == ".":
+			at_start = True
+			i += 1
+			continue
+		elif c == "=":
 			return arg[:i], arg[i + 1:]
+		at_start = False
 		i += 1
 	return None
 

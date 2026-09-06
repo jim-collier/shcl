@@ -690,14 +690,15 @@ fn init_generation_matches_expected() {
 			"{}: default init output is missing the format footer",
 			case.name
 		);
-		// The generated starter must be valid SHCL (loads with no error diagnostics).
+		// The generated starter must be valid SHCL, and load without so much as
+		// a hint: a starter that hints on its own first lines (H002 from a
+		// parent re-opened after another field) teaches a reader to ignore them.
 		let doc = Document::parse(&got);
 		assert!(
-			!doc.diagnostics()
-				.iter()
-				.any(|d| d.severity == shcl::Severity::Error),
-			"{}: generated starter does not load cleanly",
-			case.name
+			doc.diagnostics().is_empty(),
+			"{}: generated starter does not load cleanly: {:?}",
+			case.name,
+			doc.diagnostics()
 		);
 		// And it must satisfy the very schema that produced it - case 026's
 		// golden once failed its own schema (repeat lower bound and a

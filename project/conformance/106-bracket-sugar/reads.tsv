@@ -1,0 +1,10 @@
+query	type	expected	status	level
+-	load	ok	-	strict
+base	string	Boston	Good	
+base.lat	int	42	Good	
+tags	string	prod	Good	
+tags	string[]	prod	Good	
+note	string	a, b	Good	
+note	string[]	a, b	Good	
+srv[web].name	string	Boston	Good	
+-	lost	0	-	
