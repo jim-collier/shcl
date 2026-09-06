@@ -7520,20 +7520,33 @@ func starLegal(pats [][]segment, chain string) bool {
 // the mounted fragment's fields. Terminates: every descent consumes >= 1 part.
 func chainLegal(cons []constraint, frags map[string][]constraint, chain string) bool {
 	parts := chainParts(chain)
-	return chainPartsLegal(cons, frags, parts)
+	dead := map[chainState]bool{}
+	return chainPartsLegal(cons, "", frags, parts, 0, dead)
 }
 
-func chainPartsLegal(cons []constraint, frags map[string][]constraint, parts []string) bool {
+// chainState: a fragment and how many parts are consumed on entry. One that
+// has failed is not walked again - two mounts of the same fragment at the same
+// depth used to be walked both, which is 2^depth on a chain that ends unknown.
+type chainState struct {
+	set string
+	at  int
+}
+
+func chainPartsLegal(cons []constraint, set string, frags map[string][]constraint, parts []string, at int, dead map[chainState]bool) bool {
+	if dead[chainState{set, at}] {
+		return false
+	}
+	rest := parts[at:]
 	for i := range cons {
 		c := &cons[i]
 		n := len(c.segs)
-		k := len(parts)
+		k := len(rest)
 		if n < k {
 			k = n
 		}
 		matched := true
 		for j := 0; j < k; j++ {
-			if !c.segs[j].star && c.segs[j].name != parts[j] {
+			if !c.segs[j].star && c.segs[j].name != rest[j] {
 				matched = false
 				break
 			}
@@ -7541,15 +7554,16 @@ func chainPartsLegal(cons []constraint, frags map[string][]constraint, parts []s
 		if !matched {
 			continue
 		}
-		if len(parts) <= n {
+		if len(rest) <= n {
 			return true
 		}
 		if c.inherits != "" {
-			if fcs, ok := frags[c.inherits]; ok && chainPartsLegal(fcs, frags, parts[n:]) {
+			if fcs, ok := frags[c.inherits]; ok && chainPartsLegal(fcs, c.inherits, frags, parts, at+n, dead) {
 				return true
 			}
 		}
 	}
+	dead[chainState{set, at}] = true
 	return false
 }
 

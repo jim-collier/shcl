@@ -5683,21 +5683,29 @@ def _chain_legal(cons, frags, chain):
 
 
 def _chain_parts_legal(cons, frags, parts):
-	# Explicit stack of (constraints, remaining parts) rather than one frame
-	# per mount: a chain at the depth cap descends that many mounts.
-	stack = [(cons, parts)]
+	# Explicit stack of (fragment, constraints, parts consumed) rather than one
+	# frame per mount: a chain at the depth cap descends that many mounts. A
+	# state seen once is not walked again - two mounts of the same fragment at
+	# the same depth used to be walked both, which is 2^depth on a chain that
+	# ends unknown.
+	stack = [("", cons, 0)]
+	seen = set()
 	while stack:
-		cons, parts = stack.pop()
+		name, cons, at = stack.pop()
+		if (name, at) in seen:
+			continue
+		seen.add((name, at))
+		rest = parts[at:]
 		for c in cons:
 			n = len(c.segs)
-			k = min(len(parts), n)
-			if all(c.segs[i].star or c.segs[i].name == parts[i] for i in range(k)):
-				if len(parts) <= n:
+			k = min(len(rest), n)
+			if all(c.segs[i].star or c.segs[i].name == rest[i] for i in range(k)):
+				if len(rest) <= n:
 					return True
 				if c.inherits is not None:
 					fcs = frags.get(c.inherits)
 					if fcs is not None:
-						stack.append((fcs, parts[n:]))
+						stack.append((c.inherits, fcs, at + n))
 	return False
 
 

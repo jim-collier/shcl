@@ -85,13 +85,16 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Opened: 20260905-141800
 		- Closed: 20260905-191617
 
-	- 🔘 Item 4: validating a deep document against a recursive schema hangs, in the half of validation the 20260802 fix did not reach.
+	- ✅ Item 4: validating a deep document against a recursive schema hangs, in the half of validation the 20260802 fix did not reach.
 		- Reproduced in all four. A four-line schema - a fragment whose `child` and `child.child` both mount it - against a 35-line document ending in one unknown field: rust 5.5 s, go 0.42 s, c 0.47 s, python 13.2 s. Every two levels of document depth multiply that by about 2.6, so depth 42 is minutes in rust and the 512 cap never finishes. The same document with no unknown field is 3 ms at any depth.
 		- Cause: `chain_parts_legal` walks the mounts to decide whether a name chain is declared, and memoizes nothing. A schema offering two ways to consume the same chain prefix explores both to the bottom, and a chain that ends unknown has to explore all of them before it can say so.
 		- Note: this is the shape 20260802 item 4 was closed on - "when two constraint paths match the same node and both mount the same fragment, the work doubles per level of the document. A file around thirty lines deep takes over a minute". That fix memoized the mount evaluation, which still holds: adding mount paths to a schema over a 300-level document leaves the time flat at 21 ms. The unknown-field sweep's own matcher was left as it was; it predates the fix.
 		- Note: the spec claims the bound this breaks - "termination is structural and cost is proportional to the document, never the schema's unfolding".
 		- Note: the document is the attacker-controlled half in a consumer calling `LoadAndValidate` on user config, and 35 lines is enough.
+		- Fixed: the chain matcher in all four bindings remembers each (fragment, parts consumed) state it has ruled out, so two mounts of one fragment at one depth are walked once. Depth 34 went from seconds to about 2 ms; depth 400 is under 60 ms in every binding.
+		- Pinned by: a `perf-gate` workload (`recurse`: the two-mount fragment against a 60-level document ending in an unknown field, judged against the binding's own parse baseline like the other five), which the old reference does not finish, and corpus `107-schema-recursive-mounts`, which pins that the memo prunes nothing it should not: a type fault seven mounts down, a star path through a mount, one unknown leaf at the bottom.
 		- Opened: 20260905-141900
+		- Closed: 20260905-193329
 
 	- 🔘 Item 5: the changelog contradicts itself and the spec on a crossed `min`/`max` range.
 		- Reproduced by reading. `changelog.md:39` says "The field is dropped and reported once, like any other broken one"; `changelog.md:133`, added by the last round, says "the range is dropped, the field keeps its other constraints". Both sit in the same `## Unreleased` section, so the 2.1.0 release notes carry both.

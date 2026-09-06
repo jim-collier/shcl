@@ -7189,32 +7189,44 @@ fn star_legal(pats: &[&[Segment]], chain: &str) -> bool {
 /// Chain legality through fragment mounts: the general matcher - element-wise
 /// like star_legal (stars wild, prefixes legal), and when a mount's whole path
 /// matched with chain left over, the remainder is retried against the mounted
-/// fragment's fields. Terminates: every descent consumes >= 1 part.
+/// fragment's fields. Terminates: every descent consumes >= 1 part. A state
+/// is (fragment, parts consumed), and one that has failed is not walked again:
+/// two mounts of the same fragment at the same depth used to be walked both,
+/// which is 2^depth on a chain that ends unknown.
 fn chain_legal(cons: &[Constraint], frags: &HashMap<String, Vec<Constraint>>, chain: &str) -> bool {
 	let parts: Vec<&str> = chain_parts(chain);
-	chain_parts_legal(cons, frags, &parts)
+	let mut dead: std::collections::HashSet<(&str, usize)> = std::collections::HashSet::new();
+	chain_parts_legal(cons, "", frags, &parts, 0, &mut dead)
 }
 
-fn chain_parts_legal(
-	cons: &[Constraint],
-	frags: &HashMap<String, Vec<Constraint>>,
+fn chain_parts_legal<'a>(
+	cons: &'a [Constraint],
+	set: &'a str,
+	frags: &'a HashMap<String, Vec<Constraint>>,
 	parts: &[&str],
+	at: usize,
+	dead: &mut std::collections::HashSet<(&'a str, usize)>,
 ) -> bool {
+	if dead.contains(&(set, at)) {
+		return false;
+	}
+	let rest = &parts[at..];
 	for c in cons {
 		let n = c.segs.len();
-		let k = parts.len().min(n);
-		if (0..k).all(|i| c.segs[i].star || c.segs[i].name == parts[i]) {
-			if parts.len() <= n {
+		let k = rest.len().min(n);
+		if (0..k).all(|i| c.segs[i].star || c.segs[i].name == rest[i]) {
+			if rest.len() <= n {
 				return true;
 			}
 			if let Some(fr) = &c.inherits
 				&& let Some(fcs) = frags.get(fr)
-				&& chain_parts_legal(fcs, frags, &parts[n..])
+				&& chain_parts_legal(fcs, fr, frags, parts, at + n, dead)
 			{
 				return true;
 			}
 		}
 	}
+	dead.insert((set, at));
 	false
 }
 
