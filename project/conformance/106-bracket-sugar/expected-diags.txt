@@ -1,0 +1,5 @@
+line 1: Hint: E019
+line 3: Hint: E019
+line 4: Hint: E019
+line 5: Hint: E019
+ok (4 diagnostic(s))

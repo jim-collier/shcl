@@ -107,6 +107,13 @@ printf 'db:\n\thost: h\n\t"odd.key": 2\nweb:\n\tport: 1\n' > "${tmpDir}/tree.shc
 ## Two plain keys, for the edit options: what each one leaves behind is the
 ## whole assertion, so the document has to be small enough to spell out.
 printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
+## Bracket text on a value line. Two elements in brackets fold into one string,
+## which is the loss the save gate refuses; one bracketed value reads the same
+## as the bare spelling and is the documented `field:[disc]` sugar, so the
+## rewrite has to go through. The sugar file is copied fresh for every run of a
+## row that names %W%, since a rewrite is the thing being tested.
+printf 'ports: [80, 443]\n' > "${tmpDir}/brarray.shcl"
+printf 'base:[Boston]\n\tlat: 42\n' > "${tmpDir}/sugar.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
 ##	argv placeholders: %F% the good file, %B% the two-error file, %B2% a second
@@ -119,7 +126,8 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ##	takes no temp file, %R%/%SA% a raw block and a schema that refuses it, %X% an
 ##	instance whose discriminator holds an '=', %Q% one whose discriminator holds
 ##	an apostrophe, %T% a document with a name that needs quoting in a path,
-##	%F2% a two-key file for the edit options, %M% a path with no file at it.
+##	%F2% a two-key file for the edit options, %M% a path with no file at it,
+##	%BA% a bracket array, %W% a fresh copy of the selector-sugar file.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
@@ -192,6 +200,15 @@ rows=(
 	"set-default-quote-in-selector|set --set-default=srv[O'Brien].port=9 %Q%|-|0|srv: \"O'Brien\"\n\tport: 0\n|-"
 	"set-quoted-selector-eq|set --set=x[\"k]=v\"].d=2 %X%|-|0|x: a=b\n\tc: 0\n\nx: \"k]=v\"\n\td: 2\n|-"
 	"set-open-quote-refused|set --set=a[\"open=1 %X%|-|1|-|bad --set value"
+	## 20260905 item 1: a bracket array and selector sugar are spelled the same,
+	## and both were an error that counted lost, so a file written with the
+	## documented `base:[Boston]` failed check and could not be saved. Only the
+	## comma-bearing shape loses anything.
+	'bracket-array-check|check %BA%|-|6|line 1: Error: E019\nfailed: 1 diagnostic(s), 1 error(s)\n|-'
+	'bracket-array-write-refused|fmt --write %BA%|-|7|-|dropped 1 line'
+	'sugar-check|check %W%|-|0|line 1: Hint: E019\nok (1 diagnostic(s))\n|-'
+	'sugar-check-strict|check --strictness=strict %W%|-|0|-|-'
+	'sugar-write|fmt --write %W%|-|0||-'
 	## 20260830b item 18: a read below strict returned the value and said nothing
 	## about a line the load had dropped, so a damaged file read clean at exit 0.
 	'get-diags|get %B% a|-|0|1|E015 missing colon'
@@ -293,6 +310,13 @@ for row in "${rows[@]}"; do
 	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%Q%/${tmpDir}/quote.shcl}"
+	argv="${argv//%BA%/${tmpDir}/brarray.shcl}"
+	## %W% is rewritten in place, so each binding gets its own fresh copy below.
+	freshCopy=0
+	if [[ "${argv}" == *%W%* ]]; then
+		freshCopy=1
+		argv="${argv//%W%/${tmpDir}/w.shcl}"
+	fi
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
 	argv="${argv//%M%/${tmpDir}/not-there.shcl}"
@@ -313,6 +337,7 @@ for row in "${rows[@]}"; do
 	read -r -a args <<<"${argv}"
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
+		((freshCopy)) && cp "${tmpDir}/sugar.shcl" "${tmpDir}/w.shcl"
 		rc=0
 		case "${stdinSpec}" in
 			@closedin)  "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" 0<&- || rc=$? ;;

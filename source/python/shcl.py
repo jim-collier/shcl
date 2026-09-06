@@ -1111,16 +1111,21 @@ def _parse_uint(s):
 	return n
 
 
-def _looks_like_bracket_array(content):
-	"""A value spelled the way JSON, TOML and YAML spell an array. The path scanner
+def _bracket_array_body(content):
+	"""The text between the brackets of a value spelled the way JSON, TOML and
+	YAML spell an array, or None when the line is not that shape. The path scanner
 	reads the brackets as a selector, so the line arrives with no value text and the
 	old repair blamed a colon that is plainly there. The colon that counts is the
-	field's own: one inside a quoted name or a selector is not it."""
+	field's own: one inside a quoted name or a selector is not it. Selector sugar
+	(`base:[Boston]`) is spelled the same way and is legal, so the caller decides
+	by what the brackets hold."""
 	kind, colon = _name_half(content, False)
 	if kind != _NAME_COLON:
-		return False
+		return None
 	rest = content[colon + 1:].strip()
-	return rest.startswith("[") and rest.endswith("]")
+	if len(rest) < 2 or not rest.startswith("[") or not rest.endswith("]"):
+		return None
+	return rest[1:-1]
 
 
 # How the name half of a field line ends.
@@ -2023,12 +2028,23 @@ class _Parser:
 			# scalar/inline-array case has a one-line source spelling).
 			src_text = None
 			if value_text is None:
-				if _looks_like_bracket_array(content):
-					# The brackets never survive the load, so a rewrite would
-					# bake the changed value in and the file would check clean
-					# forever after. Count it lost so the save gate stops that.
-					self._err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
-					self.lost += 1
+				body = _bracket_array_body(content)
+				if body is not None:
+					if len(_split_unquoted_commas(body)) > 1:
+						# Two or more elements folded into one string. The
+						# brackets never survive the load, so a rewrite would
+						# bake the changed value in and the file would check
+						# clean forever after. Count it lost so the save gate
+						# stops that.
+						self._err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
+						self.lost += 1
+					else:
+						# One element reads as the selector the scanner made of
+						# it - `[Boston]` is `Boston` - and `field:[disc]` is
+						# documented sugar, so nothing is lost. A hint, for the
+						# JSON habit; same code, like E022.
+						self._diag(Diagnostic(lineno, Severity.Hint,
+							"bracket array syntax; read as a selector, the same value without the brackets", "E019"))
 				else:
 					# A clean path with no colon is the one defined repair:
 					# the obvious intent is that path with an empty value.

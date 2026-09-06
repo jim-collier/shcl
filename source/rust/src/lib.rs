@@ -673,17 +673,20 @@ pub const MAX_DEPTH: usize = 512;
 // Lexical helpers
 // ---------------------------------------------------------------------------
 
-/// A value spelled the way JSON, TOML and YAML spell an array. The path scanner
-/// reads the brackets as a selector, so the line arrives with no value text and
-/// the old repair blamed a colon that is plainly there. The colon that counts
-/// is the field's own: one inside a quoted name or a selector is not it.
-fn looks_like_bracket_array(content: &str) -> bool {
+/// The text between the brackets of a value spelled the way JSON, TOML and
+/// YAML spell an array, or None when the line is not that shape. The path
+/// scanner reads the brackets as a selector, so the line arrives with no value
+/// text and the old repair blamed a colon that is plainly there. The colon
+/// that counts is the field's own: one inside a quoted name or a selector is
+/// not it. Selector sugar (`base:[Boston]`) is spelled the same way and is
+/// legal, so the caller decides by what the brackets hold.
+fn bracket_array_body(content: &str) -> Option<&str> {
 	match name_half(content, false) {
 		NameHalf::Colon(colon) => {
 			let rest = content[colon + 1..].trim();
-			rest.starts_with('[') && rest.ends_with(']')
+			rest.strip_prefix('[').and_then(|r| r.strip_suffix(']'))
 		}
-		_ => false,
+		_ => None,
 	}
 }
 
@@ -2558,17 +2561,31 @@ impl Parser {
 			let mut src_text: Option<&str> = None;
 			let value = match &scan.value_text {
 				None => {
-					if looks_like_bracket_array(content) {
-						// The brackets never survive the load, so a rewrite
-						// would bake the changed value in and the file would
-						// check clean forever after. Count it lost so the save
-						// gate stops that.
-						self.err(
-							lineno,
-							"E019",
-							"bracket array syntax; an array is comma-separated, without brackets",
-						);
-						self.lost += 1;
+					if let Some(body) = bracket_array_body(content) {
+						if split_unquoted_commas(body).len() > 1 {
+							// Two or more elements folded into one string. The
+							// brackets never survive the load, so a rewrite
+							// would bake the changed value in and the file
+							// would check clean forever after. Count it lost so
+							// the save gate stops that.
+							self.err(
+								lineno,
+								"E019",
+								"bracket array syntax; an array is comma-separated, without brackets",
+							);
+							self.lost += 1;
+						} else {
+							// One element reads as the selector the scanner made
+							// of it - `[Boston]` is `Boston` - and `field:[disc]`
+							// is documented sugar, so nothing is lost. A hint,
+							// for the JSON habit; same code, like E022.
+							self.diag(Diagnostic {
+								line: lineno,
+								severity: Severity::Hint,
+								message: "bracket array syntax; read as a selector, the same value without the brackets".into(),
+								code: "E019",
+							});
+						}
 					} else {
 						// A clean path with no colon is the one defined repair:
 						// the obvious intent is that path with an empty value.

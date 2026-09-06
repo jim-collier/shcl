@@ -1407,18 +1407,23 @@ func parseIndex(s string) (uint64, bool) {
 // brackets is insignificant. A colon is a selector colon only when the next
 // non-ws char is `[`; otherwise it separates the value. An error means
 // genuinely ambiguous input, which the caller skips with a diagnostic.
-// looksLikeBracketArray: a value spelled the way JSON, TOML and YAML spell an
-// array. The path scanner reads the brackets as a selector, so the line arrives
-// with no value text and the old repair blamed a colon that is plainly there.
-// The colon that counts is the field's own: one inside a quoted name or a
-// selector is not it.
-func looksLikeBracketArray(content string) bool {
+// bracketArrayBody: the text between the brackets of a value spelled the way
+// JSON, TOML and YAML spell an array, or false when the line is not that shape.
+// The path scanner reads the brackets as a selector, so the line arrives with
+// no value text and the old repair blamed a colon that is plainly there. The
+// colon that counts is the field's own: one inside a quoted name or a selector
+// is not it. Selector sugar (`base:[Boston]`) is spelled the same way and is
+// legal, so the caller decides by what the brackets hold.
+func bracketArrayBody(content string) (string, bool) {
 	kind, colon := nameHalf(content, false)
 	if kind != nameColon {
-		return false
+		return "", false
 	}
 	rest := strings.TrimSpace(content[colon+1:])
-	return strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]")
+	if len(rest) < 2 || !strings.HasPrefix(rest, "[") || !strings.HasSuffix(rest, "]") {
+		return "", false
+	}
+	return rest[1 : len(rest)-1], true
 }
 
 // How the name half of a field line ends.
@@ -2571,12 +2576,21 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		var v value
 		switch {
 		case scan.valueText == nil:
-			if looksLikeBracketArray(content) {
-				// The brackets never survive the load, so a rewrite would bake
-				// the changed value in and the file would check clean forever
-				// after. Count it lost so the save gate stops that.
-				p.err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
-				p.lost++
+			if body, ok := bracketArrayBody(content); ok {
+				if len(splitUnquotedCommas(body)) > 1 {
+					// Two or more elements folded into one string. The brackets
+					// never survive the load, so a rewrite would bake the
+					// changed value in and the file would check clean forever
+					// after. Count it lost so the save gate stops that.
+					p.err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
+					p.lost++
+				} else {
+					// One element reads as the selector the scanner made of it -
+					// `[Boston]` is `Boston` - and `field:[disc]` is documented
+					// sugar, so nothing is lost. A hint, for the JSON habit;
+					// same code, like E022.
+					p.diag(Diagnostic{Line: lineno, Severity: SeverityHint, Message: "bracket array syntax; read as a selector, the same value without the brackets", Code: "E019"})
+				}
 			} else {
 				// A clean path with no colon is the one defined repair:
 				// the obvious intent is that path with an empty value.
