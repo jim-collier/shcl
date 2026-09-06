@@ -58,7 +58,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- Note: the spec says "the `:` before a selector is optional sugar, so `field[disc]` and `field:[disc]` are the same", and `grammar.abnf` says it again on the `segment` rule. Two spellings the documents call identical get different codes and different save outcomes.
 		- Note: half of this is a regression from 20260904 item 3. Before that fix `"a:b":[x]` and `srv[db:5432].x:[y]` were `E015` and wrote clean at exit 0; both are `E019` and refuse at exit 7 now. The bare `base:[Boston]` spelling has behaved this way since `E019` arrived.
 		- Note: corpus `089` pins `x: [a].y: [1, 2]`, which is a real bracket array after a sugar colon, so it does not cover this and does not have to change.
-		- Note: `E019` also counts lost for every single-element bracket body, where nothing is lost either - `a: ["a, b"]` reads back the same one-element array a JSON reader meant. Only a body holding an unquoted comma changes the value's reading, which is the case the code was written for.
+		- Decision needed: `E019` cannot tell a bracket array from selector sugar, because they are spelled the same. It does not have to: count lost only where something is really dropped. A comma in the brackets changes the value's reading, a numeric or `*` body already drops the line under its own code, and `[x]` reads exactly as `x` does.
 		- Opened: 20260905-141600
 
 	- 🔘 Item 2: a quote inside a bare selector swallows the trailing comment into the value.
