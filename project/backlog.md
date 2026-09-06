@@ -111,10 +111,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 	- The enhancement half of the round filed under Bugs above. Four items. Nothing here violates a stated rule; two are documents that disagree with the code, one is a recovery shape that differs between two halves of the same language, and one is a count that overstates.
 
-	- 🔘 Item 6: one line can be counted lost twice.
+	- ✅ Item 6: one line can be counted lost twice.
 		- Measured: `a: [80]` reports `E019` and then `E003`, and the lost count is 2 for one line. `a: [*]` does the same with `E019` and `E004`. `LostCount()` is documented as "how many lines or values were dropped", so a consumer showing the number to a user overstates it.
 		- Note: nothing keys on the exact number today - the save gate only asks whether it is nonzero - so this is a number worth correcting rather than a behavior to change.
+		- Fixed: by item 1's rule. A bracket body with no unquoted comma is a hint that counts nothing, so `a: [80]` and `a: [*]` are counted once each, by `E003` and `E004`.
+		- Pinned by: corpus `108-bracket-index-lost` - the two lines, the hint and error each reports, and a lost count of 2. The count read 4 before this round.
 		- Opened: 20260905-142100
+		- Closed: 20260905-193735
 
 	- 🔘 Item 7: `grammar.abnf` lists `#` as a legal selector character and the spec says it opens a comment.
 		- The `sel-char` range is "any char but `]`", which includes `#`, and its note names quotes and non-ASCII as passing through verbatim without mentioning `#`. The spec's `E003` row says the opposite and describes the real behavior: "the `#` opens a comment before the selector is read". `a[x#y].b: 1` is `E014`.
