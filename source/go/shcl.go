@@ -6692,7 +6692,13 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// Dropping a trailing `[*]` can render the same line a concrete sibling
 	// already wrote; the first spelling wins.
 	emitted := map[string]bool{}
-	first := true
+	// One block per generated line - its desc, annotation and binding - with
+	// the path's names, so the blocks can be laid out in tree order below.
+	type genBlock struct {
+		names []string
+		text  string
+	}
+	var blocks []genBlock
 	for i := range cons {
 		c := &cons[i]
 		tyname := c.ty
@@ -6726,37 +6732,77 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			continue
 		}
 		emitted[path] = true
-		if !first {
-			b.WriteByte('\n')
-		}
-		first = false
+		var block strings.Builder
 		if c.desc != nil {
 			for _, line := range strings.Split(*c.desc, "\n") {
-				b.WriteString("# ")
-				b.WriteString(line)
-				b.WriteByte('\n')
+				block.WriteString("# ")
+				block.WriteString(line)
+				block.WriteByte('\n')
 			}
 		}
-		b.WriteString("# ")
+		block.WriteString("# ")
 		// The annotation is a comment: a newline smuggled in via an allowed
 		// string value must not break out of it.
-		b.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
-		b.WriteByte('\n')
+		block.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
+		block.WriteByte('\n')
 		prefix := "#"
 		if mustExist(c) {
 			prefix = ""
 		}
 		if c.defaultText != nil {
-			fmt.Fprintf(&b, "%s%s: %s\n", prefix, path, genDefaultText(*c.defaultText))
+			fmt.Fprintf(&block, "%s%s: %s\n", prefix, path, genDefaultText(*c.defaultText))
 		} else {
-			fmt.Fprintf(&b, "%s%s:\n", prefix, path)
+			fmt.Fprintf(&block, "%s%s:\n", prefix, path)
 		}
+		blocks = append(blocks, genBlock{namesOf(c.segs), block.String()})
+	}
+	// Tree order, first appearance first. A schema may list `a.host.srv`
+	// before `a`, and emitted as listed with another field between them,
+	// `a: x` re-opens `a` and the load hints it (H002) - in the one file meant
+	// to show the format at its cleanest. Every prefix is ranked by where it
+	// first appears, so a parent's block comes before its children's, siblings
+	// keep schema order, and a schema already in tree order is unchanged.
+	rank := map[string]int{}
+	for _, bl := range blocks {
+		for k := 1; k <= len(bl.names); k++ {
+			key := namesKey(bl.names[:k])
+			if _, ok := rank[key]; !ok {
+				rank[key] = len(rank)
+			}
+		}
+	}
+	// A parent's key is a prefix of its children's, and a shorter key sorts
+	// first; the sort is stable, so two blocks on one path keep their order.
+	keys := make([][]int, len(blocks))
+	for i, bl := range blocks {
+		for k := 1; k <= len(bl.names); k++ {
+			keys[i] = append(keys[i], rank[namesKey(bl.names[:k])])
+		}
+	}
+	order := make([]int, len(blocks))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(x, y int) bool {
+		kx, ky := keys[order[x]], keys[order[y]]
+		for j := 0; j < len(kx) && j < len(ky); j++ {
+			if kx[j] != ky[j] {
+				return kx[j] < ky[j]
+			}
+		}
+		return len(kx) < len(ky)
+	})
+	for n, i := range order {
+		if n > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(blocks[i].text)
 	}
 	// Cycle-cut mounts last: their "type" column names the fragment that
 	// belongs at the path.
 	wild = append(wild, cuts...)
 	if len(wild) > 0 {
-		if !first {
+		if len(blocks) > 0 {
 			b.WriteByte('\n')
 		}
 		b.WriteString("# Paths needing an instance name (not generated):\n")
