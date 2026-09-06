@@ -95,6 +95,15 @@ Other points
 
 - Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Two neighbors stay unpadded on purpose: bare `shcl`, which prints the same help text but as a usage error, and `version`, which stays a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
 
+- The lexical rules shrink at 3.0. Decided 2026-09-06, not built yet; the backlog carries the work and the migration.
+	- Why: the same lexical rule lived in seven scanners per binding, and every scanner defect since July was two of them disagreeing. A fix reached the copies that were reproduced. One tokenizer per binding replaces them, and fewer rules leave it less to get wrong.
+	- A `[` right after a name is a selector; a `[` after the colon starts the value. The `field:[disc]` sugar goes, and bracket text after a colon is refused whole and kept verbatim, like a pasted YAML list.
+	- A quoted piece opens with a quote as its first character and closes with its last. Anywhere else a quote is a character, in a name, a selector, a value, an element, a setter argument, a `--set` path and a schema path alike. An unterminated quote keeps the piece literally everywhere.
+	- Escapes are processed inside double quotes only. Single quotes are literal and bare text never processes a backslash, which is TOML's and YAML's rule.
+	- `#` opens a comment only when first on the line or preceded by a space or tab, YAML's rule. A fence line can carry a trailing comment again in both spellings.
+	- The trailing carriage-return run comes off every line at load, raw bodies included, and a CR is special nowhere else.
+	- The cost, said once: a bare `\n` or `\t` and a single-quoted escape change meaning. The last 2.x formatter migrates a file in one pass, and a 2.x reader is unaffected by the migrated file.
+
 The itemized decisions are recorded in this file as they are made; `spec.md` is their normative form.
 
 ## Architecture
