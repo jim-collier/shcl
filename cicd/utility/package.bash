@@ -67,6 +67,23 @@ export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${root}" log -1 --forma
 fPinMtime(){ touch -d "@${SOURCE_DATE_EPOCH}" "$@"; }
 find "${payload}" -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +
 
+##	The profiler is a feature-gated dependency chain under a license `deny.toml`
+##	allows on exactly the basis that it never ships. Nothing enforced that
+##	beyond the release command not carrying the flag, so it is checked against
+##	the file rather than the command: every binary in the artifact directory,
+##	and the source payload beside them, must carry no trace of the three crates.
+##	The names are assembled so this test does not match itself.
+fCheckNoProfiler(){
+	local f hit
+	for f in "${artDir}"/shcl-* "${payload}"/code/*; do
+		[[ -f "${f}" ]] || continue
+		case "${f}" in *.sha256|*sha256sums*) continue ;; esac
+		hit="$(LC_ALL=C grep -l -a -e "ppr""of" -e "inf""erno" -e "quick""-xml" "${f}" || true)"
+		[[ -z "${hit}" ]] || fDie "$(basename "${f}"): carries the profiler dependency, which must never ship"
+	done
+}
+fCheckNoProfiler
+
 built=0
 
 ##	The deb's Depends and the rpm's Requires against the binary they carry:
@@ -176,6 +193,8 @@ fi
 
 ##	History:
 ##		- 2026-07-22: Created: nfpm deb/rpm + NSIS setup over the release artifact dir.
+##		- 2026-09-08: The profiler dependency is checked against the artifacts,
+##		  not against the release command not carrying its flag.
 ##		- 2026-08-29: Reproducible output: mtimes pinned to the commit time; man page
 ##		  and completions staged for the Linux packages only.
 ##		- 2026-09-02: Dependencies read off the binary, Debian copyright and changelog

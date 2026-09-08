@@ -102,10 +102,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- `shell-regress.bash` covers `SHCL_BIN` resolution, the caller-scope hygiene, the symlink resolution and the pre-.NET-6 guard, and caps the header comment width. Nothing covers argument pass-through, exit-code pass-through, stdin and stdout fidelity, or whether the two wrappers agree - which is why item 16 was never seen. The whole matrix run this round is about forty rows.
 		- Opened: 20260904-173700
 
-	- 🔘 Item 40: pin "pprof must never ship" to the artifact, and compile the profiling build somewhere.
+	- ✅ Item 40: pin "pprof must never ship" to the artifact, and compile the profiling build somewhere.
 		- The rule holds today: the release binary and every packaged artifact carry zero matches for pprof, inferno or quick-xml, and no default-feature build resolves the dependency. It rests entirely on the release command not carrying the feature flag. One `strings` line in `package.bash` or `sign-release.bash` would pin it to the file rather than to the command. The stake is a GPL-incompatible license that `deny.toml` allows on exactly that basis.
 		- Note: the `--features profiling` build is neither linted nor compiled by any gate, so the feature-gated block only breaks visibly in a full local run. `cargo check --features profiling` in the lint extras costs seconds after the first build.
+		- Fixed: `package.bash` reads every binary in the artifact directory and the source payload beside them, and fails on any trace of the three crates. The rule is on the file now rather than on the release command not carrying a flag.
+		- Pinned by: packaging a `--features profiling` build, which the check refuses by name.
+		- Decided: the `--features profiling` build stays out of the `--ci` gate. It needs crates.io, which the gate must not, for the same reason the comparison tool's rust half is out. A full local run builds it and hard-fails, which is where a broken feature block is caught; `config.bash` says so beside the build command.
 		- Opened: 20260904-173800
+		- Closed: 20260908-162000
 
 	- ✅ Item 41: the man page's rendered width is ungated, and one line already runs past 80.
 		- Rendered at `MANWIDTH=80`, exactly one line is 81 columns, from an unfilled example block. `cli-regress.bash` pins the help at 80 and says why; nothing does the same for the page next to it.
