@@ -127,7 +127,7 @@ LINT_EXTRA=(
 	'cicd/utility/check-wheel.bash'
 	## The README's C example is the first thing a C consumer copies, and it is
 	## the one example nothing else here builds.
-	'cicd/utility/check-readme-c.bash'
+	'cicd/utility/check-readme.bash'
 	## Claims the documents make about themselves, that no linter checks.
 	'cicd/utility/check-docs.bash'
 	## TOOL_PINS above is copied by hand into ci.yml; this fails the stage when
@@ -147,7 +147,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/check-locale.bash
 	cicd/utility/check-migrate.bash
 	cicd/utility/check-pins.bash
-	cicd/utility/check-readme-c.bash
+	cicd/utility/check-readme.bash
 	cicd/utility/check-wheel.bash
 	cicd/utility/cli-regress.bash
 	cicd/utility/comparison/compare.bash

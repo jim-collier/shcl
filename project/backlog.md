@@ -200,10 +200,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: the sweep for the recorded bash traps found no `((n++))` anywhere and every glob loop guarded, so this is what is left.
 		- Opened: 20260904-175000
 
-	- 🔘 Item 53: the README's Go example does not compile, and the Zig one is the only language example nothing builds.
+	- ✅ Item 53: the README's Go example does not compile, and the Zig one is the only language example nothing builds.
 		- The Go fragment declares a variable it never uses, which is a hard compile error, so it does not build even with the package clause, `func main` and the imports a reader adds. The Rust fragment has the same unused binding and only warns.
 		- Note: the C example is gated by `check-readme-c.bash`. The Zig example builds and runs correctly today with the build line the README prints, and nothing checks it.
+		- Fixed: both fragments print the value they read, so the binding is used and the Go one compiles.
+		- Fixed: `check-readme-c.bash` is `check-readme.bash` and builds all three. Go gets a package clause, a main and the two imports its body calls, with the library resolved from the tree rather than the proxy so it needs no network; Zig gets the statements in a main, the two-line `impl.c` the README describes, and the build line the README prints. Zig is skipped out loud where it is not installed, since nothing shipped depends on it.
+		- Pinned by: taking the print back out of the Go fragment, which the gate then refuses with `declared and not used: root`.
 		- Opened: 20260904-175200
+		- Closed: 20260908-160000
 
 ### Done
 
