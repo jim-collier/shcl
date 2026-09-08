@@ -107,9 +107,12 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: the `--features profiling` build is neither linted nor compiled by any gate, so the feature-gated block only breaks visibly in a full local run. `cargo check --features profiling` in the lint extras costs seconds after the first build.
 		- Opened: 20260904-173800
 
-	- 🔘 Item 41: the man page's rendered width is ungated, and one line already runs past 80.
+	- ✅ Item 41: the man page's rendered width is ungated, and one line already runs past 80.
 		- Rendered at `MANWIDTH=80`, exactly one line is 81 columns, from an unfilled example block. `cli-regress.bash` pins the help at 80 and says why; nothing does the same for the page next to it.
+		- Fixed: the pipeline in that example runs over two lines, which is what a shell reads anyway.
+		- Pinned by: `cli-regress.bash` renders the page at `MANWIDTH=80` and holds it to the same 80 the help is held to. Rendered, not read: the source's line lengths are not the page's, and nroff's overstrike bold has to come off first or every emphasized line reads as double width. Skipped out loud where there is no `man`.
 		- Opened: 20260904-173900
+		- Closed: 20260908-155000
 
 	- ✅ Item 42: a set-then-remove pair grows the document by about 312 bytes in Rust, Go and Python, with no way to reclaim it.
 		- Measured over 20,000 iterations with a counting allocator. Every other repeated setter is flat at 0.00 bytes per call; `set_comment` is 58 bytes, which is its semantics. `remove` unlinks the node and leaves its arena slot and its index entry.

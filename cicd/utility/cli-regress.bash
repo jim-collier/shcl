@@ -26,6 +26,7 @@
 
 set -Eeuo pipefail
 
+repoDir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 bindings=()
 while (($#)); do case "$1" in
 	-h|--help) grep -E '^##' "$0" | sed 's/^##\t\?//'; exit 0 ;;
@@ -421,6 +422,26 @@ for b in "${bindings[@]}"; do
 	done
 done
 
+## The man page sits next to that help and had nothing holding it to the same
+## width; rendered at 80 it already carried one 81-column line, from an example
+## block nroff does not fill. Rendered rather than read, because the source's
+## line lengths are not the page's. The overstrike sequences nroff writes for
+## bold come off first, or every emphasized line reads as double its width.
+manPage="${repoDir}/source/man/shcl.1"
+if [[ -f "${manPage}" ]] && command -v man >/dev/null 2>&1; then
+	rendered="$(MANWIDTH=80 MAN_KEEP_FORMATTING='' man --nh --nj -l "${manPage}" 2>/dev/null | sed 's/.\x08//g' || true)"
+	nRun+=1
+	if [[ -z "${rendered}" ]]; then
+		echo "cli-regress: man-width: the page rendered to nothing" >&2; nBad+=1
+	else
+		while IFS= read -r wide; do
+			echo "cli-regress: man-width: line ${wide}" >&2; nBad+=1
+		done < <(LC_ALL=C awk -v m="${maxCols}" 'length($0) > m { print NR " is " length($0) " columns: " substr($0, 1, 40) }' <<<"${rendered}")
+	fi
+else
+	echo "cli-regress: skipping the man page width check (no man here)"
+fi
+
 if ((nBad)); then
 	echo "cli-regress: ${nBad} of ${nRun} check(s) failed" >&2
 	exit 1
@@ -432,3 +453,5 @@ echo "cli-regress: OK: ${#rows[@]} row(s) across ${#bindings[@]} binding(s), ${n
 ##		            20260830 rounds that no corpus case can express.
 ##		2026-08-31  Help width, after the help text was found sitting at exactly
 ##		            80 columns with nothing to fail on.
+##		2026-09-08  Man page width, rendered at 80, after the page next to that
+##		            help was found carrying an 81-column example line.
