@@ -102,23 +102,33 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Rendered at `MANWIDTH=80`, exactly one line is 81 columns, from an unfilled example block. `cli-regress.bash` pins the help at 80 and says why; nothing does the same for the page next to it.
 		- Opened: 20260904-173900
 
-	- 🔘 Item 42: a set-then-remove pair grows the document by about 312 bytes in Rust, Go and Python, with no way to reclaim it.
+	- ✅ Item 42: a set-then-remove pair grows the document by about 312 bytes in Rust, Go and Python, with no way to reclaim it.
 		- Measured over 20,000 iterations with a counting allocator. Every other repeated setter is flat at 0.00 bytes per call; `set_comment` is 58 bytes, which is its semantics. `remove` unlinks the node and leaves its arena slot and its index entry.
 		- Note: C has `shcl_compact`. The other three have nothing, and nothing says so.
+		- Decided: documented rather than given a `compact` of its own in the other three. `shcl_compact` is a C deviation because C has no other answer; the other three can reload the canonical text, which is cheap and ordinary there. Adding three calls to mirror a deviation would invert the parity rule.
+		- Fixed: every binding's `remove` says the storage is not reclaimed and what to do about it, and `design.md` says it once for all four under the C binding's memory notes.
 		- Opened: 20260904-174000
+		- Closed: 20260908-145000
 
-	- 🔘 Item 43: `shcl_reads_release` plateaus at the largest single read result and the header does not say so.
+	- ✅ Item 43: `shcl_reads_release` plateaus at the largest single read result and the header does not say so.
 		- Measured: after `to_canonical` on a 100 MiB document it leaves one 95.9 MiB block held until `shcl_free`.
+		- Fixed: the header says so on `shcl_reads_release`. The read arena keeps its largest block on reset by design, so what is left at rest is the biggest single result the process has taken, not zero. Also in `design.md`.
 		- Opened: 20260904-174100
+		- Closed: 20260908-145000
 
-	- 🔘 Item 44: point a repeatedly-merging C consumer at `shcl_compact`.
+	- ✅ Item 44: point a repeatedly-merging C consumer at `shcl_compact`.
 		- Follows from item 21. The `shcl_compact` comment sells compaction to a repeated writer, "a few dozen bytes per write". Merging costs four orders of magnitude more per call, and the merge comment mentions compaction only in passing.
+		- Fixed: the `shcl_compact` comment names the merge as the case worth calling it for, and the `shcl_merge` comment says how much a fold retains and points back.
 		- Opened: 20260904-174200
+		- Closed: 20260908-145000
 
-	- 🔘 Item 45: say what `SHCL_SETJMP` costs an embedder, and decide its scope.
+	- ✅ Item 45: say what `SHCL_SETJMP` costs an embedder, and decide its scope.
 		- The macro's own comment justifies the non-unwinding path with "nothing in between has a destructor or a `__finally`". That is true of the library's two arming sites and not of the case the same header points an embedder at, where the frames between their recovery point and the failed allocation are theirs. A C++ embedder with RAII on mingw gets destructors skipped.
 		- Note: the guard is `__MINGW32__ && __x86_64__ && __SEH__`. mingw's own header takes the same unwinding branch on aarch64, so an ARM64 windows build of the C binding keeps the original behavior. `style-guide.md` scopes the deviation to mingw x86_64, so this is a limit to confirm rather than a contradiction - nothing builds C for that target today.
+		- Decided: the guard stays mingw x86_64. mingw takes the unwinding branch on aarch64 too, and nothing builds the C binding for aarch64 windows, so widening it on the assumption the shape matches would be a guess. It is a limit to measure if that target ever arrives.
+		- Fixed: the macro's own comment says what the deviation costs an embedder - a C++ frame between their recovery point and the failed allocation does not run its destructors, and a `__finally` does not run - and `style-guide.md` carries the scope and the same sentence.
 		- Opened: 20260904-174300
+		- Closed: 20260908-145000
 
 	- ✅ Item 46: `shcl_validate` leaves one arena guarded on a frame it has returned from.
 		- The teardown clears the validation arena and the document's three, and not `v->scratch`, which `v_unknown` armed on the same recovery point. Inert today, because that arena is only written inside `v_unknown` and freed afterwards. It becomes a jump into a dead frame the moment anything allocates into it after the call. `do_parse` clears all four of its arenas explicitly, which is what makes the omission read as an oversight.
