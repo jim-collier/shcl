@@ -114,6 +114,79 @@ for mode in "${compModes[@]}"; do
 	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on the space form: ${out@Q}"
 done
 
+##	20260904 item 39: nothing had ever compared what the two wrappers hand back
+##	against what the binary hands back. They are pass-through front ends, so
+##	every row here is the same assertion - same stdout, same stderr, same exit
+##	code - across four ways of calling them. Item 16 (the script form ending the
+##	caller's shell) lived in that gap for a release.
+{
+	printf 'a: 1\nname: two words\nblk:\n\t~~~txt\n\tbody\n\n\t~~~\n-dash: 5\n' > "${tmpDir}/w.shcl"
+	##	Dot-sourcing through a file, and splatting real argv into the function,
+	##	so bash's quoting never has to survive a PowerShell -Command string.
+	#  shellcheck disable=2016  ## PowerShell's own $variables.
+	{
+		echo ". '${repoDir}/source/powershell/shcl.ps1'"
+		echo 'shcl @args'
+		echo 'exit $LASTEXITCODE'
+	} > "${tmpDir}/wdot.ps1"
+
+	##	id | stdin (printf %b, '-' for none) | the arguments, one per field
+	wrapRows=(
+		'good|-|get|--int|%F%|a'
+		'missing|-|get|--int|%F%|nope'
+		'badtype|-|get|--int|%F%|name'
+		'nofile|-|check|%M%'
+		'usage|-|get|--nope|%F%|a'
+		'stdin-fmt|a: 1\n|fmt|-'
+		'stdin-ops|int\tb\t2\n|set|%F%'
+		'raw-tail|-|get|--raw|%F%|blk'
+		'space-arg|-|get|%F%|name'
+		'dash-arg|-|get|--|%F%|-dash'
+	)
+	fRunWrapper(){  ## fRunWrapper MODE STDIN ARGS...
+		local mode="$1" stdinSpec="$2"; shift 2
+		local rc=0
+		case "${mode}" in
+			binary)   if [[ "${stdinSpec}" == - ]]; then "${cli}" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" </dev/null || rc=$?
+			          else printf '%b' "${stdinSpec}" | "${cli}" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" || rc=$?; fi ;;
+			bash)     if [[ "${stdinSpec}" == - ]]; then bash "${repoDir}/source/bash/shcl.bash" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" </dev/null || rc=$?
+			          else printf '%b' "${stdinSpec}" | bash "${repoDir}/source/bash/shcl.bash" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" || rc=$?; fi ;;
+			bashsrc)  if [[ "${stdinSpec}" == - ]]; then bash -c 'source "$0"; shcl "$@"' "${repoDir}/source/bash/shcl.bash" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" </dev/null || rc=$?
+			          else printf '%b' "${stdinSpec}" | bash -c 'source "$0"; shcl "$@"' "${repoDir}/source/bash/shcl.bash" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" || rc=$?; fi ;;
+			pwsh)     if [[ "${stdinSpec}" == - ]]; then pwsh -NoProfile -File "${repoDir}/source/powershell/shcl.ps1" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" </dev/null || rc=$?
+			          else printf '%b' "${stdinSpec}" | pwsh -NoProfile -File "${repoDir}/source/powershell/shcl.ps1" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" || rc=$?; fi ;;
+			pwshsrc)  if [[ "${stdinSpec}" == - ]]; then pwsh -NoProfile -File "${tmpDir}/wdot.ps1" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" </dev/null || rc=$?
+			          else printf '%b' "${stdinSpec}" | pwsh -NoProfile -File "${tmpDir}/wdot.ps1" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" || rc=$?; fi ;;
+		esac
+		printf 'rc=%s\n' "${rc}"
+		printf -- '--out--\n'; cat "${tmpDir}/wo"
+		printf -- '--err--\n'; cat "${tmpDir}/we"
+	}
+
+	wrapModes=(bash bashsrc)
+	fHave pwsh >/dev/null 2>&1 && wrapModes+=(pwsh pwshsrc)
+	export SHCL_BIN="${cli}"
+	for row in "${wrapRows[@]}"; do
+		IFS='|' read -r -a f <<<"${row}"
+		id="${f[0]}"; stdinSpec="${f[1]}"
+		args=("${f[@]:2}")
+		for ((ai = 0; ai < ${#args[@]}; ai++)); do
+			args[ai]="${args[ai]//%F%/${tmpDir}/w.shcl}"
+			args[ai]="${args[ai]//%M%/${tmpDir}/not-there.shcl}"
+		done
+		want="$(fRunWrapper binary "${stdinSpec}" "${args[@]}")"
+		for mode in "${wrapModes[@]}"; do
+			##	The one documented difference: PowerShell eats a bare `--` before
+			##	a dot-sourced function sees it, which the rows above this block
+			##	pin on their own. Every other row goes through unchanged.
+			[[ "${id}" == dash-arg && "${mode}" == pwshsrc ]] && continue
+			got="$(fRunWrapper "${mode}" "${stdinSpec}" "${args[@]}")"
+			[[ "${got}" == "${want}" ]] || fBad "wrapper ${mode} differs from the binary on ${id}: ${got@Q} against ${want@Q}"
+		done
+	done
+	unset SHCL_BIN
+}
+
 ##	20260904 item 35: the zsh completion had never been run by anything - only
 ##	its option table was diffed - and it did not parse at all. An apostrophe
 ##	inside a single-quoted description left a quote open for the rest of the
