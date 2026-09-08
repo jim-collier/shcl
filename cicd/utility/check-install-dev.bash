@@ -48,7 +48,9 @@ git -C "${work}/clone" config core.sshCommand "ssh -i /keep/this"
 [[ "$(git -C "${work}/clone" config core.sshCommand)" == "ssh -i /keep/this" ]] || fail "a configured sshCommand was overwritten"
 
 ## Run inside the clone with no --dir: the in-clone detection finds it.
-git -C "${work}/clone" config --unset core.hooksPath
+## `--unset` exits 5 when the key is not there, which under errexit would end
+## the run here and take every check below it with it.
+git -C "${work}/clone" config --unset core.hooksPath || true
 ( cd "${work}/clone" && bash "${script}" --hooks-only >/dev/null )
 [[ "$(git -C "${work}/clone" config core.hooksPath)" == "cicd/hooks" ]] || fail "in-clone run did not set hooksPath"
 

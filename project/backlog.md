@@ -194,7 +194,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260904-174900
 		- Closed: 20260908-150000
 
-	- 🔘 Item 52: shell-trap and gate cleanups across the pipeline.
+	- ✅ Item 52: shell-trap and gate cleanups across the pipeline.
 		- `cicd.bash`'s `fWriteSums` ends its final subshell on an `&&` list, so an empty artifact directory would abort the run through the ERR trap. Not reachable today.
 		- Three `sed ... | head -1` pipelines sit under `pipefail` (`cicd.bash`, `shell-regress.bash`, `sign-release.bash`), safe only while the pattern matches exactly one line. `sed -n '...{p;q}'` removes the reader.
 		- `check-install-dev.bash` aborts on its own `git config --unset` when the key is absent, so one failing check hides the three after it.
@@ -202,7 +202,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- `check-c-compilers.bash` builds only at `-O2`, while the class it exists for is optimization-dependent - `win-runners.bash` sweeps five levels for that exact reason.
 		- Two output helpers spell the blank-line test `[[ VAR -eq 0 ]]`, and `n8git_backup-and-publish` carries a dead helper reading `${!i}` with no default. Shapes to retire, not live faults.
 		- Note: the sweep for the recorded bash traps found no `((n++))` anywhere and every glob loop guarded, so this is what is left.
+		- Fixed: `fWriteSums` ends on an `if` rather than an `&&` list, so an empty artifact directory cannot take the run down through the ERR trap.
+		- Fixed: the three `sed ... | head -1` pipelines address the line and quit inside sed, so there is no early-quitting reader under pipefail.
+		- Fixed: `check-install-dev.bash` guards its own `--unset`, which exits 5 on an absent key and was hiding the three checks after it.
+		- Fixed: `cli-regress.bash` reads `SHCL_GATE_STRICT` - a missing `/dev/full` is a failure under the gate and a skip outside it, the way the other four gates read it. `shell-regress.bash`'s list of gates that must keep reading the variable names it now.
+		- Fixed: `check-c-compilers.bash` builds the two OOM tests at every optimization level, since the shape it exists for is one gcc decides per level. 30 builds to 78, two minutes to four.
+		- Fixed: both `fEcho_Clean` helpers compare a string instead of using `-eq`, and the dead `fBuildQuotedParams` is gone from this project's copy of `n8git_backup-and-publish`. The canonical copy under the synced tree is untouched, as ever.
 		- Opened: 20260904-175000
+		- Closed: 20260908-164000
 
 	- ✅ Item 53: the README's Go example does not compile, and the Zig one is the only language example nothing builds.
 		- The Go fragment declares a variable it never uses, which is a hard compile error, so it does not build even with the package clause, `func main` and the imports a reader adds. The Rust fragment has the same unused binding and only warns.

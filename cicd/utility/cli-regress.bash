@@ -349,6 +349,14 @@ for row in "${rows[@]}"; do
 	## a chmod does not make a directory unwritable - so those rows are POSIX
 	## rows and say so there.
 	if [[ "${stdinSpec}" == @full* && ! -w /dev/full ]]; then
+		##	Under the gate a skip is a failure, the way the other gates read it:
+		##	these rows are the only cover a full-disk write has, and a runner
+		##	that quietly loses /dev/full would report OK forever. On windows the
+		##	row is skipped a line further down, which is a platform fact rather
+		##	than a missing device.
+		if [[ -n "${SHCL_GATE_STRICT:-}" && "${onWindows}" == 0 ]]; then
+			echo "cli-regress: ${id}: no /dev/full here and the gate requires it" >&2; nBad+=1; continue
+		fi
 		echo "cli-regress: skipping ${id} (no /dev/full here)"
 		continue
 	fi
