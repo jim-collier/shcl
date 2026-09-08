@@ -113,6 +113,9 @@ typedef struct { shcl_datetime *values; size_t n; shcl_status status; const shcl
 // fail but never crash the consumer.
 #define SHCL_MAX_DEPTH ((size_t)512)
 
+// How much of a file's own name the temporary file beside it borrows.
+#define SHCL_TMP_NAME_CHARS ((size_t)64)
+
 // A parse never fails on the document's account: bad lines are skipped and
 // diagnosed. It returns NULL only when an allocation failed, which is the one
 // thing it cannot work around - the process is left standing either way. Text
@@ -6170,6 +6173,22 @@ static const char *shcl_last_sep(const char *target) {
 	return sep;
 }
 
+// At most the first 64 characters of the name, so the temp's own length is
+// fixed. Carrying the whole name put the temp over the filesystem's 255 at a
+// target name in the low 240s - and the exact cut-off moved with the width of
+// the process id, so the same file saved on one machine and failed on another.
+// A truncated name can collide; the exclusive create and the eight attempts
+// already answer that. Counted in codepoints, so the cut never splits one.
+static size_t s_tmp_base(const char *b) {
+	size_t i = 0, n = 0;
+	while (b[i] && n < SHCL_TMP_NAME_CHARS) {
+		i++;
+		while (((unsigned char)b[i] & 0xC0u) == 0x80u) i++;
+		n++;
+	}
+	return i;
+}
+
 #ifdef _WIN32
 // The path a save actually rewrites. A symlink or junction is followed, so a
 // save through a linked-in config replaces the file it points at rather than
@@ -6382,8 +6401,8 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #endif
 	int fd = -1;
 	for (int attempt = 0; attempt < 8; attempt++) {
-		if (slash) sprintf(tmp, "%.*s.%s.tmp%ld.%d", (int)(slash - target + 1), target, slash + 1, (long)getpid(), attempt);
-		else sprintf(tmp, ".%s.tmp%ld.%d", target, (long)getpid(), attempt);
+		if (slash) sprintf(tmp, "%.*s.%.*s.tmp%ld.%d", (int)(slash - target + 1), target, (int)s_tmp_base(slash + 1), slash + 1, (long)getpid(), attempt);
+		else sprintf(tmp, ".%.*s.tmp%ld.%d", (int)s_tmp_base(target), target, (long)getpid(), attempt);
 #ifdef _WIN32
 		free(wtmp);
 		if (!(wtmp = shcl_widen(tmp))) break;

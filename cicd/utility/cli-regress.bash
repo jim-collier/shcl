@@ -115,6 +115,12 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 printf 'ports: [80, 443]\n' > "${tmpDir}/brarray.shcl"
 printf 'base:[Boston]\n\tlat: 42\n' > "${tmpDir}/sugar.shcl"
 
+## A 250-character basename. The temp file used to carry the whole name plus
+## the process id, which put it over the filesystem's limit somewhere in the
+## low 240s - at a point that moved with the width of the pid.
+longName="$(printf 'l%.0s' $(seq 245)).shcl"
+printf 'k: 1\n' > "${tmpDir}/${longName}"
+
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex
 ##	argv placeholders: %F% the good file, %B% the two-error file, %B2% a second
 ##	damaged file for a layered load, %D% a directory,
@@ -127,7 +133,8 @@ printf 'base:[Boston]\n\tlat: 42\n' > "${tmpDir}/sugar.shcl"
 ##	instance whose discriminator holds an '=', %Q% one whose discriminator holds
 ##	an apostrophe, %T% a document with a name that needs quoting in a path,
 ##	%F2% a two-key file for the edit options, %M% a path with no file at it,
-##	%BA% a bracket array, %W% a fresh copy of the selector-sugar file.
+##	%BA% a bracket array, %W% a fresh copy of the selector-sugar file,
+##	%L% a fresh copy of a file whose basename is 250 characters.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
@@ -212,6 +219,8 @@ rows=(
 	'sugar-write-refused|fmt --write %W%|-|7|-|dropped 1 line'
 	'sugar-migrate|migrate %W%|-|0|base: Boston\n\tlat: 42\n|-'
 	'sugar-migrate-write|migrate --write %W%|-|0||-'
+	## 20260904 item 47: the temp beside a long-named file ran past the name limit.
+	'long-name-write|fmt --write %L%|-|0||-'
 	'sugar-migrate-write-stdin|migrate --write -|-|1|-|cannot rewrite stdin'
 	'tokens-line|tokens %F%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n|-'
 	'tokens-fault|tokens %B%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n2:2 name=0-3\n3:0 name=0-1 fault=2:unexpected character after the path\n|-'
@@ -317,11 +326,17 @@ for row in "${rows[@]}"; do
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%Q%/${tmpDir}/quote.shcl}"
 	argv="${argv//%BA%/${tmpDir}/brarray.shcl}"
-	## %W% is rewritten in place, so each binding gets its own fresh copy below.
+	## %W% and %L% are rewritten in place, so each binding gets its own fresh
+	## copy below.
 	freshCopy=0
 	if [[ "${argv}" == *%W%* ]]; then
 		freshCopy=1
 		argv="${argv//%W%/${tmpDir}/w.shcl}"
+	fi
+	freshLong=0
+	if [[ "${argv}" == *%L%* ]]; then
+		freshLong=1
+		argv="${argv//%L%/${tmpDir}/${longName}}"
 	fi
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
@@ -344,6 +359,7 @@ for row in "${rows[@]}"; do
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
 		((freshCopy)) && cp "${tmpDir}/sugar.shcl" "${tmpDir}/w.shcl"
+		((freshLong)) && printf 'k: 1\n' > "${tmpDir}/${longName}"
 		rc=0
 		case "${stdinSpec}" in
 			@closedin)  "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" 0<&- || rc=$? ;;

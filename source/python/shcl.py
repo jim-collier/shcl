@@ -637,6 +637,9 @@ def _fold_node_into(arena, survivor, loser):
 # fail but never crash the consumer.
 MAX_DEPTH = 512
 
+# How much of a file's own name the temporary file beside it borrows.
+TMP_NAME_CHARS = 64
+
 
 # ---------------------------------------------------------------------------
 # Tokenizer - the one place the lexical rules live
@@ -4393,6 +4396,13 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	if d == "":
 		d = "."
 	base = os.path.basename(target)
+	# At most the first 64 characters of the name, so the temp's own length is
+	# fixed. Carrying the whole name put the temp over the filesystem's 255 at
+	# a target name in the low 240s - and the exact cut-off moved with the
+	# width of the process id, so the same file saved on one machine and failed
+	# on another. A truncated name can collide; the exclusive create and the
+	# eight attempts already answer that.
+	base = base[:TMP_NAME_CHARS]
 	if base == "":
 		base = target
 	# Exclusive create: the name is predictable, so anything already sitting

@@ -127,10 +127,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260904-174400
 		- Closed: 20260908-130000
 
-	- 🔘 Item 47: a file whose basename runs past about 241 characters cannot be rewritten, and the cut-off moves with the pid.
+	- ✅ Item 47: a file whose basename runs past about 241 characters cannot be rewritten, and the cut-off moves with the pid.
 		- Measured with a 7-digit pid: basenames of 240 and 241 characters save, 242 and 243 fail at exit 8 with no temp left behind. All eight attempts use the same length, so they fail together.
 		- Note: the failure is safe but not deterministic - a name in that band saves on a machine with a short pid and fails on one with a long pid. A fixed-width temp stem removes the band.
+		- Fixed: the temp name borrows at most the first 64 characters of the target's, in all four (`write_file_atomic` in the reference, Go and Python, `shcl_write_file_atomic` in C). Width is fixed, so the band is gone and the same name behaves the same on every machine.
+		- Decided: 64 rather than a computed remaining budget, so the rule does not depend on the pid or the platform. A truncated name can collide; the exclusive create and the eight attempts already cover that.
+		- Pinned by: the `cli-regress.bash` row `long-name-write`, a 250-character basename rewritten in place, which is exit 8 in every binding without the cap.
 		- Opened: 20260904-174500
+		- Closed: 20260908-134500
 
 	- 🔘 Item 48: the Loose currency strip also eats the whitespace after the symbol.
 		- `$ 1200` reads as 1200 in all four. The spec says only "a single leading symbol ... is stripped" and calls the list closed, so a port written from the spec would refuse it.
