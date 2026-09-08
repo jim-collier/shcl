@@ -811,14 +811,15 @@ fn parse_limited_caps() {
 	);
 	assert_eq!(doc.get_int_array("arr"), Ok(vec![1, 2]));
 	// The count the cap judges is the count the array reads back as, spelling
-	// by spelling: quoted and escaped commas, empty and blank slots, a Unicode
-	// blank (content: only a space or a tab is blank), a quote that never
-	// closes. Refused at one under, kept at exact.
+	// by spelling: quoted commas, a backslash (a character, so it shields
+	// nothing), empty and blank slots, a Unicode blank (content: only a space
+	// or a tab is blank), a quote that never closes (a character too, so the
+	// comma after it splits). Refused at one under, kept at exact.
 	#[rustfmt::skip]
 	let counts: &[(&str, usize)] = &[
-		("1, 2, 3", 3), ("\"a, b\", c", 2), ("a\\, b, c", 2), ("a,,b", 2),
+		("1, 2, 3", 3), ("\"a, b\", c", 2), ("a\\, b, c", 3), ("a,,b", 2),
 		("a, , b", 2), (" a ", 1), ("\"\", ''", 2), ("'a\", b'", 1),
-		("\"open, b", 1), ("\\", 1), ("x,\u{3000}", 2), ("x, \u{a0}y", 2), (", , ,", 0),
+		("\"open, b", 2), ("\\", 1), ("x,\u{3000}", 2), ("x, \u{a0}y", 2), (", , ,", 0),
 	];
 	for &(spelling, n) in counts {
 		let text = format!("v: {spelling}\n");
@@ -1260,10 +1261,13 @@ fn set_raw_keeps_a_shared_indent_and_trims_the_info() {
 	assert!(!doc.set_raw("q", "x", "a\nb"));
 	assert!(!doc.set_raw("q", "x", "a\rb"));
 	assert!(!doc.set_raw("q", "x", "a # b"));
-	assert!(doc.set_raw("q", "  a\n  b", "\"a # b\""));
+	// An info string has no quoting of its own: quotes are characters in it,
+	// so they hide nothing, and a `#` with no space before it is content.
+	assert!(!doc.set_raw("q", "x", "\"a # b\""));
+	assert!(doc.set_raw("q", "  a\n  b", "c#"));
 	let back = Document::parse(&doc.to_canonical());
 	assert_eq!(back.get_raw("q"), Ok("  a\n  b".to_string()));
-	assert_eq!(back.read_raw_info("q").value, "\"a # b\"");
+	assert_eq!(back.read_raw_info("q").value, "c#");
 	// A body line ending in CR has no fence spelling: the load takes the whole
 	// trailing CR run off every line, so it is refused rather than lost. A CR
 	// mid-line is content and still round-trips.

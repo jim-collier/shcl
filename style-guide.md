@@ -43,6 +43,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Every source file starts with the SPDX line and copyright, then a short purpose block. Library files also state the drop-in story and the parity contract.
 
+- The tokenizer is the one place the lexical rules live. Every reading of a line's parts - the parser's dispatch, the path scanner, the comment and comma splits, the element cap, the quote check, `SetLiteral`, the CLI's `--set` split - goes through it and reads spans. No second quote state machine, in any binding: a rule that has to be read somewhere new is read through the tokenizer, or the tokenizer grows.
+
 - Single file per binding, zero dependencies. That is the product ("copy this file into your tree"), so no module splits, no helper crates/packages, and no dependency however good.
 
 - Small standalone utility scripts are MIT regardless of anything else, and carry their license in the header.
@@ -65,7 +67,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - Derive (`Debug`, `Clone`, `PartialEq`) rather than hand-roll. Public items get `///` docs. Early returns and `let .. else` over nesting.
 
-- `Cow<str>` where a per-line helper usually has nothing to do: `key_text` when a value has no escape to resolve, `fold_name` when a name has no upper case to fold. The other three allocate freely there, or hand the work to a garbage collector, so there is nothing to mirror - and the parser calls these once per segment per line, where two strings built and freed for the sake of copying bytes onto themselves showed up in a profile.
+- `Cow<str>` where a per-line helper usually has nothing to do: `fold_name` when a name has no upper case to fold, and the path scanner's plain-name fast path when a name has nothing to resolve. The other three allocate freely there, or hand the work to a garbage collector, so there is nothing to mirror - and the parser calls these once per segment per line, where two strings built and freed for the sake of copying bytes onto themselves showed up in a profile.
 
 - The setters are `#[must_use]`. Surface-only, so parity is untouched - the other three have no equivalent and say the same thing in prose. A dropped `false` means the save that follows writes a config missing the edit and reports success, which is the one failure here that leaves no trace anywhere; the compiler catches it for free in the one language that can.
 
@@ -80,6 +82,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - Exported identifiers get doc comments starting with the name. Short names in small scopes, descriptive in the public API.
 
 - Deliberate deviation: the datetime type is `DateTime`, not `ShclDateTime`; the package name already carries the prefix. The reference and Python export `DateTime` as an alias so the two spellings meet.
+
+- The tokenizer's absent offsets (`Sep`, `Comment`, `Fault`) are `-1` where the reference has `None`; the spans themselves are the same byte offsets in every binding.
 
 ### Python
 
@@ -98,6 +102,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - Deliberate deviation: the emit, overlay and clone walks are iterative where the reference recurses. CPython's own recursion limit sits far below the 512-level depth cap the spec allows, so a document the reference formats without complaint raised RecursionError here; raising the interpreter's limit would have moved the failure to a stack overflow with no traceback. The walks carry their own explicit stacks and visit nodes in the same order, so the output is unchanged.
 
 - The public surface is type-hinted (every public method, function and attribute); private helpers are hinted where it pays, and mypy strict is not a gate.
+
+- Deliberate deviation: the tokenizer scans the UTF-8 bytes of the line rather than the str, and `Tokens.src` keeps those bytes so the read-back helpers can slice them. Every offset the four bindings hand out is a byte offset, and the `tokens` output is compared byte for byte, so the str's code-point offsets could not serve. Two hot-path shortcuts ride on that, both exact: a value with no quote and no `#` is cut with `bytes.find` one piece at a time (so the element cap still stops the scan where the byte loop would), and a bare name is matched with a compiled ASCII class.
 
 ### C (and the C++ veneer)
 
@@ -118,6 +124,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - Deliberate deviation: the float formatter decides whether a spelling reads back with its own integer arithmetic, not `strtod`. The other three have a shortest-digits formatter in their runtime; C has `printf` and `strtod`, and more than one C runtime (msvcrt, wine's) parses some 15-digit spellings one ulp off, which made the C spelling of a value depend on the libc it was built against. The parser's float reads still go through `strtod`, so a value read on such a runtime can be one ulp off; the header cannot fix a libc.
 
 - Deliberate deviation: `shcl_compact` has no counterpart in the other three. A write lands in the document's bump arena and the value it replaced stays there until `shcl_free`, so a process rewriting one field in a loop grows by a few dozen bytes per write; the other three reclaim the old value through their runtimes. Compaction rebuilds the document into fresh arenas, carrying the diagnostics, the lost count and the strictness with it, so a save or a strict gate afterwards reads the same. The C++ veneer exposes it as `compact()`.
+
+- Deliberate deviation: `shcl_tokenize` and `shcl_tokenize_value` take a document, because the span vectors they fill have to live somewhere and the read arena is where everything handed to a caller lives; the `shcl_tokens` struct is zeroed before its first use and again after `shcl_reads_release`. Inside the parser the same tokenizer fills the parse scratch, so a load retains none of it. `shcl_migrate` is the one text result with no document behind it and hands back a malloc'd buffer the caller frees, the way `shcl_read_file` does.
 
 - Deliberate deviation: `shcl_reads_release` has no counterpart in the other three. Read results are copied into the document's read arena, which only `shcl_free` reclaims - the right default for a read-once consumer and the documented contract. A process polling one document in a loop needs a way out, and the other three bindings have one for free because they hand back owned collections their runtime reclaims. The C++ veneer calls it on every read, since it copies each result into owned std types the moment it gets it.
 

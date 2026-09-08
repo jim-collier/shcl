@@ -35,6 +35,8 @@ _shcl_opts() {
 		fmt)             echo '--write --lossy --strictness --layer --set --set-literal --set-default --set-literal-default --remove' ;;
 		check)           echo '--strictness --schema' ;;
 		init)            echo '--schema --no-banner' ;;
+		migrate)         echo '--write --lossy' ;;
+		tokens)          echo '' ;;
 		count|instances|children|paths) echo '--strictness --layer --set --set-literal --set-default --set-literal-default --remove' ;;
 		*)               echo '' ;;
 	esac
@@ -46,7 +48,7 @@ _shcl_opts() {
 ## filenames that would always be wrong.
 _shcl_fileslot() {
 	case "$1" in
-		get|set|fmt|check|count|instances|children|paths) echo 1 ;;
+		get|set|fmt|check|count|instances|children|paths|migrate|tokens) echo 1 ;;
 		*)                                 echo 0 ;;
 	esac
 }
@@ -66,6 +68,8 @@ _shcl() {
 		'instances:instance values at a path'
 		'children:child field names under a path'
 		'paths:every field path in the document'
+		'migrate:rewrite a 2.x file for the current rules'
+		'tokens:each line's lexical spans'
 		'help:the help text'
 		'version:the version'
 		'about:what shcl is'

@@ -6,7 +6,7 @@
 //! no panic at any strictness, and the canonical formatter is a fixpoint.
 //! Iteration count scales via SHCL_FUZZ_ITERS (cicd raises it; default is quick).
 
-use shcl::{Document, Severity, Strictness};
+use shcl::{Document, Piece, Quote, Rules, SegTok, Strictness, Tokens, tokenize};
 
 /// Small deterministic PRNG (xorshift64*); no external crates, stable across runs.
 struct Rng(u64);
@@ -94,7 +94,7 @@ fn structural(rng: &mut Rng) -> String {
 		};
 		// Shapes 11 to 13 carry a `# k` comment behind a selector holding a
 		// quote, a backslash or a quoted `]`; see comments_behind_selectors.
-		let line = match rng.below(18) {
+		let line = match rng.below(24) {
 			0 => format!("{indent}# comment {}", rng.below(3)),
 			1 => String::new(),
 			2 => format!("{indent}no colon here"),
@@ -116,6 +116,15 @@ fn structural(rng: &mut Rng) -> String {
 				if rng.below(2) == 0 { " " } else { "" },
 				rng.below(3)
 			),
+			// The 3.0 shapes: a glued `#`, an index selector, bare and
+			// single-quoted backslashes, a value right after the colon, a
+			// quote that closes with text after it.
+			15 => format!("{indent}{name}: x#y  # k"),
+			16 => format!("{indent}{name}[#{}].{name}: {}", rng.below(2), rng.below(9)),
+			17 => format!("{indent}{name}: C:\\dir, a\\tb, 'it\\'s'"),
+			18 => format!("{indent}{name}:#x"),
+			19 => format!("{indent}{name}: \"a\" b, c  # k"),
+			20 => format!("{indent}{name}['x].{name}: {}  # k", rng.below(9)),
 			_ => format!("{indent}{name}{sel}: {}", rng.below(9)),
 		};
 		out.push_str(&line);
@@ -321,9 +330,8 @@ fn lost_count_follows_the_outcome_table() {
 			match d.code {
 				"E002" | "E003" | "E004" | "E006" | "E007" | "E008" | "E009" | "E010" | "E011"
 				| "E012" | "E016" | "E018" | "E021" => want += 1,
-				"E019" if d.severity == Severity::Error => want += 1,
 				"E014" if src.trim_start_matches([' ', '\t']).starts_with('\u{feff}') => want += 1,
-				"E013" | "E014" => {
+				"E013" | "E014" | "E019" => {
 					kept_seen += 1;
 					let kept = src.trim_matches([' ', '\t']);
 					assert!(
@@ -508,4 +516,247 @@ fn writer_roundtrips_and_stays_fixpoint() {
 			i
 		);
 	}
+}
+
+/// Lines built from the grammar with their spans known as they are laid
+/// down, so the tokenizer has an oracle outside itself: the four bindings
+/// agreeing on `tokens` proves parity, and this is what proves the spans are
+/// the grammar's. Every piece kind the grammar has is drawn here: bare and
+/// quoted names, bare and quoted selector bodies, bare, quoted, empty and
+/// open elements, whitespace wherever the grammar allows it, a glued `#`
+/// and a comment, non-ASCII text.
+#[test]
+fn tokens_follow_the_grammar() {
+	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(300)
+		.max(2000);
+	let mut rng = Rng(0x5EED_70CE_0000_0005);
+	let mut tok = Tokens::default();
+	for i in 0..iters {
+		let (line, want) = grammar_line(&mut rng);
+		tokenize(&line, b':', false, Rules::Current, &mut tok);
+		assert_eq!(tok, want, "iteration {i}: {line:?}");
+	}
+}
+
+struct LineGen {
+	text: String,
+	want: Tokens,
+}
+
+impl LineGen {
+	fn wsp(&mut self, rng: &mut Rng) {
+		self.text.push_str(["", " ", "\t", "  "][rng.below(4)]);
+	}
+	fn pick(&mut self, rng: &mut Rng, set: &[&str], n: usize) {
+		for _ in 0..n {
+			self.text.push_str(set[rng.below(set.len())]);
+		}
+	}
+	/// A quoted piece: the quote, content that cannot close it, the quote. No
+	/// `]` inside either, for the reason bare() gives.
+	fn quoted(&mut self, rng: &mut Rng) -> Piece {
+		let double = rng.below(2) == 0;
+		let q = if double { '"' } else { '\'' };
+		self.text.push(q);
+		let start = self.text.len();
+		// Inside double quotes a backslash escapes the next character, so an
+		// escaped quote stays inside; inside single quotes a backslash is a
+		// character and only the quote itself is off limits.
+		let set: &[&str] = if double {
+			&[
+				"a", "Z", " ", "\\\"", "\\\\", "'", "#", ",", "[", ":", "\u{e9}", "\\a",
+			]
+		} else {
+			&[
+				"a", "Z", " ", "\"", "\\", "#", ",", "[", ":", "\u{e9}", "\\\\",
+			]
+		};
+		// The first content character is a letter, and a quote of the other
+		// kind inside is followed by one: a comma or a blank after a quote
+		// would let an open piece earlier on the line close on it.
+		self.pick(rng, &["a", "Z"], 1);
+		for _ in 0..rng.below(5) {
+			let c = set[rng.below(set.len())];
+			self.text.push_str(c);
+			if c == "'" || c == "\"" {
+				self.text.push('a');
+			}
+		}
+		let end = self.text.len();
+		self.text.push(q);
+		Piece {
+			start,
+			end,
+			quote: if double { Quote::Double } else { Quote::Single },
+		}
+	}
+	/// A bare piece for a value or a selector body: no comma, no bracket,
+	/// no leading quote, a `#` only glued to the text before it, no edge
+	/// whitespace. `open` makes it start with a quote it never closes the
+	/// quoted way. No `]` at all, and no quote as a bare piece's last
+	/// character: a quote that opens a piece closes at the next matching
+	/// quote when that one sits right before the piece's terminator,
+	/// wherever on the line it is, so those two shapes would hand an open
+	/// piece a closing quote from a later one. That reading is the rule, not
+	/// a defect; the generator just keeps to lines with one reading.
+	fn bare(&mut self, rng: &mut Rng, term: char, open: bool) -> Piece {
+		let start = self.text.len();
+		let mut set: Vec<&str> = vec![
+			"a", "Z", "-", "_", ".", ":", "\\", "\u{e9}", "'", "\"", "[", "#",
+		];
+		set.retain(|c| !c.starts_with(term));
+		if open {
+			// The quote either never closes or closes with text after it;
+			// either way the tokenizer reads the piece bare.
+			let q = if rng.below(2) == 0 { "\"" } else { "'" };
+			self.text.push_str(q);
+			set.retain(|c| c != &q);
+			let n = 1 + rng.below(3);
+			self.pick(rng, &set, n);
+			if rng.below(2) == 0 {
+				self.text.push_str(q);
+				self.text.push_str(" b");
+			}
+		} else {
+			// First character: neither a quote nor a bracket nor `#`.
+			self.pick(rng, &["a", "Z", "-", "_", ".", ":", "\\", "\u{e9}"], 1);
+			for _ in 0..rng.below(4) {
+				// A space is fine mid-piece, but never right before a `#`.
+				let c = set[rng.below(set.len())];
+				if rng.below(5) == 0 && c != "#" {
+					self.text.push(' ');
+				}
+				self.text.push_str(c);
+			}
+		}
+		if self.text.ends_with(['\'', '"']) {
+			self.text.push('a');
+		}
+		Piece {
+			start,
+			end: self.text.len(),
+			quote: if open { Quote::Open } else { Quote::None },
+		}
+	}
+	fn segment(&mut self, rng: &mut Rng) -> SegTok {
+		let name = if rng.below(3) == 0 {
+			self.quoted(rng)
+		} else {
+			let start = self.text.len();
+			let n = 1 + rng.below(4);
+			self.pick(rng, &["a", "Z", "0", "-", "_"], n);
+			Piece {
+				start,
+				end: self.text.len(),
+				quote: Quote::None,
+			}
+		};
+		let mut selector = None;
+		if rng.below(2) == 0 {
+			self.wsp(rng);
+			self.text.push('[');
+			self.wsp(rng);
+			let body = match rng.below(4) {
+				0 => self.quoted(rng),
+				1 => self.bare(rng, ']', true),
+				_ => self.bare(rng, ']', false),
+			};
+			self.wsp(rng);
+			self.text.push(']');
+			selector = Some(body);
+		}
+		SegTok {
+			name,
+			selector,
+			star: false,
+		}
+	}
+}
+
+fn grammar_line(rng: &mut Rng) -> (String, Tokens) {
+	let mut g = LineGen {
+		text: String::new(),
+		want: Tokens::default(),
+	};
+	let nseg = 1 + rng.below(3);
+	for i in 0..nseg {
+		if i > 0 {
+			g.wsp(rng);
+			g.text.push('.');
+		}
+		g.wsp(rng);
+		let seg = g.segment(rng);
+		g.want.segments.push(seg);
+	}
+	g.wsp(rng);
+	match rng.below(4) {
+		0 => {}
+		1 => {
+			// A comment right after the path: only after whitespace.
+			g.text.push_str(" # c");
+			g.want.comment = Some(g.text.len() - 3);
+		}
+		_ => {
+			g.want.sep = Some(g.text.len());
+			g.text.push(':');
+			let npieces = rng.below(4);
+			if npieces == 0 {
+				g.wsp(rng);
+				let at = g.text.len();
+				g.want.elements.push(Piece {
+					start: at,
+					end: at,
+					quote: Quote::None,
+				});
+			}
+			for j in 0..npieces {
+				if j > 0 {
+					g.wsp(rng);
+					g.text.push(',');
+				}
+				g.wsp(rng);
+				let piece = match rng.below(5) {
+					0 => {
+						let at = g.text.len();
+						Piece {
+							start: at,
+							end: at,
+							quote: Quote::None,
+						}
+					}
+					1 => g.quoted(rng),
+					2 => g.bare(rng, ',', true),
+					_ => g.bare(rng, ',', false),
+				};
+				g.want.elements.push(piece);
+			}
+			// The value runs from its first piece (opening quote included) to
+			// after its last non-blank character, comma or closing quote
+			// included; an empty value is a point.
+			let end = g.text.trim_end_matches([' ', '\t']).len();
+			if rng.below(2) == 0 {
+				g.text.push_str("  # c");
+				g.want.comment = Some(g.text.len() - 3);
+			}
+			// An empty piece sits where the scan gave up on it: at the comma,
+			// the comment or the end that follows the blank, not at the blank.
+			for p in &mut g.want.elements {
+				if p.quote == Quote::None && p.start == p.end {
+					let rest = &g.text[p.start..];
+					p.start += rest.len() - rest.trim_start_matches([' ', '\t']).len();
+					p.end = p.start;
+				}
+			}
+			let first = g.want.elements[0];
+			let start = match first.quote {
+				Quote::Single | Quote::Double => first.start - 1,
+				_ => first.start,
+			};
+			g.want.value = (start, end.max(start));
+		}
+	}
+	(g.text, g.want)
 }

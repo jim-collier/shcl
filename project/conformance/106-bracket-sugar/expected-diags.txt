@@ -1,5 +1,6 @@
-line 1: Hint: E019
-line 3: Hint: E019
-line 4: Hint: E019
-line 5: Hint: E019
-ok (4 diagnostic(s))
+line 1: Error: E019
+line 2: Error: E018
+line 3: Error: E019
+line 4: Error: E019
+line 5: Error: E019
+failed: 5 diagnostic(s), 5 error(s)
