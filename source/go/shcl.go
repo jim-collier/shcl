@@ -5908,8 +5908,12 @@ func (d *Document) ReadRawInfo(path string) Read[string] {
 	v := &d.arena[n].value
 	raw := d.rawOf(n)
 	line := d.arena[n].line
+	// An empty binding has no block, so no info string: `Empty`, the same as a `read_raw` on it. Only a value that is there and is not a block is a type mismatch.
 	if v.kind == vRaw {
 		return Read[string]{Value: v.raw.info, Status: Good, Raw: &raw}.at(line, false)
+	}
+	if v.kind == vEmpty {
+		return Read[string]{Status: Empty, Raw: &raw}.at(line, false)
 	}
 	return Read[string]{Status: BadType, Raw: &raw}.at(line, false)
 }

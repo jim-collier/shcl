@@ -136,13 +136,21 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260904-174500
 		- Closed: 20260908-134500
 
-	- 🔘 Item 48: the Loose currency strip also eats the whitespace after the symbol.
+	- ✅ Item 48: the Loose currency strip also eats the whitespace after the symbol.
 		- `$ 1200` reads as 1200 in all four. The spec says only "a single leading symbol ... is stripped" and calls the list closed, so a port written from the spec would refuse it.
+		- Decided: the spec moves, not the code. Loose is the forgiving tier and `$ 1200` is a spelling people write; the trim was put there deliberately, so refusing it would break working configs to satisfy a sentence.
+		- Fixed: the currency rule now says the whitespace after the symbol goes with it, and names `$ 1200` as the example.
+		- Pinned by: corpus `003`, which already read a quoted `"$ 3.14"` and now reads a bare `$ 1200` beside it.
 		- Opened: 20260904-174600
+		- Closed: 20260908-142000
 
-	- 🔘 Item 49: two neighbouring reads disagree about an empty binding.
+	- ✅ Item 49: two neighbouring reads disagree about an empty binding.
 		- `read_raw_info` on an empty binding is `BadType` where `read_raw` on the same node is `Empty`. The spec is silent, so this is a call to make rather than a rule broken.
+		- Decided: `Empty`. An empty binding carries no block, so there is no info string and nothing to mismatch a type against; the raw-content read on the same node already said `Empty`. A binding whose value is there and is not a block stays `BadType`. Spec sentence added under the read statuses.
+		- Fixed: `read_raw_info` in the reference, `ReadRawInfo` in Go, `read_raw_info` in Python and `shcl_read_raw_info` in C.
+		- Pinned by: corpus `114`, which reads both halves against an empty binding, a valued one and a block.
 		- Opened: 20260904-174700
+		- Closed: 20260908-141000
 
 	- ✅ Item 50: a setter refused for its value reports the message written for `set_literal`.
 		- A `raw` op with an unquoted `#` in its info string reports "the value text is not one value". The real reason is the info string. Prose is not part of the contract, but the wording sends a reader to the wrong half of the line.
