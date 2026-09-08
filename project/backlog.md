@@ -48,6 +48,8 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Features and enhancements
 
+- 🔘 Make sure new config files get written with the SHCL info block at the bottom, unless opted out of. Make sure that comments (including the SHCL info block) are preceeded by '##', whereas disabled settings are just '#'.
+
 - ✅ The parser counts lost lines and holds a refused line's level by hand, one arm at a time, and every round since August found an arm that forgot.
 	- Reproduced: 20260829 item 1, 20260901b items 1 and 2, 20260904 items 5, 12, 14 and 15, 20260905 items 1 and 6. Nine items, one rule: what happens to a line the parser does not bind.
 	- Cause: each diagnostic arm does its own `lost += 1` and its own level push, so a new arm, or an old one nobody re-read, can skip either. Nothing derives the count or the level from what became of the line.
