@@ -350,6 +350,8 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - **A save publishes a new file in the old one's place.** Write a temp file beside the target, then move it over. That is what makes an interrupted save unable to truncate a config, and it is also the source of every limitation below: the bytes are new, so anything the old file carried outside its contents has to be deliberately carried across or it is gone.
 
+- **The temp file borrows at most the first 64 characters of the target's name.** It used to carry the whole name plus the process id, which put it over the 255-character limit for a target name in the low 240s - and moved the exact cut-off with the width of the pid, so the same file saved on one machine and failed on another. A fixed-width stem removes the band. Two long names sharing a 64-character prefix can want the same temp; the exclusive create and the eight attempts already answer that.
+
 - **What is carried, and what is not.** The permission bits are copied deliberately, and on POSIX that is the whole of what gets copied: ACLs, extended attributes, the SELinux label and any other xattr are lost, as are other hard links to the old file.
 	- None of that is fixable at this layer, since a rename cannot preserve what a rename replaces, so it is documented in the spec rather than papered over.
 	- A relabeled config on an SELinux host is the case worth knowing about: the new file takes the label its parent directory and the writing process imply, which is the same label in the ordinary case and not the same one after a `chcon`.
