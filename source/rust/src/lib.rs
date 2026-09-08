@@ -974,11 +974,21 @@ fn scan_value(text: &str, from: usize, rules: Rules, out: &mut Tokens) {
 	}
 	let mut a = from;
 	skip_wsp(s, &mut a);
+	// The value ends where the line's content ends: a carriage return there
+	// comes off with the blanks, since the load strips one from every line
+	// end and an info string or a bare last element written back would
+	// otherwise end in one the next load would take.
 	let mut b = stop_at;
-	while b > a && is_wsp_byte(s[b - 1]) {
+	while b > a && (is_wsp_byte(s[b - 1]) || s[b - 1] == b'\r') {
 		b -= 1;
 	}
 	out.value = (a.min(b), b);
+	if let Some(last) = out.elements.last_mut()
+		&& !matches!(last.quote, Quote::Single | Quote::Double)
+		&& last.end > b
+	{
+		last.end = b.max(last.start);
+	}
 }
 
 /// Tokenize one line (`sep` = `b':'`) or one lookup path (`stars` admits the

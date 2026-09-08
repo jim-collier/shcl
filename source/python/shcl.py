@@ -1042,11 +1042,7 @@ def _scan_value(s, from_, rules, out):
 			if cut < 0:
 				break
 			at = cut + 1
-		a = _skip_wsp(s, from_)
-		b = n
-		while b > a and _is_wsp_byte(s[b - 1]):
-			b -= 1
-		out.value = (min(a, b), b)
+		_end_value(s, from_, n, out)
 		return
 	pos = from_
 	count = 0
@@ -1066,11 +1062,23 @@ def _scan_value(s, from_, rules, out):
 			out.comment = stop
 		stop_at = stop
 		break
+	_end_value(s, from_, stop_at, out)
+
+
+def _end_value(s: bytes, from_: int, stop_at: int, out: Tokens) -> None:
+	# The value ends where the line's content ends: a carriage return there
+	# comes off with the blanks, since the load strips one from every line
+	# end and an info string or a bare last element written back would
+	# otherwise end in one the next load would take.
 	a = _skip_wsp(s, from_)
 	b = stop_at
-	while b > a and _is_wsp_byte(s[b - 1]):
+	while b > a and (_is_wsp_byte(s[b - 1]) or s[b - 1] == 0x0D):
 		b -= 1
 	out.value = (min(a, b), b)
+	if out.elements:
+		last = out.elements[-1]
+		if last.quote is not Quote.SINGLE and last.quote is not Quote.DOUBLE and last.end > b:
+			out.elements[-1] = Piece(last.start, max(b, last.start), last.quote)
 
 
 def tokenize(text: str, sep: str, stars: bool, rules: Rules, out: Tokens) -> None:

@@ -1226,9 +1226,18 @@ static void scan_value(ShclArena *a, ShclStr text, size_t from, ShclRules rules,
 		break;
 	}
 	size_t va = from; skip_wsp(text, &va);
+	/* The value ends where the line's content ends: a carriage return there
+	   comes off with the blanks, since the load strips one from every line
+	   end and an info string or a bare last element written back would
+	   otherwise end in one the next load would take. */
 	size_t vb = stop_at;
-	while (vb > va && is_wsp((unsigned char)text.p[vb - 1])) vb--;
+	while (vb > va && (is_wsp((unsigned char)text.p[vb - 1]) || text.p[vb - 1] == '\r')) vb--;
 	out->value_start = min_sz(va, vb); out->value_end = vb;
+	if (out->nelem) {
+		ShclPiece *last = &out->elements[out->nelem - 1];
+		if (last->quote != SHCL_QUOTE_SINGLE && last->quote != SHCL_QUOTE_DOUBLE && last->end > vb)
+			last->end = vb > last->start ? vb : last->start;
+	}
 }
 static void tokenize_value(ShclArena *a, ShclStr text, size_t from, ShclRules rules, ShclTokens *out) {
 	tok_clear(out);

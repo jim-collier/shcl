@@ -977,14 +977,27 @@ func scanValue(text string, from int, rules Rules, out *Tokens) {
 		break
 	}
 	a := skipWsp(s, from)
+	// The value ends where the line's content ends: a carriage return there
+	// comes off with the blanks, since the load strips one from every line
+	// end and an info string or a bare last element written back would
+	// otherwise end in one the next load would take.
 	b := stopAt
-	for b > a && isWspByte(s[b-1]) {
+	for b > a && (isWspByte(s[b-1]) || s[b-1] == '\r') {
 		b--
 	}
 	if a > b {
 		a = b
 	}
 	out.Value = [2]int{a, b}
+	if n := len(out.Elements); n > 0 {
+		last := &out.Elements[n-1]
+		if last.Quote != QuoteSingle && last.Quote != QuoteDouble && last.End > b {
+			last.End = b
+			if last.End < last.Start {
+				last.End = last.Start
+			}
+		}
+	}
 }
 
 // Tokenize reads one line (sep = ':') or one lookup path (stars admits the
