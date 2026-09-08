@@ -147,6 +147,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The zsh completion works. An apostrophe inside a single-quoted description left a quote open for the rest of the file, so zsh answered a parse error instead of completing anything; nothing had ever run the file, only compared the option table inside it.
+
+- Reading the info-string of an empty binding reports `Empty`, not `BadType`. The raw-content read beside it always said `Empty` on the same line, and two neighbouring reads should not disagree about what an empty binding is. A binding carrying a value that is not a block is still `BadType`.
+
+- A file whose name runs past about 240 characters can be rewritten. The temporary file written beside it carried the whole name plus the process id, which put it over the filesystem's own limit, and the exact length that failed moved with the width of the pid - so the same file saved on one machine and failed at exit 8 on another. The temporary name now borrows at most the first 64 characters.
+
+- The C binding builds a schema in time linear in its fragment count. Every fragment was compared against every fragment already recorded, and each mount paid the same scan again, so 32,000 fragments took 3.3 seconds against 0.2 in Go; the fragments are held in a name index now, as the other three bindings already held them.
+
 - `init` no longer refuses a required path whose by-value selector holds a line break. It reported `V097 required path cannot be generated` and exited 6, because a selector had no spelling for one; it does now, and the generated line reads back as the path it was generated for.
 
 - One carriage return comes off a write-ops line, not two. A line ending `v\r\r\n` reached the setter as `v` in the reference and Python and as `v\r` in Go and C: the first CR is the CRLF's and the second is the value's, and the reference took both.

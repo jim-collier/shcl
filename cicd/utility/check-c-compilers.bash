@@ -48,22 +48,32 @@ if [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
 	fi
 fi
 
+fBuild(){  ## fBuild CC OPT SRC
+	local cc="$1" opt="$2" src="$3" out
+	nRun+=1
+	if ! out="$("${cc}" -std=c11 "${opt}" -Wall -Wextra -Werror -I"${repoDir}/source/c" \
+		"${repoDir}/${src}" -o "${tmpDir}/out" -lm -lpthread 2>&1)"; then
+		echo "check-c-compilers: ${cc} ${opt} refuses ${src}:" >&2
+		echo "${out}" | head -n 8 >&2
+		nBad+=1
+	fi
+}
+
 ## Same flags the build and test stages use, so a disagreement here is a
 ## disagreement there.
 for cc in "${compilers[@]}"; do
-	## The two OOM tests are here for -Wclobbered: the library's recovery point
-	## is a setjmp, and which locals a compiler thinks the unwind can clobber
-	## differs by version and optimization level.
-	for src in source/c/cmd/shcl/main.c source/c/tests/conformance.c \
-	           source/c/tests/oom_hook.c source/c/tests/oom_recover.c \
-	           source/c/tests/mem_bounds.c; do
-		nRun+=1
-		if ! out="$("${cc}" -std=c11 -O2 -Wall -Wextra -Werror -I"${repoDir}/source/c" \
-			"${repoDir}/${src}" -o "${tmpDir}/out" -lm -lpthread 2>&1)"; then
-			echo "check-c-compilers: ${cc} refuses ${src}:" >&2
-			echo "${out}" | head -n 8 >&2
-			nBad+=1
-		fi
+	for src in source/c/cmd/shcl/main.c source/c/tests/conformance.c source/c/tests/mem_bounds.c; do
+		fBuild "${cc}" -O2 "${src}"
+	done
+	## The two OOM tests get every level. Their shape is the one this gate was
+	## written for - which locals a compiler thinks a setjmp's unwind can
+	## clobber, and whether it gives the frame a pointer and saved xmm registers
+	## at all - and gcc decides both per level, so -O2 alone proves one of five.
+	## win-runners.bash sweeps the same five on windows for the same reason.
+	for src in source/c/tests/oom_hook.c source/c/tests/oom_recover.c; do
+		for opt in -O0 -O1 -O2 -Os -O3; do
+			fBuild "${cc}" "${opt}" "${src}"
+		done
 	done
 done
 
@@ -78,3 +88,5 @@ echo "check-c-compilers: OK: ${nRun} build(s) across ${#compilers[@]} compiler(s
 ##		            local gcc 14 accepted.
 ##		2026-08-31  The two OOM tests, for -Wclobbered around the setjmp.
 ##		2026-09-05  A floor on the compiler set under SHCL_GATE_STRICT.
+##		2026-09-08  The two OOM tests build at every optimization level, since
+##		            the shape they exist for is one gcc decides per level.

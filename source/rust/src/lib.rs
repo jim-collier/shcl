@@ -660,6 +660,9 @@ fn fold_node_into(arena: &mut [NodeData], survivor: usize, loser: usize) {
 /// a load fail but never crash the consumer.
 pub const MAX_DEPTH: usize = 512;
 
+/// How much of a file's own name the temporary file beside it borrows.
+const TMP_NAME_CHARS: usize = 64;
+
 // ---------------------------------------------------------------------------
 // Tokenizer - the one place the lexical rules live
 // ---------------------------------------------------------------------------
@@ -3465,6 +3468,16 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 		.file_name()
 		.map(|b| b.to_string_lossy().into_owned())
 		.unwrap_or_else(|| file.to_string());
+	// At most the first 64 characters of the name, so the temp's own length is
+	// fixed. Carrying the whole name put the temp over the filesystem's 255 at
+	// a target name in the low 240s - and the exact cut-off moved with the
+	// width of the process id, so the same file saved on one machine and failed
+	// on another. A truncated name can collide; the exclusive create and the
+	// eight attempts already answer that.
+	let base = base
+		.char_indices()
+		.nth(TMP_NAME_CHARS)
+		.map_or(base.as_str(), |(i, _)| &base[..i]);
 	// Exclusive create: the name is predictable, so anything already sitting
 	// there - including a symlink someone else planted - must make this fail
 	// rather than be written through. Retry past a stale collision, then give
@@ -4571,6 +4584,7 @@ impl Document {
 	}
 
 	/// Delete the node(s) at a path (with their subtrees); returns how many.
+	/// A removed node's storage is not reclaimed, so a process that adds and removes in a loop grows by a few hundred bytes a pair. Reloading the canonical text gives it back.
 	pub fn remove(&mut self, path: &str) -> usize {
 		let targets: Vec<usize> = match self.resolve(path) {
 			Ok(Resolved::One(n)) => vec![n],
@@ -5692,9 +5706,11 @@ impl Document {
 		};
 		let raw = Some(self.raw_of(node));
 		let line = self.arena[node].line;
+		// An empty binding has no block, so no info string: `Empty`, the same as a `read_raw` on it. Only a value that is there and is not a block is a type mismatch.
 		match &self.arena[node].value {
 			Value::Raw(r) => Read::new(r.info.clone(), Status::Good, raw).at(line, false),
-			_ => Read::new(String::new(), Status::BadType, raw).at(line, false),
+			Value::Empty => Read::new(String::new(), Status::Empty, raw).at(line, false),
+			Value::Cell(_) => Read::new(String::new(), Status::BadType, raw).at(line, false),
 		}
 	}
 

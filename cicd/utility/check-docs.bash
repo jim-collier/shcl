@@ -304,6 +304,24 @@ grep -qF 'A setter writes only what reads back.' "${repoDir}/style-guide.md" \
 grep -qF '// The write side'"'"'s one rule: what is written has to read back' "${repoDir}/source/rust/src/lib.rs" \
 	|| fBad "lib.rs: the write-side section header is gone"
 
+##	Nothing ships the installers and the README one-liners fetch them from main
+##	as they run, so a fix that stops at dev reaches nobody. That is the one
+##	drift in the tree that reaches users the moment it happens, and until now it
+##	rested on remembering the docs-only exception at every merge. Skipped rather
+##	than failed where the refs are not both present: a shallow CI clone or a
+##	fork has no origin/main to compare against, and a missing ref is not drift.
+installers=(install.bash install.ps1 install-dev.bash)
+if git -C "${repoDir}" rev-parse --verify -q origin/main >/dev/null && git -C "${repoDir}" rev-parse --verify -q origin/dev >/dev/null; then
+	drifted="$(git -C "${repoDir}" diff --name-only origin/main origin/dev -- "${installers[@]}" || true)"
+	if [[ -n "${drifted}" ]]; then
+		while IFS= read -r f; do
+			fBad "installer on dev and not on main, where the one-liners read it: ${f}"
+		done <<<"${drifted}"
+	fi
+else
+	echo "check-docs: skipping the installer drift check (origin/main or origin/dev not present)"
+fi
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1
@@ -315,3 +333,4 @@ echo "check-docs: OK"
 ##		            disclaimer in a document that invites verbatim reuse.
 ##		2026-09-05  The crossed-range entry must agree with the spec's table.
 ##		2026-09-08  The tokenizer sentence in the style guide and the reference.
+##		2026-09-08  The installers on main must match the ones on dev.

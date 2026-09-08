@@ -637,6 +637,9 @@ def _fold_node_into(arena, survivor, loser):
 # fail but never crash the consumer.
 MAX_DEPTH = 512
 
+# How much of a file's own name the temporary file beside it borrows.
+TMP_NAME_CHARS = 64
+
 
 # ---------------------------------------------------------------------------
 # Tokenizer - the one place the lexical rules live
@@ -3190,7 +3193,10 @@ class Document:
 		return False
 
 	def remove(self, path: str) -> int:
-		"""Delete the node(s) at a path (with their subtrees); returns how many."""
+		"""Delete the node(s) at a path (with their subtrees); returns how many.
+
+		A removed node's storage is not reclaimed, so a process that adds and removes in a loop grows by a few hundred bytes a pair. Reloading the canonical text gives it back.
+		"""
 		r = self._resolve(path)
 		tag = r[0]
 		if tag == "one":
@@ -3726,8 +3732,11 @@ class Document:
 		raw = self._raw_of(na[1])
 		line = self.arena[na[1]].line
 		value = self.arena[na[1]].value
+		# An empty binding has no block, so no info string: `Empty`, the same as a `read_raw` on it. Only a value that is there and is not a block is a type mismatch.
 		if value.kind == "raw":
 			return Read(value.info, Status.Good, raw)._at(line, False)
+		if value.kind == "empty":
+			return Read("", Status.Empty, raw)._at(line, False)
 		return Read("", Status.BadType, raw)._at(line, False)
 
 	def _read_array(self, path, coerce, default):
@@ -4393,6 +4402,13 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	if d == "":
 		d = "."
 	base = os.path.basename(target)
+	# At most the first 64 characters of the name, so the temp's own length is
+	# fixed. Carrying the whole name put the temp over the filesystem's 255 at
+	# a target name in the low 240s - and the exact cut-off moved with the
+	# width of the process id, so the same file saved on one machine and failed
+	# on another. A truncated name can collide; the exclusive create and the
+	# eight attempts already answer that.
+	base = base[:TMP_NAME_CHARS]
 	if base == "":
 		base = target
 	# Exclusive create: the name is predictable, so anything already sitting
