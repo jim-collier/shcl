@@ -133,6 +133,15 @@ fn structural(rng: &mut Rng) -> String {
 	out
 }
 
+/// A short string over the interesting characters: what a setter is handed
+/// when a config value comes from somewhere other than a keyboard.
+fn soup_text(rng: &mut Rng, max: usize) -> String {
+	let len = rng.below(max);
+	(0..len)
+		.map(|_| INTERESTING[rng.below(INTERESTING.len())])
+		.collect()
+}
+
 fn seed_texts() -> Vec<String> {
 	let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../project/conformance");
 	let mut seeds: Vec<String> = Vec::new();
@@ -242,17 +251,32 @@ fn writes_on_structural_soup_stay_fixpoint() {
 		} else {
 			paths[rng.below(paths.len())].clone()
 		};
-		// Every setter answers false only for a path it could not write, which
-		// a wildcard or a missing instance among the enumerated paths can be.
-		let _ = match rng.below(7) {
+		// The values come off the soup too, so a setter meets the same text the
+		// parser does. Every setter answers false either for a path it could
+		// not write - a wildcard or a missing instance among the enumerated
+		// paths - or for text it could not write back.
+		let before = doc.to_canonical();
+		let v = soup_text(&mut rng, 7);
+		let applied = match rng.below(8) {
 			0 => doc.set_int(&path, 7),
-			1 => doc.set_string(&path, "v w"),
+			1 => doc.set_string(&path, &v),
 			2 => doc.remove(&path) > 0,
 			3 => doc.set_int_default(&path, 1),
 			4 => doc.set_empty(&path),
-			5 => doc.set_comment(&path, "note"),
-			_ => doc.set_raw(&path, "line 1\n  line 2", "txt"),
+			5 => doc.set_comment(&path, &v),
+			6 => doc.set_literal(&path, &v),
+			_ => doc.set_raw(&path, &v, &soup_text(&mut rng, 7)),
 		};
+		if !applied {
+			assert_eq!(
+				doc.to_canonical(),
+				before,
+				"a refused write changed the document at iteration {} (path {:?}, value {:?})",
+				i,
+				path,
+				v
+			);
+		}
 		let once = doc.to_canonical();
 		let twice = Document::parse(&once).to_canonical();
 		assert_eq!(
@@ -470,14 +494,8 @@ fn writer_roundtrips_and_stays_fixpoint() {
 		.and_then(|v| v.parse().ok())
 		.unwrap_or(300);
 	let mut rng = Rng(0x5EED_0000_1234_ABCD);
-	let rand_str = |rng: &mut Rng| -> String {
-		let len = rng.below(12);
-		(0..len)
-			.map(|_| INTERESTING[rng.below(INTERESTING.len())])
-			.collect()
-	};
 	for i in 0..iters {
-		let s = rand_str(&mut rng);
+		let s = soup_text(&mut rng, 12);
 		let mut d = Document::new();
 		assert!(d.set_string("k", &s));
 		// In-memory: encode is the exact inverse of the scalar string read.
@@ -505,7 +523,7 @@ fn writer_roundtrips_and_stays_fixpoint() {
 			s
 		);
 		// Array form: each element unquotes/unescapes back to itself.
-		let b = rand_str(&mut rng);
+		let b = soup_text(&mut rng, 12);
 		let mut da = Document::new();
 		assert!(da.set_string_array("k", &[s.as_str(), b.as_str()]));
 		let ra = Document::parse(&da.to_canonical()).read_string_array("k");

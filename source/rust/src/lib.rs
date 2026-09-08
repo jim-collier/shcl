@@ -122,7 +122,7 @@ impl std::error::Error for SaveError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteReason {
 	Writable,
-	BadPath,     // empty path, the scanner rejected it, or a segment carries a line break
+	BadPath,     // empty path, or the scanner rejected it
 	ValueInPath, // the path carries a `: value` part; writes take values separately
 	Wildcard,    // wildcard selectors are query-only
 	NoSuchIndex, // a `[#k]` instance that does not (and can never) exist
@@ -1113,6 +1113,16 @@ fn piece_text(p: &Piece, text: &str) -> String {
 		apply_escapes(raw)
 	} else {
 		raw.to_string()
+	}
+}
+
+/// True when a piece reads as this exact text, without building it.
+fn piece_is(p: &Piece, text: &str, want: &str) -> bool {
+	let raw = &text[p.start..p.end];
+	if p.quote == Quote::Double && raw.contains('\\') {
+		apply_escapes(raw) == want
+	} else {
+		raw == want
 	}
 }
 
@@ -3241,18 +3251,12 @@ impl Document {
 			}
 			Value::Cell(els) => {
 				out.push(' ');
-				for (i, e) in els.iter().enumerate() {
-					if i > 0 {
-						out.push_str(", ");
-					}
-					out.push_str(&emit_element(e));
-				}
+				out.push_str(&emit_cell(els));
 				push_trailing(out, node.trailing());
 				out.push('\n');
 			}
 			Value::Raw(r) => {
-				let (content, info, fence_char, fence_len) =
-					(&r.content, &r.info, &r.fence_char, &r.fence_len);
+				let (content, fence_char, fence_len) = (&r.content, &r.fence_char, &r.fence_len);
 				// Child-indent spelling is canonical: bare name line, fenced
 				// block one level deeper, verbatim content. Exception: if an
 				// earlier same-name sibling is empty, the bare `name:` header
@@ -3269,15 +3273,7 @@ impl Document {
 				if !would_merge {
 					out.push_str(&pad);
 				}
-				out.push_str(&fence);
-				if !info.is_empty() {
-					// An info-string starting with the fence char would extend
-					// the run on reparse; a space keeps the fence length intact.
-					if info.as_bytes()[0] == *fence_char {
-						out.push(' ');
-					}
-					out.push_str(info);
-				}
+				out.push_str(&emit_fence_line(r));
 				out.push('\n');
 				if !content.is_empty() {
 					for l in content.split('\n') {
@@ -3853,6 +3849,125 @@ fn quote_text(t: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// The write side's one rule: what is written has to read back
+// ---------------------------------------------------------------------------
+//
+// A setter builds its text through the emitter and reads it back with the
+// tokenizer before the document is touched. If the read does not give the
+// value it was handed, the write is refused and nothing changes. No setter
+// decides for itself what a quote, a `#`, a comma or a carriage return means:
+// twelve review items were one setter's private rule disagreeing with the
+// parser's. The typed setters keep their own render-and-parse-back on top,
+// since a float or a datetime has to read back as that type and not merely as
+// the same text.
+
+/// The value half of a binding line, the way `emit_node` writes it.
+fn emit_cell(els: &[Element]) -> String {
+	let mut out = String::new();
+	for (i, e) in els.iter().enumerate() {
+		if i > 0 {
+			out.push_str(", ");
+		}
+		out.push_str(&emit_element(e));
+	}
+	out
+}
+
+/// The opening fence line of a raw block: the fence run, then the info string
+/// behind a space when it would otherwise extend the run.
+fn emit_fence_line(r: &RawVal) -> String {
+	let mut out: String = std::iter::repeat_n(r.fence_char as char, r.fence_len).collect();
+	if !r.info.is_empty() {
+		if r.info.as_bytes()[0] == r.fence_char {
+			out.push(' ');
+		}
+		out.push_str(&r.info);
+	}
+	out
+}
+
+/// True when a value comes back off the page as itself.
+fn value_reads_back(v: &Value) -> bool {
+	match v {
+		Value::Empty => true,
+		Value::Cell(els) => {
+			let text = emit_cell(els);
+			if text.contains('\n') {
+				return false;
+			}
+			let mut tok = Tokens::default();
+			tokenize_value(&text, 0, Rules::Current, &mut tok);
+			if tok.comment.is_some() {
+				return false;
+			}
+			// Compared against the pieces rather than against a rebuilt value:
+			// a bulk write runs this per set, and the text is right there.
+			let mut back = tok
+				.elements
+				.iter()
+				.filter(|p| p.quote != Quote::None || p.end > p.start);
+			els.iter()
+				.all(|e| back.next().is_some_and(|p| piece_is(p, &text, &e.text)))
+				&& back.next().is_none()
+		}
+		Value::Raw(r) => {
+			let line = emit_fence_line(r);
+			if line.contains('\n') {
+				return false;
+			}
+			let mut tok = Tokens::default();
+			tokenize_value(&line, 0, Rules::Current, &mut tok);
+			if fence_open(&line[tok.value.0..tok.value.1])
+				!= Some((r.fence_char, r.fence_len, r.info.clone()))
+			{
+				return false;
+			}
+			// A body line ending in a carriage return loses it to the load's
+			// line-end trim, and one spelling the closing fence would end the
+			// block early.
+			r.content
+				.split('\n')
+				.all(|l| !l.ends_with('\r') && !is_fence_close(l, r.fence_char, r.fence_len))
+		}
+	}
+}
+
+/// True when a field name comes back off a line as itself.
+fn name_reads_back(name: &str) -> bool {
+	let text = escape_name(name);
+	if text.contains('\n') {
+		return false;
+	}
+	let mut tok = Tokens::default();
+	tokenize(&text, b':', false, Rules::Current, &mut tok);
+	tok.fault.is_none()
+		&& tok.segments.len() == 1
+		&& tok.segments[0].selector.is_none()
+		&& piece_is(&tok.segments[0].name, &text, name)
+}
+
+/// The comment line this text is written as, or None when it has no spelling.
+/// A `#` is added when the text carries none. The load trims every line's
+/// end, so the trimmed text is what gets written; text holding a line break
+/// is refused rather than cut down to its first line.
+fn comment_line(text: &str) -> Option<String> {
+	if text.contains('\n') {
+		return None;
+	}
+	let t = trim_wsp_end(text);
+	let line = if t.starts_with('#') {
+		t.to_string()
+	} else if t.is_empty() {
+		"#".to_string()
+	} else {
+		format!("# {}", t)
+	};
+	let mut tok = Tokens::default();
+	tokenize_value(&line, 0, Rules::Current, &mut tok);
+	(tok.comment == Some(0) && trim_wsp_end(&line) == line).then_some(line)
+}
+
+// ---------------------------------------------------------------------------
 // Accessor: path resolution
 // ---------------------------------------------------------------------------
 
@@ -4131,13 +4246,15 @@ impl Document {
 // already gone and is not maintained here.
 
 /// Read text as the value half of a line, for the setters that take value
-/// syntax rather than data. Rejects what could not have come off one line: a
-/// line break, or a quote that never closes. An unquoted `#` ends the value
-/// here exactly as it would in a file. Bracket-array text is refused too: in
-/// a file it is E019 and the line is kept verbatim, so writing it as a
-/// two-element array holding `[1` and `2]` would be a different wrong answer.
+/// syntax rather than data: whatever a file line spells with this text is
+/// what gets stored, so a trailing blank comes off and an unquoted `#` ends
+/// the value exactly as they would in a file. What is refused is what a file
+/// reports as an error, since a setter has no diagnostic to report it with: a
+/// line break, which no file line can hold, an unterminated quote (E017), and
+/// bracket text (E019, the line kept verbatim - writing it as a two-element
+/// array holding `[1` and `2]` would be a different wrong answer).
 fn literal_value(text: &str) -> Option<Value> {
-	if text.contains('\n') || text.contains('\r') {
+	if text.contains('\n') {
 		return None;
 	}
 	let mut tok = Tokens::default();
@@ -4258,10 +4375,6 @@ impl Document {
 			// catch it either. A newline in a NAME is fine: names are stored
 			// escape-resolved and emitted through the name escaper, which spells
 			// a line break `\n` and reads it back as one.
-			if matches!(&seg.selector, Some(Selector::ByValue { text, .. }) if text.contains('\n'))
-			{
-				return WriteReason::BadPath;
-			}
 			match &seg.selector {
 				Some(Selector::Wildcard) => return WriteReason::Wildcard,
 				Some(Selector::ByIndex(k)) => {
@@ -4304,6 +4417,22 @@ impl Document {
 		if self.probe_write(&scan, &mut trail) != WriteReason::Writable {
 			return None;
 		}
+		// Nothing is created until every segment the write would create is
+		// known to spell back: the name through the name escaper, an instance
+		// selector as the value it binds.
+		for (i, seg) in scan.segments.iter().enumerate() {
+			if trail[i].is_some() {
+				continue;
+			}
+			if !name_reads_back(&seg.name) {
+				return None;
+			}
+			if let Some(Selector::ByValue { text, .. }) = &seg.selector
+				&& !value_reads_back(&cell_of(text.clone()))
+			{
+				return None;
+			}
+		}
 		let mut cur = ROOT;
 		for (i, seg) in scan.segments.iter().enumerate() {
 			// The probe already resolved every segment that exists; only the
@@ -4327,6 +4456,9 @@ impl Document {
 	}
 
 	fn set_value(&mut self, path: &str, value: Value) -> bool {
+		if !value_reads_back(&value) {
+			return false;
+		}
 		match self.place(path) {
 			Some(node) => {
 				self.arena[node].value = value;
@@ -4458,22 +4590,17 @@ impl Document {
 
 	/// Attach a leading comment line to the node at a path (creating an empty
 	/// node if it does not exist yet, so a section can be annotated). A missing
-	/// `#` is added; only the first line is kept (a comment is one line), and
-	/// trailing whitespace comes off the way the load takes it, so text that is
-	/// blank leaves a bare `#`.
+	/// `#` is added, and trailing whitespace comes off the way the load takes
+	/// it, so text that is blank leaves a bare `#`. Text holding a line break
+	/// is refused: a comment is one line, and keeping only the first would
+	/// drop the rest with nothing to say so.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_comment(&mut self, path: &str, text: &str) -> bool {
+		let Some(c) = comment_line(text) else {
+			return false;
+		};
 		match self.place(path) {
 			Some(node) => {
-				let line = text.split('\n').next().unwrap_or("");
-				let c = if line.starts_with('#') {
-					line.to_string()
-				} else {
-					format!("# {}", line)
-				};
-				// Without this the load trims what was written and the writer's
-				// output stops being a fmt fixpoint.
-				let c = trim_wsp_end(&c).to_string();
 				// The node's own blank moves above its first comment; otherwise
 				// the blank would separate the comment from what it annotates.
 				// Above the first one already there, when there is one.
@@ -4533,28 +4660,14 @@ impl Document {
 		self.set_value(path, cell_of(v.to_string()))
 	}
 	/// Bind a raw block at a path, picking a fence longer than any content line.
-	/// The info-string is stored as a fence line would read it back (trimmed);
-	/// one holding a line break or an unquoted `#` has no fence-line spelling
-	/// (the `#` would read back as a comment) and fails the write. A body line
-	/// ending in CR fails for the same reason: the load takes the whole
-	/// trailing CR run off every line, so it would not read back.
+	/// The info-string is stored as a fence line would read it back (trimmed
+	/// the way the load trims one); one that would not read back whole - it
+	/// holds a line break, or a `#` behind a blank that reads as a comment -
+	/// fails the write, as does a body line ending in CR, since the load takes
+	/// the trailing CR run off every line.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
-		if info.contains('\n') || info.contains('\r') {
-			return false;
-		}
-		// The fence line the block will be written as: the fence run and the
-		// info string are one bare piece, so a quote in the info hides nothing.
-		let mut tok = Tokens::default();
-		let fence_line = format!("```{}", info);
-		tokenize_value(&fence_line, 0, Rules::Current, &mut tok);
-		if tok.comment.is_some() {
-			return false;
-		}
-		if content.split('\n').any(|line| line.ends_with('\r')) {
-			return false;
-		}
-		let info = info.trim();
+		let info = trim_wsp(info);
 		let (fence_char, fence_len) = choose_fence(content);
 		self.set_value(
 			path,
@@ -6406,7 +6519,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 /// a usable one-line form. Used by the generator, not the validator.
 fn emit_value_inline(v: &Value) -> Option<String> {
 	match v {
-		Value::Cell(els) => Some(els.iter().map(emit_element).collect::<Vec<_>>().join(", ")),
+		Value::Cell(els) => Some(emit_cell(els)),
 		_ => None,
 	}
 }
@@ -6547,11 +6660,10 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			.any(|s| matches!(s.selector, Some(Selector::Wildcard)))
 	};
 	// `[#N]` needs a pre-existing instance and its `#` would start a comment on
-	// a binding line; a newline inside a selector has no one-line spelling,
-	// since the value emitter never escapes one. Both go to the trailing note
-	// instead of emitting a broken line. A path deeper than a document may nest
-	// cannot be generated either: the line would draw E016 on the way back in.
-	// A newline in a NAME is writable: names are stored escape-resolved and the
+	// a binding line; a newline inside a selector is left to the trailing note
+	// rather than spelled inline. A path deeper than a document may nest cannot
+	// be generated either: the line would draw E016 on the way back in. A
+	// newline in a NAME is writable: names are stored escape-resolved and the
 	// name escaper spells one `\n`.
 	let unwritable = |c: &Constraint| {
 		c.segs.len() > MAX_DEPTH

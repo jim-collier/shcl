@@ -23,6 +23,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Formatter](#formatter)
 	- [Saving a file](#saving-a-file)
 	- [Load outcomes](#load-outcomes)
+	- [Write outcomes](#write-outcomes)
 	- [Testing](#testing)
 	- [Format comparison](#format-comparison)
 	- [CI/CD](#cicd)
@@ -425,6 +426,20 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 - The one thing the table changed when it was written: a raw fence with no parent field (`E006`) never held its level, so a line written deeper than it bound to the root. It holds it now, like every other dropped line.
 
 - An indent that matched no open level (`E012`) already holds an unopened level from the resolve, which refuses a sibling at the same indent the same way. The funnel leaves that one in place rather than stacking a dead level on it.
+
+### Write outcomes
+
+The mirror of the load outcomes, on the write side. A setter builds its line text through the emitter, hands it to the tokenizer, and refuses unless what comes back is the value it was given. Nothing else on the write side decides what a quote, a `#`, a comma or a carriage return means, so a setter added later carries no rule of its own and cannot disagree with the parser. Twelve review items over three months were one setter's private trim, carriage-return or `#` check drifting from the parser's.
+
+- The refusals follow from the lexical rules rather than from a list. A raw block's info string may not hold a line break or a `#` behind a blank, because the fence line would read that `#` as opening a comment. A raw body line may not end in a carriage return, because the load takes the trailing run off every line. A comment may not hold a line break, because a comment is one line and keeping the first would drop the rest with nothing to say so.
+
+- What the load normalizes, the setter normalizes too, and stores the normalized form: a comment line and a fence label are trimmed at the end the way the load trims every line. A raw body line is payload, so it is refused rather than trimmed - stripping a carriage return from each line of a block would quietly convert a CRLF payload to LF.
+
+- The typed setters keep their render-and-parse-back on top of the round trip. It answers a different question: the round trip asks whether the same text comes back, and a float or a datetime has to come back as that type. `inf` reads back as the text `inf` and as no float at all.
+
+- `SetLiteral` takes syntax rather than data, so whatever a file line spells with its text is what gets stored - a trailing blank comes off, a `#` after a blank ends the value. What it refuses is what a file reports as an error, since a setter has no diagnostic to report one with: a line break, an unterminated quote (`E017`), bracket text (`E019`).
+
+- A path may carry a line break in either half. A name emits through the name escaper and a selector value through the value emitter, and both spell one `\n` and read it back. The selector was refused until the tokenizer cut, while elements were still stored in their source spelling and the value emitter had nothing to escape with.
 
 ### Testing
 

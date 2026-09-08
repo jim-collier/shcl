@@ -141,6 +141,8 @@ rows=(
 	## 20260830 item 10: the reference kept a trailing CR on an ops line, the ports stripped it.
 	'ops-line-cr|set %F%|int\tx\t1\r|0|a: 1\n\nx: 1\n|-'
 	'ops-lone-cr|set %F%|int\tx\t1\n\r|0|a: 1\n\nx: 1\n|-'
+	## 20260908: one CR comes off an ops line, not two - the second is the value's.
+	'ops-double-cr|set %F%|string\tx\tv\r\r\n|0|a: 1\n\nx: "v\r"\n|-'
 	## 20260830 item 14: Python raised a traceback, C exited nonzero. POSIX-only:
 	## the row closes fd 0, and windows has no equivalent a shell can set up.
 	'closed-stdin|fmt -|@closedin|0||^$'
