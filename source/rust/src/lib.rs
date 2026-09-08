@@ -1604,6 +1604,21 @@ struct Parser {
 	unlisted: (usize, usize),
 }
 
+/// What became of a line the parser did not bind whole. Only the funnel
+/// (`Parser::refuse`) reads it; the count and the level follow from it.
+enum Outcome<'a> {
+	/// The line binds; a value it carried has nowhere to go and is gone.
+	ValueDropped,
+	/// Content-malformed: kept verbatim as trivia and written back in place,
+	/// where it re-diagnoses identically and never reads as a binding.
+	Retained { text: String, blank_before: bool },
+	/// Read but not applicable here; re-emitted it could bind elsewhere, so
+	/// it is gone and counts.
+	Dropped,
+	/// The parse stopped before this line; the rest was never read.
+	Stopped(&'a [&'a str]),
+}
+
 impl Parser {
 	fn new() -> Parser {
 		Parser {
@@ -1667,6 +1682,41 @@ impl Parser {
 			message,
 			code,
 		});
+	}
+
+	/// The one exit for a line the parser does not bind whole. An arm says
+	/// what became of the line and nothing else: the lost count and the
+	/// level the line holds follow from the outcome here, so no arm can
+	/// forget either. design.md's outcome table gives each code its row.
+	fn refuse(
+		&mut self,
+		line: usize,
+		code: &'static str,
+		msg: impl Into<String>,
+		outcome: Outcome,
+		indent: &str,
+	) {
+		self.err(line, code, msg);
+		let holds = matches!(outcome, Outcome::Retained { .. } | Outcome::Dropped);
+		self.lost += match &outcome {
+			Outcome::ValueDropped | Outcome::Dropped => 1,
+			Outcome::Retained { .. } => 0,
+			Outcome::Stopped(rest) => rest.iter().filter(|l| !trim_wsp(l).is_empty()).count(),
+		};
+		if let Outcome::Retained { text, blank_before } = outcome {
+			self.pending.push(Pend {
+				text,
+				indent: indent.to_string(),
+				blank_before,
+				ceiling: indent.len(),
+			});
+		}
+		// A refused line owns its indent, so what is written deeper is skipped
+		// with it (E018). An indent that matched no level already holds an
+		// unopened one, which refuses a sibling the same way; that one stays.
+		if holds && !matches!(self.stack.last(), Some((i, n)) if i == indent && *n == UNOPENED) {
+			self.stack.push((indent.to_string(), DEAD));
+		}
 	}
 
 	/// Find (or create by merge rule) the child of `parent` with this (name, value).
@@ -1937,9 +1987,13 @@ impl Parser {
 	/// Diagnose a line written under a skipped line, and skip it too. Its own
 	/// level stays dead so deeper lines go the same way.
 	fn skip_under_dead(&mut self, line: usize, indent: &str) {
-		self.err(line, "E018", "parent line was skipped; line skipped");
-		self.lost += 1;
-		self.stack.push((indent.to_string(), DEAD));
+		self.refuse(
+			line,
+			"E018",
+			"parent line was skipped; line skipped",
+			Outcome::Dropped,
+			indent,
+		);
 	}
 
 	/// Walk path segments under `parent`, select-or-creating; returns the node
@@ -1950,6 +2004,7 @@ impl Parser {
 		segs: &[Segment],
 		value: Value,
 		line: usize,
+		indent: &str,
 	) -> Option<usize> {
 		// Owned here and handed to the last segment once; Option so the loop
 		// can move it out without a clone.
@@ -1969,12 +2024,13 @@ impl Parser {
 			up = self.arena[up].parent;
 		}
 		if parent_depth + segs.len() > MAX_DEPTH {
-			self.err(
+			self.refuse(
 				line,
 				"E016",
 				format!("nesting deeper than {} levels; line skipped", MAX_DEPTH),
+				Outcome::Dropped,
+				indent,
 			);
-			self.lost += 1;
 			return None;
 		}
 		let mut cur = parent;
@@ -2006,12 +2062,13 @@ impl Parser {
 					if is_last && value.as_ref().is_some_and(|v| !v.is_empty()) {
 						// `a.b[X]: v` - the discriminator is the value; a second
 						// value has nowhere unambiguous to go.
-						self.err(
+						self.refuse(
 							line,
 							"E002",
 							format!("value after selector on '{}' ignored", seg.name),
+							Outcome::ValueDropped,
+							indent,
 						);
-						self.lost += 1;
 					}
 				}
 				(Some(Selector::ByIndex(n)), _) => {
@@ -2026,24 +2083,35 @@ impl Parser {
 					if let Some(found) = found {
 						cur = found;
 					} else {
-						self.err(line, "E003", format!("no instance {} of '{}'", n, seg.name));
-						self.lost += 1;
+						self.refuse(
+							line,
+							"E003",
+							format!("no instance {} of '{}'", n, seg.name),
+							Outcome::Dropped,
+							indent,
+						);
 						return None;
 					}
 					if is_last && value.as_ref().is_some_and(|v| !v.is_empty()) {
 						// Same as the value selector: the instance is already
 						// chosen, so a trailing value has nowhere to bind.
-						self.err(
+						self.refuse(
 							line,
 							"E002",
 							format!("value after selector on '{}' ignored", seg.name),
+							Outcome::ValueDropped,
+							indent,
 						);
-						self.lost += 1;
 					}
 				}
 				(Some(Selector::Wildcard), _) => {
-					self.err(line, "E004", "wildcard selector is query-only");
-					self.lost += 1;
+					self.refuse(
+						line,
+						"E004",
+						"wildcard selector is query-only",
+						Outcome::Dropped,
+						indent,
+					);
 					return None;
 				}
 				(None, false) => {
@@ -2158,10 +2226,21 @@ impl Parser {
 	/// A bare fence line is a value line for its parent field: fills an empty
 	/// value, else creates a new instance of that field (the repeated-leaf rule).
 	/// Returns the node the block landed on (None = no parent, diagnosed).
-	fn bind_block(&mut self, parent: usize, value: Value, line: usize) -> Option<usize> {
+	fn bind_block(
+		&mut self,
+		parent: usize,
+		value: Value,
+		line: usize,
+		indent: &str,
+	) -> Option<usize> {
 		if parent == ROOT {
-			self.err(line, "E006", "raw block with no parent field");
-			self.lost += 1;
+			self.refuse(
+				line,
+				"E006",
+				"raw block with no parent field",
+				Outcome::Dropped,
+				indent,
+			);
 			return None;
 		}
 		if self.arena[parent].value.is_empty() {
@@ -2182,46 +2261,50 @@ impl Parser {
 	}
 
 	/// One stacked-list element (`* scalar`) appends to the parent's array.
-	/// True when the element was added; false when the line was dropped.
-	fn add_star_element(&mut self, parent: usize, body: &str, line: usize) -> bool {
+	fn add_star_element(&mut self, parent: usize, body: &str, line: usize, indent: &str) {
 		if parent == ROOT {
-			self.err(line, "E007", "list element with no parent field");
-			self.lost += 1;
-			return false;
+			self.refuse(
+				line,
+				"E007",
+				"list element with no parent field",
+				Outcome::Dropped,
+				indent,
+			);
+			return;
 		}
 		// Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if !self.arena[parent].children.is_empty() {
-			self.err(
+			self.refuse(
 				line,
 				"E008",
 				"list element mixed with field children; ignored",
+				Outcome::Dropped,
+				indent,
 			);
-			self.lost += 1;
-			return false;
+			return;
 		}
 		let trimmed = trim_wsp(body);
 		if trimmed.is_empty() {
-			self.err(line, "E009", "empty list element");
-			self.lost += 1;
-			return false;
+			self.refuse(line, "E009", "empty list element", Outcome::Dropped, indent);
+			return;
 		}
 		// One scalar per line; a bare comma is an error, not a second element.
 		if split_unquoted_commas(trimmed).len() > 1 {
-			self.err(
+			self.refuse(
 				line,
 				"E010",
 				"bare comma in list element (one element per line)",
+				Outcome::Dropped,
+				indent,
 			);
-			self.lost += 1;
-			return false;
+			return;
 		}
 		if unterminated_quote(trimmed) {
 			self.err(line, "E017", "unterminated quote in value");
 		}
 		let Some(el) = parse_element(trimmed) else {
-			self.err(line, "E009", "empty list element");
-			self.lost += 1;
-			return false;
+			self.refuse(line, "E009", "empty list element", Outcome::Dropped, indent);
+			return;
 		};
 		// Element cap: each element line past it is refused on its own, the way
 		// any other bad element line is.
@@ -2229,16 +2312,17 @@ impl Parser {
 			&& let Value::Cell(els) = &self.arena[parent].value
 			&& els.len() >= self.max_elements
 		{
-			self.err(
+			self.refuse(
 				line,
 				"E021",
 				format!(
 					"array longer than {} elements; line skipped",
 					self.max_elements
 				),
+				Outcome::Dropped,
+				indent,
 			);
-			self.lost += 1;
-			return false;
+			return;
 		}
 		if self.arena[parent].value.is_empty() {
 			let old_key = merge_hash(&self.arena[parent].name, &self.arena[parent].value);
@@ -2265,15 +2349,14 @@ impl Parser {
 				els.push(el);
 			}
 		} else {
-			self.err(
+			self.refuse(
 				line,
 				"E011",
 				"field already has a value; list element ignored",
+				Outcome::Dropped,
+				indent,
 			);
-			self.lost += 1;
-			return false;
 		}
-		true
 	}
 
 	/// Legal input that looks like a common mistake: a field repeating as a bare
@@ -2348,15 +2431,13 @@ impl Parser {
 			// as lost, which is what keeps save_file from writing a silently
 			// truncated document.
 			if self.max_nodes != 0 && self.arena.len() - 1 > self.max_nodes {
-				self.err(
+				self.refuse(
 					i + 1,
 					"E020",
 					format!("node cap of {} exceeded; parse stopped", self.max_nodes),
+					Outcome::Stopped(&lines[i..]),
+					"",
 				);
-				self.lost += lines[i..]
-					.iter()
-					.filter(|l| !trim_wsp(l).is_empty())
-					.count();
 				node_capped = true;
 				break;
 			}
@@ -2400,14 +2481,19 @@ impl Parser {
 				let Some(parent) = parent else {
 					// The body goes with its fence: parsed live, it would read as
 					// root bindings and the closing fence would open a second block.
-					self.err(lineno, "E012", "indentation matches no open level");
-					self.lost += 1;
+					self.refuse(
+						lineno,
+						"E012",
+						"indentation matches no open level",
+						Outcome::Dropped,
+						indent,
+					);
 					i = next;
 					continue;
 				};
 				if parent == DEAD {
 					self.skip_under_dead(lineno, indent);
-				} else if let Some(node) = self.bind_block(parent, value, lineno) {
+				} else if let Some(node) = self.bind_block(parent, value, lineno, indent) {
 					self.attach_trivia(node, None);
 				}
 				i = next;
@@ -2423,8 +2509,13 @@ impl Parser {
 						&& matches!(lines[i].as_bytes().get(ilen + 1), Some(b' ' | b'\t')));
 				if spaced {
 					let Some(parent) = self.resolve_parent(indent) else {
-						self.err(lineno, "E012", "indentation matches no open level");
-						self.lost += 1;
+						self.refuse(
+							lineno,
+							"E012",
+							"indentation matches no open level",
+							Outcome::Dropped,
+							indent,
+						);
 						i += 1;
 						continue;
 					};
@@ -2447,18 +2538,18 @@ impl Parser {
 							ceiling: indent.len(),
 						});
 					}
-					// A dropped element holds its indent level like any
-					// skipped line, so what is written under it is skipped
-					// with it (E018) rather than re-parenting to the field.
-					if !self.add_star_element(parent, body, lineno) {
-						self.stack.push((indent.to_string(), DEAD));
-					}
+					self.add_star_element(parent, body, lineno, indent);
 					i += 1;
 					continue;
 				}
 				let Some(parent) = self.resolve_parent(indent) else {
-					self.err(lineno, "E012", "indentation matches no open level");
-					self.lost += 1;
+					self.refuse(
+						lineno,
+						"E012",
+						"indentation matches no open level",
+						Outcome::Dropped,
+						indent,
+					);
 					i += 1;
 					continue;
 				};
@@ -2467,24 +2558,19 @@ impl Parser {
 					i += 1;
 					continue;
 				}
-				self.err(
+				// Content-malformed at any position, so safe to retain. The BOM
+				// exception the field arm carries cannot apply here: this line
+				// starts with the '*' that brought us in.
+				self.refuse(
 					lineno,
 					"E013",
 					"malformed line: '*' must be followed by a space",
+					Outcome::Retained {
+						text: trim_wsp_end(rest).to_string(),
+						blank_before: had_blank,
+					},
+					indent,
 				);
-				// Content-malformed at any position, so it is safe to retain
-				// verbatim as trivia: re-emitted, it re-diagnoses identically
-				// and can never read as a live binding. A hand-typo no longer
-				// vanishes on the consumer's next save. The BOM exception the
-				// sibling site below carries cannot apply here: this line
-				// starts with the '*' that brought us in.
-				self.pending.push(Pend {
-					text: trim_wsp_end(rest).to_string(),
-					indent: indent.to_string(),
-					blank_before: had_blank,
-					ceiling: indent.len(),
-				});
-				self.stack.push((indent.to_string(), DEAD));
 				i += 1;
 				continue;
 			}
@@ -2519,8 +2605,13 @@ impl Parser {
 				continue;
 			}
 			let Some(parent) = self.resolve_parent(indent) else {
-				self.err(lineno, "E012", "indentation matches no open level");
-				self.lost += 1;
+				self.refuse(
+					lineno,
+					"E012",
+					"indentation matches no open level",
+					Outcome::Dropped,
+					indent,
+				);
 				i += 1;
 				continue;
 			};
@@ -2532,25 +2623,24 @@ impl Parser {
 			let scan = match scan_path(content) {
 				Ok(s) => s,
 				Err(reason) => {
-					self.err(
+					// Content-malformed at any position, so retained - except a
+					// line led by a BOM, which the file-start strip would rewrite
+					// into something that can bind.
+					let outcome = if rest.starts_with('\u{feff}') {
+						Outcome::Dropped
+					} else {
+						Outcome::Retained {
+							text: trim_wsp_end(rest).to_string(),
+							blank_before: had_blank,
+						}
+					};
+					self.refuse(
 						lineno,
 						"E014",
 						format!("malformed line skipped: {}", reason),
+						outcome,
+						indent,
 					);
-					// Content-malformed at any position - retained as trivia,
-					// same rationale (and same BOM exception) as the bad '*'
-					// line above.
-					if rest.starts_with('\u{feff}') {
-						self.lost += 1;
-					} else {
-						self.pending.push(Pend {
-							text: trim_wsp_end(rest).to_string(),
-							indent: indent.to_string(),
-							blank_before: had_blank,
-							ceiling: indent.len(),
-						});
-					}
-					self.stack.push((indent.to_string(), DEAD));
 					i += 1;
 					continue;
 				}
@@ -2568,12 +2658,13 @@ impl Parser {
 							// would bake the changed value in and the file
 							// would check clean forever after. Count it lost so
 							// the save gate stops that.
-							self.err(
+							self.refuse(
 								lineno,
 								"E019",
 								"bracket array syntax; an array is comma-separated, without brackets",
+								Outcome::ValueDropped,
+								indent,
 							);
-							self.lost += 1;
 						} else {
 							// One element reads as the selector the scanner made
 							// of it - `[Boston]` is `Boston` - and `field:[disc]`
@@ -2607,16 +2698,16 @@ impl Parser {
 						// splits the value (the quote check does too), or
 						// the cap would bound nothing.
 						if self.max_elements != 0 && cell_exceeds(v, self.max_elements) {
-							self.err(
+							self.refuse(
 								lineno,
 								"E021",
 								format!(
 									"array longer than {} elements; line skipped",
 									self.max_elements
 								),
+								Outcome::Dropped,
+								indent,
 							);
-							self.lost += 1;
-							self.stack.push((indent.to_string(), DEAD));
 							i = next;
 							continue;
 						}
@@ -2632,7 +2723,7 @@ impl Parser {
 			// (a merge into an equal-valued node keeps the first line's span;
 			// a value dropped after a last-segment selector records nothing).
 			let vkey = src_text.as_ref().map(|_| value_hash(&value));
-			if let Some(node) = self.attach_path(parent, &scan.segments, value, lineno) {
+			if let Some(node) = self.attach_path(parent, &scan.segments, value, lineno, indent) {
 				if let (Some(s), Some(k)) = (src_text, vkey)
 					&& !self.arena[node].src_set
 					&& value_hash(&self.arena[node].value) == k
@@ -2647,18 +2738,18 @@ impl Parser {
 				}
 				self.attach_trivia(node, comment);
 				self.stack.push((indent.to_string(), node));
-			} else {
-				self.stack.push((indent.to_string(), DEAD));
 			}
 			i = next;
 		}
 		// A cap crossed on the document's last line still reports, with nothing
 		// left to skip.
 		if !node_capped && self.max_nodes != 0 && self.arena.len() - 1 > self.max_nodes {
-			self.err(
+			self.refuse(
 				lines.len(),
 				"E020",
 				format!("node cap of {} exceeded; parse stopped", self.max_nodes),
+				Outcome::Stopped(&[]),
+				"",
 			);
 		}
 		self.star_flush();

@@ -48,7 +48,7 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Features and enhancements
 
-- 🔘 The parser counts lost lines and holds a refused line's level by hand, one arm at a time, and every round since August found an arm that forgot.
+- ✅ The parser counts lost lines and holds a refused line's level by hand, one arm at a time, and every round since August found an arm that forgot.
 	- Reproduced: 20260829 item 1, 20260901b items 1 and 2, 20260904 items 5, 12, 14 and 15, 20260905 items 1 and 6. Nine items, one rule: what happens to a line the parser does not bind.
 	- Cause: each diagnostic arm does its own `lost += 1` and its own level push, so a new arm, or an old one nobody re-read, can skip either. Nothing derives the count or the level from what became of the line.
 	- Fix: one funnel. A line the parser handles ends in one of three outcomes: bound, retained (the text kept verbatim as trivia and written back unchanged), or dropped. One function takes the line, its code and its outcome; it records the diagnostic, pushes a dead level for anything not bound, and counts lost for dropped. No arm writes `lost` or touches the level stack itself. A line under a retained or dropped line is `E018` through the same funnel, so it inherits the outcome.
@@ -56,7 +56,13 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Fix: the merge carries a retained line as trivia the way it carries a comment, so 20260904 item 5 holds by construction rather than by a special case.
 	- Pinned by: a fuzz property in all four runners: `lost` is zero exactly when every input line's content reappears in the canonical output, after the parser's own normalization. The corpus `lost` row on every case stays. And a `shell-regress.bash` scan: no function in any binding's parser writes the lost count or pushes a level except the funnel.
 	- Note: reference first, then the three ports from the diff, per the style guide. No behavior changes, so no golden moves. If one does, the table was wrong about that code and the table wins.
+	- Fixed: one funnel per binding (`refuse`), taking the line, its code and its outcome. It records the diagnostic, counts lost for a dropped line or value, keeps a retained line as trivia, and holds the indent level for anything not bound. Every arm that used to count or push now names its outcome and nothing else.
+	- Fixed: the outcome table is in `design.md` under Load outcomes, one row per load-time code; the spec's code table points at it.
+	- Found on the way: a raw fence with no parent field (`E006`) was the one skipped line that never held its level, so a line written deeper than it bound to the root. It holds it now; changelog Changed, corpus `059` extended.
+	- The merge's carry of a retained line stays as item 5 of the 20260904 round left it. The funnel is now the only thing that makes one, and a retained line never begins with `#`, so telling it from a comment by its first character is exact rather than a guess.
+	- Pinned by: a fuzz property in the reference (the lost count equals the number of dropped and value-dropped diagnostics by the table, and every retained line's text comes back in the canonical output); the crosscheck's save gate now runs over the fuzz soup as well as the corpus, so a port that counts differently diverges on the in-place write; and a `shell-regress.bash` scan that lifts each binding's funnel and refuses any lost-count increment or dead-level push outside it. The `E020` remainder is left to the existing cap fixtures, since its line number cannot say which lines were unread.
 	- Opened: 20260906-090943
+	- Closed: 20260907-190729
 
 - 🔘 Seven separate scanners each decide where a line's parts begin and end, and every scanner item since July was two of them disagreeing.
 	- Reproduced: 20260725 item 11, 20260817 item 1, 20260829 item 6, 20260830b item 2, 20260901 item 6, 20260904 items 2, 3 and 19, 20260905 items 1, 2, 3 and 8. Twelve items, one rule.

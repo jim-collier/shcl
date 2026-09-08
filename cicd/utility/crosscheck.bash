@@ -344,6 +344,10 @@ if [[ -n "$extra" && -d "$extra" ]]; then
 		# Same NUL limitation as the corpus loop; silently skip (a dump can be large).
 		if fHasNul "$f"; then continue; fi
 		fCompare "fmt ${f##*/}" fmt "$f"
+		# The save gate over the soup as well: whether a load counted anything
+		# lost is the one parse result no read can show, and the corpus alone
+		# holds only the shapes somebody thought to pin.
+		caseSrc="$f"; fCompareWrite "fmt --write ${f##*/}" fFixCase fmt --write
 		# Derived reads.tsv (the reference dumps one per input, paths it knows exist):
 		# replay the accessor rows too, so the fuzz set covers reads, not just fmt.
 		reads="${f%.shcl}.reads.tsv"
