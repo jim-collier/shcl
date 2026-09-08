@@ -567,6 +567,8 @@ shcl set --write server.shcl --set 'workers=8'
 
 An in-place write is the library's own save, with the same refusal (at its own exit code, 7) when the rewrite would delete a line the load dropped; see [What saving does](#what-saving-does). `--lossy` is the way to say you meant it.
 
+Two more verbs are there for the odd day. `migrate` rewrites a file written for shcl 2.x under the 3.0 rules, touching only what the two read differently (a backslash outside double quotes, a quote that never closed, a `#` glued to the text before it, the old `name:[disc]` spelling) and leaving comments, blank lines and layout as they were; `--write` puts it back in place through the same gate. `tokens` prints each line as the parser reads it, span by span, for the times a line is refused and it is not obvious why.
+
 `shcl help` covers the rest and `man shcl` says the same at more length, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. Tab completion for bash and zsh is included. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
 
 ## Example use-cases in your code

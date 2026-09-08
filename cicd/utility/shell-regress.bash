@@ -934,6 +934,40 @@ fCheckFunnel c      "${repoDir}/source/c/shcl.h"         '^static void p_refuse\
 counts="$(fScanFunnel "${tmpDir}/funnelbait.h" '^static void p_refuse\(' '^static |^}' 'lost\+\+|lost \+=|node = DEAD' 2>/dev/null)"
 [[ "$counts" == "2 1" ]] || fBad "the funnel scan counted '${counts}' on the bait, wanted '2 1'"
 
+##	The tokenizer is the one place the lexical rules live, so no binding may
+##	carry a second quote state machine. The scan lifts each binding's
+##	tokenizer section by its header and refuses a quote-state variable or the
+##	close-finder anywhere outside it; inside it wants at least two hits, or
+##	the scan is blind.
+fScanTokenizer(){   ## fScanTokenizer FILE START-REGEX END-REGEX STATE-REGEX -> "inside outside"
+	st="$2" en="$3" qs="$4" awk '
+		$0 ~ ENVIRON["st"] { in_sec = 1; next }
+		in_sec && $0 ~ ENVIRON["en"] { in_sec = 0 }
+		$0 ~ ENVIRON["qs"] { if (in_sec) ni++; else { no++; print FILENAME ":" NR ": " $0 > "/dev/stderr" } }
+		END { print ni + 0, no + 0 }
+	' "$1"
+}
+fCheckTokenizer(){  ## fCheckTokenizer LABEL FILE START-REGEX END-REGEX STATE-REGEX
+	local counts
+	counts="$(fScanTokenizer "$2" "$3" "$4" "$5" 2>&1 || echo "scan failed 0 0")"
+	local inside="${counts##*$'\n'}"; inside="${inside%% *}"
+	local outside="${counts##* }"
+	((inside >= 2)) || fBad "$1: the tokenizer section holds ${inside} quote-state site(s) (scan blind?)"
+	((outside == 0)) || fBad "$1: ${outside} quote state machine(s) outside the tokenizer:"$'\n'"${counts%$'\n'*}"
+}
+tokState='in_quote|inQuote|in_q\b|quote_close\(|quoteClose\('
+fCheckTokenizer rust   "${repoDir}/source/rust/src/lib.rs" 'Tokenizer - the one place the lexical rules live' '^// Path scanner' "${tokState}"
+fCheckTokenizer go     "${repoDir}/source/go/shcl.go"      'Tokenizer - the one place the lexical rules live' '^// Path scanner' "${tokState}"
+fCheckTokenizer python "${repoDir}/source/python/shcl.py"  'Tokenizer - the one place the lexical rules live' '^# Path scanner'  "${tokState}"
+fCheckTokenizer c      "${repoDir}/source/c/shcl.h"        'Tokenizer - the one place the lexical rules live' 'Path scanner'     "${tokState}"
+##	Bait: a tokenizer holding two sites and one quote loop past it.
+{
+	printf '%s\n' '// Tokenizer - the one place the lexical rules live' 'let c = quote_close(s, 0);' 'let d = quote_close(s, 1);' \
+		'// Path scanner' 'let mut in_quote = None;'
+} > "${tmpDir}/tokbait.rs"
+counts="$(fScanTokenizer "${tmpDir}/tokbait.rs" 'Tokenizer - the one place the lexical rules live' '^// Path scanner' "${tokState}" 2>/dev/null)"
+[[ "$counts" == "2 1" ]] || fBad "the tokenizer scan counted '${counts}' on the bait, wanted '2 1'"
+
 ##	A one-line loop body that is a `[[ ... ]] && ...` list. When the test fails
 ##	on the last iteration the loop returns 1, which is harmless at statement
 ##	level on this bash but kills the caller the moment the loop becomes the last

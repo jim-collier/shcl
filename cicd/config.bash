@@ -145,6 +145,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/check-docs.bash
 	cicd/utility/check-install-dev.bash
 	cicd/utility/check-locale.bash
+	cicd/utility/check-migrate.bash
 	cicd/utility/check-pins.bash
 	cicd/utility/check-readme-c.bash
 	cicd/utility/check-wheel.bash
@@ -203,6 +204,9 @@ TEST_EXTRA=(
 	'cicd/utility/perf-gate.bash "${BINDING_CLIS[@]}"'
 	## The wrappers, the one-liner's scope hygiene, and the errexit grep trap.
 	'cicd/utility/shell-regress.bash'
+	## A 2.x file migrated for the current rules reads as the tree 2.x read,
+	## judged against a build of the last pre-cut commit.
+	'cicd/utility/check-migrate.bash'
 	## install-dev's hook setup, through its --hooks-only path on a throwaway
 	## clone - the one piece of that script the toolchain installs used to wall
 	## off from any gate.
