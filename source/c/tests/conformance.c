@@ -1459,19 +1459,21 @@ int main(int argc, char **argv) {
 			|| !shcl_set_int(nd, "\"a\nb\".c", sizeof "\"a\nb\".c" - 1, 1))
 			fail("path_newline", "a line break in a path was refused");
 		shcl_str nt = shcl_to_canonical(nd);
-		char *ntext = (char *)malloc(nt.n + 1);
-		if (!ntext) fail("path_newline", "out of memory");
-		memcpy(ntext, nt.p, nt.n); ntext[nt.n] = 0;
-		shcl_doc *nb = shcl_parse(ntext, nt.n);
-		if (shcl_error_count(nb) != 0) fail("path_newline", "the reload has errors");
-		shcl_str n2 = shcl_to_canonical(nb);
-		if (n2.n != nt.n || memcmp(n2.p, ntext, nt.n) != 0) fail("path_newline", "not a fixpoint");
-		if (shcl_read_int(nb, "x[\"p\\nq\"].c", sizeof "x[\"p\\nq\"].c" - 1).value != 1
-			|| shcl_read_int(nb, "\"a\\nb\".c", sizeof "\"a\\nb\".c" - 1).value != 1
-			|| shcl_read_int(nb, "\"a\nb\".c", sizeof "\"a\nb\".c" - 1).value != 1)
-			fail("path_newline", "a line break in a path did not read back");
-		free(ntext);
-		shcl_free(nb);
+		char ntext[256];
+		if (nt.n >= sizeof ntext) {
+			fail("path_newline", "the canonical text outgrew the fixture buffer");
+		} else {
+			memcpy(ntext, nt.p, nt.n); ntext[nt.n] = 0;
+			shcl_doc *nb = shcl_parse(ntext, nt.n);
+			if (shcl_error_count(nb) != 0) fail("path_newline", "the reload has errors");
+			shcl_str n2 = shcl_to_canonical(nb);
+			if (n2.n != nt.n || memcmp(n2.p, ntext, nt.n) != 0) fail("path_newline", "not a fixpoint");
+			if (shcl_read_int(nb, "x[\"p\\nq\"].c", sizeof "x[\"p\\nq\"].c" - 1).value != 1
+				|| shcl_read_int(nb, "\"a\\nb\".c", sizeof "\"a\\nb\".c" - 1).value != 1
+				|| shcl_read_int(nb, "\"a\nb\".c", sizeof "\"a\nb\".c" - 1).value != 1)
+				fail("path_newline", "a line break in a path did not read back");
+			shcl_free(nb);
+		}
 		shcl_free(nd);
 	}
 	// Each setter is the inverse of its read, so a value with no spelling the
