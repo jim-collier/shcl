@@ -368,7 +368,7 @@ eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
 ##	version, or its entries against the files. A throwaway key stands in for
 ##	the wrong one, and every refusal must leave no .sig.
 if fHave openssl; then
-	sver="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "${repoDir}/source/rust/Cargo.toml" | head -1)"
+	sver="$(sed -n '/^version *= *"/{ s/^version *= *"\(.*\)".*/\1/p; q; }' "${repoDir}/source/rust/Cargo.toml")"
 	openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${tmpDir}/wrong.pem" 2>/dev/null
 	fSignRun(){   ## fSignRun DIR: run the signer on DIR with the throwaway key; stderr in signOut
 		signOut="$(bash "${repoDir}/cicd/utility/sign-release.bash" --key "${tmpDir}/wrong.pem" --dir "$1" --no-tag-check 2>&1 || true)"
@@ -685,7 +685,7 @@ grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev
 ##	20260904 item 28: SHCL_GATE_STRICT is armed by one line in cicd.bash and read
 ##	by the gates; deleting the line disarmed every skip-as-failure silently.
 grep -qE '^\s*export SHCL_GATE_STRICT=1' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer exports SHCL_GATE_STRICT under --ci"
-for g in check-c-compilers.bash check-locale.bash package.bash shell-regress.bash; do
+for g in check-c-compilers.bash check-locale.bash package.bash shell-regress.bash cli-regress.bash; do
 	grep -q 'SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
 done
 

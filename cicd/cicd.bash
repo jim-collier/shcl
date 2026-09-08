@@ -152,7 +152,7 @@ fi
 ## Output helpers: fEcho / fEcho_Clean, blank-collapsing.
 declare -i _wasLastEchoBlank=0
 fEcho_ResetBlankCounter(){ _wasLastEchoBlank=0; }
-fEcho_Clean(){ if [[ -n "${1:-}" ]]; then echo -e "$*"; _wasLastEchoBlank=0; elif [[ $_wasLastEchoBlank -eq 0 ]] && echo; then _wasLastEchoBlank=1; fi; }
+fEcho_Clean(){ if [[ -n "${1:-}" ]]; then echo -e "$*"; _wasLastEchoBlank=0; elif [[ "${_wasLastEchoBlank}" == 0 ]] && echo; then _wasLastEchoBlank=1; fi; }
 fEcho(){       if [[ -n "$*"     ]]; then fEcho_Clean "[ $* ]"; else fEcho_Clean ""; fi; }
 fEcho_Force(){ fEcho_ResetBlankCounter; fEcho "$*"; }
 _letterbox="••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••"
@@ -161,15 +161,20 @@ fDie(){ { fEcho_Force "FAILED: $*"; } >&2; exit 1; }
 trap 'rc=$?; printf "\n[ CICD ABORTED (exit %s) at line %s: %s ]\n" "$rc" "$LINENO" "$BASH_COMMAND" >&2; exit $rc' ERR
 
 ## Current version from the single canonical source.
-fVersion(){ sed -n 's/^version *= *"\(.*\)".*/\1/p' "${root}/${VERSION_MANIFEST}" | head -1; }
+## No `| head -1`: under pipefail an early-quitting reader kills the writer
+## with SIGPIPE, so the quit belongs in sed.
+fVersion(){ sed -n '/^version *= *"/{ s/^version *= *"\(.*\)".*/\1/p; q; }' "${root}/${VERSION_MANIFEST}"; }
 
 ## (Re)write the sha256sums file over every artifact in the release dir except
 ## the sums file itself.
 fWriteSums(){
 	[[ -n "${art_dir:-}" && -d "${art_dir:-/nonexist}" ]] || return 0
+	## The subshell must not end on an `&&` list: with no artifacts the test is
+	## false, the subshell returns 1, and the ERR trap takes down the run over an
+	## empty directory.
 	( cd "${art_dir}"
 	  files=(); for x in "${EXE_NAME}-${ver}-"*; do [[ "$x" == "$sums" || ! -f "$x" ]] && continue; files+=("$x"); done
-	  ((${#files[@]})) && sha256sum "${files[@]}" > "${sums}" )
+	  if ((${#files[@]})); then sha256sum "${files[@]}" > "${sums}"; fi )
 }
 
 ## First existing+writable dir from the list; empty output when there is none.
