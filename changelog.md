@@ -57,6 +57,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The installers say more about what went wrong and refuse more of what would go wrong. A GitHub rate limit is named as one instead of "none published yet, or network down", and `GITHUB_TOKEN` is used when set. A destination that cannot be written is found before the downloads, not after them. A symlink at the bin path pointing at someone else's build is refused like a real file there. Both say when another `shcl` earlier on PATH will win. A Windows uninstall leaves a setup.exe install to its own uninstaller. `install-dev.bash` puts a fresh clone on `dev`.
 
+- A setter writes only what reads back. Every one builds its line text through the emitter and reads it with the tokenizer before the document is touched, so text that would come back different is refused and nothing changes; the write side used to carry a trim, a carriage-return check and a `#` check per setter, and twelve defects were one of them disagreeing with the parser. Two spellings change with it: `SetRaw` trims a fence label the way the load trims a line, so a no-break space in one survives where a full-width trim dropped it, and it takes a label carrying a carriage return mid-text, which reads back; `SetLiteral` takes one too, since a file line holds one.
+
+- A `comment` op in a write-ops script decodes `\n`, `\t` and `\\`, the way the `string` and `raw` ops do.
+
 - A comment trailing a top-level field is the document's, not the field's. Both spellings emit at column zero, so the distinction had nothing to come back to on a reload - and it made merging a layer differ from merging that same layer after formatting it. A comment written deeper than its field still belongs to it.
 
 - A stdin nothing is attached to reads as an empty document in every CLI, on every platform. It always did on Linux; on Windows a closed handle came back as an error and the run exited 8.
@@ -142,6 +146,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The Linux installer's stable channel picks the highest version rather than the most recently published release, so a patch back-ported to an older line after a newer one shipped is no longer handed out as stable. Both installers now list releases for both channels and drop drafts, which have no assets to install.
 
 ### Fixed
+
+- One carriage return comes off a write-ops line, not two. A line ending `v\r\r\n` reached the setter as `v` in the reference and Python and as `v\r` in Go and C: the first CR is the CRLF's and the second is the value's, and the reference took both.
+
+- `SetComment` no longer drops everything after the first line of the text it is given. It kept the first line, reported success, and said nothing about the rest, so a two-line note reached the file as one; text holding a line break is refused now.
+
+- A write refused for its text names the half of the op that had no spelling. A `raw` op whose info string held an unquoted `#` reported the sentence written for `SetLiteral`, which sends the reader to the value.
 
 - A quote in the middle of a bare value no longer swallows the rest of the line. `note: don't panic  # keep this` used to load as the string `don't panic  # keep this` with no diagnostic, and the next `fmt --write` baked that in at exit 0, comment gone for good; `b: it's fine, ok` read as one element where the same words without the apostrophe read as two. A piece is quoted only when it begins with a quote, which is what the spec and the grammar always said. The same rule now holds in a selector: `srv[O'Brien].port: 8080  # main` used to read the port as the string `8080  # main` with the comment gone on the next write, and `--set="srv[O'Brien].port=8080"` was refused as unbalanced while `get` on that path worked. A quote opens a quoted discriminator only as the selector's first character, and a bare selector runs to the first `]`.
 
