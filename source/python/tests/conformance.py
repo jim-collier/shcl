@@ -300,7 +300,7 @@ def try_apply_op(doc, line):
 		elif op == "empty":
 			wrote = doc.set_empty(path)
 		elif op == "comment":
-			wrote = doc.set_comment(path, v)
+			wrote = doc.set_comment(path, _unescape_ops(v))
 		elif op == "remove":
 			doc.remove(path)
 			wrote = True
@@ -318,6 +318,87 @@ def apply_op(doc, line, at):
 	err = try_apply_op(doc, line)
 	if err is not None:
 		raise SystemExit(f"{at}: {err}")
+
+
+# The alphabet the setter round-trip fixture draws from: every character that
+# means something to the tokenizer, plus a blank the load trims and a no-break
+# space it does not. Same fixture in every runner.
+SETTER_SOUP = ('"', "'", "\\", "#", ",", "[", "]", "\r", "\n", " ", "\t", "\u00a0", "a")
+
+
+def soup_inputs():
+	# Every string of one and two characters over that alphabet, and the empty
+	# string.
+	out = [""]
+	for a in SETTER_SOUP:
+		out.append(a)
+		for b in SETTER_SOUP:
+			out.append(a + b)
+	return out
+
+
+def setters_write_only_what_reads_back():
+	# A setter writes only what reads back. Each one builds its text through the
+	# emitter and hands it to the tokenizer before the document is touched, so
+	# for every input either the call refuses and the document is byte-identical,
+	# or the canonical text reloads to itself and the read gives the value back.
+	# Twelve review items were one setter's own trim, carriage-return or `#` rule
+	# disagreeing with the parser's. Same fixture in every runner.
+	for s in soup_inputs():
+		for kind in range(6):
+			doc = shcl.Document.parse("k: 1\n")
+			before = doc.to_canonical()
+			if kind == 0:
+				applied = doc.set_string("k", s)
+			elif kind == 1:
+				applied = doc.set_literal("k", s)
+			elif kind == 2:
+				applied = doc.set_comment("k", s)
+			elif kind == 3:
+				applied = doc.set_raw("k", s, "t")
+			elif kind == 4:
+				applied = doc.set_raw("k", "body", s)
+			else:
+				applied = doc.set_string_array("k", ["x", s])
+			if not applied:
+				if doc.to_canonical() != before:
+					raise SystemExit(f"a refused write changed the document (setter {kind}, input {s!r})")
+				continue
+			text = doc.to_canonical()
+			back = shcl.Document.parse(text)
+			if back.to_canonical() != text:
+				raise SystemExit(f"written text is not a fixpoint (setter {kind}, input {s!r}):\n{text}")
+			if back.instances("k") != doc.instances("k"):
+				raise SystemExit(f"the value read differs after a reload (setter {kind}, input {s!r}):\n{text}")
+			if kind == 0 and back.read_string("k").value != s:
+				raise SystemExit(f"string {s!r} read back {back.read_string('k').value!r}")
+			# A comment has no accessor of its own, so the oracle is the text:
+			# whatever the load would keep of what was handed in has to be in the
+			# document, not a shortened form of it.
+			if kind == 2 and s.rstrip(" \t\r") not in text:
+				raise SystemExit(f"the comment handed in is not in the document ({s!r}):\n{text}")
+			if kind in (3, 4):
+				if back.get_raw("k") != doc.get_raw("k"):
+					raise SystemExit(f"raw body {s!r} got {back.get_raw('k')!r}")
+				if back.read_raw_info("k").value != doc.read_raw_info("k").value:
+					raise SystemExit(f"raw info {s!r} got {back.read_raw_info('k').value!r}")
+			if kind == 5 and back.read_string_array("k").value != ["x", s]:
+				raise SystemExit(f"array {s!r} got {back.read_string_array('k').value!r}")
+		# The same rule for a name: whatever quote_segment spells has to come
+		# back as one segment holding that name, or the write is refused.
+		path = shcl.quote_segment(s)
+		doc = shcl.Document.parse("k: 1\n")
+		before = doc.to_canonical()
+		if not doc.set_string(path, "v"):
+			if doc.to_canonical() != before:
+				raise SystemExit(f"a refused name write changed the document ({s!r})")
+			continue
+		text = doc.to_canonical()
+		back = shcl.Document.parse(text)
+		if back.to_canonical() != text:
+			raise SystemExit(f"name {s!r} is not a fixpoint:\n{text}")
+		if back.read_string(path).value != "v":
+			raise SystemExit(f"name {s!r} did not read back:\n{text}")
 
 
 def main():
@@ -605,12 +686,13 @@ def main():
 		("a[#5].b", shcl.WriteReason.NoSuchIndex),
 		("nope[#0].b", shcl.WriteReason.NoSuchIndex),
 		(".".join(["d"] * 513), shcl.WriteReason.TooDeep),
-		# A literal line break in a SELECTOR: the binding would emit across two
-		# lines and reparse as neither, and the value emitter never escapes one.
-		# In a NAME it is writable - names emit through the name escaper, which
-		# spells a line break \n, so the escaped and literal spellings are one
-		# path now. Not corpus-pinnable - an ops line cannot carry a raw newline.
-		('a["p\nq"].b', shcl.WriteReason.BadPath),
+		# A literal line break is writable wherever a path can carry one: a name
+		# emits through the name escaper and a selector value through the value
+		# emitter, and both spell a break \n and read it back as one. The
+		# selector was refused while the value emitter still wrote elements in
+		# their source spelling and had nothing to escape with. Not
+		# corpus-pinnable - an ops line cannot carry a raw newline.
+		('a["p\nq"].b', shcl.WriteReason.Writable),
 		('"x\ny".b', shcl.WriteReason.Writable),
 		('"x\\ny".b', shcl.WriteReason.Writable),
 	):
@@ -1321,8 +1403,17 @@ def main():
 		raise SystemExit(f"set_raw indent got {rawback.get_raw('q')!r}")
 	if rawback.read_raw_info("q").value != "sql":
 		raise SystemExit("set_raw info not trimmed")
-	if rawdoc.set_raw("q", "x", "a\nb") or rawdoc.set_raw("q", "x", "a\rb"):
+	if rawdoc.set_raw("q", "x", "a\nb"):
 		raise SystemExit("set_raw accepted an info with a line break")
+	# A CR the load would take off the line end has no spelling; one mid-info is
+	# content, the same rule a body line follows.
+	if rawdoc.set_raw("q", "x", "ab\r"):
+		raise SystemExit("set_raw accepted an info ending in CR")
+	if not rawdoc.set_raw("q", "x", "a\rb"):
+		raise SystemExit("set_raw refused an info with a mid-string CR")
+	rawback = shcl.Document.parse(rawdoc.to_canonical())
+	if rawback.read_raw_info("q").value != "a\rb":
+		raise SystemExit(f"set_raw mid-string CR info got {rawback.read_raw_info('q').value!r}")
 	if rawdoc.set_raw("q", "x", "a # b"):
 		raise SystemExit("set_raw accepted an info with an unquoted #")
 	# An info string has no quoting of its own: quotes are characters in it,
@@ -1396,6 +1487,25 @@ def main():
 		raise SystemExit(f"set_float of a wide int wrote {tdoc.read_string('h').value!r}")
 	if tdoc.set_float_array("i", [10 ** 400, -(10 ** 400)]) or tdoc.exists("i"):
 		raise SystemExit("set_float_array past the float range bound a value")
+
+	setters_write_only_what_reads_back()
+
+	# Both halves of a path can carry a line break and spell it \n: a name
+	# through the name escaper, a selector value through the value emitter. The
+	# selector was refused while elements were stored in their source spelling
+	# and the emitter had nothing to escape with. Same fixture in every runner.
+	nldoc = shcl.Document.parse("z: 0\n")
+	if not nldoc.set_int('x["p\nq"].c', 1) or not nldoc.set_int('"a\nb".c', 1):
+		raise SystemExit("a line break in a path was refused")
+	nltext = nldoc.to_canonical()
+	nlback = shcl.Document.parse(nltext)
+	if nlback.error_count() != 0:
+		raise SystemExit(f"the reload has {nlback.error_count()} error(s):\n{nltext}")
+	if nlback.to_canonical() != nltext:
+		raise SystemExit(f"a line break in a path is not a fixpoint:\n{nltext}")
+	for nlpath in ('x["p\\nq"].c', '"a\\nb".c', '"a\nb".c'):
+		if nlback.read_int(nlpath).value != 1:
+			raise SystemExit(f"read {nlpath!r} got {nlback.read_int(nlpath).value}")
 
 	# Three hot-path shortcuts this binding carries because it is the slow one.
 	# Each is asserted structurally, by what the code does rather than by a

@@ -67,6 +67,25 @@ static void rmdir_long(const char *p) {
 static int nfail = 0;
 static void fail(const char *at, const char *msg) { fprintf(stderr, "FAIL %s: %s\n", at, msg); nfail++; }
 
+/* The setter round-trip fixture works on documents of a few dozen bytes, so
+   the canonical text is copied onto the stack rather than left in a read
+   arena two documents deep. */
+#define SOUP_BUF 128
+static void soup_text(shcl_doc *d, char *out, size_t *n) {
+	shcl_str c = shcl_to_canonical(d);
+	if (c.n > SOUP_BUF) { fail("setters_read_back", "canonical text longer than the fixture buffer"); *n = 0; return; }
+	memcpy(out, c.p, c.n); *n = c.n;
+}
+/* The failing input named as bytes: it is mostly punctuation and blanks.
+   A kind below zero is the name half, which has no setter number. */
+static void soup_fail(const char *msg, int kind, const char *in, size_t n) {
+	fprintf(stderr, "FAIL setters_read_back: %s (", msg);
+	if (kind >= 0) fprintf(stderr, "setter %d, ", kind);
+	fprintf(stderr, "input");
+	for (size_t i = 0; i < n; i++) fprintf(stderr, " %02x", (unsigned char)in[i]);
+	fprintf(stderr, ")\n");
+	nfail++;
+}
 // Substring search over a length-delimited buffer (memmem is GNU-only).
 static int contains(const char *p, size_t n, const char *needle) {
 	size_t m = strlen(needle);
@@ -294,7 +313,7 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 	}
 	else if (!strcmp(op, "raw")) { if (!PRESENT) { const char *cont = nf > 3 ? f[3] : ""; size_t cn = nf > 3 ? strlen(f[3]) : 0; char *b = (char *)xrealloc(NULL, cn ? cn : 1); size_t m = cf_unescape(cont, cn, b); wrote = shcl_set_raw(d, path, plen, b, m, v, vn); free(b); } }
 	else if (!strcmp(op, "empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
-	else if (!strcmp(op, "comment") && !only_absent) wrote = shcl_set_comment(d, path, plen, v, vn);
+	else if (!strcmp(op, "comment") && !only_absent) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = shcl_set_comment(d, path, plen, b, m); free(b); }
 	else if (!strcmp(op, "remove") && !only_absent) shcl_remove(d, path, plen);
 	else rc = 1; // unknown op
 	if (rc == 0 && !wrote) rc = 1;
@@ -1172,9 +1191,17 @@ int main(int argc, char **argv) {
 		shcl_read_str bi = shcl_read_raw_info(back, "q", 1);
 		if (bi.status != SHCL_GOOD || bi.value.n != 3 || memcmp(bi.value.p, "sql", 3) != 0) fail("set_raw", "info not trimmed");
 		if (shcl_set_raw(sd, "q", 1, "x", 1, "a\nb", 3)) fail("set_raw", "info with a newline accepted");
-		if (shcl_set_raw(sd, "q", 1, "x", 1, "a\rb", 3)) fail("set_raw", "info with a CR accepted");
 		br = shcl_read_raw(sd, "q", 1);
 		if (br.status != SHCL_GOOD || br.value.n != 7 || memcmp(br.value.p, "  a\n  b", 7) != 0) fail("set_raw", "refused write changed the document");
+		// A CR the load would take off the line end has no spelling; one
+		// mid-info is content, the same rule a body line follows.
+		if (shcl_set_raw(sd, "q", 1, "x", 1, "ab\r", 3)) fail("set_raw", "info ending in a CR accepted");
+		if (!shcl_set_raw(sd, "q", 1, "x", 1, "a\rb", 3)) fail("set_raw", "info with a mid-string CR refused");
+		shcl_free(back);
+		sc = shcl_to_canonical(sd);
+		back = shcl_parse(sc.p, sc.n);
+		bi = shcl_read_raw_info(back, "q", 1);
+		if (bi.status != SHCL_GOOD || bi.value.n != 3 || memcmp(bi.value.p, "a\rb", 3) != 0) fail("set_raw", "mid-string CR info did not round-trip");
 		if (shcl_set_raw(sd, "q", 1, "x", 1, "a # b", 5)) fail("set_raw", "info with an unquoted # accepted");
 		// An info string has no quoting of its own: quotes are characters in
 		// it, so they hide nothing, and a `#` with no space before it is content.
@@ -1409,17 +1436,43 @@ int main(int argc, char **argv) {
 			for (size_t i = 0; i < 513; i++) { if (i) deep[dn++] = '.'; deep[dn++] = 'd'; }
 			if (shcl_write_reason_(wd, deep, dn) != SHCL_W_TOO_DEEP) fail("write_reason", "513 segments not too deep");
 		}
-		// A literal line break in a SELECTOR: the binding would emit across two
-		// lines and reparse as neither, and the value emitter never escapes one.
-		// In a NAME it is writable - names emit through the name escaper, which
-		// spells a line break \n, so the escaped and literal spellings are one
-		// path now. Not corpus-pinnable - an ops line cannot carry a raw newline.
-		if (shcl_write_reason_(wd, "a[\"p\nq\"].b", 10) != SHCL_W_BAD_PATH) fail("write_reason", "newline in selector not flagged");
+		// A literal line break is writable wherever a path can carry one: a name
+		// emits through the name escaper and a selector value through the value
+		// emitter, and both spell a break \n and read it back as one. The
+		// selector was refused while the value emitter still wrote elements in
+		// their source spelling and had nothing to escape with. Not
+		// corpus-pinnable - an ops line cannot carry a raw newline.
+		if (shcl_write_reason_(wd, "a[\"p\nq\"].b", 10) != SHCL_W_WRITABLE) fail("write_reason", "newline in selector not writable");
 		if (shcl_write_reason_(wd, "\"x\ny\".b", 7) != SHCL_W_WRITABLE) fail("write_reason", "newline in name not writable");
 		if (shcl_write_reason_(wd, "\"x\\ny\".b", 8) != SHCL_W_WRITABLE) fail("write_reason", "escaped newline not writable");
 		// The probe never creates: the doc is unchanged after all of the above.
 		if (shcl_count(wd, "a", 1) != 1) fail("write_reason", "probe created nodes");
 		shcl_free(wd);
+	}
+	// Both halves of a path can carry a line break and spell it \n: a name
+	// through the name escaper, a selector value through the value emitter. The
+	// selector was refused while elements were stored in their source spelling
+	// and the emitter had nothing to escape with. Same fixture in every runner.
+	{
+		shcl_doc *nd = shcl_parse("z: 0\n", 5);
+		if (!shcl_set_int(nd, "x[\"p\nq\"].c", sizeof "x[\"p\nq\"].c" - 1, 1)
+			|| !shcl_set_int(nd, "\"a\nb\".c", sizeof "\"a\nb\".c" - 1, 1))
+			fail("path_newline", "a line break in a path was refused");
+		shcl_str nt = shcl_to_canonical(nd);
+		char *ntext = (char *)malloc(nt.n + 1);
+		if (!ntext) fail("path_newline", "out of memory");
+		memcpy(ntext, nt.p, nt.n); ntext[nt.n] = 0;
+		shcl_doc *nb = shcl_parse(ntext, nt.n);
+		if (shcl_error_count(nb) != 0) fail("path_newline", "the reload has errors");
+		shcl_str n2 = shcl_to_canonical(nb);
+		if (n2.n != nt.n || memcmp(n2.p, ntext, nt.n) != 0) fail("path_newline", "not a fixpoint");
+		if (shcl_read_int(nb, "x[\"p\\nq\"].c", sizeof "x[\"p\\nq\"].c" - 1).value != 1
+			|| shcl_read_int(nb, "\"a\\nb\".c", sizeof "\"a\\nb\".c" - 1).value != 1
+			|| shcl_read_int(nb, "\"a\nb\".c", sizeof "\"a\nb\".c" - 1).value != 1)
+			fail("path_newline", "a line break in a path did not read back");
+		free(ntext);
+		shcl_free(nb);
+		shcl_free(nd);
 	}
 	// Each setter is the inverse of its read, so a value with no spelling the
 	// reader accepts fails the write and leaves the document alone. Same
@@ -1555,6 +1608,105 @@ int main(int argc, char **argv) {
 		if (r.status != SHCL_GOOD || r.value.n != 4 || memcmp(r.value.p, "q\"q'", 4) != 0)
 			fail("written_spelling", "written value did not read back");
 		shcl_free(wb); shcl_free(wd);
+	}
+
+	/* A setter writes only what reads back. Each one builds its text through
+	   the emitter and hands it to the tokenizer before the document is
+	   touched, so for every input either the call refuses and the document is
+	   byte-identical, or the canonical text reloads to itself and the read
+	   gives the value back. Twelve review items were one setter's own trim,
+	   carriage-return or `#` rule disagreeing with the parser's. Same fixture
+	   in every runner. */
+	{
+		/* The alphabet: every character that means something to the
+		   tokenizer, plus a blank the load trims and a no-break space it does
+		   not. Every string of one and two characters over it, and the empty
+		   string. */
+		static const char *const soup[] = { "\"", "'", "\\", "#", ",", "[", "]", "\r", "\n", " ", "\t", "\xc2\xa0", "a" };
+		const size_t nsoup = sizeof soup / sizeof soup[0];
+		for (size_t ai = 0; ai <= nsoup; ai++) for (size_t bi = 0; bi < (ai == 0 ? 1u : nsoup + 1); bi++) {
+			char in[8]; size_t inn = 0;
+			if (ai) { size_t l = strlen(soup[ai - 1]); memcpy(in, soup[ai - 1], l); inn = l; }
+			if (ai && bi) { size_t l = strlen(soup[bi - 1]); memcpy(in + inn, soup[bi - 1], l); inn += l; }
+			for (int kind = 0; kind < 6; kind++) {
+				shcl_doc *sd = shcl_parse("k: 1\n", 5);
+				char before[SOUP_BUF]; size_t bn;
+				soup_text(sd, before, &bn);
+				int applied;
+				switch (kind) {
+				case 0: applied = shcl_set_string(sd, "k", 1, in, inn); break;
+				case 1: applied = shcl_set_literal(sd, "k", 1, in, inn); break;
+				case 2: applied = shcl_set_comment(sd, "k", 1, in, inn); break;
+				case 3: applied = shcl_set_raw(sd, "k", 1, in, inn, "t", 1); break;
+				case 4: applied = shcl_set_raw(sd, "k", 1, "body", 4, in, inn); break;
+				default: { const char *av[2]; size_t al[2]; av[0] = "x"; al[0] = 1; av[1] = in; al[1] = inn; applied = shcl_set_string_array(sd, "k", 1, av, al, 2); } break;
+				}
+				char text[SOUP_BUF]; size_t tn;
+				soup_text(sd, text, &tn);
+				if (!applied) {
+					if (tn != bn || memcmp(text, before, tn) != 0) soup_fail("a refused write changed the document", kind, in, inn);
+					shcl_free(sd);
+					continue;
+				}
+				shcl_doc *back = shcl_parse(text, tn);
+				char again[SOUP_BUF]; size_t an2;
+				soup_text(back, again, &an2);
+				if (an2 != tn || memcmp(again, text, tn) != 0) soup_fail("written text is not a fixpoint", kind, in, inn);
+				shcl_str *wi = NULL, *bk = NULL;
+				size_t wn = shcl_instances(sd, "k", 1, &wi), bn2 = shcl_instances(back, "k", 1, &bk);
+				int same = wn == bn2;
+				for (size_t i = 0; same && i < wn; i++) same = wi[i].n == bk[i].n && memcmp(wi[i].p, bk[i].p, wi[i].n) == 0;
+				if (!same) soup_fail("the value read differs after a reload", kind, in, inn);
+				if (kind == 0) {
+					shcl_read_str r = shcl_read_string(back, "k", 1);
+					if (r.status != SHCL_GOOD || r.value.n != inn || memcmp(r.value.p, in, inn) != 0) soup_fail("string did not read back", kind, in, inn);
+				} else if (kind == 2) {
+					/* A comment has no accessor of its own, so the oracle is
+					   the text: whatever the load would keep of what was
+					   handed in has to be in the document, not a shortened
+					   form of it. */
+					size_t kn = inn;
+					while (kn && (in[kn - 1] == ' ' || in[kn - 1] == '\t' || in[kn - 1] == '\r')) kn--;
+					char kept[sizeof in]; memcpy(kept, in, kn); kept[kn] = '\0';
+					if (!contains(text, tn, kept)) soup_fail("the comment handed in is not in the document", kind, in, inn);
+				} else if (kind == 3 || kind == 4) {
+					shcl_read_str rb = shcl_read_raw(back, "k", 1), rw = shcl_read_raw(sd, "k", 1);
+					if (rb.status != rw.status || rb.value.n != rw.value.n || memcmp(rb.value.p, rw.value.p, rw.value.n) != 0) soup_fail("raw body did not read back", kind, in, inn);
+					shcl_read_str ib = shcl_read_raw_info(back, "k", 1), iw = shcl_read_raw_info(sd, "k", 1);
+					if (ib.status != iw.status || ib.value.n != iw.value.n || memcmp(ib.value.p, iw.value.p, iw.value.n) != 0) soup_fail("raw info did not read back", kind, in, inn);
+				} else if (kind == 5) {
+					shcl_read_str_arr ra = shcl_read_string_array(back, "k", 1);
+					if (ra.n != 2 || ra.values[0].n != 1 || ra.values[0].p[0] != 'x'
+						|| ra.values[1].n != inn || memcmp(ra.values[1].p, in, inn) != 0) soup_fail("array did not read back", kind, in, inn);
+				}
+				shcl_free(back); shcl_free(sd);
+			}
+			/* The same rule for a name: whatever shcl_quote_segment spells has
+			   to come back as one segment holding that name, or the write is
+			   refused. */
+			shcl_doc *nd = shcl_parse("k: 1\n", 5);
+			shcl_str qs = shcl_quote_segment(nd, in, inn);
+			char qp[SOUP_BUF]; size_t qn = qs.n;
+			if (qn > sizeof qp) fail("setters_read_back", "quoted segment longer than the fixture buffer");
+			memcpy(qp, qs.p, qn);
+			char before[SOUP_BUF]; size_t bn;
+			soup_text(nd, before, &bn);
+			int wrote = shcl_set_string(nd, qp, qn, "v", 1);
+			char text[SOUP_BUF]; size_t tn;
+			soup_text(nd, text, &tn);
+			if (!wrote) {
+				if (tn != bn || memcmp(text, before, tn) != 0) soup_fail("a refused name write changed the document", -1, in, inn);
+			} else {
+				shcl_doc *back = shcl_parse(text, tn);
+				char again[SOUP_BUF]; size_t an2;
+				soup_text(back, again, &an2);
+				if (an2 != tn || memcmp(again, text, tn) != 0) soup_fail("the name is not a fixpoint", -1, in, inn);
+				shcl_read_str r = shcl_read_string(back, qp, qn);
+				if (r.status != SHCL_GOOD || r.value.n != 1 || r.value.p[0] != 'v') soup_fail("the name did not read back", -1, in, inn);
+				shcl_free(back);
+			}
+			shcl_free(nd);
+		}
 	}
 
 #ifdef _WIN32

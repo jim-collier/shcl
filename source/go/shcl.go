@@ -144,7 +144,7 @@ type WriteReason int
 
 const (
 	Writable    WriteReason = iota // the path passes the writer's validation
-	BadPath                        // empty path, the scanner rejected it, or a segment carries a line break
+	BadPath                        // empty path, or the scanner rejected it
 	ValueInPath                    // the path carries a `: value` part; writes take values separately
 	Wildcard                       // wildcard selectors are query-only
 	NoSuchIndex                    // a `[#k]` instance that does not (and can never) exist
@@ -1107,6 +1107,15 @@ func pieceText(p *Piece, text string) string {
 		return applyEscapes(raw)
 	}
 	return raw
+}
+
+// pieceIs is true when a piece reads as this exact text, without building it.
+func pieceIs(p *Piece, text, want string) bool {
+	raw := text[p.Start:p.End]
+	if p.Quote == QuoteDouble && strings.Contains(raw, "\\") {
+		return applyEscapes(raw) == want
+	}
+	return raw == want
 }
 
 // elementOf is the element a value piece makes, or ok=false for an empty bare
@@ -3098,12 +3107,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 		out.WriteByte('\n')
 	case vCell:
 		out.WriteByte(' ')
-		for k := range node.value.els {
-			if k > 0 {
-				out.WriteString(", ")
-			}
-			out.WriteString(emitElement(&node.value.els[k]))
-		}
+		out.WriteString(emitCell(node.value.els))
 		writeTrailing(out, node.trailing())
 		out.WriteByte('\n')
 	default:
@@ -3124,15 +3128,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 		if !wouldMerge {
 			out.WriteString(bodyPad)
 		}
-		out.WriteString(fence)
-		if r.info != "" {
-			// An info-string starting with the fence char would extend the run
-			// on reparse; a space keeps the fence length intact.
-			if r.info[0] == r.fenceChar {
-				out.WriteByte(' ')
-			}
-			out.WriteString(r.info)
-		}
+		out.WriteString(emitFenceLine(r))
 		out.WriteByte('\n')
 		if r.content != "" {
 			for _, l := range strings.Split(r.content, "\n") {
@@ -3786,6 +3782,145 @@ func quoteText(t string) string {
 }
 
 // ---------------------------------------------------------------------------
+// The write side's one rule: what is written has to read back
+// ---------------------------------------------------------------------------
+//
+// A setter builds its text through the emitter and reads it back with the
+// tokenizer before the document is touched. If the read does not give the
+// value it was handed, the write is refused and nothing changes. No setter
+// decides for itself what a quote, a `#`, a comma or a carriage return means:
+// twelve review items were one setter's private rule disagreeing with the
+// parser's. The typed setters keep their own render-and-parse-back on top,
+// since a float or a datetime has to read back as that type and not merely as
+// the same text.
+
+// emitCell is the value half of a binding line, the way emitNode writes it.
+func emitCell(els []element) string {
+	var out strings.Builder
+	for i := range els {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(emitElement(&els[i]))
+	}
+	return out.String()
+}
+
+// emitFenceLine is the opening fence line of a raw block: the fence run, then
+// the info string behind a space when it would otherwise extend the run.
+func emitFenceLine(r *rawValue) string {
+	var out strings.Builder
+	out.WriteString(strings.Repeat(string(rune(r.fenceChar)), r.fenceLen))
+	if r.info != "" {
+		if r.info[0] == r.fenceChar {
+			out.WriteByte(' ')
+		}
+		out.WriteString(r.info)
+	}
+	return out.String()
+}
+
+// nextElement is the next piece of a tokenized value the load would keep,
+// from *i: an empty bare slot is dropped, so it is skipped here too.
+func nextElement(els []Piece, i *int) *Piece {
+	for *i < len(els) {
+		p := &els[*i]
+		*i++
+		if p.Quote != QuoteNone || p.End > p.Start {
+			return p
+		}
+	}
+	return nil
+}
+
+// valueReadsBack is true when a value comes back off the page as itself.
+func valueReadsBack(v *value) bool {
+	switch v.kind {
+	case vEmpty:
+		return true
+	case vCell:
+		text := emitCell(v.els)
+		if strings.Contains(text, "\n") {
+			return false
+		}
+		var tok Tokens
+		TokenizeValue(text, 0, RulesCurrent, &tok)
+		if tok.Comment >= 0 {
+			return false
+		}
+		// Compared against the pieces rather than against a rebuilt value: a
+		// bulk write runs this per set, and the text is right there.
+		at := 0
+		for i := range v.els {
+			p := nextElement(tok.Elements, &at)
+			if p == nil || !pieceIs(p, text, v.els[i].text) {
+				return false
+			}
+		}
+		return nextElement(tok.Elements, &at) == nil
+	default:
+		r := v.raw
+		line := emitFenceLine(r)
+		if strings.Contains(line, "\n") {
+			return false
+		}
+		var tok Tokens
+		TokenizeValue(line, 0, RulesCurrent, &tok)
+		ch, length, info, ok := fenceOpen(line[tok.Value[0]:tok.Value[1]])
+		if !ok || ch != r.fenceChar || length != r.fenceLen || info != r.info {
+			return false
+		}
+		// A body line ending in a carriage return loses it to the load's
+		// line-end trim, and one spelling the closing fence would end the
+		// block early.
+		for _, l := range strings.Split(r.content, "\n") {
+			if strings.HasSuffix(l, "\r") || isFenceClose(l, r.fenceChar, r.fenceLen) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// nameReadsBack is true when a field name comes back off a line as itself.
+func nameReadsBack(name string) bool {
+	text := escapeName(name)
+	if strings.Contains(text, "\n") {
+		return false
+	}
+	var tok Tokens
+	Tokenize(text, ':', false, RulesCurrent, &tok)
+	return tok.Fault < 0 && len(tok.Segments) == 1 && tok.Segments[0].Selector == nil &&
+		pieceIs(&tok.Segments[0].Name, text, name)
+}
+
+// commentLine is the comment line this text is written as, or ok=false when it
+// has no spelling. A `#` is added when the text carries none. The load trims
+// every line's end, so the trimmed text is what gets written; text holding a
+// line break is refused rather than cut down to its first line.
+func commentLine(text string) (string, bool) {
+	if strings.Contains(text, "\n") {
+		return "", false
+	}
+	t := trimEndWS(text)
+	var line string
+	switch {
+	case strings.HasPrefix(t, "#"):
+		line = t
+	case t == "":
+		line = "#"
+	default:
+		line = "# " + t
+	}
+	var tok Tokens
+	TokenizeValue(line, 0, RulesCurrent, &tok)
+	if tok.Comment != 0 || trimEndWS(line) != line {
+		return "", false
+	}
+	return line, true
+}
+
+// ---------------------------------------------------------------------------
 // Accessor: path resolution
 // ---------------------------------------------------------------------------
 
@@ -4139,13 +4274,15 @@ func boolText(v bool) string {
 }
 
 // literalValue reads text as the value half of a line, for the setters that
-// take value syntax rather than data. Rejects what could not have come off one
-// line: a line break, or a quote that never closes. An unquoted # ends the
-// value here exactly as it would in a file. Bracket-array text is refused
-// too: in a file it is E019 and the line is kept verbatim, so writing it as a
-// two-element array holding `[1` and `2]` would be a different wrong answer.
+// take value syntax rather than data: whatever a file line spells with this
+// text is what gets stored, so a trailing blank comes off and an unquoted #
+// ends the value exactly as they would in a file. What is refused is what a
+// file reports as an error, since a setter has no diagnostic to report it
+// with: a line break, which no file line can hold, an unterminated quote
+// (E017), and bracket text (E019, the line kept verbatim - writing it as a
+// two-element array holding `[1` and `2]` would be a different wrong answer).
 func literalValue(text string) (value, bool) {
-	if strings.ContainsAny(text, "\n\r") {
+	if strings.Contains(text, "\n") {
 		return value{}, false
 	}
 	var tok Tokens
@@ -4251,17 +4388,6 @@ func (d *Document) probeWrite(scan pathScan) (WriteReason, []int) {
 		if seg.star {
 			return Wildcard, nil
 		}
-		// A newline in a SELECTOR has no one-line spelling, so the emitted
-		// binding would split across two lines and reparse as neither. The
-		// selector stores its path text raw and the value emitter never escapes
-		// a line break, so nothing downstream can rescue it - and the reload
-		// loses nothing it can count, so the save gate would not catch it. A
-		// newline in a NAME is fine: names are stored escape-resolved and
-		// emitted through the name escaper, which spells a line break \n and
-		// reads it back as one.
-		if seg.sel != nil && seg.sel.kind == selByValue && strings.Contains(seg.sel.value, "\n") {
-			return BadPath, nil
-		}
 		switch {
 		case seg.sel == nil:
 			if alive {
@@ -4317,6 +4443,24 @@ func (d *Document) place(path string) (int, bool) {
 	if reason != Writable {
 		return 0, false
 	}
+	// Nothing is created until every segment the write would create is known
+	// to spell back: the name through the name escaper, an instance selector
+	// as the value it binds.
+	for i := range scan.segments {
+		if trail[i] >= 0 {
+			continue
+		}
+		seg := &scan.segments[i]
+		if !nameReadsBack(seg.name) {
+			return 0, false
+		}
+		if seg.sel != nil && seg.sel.kind == selByValue {
+			v := cellOf(seg.sel.value)
+			if !valueReadsBack(&v) {
+				return 0, false
+			}
+		}
+	}
 	cur := root
 	for i := range scan.segments {
 		seg := &scan.segments[i]
@@ -4341,6 +4485,9 @@ func (d *Document) place(path string) (int, bool) {
 }
 
 func (d *Document) setValue(path string, v value) bool {
+	if !valueReadsBack(&v) {
+		return false
+	}
 	idx, ok := d.place(path)
 	if !ok {
 		return false
@@ -4493,24 +4640,20 @@ func (d *Document) Remove(path string) int {
 }
 
 // SetComment attaches a leading comment line to the node at a path (creating an
-// empty node if absent, so a section can be annotated). A missing '#' is added;
-// only the first line is kept (a comment is one line), and trailing whitespace
-// comes off the way the load takes it, so text that is blank leaves a bare '#'.
+// empty node if absent, so a section can be annotated). A missing '#' is added,
+// and trailing whitespace comes off the way the load takes it, so text that is
+// blank leaves a bare '#'. Text holding a line break is refused: a comment is
+// one line, and keeping only the first would drop the rest with nothing to say
+// so.
 func (d *Document) SetComment(path, text string) bool {
+	line, ok := commentLine(text)
+	if !ok {
+		return false
+	}
 	idx, ok := d.place(path)
 	if !ok {
 		return false
 	}
-	line := text
-	if i := strings.IndexByte(line, '\n'); i >= 0 {
-		line = line[:i]
-	}
-	if !strings.HasPrefix(line, "#") {
-		line = "# " + line
-	}
-	// Without this the load trims what was written and the writer's output
-	// stops being a fmt fixpoint.
-	line = trimEndWS(line)
 	// The node's own blank moves above its first comment; otherwise the blank
 	// would separate the comment from what it annotates. Above the first one
 	// already there, when there is one.
@@ -4581,28 +4724,13 @@ func (d *Document) SetEmpty(path string) bool {
 }
 
 // SetRaw binds a raw block at path, picking a fence longer than any content line.
-// The info-string is stored as a fence line would read it back (trimmed); one
-// holding a line break or an unquoted `#` has no fence-line spelling (the `#`
-// would read back as a comment) and fails the write. A body line ending in CR
-// fails for the same reason: the load takes the whole trailing CR run off every
-// line, so it would not read back.
+// The info-string is stored as a fence line would read it back (trimmed the way
+// the load trims one); one that would not read back whole - it holds a line
+// break, or a `#` behind a blank that reads as a comment - fails the write, as
+// does a body line ending in CR, since the load takes the trailing CR run off
+// every line.
 func (d *Document) SetRaw(path, content, info string) bool {
-	if strings.ContainsAny(info, "\n\r") {
-		return false
-	}
-	// The fence line the block will be written as: the fence run and the
-	// info string are one bare piece, so a quote in the info hides nothing.
-	var tok Tokens
-	TokenizeValue("```"+info, 0, RulesCurrent, &tok)
-	if tok.Comment >= 0 {
-		return false
-	}
-	for _, line := range strings.Split(content, "\n") {
-		if strings.HasSuffix(line, "\r") {
-			return false
-		}
-	}
-	info = strings.TrimSpace(info)
+	info = trimWsp(info)
 	fc, fl := chooseFence(content)
 	return d.setValue(path, value{kind: vRaw, raw: &rawValue{content: content, info: info, fenceChar: fc, fenceLen: fl}})
 }
@@ -6579,11 +6707,7 @@ func emitValueInline(v *value) (string, bool) {
 	if v.kind != vCell {
 		return "", false
 	}
-	parts := make([]string, len(v.els))
-	for i := range v.els {
-		parts[i] = emitElement(&v.els[i])
-	}
-	return strings.Join(parts, ", "), true
+	return emitCell(v.els), true
 }
 
 // ---------------------------------------------------------------------------
@@ -6723,11 +6847,10 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		return false
 	}
 	// `[#N]` needs a pre-existing instance and its `#` would start a comment on
-	// a binding line; a newline inside a selector has no one-line spelling,
-	// since the value emitter never escapes one. Both go to the trailing note
-	// instead of emitting a broken line. A path deeper than a document may nest
-	// cannot be generated either: the line would draw E016 on the way back in.
-	// A newline in a NAME is writable: names are stored escape-resolved and the
+	// a binding line; a newline inside a selector is left to the trailing note
+	// rather than spelled inline. A path deeper than a document may nest cannot
+	// be generated either: the line would draw E016 on the way back in. A
+	// newline in a NAME is writable: names are stored escape-resolved and the
 	// name escaper spells one `\n`.
 	unwritable := func(c *constraint) bool {
 		if len(c.segs) > MaxDepth {

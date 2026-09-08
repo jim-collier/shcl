@@ -517,7 +517,8 @@ def load_layered(o, file):
 		doc.merge(over)
 	for st in o.sets:
 		if not st.apply(doc):
-			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {describe_refusal(doc, st.path)}\n")
+			why = describe_refusal(doc, st.path, "the value text is not one value")
+			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {why}\n")
 			return None, 1
 	return doc, None
 
@@ -599,13 +600,14 @@ def check_opts(cmd, o):
 	return None
 
 
-def describe_refusal(doc, path):
-	# The per-binding wording behind a setter's bare False.
+def describe_refusal(doc, path, unwritable):
+	# The per-binding wording behind a setter's bare False. When the path itself
+	# is fine what failed is the text, and only the caller knows which half of
+	# the op that was, so it names it: a setter refused for its value used to
+	# report the sentence written for set_literal whatever the op.
 	reason = doc.write_reason(path)
 	if reason == shcl.WriteReason.Writable:
-		# The path itself is fine, so the value text must be what failed (a
-		# literal that does not parse as one value).
-		return "the value text is not one value"
+		return unwritable
 	if reason == shcl.WriteReason.BadPath:
 		return "not a usable path"
 	if reason == shcl.WriteReason.ValueInPath:
@@ -1090,14 +1092,24 @@ def apply_op(doc, line):
 	elif op == "empty":
 		wrote = doc.set_empty(path)
 	elif op == "comment":
-		wrote = doc.set_comment(path, v)
+		wrote = doc.set_comment(path, _unescape_ops(v))
 	elif op == "remove":
 		doc.remove(path)
 		wrote = True
 	else:
 		raise ValueError(f"unknown op: {op}")
 	if not wrote:
-		raise ValueError(f"cannot write {path}: {describe_refusal(doc, path)}")
+		# Which half of the op had no spelling: the reader is otherwise sent to
+		# the value when it was the info string or the comment that failed.
+		if op in ("literal", "literal-default"):
+			unwritable = "the value text is not one value"
+		elif op == "comment":
+			unwritable = "the comment text is not one line"
+		elif op in ("raw", "raw-default"):
+			unwritable = "the info string or the block body has no fence spelling"
+		else:
+			unwritable = "the value has no spelling that reads back"
+		raise ValueError(f"cannot write {path}: {describe_refusal(doc, path, unwritable)}")
 
 
 def do_set(o):
@@ -1141,7 +1153,8 @@ def do_set(o):
 	say_diagnostics(diags)
 	for st in o.sets:
 		if not st.apply(doc):
-			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {describe_refusal(doc, st.path)}\n")
+			why = describe_refusal(doc, st.path, "the value text is not one value")
+			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {why}\n")
 			return 1
 	# --set carries the edits, so stdin is left alone: reading it here would
 	# block on the console for anyone who passed edits as options.
@@ -1163,11 +1176,8 @@ def do_set(o):
 			return EXIT_IO
 	pieces = ops.split("\n")
 	for n, line in enumerate(pieces):
-		# The CR of a CRLF comes off with the LF, as the reference's line split
-		# takes it; then one more, so a bare CR at EOF (the CR of a CRLF that
-		# lost its LF) goes the same way.
-		if n + 1 < len(pieces) and line.endswith("\r"):
-			line = line[:-1]
+		# One CR off each piece: the CR of a CRLF, or of a CRLF at EOF that lost
+		# its LF. A second one is the value's.
 		line = line[:-1] if line.endswith("\r") else line
 		if line == "" or line.startswith("#"):
 			continue

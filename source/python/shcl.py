@@ -111,7 +111,7 @@ class WriteReason(Enum):
 	setter's bare False. Writable = the path passes the writer's validation;
 	the rest name the five ways it cannot."""
 	Writable = 0
-	BadPath = 1       # empty path, the scanner rejected it, or a segment carries a line break
+	BadPath = 1       # empty path, or the scanner rejected it
 	ValueInPath = 2   # the path carries a `: value` part; writes take values separately
 	Wildcard = 3      # wildcard selectors are query-only
 	NoSuchIndex = 4   # a `[#k]` instance that does not (and can never) exist
@@ -417,12 +417,14 @@ def _raw(content, info, fence_char, fence_len):
 
 def _literal_value(text):
 	# Read text as the value half of a line, for the setters that take value
-	# syntax rather than data. Rejects what could not have come off one line: a
-	# line break, or a quote that never closes. An unquoted # ends the value
-	# here exactly as it would in a file. Bracket-array text is refused too: in
-	# a file it is E019 and the line is kept verbatim, so writing it as a
-	# two-element array holding `[1` and `2]` would be a different wrong answer.
-	if "\n" in text or "\r" in text:
+	# syntax rather than data: whatever a file line spells with this text is
+	# what gets stored, so a trailing blank comes off and an unquoted `#` ends
+	# the value exactly as they would in a file. What is refused is what a file
+	# reports as an error, since a setter has no diagnostic to report it with: a
+	# line break, which no file line can hold, an unterminated quote (E017), and
+	# bracket text (E019, the line kept verbatim - writing it as a two-element
+	# array holding `[1` and `2]` would be a different wrong answer).
+	if "\n" in text:
 		return None
 	tok = Tokens()
 	tokenize_value(text, 0, Rules.CURRENT, tok)
@@ -1169,6 +1171,14 @@ def _piece_text(p, s):
 	if p.quote is Quote.DOUBLE and "\\" in raw:
 		return _apply_escapes(raw)
 	return raw
+
+
+def _piece_is(p, s, want):
+	"""True when a piece reads as this exact text, without building it."""
+	raw = s[p.start:p.end]
+	if p.quote is Quote.DOUBLE and _B_BACKSLASH in raw:
+		return _apply_escapes(raw.decode("utf-8")) == want
+	return raw == want.encode("utf-8")
 
 
 def _element_of(p, s):
@@ -2699,10 +2709,7 @@ class Document:
 			out.append("\n")
 		elif v.kind == "cell":
 			out.append(" ")
-			for k, e in enumerate(v.els):
-				if k > 0:
-					out.append(", ")
-				out.append(_emit_element(e))
+			out.append(_emit_cell(v.els))
 			if trailing:
 				out.append("  ")
 				out.append(trailing)
@@ -2724,13 +2731,7 @@ class Document:
 			fence = v.fence_char * v.fence_len
 			if not would_merge:
 				out.append(body_pad)
-			out.append(fence)
-			if v.info:
-				# An info-string starting with the fence char would extend the run
-				# on reparse; a space keeps the fence length intact.
-				if v.info[0] == v.fence_char:
-					out.append(" ")
-				out.append(v.info)
+			out.append(_emit_fence_line(v))
 			out.append("\n")
 			if v.content:
 				for ln in v.content.split("\n"):
@@ -3036,16 +3037,6 @@ class Document:
 			if seg.star:
 				return (WriteReason.Wildcard, None)
 			sel = seg.selector
-			# A newline in a SELECTOR has no one-line spelling, so the emitted
-			# binding would split across two lines and reparse as neither. The
-			# selector stores its path text raw and the value emitter never
-			# escapes a line break, so nothing downstream can rescue it - and the
-			# reload loses nothing it can count, so the save gate would not catch
-			# it. A newline in a NAME is fine: names are stored escape-resolved
-			# and emitted through the name escaper, which spells a line break \n
-			# and reads it back as one.
-			if sel is not None and sel[0] == "val" and "\n" in sel[1]:
-				return (WriteReason.BadPath, None)
 			if sel is not None and sel[0] == "wild":
 				return (WriteReason.Wildcard, None)
 			if sel is not None and sel[0] == "idx":
@@ -3086,6 +3077,17 @@ class Document:
 		trail: list = []
 		if self._probe_write(segments, value_text, trail)[0] != WriteReason.Writable:
 			return None
+		# Nothing is created until every segment the write would create is known
+		# to spell back: the name through the name escaper, an instance selector
+		# as the value it binds.
+		for i, seg in enumerate(segments):
+			if trail[i] is not None:
+				continue
+			if not _name_reads_back(seg.name):
+				return None
+			sel = seg.selector
+			if sel is not None and sel[0] == "val" and not _value_reads_back(_cell_of(sel[1])):
+				return None
 		cur = ROOT
 		for i, seg in enumerate(segments):
 			# The probe already resolved every segment that exists; only the
@@ -3105,6 +3107,8 @@ class Document:
 		return cur
 
 	def _set_value(self, path, value):
+		if not _value_reads_back(value):
+			return False
 		idx = self._place(path)
 		if idx is None:
 			return False
@@ -3206,24 +3210,22 @@ class Document:
 
 	def set_comment(self, path: str, text: str) -> bool:
 		"""Attach a leading comment line to the node at a path (creating an empty
-		node if absent). A missing '#' is added; only the first line is kept, and
-		trailing whitespace comes off the way the load takes it, so text that is
-		blank leaves a bare '#'."""
+		node if absent). A missing '#' is added, and trailing whitespace comes
+		off the way the load takes it, so text that is blank leaves a bare '#'.
+		Text holding a line break is refused: a comment is one line, and keeping
+		only the first would drop the rest with nothing to say so."""
 		_want("set_comment", text, "str")
+		c = _comment_line(text)
+		if c is None:
+			return False
 		idx = self._place(path)
 		if idx is None:
 			return False
-		line = text.split("\n", 1)[0]
-		if not line.startswith("#"):
-			line = "# " + line
-		# Without this the load trims what was written and the writer's output
-		# stops being a fmt fixpoint.
-		line = _trim_wsp_end(line)
 		# The node's own blank moves above its first comment; otherwise the
 		# blank would separate the comment from what it annotates. Above the
 		# first one already there, when there is one.
 		nd = self.arena[idx]
-		lead = _Lead(line, False)
+		lead = _Lead(c, False)
 		t = nd._triv()
 		if nd.blank_before:
 			nd.blank_before = False
@@ -3280,23 +3282,13 @@ class Document:
 	def set_raw(self, path: str, content: str, info: str) -> bool:
 		"""Bind a raw block at a path, picking a fence longer than any content
 		line. The info-string is stored as a fence line would read it back
-		(trimmed); one holding a line break or an unquoted `#` has no fence-line
-		spelling (the `#` would read back as a comment) and fails the write. A
-		body line ending in CR fails for the same reason: the load takes the
-		whole trailing CR run off every line, so it would not read back."""
+		(trimmed the way the load trims one); one that would not read back whole
+		- it holds a line break, or a `#` behind a blank that reads as a comment
+		- fails the write, as does a body line ending in CR, since the load takes
+		the trailing CR run off every line."""
 		_want("set_raw", content, "str")
 		_want("set_raw", info, "str")
-		if "\n" in info or "\r" in info:
-			return False
-		# The fence line the block will be written as: the fence run and the
-		# info string are one bare piece, so a quote in the info hides nothing.
-		tok = Tokens()
-		tokenize_value("```" + info, 0, Rules.CURRENT, tok)
-		if tok.comment is not None:
-			return False
-		if any(line.endswith("\r") for line in content.split("\n")):
-			return False
-		info = _trim(info)
+		info = _trim_wsp(info)
 		fc, fl = _choose_fence(content)
 		return self._set_value(path, _raw(content, info, fc, fl))
 
@@ -4649,6 +4641,125 @@ def _quote_text(t):
 
 
 # ---------------------------------------------------------------------------
+# The write side's one rule: what is written has to read back
+# ---------------------------------------------------------------------------
+#
+# A setter builds its text through the emitter and reads it back with the
+# tokenizer before the document is touched. If the read does not give the value
+# it was handed, the write is refused and nothing changes. No setter decides for
+# itself what a quote, a `#`, a comma or a carriage return means: twelve review
+# items were one setter's private rule disagreeing with the parser's. The typed
+# setters keep their own render-and-parse-back on top, since a float or a
+# datetime has to read back as that type and not merely as the same text.
+
+
+def _encodable(text):
+	"""True when the text has UTF-8 bytes for the tokenizer to scan. Python is
+	the one binding whose string can hold a lone surrogate, so it is the one
+	that can be handed text with no spelling at all; the read-back checks let
+	that through rather than refusing it, since the save is where a document
+	that cannot be encoded fails, and always has."""
+	try:
+		text.encode("utf-8")
+	except UnicodeEncodeError:
+		return False
+	return True
+
+
+def _emit_cell(els):
+	"""The value half of a binding line, the way _emit_node writes it."""
+	return ", ".join(_emit_element(e) for e in els)
+
+
+def _emit_fence_line(v):
+	"""The opening fence line of a raw block: the fence run, then the info
+	string behind a space when it would otherwise extend the run."""
+	out = v.fence_char * v.fence_len
+	if v.info:
+		if v.info[0] == v.fence_char:
+			out += " "
+		out += v.info
+	return out
+
+
+def _value_reads_back(v):
+	"""True when a value comes back off the page as itself."""
+	if v.kind == "empty":
+		return True
+	if v.kind == "cell":
+		text = _emit_cell(v.els)
+		if "\n" in text:
+			return False
+		if not _encodable(text):
+			return True
+		tok = Tokens()
+		tokenize_value(text, 0, Rules.CURRENT, tok)
+		if tok.comment is not None:
+			return False
+		# Compared against the pieces rather than against a rebuilt value: a
+		# bulk write runs this per set, and the text is right there.
+		back = [p for p in tok.elements if p.quote is not Quote.NONE or p.end > p.start]
+		if len(back) != len(v.els):
+			return False
+		return all(_piece_is(p, tok.src, e.text) for p, e in zip(back, v.els))
+	line = _emit_fence_line(v)
+	if "\n" in line:
+		return False
+	if not _encodable(line):
+		return True
+	tok = Tokens()
+	tokenize_value(line, 0, Rules.CURRENT, tok)
+	if _fence_open(tok.src[tok.value[0]:tok.value[1]].decode("utf-8")) != (v.fence_char, v.fence_len, v.info):
+		return False
+	# A body line ending in a carriage return loses it to the load's line-end
+	# trim, and one spelling the closing fence would end the block early.
+	return all(
+		not ln.endswith("\r") and not _is_fence_close(ln, v.fence_char, v.fence_len)
+		for ln in v.content.split("\n")
+	)
+
+
+def _name_reads_back(name):
+	"""True when a field name comes back off a line as itself."""
+	text = _escape_name(name)
+	if "\n" in text:
+		return False
+	if not _encodable(text):
+		return True
+	tok = Tokens()
+	tokenize(text, ":", False, Rules.CURRENT, tok)
+	return (
+		tok.fault is None
+		and len(tok.segments) == 1
+		and tok.segments[0].selector is None
+		and _piece_is(tok.segments[0].name, tok.src, name)
+	)
+
+
+def _comment_line(text):
+	"""The comment line this text is written as, or None when it has no
+	spelling. A `#` is added when the text carries none. The load trims every
+	line's end, so the trimmed text is what gets written; text holding a line
+	break is refused rather than cut down to its first line."""
+	if "\n" in text:
+		return None
+	t = _trim_wsp_end(text)
+	if t.startswith("#"):
+		line = t
+	elif not t:
+		line = "#"
+	else:
+		line = "# " + t
+	if not _encodable(line):
+		return line
+	tok = Tokens()
+	tokenize_value(line, 0, Rules.CURRENT, tok)
+	if tok.comment == 0 and _trim_wsp_end(line) == line:
+		return line
+	return None
+
+
+# ---------------------------------------------------------------------------
 # Coercion ("intelligent but safe"; Loose re-admits a closed list of tricks)
 # ---------------------------------------------------------------------------
 
@@ -5488,7 +5599,7 @@ def _emit_value_inline(v):
 	# a usable one-line form. Used by the generator, not the validator.
 	if v.kind != "cell":
 		return None
-	return ", ".join(_emit_element(e) for e in v.els)
+	return _emit_cell(v.els)
 
 
 def _allowed_join(a):
@@ -5588,9 +5699,8 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		return any(s.selector is not None and s.selector[0] == "wild" for s in c.segs)
 
 	# `[#N]` needs a pre-existing instance and its `#` would start a comment on a
-	# binding line; a newline inside a selector has no one-line spelling, since
-	# the value emitter never escapes one. Both go to the trailing note instead
-	# of emitting a broken line. A path deeper than a document may nest cannot be
+	# binding line; a newline inside a selector is left to the trailing note
+	# rather than spelled inline. A path deeper than a document may nest cannot be
 	# generated either: the line would draw E016 on the way back in. A newline in
 	# a NAME is writable: names are stored escape-resolved and the name escaper
 	# spells one `\n`.

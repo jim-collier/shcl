@@ -498,7 +498,7 @@ func tryApplyOpTest(doc *Document, line string) error {
 	case "empty":
 		wrote = doc.SetEmpty(path)
 	case "comment":
-		wrote = doc.SetComment(path, v)
+		wrote = doc.SetComment(path, unescapeOpsTest(v))
 	case "remove":
 		doc.Remove(path)
 		wrote = true
@@ -698,13 +698,14 @@ func TestWriteReasonNamesTheFailure(t *testing.T) {
 	if got := doc.WriteReason(deep); got != TooDeep {
 		t.Errorf("deep path: got %v, want TooDeep", got)
 	}
-	// A literal line break in a SELECTOR: the binding would emit across two lines
-	// and reparse as neither, and the value emitter never escapes one. In a NAME
-	// it is writable - names emit through the name escaper, which spells a line
-	// break \n, so the escaped and literal spellings are one path now. Not
-	// corpus-pinnable - an ops line cannot carry a raw newline.
-	if got := doc.WriteReason("a[\"p\nq\"].b"); got != BadPath {
-		t.Errorf("newline in selector: got %v, want BadPath", got)
+	// A literal line break is writable wherever a path can carry one: a name
+	// emits through the name escaper and a selector value through the value
+	// emitter, and both spell a break \n and read it back as one. The selector
+	// was refused while the value emitter still wrote elements in their source
+	// spelling and had nothing to escape with. Not corpus-pinnable - an ops
+	// line cannot carry a raw newline.
+	if got := doc.WriteReason("a[\"p\nq\"].b"); got != Writable {
+		t.Errorf("newline in selector: got %v, want Writable", got)
 	}
 	if got := doc.WriteReason("\"x\ny\".b"); got != Writable {
 		t.Errorf("newline in name: got %v, want Writable", got)
@@ -1073,8 +1074,16 @@ func TestSetRawKeepsASharedIndentAndTrimsTheInfo(t *testing.T) {
 	if doc.SetRaw("q", "x", "a\nb") {
 		t.Error("info with a newline was accepted")
 	}
-	if doc.SetRaw("q", "x", "a\rb") {
-		t.Error("info with a carriage return was accepted")
+	// A CR the load would take off the line end has no spelling; one mid-info
+	// is content, the same rule a body line follows.
+	if doc.SetRaw("q", "x", "ab\r") {
+		t.Error("info ending in a carriage return was accepted")
+	}
+	if !doc.SetRaw("q", "x", "a\rb") {
+		t.Fatal("info with a mid-string carriage return was refused")
+	}
+	if info := Parse(doc.ToCanonical()).ReadRawInfo("q").Value; info != "a\rb" {
+		t.Errorf("mid-string CR info: got %q", info)
 	}
 	if doc.SetRaw("q", "x", "a # b") {
 		t.Error("info with an unquoted # was accepted")
@@ -1222,6 +1231,30 @@ func TestSaveRefusesADirectoryShapedPath(t *testing.T) {
 // UTF-8 fails the write rather than storing a replacement character per bad
 // byte and reporting success. Go-only: the other three cannot hold such a
 // string in the first place.
+// Both halves of a path can carry a line break and spell it \n: a name through
+// the name escaper, a selector value through the value emitter. The selector
+// was refused while elements were stored in their source spelling and the
+// emitter had nothing to escape with. Same fixture in every runner.
+func TestALineBreakInAPathWritesAndReadsBack(t *testing.T) {
+	doc := Parse("z: 0\n")
+	if !doc.SetInt("x[\"p\nq\"].c", 1) || !doc.SetInt("\"a\nb\".c", 1) {
+		t.Fatal("a line break in a path was refused")
+	}
+	text := doc.ToCanonical()
+	back := Parse(text)
+	if back.ErrorCount() != 0 {
+		t.Errorf("the reload has %d error(s):\n%s", back.ErrorCount(), text)
+	}
+	if got := back.ToCanonical(); got != text {
+		t.Errorf("not a fixpoint:\n%s", text)
+	}
+	for _, p := range []string{"x[\"p\\nq\"].c", "\"a\\nb\".c", "\"a\nb\".c"} {
+		if r := back.ReadInt(p); r.Value != 1 {
+			t.Errorf("read %q got %d", p, r.Value)
+		}
+	}
+}
+
 func TestSetStringRefusesInvalidUTF8(t *testing.T) {
 	d := Parse("a: 1\n")
 	bad := string([]byte{0x61, 0xff, 0x62})
@@ -1969,5 +2002,113 @@ func TestPathsEnumerationShape(t *testing.T) {
 	}
 	if r := doc.ReadInt(QuoteSegment("q n")); r.Value != 3 || r.Status != Good {
 		t.Fatalf("quoted segment read: %v %v", r.Value, r.Status)
+	}
+}
+
+// setterSoup is the alphabet the setter round-trip fixture draws from: every
+// character that means something to the tokenizer, plus a blank the load trims
+// and a no-break space it does not. Same fixture in every runner.
+var setterSoup = []string{"\"", "'", "\\", "#", ",", "[", "]", "\r", "\n", " ", "\t", "\u00a0", "a"}
+
+// soupInputs is every string of one and two characters over that alphabet, and
+// the empty string.
+func soupInputs() []string {
+	out := []string{""}
+	for _, a := range setterSoup {
+		out = append(out, a)
+		for _, b := range setterSoup {
+			out = append(out, a+b)
+		}
+	}
+	return out
+}
+
+// TestSettersWriteOnlyWhatReadsBack: a setter writes only what reads back. Each
+// one builds its text through the emitter and hands it to the tokenizer before
+// the document is touched, so for every input either the call refuses and the
+// document is byte-identical, or the canonical text reloads to itself and the
+// read gives the value back. Twelve review items were one setter's own trim,
+// carriage-return or `#` rule disagreeing with the parser's. Same fixture in
+// every runner.
+func TestSettersWriteOnlyWhatReadsBack(t *testing.T) {
+	for _, s := range soupInputs() {
+		for kind := 0; kind < 6; kind++ {
+			doc := Parse("k: 1\n")
+			before := doc.ToCanonical()
+			applied := false
+			switch kind {
+			case 0:
+				applied = doc.SetString("k", s)
+			case 1:
+				applied = doc.SetLiteral("k", s)
+			case 2:
+				applied = doc.SetComment("k", s)
+			case 3:
+				applied = doc.SetRaw("k", s, "t")
+			case 4:
+				applied = doc.SetRaw("k", "body", s)
+			default:
+				applied = doc.SetStringArray("k", []string{"x", s})
+			}
+			if !applied {
+				if doc.ToCanonical() != before {
+					t.Fatalf("a refused write changed the document (setter %d, input %q)", kind, s)
+				}
+				continue
+			}
+			text := doc.ToCanonical()
+			back := Parse(text)
+			if back.ToCanonical() != text {
+				t.Fatalf("written text is not a fixpoint (setter %d, input %q):\n%s", kind, s, text)
+			}
+			if !reflect.DeepEqual(back.Instances("k"), doc.Instances("k")) {
+				t.Fatalf("the value read differs after a reload (setter %d, input %q):\n%s", kind, s, text)
+			}
+			switch kind {
+			case 0:
+				if r := back.ReadString("k"); r.Value != s {
+					t.Fatalf("string %q: got %q", s, r.Value)
+				}
+			case 2:
+				// A comment has no accessor of its own, so the oracle is the
+				// text: whatever the load would keep of what was handed in has
+				// to be in the document, not a shortened form of it.
+				if !strings.Contains(text, strings.TrimRight(s, " \t\r")) {
+					t.Fatalf("the comment handed in is not in the document (%q):\n%s", s, text)
+				}
+			case 3, 4:
+				bv, bs := back.GetRaw("k")
+				dv, ds := doc.GetRaw("k")
+				if bv != dv || bs != ds {
+					t.Fatalf("raw body %q: got %q %v, want %q %v", s, bv, bs, dv, ds)
+				}
+				if back.ReadRawInfo("k").Value != doc.ReadRawInfo("k").Value {
+					t.Fatalf("raw info %q: got %q", s, back.ReadRawInfo("k").Value)
+				}
+			case 5:
+				if got := back.ReadStringArray("k").Value; !reflect.DeepEqual(got, []string{"x", s}) {
+					t.Fatalf("array %q: got %q", s, got)
+				}
+			}
+		}
+		// The same rule for a name: whatever QuoteSegment spells has to come
+		// back as one segment holding that name, or the write is refused.
+		path := QuoteSegment(s)
+		doc := Parse("k: 1\n")
+		before := doc.ToCanonical()
+		if !doc.SetString(path, "v") {
+			if doc.ToCanonical() != before {
+				t.Fatalf("a refused name write changed the document (%q)", s)
+			}
+			continue
+		}
+		text := doc.ToCanonical()
+		back := Parse(text)
+		if back.ToCanonical() != text {
+			t.Fatalf("name %q is not a fixpoint:\n%s", s, text)
+		}
+		if r := back.ReadString(path); r.Value != "v" {
+			t.Fatalf("name %q did not read back:\n%s", s, text)
+		}
 	}
 }
