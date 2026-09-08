@@ -104,9 +104,13 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260904-173600
 		- Closed: 20260908-151000
 
-	- 🔘 Item 39: nothing gates the two wrappers past `SHCL_BIN`.
+	- ✅ Item 39: nothing gates the two wrappers past `SHCL_BIN`.
 		- `shell-regress.bash` covers `SHCL_BIN` resolution, the caller-scope hygiene, the symlink resolution and the pre-.NET-6 guard, and caps the header comment width. Nothing covers argument pass-through, exit-code pass-through, stdin and stdout fidelity, or whether the two wrappers agree - which is why item 16 was never seen. The whole matrix run this round is about forty rows.
+		- Fixed: a matrix in `shell-regress.bash`. Ten invocations - a good read, a missing path, a bad type, a missing file, a usage error, `fmt -` from stdin, a `set` ops script from stdin, a raw block whose body ends in a blank line, an argument holding a space, and a leading-dash argument after `--` - each run through the binary and then through four ways of calling a wrapper: bash as a script, bash sourced, PowerShell as a script, PowerShell dot-sourced. Stdout, stderr and the exit code have to match the binary. Thirty-nine checks.
+		- Note: the dot-sourced PowerShell form skips the `--` row, which is the one documented difference and is pinned on its own two rows above.
+		- Pinned by: making each wrapper's run path exit 0 instead of forwarding the code. The bash injection is caught on four rows, the PowerShell one on four.
 		- Opened: 20260904-173700
+		- Closed: 20260908-174500
 
 	- ✅ Item 40: pin "pprof must never ship" to the artifact, and compile the profiling build somewhere.
 		- The rule holds today: the release binary and every packaged artifact carry zero matches for pprof, inferno or quick-xml, and no default-feature build resolves the dependency. It rests entirely on the release command not carrying the feature flag. One `strings` line in `package.bash` or `sign-release.bash` would pin it to the file rather than to the command. The stake is a GPL-incompatible license that `deny.toml` allows on exactly that basis.
