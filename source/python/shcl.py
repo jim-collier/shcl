@@ -3193,7 +3193,10 @@ class Document:
 		return False
 
 	def remove(self, path: str) -> int:
-		"""Delete the node(s) at a path (with their subtrees); returns how many."""
+		"""Delete the node(s) at a path (with their subtrees); returns how many.
+
+		A removed node's storage is not reclaimed, so a process that adds and removes in a loop grows by a few hundred bytes a pair. Reloading the canonical text gives it back.
+		"""
 		r = self._resolve(path)
 		tag = r[0]
 		if tag == "one":

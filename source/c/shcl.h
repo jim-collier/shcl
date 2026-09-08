@@ -47,6 +47,17 @@
 // unwinding at all, and a C recovery point needs nothing more, since nothing in
 // between has a destructor or a __finally. Include <setjmp.h> before using it.
 // The full shape is in style-guide.md under the C deviations.
+//
+// What it costs an embedder, on mingw x86_64 only: the jump skips the unwind,
+// so a C++ frame between the recovery point and the failed allocation does not
+// run its destructors, and a __finally block does not run either. That is
+// nothing for the library's own two recovery points, and it is not nothing for
+// an embedder arming one across their own frames - so on that target, keep the
+// frames between the two plain, or accept the leak. Everywhere else the plain
+// setjmp is in use and the unwind is the platform's ordinary one. mingw takes
+// the same unwinding branch on aarch64, and nothing builds this for aarch64
+// windows today; if that changes, the shape has to be measured there before
+// the guard is widened rather than assumed to match.
 #if defined(__MINGW32__) && defined(__x86_64__) && defined(__SEH__)
 	#define SHCL_SETJMP(buf) _setjmp((buf), NULL)
 #else
@@ -345,12 +356,21 @@ shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t 
 // and results live until shcl_free, which is the documented contract and what a
 // read-once consumer wants. A process polling the same document in a loop calls
 // it between passes so the memory does not climb.
+// It levels off rather than going to zero: the largest block stays, so the next
+// pass writes into it instead of asking the system again. The resting cost
+// after this call is therefore the size of the biggest single result the
+// process has ever taken - a shcl_to_canonical of a 100 MiB document leaves
+// about that much held until shcl_free.
 void shcl_reads_release(shcl_doc *d);
 // The write-side counterpart. A write lands in a bump arena and the value it
 // replaced stays there until shcl_free, so a process rewriting one field in a
-// loop grows by a few dozen bytes per write. Compaction rebuilds the document
-// into fresh arenas holding only what it now contains - same content, same
-// diagnostics, same lost count, same strictness - and gives the old ones back.
+// loop grows by a few dozen bytes per write, and a removed node's storage goes
+// the same way. A merge is the case that makes this matter: folding a layer
+// rebuilds every parent it touches, so a process merging in a loop grows by
+// hundreds of kilobytes a call, not dozens of bytes.
+// Compaction rebuilds the document into fresh arenas holding only what it now
+// contains - same content, same diagnostics, same lost count, same strictness -
+// and gives the old ones back.
 // Every read result is invalid after it, as after shcl_reads_release. Optional,
 // for a long-running writer; a write-once consumer never needs it. On an
 // allocation failure the document is left as it was.
@@ -431,6 +451,7 @@ char *shcl_migrate(const char *text, size_t len, size_t *out_len);
 // writes a document missing the edit, and reports success doing it.
 shcl_doc *shcl_new(void); // an empty document (start point for generation), or NULL on an allocation failure
 int shcl_exists(shcl_doc *d, const char *path, size_t plen);       // 0/1
+// A removed node's storage is not reclaimed until shcl_compact or shcl_free.
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen);    // count deleted
 int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
 int shcl_set_empty(shcl_doc *d, const char *path, size_t plen);
@@ -487,8 +508,11 @@ int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, 
 // meets an overridden leaf, so a cached upper pair is not the same document the
 // CLI's left fold produces. d keeps its own strictness, so a value from a
 // stricter layer reads with d's coercion. And a replaced node is kept until
-// shcl_free or shcl_compact: this costs a pass over the touched scopes plus an
-// index rebuild on the next read.
+// shcl_free or shcl_compact - hundreds of kilobytes a merge on a large base,
+// four orders of magnitude more than a single write, so a process folding
+// layers in a loop is the one that has to call shcl_compact rather than the one
+// that rewrites a field. It costs a pass over the touched scopes plus an index
+// rebuild on the next read.
 void shcl_merge(shcl_doc *d, const shcl_doc *over);
 
 // CLI/aliases: 1|2|3 or loose|standard|strict. Returns 1 on success.

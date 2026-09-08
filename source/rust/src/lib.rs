@@ -4584,6 +4584,7 @@ impl Document {
 	}
 
 	/// Delete the node(s) at a path (with their subtrees); returns how many.
+	/// A removed node's storage is not reclaimed, so a process that adds and removes in a loop grows by a few hundred bytes a pair. Reloading the canonical text gives it back.
 	pub fn remove(&mut self, path: &str) -> usize {
 		let targets: Vec<usize> = match self.resolve(path) {
 			Ok(Resolved::One(n)) => vec![n],
