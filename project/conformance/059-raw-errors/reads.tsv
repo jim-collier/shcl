@@ -2,4 +2,4 @@ query	type	expected	status
 -	load	ok	-
 -	load	fail	-	strict
 a	raw	never closed	Good
--	lost	1	-
+-	lost	2	-

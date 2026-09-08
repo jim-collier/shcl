@@ -2046,17 +2046,79 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 	return 0, false
 }
 
+// outcome: what became of a line the parser did not bind whole. Only the
+// funnel (parser.refuse) reads it; the count and the level follow from it.
+type outcome struct {
+	kind        int
+	text        string   // retained: the line, kept verbatim
+	blankBefore bool     // retained: a blank line preceded it
+	rest        []string // stopped: the lines never read
+}
+
+const (
+	// The line binds; a value it carried has nowhere to go and is gone.
+	outcomeValueDropped = iota
+	// Content-malformed: kept verbatim as trivia and written back in place,
+	// where it re-diagnoses identically and never reads as a binding.
+	outcomeRetained
+	// Read but not applicable here; re-emitted it could bind elsewhere, so
+	// it is gone and counts.
+	outcomeDropped
+	// The parse stopped before this line; the rest was never read.
+	outcomeStopped
+)
+
+var (
+	outValueDropped = outcome{kind: outcomeValueDropped}
+	outDropped      = outcome{kind: outcomeDropped}
+)
+
+func outRetained(text string, blankBefore bool) outcome {
+	return outcome{kind: outcomeRetained, text: text, blankBefore: blankBefore}
+}
+
+func outStopped(rest []string) outcome { return outcome{kind: outcomeStopped, rest: rest} }
+
+// refuse is the one exit for a line the parser does not bind whole. An arm
+// says what became of the line and nothing else: the lost count and the
+// level the line holds follow from the outcome here, so no arm can forget
+// either. design.md's outcome table gives each code its row.
+func (p *parser) refuse(line int, code, msg string, out outcome, indent string) {
+	p.err(line, code, msg)
+	holds := out.kind == outcomeRetained || out.kind == outcomeDropped
+	n := 0
+	switch out.kind {
+	case outcomeValueDropped, outcomeDropped:
+		n = 1
+	case outcomeStopped:
+		for _, l := range out.rest {
+			if trimWsp(l) != "" {
+				n++
+			}
+		}
+	}
+	p.lost += n
+	if out.kind == outcomeRetained {
+		p.pending = append(p.pending, pend{text: out.text, indent: indent, blankBefore: out.blankBefore, ceiling: len(indent)})
+	}
+	// A refused line owns its indent, so what is written deeper is skipped
+	// with it (E018). An indent that matched no level already holds an
+	// unopened one, which refuses a sibling the same way; that one stays.
+	top := len(p.stack) - 1
+	if holds && !(top >= 0 && p.stack[top].indent == indent && p.stack[top].node == unopened) {
+		p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+	}
+}
+
 // skipUnderDead diagnoses a line written under a skipped line, and skips it
 // too. Its own level stays dead so deeper lines go the same way.
 func (p *parser) skipUnderDead(line int, indent string) {
-	p.err(line, "E018", "parent line was skipped; line skipped")
-	p.lost++
-	p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+	p.refuse(line, "E018", "parent line was skipped; line skipped", outDropped, indent)
 }
 
 // attachPath walks path segments under parent, select-or-creating; returns the
 // node for the last segment carrying v. ok=false aborts the line (diagnosed).
-func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int, bool) {
+func (p *parser) attachPath(parent int, segs []segment, v value, line int, indent string) (int, bool) {
 	p.starFlush()
 	// Field child under a stacked list: diagnose the mix once, keep the field.
 	if p.arena[parent].starList && !p.arena[parent].starMixed {
@@ -2070,8 +2132,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 		parentDepth++
 	}
 	if parentDepth+len(segs) > MaxDepth {
-		p.err(line, "E016", fmt.Sprintf("nesting deeper than %d levels; line skipped", MaxDepth))
-		p.lost++
+		p.refuse(line, "E016", fmt.Sprintf("nesting deeper than %d levels; line skipped", MaxDepth), outDropped, indent)
 		return 0, false
 	}
 	cur := parent
@@ -2099,8 +2160,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			if isLast && !v.isEmpty() {
 				// `a.b[X]: v` - the discriminator is the value; a second
 				// value has nowhere unambiguous to go.
-				p.err(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", seg.name))
-				p.lost++
+				p.refuse(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", seg.name), outValueDropped, indent)
 			}
 		case seg.sel != nil && seg.sel.kind == selByIndex:
 			found, ok := 0, false
@@ -2118,19 +2178,16 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int) (int,
 			if ok {
 				cur = found
 			} else {
-				p.err(line, "E003", fmt.Sprintf("no instance %d of '%s'", seg.sel.index, seg.name))
-				p.lost++
+				p.refuse(line, "E003", fmt.Sprintf("no instance %d of '%s'", seg.sel.index, seg.name), outDropped, indent)
 				return 0, false
 			}
 			if isLast && !v.isEmpty() {
 				// Same as the value selector: the instance is already chosen,
 				// so a trailing value has nowhere to bind.
-				p.err(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", seg.name))
-				p.lost++
+				p.refuse(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", seg.name), outValueDropped, indent)
 			}
 		case seg.sel != nil:
-			p.err(line, "E004", "wildcard selector is query-only")
-			p.lost++
+			p.refuse(line, "E004", "wildcard selector is query-only", outDropped, indent)
 			return 0, false
 		case !isLast:
 			cur = p.selectOrCreate(cur, seg.name, seg.nameSrc, value{kind: vEmpty}, line)
@@ -2230,10 +2287,9 @@ func (p *parser) consumeRaw(
 // bindBlock: a bare fence line is a value line for its parent field: fills an
 // empty value, else creates a new instance of that field (the repeated-leaf
 // rule). Returns the node the block landed on (-1 = no parent, diagnosed).
-func (p *parser) bindBlock(parent int, v value, line int) int {
+func (p *parser) bindBlock(parent int, v value, line int, indent string) int {
 	if parent == root {
-		p.err(line, "E006", "raw block with no parent field")
-		p.lost++
+		p.refuse(line, "E006", "raw block with no parent field", outDropped, indent)
 		return -1
 	}
 	if p.arena[parent].value.isEmpty() {
@@ -2249,46 +2305,39 @@ func (p *parser) bindBlock(parent int, v value, line int) int {
 
 // addStarElement: one stacked-list element (`* scalar`) appends to the
 // parent's array.
-// True when the element was added, false when the line was dropped.
-func (p *parser) addStarElement(parent int, body string, line int) bool {
+func (p *parser) addStarElement(parent int, body string, line int, indent string) {
 	if parent == root {
-		p.err(line, "E007", "list element with no parent field")
-		p.lost++
-		return false
+		p.refuse(line, "E007", "list element with no parent field", outDropped, indent)
+		return
 	}
 	// Uniform-or-nothing (spec): a mix with field children is not a block array.
 	if len(p.arena[parent].children) != 0 {
-		p.err(line, "E008", "list element mixed with field children; ignored")
-		p.lost++
-		return false
+		p.refuse(line, "E008", "list element mixed with field children; ignored", outDropped, indent)
+		return
 	}
 	trimmed := trimWsp(body)
 	if trimmed == "" {
-		p.err(line, "E009", "empty list element")
-		p.lost++
-		return false
+		p.refuse(line, "E009", "empty list element", outDropped, indent)
+		return
 	}
 	// One scalar per line; a bare comma is an error, not a second element.
 	if len(splitUnquotedCommas(trimmed)) > 1 {
-		p.err(line, "E010", "bare comma in list element (one element per line)")
-		p.lost++
-		return false
+		p.refuse(line, "E010", "bare comma in list element (one element per line)", outDropped, indent)
+		return
 	}
 	if unterminatedQuote(trimmed) {
 		p.err(line, "E017", "unterminated quote in value")
 	}
 	el, ok := parseElement(trimmed)
 	if !ok {
-		p.err(line, "E009", "empty list element")
-		p.lost++
-		return false
+		p.refuse(line, "E009", "empty list element", outDropped, indent)
+		return
 	}
 	// Element cap: each element line past it is refused on its own, the way
 	// any other bad element line is.
 	if p.maxElements != 0 && p.arena[parent].value.kind == vCell && len(p.arena[parent].value.els) >= p.maxElements {
-		p.err(line, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements))
-		p.lost++
-		return false
+		p.refuse(line, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
+		return
 	}
 	switch {
 	case p.arena[parent].value.isEmpty():
@@ -2315,11 +2364,8 @@ func (p *parser) addStarElement(parent int, body string, line int) bool {
 		}
 		p.arena[parent].value.els = append(p.arena[parent].value.els, el)
 	default:
-		p.err(line, "E011", "field already has a value; list element ignored")
-		p.lost++
-		return false
+		p.refuse(line, "E011", "field already has a value; list element ignored", outDropped, indent)
 	}
-	return true
 }
 
 // emitRepeatedLeafHints flags legal input that looks like a common mistake: a
@@ -2401,12 +2447,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// as lost, which is what keeps SaveFile from writing a silently
 		// truncated document.
 		if p.maxNodes != 0 && len(p.arena)-1 > p.maxNodes {
-			p.err(i+1, "E020", fmt.Sprintf("node cap of %d exceeded; parse stopped", p.maxNodes))
-			for _, l := range lines[i:] {
-				if trimWsp(l) != "" {
-					p.lost++
-				}
-			}
+			p.refuse(i+1, "E020", fmt.Sprintf("node cap of %d exceeded; parse stopped", p.maxNodes), outStopped(lines[i:]), "")
 			nodeCapped = true
 			break
 		}
@@ -2442,14 +2483,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			if !okp {
 				// The body goes with its fence: parsed live, it would read as
 				// root bindings and the closing fence would open a second block.
-				p.err(lineno, "E012", "indentation matches no open level")
-				p.lost++
+				p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
 				i = next
 				continue
 			}
 			if parent == dead {
 				p.skipUnderDead(lineno, indent)
-			} else if node := p.bindBlock(parent, v, lineno); node >= 0 {
+			} else if node := p.bindBlock(parent, v, lineno, indent); node >= 0 {
 				p.attachTrivia(node, "")
 			}
 			i = next
@@ -2468,8 +2508,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			if spaced {
 				parent, okp := p.resolveParent(indent)
 				if !okp {
-					p.err(lineno, "E012", "indentation matches no open level")
-					p.lost++
+					p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
 					i++
 					continue
 				}
@@ -2487,19 +2526,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				} else if comment != "" {
 					p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 				}
-				// A dropped element holds its indent level like any skipped line, so
-				// what is written under it is skipped with it (E018) rather than
-				// re-parenting to the field.
-				if !p.addStarElement(parent, body, lineno) {
-					p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
-				}
+				p.addStarElement(parent, body, lineno, indent)
 				i++
 				continue
 			}
 			parent, okp := p.resolveParent(indent)
 			if !okp {
-				p.err(lineno, "E012", "indentation matches no open level")
-				p.lost++
+				p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
 				i++
 				continue
 			}
@@ -2508,15 +2541,10 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				i++
 				continue
 			}
-			p.err(lineno, "E013", "malformed line: '*' must be followed by a space")
-			// Content-malformed at any position, so it is safe to retain
-			// verbatim as trivia: re-emitted, it re-diagnoses identically
-			// and can never read as a live binding. A hand-typo no longer
-			// vanishes on the consumer's next save. The BOM exception the
-			// sibling site below carries cannot apply here: this line starts
-			// with the '*' that brought us in.
-			p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
-			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+			// Content-malformed at any position, so safe to retain. The BOM
+			// exception the field arm carries cannot apply here: this line
+			// starts with the '*' that brought us in.
+			p.refuse(lineno, "E013", "malformed line: '*' must be followed by a space", outRetained(trimEndWS(rest), hadBlank), indent)
 			i++
 			continue
 		}
@@ -2545,8 +2573,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		}
 		parent, okp := p.resolveParent(indent)
 		if !okp {
-			p.err(lineno, "E012", "indentation matches no open level")
-			p.lost++
+			p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
 			i++
 			continue
 		}
@@ -2557,15 +2584,14 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		}
 		scan, serr := scanPath(content)
 		if serr != nil {
-			p.err(lineno, "E014", "malformed line skipped: "+serr.Error())
-			// Content-malformed at any position - retained as trivia, same
-			// rationale (and same BOM exception) as the bad '*' line above.
+			// Content-malformed at any position, so retained - except a line
+			// led by a BOM, which the file-start strip would rewrite into
+			// something that can bind.
+			out := outRetained(trimEndWS(rest), hadBlank)
 			if strings.HasPrefix(rest, "\ufeff") {
-				p.lost++
-			} else {
-				p.pending = append(p.pending, pend{text: trimEndWS(rest), indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
+				out = outDropped
 			}
-			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+			p.refuse(lineno, "E014", "malformed line skipped: "+serr.Error(), out, indent)
 			i++
 			continue
 		}
@@ -2582,8 +2608,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 					// never survive the load, so a rewrite would bake the
 					// changed value in and the file would check clean forever
 					// after. Count it lost so the save gate stops that.
-					p.err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
-					p.lost++
+					p.refuse(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets", outValueDropped, indent)
 				} else {
 					// One element reads as the selector the scanner made of it -
 					// `[Boston]` is `Boston` - and `field:[disc]` is documented
@@ -2609,9 +2634,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				// document's value. Counted before anything splits the value
 				// (the quote check does too), or the cap would bound nothing.
 				if p.maxElements != 0 && cellExceeds(*scan.valueText, p.maxElements) {
-					p.err(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements))
-					p.lost++
-					p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
+					p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
 					i = next
 					continue
 				}
@@ -2629,7 +2652,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		if haveSrc {
 			vkey = valueHash(&v)
 		}
-		if node, ok := p.attachPath(parent, scan.segments, v, lineno); ok {
+		if node, ok := p.attachPath(parent, scan.segments, v, lineno, indent); ok {
 			if haveSrc && !p.arena[node].srcSet && valueHash(&p.arena[node].value) == vkey {
 				p.arena[node].srcSet = true
 				if !srcMatchesDisplay(&p.arena[node].value, srcText) {
@@ -2642,15 +2665,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			}
 			p.attachTrivia(node, comment)
 			p.stack = append(p.stack, stackEnt{indent: indent, node: node})
-		} else {
-			p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
 		}
 		i = next
 	}
 	// A cap crossed on the document's last line still reports, with nothing
 	// left to skip.
 	if !nodeCapped && p.maxNodes != 0 && len(p.arena)-1 > p.maxNodes {
-		p.err(len(lines), "E020", fmt.Sprintf("node cap of %d exceeded; parse stopped", p.maxNodes))
+		p.refuse(len(lines), "E020", fmt.Sprintf("node cap of %d exceeded; parse stopped", p.maxNodes), outStopped(nil), "")
 	}
 	p.starFlush()
 	p.foldLateDups()

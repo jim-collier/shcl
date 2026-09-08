@@ -1356,6 +1356,37 @@ def _scan_path_ex(inp, stars):
 # ---------------------------------------------------------------------------
 
 
+class _Outcome:
+	"""What became of a line the parser did not bind whole. Only the funnel
+	(`_Parser._refuse`) reads it; the count and the level follow from it."""
+
+	__slots__ = ("kind", "text", "blank_before", "rest")
+
+	def __init__(self, kind, text="", blank_before=False, rest=()):
+		self.kind = kind
+		self.text = text  # retained: the line, kept verbatim
+		self.blank_before = blank_before  # retained: a blank line preceded it
+		self.rest = rest  # stopped: the lines never read
+
+
+# The line binds; a value it carried has nowhere to go and is gone.
+OUT_VALUE_DROPPED = _Outcome("value_dropped")
+# Read but not applicable here; re-emitted it could bind elsewhere, so it is
+# gone and counts.
+OUT_DROPPED = _Outcome("dropped")
+
+
+def _out_retained(text, blank_before):
+	"""Content-malformed: kept verbatim as trivia and written back in place,
+	where it re-diagnoses identically and never reads as a binding."""
+	return _Outcome("retained", text, blank_before)
+
+
+def _out_stopped(rest):
+	"""The parse stopped before this line; the rest was never read."""
+	return _Outcome("stopped", rest=rest)
+
+
 class _Parser:
 	def __init__(self):
 		self.arena = [_Node("", _empty(), 0, 0)]
@@ -1586,14 +1617,34 @@ class _Parser:
 		self.stack.append((indent, UNOPENED))
 		return None
 
+	def _refuse(self, line, code, msg, outcome, indent):
+		"""The one exit for a line the parser does not bind whole. An arm says
+		what became of the line and nothing else: the lost count and the level
+		the line holds follow from the outcome here, so no arm can forget
+		either. design.md's outcome table gives each code its row."""
+		self._err(line, code, msg)
+		holds = outcome.kind in ("retained", "dropped")
+		if outcome.kind in ("value_dropped", "dropped"):
+			n = 1
+		elif outcome.kind == "stopped":
+			n = sum(1 for ln in outcome.rest if _trim_wsp(ln))
+		else:
+			n = 0
+		self.lost += n
+		if outcome.kind == "retained":
+			self.pending.append(_Pend(outcome.text, indent, outcome.blank_before))
+		# A refused line owns its indent, so what is written deeper is skipped
+		# with it (E018). An indent that matched no level already holds an
+		# unopened one, which refuses a sibling the same way; that one stays.
+		if holds and not (self.stack and self.stack[-1] == (indent, UNOPENED)):
+			self.stack.append((indent, DEAD))
+
 	def _skip_under_dead(self, line, indent):
 		"""Diagnose a line written under a skipped line, and skip it too. Its own
 		level stays dead so deeper lines go the same way."""
-		self._err(line, "E018", "parent line was skipped; line skipped")
-		self.lost += 1
-		self.stack.append((indent, DEAD))
+		self._refuse(line, "E018", "parent line was skipped; line skipped", OUT_DROPPED, indent)
 
-	def _attach_path(self, parent, segs, value, line):
+	def _attach_path(self, parent, segs, value, line, indent):
 		"""Walk path segments under `parent`, select-or-creating; returns the node
 		for the last segment carrying `value`. None aborts the line (diagnosed)."""
 		self._star_flush()
@@ -1610,8 +1661,7 @@ class _Parser:
 			parent_depth += 1
 			up = self.arena[up].parent
 		if parent_depth + len(segs) > MAX_DEPTH:
-			self._err(line, "E016", f"nesting deeper than {MAX_DEPTH} levels; line skipped")
-			self.lost += 1
+			self._refuse(line, "E016", f"nesting deeper than {MAX_DEPTH} levels; line skipped", OUT_DROPPED, indent)
 			return None
 		cur = parent
 		last = len(segs) - 1
@@ -1639,8 +1689,7 @@ class _Parser:
 				if is_last and not value.is_empty():
 					# `a.b[X]: v` - the discriminator is the value; a second
 					# value has nowhere unambiguous to go.
-					self._err(line, "E002", f"value after selector on '{seg.name}' ignored")
-					self.lost += 1
+					self._refuse(line, "E002", f"value after selector on '{seg.name}' ignored", OUT_VALUE_DROPPED, indent)
 			elif sel is not None and sel[0] == "idx":
 				k = sel[1]
 				found = None
@@ -1654,17 +1703,14 @@ class _Parser:
 				if found is not None:
 					cur = found
 				else:
-					self._err(line, "E003", f"no instance {k} of '{seg.name}'")
-					self.lost += 1
+					self._refuse(line, "E003", f"no instance {k} of '{seg.name}'", OUT_DROPPED, indent)
 					return None
 				if is_last and not value.is_empty():
 					# Same as the value selector: the instance is already chosen,
 					# so a trailing value has nowhere to bind.
-					self._err(line, "E002", f"value after selector on '{seg.name}' ignored")
-					self.lost += 1
+					self._refuse(line, "E002", f"value after selector on '{seg.name}' ignored", OUT_VALUE_DROPPED, indent)
 			elif sel is not None and sel[0] == "wild":
-				self._err(line, "E004", "wildcard selector is query-only")
-				self.lost += 1
+				self._refuse(line, "E004", "wildcard selector is query-only", OUT_DROPPED, indent)
 				return None
 			elif not is_last:
 				cur = self._select_or_create(cur, seg.name, seg.name_src, _empty(), line)
@@ -1733,13 +1779,12 @@ class _Parser:
 		stripped = [_strip_common(ln, nest) for ln in content]
 		return _raw("\n".join(stripped), info, ch, length), i
 
-	def _bind_block(self, parent, value, line):
+	def _bind_block(self, parent, value, line, indent):
 		"""A bare fence line is a value line for its parent field: fills an empty
 		value, else creates a new instance of that field (the repeated-leaf rule).
 		Returns the node the block landed on (None = no parent, diagnosed)."""
 		if parent == ROOT:
-			self._err(line, "E006", "raw block with no parent field")
-			self.lost += 1
+			self._refuse(line, "E006", "raw block with no parent field", OUT_DROPPED, indent)
 			return None
 		if self.arena[parent].value.is_empty():
 			pnode = self.arena[parent]
@@ -1753,35 +1798,29 @@ class _Parser:
 		grandparent = self.arena[parent].parent
 		return self._select_or_create(grandparent, name, name_src, value, line)
 
-	def _add_star_element(self, parent, body, line):
-		"""True when the element was added, False when the line was dropped."""
+	def _add_star_element(self, parent, body, line, indent):
 		"""One stacked-list element (`* scalar`) appends to the parent's array."""
 		if parent == ROOT:
-			self._err(line, "E007", "list element with no parent field")
-			self.lost += 1
-			return False
+			self._refuse(line, "E007", "list element with no parent field", OUT_DROPPED, indent)
+			return
 		# Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if self.arena[parent].children:
-			self._err(line, "E008", "list element mixed with field children; ignored")
-			self.lost += 1
-			return False
+			self._refuse(line, "E008", "list element mixed with field children; ignored", OUT_DROPPED, indent)
+			return
 		trimmed = _trim_wsp(body)
 		if not trimmed:
-			self._err(line, "E009", "empty list element")
-			self.lost += 1
-			return False
+			self._refuse(line, "E009", "empty list element", OUT_DROPPED, indent)
+			return
 		# One scalar per line; a bare comma is an error, not a second element.
 		if len(_split_unquoted_commas(trimmed)) > 1:
-			self._err(line, "E010", "bare comma in list element (one element per line)")
-			self.lost += 1
-			return False
+			self._refuse(line, "E010", "bare comma in list element (one element per line)", OUT_DROPPED, indent)
+			return
 		if _unterminated_quote(trimmed):
 			self._err(line, "E017", "unterminated quote in value")
 		el = _parse_element(trimmed)
 		if el is None:
-			self._err(line, "E009", "empty list element")
-			self.lost += 1
-			return False
+			self._refuse(line, "E009", "empty list element", OUT_DROPPED, indent)
+			return
 		# Element cap: each element line past it is refused on its own, the way
 		# any other bad element line is.
 		if (
@@ -1789,9 +1828,8 @@ class _Parser:
 			and self.arena[parent].value.kind == "cell"
 			and len(self.arena[parent].value.els) >= self.max_elements
 		):
-			self._err(line, "E021", f"array longer than {self.max_elements} elements; line skipped")
-			self.lost += 1
-			return False
+			self._refuse(line, "E021", f"array longer than {self.max_elements} elements; line skipped", OUT_DROPPED, indent)
+			return
 		node = self.arena[parent]
 		if node.value.kind == "empty":
 			old_key = _merge_key(node.name, node.value)
@@ -1814,10 +1852,7 @@ class _Parser:
 				self.star_open = (parent, old_key, old_disp)
 			node.value.els.append(el)
 		else:
-			self._err(line, "E011", "field already has a value; list element ignored")
-			self.lost += 1
-			return False
-		return True
+			self._refuse(line, "E011", "field already has a value; list element ignored", OUT_DROPPED, indent)
 
 	def _emit_repeated_leaf_hints(self):
 		"""Legal input that looks like a common mistake: a field repeating as a bare
@@ -1875,8 +1910,7 @@ class _Parser:
 			# counts as lost, which is what keeps save_file from writing a
 			# silently truncated document.
 			if self.max_nodes and len(self.arena) - 1 > self.max_nodes:
-				self._err(i + 1, "E020", f"node cap of {self.max_nodes} exceeded; parse stopped")
-				self.lost += sum(1 for ln in lines[i:] if _trim_wsp(ln))
+				self._refuse(i + 1, "E020", f"node cap of {self.max_nodes} exceeded; parse stopped", _out_stopped(lines[i:]), "")
 				node_capped = True
 				break
 			lineno = i + 1
@@ -1910,14 +1944,13 @@ class _Parser:
 				if parent is None:
 					# The body goes with its fence: parsed live, it would read as
 					# root bindings and the closing fence would open a second block.
-					self._err(lineno, "E012", "indentation matches no open level")
-					self.lost += 1
+					self._refuse(lineno, "E012", "indentation matches no open level", OUT_DROPPED, indent)
 					i = nxt
 					continue
 				if parent == DEAD:
 					self._skip_under_dead(lineno, indent)
 				else:
-					node = self._bind_block(parent, value, lineno)
+					node = self._bind_block(parent, value, lineno, indent)
 					if node is not None:
 						self._attach_trivia(node, "")
 				i = nxt
@@ -1934,8 +1967,7 @@ class _Parser:
 				if spaced:
 					parent = self._resolve_parent(indent)
 					if parent is None:
-						self._err(lineno, "E012", "indentation matches no open level")
-						self.lost += 1
+						self._refuse(lineno, "E012", "indentation matches no open level", OUT_DROPPED, indent)
 						i += 1
 						continue
 					if parent == DEAD:
@@ -1950,32 +1982,22 @@ class _Parser:
 						self._attach_trivia(parent, comment)
 					elif comment:
 						self.pending.append(_Pend(comment, indent, had_blank))
-					# A dropped element holds its indent level like any skipped line, so
-					# what is written under it is skipped with it (E018) rather than
-					# re-parenting to the field.
-					if not self._add_star_element(parent, body, lineno):
-						self.stack.append((indent, DEAD))
+					self._add_star_element(parent, body, lineno, indent)
 					i += 1
 					continue
 				parent = self._resolve_parent(indent)
 				if parent is None:
-					self._err(lineno, "E012", "indentation matches no open level")
-					self.lost += 1
+					self._refuse(lineno, "E012", "indentation matches no open level", OUT_DROPPED, indent)
 					i += 1
 					continue
 				if parent == DEAD:
 					self._skip_under_dead(lineno, indent)
 					i += 1
 					continue
-				self._err(lineno, "E013", "malformed line: '*' must be followed by a space")
-				# Content-malformed at any position, so it is safe to retain
-				# verbatim as trivia: re-emitted, it re-diagnoses identically
-				# and can never read as a live binding. A hand-typo no longer
-				# vanishes on the consumer's next save. The BOM exception the
-				# sibling site below carries cannot apply here: this line
+				# Content-malformed at any position, so safe to retain. The BOM
+				# exception the field arm carries cannot apply here: this line
 				# starts with the '*' that brought us in.
-				self.pending.append(_Pend(_trim_wsp_end(rest), indent, had_blank))
-				self.stack.append((indent, DEAD))
+				self._refuse(lineno, "E013", "malformed line: '*' must be followed by a space", _out_retained(_trim_wsp_end(rest), had_blank), indent)
 				i += 1
 				continue
 			# Field line.
@@ -2002,8 +2024,7 @@ class _Parser:
 				continue
 			parent = self._resolve_parent(indent)
 			if parent is None:
-				self._err(lineno, "E012", "indentation matches no open level")
-				self.lost += 1
+				self._refuse(lineno, "E012", "indentation matches no open level", OUT_DROPPED, indent)
 				i += 1
 				continue
 			if parent == DEAD:
@@ -2013,14 +2034,11 @@ class _Parser:
 			try:
 				segments, value_text = _scan_path(content)
 			except _PathError as e:
-				self._err(lineno, "E014", f"malformed line skipped: {e.args[0]}")
-				# Content-malformed at any position - retained as trivia, same
-				# rationale (and same BOM exception) as the bad '*' line above.
-				if rest.startswith("\ufeff"):
-					self.lost += 1
-				else:
-					self.pending.append(_Pend(_trim_wsp_end(rest), indent, had_blank))
-				self.stack.append((indent, DEAD))
+				# Content-malformed at any position, so retained - except a line
+				# led by a BOM, which the file-start strip would rewrite into
+				# something that can bind.
+				out = OUT_DROPPED if rest.startswith("\ufeff") else _out_retained(_trim_wsp_end(rest), had_blank)
+				self._refuse(lineno, "E014", f"malformed line skipped: {e.args[0]}", out, indent)
 				i += 1
 				continue
 			nxt = i + 1
@@ -2036,8 +2054,7 @@ class _Parser:
 						# bake the changed value in and the file would check
 						# clean forever after. Count it lost so the save gate
 						# stops that.
-						self._err(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets")
-						self.lost += 1
+						self._refuse(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets", OUT_VALUE_DROPPED, indent)
 					else:
 						# One element reads as the selector the scanner made of
 						# it - `[Boston]` is `Boston` - and `field:[disc]` is
@@ -2064,9 +2081,7 @@ class _Parser:
 					# value (the quote check does too), or the cap would bound
 					# nothing.
 					if self.max_elements and _cell_exceeds(value_text, self.max_elements):
-						self._err(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped")
-						self.lost += 1
-						self.stack.append((indent, DEAD))
+						self._refuse(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped", OUT_DROPPED, indent)
 						i = nxt
 						continue
 					if _unterminated_quote(value_text):
@@ -2076,7 +2091,7 @@ class _Parser:
 			# Record only when the bound node holds exactly this line's value
 			# (a merge into an equal-valued node keeps the first line's span;
 			# a value dropped after a last-segment selector records nothing).
-			node = self._attach_path(parent, segments, value, lineno)
+			node = self._attach_path(parent, segments, value, lineno, indent)
 			if node is not None:
 				# The bound node usually holds the very object just parsed, so
 				# identity settles it and neither key gets built. The key
@@ -2093,13 +2108,11 @@ class _Parser:
 					self.arena[node].blank_before = True
 				self._attach_trivia(node, comment)
 				self.stack.append((indent, node))
-			else:
-				self.stack.append((indent, DEAD))
 			i = nxt
 		# A cap crossed on the document's last line still reports, with nothing
 		# left to skip.
 		if not node_capped and self.max_nodes and len(self.arena) - 1 > self.max_nodes:
-			self._err(nlines, "E020", f"node cap of {self.max_nodes} exceeded; parse stopped")
+			self._refuse(nlines, "E020", f"node cap of {self.max_nodes} exceeded; parse stopped", _out_stopped(()), "")
 		self._star_flush()
 		self._fold_late_dups()
 		self._emit_repeated_leaf_hints()
