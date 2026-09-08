@@ -19,10 +19,10 @@ Each case is a directory `NNN-short-name/` containing:
 	- `<T><TAB>PATH<TAB>VALUE` - set a scalar. `datetime` VALUE is any accepted spelling and is stored canonically.
 	- `<T>-array<TAB>PATH<TAB>V1<TAB>V2...` - set an inline array (no elements = an empty value).
 	- `<T>[-array]-default<TAB>...` - set only if the path does not already resolve.
-	- `literal<TAB>PATH<TAB>TEXT` (and `literal-default`) - set from value syntax rather than data, so `80, 443` stores a two-element array where the `string` op would store one quoted string. `TEXT` is read as the value half of a line: it is trimmed, an unquoted `#` ends it, and text carrying a line break or an unclosed quote is rejected.
+	- `literal<TAB>PATH<TAB>TEXT` (and `literal-default`) - set from value syntax rather than data, so `80, 443` stores a two-element array where the `string` op would store one quoted string. `TEXT` is read as the value half of a line: it is trimmed, an unquoted `#` ends it, and text carrying a line break, an unclosed quote or a leading `[` is rejected.
 	- `raw<TAB>PATH<TAB>INFO<TAB>CONTENT` (and `raw-default`) - set a raw block; `INFO` may be empty.
 	- `empty<TAB>PATH`, `comment<TAB>PATH<TAB>TEXT`, `remove<TAB>PATH`.
-	- `string` and `raw` `CONTENT` values decode `\n` `\t` `\\` (so a multi-line value fits on one op line); no other escapes are interpreted. The setters re-encode for storage, so a value read back equals the logical value it was set from.
+	- `string`, `comment` and `raw` `CONTENT` values decode `\n` `\t` `\\` (so a multi-line value fits on one op line); no other escapes are interpreted. The setters re-encode for storage, so a value read back equals the logical value it was set from.
 	- Op values are gated with the reference's grammar before any write: an int is an optional sign plus ASCII digits within i64 range; a float follows the Rust `f64` grammar (sign, `inf`/`infinity`/`nan` case-insensitive, or decimal digits with optional `.`/exponent - no underscores, hex, padding, or non-ASCII digits; overflow stores `inf`). A malformed value, a bad datetime, or an unusable path (wildcard, missing `[#N]`) rejects the op: the CLI exits 1 with empty stdout.
 
 - `write-bad.ops` (optional) - the **bad-op** dimension. Each line (same grammar as `write.ops`; blank/`#` skipped), applied ALONE to a fresh parse of `input.shcl`, must be rejected and leave the document unchanged. The differential harness replays each line through every CLI's `set` and compares stdout and exit code.

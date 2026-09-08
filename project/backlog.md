@@ -48,6 +48,8 @@ Every item carries the date it was opened and, once settled, the date it closed.
 
 ### Features and enhancements
 
+- 🔘 Make sure new config files get written with the SHCL info block at the bottom, unless opted out of. Make sure that comments (including the SHCL info block) are preceeded by '##', whereas disabled settings are just '#'.
+
 - ✅ The parser counts lost lines and holds a refused line's level by hand, one arm at a time, and every round since August found an arm that forgot.
 	- Reproduced: 20260829 item 1, 20260901b items 1 and 2, 20260904 items 5, 12, 14 and 15, 20260905 items 1 and 6. Nine items, one rule: what happens to a line the parser does not bind.
 	- Cause: each diagnostic arm does its own `lost += 1` and its own level push, so a new arm, or an old one nobody re-read, can skip either. Nothing derives the count or the level from what became of the line.
@@ -82,14 +84,25 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Opened: 20260906-090943
 	- Closed: 20260908-000000
 
-- 🔘 Each setter carries its own trim, carriage-return and `#` rule, and twelve items were a setter writing text the next load reads differently.
+- ✅ Each setter carries its own trim, carriage-return and `#` rule, and twelve items were a setter writing text the next load reads differently.
 	- Reproduced: 20260725 item 13, 20260817 item 5, 20260829 items 2 and 3, 20260830 item 9, 20260830b items 1, 5 and 6, 20260901 item 4, 20260902 item 38, 20260904 items 18 and 19.
 	- Cause: the writer has its own trim, its own CR check, its own `#` check and its own bracket check per setter, none of them the parser's. Every new setter re-decides each, and a decision taken for one (a CR is content, 20260817 item 5) was taken the other way for the next (20260830b item 5).
 	- Fix: a setter builds its line text through the emitter, runs it through the tokenizer, and refuses unless the result is one line whose spans read back the value it was given. `SetString`, `SetLiteral`, `SetRaw` (the info string as a fence line, each body line under the raw-body rule), `SetComment` (as a comment line), and a path segment through `quote_segment` then the tokenizer. The per-setter refusals go: what is refused is whatever does not survive the round trip. `SetFloat` and `SetDateTime` keep their render-and-parse-back from 20260901 item 4, which is the same shape.
 	- Pinned by: a fuzz property per setter in all four runners. Inputs drawn from a soup of CR, LF, `#`, both quotes, brackets, commas, backslashes and unicode spaces; for each setter and input, either the call returns false and the document is byte-identical, or the document's canonical text reloads to itself and the read hands back the value. The corpus fixpoint property stays as it is.
 	- Note: a few inputs that used to be accepted and mangled are refused. Changelog Fixed entry.
 	- Note: after the tokenizer item.
+	- Fixed: one check for every setter. The value is emitted the way the writer will write it, read back with the tokenizer, and refused unless the pieces spell what they were given; `set_value` runs it before the document is touched, so a refused write leaves the file byte-identical. `SetRaw`'s four hand-written checks, `SetComment`'s truncation and `SetLiteral`'s carriage-return refusal are gone, and the emitter's value half and fence line are each one function now, shared by the writer and the check.
+	- Fixed: a name and a by-value selector go through the same rule before anything is created, so a path is refused whole rather than half-built.
+	- Decided: what the load normalizes, the setter normalizes and stores - a comment line and a fence label are trimmed at the end the way every line is. A raw body line is payload, so a carriage return there is refused rather than trimmed off each line, which would turn a CRLF block into an LF one. Recorded in `design.md` under Write outcomes.
+	- Decided: `SetComment` refuses text holding a line break. It kept the first line and reported success, which is the one refusal in this round a consumer will notice.
+	- Decided: `SetLiteral` keeps the refusals a file line reports as an error (`E017`, `E019`, a line break) and drops the rest, since a setter has no diagnostic channel and everything else a file line spells is a value it can store.
+	- Found on the way: a selector carrying a line break had been refused since before the tokenizer cut, on the ground that the value emitter never escapes one. It does now - elements are stored as logical strings - so the write goes through, is a fixpoint and reads back. The refusal is gone in all four; a name always could.
+	- Found on the way: a write refused for its text reported the sentence written for `SetLiteral` whatever the op, which closes item 50 of the 20260904 round.
+	- Found on the way: the reference and Python took two carriage returns off a write-ops line where Go and C took one, so an ops line ending `v\r\r\n` wrote a different value in two of the four. One comes off now - the CRLF's - and the second is the value's. `cli-regress` row `ops-double-cr`.
+	- Pinned by: a fixture in all four runners over every string of one and two characters drawn from the thirteen that mean something to the tokenizer, across six setters and the name half - either the call refuses and the document is byte-identical, or the canonical text reloads to itself and the read hands the value back. The reference's write fuzz property draws its values from the same soup and asserts the same refusal rule. Corpus `112`, `check-docs.bash` on the style guide's sentence, and the four-way crosscheck on the new refusal messages.
+	- Measured: 40,000 string writes cost 74 ms against 59 ms, a third of a microsecond per write for the read-back. Every perf-gate workload is inside a fifth of its budget.
 	- Opened: 20260906-090943
+	- Closed: 20260908-015200
 
 - ✅ 3.0: cut the lexical rules down to a set that fits in a sentence each, with a `migrate` command that rewrites a 2.x file.
 	- Decided, all of it. `design.md` carries the summary now and the spec gets the wording with the work.
@@ -107,6 +120,11 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Note: the module path and the two per-binding README constraints move at the cut, per the release recipe, not here.
 	- Opened: 20260906-090943
 	- Closed: 20260908-000000
+
+- 🔘 The generator will not spell a selector holding a line break, on a reason that no longer holds.
+	- `unwritable` sends such a path to the trailing "not generated" block, because the value emitter used to have nothing to escape a break with. It has since the tokenizer cut, and `gen_selector_text` already spells one; the setters take the same path now. So the exclusion is probably stale, and `V097` validates whatever the generator emits, which would catch it if it were not.
+	- Small, and nothing in the corpus has such a schema, so no golden moves either way. Left out of the setter round to keep generation out of it.
+	- Opened: 20260908-015200
 
 - 🔘 Every review since 08-29 was filed within a day of the previous fix round merging, and each same-day pair refiled the fix's rough edges as new bugs.
 	- Reproduced: 20260830 filed on the 20260829 merge, 20260830b on 20260830, 20260901b on 20260901, 20260905 on 20260904. 20260830 items 1, 3, 4 and 8, 20260901b items 1 and 2, and 20260905 items 1, 2 and 3 are each the previous day's fix seen from one step further on.
@@ -191,9 +209,11 @@ Every item carries the date it was opened and, once settled, the date it closed.
 		- `read_raw_info` on an empty binding is `BadType` where `read_raw` on the same node is `Empty`. The spec is silent, so this is a call to make rather than a rule broken.
 		- Opened: 20260904-174700
 
-	- 🔘 Item 50: a setter refused for its value reports the message written for `set_literal`.
+	- ✅ Item 50: a setter refused for its value reports the message written for `set_literal`.
 		- A `raw` op with an unquoted `#` in its info string reports "the value text is not one value". The real reason is the info string. Prose is not part of the contract, but the wording sends a reader to the wrong half of the line.
+		- Fixed with the setter round-trip item: the op names the half that had no spelling, so a `raw` op says the info string or the block body, a `comment` op says the comment text, and a typed op says the value.
 		- Opened: 20260904-174800
+		- Closed: 20260908-015200
 
 	- 🔘 Item 51: three places the spec could say more.
 		- A column-zero tail comment: the paragraph says a comment written at the level of the block's last binding trails that binding, and then that only top-level tail comments remain end-of-file orphans. For a comment at column zero after the last top-level binding those read against each other. The behavior is settled and the changelog states it; the sentence describing the old behavior is still there.

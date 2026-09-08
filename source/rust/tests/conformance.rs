@@ -135,7 +135,7 @@ fn try_apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			doc.set_raw_default(path, &unescape_ops(f.get(3).copied().unwrap_or("")), v)
 		}
 		"empty" => doc.set_empty(path),
-		"comment" => doc.set_comment(path, v),
+		"comment" => doc.set_comment(path, &unescape_ops(v)),
 		"remove" => {
 			doc.remove(path);
 			true
@@ -968,12 +968,13 @@ fn write_reason_names_the_failure() {
 	assert_eq!(doc.write_reason("nope[#0].b"), NoSuchIndex);
 	let deep = vec!["d"; 513].join(".");
 	assert_eq!(doc.write_reason(&deep), TooDeep);
-	// A literal line break in a SELECTOR: the binding would emit across two lines
-	// and reparse as neither, and the value emitter never escapes one. In a NAME
-	// it is writable - names emit through the name escaper, which spells a line
-	// break `\n`, so the escaped and literal spellings are one path now. Not
-	// corpus-pinnable - an ops line cannot carry a raw newline.
-	assert_eq!(doc.write_reason("a[\"p\nq\"].b"), BadPath);
+	// A literal line break is writable wherever a path can carry one: a name
+	// emits through the name escaper and a selector value through the value
+	// emitter, and both spell a break `\n` and read it back as one. The
+	// selector was refused while the value emitter still wrote elements in
+	// their source spelling and had nothing to escape with. Not corpus-pinnable
+	// - an ops line cannot carry a raw newline.
+	assert_eq!(doc.write_reason("a[\"p\nq\"].b"), Writable);
 	assert_eq!(doc.write_reason("\"x\ny\".b"), Writable);
 	assert_eq!(doc.write_reason("\"x\\ny\".b"), Writable);
 	// The probe never creates: the doc is unchanged after all of the above.
@@ -1043,18 +1044,19 @@ fn setters_refuse_a_value_the_reader_refuses() {
 }
 
 #[test]
-fn setter_refuses_a_path_it_could_not_write_back() {
-	// The refusal has to bite the setters too, not just the probe: a created
-	// node here would leave a document that no longer parses, and the reload
-	// counts nothing lost, so the save gate would not catch it.
+fn a_line_break_in_a_path_writes_and_reads_back() {
+	// Both halves of a path can carry one and spell it `\n`: a name through the
+	// name escaper, a selector value through the value emitter. The selector
+	// was refused while elements were stored in their source spelling and the
+	// emitter had nothing to escape with. Same fixture in every runner.
 	let mut doc = Document::parse("z: 0\n");
-	assert!(!doc.set_int("x[\"p\nq\"].c", 1));
-	assert_eq!(doc.to_canonical(), "z: 0\n");
-	// A line break in a NAME writes and reads back: the two spellings are one
-	// path, and the emitter escapes it rather than splitting the line.
+	assert!(doc.set_int("x[\"p\nq\"].c", 1));
 	assert!(doc.set_int("\"a\nb\".c", 1));
-	let back = Document::parse(&doc.to_canonical());
+	let text = doc.to_canonical();
+	let back = Document::parse(&text);
 	assert_eq!(back.error_count(), 0);
+	assert_eq!(back.to_canonical(), text);
+	assert_eq!(back.read_int("x[\"p\\nq\"].c").value, 1);
 	assert_eq!(back.read_int("\"a\\nb\".c").value, 1);
 	assert_eq!(back.read_int("\"a\nb\".c").value, 1);
 }
@@ -1259,7 +1261,16 @@ fn set_raw_keeps_a_shared_indent_and_trims_the_info() {
 	assert_eq!(back.get_raw("q"), Ok("  a\n  b".to_string()));
 	assert_eq!(back.read_raw_info("q").value, "sql");
 	assert!(!doc.set_raw("q", "x", "a\nb"));
-	assert!(!doc.set_raw("q", "x", "a\rb"));
+	// A CR the load would take off the line end has no spelling; one mid-info
+	// is content, the same rule a body line follows.
+	assert!(!doc.set_raw("q", "x", "ab\r"));
+	assert!(doc.set_raw("q", "x", "a\rb"));
+	assert_eq!(
+		Document::parse(&doc.to_canonical())
+			.read_raw_info("q")
+			.value,
+		"a\rb"
+	);
 	assert!(!doc.set_raw("q", "x", "a # b"));
 	// An info string has no quoting of its own: quotes are characters in it,
 	// so they hide nothing, and a `#` with no space before it is content.
@@ -1723,4 +1734,134 @@ fn nul_name_does_not_satisfy_a_dotted_schema_path() {
 	// The genuinely two-segment spelling still validates clean.
 	let ok = Document::parse("x:\n\ty: 1\n");
 	assert!(ok.validate(&schema).is_empty());
+}
+
+/// The alphabet the setter round-trip fixture draws from: every character
+/// that means something to the tokenizer, plus a blank the load trims and a
+/// no-break space it does not. Same fixture in every runner.
+const SETTER_SOUP: &[&str] = &[
+	"\"", "'", "\\", "#", ",", "[", "]", "\r", "\n", " ", "\t", "\u{a0}", "a",
+];
+
+/// Every string of one and two characters over that alphabet, and the empty
+/// string.
+fn soup_inputs() -> Vec<String> {
+	let mut out = vec![String::new()];
+	for a in SETTER_SOUP {
+		out.push((*a).to_string());
+		for b in SETTER_SOUP {
+			out.push(format!("{}{}", a, b));
+		}
+	}
+	out
+}
+
+/// A setter writes only what reads back. Each one builds its text through the
+/// emitter and hands it to the tokenizer before the document is touched, so
+/// for every input either the call refuses and the document is byte-identical,
+/// or the canonical text reloads to itself and the read gives the value back.
+/// Twelve review items were one setter's own trim, carriage-return or `#` rule
+/// disagreeing with the parser's. Same fixture in every runner.
+#[test]
+fn setters_write_only_what_reads_back() {
+	for s in soup_inputs() {
+		for kind in 0..6 {
+			let mut doc = Document::parse("k: 1\n");
+			let before = doc.to_canonical();
+			let applied = match kind {
+				0 => doc.set_string("k", &s),
+				1 => doc.set_literal("k", &s),
+				2 => doc.set_comment("k", &s),
+				3 => doc.set_raw("k", &s, "t"),
+				4 => doc.set_raw("k", "body", &s),
+				_ => doc.set_string_array("k", &["x", s.as_str()]),
+			};
+			if !applied {
+				assert_eq!(
+					doc.to_canonical(),
+					before,
+					"a refused write changed the document (setter {}, input {:?})",
+					kind,
+					s
+				);
+				continue;
+			}
+			let text = doc.to_canonical();
+			let back = Document::parse(&text);
+			assert_eq!(
+				back.to_canonical(),
+				text,
+				"written text is not a fixpoint (setter {}, input {:?}):\n{}",
+				kind,
+				s,
+				text
+			);
+			assert_eq!(
+				back.instances("k"),
+				doc.instances("k"),
+				"the value read differs after a reload (setter {}, input {:?}):\n{}",
+				kind,
+				s,
+				text
+			);
+			match kind {
+				0 => assert_eq!(back.read_string("k").value, s, "string {:?}", s),
+				// A comment has no accessor of its own, so the oracle is the
+				// text: whatever the load would keep of what was handed in has
+				// to be in the document, not a shortened form of it.
+				2 => assert!(
+					text.contains(s.trim_end_matches([' ', '\t', '\r'])),
+					"the comment handed in is not in the document ({:?}):\n{}",
+					s,
+					text
+				),
+				3 | 4 => {
+					assert_eq!(back.get_raw("k"), doc.get_raw("k"), "raw body {:?}", s);
+					assert_eq!(
+						back.read_raw_info("k").value,
+						doc.read_raw_info("k").value,
+						"raw info {:?}",
+						s
+					);
+				}
+				5 => assert_eq!(
+					back.read_string_array("k").value,
+					vec!["x".to_string(), s.clone()],
+					"array {:?}",
+					s
+				),
+				_ => {}
+			}
+		}
+		// The same rule for a name: whatever `quote_segment` spells has to come
+		// back as one segment holding that name, or the write is refused.
+		let path = shcl::quote_segment(&s);
+		let mut doc = Document::parse("k: 1\n");
+		let before = doc.to_canonical();
+		if !doc.set_string(&path, "v") {
+			assert_eq!(
+				doc.to_canonical(),
+				before,
+				"a refused name write changed the document ({:?})",
+				s
+			);
+			continue;
+		}
+		let text = doc.to_canonical();
+		let back = Document::parse(&text);
+		assert_eq!(
+			back.to_canonical(),
+			text,
+			"name {:?} is not a fixpoint:\n{}",
+			s,
+			text
+		);
+		assert_eq!(
+			back.read_string(&path).value,
+			"v",
+			"name {:?} did not read back:\n{}",
+			s,
+			text
+		);
+	}
 }

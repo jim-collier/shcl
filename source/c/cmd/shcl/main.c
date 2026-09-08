@@ -318,11 +318,13 @@ static char *read_input(const char *file, size_t *len) {
 }
 
 // The per-binding wording behind a setter's bare 0.
-static const char *describe_refusal(shcl_doc *d, const char *path, size_t plen) {
+// Why a write was refused. When the path itself is fine what failed is the
+// text, and only the caller knows which half of the op that was, so it names
+// it: a setter refused for its value used to report the sentence written for
+// shcl_set_literal whatever the op.
+static const char *describe_refusal(shcl_doc *d, const char *path, size_t plen, const char *unwritable) {
 	switch (shcl_write_reason_(d, path, plen)) {
-	// The path itself is fine, so the value text must be what failed (a
-	// literal that does not parse as one value).
-	case SHCL_W_WRITABLE: return "the value text is not one value";
+	case SHCL_W_WRITABLE: return unwritable;
 	case SHCL_W_BAD_PATH: return "not a usable path";
 	case SHCL_W_VALUE_IN_PATH: return "a path with a value part cannot be written";
 	case SHCL_W_WILDCARD: return "a wildcard path cannot be written";
@@ -450,7 +452,7 @@ static int set_apply(shcl_doc *d, const SetOpt *s) {
 	else if (!strcmp(s->opt, "--set-default")) ok = shcl_set_string_default(d, s->path, s->plen, s->value, vlen);
 	else if (!strcmp(s->opt, "--set-literal-default")) ok = shcl_set_literal_default(d, s->path, s->plen, s->value, vlen);
 	else ok = shcl_set_string(d, s->path, s->plen, s->value, vlen);
-	if (!ok) fprintf(stderr, "%s: cannot write %.*s: %s\n", s->opt, (int)s->plen, s->path, describe_refusal(d, s->path, s->plen));
+	if (!ok) fprintf(stderr, "%s: cannot write %.*s: %s\n", s->opt, (int)s->plen, s->path, describe_refusal(d, s->path, s->plen, "the value text is not one value"));
 	return ok;
 }
 
@@ -938,10 +940,19 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno
 	}
 	else if (OP("raw")) { if (!PRESENT) { const char *cont = nf > 3 ? fp[3] : ""; size_t contn = nf > 3 ? fn[3] : 0; char *b = (char *)xrealloc(NULL, contn ? contn : 1); size_t m = unescape_ops(cont, contn, b); wrote = shcl_set_raw(d, path, plen, b, m, v, vn); free(b); } }
 	else if (OP("empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
-	else if (OP("comment") && !only_absent) wrote = shcl_set_comment(d, path, plen, v, vn);
+	else if (OP("comment") && !only_absent) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = unescape_ops(v, vn, b); wrote = shcl_set_comment(d, path, plen, b, m); free(b); }
 	else if (OP("remove") && !only_absent) shcl_remove(d, path, plen);
 	else { op_err(lineno, "unknown op: %.*s", (int)opn_full, fp[0]); rc = 1; }
-	if (rc == 0 && !wrote) { op_err(lineno, "cannot write %.*s: %s", (int)plen, path, describe_refusal(d, path, plen)); rc = 1; }
+	if (rc == 0 && !wrote) {
+		// Which half of the op had no spelling: the reader is otherwise sent to
+		// the value when it was the info string or the comment that failed.
+		const char *unwritable = "the value has no spelling that reads back";
+		if (OP("literal")) unwritable = "the value text is not one value";
+		else if (OP("comment")) unwritable = "the comment text is not one line";
+		else if (OP("raw")) unwritable = "the info string or the block body has no fence spelling";
+		op_err(lineno, "cannot write %.*s: %s", (int)plen, path, describe_refusal(d, path, plen, unwritable));
+		rc = 1;
+	}
 	#undef PRESENT
 	#undef OP
 	free(fp); free(fn);

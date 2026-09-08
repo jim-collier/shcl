@@ -704,13 +704,15 @@ func checkOpts(cmd string, o *opts) int {
 	return 0
 }
 
-// describeRefusal is the per-binding wording behind a setter's bare false.
-func describeRefusal(doc *shcl.Document, path string) string {
+// describeRefusal is the per-binding wording behind a setter's bare false: why
+// a write was refused. When the path itself is fine what failed is the text,
+// and only the caller knows which half of the op that was, so it names it: a
+// setter refused for its value used to report the sentence written for
+// SetLiteral whatever the op.
+func describeRefusal(doc *shcl.Document, path, unwritable string) string {
 	switch doc.WriteReason(path) {
 	case shcl.Writable:
-		// The path itself is fine, so the value text must be what failed (a
-		// literal that does not parse as one value).
-		return "the value text is not one value"
+		return unwritable
 	case shcl.ValueInPath:
 		return "a path with a value part cannot be written"
 	case shcl.Wildcard:
@@ -912,7 +914,7 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 	}
 	for _, s := range o.sets {
 		if !s.apply(doc) {
-			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path))
+			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path, "the value text is not one value"))
 			return nil, 1
 		}
 	}
@@ -1613,7 +1615,7 @@ func applyOp(doc *shcl.Document, line string) error {
 	case "empty":
 		wrote = doc.SetEmpty(path)
 	case "comment":
-		wrote = doc.SetComment(path, v)
+		wrote = doc.SetComment(path, unescapeOps(v))
 	case "remove":
 		doc.Remove(path)
 		wrote = true
@@ -1621,7 +1623,18 @@ func applyOp(doc *shcl.Document, line string) error {
 		return fmt.Errorf("unknown op: %s", f[0])
 	}
 	if !wrote {
-		return fmt.Errorf("cannot write %s: %s", path, describeRefusal(doc, path))
+		// Which half of the op had no spelling: the reader is otherwise sent
+		// to the value when it was the info string or the comment that failed.
+		unwritable := "the value has no spelling that reads back"
+		switch f[0] {
+		case "literal", "literal-default":
+			unwritable = "the value text is not one value"
+		case "comment":
+			unwritable = "the comment text is not one line"
+		case "raw", "raw-default":
+			unwritable = "the info string or the block body has no fence spelling"
+		}
+		return fmt.Errorf("cannot write %s: %s", path, describeRefusal(doc, path, unwritable))
 	}
 	return nil
 }
@@ -1689,7 +1702,7 @@ func doSet(o *opts) int {
 	sayDiagnostics(diags)
 	for _, s := range o.sets {
 		if !s.apply(doc) {
-			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path))
+			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path, "the value text is not one value"))
 			return 1
 		}
 	}

@@ -297,6 +297,13 @@ grep -qF 'The tokenizer is the one place the lexical rules live.' "${repoDir}/st
 grep -qF '// Tokenizer - the one place the lexical rules live' "${repoDir}/source/rust/src/lib.rs" \
 	|| fBad "lib.rs: the tokenizer section header is gone"
 
+##	Same for the write side: the setters' one rule is a sentence a reader is
+##	told to rely on, and the reference's section header repeats it.
+grep -qF 'A setter writes only what reads back.' "${repoDir}/style-guide.md" \
+	|| fBad "style-guide.md: the setter read-back sentence is gone"
+grep -qF '// The write side'"'"'s one rule: what is written has to read back' "${repoDir}/source/rust/src/lib.rs" \
+	|| fBad "lib.rs: the write-side section header is gone"
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1

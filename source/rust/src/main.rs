@@ -678,11 +678,13 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 }
 
 /// The per-binding wording behind a setter's bare `false`.
-fn describe_refusal(doc: &Document, path: &str) -> &'static str {
+/// Why a write was refused. When the path itself is fine what failed is the
+/// text, and only the caller knows which half of the op that was, so it names
+/// it: a setter refused for its value used to report the sentence written for
+/// `set_literal` whatever the op.
+fn describe_refusal(doc: &Document, path: &str, unwritable: &'static str) -> &'static str {
 	match doc.write_reason(path) {
-		// The path itself is fine, so the value text must be what failed (a
-		// literal that does not parse as one value).
-		shcl::WriteReason::Writable => "the value text is not one value",
+		shcl::WriteReason::Writable => unwritable,
 		shcl::WriteReason::BadPath => "not a usable path",
 		shcl::WriteReason::ValueInPath => "a path with a value part cannot be written",
 		shcl::WriteReason::Wildcard => "a wildcard path cannot be written",
@@ -781,7 +783,7 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 				"{}: cannot write {}: {}",
 				s.opt(),
 				s.path,
-				describe_refusal(&doc, &s.path)
+				describe_refusal(&doc, &s.path, "the value text is not one value")
 			);
 			return Err(1);
 		}
@@ -1381,7 +1383,7 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			doc.set_raw_default(path, &unescape_ops(f.get(3).copied().unwrap_or("")), val())
 		}
 		"empty" => doc.set_empty(path),
-		"comment" => doc.set_comment(path, val()),
+		"comment" => doc.set_comment(path, &unescape_ops(val())),
 		"remove" => {
 			doc.remove(path);
 			true
@@ -1389,10 +1391,18 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		other => return Err(format!("unknown op: {}", other)),
 	};
 	if !wrote {
+		// Which half of the op had no spelling: the reader is otherwise sent to
+		// the value when it was the info string or the comment that failed.
+		let unwritable = match f[0] {
+			"literal" | "literal-default" => "the value text is not one value",
+			"comment" => "the comment text is not one line",
+			"raw" | "raw-default" => "the info string or the block body has no fence spelling",
+			_ => "the value has no spelling that reads back",
+		};
 		return Err(format!(
 			"cannot write {}: {}",
 			path,
-			describe_refusal(doc, path)
+			describe_refusal(doc, path, unwritable)
 		));
 	}
 	Ok(())
@@ -1463,7 +1473,7 @@ fn do_set(o: &Opts) -> u8 {
 				"{}: cannot write {}: {}",
 				s.opt(),
 				s.path,
-				describe_refusal(&doc, &s.path)
+				describe_refusal(&doc, &s.path, "the value text is not one value")
 			);
 			return 1;
 		}
@@ -1483,7 +1493,10 @@ fn do_set(o: &Opts) -> u8 {
 			return EXIT_IO;
 		}
 	}
-	for (n, line) in ops.lines().enumerate() {
+	// Split on the newline and take one CR off each piece: that is the CR of a
+	// CRLF, or of a CRLF at EOF that lost its LF. A second one is the value's,
+	// and `lines()` plus a strip used to eat it.
+	for (n, line) in ops.split('\n').enumerate() {
 		let line = line.strip_suffix('\r').unwrap_or(line);
 		if line.is_empty() || line.starts_with('#') {
 			continue;

@@ -73,7 +73,7 @@ typedef enum {
 // the rest name the five ways it cannot.
 typedef enum {
 	SHCL_W_WRITABLE,
-	SHCL_W_BAD_PATH,      // empty path, the scanner rejected it, or a segment carries a line break
+	SHCL_W_BAD_PATH,      // empty path, or the scanner rejected it
 	SHCL_W_VALUE_IN_PATH, // the path carries a `: value` part; writes take values separately
 	SHCL_W_WILDCARD,      // wildcard selectors are query-only
 	SHCL_W_NO_SUCH_INDEX, // a `[#k]` instance that does not (and can never) exist
@@ -680,7 +680,6 @@ typedef shcl_str ShclStr;
 static ShclStr s_lit(const char *z) { ShclStr s; s.p = z; s.n = strlen(z); return s; }
 static ShclStr s_empty(void) { ShclStr s; s.p = ""; s.n = 0; return s; }
 static int s_eq(ShclStr a, ShclStr b) { return a.n == b.n && (a.n == 0 || memcmp(a.p, b.p, a.n) == 0); }
-static int s_has_nl(ShclStr s) { for (size_t i = 0; i < s.n; i++) if (s.p[i] == '\n') return 1; return 0; }
 static ShclStr s_dup(ShclArena *a, ShclStr x) {
 	if (x.n == 0) return s_empty();
 	char *m = (char *)arena_alloc(a, x.n); memcpy(m, x.p, x.n);
@@ -3614,6 +3613,11 @@ static int dt_reads_back(ShclArena *scratch, const shcl_datetime *dt) {
 }
 
 
+/* Defined with the emitter: each check is the emitted spelling read back. */
+static int value_reads_back(ShclArena *a, const ShclValue *v);
+static int name_reads_back(ShclArena *a, ShclStr name);
+static int comment_line(ShclArena *a, ShclStr text, ShclStr *out);
+
 // Pick a backtick fence long enough that no content line closes it early.
 static void w_choose_fence(ShclStr content, unsigned char *fc, size_t *fl) {
 	size_t maxrun = 0, start = 0;
@@ -3682,15 +3686,6 @@ static shcl_write_reason w_probe_write(shcl_doc *d, ShclArena *a, const ShclPath
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		ShclSegment *seg = &ps.segs.data[i];
 		if (seg->star) return SHCL_W_WILDCARD;
-		/* A newline in a SELECTOR has no one-line spelling, so the emitted
-		   binding would split across two lines and reparse as neither. The
-		   selector stores its path text raw and the value emitter never escapes
-		   a line break, so nothing downstream can rescue it - and the reload
-		   loses nothing it can count, so the save gate would not catch it. A
-		   newline in a NAME is fine: names are stored escape-resolved and
-		   emitted through the name escaper, which spells a line break \n and
-		   reads it back as one. */
-		if (seg->sel.tag == SEL_VALUE && s_has_nl(seg->sel.value)) return SHCL_W_BAD_PATH;
 		if (seg->sel.tag == SEL_WILDCARD) return SHCL_W_WILDCARD;
 		if (seg->sel.tag == SEL_INDEX) {
 			if (off) return SHCL_W_NO_SUCH_INDEX;
@@ -3734,6 +3729,18 @@ static int w_place(shcl_doc *d, ShclStr path, size_t *out) {
 	ShclPathScan ps = scan_lookup(t, path);
 	size_t *trail = (size_t *)arena_alloc(t, (ps.segs.len ? ps.segs.len : 1) * sizeof(size_t));
 	if (w_probe_write(d, t, &ps, trail) != SHCL_W_WRITABLE) return 0;
+	/* Nothing is created until every segment the write would create is known
+	   to spell back: the name through the name escaper, an instance selector
+	   as the value it binds. */
+	for (size_t i = 0; i < ps.segs.len; i++) {
+		const ShclSegment *seg = &ps.segs.data[i];
+		if (trail[i] != (size_t)-1) continue;
+		if (!name_reads_back(t, seg->name)) return 0;
+		if (seg->sel.tag == SEL_VALUE) {
+			ShclValue sv = w_cell1(t, seg->sel.value);
+			if (!value_reads_back(t, &sv)) return 0;
+		}
+	}
 	size_t cur = ROOT;
 	for (size_t i = 0; i < ps.segs.len; i++) {
 		const ShclSegment *seg = &ps.segs.data[i];
@@ -3835,6 +3842,7 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
    mark. The mark is taken by the caller, before it encodes. */
 static int w_set_marked(shcl_doc *d, ShclStr path, ShclValue v, ShclMark m) {
 	size_t idx;
+	if (!value_reads_back(&d->scratch, &v)) { arena_release(&d->arena, m); return 0; }
 	if (!w_place(d, path, &idx)) { arena_release(&d->arena, m); return 0; }
 	NODE(d, idx).value = v;
 	w_collapse_dup(d, idx);
@@ -3877,17 +3885,21 @@ shcl_write_reason shcl_write_reason_(shcl_doc *d, const char *path, size_t plen)
 	return w_write_reason(d, &d->scratch, p);
 }
 
+/* Attach a leading comment line to the node at a path (creating an empty node
+   if it does not exist yet, so a section can be annotated). A missing `#` is
+   added, and trailing whitespace comes off the way the load takes it, so text
+   that is blank leaves a bare `#`. Text holding a line break is refused: a
+   comment is one line, and keeping only the first would drop the rest with
+   nothing to say so. */
 int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; size_t idx;
-	if (!w_place(d, p, &idx)) return 0;
-	ShclStr line; line.p = text; line.n = tlen;
-	for (size_t i = 0; i < line.n; i++) if (line.p[i] == '\n') { line.n = i; break; }
-	ShclStr out;
-	if (line.n == 0 || line.p[0] != '#') { ShclSB b = {0}; sb_puts(a, &b, "# "); sb_putS(a, &b, line); out = sb_S(&b); }
-	else out = s_dup(a, line);
-	/* Without this the load trims what was written and the writer's output
-	   stops being a fmt fixpoint. Blank text leaves a bare `#`. */
-	out = trim_wsp_end(out);
+	ShclStr in; in.p = text ? text : ""; in.n = tlen; ShclStr line;
+	if (!comment_line(&d->scratch, in, &line)) return 0;
+	/* Copied out ahead of w_place, which resets the scratch the line was built
+	   in; a refused place gives the copy straight back. */
+	ShclMark m = arena_mark(a);
+	ShclStr out = s_dup(a, line);
+	if (!w_place(d, p, &idx)) { arena_release(a, m); return 0; }
 	/* The node's own blank moves above its first comment; otherwise the blank
 	   would separate the comment from what it annotates. Above the first one
 	   already there, when there is one. */
@@ -3913,17 +3925,22 @@ int shcl_set_float(shcl_doc *d, const char *path, size_t plen, double v) { if (!
 int shcl_set_bool(shcl_doc *d, const char *path, size_t plen, int v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_bool_text(v)), m); }
 int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr in; in.p = s; in.n = slen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, s_dup(a, in)), m); }
 
+/* Read text as the value half of a line, for the setters that take value
+   syntax rather than data: whatever a file line spells with this text is what
+   gets stored, so a trailing blank comes off and an unquoted `#` ends the
+   value exactly as they would in a file. What is refused is what a file
+   reports as an error, since a setter has no diagnostic to report it with: a
+   line break, which no file line can hold, an unterminated quote (E017), and
+   bracket text (E019, the line kept verbatim - writing it as a two-element
+   array holding `[1` and `2]` would be a different wrong answer). */
 static int literal_value(ShclArena *a, ShclArena *tmp, ShclStr text, ShclValue *out) {
-	for (size_t i = 0; i < text.n; i++) { if (text.p[i] == '\n' || text.p[i] == '\r') return 0; }
+	for (size_t i = 0; i < text.n; i++) { if (text.p[i] == '\n') return 0; }
 	/* One copy of the value text up front: the elements slice it, and the
 	   caller's buffer need not outlive the call (the setter contract). */
 	ShclStr copy = s_dup(a, text);
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
 	tokenize_value(tmp, copy, 0, SHCL_RULES_CURRENT, &tok);
 	for (size_t i = 0; i < tok.nelem; i++) if (tok.elements[i].quote == SHCL_QUOTE_OPEN) return 0;
-	/* Bracket-array text is refused too: in a file it is E019 and the line is
-	   kept verbatim, so writing it as a two-element array holding `[1` and
-	   `2]` would be a different wrong answer. */
 	if (tok.value_start < copy.n && copy.p[tok.value_start] == '[') return 0;
 	*out = cell_of_tokens(a, tmp, &tok, copy);
 	return 1;
@@ -3938,25 +3955,15 @@ int shcl_set_literal(shcl_doc *d, const char *path, size_t plen, const char *tex
 }
 int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!dt_reads_back(&d->scratch, dt)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_dt_text(a, dt)), m); }
 // Bind a raw block at a path, picking a fence longer than any content line.
-// The info-string is stored as a fence line would read it back (trimmed); one
-// holding a line break or an unquoted `#` has no fence-line spelling (the `#`
-// would read back as a comment) and fails the write. A body line ending in CR
-// fails for the same reason: the load takes the whole trailing CR run off every
-// line, so it would not read back.
+// The info-string is stored as a fence line would read it back (trimmed the
+// way the load trims one); one that would not read back whole - it holds a
+// line break, or a `#` behind a blank that reads as a comment - fails the
+// write, as does a body line ending in CR, since the load takes the trailing
+// CR run off every line.
 int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) {
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen;
-	ShclStr it; it.p = info; it.n = ilen;
-	if (it.n && (memchr(it.p, '\n', it.n) || memchr(it.p, '\r', it.n))) return 0;
-	/* The fence line the block will be written as: the fence run and the info
-	   string are one bare piece, so a quote in the info hides nothing. */
-	{
-		ShclSB fl = {0}; sb_puts(&d->scratch, &fl, "```"); sb_putS(&d->scratch, &fl, it);
-		ShclTokens tok; memset(&tok, 0, sizeof tok);
-		tokenize_value(&d->scratch, sb_S(&fl), 0, SHCL_RULES_CURRENT, &tok);
-		if (tok.has_comment) return 0;
-	}
-	for (size_t i = 0; i < clen; i++) if (content[i] == '\r' && (i + 1 == clen || content[i + 1] == '\n')) return 0;
-	it = s_trim(it);
+	ShclStr it; it.p = info ? info : ""; it.n = ilen;
+	it = s_trim_wsp(it);
 	ShclMark m = arena_mark(a);
 	ShclStr c = w_dupz(a, content, clen), inf = s_dup(a, it);
 	unsigned char fc; size_t fl; w_choose_fence(c, &fc, &fl);
@@ -4520,6 +4527,112 @@ static ShclStr escape_name(ShclArena *a, ShclStr name) {
 	return sb_S(&b);
 }
 static ShclStr emit_name(ShclArena *a, ShclStr name) { return escape_name(a, name); }
+
+// ---------------------------------------------------------------------------
+// The write side's one rule: what is written has to read back
+// ---------------------------------------------------------------------------
+//
+// A setter builds its text through the emitter and reads it back with the
+// tokenizer before the document is touched. If the read does not give the
+// value it was handed, the write is refused and nothing changes. No setter
+// decides for itself what a quote, a `#`, a comma or a carriage return means:
+// twelve review items were one setter's private rule disagreeing with the
+// parser's. The typed setters keep their own render-and-parse-back on top,
+// since a float or a datetime has to read back as that type and not merely as
+// the same text. Every check builds in the arena it is handed - scratch at
+// each call site, dead by the time the setter returns.
+
+/* The value half of a binding line, the way emit_node writes it. */
+static ShclStr emit_cell(ShclArena *a, const ShclElement *els, size_t n) {
+	ShclSB out = {0, 0, 0};
+	for (size_t i = 0; i < n; i++) { if (i) sb_puts(a, &out, ", "); sb_putS(a, &out, emit_element(a, &els[i])); }
+	return sb_S(&out);
+}
+
+/* The opening fence line of a raw block: the fence run, then the info string
+   behind a space when it would otherwise extend the run. */
+static ShclStr emit_fence_line(ShclArena *a, const ShclRawVal *r) {
+	ShclSB out = {0, 0, 0};
+	for (size_t k = 0; k < r->fence_len; k++) sb_putc(a, &out, (char)r->fence_char);
+	if (r->info.n > 0) {
+		if ((unsigned char)r->info.p[0] == r->fence_char) sb_putc(a, &out, ' ');
+		sb_putS(a, &out, r->info);
+	}
+	return sb_S(&out);
+}
+
+/* True when a piece reads as this exact text, without building it. */
+static int piece_is(ShclArena *a, const ShclPiece *p, ShclStr text, ShclStr want) {
+	ShclStr raw = s_slice(text, p->start, p->end);
+	if (p->quote == SHCL_QUOTE_DOUBLE && raw.n && memchr(raw.p, '\\', raw.n)) return s_eq(apply_escapes(a, raw), want);
+	return s_eq(raw, want);
+}
+
+/* True when a value comes back off the page as itself. */
+static int value_reads_back(ShclArena *a, const ShclValue *v) {
+	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	if (v->kind == V_EMPTY) return 1;
+	if (v->kind == V_CELL) {
+		ShclStr text = emit_cell(a, v->els, v->nels);
+		if (text.n && memchr(text.p, '\n', text.n)) return 0;
+		tokenize_value(a, text, 0, SHCL_RULES_CURRENT, &tok);
+		if (tok.has_comment) return 0;
+		/* Compared against the pieces rather than against a rebuilt value: a
+		   bulk write runs this per set, and the text is right there. */
+		size_t k = 0;
+		for (size_t i = 0; i < tok.nelem; i++) {
+			const ShclPiece *p = &tok.elements[i];
+			if (p->quote == SHCL_QUOTE_NONE && p->end == p->start) continue;
+			if (k == v->nels || !piece_is(a, p, text, v->els[k].text)) return 0;
+			k++;
+		}
+		return k == v->nels;
+	}
+	const ShclRawVal *r = v->raw;
+	ShclStr line = emit_fence_line(a, r);
+	if (line.n && memchr(line.p, '\n', line.n)) return 0;
+	tokenize_value(a, line, 0, SHCL_RULES_CURRENT, &tok);
+	ShclFence f = fence_open(s_slice(line, tok.value_start, tok.value_end));
+	if (!f.ok || f.ch != r->fence_char || f.len != r->fence_len || !s_eq(f.info, r->info)) return 0;
+	/* A body line ending in a carriage return loses it to the load's line-end
+	   trim, and one spelling the closing fence would end the block early. */
+	size_t start = 0;
+	for (size_t i = 0; i <= r->content.n; i++) if (i == r->content.n || r->content.p[i] == '\n') {
+		ShclStr l = s_slice(r->content, start, i);
+		if (l.n && l.p[l.n - 1] == '\r') return 0;
+		if (is_fence_close(l, r->fence_char, r->fence_len)) return 0;
+		start = i + 1;
+	}
+	return 1;
+}
+
+/* True when a field name comes back off a line as itself. */
+static int name_reads_back(ShclArena *a, ShclStr name) {
+	ShclStr text = escape_name(a, name);
+	if (text.n && memchr(text.p, '\n', text.n)) return 0;
+	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	tokenize(a, text, ':', 0, SHCL_RULES_CURRENT, &tok);
+	return !tok.has_fault && tok.nseg == 1 && !tok.segments[0].has_selector
+		&& piece_is(a, &tok.segments[0].name, text, name);
+}
+
+/* The comment line this text is written as, 0 when it has no spelling. A `#`
+   is added when the text carries none. The load trims every line's end, so
+   the trimmed text is what gets written; text holding a line break is refused
+   rather than cut down to its first line. */
+static int comment_line(ShclArena *a, ShclStr text, ShclStr *out) {
+	if (text.n && memchr(text.p, '\n', text.n)) return 0;
+	ShclStr t = trim_wsp_end(text), line;
+	if (t.n && t.p[0] == '#') line = t;
+	else if (t.n == 0) line = s_lit("#");
+	else { ShclSB b = {0, 0, 0}; sb_puts(a, &b, "# "); sb_putS(a, &b, t); line = sb_S(&b); }
+	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	tokenize_value(a, line, 0, SHCL_RULES_CURRENT, &tok);
+	if (!tok.has_comment || tok.comment != 0 || trim_wsp_end(line).n != line.n) return 0;
+	*out = line;
+	return 1;
+}
+
 /* Inline comment, canonically two spaces before the `#`. */
 static void emit_trailing(ShclArena *a, ShclSB *out, ShclStr trailing) {
 	if (trailing.n) { sb_puts(a, out, "  "); sb_putS(a, out, trailing); }
@@ -4575,7 +4688,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 	if (v->kind == V_EMPTY) { emit_trailing(a, out, trailing); sb_putc(a, out, '\n'); }
 	else if (v->kind == V_CELL) {
 		sb_putc(a, out, ' ');
-		for (size_t i = 0; i < v->nels; i++) { if (i) sb_puts(a, out, ", "); sb_putS(a, out, emit_element(a, &v->els[i])); }
+		sb_putS(a, out, emit_cell(a, v->els, v->nels));
 		emit_trailing(a, out, trailing);
 		sb_putc(a, out, '\n');
 	} else {
@@ -4583,8 +4696,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 		if (would_merge) sb_putc(a, out, ' ');
 		else { emit_trailing(a, out, trailing); sb_putc(a, out, '\n'); }
 		if (!would_merge) for (size_t k = 0; k < depth + 1; k++) sb_putc(a, out, '\t');
-		for (size_t k = 0; k < r->fence_len; k++) sb_putc(a, out, (char)r->fence_char);
-		if (r->info.n > 0) { if ((unsigned char)r->info.p[0] == r->fence_char) sb_putc(a, out, ' '); sb_putS(a, out, r->info); }
+		sb_putS(a, out, emit_fence_line(a, r));
 		sb_putc(a, out, '\n');
 		if (r->content.n > 0) {
 			size_t start = 0;
@@ -5092,9 +5204,7 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 		} else if (s_eq(kid->name, s_lit("default"))) {
 			if (!c.has_default) {
 				if (kid->value.kind == V_CELL) {
-					ShclSB s = {0, 0, 0};
-					for (size_t x = 0; x < kid->value.nels; x++) { if (x) sb_puts(a, &s, ", "); sb_putS(a, &s, emit_element(a, &kid->value.els[x])); }
-					c.has_default = 1; c.default_text = sb_S(&s);
+					c.has_default = 1; c.default_text = emit_cell(a, kid->value.els, kid->value.nels);
 				}
 				default_at = kids.data[ki];
 			}
@@ -6499,8 +6609,8 @@ static int g_has_wild(const ShclVCons *c) {
 	return 0;
 }
 // `[#N]` needs a pre-existing instance and its `#` would start a comment on a
-// binding line; a newline inside a selector has no one-line spelling, since the
-// value emitter never escapes one. A path deeper than a document may nest
+// binding line; a newline inside a selector is left to the trailing note rather
+// than spelled inline. A path deeper than a document may nest
 // cannot be generated either: the line would draw E016 on the way back in. A
 // newline in a NAME is writable: names are stored escape-resolved and the name
 // escaper spells one `\n`.
