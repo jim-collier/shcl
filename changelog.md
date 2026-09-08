@@ -147,6 +147,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The C binding builds a schema in time linear in its fragment count. Every fragment was compared against every fragment already recorded, and each mount paid the same scan again, so 32,000 fragments took 3.3 seconds against 0.2 in Go; the fragments are held in a name index now, as the other three bindings already held them.
+
 - `init` no longer refuses a required path whose by-value selector holds a line break. It reported `V097 required path cannot be generated` and exited 6, because a selector had no spelling for one; it does now, and the generated line reads back as the path it was generated for.
 
 - One carriage return comes off a write-ops line, not two. A line ending `v\r\r\n` reached the setter as `v` in the reference and Python and as `v\r` in Go and C: the first CR is the CRLF's and the second is the value's, and the reference took both.

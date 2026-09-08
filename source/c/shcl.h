@@ -5030,12 +5030,21 @@ DEFINE_VEC(ShclVecVFrag, ShclVFrag)
 // `field:` path, or a mount naming no declared fragment). Key-level faults
 // keep their entry's chain, so only these two classes can turn declared
 // fields into false unknowns - the sweep runs unless one of them happened.
-typedef struct { ShclVecVCons cons; ShclVecVFrag frags; int paths_complete; } ShclVSchemaDef;
+/* fmap: fragment name -> index in frags. The other three bindings hold their
+   fragments in a map; a linear scan here made the duplicate check quadratic in
+   the fragment count, and every mount pays it again. */
+typedef struct { ShclVecVCons cons; ShclVecVFrag frags; ShclCMap fmap; int paths_complete; } ShclVSchemaDef;
+
+static size_t v_frag_index(const ShclVSchemaDef *def, ShclStr name) {
+	uint64_t h = cmap_hash(name, s_empty());
+	for (ShclCMapEnt *e = cmap_first(&def->fmap, h); e; e = cmap_next(e, h))
+		if (s_eq(def->frags.data[e->val].name, name)) return e->val;
+	return SIZE_MAX;
+}
 
 static const ShclVecVCons *v_frag_get(const ShclVSchemaDef *def, ShclStr name) {
-	for (size_t i = 0; i < def->frags.len; i++)
-		if (s_eq(def->frags.data[i].name, name)) return &def->frags.data[i].fields;
-	return NULL;
+	size_t i = v_frag_index(def, name);
+	return i == SIZE_MAX ? NULL : &def->frags.data[i].fields;
 }
 
 static void v_diag(ShclArena *a, ShclVecDiag *out, size_t line, const char *code, ShclStr msg) {
@@ -5341,6 +5350,7 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 					v_diag(a, faults, kid->line, "V094", sb_S(&s));
 				}
 			}
+			cmap_put(a, &def->fmap, cmap_hash(name, s_empty()), def->frags.len);
 			ShclVecVFrag_push(a, &def->frags, fr);
 		} else {
 			v_diag(a, faults, node->line, "V090", v_msg3(a, "unknown schema key '", node->name, "'"));
@@ -5632,6 +5642,9 @@ static void v_check_from(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCo
 	arena_reset(lv);
 	ShclVecVCtx ctxs = {0};
 	v_contexts(lv, d, &start, 1, c->segs.data, c->segs.len, anchor0, &ctxs);
+	// The mount is the constraint's, not the node's, so it is looked up once
+	// here rather than once per resolved node.
+	const ShclVecVCons *fcs = c->inherits.n ? v_frag_get(def, c->inherits) : NULL;
 	for (size_t i = 0; i < ctxs.len; i++) {
 		ShclVCtx *ctx = &ctxs.data[i];
 		if (c->required && ctx->found.len == 0)
@@ -5651,7 +5664,6 @@ static void v_check_from(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCo
 			size_t n = ctx->found.data[k];
 			v_node(a, lv, d, c, n, out);
 			if (c->inherits.n) {
-				const ShclVecVCons *fcs = v_frag_get(def, c->inherits);
 				if (fcs) {
 					// Two constraints can resolve to the same node and mount the
 					// same fragment there. The second mount would repeat the
@@ -5729,11 +5741,6 @@ static int star_legal(const ShclVecSeg *pats, size_t npats, ShclStr chain) {
 // constraints, row k+1 fragment k - and one that has failed is not walked
 // again: two mounts of the same fragment at the same depth used to be walked
 // both, which is 2^depth on a chain that ends unknown.
-static size_t v_frag_index(const ShclVSchemaDef *def, ShclStr name) {
-	for (size_t i = 0; i < def->frags.len; i++)
-		if (s_eq(def->frags.data[i].name, name)) return i;
-	return SIZE_MAX;
-}
 static int chain_parts_legal(const ShclVecVCons *cons, size_t set, const ShclVSchemaDef *def, ShclStr chain, size_t from, size_t at, size_t nparts, unsigned char *dead) {
 	if (dead[set * (nparts + 1) + at]) return 0;
 	for (size_t ci = 0; ci < cons->len; ci++) {
@@ -5922,8 +5929,10 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	free(lvls);
 	levels = NULL;
 	if (def.paths_complete) v_unknown(a, &v->scratch, d, &def, &v->diags);
-	/* This frame is about to go; the arenas outlive it. */
-	arena_guard(&v->arena, NULL);
+	/* This frame is about to go; the arenas outlive it. v->scratch is armed
+	   inside v_unknown, so it is disarmed here with the rest rather than left
+	   pointing at a frame that has returned. */
+	arena_guard(&v->arena, NULL); arena_guard(&v->scratch, NULL);
 	arena_guard(&d->index_arena, NULL); arena_guard(&d->scratch, NULL); arena_guard(&d->reads, NULL);
 	return v;
 }
