@@ -1141,6 +1141,17 @@ size_t shcl_tokens_element_count(const shcl_tokens *t) {
 
 static void skip_wsp(ShclStr s, size_t *pos) { while (*pos < s.n && is_wsp((unsigned char)s.p[*pos])) (*pos)++; }
 
+/* End of a run of blanks and carriage returns that holds at least one CR and
+   runs into a `#`, or s.n when there is none. 2.x cut a line at its first `#`
+   and then trimmed blanks and CR off the end of the half before it, so such a
+   run was never content. A CR anywhere else was malformed to 2.x as well, which
+   is why only this one position needs saying. */
+static size_t cr_run_to_comment(ShclStr s, size_t from) {
+	size_t k = from; int cr = 0;
+	while (k < s.n && (is_wsp((unsigned char)s.p[k]) || s.p[k] == '\r')) { cr |= s.p[k] == '\r'; k++; }
+	return (cr && k < s.n && s.p[k] == '#') ? k : s.n;
+}
+
 /* Byte length of the UTF-8 character that starts with b. The scan only ever
    compares against ASCII structure characters, which UTF-8 guarantees cannot
    appear inside a multibyte sequence, so it advances by whole characters and
@@ -1298,6 +1309,7 @@ static void tokenize(ShclArena *a, ShclStr text, char sep, int stars, ShclRules 
 			seg.name.start = start; seg.name.end = pos; seg.name.quote = SHCL_QUOTE_NONE;
 		}
 		skip_wsp(s, &pos);
+		if (rules == SHCL_RULES_V2) { size_t k = cr_run_to_comment(s, pos); if (k < s.n) pos = k; }
 		int have_open = 0; size_t open = 0;
 		if (pos < s.n && s.p[pos] == '[') { have_open = 1; open = pos; }
 		if (!have_open && rules == SHCL_RULES_V2 && pos < s.n && s.p[pos] == sep) {
@@ -1313,6 +1325,7 @@ static void tokenize(ShclArena *a, ShclStr text, char sep, int stars, ShclRules 
 			seg.selector = piece; seg.has_selector = 1;
 			pos = stop + 1;
 			skip_wsp(s, &pos);
+			if (rules == SHCL_RULES_V2) { size_t k = cr_run_to_comment(s, pos); if (k < s.n) pos = k; }
 		}
 		tok_push_seg(a, out, seg);
 		if (pos >= s.n) return;
@@ -1617,6 +1630,9 @@ static void value_edits(ShclArena *a, ShclStr text, const ShclTokens *tok, ShclV
    the caller copies through until its close. */
 static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclTokens *tok, int *fence_on, unsigned char *fence_ch, size_t *fence_len) {
 	if (rest.n == 0 || rest.p[0] == '#') return rest;
+	/* A whole line 2.x read as a comment, once its leading CR run went. */
+	size_t lead = cr_run_to_comment(rest, 0);
+	if (lead < rest.n) return s_slice(rest, lead, rest.n);
 	/* A child-indent fence: 2.x read the info string to the end of the line. */
 	ShclFence f = fence_open(rest);
 	if (f.ok) { *fence_on = 1; *fence_ch = f.ch; *fence_len = f.len; return rest; }
@@ -1679,8 +1695,14 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 			value_edits(a, rest, tok, &edits);
 		}
 	}
-	if (tok->has_comment && tok->comment > 0 && !is_wsp((unsigned char)rest.p[tok->comment - 1]))
-		edit_push(a, &edits, tok->comment, tok->comment, s_lit(" "));
+	if (tok->has_comment) {
+		size_t c = tok->comment, at = c;
+		while (at > 0 && (is_wsp((unsigned char)rest.p[at - 1]) || rest.p[at - 1] == '\r')) at--;
+		int cr = 0;
+		for (size_t k = at; k < c; k++) cr |= rest.p[k] == '\r';
+		if (cr) edit_push(a, &edits, at, c, s_lit(" "));
+		else if (at == c && c > 0) edit_push(a, &edits, c, c, s_lit(" "));
+	}
 	return splice(a, rest, &edits);
 }
 
@@ -1689,8 +1711,9 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
    where the two rule sets disagree: a bare or single-quoted piece whose
    backslash meant an escape is double-quoted with that escape; a piece that
    opened a quote it never closed is quoted whole; a `#` that opened a comment
-   with no space before it gets one; the name:[disc] selector sugar loses its
-   colon, and on a last segment becomes `name: disc`. Everything else -
+   with no space before it gets one, and a CR run before one goes with it,
+   since 2.x trimmed that; the name:[disc] selector sugar loses its colon, and
+   on a last segment becomes `name: disc`. Everything else -
    comments, blank lines, raw bodies, layout, a line 2.x could not read -
    comes through as written. One shape has no spelling here at all: a fence
    line whose info string holds a whitespace-`#`, which now ends the label and

@@ -147,6 +147,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `migrate` carries a line whose `#` sits right behind a carriage return. 2.x cut such a line at the `#` and then trimmed the carriage return off the half before it, so `my<CR>#note: 1` bound `my`; the migrated text kept the byte, the name ended at it, and the binding was gone with an `E014` at exit 0. The run goes now, replaced by the single space the `#` needs. Only a carriage return was affected - any other control character in that position was malformed to 2.x as well.
+
 - The zsh completion works. An apostrophe inside a single-quoted description left a quote open for the rest of the file, so zsh answered a parse error instead of completing anything; nothing had ever run the file, only compared the option table inside it.
 
 - Reading the info-string of an empty binding reports `Empty`, not `BadType`. The raw-content read beside it always said `Empty` on the same line, and two neighbouring reads should not disagree about what an empty binding is. A binding carrying a value that is not a block is still `BadType`.

@@ -879,6 +879,7 @@ class Tokens:
 # The structure bytes the scan compares against. All ASCII, which UTF-8
 # guarantees cannot appear inside a multibyte sequence.
 _B_TAB = 0x09
+_B_CR = 0x0D
 _B_SPACE = 0x20
 _B_DQUOTE = 0x22
 _B_HASH = 0x23
@@ -905,6 +906,20 @@ def _skip_wsp(s, pos):
 	while pos < n and (s[pos] == _B_SPACE or s[pos] == _B_TAB):
 		pos += 1
 	return pos
+
+
+def _cr_run_to_comment(s, from_):
+	"""End of a run of blanks and carriage returns that holds at least one CR
+	and runs into a `#`, else None. 2.x cut a line at its first `#` and then
+	trimmed blanks and CR off the end of the half before it, so such a run was
+	never content. A CR anywhere else was malformed to 2.x as well, which is why
+	only this one position needs saying."""
+	n = len(s)
+	k, cr = from_, False
+	while k < n and (s[k] == _B_SPACE or s[k] == _B_TAB or s[k] == _B_CR):
+		cr = cr or s[k] == _B_CR
+		k += 1
+	return k if cr and k < n and s[k] == _B_HASH else None
 
 
 def _utf8_len(b):
@@ -1127,6 +1142,10 @@ def tokenize(text: str, sep: str, stars: bool, rules: Rules, out: Tokens) -> Non
 				return
 			name = Piece(start, pos, Quote.NONE)
 		pos = _skip_wsp(s, pos)
+		if rules is Rules.V2:
+			k = _cr_run_to_comment(s, pos)
+			if k is not None:
+				pos = k
 		selector = None
 		open_at = pos if pos < n and s[pos] == _B_LBRACKET else None
 		if open_at is None and rules is Rules.V2 and pos < n and s[pos] == sep_b:
@@ -1149,6 +1168,10 @@ def tokenize(text: str, sep: str, stars: bool, rules: Rules, out: Tokens) -> Non
 				return
 			selector = piece
 			pos = _skip_wsp(s, stop + 1)
+			if rules is Rules.V2:
+				k = _cr_run_to_comment(s, pos)
+				if k is not None:
+					pos = k
 		out.segments.append(SegTok(name, selector, star))
 		if pos >= n:
 			return
@@ -1338,8 +1361,9 @@ def migrate(text: str) -> str:
 	where the two rule sets disagree: a bare or single-quoted piece whose
 	backslash meant an escape is double-quoted with that escape; a piece that
 	opened a quote it never closed is quoted whole; a `#` that opened a
-	comment with no space before it gets one; the `name:[disc]` selector
-	sugar loses its colon, and on a last segment becomes `name: disc`.
+	comment with no space before it gets one, and a CR run before one goes
+	with it, since 2.x trimmed that; the `name:[disc]` selector sugar loses
+	its colon, and on a last segment becomes `name: disc`.
 	Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 	could not read - comes through as written. One shape has no spelling
 	here at all: a fence line whose info string holds a whitespace-`#`, which
@@ -1429,6 +1453,10 @@ def _migrate_line(rest, tok, fence):
 	the fence a raw block it opened is closed by (None when it opened none)."""
 	if not rest or rest.startswith("#"):
 		return rest, fence
+	# A whole line 2.x read as a comment, once its leading CR run went.
+	k = _cr_run_to_comment(rest.encode("utf-8"), 0)
+	if k is not None:
+		return rest[k:], fence
 	# A child-indent fence: 2.x read the info string to the end of the line.
 	fo = _fence_open(rest)
 	if fo is not None:
@@ -1502,8 +1530,14 @@ def _migrate_line(rest, tok, fence):
 				return _splice(s, edits).decode("utf-8"), (fo[0], fo[1])
 			_value_edits(s, tok, edits)
 	c = tok.comment
-	if c is not None and c > 0 and not _is_wsp_byte(s[c - 1]):
-		edits.append((c, c, b" "))
+	if c is not None:
+		a = c
+		while a > 0 and (_is_wsp_byte(s[a - 1]) or s[a - 1] == _B_CR):
+			a -= 1
+		if _B_CR in s[a:c]:
+			edits.append((a, c, b" "))
+		elif a == c and c > 0:
+			edits.append((c, c, b" "))
 	return _splice(s, edits).decode("utf-8"), fence
 
 
