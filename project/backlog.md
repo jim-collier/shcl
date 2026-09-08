@@ -168,11 +168,15 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260904-174800
 		- Closed: 20260908-015200
 
-	- 🔘 Item 51: three places the spec could say more.
+	- ✅ Item 51: three places the spec could say more.
 		- A column-zero tail comment: the paragraph says a comment written at the level of the block's last binding trails that binding, and then that only top-level tail comments remain end-of-file orphans. For a comment at column zero after the last top-level binding those read against each other. The behavior is settled and the changelog states it; the sentence describing the old behavior is still there.
 		- The generator has no stated output ceiling. A mount chain produces dotted paths, so output is quadratic in depth: 44 KB of schema at the 512 cap generates 1,067,121 bytes. Time is linear in output and the depth cap bounds it, so nothing is wrong - but "a starter config" does not prepare a reader for a megabyte.
 		- Non-UTF-8 input is unspecified at library level. Every CLI refuses the file at exit 8, while Go and C accept the bytes and Python accepts surrogate-escaped ones, and the three then give three different "did you mean" answers. One sentence saying it is unspecified is cheaper than making them agree.
+		- Fixed: the comment paragraph names the column-zero exception, so the two sentences no longer read against each other.
+		- Fixed: the generator paragraph states the shape - flat paths mean output grows with the square of the depth - with one measured figure: 21 KB of schema mounting itself 511 levels deep generates 270 KB.
+		- Fixed: the encoding line says a library's answer to bytes that are not valid UTF-8 is unspecified and that the bindings differ, while every CLI refuses such a file at exit 8.
 		- Opened: 20260904-174900
+		- Closed: 20260908-150000
 
 	- 🔘 Item 52: shell-trap and gate cleanups across the pipeline.
 		- `cicd.bash`'s `fWriteSums` ends its final subshell on an `&&` list, so an empty artifact directory would abort the run through the ERR trap. Not reachable today.
