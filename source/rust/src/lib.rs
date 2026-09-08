@@ -5705,9 +5705,11 @@ impl Document {
 		};
 		let raw = Some(self.raw_of(node));
 		let line = self.arena[node].line;
+		// An empty binding has no block, so no info string: `Empty`, the same as a `read_raw` on it. Only a value that is there and is not a block is a type mismatch.
 		match &self.arena[node].value {
 			Value::Raw(r) => Read::new(r.info.clone(), Status::Good, raw).at(line, false),
-			_ => Read::new(String::new(), Status::BadType, raw).at(line, false),
+			Value::Empty => Read::new(String::new(), Status::Empty, raw).at(line, false),
+			Value::Cell(_) => Read::new(String::new(), Status::BadType, raw).at(line, false),
 		}
 	}
 

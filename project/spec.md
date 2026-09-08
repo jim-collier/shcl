@@ -371,7 +371,7 @@ The array, bool, float, datetime, string, raw, and raw-info forms follow the sam
 
 ### Status sentinels
 
-Reads report one of: **Good**, **Empty** (present but no value), **NotFound** (path does not resolve), **BadType** (present but not coercible to the requested type), **Multiple** (path resolves to more than one instance and the call wanted one). `Empty` is informational, not a failure - the empty value is still returned. The parser **never** refuses a legitimately reachable value because some *other* part of the file was malformed.
+Reads report one of: **Good**, **Empty** (present but no value), **NotFound** (path does not resolve), **BadType** (present but not coercible to the requested type), **Multiple** (path resolves to more than one instance and the call wanted one). `Empty` is informational, not a failure - the empty value is still returned. An empty binding is `Empty` to every read on it, the info-string read included: there is no block there, so there is nothing to mismatch a type against. The parser **never** refuses a legitimately reachable value because some *other* part of the file was malformed.
 
 ### Lookup and traversal
 
@@ -683,7 +683,7 @@ The bundles are normative - a binding implements exactly this table:
 
 Notes:
 
-- **Loose** re-admits the forgiving conversions cut from Standard, as a closed list - nothing joins it without a spec change. The currency rule is: a single leading symbol from exactly these codepoints is stripped (`$ ¢ £ ¤ ¥ ₩ ₪ ₫ € ₭ ₮ ₱ ₲ ₴ ₹ ₺ ₼ ₽ ₾ ₿`); multi-letter codes (`USD`, `kr`) are not, and there is no trailing form. A `%` float is the fraction, so a Loose `GetInt` on `50%` rounds 0.5 -> 1 - never special-cased to the pre-`%` number, so `GetInt` and `GetFloat` cannot disagree.
+- **Loose** re-admits the forgiving conversions cut from Standard, as a closed list - nothing joins it without a spec change. The currency rule is: a single leading symbol from exactly these codepoints is stripped (`$ ¢ £ ¤ ¥ ₩ ₪ ₫ € ₭ ₮ ₱ ₲ ₴ ₹ ₺ ₼ ₽ ₾ ₿`), along with any whitespace after it, so `$ 1200` reads the same as `$1200`; multi-letter codes (`USD`, `kr`) are not stripped, and there is no trailing form. A `%` float is the fraction, so a Loose `GetInt` on `50%` rounds 0.5 -> 1 - never special-cased to the pre-`%` number, so `GetInt` and `GetFloat` cannot disagree.
 
 - **Strict** is the "fail loudly" mode: any `error` diagnostic aborts the load (the never-bail philosophy above describes Loose and Standard). Reads are unchanged except the boolean set. `hint` diagnostics never fail a load at any level - repeated leaves are legal instances, and failing legal input would break the data model.
 

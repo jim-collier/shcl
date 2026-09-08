@@ -4381,7 +4381,9 @@ shcl_read_str shcl_read_raw(shcl_doc *d, const char *path, size_t plen) {
 shcl_read_str shcl_read_raw_info(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_str R; ShclStr p; p.p = path; p.n = plen; ShclValue *v; shcl_status st = value_at(d, p, &v);
 	if (st != SHCL_GOOD) { R.value = s_empty(); R.status = st; return R; }
+	/* An empty binding has no block, so no info string: `Empty`, the same as a `read_raw` on it. Only a value that is there and is not a block is a type mismatch. */
 	if (v->kind == V_RAW) { R.value = v->raw->info; R.status = SHCL_GOOD; }
+	else if (v->kind == V_EMPTY) { R.value = s_empty(); R.status = SHCL_EMPTY; }
 	else { R.value = s_empty(); R.status = SHCL_BAD_TYPE; }
 	return R;
 }

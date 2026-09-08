@@ -3729,8 +3729,11 @@ class Document:
 		raw = self._raw_of(na[1])
 		line = self.arena[na[1]].line
 		value = self.arena[na[1]].value
+		# An empty binding has no block, so no info string: `Empty`, the same as a `read_raw` on it. Only a value that is there and is not a block is a type mismatch.
 		if value.kind == "raw":
 			return Read(value.info, Status.Good, raw)._at(line, False)
+		if value.kind == "empty":
+			return Read("", Status.Empty, raw)._at(line, False)
 		return Read("", Status.BadType, raw)._at(line, False)
 
 	def _read_array(self, path, coerce, default):

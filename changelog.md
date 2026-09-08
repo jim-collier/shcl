@@ -147,6 +147,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Reading the info-string of an empty binding reports `Empty`, not `BadType`. The raw-content read beside it always said `Empty` on the same line, and two neighbouring reads should not disagree about what an empty binding is. A binding carrying a value that is not a block is still `BadType`.
+
 - A file whose name runs past about 240 characters can be rewritten. The temporary file written beside it carried the whole name plus the process id, which put it over the filesystem's own limit, and the exact length that failed moved with the width of the pid - so the same file saved on one machine and failed at exit 8 on another. The temporary name now borrows at most the first 64 characters.
 
 - The C binding builds a schema in time linear in its fragment count. Every fragment was compared against every fragment already recorded, and each mount paid the same scan again, so 32,000 fragments took 3.3 seconds against 0.2 in Go; the fragments are held in a name index now, as the other three bindings already held them.
