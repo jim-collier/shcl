@@ -122,7 +122,7 @@ impl std::error::Error for SaveError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteReason {
 	Writable,
-	BadPath,     // empty path, the scanner rejected it, or a segment carries a line break
+	BadPath,     // empty path, or the scanner rejected it
 	ValueInPath, // the path carries a `: value` part; writes take values separately
 	Wildcard,    // wildcard selectors are query-only
 	NoSuchIndex, // a `[#k]` instance that does not (and can never) exist
@@ -4375,10 +4375,6 @@ impl Document {
 			// catch it either. A newline in a NAME is fine: names are stored
 			// escape-resolved and emitted through the name escaper, which spells
 			// a line break `\n` and reads it back as one.
-			if matches!(&seg.selector, Some(Selector::ByValue { text, .. }) if text.contains('\n'))
-			{
-				return WriteReason::BadPath;
-			}
 			match &seg.selector {
 				Some(Selector::Wildcard) => return WriteReason::Wildcard,
 				Some(Selector::ByIndex(k)) => {
@@ -6664,11 +6660,10 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			.any(|s| matches!(s.selector, Some(Selector::Wildcard)))
 	};
 	// `[#N]` needs a pre-existing instance and its `#` would start a comment on
-	// a binding line; a newline inside a selector has no one-line spelling,
-	// since the value emitter never escapes one. Both go to the trailing note
-	// instead of emitting a broken line. A path deeper than a document may nest
-	// cannot be generated either: the line would draw E016 on the way back in.
-	// A newline in a NAME is writable: names are stored escape-resolved and the
+	// a binding line; a newline inside a selector is left to the trailing note
+	// rather than spelled inline. A path deeper than a document may nest cannot
+	// be generated either: the line would draw E016 on the way back in. A
+	// newline in a NAME is writable: names are stored escape-resolved and the
 	// name escaper spells one `\n`.
 	let unwritable = |c: &Constraint| {
 		c.segs.len() > MAX_DEPTH

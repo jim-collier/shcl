@@ -1493,7 +1493,10 @@ fn do_set(o: &Opts) -> u8 {
 			return EXIT_IO;
 		}
 	}
-	for (n, line) in ops.lines().enumerate() {
+	// Split on the newline and take one CR off each piece: that is the CR of a
+	// CRLF, or of a CRLF at EOF that lost its LF. A second one is the value's,
+	// and `lines()` plus a strip used to eat it.
+	for (n, line) in ops.split('\n').enumerate() {
 		let line = line.strip_suffix('\r').unwrap_or(line);
 		if line.is_empty() || line.starts_with('#') {
 			continue;
