@@ -2425,12 +2425,50 @@ static int resolve_parent(ShclParser *P, ShclStr indent, size_t *out) {
 	return 0;
 }
 
+/* What became of a line the parser did not bind whole. Only the funnel
+   (p_refuse) reads it; the count and the level follow from it. */
+typedef enum {
+	OUT_VALUE_DROPPED, /* the line binds; a value it carried has nowhere to go and is gone */
+	OUT_RETAINED,      /* content-malformed: kept verbatim as trivia and written back in place */
+	OUT_DROPPED,       /* read but not applicable here; re-emitted it could bind elsewhere, so it is gone and counts */
+	OUT_STOPPED        /* the parse stopped before this line; the rest was never read */
+} ShclOutcomeKind;
+typedef struct { ShclOutcomeKind kind; ShclStr text; int blank_before; const ShclStr *rest; size_t nrest; } ShclOutcome;
+static ShclOutcome out_kind(ShclOutcomeKind kind) { ShclOutcome o; memset(&o, 0, sizeof o); o.kind = kind; return o; }
+static ShclOutcome out_retained(ShclStr text, int blank_before) { ShclOutcome o = out_kind(OUT_RETAINED); o.text = text; o.blank_before = blank_before; return o; }
+static ShclOutcome out_stopped(const ShclStr *rest, size_t nrest) { ShclOutcome o = out_kind(OUT_STOPPED); o.rest = rest; o.nrest = nrest; return o; }
+
+/* The one exit for a line the parser does not bind whole. An arm says what
+   became of the line and nothing else: the lost count and the level the line
+   holds follow from the outcome here, so no arm can forget either. design.md's
+   outcome table gives each code its row. */
+static void p_refuse(ShclParser *P, size_t line, const char *code, ShclStr msg, ShclOutcome out, ShclStr indent) {
+	p_err(P, line, code, msg);
+	int holds = out.kind == OUT_RETAINED || out.kind == OUT_DROPPED;
+	size_t n = 0;
+	switch (out.kind) {
+	case OUT_VALUE_DROPPED: case OUT_DROPPED: n = 1; break;
+	case OUT_STOPPED: for (size_t r = 0; r < out.nrest; r++) if (s_trim_wsp(out.rest[r]).n) n++; break;
+	case OUT_RETAINED: break;
+	}
+	P->d->lost += n;
+	if (out.kind == OUT_RETAINED) {
+		ShclPend pd; pd.text = out.text; pd.indent = indent; pd.blank_before = out.blank_before; pd.ceiling = indent.n;
+		ShclVecPend_push(P->tmp, &P->pending, pd);
+	}
+	/* A refused line owns its indent, so what is written deeper is skipped
+	   with it (E018). An indent that matched no level already holds an
+	   unopened one, which refuses a sibling the same way; that one stays. */
+	size_t top = P->stack.len - 1;
+	if (holds && !(s_eq(P->stack.data[top].indent, indent) && P->stack.data[top].node == UNOPENED)) {
+		ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P->tmp, &P->stack, se);
+	}
+}
+
 /* Diagnose a line written under a skipped line, and skip it too. Its own
    level stays dead so deeper lines go the same way. */
 static void skip_under_dead(ShclParser *P, size_t line, ShclStr indent) {
-	p_err(P, line, "E018", s_lit("parent line was skipped; line skipped"));
-	P->d->lost++;
-	ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P->tmp, &P->stack, se);
+	p_refuse(P, line, "E018", s_lit("parent line was skipped; line skipped"), out_kind(OUT_DROPPED), indent);
 }
 
 /* The single H002 wording site: the merge hint and the schema suppressor
@@ -2450,7 +2488,7 @@ static void reent_set(ShclParser *P, size_t node, size_t line) {
 		if (P->reent_node.data[i] == node) { P->reent_line.data[i] = line; return; }
 	ShclVecSize_push(P->tmp, &P->reent_node, node); ShclVecSize_push(P->tmp, &P->reent_line, line);
 }
-static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t nsegs, ShclValue value, size_t line, size_t *out) {
+static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t nsegs, ShclValue value, size_t line, ShclStr indent, size_t *out) {
 	ShclArena *a = &P->d->arena;
 	/* Field child under a stacked list: diagnose the mix once, keep the field. */
 	star_flush(P);
@@ -2464,8 +2502,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 	for (size_t up = parent; up != ROOT; up = NODE(P->d, up).parent) parent_depth++;
 	if (parent_depth + nsegs > SHCL_MAX_DEPTH) {
 		ShclSB m = {0}; sb_puts(P->line, &m, "nesting deeper than "); sb_put_u64(P->line, &m, SHCL_MAX_DEPTH); sb_puts(P->line, &m, " levels; line skipped");
-		p_err(P, line, "E016", sb_S(&m));
-		P->d->lost++;
+		p_refuse(P, line, "E016", sb_S(&m), out_kind(OUT_DROPPED), indent);
 		return 0;
 	}
 	size_t cur = parent;
@@ -2491,8 +2528,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 			}
 			if (is_last && !v_is_empty(&value)) {
 				ShclSB m = {0}; sb_puts(P->line, &m, "value after selector on '"); sb_putS(P->line, &m, seg->name); sb_puts(P->line, &m, "' ignored");
-				p_err(P, line, "E002", sb_S(&m));
-				P->d->lost++;
+				p_refuse(P, line, "E002", sb_S(&m), out_kind(OUT_VALUE_DROPPED), indent);
 			}
 			break;
 		}
@@ -2507,19 +2543,18 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 			if (found != (size_t)-1) cur = found;
 			else {
 				ShclSB m = {0}; sb_puts(P->line, &m, "no instance "); sb_put_u64(P->line, &m, seg->sel.index); sb_puts(P->line, &m, " of '"); sb_putS(P->line, &m, seg->name); sb_putc(P->line, &m, '\'');
-				p_err(P, line, "E003", sb_S(&m)); P->d->lost++; return 0;
+				p_refuse(P, line, "E003", sb_S(&m), out_kind(OUT_DROPPED), indent); return 0;
 			}
 			/* Same as the value selector: the instance is already chosen, so a
 			   trailing value has nowhere to bind. */
 			if (is_last && !v_is_empty(&value)) {
 				ShclSB m = {0}; sb_puts(P->line, &m, "value after selector on '"); sb_putS(P->line, &m, seg->name); sb_puts(P->line, &m, "' ignored");
-				p_err(P, line, "E002", sb_S(&m));
-				P->d->lost++;
+				p_refuse(P, line, "E002", sb_S(&m), out_kind(OUT_VALUE_DROPPED), indent);
 			}
 			break;
 		}
 		case SEL_WILDCARD:
-			p_err(P, line, "E004", s_lit("wildcard selector is query-only")); P->d->lost++; return 0;
+			p_refuse(P, line, "E004", s_lit("wildcard selector is query-only"), out_kind(OUT_DROPPED), indent); return 0;
 		case SEL_NONE: {
 			size_t seg_parent = cur;
 			size_t before = P->d->nodes.len;
@@ -2620,8 +2655,8 @@ static ShclValue consume_raw(ShclParser *P, const ShclStr *lines, size_t nlines,
 }
 
 /* Returns the node the block landed on ((size_t)-1 = no parent, diagnosed). */
-static size_t bind_block(ShclParser *P, size_t parent, ShclValue value, size_t line) {
-	if (parent == ROOT) { p_err(P, line, "E006", s_lit("raw block with no parent field")); P->d->lost++; return (size_t)-1; }
+static size_t bind_block(ShclParser *P, size_t parent, ShclValue value, size_t line, ShclStr indent) {
+	if (parent == ROOT) { p_refuse(P, line, "E006", s_lit("raw block with no parent field"), out_kind(OUT_DROPPED), indent); return (size_t)-1; }
 	if (v_is_empty(&NODE(P->d, parent).value)) {
 		uint64_t old_key = merge_hash(NODE(P->d, parent).name, &NODE(P->d, parent).value);
 		uint64_t old_disp = disp_hash(NODE(P->d, parent).name, &NODE(P->d, parent).value);
@@ -2633,25 +2668,24 @@ static size_t bind_block(ShclParser *P, size_t parent, ShclValue value, size_t l
 	return select_or_create(P, gp, name, name_src, value, line);
 }
 
-/* 1 when the element was added, 0 when the line was dropped. */
-static int add_star_element(ShclParser *P, size_t parent, ShclStr body, size_t line) {
+/* One stacked-list element (`* scalar`) appends to the parent's array. */
+static void add_star_element(ShclParser *P, size_t parent, ShclStr body, size_t line, ShclStr indent) {
 	ShclArena *a = &P->d->arena;
-	if (parent == ROOT) { p_err(P, line, "E007", s_lit("list element with no parent field")); P->d->lost++; return 0; }
+	if (parent == ROOT) { p_refuse(P, line, "E007", s_lit("list element with no parent field"), out_kind(OUT_DROPPED), indent); return; }
 	/* Uniform-or-nothing (spec): a mix with field children is not a block array. */
-	if (NODE(P->d, parent).children.len != 0) { p_err(P, line, "E008", s_lit("list element mixed with field children; ignored")); P->d->lost++; return 0; }
+	if (NODE(P->d, parent).children.len != 0) { p_refuse(P, line, "E008", s_lit("list element mixed with field children; ignored"), out_kind(OUT_DROPPED), indent); return; }
 	ShclStr trimmed = s_trim_wsp(body);
-	if (trimmed.n == 0) { p_err(P, line, "E009", s_lit("empty list element")); P->d->lost++; return 0; }
-	if (count_unquoted_pieces(trimmed) > 1) { p_err(P, line, "E010", s_lit("bare comma in list element (one element per line)")); P->d->lost++; return 0; }
+	if (trimmed.n == 0) { p_refuse(P, line, "E009", s_lit("empty list element"), out_kind(OUT_DROPPED), indent); return; }
+	if (count_unquoted_pieces(trimmed) > 1) { p_refuse(P, line, "E010", s_lit("bare comma in list element (one element per line)"), out_kind(OUT_DROPPED), indent); return; }
 	if (unterminated_quote(P->line, trimmed)) p_err(P, line, "E017", s_lit("unterminated quote in value"));
 	ShclElement el;
-	if (!parse_element(a, trimmed, &el)) { p_err(P, line, "E009", s_lit("empty list element")); P->d->lost++; return 0; }
+	if (!parse_element(a, trimmed, &el)) { p_refuse(P, line, "E009", s_lit("empty list element"), out_kind(OUT_DROPPED), indent); return; }
 	/* Element cap: each element line past it is refused on its own, the way
 	   any other bad element line is. */
 	if (P->max_elements && NODE(P->d, parent).value.kind == V_CELL && NODE(P->d, parent).value.nels >= P->max_elements) {
 		ShclSB m = {0}; sb_puts(P->line, &m, "array longer than "); sb_put_u64(P->line, &m, P->max_elements); sb_puts(P->line, &m, " elements; line skipped");
-		p_err(P, line, "E021", sb_S(&m));
-		P->d->lost++;
-		return 0;
+		p_refuse(P, line, "E021", sb_S(&m), out_kind(OUT_DROPPED), indent);
+		return;
 	}
 	ShclNode *node = &NODE(P->d, parent);
 	if (node->value.kind == V_EMPTY) {
@@ -2680,11 +2714,8 @@ static int add_star_element(ShclParser *P, size_t parent, ShclStr body, size_t l
 		}
 		node->value.els[node->value.nels++] = el;
 	} else {
-		p_err(P, line, "E011", s_lit("field already has a value; list element ignored"));
-		P->d->lost++;
-		return 0;
+		p_refuse(P, line, "E011", s_lit("field already has a value; list element ignored"), out_kind(OUT_DROPPED), indent);
 	}
-	return 1;
 }
 
 /* The single H001 wording site: the hint builder and the schema suppressor
@@ -2807,8 +2838,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		   truncated document. */
 		if (P.max_nodes && d->nodes.len - 1 > P.max_nodes) {
 			ShclSB m = {0}; sb_puts(P.line, &m, "node cap of "); sb_put_u64(P.line, &m, P.max_nodes); sb_puts(P.line, &m, " exceeded; parse stopped");
-			p_err(&P, i + 1, "E020", sb_S(&m));
-			for (size_t r = i; r < lines.len; r++) if (s_trim_wsp(lines.data[r]).n) d->lost++;
+			p_refuse(&P, i + 1, "E020", sb_S(&m), out_stopped(lines.data + i, lines.len - i), s_empty());
 			node_capped = 1;
 			break;
 		}
@@ -2841,10 +2871,10 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			size_t next; ShclValue val = consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, f, &next);
 			/* The body goes with its fence: parsed live, it would read as root
 			   bindings and the closing fence would open a second block. */
-			if (!resolved) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i = next; continue; }
+			if (!resolved) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i = next; continue; }
 			if (parent == DEAD) skip_under_dead(&P, lineno, indent);
 			else {
-				size_t bnode = bind_block(&P, parent, val, lineno);
+				size_t bnode = bind_block(&P, parent, val, lineno, indent);
 				if (bnode != (size_t)-1) attach_trivia(&P, bnode, s_empty());
 			}
 			i = next; continue;
@@ -2858,7 +2888,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			if (after.n == 0 && lines.data[i].n > indent.n + 1) spaced = lines.data[i].p[indent.n + 1] == ' ' || lines.data[i].p[indent.n + 1] == '\t';
 			if (spaced) {
 				size_t parent;
-				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
+				if (!resolve_parent(&P, indent, &parent)) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i++; continue; }
 				if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
 				ShclStr ecomment; ShclStr body = split_value_comment(after, &ecomment);
 				/* Elements have no node of their own; trivia rides the field. At the
@@ -2866,29 +2896,18 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 				   like any other pending one. */
 				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
 				else if (ecomment.n) { ShclPend pd; pd.text = ecomment; pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n; ShclVecPend_push(P.tmp, &P.pending, pd); }
-				/* A dropped element holds its indent level like any skipped line,
-				   so what is written under it is skipped with it (E018) rather
-				   than re-parenting to the field. */
-				if (!add_star_element(&P, parent, body, lineno)) { ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se); }
+				add_star_element(&P, parent, body, lineno, indent);
 				i++; continue;
 			}
 			{
 				size_t parent;
-				if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
+				if (!resolve_parent(&P, indent, &parent)) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i++; continue; }
 				if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
 			}
-			p_err(&P, lineno, "E013", s_lit("malformed line: '*' must be followed by a space"));
-			/* Content-malformed at any position, so it is safe to retain
-			   verbatim as trivia: re-emitted, it re-diagnoses identically and
-			   can never read as a live binding. A hand-typo no longer
-			   vanishes on the consumer's next save. The BOM exception the
-			   sibling site below carries cannot apply here: this line starts
-			   with the '*' that brought us in. */
-			{
-				ShclPend pd; pd.text = trim_wsp_end(rest); pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n;
-				ShclVecPend_push(P.tmp, &P.pending, pd);
-				ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);
-			}
+			/* Content-malformed at any position, so safe to retain. The BOM
+			   exception the field arm carries cannot apply here: this line
+			   starts with the '*' that brought us in. */
+			p_refuse(&P, lineno, "E013", s_lit("malformed line: '*' must be followed by a space"), out_retained(trim_wsp_end(rest), had_blank), indent);
 			i++; continue;
 		}
 		ShclStr comment; ShclStr before = split_comment(rest, &comment);
@@ -2911,19 +2930,16 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			i++; continue;
 		}
 		size_t parent;
-		if (!resolve_parent(&P, indent, &parent)) { p_err(&P, lineno, "E012", s_lit("indentation matches no open level")); d->lost++; i++; continue; }
+		if (!resolve_parent(&P, indent, &parent)) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i++; continue; }
 		if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
 		ShclPathScan scan = scan_path(&own->line, content);
 		if (!scan.ok) {
-			ShclSB m = {0}; sb_puts(P.line, &m, "malformed line skipped: "); sb_putS(P.line, &m, scan.err); p_err(&P, lineno, "E014", sb_S(&m));
-			/* Content-malformed at any position - retained as trivia, same
-			   rationale (and same BOM exception) as the bad '*' line above. */
-			if (rest.n >= 3 && (unsigned char)rest.p[0] == 0xEF && (unsigned char)rest.p[1] == 0xBB && (unsigned char)rest.p[2] == 0xBF) d->lost++;
-			else {
-				ShclPend pd; pd.text = trim_wsp_end(rest); pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n;
-				ShclVecPend_push(P.tmp, &P.pending, pd);
-			}
-			ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);
+			ShclSB m = {0}; sb_puts(P.line, &m, "malformed line skipped: "); sb_putS(P.line, &m, scan.err);
+			/* Content-malformed at any position, so retained - except a line led
+			   by a BOM, which the file-start strip would rewrite into something
+			   that can bind. */
+			int bom = rest.n >= 3 && (unsigned char)rest.p[0] == 0xEF && (unsigned char)rest.p[1] == 0xBB && (unsigned char)rest.p[2] == 0xBF;
+			p_refuse(&P, lineno, "E014", sb_S(&m), bom ? out_kind(OUT_DROPPED) : out_retained(trim_wsp_end(rest), had_blank), indent);
 			i++; continue;
 		}
 		size_t next = i + 1;
@@ -2938,8 +2954,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 					   never survive the load, so a rewrite would bake the changed
 					   value in and the file would check clean forever after.
 					   Count it lost so the save gate stops that. */
-					p_err(&P, lineno, "E019", s_lit("bracket array syntax; an array is comma-separated, without brackets"));
-					P.d->lost++;
+					p_refuse(&P, lineno, "E019", s_lit("bracket array syntax; an array is comma-separated, without brackets"), out_kind(OUT_VALUE_DROPPED), indent);
 				} else {
 					/* One element reads as the selector the scanner made of it -
 					   [Boston] is Boston - and field:[disc] is documented sugar,
@@ -2961,9 +2976,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 				   (the quote check does too), or the cap would bound nothing. */
 				if (P.max_elements && cell_exceeds(scan.value_text, P.max_elements)) {
 					ShclSB m = {0}; sb_puts(P.line, &m, "array longer than "); sb_put_u64(P.line, &m, P.max_elements); sb_puts(P.line, &m, " elements; line skipped");
-					p_err(&P, lineno, "E021", sb_S(&m));
-					P.d->lost++;
-					ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);
+					p_refuse(&P, lineno, "E021", sb_S(&m), out_kind(OUT_DROPPED), indent);
 					i = next; continue;
 				}
 				if (unterminated_quote(&own->line, scan.value_text)) p_err(&P, lineno, "E017", s_lit("unterminated quote in value"));
@@ -2971,12 +2984,10 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			}
 		}
 		size_t node = 0; /* attach_path fills it; the init quiets gcc's inlining-dependent maybe-uninitialized */
-		if (attach_path(&P, parent, scan.segs.data, scan.segs.len, value, lineno, &node)) {
+		if (attach_path(&P, parent, scan.segs.data, scan.segs.len, value, lineno, indent, &node)) {
 			if (had_blank) NODE(d, node).blank_before = 1;
 			attach_trivia(&P, node, comment);
 			ShclStackEnt se; se.indent = indent; se.node = node; ShclVecStack_push(P.tmp, &P.stack, se);
-		} else {
-			ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P.tmp, &P.stack, se);
 		}
 		i = next;
 	}
@@ -2984,7 +2995,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	   left to skip. */
 	if (!node_capped && P.max_nodes && d->nodes.len - 1 > P.max_nodes) {
 		ShclSB m = {0}; sb_puts(P.line, &m, "node cap of "); sb_put_u64(P.line, &m, P.max_nodes); sb_puts(P.line, &m, " exceeded; parse stopped");
-		p_err(&P, lines.len, "E020", sb_S(&m));
+		p_refuse(&P, lines.len, "E020", sb_S(&m), out_stopped(NULL, 0), s_empty());
 	}
 	star_flush(&P);
 	fold_late_dups(&P);

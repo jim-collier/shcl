@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A raw-block fence with no parent field (`E006`) holds its indent level like every other skipped line, so a line written deeper than it is skipped with it (`E018`) instead of binding to the root. It was the one skipped line that did not.
+
 - `init` lays the generated lines out in tree order: a path's parent comes before its children and siblings keep the schema's order, where the lines used to follow the schema's order alone. A schema listing `a.host.srv` before `a` used to generate `a: x` after another field, re-opening `a`, and the starter config hinted `H002` on its own first lines. A schema already written in tree order generates the same text as before.
 
 - A `min` above its `max` is a schema fault. The range admits nothing, so every value drew both a below-min and an above-max error and the config looked wrong when the schema was. The range is dropped and reported once, at the `max` line; the field keeps its other constraints.

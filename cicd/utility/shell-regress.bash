@@ -898,6 +898,42 @@ n="$(fScanUnguardedGrep "${tmpDir}/scanbait.bash" | wc -l)"
 n="$(fScanTabEre "${tmpDir}/scanbait.bash" | wc -l)"
 ((n == 2)) || fBad "the backslash-t scan found ${n} of 2 spellings"
 
+##	The parser's lost count and its dead-level push have one home, the funnel
+##	(`refuse` in each binding). An arm that counted or pushed by hand is the
+##	shape nine review items took, one arm at a time, so no arm may. The scan
+##	lifts the funnel by its first line and the next function start, wants
+##	every increment and dead push inside it, and allows one outside: the
+##	merge's, which sums a layer's count into the base.
+##	The patterns ride the environment: awk's -v unescapes its value, so `\(`
+##	would reach the regex as a bare `(`.
+fScanFunnel(){   ## fScanFunnel FILE FUNNEL-REGEX NEXT-FN-REGEX WRITE-REGEX -> "inside outside"
+	fn="$2" nx="$3" wr="$4" awk '
+		$0 ~ ENVIRON["fn"] { in_fn = 1; next }
+		in_fn && $0 ~ ENVIRON["nx"] { in_fn = 0 }
+		$0 ~ ENVIRON["wr"] && $0 !~ /over(\.|->)_?lost/ { if (in_fn) ni++; else { no++; print FILENAME ":" NR ": " $0 > "/dev/stderr" } }
+		END { print ni + 0, no + 0 }
+	' "$1"
+}
+fCheckFunnel(){  ## fCheckFunnel LABEL FILE FUNNEL-REGEX NEXT-FN-REGEX WRITE-REGEX
+	local counts
+	counts="$(fScanFunnel "$2" "$3" "$4" "$5" 2>&1 || echo "scan failed 0 0")"
+	local inside="${counts##*$'\n'}"; inside="${inside%% *}"
+	local outside="${counts##* }"
+	((inside >= 2)) || fBad "$1: the funnel holds ${inside} of the two writes (scan blind?)"
+	((outside == 0)) || fBad "$1: ${outside} lost-count or dead-level write(s) outside the funnel:"$'\n'"${counts%$'\n'*}"
+}
+fCheckFunnel rust   "${repoDir}/source/rust/src/lib.rs"  '^\tfn refuse\('              '^\tfn |^}'          'lost \+=|lost\+=|DEAD\)\)'
+fCheckFunnel go     "${repoDir}/source/go/shcl.go"       '^func \(p \*parser\) refuse\(' '^func '            'lost\+\+|lost \+=|node: dead}'
+fCheckFunnel python "${repoDir}/source/python/shcl.py"   '^\tdef _refuse\('            '^\tdef |^class |^def ' 'lost \+=|, DEAD\)\)'
+fCheckFunnel c      "${repoDir}/source/c/shcl.h"         '^static void p_refuse\('      '^static |^}'         'lost\+\+|lost \+=|node = DEAD'
+##	Bait: a funnel holding both writes and one stray increment past it.
+{
+	printf '%s\n' 'static void p_refuse(void) {' '	P->d->lost += n;' '	se.node = DEAD;' '}' \
+		'static void other(void) {' '	d->lost += over->lost;' '	P->d->lost++;' '}'
+} > "${tmpDir}/funnelbait.h"
+counts="$(fScanFunnel "${tmpDir}/funnelbait.h" '^static void p_refuse\(' '^static |^}' 'lost\+\+|lost \+=|node = DEAD' 2>/dev/null)"
+[[ "$counts" == "2 1" ]] || fBad "the funnel scan counted '${counts}' on the bait, wanted '2 1'"
+
 ##	A one-line loop body that is a `[[ ... ]] && ...` list. When the test fails
 ##	on the last iteration the loop returns 1, which is harmless at statement
 ##	level on this bash but kills the caller the moment the loop becomes the last
