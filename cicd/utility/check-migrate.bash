@@ -125,6 +125,13 @@ fReadTree(){
 ##	runners pin those.
 fHasNul(){ IFS= read -r -d '' _ <"$1"; }
 
+##	A 2.x fence label carrying a whitespace-`#` has no spelling here at all: the
+##	`#` opens the line's comment now, and nothing quotes a label. So `migrate`
+##	leaves the line as written and the reading differs by design. Matched on the
+##	text rather than by file name, because a fuzz document's number moves every
+##	time the corpus grows.
+fInfoHashLabel(){ grep -qE '(```|~~~)[^#]*[[:space:]]#' "$1"; }
+
 declare -i nCompared=0 nSkipped=0 nBad=0 nExpected=0
 exceptions='068-info-hash-spellings'
 for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
@@ -132,26 +139,27 @@ for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
 	name="${f%/input.shcl}"; name="${name##*/}"
 	if fHasNul "${f}"; then nSkipped+=1; continue; fi
 	if ! fClean2x "${f}"; then nSkipped+=1; continue; fi
+	if fInfoHashLabel "${f}"; then
+		nSkipped+=1
+		if [[ " ${exceptions} " == *" ${name} "* ]]; then nExpected+=1; fi
+		continue
+	fi
 	"${newCli}" migrate "${f}" > "${tmpDir}/migrated.shcl" 2>/dev/null || true
 	want="$(fReadTree "${oldCli}" "${f}")"
 	got="$(fReadTree "${newCli}" "${tmpDir}/migrated.shcl")"
 	nCompared+=1
 	if [[ "${want}" != "${got}" ]]; then
-		if [[ " ${exceptions} " == *" ${name} "* ]]; then
-			nExpected+=1
-			continue
-		fi
 		nBad+=1
 		echo "check-migrate: DIVERGE ${name}: the 2.x reads of the original and the current reads of the migrated text differ"
 		diff <(printf '%s\n' "${want}") <(printf '%s\n' "${got}") | head -12 || true
 	fi
 done
 
-##	The named exception has to keep being one, or the list is stale.
+##	The named case has to keep carrying the shape, or the list is stale.
 for e in ${exceptions}; do
 	[[ -f "${corpus}/${e}/input.shcl" ]] || { echo "check-migrate: exception ${e} names no corpus case" >&2; nBad+=1; }
 done
-((nExpected == 1)) || { echo "check-migrate: expected exactly one known divergence (068), saw ${nExpected}" >&2; nBad+=1; }
+((nExpected == 1)) || { echo "check-migrate: expected exactly one named unmigratable case (068), saw ${nExpected}" >&2; nBad+=1; }
 if ((nCompared < minCompared)); then
 	echo "check-migrate: only ${nCompared} document(s) compared, need at least ${minCompared} (${nSkipped} skipped)" >&2
 	exit 2
@@ -160,7 +168,7 @@ if ((nBad)); then
 	echo "check-migrate: ${nBad} divergence(s) over ${nCompared} document(s) (${nSkipped} skipped as not clean under 2.x)" >&2
 	exit 1
 fi
-echo "check-migrate: OK: ${nCompared} document(s) migrate to the tree 2.x read (${nSkipped} skipped as not clean under 2.x, 1 known exception)"
+echo "check-migrate: OK: ${nCompared} document(s) migrate to the tree 2.x read (${nSkipped} skipped as not clean under 2.x or carrying an unmigratable fence label)"
 
 ##	History:
 ##		2026-09-08  Created with the 3.0 lexical cut, pinned on the funnel merge.

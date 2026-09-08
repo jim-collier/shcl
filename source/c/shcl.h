@@ -6609,17 +6609,14 @@ static int g_has_wild(const ShclVCons *c) {
 	return 0;
 }
 // `[#N]` needs a pre-existing instance and its `#` would start a comment on a
-// binding line; a newline inside a selector is left to the trailing note rather
-// than spelled inline. A path deeper than a document may nest
-// cannot be generated either: the line would draw E016 on the way back in. A
-// newline in a NAME is writable: names are stored escape-resolved and the name
-// escaper spells one `\n`.
+// binding line. A path deeper than a document may nest cannot be generated
+// either: the line would draw E016 on the way back in. A newline in a name or a
+// by-value selector is writable, since both are spelled escaped.
 static int g_unwritable(const ShclVCons *c) {
 	if (c->segs.len > SHCL_MAX_DEPTH) return 1;
 	for (size_t si = 0; si < c->segs.len; si++) {
 		const ShclSegment *sg = &c->segs.data[si];
 		if (sg->sel.tag == SEL_INDEX || sg->star) return 1;
-		if (sg->sel.tag == SEL_VALUE && memchr(sg->sel.value.p, '\n', sg->sel.value.n)) return 1;
 	}
 	return 0;
 }

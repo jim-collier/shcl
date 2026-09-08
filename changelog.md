@@ -147,6 +147,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `init` no longer refuses a required path whose by-value selector holds a line break. It reported `V097 required path cannot be generated` and exited 6, because a selector had no spelling for one; it does now, and the generated line reads back as the path it was generated for.
+
 - One carriage return comes off a write-ops line, not two. A line ending `v\r\r\n` reached the setter as `v` in the reference and Python and as `v\r` in Go and C: the first CR is the CRLF's and the second is the value's, and the reference took both.
 
 - `SetComment` no longer drops everything after the first line of the text it is given. It kept the first line, reported success, and said nothing about the rest, so a two-line note reached the file as one; text holding a line break is refused now.

@@ -5699,17 +5699,12 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		return any(s.selector is not None and s.selector[0] == "wild" for s in c.segs)
 
 	# `[#N]` needs a pre-existing instance and its `#` would start a comment on a
-	# binding line; a newline inside a selector is left to the trailing note
-	# rather than spelled inline. A path deeper than a document may nest cannot be
-	# generated either: the line would draw E016 on the way back in. A newline in
-	# a NAME is writable: names are stored escape-resolved and the name escaper
-	# spells one `\n`.
+	# binding line. A path deeper than a document may nest cannot be generated
+	# either: the line would draw E016 on the way back in. A newline in a name or
+	# a by-value selector is writable, since both are spelled escaped.
 	def unwritable(c):
 		return len(c.segs) > MAX_DEPTH or any(
-			(s.selector is not None and s.selector[0] == "idx")
-			or s.star
-			or (s.selector is not None and s.selector[0] == "val" and "\n" in s.selector[1])
-			for s in c.segs
+			(s.selector is not None and s.selector[0] == "idx") or s.star for s in c.segs
 		)
 
 	# Live concrete paths materialize instances; decide which must-exist
