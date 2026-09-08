@@ -77,6 +77,8 @@ Every item carries the date it was opened and, once settled, the date it closed.
 	- Fixed: elements are stored as the logical string they spell, since the escape rule now depends on how a piece was quoted and the tokenizer is the only thing that knows. Reads hand the text back as is, and the emitter picks the spelling.
 	- Decided: an element cap stops the scan rather than counting after it, so a capped parse still never builds the array it refuses. And an unterminated quote in a field name stays `E014`: a bare name cannot carry a quote, so there is nothing literal to keep.
 	- Pinned by: a `tokens` subcommand on every CLI, compared four ways by `crosscheck.bash` over the corpus and the fuzz soup; a generator in the reference that builds lines from the grammar with their spans known and asserts the tokenizer returns exactly those; `check-docs.bash` on the style guide's sentence; and a `shell-regress.bash` scan that refuses a quote-state variable outside the tokenizer in any binding.
+	- Measured: the release reference parses a 17 MB document 10% faster and formats it 9% faster than before. Python is 11 to 15% slower on a parse, since the value half now walks bytes in a Python loop; inside its own perf-gate ratio.
+	- Found on the way: a carriage return sitting before a fence line's comment ended the emitted fence line, and the next load stripped it. The value end takes a CR off with the blanks now, the way the old content trim did.
 	- Opened: 20260906-090943
 	- Closed: 20260908-000000
 
