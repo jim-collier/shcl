@@ -1,5 +1,6 @@
 query	type	expected	status
 -	load	ok	-
 idx	string	-	NotFound
+w	string	-	NotFound
 ok	int	1	Good
--	lost	2	-
+-	lost	0	-

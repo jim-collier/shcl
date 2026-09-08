@@ -5,8 +5,9 @@
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
 use shcl::{
-	Diagnostic, Document, SaveError, Severity, Status, Strictness, format_f64, generate,
-	parse_datetime, suppress_declared_reopens, suppress_declared_repeats,
+	Diagnostic, Document, Piece, Quote, Rules, SaveError, Severity, Status, Strictness, Tokens,
+	format_f64, generate, migrate, parse_datetime, suppress_declared_reopens,
+	suppress_declared_repeats, tokenize, write_file_atomic,
 };
 use std::process::ExitCode;
 
@@ -78,6 +79,11 @@ Usage:
                                          out)
   shcl paths [options] FILE              every field path in the document, one
                                          per line
+  shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current
+                                         rules (print it, or rewrite FILE in
+                                         place with --write)
+  shcl tokens FILE                       each line's lexical spans, for seeing
+                                         why the parser read a line as it did
   shcl help | version                    this help, or the version (also
                                          -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
@@ -117,10 +123,10 @@ Options (the subcommands each belongs to are in parentheses):
                                          wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
-  --lossy                                (fmt/set) with --write, rewrite even
-                                         when the load dropped lines this write
-                                         would delete; without it the write
-                                         refuses and nothing is changed
+  --lossy                                (fmt/set/migrate) with --write, rewrite
+                                         even when the load dropped lines this
+                                         write would delete; without it the
+                                         write refuses and nothing is changed
   --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
@@ -365,59 +371,14 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 }
 
 /// PATH=VALUE at the first `=` outside quotes and brackets, so a selector
-/// holding one (`x[a=b].c=1`) still addresses its instance. A quote opens
-/// only where the path scanner opens one - a segment's or a selector body's
-/// first char - so `srv[O'Brien].port=8080` splits at its `=`, and a bare
-/// selector body runs to the first `]`.
+/// holding one (`x[a=b].c=1`) still addresses its instance. The tokenizer
+/// reads the path half with `=` as its separator, so quotes and brackets
+/// mean here exactly what they mean in a file; an argument whose path half
+/// is not a path at all has no `=` to split at.
 fn split_set(arg: &str) -> Option<(&str, &str)> {
-	let bytes = arg.as_bytes();
-	let mut in_quote: Option<u8> = None;
-	let mut in_sel = false;
-	let mut at_start = true;
-	let mut i = 0;
-	while i < bytes.len() {
-		let b = bytes[i];
-		if let Some(q) = in_quote {
-			if b == b'\\' {
-				i += 1;
-			} else if b == q {
-				in_quote = None;
-			}
-			i += 1;
-			continue;
-		}
-		if b == b' ' || b == b'\t' {
-			i += 1;
-			continue;
-		}
-		if in_sel {
-			if b == b']' {
-				in_sel = false;
-			} else if at_start && (b == b'"' || b == b'\'') {
-				in_quote = Some(b);
-			}
-		} else {
-			match b {
-				b'"' | b'\'' if at_start => in_quote = Some(b),
-				b'[' => {
-					in_sel = true;
-					at_start = true;
-					i += 1;
-					continue;
-				}
-				b'.' => {
-					at_start = true;
-					i += 1;
-					continue;
-				}
-				b'=' => return Some((&arg[..i], &arg[i + 1..])),
-				_ => {}
-			}
-		}
-		at_start = false;
-		i += 1;
-	}
-	None
+	let mut tok = Tokens::default();
+	tokenize(arg, b'=', true, Rules::Current, &mut tok);
+	tok.sep.map(|i| (&arg[..i], &arg[i + 1..]))
 }
 
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
@@ -626,6 +587,8 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		],
 		"check" => &["--strictness", "--schema"],
 		"init" => &["--schema", "--no-banner"],
+		"migrate" => &["--write", "--lossy"],
+		"tokens" => &[],
 		"count" | "instances" | "children" | "paths" => &[
 			"--strictness",
 			"--layer",
@@ -1133,6 +1096,150 @@ fn do_fmt(o: &Opts) -> u8 {
 	0
 }
 
+/// A 2.x file rewritten for the current rules. The rewrite is text to text;
+/// the load after it is for the diagnostics and the save gate, the same gate
+/// `fmt --write` goes through.
+fn do_migrate(o: &Opts) -> u8 {
+	let [file] = o.args.as_slice() else {
+		errln!("usage: shcl migrate [--write|-w] FILE (see --help)");
+		return 1;
+	};
+	if o.write && file == "-" {
+		errln!("migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE");
+		return 1;
+	}
+	let text = match read_input(file) {
+		Ok(t) => t,
+		Err(e) => {
+			errln!("{}", e);
+			return EXIT_IO;
+		}
+	};
+	let migrated = migrate(&text);
+	let doc = match load_from("", &migrated, o.strictness) {
+		Ok(d) => d,
+		Err(code) => return code,
+	};
+	say_diagnostics_from("", doc.diagnostics());
+	if o.write {
+		if doc.lost_count() != 0 && !o.lossy {
+			errln!(
+				"{}: refusing to rewrite: the migrated text drops {} line(s)/value(s) on load (--lossy overrides)",
+				file,
+				doc.lost_count()
+			);
+			return 7;
+		}
+		return match write_file_atomic(file, &migrated) {
+			Ok(()) => 0,
+			Err(e) => {
+				errln!("{}", e);
+				EXIT_IO
+			}
+		};
+	}
+	out!("{}", migrated);
+	0
+}
+
+/// Every line's spans, one line of output per input line: the indent
+/// length, then each token as `kind=start-end` with a mark for how it was
+/// quoted (`'`, `"`, or `?` for a quote that never closed), offsets counted
+/// from the first character after the indent. A blank line and a comment
+/// line say so; every other line is tokenized on its own, raw bodies
+/// included, since this is the lexical view and not the parse.
+fn do_tokens(o: &Opts) -> u8 {
+	let [file] = o.args.as_slice() else {
+		errln!("usage: shcl tokens FILE (see --help)");
+		return 1;
+	};
+	let text = match read_input(file) {
+		Ok(t) => t,
+		Err(e) => {
+			errln!("{}", e);
+			return EXIT_IO;
+		}
+	};
+	let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+	let mut lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+	if text.ends_with('\n') {
+		lines.pop();
+	}
+	let mut tok = Tokens::default();
+	let mut out = String::new();
+	for (i, line) in lines.iter().enumerate() {
+		let ilen = line
+			.bytes()
+			.take_while(|&b| b == b' ' || b == b'\t')
+			.count();
+		let rest = &line[ilen..];
+		let rest = rest.trim_end_matches([' ', '\t', '\r']);
+		out.push_str(&format!("{}:{}", i + 1, ilen));
+		if rest.is_empty() {
+			out.push_str(" blank\n");
+			continue;
+		}
+		if rest.starts_with('#') {
+			out.push_str(" comment\n");
+			continue;
+		}
+		let span = |p: &Piece| {
+			let mark = match p.quote {
+				Quote::None => "",
+				Quote::Single => "'",
+				Quote::Double => "\"",
+				Quote::Open => "?",
+			};
+			format!("{}-{}{}", p.start, p.end, mark)
+		};
+		// A stacked element and a fence line are value halves on their own.
+		let star = rest.starts_with('*') && rest[1..].starts_with([' ', '\t']);
+		let fence = rest.starts_with("```") || rest.starts_with("~~~");
+		if star || fence {
+			shcl::tokenize_value(rest, usize::from(star), Rules::Current, &mut tok);
+			out.push_str(if star { " star" } else { " fence" });
+			out.push_str(&format!(" value={}-{}", tok.value.0, tok.value.1));
+			for p in &tok.elements {
+				out.push_str(&format!(" elem={}", span(p)));
+			}
+			if let Some(at) = tok.comment {
+				out.push_str(&format!(" comment={}", at));
+			}
+			out.push('\n');
+			continue;
+		}
+		tokenize(rest, b':', false, Rules::Current, &mut tok);
+		for seg in &tok.segments {
+			out.push_str(&format!(
+				" {}={}",
+				if seg.star { "star" } else { "name" },
+				span(&seg.name)
+			));
+			if let Some(sel) = &seg.selector {
+				out.push_str(&format!(" sel={}", span(sel)));
+			}
+		}
+		if let Some(at) = tok.sep {
+			out.push_str(&format!(
+				" sep={} value={}-{}",
+				at, tok.value.0, tok.value.1
+			));
+			for p in &tok.elements {
+				out.push_str(&format!(" elem={}", span(p)));
+			}
+		}
+		if let Some(at) = tok.comment {
+			out.push_str(&format!(" comment={}", at));
+		}
+		if let Some((at, why)) = tok.fault {
+			out.push_str(&format!(" fault={}:{}", at, why));
+		}
+		out.push('\n');
+	}
+	out!("{}", out);
+	0
+}
+
 /// Decode an ops-script value: \n \t \\ only; other `\x` stays verbatim. The
 /// setters re-encode, so this is just for embedding newlines/tabs on one line.
 fn unescape_ops(s: &str) -> String {
@@ -1601,7 +1708,7 @@ fn do_paths(o: &Opts) -> u8 {
 	0
 }
 
-const COMMANDS: [&str; 9] = [
+const COMMANDS: [&str; 11] = [
 	"get",
 	"set",
 	"fmt",
@@ -1611,6 +1718,8 @@ const COMMANDS: [&str; 9] = [
 	"instances",
 	"children",
 	"paths",
+	"migrate",
+	"tokens",
 ];
 
 fn run(cmd: &str, o: &Opts) -> u8 {
@@ -1632,6 +1741,8 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 		"instances" => do_enum(o, false),
 		"children" => do_children(o),
 		"paths" => do_paths(o),
+		"migrate" => do_migrate(o),
+		"tokens" => do_tokens(o),
 		other => {
 			errln!("{}: no dispatch arm (see --help)", other);
 			1

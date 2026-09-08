@@ -289,6 +289,14 @@ grep -qF 'the range is dropped (the field keeps its other constraints)' "${repoD
 grep -q 'The field is dropped' "${repoDir}/changelog.md" \
 	&& fBad "changelog.md: a crossed min/max range drops the range, not the field"
 
+##	The style guide names the tokenizer as the one place the lexical rules
+##	live, and the reference's section header says the same. Both sentences
+##	are what a reader is told to rely on, so neither may drift or go.
+grep -qF 'The tokenizer is the one place the lexical rules live.' "${repoDir}/style-guide.md" \
+	|| fBad "style-guide.md: the tokenizer sentence is gone"
+grep -qF '// Tokenizer - the one place the lexical rules live' "${repoDir}/source/rust/src/lib.rs" \
+	|| fBad "lib.rs: the tokenizer section header is gone"
+
 if ((nBad)); then
 	echo "check-docs: ${nBad} check(s) failed" >&2
 	exit 1
@@ -299,3 +307,4 @@ echo "check-docs: OK"
 ##		2026-08-30  Created, after a double negative reversed the legal-advice
 ##		            disclaimer in a document that invites verbatim reuse.
 ##		2026-09-05  The crossed-range entry must agree with the spec's table.
+##		2026-09-08  The tokenizer sentence in the style guide and the reference.

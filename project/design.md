@@ -96,14 +96,18 @@ Other points
 
 - Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Two neighbors stay unpadded on purpose: bare `shcl`, which prints the same help text but as a usage error, and `version`, which stays a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
 
-- The lexical rules shrink at 3.0. Decided 2026-09-06, not built yet; the backlog carries the work and the migration.
+- The lexical rules shrink at 3.0. Decided 2026-09-06, built 2026-09-08; `spec.md` has the wording and `migrate` carries a 2.x file across.
 	- Why: the same lexical rule lived in seven scanners per binding, and every scanner defect since July was two of them disagreeing. A fix reached the copies that were reproduced. One tokenizer per binding replaces them, and fewer rules leave it less to get wrong.
-	- A `[` right after a name is a selector; a `[` after the colon starts the value. The `field:[disc]` sugar goes, and bracket text after a colon is refused whole and kept verbatim, like a pasted YAML list.
-	- A quoted piece opens with a quote as its first character and closes with its last. Anywhere else a quote is a character, in a name, a selector, a value, an element, a setter argument, a `--set` path and a schema path alike. An unterminated quote keeps the piece literally everywhere.
-	- Escapes are processed inside double quotes only. Single quotes are literal and bare text never processes a backslash, which is TOML's and YAML's rule.
-	- `#` opens a comment only when first on the line or preceded by a space or tab, YAML's rule. A fence line can carry a trailing comment again in both spellings.
+	- A `[` right after a name is a selector; a `[` after the colon starts the value. The `field:[disc]` sugar is gone, and bracket text after a colon is refused whole and kept verbatim, like a pasted YAML list.
+	- A quoted piece opens with a quote as its first character and closes at the next matching quote, which has to be the last thing in the piece. Anywhere else a quote is a character, in a name, a selector, a value, an element, a setter argument, a `--set` path and a schema path alike. A piece that opens a quote it never closes that way is read bare, quotes and all, and reported; the comma or comment after it still ends it, so a typo costs one element rather than the rest of the line.
+	- Escapes are processed inside double quotes only. Single quotes are literal and bare text never processes a backslash, which is TOML's and YAML's rule. Elements are stored as the logical string they spell, so a read hands the text back as is and the emitter picks the spelling: single quotes for text holding a double quote or a backslash, double quotes with escapes for a line break, a tab, or both quote kinds.
+	- `#` opens a comment only when first on the line or preceded by a space or tab, YAML's rule. A fence line carries a trailing comment again in both spellings, and the info string is bare text: `c#` is a label.
 	- The trailing carriage-return run comes off every line at load, raw bodies included, and a CR is special nowhere else.
-	- The cost, said once: a bare `\n` or `\t` and a single-quoted escape change meaning. A `migrate` command in 3.0 rewrites a file in one pass, and a 2.x reader is unaffected by the migrated file. There is no 2.1.0; everything since 2.0.0 goes out in 3.0.0.
+	- The cost, said once: a bare `\n` or `\t` and a single-quoted escape change meaning. A `migrate` command rewrites a file in one pass, and a 2.x reader is unaffected by the migrated file. There is no 2.1.0; everything since 2.0.0 goes out in 3.0.0.
+	- One shape has no spelling after the cut: a fence label holding a whitespace-`#`, which now ends the label and opens a comment. `migrate` leaves such a line as written and the load names it.
+
+- One tokenizer per binding is the only reader of a line's parts. It takes text and a separator and hands back spans: per segment a name and an optional selector body, each with how it was quoted; the separator; the value and its elements; the comment; or the fault that makes the line malformed. Nothing is copied. The parser's line dispatch, the path scanner behind every lookup and setter, `SetLiteral`, `SetRaw`'s info check and the CLI's `--set` split all read those spans, and the seven scanners they replaced are deleted rather than wrapped. A 2.x flag on the same tokenizer is what `migrate` reads with, so the old rules live in one place too.
+	- Pinned by a `tokens` subcommand on every CLI, compared four ways over the corpus and the fuzz soup, and by a generator in the reference that builds lines from the grammar with their spans known and asserts the tokenizer returns exactly those.
 
 The itemized decisions are recorded in this file as they are made; `spec.md` is their normative form.
 
@@ -363,7 +367,7 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - **`set --write` creates a FILE that is not there yet.** `--write` names the file the command produces, so reporting it missing was an obstacle rather than a safeguard - the workaround was to `touch` it first, which is the same act with an extra step. `fmt --write` deliberately does not, having nothing to format. A file that exists but cannot be read stays an error in both, since the alternative is writing over something unread.
 
-- **Bracket text counts as lost only when it holds an unquoted comma.** `ports: [80, 443]` and the selector sugar `base:[Boston]` are one spelling to the grammar, and the first cut of `E019` treated both as lost content, so a file written with the documented sugar failed `check` and could not be saved. What the save gate exists to stop is `[80, 443]` folding into the one string `80, 443`; with no unquoted comma the value reads the same with or without the brackets. So the comma decides: an error that counts lost, or a hint under the same code (the `E022` precedent) that counts nothing. A hint rather than silence, because `tags: [prod]` is usually a JSON habit and the rewrite to `tags: prod` should not go unexplained.
+- **Bracket text after the colon is retained, never read.** `ports: [80, 443]` used to be read through the selector scanner, which folded two elements into the one string `80, 443`; the first cut of `E019` counted that as lost, then only when the brackets held an unquoted comma, because the selector sugar `base:[Boston]` was spelled the same way. At 3.0 the sugar is gone, so a `[` after the colon has one meaning: the JSON habit. The line is kept verbatim like any other malformed line, binds nothing, and counts nothing lost, the way a pasted YAML `- item` line already was. An error rather than a hint, because the value is not there to read.
 
 - **A refused in-place write exits 7, its own code.** It shared 1 with usage and I/O errors, so a script could not tell "pass `--lossy` or fix the file" apart from "the command line is wrong" - and the refusal is the one failure whose remedy is a decision rather than a correction.
 
@@ -411,7 +415,7 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 | `E016` | error | dropped |
 | `E017` | error | bound |
 | `E018` | error | dropped |
-| `E019` | error or hint | value dropped when the brackets hold an unquoted comma (error); bound otherwise (hint) |
+| `E019` | error | retained |
 | `E020` | error | the parse stopped: every later non-blank line is dropped, and no level is held |
 | `E021` | error | dropped |
 | `E022` | error or hint | bound (about the list, not a line) |

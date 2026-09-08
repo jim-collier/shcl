@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `shcl migrate FILE [--write]`, and `migrate(text)` in every binding: a file written for 2.x, rewritten for the 3.0 lexical rules so the parser reads the same tree. Only what the two rule sets read differently is touched - a backslash 2.x read as an escape outside double quotes, a quote that never closed, a `#` with no space before it, and the `name:[disc]` selector sugar - and comments, blank lines, raw bodies and layout come through as written. `--write` goes through the same gate as `fmt --write`.
+
+- `shcl tokens FILE`: each line's lexical spans, one output line per input line, for seeing why the parser read a line the way it did. It prints the same view the parser reads through, so it is also the cross-binding pin for the tokenizer.
+
 - `ReadFile(path, maxBytes)` in every binding and the C++ veneer: the file tier's read half on its own - the file's text, or the load status saying why not, with a cap on how much is read (past it is `Unreadable`; 0 is no cap). `LoadFile` is now this plus a parse. It is for a consumer that needs the exact bytes it last saw, to tell its own save coming back as a change notification from somebody else's edit, or a bound on what it will read before parsing - both of which meant keeping a hand-rolled read beside the library.
 
 - `ParseLimited` (each binding's spelling, and the C++ veneer): a parse with caller-supplied caps, for input the consumer does not control. A document holds many times its byte size in memory, so `ReadFile`'s byte cap alone cannot bound a load. A node cap stops the parse with one `E020` and counts the unparsed remainder as lost, so a save cannot silently truncate; an element cap refuses any line whose array would exceed it (`E021`), skipping the line whole rather than truncating the value; a diagnostic cap lists only that many and ends the list with one `E022` that counts the rest, since a document of nothing but bad lines costs a diagnostic per line. 0 disables a cap.
@@ -35,6 +39,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The Windows setup handles a running `shcl.exe` and an existing older install instead of failing partway through.
 
 ### Changed
+
+- The lexical rules are smaller, and one tokenizer per binding is the only place they live. Seven scanners used to carry their own copy of when a quote opens, what a backslash shields and where a selector ends, and every scanner defect since July was two of them disagreeing. What a 2.x file reads differently, and `migrate` rewrites:
+	- Escapes are processed inside double quotes only. Single quotes are literal, and a backslash in bare text is a character, so `path: C:\dir\new` reads as written. `\,` and `\#` no longer shield a comma or a `#` in bare text; quote the value instead.
+	- `#` opens a comment only when first on the line or after a space or tab, YAML's rule. `url: http://h/#frag` is a bare value, `a[#2]` is an index selector reachable from a file, `c#` is a fence label, and `a:#x` is the value `#x`. A fence line takes a trailing ` # note` as a comment again, in both spellings, and the info string is bare text.
+	- A `[` right after a name is a selector and a `[` after the colon starts the value. The `field:[disc]` sugar is gone; `field[disc]` is the one spelling. `E019` is one outcome now: bracket text after the colon is kept verbatim and binds nothing, like a pasted YAML list, so nothing is counted lost and the rewrite goes through unchanged. `SetLiteral` refuses any text beginning with `[`.
+	- A quoted piece opens with a quote as its first character and closes at the next matching quote, which has to be the last thing in the piece; anywhere else a quote is a character. A piece that opens a quote it never closes that way is read bare, quotes and all, and reported (`E017`); the comma or comment after it still ends it, where it used to swallow the rest of the line. The same rule reads a selector body, which used to throw the whole line away.
+	- Elements are stored as the logical string they spell. A read hands the text back as is, and the emitter picks the spelling: single quotes for text holding a double quote or a backslash, double quotes with escapes for a line break, a tab, or both quote kinds. Canonical output of `a: "q\"uote"` is `a: 'q"uote'`.
 
 - A raw-block fence with no parent field (`E006`) holds its indent level like every other skipped line, so a line written deeper than it is skipped with it (`E018`) instead of binding to the root. It was the one skipped line that did not.
 

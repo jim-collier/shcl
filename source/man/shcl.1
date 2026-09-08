@@ -3,7 +3,7 @@
 .\"
 .\" Carries no version string on purpose: the release bump touches eight files
 .\" and this is not one of them. Keep it in step with HELP in the four CLIs.
-.TH SHCL 1 2026-08-30 shcl "User Commands"
+.TH SHCL 1 2026-09-08 shcl "User Commands"
 .SH NAME
 shcl \- read, edit, validate and format Simple Hierarchical Config Language files
 .SH SYNOPSIS
@@ -49,6 +49,15 @@ shcl \- read, edit, validate and format Simple Hierarchical Config Language file
 .SY shcl
 .B paths
 .RI [ options ]
+.I FILE
+.YS
+.SY shcl
+.B migrate
+.RB [ \-\-write | \-w ]
+.I FILE
+.YS
+.SY shcl
+.B tokens
 .I FILE
 .YS
 .SY shcl
@@ -153,6 +162,31 @@ Print every field path in the document, one per line, in file order and
 deduplicated \- the whole-document counterpart of
 .BR children .
 .TP
+.B migrate
+Rewrite a file written for shcl 2.x so the current parser reads the same
+tree, and print it (or rewrite
+.I FILE
+in place with
+.BR \-\-write ,
+through the same gate as
+.BR fmt ).
+Only what the two rule sets read differently is touched: a backslash 2.x read
+as an escape outside double quotes, a quote that never closed, a
+.B #
+with no space before it, and the
+.B name:[disc]
+selector sugar. Comments, blank lines, raw bodies and layout come through as
+written. The migrated text's diagnostics are printed, so a line the new rules
+refuse is named rather than silently kept.
+.TP
+.B tokens
+Print each line's lexical spans, one line of output per input line: the indent
+length, then every name, selector, separator, value, element and comment as
+.IR kind = start - end
+byte offsets from the first character after the indent, with a mark for how a
+piece was quoted, and the fault that made a line malformed. This is the view
+the parser reads a line through, for seeing why it read a line as it did.
+.TP
 .BR help ", " version ", " about ", " donate
 Print this command's help, its version, what SHCL is, or where to support it.
 The first two are also
@@ -238,7 +272,7 @@ that does not exist yet is created;
 has nothing to format and reports it missing.
 .TP
 .B \-\-lossy
-.RB ( fmt ", " set )
+.RB ( fmt ", " set ", " migrate )
 With
 .BR \-\-write ,
 rewrite even when the load dropped lines this write would delete. Without it

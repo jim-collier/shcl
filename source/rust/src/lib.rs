@@ -330,7 +330,7 @@ impl std::fmt::Display for ShclDateTime {
 
 #[derive(Debug, Clone, PartialEq)]
 struct Element {
-	text: String, // quote-stripped, escapes NOT applied (applied on string read; names differ - see scan_path_ex)
+	text: String, // the logical string: quotes stripped, escapes resolved
 	quoted: bool,
 }
 
@@ -383,14 +383,6 @@ struct RawVal {
 /// since 2.0, and a `[value]` selector matches on the resolved text already -
 /// without this, one selector addressed two instances. Borrowed when there is
 /// nothing to resolve, which is nearly every element.
-fn key_text(s: &str) -> std::borrow::Cow<'_, str> {
-	if s.contains('\\') {
-		std::borrow::Cow::Owned(apply_escapes(s))
-	} else {
-		std::borrow::Cow::Borrowed(s)
-	}
-}
-
 impl Value {
 	/// Merge key: nodes with equal (name, key) collapse into one.
 	fn key(&self) -> String {
@@ -402,10 +394,9 @@ impl Value {
 				// "a\0b" (NUL is legal in a quoted string), silently merging them.
 				let mut k = String::from("c:");
 				for e in els {
-					let t = key_text(&e.text);
-					k.push_str(&t.len().to_string());
+					k.push_str(&e.text.len().to_string());
 					k.push(':');
-					k.push_str(&t);
+					k.push_str(&e.text);
 				}
 				k
 			}
@@ -670,135 +661,479 @@ fn fold_node_into(arena: &mut [NodeData], survivor: usize, loser: usize) {
 pub const MAX_DEPTH: usize = 512;
 
 // ---------------------------------------------------------------------------
-// Lexical helpers
+// Tokenizer - the one place the lexical rules live
 // ---------------------------------------------------------------------------
+//
+// Every reading of a line's parts goes through `tokenize`: the parser's line
+// dispatch, the path scanner behind every lookup and setter, the comment and
+// comma splits, the element cap, the unterminated-quote check, `SetLiteral`
+// and the CLI's `--set` split. Seven scanners used to carry their own copy of
+// these rules, and every scanner defect since July was two of them
+// disagreeing. The rules, one sentence each:
+//
+// - A piece (a name, a selector body, a value element) is quoted only when
+//   its first character is a quote and the next matching quote is the last
+//   thing before the piece ends; inside double quotes a backslash escapes the
+//   next character, inside single quotes nothing does. Anywhere else a quote
+//   is an ordinary character, and a piece that began with one it never closed
+//   is kept literally and reported (`E017`).
+// - Escapes are processed inside double quotes only; bare text and single
+//   quotes never process a backslash.
+// - `#` opens a comment when it is outside quotes and either first in the
+//   text or preceded by a space or tab.
+// - A bare name is ASCII letters, digits, `-` and `_`; a `[` right after a
+//   name opens a selector, whose bare body runs to the first `]`; a `[` after
+//   the separator starts the value, which the parser refuses (`E019`).
+// - A value is split on unquoted commas, each piece trimmed.
+//
+// Under `Rules::V2` the tokenizer reads the 2.x spellings instead, for
+// `migrate`: any unquoted `#` is a comment, a backslash shields the next
+// character in bare and single-quoted text, a separator followed by `[` is
+// the selector sugar, and an open quote swallows the rest of the line.
 
-/// The text between the brackets of a value spelled the way JSON, TOML and
-/// YAML spell an array, or None when the line is not that shape. The path
-/// scanner reads the brackets as a selector, so the line arrives with no value
-/// text and the old repair blamed a colon that is plainly there. The colon
-/// that counts is the field's own: one inside a quoted name or a selector is
-/// not it. Selector sugar (`base:[Boston]`) is spelled the same way and is
-/// legal, so the caller decides by what the brackets hold.
-fn bracket_array_body(content: &str) -> Option<&str> {
-	match name_half(content, false) {
-		NameHalf::Colon(colon) => {
-			let rest = content[colon + 1..].trim();
-			rest.strip_prefix('[').and_then(|r| r.strip_suffix(']'))
-		}
-		_ => None,
+/// How a piece was quoted. `Open` is a piece that began with a quote and
+/// never closed with the matching quote as its last character: the whole
+/// piece is kept literally, quotes and all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quote {
+	None,
+	Single,
+	Double,
+	Open,
+}
+
+/// One piece of the text: byte offsets of its content. For a quoted piece
+/// the quotes sit just outside the span; for an open or bare piece the span
+/// is the trimmed text itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Piece {
+	pub start: usize,
+	pub end: usize,
+	pub quote: Quote,
+}
+
+/// One path segment: its name, an optional `[selector]` body, and whether
+/// the name was the bare `*` wildcard (lookups only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegTok {
+	pub name: Piece,
+	pub selector: Option<Piece>,
+	pub star: bool,
+}
+
+/// The spans of one line, or of one lookup path. Nothing is copied: every
+/// field is an offset into the text that was tokenized.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Tokens {
+	pub segments: Vec<SegTok>,
+	/// Offset of the separator (`:` on a line, `=` in `--set`); None when
+	/// the path ran to the end of the text or into a comment.
+	pub sep: Option<usize>,
+	/// The value: everything after the separator up to the comment, trimmed.
+	pub value: (usize, usize),
+	/// The value's comma-separated pieces, empty ones included, each trimmed.
+	pub elements: Vec<Piece>,
+	/// Offset of the `#` that opens a trailing comment.
+	pub comment: Option<usize>,
+	/// Where the path stopped making sense, and why. A faulted line is
+	/// malformed as a whole (`E014`).
+	pub fault: Option<(usize, &'static str)>,
+	/// The caller's element cap (0 = none): the scan stops as soon as the
+	/// value holds more elements than this, so a capped parse never builds
+	/// the array it is going to refuse. Kept across `tokenize` calls.
+	pub cap: usize,
+	/// True when the cap stopped the scan; `elements` is then incomplete.
+	pub capped: bool,
+}
+
+impl Tokens {
+	fn clear(&mut self) {
+		self.segments.clear();
+		self.sep = None;
+		self.value = (0, 0);
+		self.elements.clear();
+		self.comment = None;
+		self.fault = None;
+		self.capped = false;
+	}
+	/// How many elements the value holds: a quoted piece counts even when
+	/// empty (`""` is a real element), an empty bare slot does not.
+	pub fn element_count(&self) -> usize {
+		self.elements
+			.iter()
+			.filter(|p| p.quote != Quote::None || p.end > p.start)
+			.count()
 	}
 }
 
-/// How the name half of a field line ends.
-enum NameHalf {
-	Colon(usize), // the field's own colon, byte offset
-	Hash(usize),  // an unquoted `#` first: a comment, or a malformed name
-	End,
+/// Which spelling the tokenizer reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rules {
+	/// The current rules, listed at the top of this section.
+	Current,
+	/// The 2.x rules, for `migrate` only.
+	V2,
 }
 
-/// Scan a field line's name half the way the path scanner reads it. A quote
-/// opens only where the scanner opens one - as a segment's first char (a
-/// quoted name) or a selector body's first char (a quoted discriminator) - so
-/// `O'Brien` in a bare selector is text, not an open quote hiding the `#`
-/// after it. `\` shields the next char inside quotes only; a bare selector
-/// body runs to the first `]` unescaped, as it does in the scanner. With
-/// `sugar` a colon followed by `[` is selector sugar rather than the
-/// separator. An unquoted `#` ends the half wherever it sits: a comment, or a
-/// malformed name.
-fn name_half(s: &str, sugar: bool) -> NameHalf {
-	let mut in_quote: Option<char> = None;
-	let mut in_sel = false;
-	let mut at_start = true; // first char of a segment, or of a selector body
-	let mut it = s.char_indices();
-	while let Some((byte, c)) = it.next() {
-		if let Some(q) = in_quote {
-			if c == '\\' {
-				it.next();
-			} else if c == q {
-				in_quote = None;
-			}
-			continue;
-		}
-		if is_wsp(c) {
-			continue;
-		}
-		if c == '#' {
-			return NameHalf::Hash(byte);
-		}
-		if in_sel {
-			if c == ']' {
-				in_sel = false;
-			} else if at_start && (c == '"' || c == '\'') {
-				in_quote = Some(c);
-			}
-			at_start = false;
-			continue;
-		}
-		match c {
-			'"' | '\'' if at_start => in_quote = Some(c),
-			'[' => {
-				in_sel = true;
-				at_start = true;
-				continue;
-			}
-			'.' => {
-				at_start = true;
-				continue;
-			}
-			':' => {
-				let rest = s[byte + 1..].trim_start_matches([' ', '\t']);
-				if !(sugar && rest.starts_with('[')) {
-					return NameHalf::Colon(byte);
-				}
-			}
-			_ => {}
-		}
-		at_start = false;
+fn is_wsp_byte(b: u8) -> bool {
+	b == b' ' || b == b'\t'
+}
+
+fn is_bare_name_byte(b: u8) -> bool {
+	b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
+fn skip_wsp(s: &[u8], pos: &mut usize) {
+	while *pos < s.len() && is_wsp_byte(s[*pos]) {
+		*pos += 1;
 	}
-	NameHalf::End
 }
 
-/// Offset of the `#` that starts a comment in value text, scanning from
-/// `from`. A quote opens a quoted piece only at the start of a piece - the
-/// start of the value, or after an unquoted comma - which is the spec's rule:
-/// a piece is quoted only when it begins with one. So an apostrophe in prose
-/// (`don't panic  # keep`) hides nothing. `\` shields the next char.
-fn value_comment_at(s: &str, from: usize) -> Option<usize> {
-	let mut in_quote: Option<char> = None;
-	let mut at_start = true;
-	let mut it = s[from..].char_indices();
-	while let Some((off, c)) = it.next() {
-		if c == '\\' {
-			it.next();
-			at_start = false;
+/// Byte length of the UTF-8 character that starts with `b`. The scan only
+/// ever compares against ASCII structure characters, which UTF-8 guarantees
+/// cannot appear inside a multibyte sequence, so it advances by whole
+/// characters and every offset it records is a character boundary.
+fn utf8_len(b: u8) -> usize {
+	match b {
+		0..=0x7F => 1,
+		0xC0..=0xDF => 2,
+		0xE0..=0xEF => 3,
+		_ => 4,
+	}
+}
+
+/// Offset of the quote that closes the one at `pos`, or None.
+fn quote_close(s: &[u8], pos: usize, rules: Rules) -> Option<usize> {
+	let q = s[pos];
+	let escapes = q == b'"' || rules == Rules::V2;
+	let mut i = pos + 1;
+	while i < s.len() {
+		if escapes && s[i] == b'\\' && i + 1 < s.len() {
+			i += 1 + utf8_len(s[i + 1]);
 			continue;
 		}
-		match in_quote {
-			Some(q) => {
-				if c == q {
-					in_quote = None;
-				}
-			}
-			None => match c {
-				'"' | '\'' if at_start => in_quote = Some(c),
-				'#' => return Some(from + off),
-				',' => {
-					at_start = true;
-					continue;
-				}
-				_ => {}
-			},
+		if s[i] == q {
+			return Some(i);
 		}
-		if !is_wsp(c) {
-			at_start = false;
-		}
+		i += utf8_len(s[i]);
 	}
 	None
 }
 
+/// True when the `#` at `i` opens a comment: outside quotes (the caller's
+/// business) and, under the current rules, first in the text or after a
+/// space or tab.
+fn comment_at(s: &[u8], i: usize, rules: Rules) -> bool {
+	s[i] == b'#' && (rules == Rules::V2 || i == 0 || is_wsp_byte(s[i - 1]))
+}
+
+/// One piece from `pos`: a value element up to an unquoted comma or comment,
+/// or a selector body up to an unquoted `]` (`term`). Returns the trimmed
+/// piece and the offset of what ended it: the terminator, a comment's `#`,
+/// or the end of the text.
+fn scan_piece(s: &[u8], mut pos: usize, term: u8, rules: Rules) -> (Piece, usize) {
+	skip_wsp(s, &mut pos);
+	let start = pos;
+	let mut quote = Quote::None;
+	if pos < s.len() && (s[pos] == b'"' || s[pos] == b'\'') {
+		match quote_close(s, pos, rules) {
+			Some(close) => {
+				// A value piece may also end at a comment or the line end;
+				// a selector body ends at its bracket and nowhere else.
+				let mut i = close + 1;
+				skip_wsp(s, &mut i);
+				let ended = if i < s.len() {
+					s[i] == term || (term == b',' && comment_at(s, i, rules))
+				} else {
+					term == b','
+				};
+				if ended {
+					let q = if s[pos] == b'"' {
+						Quote::Double
+					} else {
+						Quote::Single
+					};
+					return (
+						Piece {
+							start: pos + 1,
+							end: close,
+							quote: q,
+						},
+						i,
+					);
+				}
+				// Text after the closing quote: the quote was a character
+				// after all, and the scan restarts at it. 2.x went on from
+				// the close with the quotes read as a pair.
+				quote = Quote::Open;
+				if rules == Rules::V2 {
+					pos = close + 1;
+				}
+			}
+			None => {
+				quote = Quote::Open;
+				if rules == Rules::V2 {
+					// 2.x: an open quote swallowed the rest of the line.
+					let mut end = s.len();
+					while end > start && is_wsp_byte(s[end - 1]) {
+						end -= 1;
+					}
+					return (Piece { start, end, quote }, s.len());
+				}
+			}
+		}
+	}
+	let shield = rules == Rules::V2;
+	let mut content_end = start;
+	while pos < s.len() {
+		let b = s[pos];
+		if shield && b == b'\\' && pos + 1 < s.len() {
+			pos += 1 + utf8_len(s[pos + 1]);
+			content_end = pos.min(s.len());
+			continue;
+		}
+		if b == term || comment_at(s, pos, rules) {
+			break;
+		}
+		pos += utf8_len(b);
+		if !is_wsp_byte(b) {
+			content_end = pos.min(s.len());
+		}
+	}
+	// 2.x judged a piece quoted by its shape after the scan: a quote at both
+	// ends, the last one not escaped, however many closes sat between.
+	if rules == Rules::V2
+		&& quote == Quote::Open
+		&& content_end - start >= 2
+		&& s[content_end - 1] == s[start]
+		&& s[start..content_end - 1]
+			.iter()
+			.rev()
+			.take_while(|&&b| b == b'\\')
+			.count() % 2
+			== 0
+	{
+		let q = if s[start] == b'"' {
+			Quote::Double
+		} else {
+			Quote::Single
+		};
+		return (
+			Piece {
+				start: start + 1,
+				end: content_end - 1,
+				quote: q,
+			},
+			pos.min(s.len()),
+		);
+	}
+	(
+		Piece {
+			start,
+			end: content_end,
+			quote,
+		},
+		pos.min(s.len()),
+	)
+}
+
+/// The value half: everything from `from` on, split into pieces, with the
+/// comment found on the way. `from` is where the separator ended, so a `#`
+/// right after it (`a:#x`) is content and one after a space is a comment;
+/// at 0 the text starts a line and a leading `#` is a comment.
+pub fn tokenize_value(text: &str, from: usize, rules: Rules, out: &mut Tokens) {
+	out.clear();
+	scan_value(text, from, rules, out);
+}
+
+fn scan_value(text: &str, from: usize, rules: Rules, out: &mut Tokens) {
+	let s = text.as_bytes();
+	let mut pos = from;
+	let stop_at;
+	let mut count = 0usize;
+	loop {
+		let (piece, stop) = scan_piece(s, pos, b',', rules);
+		out.elements.push(piece);
+		if piece.quote != Quote::None || piece.end > piece.start {
+			count += 1;
+			if out.cap != 0 && count > out.cap {
+				out.capped = true;
+				out.value = (from, from);
+				return;
+			}
+		}
+		if stop < s.len() && s[stop] == b',' {
+			pos = stop + 1;
+			continue;
+		}
+		if stop < s.len() {
+			out.comment = Some(stop);
+		}
+		stop_at = stop;
+		break;
+	}
+	let mut a = from;
+	skip_wsp(s, &mut a);
+	let mut b = stop_at;
+	while b > a && is_wsp_byte(s[b - 1]) {
+		b -= 1;
+	}
+	out.value = (a.min(b), b);
+}
+
+/// Tokenize one line (`sep` = `b':'`) or one lookup path (`stars` admits the
+/// bare `*` name wildcard); the CLI's `--set` passes `b'='`. `out` is
+/// cleared and reused, so a parse allocates once per document rather than
+/// once per line. `text` is the line after its indent, or the path.
+pub fn tokenize(text: &str, sep: u8, stars: bool, rules: Rules, out: &mut Tokens) {
+	out.clear();
+	let s = text.as_bytes();
+	let mut pos = 0usize;
+	loop {
+		skip_wsp(s, &mut pos);
+		if pos >= s.len() {
+			out.fault = Some((pos, "expected a field name"));
+			return;
+		}
+		let mut star = false;
+		let name = if s[pos] == b'"' || s[pos] == b'\'' {
+			let Some(close) = quote_close(s, pos, rules) else {
+				out.fault = Some((pos, "unterminated quote in a field name"));
+				return;
+			};
+			let q = if s[pos] == b'"' {
+				Quote::Double
+			} else {
+				Quote::Single
+			};
+			let piece = Piece {
+				start: pos + 1,
+				end: close,
+				quote: q,
+			};
+			pos = close + 1;
+			piece
+		} else if stars && s[pos] == b'*' {
+			star = true;
+			pos += 1;
+			Piece {
+				start: pos - 1,
+				end: pos,
+				quote: Quote::None,
+			}
+		} else {
+			let start = pos;
+			while pos < s.len() && is_bare_name_byte(s[pos]) {
+				pos += 1;
+			}
+			if pos == start {
+				out.fault = Some((pos, "expected a field name"));
+				return;
+			}
+			Piece {
+				start,
+				end: pos,
+				quote: Quote::None,
+			}
+		};
+		skip_wsp(s, &mut pos);
+		let mut selector = None;
+		let mut open = (pos < s.len() && s[pos] == b'[').then_some(pos);
+		if open.is_none() && rules == Rules::V2 && pos < s.len() && s[pos] == sep {
+			let mut q = pos + 1;
+			skip_wsp(s, &mut q);
+			if q < s.len() && s[q] == b'[' {
+				open = Some(q);
+			}
+		}
+		if let Some(at) = open {
+			if star {
+				out.fault = Some((at, "selector on a name wildcard"));
+				return;
+			}
+			let (piece, stop) = scan_piece(s, at + 1, b']', rules);
+			if stop >= s.len() || s[stop] != b']' {
+				out.fault = Some((at, "unterminated selector"));
+				return;
+			}
+			if piece.end == piece.start && piece.quote == Quote::None {
+				out.fault = Some((at, "empty selector"));
+				return;
+			}
+			if piece.quote == Quote::Open && rules == Rules::V2 {
+				out.fault = Some((at, "unterminated quote in a selector"));
+				return;
+			}
+			selector = Some(piece);
+			pos = stop + 1;
+			skip_wsp(s, &mut pos);
+		}
+		out.segments.push(SegTok {
+			name,
+			selector,
+			star,
+		});
+		if pos >= s.len() {
+			return;
+		}
+		let b = s[pos];
+		if b == b'.' {
+			pos += 1;
+			continue;
+		}
+		if b == sep {
+			out.sep = Some(pos);
+			scan_value(text, pos + 1, rules, out);
+			return;
+		}
+		if comment_at(s, pos, rules) {
+			out.comment = Some(pos);
+			return;
+		}
+		out.fault = Some((pos, "unexpected character after the path"));
+		return;
+	}
+}
+
+/// The text of a piece as the reader sees it: escapes applied inside double
+/// quotes, everything else as written.
+fn piece_text(p: &Piece, text: &str) -> String {
+	let raw = &text[p.start..p.end];
+	if p.quote == Quote::Double && raw.contains('\\') {
+		apply_escapes(raw)
+	} else {
+		raw.to_string()
+	}
+}
+
+/// The element a value piece makes, or None for an empty bare slot (dropped,
+/// never an error).
+fn element_of(p: &Piece, text: &str) -> Option<Element> {
+	if p.quote == Quote::None && p.end == p.start {
+		return None;
+	}
+	Some(Element {
+		text: piece_text(p, text),
+		quoted: matches!(p.quote, Quote::Single | Quote::Double),
+	})
+}
+
+/// The value the tokenized pieces spell.
+fn cell_of_tokens(tok: &Tokens, text: &str) -> Value {
+	let els: Vec<Element> = tok
+		.elements
+		.iter()
+		.filter_map(|p| element_of(p, text))
+		.collect();
+	if els.is_empty() {
+		Value::Empty
+	} else {
+		Value::Cell(els)
+	}
+}
+
 /// Folds A-Z only; non-ASCII passes through untouched. Borrowed when there is
-/// nothing to fold, the way key_text borrows when there is nothing to resolve.
+/// nothing to fold, the way piece_text borrows when there is nothing to resolve.
 fn fold_name(s: &str) -> std::borrow::Cow<'_, str> {
 	if s.bytes().any(|b| b.is_ascii_uppercase()) {
 		std::borrow::Cow::Owned(s.to_ascii_lowercase())
@@ -830,110 +1165,6 @@ fn trim_wsp_end(s: &str) -> &str {
 	s.trim_end_matches(|c| is_wsp(c) || c == '\r')
 }
 
-/// Split off an unquoted trailing comment from a field line: (content, comment
-/// from `#` on). The name half is read the scanner's way and the value half
-/// the value's way (see value_comment_at). Comments are kept as trivia.
-fn split_comment(s: &str) -> (&str, Option<&str>) {
-	if !s.contains('#') {
-		return (s, None);
-	}
-	let hash = match name_half(s, true) {
-		NameHalf::Hash(i) => Some(i),
-		NameHalf::Colon(i) => value_comment_at(s, i + 1),
-		NameHalf::End => None,
-	};
-	match hash {
-		Some(i) => (&s[..i], Some(&s[i..])),
-		None => (s, None),
-	}
-}
-
-/// The same for value text alone: a list element, or a setter's argument.
-fn split_value_comment(s: &str) -> (&str, Option<&str>) {
-	if !s.contains('#') {
-		return (s, None);
-	}
-	match value_comment_at(s, 0) {
-		Some(i) => (&s[..i], Some(&s[i..])),
-		None => (s, None),
-	}
-}
-
-/// Split on unquoted commas; a quote opens only at the start of a piece (see
-/// value_comment_at), and `\` shields the next char.
-fn split_unquoted_commas(s: &str) -> Vec<&str> {
-	if !s.contains(',') {
-		return vec![s];
-	}
-	let mut parts = Vec::new();
-	let mut in_quote: Option<char> = None;
-	let mut at_start = true;
-	let mut start = 0usize;
-	let mut it = s.char_indices();
-	while let Some((byte, c)) = it.next() {
-		if c == '\\' {
-			it.next();
-			at_start = false;
-			continue;
-		}
-		match in_quote {
-			Some(q) => {
-				if c == q {
-					in_quote = None;
-				}
-			}
-			None => match c {
-				'"' | '\'' if at_start => in_quote = Some(c),
-				',' => {
-					parts.push(&s[start..byte]);
-					start = byte + 1;
-					at_start = true;
-					continue;
-				}
-				_ => {}
-			},
-		}
-		if !is_wsp(c) {
-			at_start = false;
-		}
-	}
-	parts.push(&s[start..]);
-	parts
-}
-
-/// A dangling trailing backslash would swallow the separator after it on
-/// re-emit; store the doubled spelling instead (identical on string read).
-fn normalize_dangling_backslash(mut t: String) -> String {
-	let run = t.chars().rev().take_while(|&c| c == '\\').count();
-	if run % 2 == 1 {
-		t.push('\\');
-	}
-	t
-}
-
-/// True when some piece starts with a quote that never closes (the closing
-/// quote missing or escaped). Such a piece stays literal - and a quote-aware
-/// comment strip has already swallowed any trailing `#` comment into it - so
-/// the parser calls it out instead of letting the typo look deliberate.
-/// Mid-text apostrophes (`it's fine`) are legal prose and stay silent.
-fn unterminated_quote(text: &str) -> bool {
-	if !text.contains('"') && !text.contains('\'') {
-		return false;
-	}
-	for piece in split_unquoted_commas(text) {
-		let t = trim_wsp(piece);
-		if !quoted_shape(t) {
-			let Some(&first) = t.as_bytes().first() else {
-				continue;
-			};
-			if first == b'"' || first == b'\'' {
-				return true;
-			}
-		}
-	}
-	false
-}
-
 /// Value text for a diagnostic message: line breaks and tabs escaped, so one
 /// diagnostic is one line. A raw block's body is the value that made this
 /// necessary - it carries its own newlines.
@@ -942,95 +1173,6 @@ fn one_line(s: &str) -> String {
 		.replace('\n', "\\n")
 		.replace('\r', "\\r")
 		.replace('\t', "\\t")
-}
-
-/// True when the text is one quote pair: a quote char at both ends, the last
-/// one not escaped. Quotes and the backslash are ASCII, so bytes suffice.
-fn quoted_shape(t: &str) -> bool {
-	let b = t.as_bytes();
-	let Some(&first) = b.first() else {
-		return false;
-	};
-	if (first != b'"' && first != b'\'') || b.len() < 2 || b[b.len() - 1] != first {
-		return false;
-	}
-	let mut esc = false;
-	for &c in &b[1..b.len() - 1] {
-		esc = c == b'\\' && !esc;
-	}
-	!esc
-}
-
-/// Trim, then strip one matching outer quote pair if present. Unquoted empty
-/// slots return None (dropped, never an error).
-fn parse_element(piece: &str) -> Option<Element> {
-	let t = trim_wsp(piece);
-	if t.is_empty() {
-		return None;
-	}
-	if quoted_shape(t) {
-		return Some(Element {
-			text: t[1..t.len() - 1].to_string(),
-			quoted: true,
-		});
-	}
-	Some(Element {
-		text: normalize_dangling_backslash(t.to_string()),
-		quoted: false,
-	})
-}
-
-/// Whether `parse_cell` would build more than `max` elements. Counts the
-/// pieces the way the splitter cuts them, without building any, so a capped
-/// parse refuses an over-long line before holding the array.
-fn cell_exceeds(text: &str, max: usize) -> bool {
-	let mut count = 0usize;
-	let mut has_content = false;
-	let mut in_quote: Option<char> = None;
-	let mut it = text.chars();
-	while let Some(c) = it.next() {
-		if c == '\\' {
-			has_content = true;
-			it.next();
-			continue;
-		}
-		match in_quote {
-			Some(q) if c == q => in_quote = None,
-			None if (c == '"' || c == '\'') && !has_content => in_quote = Some(c),
-			None if c == ',' => {
-				if has_content {
-					count += 1;
-					if count > max {
-						return true;
-					}
-				}
-				has_content = false;
-				continue;
-			}
-			_ => {}
-		}
-		if !is_wsp(c) {
-			has_content = true;
-		}
-	}
-	if has_content {
-		count += 1;
-	}
-	count > max
-}
-
-fn parse_cell(text: &str) -> Value {
-	let mut els = Vec::new();
-	for piece in split_unquoted_commas(text) {
-		if let Some(e) = parse_element(piece) {
-			els.push(e);
-		}
-	}
-	if els.is_empty() {
-		Value::Empty
-	} else {
-		Value::Cell(els)
-	}
 }
 
 /// Escape processing (string reads): \t \n \\ \" \'; unknown escapes stay literal.
@@ -1058,11 +1200,11 @@ fn apply_escapes(s: &str) -> String {
 	out
 }
 
-/// The predicate a `[value]` selector matches with: display form with escapes
-/// applied on both sides, so `["q\"uote"]` finds `'q"uote'` - a logical-string
-/// match, not spelling against spelling.
+/// The predicate a `[value]` selector matches with: the display form, which
+/// is built from logical strings, so `["q\"uote"]` finds `'q"uote'` - a
+/// logical-string match, not spelling against spelling.
 fn disp_key(v: &Value) -> String {
-	apply_escapes(&v.display())
+	v.display()
 }
 
 /// The single-element restriction a QUOTED `[value]` selector adds on top of
@@ -1117,10 +1259,9 @@ fn merge_hash(name: &str, v: &Value) -> u64 {
 		Value::Cell(els) => {
 			h.bytes(b"c:");
 			for e in els {
-				let t = key_text(&e.text);
-				h.dec(t.len());
+				h.dec(e.text.len());
 				h.byte(b':');
-				h.bytes(t.as_bytes());
+				h.bytes(e.text.as_bytes());
 			}
 		}
 		Value::Raw(r) => {
@@ -1148,10 +1289,7 @@ fn merge_eq(name_a: &str, va: &Value, name_b: &str, vb: &Value) -> bool {
 	match (va, vb) {
 		(Value::Empty, Value::Empty) => true,
 		(Value::Cell(a), Value::Cell(b)) => {
-			a.len() == b.len()
-				&& a.iter()
-					.zip(b)
-					.all(|(x, y)| key_text(&x.text) == key_text(&y.text))
+			a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.text == y.text)
 		}
 		(Value::Raw(a), Value::Raw(b)) => a.info == b.info && a.content == b.content,
 		_ => false,
@@ -1321,6 +1459,222 @@ fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
 }
 
 // ---------------------------------------------------------------------------
+// Migration: a 2.x document rewritten for the current lexical rules
+// ---------------------------------------------------------------------------
+
+/// Rewrite a document written under the 2.x rules so this parser reads the
+/// same tree. Each line is read with the 2.x tokenizer and re-spelled only
+/// where the two rule sets disagree: a bare or single-quoted piece whose
+/// backslash meant an escape is double-quoted with that escape; a piece
+/// that opened a quote it never closed is quoted whole; a `#` that opened a
+/// comment with no space before it gets one; the `name:[disc]` selector
+/// sugar loses its colon, and on a last segment becomes `name: disc`.
+/// Everything else - comments, blank lines, raw bodies, layout, a line 2.x
+/// could not read - comes through as written. One shape has no spelling
+/// here at all: a fence line whose info string holds a whitespace-`#`,
+/// which now ends the label and opens a comment.
+pub fn migrate(text: &str) -> String {
+	let (bom, text) = match text.strip_prefix('\u{feff}') {
+		Some(t) => ("\u{feff}", t),
+		None => ("", text),
+	};
+	let mut out = String::with_capacity(text.len() + 32);
+	out.push_str(bom);
+	let mut tok = Tokens::default();
+	let mut fence: Option<(u8, usize)> = None;
+	for (i, line) in text.split('\n').enumerate() {
+		if i > 0 {
+			out.push('\n');
+		}
+		let body = line.trim_end_matches('\r');
+		let cr = &line[body.len()..];
+		if let Some((ch, len)) = fence {
+			if is_fence_close(body, ch, len) {
+				fence = None;
+			}
+			out.push_str(line);
+			continue;
+		}
+		let indent = leading_ws(body);
+		let rest_full = &body[indent.len()..];
+		let rest = trim_wsp_end(rest_full);
+		out.push_str(indent);
+		out.push_str(&migrate_line(rest, &mut tok, &mut fence));
+		out.push_str(&rest_full[rest.len()..]);
+		out.push_str(cr);
+	}
+	out
+}
+
+/// One edit to a line: replace `start..end` with the text.
+type Edit = (usize, usize, String);
+
+fn splice(text: &str, mut edits: Vec<Edit>) -> String {
+	edits.sort_by_key(|e| e.0);
+	let mut out = String::with_capacity(text.len() + 8);
+	let mut at = 0;
+	for (start, end, with) in edits {
+		out.push_str(&text[at..start]);
+		out.push_str(&with);
+		at = end;
+	}
+	out.push_str(&text[at..]);
+	out
+}
+
+/// True when the current tokenizer reads this spelling as one whole piece,
+/// quoted the same way, with exactly this text, so nothing has to change.
+fn reads_same(spelling: &str, quoted: bool, logical: &str) -> bool {
+	let mut tok = Tokens::default();
+	tokenize_value(spelling, 0, Rules::Current, &mut tok);
+	tok.elements.len() == 1
+		&& tok.value == (0, spelling.len())
+		&& matches!(tok.elements[0].quote, Quote::Single | Quote::Double) == quoted
+		&& tok.elements[0].quote != Quote::Open
+		&& piece_text(&tok.elements[0], spelling) == logical
+}
+
+/// The re-spellings a value's pieces need. Each piece is read the 2.x way
+/// (escapes everywhere, an open quote kept whole, a quote at both ends
+/// making it quoted) and re-spelled only where the current rules would read
+/// the same text as something else.
+fn value_edits(text: &str, tok: &Tokens, edits: &mut Vec<Edit>) {
+	for p in &tok.elements {
+		let raw = &text[p.start..p.end];
+		let quoted = matches!(p.quote, Quote::Single | Quote::Double);
+		let (a, b) = if quoted {
+			(p.start - 1, p.end + 1)
+		} else {
+			(p.start, p.end)
+		};
+		if p.quote == Quote::None && !raw.contains('\\') && !raw.is_empty() {
+			continue;
+		}
+		let logical = apply_escapes(raw);
+		if reads_same(&text[a..b], quoted, &logical) {
+			continue;
+		}
+		let spelling = if quoted || p.quote == Quote::Open {
+			quote_text(&logical)
+		} else {
+			emit_element(&Element {
+				text: logical,
+				quoted: false,
+			})
+		};
+		edits.push((a, b, spelling));
+	}
+}
+
+fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -> String {
+	if rest.is_empty() || rest.starts_with('#') {
+		return rest.to_string();
+	}
+	// A child-indent fence: 2.x read the info string to the end of the line.
+	if let Some((ch, len, _)) = fence_open(rest) {
+		*fence = Some((ch, len));
+		return rest.to_string();
+	}
+	let s = rest.as_bytes();
+	let mut edits: Vec<Edit> = Vec::new();
+	if rest.starts_with('*') && s.get(1).is_some_and(|&b| is_wsp_byte(b)) {
+		tokenize_value(rest, 1, Rules::V2, tok);
+		// A bare comma was refused (E010), so there is nothing to carry.
+		if tok.elements.len() == 1 {
+			value_edits(rest, tok, &mut edits);
+		}
+	} else {
+		tokenize(rest, b':', false, Rules::V2, tok);
+		if tok.fault.is_some() {
+			return rest.to_string();
+		}
+		let last = tok.segments.len() - 1;
+		for (i, seg) in tok.segments.iter().enumerate() {
+			let name = &rest[seg.name.start..seg.name.end];
+			if seg.name.quote == Quote::Single && apply_escapes(name) != name {
+				edits.push((
+					seg.name.start - 1,
+					seg.name.end + 1,
+					escape_name(&apply_escapes(name)),
+				));
+			}
+			let Some(sel) = seg.selector else {
+				continue;
+			};
+			let quoted = matches!(sel.quote, Quote::Single | Quote::Double);
+			// Back from the body to the `[`, and forward to the `]`.
+			let mut open = if quoted { sel.start - 1 } else { sel.start };
+			while open > 0 && is_wsp_byte(s[open - 1]) {
+				open -= 1;
+			}
+			open -= 1;
+			let mut close = if quoted { sel.end + 1 } else { sel.end };
+			while s[close] != b']' {
+				close += 1;
+			}
+			let mut colon = None;
+			let mut k = open;
+			while k > 0 && is_wsp_byte(s[k - 1]) {
+				k -= 1;
+			}
+			if k > 0 && s[k - 1] == b':' {
+				colon = Some(k - 1);
+			}
+			let body = &rest[sel.start..sel.end];
+			let logical = apply_escapes(body);
+			if i == last && tok.sep.is_none() {
+				if let Some(c) = colon {
+					// `name:[disc]` with nothing after it: 2.x read it as
+					// `name: disc`. A bare comma in there was refused as a
+					// bracket array, and an index or the wildcard was refused
+					// as a selector, so those stay as written.
+					if !quoted && (body.contains(',') || index_shape(body) || body == "*") {
+						return rest.to_string();
+					}
+					let spelling = if logical == body {
+						rest[open + 1..close].trim_matches(is_wsp).to_string()
+					} else {
+						quote_text(&logical)
+					};
+					edits.push((c, close + 1, format!(": {}", spelling)));
+					continue;
+				}
+			} else if let Some(c) = colon {
+				// The colon goes, and one space after it when the author
+				// spaced both sides, so `base : [x]` comes out `base [x]`.
+				let spaced = c > 0 && is_wsp_byte(s[c - 1]) && is_wsp_byte(s[c + 1]);
+				edits.push((c, c + 1 + usize::from(spaced), String::new()));
+			}
+			if logical != body {
+				let (a, b) = if quoted {
+					(sel.start - 1, sel.end + 1)
+				} else {
+					(sel.start, sel.end)
+				};
+				if sel.quote != Quote::Double {
+					edits.push((a, b, quote_text(&logical)));
+				}
+			}
+		}
+		if tok.sep.is_some() {
+			// A same-line fence: the info string ran to the end of the line.
+			if let Some((ch, len, _)) = fence_open(&rest[tok.value.0..]) {
+				*fence = Some((ch, len));
+				return splice(rest, edits);
+			}
+			value_edits(rest, tok, &mut edits);
+		}
+	}
+	if let Some(c) = tok.comment
+		&& c > 0
+		&& !is_wsp_byte(s[c - 1])
+	{
+		edits.push((c, c, " ".to_string()));
+	}
+	splice(rest, edits)
+}
+
+// ---------------------------------------------------------------------------
 // Path scanner (shared by file lines and accessor queries)
 // ---------------------------------------------------------------------------
 
@@ -1337,15 +1691,15 @@ enum Selector {
 
 #[derive(Debug, Clone)]
 struct Segment {
-	name: String,     // folded
-	name_src: String, // as authored: unfolded, quotes stripped, escapes applied
+	name: String,     // folded, escapes resolved
+	name_src: String, // as authored: unfolded, quotes stripped, escapes as written
 	selector: Option<Selector>,
 	star: bool, // bare `*` name wildcard; quoted "*" stays a literal name
 }
 
 struct PathScan {
 	segments: Vec<Segment>,
-	value_text: Option<String>, // text after the separator colon, trimmed
+	value_text: Option<String>, // text after the separator colon, before any comment, trimmed
 }
 
 /// The spelling of an index selector - an optional `#`, an optional `+`, then
@@ -1363,191 +1717,86 @@ fn index_usize(k: u64) -> Option<usize> {
 	usize::try_from(k).ok()
 }
 
-/// Scan `a . b : [sel] . c : value`. Whitespace around dots/colons/brackets is
-/// insignificant. A colon is a selector colon only when the next non-ws char is
-/// `[`; otherwise it separates the value. Err(reason) means genuinely ambiguous
-/// input, which the caller skips with a diagnostic.
-fn scan_path(input: &str) -> Result<PathScan, String> {
-	scan_path_ex(input, false)
-}
-
-/// Query spelling of scan_path: also accepts a bare `*` segment (the name
-/// wildcard - any child name). Document lines never take it; only lookups
-/// (reads, the writer probe, schema paths) do.
-fn scan_lookup(input: &str) -> Result<PathScan, String> {
-	scan_path_ex(input, true)
-}
-
-fn scan_path_ex(input: &str, stars: bool) -> Result<PathScan, String> {
-	// Byte cursor with inline char decoding (a Vec<char> per call was a parse
-	// hot spot). Every position the scanner stops on is a char boundary: it
-	// only byte-matches ASCII structure chars, which UTF-8 guarantees cannot
-	// appear inside a multibyte sequence, and otherwise advances by whole
-	// chars. Backslash still shields the next CHAR, multibyte included.
-	let bytes = input.as_bytes();
-	let mut pos = 0usize;
-	// First char at a known boundary; the fallback arm is unreachable (callers
-	// check pos < len first) but keeps the decode total.
-	fn char_at(s: &str, pos: usize) -> char {
-		s[pos..].chars().next().unwrap_or('\u{0}')
-	}
-	fn skip_ws(bytes: &[u8], pos: &mut usize) {
-		while *pos < bytes.len() && (bytes[*pos] == b' ' || bytes[*pos] == b'\t') {
-			*pos += 1;
-		}
-	}
-	fn read_quoted(s: &str, pos: &mut usize) -> Result<String, String> {
-		let q = char::from(s.as_bytes()[*pos]); // caller checked: ASCII quote
-		*pos += 1;
-		let mut out = String::new();
-		loop {
-			if *pos >= s.len() {
-				return Err("unterminated quote".into());
-			}
-			let c = char_at(s, *pos);
-			if c == '\\' && *pos + 1 < s.len() {
-				let next = char_at(s, *pos + 1);
-				out.push(c);
-				out.push(next);
-				*pos += 1 + next.len_utf8();
-				continue;
-			}
-			*pos += c.len_utf8();
-			if c == q {
-				return Ok(out);
-			}
-			out.push(c);
-		}
-	}
-	let mut segments: Vec<Segment> = Vec::new();
-	loop {
-		skip_ws(bytes, &mut pos);
-		if pos >= bytes.len() {
-			return Err("empty path".into());
-		}
-		// Field name: quoted, bare, or (lookups only) the `*` name wildcard.
-		let mut star = false;
-		let name = if bytes[pos] == b'"' || bytes[pos] == b'\'' {
-			read_quoted(input, &mut pos)?
-		} else if stars && bytes[pos] == b'*' {
-			pos += 1;
-			star = true;
-			"*".to_string()
-		} else {
-			let start = pos;
-			// Bare-name chars are ASCII, so the byte-as-char view is exact
-			// (bytes >= 0x80 map to chars the predicate rejects either way).
-			while pos < bytes.len() && is_bare_name_char(char::from(bytes[pos])) {
-				pos += 1;
-			}
-			if pos == start {
-				return Err(format!(
-					"expected field name, found '{}'",
-					char_at(input, pos)
-				));
-			}
-			input[start..pos].to_string()
+/// What a selector body means: `*` the wildcard, an index shape an index, a
+/// quoted body a value match, anything else a bare value match.
+fn selector_of(p: &Piece, text: &str) -> Selector {
+	let body = piece_text(p, text);
+	if matches!(p.quote, Quote::Single | Quote::Double) {
+		// quotes force a value match, even numeric - and scalar-only
+		return Selector::ByValue {
+			text: body,
+			quoted: true,
 		};
-		let mut selector: Option<Selector> = None;
-		skip_ws(bytes, &mut pos);
-		// Optional selector, with its optional sugar colon (colon counts as
-		// selector sugar only when the next non-ws char is an open bracket).
-		let mut bracket_at: Option<usize> = None;
-		if pos < bytes.len() && bytes[pos] == b'[' {
-			bracket_at = Some(pos);
-		} else if pos < bytes.len() && bytes[pos] == b':' {
-			let mut q = pos + 1;
-			skip_ws(bytes, &mut q);
-			if q < bytes.len() && bytes[q] == b'[' {
-				bracket_at = Some(q);
-			}
-		}
-		if let Some(b) = bracket_at {
-			pos = b + 1;
-			skip_ws(bytes, &mut pos);
-			if pos < bytes.len() && (bytes[pos] == b'"' || bytes[pos] == b'\'') {
-				let v = read_quoted(input, &mut pos)?;
-				selector = Some(Selector::ByValue {
-					text: v,
-					quoted: true,
-				}); // quotes force a value match, even numeric - and scalar-only
-			} else {
-				let start = pos;
-				while pos < bytes.len() && bytes[pos] != b']' {
-					pos += 1;
-				}
-				let body: String = trim_wsp(&input[start..pos]).to_string();
-				selector = Some(if body == "*" {
-					Selector::Wildcard
-				} else if let Some(n) = body.strip_prefix('#').and_then(|d| d.parse::<u64>().ok()) {
-					Selector::ByIndex(n)
-				} else if let Ok(n) = body.parse::<u64>() {
-					Selector::ByIndex(n)
-				} else if index_shape(&body) {
-					// All digits but past u64: an index no instance can have,
-					// not a value selector that would create one on a write.
-					Selector::ByIndex(u64::MAX)
-				} else if body.is_empty() {
-					return Err("empty selector".into());
-				} else {
-					Selector::ByValue {
-						text: normalize_dangling_backslash(body),
-						quoted: false,
-					}
-				});
-			}
-			skip_ws(bytes, &mut pos);
-			if pos >= bytes.len() || bytes[pos] != b']' {
-				return Err("unterminated selector".into());
-			}
-			pos += 1;
-			skip_ws(bytes, &mut pos);
-		}
-		if star && selector.is_some() {
-			return Err("selector on a name wildcard".into());
-		}
+	}
+	if body == "*" {
+		return Selector::Wildcard;
+	}
+	if let Some(n) = body.strip_prefix('#').and_then(|d| d.parse::<u64>().ok()) {
+		return Selector::ByIndex(n);
+	}
+	if let Ok(n) = body.parse::<u64>() {
+		return Selector::ByIndex(n);
+	}
+	if index_shape(&body) {
+		// All digits but past u64: an index no instance can have, not a
+		// value selector that would create one on a write.
+		return Selector::ByIndex(u64::MAX);
+	}
+	Selector::ByValue {
+		text: body,
+		quoted: false,
+	}
+}
+
+/// The path the tokens spell. Err(reason) is the tokenizer's fault: input
+/// that is not a path at all, which the caller skips with a diagnostic.
+fn path_of(tok: &Tokens, text: &str) -> Result<PathScan, String> {
+	if let Some((_, reason)) = tok.fault {
+		return Err(reason.to_string());
+	}
+	let mut segments: Vec<Segment> = Vec::with_capacity(tok.segments.len());
+	for seg in &tok.segments {
+		let raw = &text[seg.name.start..seg.name.end];
 		// Names resolve escapes, the same rule values follow when they are
-		// compared: two spellings of one name are one name. name_src keeps the
-		// source spelling, which is what `authored_name` hands back - empty
-		// when it matches, the same sentinel NodeData uses.
+		// compared: two spellings of one name are one name. name_src keeps
+		// the source spelling, which is what `authored_name` hands back -
+		// empty when it matches, the same sentinel NodeData uses.
 		//
-		// A name with no backslash and no upper case is already its own
-		// resolved, folded spelling, so the scanner's buffer becomes the name
-		// and nothing is allocated. That is nearly every name in a document,
-		// and this runs once per segment per line: building and then freeing
-		// two more strings each time was a third of the parse on a flat file.
-		let plain = !name.contains('\\') && !name.bytes().any(|b| b.is_ascii_uppercase());
-		let (seg_name, seg_src) = if plain {
-			(name, String::new())
+		// A name with nothing to resolve and no upper case is already its
+		// own resolved, folded spelling, so the source text becomes the name
+		// and nothing else is allocated. That is nearly every name in a
+		// document, and this runs once per segment per line.
+		let plain = (seg.name.quote != Quote::Double || !raw.contains('\\'))
+			&& !raw.bytes().any(|b| b.is_ascii_uppercase());
+		let (name, name_src) = if plain {
+			(raw.to_string(), String::new())
 		} else {
-			(fold_name(&key_text(&name)).into_owned(), name)
+			(
+				fold_name(&piece_text(&seg.name, text)).into_owned(),
+				raw.to_string(),
+			)
 		};
 		segments.push(Segment {
-			name: seg_name,
-			name_src: seg_src,
-			selector,
-			star,
+			name,
+			name_src,
+			selector: seg.selector.as_ref().map(|p| selector_of(p, text)),
+			star: seg.star,
 		});
-		if pos >= bytes.len() {
-			return Ok(PathScan {
-				segments,
-				value_text: None,
-			});
-		}
-		match bytes[pos] {
-			b'.' => {
-				pos += 1;
-			}
-			b':' => {
-				pos += 1;
-				return Ok(PathScan {
-					segments,
-					value_text: Some(trim_wsp(&input[pos..]).to_string()),
-				});
-			}
-			_ => return Err(format!("unexpected '{}' after field", char_at(input, pos))),
-		}
 	}
+	Ok(PathScan {
+		segments,
+		value_text: tok.sep.map(|_| text[tok.value.0..tok.value.1].to_string()),
+	})
+}
+
+/// Scan a lookup path `a . b [sel] . c`: the document-line spelling plus
+/// the bare `*` segment (the name wildcard - any child name), which document
+/// lines never take; only lookups (reads, the writer probe, schema paths)
+/// do. Whitespace around dots, colons and brackets is insignificant.
+fn scan_lookup(input: &str) -> Result<PathScan, String> {
+	let mut tok = Tokens::default();
+	tokenize(input, b':', true, Rules::Current, &mut tok);
+	path_of(&tok, input)
 }
 
 // ---------------------------------------------------------------------------
@@ -2161,7 +2410,7 @@ impl Parser {
 	/// The child of `cur` named `name` whose display form is the selector text
 	/// (escapes applied), or None. Quoted selectors only match a single scalar.
 	fn find_by_value(&self, cur: usize, name: &str, text: &str, quoted: bool) -> Option<usize> {
-		let want = apply_escapes(text);
+		let want = text.to_string();
 		self.disp_map[cur]
 			.as_deref()
 			.and_then(|m| m.get(&disp_hash_text(name, &want)))
@@ -2261,7 +2510,14 @@ impl Parser {
 	}
 
 	/// One stacked-list element (`* scalar`) appends to the parent's array.
-	fn add_star_element(&mut self, parent: usize, body: &str, line: usize, indent: &str) {
+	fn add_star_element(
+		&mut self,
+		parent: usize,
+		tok: &Tokens,
+		text: &str,
+		line: usize,
+		indent: &str,
+	) {
 		if parent == ROOT {
 			self.refuse(
 				line,
@@ -2283,13 +2539,8 @@ impl Parser {
 			);
 			return;
 		}
-		let trimmed = trim_wsp(body);
-		if trimmed.is_empty() {
-			self.refuse(line, "E009", "empty list element", Outcome::Dropped, indent);
-			return;
-		}
 		// One scalar per line; a bare comma is an error, not a second element.
-		if split_unquoted_commas(trimmed).len() > 1 {
+		if tok.elements.len() > 1 {
 			self.refuse(
 				line,
 				"E010",
@@ -2299,13 +2550,14 @@ impl Parser {
 			);
 			return;
 		}
-		if unterminated_quote(trimmed) {
-			self.err(line, "E017", "unterminated quote in value");
-		}
-		let Some(el) = parse_element(trimmed) else {
+		let piece = tok.elements[0];
+		let Some(el) = element_of(&piece, text) else {
 			self.refuse(line, "E009", "empty list element", Outcome::Dropped, indent);
 			return;
 		};
+		if piece.quote == Quote::Open {
+			self.err(line, "E017", "unterminated quote in value");
+		}
 		// Element cap: each element line past it is refused on its own, the way
 		// any other bad element line is.
 		if self.max_elements != 0
@@ -2425,6 +2677,10 @@ impl Parser {
 		}
 		let mut i = 0usize;
 		let mut node_capped = false;
+		let mut tok = Tokens {
+			cap: self.max_elements,
+			..Tokens::default()
+		};
 		while i < lines.len() {
 			// Node cap: reported at the first line not parsed, so the count can
 			// overshoot by at most one line's path. The unparsed remainder counts
@@ -2474,8 +2730,14 @@ impl Parser {
 			// A binding line claims the pending comments - but deeper-written
 			// ones hang on their own block first.
 			self.hang_deeper_pending(indent);
-			// Child-indent fence: a value line for its parent field.
-			if let Some(fence) = fence_open(rest) {
+			// Child-indent fence: a value line for its parent field. The fence
+			// and its info string are the value; a comment may follow them.
+			if rest.starts_with(['`', '~'])
+				&& let Some(fence) = {
+					tokenize_value(rest, 0, Rules::Current, &mut tok);
+					fence_open(&rest[tok.value.0..tok.value.1])
+				} {
+				let comment = tok.comment.map(|c| &rest[c..]);
 				let parent = self.resolve_parent(indent);
 				let (value, next) = self.consume_raw(&lines, i + 1, lineno, indent, fence);
 				let Some(parent) = parent else {
@@ -2494,7 +2756,7 @@ impl Parser {
 				if parent == DEAD {
 					self.skip_under_dead(lineno, indent);
 				} else if let Some(node) = self.bind_block(parent, value, lineno, indent) {
-					self.attach_trivia(node, None);
+					self.attach_trivia(node, comment);
 				}
 				i = next;
 				continue;
@@ -2524,7 +2786,8 @@ impl Parser {
 						i += 1;
 						continue;
 					}
-					let (body, comment) = split_value_comment(after);
+					tokenize_value(rest, 1, Rules::Current, &mut tok);
+					let comment = tok.comment.map(|c| &rest[c..]);
 					// Elements have no node of their own; trivia rides the field.
 					// At the root there is no field (E007), so the comment rides
 					// the document like any other pending one.
@@ -2538,7 +2801,7 @@ impl Parser {
 							ceiling: indent.len(),
 						});
 					}
-					self.add_star_element(parent, body, lineno, indent);
+					self.add_star_element(parent, &tok, rest, lineno, indent);
 					i += 1;
 					continue;
 				}
@@ -2575,35 +2838,8 @@ impl Parser {
 				continue;
 			}
 			// Field line.
-			let (mut before, mut comment) = split_comment(rest);
-			// A same-line fence runs to the end of the line: the child-indent
-			// spelling keeps a `#` in its info-string, the grammar gives the
-			// same-line alternative no comment at all, and the emitter already
-			// assumes it. Without this, `a: ```c#` loses the `#`. The cheap
-			// test comes first so an ordinary commented line is not scanned
-			// twice.
-			if comment.is_some()
-				&& (before.contains("```") || before.contains("~~~"))
-				&& scan_path(trim_wsp_end(before))
-					.is_ok_and(|s| s.value_text.is_some_and(|v| fence_open(&v).is_some()))
-			{
-				before = rest;
-				comment = None;
-			}
-			let content = trim_wsp_end(before);
-			if content.is_empty() {
-				// Only a comment survived (e.g. an escaped lead-in); keep it.
-				if let Some(c) = comment {
-					self.pending.push(Pend {
-						text: c.to_string(),
-						indent: indent.to_string(),
-						blank_before: had_blank,
-						ceiling: indent.len(),
-					});
-				}
-				i += 1;
-				continue;
-			}
+			tokenize(rest, b':', false, Rules::Current, &mut tok);
+			let comment = tok.comment.map(|c| &rest[c..]);
 			let Some(parent) = self.resolve_parent(indent) else {
 				self.refuse(
 					lineno,
@@ -2620,7 +2856,7 @@ impl Parser {
 				i += 1;
 				continue;
 			}
-			let scan = match scan_path(content) {
+			let scan = match path_of(&tok, rest) {
 				Ok(s) => s,
 				Err(reason) => {
 					// Content-malformed at any position, so retained - except a
@@ -2646,45 +2882,53 @@ impl Parser {
 				}
 			};
 			let mut next = i + 1;
+			// Element cap: the whole line is refused, so a capped load never
+			// holds a truncated array that would read as the document's
+			// value. The scan stopped at the cap, so nothing past it was
+			// built either.
+			if tok.capped {
+				self.refuse(
+					lineno,
+					"E021",
+					format!(
+						"array longer than {} elements; line skipped",
+						self.max_elements
+					),
+					Outcome::Dropped,
+					indent,
+				);
+				i = next;
+				continue;
+			}
 			// The verbatim value span, kept for reads' `raw` (only the plain
 			// scalar/inline-array case has a one-line source spelling).
 			let mut src_text: Option<&str> = None;
 			let value = match &scan.value_text {
 				None => {
-					if let Some(body) = bracket_array_body(content) {
-						if split_unquoted_commas(body).len() > 1 {
-							// Two or more elements folded into one string. The
-							// brackets never survive the load, so a rewrite
-							// would bake the changed value in and the file
-							// would check clean forever after. Count it lost so
-							// the save gate stops that.
-							self.refuse(
-								lineno,
-								"E019",
-								"bracket array syntax; an array is comma-separated, without brackets",
-								Outcome::ValueDropped,
-								indent,
-							);
-						} else {
-							// One element reads as the selector the scanner made
-							// of it - `[Boston]` is `Boston` - and `field:[disc]`
-							// is documented sugar, so nothing is lost. A hint,
-							// for the JSON habit; same code, like E022.
-							self.diag(Diagnostic {
-								line: lineno,
-								severity: Severity::Hint,
-								message: "bracket array syntax; read as a selector, the same value without the brackets".into(),
-								code: "E019",
-							});
-						}
-					} else {
-						// A clean path with no colon is the one defined repair:
-						// the obvious intent is that path with an empty value.
-						self.err(lineno, "E015", "missing colon; repaired as an empty value");
-					}
+					// A clean path with no colon is the one defined repair: the
+					// obvious intent is that path with an empty value.
+					self.err(lineno, "E015", "missing colon; repaired as an empty value");
 					Value::Empty
 				}
 				Some(v) if v.is_empty() => Value::Empty,
+				Some(v) if v.starts_with('[') => {
+					// A value spelled the way JSON, TOML and YAML spell an
+					// array. The brackets are not a selector after the colon,
+					// and reading the text without them would bake a changed
+					// value in, so the line is kept verbatim.
+					self.refuse(
+						lineno,
+						"E019",
+						"bracket array syntax; an array is comma-separated, without brackets",
+						Outcome::Retained {
+							text: trim_wsp_end(rest).to_string(),
+							blank_before: had_blank,
+						},
+						indent,
+					);
+					i = next;
+					continue;
+				}
 				Some(v) => {
 					if let Some(fence) = fence_open(v) {
 						// Same-line fence spelling.
@@ -2692,30 +2936,11 @@ impl Parser {
 						next = n;
 						val
 					} else {
-						// Element cap: the whole line is refused, so a capped
-						// load never holds a truncated array that would read
-						// as the document's value. Counted before anything
-						// splits the value (the quote check does too), or
-						// the cap would bound nothing.
-						if self.max_elements != 0 && cell_exceeds(v, self.max_elements) {
-							self.refuse(
-								lineno,
-								"E021",
-								format!(
-									"array longer than {} elements; line skipped",
-									self.max_elements
-								),
-								Outcome::Dropped,
-								indent,
-							);
-							i = next;
-							continue;
-						}
-						if unterminated_quote(v) {
+						if tok.elements.iter().any(|p| p.quote == Quote::Open) {
 							self.err(lineno, "E017", "unterminated quote in value");
 						}
-						src_text = Some(v);
-						parse_cell(v)
+						src_text = Some(v.as_str());
+						cell_of_tokens(&tok, rest)
 					}
 				}
 			};
@@ -3609,9 +3834,12 @@ fn emit_element(e: &Element) -> String {
 	// ideographic space) at either end would not survive the reload. Edges only
 	// - interior whitespace is never trimmed and quoting it would move bytes.
 	let needs = t.is_empty()
-		|| t.chars()
-			.any(|c| matches!(c, ' ' | '\t' | ',' | ':' | '#' | '"' | '\'' | '[' | ']'))
-		|| t.starts_with(char::is_whitespace)
+		|| t.chars().any(|c| {
+			matches!(
+				c,
+				' ' | '\t' | '\n' | ',' | ':' | '#' | '"' | '\'' | '[' | ']'
+			)
+		}) || t.starts_with(char::is_whitespace)
 		|| t.ends_with(char::is_whitespace)
 		|| fence_open(t).is_some()
 		|| (e.quoted && !is_data_format(e));
@@ -3637,60 +3865,28 @@ fn is_data_format(e: &Element) -> bool {
 	t.len() <= 5 && parse_bool_text(t, Strictness::Standard).is_some()
 }
 
-/// Quote chars that are NOT already escaped in the raw text; escaped ones must
-/// stay untouched or every round-trip would re-escape them.
-fn bare_quote_counts(t: &str) -> (usize, usize) {
-	let (mut dq, mut sq) = (0usize, 0usize);
-	let mut it = t.chars();
-	while let Some(c) = it.next() {
-		match c {
-			'\\' => {
-				it.next();
-			}
-			'"' => dq += 1,
-			'\'' => sq += 1,
-			_ => {}
-		}
-	}
-	(dq, sq)
-}
-
+/// Quote a logical string so the tokenizer reads it back as the same string.
+/// Single quotes are literal, so they are the spelling for text holding a
+/// double quote or a backslash; double quotes carry the escapes, so they are
+/// the spelling for a line break, a tab, or text holding both quote kinds.
 fn quote_text(t: &str) -> String {
-	// A dangling trailing backslash would turn the closing quote into an
-	// escape pair - the scanner reads the path back wrong, or not at all.
-	// Store the doubled spelling (identical on string read), the same rule
-	// the element parser applies to bare text.
-	let normalized;
-	let t = if t.ends_with('\\') {
-		normalized = normalize_dangling_backslash(t.to_string());
-		normalized.as_str()
-	} else {
-		t
-	};
-	let (dq, sq) = bare_quote_counts(t);
-	if dq == 0 {
-		format!("\"{}\"", t)
-	} else if sq == 0 {
-		format!("'{}'", t)
-	} else {
-		// Both quote kinds appear bare: escape the doubles, wrap in doubles.
-		let mut out = String::from("\"");
-		let mut it = t.chars();
-		while let Some(c) = it.next() {
-			match c {
-				'\\' => {
-					out.push(c);
-					if let Some(n) = it.next() {
-						out.push(n);
-					}
-				}
-				'"' => out.push_str("\\\""),
-				_ => out.push(c),
-			}
-		}
-		out.push('"');
-		out
+	let control = t.contains(['\n', '\t']);
+	if !control && !t.contains('\'') && (t.contains('"') || t.contains('\\')) {
+		return format!("'{}'", t);
 	}
+	let mut out = String::with_capacity(t.len() + 2);
+	out.push('"');
+	for c in t.chars() {
+		match c {
+			'\\' => out.push_str("\\\\"),
+			'"' => out.push_str("\\\""),
+			'\n' => out.push_str("\\n"),
+			'\t' => out.push_str("\\t"),
+			_ => out.push(c),
+		}
+	}
+	out.push('"');
+	out
 }
 
 // ---------------------------------------------------------------------------
@@ -3784,7 +3980,7 @@ impl Document {
 			match &seg.selector {
 				None => cur = next,
 				Some(Selector::ByValue { text, quoted }) => {
-					let want = apply_escapes(text);
+					let want = text.to_string();
 					cur = next
 						.into_iter()
 						.filter(|&c| {
@@ -3975,18 +4171,18 @@ impl Document {
 /// syntax rather than data. Rejects what could not have come off one line: a
 /// line break, or a quote that never closes. An unquoted `#` ends the value
 /// here exactly as it would in a file. Bracket-array text is refused too: in
-/// a file it is E019 and the line is lost, so writing it as a two-element
-/// array holding `[1` and `2]` would be a different wrong answer.
+/// a file it is E019 and the line is kept verbatim, so writing it as a
+/// two-element array holding `[1` and `2]` would be a different wrong answer.
 fn literal_value(text: &str) -> Option<Value> {
 	if text.contains('\n') || text.contains('\r') {
 		return None;
 	}
-	let (v, _) = split_value_comment(text);
-	let v = trim_wsp(v);
-	if unterminated_quote(v) || (v.starts_with('[') && v.ends_with(']')) {
+	let mut tok = Tokens::default();
+	tokenize_value(text, 0, Rules::Current, &mut tok);
+	if tok.elements.iter().any(|p| p.quote == Quote::Open) || text[tok.value.0..].starts_with('[') {
 		return None;
 	}
-	Some(parse_cell(v))
+	Some(cell_of_tokens(&tok, text))
 }
 
 fn cell_of(text: String) -> Value {
@@ -3994,46 +4190,6 @@ fn cell_of(text: String) -> Value {
 		text,
 		quoted: false,
 	}])
-}
-
-/// Encode a logical string into stored element text so a scalar read
-/// (apply_escapes) hands it back verbatim and an emit/reparse round-trips. Only
-/// backslash, newline, and tab need encoding; emit_element wraps quote/reserved
-/// chars itself, and reparse strips that wrapping.
-fn encode_string(s: &str) -> String {
-	let mut out = String::with_capacity(s.len());
-	for c in s.chars() {
-		match c {
-			'\\' => out.push_str("\\\\"),
-			'\n' => out.push_str("\\n"),
-			'\t' => out.push_str("\\t"),
-			_ => out.push(c),
-		}
-	}
-	// The emitter escapes a bare double quote when both quote kinds appear, so
-	// a reparse of the written line stores the escaped spelling. Store it here
-	// too, or `instances` and a read's raw text differ between a written
-	// document and its own reload - the one place `set(x)` and
-	// `load(emit(set(x)))` disagreed.
-	let (dq, sq) = bare_quote_counts(&out);
-	if dq > 0 && sq > 0 {
-		let mut esc = String::with_capacity(out.len() + dq);
-		let mut it = out.chars();
-		while let Some(c) = it.next() {
-			match c {
-				'\\' => {
-					esc.push(c);
-					if let Some(n) = it.next() {
-						esc.push(n);
-					}
-				}
-				'"' => esc.push_str("\\\""),
-				_ => esc.push(c),
-			}
-		}
-		return esc;
-	}
-	out
 }
 
 /// Pick a backtick fence long enough that no content line closes it early.
@@ -4156,7 +4312,7 @@ impl Document {
 					}
 				}
 				Some(Selector::ByValue { text, quoted }) => {
-					let want = apply_escapes(text);
+					let want = text.to_string();
 					probe = probe.and_then(|c| {
 						self.children_named(c, &seg.name).into_iter().find(|&n| {
 							disp_key(&self.arena[n].value) == want
@@ -4400,7 +4556,7 @@ impl Document {
 	/// Bind a string at a path, escaped so it reads back exactly.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string(&mut self, path: &str, v: &str) -> bool {
-		self.set_value(path, cell_of(encode_string(v)))
+		self.set_value(path, cell_of(v.to_string()))
 	}
 	/// Bind a datetime at a path, in its canonical spelling. The struct's
 	/// fields are public and carry no invariant, so a value the reader would
@@ -4421,7 +4577,15 @@ impl Document {
 	/// trailing CR run off every line, so it would not read back.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
-		if info.contains('\n') || info.contains('\r') || split_comment(info).1.is_some() {
+		if info.contains('\n') || info.contains('\r') {
+			return false;
+		}
+		// The fence line the block will be written as: the fence run and the
+		// info string are one bare piece, so a quote in the info hides nothing.
+		let mut tok = Tokens::default();
+		let fence_line = format!("```{}", info);
+		tokenize_value(&fence_line, 0, Rules::Current, &mut tok);
+		if tok.comment.is_some() {
 			return false;
 		}
 		if content.split('\n').any(|line| line.ends_with('\r')) {
@@ -4473,10 +4637,7 @@ impl Document {
 	/// Bind an inline string array at a path, per-element escaped.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string_array(&mut self, path: &str, v: &[&str]) -> bool {
-		self.set_value(
-			path,
-			array_cell(v.iter().map(|x| encode_string(x)).collect()),
-		)
+		self.set_value(path, array_cell(v.iter().map(|x| x.to_string()).collect()))
 	}
 	/// Bind an inline datetime array at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -5418,7 +5579,7 @@ impl Document {
 			Value::Empty => Read::new(String::new(), Status::Empty, raw).at(line, false),
 			Value::Raw(r) => Read::new(r.content.clone(), Status::Good, raw).at(line, false),
 			Value::Cell(els) if els.len() == 1 => {
-				Read::new(apply_escapes(&els[0].text), Status::Good, raw).at(line, els[0].quoted)
+				Read::new(els[0].text.clone(), Status::Good, raw).at(line, els[0].quoted)
 			}
 			// Canonical inline form (quoting + escapes intact), so the string
 			// re-parses to the same array - not the bare display join.
@@ -5558,7 +5719,7 @@ impl Document {
 
 	/// Full-tier string-array read at a path, escapes applied per element.
 	pub fn read_string_array(&self, path: &str) -> Read<Vec<String>> {
-		self.read_array(path, |e| Some(apply_escapes(&e.text)))
+		self.read_array(path, |e| Some(e.text.clone()))
 	}
 
 	// Full tier, Result form: Ok(value) on Good; the sentinel otherwise. Empty
@@ -5844,7 +6005,7 @@ fn vdiag(out: &mut Vec<Diagnostic>, line: usize, code: &'static str, msg: String
 /// One scalar constraint value (escapes applied), or None for anything else.
 fn single_text(v: &Value) -> Option<String> {
 	match v {
-		Value::Cell(els) if els.len() == 1 => Some(apply_escapes(&els[0].text)),
+		Value::Cell(els) if els.len() == 1 => Some(els[0].text.clone()),
 		_ => None,
 	}
 }
@@ -6125,7 +6286,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 					c.desc = match &kid.value {
 						Value::Cell(els) => Some(
 							els.iter()
-								.map(|e| apply_escapes(&e.text))
+								.map(|e| e.text.clone())
 								.collect::<Vec<_>>()
 								.join(", "),
 						),
@@ -6201,7 +6362,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 				.map(AllowedSet::Dates),
 			"raw" => None, // a raw body has no element space to enumerate
 			_ => Some(AllowedSet::Strings(
-				els.iter().map(|e| apply_escapes(&e.text)).collect(),
+				els.iter().map(|e| e.text.clone()).collect(),
 			)),
 		};
 		match set {
@@ -6704,28 +6865,37 @@ fn gen_path_text(segs: &[Segment], parent_values: &HashMap<Vec<&str>, &str>) -> 
 	out
 }
 
-/// A default's spelling inside a `[value]` selector: the value-side text as
-/// is, except that a bracket or a backslash would end or escape the selector,
-/// so those go quoted (the selector matches on the escaped display, so the
-/// quoted spelling finds the bare value).
+/// A default's spelling inside a `[value]` selector. A quoted element is
+/// already a quoted selector body. A bare spelling goes in as is unless a
+/// bare body would read it as something else - a bracket ends the selector,
+/// a leading quote opens one, edge whitespace is trimmed, a whitespace-`#`
+/// opens a comment, digits or `*` name an index or the wildcard - and those
+/// go quoted (the selector matches on the display form, so the quoted
+/// spelling finds the bare value).
 fn gen_selector_text(v: &str) -> String {
 	if v.contains('\n') {
 		return gen_default_text(v);
 	}
-	// The scanner reads a bare selector body as an index when it is all digits
-	// (with an optional sign or `#`), and as a wildcard when it is `*`, so a
-	// default of that shape has to be quoted or the line names an instance
-	// that is not there.
+	let mut tok = Tokens::default();
+	tokenize_value(v, 0, Rules::Current, &mut tok);
+	if tok.elements.len() == 1
+		&& matches!(tok.elements[0].quote, Quote::Single | Quote::Double)
+		&& tok.value == (0, v.len())
+	{
+		return v.to_string();
+	}
 	let body = v.trim();
 	let reads_as_selector = body == "*"
 		|| body.parse::<u64>().is_ok()
 		|| body
 			.strip_prefix('#')
 			.is_some_and(|d| d.parse::<u64>().is_ok());
-	if (v.contains(['[', ']', '\\']) || reads_as_selector) && !quoted_shape(v) {
-		return quote_text(v);
-	}
-	v.to_string()
+	let needs = v != trim_wsp(v)
+		|| v.starts_with(['"', '\''])
+		|| v.contains(['[', ']', '\t'])
+		|| tok.comment.is_some()
+		|| reads_as_selector;
+	if needs { quote_text(v) } else { v.to_string() }
 }
 
 fn names_of(segs: &[Segment]) -> Vec<&str> {
@@ -6887,7 +7057,7 @@ impl Document {
 			match &seg.selector {
 				None => cur = next,
 				Some(Selector::ByValue { text, quoted }) => {
-					let want = apply_escapes(text);
+					let want = text.to_string();
 					cur = next
 						.into_iter()
 						.filter(|&c| {
@@ -7173,7 +7343,7 @@ impl Document {
 						if let Some(AllowedSet::Strings(set)) = &c.allowed {
 							let bad = els
 								.iter()
-								.map(|e| apply_escapes(&e.text))
+								.map(|e| e.text.clone())
 								.find(|s| !set.contains(s));
 							if let Some(b) = bad {
 								vdiag(
