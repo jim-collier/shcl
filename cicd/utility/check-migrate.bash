@@ -121,6 +121,15 @@ fReadTree(){
 	done < <("${cli}" paths "${doc}" 2>/dev/null || true)
 }
 
+##	One read answers differently by decision rather than by migration: the info
+##	string of an empty binding was BadType in 2.x and is Empty now, matching the
+##	raw-content read on the same node. The two reads sit next to each other in
+##	the tree above, so the 2.x side's answer is brought forward here rather than
+##	dropping the info string from the comparison entirely.
+##	Each read prints its (empty) value before its status line, so the raw status
+##	sits two lines back.
+fAge2xReads(){ awk '$0 == "rawinfo exit 4" && prev == "" && prev2 == "raw exit 2" { $0 = "rawinfo exit 2" } { print; prev2 = prev; prev = $0 }'; }
+
 ##	A NUL-bearing document cannot ride a command substitution; the native
 ##	runners pin those.
 fHasNul(){ IFS= read -r -d '' _ <"$1"; }
@@ -131,6 +140,16 @@ fHasNul(){ IFS= read -r -d '' _ <"$1"; }
 ##	text rather than by file name, because a fuzz document's number moves every
 ##	time the corpus grows.
 fInfoHashLabel(){ grep -qE '(```|~~~)[^#]*[[:space:]]#' "$1"; }
+
+##	A `#` right after a control character has no spelling either. 2.x cut the
+##	line at the `#` and then trimmed the control character off the end of the
+##	name half, so `my<CR>#x: 1` bound `my`; here the name ends at the control
+##	character, which is then unexpected, and no space put before the `#` moves
+##	it. Keeping the byte and keeping the reading cannot both be done, so
+##	`migrate` leaves the line and the load names it. Filed as its own item.
+##	Tab is a control character and is also whitespace, so it is out of the class:
+##	a tab before a `#` opens a comment here just as it did in 2.x.
+fCtrlBeforeHash(){ LC_ALL=C grep -qE "$(printf '[\001-\010\013-\037\177]#')" "$1"; }
 
 declare -i nCompared=0 nSkipped=0 nBad=0 nExpected=0
 exceptions='068-info-hash-spellings'
@@ -144,8 +163,9 @@ for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
 		if [[ " ${exceptions} " == *" ${name} "* ]]; then nExpected+=1; fi
 		continue
 	fi
+	if fCtrlBeforeHash "${f}"; then nSkipped+=1; continue; fi
 	"${newCli}" migrate "${f}" > "${tmpDir}/migrated.shcl" 2>/dev/null || true
-	want="$(fReadTree "${oldCli}" "${f}")"
+	want="$(fReadTree "${oldCli}" "${f}" | fAge2xReads)"
 	got="$(fReadTree "${newCli}" "${tmpDir}/migrated.shcl")"
 	nCompared+=1
 	if [[ "${want}" != "${got}" ]]; then
@@ -168,7 +188,7 @@ if ((nBad)); then
 	echo "check-migrate: ${nBad} divergence(s) over ${nCompared} document(s) (${nSkipped} skipped as not clean under 2.x)" >&2
 	exit 1
 fi
-echo "check-migrate: OK: ${nCompared} document(s) migrate to the tree 2.x read (${nSkipped} skipped as not clean under 2.x or carrying an unmigratable fence label)"
+echo "check-migrate: OK: ${nCompared} document(s) migrate to the tree 2.x read (${nSkipped} skipped as not clean under 2.x or carrying a shape 2.x could spell and this cannot)"
 
 ##	History:
 ##		2026-09-08  Created with the 3.0 lexical cut, pinned on the funnel merge.

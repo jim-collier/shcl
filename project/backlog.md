@@ -52,6 +52,12 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 ### Features and enhancements
 
+- 🔘 A `#` right after a control character has no spelling `migrate` can reach.
+	- Reproduced: `my<CR>#sery: 1` binds `my` under 2.x - the `#` cut the line, and the trim then took the carriage return off the end of the name half. Here the name ends at the carriage return, which is then an unexpected character, and no space put before the `#` changes that. `migrate` leaves the line, the load reports `E014`, and the path is gone.
+	- Two ways out, neither obviously right. Drop the trimmed control character, which reproduces the 2.x tree exactly but edits text that was not part of it - against the promise that everything outside the tree comes through as written. Or say the shape is unmigratable and leave it, as the whitespace-`#` fence label already is.
+	- Fuzz-only in practice; nothing a person types looks like this. `check-migrate.bash` skips such a document for now and names the shape.
+	- Opened: 20260908-180000
+
 - 🔘 Make sure new config files get written with the SHCL info block at the bottom, unless opted out of. Make sure that comments (including the SHCL info block) are preceeded by '##', whereas disabled settings are just '#'.
 
 ### Done
