@@ -599,6 +599,7 @@ if file_status == FileStatus::NotFound {
 // Typed read, with a fallback if the path is missing
 let workers = doc.get_int("workers").unwrap_or(4);
 let root = doc.get_string("site[example.com].root").unwrap_or_default();
+println!("serving from {root}");
 
 // Or ask why a read failed, when the difference matters
 match doc.get_int("site[example.com].max-upload-mb") {
@@ -645,6 +646,7 @@ if fileStatus == shcl.FileNotFound {
 
 workers := doc.GetIntOr("workers", 4)
 root := doc.GetStringOr("site[example.com].root", "")
+fmt.Println("serving from", root)
 
 if mb, st := doc.GetInt("site[example.com].max-upload-mb"); st == shcl.Good {
 	fmt.Println(mb, "MB")
